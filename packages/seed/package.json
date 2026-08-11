@@ -1,0 +1,21 @@
+{
+  "name": "@shikoo/seed",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --max-warnings 0"
+  },
+  "dependencies": {
+    "@shikoo/contracts": "workspace:*",
+    "@shikoo/database": "workspace:*",
+    "@shikoo/domain": "workspace:*",
+    "@shikoo/sms-parser": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "typescript": "5.6.3"
+  }
+}

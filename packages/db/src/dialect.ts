@@ -137,17 +137,35 @@ function rewriteInsertOrIgnore(sql: string): string {
   return `${trimmed} ON CONFLICT DO NOTHING`;
 }
 
-/** `?1, ?2` -> `$1, $2`. Reuse of a number is legal in both dialects. */
+/**
+ * `?1, ?2` -> `$1, $2`, and bare `?, ?` -> `$1, $2`.
+ *
+ * D1 accepts both styles. Numbered placeholders may repeat a number, which
+ * Postgres also allows, so those translate one-for-one. Anonymous ones bind
+ * left to right, so they are numbered in the order they appear.
+ *
+ * Mixing the two in one statement is refused rather than guessed: SQLite's rule
+ * for what `?` means after an explicit `?3` is subtle enough that any
+ * translation would be a coin flip with someone's money on it.
+ */
 function rewritePlaceholders(sql: string): string {
-  return mapCode(sql, (code) => {
-    if (/\?(?![0-9])/.test(code.replace(/\?[0-9]+/g, ''))) {
-      throw new DialectError(
-        'anonymous ? placeholder — Postgres needs numbered parameters',
-        sql,
-      );
-    }
-    return code.replace(/\?([0-9]+)/g, '$$$1');
-  });
+  const spans = scan(sql);
+  const code = spans.filter((s) => s.code).map((s) => s.text).join('');
+  const hasNumbered = /\?[0-9]/.test(code);
+  const hasAnonymous = /\?(?![0-9])/.test(code.replace(/\?[0-9]+/g, ''));
+
+  if (hasNumbered && hasAnonymous) {
+    throw new DialectError(
+      'statement mixes ?N and bare ? placeholders — number them consistently',
+      sql,
+    );
+  }
+
+  if (hasAnonymous) {
+    let next = 0;
+    return mapCode(sql, (part) => part.replace(/\?/g, () => `$${++next}`));
+  }
+  return mapCode(sql, (part) => part.replace(/\?([0-9]+)/g, '$$$1'));
 }
 
 const cache = new Map<string, string>();

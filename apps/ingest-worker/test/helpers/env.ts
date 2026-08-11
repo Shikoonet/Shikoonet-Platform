@@ -1,0 +1,89 @@
+/**
+ * Replaces `import { env } from 'cloudflare:test'`.
+ *
+ * The Workers test pool gave each run a fresh D1 and applied the migrations
+ * from `?raw` imports. Here the schema is the repo's own migrations, already
+ * applied to the test database, so `applySchema()` only has to confirm that —
+ * a suite that silently ran against an empty database would pass by asserting
+ * nothing.
+ *
+ * Needs DATABASE_URL and migrations 0001-0005 applied (`pnpm sim:up`).
+ */
+
+import { createPostgresD1 } from '@shikoo/db';
+import type { Env } from '../../src/index.js';
+import { noRateLimit } from '../../src/rateLimit.js';
+
+const { db, pool } = createPostgresD1();
+
+/**
+ * The same shape the Worker received as bindings.
+ *
+ * Rate limiting is off by default: these suites are about ingestion, and a
+ * shared limiter would make one test's traffic fail another's. The limiter has
+ * its own tests in rateLimit.test.ts.
+ */
+export const env: Env = {
+  DB: db,
+  DEVICE_LIMIT: noRateLimit,
+  IP_LIMIT: noRateLimit,
+  ENV_NAME: 'test',
+  APP_VERSION: 'test',
+  MIRZABOT_INTEGRATION_ENABLED: 'true',
+  MIRZABOT_INTEGRATION_ID: 'mirzabot-test',
+  MIRZABOT_INTEGRATION_HMAC_SECRET: 'test-secret',
+  AUTO_MATCH_ENABLED: 'false',
+  AUTO_FULFILLMENT_ENABLED: 'false',
+};
+
+export { pool };
+
+/** Tables the hub owns, in an order that satisfies the foreign keys. */
+const HUB_TABLES = [
+  'reconciliation_matches',
+  'transaction_account_assignments',
+  'transaction_detected_identifiers',
+  'transaction_reviews',
+  'reseller_transactions',
+  'income_declined_transactions',
+  'dashboard_transaction_reads',
+  'dashboard_payment_event_reads',
+  'account_assignment_preview_items',
+  'account_assignment_previews',
+  'payment_claims',
+  'transaction_candidates',
+  'raw_sms_events',
+  'payment_cards',
+  'financial_account_identifiers',
+  'financial_accounts',
+  'device_credentials',
+  'devices',
+  'integration_events',
+  'audit_logs',
+  'comments',
+];
+
+/**
+ * Confirms the schema is present. Named `applySchema` because that is what the
+ * Worker-era tests called; it no longer applies anything.
+ */
+export async function applySchema(): Promise<void> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*)::int AS n FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = ANY($1)`,
+    )
+    .bind(HUB_TABLES)
+    .first<{ n: number }>();
+  if ((row?.n ?? 0) < HUB_TABLES.length) {
+    throw new Error(
+      `expected ${HUB_TABLES.length} hub tables, found ${row?.n ?? 0}. ` +
+        'Apply migrations/000*.sql to DATABASE_URL first (pnpm sim:up).',
+    );
+  }
+}
+
+/** Empties every hub table so each suite starts from a known state. */
+export async function resetHub(): Promise<void> {
+  await db.prepare(`TRUNCATE ${HUB_TABLES.join(', ')} RESTART IDENTITY CASCADE`).run();
+}

@@ -37,8 +37,23 @@ describe('placeholders', () => {
     );
   });
 
-  it('refuses an anonymous ? rather than guessing its position', () => {
-    expect(() => toPostgres('SELECT * FROM t WHERE a = ?')).toThrow(DialectError);
+  it('numbers bare ? placeholders left to right', () => {
+    // D1 accepts both styles; the hub's tests use this one.
+    expect(toPostgres('INSERT INTO t (a, b, c) VALUES (?, ?, ?)')).toBe(
+      'INSERT INTO t (a, b, c) VALUES ($1, $2, $3)',
+    );
+  });
+
+  it('does not count a ? inside a literal as a placeholder', () => {
+    expect(toPostgres("SELECT ? WHERE label = 'why? really'")).toBe(
+      "SELECT $1 WHERE label = 'why? really'",
+    );
+  });
+
+  it('refuses a statement that mixes both styles', () => {
+    // SQLite's numbering rule for a bare ? after an explicit ?3 is subtle
+    // enough that translating it would be a guess.
+    expect(() => toPostgres('SELECT * FROM t WHERE a = ?1 AND b = ?')).toThrow(DialectError);
   });
 
   it('counts parameters for a translated statement', () => {
