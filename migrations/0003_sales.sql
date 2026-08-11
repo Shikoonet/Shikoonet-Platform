@@ -127,6 +127,10 @@ CREATE TABLE payments (
   -- `operation_type` is its prefix, which is all that was ever readable.
   operation_type  text,
   legacy_step_token text,
+  -- The raw Payment_Method string ('arze digital offline', 'plisio', …). `method`
+  -- above is the normalised form; this keeps the original so a collapse can
+  -- always be undone.
+  legacy_method   text,
   telegram_message_id bigint,
   created_at      timestamptz NOT NULL,
   updated_at      timestamptz,

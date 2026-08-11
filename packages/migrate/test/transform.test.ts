@@ -1,0 +1,198 @@
+import { describe, expect, it } from 'vitest';
+import * as t from '../src/transform.js';
+
+describe('money', () => {
+  it('converts Toman to IRR', () => {
+    expect(t.tomanToIrr('100000')).toBe(1_000_000n);
+    expect(t.tomanToIrr(150000)).toBe(1_500_000n);
+  });
+
+  it('carries a negative balance through unchanged', () => {
+    // Production user 314985971. The migration must reproduce this, not fix it.
+    expect(t.tomanToIrr('-5940000')).toBe(-59_400_000n);
+  });
+
+  it('treats missing as zero, not as a failure', () => {
+    expect(t.tomanToIrr(null)).toBe(0n);
+    expect(t.tomanToIrr('')).toBe(0n);
+  });
+
+  it('refuses anything that is not an integer amount', () => {
+    expect(() => t.tomanToIrr('100,000')).toThrow(t.TransformError);
+    expect(() => t.tomanToIrr('12.5')).toThrow(t.TransformError);
+    expect(() => t.tomanToIrr('۱۰۰۰')).toThrow(t.TransformError); // Persian digits
+  });
+
+  it('stays exact past the float safe range', () => {
+    const huge = '10000000000000000'; // 1e16 Toman
+    expect(t.tomanToIrr(huge)).toBe(100_000_000_000_000_000n);
+  });
+});
+
+describe('identity', () => {
+  it('parses telegram ids', () => {
+    expect(t.telegramId('6714538686')).toBe(6714538686n);
+    expect(t.telegramId(' 358123646 ')).toBe(358123646n);
+  });
+
+  it('refuses a non-numeric or missing id', () => {
+    expect(() => t.telegramId('abc')).toThrow(t.TransformError);
+    expect(() => t.telegramId(null)).toThrow(t.TransformError);
+  });
+
+  it('drops the NOT_USERNAME sentinel', () => {
+    expect(t.username('NOT_USERNAME')).toBeNull();
+    expect(t.username('Rezaahmadi2494')).toBe('Rezaahmadi2494');
+    expect(t.username('  ')).toBeNull();
+  });
+
+  it('drops the "none" phone sentinel', () => {
+    expect(t.phone('none')).toBeNull();
+    expect(t.phone('09121234567')).toBe('09121234567');
+  });
+});
+
+describe('status mapping', () => {
+  it('maps every payment status present in production', () => {
+    expect(t.paymentStatus('paid')).toBe('PAID');
+    expect(t.paymentStatus('expire')).toBe('EXPIRED');
+    expect(t.paymentStatus('reject')).toBe('REJECTED');
+    expect(t.paymentStatus('Unpaid')).toBe('PENDING');
+    expect(t.paymentStatus('processing')).toBe('PROCESSING');
+    expect(t.paymentStatus('waiting')).toBe('AWAITING_REVIEW');
+  });
+
+  it('collapses both spellings of disabled', () => {
+    // 'disabledn' is a real production value, from a bug in the PHP writer.
+    expect(t.subscriptionStatus('disabled')).toBe('DISABLED');
+    expect(t.subscriptionStatus('disabledn')).toBe('DISABLED');
+  });
+
+  it('stops the migration on an unmapped value instead of guessing', () => {
+    expect(() => t.paymentStatus('something_new')).toThrow(t.TransformError);
+    expect(() => t.subscriptionStatus('')).toThrow(t.TransformError);
+    expect(() => t.orderKind('extra_seats')).toThrow(t.TransformError);
+  });
+
+  it('reads the reseller flag', () => {
+    expect(t.isReseller('n')).toBe(true);
+    expect(t.isReseller('f')).toBe(false);
+  });
+
+  it('maps user status in either capitalisation', () => {
+    // Production holds both spellings: 'Active' on 11,192 rows, 'active' on 5.
+    expect(t.userStatus('Active')).toBe('ACTIVE');
+    expect(t.userStatus('active')).toBe('ACTIVE');
+    expect(t.userStatus('block')).toBe('BLOCKED');
+    expect(() => t.userStatus('banned')).toThrow(t.TransformError);
+  });
+});
+
+describe('step token', () => {
+  it('promotes only the operation prefix', () => {
+    expect(t.stepToken('getconfigafterpay|6714538686_28ed')).toEqual({
+      operationType: 'getconfigafterpay',
+      raw: 'getconfigafterpay|6714538686_28ed',
+    });
+  });
+
+  it('keeps the literal 0 rows without inventing an operation', () => {
+    expect(t.stepToken('0')).toEqual({ operationType: null, raw: '0' });
+  });
+
+  it('handles the 22 null rows', () => {
+    expect(t.stepToken(null)).toEqual({ operationType: null, raw: null });
+  });
+});
+
+describe('luhn', () => {
+  it('accepts the card the bot hands out', () => {
+    expect(t.isLuhnValid('5054161706277062')).toBe(true);
+  });
+
+  it('rejects the hub copy that differs by one digit', () => {
+    // The proof behind BUGS-FOR-ADMIN.md item 4.
+    expect(t.isLuhnValid('5054161716277062')).toBe(false);
+  });
+
+  it('rejects non-digits and wrong lengths', () => {
+    expect(t.isLuhnValid('5054-1617-0627-7062')).toBe(false);
+    expect(t.isLuhnValid('123')).toBe(false);
+    expect(t.isLuhnValid('')).toBe(false);
+  });
+});
+
+describe('timestamps', () => {
+  it('accepts the bot string format', () => {
+    expect(t.tehranString('2026/08/11 23:26:33', 'time')).toBe('2026/08/11 23:26:33');
+  });
+
+  it('accepts the MySQL DATETIME form and normalises the separator', () => {
+    // revenue_adjustment_log.created_at is a DATETIME, also in Tehran local.
+    expect(t.tehranString('2026-08-11 21:58:13', 'created_at')).toBe('2026/08/11 21:58:13');
+  });
+
+  it('treats the MySQL zero date as absent rather than year 0', () => {
+    expect(t.tehranString('0000-00-00 00:00:00', 'time')).toBeNull();
+  });
+
+  it('refuses a format it was not built for', () => {
+    expect(() => t.tehranString('11/08/2026 23:26', 'time')).toThrow(t.TransformError);
+    expect(() => t.tehranString('yesterday', 'time')).toThrow(t.TransformError);
+  });
+
+  it('accepts epoch seconds inside the plausible window', () => {
+    expect(t.epochSeconds('1786478188', 'time_sell')).toBe('1786478188');
+  });
+
+  it('catches milliseconds pasted into a seconds column', () => {
+    expect(() => t.epochSeconds('1786478188000', 'time_sell')).toThrow(t.TransformError);
+    expect(() => t.epochSeconds('0', 'time_sell')).toThrow(t.TransformError);
+  });
+
+  it('builds DateStyle-independent SQL', () => {
+    expect(t.sqlExpr.tehranString('$1')).toContain("'YYYY/MM/DD HH24:MI:SS'");
+    expect(t.sqlExpr.tehranString('$1')).toContain("AT TIME ZONE 'Asia/Tehran'");
+  });
+});
+
+describe('hub epoch columns', () => {
+  it('passes numbers straight through', () => {
+    expect(t.hubEpochMillis(1786094815726, 'created_at')).toBe(1786094815726);
+  });
+
+  it('rescues the three access_users rows holding a UTC datetime string', () => {
+    // SQLite does not enforce column types, so an INTEGER column holds text.
+    expect(t.hubEpochMillis('2026-08-04 20:32:43', 'access_users.created_at')).toBe(
+      Date.UTC(2026, 7, 4, 20, 32, 43),
+    );
+  });
+
+  it('accepts a numeric string', () => {
+    expect(t.hubEpochMillis('1786094815726', 'created_at')).toBe(1786094815726);
+  });
+
+  it('refuses anything else rather than storing a wrong instant', () => {
+    expect(() => t.hubEpochMillis('soon', 'created_at')).toThrow(t.TransformError);
+  });
+
+  it('knows which columns are timestamps', () => {
+    expect(t.HUB_EPOCH_COLUMNS.has('bank_timestamp')).toBe(true);
+    expect(t.HUB_EPOCH_COLUMNS.has('amount_irr')).toBe(false);
+  });
+});
+
+describe('legacyAttrs', () => {
+  it('keeps what no column claimed and drops legacy empties', () => {
+    const row = { id: '1', username: 'a', score: '5', pagenumber: '0', token: null };
+    expect(t.legacyAttrs(row, ['id', 'username'], ['token'])).toEqual({ score: '5' });
+  });
+});
+
+describe('json', () => {
+  it('falls back instead of throwing on malformed input', () => {
+    expect(t.json('{"volume":true}')).toEqual({ volume: true });
+    expect(t.json('not json')).toEqual({});
+    expect(t.json(null, [])).toEqual([]);
+  });
+});

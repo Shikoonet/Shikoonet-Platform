@@ -44,6 +44,10 @@ CREATE TABLE users (
   referral_bonus_claimed boolean NOT NULL DEFAULT false,
   test_quota_used   integer     NOT NULL DEFAULT 0,
   score             integer     NOT NULL DEFAULT 0,
+  -- A standing per-customer percentage off, applied at checkout
+  -- (legacy `user.pricediscount`; index.php:1541 computes price * pct / 100).
+  discount_percent  numeric(5,2) NOT NULL DEFAULT 0
+                      CHECK (discount_percent >= 0 AND discount_percent <= 100),
   notify_enabled    boolean     NOT NULL DEFAULT true,
   registered_at     timestamptz NOT NULL,
   last_seen_at      timestamptz,

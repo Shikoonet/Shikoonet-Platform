@@ -1,0 +1,21 @@
+{
+  "name": "@shikoo/migrate",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "preflight": "tsx src/cli.ts preflight",
+    "migrate": "tsx src/cli.ts migrate",
+    "verify": "tsx src/cli.ts verify",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0"
+  },
+  "dependencies": {
+    "mysql2": "^3.11.4",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.11.10"
+  }
+}
