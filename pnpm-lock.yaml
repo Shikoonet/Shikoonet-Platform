@@ -30,6 +30,31 @@ importers:
         specifier: 2.1.4
         version: 2.1.4(@types/node@22.20.1)
 
+  packages/contracts:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.20.1
+      typescript:
+        specifier: 5.6.3
+        version: 5.6.3
+
+  packages/database:
+    dependencies:
+      '@shikoo/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@shikoo/db':
+        specifier: workspace:*
+        version: link:../db
+    devDependencies:
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.20.1
+      typescript:
+        specifier: 5.6.3
+        version: 5.6.3
+
   packages/db:
     dependencies:
       pg:
@@ -42,6 +67,28 @@ importers:
       '@types/pg':
         specifier: ^8.11.10
         version: 8.21.0
+
+  packages/domain:
+    dependencies:
+      '@shikoo/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@shikoo/database':
+        specifier: workspace:*
+        version: link:../database
+    devDependencies:
+      '@shikoo/db':
+        specifier: workspace:*
+        version: link:../db
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.20.1
+      typescript:
+        specifier: 5.6.3
+        version: 5.6.3
+      vitest:
+        specifier: 2.1.4
+        version: 2.1.4(@types/node@22.20.1)
 
   packages/migrate:
     dependencies:
@@ -58,6 +105,22 @@ importers:
       '@types/pg':
         specifier: ^8.11.10
         version: 8.21.0
+
+  packages/sms-parser:
+    dependencies:
+      '@shikoo/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.20.1
+      typescript:
+        specifier: 5.6.3
+        version: 5.6.3
+      vitest:
+        specifier: 2.1.4
+        version: 2.1.4(@types/node@22.20.1)
 
 packages:
 

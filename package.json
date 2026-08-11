@@ -4,10 +4,12 @@
   "version": "0.1.0",
   "description": "Shikoo platform — Telegram commerce bot, bank-SMS payment verification, and product provisioning on one Postgres.",
   "packageManager": "pnpm@10.0.0",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "typecheck": "pnpm -r --parallel typecheck",
-    "test": "pnpm -r --parallel test",
+    "test": "pnpm -r test",
     "build": "pnpm -r --parallel build",
     "lint": "pnpm -r --parallel lint",
     "format": "prettier --write \"**/*.{ts,tsx,md,json,yaml,sql}\"",
