@@ -16,8 +16,12 @@
 -- tests and all of packages/domain read these columns. Converting the types
 -- turns a database adapter into a rewrite of the one part of this system that
 -- is already proven. New tables (0001-0003) use timestamptz and boolean; this
--- file is a port and reads like one. Human-readable timestamptz mirrors are
--- added as generated columns where reporting actually needs them.
+-- file is a port and reads like one.
+--
+-- No generated timestamptz mirror columns either, though they were tempting:
+-- the ported worker returns rows straight to the SPA, and an extra column on
+-- `SELECT *` would leak into API responses and break response-shape tests.
+-- Reporting calls to_timestamp(bank_timestamp / 1000.0) explicitly instead.
 --
 -- The partial unique indexes at the bottom are the money invariant. They are
 -- the reason this platform is on Postgres and not MySQL.
@@ -125,7 +129,6 @@ CREATE TABLE raw_sms_events (
   duplicate_of                text REFERENCES raw_sms_events(id) ON DELETE SET NULL,
   processing_error            text,
   created_at                  bigint NOT NULL,
-  sms_at timestamptz GENERATED ALWAYS AS (to_timestamp(sms_timestamp / 1000.0)) STORED,
   UNIQUE (device_id, body_sha256)
 );
 CREATE INDEX idx_raw_sms_device_ts       ON raw_sms_events(device_id, sms_timestamp DESC);
@@ -150,8 +153,7 @@ CREATE TABLE transaction_candidates (
   processing_disposition text NOT NULL DEFAULT 'ACTIONABLE' CHECK (processing_disposition IN (
                            'ACTIONABLE','OUTGOING_IGNORED','ADMIN_EXCLUDED')),
   created_at             bigint NOT NULL,
-  updated_at             bigint NOT NULL,
-  bank_at timestamptz GENERATED ALWAYS AS (to_timestamp(bank_timestamp / 1000.0)) STORED
+  updated_at             bigint NOT NULL
 );
 CREATE INDEX idx_tx_bank_ts  ON transaction_candidates(bank_timestamp DESC);
 CREATE INDEX idx_tx_status   ON transaction_candidates(status);
@@ -186,8 +188,7 @@ CREATE TABLE payment_claims (
                                 'PENDING','MATCH_SUGGESTED','VERIFIED','REJECTED',
                                 'FAKE_RECEIPT','EXPIRED')),
   created_at                  bigint NOT NULL,
-  updated_at                  bigint NOT NULL,
-  submitted_at_ts timestamptz GENERATED ALWAYS AS (to_timestamp(submitted_at / 1000.0)) STORED
+  updated_at                  bigint NOT NULL
 );
 CREATE INDEX idx_claim_status         ON payment_claims(status);
 CREATE INDEX idx_claim_account_status ON payment_claims(target_financial_account_id, status);

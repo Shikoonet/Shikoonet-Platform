@@ -31,4 +31,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
+
+      # Before the tests, not after: @shikoo/db runs against a real database,
+      # including a check that every hub SQL statement parses against this
+      # schema. It needs the schema to exist.
+      #
+      # Gating the migrations themselves also matters on its own — without it a
+      # migration that fails to apply, or one that quietly drops a partial
+      # unique index, reaches main with every other check green.
+      - name: Apply migrations
+        run: |
+          for f in migrations/0*.sql; do
+            echo "== $f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+      - name: Prove the money invariants
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f migrations/verify_invariants.sql
+
       - run: pnpm test
