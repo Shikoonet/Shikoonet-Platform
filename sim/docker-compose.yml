@@ -1,0 +1,59 @@
+# Local simulation environment.
+#
+# Today it carries the two databases the migration work needs: the Postgres we
+# are moving to, and a MySQL loaded with the real production dump so the
+# migration can be written and tested against real-shaped data offline.
+#
+# The fake Telegram API and fake provisioning panel arrive with the bot — there
+# is nothing to fake until there is a bot to point at them.
+
+name: shikoo-sim
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: shikoo
+      POSTGRES_PASSWORD: shikoo_local
+      POSTGRES_DB: shikoo
+      # Deterministic: no locale drift between machines.
+      LANG: C.UTF-8
+    command:
+      - postgres
+      - -c
+      - timezone=UTC
+    ports:
+      - '5433:5432' # 5433 on the host, so a locally installed Postgres still works
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U shikoo -d shikoo']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Source of truth for the migration, seeded from the production dump on first
+  # boot. Read-only mount: the dump on disk is never modified.
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: shikoo_local
+      MYSQL_DATABASE: mirzabot
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+    ports:
+      - '3307:3306'
+    volumes:
+      - mysqldata:/var/lib/mysql
+      - ../legacy/mirzabot-php/db/mirzabot-prod-20260811.sql:/docker-entrypoint-initdb.d/01-dump.sql:ro
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost', '-pshikoo_local']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  pgdata:
+  mysqldata:
