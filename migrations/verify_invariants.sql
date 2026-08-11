@@ -151,6 +151,18 @@ SELECT assert_rejects($$
        VALUES ((SELECT id FROM users WHERE telegram_id = 1001), 0, 'TOPUP')
 $$, 'a zero-amount wallet entry is rejected');
 
+-- A negative balance must be storable. Production has one (user 314985971, at
+-- -5,940,000 Toman) with no history explaining it. Migration reproduces the
+-- number exactly; a schema that refused it would force the migration to alter
+-- money, which is the one thing it must never do. Correcting the balance is a
+-- later, deliberate ledger entry with a named author.
+INSERT INTO wallet_entries (user_id, amount_irr, kind, note)
+     VALUES ((SELECT id FROM users WHERE telegram_id = 1002), -59400000, 'OPENING',
+             'legacy balance carried over as-is');
+SELECT assert_eq((SELECT balance_irr FROM wallets w JOIN users u ON u.id = w.user_id
+                   WHERE u.telegram_id = 1002),
+                 -59400000, 'a negative legacy balance survives migration unchanged');
+
 -- ==========================================================================
 -- 4. APPEND-ONLY LEDGERS
 -- ==========================================================================
