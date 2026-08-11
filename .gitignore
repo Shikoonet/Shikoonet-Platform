@@ -1,0 +1,22 @@
+node_modules
+dist
+build
+coverage
+test-results
+playwright-report
+*.tsbuildinfo
+
+# Local env / secrets — never committed
+.env
+.env.*
+!.env.example
+sim/.env.local
+
+# Production data — customer payments, Telegram IDs, card numbers
+legacy/mirzabot-php/db/
+*.sql.gz
+
+# Reference copies of the two systems being replaced. Each keeps its OWN git
+# history (hub-cloudflare still tracks its GitHub remote), so they are not
+# vendored into this repo. Deleted in phase 5 once the strangler completes.
+legacy/

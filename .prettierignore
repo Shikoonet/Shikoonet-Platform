@@ -1,0 +1,10 @@
+node_modules
+dist
+build
+playwright-report
+test-results
+coverage
+*.lock
+pnpm-lock.yaml
+migrations
+legacy
