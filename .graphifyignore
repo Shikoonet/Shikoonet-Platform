@@ -1,0 +1,13 @@
+# legacy/ is git-ignored (each keeps its own repo) but IS our reference code
+# during the rewrite, so graphify must index it. Exclude only the noise.
+node_modules/
+dist/
+build/
+graphify-out/
+legacy/mirzabot-php/vendor/
+legacy/mirzabot-php/lang/
+legacy/mirzabot-php/app/assets/
+legacy/mirzabot-php/db/
+legacy/hub-cloudflare/.production-backups/
+legacy/hub-cloudflare/.deploy-backups/
+legacy/hub-cloudflare/graphify-out/
