@@ -72,6 +72,29 @@ describe('/start', () => {
     expect(session?.step).toBeNull();
   });
 
+  it("registers a customer as 'fa' even when their Telegram runs in English", async () => {
+    // Caught by the first real message this bot ever received: Sam's own account
+    // reports language_code 'en'. Production is 11,240 'fa' to one 'en', so the
+    // phone's locale is not evidence of the language a customer buys in.
+    const { updateId, telegramId } = ids();
+    const update = startUpdate(updateId, telegramId);
+    update.message!.from!.language_code = 'en';
+
+    await handleUpdate(db, update);
+
+    expect((await userRow(telegramId))?.lang).toBe('fa');
+  });
+
+  it('leaves a language the customer chose alone', async () => {
+    const { updateId, telegramId } = ids();
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+    await db.prepare(`UPDATE users SET lang = 'en' WHERE telegram_id = ?1`).bind(telegramId).run();
+
+    await handleUpdate(db, startUpdate(updateId + 1, telegramId));
+
+    expect((await userRow(telegramId))?.lang).toBe('en');
+  });
+
   it('abandons a half-finished flow', async () => {
     const { updateId, telegramId } = ids();
     await handleUpdate(db, startUpdate(updateId, telegramId));

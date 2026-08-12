@@ -83,19 +83,23 @@ async function handleStart(
   // Upsert rather than SELECT-then-INSERT: two customers cannot race into two
   // rows for one telegram_id, because the unique index decides, not this code.
   //
-  // `lang` is only set on insert. A customer who changed it in the bot must not
-  // have that undone by their phone's locale on the next /start.
+  // `lang` is deliberately not set from `from.language_code`. Production says
+  // why: 11,240 customers are 'fa' and exactly one is 'en', while plenty of them
+  // run Telegram in English — the phone's locale does not predict the language a
+  // customer wants to be sold in. The legacy bot reads language_code too and
+  // likewise never assigns it; language is an explicit choice in the menu. The
+  // column defaults to 'fa'.
   const user = await tx
     .prepare(
-      `INSERT INTO users (telegram_id, username, lang, registered_at, last_seen_at)
-       VALUES (?1, ?2, ?3, now(), now())
+      `INSERT INTO users (telegram_id, username, registered_at, last_seen_at)
+       VALUES (?1, ?2, now(), now())
        ON CONFLICT (telegram_id) DO UPDATE
          SET username = EXCLUDED.username,
              last_seen_at = now(),
              updated_at = now()
        RETURNING id, status`,
     )
-    .bind(from.id, from.username ?? null, from.language_code === 'en' ? 'en' : 'fa')
+    .bind(from.id, from.username ?? null)
     .first<{ id: number; status: string }>();
   if (!user) throw new Error('user upsert returned no row');
 
