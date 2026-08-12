@@ -4,7 +4,7 @@ import { formatTomanFromIrr } from './format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { NewBadge } from './NewBadge.js';
 import { bankName, formatToman, deviceInlineLabel, type AccountRefLike } from './paymentReview.js';
-import { formatRelativePast } from './paymentReview.js';
+import { formatTimeAgo } from './paymentReview.js';
 import { formatExactDateTime } from './paymentReview.js';
 import type { AnalyticsResponse } from './analytics.js';
 import { formatPercentChange } from './analytics.js';
@@ -168,7 +168,7 @@ function verifiedAtLabel(item: PaymentItem): string {
   const ts =
     item.matchedTransaction?.verifiedAt ?? item.matchedTransaction?.bankTimestamp ?? item.effectiveTs;
   if (ts == null) return '—';
-  return formatRelativePast(Date.now() - ts);
+  return formatTimeAgo(ts);
 }
 
 /** Exact YYYY-MM-DD HH:mm:ss in the user's local timezone (no relative time). */

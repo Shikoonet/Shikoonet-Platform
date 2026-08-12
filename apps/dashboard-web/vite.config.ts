@@ -14,8 +14,12 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // 8788 is the dashboard worker, which serves every route this SPA calls
+      // (/api/v1/payments, /analytics, /notifications, /version). 8787 is the
+      // ingest worker and answers only POST /api/v1/sms, so pointing here made
+      // `pnpm dev` return 500 for the whole dashboard.
       '/api': {
-        target: 'http://localhost:8787',
+        target: 'http://localhost:8788',
         changeOrigin: true,
       },
     },

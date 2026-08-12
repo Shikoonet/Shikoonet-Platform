@@ -55,7 +55,7 @@ import {
   bankName,
   defaultCandidateId,
   formatRelativeFuture,
-  formatRelativePast,
+  formatTimeAgo,
   formatToman,
   isReopenEligible,
   reasonText,
@@ -950,7 +950,7 @@ function ManuallyVerifiedRow({
         </div>
         <div className="hub-list-row__line2 muted">
           {masked}
-          {verifiedAt != null && <> · Verified {formatRelativePast(verifiedAt)}</>}
+          {verifiedAt != null && <> · Verified {formatTimeAgo(verifiedAt)}</>}
           {operator && <> · by {operator}</>}
           <> · Tx {txLabel}</>
           <> · Fulfillment {item.fulfillmentState ?? 'Unknown'}</>
@@ -1052,7 +1052,7 @@ function ReopenVerificationModal({
           {verifiedAt != null && (
             <>
               <dt>Verified at</dt>
-              <dd>{formatRelativePast(verifiedAt)}</dd>
+              <dd>{formatTimeAgo(verifiedAt)}</dd>
             </>
           )}
         </dl>

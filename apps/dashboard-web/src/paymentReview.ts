@@ -54,7 +54,10 @@ export function defaultHistoryRangeState(): HistoryRangeState {
   return { preset: 'all' };
 }
 
-export function historyRangeQueryParams(state: HistoryRangeState): { range: HistoryRange; day?: string } {
+export function historyRangeQueryParams(state: HistoryRangeState): {
+  range: HistoryRange;
+  day?: string;
+} {
   if (state.preset === 'day') {
     return { range: 'day', ...(state.day ? { day: state.day } : {}) };
   }
@@ -220,8 +223,7 @@ const REASON_TEXT: Record<string, string> = {
   AMBIGUOUS_CLAIMS: 'Multiple payments could match this bank transfer',
   NO_TRANSACTION: 'No matching bank transfer found',
   NO_TRANSACTION_AFTER_10M: 'Receipt submitted, but no bank transfer was found within 10 minutes',
-  OUTSIDE_AUTO_MATCH_WINDOW:
-    'Matching transfer found, but outside the 5-minute auto-verify window',
+  OUTSIDE_AUTO_MATCH_WINDOW: 'Matching transfer found, but outside the 5-minute auto-verify window',
   UNMAPPED_CARD: 'Card is not linked to a bank account',
   AMBIGUOUS_CARD_MAPPING: 'This card is linked to more than one bank account',
   ACCOUNT_NOT_ACTIVE: 'This bank account is not active',
@@ -317,8 +319,24 @@ export function formatDurationLong(ms: number): string {
   return `${min}m ${sec}s`;
 }
 
-export function formatRelativePast(ms: number): string {
-  const totalSec = Math.max(0, Math.floor(ms / 1000));
+/**
+ * "27 minutes ago", from the timestamp itself.
+ *
+ * Takes the TIMESTAMP, not an elapsed duration. It used to take a duration,
+ * sitting in a row with formatDuration and formatDurationLong which genuinely
+ * do — and two of its three callers handed it `verifiedAt` straight, which
+ * formats the whole epoch as an interval. The manually-verified list on the
+ * live dashboard read "Verified 29773038 minutes ago" (56 years) for payments
+ * approved that afternoon, while the Bot Auto Verified table beside it — the
+ * one caller that remembered to subtract — was right.
+ *
+ * Making the parameter the timestamp removes the choice: `verifiedAt` is what
+ * every caller has, so there is nothing left to get wrong.
+ *
+ * `now` is injectable so this stays a pure function under test.
+ */
+export function formatTimeAgo(timestampMs: number, now: number = Date.now()): string {
+  const totalSec = Math.max(0, Math.floor((now - timestampMs) / 1000));
   const min = Math.floor(totalSec / 60);
   if (min <= 0) return 'just now';
   if (min === 1) return '1 minute ago';
