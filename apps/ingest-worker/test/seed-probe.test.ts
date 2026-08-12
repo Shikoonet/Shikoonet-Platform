@@ -151,11 +151,15 @@ describe('seed probe: spec counts', () => {
     expect(r.malformed).toBeGreaterThanOrEqual(20);
     expect(r.parserFailures).toBeGreaterThanOrEqual(10);
     expect(r.fakeReceipts).toBe(10);
-  });
+    // A full seed is ~1,600 rows through the D1 binding, comfortably over
+    // vitest's 5s default whenever the machine is busy — it failed once while a
+    // bot and a browser shared the box, then passed alone. A generous explicit
+    // budget keeps a genuine hang detectable without failing for load.
+  }, 60_000);
 
   it('is reproducible across runs (same seed, same counts)', async () => {
     await seed(env.DB as unknown as HubD1Database);
     const n = await count('SELECT COUNT(*) AS n FROM devices');
     expect(n).toBe(6);
-  });
+  }, 60_000);
 });

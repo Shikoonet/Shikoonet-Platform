@@ -1,4 +1,7 @@
 node_modules
+
+# Playwright MCP scratch output (screenshots, page snapshots)
+.playwright-mcp/
 dist
 build
 coverage

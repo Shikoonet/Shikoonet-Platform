@@ -1,7 +1,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { decode, encode, CALLBACK_MAX_BYTES } from '../src/callback.js';
+import { handleUpdate } from '../src/handle.js';
+import { PANEL_EMPTY, PLAN_GONE } from '../src/menu.js';
 import { orderForUser, subscriptionForUser } from '../src/owned.js';
+import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
+import { ensureCatalog, giveSubscription, planId, providerId } from './helpers/shop.js';
 
 /**
  * The attack these tests perform is the live one in the current PHP bot:
@@ -92,6 +96,83 @@ describe('a customer cannot reach another customer’s rows', () => {
     expect(missing).toBeNull();
   });
 });
+
+/**
+ * The catalog half of the same rule. A button having been drawn proves nothing:
+ * anyone can post `order:<id>` for an id they were never shown, so the order
+ * path re-runs the visibility check rather than trusting the journey.
+ */
+describe('a customer cannot buy what the shop never offered them', () => {
+  let buyer: number;
+  let buyerTelegramId: number;
+
+  beforeAll(async () => {
+    await ensureCatalog();
+    buyerTelegramId = 880_010;
+    buyer = await makeUser(buyerTelegramId, 'forger');
+  });
+
+  it('books nothing for a hidden product', async () => {
+    await expectNoOrder(buyer, buyerTelegramId, 990_101, await planId('sim-vip-hidden'));
+  });
+
+  it('books nothing on a disabled panel', async () => {
+    await expectNoOrder(buyer, buyerTelegramId, 990_102, await planId('sim-off-1m'));
+  });
+
+  it('books nothing from a resellers-only plan', async () => {
+    await expectNoOrder(buyer, buyerTelegramId, 990_103, await planId('sim-vip-reseller'));
+  });
+
+  it('books nothing for a first-purchase offer the customer has used up', async () => {
+    await giveSubscription(buyer, 'sec-shop-sub');
+    await expectNoOrder(buyer, buyerTelegramId, 990_104, await planId('sim-vip-trial'));
+  });
+
+  it('lists nothing for a panel the customer may not open', async () => {
+    const outcome = await handleUpdate(
+      db,
+      pressButton(990_105, buyerTelegramId, `panel:${await providerId('sim-off')}`),
+    );
+    expect(outcome.replies[0]?.text).toBe(PANEL_EMPTY);
+  });
+});
+
+async function expectNoOrder(
+  userId: number,
+  telegramId: number,
+  updateId: number,
+  targetPlanId: number,
+): Promise<void> {
+  const before = await countOrders(userId);
+  const outcome = await handleUpdate(
+    db,
+    pressButton(updateId, telegramId, `order:${targetPlanId}`),
+  );
+  // One answer for every reason, so the reply cannot be used to map the catalog.
+  expect(outcome.replies[0]?.text).toBe(PLAN_GONE);
+  expect(await countOrders(userId)).toBe(before);
+}
+
+async function countOrders(userId: number): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*)::int AS n FROM orders WHERE user_id = ?1`)
+    .bind(userId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+function pressButton(updateId: number, telegramId: number, data: string): TelegramUpdate {
+  return {
+    update_id: updateId,
+    callback_query: {
+      id: `cq-${updateId}`,
+      from: { id: telegramId },
+      message: { message_id: 1, chat: { id: telegramId } },
+      data,
+    },
+  };
+}
 
 describe('callback data is parsed as untrusted input', () => {
   it('reads the shapes we produce', () => {

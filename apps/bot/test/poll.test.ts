@@ -175,6 +175,97 @@ describe('pollOnce', () => {
   });
 });
 
+describe('button presses', () => {
+  function press(updateId: number, telegramId: number, data: string): TelegramUpdate {
+    return {
+      update_id: updateId,
+      callback_query: {
+        id: `cq-${updateId}`,
+        from: { id: telegramId },
+        message: { message_id: 77, chat: { id: telegramId } },
+        data,
+      },
+    };
+  }
+
+  it('stops the spinner', async () => {
+    const { updateId, telegramId } = ids();
+    const answered: string[] = [];
+    const api = stubApi({
+      getUpdates: async () => [press(updateId, telegramId, 'menu')],
+      answerCallbackQuery: async (id) => {
+        answered.push(id);
+      },
+    });
+
+    await pollOnce(db, api, updateId);
+
+    expect(answered).toEqual([`cq-${updateId}`]);
+  });
+
+  it('stops the spinner even for a redelivered press', async () => {
+    // The duplicate never reaches a handler, so answering cannot live in one.
+    const { updateId, telegramId } = ids();
+    const answered: string[] = [];
+    const api = stubApi({
+      getUpdates: async () => [press(updateId, telegramId, 'menu')],
+      answerCallbackQuery: async (id) => {
+        answered.push(id);
+      },
+    });
+
+    await pollOnce(db, api, updateId);
+    const result = await pollOnce(db, api, updateId);
+
+    expect(result.counts.duplicate).toBe(1);
+    expect(answered).toHaveLength(2);
+  });
+
+  it('replaces the menu in place instead of sending a new one', async () => {
+    const { updateId, telegramId } = ids();
+    // A registered customer, so the press produces a real screen.
+    await pollOnce(db, fakeApi([startUpdate(updateId, telegramId)]).api, updateId);
+
+    const edits: { messageId: number; text: string }[] = [];
+    const sent: number[] = [];
+    const api = stubApi({
+      getUpdates: async () => [press(updateId + 1, telegramId, 'menu')],
+      editMessageText: async (_chatId, messageId, text) => {
+        edits.push({ messageId, text });
+      },
+      sendMessage: async (chatId) => {
+        sent.push(chatId);
+      },
+    });
+
+    await pollOnce(db, api, updateId + 1);
+
+    expect(edits).toHaveLength(1);
+    expect(edits[0]?.messageId).toBe(77);
+    expect(sent).toEqual([]);
+  });
+
+  it('stops the spinner when the update failed outright', async () => {
+    // Otherwise a database outage looks like a bot that hung on the button.
+    const { updateId } = ids();
+    const answered: string[] = [];
+    const broken = press(updateId, 9_300_000_000_000_000_000, 'menu');
+
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const api = stubApi({
+      getUpdates: async () => [broken],
+      answerCallbackQuery: async (id) => {
+        answered.push(id);
+      },
+    });
+    const result = await pollOnce(db, api, updateId);
+    errors.mockRestore();
+
+    expect(result.failed).toBe(1);
+    expect(answered).toEqual([`cq-${updateId}`]);
+  });
+});
+
 describe('run', () => {
   it('polls until aborted, carrying the offset forward', async () => {
     const controller = new AbortController();

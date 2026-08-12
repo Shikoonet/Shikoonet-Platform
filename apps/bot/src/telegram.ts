@@ -187,11 +187,21 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     },
 
     async editMessageText(chatId, messageId, text, keyboard) {
-      await call(
-        'editMessageText',
-        { chat_id: chatId, message_id: messageId, text, ...markup(keyboard) },
-        15_000,
-      );
+      try {
+        await call(
+          'editMessageText',
+          { chat_id: chatId, message_id: messageId, text, ...markup(keyboard) },
+          15_000,
+        );
+      } catch (err) {
+        // Pressing the same button twice asks Telegram to replace a message
+        // with itself, and it answers 400. The screen already says what we
+        // wanted it to say, so this is the success case wearing an error's
+        // clothes — and treating it as a failure fills the log during ordinary
+        // use. Seen on the first live run of the menu.
+        if (String(err).includes('message is not modified')) return;
+        throw err;
+      }
     },
 
     async answerCallbackQuery(callbackQueryId, text) {

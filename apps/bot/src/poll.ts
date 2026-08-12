@@ -13,7 +13,7 @@
 
 import type { D1Database } from '@shikoo/database';
 import { handleUpdate, type HandleStatus } from './handle.js';
-import type { TelegramApi } from './telegram.js';
+import type { TelegramApi, TelegramUpdate } from './telegram.js';
 
 export interface PollResult {
   /** Offset to pass to the next call. */
@@ -71,13 +71,21 @@ export async function pollOnce(
       failed++;
       sawFailure = true;
       console.error(`[bot] update ${update.update_id} failed, will be retried`, err);
+      // Still stop the client's spinner. A button that keeps spinning through a
+      // database outage reads as a bot that died, and answering says nothing
+      // about whether the work succeeded.
+      await answer(api, update);
       continue;
     }
     if (!sawFailure) confirmedThrough = update.update_id;
     counts[outcome.status]++;
     for (const reply of outcome.replies) {
       try {
-        await api.sendMessage(reply.chatId, reply.text);
+        if (reply.editMessageId === undefined) {
+          await api.sendMessage(reply.chatId, reply.text, reply.keyboard);
+        } else {
+          await api.editMessageText(reply.chatId, reply.editMessageId, reply.text, reply.keyboard);
+        }
       } catch (err) {
         // The transaction has already committed. Retrying the whole update would
         // now be a no-op against the claim, so the reply is simply lost and said
@@ -85,9 +93,28 @@ export async function pollOnce(
         console.error(`[bot] reply for update ${update.update_id} was not delivered`, err);
       }
     }
+    await answer(api, update);
   }
 
   return { offset: confirmedThrough + 1, counts, failed };
+}
+
+/**
+ * Clears the spinner on a button press.
+ *
+ * Deliberately outside handleUpdate: a redelivered update is answered too, and
+ * that one never reaches a handler at all. Telegram spins the button for a few
+ * seconds otherwise, which every customer reads as a hung bot.
+ */
+async function answer(api: TelegramApi, update: TelegramUpdate): Promise<void> {
+  if (!update.callback_query) return;
+  try {
+    await api.answerCallbackQuery(update.callback_query.id);
+  } catch (err) {
+    // Expired callback ids are normal and not worth a failure; the customer has
+    // already seen their reply.
+    console.error(`[bot] callback ${update.callback_query.id} was not acknowledged`, err);
+  }
 }
 
 /** Drops claims old enough that Telegram can no longer redeliver them. */

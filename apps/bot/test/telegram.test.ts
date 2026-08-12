@@ -142,3 +142,44 @@ describe('sendMessage', () => {
     await expect(api.sendMessage(42, 'hi')).rejects.toThrow('chat not found');
   });
 });
+
+describe('editMessageText', () => {
+  it('sends the keyboard along with the new text', async () => {
+    const { api, calls } = apiWith(() => ok(true));
+    await api.editMessageText(42, 7, 'منو', [[{ text: 'خرید', callback_data: 'buy' }]]);
+    expect(calls[0]?.url).toContain('/editMessageText');
+    expect(calls[0]?.body).toEqual({
+      chat_id: 42,
+      message_id: 7,
+      text: 'منو',
+      reply_markup: { inline_keyboard: [[{ text: 'خرید', callback_data: 'buy' }]] },
+    });
+  });
+
+  it('treats "message is not modified" as done, not as a failure', async () => {
+    // What pressing the same button twice looks like. Found on the first live
+    // run of the menu: two presses, two stack traces, nothing actually wrong.
+    const { api } = apiWith(
+      () =>
+        new Response(
+          JSON.stringify({
+            ok: false,
+            description:
+              'Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message',
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    await expect(api.editMessageText(42, 7, 'منو')).resolves.toBeUndefined();
+  });
+
+  it('still throws for a real rejection', async () => {
+    const { api } = apiWith(
+      () =>
+        new Response(JSON.stringify({ ok: false, description: 'message to edit not found' }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    await expect(api.editMessageText(42, 7, 'منو')).rejects.toThrow('message to edit not found');
+  });
+});
