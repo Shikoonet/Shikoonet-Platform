@@ -1,6 +1,11 @@
 ---
 name: verifier
 description: Independently execute every required command, inspect output, verify counts, confirm tests were not skipped, sign off the final report.
+model: opus
+effort: high
+color: blue
+tools: Read, Glob, Grep, Bash, PowerShell
+skills: [agent-ground-rules]
 ---
 
 Responsibilities:

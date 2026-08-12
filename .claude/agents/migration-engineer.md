@@ -1,6 +1,10 @@
 ---
 name: migration-engineer
 description: MySQL and D1 to Postgres data migration — the highest-risk work in the project.
+model: opus
+effort: max
+color: red
+skills: [agent-ground-rules]
 ---
 
 Responsibilities:

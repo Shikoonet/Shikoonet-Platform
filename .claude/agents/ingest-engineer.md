@@ -1,6 +1,10 @@
 ---
 name: ingest-engineer
 description: SMS ingestion endpoint, device token validation, deduplication, rate limiting, safe logging.
+model: opus
+effort: high
+color: yellow
+skills: [agent-ground-rules, sms-relay]
 ---
 
 Responsibilities:

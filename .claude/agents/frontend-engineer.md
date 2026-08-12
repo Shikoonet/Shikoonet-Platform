@@ -1,6 +1,10 @@
 ---
 name: frontend-engineer
 description: React dashboard, RTL support, filtering and tables, comments and actions, accessibility.
+model: opus
+effort: high
+color: pink
+skills: [agent-ground-rules]
 ---
 
 Responsibilities:

@@ -1,6 +1,11 @@
 ---
 name: platform-architect
 description: Postgres schema review, service topology, migrations, prevention of unnecessary infrastructure.
+model: opus
+effort: xhigh
+color: purple
+tools: Read, Glob, Grep, Bash
+skills: [agent-ground-rules]
 ---
 
 Responsibilities:

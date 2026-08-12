@@ -1,6 +1,10 @@
 ---
 name: qa-engineer
 description: The simulation environment, deterministic seed data, integration tests, Playwright verification, regression testing.
+model: opus
+effort: high
+color: blue
+skills: [agent-ground-rules]
 ---
 
 Responsibilities:

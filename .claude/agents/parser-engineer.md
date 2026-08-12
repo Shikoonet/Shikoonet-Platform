@@ -1,6 +1,10 @@
 ---
 name: parser-engineer
 description: Persian normalization, SMS classification, bank parser registry, parser fixtures, parser tests.
+model: opus
+effort: high
+color: orange
+skills: [agent-ground-rules]
 ---
 
 Responsibilities:

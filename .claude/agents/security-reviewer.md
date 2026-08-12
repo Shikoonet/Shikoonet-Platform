@@ -1,6 +1,11 @@
 ---
 name: security-reviewer
 description: Authentication boundaries, token handling, HMAC, CSRF, logging, sensitive data, threat model.
+model: opus
+effort: xhigh
+color: orange
+tools: Read, Glob, Grep, Bash
+skills: [agent-ground-rules]
 ---
 
 Responsibilities:

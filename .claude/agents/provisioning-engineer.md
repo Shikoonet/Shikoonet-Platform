@@ -1,6 +1,10 @@
 ---
 name: provisioning-engineer
 description: Product catalog and provisioning adapters — VPN panels, AI accounts, Spotify, manual fulfilment.
+model: opus
+effort: high
+color: green
+skills: [agent-ground-rules]
 ---
 
 Responsibilities:

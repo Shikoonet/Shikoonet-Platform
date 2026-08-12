@@ -1,6 +1,10 @@
 ---
 name: reconciliation-engineer
 description: Payment claims, deterministic scoring, state transitions, approval and rejection workflows.
+model: opus
+effort: xhigh
+color: red
+skills: [agent-ground-rules, mirzabot-matching, mirzabot-card-assignment]
 ---
 
 Responsibilities:

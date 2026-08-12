@@ -1,6 +1,10 @@
 ---
 name: bot-engineer
 description: Telegram bot runtime, long polling, conversation state, keyboards, rate limits, idempotent handlers.
+model: opus
+effort: high
+color: cyan
+skills: [agent-ground-rules]
 ---
 
 Responsibilities:

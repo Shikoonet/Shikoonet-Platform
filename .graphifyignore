@@ -1,13 +1,21 @@
-# legacy/ is git-ignored (each keeps its own repo) but IS our reference code
-# during the rewrite, so graphify must index it. Exclude only the noise.
+# legacy/ is git-ignored (each keeps its own repo), so graphify has to be told
+# explicitly what to do with it.
+#
+# hub-cloudflare is now fully ported into packages/ and apps/. Indexing it too
+# would double every symbol and send queries to the dead copy — `mirzabotVerify`
+# should resolve to packages/domain/src, not to legacy. Excluded.
+#
+# mirzabot-php stays indexed: it is the behavioural reference for the bot we are
+# about to rewrite in phase 4, and nothing has replaced it yet.
+
 node_modules/
 dist/
 build/
 graphify-out/
+
+legacy/hub-cloudflare/
+
 legacy/mirzabot-php/vendor/
 legacy/mirzabot-php/lang/
 legacy/mirzabot-php/app/assets/
 legacy/mirzabot-php/db/
-legacy/hub-cloudflare/.production-backups/
-legacy/hub-cloudflare/.deploy-backups/
-legacy/hub-cloudflare/graphify-out/
