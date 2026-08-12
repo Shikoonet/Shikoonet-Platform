@@ -21,6 +21,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createPostgresD1 } from '../src/index.js';
 import { toPostgres } from '../src/dialect.js';
 
+
 const HUB = new URL('../../../legacy/hub-cloudflare', import.meta.url).pathname.replace(
   /^\/([A-Za-z]:)/,
   '$1',
@@ -85,7 +86,10 @@ function collect(): { standalone: Statement[]; interpolated: number; fragments: 
 }
 
 const hubPresent = existsSync(join(HUB, 'packages'));
-const { db, pool } = createPostgresD1();
+// The pool directly, not the adapter: this probe wraps each statement in
+// `PREPARE ... AS`, so the inner $1 would look like a parameter of the outer
+// statement and the adapter would dutifully bind a value for it.
+const { pool } = createPostgresD1();
 
 afterAll(async () => {
   await pool.end();
@@ -119,11 +123,11 @@ describe.skipIf(!hubPresent)('every hub SQL statement is portable', () => {
       }
 
       try {
-        await db.prepare('BEGIN').run();
-        await db.prepare(`PREPARE hub_probe_${n++} AS ${translated}`).run();
-        await db.prepare('ROLLBACK').run();
+        await pool.query('BEGIN');
+        await pool.query(`PREPARE hub_probe_${n++} AS ${translated}`);
+        await pool.query('ROLLBACK');
       } catch (err) {
-        await db.prepare('ROLLBACK').run().catch(() => undefined);
+        await pool.query('ROLLBACK').catch(() => undefined);
         const e = err as { code?: string; message: string };
         // 42P18: Postgres cannot infer a type for a bare parameter. The
         // statement is syntactically valid and resolves against the schema;

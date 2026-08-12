@@ -14,7 +14,7 @@
  */
 
 import pg from 'pg';
-import { toPostgres } from './dialect.js';
+import { compactParameters, toPostgres } from './dialect.js';
 
 export type {
   D1Database, D1PreparedStatement, D1Result, D1ExecResult, D1DatabaseSession,
@@ -50,15 +50,34 @@ function parseInt8(value: string): number {
   return n;
 }
 
+/**
+ * `numeric` reaches us mostly from aggregates: Postgres types `SUM(bigint)` as
+ * numeric, where SQLite returned a plain integer. Left as a string, every money
+ * total in the dashboard would compare unequal to the number it should be —
+ * `'4000000' !== 4000000` — and the failure is silent, not loud.
+ *
+ * Converted to a number, but only when that is lossless. A value with more than
+ * 15 significant digits cannot survive the round trip, so it raises instead of
+ * arriving quietly rounded.
+ */
+function parseNumeric(value: string): number {
+  const significant = value.replace(/[-+.]/g, '').replace(/^0+/, '');
+  if (significant.length > 15) {
+    throw new RangeError(
+      `numeric ${value} has more precision than a JS number can hold; ` +
+        'read this column as text or round it in SQL',
+    );
+  }
+  return Number(value);
+}
+
 let typesConfigured = false;
 
 /** Idempotent: node-postgres type parsers are process-global. */
 export function configureTypeParsers(): void {
   if (typesConfigured) return;
   pg.types.setTypeParser(pg.types.builtins.INT8, parseInt8);
-  // numeric: the hub has no numeric columns, but a future one must not become
-  // a float behind our back.
-  pg.types.setTypeParser(pg.types.builtins.NUMERIC, (v) => v);
+  pg.types.setTypeParser(pg.types.builtins.NUMERIC, parseNumeric);
   typesConfigured = true;
 }
 
@@ -96,8 +115,26 @@ class PgStatement implements D1PreparedStatement {
     return new PgStatement(this.exec, this.sql, values);
   }
 
-  private run_(): Promise<pg.QueryResult> {
-    return this.exec.query(toPostgres(this.sql), [...this.values]);
+  /**
+   * Runs the statement, attaching it to any driver error.
+   *
+   * Postgres reports things like "could not determine data type of parameter
+   * $2" with no indication of which of the ~370 statements it came from.
+   * Finding that by bisection is miserable; the statement is right here.
+   */
+  private async run_(): Promise<pg.QueryResult> {
+    const plan = compactParameters(toPostgres(this.sql));
+    // `keep` holds the original 1-based positions still referenced, so the
+    // values follow the same reordering the SQL just got.
+    const values = plan.keep.map((position) => this.values[position - 1]);
+    try {
+      return await this.exec.query(plan.sql, values);
+    } catch (err) {
+      if (err instanceof Error) {
+        err.message = `${err.message}\n  statement: ${plan.sql.replace(/\s+/g, ' ').trim()}`;
+      }
+      throw err;
+    }
   }
 
   async first<T = unknown>(col?: string): Promise<T | null> {

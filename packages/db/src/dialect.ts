@@ -190,3 +190,42 @@ export function parameterCount(translated: string): number {
   }
   return max;
 }
+
+export interface ParameterPlan {
+  /** SQL with parameters renumbered to a gapless $1..$n. */
+  sql: string;
+  /** Original 1-based positions, in their new order. */
+  keep: number[];
+}
+
+/**
+ * Removes gaps in the parameter numbering.
+ *
+ * The hub builds several statements by concatenating optional fragments, so a
+ * query can bind three values while referencing only `?1` and `?3` — the
+ * fragment that would have used `?2` was omitted. SQLite ignores a bound
+ * parameter nothing refers to. Postgres cannot: it has to infer a type for
+ * every `$n` up to the highest one used, and an unreferenced `$2` has no
+ * context to infer from, so the whole statement fails with "could not
+ * determine data type of parameter $2".
+ *
+ * Renumbering to a gapless sequence and dropping the matching values
+ * reproduces SQLite's behaviour exactly, in one place, rather than editing
+ * every conditional query.
+ */
+export function compactParameters(translated: string): ParameterPlan {
+  const used = new Set<number>();
+  for (const span of scan(translated)) {
+    if (!span.code) continue;
+    for (const m of span.text.matchAll(/\$([0-9]+)/g)) used.add(Number(m[1]));
+  }
+  const keep = [...used].sort((a, b) => a - b);
+  // Already gapless and in order — the common case, so do no work.
+  if (keep.every((n, i) => n === i + 1)) return { sql: translated, keep };
+
+  const renumber = new Map(keep.map((old, i) => [old, i + 1]));
+  const sql = mapCode(translated, (code) =>
+    code.replace(/\$([0-9]+)/g, (_, n: string) => `$${renumber.get(Number(n)) ?? n}`),
+  );
+  return { sql, keep };
+}

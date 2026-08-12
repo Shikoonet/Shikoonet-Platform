@@ -6,10 +6,23 @@ export type HistoryRange = 'all' | 'today' | '2d' | '3d' | '7d' | '30d' | 'day';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * The Tehran calendar day containing `epochMs`, as a UTC millisecond range.
+ *
+ * Shift the instant into Tehran wall-clock space, truncate to midnight there,
+ * then shift back. Both steps are required: truncating first and adding the
+ * offset afterwards gives the UTC day's midnight moved forward, which is a
+ * different 24 hours entirely.
+ *
+ * That was the previous behaviour, and it was wrong for every instant of every
+ * day — the window ran 07:00 Tehran to 07:00 Tehran instead of midnight to
+ * midnight. Nothing caught it because the tests only checked that this function
+ * agreed with itself. See BUGS-FOR-ADMIN.md item 7.
+ */
 export function tehranDayFromUtc(epochMs: number): { start: number; end: number } {
-  const startUtc = new Date(epochMs);
-  startUtc.setUTCHours(0, 0, 0, 0);
-  const start = startUtc.getTime() + TEHRAN_OFFSET_MS;
+  const shifted = new Date(epochMs + TEHRAN_OFFSET_MS);
+  shifted.setUTCHours(0, 0, 0, 0);
+  const start = shifted.getTime() - TEHRAN_OFFSET_MS;
   return { start, end: start + DAY_MS };
 }
 

@@ -14,16 +14,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { applySchema, env } from './helpers/env.js';
 import { app } from '../src/index.js';
-// The dashboard worker has not been ported off Cloudflare yet, so the two
-// blocks below cannot run here. They are skipped rather than deleted, and move
-// to apps/dashboard-worker/test when that port lands — a security assertion
-// that quietly disappears during a migration is exactly the kind that never
-// comes back.
-const dashboardApp = {
-  fetch: (_request: Request, _env?: unknown): Promise<Response> => {
-    throw new Error('dashboard-worker is not ported yet');
-  },
-};
+import { app as dashboardApp } from '@shikoo/dashboard';
 
 // Schema now comes from migrations/000*.sql, applied to the test database.
 
@@ -199,7 +190,7 @@ describe('security: device tokens', () => {
   });
 });
 
-describe.skip('security: SMS body — OTP redaction [needs dashboard-worker]', () => {
+describe('security: SMS body — OTP redaction', () => {
   it('OTP body never persisted, no transaction created, classification=OTP', async () => {
     const apiKey = 'a'.repeat(40);
     const otpSecret = 'کد تایید: 654321 - محرمانه';
@@ -276,7 +267,7 @@ describe.skip('security: SMS body — OTP redaction [needs dashboard-worker]', (
   });
 });
 
-describe.skip('security: access JWT / RBAC [needs dashboard-worker]', () => {
+describe('security: access JWT / RBAC', () => {
   it('missing JWT → 401 unauthorized', async () => {
     const r = await dashboardApp.fetch(
       new Request('https://dashboard.example.com/api/v1/devices'),

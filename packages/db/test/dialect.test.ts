@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DialectError, parameterCount, toPostgres } from '../src/dialect.js';
+import { compactParameters, DialectError, parameterCount, toPostgres } from '../src/dialect.js';
 
 describe('placeholders', () => {
   it('renumbers ?N to $N', () => {
@@ -115,5 +115,34 @@ describe('statements the hub already writes in valid Postgres', () => {
     expect(toPostgres('SELECT "odd?1name" FROM t WHERE a = ?1')).toBe(
       'SELECT "odd?1name" FROM t WHERE a = $1',
     );
+  });
+});
+
+describe('parameter gaps', () => {
+  it('leaves a gapless statement untouched', () => {
+    const plan = compactParameters('SELECT * FROM t WHERE a = $1 AND b = $2');
+    expect(plan.sql).toBe('SELECT * FROM t WHERE a = $1 AND b = $2');
+    expect(plan.keep).toEqual([1, 2]);
+  });
+
+  it('closes a gap left by an omitted SQL fragment', () => {
+    // The hub concatenates optional fragments, so $2 can go missing while $3
+    // stays. SQLite ignores the unused bound value; Postgres cannot infer a
+    // type for it and fails the whole statement.
+    const plan = compactParameters('SELECT $1 FROM t JOIN u ON u.e = $3');
+    expect(plan.sql).toBe('SELECT $1 FROM t JOIN u ON u.e = $2');
+    expect(plan.keep).toEqual([1, 3]);
+  });
+
+  it('treats a repeated parameter as one value', () => {
+    const plan = compactParameters('SELECT $4 WHERE a = $4 AND b = $4');
+    expect(plan.sql).toBe('SELECT $1 WHERE a = $1 AND b = $1');
+    expect(plan.keep).toEqual([4]);
+  });
+
+  it('ignores a $n inside a string literal', () => {
+    const plan = compactParameters("SELECT $1, 'costs $3 total'");
+    expect(plan.sql).toBe("SELECT $1, 'costs $3 total'");
+    expect(plan.keep).toEqual([1]);
   });
 });
