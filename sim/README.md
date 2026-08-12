@@ -8,10 +8,10 @@ pnpm sim:up      # start Postgres + MySQL
 pnpm sim:down    # stop and delete the volumes
 ```
 
-| service  | host port | credentials                  |
-| -------- | --------- | ---------------------------- |
-| Postgres | 5433      | `shikoo` / `shikoo_local`    |
-| MySQL    | 3307      | `root` / `shikoo_local`      |
+| service  | host port | credentials               |
+| -------- | --------- | ------------------------- |
+| Postgres | 5433      | `shikoo` / `shikoo_local` |
+| MySQL    | 3307      | `root` / `shikoo_local`   |
 
 Non-default ports so a Postgres or MySQL already installed on the machine keeps
 working.
@@ -32,6 +32,25 @@ so the init script runs again).
 
 `.env.local` is git-ignored. The Telegram token there must be the **test** bot,
 never the production one.
+
+Write the file yourself and do not paste the token anywhere else — not into a
+chat, not onto a command line, where it would survive in shell history:
+
+```ini
+# sim/.env.local
+DATABASE_URL=postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo
+TELEGRAM_BOT_TOKEN=<the test bot's token from BotFather>
+```
+
+Then:
+
+```bash
+pnpm --filter @shikoo/bot start:local
+```
+
+`start:local` reads that file through Node's own `--env-file`, so the token
+never appears in a command. Only one process may long-poll a token at a time:
+a second one makes Telegram return `409 Conflict` to both.
 
 ## What is not here yet
 

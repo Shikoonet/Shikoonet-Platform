@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "scripts": {
     "start": "tsx src/server.ts",
+    "start:local": "tsx --env-file=../../sim/.env.local src/server.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test --max-warnings 0",
     "test": "vitest run"
