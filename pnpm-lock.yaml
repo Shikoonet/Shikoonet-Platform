@@ -30,6 +30,34 @@ importers:
         specifier: 2.1.4
         version: 2.1.4(@types/node@22.20.1)(happy-dom@20.11.2)
 
+  apps/bot:
+    dependencies:
+      '@shikoo/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@shikoo/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      '@shikoo/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      zod:
+        specifier: 3.23.8
+        version: 3.23.8
+    devDependencies:
+      '@shikoo/seed':
+        specifier: workspace:*
+        version: link:../../packages/seed
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.20.1
+      typescript:
+        specifier: 5.6.3
+        version: 5.6.3
+      vitest:
+        specifier: 2.1.4
+        version: 2.1.4(@types/node@22.20.1)(happy-dom@20.11.2)
+
   apps/dashboard-web:
     dependencies:
       '@shikoo/contracts':
