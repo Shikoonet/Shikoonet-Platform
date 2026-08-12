@@ -93,6 +93,52 @@ describe('pollOnce', () => {
       .bind(bad.updateId)
       .first<{ n: number }>();
     expect(claimed?.n).toBe(0);
+
+    // The offset is an acknowledgement: confirming past the failure would make
+    // Telegram delete it, and the rollback above would have bought nothing.
+    expect(result.offset).toBe(bad.updateId);
+  });
+
+  it('acknowledges nothing when every update in the batch fails', async () => {
+    // What a database outage looks like. Advancing the offset here would throw
+    // away the whole batch, not one message.
+    const a = ids();
+    const b = ids();
+    const brokenA = startUpdate(a.updateId, a.telegramId);
+    const brokenB = startUpdate(b.updateId, b.telegramId);
+    brokenA.message!.from!.id = 9_300_000_000_000_000_000;
+    brokenB.message!.from!.id = 9_300_000_000_000_000_001;
+
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { api } = fakeApi([brokenA, brokenB]);
+    const result = await pollOnce(db, api, a.updateId);
+    errors.mockRestore();
+
+    expect(result.failed).toBe(2);
+    expect(result.offset).toBe(a.updateId);
+  });
+
+  it('acknowledges the run of successes before the first failure', async () => {
+    const first = ids();
+    const bad = ids();
+    const after = ids();
+    const broken = startUpdate(bad.updateId, bad.telegramId);
+    broken.message!.from!.id = 9_300_000_000_000_000_000;
+
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { api } = fakeApi([
+      startUpdate(first.updateId, first.telegramId),
+      broken,
+      startUpdate(after.updateId, after.telegramId),
+    ]);
+    const result = await pollOnce(db, api, first.updateId);
+    errors.mockRestore();
+
+    // Everything up to the failure is safe to forget; the failure and what
+    // follows it come back next cycle, where the claim makes the replay free.
+    expect(result.offset).toBe(first.updateId + 1);
+    expect(result.offset).toBeLessThanOrEqual(bad.updateId);
+    expect(result.counts.processed).toBe(2);
   });
 
   it('treats a failed reply as a lost reply, not a failed update', async () => {
@@ -134,6 +180,38 @@ describe('run', () => {
     expect(offsets[0]).toBe(0);
     // The second cycle must ask for what comes after the update it just handled.
     expect(offsets[1]).toBe(updateId + 1);
+  });
+
+  it('cancels the poll in flight rather than waiting it out', async () => {
+    // A long poll blocks for 25 seconds. Without the signal reaching fetch, every
+    // restart pays that in full — and a process still holding the token when the
+    // next one starts is what Telegram answers with 409 to both.
+    const controller = new AbortController();
+    let sawSignal = false;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const api: TelegramApi = {
+      getUpdates: (_offset, _timeoutSec, signal) =>
+        new Promise((_resolve, reject) => {
+          sawSignal = signal !== undefined;
+          // Resolves for no other reason: only the abort can end this.
+          signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        }),
+      sendMessage: async () => undefined,
+    };
+
+    const started = Date.now();
+    const finished = run(db, api, { signal: controller.signal, timeoutSec: 25, backoffMs: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort();
+    await finished;
+    const elapsed = Date.now() - started;
+
+    expect(sawSignal).toBe(true);
+    expect(elapsed).toBeLessThan(1_000);
+    // A shutdown is not an outage: it must not be logged as a failed cycle, and
+    // it must not sit through the backoff on the way out.
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
   });
 
   it('survives a failed cycle instead of crash-looping', async () => {

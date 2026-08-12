@@ -56,7 +56,14 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '
   const { stop } = start();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
-      void stop().then(() => process.exit(0));
+      // A shutdown that throws must still exit. Hanging here is how a process
+      // survives its own SIGTERM and then holds the bot token against the next
+      // one, which Telegram answers with 409 to both.
+      void stop()
+        .catch((err: unknown) => {
+          console.error('[bot] shutdown failed', err);
+        })
+        .finally(() => process.exit(0));
     });
   }
 }

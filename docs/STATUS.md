@@ -12,7 +12,7 @@
 |                       |                                                                                          |
 | --------------------- | ---------------------------------------------------------------------------------------- |
 | فازها                 | ۱ پایه ✅ · ۲ دیتا ✅ · ۳ انتقال Hub ✅ · **۴ ربات جدید — اسکلت زنده** · ۵ بازنشستگی PHP |
-| تست‌ها                | **۹۰۲ سبز، صفر skip**                                                                    |
+| تست‌ها                | **۹۰۵ سبز، صفر skip**                                                                    |
 | تضمین‌های دیتابیس     | **۱۹/۱۹** — روی دیتابیس خالی و روی دیتای کامل پروداکشن                                   |
 | مهاجرت دیتا           | اختلاف **صفر ریال**، ۲.۱ ثانیه، قابل تکرار                                               |
 | وابستگی Cloudflare    | **صفر**                                                                                  |
@@ -27,7 +27,7 @@ packages/database         ۳۰۹ خط     شکل ردیف‌ها + ثابت‌ه
 packages/db               ۵۵۱ خط      ۴۲ تست   آداپتور Postgres ← این درزِ کل مهاجرت است
 packages/migrate        ۲٬۱۳۸ خط      ۳۴ تست   MySQL + D1 → Postgres
 packages/seed         ۱٬۰۰۴ خط     دیتای قطعی برای تست + کاتالوگ فروشگاه
-apps/bot                  ۴۶۸ خط      ۳۴ تست   long polling، اسکلت — /start و بس
+apps/bot                  ۵۱۱ خط      ۳۷ تست   long polling، اسکلت — /start و بس
 apps/ingest-worker      ۱٬۸۸۷ خط      ۸۲ تست   تنها سطح عمومی: POST /api/v1/sms
 apps/dashboard-worker   ۷٬۶۶۹ خط     ۲۳۹ تست   ۸۷ روت، پشت Cloudflare Access
 apps/dashboard-web     ۱۵٬۲۴۵ خط     ۲۰۷ تست   SPA ری‌اکت
@@ -45,7 +45,7 @@ for f in migrations/000*.sql; do              # اسکیما را بساز
   docker exec -i shikoo-sim-postgres-1 psql -U shikoo -d shikoo -v ON_ERROR_STOP=1 -q < "$f"
 done
 
-pnpm typecheck && pnpm lint && pnpm test      # ۹۰۲ تست
+pnpm typecheck && pnpm lint && pnpm test      # ۹۰۵ تست
 ```
 
 **تضمین‌های پول** (هر وقت شک کردی، روی هر دیتابیسی امن است — همه‌چیز rollback می‌شود):
@@ -98,6 +98,7 @@ pnpm --filter @shikoo/bot start:local
 | `ECONNREFUSED 127.0.0.1:5433` وسط اجرای تست             | Docker Desktop مُرده                                                                                     | کانتینرها را دوباره بالا بیاور. **این قرمز را باگ کد نخوان** — قبلش کد خروجی را جدا از `tail`/`grep` نگاه کن، وگرنه کد خروجیِ لولهٔ آخر را می‌خوانی نه `pnpm` را. |
 | `ports are not available: ... 5433 ... forbidden`       | ویندوز پورت را در بازهٔ رزرو Hyper-V بلعیده (`netsh interface ipv4 show excludedportrange protocol=tcp`) | با ادمین: `net stop winnat ; net start winnat`. دائمی: `netsh int ipv4 add excludedportrange protocol=tcp startport=5433 numberofports=1 store=persistent`        |
 | `duplicate key ... telegram_updates_pkey` در تست ربات   | دو تست از یک `update_id` استفاده کرده‌اند                                                                | `ids()` در تست‌ها بلوک ۱۰تایی می‌دهد چون چند تست `updateId + 1` را هم مصرف می‌کنند. از همان استفاده کن، دستی عدد نگذار.                                           |
+| ربات `409 Conflict` می‌گیرد                             | دو پروسه هم‌زمان روی یک توکن poll می‌کنند                                                                | معمولاً پروسهٔ قبلی یتیم مانده. با `Get-CimInstance Win32_Process` دنبال `server.ts` بگرد و بکشش. کشتن شلِ والد بچه‌ها را نمی‌کشد.                                |
 
 ### آداپتور Postgres (`packages/db`)
 
@@ -187,6 +188,11 @@ Hub (همهٔ ستون‌های زمان)            اپاک میلی‌ثان�
   هزینه‌اش این است که یک پاسخ ممکن است گم شود؛ در ازایش دیتابیس هیچ‌وقت غلط نمی‌شود.
 - **آفست long polling ذخیره نمی‌شود.** تضمین یکتایی فقط `telegram_updates` است — دو سازوکار که
   بتوانند با هم اختلاف پیدا کنند بدتر از یکی است.
+- **آفستی که `pollOnce` برمی‌گرداند «رسید» است، نه بیشترین شماره.** تلگرام با گرفتن آن، هر آپدیت
+  پایین‌ترش را **پاک می‌کند**. پس آفست فقط تا درست قبل از اولین آپدیتی که هندلرش ترکید جلو می‌رود.
+  اگر از رویش رد شویم، rollbackِ claim هیچ چیزی نخریده — تلگرام دیگر آن را نمی‌فرستد. و وقتی
+  دیتابیس خواب است این یعنی از دست رفتن **کل بسته**، نه یک پیام. آپدیت‌های بعد از خطا همچنان
+  پردازش می‌شوند تا صف نخوابد؛ دور بعد دوباره می‌آیند و claim آن‌ها را `duplicate` می‌کند.
 
 ---
 

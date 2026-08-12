@@ -31,33 +31,49 @@ export const EMPTY_COUNTS: Record<HandleStatus, number> = {
 /**
  * One fetch-and-handle cycle.
  *
- * The offset advances past every update we received, including ones whose
- * handler threw. That is safe precisely because the throw rolled the claim back:
- * the update is unclaimed, so if Telegram redelivers it we try again, and if it
- * does not, we have not silently marked a failure as done.
+ * The returned offset is an ACKNOWLEDGEMENT, not a high-water mark. Passing it
+ * to the next getUpdates tells Telegram to delete everything below it, so it may
+ * only advance to just before the first update whose handler threw.
+ *
+ * That distinction is the whole safety property. Rolling the claim back buys
+ * nothing if we then confirm past the update — Telegram would drop it and the
+ * retry we rolled back for would never arrive. With the database down that is
+ * not one lost message, it is every message in the batch.
+ *
+ * Updates after a failure are still handled, so one stuck customer does not
+ * block the queue; they simply arrive again next cycle and dedupe to
+ * 'duplicate'. Telegram returns updates in ascending update_id order, which is
+ * what makes "before the first failure" well defined.
+ *
+ * ponytail: an update that fails forever is retried forever, loudly, once per
+ * cycle. The alternative — confirming past it — loses real work in the far more
+ * likely case of a transient database outage. If a genuine poison update ever
+ * appears, give it a failure count and skip it after N cycles.
  */
 export async function pollOnce(
   db: D1Database,
   api: TelegramApi,
   offset: number,
   timeoutSec = 25,
+  signal?: AbortSignal,
 ): Promise<PollResult> {
-  const updates = await api.getUpdates(offset, timeoutSec);
+  const updates = await api.getUpdates(offset, timeoutSec, signal);
   const counts = { ...EMPTY_COUNTS };
   let failed = 0;
-  let highest = offset - 1;
+  let confirmedThrough = offset - 1;
+  let sawFailure = false;
 
   for (const update of updates) {
-    if (update.update_id > highest) highest = update.update_id;
     let outcome;
     try {
       outcome = await handleUpdate(db, update);
     } catch (err) {
-      // One bad update must not stop the queue behind it.
       failed++;
-      console.error(`[bot] update ${update.update_id} failed`, err);
+      sawFailure = true;
+      console.error(`[bot] update ${update.update_id} failed, will be retried`, err);
       continue;
     }
+    if (!sawFailure) confirmedThrough = update.update_id;
     counts[outcome.status]++;
     for (const reply of outcome.replies) {
       try {
@@ -71,7 +87,7 @@ export async function pollOnce(
     }
   }
 
-  return { offset: highest + 1, counts, failed };
+  return { offset: confirmedThrough + 1, counts, failed };
 }
 
 /** Drops claims old enough that Telegram can no longer redeliver them. */
@@ -105,9 +121,12 @@ export async function run(
 
   while (!options.signal?.aborted) {
     try {
-      const result = await pollOnce(db, api, offset, timeoutSec);
+      const result = await pollOnce(db, api, offset, timeoutSec, options.signal);
       offset = result.offset;
     } catch (err) {
+      // A shutdown aborts the poll in flight, which surfaces here as a fetch
+      // error. It is not a failure and must not be logged as one.
+      if (options.signal?.aborted) break;
       // Telegram down, network down, database down: back off and keep the
       // process alive. A crash-loop here is indistinguishable from an outage
       // and much harder to read in the logs.
@@ -124,10 +143,15 @@ export async function run(
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => {
+    // Both sides are cleaned up. Without this the listener outlives the sleep,
+    // so a long outage — one backoff per failed cycle — piles listeners onto the
+    // same signal until Node starts warning about a leak.
+    const done = (): void => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
       resolve();
-    });
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
   });
 }

@@ -46,8 +46,13 @@ const EnvelopeSchema = z.object({
 });
 
 export interface TelegramApi {
-  /** Long-polls. Returns updates with `update_id >= offset`. */
-  getUpdates(offset: number, timeoutSec: number): Promise<TelegramUpdate[]>;
+  /**
+   * Long-polls. Returns updates with `update_id >= offset`.
+   *
+   * `signal` cancels the poll in flight. Without it a shutdown has to wait out
+   * the full poll — 25 seconds of nothing on every restart.
+   */
+  getUpdates(offset: number, timeoutSec: number, signal?: AbortSignal): Promise<TelegramUpdate[]>;
   sendMessage(chatId: number, text: string): Promise<void>;
 }
 
@@ -70,14 +75,20 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
   const doFetch = options.fetch ?? globalThis.fetch;
   const token = options.token;
 
-  async function call(method: string, body: unknown, timeoutMs: number): Promise<unknown> {
+  async function call(
+    method: string,
+    body: unknown,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     let response: Response;
+    const deadline = AbortSignal.timeout(timeoutMs);
     try {
       response = await doFetch(`${base}/bot${token}/${method}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: signal ? AbortSignal.any([deadline, signal]) : deadline,
       });
     } catch (err) {
       // A network error's message can carry the URL, and the URL carries the token.
@@ -103,12 +114,13 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
   }
 
   return {
-    async getUpdates(offset, timeoutSec) {
+    async getUpdates(offset, timeoutSec, signal) {
       // The HTTP timeout must outlast the long poll or every poll aborts.
       const result = await call(
         'getUpdates',
         { offset, timeout: timeoutSec, allowed_updates: ['message'] },
         (timeoutSec + 10) * 1000,
+        signal,
       );
       if (!Array.isArray(result)) {
         throw new Error('telegram getUpdates did not return a list');
