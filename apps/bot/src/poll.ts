@@ -122,7 +122,15 @@ export async function run(
   while (!options.signal?.aborted) {
     try {
       const result = await pollOnce(db, api, offset, timeoutSec, options.signal);
+      const stalled = result.failed > 0 && result.offset === offset;
       offset = result.offset;
+      // Nothing in the batch could be acknowledged, so getUpdates will hand the
+      // same failure straight back — and because there ARE updates waiting, it
+      // returns instantly instead of long-polling. Without this pause the loop
+      // spins at the speed of the network: a five-minute database outage
+      // produced 350 attempts and 6,000 log lines, hammering a database that
+      // was trying to come back and earning a 429 from Telegram on the way.
+      if (stalled) await sleep(backoffMs, options.signal);
     } catch (err) {
       // A shutdown aborts the poll in flight, which surfaces here as a fetch
       // error. It is not a failure and must not be logged as one.

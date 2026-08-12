@@ -214,6 +214,38 @@ describe('run', () => {
     errors.mockRestore();
   });
 
+  it('backs off when a batch makes no progress, instead of spinning', async () => {
+    // Found by pulling the plug on Postgres for five minutes with the bot live:
+    // getUpdates succeeded every time and only the handlers failed, so nothing
+    // hit the catch below and nothing paused. 350 attempts, 6,000 log lines.
+    const controller = new AbortController();
+    const { updateId, telegramId } = ids();
+    const broken = startUpdate(updateId, telegramId);
+    broken.message!.from!.id = 9_300_000_000_000_000_000;
+
+    let calls = 0;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const api: TelegramApi = {
+      getUpdates: async () => {
+        calls++;
+        // Telegram returns instantly while updates are pending — it does not
+        // long-poll — which is exactly why the loop had nothing slowing it down.
+        return [broken];
+      },
+      sendMessage: async () => undefined,
+    };
+
+    const finished = run(db, api, { signal: controller.signal, backoffMs: 10_000 });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    controller.abort();
+    await finished;
+    errors.mockRestore();
+
+    // With a 10s backoff and a 150ms window, one attempt is all that fits.
+    // Without the backoff this was hundreds.
+    expect(calls).toBe(1);
+  });
+
   it('survives a failed cycle instead of crash-looping', async () => {
     const controller = new AbortController();
     let calls = 0;
