@@ -31,13 +31,39 @@ const MessageSchema = z.object({
   text: z.string().optional(),
 });
 
+/**
+ * A button press.
+ *
+ * `data` is whatever the client sent. Telegram does not sign it, does not
+ * remember which buttons it offered, and does not check that this user was ever
+ * shown this button — anyone can post any string with a plain API call. It is
+ * user input in exactly the sense a URL query parameter is, and callback.ts
+ * treats it that way.
+ */
+const CallbackQuerySchema = z.object({
+  id: z.string(),
+  from: TelegramUserSchema,
+  message: MessageSchema.optional(),
+  data: z.string().optional(),
+});
+
 const UpdateSchema = z.object({
   update_id: z.number().int(),
   message: MessageSchema.optional().catch(undefined),
+  callback_query: CallbackQuerySchema.optional().catch(undefined),
 });
 
 export type TelegramUpdate = z.infer<typeof UpdateSchema>;
 export type TelegramMessage = z.infer<typeof MessageSchema>;
+export type TelegramCallbackQuery = z.infer<typeof CallbackQuerySchema>;
+
+/** One button. `callback_data` is capped at 64 BYTES by Telegram, not characters. */
+export interface InlineButton {
+  text: string;
+  callback_data: string;
+}
+
+export type InlineKeyboard = InlineButton[][];
 
 const EnvelopeSchema = z.object({
   ok: z.boolean(),
@@ -53,7 +79,19 @@ export interface TelegramApi {
    * the full poll — 25 seconds of nothing on every restart.
    */
   getUpdates(offset: number, timeoutSec: number, signal?: AbortSignal): Promise<TelegramUpdate[]>;
-  sendMessage(chatId: number, text: string): Promise<void>;
+  sendMessage(chatId: number, text: string, keyboard?: InlineKeyboard): Promise<void>;
+  /** Replaces a message in place, so a menu does not leave a trail behind it. */
+  editMessageText(
+    chatId: number,
+    messageId: number,
+    text: string,
+    keyboard?: InlineKeyboard,
+  ): Promise<void>;
+  /**
+   * Clears the client's spinner. Telegram leaves the button spinning for a few
+   * seconds otherwise, which reads as a hung bot.
+   */
+  answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void>;
 }
 
 export interface TelegramApiOptions {
@@ -68,6 +106,11 @@ export const TELEGRAM_API_BASE = 'https://api.telegram.org';
 /** Never let a token reach a log line or an exception message. */
 function redact(message: string, token: string): string {
   return token === '' ? message : message.split(token).join('<token>');
+}
+
+/** Omitted entirely when there is no keyboard, so a menu is never sent as `null`. */
+function markup(keyboard?: InlineKeyboard): Record<string, unknown> {
+  return keyboard === undefined ? {} : { reply_markup: { inline_keyboard: keyboard } };
 }
 
 export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
@@ -118,7 +161,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       // The HTTP timeout must outlast the long poll or every poll aborts.
       const result = await call(
         'getUpdates',
-        { offset, timeout: timeoutSec, allowed_updates: ['message'] },
+        { offset, timeout: timeoutSec, allowed_updates: ['message', 'callback_query'] },
         (timeoutSec + 10) * 1000,
         signal,
       );
@@ -139,8 +182,24 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       return updates;
     },
 
-    async sendMessage(chatId, text) {
-      await call('sendMessage', { chat_id: chatId, text }, 15_000);
+    async sendMessage(chatId, text, keyboard) {
+      await call('sendMessage', { chat_id: chatId, text, ...markup(keyboard) }, 15_000);
+    },
+
+    async editMessageText(chatId, messageId, text, keyboard) {
+      await call(
+        'editMessageText',
+        { chat_id: chatId, message_id: messageId, text, ...markup(keyboard) },
+        15_000,
+      );
+    },
+
+    async answerCallbackQuery(callbackQueryId, text) {
+      await call(
+        'answerCallbackQuery',
+        { callback_query_id: callbackQueryId, ...(text === undefined ? {} : { text }) },
+        15_000,
+      );
     },
   };
 }

@@ -21,15 +21,30 @@ function startUpdate(updateId: number, telegramId: number, text = '/start'): Tel
   };
 }
 
+/**
+ * A TelegramApi with everything stubbed, so a test overrides only the one or
+ * two calls it is actually about. Adding a method to the interface then costs
+ * one line here instead of one per fake.
+ */
+function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
+  return {
+    getUpdates: async () => [],
+    sendMessage: async () => undefined,
+    editMessageText: async () => undefined,
+    answerCallbackQuery: async () => undefined,
+    ...overrides,
+  };
+}
+
 function fakeApi(updates: TelegramUpdate[], opts: { sendFails?: boolean } = {}) {
   const sent: { chatId: number; text: string }[] = [];
-  const api: TelegramApi = {
+  const api = stubApi({
     getUpdates: async () => updates,
     sendMessage: async (chatId, text) => {
       if (opts.sendFails) throw new Error('telegram sendMessage failed');
       sent.push({ chatId, text });
     },
-  };
+  });
   return { api, sent };
 }
 
@@ -165,7 +180,7 @@ describe('run', () => {
     const controller = new AbortController();
     const offsets: number[] = [];
     const { updateId, telegramId } = ids();
-    const api: TelegramApi = {
+    const api = stubApi({
       getUpdates: async (offset) => {
         offsets.push(offset);
         if (offsets.length === 1) return [startUpdate(updateId, telegramId)];
@@ -173,7 +188,7 @@ describe('run', () => {
         return [];
       },
       sendMessage: async () => undefined,
-    };
+    });
 
     await run(db, api, { signal: controller.signal, timeoutSec: 1 });
 
@@ -189,7 +204,7 @@ describe('run', () => {
     const controller = new AbortController();
     let sawSignal = false;
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const api: TelegramApi = {
+    const api = stubApi({
       getUpdates: (_offset, _timeoutSec, signal) =>
         new Promise((_resolve, reject) => {
           sawSignal = signal !== undefined;
@@ -197,7 +212,7 @@ describe('run', () => {
           signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
         }),
       sendMessage: async () => undefined,
-    };
+    });
 
     const started = Date.now();
     const finished = run(db, api, { signal: controller.signal, timeoutSec: 25, backoffMs: 5_000 });
@@ -225,7 +240,7 @@ describe('run', () => {
 
     let calls = 0;
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const api: TelegramApi = {
+    const api = stubApi({
       getUpdates: async () => {
         calls++;
         // Telegram returns instantly while updates are pending — it does not
@@ -233,7 +248,7 @@ describe('run', () => {
         return [broken];
       },
       sendMessage: async () => undefined,
-    };
+    });
 
     const finished = run(db, api, { signal: controller.signal, backoffMs: 10_000 });
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -250,7 +265,7 @@ describe('run', () => {
     const controller = new AbortController();
     let calls = 0;
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const api: TelegramApi = {
+    const api = stubApi({
       getUpdates: async () => {
         calls++;
         if (calls === 1) throw new Error('telegram is down');
@@ -258,7 +273,7 @@ describe('run', () => {
         return [];
       },
       sendMessage: async () => undefined,
-    };
+    });
 
     await run(db, api, { signal: controller.signal, backoffMs: 1 });
     errors.mockRestore();
@@ -270,13 +285,13 @@ describe('run', () => {
     const controller = new AbortController();
     controller.abort();
     let calls = 0;
-    const api: TelegramApi = {
+    const api = stubApi({
       getUpdates: async () => {
         calls++;
         return [];
       },
       sendMessage: async () => undefined,
-    };
+    });
 
     await run(db, api, { signal: controller.signal });
 
