@@ -100,7 +100,11 @@ function strictMap<T extends string>(
     const key = (value ?? '').trim();
     const mapped = table[key];
     if (mapped === undefined) {
-      throw new TransformError(field, value, `unmapped legacy value; known: ${Object.keys(table).join(', ')}`);
+      throw new TransformError(
+        field,
+        value,
+        `unmapped legacy value; known: ${Object.keys(table).join(', ')}`,
+      );
     }
     return mapped;
   };
@@ -160,9 +164,31 @@ export const LEASE_STATUS = {
 } as const;
 export const leaseStatus = strictMap(LEASE_STATUS, 'card_assignment_leases.status');
 
-/** `agent = 'n'` marks a reseller; see panel/users.php:50 counting them. */
+/**
+ * Legacy `agent`, which appears on BOTH `user` and `product` rows and means the
+ * same thing in each: who this row is for.
+ *
+ * index.php:299 pins the domain — `in_array($user['agent'], ["n","n2","f"])`.
+ * 'f' is an ordinary customer; 'n' and 'n2' are the two reseller tiers. The
+ * earlier version tested `=== 'n'` and so read 'n2' as an ordinary customer.
+ * Production carries no 'n2' row today, which is the only reason that never
+ * showed: a second-tier reseller would have migrated as a normal customer, and
+ * a reseller-only product as one anybody can buy.
+ *
+ * Anything outside the domain throws. A wrong `false` here is invisible — the
+ * customer simply never sees the product — which is exactly the kind of silent
+ * fallback this migration refuses to make.
+ */
 export function isReseller(value: string | null | undefined): boolean {
-  return (value ?? '').trim() === 'n';
+  const agent = (value ?? '').trim();
+  // Absent, not unmapped: a row that never had the column set is an ordinary
+  // customer, which is what the legacy default has always meant.
+  if (agent === '' || agent === 'f') return false;
+  if (agent === 'n' || agent === 'n2') return true;
+  throw new Error(
+    `unmapped legacy agent value ${JSON.stringify(agent)} — the domain is ` +
+      "'f', 'n', 'n2' (index.php:299). Add it here deliberately; do not default it.",
+  );
 }
 
 /**
@@ -284,19 +310,43 @@ export function hubEpochMillis(value: unknown, field: string): number | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(raw);
   if (!m) throw new TransformError(field, value, 'neither epoch millis nor a UTC datetime');
   return Date.UTC(
-    Number(m[1]), Number(m[2]) - 1, Number(m[3]),
-    Number(m[4]), Number(m[5]), Number(m[6]),
+    Number(m[1]),
+    Number(m[2]) - 1,
+    Number(m[3]),
+    Number(m[4]),
+    Number(m[5]),
+    Number(m[6]),
   );
 }
 
 /** Column names in the payment hub that carry epoch milliseconds. */
 export const HUB_EPOCH_COLUMNS: ReadonlySet<string> = new Set([
-  'created_at', 'updated_at', 'submitted_at', 'paid_clicked_at',
-  'receipt_submitted_at', 'bank_timestamp', 'sms_timestamp', 'received_at',
-  'processed_at', 'reviewed_at', 'assigned_at', 'classified_at', 'declined_at',
-  'restored_at', 'expires_at', 'applied_at', 'last_seen_at', 'last_success_at',
-  'last_auth_failure_at', 'activated_at', 'revoked_at', 'last_used_at',
-  'seen_at', 'last_attempt_at', 'next_attempt_at', 'last_seen_transaction_at',
+  'created_at',
+  'updated_at',
+  'submitted_at',
+  'paid_clicked_at',
+  'receipt_submitted_at',
+  'bank_timestamp',
+  'sms_timestamp',
+  'received_at',
+  'processed_at',
+  'reviewed_at',
+  'assigned_at',
+  'classified_at',
+  'declined_at',
+  'restored_at',
+  'expires_at',
+  'applied_at',
+  'last_seen_at',
+  'last_success_at',
+  'last_auth_failure_at',
+  'activated_at',
+  'revoked_at',
+  'last_used_at',
+  'seen_at',
+  'last_attempt_at',
+  'next_attempt_at',
+  'last_seen_transaction_at',
 ]);
 
 /** Rejects epoch values outside a sane window instead of storing year 1970. */
@@ -329,10 +379,7 @@ export function epochSeconds(
  */
 const TEHRAN_STRING = /^(\d{4})[/-](\d{2})[/-](\d{2})[ T](\d{2}:\d{2}:\d{2})/;
 
-export function tehranString(
-  value: string | null | undefined,
-  field: string,
-): string | null {
+export function tehranString(value: string | null | undefined, field: string): string | null {
   if (!value) return null;
   const raw = String(value).trim();
   if (raw === '' || raw === '0000-00-00 00:00:00') return null;

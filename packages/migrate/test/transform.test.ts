@@ -79,6 +79,26 @@ describe('status mapping', () => {
     expect(t.isReseller('f')).toBe(false);
   });
 
+  it("counts 'n2' as a reseller too", () => {
+    // index.php:299 pins the domain to ["n","n2","f"]. Testing only 'n' and 'f'
+    // is what let the second tier read as an ordinary customer: on a user that
+    // is a lost reseller, on a product one that anybody can buy.
+    expect(t.isReseller('n2')).toBe(true);
+  });
+
+  it('refuses an agent value outside the legacy domain', () => {
+    // A wrong `false` here is invisible — the product simply never appears for
+    // the customer it was meant for — so it must stop the migration instead.
+    expect(() => t.isReseller('reseller')).toThrow(/unmapped legacy agent value/);
+    expect(() => t.isReseller('N')).toThrow(/unmapped legacy agent value/);
+  });
+
+  it('treats an absent agent as an ordinary customer', () => {
+    expect(t.isReseller(null)).toBe(false);
+    expect(t.isReseller(undefined)).toBe(false);
+    expect(t.isReseller('  ')).toBe(false);
+  });
+
   it('maps user status in either capitalisation', () => {
     // Production holds both spellings: 'Active' on 11,192 rows, 'active' on 5.
     expect(t.userStatus('Active')).toBe('ACTIVE');

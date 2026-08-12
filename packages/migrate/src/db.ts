@@ -27,8 +27,7 @@ export function loadConfig(): Config {
       database: env.MYSQL_DATABASE ?? 'mirzabot',
     },
     postgres: {
-      connectionString:
-        env.DATABASE_URL ?? 'postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo',
+      connectionString: env.DATABASE_URL ?? 'postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo',
     },
     d1ExportDir:
       env.D1_EXPORT_DIR ??
@@ -120,9 +119,7 @@ export async function insertBatch(
     const params: unknown[] = [];
     const tuples = slice.map((row) => {
       if (row.length !== columns.length) {
-        throw new Error(
-          `${table}: row has ${row.length} values for ${columns.length} columns`,
-        );
+        throw new Error(`${table}: row has ${row.length} values for ${columns.length} columns`);
       }
       const placeholders = row.map((value, i) => {
         params.push(value);
@@ -160,10 +157,11 @@ export const report = {
   warn: (s: string) => console.log(`  ${YELLOW}warn${RESET}  ${s}`),
   fail: (s: string) => console.log(`  ${RED}FAIL${RESET}  ${s}`),
   detail: (s: string) => console.log(`        ${DIM}${s}${RESET}`),
-  count: (label: string, n: number | string) =>
-    console.log(`  ${String(n).padStart(7)}  ${label}`),
+  count: (label: string, n: number | string) => console.log(`  ${String(n).padStart(7)}  ${label}`),
 };
 
 export function fmt(n: bigint | number | string): string {
-  return BigInt(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return BigInt(n)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
