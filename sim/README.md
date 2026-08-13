@@ -52,6 +52,31 @@ pnpm --filter @shikoo/bot start:local
 never appears in a command. Only one process may long-poll a token at a time:
 a second one makes Telegram return `409 Conflict` to both.
 
+## Injecting a bank SMS by hand
+
+The seeded devices carry real credentials, so the whole payment path can be
+walked offline: bot → claim → bank SMS → auto-verify → delivery. The API key is
+derived from the device code, so it is never stored and never logged:
+
+```bash
+node -e "console.log(require('crypto').createHash('sha256').update('seed-apikey-phone-d-20260804').digest('hex'))"
+```
+
+Post it with `deviceId` set to that same device code (`phone-a` … `phone-f`) and
+a body the parsers accept, e.g.
+`مبلغ 3,000,000 ریال به کارت *6030 واریز شد. مانده 72,222,222 ریال`.
+
+Two things the walk gets wrong if you improvise:
+
+- **Auto-match is off unless you ask for it.** Start ingest with
+  `MIRZABOT_INTEGRATION_ENABLED=true AUTO_MATCH_ENABLED=true`, otherwise the SMS
+  is stored, no claim is decided, and it looks like a bug.
+- **Pin `timestamp` to `paid_clicked_at + 20s`**, read from `payment_claims`.
+  Wall-clock drifts out of the ±5m window while you are typing. And a *second*
+  deposit of the same amount to the same card inside that window makes the pair
+  ambiguous: the claim then sits at `AMBIGUOUS_TRANSACTIONS`, which is the
+  matcher being right, not broken.
+
 ## What is not here yet
 
 The fake Telegram API and the fake provisioning panel. They arrive with the bot

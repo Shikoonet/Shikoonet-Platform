@@ -155,6 +155,45 @@ describe('security: device tokens', () => {
     expect(JSON.stringify(aj)).toBe(JSON.stringify(bj));
   });
 
+  it('two devices whose keys share a prefix each authenticate with their own', async () => {
+    // The prefix is only the first 4 chars of the token, so a collision is a
+    // matter of when, not if — at 100 credentials it is already ~8%. The
+    // lookup used to be `WHERE token_prefix = ?` with `LIMIT 1`, which handed
+    // back whichever row the planner picked and told the other device its key
+    // was invalid. Found on 2026-08-14 when the simulation seed gave all six
+    // devices the same prefix and five of them could not post.
+    const keyA = `dead${'1'.repeat(36)}`;
+    const keyB = `dead${'2'.repeat(36)}`;
+    await seedDevice({ deviceCode: 'sec-collide-a', apiKey: keyA });
+    await seedDevice({ deviceCode: 'sec-collide-b', apiKey: keyB });
+
+    async function post(deviceId: string, apiKey: string, ts: number): Promise<number> {
+      const r = await app.fetch(
+        new Request('https://example.com/api/v1/sms', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            apiKey,
+            deviceId,
+            deviceName: 'X',
+            message: 'مبلغ 1,000 ریال به کارت *1234',
+            sender: 'BANK',
+            timestamp: String(ts),
+            checksum: '0'.repeat(32),
+          }),
+        }),
+        env,
+      );
+      return r.status;
+    }
+
+    const ts = Date.now();
+    expect(await post('sec-collide-a', keyA, ts)).toBe(200);
+    expect(await post('sec-collide-b', keyB, ts + 1)).toBe(200);
+    // And a shared prefix still does not let one device use the other's key.
+    expect(await post('sec-collide-a', keyB, ts + 2)).toBe(401);
+  });
+
   it('plaintext SMS body never appears in audit_logs', async () => {
     const apiKey = 'a'.repeat(40);
     const { deviceId } = await seedDevice({ deviceCode: 'sec-audit', apiKey });

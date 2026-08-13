@@ -19,7 +19,7 @@
  *   - 10 of those 20 are parser failures (ERROR)
  */
 import { normalizeText, parseSms } from '@shikoo/sms-parser';
-import { MIRZABOT_SOURCE } from '@shikoo/contracts';
+import { MIRZABOT_SOURCE, tokenPrefix } from '@shikoo/contracts';
 import { scoreMatch } from '@shikoo/domain';
 import type { D1Database } from '@shikoo/database';
 import { rng, pick, randInt } from './rng.js';
@@ -151,11 +151,23 @@ export async function seed(db: D1Database, opts: { verbose?: boolean } = {}): Pr
       )
       .bind(d.id, d.code, d.display_name, t0)
       .run();
+    // The key a manual smoke test presents. Two things must hold, and neither
+    // did before 2026-08-14:
+    //   - the prefix comes from `tokenPrefix`, because ingest looks the
+    //     credential up by `apiKey.slice(0, 4)` on equality. The old
+    //     hand-written `tok-pho` was seven characters, so no seeded device
+    //     could authenticate at all.
+    //   - the key is shaped like a real one (64 hex, `generateApiToken`), so
+    //     the six devices get six different prefixes. A literal
+    //     `token-phone-a-…` gives all of them `toke`.
+    // Every ingest test mints its own credential, which is why neither showed.
+    // Derivation is in `sim/README.md` so a smoke test can recompute the key.
+    const apiKey = await sha256(`seed-apikey-${d.code}-${seedNum}`);
     await db
       .prepare(
         `INSERT INTO device_credentials (id, device_id, token_hash, token_prefix, status, created_at, activated_at) VALUES (?1, ?2, ?3, ?4, 'ACTIVE', ?5, ?5)`,
       )
-      .bind(id(), d.id, await sha256(`token-${d.code}-${seedNum}`), `tok-${d.code.slice(0, 3)}`, t0)
+      .bind(id(), d.id, await sha256(apiKey), tokenPrefix(apiKey), t0)
       .run();
   }
 

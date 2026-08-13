@@ -220,7 +220,11 @@ export const SQL = {
    */
 
   findActiveDevice: `SELECT * FROM devices WHERE device_code = ?1 AND active = 1 LIMIT 1`,
-  findActiveCredentialByPrefix: `SELECT * FROM device_credentials WHERE token_prefix = ?1 AND status = 'ACTIVE' LIMIT 1`,
+  // Scoped to the device on purpose. The prefix is only the first 4 hex chars
+  // of the token, so two devices can hold the same one; without `device_id`
+  // the LIMIT 1 returns whichever row the planner picks and the other device
+  // is told its key is invalid.
+  findActiveCredentialByPrefix: `SELECT * FROM device_credentials WHERE token_prefix = ?1 AND device_id = ?2 AND status = 'ACTIVE' LIMIT 1`,
   updateCredentialLastUsed: `UPDATE device_credentials SET last_used_at = ?2 WHERE id = ?1`,
   touchDeviceSeen: `UPDATE devices SET last_seen_at = ?2 WHERE id = ?1`,
   touchDeviceSuccess: `UPDATE devices SET last_success_at = ?2 WHERE id = ?1`,

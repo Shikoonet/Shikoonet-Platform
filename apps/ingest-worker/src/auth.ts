@@ -60,7 +60,7 @@ export async function authenticateDevice(
   const credential =
     (await db
       .prepare(SQL.findActiveCredentialByPrefix)
-      .bind(prefix)
+      .bind(prefix, device.id)
       .first<DeviceCredentialRow>()) ?? null;
 
   if (!credential || credential.device_id !== device.id) {
