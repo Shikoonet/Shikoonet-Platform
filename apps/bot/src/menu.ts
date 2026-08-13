@@ -57,7 +57,7 @@ export function mainMenu(isReseller: boolean): InlineKeyboard {
     ],
     [
       { text: '🏦 کیف پول + شارژ', callback_data: encode('soon') },
-      { text: '🛍 سرویس های من', callback_data: encode('soon') },
+      { text: '🛍 سرویس های من', callback_data: encode('mine') },
     ],
     [
       { text: '☎️ پشتیبانی', callback_data: encode('soon') },
@@ -293,6 +293,228 @@ export function serviceNeedsHelp(publicId: string): string {
     '',
     'همکاران ما پیگیری می‌کنند. لطفاً این شماره را نگه دارید.',
   ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// «سرویس های من» — what the customer already owns
+// ---------------------------------------------------------------------------
+
+export const MY_SERVICES_EMPTY = [
+  'هنوز سرویسی ندارید.',
+  '',
+  'از دکمهٔ «خرید اشتراک» می‌توانید اولین سرویس‌تان را بگیرید.',
+].join('\n');
+
+export const SERVICE_GONE = 'این سرویس پیدا نشد. لطفاً از فهرست سرویس‌ها دوباره انتخاب کنید.';
+
+/** How many services fit on one screen without the keyboard becoming a wall. */
+export const SERVICES_PER_PAGE = 8;
+
+const BYTES_PER_GB = 1024 ** 3;
+
+/**
+ * What state a service is really in.
+ *
+ * `subscriptions.status` alone is not the answer: it stays 'ACTIVE' after the
+ * expiry date passes and after the volume runs out, because neither of those
+ * is an event anybody writes — they are simply true from a moment onward. The
+ * panel knows, but asking it is a network call, so the two facts that decide it
+ * (`expires_at`, `used_bytes` against `volume_gb`) are compared here instead.
+ *
+ * Deliberately not written back to the row. A clock that is briefly wrong, or a
+ * usage figure the sync has not refreshed yet, would otherwise permanently
+ * mark a service the customer paid for as dead.
+ */
+export type ServiceState =
+  | 'ACTIVE'
+  | 'EXPIRED'
+  | 'EXHAUSTED'
+  | 'ON_HOLD'
+  | 'DISABLED'
+  | 'REMOVED'
+  | 'FAILED';
+
+/** The fields of a subscription any of these screens is allowed to read. */
+export interface ServiceView {
+  id: number;
+  public_id: string;
+  status: string;
+  plan_name_at_sale: string;
+  provider_name_at_sale: string | null;
+  remote_username: string | null;
+  subscription_url: string | null;
+  volume_gb: number | null;
+  used_bytes: number | null;
+  expires_at: string | null;
+}
+
+export function serviceState(service: ServiceView, now: number): ServiceState {
+  if (service.status !== 'ACTIVE') {
+    switch (service.status) {
+      case 'ON_HOLD':
+        return 'ON_HOLD';
+      case 'DISABLED':
+        return 'DISABLED';
+      case 'REMOVED':
+        return 'REMOVED';
+      default:
+        return 'FAILED';
+    }
+  }
+  if (service.expires_at !== null && Date.parse(service.expires_at) <= now) {
+    return 'EXPIRED';
+  }
+  // Unmetered plans have no volume, so there is nothing to run out of.
+  if (
+    service.volume_gb !== null &&
+    service.volume_gb > 0 &&
+    service.used_bytes !== null &&
+    service.used_bytes >= service.volume_gb * BYTES_PER_GB
+  ) {
+    return 'EXHAUSTED';
+  }
+  return 'ACTIVE';
+}
+
+const STATE_GLYPH: Record<ServiceState, string> = {
+  ACTIVE: '✅',
+  EXPIRED: '⌛',
+  EXHAUSTED: '📵',
+  ON_HOLD: '⏸',
+  DISABLED: '⛔',
+  REMOVED: '🗑',
+  FAILED: '⚠️',
+};
+
+const STATE_LABEL: Record<ServiceState, string> = {
+  ACTIVE: 'فعال',
+  EXPIRED: 'تاریخ انقضا گذشته',
+  EXHAUSTED: 'حجم تمام شده',
+  ON_HOLD: 'در انتظار فعال‌سازی',
+  DISABLED: 'غیرفعال',
+  REMOVED: 'حذف شده',
+  FAILED: 'مشکل در آماده‌سازی',
+};
+
+/** Telegram wraps a long button onto several lines and the list stops being
+ *  scannable. The name carries the plan, the duration and the price, so the
+ *  front of it is the part worth keeping. */
+function shortName(name: string): string {
+  const trimmed = name.trim();
+  return trimmed.length <= 38 ? trimmed : `${trimmed.slice(0, 37)}…`;
+}
+
+export function myServicesTitle(total: number, page: number, pages: number): string {
+  const head = `🛍 سرویس‌های شما (${total} مورد)`;
+  return pages > 1 ? `${head}\n\nصفحهٔ ${page} از ${pages}` : head;
+}
+
+/**
+ * One row per service, plus paging when there is more than one screenful.
+ *
+ * Page numbers travel in `callback_data` and are therefore untrusted — which
+ * costs nothing, because a page is only an OFFSET into a query already scoped
+ * to this customer. The worst a forged page can produce is an empty list.
+ */
+export function myServicesMenu(
+  services: ServiceView[],
+  now: number,
+  page: number,
+  pages: number,
+): InlineKeyboard {
+  const keyboard: InlineKeyboard = services.map((service) => [
+    {
+      text: `${STATE_GLYPH[serviceState(service, now)]} ${shortName(service.plan_name_at_sale)}`,
+      callback_data: encode('sub', service.id),
+    },
+  ]);
+  if (pages > 1) {
+    const paging: InlineKeyboard[number] = [];
+    if (page > 1) paging.push({ text: '« قبلی', callback_data: encode('mine', page - 1) });
+    if (page < pages) paging.push({ text: 'بعدی »', callback_data: encode('mine', page + 1) });
+    keyboard.push(paging);
+  }
+  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
+  return keyboard;
+}
+
+/** `1288490188` -> `'1.2 گیگابایت'`. Latin digits, like every other number here. */
+export function formatGigabytes(bytes: number): string {
+  const gb = bytes / BYTES_PER_GB;
+  // Under a tenth of a gigabyte "0.0" reads as nothing at all, which is wrong
+  // for a customer who has just started using a service.
+  const shown = gb > 0 && gb < 0.1 ? gb.toFixed(2) : gb.toFixed(1);
+  return `${Number(shown).toLocaleString('en-US')} گیگابایت`;
+}
+
+/**
+ * One service, in full.
+ *
+ * The link is only shown while the service can actually be used. Handing a
+ * customer the config of an expired or exhausted account is how support gets
+ * "I imported it and nothing works" — the link resolves, the account is dead,
+ * and nothing on the screen said so.
+ */
+export function serviceDetail(service: ServiceView, now: number): string {
+  const state = serviceState(service, now);
+  const lines = [
+    `${STATE_GLYPH[state]} ${service.plan_name_at_sale}`,
+    `وضعیت: ${STATE_LABEL[state]}`,
+  ];
+  if (service.provider_name_at_sale) {
+    lines.push(`📍 لوکیشن: ${service.provider_name_at_sale}`);
+  }
+  lines.push(`🔖 شمارهٔ سرویس: ${service.public_id}`);
+  if (service.remote_username) {
+    lines.push(`👤 نام کاربری: ${service.remote_username}`);
+  }
+
+  lines.push('');
+  if (service.volume_gb === null) {
+    lines.push('📦 حجم: نامحدود');
+    if (service.used_bytes !== null) {
+      lines.push(`📊 مصرف شده: ${formatGigabytes(service.used_bytes)}`);
+    }
+  } else {
+    lines.push(`📦 حجم: ${service.volume_gb.toLocaleString('en-US')} گیگابایت`);
+    if (service.used_bytes !== null) {
+      const remaining = Math.max(0, service.volume_gb * BYTES_PER_GB - service.used_bytes);
+      lines.push(`📊 مصرف شده: ${formatGigabytes(service.used_bytes)}`);
+      lines.push(`🎯 باقی‌مانده: ${formatGigabytes(remaining)}`);
+    }
+  }
+
+  if (service.expires_at === null) {
+    lines.push('📅 اعتبار: بدون محدودیت زمان');
+  } else {
+    const expiry = new Date(service.expires_at);
+    lines.push(`📅 اعتبار تا: ${formatTehranDate(expiry)}`);
+    const daysLeft = Math.ceil((expiry.getTime() - now) / 86_400_000);
+    if (daysLeft > 0) lines.push(`⏳ ${daysLeft.toLocaleString('en-US')} روز باقی مانده`);
+  }
+
+  if (state === 'ACTIVE' && service.subscription_url) {
+    lines.push('', '🔗 لینک اشتراک:', service.subscription_url);
+  } else if (state === 'ACTIVE') {
+    // Provisioned by a person, or a row migrated from the old bot that the sync
+    // has not reached yet. Saying so beats an empty space where a link goes.
+    lines.push('', 'لینک این سرویس هنوز در دسترس نیست. لطفاً به پشتیبانی پیام دهید.');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * ponytail: back always lands on the first page. Carrying the page the customer
+ * came from would need a second id in `callback_data`, and it costs four
+ * customers in production one extra tap.
+ */
+export function serviceDetailMenu(): InlineKeyboard {
+  return [
+    [
+      { text: 'بازگشت به سرویس‌ها ⬅️', callback_data: encode('mine') },
+      { text: BACK_TO_MENU, callback_data: encode('menu') },
+    ],
+  ];
 }
 
 /**

@@ -10,9 +10,9 @@
  * `provisioning_providers.kind` and store whatever handle comes back in
  * `subscriptions.remote_ref`. Adding Spotify is a new file in this directory.
  *
- * Only `provision` exists so far. `renew`, `revoke` and `status` are named in
- * the plan and will land with the renewal flow — declaring them now as methods
- * nobody implements would be four unimplemented branches per adapter.
+ * `provision` and `listAccounts` exist. `revoke` is named in the plan and is
+ * not declared here — an unimplemented branch per adapter buys nothing until
+ * something calls it.
  */
 
 /** What the customer bought, flattened so an adapter needs no SQL. */
@@ -69,6 +69,26 @@ export interface ProvisionFailed {
 
 export type ProvisionResult = ProvisionOk | ProvisionFailed;
 
+/**
+ * One remote account as the provider currently sees it.
+ *
+ * Deliberately three fields and not the panel's whole user object. Everything
+ * else the panel knows — status, expiry, inbounds — is either ours to decide or
+ * cannot be mapped without guessing, and a sync that guesses is a sync that can
+ * mark a paid service dead because a panel had a bad minute.
+ */
+export interface RemoteAccount {
+  username: string;
+  /** Bytes consumed. NULL when the provider does not count. */
+  usedBytes: number | null;
+  /** Absolute, tappable. NULL when this provider hands out no link. */
+  subscriptionUrl: string | null;
+}
+
+export type AccountsResult =
+  | { ok: true; accounts: RemoteAccount[] }
+  | { ok: false; reason: string };
+
 export interface ProvisioningAdapter {
   readonly kind: string;
   /**
@@ -77,6 +97,19 @@ export interface ProvisioningAdapter {
    * that calls it can be interrupted at any point and will call again.
    */
   provision(request: ProvisionRequest, provider: ProviderContext): Promise<ProvisionResult>;
+  /**
+   * Every account this provider holds, for the sweep that refreshes what the
+   * customer sees.
+   *
+   * Optional, and bulk on purpose. Mirzabot asks the panel about one account
+   * every time anyone opens a service screen; with 3,139 live services that is
+   * a panel request per glance. One listing per panel per sweep is the same
+   * information for a thousandth of the traffic.
+   *
+   * An adapter with nothing to report — `manual` — simply does not have this,
+   * and the sweep skips it rather than being told an empty list.
+   */
+  listAccounts?(provider: ProviderContext): Promise<AccountsResult>;
 }
 
 /** Everything about the provider except its secrets. */

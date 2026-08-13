@@ -15,6 +15,7 @@ import type { D1Database } from '@shikoo/database';
 import { handleUpdate, type HandleStatus } from './handle.js';
 import { settleVerifiedPayments, type Notification } from './settle.js';
 import { provisionPaidOrders } from './provision.js';
+import { syncSubscriptions } from './sync.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 
 export interface PollResult {
@@ -203,6 +204,14 @@ export async function run(
       // problem, a panel that will not answer is not — and a panel being down
       // must never hold up telling a customer their payment was confirmed.
       await sweep(api, 'provisioning paid orders', () => provisionPaidOrders(db));
+      // Refreshing what «سرویس های من» shows. Produces no messages — it rate
+      // limits itself off `last_synced_at`, so calling it every cycle costs one
+      // aggregate query on the nine cycles out of ten that do nothing.
+      try {
+        await syncSubscriptions(db);
+      } catch (err) {
+        console.error('[bot] subscription sync failed, will retry', err);
+      }
     } catch (err) {
       // A shutdown aborts the poll in flight, which surfaces here as a fetch
       // error. It is not a failure and must not be logged as one.

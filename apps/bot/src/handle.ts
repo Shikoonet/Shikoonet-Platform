@@ -27,7 +27,12 @@ import { panelsForUser, plansOnPanel, purchasablePlan } from './catalog.js';
 import * as menu from './menu.js';
 import { priceForUser } from './money.js';
 import { newPublicId, placeOrder } from './order.js';
-import { orderForUser } from './owned.js';
+import {
+  countSubscriptionsForUser,
+  orderForUser,
+  subscriptionForUser,
+  subscriptionsForUser,
+} from './owned.js';
 import { checkoutFor, recordPaidClick } from './payment.js';
 import type {
   InlineKeyboard,
@@ -246,13 +251,7 @@ async function handleCallback(
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
       const placed = await placeOrder(tx, user.id, plan, user.discount_percent);
-      const checkout = await checkoutFor(
-        tx,
-        user.id,
-        placed.id,
-        placed.totalIrr,
-        newPublicId(),
-      );
+      const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
       if (!checkout) {
         return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
       }
@@ -260,9 +259,47 @@ async function handleCallback(
         return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
       }
       return screen(
-        menu.checkout(placed.publicId, plan, placed.totalIrr, checkout.cardDigits, checkout.cardHolder),
+        menu.checkout(
+          placed.publicId,
+          plan,
+          placed.totalIrr,
+          checkout.cardDigits,
+          checkout.cardHolder,
+        ),
         menu.checkoutMenu(placed.id),
       );
+    }
+
+    case 'mine': {
+      // The page is untrusted and needs no check: it becomes an OFFSET into a
+      // query that is already scoped to this customer, so the worst a forged
+      // page can do is show them nothing.
+      const total = await countSubscriptionsForUser(tx, user.id);
+      if (total === 0) {
+        return screen(menu.MY_SERVICES_EMPTY, menu.mainMenu(user.is_reseller));
+      }
+      const pages = Math.ceil(total / menu.SERVICES_PER_PAGE);
+      const page = Math.min(action.id ?? 1, pages);
+      const services = await subscriptionsForUser(
+        tx,
+        user.id,
+        menu.SERVICES_PER_PAGE,
+        (page - 1) * menu.SERVICES_PER_PAGE,
+      );
+      return screen(
+        menu.myServicesTitle(total, page, pages),
+        menu.myServicesMenu(services, Date.now(), page, pages),
+      );
+    }
+
+    case 'sub': {
+      if (action.id === undefined) return IGNORED;
+      // Straight through owned.ts. This is the exact lookup Mirzabot does by id
+      // alone on the `subscriptionurl_` button, which hands any customer any
+      // other customer's config — BUGS-FOR-ADMIN.md item 8.
+      const service = await subscriptionForUser(tx, user.id, action.id);
+      if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+      return screen(menu.serviceDetail(service, Date.now()), menu.serviceDetailMenu());
     }
 
     case 'paid': {

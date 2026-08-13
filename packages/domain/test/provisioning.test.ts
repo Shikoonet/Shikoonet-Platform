@@ -170,10 +170,9 @@ describe('the marzban adapter', () => {
     const panel = fakePanel({
       users: {},
       onCreate: () =>
-        new Response(
-          JSON.stringify({ username: 'x', subscription_url: 'https://sub.other/abc' }),
-          { status: 200 },
-        ),
+        new Response(JSON.stringify({ username: 'x', subscription_url: 'https://sub.other/abc' }), {
+          status: 200,
+        }),
     });
 
     const result = await marzbanAdapter.provision(request(), provider({ fetch: panel.fetchImpl }));
@@ -216,7 +215,10 @@ describe('the marzban adapter', () => {
         },
       });
 
-      const result = await marzbanAdapter.provision(request(), provider({ fetch: panel.fetchImpl }));
+      const result = await marzbanAdapter.provision(
+        request(),
+        provider({ fetch: panel.fetchImpl }),
+      );
 
       expect(result).toMatchObject({ ok: true, alreadyExisted: true });
       expect(result.ok && result.subscriptionUrl).toBe('https://panel.example.com/sub/existing');
@@ -254,7 +256,8 @@ describe('the marzban adapter', () => {
 
   describe('when it goes wrong', () => {
     it('asks to be retried when the panel is unreachable', async () => {
-      const fetchImpl = (() => Promise.reject(new Error('ECONNREFUSED'))) as unknown as typeof globalThis.fetch;
+      const fetchImpl = (() =>
+        Promise.reject(new Error('ECONNREFUSED'))) as unknown as typeof globalThis.fetch;
 
       const result = await marzbanAdapter.provision(request(), provider({ fetch: fetchImpl }));
 
@@ -270,7 +273,10 @@ describe('the marzban adapter', () => {
         [422, false],
       ] as const) {
         const panel = fakePanel({ onCreate: () => new Response('{}', { status }) });
-        const result = await marzbanAdapter.provision(request(), provider({ fetch: panel.fetchImpl }));
+        const result = await marzbanAdapter.provision(
+          request(),
+          provider({ fetch: panel.fetchImpl }),
+        );
         expect(result).toMatchObject({ ok: false, retryable });
       }
     });
@@ -312,7 +318,9 @@ describe('the marzban adapter', () => {
 
     it('never puts the password in the failure reason', async () => {
       const fetchImpl = (async () =>
-        new Response('{"detail":"bad password p:ss:word"}', { status: 401 })) as unknown as typeof globalThis.fetch;
+        new Response('{"detail":"bad password p:ss:word"}', {
+          status: 401,
+        })) as unknown as typeof globalThis.fetch;
 
       const result = await marzbanAdapter.provision(request(), provider({ fetch: fetchImpl }));
 
@@ -347,5 +355,106 @@ describe('choosing an adapter', () => {
     // No link, so the caller cannot promise the customer a config.
     expect(result.ok && result.subscriptionUrl).toBeNull();
     expect(result.ok && result.remoteRef).toMatchObject({ pending: true });
+  });
+});
+
+/**
+ * The bulk listing the subscription sync is built on.
+ *
+ * Paging is asserted against a panel that actually holds more than one page,
+ * because the loop's exit condition is the interesting part: reading `total`
+ * instead of the length of the array beside it is how a listing quietly stops
+ * halfway when a panel's count and its page disagree.
+ */
+describe('listing every account on a panel', () => {
+  function listingPanel(count: number, over: (i: number) => Record<string, unknown> = () => ({})) {
+    const pages: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok-123' }), { status: 200 });
+      }
+      const match = /offset=(\d+)&limit=(\d+)/.exec(url);
+      if (!match) return new Response('{}', { status: 500 });
+      pages.push(url);
+      const offset = Number(match[1]);
+      const limit = Number(match[2]);
+      const users = [];
+      for (let i = offset; i < Math.min(offset + limit, count); i++) {
+        users.push({
+          username: `u_${i}`,
+          used_traffic: i * 1024,
+          subscription_url: `/sub/u_${i}`,
+          ...over(i),
+        });
+      }
+      // Deliberately wrong on purpose in one test below; here it is honest.
+      return new Response(JSON.stringify({ users, total: count }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    return { pages, fetchImpl };
+  }
+
+  it('returns every account and makes the link absolute', async () => {
+    const panel = listingPanel(3);
+
+    const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.accounts).toEqual([
+      { username: 'u_0', usedBytes: 0, subscriptionUrl: 'https://panel.example.com/sub/u_0' },
+      { username: 'u_1', usedBytes: 1024, subscriptionUrl: 'https://panel.example.com/sub/u_1' },
+      { username: 'u_2', usedBytes: 2048, subscriptionUrl: 'https://panel.example.com/sub/u_2' },
+    ]);
+    // One full page was not needed, so one request.
+    expect(panel.pages).toHaveLength(1);
+  });
+
+  it('walks past the first page rather than stopping at it', async () => {
+    // 501 accounts against a 500-account page: the second page has one row.
+    const panel = listingPanel(501);
+
+    const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok && result.accounts).toHaveLength(501);
+    expect(panel.pages).toHaveLength(2);
+  });
+
+  it('refuses a usage figure that would corrupt the row', async () => {
+    // A panel mid-restart has been seen to report both of these. The column has
+    // a `>= 0` CHECK, so a negative would abort the whole sync batch, and a
+    // fraction would show a customer volume they do not have.
+    const panel = listingPanel(2, (i) => ({ used_traffic: i === 0 ? -5 : 1024.7 }));
+
+    const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok && result.accounts[0]?.usedBytes).toBeNull();
+    expect(result.ok && result.accounts[1]?.usedBytes).toBe(1024);
+  });
+
+  it('skips an account with no name instead of inventing one', async () => {
+    const panel = listingPanel(2, (i) => (i === 0 ? { username: null } : {}));
+
+    const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok && result.accounts).toHaveLength(1);
+    expect(result.ok && result.accounts[0]?.username).toBe('u_1');
+  });
+
+  it('reports a refusal rather than an empty panel', async () => {
+    // The difference matters: an empty list would mean "this panel holds
+    // nothing", and the sweep would have no reason to leave the rows alone.
+    const fetchImpl = (async (input: string | URL | Request) =>
+      String(input).endsWith('/api/admin/token')
+        ? new Response(JSON.stringify({ access_token: 't' }), { status: 200 })
+        : new Response('{}', { status: 403 })) as unknown as typeof globalThis.fetch;
+
+    const result = await marzbanAdapter.listAccounts!(provider({ fetch: fetchImpl }));
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain('403');
+  });
+
+  it('is not offered at all by the manual adapter', () => {
+    expect(manualAdapter.listAccounts).toBeUndefined();
   });
 });

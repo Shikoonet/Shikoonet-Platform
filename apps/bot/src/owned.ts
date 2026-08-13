@@ -53,8 +53,70 @@ export async function orderForUser(
 
 export interface OwnedSubscription {
   id: number;
+  public_id: string;
   status: string;
+  plan_name_at_sale: string;
+  provider_name_at_sale: string | null;
+  remote_username: string | null;
+  subscription_url: string | null;
+  /** `numeric` and `int8` both come back as numbers — packages/db sets the
+   *  type parsers, and refuses any value a JS number would round. */
+  volume_gb: number | null;
+  used_bytes: number | null;
+  duration_days: number | null;
   expires_at: string | null;
+  last_synced_at: string | null;
+  purchased_at: string;
+}
+
+const SUBSCRIPTION_COLUMNS = `
+  id, public_id, status, plan_name_at_sale, provider_name_at_sale,
+  remote_username, subscription_url, volume_gb, used_bytes,
+  duration_days, expires_at, last_synced_at, purchased_at
+`;
+
+/**
+ * Everything this customer owns, newest first, with the live ones on top.
+ *
+ * `PENDING_PAYMENT` rows are excluded. They are the shell of a purchase that
+ * was never completed — there is nothing to show and nothing to tap, and
+ * listing them next to real services is how a customer comes to support asking
+ * why a service they never paid for does not work.
+ *
+ * Paged rather than capped. Four customers in production have more than ten
+ * services and one has forty-five, and they are the resellers — showing them
+ * the first eight and silently dropping the rest would hit exactly the people
+ * who use this screen most.
+ */
+export async function subscriptionsForUser(
+  db: Db,
+  userId: number,
+  limit: number,
+  offset = 0,
+): Promise<OwnedSubscription[]> {
+  const rows = await db
+    .prepare(
+      `SELECT ${SUBSCRIPTION_COLUMNS}
+         FROM subscriptions
+        WHERE user_id = ?1 AND status <> 'PENDING_PAYMENT'
+        ORDER BY (status = 'ACTIVE') DESC, purchased_at DESC, id DESC
+        LIMIT ?2 OFFSET ?3`,
+    )
+    .bind(userId, limit, offset)
+    .all<OwnedSubscription>();
+  return rows.results;
+}
+
+/** How many rows the list above can page through. */
+export async function countSubscriptionsForUser(db: Db, userId: number): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*)::int AS n FROM subscriptions
+        WHERE user_id = ?1 AND status <> 'PENDING_PAYMENT'`,
+    )
+    .bind(userId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 /**
@@ -69,9 +131,9 @@ export async function subscriptionForUser(
 ): Promise<OwnedSubscription | null> {
   return db
     .prepare(
-      `SELECT id, status, expires_at
+      `SELECT ${SUBSCRIPTION_COLUMNS}
          FROM subscriptions
-        WHERE id = ?1 AND user_id = ?2`,
+        WHERE id = ?1 AND user_id = ?2 AND status <> 'PENDING_PAYMENT'`,
     )
     .bind(subscriptionId, userId)
     .first<OwnedSubscription>();

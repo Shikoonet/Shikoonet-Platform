@@ -35,6 +35,8 @@ export const CALLBACK_ACTIONS = [
   'plan', // <planId> — one plan, with its price
   'order', // <planId> — create the order and show the card to pay into
   'paid', // <orderId> — the customer says they have paid
+  'mine', // [page] — the services this customer already owns
+  'sub', // <subscriptionId> — one owned service, with its link
   'soon', // a menu entry that has no implementation yet
 ] as const;
 

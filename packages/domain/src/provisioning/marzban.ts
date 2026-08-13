@@ -25,25 +25,56 @@
  */
 
 import type {
+  AccountsResult,
   ProviderContext,
   ProvisionRequest,
   ProvisionResult,
   ProvisioningAdapter,
+  RemoteAccount,
 } from './types.js';
 
 const GB = 1024 * 1024 * 1024;
 /** Long enough for a panel under load, short enough that a sweep is not stuck. */
 const TIMEOUT_MS = 20_000;
 
+/** One page of the account listing. Marzban's own default is 50; the sweep runs
+ *  every few minutes, so fewer, larger responses cost the panel less. */
+const PAGE_SIZE = 500;
+/**
+ * ponytail: a hard ceiling on the listing rather than a cursor.
+ *
+ * The largest live panel holds a few thousand accounts, so this is roughly ten
+ * times what exists. It is here so that a panel answering with a page that
+ * never shrinks cannot spin the sweep forever. Raise it if a panel ever grows
+ * past it — the log line below says so by name.
+ */
+const MAX_ACCOUNTS = 50_000;
+
 interface MarzbanUser {
   username?: unknown;
   subscription_url?: unknown;
   expire?: unknown;
   status?: unknown;
+  used_traffic?: unknown;
 }
 
 function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * A byte counter from a panel, or null.
+ *
+ * Everything is checked because this number is written to a column with a
+ * `>= 0` CHECK and then subtracted from the customer's quota. A negative or
+ * fractional `used_traffic` — both of which a panel mid-restart has been seen
+ * to report — would either abort the whole sync batch on the constraint or
+ * show a customer more volume than they bought.
+ */
+function asByteCount(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.floor(n);
 }
 
 /**
@@ -123,11 +154,14 @@ async function getUser(
   username: string,
 ): Promise<UserLookup> {
   const res = await withTimeout((signal) =>
-    provider.fetch(`${provider.baseUrl!.replace(/\/+$/, '')}/api/user/${encodeURIComponent(username)}`, {
-      method: 'GET',
-      headers: { accept: 'application/json', authorization: `Bearer ${token}` },
-      signal,
-    }),
+    provider.fetch(
+      `${provider.baseUrl!.replace(/\/+$/, '')}/api/user/${encodeURIComponent(username)}`,
+      {
+        method: 'GET',
+        headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+        signal,
+      },
+    ),
   );
   if (res.status === 404) return { state: 'missing' };
   if (!res.ok) return { state: 'failed', status: res.status };
@@ -215,7 +249,11 @@ export const marzbanAdapter: ProvisioningAdapter = {
             alreadyExisted: true,
           };
         }
-        return { ok: false, reason: 'panel reported a conflict for a user it does not have', retryable: true };
+        return {
+          ok: false,
+          reason: 'panel reported a conflict for a user it does not have',
+          retryable: true,
+        };
       }
 
       if (!res.ok) {
@@ -241,6 +279,53 @@ export const marzbanAdapter: ProvisioningAdapter = {
       // none worth losing the order over.
       const reason = error instanceof Error ? error.message : String(error);
       return { ok: false, reason: `could not reach the panel: ${reason}`, retryable: true };
+    }
+  },
+
+  async listAccounts(provider: ProviderContext): Promise<AccountsResult> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+
+      const accounts: RemoteAccount[] = [];
+      for (let offset = 0; offset < MAX_ACCOUNTS; offset += PAGE_SIZE) {
+        const res = await withTimeout((signal) =>
+          provider.fetch(`${base}/api/users?offset=${offset}&limit=${PAGE_SIZE}`, {
+            method: 'GET',
+            headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+            signal,
+          }),
+        );
+        if (!res.ok)
+          return { ok: false, reason: `panel would not list accounts (HTTP ${res.status})` };
+
+        const json = (await res.json()) as { users?: unknown };
+        const page = Array.isArray(json.users) ? (json.users as MarzbanUser[]) : [];
+        for (const user of page) {
+          const username = asString(user.username);
+          // An account with no name cannot be matched to a subscription, so it
+          // is not an account as far as this sweep is concerned.
+          if (username === null) continue;
+          accounts.push({
+            username,
+            usedBytes: asByteCount(user.used_traffic),
+            subscriptionUrl: absoluteSubUrl(user.subscription_url, base),
+          });
+        }
+        // A short page is the last page. Trusting `total` instead would mean
+        // trusting a number to agree with the array beside it.
+        if (page.length < PAGE_SIZE) return { ok: true, accounts };
+      }
+      // Hit the ceiling. Reporting what was read beats reporting nothing, and
+      // the log line is what says the ceiling needs raising.
+      console.error(
+        `[marzban] panel ${provider.code} has more than ${MAX_ACCOUNTS} accounts; the rest were not synced`,
+      );
+      return { ok: true, accounts };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}` };
     }
   },
 };

@@ -69,7 +69,9 @@ interface PendingOrder {
  * its schema comment promises. `PANEL_<REF>` is `username:password`, and only
  * the first colon splits so a password may contain one.
  */
-function credentialsFor(secretRef: string | null): { username: string; password: string } | null {
+export function credentialsFor(
+  secretRef: string | null,
+): { username: string; password: string } | null {
   if (!secretRef) return null;
   const raw = process.env[`PANEL_${secretRef.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`];
   if (!raw) return null;
@@ -234,10 +236,10 @@ async function deliver(
           `INSERT INTO subscriptions
              (public_id, user_id, order_id, plan_id, provider_id,
               provider_name_at_sale, plan_name_at_sale, price_irr,
-              remote_ref, remote_username, volume_gb, duration_days,
+              remote_ref, remote_username, subscription_url, volume_gb, duration_days,
               status, purchased_at, activated_at, expires_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9::jsonb, ?10, ?11, ?12,
-                   'ACTIVE', now(), now(), ?13)`,
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9::jsonb, ?10, ?11, ?12, ?13,
+                   'ACTIVE', now(), now(), ?14)`,
         )
         .bind(
           row.order_public_id,
@@ -250,6 +252,9 @@ async function deliver(
           row.total_irr,
           JSON.stringify(result.remoteRef),
           result.remoteUsername,
+          // Stored, not re-fetched. The customer will ask for this link again
+          // days from now, from a screen that must not make a network call.
+          result.subscriptionUrl,
           toNumber(row.volume_gb),
           row.duration_days,
           expiresAt === null ? null : expiresAt.toISOString(),
