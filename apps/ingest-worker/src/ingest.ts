@@ -5,7 +5,7 @@
  * structured — the route layer maps them to status codes.
  */
 
-import { normalizeText, parseSms } from '@shikoo/sms-parser';
+import { compilePatterns, normalizeText, parseSms } from '@shikoo/sms-parser';
 import {
   resolveAccountByHint,
   suggestMatchesForTransaction,
@@ -13,6 +13,7 @@ import {
   resolveDetectedIdentifiers,
   assignAccountForTx,
   autoCreatePendingAccount,
+  loadBankSmsPatterns,
   type DetectedIdentifierInput,
 } from '@shikoo/domain';
 import { SQL, type D1Database } from '@shikoo/database';
@@ -149,7 +150,16 @@ export async function ingest(
     timestamp: smsTimestamp,
     deviceId: device.id,
   };
-  const result = parseSms(sms);
+  // Operator-editable bank patterns. They are strictly additive — they never
+  // run where a built-in named the bank, never replace an amount a built-in
+  // extracted, and never see an OTP (see registry.ts). A pattern that no longer
+  // compiles is skipped and reported rather than taking every bank SMS down
+  // with it; the id is safe to log, the body is not.
+  const { parsers, skipped } = compilePatterns(await loadBankSmsPatterns(db));
+  for (const s of skipped) {
+    console.warn(`bank_sms_patterns row ${s.id} skipped: ${s.problems.join('; ')}`);
+  }
+  const result = parseSms(sms, parsers);
 
   const eventId = crypto.randomUUID();
   const created = Date.now();

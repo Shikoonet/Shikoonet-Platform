@@ -6,6 +6,9 @@ import {
   maskCardDigits,
   normalizeCardDigits,
   formatCardDigitsForDisplay,
+  identifyBank,
+  luhnOk,
+  type BankPrefix,
   verifyMirzabotClaim,
   verifyMirzabotClaimWithoutTransaction,
   reassignMirzabotTransaction,
@@ -492,13 +495,38 @@ export function registerMirzabotRoutes(
     Variables: { identity: Ident };
   }>,
 ) {
+  /**
+   * The issuer table, read fresh per request.
+   *
+   * It is a few dozen rows behind Cloudflare Access, so caching it would trade
+   * a millisecond for a stale answer right after an admin corrects a prefix —
+   * which is the one moment they are looking at the screen to check.
+   */
+  async function loadPrefixes(db: D1Database): Promise<BankPrefix[]> {
+    const rows = await db
+      .prepare(`SELECT prefix, bank_name FROM bank_card_prefixes`)
+      .all<{ prefix: string; bank_name: string }>();
+    return (rows.results ?? []).map((r) => ({ prefix: r.prefix, bankName: r.bank_name }));
+  }
+
   app.get('/api/v1/accounts/:accountId/payment-cards', async (c) => {
+    const prefixes = await loadPrefixes(c.env.DB);
     const rows = await c.env.DB.prepare(
-      `SELECT id, financial_account_id, card_digits, label, created_at
+      `SELECT id, financial_account_id, card_digits, label, created_at,
+              status, display_weight, last_assigned_at
        FROM payment_cards WHERE financial_account_id = ?1 ORDER BY created_at DESC`,
     )
       .bind(c.req.param('accountId'))
-      .all<{ id: string; financial_account_id: string; card_digits: string; label: string | null; created_at: number }>();
+      .all<{
+        id: string;
+        financial_account_id: string;
+        card_digits: string;
+        label: string | null;
+        created_at: number;
+        status: string;
+        display_weight: number;
+        last_assigned_at: number | null;
+      }>();
     const items = (rows.results ?? []).map((r) => ({
       id: r.id,
       financial_account_id: r.financial_account_id,
@@ -507,6 +535,12 @@ export function registerMirzabotRoutes(
       display: formatCardDigitsForDisplay(r.card_digits),
       label: r.label,
       created_at: r.created_at,
+      status: r.status,
+      // How much more often than a weight-1 card this one is handed out.
+      display_weight: r.display_weight,
+      last_assigned_at: r.last_assigned_at,
+      bank_name: identifyBank(r.card_digits, prefixes),
+      luhn_ok: luhnOk(r.card_digits),
     }));
     return c.json({ ok: true, items });
   });
@@ -579,15 +613,27 @@ export function registerMirzabotRoutes(
     const now = Date.now();
     const id = crypto.randomUUID();
     try {
+      // The rotation cursor starts level with the cards already in service, not
+      // at zero. A card starting at zero among peers whose cursors are in the
+      // millions wins EVERY checkout until it catches up — which is exactly the
+      // behaviour the head admin asked us to remove, so re-introducing it here
+      // would undo the whole change.
       await c.env.DB.prepare(
-        `INSERT INTO payment_cards (id, financial_account_id, card_digits, label, created_at)
-         VALUES (?1,?2,?3,?4,?5)`,
+        `INSERT INTO payment_cards (id, financial_account_id, card_digits, label, created_at, rotation_cursor)
+         VALUES (?1,?2,?3,?4,?5,
+                 COALESCE((SELECT MAX(rotation_cursor) FROM payment_cards WHERE status = 'ACTIVE'), 0))`,
       )
         .bind(id, accountId, digits, parsed.data.label ?? null, now)
         .run();
     } catch {
       return c.json({ ok: false, error: 'card_already_mapped', message: 'Could not map card.' }, 409);
     }
+    // Reported, never enforced. A card that fails Luhn cannot exist, and one
+    // such row is live in production today (BUGS-FOR-ADMIN.md item 4) — but the
+    // issuer table can be out of date, so refusing the save on a bank mismatch
+    // would block a correct card on our own stale data.
+    const prefixes = await loadPrefixes(c.env.DB);
+    const detectedBank = identifyBank(digits, prefixes);
     return c.json({
       ok: true,
       id,
@@ -595,7 +641,54 @@ export function registerMirzabotRoutes(
       masked: maskCardDigits(digits),
       display: formatCardDigitsForDisplay(digits),
       moved: existing != null && existing.financial_account_id !== accountId,
+      luhn_ok: luhnOk(digits),
+      bank_name: detectedBank,
     });
+  });
+
+  /**
+   * How often this card is shown, relative to the others.
+   *
+   * Weight only, on purpose: the rotation cursor is rotation's own state and an
+   * admin editing it by hand would be editing the queue position of every other
+   * card at the same time.
+   */
+  const CardWeightBody = z.object({ displayWeight: z.number().int().min(1).max(20) }).strict();
+  app.patch('/api/v1/payment-cards/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = CardWeightBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const cardId = c.req.param('id');
+    const before = await c.env.DB.prepare(
+      `SELECT id, card_digits, display_weight FROM payment_cards WHERE id = ?1`,
+    )
+      .bind(cardId)
+      .first<{ id: string; card_digits: string; display_weight: number }>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const now = Date.now();
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO audit_logs
+           (id, actor_email, actor_role, action, entity_type, entity_id,
+            before_json, after_json, reason, request_id, created_at)
+         VALUES (?1, ?2, ?3, 'payment_card.weight_changed', 'PAYMENT_CARD', ?4, ?5, ?6, NULL, NULL, ?7)`,
+      ).bind(
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        cardId,
+        JSON.stringify({ displayWeight: before.display_weight }),
+        JSON.stringify({ displayWeight: parsed.data.displayWeight }),
+        now,
+      ),
+      c.env.DB.prepare(`UPDATE payment_cards SET display_weight = ?2 WHERE id = ?1`).bind(
+        cardId,
+        parsed.data.displayWeight,
+      ),
+    ]);
+    return c.json({ ok: true, id: cardId, display_weight: parsed.data.displayWeight });
   });
 
   app.delete('/api/v1/payment-cards/:id', async (c) => {

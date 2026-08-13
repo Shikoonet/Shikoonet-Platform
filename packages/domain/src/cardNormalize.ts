@@ -13,6 +13,32 @@ export function normalizeCardDigits(input: string): string | null {
   return digits;
 }
 
+/**
+ * Luhn check digit — the one thing about a card number that is true outside
+ * this codebase.
+ *
+ * A 16-digit Iranian card carries a Luhn check digit, so a mistyped number is
+ * detectable without asking anyone. It is worth having: `payment_cards` in
+ * production holds `5054161716277062`, which fails this test and therefore
+ * cannot be a real card. That row silently broke claim-to-account resolution
+ * for one bank until a human counted the digits (BUGS-FOR-ADMIN.md item 4).
+ *
+ * Takes normalized ASCII digits. Anything else is not a card number.
+ */
+export function luhnOk(digits: string): boolean {
+  if (!/^\d+$/.test(digits) || digits.length < 2) return false;
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = digits.charCodeAt(digits.length - 1 - i) - 48;
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
 export function maskCardDigits(digits: string): string {
   if (digits.length < 4) return '****';
   return `**** **** **** ${digits.slice(-4)}`;

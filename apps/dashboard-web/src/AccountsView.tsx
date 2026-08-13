@@ -729,6 +729,18 @@ function SortDropdown({
   );
 }
 
+interface PaymentCardRow {
+  id: string;
+  card_digits: string;
+  display: string;
+  label: string | null;
+  status: string;
+  /** How many turns this card takes for every one turn a weight-1 card takes. */
+  display_weight: number;
+  bank_name: string | null;
+  luhn_ok: boolean;
+}
+
 function PaymentCardsPanel({
   accountId,
   onChanged,
@@ -736,9 +748,7 @@ function PaymentCardsPanel({
   accountId: string;
   onChanged?: () => void;
 }) {
-  const [cards, setCards] = useState<
-    Array<{ id: string; card_digits: string; display: string; label: string | null }>
-  >([]);
+  const [cards, setCards] = useState<PaymentCardRow[]>([]);
   const [newCard, setNewCard] = useState('');
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
@@ -751,10 +761,26 @@ function PaymentCardsPanel({
       setErr(`Could not load cards (${r.status})`);
       return;
     }
-    const j = (await r.json()) as {
-      items: Array<{ id: string; card_digits: string; display: string; label: string | null }>;
-    };
+    const j = (await r.json()) as { items: PaymentCardRow[] };
     setCards(j.items);
+  }
+
+  async function setWeight(id: string, displayWeight: number) {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await fetch(`/api/v1/payment-cards/${id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ displayWeight }),
+      });
+      if (!r.ok) throw new Error(`Could not change weight (${r.status})`);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -822,18 +848,48 @@ function PaymentCardsPanel({
           </button>
         </div>
       )}
-      <ul>
+      <ul className="payment-cards-list">
         {cards.length === 0 && <li className="muted">No cards mapped to this account yet.</li>}
         {cards.map((c) => (
           <li key={c.id}>
-            <IdentifierText value={c.display} />
-            {c.label ? ` (${c.label})` : ''}
-            <button type="button" className="btn-sm" disabled={busy} onClick={() => removeCard(c.id)}>
-              Remove
-            </button>
+            <span className="payment-cards-list__id">
+              <IdentifierText value={c.display} />
+              {c.label ? ` (${c.label})` : ''}
+              {c.bank_name && <span className="badge">{c.bank_name}</span>}
+              {/* A card number that fails its own check digit cannot exist. One
+                  such row is live in production and quietly broke claim-to-account
+                  resolution for a whole bank until a human counted the digits. */}
+              {!c.luhn_ok && <span className="badge badge-danger">check digit fails</span>}
+              {c.status !== 'ACTIVE' && <span className="badge">{c.status}</span>}
+            </span>
+            <span className="payment-cards-list__actions">
+              <label>
+                Shown{' '}
+                <select
+                  value={c.display_weight}
+                  disabled={busy}
+                  onChange={(e) => void setWeight(c.id, Number(e.target.value))}
+                >
+                  {Array.from({ length: 20 }, (_, i) => i + 1).map((w) => (
+                    <option key={w} value={w}>
+                      {w === 1 ? 'normally (1×)' : `${w}× as often`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" className="btn-sm" disabled={busy} onClick={() => removeCard(c.id)}>
+                Remove
+              </button>
+            </span>
           </li>
         ))}
       </ul>
+      <p className="muted">
+        Rotation hands out the card that is furthest behind. A weight of 3 means this card comes up
+        three times as often as a normal one — it never becomes the only card shown. Raise it for a
+        newly added card until its transaction count on the Statistics screen catches up, then set it
+        back to 1.
+      </p>
       <div className="row toolbar">
         <input
           placeholder="5047-0616-7456-0137"

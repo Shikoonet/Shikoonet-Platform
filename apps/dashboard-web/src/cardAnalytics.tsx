@@ -74,6 +74,14 @@ export function CardBalancingPanel({
                   <span className="account-usage-row__purchases">
                     {item.purchaseCount} {item.purchaseCount === 1 ? 'purchase' : 'purchases'}
                   </span>
+                  {/* Only shown when it is not 1. A weight beside every card
+                      would be noise; a weight beside the one card being pushed
+                      is the reminder to set it back once the count catches up. */}
+                  {item.displayWeight > 1 && (
+                    <span className="badge" title="Rotation weight — set on the account screen">
+                      shown {item.displayWeight}× as often
+                    </span>
+                  )}
                   <span className="account-usage-row__balance">
                     {item.hubEligible ? (
                       <span className="muted">eligible</span>

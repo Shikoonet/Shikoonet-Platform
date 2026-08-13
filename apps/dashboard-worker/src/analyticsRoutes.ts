@@ -457,6 +457,7 @@ export async function loadCardAnalytics(
   const rows = await db
     .prepare(
       `SELECT pc.card_digits,
+              pc.display_weight,
               fa.id AS account_id,
               fa.display_name,
               fa.owner_label,
@@ -477,12 +478,13 @@ export async function loadCardAnalytics(
        -- other fa.* columns by functional dependency. SQLite allowed the bare
        -- columns and picked an arbitrary row per group; that only happened to
        -- be right because a card belongs to exactly one account.
-       GROUP BY pc.card_digits, fa.id
+       GROUP BY pc.card_digits, pc.display_weight, fa.id
        ORDER BY purchase_count DESC, pc.card_digits ASC`,
     )
     .bind(...binds)
     .all<{
       card_digits: string;
+      display_weight: number;
       account_id: string;
       display_name: string;
       owner_label: string | null;
@@ -494,6 +496,10 @@ export async function loadCardAnalytics(
   const items = (rows.results ?? []).map((r) => ({
     cardDigits: r.card_digits,
     cardMasked: `****${r.card_digits.slice(-4)}`,
+    // Sits beside the count on purpose: the count is how far behind a card is,
+    // the weight is how fast it is catching up, and the admin needs both in one
+    // place to decide when to set the weight back to 1.
+    displayWeight: r.display_weight,
     accountId: r.account_id,
     displayName: r.display_name,
     ownerLabel: r.owner_label,

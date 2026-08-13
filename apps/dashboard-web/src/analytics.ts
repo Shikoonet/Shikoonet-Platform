@@ -95,6 +95,8 @@ export interface CardAnalyticsItem {
   accountHint: string | null;
   accountStatus: string;
   purchaseCount: number;
+  /** Rotation weight: how many turns this card takes per turn of a normal one. */
+  displayWeight: number;
   purchaseBarPercent: number;
   hubEligible: boolean;
   exclusionReason: string;

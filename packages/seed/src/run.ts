@@ -16,8 +16,16 @@ import { createPostgresD1 } from '@shikoo/db';
 import { seed } from './generators.js';
 import { seedCatalog } from './catalog.js';
 
-/** Bookkeeping the migrations own. Wiping it would strand the schema. */
-const KEEP = new Set(['schema_meta']);
+/**
+ * Tables the migrations own rather than the seed.
+ *
+ * `schema_meta` is bookkeeping — wiping it would strand the schema.
+ * `bank_card_prefixes` is reference data: which bank issued which card range,
+ * inserted by `0007` and corrected by admins in the dashboard afterwards.
+ * Truncating it would leave every card unattributed until someone noticed, and
+ * re-seeding it here would throw away those corrections.
+ */
+const KEEP = new Set(['schema_meta', 'bank_card_prefixes']);
 
 /**
  * This truncates every table it is pointed at, so it may only ever be pointed

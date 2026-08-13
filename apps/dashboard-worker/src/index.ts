@@ -36,6 +36,7 @@ import { lookupRole, verifyAccess } from './access.js';
 import { securityHeaders, originGuard } from './security.js';
 import { registerMirzabotRoutes, loadPaymentCardsForAccounts } from './mirzabotRoutes.js';
 import { registerAnalyticsRoutes } from './analyticsRoutes.js';
+import { registerBankRoutes } from './bankRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
 const DEFAULT_INGEST_URL = 'https://ingest-worker.samsos.workers.dev/api/v1/sms';
@@ -4352,6 +4353,7 @@ app.post('/api/v1/admin/cleanup-debits/apply', async (c) => {
 
 registerMirzabotRoutes(app);
 registerAnalyticsRoutes(app);
+registerBankRoutes(app);
 
 export default app;
 export { app };

@@ -9,6 +9,8 @@ export * from './notifications.js';
 export * from './accountStatus.js';
 export * from './autoCreateAccount.js';
 export * from './cardNormalize.js';
+export * from './bankIdentity.js';
+export * from './bankSmsPatterns.js';
 export * from './mirzabotMatch.js';
 export * from './mirzabotVerify.js';
 export * from './reassignMirzabotTransaction.js';

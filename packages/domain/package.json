@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@shikoo/contracts": "workspace:*",
-    "@shikoo/database": "workspace:*"
+    "@shikoo/database": "workspace:*",
+    "@shikoo/sms-parser": "workspace:*"
   },
   "devDependencies": {
     "@shikoo/db": "workspace:*",
