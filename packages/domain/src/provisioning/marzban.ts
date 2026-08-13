@@ -371,21 +371,33 @@ export const marzbanAdapter: ProvisioningAdapter = {
       const from = request.renewFrom.getTime();
 
       let dataLimit: number;
-      let expire: string | number;
+      let expiresAtMs: number | null;
       if (request.mode === 'ADD') {
         // Measured from whatever time is left, so renewing early keeps the days
         // already paid for. `time() - expire > 0 ? time() : expire` in the PHP.
         const current = expiryMs(found.user.expire);
         const anchor = current !== null && current > from ? current : from;
-        expire = addedMs === null ? 0 : new Date(anchor + addedMs).toISOString();
+        expiresAtMs = addedMs === null ? null : anchor + addedMs;
         const currentQuota = quotaBytes(found.user.data_limit);
         // Adding to an unmetered account, or adding unmetered volume, leaves it
         // unmetered — anything else would put a cap on a service that had none.
         dataLimit = addedBytes === null || currentQuota === null ? 0 : currentQuota + addedBytes;
       } else {
-        expire = addedMs === null ? 0 : new Date(from + addedMs).toISOString();
+        expiresAtMs = addedMs === null ? null : from + addedMs;
         dataLimit = addedBytes ?? 0;
       }
+      // Seconds, not ISO — and the difference is not ours to choose. The live
+      // PHP writes this field two different ways against these same five
+      // panels, and which one depends on the OPERATION, not on the panel:
+      //
+      //   create  Marzban.php:242     date('c', $ts)   ISO-8601
+      //   extend  panels.php:1958     $time_new        unix seconds
+      //
+      // `provision` above matches the first because it is a create. This is an
+      // extend, so it matches the second. Both shapes are proven against the
+      // production panels every day; picking one for both would be replacing
+      // evidence with a preference.
+      const expire = expiresAtMs === null ? 0 : Math.floor(expiresAtMs / 1000);
 
       if (request.mode === 'RESET') {
         // Legacy resets before it modifies, and the order matters: zeroing after
@@ -440,7 +452,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
         // What was asked for, not what came back: a panel that echoes the
         // request is agreeing, and a panel that echoes something else has
         // already been accepted by the `res.ok` above.
-        expiresAt: expire === 0 ? null : new Date(expire),
+        expiresAt: expiresAtMs === null ? null : new Date(expiresAtMs),
         volumeGb: dataLimit === 0 ? null : dataLimit / GB,
       };
     } catch (error) {

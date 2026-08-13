@@ -438,7 +438,7 @@ describe('applying it', () => {
 
     expect(panel.resets).toContain(target.username);
     // 30 days from now, not from the five days that were left.
-    expect(panel.puts[0]?.body['expire']).toBe(new Date(NOW_MS + 30 * DAY).toISOString());
+    expect(panel.puts[0]?.body['expire']).toBe((NOW_MS + 30 * DAY) / 1000);
     expect(panel.puts[0]?.body['data_limit']).toBe(50 * GIB);
 
     const sub = await subscriptionRow(target.subId);
@@ -466,7 +466,7 @@ describe('applying it', () => {
     await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
 
     // The five remaining days are kept: 5 + 30, not 30.
-    expect(panel.puts[0]?.body['expire']).toBe(new Date(NOW_MS + 35 * DAY).toISOString());
+    expect(panel.puts[0]?.body['expire']).toBe((NOW_MS + 35 * DAY) / 1000);
     expect(panel.puts[0]?.body['data_limit']).toBe(100 * GIB);
     // And the counter is NOT reset, because the quota grew instead.
     expect(panel.resets).toHaveLength(0);
@@ -491,7 +491,7 @@ describe('applying it', () => {
     await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
 
     // 30 days from today, not 20 days from an expiry ten days in the past.
-    expect(panel.puts[0]?.body['expire']).toBe(new Date(NOW_MS + 30 * DAY).toISOString());
+    expect(panel.puts[0]?.body['expire']).toBe((NOW_MS + 30 * DAY) / 1000);
   });
 
   it('does not apply the same renewal twice after a timeout', async () => {

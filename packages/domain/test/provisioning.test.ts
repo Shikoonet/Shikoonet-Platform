@@ -558,7 +558,7 @@ describe('extending an account', () => {
       provider({ fetch: panel.fetchImpl }),
     );
 
-    expect(panel.puts[0]?.['expire']).toBe(new Date(NOW + 40 * 86_400_000).toISOString());
+    expect(panel.puts[0]?.['expire']).toBe((NOW + 40 * 86_400_000) / 1000);
   });
 
   it('keeps an unmetered account unmetered', async () => {
@@ -619,5 +619,101 @@ describe('extending an account', () => {
 
     expect(panel.resets).toHaveLength(0);
     expect(panel.puts[0]?.['data_limit']).toBe(60 * 1024 ** 3);
+  });
+});
+
+/**
+ * The one field whose shape is not ours to choose.
+ *
+ * `expire` is written two different ways against the same five production
+ * panels, and which one depends on the OPERATION rather than on the panel:
+ *
+ *   create   Marzban.php:242    $data["expire"] = date('c', $timestamp)
+ *   extend   panels.php:1958    'expire' => $time_new
+ *
+ * Both work in production today, so both are evidence. These tests exist so
+ * that the next person to notice the inconsistency cannot tidy it into one
+ * shape without deleting a citation first — and getting it wrong sells a
+ * customer an account that expired in 1970.
+ */
+describe('the expire field, in the shape the live PHP uses', () => {
+  const AT = NOW + 30 * 86_400_000;
+
+  /** A panel that answers everything renew needs and records the PUT. */
+  function renewPanel(currentExpire: string | number) {
+    const puts: Record<string, unknown>[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 't' }), { status: 200 });
+      }
+      if (url.endsWith('/reset')) return new Response('{}', { status: 200 });
+      if (method === 'GET') {
+        return new Response(JSON.stringify({ expire: currentExpire, data_limit: 0 }), {
+          status: 200,
+        });
+      }
+      puts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ username: 'u' }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    return { puts, fetchImpl };
+  }
+
+  function renewal(over: Partial<RenewRequest> = {}): RenewRequest {
+    return {
+      username: 'u',
+      volumeGb: 50,
+      durationDays: 30,
+      note: 'shikoo abc',
+      providerConfig: {},
+      planAttrs: {},
+      mode: 'RESET',
+      renewFrom: new Date(NOW),
+      ...over,
+    };
+  }
+
+  it('creates with ISO-8601, like Marzban.php:242', async () => {
+    const panel = fakePanel();
+
+    await marzbanAdapter.provision(
+      request({ expiresAt: new Date(AT) }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    const body = createCall(panel.calls)?.body as Record<string, unknown>;
+    expect(body['expire']).toBe(new Date(AT).toISOString());
+    expect(typeof body['expire']).toBe('string');
+  });
+
+  it('extends with unix seconds, like panels.php:1958', async () => {
+    const panel = renewPanel(0);
+
+    await marzbanAdapter.renew!(renewal(), provider({ fetch: panel.fetchImpl }));
+
+    expect(panel.puts[0]?.['expire']).toBe(AT / 1000);
+    expect(typeof panel.puts[0]?.['expire']).toBe('number');
+  });
+
+  it('reads back whichever shape it is answered with', async () => {
+    // Needed precisely because the two paths write differently: an account we
+    // created carries ISO, one we extended carries seconds, and an ADD renewal
+    // has to measure from either without noticing the difference.
+    const at = NOW + 10 * 86_400_000;
+    const fromSeconds = renewPanel(Math.floor(at / 1000));
+    const fromIso = renewPanel(new Date(at).toISOString());
+
+    await marzbanAdapter.renew!(
+      renewal({ mode: 'ADD', durationDays: 10 }),
+      provider({ fetch: fromSeconds.fetchImpl }),
+    );
+    await marzbanAdapter.renew!(
+      renewal({ mode: 'ADD', durationDays: 10 }),
+      provider({ fetch: fromIso.fetchImpl }),
+    );
+
+    expect(fromSeconds.puts[0]?.['expire']).toBe((at + 10 * 86_400_000) / 1000);
+    expect(fromIso.puts[0]?.['expire']).toBe(fromSeconds.puts[0]?.['expire']);
   });
 });
