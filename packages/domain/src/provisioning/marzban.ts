@@ -39,6 +39,8 @@
  */
 
 import type {
+  AccountAction,
+  AccountActionResult,
   AccountsResult,
   ProviderContext,
   ProvisionRequest,
@@ -543,6 +545,78 @@ export const marzbanAdapter: ProvisioningAdapter = {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return { ok: false, reason: `could not reach the panel: ${reason}` };
+    }
+  },
+
+  /**
+   * The two things a customer may do to their own account.
+   *
+   * Both endpoints come from the live PHP rather than from a reading of the
+   * panel's docs, which are switched off on our panel:
+   *
+   *   revoke   Marzban.php:197      POST /api/user/{u}/revoke_sub
+   *   on/off   panels.php:1659-1666 PUT  /api/user/{u}  {"status": …}
+   *
+   * The status is sent, never toggled from what we last saw. A toggle computed
+   * here would turn an account back on because our copy of its state was stale.
+   */
+  async act(action: AccountAction, provider: ProviderContext): Promise<AccountActionResult> {
+    try {
+      if (!provider.baseUrl) {
+        return { ok: false, reason: 'this panel has no address configured', retryable: false };
+      }
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error, retryable: auth.retryable };
+      const base = provider.baseUrl.replace(/\/+$/, '');
+      const user = encodeURIComponent(action.username);
+
+      const res = await withTimeout((signal) =>
+        action.kind === 'REVOKE_SUB'
+          ? provider.fetch(`${base}/api/user/${user}/revoke_sub`, {
+              method: 'POST',
+              headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+              signal,
+            })
+          : provider.fetch(`${base}/api/user/${user}`, {
+              method: 'PUT',
+              headers: {
+                accept: 'application/json',
+                'content-type': 'application/json',
+                authorization: `Bearer ${auth.token}`,
+              },
+              body: JSON.stringify({ status: action.enabled ? 'active' : 'disabled' }),
+              signal,
+            }),
+      );
+      // 404 is not "try later": the account is not there, and a customer who is
+      // shown "we will retry" for a service that does not exist is being lied to.
+      if (res.status === 404) {
+        return { ok: false, reason: 'the panel does not know this account', retryable: false };
+      }
+      if (!res.ok) {
+        return {
+          ok: false,
+          reason: `panel refused the change (HTTP ${res.status})`,
+          retryable: isPanelFault(res.status),
+        };
+      }
+
+      const updated = (await res.json()) as MarzbanUser;
+      const status = asString((updated as { status?: unknown }).status);
+      return {
+        ok: true,
+        // Only a revoke replaces the link. On a status change the panel echoes
+        // the same one, and storing it again would be a write that says nothing.
+        ...(action.kind === 'REVOKE_SUB'
+          ? { subscriptionUrl: absoluteSubUrl(updated.subscription_url, base) }
+          : {}),
+        // What the panel says it is now — not what we asked for. If it refused
+        // quietly, this is where that shows.
+        ...(status === null ? {} : { enabled: status === 'active' }),
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}`, retryable: true };
     }
   },
 };

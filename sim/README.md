@@ -52,6 +52,31 @@ pnpm --filter @shikoo/bot start:local
 never appears in a command. Only one process may long-poll a token at a time:
 a second one makes Telegram return `409 Conflict` to both.
 
+## The fake panel
+
+```bash
+pnpm sim:panel            # http://127.0.0.1:8790, in memory
+```
+
+A PasarGuard that answers, so delivery, renewal, sync and the service buttons
+can be walked offline. Point the simulation's panels at it and give it any
+credentials:
+
+```sql
+UPDATE provisioning_providers
+   SET base_url = 'http://127.0.0.1:8790', secret_ref = 'sim-fake-panel'
+ WHERE kind = 'pasarguard';
+```
+
+```bash
+PANEL_SIM_FAKE_PANEL='admin:secret' pnpm --filter @shikoo/bot start:local
+```
+
+**It is not evidence of the real panel's shape.** It answers what our adapter
+sends, so agreement proves only that we are consistent with ourselves — rule 6.
+The endpoint shapes come from the live PHP and are cited in `marzban.ts`. Its
+state is in memory: restart it and every account is gone.
+
 ## Injecting a bank SMS by hand
 
 The seeded devices carry real credentials, so the whole payment path can be

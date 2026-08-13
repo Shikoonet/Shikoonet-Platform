@@ -22,7 +22,8 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { renewAllowed, renewModeFor } from '@shikoo/domain';
+import { isAutomated, renewAllowed, renewModeFor } from '@shikoo/domain';
+import { actOnService } from './actions.js';
 import { decode } from './callback.js';
 import { panelsForUser, plansOnPanel, purchasablePlan } from './catalog.js';
 import * as menu from './menu.js';
@@ -35,7 +36,9 @@ import {
   renewableForUser,
   renewableForUserById,
   subscriptionForUser,
+  subscriptionOnPanelForUser,
   subscriptionsForUser,
+  type OwnedSubscriptionOnPanel,
 } from './owned.js';
 import { checkoutFor, recordPaidClick } from './payment.js';
 import {
@@ -80,6 +83,21 @@ export interface HandleOutcome {
 
 const IGNORED: HandleOutcome = { status: 'ignored', replies: [] };
 
+/**
+ * Whether this service gets panel buttons, and which way the on/off one points.
+ *
+ * Null for a manual product, for a row whose panel was deleted, and for one the
+ * panel never named — there is nothing to call in any of those, and a button
+ * that cannot work is worse than no button.
+ */
+function actionsFor(service: OwnedSubscriptionOnPanel): menu.ServiceActions | null {
+  if (!service.provider_kind || !service.provider_base_url || !service.remote_username) return null;
+  if (!isAutomated(service.provider_kind)) return null;
+  // REMOVED, FAILED, PENDING_PAYMENT: nothing to revoke and nothing to switch.
+  if (service.status !== 'ACTIVE' && service.status !== 'DISABLED') return null;
+  return { id: service.id, disabled: service.status === 'DISABLED' };
+}
+
 /** Built by hand rather than by object literal: `exactOptionalPropertyTypes`
  *  rejects an explicit `undefined`, and every caller here has optional halves. */
 function reply(
@@ -96,7 +114,13 @@ function reply(
   };
 }
 
-export async function handleUpdate(db: D1Database, update: TelegramUpdate): Promise<HandleOutcome> {
+export async function handleUpdate(
+  db: D1Database,
+  update: TelegramUpdate,
+  // Injected so a test can answer for the panel. The service buttons are the
+  // only handlers that leave the process.
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+): Promise<HandleOutcome> {
   return db.withSession(async (tx) => {
     const claim = await tx
       .prepare(`INSERT INTO telegram_updates (update_id) VALUES (?1) ON CONFLICT DO NOTHING`)
@@ -107,7 +131,7 @@ export async function handleUpdate(db: D1Database, update: TelegramUpdate): Prom
     }
 
     if (update.callback_query) {
-      return handleCallback(tx, update.callback_query);
+      return handleCallback(tx, update.callback_query, fetchImpl);
     }
 
     const message = update.message;
@@ -195,6 +219,7 @@ async function handleStart(
 async function handleCallback(
   tx: D1DatabaseSession,
   query: TelegramCallbackQuery,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<HandleOutcome> {
   const action = decode(query.data);
   if (!action) return IGNORED;
@@ -314,9 +339,52 @@ async function handleCallback(
       // Straight through owned.ts. This is the exact lookup Mirzabot does by id
       // alone on the `subscriptionurl_` button, which hands any customer any
       // other customer's config — BUGS-FOR-ADMIN.md item 8.
-      const service = await subscriptionForUser(tx, user.id, action.id);
+      const service = await subscriptionOnPanelForUser(tx, user.id, action.id);
       if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
-      return screen(menu.serviceDetail(service, Date.now()), menu.serviceDetailMenu());
+      return screen(
+        menu.serviceDetail(service, Date.now()),
+        menu.serviceDetailMenu(actionsFor(service)),
+      );
+    }
+
+    case 'rvk': {
+      if (action.id === undefined) return IGNORED;
+      const service = await subscriptionOnPanelForUser(tx, user.id, action.id);
+      if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+      if (!actionsFor(service)) {
+        return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu());
+      }
+      return screen(menu.CONFIRM_REVOKE, menu.confirmRevokeMenu(action.id));
+    }
+
+    case 'rvk2':
+    case 'off':
+    case 'on': {
+      if (action.id === undefined) return IGNORED;
+      const kind = action.action === 'rvk2' ? 'REVOKE' : action.action === 'on' ? 'ENABLE' : 'DISABLE';
+      const outcome = await actOnService(tx, user.id, action.id, kind, fetchImpl);
+      if (outcome.status === 'GONE') {
+        return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+      }
+      if (outcome.status === 'UNSUPPORTED') {
+        return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu());
+      }
+      if (outcome.status === 'FAILED') {
+        return screen(
+          menu.actionFailed(outcome.reason),
+          menu.serviceDetailMenu(actionsFor(outcome.service)),
+        );
+      }
+      // The service is redrawn under the message, so the customer sees the new
+      // state rather than being told about it and left on a stale screen.
+      const detail = menu.serviceDetail(outcome.service, Date.now());
+      const said =
+        kind === 'REVOKE'
+          ? outcome.subscriptionUrl === null
+            ? menu.actionFailed('پنل لینک جدیدی برنگرداند')
+            : menu.linkReplaced(outcome.subscriptionUrl)
+          : menu.serviceSwitched(kind === 'ENABLE');
+      return screen(`${said}\n\n${detail}`, menu.serviceDetailMenu(actionsFor(outcome.service)));
     }
 
     case 'renew': {

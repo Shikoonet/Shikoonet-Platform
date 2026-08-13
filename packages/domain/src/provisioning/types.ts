@@ -148,6 +148,27 @@ export type AccountsResult =
   | { ok: true; accounts: RemoteAccount[] }
   | { ok: false; reason: string };
 
+/**
+ * Something the customer asks of an account they already own — not a purchase.
+ *
+ * Deliberately not folded into `renew`: nothing here changes what was paid for,
+ * so none of it goes near an order. What comes back is only what the caller has
+ * to store — a revoked link is a new link, and a status change is a status.
+ */
+export type AccountAction =
+  | { kind: 'REVOKE_SUB'; username: string }
+  | { kind: 'SET_ENABLED'; username: string; enabled: boolean };
+
+export type AccountActionResult =
+  | {
+      ok: true;
+      /** Present when the action replaced it. `undefined` means unchanged. */
+      subscriptionUrl?: string | null;
+      /** What the account's status is now, as the panel reports it. */
+      enabled?: boolean;
+    }
+  | { ok: false; reason: string; retryable: boolean };
+
 export interface ProvisioningAdapter {
   readonly kind: string;
   /**
@@ -180,6 +201,15 @@ export interface ProvisioningAdapter {
    * and the sweep skips it rather than being told an empty list.
    */
   listAccounts?(provider: ProviderContext): Promise<AccountsResult>;
+  /**
+   * Act on an existing account at the customer's request: replace its
+   * subscription link, or turn it off and on.
+   *
+   * Optional, and a provider that lacks it simply does not offer the buttons —
+   * a `manual` product has no panel to ask, and pretending otherwise would tell
+   * the customer something happened when nothing did.
+   */
+  act?(action: AccountAction, provider: ProviderContext): Promise<AccountActionResult>;
 }
 
 /** Everything about the provider except its secrets. */

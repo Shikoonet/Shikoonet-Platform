@@ -48,6 +48,12 @@ export const CALLBACK_ACTIONS = [
   'tpo', // <orderId> — deposit exactly what this order still needs, computed
   //        from the order row for the same reason.
   'wpay', // <orderId> — pay that order out of the balance
+  'rvk', // <subscriptionId> — ask before replacing the subscription link
+  'rvk2', // <subscriptionId> — do it. Separate action rather than a flag: the
+  //        old link stops working the moment this runs, on every device the
+  //        customer has already imported it onto.
+  'off', // <subscriptionId> — turn the account off at the panel
+  'on', // <subscriptionId> — turn it back on
   'soon', // a menu entry that has no implementation yet
 ] as const;
 

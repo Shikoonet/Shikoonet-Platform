@@ -259,3 +259,51 @@ export async function subscriptionForUser(
     .bind(subscriptionId, userId)
     .first<OwnedSubscription>();
 }
+
+/** A service together with the panel it lives on — for the buttons that call it. */
+export interface OwnedSubscriptionOnPanel extends OwnedSubscription {
+  provider_id: number | null;
+  provider_code: string | null;
+  provider_name: string | null;
+  provider_kind: string | null;
+  provider_base_url: string | null;
+  provider_secret_ref: string | null;
+  provider_config: Record<string, unknown> | null;
+}
+
+/**
+ * The same row, plus its panel.
+ *
+ * A second function rather than more columns on `subscriptionForUser`, because
+ * the panel's `config` carries a shared secret (see migrations/0002) and the
+ * detail screen has no use for it. Reading it only where a panel call is about
+ * to happen keeps it out of every other query's result.
+ *
+ * The panel is the one the ACCOUNT was sold on — `subscriptions.provider_id` —
+ * not the one its plan points at today. They can differ: a config from the
+ * shelf, or a plan moved between panels after the sale.
+ */
+export async function subscriptionOnPanelForUser(
+  db: Db,
+  userId: number,
+  subscriptionId: number,
+): Promise<OwnedSubscriptionOnPanel | null> {
+  return db
+    .prepare(
+      `SELECT ${SUBSCRIPTION_COLUMNS.split(',')
+        .map((c) => `s.${c.trim()}`)
+        .join(', ')},
+              pv.id         AS provider_id,
+              pv.code       AS provider_code,
+              pv.name       AS provider_name,
+              pv.kind       AS provider_kind,
+              pv.base_url   AS provider_base_url,
+              pv.secret_ref AS provider_secret_ref,
+              pv.config     AS provider_config
+         FROM subscriptions s
+         LEFT JOIN provisioning_providers pv ON pv.id = s.provider_id
+        WHERE s.id = ?1 AND s.user_id = ?2 AND s.status <> 'PENDING_PAYMENT'`,
+    )
+    .bind(subscriptionId, userId)
+    .first<OwnedSubscriptionOnPanel>();
+}

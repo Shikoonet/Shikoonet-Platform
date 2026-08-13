@@ -563,14 +563,75 @@ export function serviceDetail(service: ServiceView, now: number): string {
  * came from would need a second id in `callback_data`, and it costs four
  * customers in production one extra tap.
  */
-export function serviceDetailMenu(): InlineKeyboard {
+export function serviceDetailMenu(actions?: ServiceActions | null): InlineKeyboard {
+  const keyboard: InlineKeyboard = [];
+  if (actions) {
+    keyboard.push([
+      { text: '🔄 تغییر لینک اشتراک', callback_data: encode('rvk', actions.id) },
+    ]);
+    keyboard.push([
+      actions.disabled
+        ? { text: '💡 روشن کردن سرویس', callback_data: encode('on', actions.id) }
+        : { text: '⛔ خاموش کردن سرویس', callback_data: encode('off', actions.id) },
+    ]);
+  }
+  keyboard.push([
+    { text: 'بازگشت به سرویس‌ها ⬅️', callback_data: encode('mine') },
+    { text: BACK_TO_MENU, callback_data: encode('menu') },
+  ]);
+  return keyboard;
+}
+
+/**
+ * Whether to draw the panel buttons at all, and which way the switch points.
+ *
+ * Absent for a service no panel can be asked about — a manual product, or a row
+ * whose panel was deleted. Drawing a button that cannot do anything is how a
+ * customer comes to support saying they pressed it and nothing happened.
+ */
+export interface ServiceActions {
+  id: number;
+  disabled: boolean;
+}
+
+export const CONFIRM_REVOKE = [
+  '⚠️ لینک اشتراک این سرویس عوض می‌شود.',
+  '',
+  'لینک فعلی از کار می‌افتد و باید لینک جدید را روی همهٔ دستگاه‌هایتان دوباره وارد کنید.',
+  'حجم و تاریخ سرویس دست‌نخورده می‌ماند.',
+].join('\n');
+
+export function confirmRevokeMenu(subscriptionId: number): InlineKeyboard {
   return [
-    [
-      { text: 'بازگشت به سرویس‌ها ⬅️', callback_data: encode('mine') },
-      { text: BACK_TO_MENU, callback_data: encode('menu') },
-    ],
+    [{ text: '✅ بله، لینک را عوض کن', callback_data: encode('rvk2', subscriptionId) }],
+    [{ text: 'بازگشت ⬅️', callback_data: encode('sub', subscriptionId) }],
   ];
 }
+
+export function linkReplaced(subscriptionUrl: string): string {
+  return [
+    '✅ لینک اشتراک عوض شد.',
+    '',
+    '🔗 لینک جدید:',
+    subscriptionUrl,
+    '',
+    'لینک قبلی دیگر کار نمی‌کند.',
+  ].join('\n');
+}
+
+export function serviceSwitched(enabled: boolean): string {
+  return enabled
+    ? '💡 سرویس روشن شد و دوباره قابل استفاده است.'
+    : '⛔ سرویس خاموش شد. هر وقت خواستید از همین صفحه روشنش کنید — حجم و تاریخ سرویس حساب می‌شود.';
+}
+
+/** The panel said no. The reason is the adapter's, and it is written for a person. */
+export function actionFailed(reason: string): string {
+  return ['⚠️ این کار انجام نشد.', '', reason, '', 'کمی بعد دوباره امتحان کنید.'].join('\n');
+}
+
+export const ACTION_UNSUPPORTED =
+  'این سرویس به‌صورت دستی آماده شده و از این طریق قابل تغییر نیست. لطفاً به پشتیبانی پیام دهید.';
 
 // ---------------------------------------------------------------------------
 // «تمدید سرویس»
