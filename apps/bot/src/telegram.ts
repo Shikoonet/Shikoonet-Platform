@@ -73,6 +73,14 @@ const EnvelopeSchema = z.object({
 
 export interface TelegramApi {
   /**
+   * The bot's own @username.
+   *
+   * Needed for the referral link, and asked for rather than configured: an
+   * operator who types the wrong username produces links that open somebody
+   * else's bot, and nothing would ever tell them.
+   */
+  getMe(): Promise<{ username: string | null }>;
+  /**
    * Long-polls. Returns updates with `update_id >= offset`.
    *
    * `signal` cancels the poll in flight. Without it a shutdown has to wait out
@@ -157,6 +165,14 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
   }
 
   return {
+    async getMe() {
+      const result = await call('getMe', {}, 15_000);
+      const parsed = z
+        .object({ username: z.string().optional() })
+        .safeParse(result);
+      return { username: parsed.success ? (parsed.data.username ?? null) : null };
+    },
+
     async getUpdates(offset, timeoutSec, signal) {
       // The HTTP timeout must outlast the long poll or every poll aborts.
       const result = await call(

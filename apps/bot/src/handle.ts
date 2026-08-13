@@ -44,6 +44,17 @@ import {
   placeRenewalOrder,
   placeTopupOrder,
 } from './order.js';
+import { clientApps, helpArticle, helpArticles } from './content.js';
+import {
+  claimReferrer,
+  COMMISSION_PERCENT,
+  payReferralCommission,
+  referralLink,
+  referralSummary,
+  referrerFromPayload,
+} from './referral.js';
+import { applyForReseller, hasOpenRequest } from './reseller.js';
+import { settingIs, settingText } from './settings.js';
 import {
   countRenewableForUser,
   countSubscriptionsForUser,
@@ -247,9 +258,23 @@ async function handleStart(
     .bind(user.id)
     .run();
 
+  // `/start 42` is somebody arriving on a referral link. The payload is
+  // untrusted and is only ever used as a row id: `claimReferrer` refuses it
+  // unless it names a real, different customer, and refuses it outright if this
+  // customer already has a referrer — the first link wins, always.
+  const referrer = referrerFromPayload(message.text!.trim().split(/\s+/)[1]);
+  const claimed =
+    referrer === null ? false : await claimReferrer(tx, user.id, referrer);
+
   return {
     status: 'processed',
-    replies: [reply(message.chat.id, menu.WELCOME, menu.mainMenu(user.is_reseller))],
+    replies: [
+      reply(
+        message.chat.id,
+        claimed ? `${menu.REFERRAL_WELCOME}\n\n${menu.WELCOME}` : menu.WELCOME,
+        menu.mainMenu(user.is_reseller),
+      ),
+    ],
   };
 }
 
@@ -300,6 +325,7 @@ async function handleTypedAnswer(
   if (session.step === 'code') return handleDiscountCode(tx, message, user, session);
   if (session.step === 'coder') return handleRenewalCode(tx, message, user, session);
   if (session.step === 'gift') return handleGiftCode(tx, message, user);
+  if (session.step === 'agent') return handleResellerRequest(tx, message, user);
   return IGNORED;
 }
 
@@ -554,6 +580,33 @@ async function heldRenewalName(
   return typeof typed === 'string' ? typed : null;
 }
 
+/** The text of a reseller application. */
+async function handleResellerRequest(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+): Promise<HandleOutcome> {
+  const said = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, keyboard }],
+  });
+  const result = await applyForReseller(tx, user.id, user.is_reseller, message.text!);
+  if (result === 'EMPTY') {
+    // The question stays open — they can simply type again.
+    return said(menu.RESELLER_REQUEST_EMPTY, [
+      [{ text: menu.BACK_TO_MENU_LABEL, callback_data: encode('menu') }],
+    ]);
+  }
+  await clearSession(tx, user.id);
+  const answer =
+    result === 'FILED'
+      ? menu.RESELLER_REQUEST_FILED
+      : result === 'ALREADY_PENDING'
+        ? menu.RESELLER_REQUEST_OPEN
+        : menu.ALREADY_RESELLER;
+  return said(answer, menu.mainMenu(user.is_reseller));
+}
+
 /** A gift code typed at the wallet. The credit itself is `redeemGift`. */
 async function handleGiftCode(
   tx: D1DatabaseSession,
@@ -726,6 +779,73 @@ async function handleCallback(
       await ask(tx, user.id, 'gift', {});
       return screen(menu.ASK_GIFT_CODE, [
         [{ text: 'بازگشت ⬅️', callback_data: encode('wal') }],
+      ]);
+    }
+
+    case 'sup': {
+      // The handle is the admin's own setting, not a constant in our source —
+      // production runs `statussupportpv = onpvsupport` with `id_support` set,
+      // and both can change without a deploy.
+      const handle = (await settingIs(tx, 'bot', 'statussupportpv', 'onpvsupport'))
+        ? await settingText(tx, 'bot', 'id_support')
+        : null;
+      return screen(
+        handle === null ? menu.SUPPORT_UNAVAILABLE : menu.supportScreen(handle),
+        menu.mainMenu(user.is_reseller),
+      );
+    }
+
+    case 'hlp': {
+      if (action.id !== undefined) {
+        const article = await helpArticle(tx, action.id);
+        if (!article) return screen(menu.HELP_EMPTY, menu.mainMenu(user.is_reseller));
+        return screen(
+          menu.helpArticleScreen(article.title, article.body),
+          menu.helpMenu([], (await clientApps(tx)).length > 0),
+        );
+      }
+      const articles = await helpArticles(tx);
+      const apps = await clientApps(tx);
+      if (articles.length === 0 && apps.length === 0) {
+        return screen(menu.HELP_EMPTY, menu.mainMenu(user.is_reseller));
+      }
+      return screen(menu.CHOOSE_HELP, menu.helpMenu(articles, apps.length > 0));
+    }
+
+    case 'app': {
+      const apps = await clientApps(tx);
+      if (apps.length === 0) return screen(menu.APPS_EMPTY, menu.mainMenu(user.is_reseller));
+      return screen(menu.appsScreen(apps), menu.helpMenu([], false));
+    }
+
+    case 'ref': {
+      const username = await settingText(tx, 'bot', 'username');
+      if (username === null) {
+        // Nothing here is worth showing without a link that works.
+        return screen(menu.SOON, menu.mainMenu(user.is_reseller));
+      }
+      const summary = await referralSummary(tx, user.id);
+      return screen(
+        menu.referralScreen(
+          referralLink(username, user.id),
+          summary.invited,
+          summary.earnedIrr,
+          COMMISSION_PERCENT,
+        ),
+        menu.referralMenu(),
+      );
+    }
+
+    case 'agr': {
+      // Both answers before the question: a reseller has nothing to apply for,
+      // and somebody already waiting does not need to write it out twice.
+      if (user.is_reseller) return screen(menu.ALREADY_RESELLER, menu.mainMenu(true));
+      if (await hasOpenRequest(tx, user.id)) {
+        return screen(menu.RESELLER_REQUEST_OPEN, menu.mainMenu(false));
+      }
+      await ask(tx, user.id, 'agent', {});
+      return screen(menu.ASK_RESELLER_REQUEST, [
+        [{ text: menu.BACK_TO_MENU_LABEL, callback_data: encode('menu') }],
       ]);
     }
 
@@ -1068,6 +1188,10 @@ async function handleCallback(
         )
         .bind(order.id)
         .run();
+      // Paying from the balance is a purchase like any other, so it earns the
+      // referrer the same commission a card-to-card payment does. Both paths
+      // call the same function, which is what stops the two disagreeing.
+      await payReferralCommission(tx, order.id);
       await tx
         .prepare(
           `INSERT INTO payments

@@ -62,6 +62,11 @@ export const CALLBACK_ACTIONS = [
   //        chosen yet and the code is held against the SERVICE
   'dxr', // <subscriptionId> — take it back off the renewal
   'gft', // ask for a gift code to credit the wallet
+  'agr', // ask for a reseller application
+  'sup', // how to reach support
+  'ref', // the customer's referral link and what it has earned
+  'hlp', // [articleId] — the education list, or one article
+  'app', // the client apps and their links
   'soon', // a menu entry that has no implementation yet
 ] as const;
 

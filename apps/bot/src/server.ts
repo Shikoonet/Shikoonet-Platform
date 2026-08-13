@@ -35,6 +35,27 @@ export function start(): { stop: () => Promise<void> } {
     baseUrl: process.env.TELEGRAM_API_BASE ?? TELEGRAM_API_BASE,
   });
 
+  // The bot's own username, learned rather than configured, so the referral
+  // links it hands out cannot point at a different bot. A failure here is not
+  // fatal: everything except that one screen works without it.
+  void api
+    .getMe()
+    .then(async ({ username }) => {
+      if (username === null) return;
+      await db
+        .prepare(
+          `INSERT INTO settings (scope, key, value, updated_at, updated_by)
+           VALUES ('bot', 'username', to_jsonb(?1::text), now(), 'bot')
+           ON CONFLICT (scope, key) DO UPDATE
+             SET value = EXCLUDED.value, updated_at = now(), updated_by = 'bot'`,
+        )
+        .bind(username)
+        .run();
+    })
+    .catch((err: unknown) => {
+      console.error('[bot] could not read our own username', err);
+    });
+
   const controller = new AbortController();
   const finished = run(db, api, {
     timeoutSec: positiveInt('TELEGRAM_POLL_TIMEOUT_SEC', 25),

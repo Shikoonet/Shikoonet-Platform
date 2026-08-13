@@ -15,6 +15,7 @@
 
 import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
+import { payReferralCommission } from './referral.js';
 import { creditTopup } from './wallet.js';
 
 export interface Notification {
@@ -108,6 +109,12 @@ export async function settleVerifiedPayments(db: D1Database): Promise<Notificati
           }
           await creditTopup(tx, row.order_user_id, row.order_id, row.order_total_irr);
           credited = row.order_total_irr;
+        }
+        if (moved.meta.changes === 1 && !isTopup) {
+          // Whoever brought this customer is paid here, in the same transaction
+          // that made the order real — not in a sweep that could run against an
+          // order that later turned out not to be paid at all.
+          await payReferralCommission(tx, row.order_id);
         }
         if (moved.meta.changes === 0) {
           // Somebody paid for an order that is no longer waiting to be paid —

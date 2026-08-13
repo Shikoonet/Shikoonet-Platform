@@ -28,6 +28,7 @@ function startUpdate(updateId: number, telegramId: number, text = '/start'): Tel
  */
 function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
   return {
+    getMe: async () => ({ username: 'Test_Shikoo_bot' }),
     getUpdates: async () => [],
     sendMessage: async () => undefined,
     editMessageText: async () => undefined,

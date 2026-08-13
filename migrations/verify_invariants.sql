@@ -259,6 +259,28 @@ SELECT assert_rejects($$
                '__inv-stock-a', 'https://example.invalid/sub/again')
 $$, 'the same panel account cannot be shelved twice');
 
+-- ---------------------------------------------------------------------------
+-- reseller applications — one open at a time, per person (0012)
+-- ---------------------------------------------------------------------------
+
+INSERT INTO reseller_requests (user_id, description, status, created_at)
+     VALUES ((SELECT id FROM users WHERE telegram_id = 900000001), 'first', 'PENDING', now());
+
+SELECT assert_rejects($$
+  INSERT INTO reseller_requests (user_id, description, status, created_at)
+       VALUES ((SELECT id FROM users WHERE telegram_id = 900000001), 'again', 'PENDING', now())
+$$, 'one person cannot have two open reseller applications');
+
+-- And the deliberate opening: a turned-down application does not block a new one.
+UPDATE reseller_requests SET status = 'REJECTED'
+ WHERE user_id = (SELECT id FROM users WHERE telegram_id = 900000001);
+INSERT INTO reseller_requests (user_id, description, status, created_at)
+     VALUES ((SELECT id FROM users WHERE telegram_id = 900000001), 'after a no', 'PENDING', now());
+SELECT assert_eq(
+  (SELECT count(*) FROM reseller_requests
+    WHERE user_id = (SELECT id FROM users WHERE telegram_id = 900000001)),
+  2, 'a rejected applicant may apply again');
+
 \echo ''
 \echo '  All invariants hold.'
 \echo ''

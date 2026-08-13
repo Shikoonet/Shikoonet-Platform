@@ -48,6 +48,8 @@ export const PLAN_GONE = 'این سرویس در دسترس شما نیست. ل�
 export const NOT_REGISTERED = 'برای شروع لطفاً /start را بزنید.';
 
 const BACK_TO_MENU = 'بازگشت به منو ⬅️';
+/** For the few screens handle.ts builds a one-button keyboard for itself. */
+export const BACK_TO_MENU_LABEL = BACK_TO_MENU;
 
 export function mainMenu(isReseller: boolean): InlineKeyboard {
   const keyboard: InlineKeyboard = [
@@ -60,15 +62,15 @@ export function mainMenu(isReseller: boolean): InlineKeyboard {
       { text: '🛍 سرویس های من', callback_data: encode('mine') },
     ],
     [
-      { text: '☎️ پشتیبانی', callback_data: encode('soon') },
-      { text: '📚 آموزش', callback_data: encode('soon') },
-      { text: '👥 زیر مجموعه گیری', callback_data: encode('soon') },
+      { text: '☎️ پشتیبانی', callback_data: encode('sup') },
+      { text: '📚 آموزش', callback_data: encode('hlp') },
+      { text: '👥 زیر مجموعه گیری', callback_data: encode('ref') },
     ],
   ];
   // Production appends this only for non-resellers, and only while
   // `setting.statusagentrequest` is on — which it is.
   if (!isReseller) {
-    keyboard.push([{ text: '👨‍💻 درخواست نمایندگی', callback_data: encode('soon') }]);
+    keyboard.push([{ text: '👨‍💻 درخواست نمایندگی', callback_data: encode('agr') }]);
   }
   return keyboard;
 }
@@ -170,6 +172,130 @@ export const ASK_DISCOUNT_CODE = [
 ].join('\n');
 
 export const ASK_GIFT_CODE = '🎁 کد هدیه را بفرستید.';
+
+/**
+ * The reseller application.
+ *
+ * The legacy text asks for a description and nothing else, so this does too —
+ * a form with fields nobody reads is worse than one free-text box the admin
+ * actually looks at.
+ */
+export const ASK_RESELLER_REQUEST = [
+  '👨‍💻 درخواست نمایندگی',
+  '',
+  'در یک پیام بنویسید چه می‌فروشید، چند مشتری دارید، و چرا نمایندگی می‌خواهید.',
+  'همین پیام برای ادمین فرستاده می‌شود.',
+].join('\n');
+
+export const RESELLER_REQUEST_FILED = [
+  '✅ درخواست شما ثبت شد.',
+  '',
+  'بعد از بررسی، نتیجه همین‌جا به شما اطلاع داده می‌شود.',
+].join('\n');
+
+export const RESELLER_REQUEST_OPEN =
+  '🕓 درخواست شما ثبت شده و در حال بررسی است. تا اعلام نتیجه، درخواست تازه لازم نیست.';
+
+export const ALREADY_RESELLER = '✅ شما از قبل نماینده هستید.';
+
+export const RESELLER_REQUEST_EMPTY = 'لطفاً توضیح‌تان را در یک پیام متنی بفرستید.';
+
+/**
+ * Support.
+ *
+ * Production runs `statussupportpv = 'onpvsupport'` with `id_support` set, which
+ * means support on the live bot is "message this person", not a ticket system.
+ * The ticket tables exist and hold seven messages from before that switch; they
+ * stay unread until an admin asks for them back.
+ *
+ * The handle is written as plain text on purpose. Messages carry no
+ * `parse_mode`, and Telegram turns `@name` into a link by itself — so this
+ * needs no markup and cannot be broken by a handle with an underscore in it.
+ */
+export function supportScreen(handle: string): string {
+  return [
+    '☎️ پشتیبانی',
+    '',
+    `برای گفتگو با پشتیبانی به @${handle} پیام بدهید.`,
+    '',
+    '🔖 اگر دربارهٔ یک سفارش است، شمارهٔ سفارش را هم بفرستید.',
+  ].join('\n');
+}
+
+export const SUPPORT_UNAVAILABLE =
+  'راه ارتباط با پشتیبانی هنوز تنظیم نشده است. کمی بعد دوباره امتحان کنید.';
+
+export const HELP_EMPTY = 'هنوز مطلب آموزشی ثبت نشده است.';
+
+export const CHOOSE_HELP = '📚 آموزش — یک مورد را انتخاب کنید.';
+
+export function helpMenu(
+  articles: { id: number; title: string }[],
+  hasApps: boolean,
+): InlineKeyboard {
+  const keyboard: InlineKeyboard = articles.map((a) => [
+    { text: shortName(a.title), callback_data: encode('hlp', a.id) },
+  ]);
+  if (hasApps) keyboard.push([{ text: '📱 برنامه‌ها', callback_data: encode('app') }]);
+  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
+  return keyboard;
+}
+
+export function helpArticleScreen(title: string, body: string): string {
+  return body.trim() === '' ? `📚 ${title}` : `📚 ${title}\n\n${body}`;
+}
+
+export const APPS_EMPTY = 'هنوز برنامه‌ای ثبت نشده است.';
+
+export const REFERRAL_WELCOME = '👥 شما با لینک دعوت یکی از کاربران وارد شدید.';
+
+/**
+ * The referral screen.
+ *
+ * The percentage and the "first purchase" limit are stated because they are the
+ * whole deal: production pays ten percent of a referred customer's FIRST
+ * purchase and nothing after it, and a screen that said "commission on your
+ * friends' purchases" would be selling something that does not exist.
+ */
+export function referralScreen(
+  link: string,
+  invited: number,
+  earnedIrr: number,
+  percent: number,
+): string {
+  return [
+    '👥 زیرمجموعه‌گیری',
+    '',
+    // No parse_mode anywhere in this bot, so emphasis is quotation marks.
+    `هر کسی با لینک شما وارد شود، از «اولین خرید» او ${percent}٪ به کیف پول شما اضافه می‌شود.`,
+    '',
+    `👤 دعوت‌شده‌ها: ${invited.toLocaleString('en-US')}`,
+    `💰 درآمد تا امروز: ${formatToman(earnedIrr)}`,
+    '',
+    '🔗 لینک دعوت شما:',
+    link,
+  ].join('\n');
+}
+
+export function referralMenu(): InlineKeyboard {
+  return [[{ text: BACK_TO_MENU, callback_data: encode('menu') }]];
+}
+
+/**
+ * The apps, as a list of links in one message.
+ *
+ * Not buttons: a `callback_data` button cannot open a link, and the URL button
+ * Telegram does have would need the whole keyboard type widened for eight rows
+ * of text that read perfectly well as text.
+ */
+export function appsScreen(apps: { name: string; platform: string | null; link: string }[]): string {
+  const lines = ['📱 برنامه‌های پیشنهادی', ''];
+  for (const app of apps) {
+    lines.push(app.platform ? `• ${app.name} — ${app.platform}` : `• ${app.name}`);
+    lines.push(app.link, '');
+  }
+  return lines.join('\n').trimEnd();
+}
 
 /**
  * A code accepted before a plan is chosen.

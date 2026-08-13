@@ -327,9 +327,91 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
     plans++;
   }
 
+  await seedContent(db);
+
   return {
     providers: PROVIDERS.length,
     products: PRODUCTS.length,
     plans,
   };
+}
+
+/**
+ * The settings and content the menu's quieter corners read.
+ *
+ * Without these three the support, education and referral screens all render
+ * their "not set up yet" branch in the simulation, and a screen that can only
+ * be seen empty is a screen nobody has looked at. The values are shaped like
+ * production's — `onpvsupport` with a handle, four articles, a few apps — but
+ * the handle is a fixture, not the real admin's.
+ */
+const HELP_ARTICLES = [
+  {
+    title: 'اتصال در اندروید',
+    body: 'برنامه v2rayNG را نصب کنید، لینک اشتراک را از «سرویس‌های من» کپی کنید و در برنامه Import کنید.',
+  },
+  {
+    title: 'اتصال در آیفون',
+    body: 'برنامه Streisand را نصب کنید و لینک اشتراک را در آن وارد کنید.',
+  },
+  {
+    title: 'سرویس وصل نمی‌شود',
+    body: 'اول از «سرویس‌های من» ببینید حجم یا زمان تمام نشده باشد. اگر باقی است، لینک اشتراک را یک بار به‌روزرسانی کنید.',
+  },
+];
+
+const CLIENT_APPS = [
+  { name: 'v2rayNG', platform: 'Android', link: 'https://github.com/2dust/v2rayNG/releases' },
+  { name: 'Streisand', platform: 'iOS', link: 'https://apps.apple.com/app/streisand/id6450534064' },
+  { name: 'v2rayN', platform: 'Windows', link: 'https://github.com/2dust/v2rayN/releases' },
+];
+
+async function seedContent(db: D1Database): Promise<void> {
+  for (const [scope, key, value] of [
+    ['bot', 'statussupportpv', 'onpvsupport'],
+    ['bot', 'id_support', 'shikoo_sim_support'],
+    ['bot', 'username', 'Test_Shikoo_bot'],
+  ] as const) {
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value, updated_at, updated_by)
+         VALUES (?1, ?2, to_jsonb(?3::text), now(), 'seed')
+         ON CONFLICT (scope, key) DO UPDATE
+           SET value = EXCLUDED.value, updated_at = now(), updated_by = 'seed'`,
+      )
+      .bind(scope, key, value)
+      .run();
+  }
+
+  // Neither table has a natural key in the schema, so the title and the name
+  // are what make a re-run a no-op rather than a fourth copy of every article.
+  for (const [i, article] of HELP_ARTICLES.entries()) {
+    const existing = await db
+      .prepare(`SELECT id FROM help_articles WHERE title = ?1`)
+      .bind(article.title)
+      .first<{ id: number }>();
+    if (existing) continue;
+    await db
+      .prepare(
+        `INSERT INTO help_articles (title, body, category, sort_order, active)
+         VALUES (?1, ?2, 'آموزش', ?3, true)`,
+      )
+      .bind(article.title, article.body, i)
+      .run();
+  }
+
+  for (const [i, app] of CLIENT_APPS.entries()) {
+    const existing = await db
+      .prepare(`SELECT id FROM client_apps WHERE name = ?1`)
+      .bind(app.name)
+      .first<{ id: number }>();
+    if (existing) continue;
+    await db
+      .prepare(
+        `INSERT INTO client_apps (name, platform, link, sort_order, active)
+         VALUES (?1, ?2, ?3, ?4, true)`,
+      )
+      .bind(app.name, app.platform, app.link, i)
+      .run();
+  }
 }
