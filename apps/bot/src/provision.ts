@@ -33,6 +33,7 @@ import {
 } from '@shikoo/domain';
 import * as menu from './menu.js';
 import type { Notification } from './settle.js';
+import { deliverFromStock } from './stock.js';
 import { refundOrder } from './wallet.js';
 
 /**
@@ -239,6 +240,11 @@ async function deliver(
 
   if (!result.ok) {
     if (result.retryable) {
+      // Retrying forever is only acceptable while the panel might come back
+      // soon. Past that, the shelf finishes the order — see `stock.ts` for why
+      // it waits first and why a renewal may not use it.
+      const fromStock = await deliverFromStock(db, row, now);
+      if (fromStock !== null) return fromStock;
       // Back to PAID so the next pass tries again. The customer is told nothing
       // yet — a panel that is briefly down is not news, and saying "there was a
       // problem" only to succeed a minute later is worse than silence.

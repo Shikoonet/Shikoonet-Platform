@@ -217,6 +217,37 @@ SELECT assert_rejects($$
                (SELECT id FROM users WHERE telegram_id = 900000001))
 $$, 'the same gift code cannot be redeemed twice by one user');
 
+-- ==========================================================================
+-- 7. THE CONFIG SHELF — one config to one order, and only once
+-- ==========================================================================
+INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url)
+     VALUES ((SELECT id FROM product_plans ORDER BY id LIMIT 1),
+             (SELECT id FROM provisioning_providers ORDER BY id LIMIT 1),
+             '__inv-stock-a', 'https://example.invalid/sub/a');
+INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url)
+     VALUES ((SELECT id FROM product_plans ORDER BY id LIMIT 1),
+             (SELECT id FROM provisioning_providers ORDER BY id LIMIT 1),
+             '__inv-stock-b', 'https://example.invalid/sub/b');
+
+UPDATE provisioning_stock SET status = 'USED', order_id = (SELECT id FROM orders WHERE public_id = '__inv-ok-1')
+ WHERE remote_username = '__inv-stock-a';
+
+SELECT assert_rejects($$
+  UPDATE provisioning_stock SET status = 'USED', order_id = (SELECT id FROM orders WHERE public_id = '__inv-ok-1')
+   WHERE remote_username = '__inv-stock-b'
+$$, 'one order cannot take a second config from the shelf');
+
+SELECT assert_rejects($$
+  UPDATE provisioning_stock SET status = 'USED' WHERE remote_username = '__inv-stock-b'
+$$, 'a config cannot be marked sold without naming the order that took it');
+
+SELECT assert_rejects($$
+  INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url)
+       VALUES ((SELECT id FROM product_plans ORDER BY id LIMIT 1),
+               (SELECT id FROM provisioning_providers ORDER BY id LIMIT 1),
+               '__inv-stock-a', 'https://example.invalid/sub/again')
+$$, 'the same panel account cannot be shelved twice');
+
 \echo ''
 \echo '  All invariants hold.'
 \echo ''
