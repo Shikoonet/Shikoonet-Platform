@@ -69,6 +69,27 @@ export interface OwnedSubscription {
   purchased_at: string;
 }
 
+/**
+ * Whether a service is still usable — the SQL half of `menu.serviceState`.
+ *
+ * It exists because `status` alone is the wrong thing to sort on, and looking
+ * at the real screen is what showed it: three services, all `status = 'ACTIVE'`,
+ * one of them four days past its date, and the expired one sat at the top of
+ * the customer's list. Sorting on `status` had looked right in a test, because
+ * that test used a DISABLED row — the one case where `status` does move.
+ *
+ * The predicate is duplicated, not shared, because one side is SQL and the
+ * other is TypeScript. If one changes the other must: the glyph beside a row
+ * and the position of that row have to agree, or the list reads as sorted by
+ * nothing.
+ */
+const USABLE = `(
+  status = 'ACTIVE'
+  AND (expires_at IS NULL OR expires_at > now())
+  AND (volume_gb IS NULL OR volume_gb <= 0 OR used_bytes IS NULL
+       OR used_bytes < volume_gb * 1073741824)
+)`;
+
 const SUBSCRIPTION_COLUMNS = `
   id, public_id, status, plan_name_at_sale, provider_name_at_sale,
   remote_username, subscription_url, volume_gb, used_bytes,
@@ -99,7 +120,7 @@ export async function subscriptionsForUser(
       `SELECT ${SUBSCRIPTION_COLUMNS}
          FROM subscriptions
         WHERE user_id = ?1 AND status <> 'PENDING_PAYMENT'
-        ORDER BY (status = 'ACTIVE') DESC, purchased_at DESC, id DESC
+        ORDER BY ${USABLE} DESC, purchased_at DESC, id DESC
         LIMIT ?2 OFFSET ?3`,
     )
     .bind(userId, limit, offset)

@@ -341,7 +341,7 @@ async function handleCallback(
         return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
       }
       return screen(
-        menu.renewIntro(service, renewModeFor(service.provider_config ?? {}) === 'ADD'),
+        menu.renewIntro(service, renewModeFor(service.provider_config ?? {}), Date.now()),
         menu.renewPlanMenu(service.id, plans, user.discount_percent),
       );
     }

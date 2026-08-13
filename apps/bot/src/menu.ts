@@ -509,6 +509,11 @@ export function serviceDetail(service: ServiceView, now: number): string {
     // Provisioned by a person, or a row migrated from the old bot that the sync
     // has not reached yet. Saying so beats an empty space where a link goes.
     lines.push('', 'لینک این سرویس هنوز در دسترس نیست. لطفاً به پشتیبانی پیام دهید.');
+  } else if (state === 'EXPIRED' || state === 'EXHAUSTED') {
+    // Seen on the real screen: a dead service showed its status, withheld its
+    // link, and then said nothing at all — leaving the customer on a screen
+    // with no way forward. This is the one thing they can do about it.
+    lines.push('', 'برای استفادهٔ دوباره، از دکمهٔ «♻️ تمدید سرویس» در منوی اصلی اقدام کنید.');
   }
   return lines.join('\n');
 }
@@ -589,7 +594,8 @@ export function renewMenu(
  */
 export function renewIntro(
   service: { plan_name_at_sale: string; public_id: string; expires_at: string | null },
-  addsToWhatIsLeft: boolean,
+  mode: 'ADD' | 'RESET',
+  now: number,
 ): string {
   const lines = [
     `♻️ تمدید سرویس`,
@@ -600,11 +606,19 @@ export function renewIntro(
   if (service.expires_at !== null) {
     lines.push(`📅 اعتبار فعلی تا: ${formatTehranDate(new Date(service.expires_at))}`);
   }
+  // An ADD panel adds to whatever is left — but only if anything IS left. Seen
+  // on the real screen: a service four days past its date, on an ADD panel,
+  // promising the customer their remaining time would be kept. There was none.
+  // The adapter already anchors at today in that case; this is the sentence
+  // catching up with what it does.
+  const somethingLeft = service.expires_at !== null && Date.parse(service.expires_at) > now;
   lines.push(
     '',
-    addsToWhatIsLeft
+    mode === 'ADD' && somethingLeft
       ? 'زمان و حجم پلنی که انتخاب می‌کنید به باقی‌ماندهٔ فعلی اضافه می‌شود.'
-      : 'با تمدید، زمان و حجم از نو شروع می‌شود و مصرف قبلی صفر می‌گردد.',
+      : mode === 'ADD'
+        ? 'اعتبار این سرویس تمام شده، پس زمان پلن جدید از امروز حساب می‌شود.'
+        : 'با تمدید، زمان و حجم از نو شروع می‌شود و مصرف قبلی صفر می‌گردد.',
     '',
     '🛍 پلن تمدید را انتخاب کنید:',
   );

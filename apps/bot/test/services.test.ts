@@ -130,6 +130,56 @@ describe('the list', () => {
     expect(buttons.map((b) => b.callback_data)).toContain(`sub:${subId}`);
   });
 
+  it('puts a service whose date has passed below a live one', async () => {
+    // Found by opening the real screen, not by this suite: three services, all
+    // `status = 'ACTIVE'`, and the one four days expired sat at the top. The
+    // test below passed the whole time because it used a DISABLED row — the
+    // one case where `status` actually moves.
+    const { updateId, telegramId } = ids();
+    const userId = await customer(telegramId);
+    await makeService(userId, {
+      publicId: `svc-${telegramId}-past`,
+      planName: 'سرویس-گذشته',
+      expiresInDays: -4,
+      purchasedAtMs: NOW_MS - DAY,
+    });
+    await makeService(userId, {
+      publicId: `svc-${telegramId}-now`,
+      planName: 'سرویس-جاری',
+      expiresInDays: 10,
+      purchasedAtMs: NOW_MS - 30 * DAY,
+    });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'mine'));
+
+    expect(out.replies[0]?.keyboard?.[0]?.[0]?.text).toContain('سرویس-جاری');
+  });
+
+  it('puts a service with no volume left below a live one', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await customer(telegramId);
+    await makeService(userId, {
+      publicId: `svc-${telegramId}-drained`,
+      planName: 'سرویس-خالی',
+      volumeGb: 10,
+      usedBytes: 10 * GIB,
+      expiresInDays: 20,
+      purchasedAtMs: NOW_MS - DAY,
+    });
+    await makeService(userId, {
+      publicId: `svc-${telegramId}-full`,
+      planName: 'سرویس-پر',
+      volumeGb: 10,
+      usedBytes: GIB,
+      expiresInDays: 20,
+      purchasedAtMs: NOW_MS - 30 * DAY,
+    });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'mine'));
+
+    expect(out.replies[0]?.keyboard?.[0]?.[0]?.text).toContain('سرویس-پر');
+  });
+
   it('puts live services above dead ones', async () => {
     const { updateId, telegramId } = ids();
     const userId = await customer(telegramId);
@@ -276,6 +326,9 @@ describe('one service', () => {
 
     expect(text).toContain('تاریخ انقضا گذشته');
     expect(text).not.toContain('EXPIRED_ONE');
+    // And does not leave them on a dead end. Seen on the real screen: status,
+    // no link, and nothing at all about what to do next.
+    expect(text).toContain('تمدید سرویس');
   });
 
   it('withholds the link once the volume is gone', async () => {

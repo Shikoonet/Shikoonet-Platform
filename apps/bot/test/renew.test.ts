@@ -268,6 +268,48 @@ describe('choosing what to renew', () => {
     }
   });
 
+  it('does not promise to keep remaining time a service no longer has', async () => {
+    // Seen on the real screen: an expired service on an ADD panel telling the
+    // customer their plan would be added to "the current remainder". There was
+    // none. The adapter already anchors at today in that case — this is the
+    // sentence agreeing with it.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await setPanelConfig(panelId, {
+      Methodextend: 'اضافه شدن زمان و حجم به ماه بعد',
+      status_extend: 'on_extend',
+    });
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-gone`,
+      username: `u_${telegramId}`,
+      expiresInDays: -4,
+    });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
+    const text = out.replies[0]?.text ?? '';
+
+    expect(text).not.toContain('باقی‌ماندهٔ فعلی');
+    expect(text).toContain('از امروز');
+  });
+
+  it('does promise to keep it while there is some', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await setPanelConfig(panelId, {
+      Methodextend: 'اضافه شدن زمان و حجم به ماه بعد',
+      status_extend: 'on_extend',
+    });
+    const subId = await makeService(userId, panelId, {
+      publicId: `ren-${telegramId}-left`,
+      username: `u_${telegramId}`,
+      expiresInDays: 6,
+    });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `rnw:${subId}`));
+
+    expect(out.replies[0]?.text).toContain('باقی‌ماندهٔ فعلی');
+  });
+
   it('honours a panel the admin switched renewal off for', async () => {
     // `status_extend = off_extend` on one live panel. Ignoring it would be the
     // new bot quietly overriding the admin's own setting.

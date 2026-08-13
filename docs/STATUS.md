@@ -12,7 +12,7 @@
 |                       |                                                                                                                |
 | --------------------- | -------------------------------------------------------------------------------------------------------------- |
 | فازها                 | ۱ پایه ✅ · ۲ دیتا ✅ · ۳ انتقال Hub ✅ · **۴ ربات جدید — خرید، تحویل، سرویس‌های من، تمدید** · ۵ بازنشستگی PHP |
-| تست‌ها                | **۱۱۳۵ سبز، صفر skip** (۲۰۲۶-۰۸-۱۳)                                                                            |
+| تست‌ها                | **۱۱۳۹ سبز، صفر skip** (۲۰۲۶-۰۸-۱۳)                                                                            |
 | تضمین‌های دیتابیس     | **۱۹/۱۹** — روی دیتابیس خالی و روی دیتای کامل پروداکشن                                                         |
 | مهاجرت دیتا           | اختلاف **صفر ریال**، ۲.۱ ثانیه، قابل تکرار                                                                     |
 | وابستگی Cloudflare    | Workers و D1: **صفر**. Tunnel و Access عمداً می‌مانند — تصمیم ۲۰۲۶-۰۸-۱۲                                       |
@@ -27,7 +27,7 @@ packages/database         ۳۰۹ خط     شکل ردیف‌ها + ثابت‌ه
 packages/db               ۵۵۱ خط      ۴۲ تست   آداپتور Postgres ← این درزِ کل مهاجرت است
 packages/migrate        ۲٬۱۳۸ خط      ۳۴ تست   MySQL + D1 → Postgres
 packages/seed         ۱٬۰۰۷ خط     دیتای قطعی برای تست + کاتالوگ فروشگاه
-apps/bot                ۳٬۵۷۴ خط     ۱۹۶ تست   long polling، خرید، تحویل، سرویس‌های من، تمدید
+apps/bot                ۳٬۵۸۰ خط     ۲۰۰ تست   long polling، خرید، تحویل، سرویس‌های من، تمدید
 apps/ingest-worker      ۱٬۸۸۷ خط      ۸۲ تست   تنها سطح عمومی: POST /api/v1/sms
 apps/dashboard-worker   ۷٬۶۶۹ خط     ۲۳۹ تست   ۸۷ روت، پشت Cloudflare Access
 apps/dashboard-web     ۱۵٬۲۴۵ خط     ۲۱۲ تست   SPA ری‌اکت
@@ -45,7 +45,7 @@ for f in migrations/0*.sql; do              # اسکیما را بساز
   docker exec -i shikoo-sim-postgres-1 psql -U shikoo -d shikoo -v ON_ERROR_STOP=1 -q < "$f"
 done
 
-pnpm typecheck && pnpm lint && pnpm test      # ۱٬۱۳۵ تست
+pnpm typecheck && pnpm lint && pnpm test      # ۱٬۱۳۹ تست
 
 # دیتای شبیه‌سازی (پاک می‌کند و از نو می‌سازد — فقط روی دیتابیس محلی اجرا می‌شود)
 pnpm --filter @shikoo/seed seed:sim
