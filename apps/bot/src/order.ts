@@ -93,13 +93,57 @@ export async function placeTopupOrder(
   );
 }
 
+/**
+ * Extra gigabytes or extra days on a service the customer already has.
+ *
+ * `quantity` is the thing bought — gigabytes or days — and `unit_price_irr` is
+ * the panel's rate for one of them, so the schema's arithmetic check is what
+ * verifies the total rather than this function claiming it. The plan is NULL:
+ * an add-on is not a plan and must never look like one to the sweep, which
+ * would otherwise try to provision a whole new account for it.
+ *
+ * The standing discount applies. Unlike a deposit, this IS merchandise.
+ */
+export async function placeAddonOrder(
+  tx: D1DatabaseSession,
+  userId: number,
+  subscriptionId: number,
+  kind: 'ADD_VOLUME' | 'ADD_TIME',
+  quantity: number,
+  unitPriceIrr: number,
+  discountPercent: number,
+): Promise<PlacedOrder> {
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+    throw new Error(`add-on quantity ${quantity} is not a usable amount`);
+  }
+  if (!Number.isSafeInteger(unitPriceIrr) || unitPriceIrr <= 0) {
+    throw new Error(`add-on unit price ${unitPriceIrr} is not a usable price`);
+  }
+  const gross = priceForUser(unitPriceIrr * quantity, discountPercent);
+  // The discount is taken off the total, so it is the unit price that must be
+  // restated for the check `total = unit x quantity - discount` to hold.
+  return place(
+    tx,
+    userId,
+    null,
+    { unitPriceIrr, discountIrr: unitPriceIrr * quantity - gross.totalIrr, totalIrr: gross.totalIrr },
+    kind,
+    subscriptionId,
+    quantity,
+  );
+}
+
 async function place(
   tx: D1DatabaseSession,
   userId: number,
   planId: number | null,
   price: Price,
-  kind: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP',
+  kind: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP' | 'ADD_VOLUME' | 'ADD_TIME',
   subscriptionId: number | null,
+  /** Gigabytes or days on an add-on; one of everything else. The schema's
+   *  `total = unit x quantity - discount` check is what keeps the three
+   *  honest, so the caller cannot quietly disagree with itself. */
+  quantity = 1,
 ): Promise<PlacedOrder> {
 
   // Same plan, same price, same target, still waiting to be paid. A price
@@ -118,11 +162,12 @@ async function place(
           AND total_irr = ?3
           AND kind = ?4
           AND target_subscription_id IS NOT DISTINCT FROM ?5
+          AND quantity = ?6
           AND status = 'AWAITING_PAYMENT'
         ORDER BY created_at DESC
         LIMIT 1`,
     )
-    .bind(userId, planId, price.totalIrr, kind, subscriptionId)
+    .bind(userId, planId, price.totalIrr, kind, subscriptionId, quantity)
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (open) {
     return { id: open.id, publicId: open.public_id, totalIrr: open.total_irr, reused: true };
@@ -133,7 +178,7 @@ async function place(
       `INSERT INTO orders
          (public_id, user_id, kind, plan_id, target_subscription_id, quantity,
           unit_price_irr, discount_irr, total_irr, status)
-       VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, 'AWAITING_PAYMENT')
+       VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8, 'AWAITING_PAYMENT')
        RETURNING id, public_id, total_irr`,
     )
     .bind(
@@ -145,6 +190,7 @@ async function place(
       price.unitPriceIrr,
       price.discountIrr,
       price.totalIrr,
+      quantity,
     )
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (!row) throw new Error('order insert returned no row');

@@ -91,6 +91,71 @@ export function renewAllowed(config: Record<string, unknown>): boolean {
 }
 
 /**
+ * What one extra gigabyte and one extra day cost on this panel, in IRR.
+ *
+ * The admin has been setting these for years, per panel and per customer tier,
+ * and they are already in `config` — the migration carried the whole legacy row
+ * across. Production, on the VIP panel: `{"f":"50000","n":"5000","n2":"5000"}`
+ * for volume, `{"f":"15000","n":"4000","n2":"4000"}` for time.
+ *
+ *   f    ordinary customer
+ *   n    reseller
+ *   n2   reseller, second tier
+ *
+ * Stored in TOMAN, like every other price in the old database, so it is
+ * multiplied here — this is the edge the toman rule talks about, and nothing
+ * downstream sees anything but IRR.
+ *
+ * The units come from the PHP and not from a reading of the field names:
+ * `index.php:2702` divides the paid amount by the rate to get days
+ * (`priceـper_day`), and `index.php:2116` multiplies the rate by gigabytes.
+ *
+ * Null means "not for sale here" — an unreadable value, a missing tier, zero,
+ * or a panel the admin set to `off_extend`. It is never a guess.
+ */
+export interface ExtraPricing {
+  volumeIrrPerGb: number | null;
+  timeIrrPerDay: number | null;
+}
+
+export type CustomerTier = 'f' | 'n' | 'n2';
+
+export function extraPricingFor(
+  config: Record<string, unknown>,
+  tier: CustomerTier,
+): ExtraPricing {
+  if (!renewAllowed(config)) return { volumeIrrPerGb: null, timeIrrPerDay: null };
+  return {
+    volumeIrrPerGb: tomanRate(config['priceextravolume'], tier),
+    timeIrrPerDay: tomanRate(config['priceextratime'], tier),
+  };
+}
+
+/** `{"f":"50000",…}` → 500000 IRR, or null for anything that is not a price. */
+function tomanRate(raw: unknown, tier: CustomerTier): number | null {
+  // The column is text in the legacy database and jsonb here, so both shapes
+  // arrive. A string that is not JSON is a setting nobody can act on, not a
+  // reason to fail a customer's screen.
+  let table: unknown = null;
+  if (typeof raw === 'string') {
+    try {
+      table = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  } else if (typeof raw === 'object' && raw !== null) {
+    table = raw;
+  }
+  if (table === null || typeof table !== 'object') return null;
+  const value = (table as Record<string, unknown>)[tier];
+  const toman = typeof value === 'number' ? value : Number(value);
+  // A rate of zero would make an add-on free and an unbounded one — the
+  // customer types the gigabytes, so zero times anything is a giveaway.
+  if (!Number.isFinite(toman) || toman <= 0) return null;
+  return Math.round(toman) * 10;
+}
+
+/**
  * The account name on the remote panel.
  *
  * Shaped like the ones already in production — `369469521_ce4c`,

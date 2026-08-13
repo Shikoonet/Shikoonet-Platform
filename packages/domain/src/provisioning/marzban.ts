@@ -417,7 +417,11 @@ export const marzbanAdapter: ProvisioningAdapter = {
         // already paid for. `time() - expire > 0 ? time() : expire` in the PHP.
         const current = expiryMs(found.user.expire);
         const anchor = current !== null && current > from ? current : from;
-        expiresAtMs = addedMs === null ? null : anchor + addedMs;
+        // Zero means "add nothing here", which is NOT what null means. Null is
+        // "no limit", and the two part company on an unmetered account: an
+        // extra-volume purchase adds no days, and `anchor + 0` would stamp
+        // today's date on a service that had no expiry at all — killing it.
+        expiresAtMs = addedMs === null ? null : addedMs === 0 ? current : anchor + addedMs;
         const currentQuota = quotaBytes(found.user.data_limit);
         // Adding to an unmetered account, or adding unmetered volume, leaves it
         // unmetered — anything else would put a cap on a service that had none.

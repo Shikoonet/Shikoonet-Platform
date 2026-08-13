@@ -52,6 +52,8 @@ export const CALLBACK_ACTIONS = [
   'rvk2', // <subscriptionId> — do it. Separate action rather than a flag: the
   //        old link stops working the moment this runs, on every device the
   //        customer has already imported it onto.
+  'xv', // <subscriptionId> — ask how many gigabytes to add
+  'xt', // <subscriptionId> — ask how many days to add
   'off', // <subscriptionId> — turn the account off at the panel
   'on', // <subscriptionId> — turn it back on
   'soon', // a menu entry that has no implementation yet

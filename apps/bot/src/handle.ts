@@ -22,20 +22,25 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { isAutomated, renewAllowed, renewModeFor } from '@shikoo/domain';
+import { extraPricingFor, isAutomated, renewAllowed, renewModeFor } from '@shikoo/domain';
 import { actOnService } from './actions.js';
 import { decode } from './callback.js';
 import { panelsForUser, plansOnPanel, purchasablePlan } from './catalog.js';
 import * as menu from './menu.js';
 import { priceForUser } from './money.js';
-import { newPublicId, placeOrder, placeRenewalOrder, placeTopupOrder } from './order.js';
+import {
+  newPublicId,
+  placeAddonOrder,
+  placeOrder,
+  placeRenewalOrder,
+  placeTopupOrder,
+} from './order.js';
 import {
   countRenewableForUser,
   countSubscriptionsForUser,
   orderForUser,
   renewableForUser,
   renewableForUserById,
-  subscriptionForUser,
   subscriptionOnPanelForUser,
   subscriptionsForUser,
   type OwnedSubscriptionOnPanel,
@@ -90,12 +95,33 @@ const IGNORED: HandleOutcome = { status: 'ignored', replies: [] };
  * panel never named — there is nothing to call in any of those, and a button
  * that cannot work is worse than no button.
  */
-function actionsFor(service: OwnedSubscriptionOnPanel): menu.ServiceActions | null {
+function actionsFor(
+  service: OwnedSubscriptionOnPanel,
+  tier: menu.CustomerTier = 'f',
+): menu.ServiceActions | null {
   if (!service.provider_kind || !service.provider_base_url || !service.remote_username) return null;
   if (!isAutomated(service.provider_kind)) return null;
   // REMOVED, FAILED, PENDING_PAYMENT: nothing to revoke and nothing to switch.
   if (service.status !== 'ACTIVE' && service.status !== 'DISABLED') return null;
-  return { id: service.id, disabled: service.status === 'DISABLED' };
+  const pricing = extraPricingFor(service.provider_config ?? {}, tier);
+  return {
+    id: service.id,
+    disabled: service.status === 'DISABLED',
+    volumeIrrPerGb: pricing.volumeIrrPerGb,
+    timeIrrPerDay: pricing.timeIrrPerDay,
+  };
+}
+
+/**
+ * Which price column this customer is charged from.
+ *
+ * The legacy `agent` field is three tiers and we carry one flag, so a reseller
+ * reads the reseller column and everybody else the ordinary one. `n2` exists in
+ * the data and is priced identically to `n` on every live panel, so nothing is
+ * lost by not having a third flag yet.
+ */
+function tierFor(user: Caller): menu.CustomerTier {
+  return user.is_reseller ? 'n' : 'f';
 }
 
 /** Built by hand rather than by object literal: `exactOptionalPropertyTypes`
@@ -144,7 +170,8 @@ export async function handleUpdate(
     if (command(message.text) === '/start') {
       return handleStart(tx, message);
     }
-    return IGNORED;
+    // The one flow that needs a typed answer: how many gigabytes, how many days.
+    return handleAddonAmount(tx, message);
   });
 }
 
@@ -214,6 +241,99 @@ async function handleStart(
     status: 'processed',
     replies: [reply(message.chat.id, menu.WELCOME, menu.mainMenu(user.is_reseller))],
   };
+}
+
+/** The largest add-on one purchase may be. */
+export const ADDON_MAX = 1000;
+
+/**
+ * A number typed in answer to «چند گیگابایت؟».
+ *
+ * Everything here is checked again from the database: which service, whose it
+ * is, and what the panel charges. The session carries the id, not the price —
+ * a session that carried a price would be a price the customer's own row could
+ * be made to disagree with.
+ */
+async function handleAddonAmount(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+): Promise<HandleOutcome> {
+  const from = message.from;
+  if (!from) return IGNORED;
+  const user = await tx
+    .prepare(
+      `SELECT id, status, is_reseller, discount_percent FROM users WHERE telegram_id = ?1`,
+    )
+    .bind(from.id)
+    .first<Caller>();
+  if (!user || user.status === 'BLOCKED') return IGNORED;
+
+  const session = await tx
+    .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
+    .bind(user.id)
+    .first<{ step: string | null; data: Record<string, unknown> | null }>();
+  const step = session?.step ?? '';
+  if (!step.startsWith('addon:')) return IGNORED;
+  const kind = step === 'addon:ADD_VOLUME' ? 'ADD_VOLUME' : 'ADD_TIME';
+  const subscriptionId = Number(session?.data?.['subscriptionId']);
+  if (!Number.isSafeInteger(subscriptionId)) return IGNORED;
+
+  const reply = (text: string, keyboard?: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, ...(keyboard ? { keyboard } : {}) }],
+  });
+
+  // Persian digits are what a Persian keyboard produces, so they are accepted
+  // and normalised rather than rejected as "not a number".
+  const typed = message.text!.trim().replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+  if (!/^[0-9]+$/.test(typed)) return reply(menu.ADDON_NOT_A_NUMBER);
+  const quantity = Number(typed);
+  if (quantity <= 0) return reply(menu.ADDON_NOT_A_NUMBER);
+  if (quantity > ADDON_MAX) return reply(menu.addonTooMuch(ADDON_MAX));
+
+  const service = await subscriptionOnPanelForUser(tx, user.id, subscriptionId);
+  if (!service) return reply(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+  const actions = actionsFor(service, tierFor(user));
+  const unit =
+    kind === 'ADD_VOLUME' ? (actions?.volumeIrrPerGb ?? null) : (actions?.timeIrrPerDay ?? null);
+  if (unit === null) return reply(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu());
+
+  const placed = await placeAddonOrder(
+    tx,
+    user.id,
+    service.id,
+    kind,
+    quantity,
+    unit,
+    user.discount_percent,
+  );
+  const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
+  if (!checkout) return reply(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
+  if (checkout.claimed) return reply(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+
+  // The step is cleared here and not before: a customer who typed something
+  // unusable is still in the flow and can simply type again.
+  await tx
+    .prepare(`UPDATE bot_sessions SET step = NULL, data = '{}'::jsonb, updated_at = now()
+               WHERE user_id = ?1`)
+    .bind(user.id)
+    .run();
+
+  return reply(
+    menu.addonCheckout(
+      placed.publicId,
+      kind,
+      quantity,
+      service.plan_name_at_sale,
+      placed.totalIrr,
+      checkout.cardDigits,
+      checkout.cardHolder,
+    ),
+    menu.checkoutMenu(placed.id, {
+      balanceIrr: await balanceFor(tx, user.id),
+      totalIrr: placed.totalIrr,
+    }),
+  );
 }
 
 async function handleCallback(
@@ -343,8 +463,35 @@ async function handleCallback(
       if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
       return screen(
         menu.serviceDetail(service, Date.now()),
-        menu.serviceDetailMenu(actionsFor(service)),
+        menu.serviceDetailMenu(actionsFor(service, tierFor(user))),
       );
+    }
+
+    case 'xv':
+    case 'xt': {
+      if (action.id === undefined) return IGNORED;
+      const service = await subscriptionOnPanelForUser(tx, user.id, action.id);
+      if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+      const actions = actionsFor(service, tierFor(user));
+      const kind = action.action === 'xv' ? 'ADD_VOLUME' : 'ADD_TIME';
+      const unit =
+        kind === 'ADD_VOLUME' ? (actions?.volumeIrrPerGb ?? null) : (actions?.timeIrrPerDay ?? null);
+      // The button is only drawn when there is a price, but the button is not
+      // what decides — a forged callback lands here too.
+      if (unit === null) return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu());
+      // The amount is typed, not tapped, so the flow has to survive the gap.
+      // `bot_sessions` is where that lives, and it is scoped to the user row —
+      // the service id in it was already checked for ownership just above.
+      await tx
+        .prepare(
+          `INSERT INTO bot_sessions (user_id, step, data, updated_at)
+           VALUES (?1, ?2, ?3::jsonb, now())
+           ON CONFLICT (user_id) DO UPDATE
+             SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now()`,
+        )
+        .bind(user.id, `addon:${kind}`, JSON.stringify({ subscriptionId: service.id }))
+        .run();
+      return screen(menu.askAddonAmount(kind, unit), menu.confirmRevokeMenu(service.id).slice(1));
     }
 
     case 'rvk': {

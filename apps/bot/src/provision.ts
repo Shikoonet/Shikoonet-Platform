@@ -47,6 +47,8 @@ interface PendingOrder {
   order_id: number;
   order_public_id: string;
   order_kind: string;
+  /** Gigabytes or days on an add-on; 1 on everything else. */
+  quantity: number;
   user_id: number;
   telegram_id: number | null;
   plan_id: number | null;
@@ -134,6 +136,7 @@ export async function provisionPaidOrders(
               o.public_id     AS order_public_id,
               o.user_id       AS user_id,
               o.kind          AS order_kind,
+              o.quantity      AS quantity,
               u.telegram_id   AS telegram_id,
               o.plan_id       AS plan_id,
               o.total_irr     AS total_irr,
@@ -204,6 +207,15 @@ async function deliver(
   fetchImpl: typeof globalThis.fetch,
   now: number,
 ): Promise<string | null> {
+  // An add-on carries no plan on purpose — it is gigabytes or days on an
+  // account that already exists — so it is routed before the plan check below.
+  if (row.order_kind === 'ADD_VOLUME' || row.order_kind === 'ADD_TIME') {
+    return renew(db, row, fetchImpl, now, {
+      kind: row.order_kind,
+      quantity: row.quantity,
+    });
+  }
+
   // An order whose plan or provider was deleted out from under it. The money is
   // real, so this is a person's problem, not a silent drop.
   if (row.plan_id === null || row.provider_id === null || row.provider_kind === null) {
@@ -324,11 +336,17 @@ async function deliver(
  * twice is sixty. The order status is what keeps it to once, and the adapter
  * carries a second guard of its own (the order id in the account's note).
  */
+interface Addon {
+  kind: 'ADD_VOLUME' | 'ADD_TIME';
+  quantity: number;
+}
+
 async function renew(
   db: D1Database,
   row: PendingOrder,
   fetchImpl: typeof globalThis.fetch,
   now: number,
+  addon: Addon | null = null,
 ): Promise<string | null> {
   // The subscription is joined on `user_id = o.user_id`, so a NULL here also
   // covers a renewal order pointed at somebody else's service.
@@ -339,7 +357,10 @@ async function renew(
 
   const serviceName = row.target_name ?? row.plan_name ?? row.product_name ?? 'سرویس';
   const adapter = adapterFor(row.provider_kind!);
-  const mode = renewModeFor(row.provider_config ?? {});
+  // An add-on always ADDs. RESET is a renewal's business — it hands the account
+  // the plan again from zero — and applying it to "five more gigabytes" would
+  // throw away everything the customer had left.
+  const mode = addon === null ? renewModeFor(row.provider_config ?? {}) : 'ADD';
 
   if (!adapter.renew) {
     // A manual product, or a panel type nobody automated. The money is real and
@@ -351,8 +372,11 @@ async function renew(
   const result = await adapter.renew(
     {
       username: row.target_username,
-      volumeGb: toNumber(row.volume_gb),
-      durationDays: row.duration_days,
+      // Zero on the dimension not being bought. In ADD mode zero means "add
+      // nothing here" while null means "no limit" — the difference is what
+      // stops an extra-volume purchase from removing an account's expiry.
+      volumeGb: addon === null ? toNumber(row.volume_gb) : addon.kind === 'ADD_VOLUME' ? addon.quantity : 0,
+      durationDays: addon === null ? row.duration_days : addon.kind === 'ADD_TIME' ? addon.quantity : 0,
       note: `shikoo ${row.order_public_id}`,
       providerConfig: row.provider_config ?? {},
       planAttrs: row.plan_attrs ?? {},
@@ -385,6 +409,39 @@ async function renew(
   }
 
   const expiresAt = result.expiresAt ?? null;
+  if (addon !== null) {
+    // Only what was bought. Writing the plan columns here would blank the
+    // service's name and duration, because an add-on has no plan — and a
+    // separate statement rather than a branch inside one, because the adapter
+    // rejects a bound parameter the SQL never uses.
+    await db.withSession(async (tx) => {
+      await tx
+        .prepare(
+          `UPDATE subscriptions
+              SET volume_gb      = COALESCE(?2, volume_gb),
+                  expires_at     = ?3,
+                  notify         = '{}'::jsonb,
+                  last_synced_at = NULL,
+                  updated_at     = now()
+            WHERE id = ?1`,
+        )
+        .bind(
+          row.target_subscription_id,
+          result.volumeGb ?? null,
+          expiresAt === null ? null : expiresAt.toISOString(),
+        )
+        .run();
+      await tx
+        .prepare(
+          `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
+            WHERE id = ?1 AND status = 'PROVISIONING'`,
+        )
+        .bind(row.order_id)
+        .run();
+    });
+    return menu.addonApplied(addon.kind, addon.quantity, serviceName, expiresAt);
+  }
+
   await db.withSession(async (tx) => {
     await tx
       .prepare(

@@ -569,6 +569,37 @@ describe('extending an account', () => {
     expect(panel.puts[0]?.['expire']).toBe((NOW + 40 * 86_400_000) / 1000);
   });
 
+  it('adds volume without touching an expiry that does not exist', async () => {
+    // The extra-volume purchase: gigabytes, zero days. Zero must mean "add no
+    // time", not "start the clock" — this account has no expiry, and stamping
+    // one on it would end a service the customer is still paying for.
+    const panel = panelWith({ expire: 0, data_limit: 10 * 1024 ** 3 });
+
+    await marzbanAdapter.renew!(
+      renewRequest({ mode: 'ADD', volumeGb: 5, durationDays: 0 }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    expect(panel.puts[0]?.['expire']).toBe(0);
+    expect(panel.puts[0]?.['data_limit']).toBe(15 * 1024 ** 3);
+  });
+
+  it('adds days without touching the quota', async () => {
+    // And the mirror: the extra-time purchase is days with zero gigabytes.
+    const panel = panelWith({
+      expire: Math.floor((NOW + 5 * 86_400_000) / 1000),
+      data_limit: 10 * 1024 ** 3,
+    });
+
+    await marzbanAdapter.renew!(
+      renewRequest({ mode: 'ADD', volumeGb: 0, durationDays: 7 }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    expect(panel.puts[0]?.['expire']).toBe((NOW + 12 * 86_400_000) / 1000);
+    expect(panel.puts[0]?.['data_limit']).toBe(10 * 1024 ** 3);
+  });
+
   it('keeps an unmetered account unmetered', async () => {
     const panel = panelWith({ expire: 0, data_limit: 0 });
 

@@ -566,6 +566,16 @@ export function serviceDetail(service: ServiceView, now: number): string {
 export function serviceDetailMenu(actions?: ServiceActions | null): InlineKeyboard {
   const keyboard: InlineKeyboard = [];
   if (actions) {
+    const addons: InlineKeyboard[number] = [];
+    // Each button appears only if that panel has a price for it. The admin sets
+    // them per panel, and one panel has extending switched off entirely.
+    if (actions.volumeIrrPerGb !== null) {
+      addons.push({ text: '➕ حجم اضافه', callback_data: encode('xv', actions.id) });
+    }
+    if (actions.timeIrrPerDay !== null) {
+      addons.push({ text: '⏳ زمان اضافه', callback_data: encode('xt', actions.id) });
+    }
+    if (addons.length > 0) keyboard.push(addons);
     keyboard.push([
       { text: '🔄 تغییر لینک اشتراک', callback_data: encode('rvk', actions.id) },
     ]);
@@ -589,9 +599,112 @@ export function serviceDetailMenu(actions?: ServiceActions | null): InlineKeyboa
  * whose panel was deleted. Drawing a button that cannot do anything is how a
  * customer comes to support saying they pressed it and nothing happened.
  */
+export type { CustomerTier } from '@shikoo/domain';
+
 export interface ServiceActions {
   id: number;
   disabled: boolean;
+  /** Null when this panel does not sell that add-on. */
+  volumeIrrPerGb: number | null;
+  timeIrrPerDay: number | null;
+}
+
+/** `1_950_000` → `'195,000 تومان'`. The customer's currency, at the edge only. */
+function toman(irr: number): string {
+  return `${Math.round(irr / 10).toLocaleString('en-US')} تومان`;
+}
+
+export function askAddonAmount(kind: 'ADD_VOLUME' | 'ADD_TIME', unitIrr: number): string {
+  return kind === 'ADD_VOLUME'
+    ? [
+        '➕ خرید حجم اضافه',
+        '',
+        `قیمت هر گیگابایت: ${toman(unitIrr)}`,
+        '',
+        'چند گیگابایت می‌خواهید؟ فقط عدد بفرستید — مثلاً 5',
+      ].join('\n')
+    : [
+        '⏳ خرید زمان اضافه',
+        '',
+        `قیمت هر روز: ${toman(unitIrr)}`,
+        '',
+        'چند روز می‌خواهید؟ فقط عدد بفرستید — مثلاً 30',
+      ].join('\n');
+}
+
+/** The customer typed something that is not a count. */
+export const ADDON_NOT_A_NUMBER =
+  'لطفاً فقط یک عدد بفرستید — مثلاً 5. برای انصراف /start را بزنید.';
+
+export function addonTooMuch(max: number): string {
+  return `بیشترین مقدار در هر خرید ${max.toLocaleString('en-US')} است. عدد کوچک‌تری بفرستید.`;
+}
+
+export function addonInvoice(
+  kind: 'ADD_VOLUME' | 'ADD_TIME',
+  quantity: number,
+  totalIrr: number,
+): string {
+  const what =
+    kind === 'ADD_VOLUME'
+      ? `${quantity.toLocaleString('en-US')} گیگابایت حجم`
+      : `${quantity.toLocaleString('en-US')} روز زمان`;
+  return ['🧾 فاکتور شما:', '', `📦 ${what}`, `💳 مبلغ: ${toman(totalIrr)}`].join('\n');
+}
+
+/**
+ * The checkout for an add-on.
+ *
+ * Its own screen rather than the plan checkout with a fake plan pushed through
+ * it: what is being bought here is a quantity, not a product, and the two lines
+ * that differ are exactly the two a customer checks before transferring money.
+ */
+export function addonCheckout(
+  publicId: string,
+  kind: 'ADD_VOLUME' | 'ADD_TIME',
+  quantity: number,
+  serviceName: string,
+  totalIrr: number,
+  cardDigits: string,
+  cardHolder: string | null,
+): string {
+  const what =
+    kind === 'ADD_VOLUME'
+      ? `${quantity.toLocaleString('en-US')} گیگابایت حجم`
+      : `${quantity.toLocaleString('en-US')} روز زمان`;
+  const lines = [
+    '🧾 سفارش شما ثبت شد. برای تکمیل، مبلغ زیر را کارت‌به‌کارت کنید.',
+    '',
+    `🔖 شمارهٔ سفارش: ${publicId}`,
+    `📦 ${what} برای «${serviceName}»`,
+    `💳 مبلغ دقیق: ${toman(totalIrr)}`,
+    '',
+    '🏦 شمارهٔ کارت:',
+    formatCard(cardDigits),
+  ];
+  if (cardHolder) lines.push(`👤 به نام: ${cardHolder}`);
+  lines.push(
+    '',
+    'لطفاً دقیقاً همین مبلغ را واریز کنید — مبلغ متفاوت بررسی دستی می‌خواهد و طول می‌کشد.',
+    'بعد از واریز، دکمهٔ زیر را بزنید.',
+  );
+  return lines.join('\n');
+}
+
+export function addonApplied(
+  kind: 'ADD_VOLUME' | 'ADD_TIME',
+  quantity: number,
+  serviceName: string,
+  expiresAt: Date | null,
+): string {
+  const lines = [
+    kind === 'ADD_VOLUME'
+      ? `✅ ${quantity.toLocaleString('en-US')} گیگابایت به «${serviceName}» اضافه شد.`
+      : `✅ ${quantity.toLocaleString('en-US')} روز به «${serviceName}» اضافه شد.`,
+  ];
+  if (expiresAt !== null) lines.push(`📅 اعتبار تا: ${formatTehranDate(expiresAt)}`);
+  lines.push('', 'لینک اشتراک شما عوض نشده و همان قبلی است.');
+  return lines.join('\n');
 }
 
 export const CONFIRM_REVOKE = [
