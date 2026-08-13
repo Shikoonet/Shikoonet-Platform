@@ -24,7 +24,7 @@ import {
   TOPUP_MIN_IRR,
 } from '../src/wallet.js';
 import { db } from './helpers/env.js';
-import { ensureCatalog, makeCustomer } from './helpers/shop.js';
+import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
 beforeEach(async () => {
   await ensureCatalog();
@@ -261,5 +261,101 @@ describe('the balance and its history', () => {
     await expect(
       db.prepare(`DELETE FROM wallet_entries WHERE user_id = ?1`).bind(userId).run(),
     ).rejects.toThrow(/append-only/);
+  });
+});
+
+describe('an order paid from the wallet that cannot be delivered', () => {
+  it('gives the credit back and says so, instead of calling it safe', async () => {
+    // Walked on the test bot on 2026-08-13: the customer paid from the balance
+    // for a panel with no address, the order failed, and the message told them
+    // their payment was "safe" while the credit stayed spent.
+    const userId = await makeCustomer(920_100_030);
+    await credit(userId, 3_000_000, `t:${userId}:a`);
+    const plan = await planId('sim-vip-1m-20');
+    const order = await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
+                             unit_price_irr, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, 1000000, 0, 1000000, 'AWAITING_PAYMENT')
+         RETURNING id`,
+      )
+      .bind(newPublicId(), userId, plan)
+      .first<{ id: number }>();
+    await db.withSession(async (tx) => spendOnOrder(tx, userId, order!.id, 1_000_000));
+    await db
+      .prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status,
+                               created_at, updated_at)
+         VALUES (?1, ?2, ?3, 1000000, 'WALLET', 'PAID', now(), now())`,
+      )
+      .bind(newPublicId(), userId, order!.id)
+      .run();
+    await db.prepare(`UPDATE orders SET status = 'PAID' WHERE id = ?1`).bind(order!.id).run();
+    expect(await balanceFor(db, userId)).toBe(2_000_000);
+
+    // No base_url on the fixture provider, which is the real failure seen.
+    const notes = await provisionPaidOrders(db, (async () =>
+      Promise.reject(new Error('panel unreachable'))) as unknown as typeof fetch);
+
+    expect(await balanceFor(db, userId)).toBe(3_000_000);
+    expect(notes.some((n) => n.text.includes('به کیف پول شما برگشت'))).toBe(true);
+  });
+
+  it('refunds once, however many sweeps see it', async () => {
+    const userId = await makeCustomer(920_100_031);
+    await credit(userId, 2_000_000, `t:${userId}:a`);
+    const plan = await planId('sim-vip-1m-20');
+    const order = await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
+                             unit_price_irr, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, 1000000, 0, 1000000, 'PAID')
+         RETURNING id`,
+      )
+      .bind(newPublicId(), userId, plan)
+      .first<{ id: number }>();
+    await db
+      .prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status,
+                               created_at, updated_at)
+         VALUES (?1, ?2, ?3, 1000000, 'WALLET', 'PAID', now(), now())`,
+      )
+      .bind(newPublicId(), userId, order!.id)
+      .run();
+
+    await provisionPaidOrders(db);
+    const after = await balanceFor(db, userId);
+    await db.prepare(`UPDATE orders SET status = 'PROVISIONING' WHERE id = ?1`).bind(order!.id).run();
+    await provisionPaidOrders(db);
+
+    expect(await balanceFor(db, userId)).toBe(after);
+  });
+
+  it('leaves a card payment alone — that money is in a bank, not in the ledger', async () => {
+    const userId = await makeCustomer(920_100_032);
+    await credit(userId, 1_000_000, `t:${userId}:a`);
+    const plan = await planId('sim-vip-1m-20');
+    const order = await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
+                             unit_price_irr, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, 1000000, 0, 1000000, 'PAID')
+         RETURNING id`,
+      )
+      .bind(newPublicId(), userId, plan)
+      .first<{ id: number }>();
+    await db
+      .prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status,
+                               created_at, updated_at)
+         VALUES (?1, ?2, ?3, 1000000, 'CARD_TO_CARD', 'PAID', now(), now())`,
+      )
+      .bind(newPublicId(), userId, order!.id)
+      .run();
+
+    const notes = await provisionPaidOrders(db);
+
+    expect(await balanceFor(db, userId)).toBe(1_000_000);
+    expect(notes.some((n) => n.text.includes('محفوظ است'))).toBe(true);
   });
 });

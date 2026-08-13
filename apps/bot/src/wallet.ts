@@ -166,6 +166,43 @@ export async function spendOnOrder(
 }
 
 /**
+ * Puts a wallet payment back when the order it paid for cannot be delivered.
+ *
+ * Only for orders paid from the balance. A card-to-card payment is real money
+ * in a real bank account and is a person's decision to return; a wallet payment
+ * is credit we hold, and holding it for a service that failed is simply keeping
+ * the customer's money. The legacy bot refunds here too (`function.php:863`).
+ *
+ * Returns the amount put back, or null when there is nothing to put back —
+ * which covers both "this was not paid from the wallet" and "already refunded".
+ *
+ * Found by walking the screen: paying from the wallet for a panel with no
+ * address left the customer 100,000 Toman lighter, the order FAILED, and a
+ * message saying their payment was safe.
+ */
+export async function refundOrder(db: Db, orderId: number): Promise<number | null> {
+  const paid = await db
+    .prepare(
+      `SELECT user_id, amount_irr FROM payments
+        WHERE order_id = ?1 AND method = 'WALLET' AND status = 'PAID'
+        ORDER BY id LIMIT 1`,
+    )
+    .bind(orderId)
+    .first<{ user_id: number | null; amount_irr: number }>();
+  if (!paid || paid.user_id === null || paid.amount_irr <= 0) return null;
+
+  const done = await db
+    .prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, actor, note, idempotency_key)
+       VALUES (?1, ?2, 'REFUND', ?3, 'SYSTEM', 'order could not be delivered', ?4)
+       ON CONFLICT (idempotency_key) DO NOTHING`,
+    )
+    .bind(paid.user_id, paid.amount_irr, orderId, `order:${orderId}:refund`)
+    .run();
+  return done.meta.changes > 0 ? paid.amount_irr : null;
+}
+
+/**
  * What to deposit so this order can be paid from the balance.
  *
  * Rounded UP to a whole Toman, because asking for a deposit that leaves the

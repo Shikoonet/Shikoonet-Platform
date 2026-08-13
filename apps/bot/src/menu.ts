@@ -312,14 +312,27 @@ export function serviceBeingPrepared(publicId: string): string {
  * Says the money is safe first. That is the customer's actual question, and the
  * order is sitting in FAILED with a reason attached for whoever picks it up.
  */
-export function serviceNeedsHelp(publicId: string): string {
-  return [
-    '⚠️ پرداخت شما ثبت شده و محفوظ است، ولی آماده‌سازی سرویس به مشکل خورد.',
+/**
+ * `refundedIrr` is what went back into the wallet, or null when nothing did.
+ *
+ * The old wording said the payment "is safe" whatever had happened. For a bank
+ * transfer that is true — the money is in the account. For an order paid from
+ * the balance it was not: the credit had been spent and the service never
+ * arrived, so "safe" meant "we still have your money". Say which one it was.
+ */
+export function serviceNeedsHelp(publicId: string, refundedIrr: number | null = null): string {
+  const lines = [
+    refundedIrr === null
+      ? '⚠️ پرداخت شما ثبت شده و محفوظ است، ولی آماده‌سازی سرویس به مشکل خورد.'
+      : '⚠️ آماده‌سازی سرویس به مشکل خورد.',
     '',
     `🔖 شمارهٔ پیگیری: ${publicId}`,
-    '',
-    'همکاران ما پیگیری می‌کنند. لطفاً این شماره را نگه دارید.',
-  ].join('\n');
+  ];
+  if (refundedIrr !== null) {
+    lines.push(`💰 مبلغ ${formatToman(refundedIrr)} به کیف پول شما برگشت.`);
+  }
+  lines.push('', 'همکاران ما پیگیری می‌کنند. لطفاً این شماره را نگه دارید.');
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -889,11 +902,17 @@ export function walletToppedUp(amountIrr: number): string {
   ].join('\n');
 }
 
-export function walletPaid(serviceName: string, remainingIrr: number): string {
+/**
+ * `publicId`, not a service name. The first version of this screen labelled the
+ * order id with 🔐 as though it were the product, so the customer read
+ * `🔐 143e2b4cb3` where they expected to see what they had just bought. Only
+ * opening the screen showed it.
+ */
+export function walletPaid(publicId: string, remainingIrr: number): string {
   return [
     '✅ پرداخت از کیف پول انجام شد.',
     '',
-    `🔐 ${serviceName}`,
+    `🔖 شمارهٔ سفارش: ${publicId}`,
     `💰 موجودی باقی‌مانده: ${formatToman(remainingIrr)}`,
     '',
     'سرویس در حال آماده‌سازی است و تا لحظاتی دیگر فرستاده می‌شود.',

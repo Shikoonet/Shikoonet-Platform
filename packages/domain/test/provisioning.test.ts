@@ -725,3 +725,45 @@ describe('the expire field, in the shape the live PHP uses', () => {
     expect(fromIso.puts[0]?.['expire']).toBe(fromSeconds.puts[0]?.['expire']);
   });
 });
+
+describe('a panel that is not configured', () => {
+  /**
+   * Found by paying from the wallet on the test bot on 2026-08-13. The money
+   * left the ledger, the order went to PAID, and the sweep retried forever
+   * because a missing secret was reported as a transient failure. The customer
+   * was charged and told nothing.
+   */
+  it('is a job for a person, not something to retry until the panel appears', async () => {
+    const noSecret = { ...provider(), credentials: null };
+    const result = await marzbanAdapter.provision(request(), noSecret);
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.retryable).toBe(false);
+    expect(result.ok === false && result.reason).toContain('secret_ref');
+  });
+
+  it('says the same about a panel with no address', async () => {
+    const noUrl = { ...provider(), baseUrl: null };
+    const result = await marzbanAdapter.provision(request(), noUrl);
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.retryable).toBe(false);
+  });
+
+  it('treats a rejected login as configuration and a sick panel as worth retrying', async () => {
+    const rejecting = (status: number) =>
+      (async () => new Response('{}', { status })) as unknown as typeof globalThis.fetch;
+
+    const badPassword = await marzbanAdapter.provision(request(), {
+      ...provider(),
+      fetch: rejecting(401),
+    });
+    expect(badPassword.ok === false && badPassword.retryable).toBe(false);
+
+    const panelIll = await marzbanAdapter.provision(request(), {
+      ...provider(),
+      fetch: rejecting(503),
+    });
+    expect(panelIll.ok === false && panelIll.retryable).toBe(true);
+  });
+});

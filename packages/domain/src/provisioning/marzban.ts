@@ -124,10 +124,32 @@ async function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise
  * provisioning — an event that happens a few times an hour — is not worth
  * either.
  */
-async function login(provider: ProviderContext): Promise<{ token: string } | { error: string }> {
-  if (!provider.baseUrl) return { error: 'panel has no base_url configured' };
+interface LoginFailed {
+  error: string;
+  /**
+   * False when waiting cannot possibly help.
+   *
+   * The distinction is not cosmetic. A retryable failure sends the order back
+   * to PAID and the sweep tries again forever; for a panel with no `base_url`
+   * or no secret in the environment that is a customer who has been charged,
+   * hears nothing, and waits on a loop that can never finish. Seen on the test
+   * bot on 2026-08-13 after paying from the wallet: the money left the ledger
+   * and the order sat at PAID in silence.
+   *
+   * Configuration cannot fix itself, so it goes to a person instead.
+   */
+  retryable: boolean;
+}
+
+async function login(provider: ProviderContext): Promise<{ token: string } | LoginFailed> {
+  if (!provider.baseUrl) {
+    return { error: 'panel has no base_url configured', retryable: false };
+  }
   if (!provider.credentials) {
-    return { error: `no credentials found for panel "${provider.name}" (secret_ref)` };
+    return {
+      error: `no credentials found for panel "${provider.name}" (secret_ref)`,
+      retryable: false,
+    };
   }
   const body = new URLSearchParams({
     username: provider.credentials.username,
@@ -143,11 +165,13 @@ async function login(provider: ProviderContext): Promise<{ token: string } | { e
   );
   if (!res.ok) {
     // The status is safe to report; the body may echo the credentials back.
-    return { error: `panel login failed (HTTP ${res.status})` };
+    // A rejected login is wrong credentials, which is configuration; only the
+    // panel being ill is worth trying again for.
+    return { error: `panel login failed (HTTP ${res.status})`, retryable: isPanelFault(res.status) };
   }
   const json = (await res.json()) as { access_token?: unknown };
   const token = asString(json.access_token);
-  if (token === null) return { error: 'panel login returned no access_token' };
+  if (token === null) return { error: 'panel login returned no access_token', retryable: true };
   return { token };
 }
 
@@ -230,7 +254,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
   async provision(request: ProvisionRequest, provider: ProviderContext): Promise<ProvisionResult> {
     try {
       const auth = await login(provider);
-      if ('error' in auth) return { ok: false, reason: auth.error, retryable: true };
+      if ('error' in auth) return { ok: false, reason: auth.error, retryable: auth.retryable };
       const base = provider.baseUrl!.replace(/\/+$/, '');
 
       // Look first. The username is derived from the order, so a sweep that
@@ -344,7 +368,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
   async renew(request: RenewRequest, provider: ProviderContext): Promise<ProvisionResult> {
     try {
       const auth = await login(provider);
-      if ('error' in auth) return { ok: false, reason: auth.error, retryable: true };
+      if ('error' in auth) return { ok: false, reason: auth.error, retryable: auth.retryable };
       const base = provider.baseUrl!.replace(/\/+$/, '');
 
       const found = await getUser(provider, auth.token, request.username);

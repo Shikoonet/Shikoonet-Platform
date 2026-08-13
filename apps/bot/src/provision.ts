@@ -33,6 +33,7 @@ import {
 } from '@shikoo/domain';
 import * as menu from './menu.js';
 import type { Notification } from './settle.js';
+import { refundOrder } from './wallet.js';
 
 /**
  * How long an order may sit in PROVISIONING before a later sweep takes it back.
@@ -205,8 +206,8 @@ async function deliver(
   // An order whose plan or provider was deleted out from under it. The money is
   // real, so this is a person's problem, not a silent drop.
   if (row.plan_id === null || row.provider_id === null || row.provider_kind === null) {
-    await fail(db, row.order_id, 'the plan or its provider no longer exists');
-    return menu.serviceNeedsHelp(row.order_public_id);
+    const refunded = await fail(db, row.order_id, 'the plan or its provider no longer exists');
+    return menu.serviceNeedsHelp(row.order_public_id, refunded);
   }
 
   if (row.order_kind === 'RENEWAL') {
@@ -248,9 +249,9 @@ async function deliver(
       console.error(`[bot] order ${row.order_public_id} will retry: ${result.reason}`);
       return null;
     }
-    await fail(db, row.order_id, result.reason);
+    const refunded = await fail(db, row.order_id, result.reason);
     console.error(`[bot] order ${row.order_public_id} needs a human: ${result.reason}`);
-    return menu.serviceNeedsHelp(row.order_public_id);
+    return menu.serviceNeedsHelp(row.order_public_id, refunded);
   }
 
   const expiresAt = request.expiresAt;
@@ -326,8 +327,8 @@ async function renew(
   // The subscription is joined on `user_id = o.user_id`, so a NULL here also
   // covers a renewal order pointed at somebody else's service.
   if (row.target_subscription_id === null || row.target_username === null) {
-    await fail(db, row.order_id, 'the service this renewal points at no longer exists');
-    return menu.serviceNeedsHelp(row.order_public_id);
+    const refunded = await fail(db, row.order_id, 'the service this renewal points at no longer exists');
+    return menu.serviceNeedsHelp(row.order_public_id, refunded);
   }
 
   const serviceName = row.target_name ?? row.plan_name ?? row.product_name ?? 'سرویس';
@@ -372,9 +373,9 @@ async function renew(
       console.error(`[bot] renewal ${row.order_public_id} will retry: ${result.reason}`);
       return null;
     }
-    await fail(db, row.order_id, result.reason);
+    const refunded = await fail(db, row.order_id, result.reason);
     console.error(`[bot] renewal ${row.order_public_id} needs a human: ${result.reason}`);
-    return menu.serviceNeedsHelp(row.order_public_id);
+    return menu.serviceNeedsHelp(row.order_public_id, refunded);
   }
 
   const expiresAt = result.expiresAt ?? null;
@@ -434,12 +435,25 @@ async function complete(db: D1Database, orderId: number): Promise<void> {
     .run();
 }
 
-async function fail(db: D1Database, orderId: number, reason: string): Promise<void> {
-  await db
+/**
+ * Ends an order that cannot be delivered, and returns any credit it consumed.
+ *
+ * The refund is only for a payment made from the wallet. Card-to-card money sits
+ * in a bank account and giving it back is a person's decision; wallet credit is
+ * ours to hold, and holding it for a service that failed is keeping the
+ * customer's money. Returns what was put back so the customer can be told.
+ */
+async function fail(db: D1Database, orderId: number, reason: string): Promise<number | null> {
+  const ended = await db
     .prepare(
       `UPDATE orders SET status = 'FAILED', failure_reason = ?2, updated_at = now()
         WHERE id = ?1 AND status = 'PROVISIONING'`,
     )
     .bind(orderId, reason)
     .run();
+  // Guarded on this sweep being the one that ended it, so two sweeps racing
+  // cannot both refund. The idempotency key would stop the second anyway; this
+  // keeps the message honest as well as the ledger.
+  if (ended.meta.changes === 0) return null;
+  return refundOrder(db, orderId);
 }
