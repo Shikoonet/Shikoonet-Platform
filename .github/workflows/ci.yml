@@ -22,8 +22,9 @@ jobs:
       DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
     steps:
       - uses: actions/checkout@v4
+      # No `version:` here — action-setup v4 errors out if it is given one *and*
+      # package.json has `packageManager`. That field is the single source.
       - uses: pnpm/action-setup@v4
-        with: { version: 10 }
       - uses: actions/setup-node@v4
         with:
           node-version: 22
