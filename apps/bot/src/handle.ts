@@ -298,6 +298,7 @@ async function handleTypedAnswer(
 
   if (session.step.startsWith('addon:')) return handleAddonAmount(tx, message, user, session);
   if (session.step === 'code') return handleDiscountCode(tx, message, user, session);
+  if (session.step === 'coder') return handleRenewalCode(tx, message, user, session);
   if (session.step === 'gift') return handleGiftCode(tx, message, user);
   return IGNORED;
 }
@@ -447,6 +448,110 @@ async function handleDiscountCode(
     `${menu.discountApplied(check.code.code, check.discountIrr)}\n\n${menu.planDetail(plan, price, applied)}`,
     menu.planDetailMenu(plan, applied),
   );
+}
+
+/**
+ * A discount code typed against a service being renewed.
+ *
+ * The plan comes after the code here, so the product scope cannot be checked
+ * yet and `productId` goes in as null. Everything that CAN be checked is —
+ * including that the code is for renewals — and the rest happens at `rord`,
+ * where the plan is finally known.
+ */
+async function handleRenewalCode(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  session: Session,
+): Promise<HandleOutcome> {
+  const subscriptionId = Number(session.data['subscriptionId']);
+  if (!Number.isSafeInteger(subscriptionId)) return IGNORED;
+  const answer = (text: string, keyboard?: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, ...(keyboard ? { keyboard } : {}) }],
+  });
+
+  const service = await renewableForUserById(tx, user.id, subscriptionId);
+  if (!service) return answer(menu.RENEWAL_GONE, menu.renewMenu([], Date.now(), 1, 1));
+
+  const check = await checkCode(
+    tx,
+    user.id,
+    user.is_reseller,
+    message.text!,
+    { kind: 'RENEW', priceIrr: 0, productId: null, providerId: service.provider_id },
+    Date.now(),
+  );
+  if (!check.ok) {
+    return answer(
+      menu.DISCOUNT_REFUSED[check.reason] ?? menu.DISCOUNT_REFUSED['UNKNOWN_CODE']!,
+      [[{ text: 'بازگشت ⬅️', callback_data: encode('rnw', subscriptionId) }]],
+    );
+  }
+  await ask(tx, user.id, 'coder:held', { subscriptionId, code: check.code.code });
+  const plans = await plansOnPanel(tx, user.id, service.provider_id);
+  return answer(
+    menu.discountHeldForRenewal(check.code.code),
+    menu.renewPlanMenu(service.id, plans, user.discount_percent, check.code.code),
+  );
+}
+
+/**
+ * The code held against a renewal, re-checked now that the plan is known.
+ *
+ * This is where the product scope finally gets tested — the one check
+ * `handleRenewalCode` could not make.
+ */
+async function heldRenewalCode(
+  tx: D1DatabaseSession,
+  user: Caller,
+  subscriptionId: number,
+  plan: CatalogPlan,
+  priceIrr: number,
+): Promise<{ code: DiscountCode; discountIrr: number } | null> {
+  const row = await tx
+    .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
+    .bind(user.id)
+    .first<{ step: string | null; data: Record<string, unknown> | null }>();
+  if (row?.step !== 'coder:held') return null;
+  const data = row.data ?? {};
+  if (Number(data['subscriptionId']) !== subscriptionId) return null;
+  const typed = data['code'];
+  if (typeof typed !== 'string') return null;
+
+  const check = await checkCode(
+    tx,
+    user.id,
+    user.is_reseller,
+    typed,
+    { kind: 'RENEW', priceIrr, productId: plan.productId, providerId: plan.providerId },
+    Date.now(),
+  );
+  if (check.ok) return { code: check.code, discountIrr: check.discountIrr };
+  if (
+    check.reason === 'ALREADY_USED' &&
+    check.code &&
+    (await redemptionOnOpenOrder(tx, check.code.id, user.id, plan.planId))
+  ) {
+    return { code: check.code, discountIrr: discountFor(check.code, priceIrr) };
+  }
+  return null;
+}
+
+/** The code a renewal screen should show as held, if any. */
+async function heldRenewalName(
+  tx: D1DatabaseSession,
+  userId: number,
+  subscriptionId: number,
+): Promise<string | null> {
+  const row = await tx
+    .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
+    .bind(userId)
+    .first<{ step: string | null; data: Record<string, unknown> | null }>();
+  if (row?.step !== 'coder:held') return null;
+  if (Number(row.data?.['subscriptionId']) !== subscriptionId) return null;
+  const typed = row.data?.['code'];
+  return typeof typed === 'string' ? typed : null;
 }
 
 /** A gift code typed at the wallet. The credit itself is `redeemGift`. */
@@ -806,6 +911,34 @@ async function handleCallback(
       }
       return screen(
         menu.renewIntro(service, renewModeFor(service.provider_config ?? {}), Date.now()),
+        menu.renewPlanMenu(
+          service.id,
+          plans,
+          user.discount_percent,
+          await heldRenewalName(tx, user.id, service.id),
+        ),
+      );
+    }
+
+    case 'dsr': {
+      if (action.id === undefined) return IGNORED;
+      // Ownership first, like every other id off a button.
+      const service = await renewableForUserById(tx, user.id, action.id);
+      if (!service) return screen(menu.RENEWAL_GONE, menu.renewMenu([], Date.now(), 1, 1));
+      await ask(tx, user.id, 'coder', { subscriptionId: service.id });
+      return screen(menu.ASK_DISCOUNT_CODE, [
+        [{ text: 'بازگشت ⬅️', callback_data: encode('rnw', service.id) }],
+      ]);
+    }
+
+    case 'dxr': {
+      if (action.id === undefined) return IGNORED;
+      const service = await renewableForUserById(tx, user.id, action.id);
+      if (!service) return screen(menu.RENEWAL_GONE, menu.renewMenu([], Date.now(), 1, 1));
+      await clearSession(tx, user.id);
+      const plans = await plansOnPanel(tx, user.id, service.provider_id);
+      return screen(
+        `${menu.DISCOUNT_TAKEN_OFF}\n\n${menu.renewIntro(service, renewModeFor(service.provider_config ?? {}), Date.now())}`,
         menu.renewPlanMenu(service.id, plans, user.discount_percent),
       );
     }
@@ -826,7 +959,20 @@ async function handleCallback(
       if (!plan || plan.providerId !== service.provider_id) {
         return screen(menu.PLAN_GONE, menu.afterPaidMenu());
       }
-      const placed = await placeRenewalOrder(tx, user.id, plan, user.discount_percent, service.id);
+      const listed = priceForUser(plan.priceIrr, user.discount_percent);
+      const held = await heldRenewalCode(tx, user, service.id, plan, listed.totalIrr);
+      const placed = await placeRenewalOrder(
+        tx,
+        user.id,
+        plan,
+        user.discount_percent,
+        service.id,
+        held?.discountIrr ?? 0,
+      );
+      // Same rule as a purchase: the redemption is written in the transaction
+      // that writes the order, and the held code stays put so a second tap
+      // re-prices identically and lands on the order that already exists.
+      if (held) await redeem(tx, held.code.id, user.id, placed.id, held.discountIrr);
       const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
       if (!checkout) {
         return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
@@ -842,6 +988,7 @@ async function handleCallback(
           placed.totalIrr,
           checkout.cardDigits,
           checkout.cardHolder,
+          held ? { code: held.code.code, discountIrr: held.discountIrr } : null,
         ),
         menu.checkoutMenu(placed.id, {
           balanceIrr: await balanceFor(tx, user.id),

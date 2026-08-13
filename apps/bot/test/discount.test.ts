@@ -360,6 +360,106 @@ describe('using one twice', () => {
   });
 });
 
+describe('renewing with a code', () => {
+  /** A service on the VIP panel that can be renewed. */
+  async function makeRenewable(userId: number, publicId: string): Promise<number> {
+    const row = await db
+      .prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
+            remote_username, volume_gb, duration_days, status, purchased_at, expires_at)
+         VALUES (?1, ?2, ?3, 'کهنه - ۲۰ گیگ', 1000000, ?4, 20, 30, 'ACTIVE', now(),
+                 now() + interval '3 days')
+         RETURNING id`,
+      )
+      .bind(publicId, userId, VIP_PROVIDER, `u_${publicId}`)
+      .first<{ id: number }>();
+    if (!row) throw new Error('renewable fixture failed');
+    return row.id;
+  }
+
+  it('applies a renewal code to the renewal order', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await makeRenewable(userId, `rn${telegramId}`);
+    await makeCode('ext20', { appliesTo: 'RENEW', percent: 20 });
+
+    await handleUpdate(db, press(updateId, telegramId, `dsr:${service}`));
+    const said = await handleUpdate(db, types(updateId + 1, telegramId, 'ext20'));
+    expect(said.replies[0]?.text).toContain('ext20');
+    await handleUpdate(db, press(updateId + 2, telegramId, `rord:${service}:${VIP_PLAN}`));
+
+    const order = await lastOrder(userId);
+    expect(order).toMatchObject({
+      discount_irr: Math.round(VIP_PRICE * 0.2),
+      total_irr: VIP_PRICE - Math.round(VIP_PRICE * 0.2),
+    });
+  });
+
+  it('refuses a buy-only code on a renewal', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await makeRenewable(userId, `rb${telegramId}`);
+    await makeCode('buyonly', { appliesTo: 'BUY' });
+
+    await handleUpdate(db, press(updateId, telegramId, `dsr:${service}`));
+    const out = await handleUpdate(db, types(updateId + 1, telegramId, 'buyonly'));
+
+    expect(out.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['NOT_FOR_THIS']);
+  });
+
+  it('accepts a product-scoped code but does not apply it to another product', async () => {
+    // The one check the renewal entry cannot make: the plan is chosen after the
+    // code. It has to be made again at the order, and this is that.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await makeRenewable(userId, `rp${telegramId}`);
+    const otherProduct = await db
+      .prepare(`SELECT p.id FROM products p JOIN product_plans pl ON pl.product_id = p.id
+                 WHERE pl.id <> ?1 AND p.provider_id = ?2 LIMIT 1`)
+      .bind(VIP_PLAN, VIP_PROVIDER)
+      .first<{ id: number }>();
+    await makeCode('otherp', { appliesTo: 'RENEW', productId: otherProduct!.id });
+
+    await handleUpdate(db, press(updateId, telegramId, `dsr:${service}`));
+    // Accepted here, because no plan has been chosen yet.
+    const said = await handleUpdate(db, types(updateId + 1, telegramId, 'otherp'));
+    expect(said.replies[0]?.text).toContain('otherp');
+
+    await handleUpdate(db, press(updateId + 2, telegramId, `rord:${service}:${VIP_PLAN}`));
+
+    // And not applied, because the plan chosen is not the product it is for.
+    expect((await lastOrder(userId))?.discount_irr).toBe(0);
+  });
+
+  it('does not let a renewal code be spent twice', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await makeRenewable(userId, `rt${telegramId}`);
+    await makeCode('extonce', { appliesTo: 'RENEW', percent: 15 });
+    const before = await orderCount(userId);
+
+    await handleUpdate(db, press(updateId, telegramId, `dsr:${service}`));
+    await handleUpdate(db, types(updateId + 1, telegramId, 'extonce'));
+    await handleUpdate(db, press(updateId + 2, telegramId, `rord:${service}:${VIP_PLAN}`));
+    await handleUpdate(db, press(updateId + 3, telegramId, `rord:${service}:${VIP_PLAN}`));
+
+    expect(await orderCount(userId)).toBe(before + 1);
+    expect((await lastOrder(userId))?.discount_irr).toBe(Math.round(VIP_PRICE * 0.15));
+  });
+
+  it('will not hold a code against somebody else’s service', async () => {
+    const owner = await makeCustomer(ids().telegramId);
+    const service = await makeRenewable(owner, `rx${owner}`);
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `dsr:${service}`));
+
+    expect(out.replies[0]?.text).toBe(menu.RENEWAL_GONE);
+  });
+});
+
 describe('a gift code', () => {
   it('credits the wallet once, whatever the customer types after', async () => {
     const { updateId, telegramId } = ids();

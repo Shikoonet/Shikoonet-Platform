@@ -171,6 +171,21 @@ export const ASK_DISCOUNT_CODE = [
 
 export const ASK_GIFT_CODE = '🎁 کد هدیه را بفرستید.';
 
+/**
+ * A code accepted before a plan is chosen.
+ *
+ * It deliberately promises nothing about the amount. On the renewal path the
+ * plan comes after the code, and some codes are tied to one product — so the
+ * only honest thing to say here is that it will be applied where it fits.
+ */
+export function discountHeldForRenewal(code: string): string {
+  return [
+    `✅ کد «${code}» ثبت شد.`,
+    '',
+    'حالا پلن تمدید را انتخاب کنید؛ اگر کد به آن پلن بخورد، روی فاکتور اعمال می‌شود.',
+  ].join('\n');
+}
+
 export const DISCOUNT_TAKEN_OFF = 'کد تخفیف برداشته شد.';
 
 /**
@@ -937,9 +952,14 @@ export function renewPlanMenu(
   subscriptionId: number,
   plans: CatalogPlan[],
   discountPercent = 0,
+  heldCode?: string | null,
 ): InlineKeyboard {
   const keyboard: InlineKeyboard = plans.map((plan) => {
     const price = priceForUser(plan.priceIrr, discountPercent);
+    // The listed price stays the listed price while a code is held: which plan
+    // the code applies to is not known until one is chosen, and a button that
+    // promised a discount the chosen plan turns out not to qualify for would be
+    // worse than one that says nothing.
     const quoted = price.discountIrr === 0 && nameMentionsPrice(plan.productName, plan.priceIrr);
     return [
       {
@@ -948,6 +968,11 @@ export function renewPlanMenu(
       },
     ];
   });
+  keyboard.push([
+    heldCode
+      ? { text: `🏷 برداشتن کد «${heldCode}»`, callback_data: encode('dxr', subscriptionId) }
+      : { text: '🏷 کد تخفیف دارم', callback_data: encode('dsr', subscriptionId) },
+  ]);
   keyboard.push([
     { text: 'بازگشت به سرویس‌ها ⬅️', callback_data: encode('renew') },
     { text: BACK_TO_MENU, callback_data: encode('menu') },
@@ -963,6 +988,7 @@ export function renewCheckout(
   totalIrr: number,
   cardDigits: string,
   cardHolder: string | null,
+  applied?: AppliedCode | null,
 ): string {
   const lines = [
     '🧾 درخواست تمدید ثبت شد. برای تکمیل، مبلغ زیر را کارت‌به‌کارت کنید.',
@@ -970,11 +996,16 @@ export function renewCheckout(
     `🔖 شمارهٔ سفارش: ${publicId}`,
     `♻️ تمدید سرویس: ${serviceName}`,
     `🔐 با پلن: ${plan.productName}`,
+  ];
+  if (applied && applied.discountIrr > 0) {
+    lines.push(`🏷 کد «${applied.code}»: ${formatToman(applied.discountIrr)} تخفیف`);
+  }
+  lines.push(
     `💳 مبلغ دقیق: ${formatToman(totalIrr)}`,
     '',
     '🏦 شمارهٔ کارت:',
     formatCard(cardDigits),
-  ];
+  );
   if (cardHolder) lines.push(`👤 به نام: ${cardHolder}`);
   lines.push(
     '',

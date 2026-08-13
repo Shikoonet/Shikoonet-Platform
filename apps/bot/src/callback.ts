@@ -58,6 +58,9 @@ export const CALLBACK_ACTIONS = [
   'on', // <subscriptionId> — turn it back on
   'dsc', // <planId> — ask for a discount code to put on that plan
   'dsx', // <planId> — take the code back off it
+  'dsr', // <subscriptionId> — the same, for a renewal, where the plan is not
+  //        chosen yet and the code is held against the SERVICE
+  'dxr', // <subscriptionId> — take it back off the renewal
   'gft', // ask for a gift code to credit the wallet
   'soon', // a menu entry that has no implementation yet
 ] as const;

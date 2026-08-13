@@ -64,7 +64,16 @@ export interface PurchaseContext {
   kind: 'BUY' | 'RENEW';
   /** Before the discount, in IRR. */
   priceIrr: number;
-  productId: number;
+  /**
+   * Null when no product has been chosen yet.
+   *
+   * That happens on the renewal path, where the code is typed against a service
+   * and the plan is picked afterwards. The product scope is then checked at the
+   * moment the plan IS chosen, in the same transaction that writes the order —
+   * so a product-scoped code still cannot reach the wrong product. What null
+   * buys is a "your code is accepted" that does not lie later.
+   */
+  productId: number | null;
   providerId: number;
 }
 
@@ -147,7 +156,11 @@ export async function checkCode(
   if (row.applies_to !== 'ALL' && row.applies_to !== context.kind) {
     return { ok: false, reason: 'NOT_FOR_THIS' };
   }
-  if (row.product_id !== null && row.product_id !== context.productId) {
+  if (
+    row.product_id !== null &&
+    context.productId !== null &&
+    row.product_id !== context.productId
+  ) {
     return { ok: false, reason: 'NOT_FOR_THIS' };
   }
   if (row.provider_id !== null && row.provider_id !== context.providerId) {
