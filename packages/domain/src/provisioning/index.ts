@@ -7,6 +7,7 @@ import { manualAdapter } from './manual.js';
 import type { ProvisioningAdapter, RenewMode } from './types.js';
 
 export * from './types.js';
+export * from './schemaCheck.js';
 export { marzbanAdapter } from './marzban.js';
 export { manualAdapter } from './manual.js';
 

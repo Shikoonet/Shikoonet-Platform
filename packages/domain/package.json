@@ -8,7 +8,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "lint": "eslint src test --max-warnings 0"
+    "lint": "eslint src test scripts --max-warnings 0",
+    "panel:schema": "tsx scripts/panel-schema.ts"
   },
   "dependencies": {
     "@shikoo/contracts": "workspace:*",
