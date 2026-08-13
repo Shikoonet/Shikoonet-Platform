@@ -271,6 +271,9 @@ importers:
       '@shikoo/database':
         specifier: workspace:*
         version: link:../database
+      '@shikoo/db':
+        specifier: workspace:*
+        version: link:../db
       '@shikoo/domain':
         specifier: workspace:*
         version: link:../domain
@@ -281,6 +284,9 @@ importers:
       '@types/node':
         specifier: ^22.9.0
         version: 22.20.1
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.12
       typescript:
         specifier: 5.6.3
         version: 5.6.3

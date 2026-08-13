@@ -19,6 +19,7 @@
  *   - 10 of those 20 are parser failures (ERROR)
  */
 import { normalizeText, parseSms } from '@shikoo/sms-parser';
+import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 import { scoreMatch } from '@shikoo/domain';
 import type { D1Database } from '@shikoo/database';
 import { rng, pick, randInt } from './rng.js';
@@ -96,6 +97,38 @@ export interface SeedResult {
   parserErrors: number;
 }
 
+function luhnOk(digits: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+/**
+ * A 16-digit card that ends in the account's `card_last_four` (so the parser's
+ * account hint still resolves) and passes Luhn.
+ *
+ * Luhn matters even in a fixture: a card number that could not exist is a fake
+ * that would hide a real check. `index` guarantees uniqueness — `card_last_four`
+ * is drawn at random and 36 draws collide often enough — and one free digit is
+ * brute-forced to make the checksum come out.
+ */
+function fixtureCardDigits(index: number, lastFour: string): string {
+  const body = String(index).padStart(7, '0');
+  for (let filler = 0; filler <= 9; filler++) {
+    const candidate = `6037${body}${filler}${lastFour}`;
+    if (luhnOk(candidate)) return candidate;
+  }
+  // Unreachable: changing one digit walks the checksum through all ten residues.
+  throw new Error(`no Luhn-valid card for index ${index}`);
+}
+
 export async function seed(db: D1Database, opts: { verbose?: boolean } = {}): Promise<SeedResult> {
   const seedNum = 20260804;
   const rand = rng(seedNum);
@@ -159,6 +192,20 @@ export async function seed(db: D1Database, opts: { verbose?: boolean } = {}): Pr
         )
         .run();
     }
+  }
+
+  // 2a) One payment card per card account. Card-to-card verification resolves
+  //     the card the customer paid into back to an account through this table;
+  //     with it empty, every claim decides UNMAPPED_CARD and nothing can ever
+  //     auto-verify. The seed made none, so that path was untestable.
+  for (const [i, a] of accounts.entries()) {
+    await db
+      .prepare(
+        `INSERT INTO payment_cards (id, financial_account_id, card_digits, label, holder_name, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE', ?6)`,
+      )
+      .bind(id(), a.id, fixtureCardDigits(i, a.card_last_four), a.display_name, 'تست شیکو', t0)
+      .run();
   }
 
   // 2b) Spec-mandated accounts for the deterministic bank parsers. Each
@@ -500,7 +547,12 @@ export async function seed(db: D1Database, opts: { verbose?: boolean } = {}): Pr
         c.account?.id ?? null,
         c.ts,
         null,
-        'manual',
+        // Every claim in this hub is a card-to-card claim. `source_system` names
+        // that protocol, not the bot that opened it — every review query, the
+        // auto-verify engine and `matching.ts`'s exclusion all key off this
+        // value. Writing 'manual' here made the whole Payments screen render
+        // zero rows in the simulation environment.
+        MIRZABOT_SOURCE,
         '{}',
         c.status,
         c.ts,
