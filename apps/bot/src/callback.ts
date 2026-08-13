@@ -33,7 +33,8 @@ export const CALLBACK_ACTIONS = [
   'buy', // the panel/location list
   'panel', // <providerId> — the products on one panel
   'plan', // <planId> — one plan, with its price
-  'order', // <planId> — create the order
+  'order', // <planId> — create the order and show the card to pay into
+  'paid', // <orderId> — the customer says they have paid
   'soon', // a menu entry that has no implementation yet
 ] as const;
 

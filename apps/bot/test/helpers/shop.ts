@@ -12,6 +12,40 @@ import { db } from './env.js';
 
 export async function ensureCatalog(): Promise<void> {
   await seedCatalog(db);
+  await ensurePaymentCard();
+}
+
+/** The card digits the fixture hands out. Luhn-valid, so it could be real. */
+export const FIXTURE_CARD = '6037000000000095';
+const FIXTURE_ACCOUNT_ID = 'sim-bot-account';
+
+/**
+ * One ACTIVE card and the account it resolves to.
+ *
+ * Checkout cannot draw a screen without a card, so every shop test needs this —
+ * hence calling it from `ensureCatalog` rather than making each test remember.
+ * Fixed ids keep it idempotent across the reruns this shared database sees.
+ */
+export async function ensurePaymentCard(): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO financial_accounts
+         (id, bank_name, display_name, account_type, account_hint, card_last_four,
+          active, parser_configuration, created_at, updated_at)
+       VALUES (?1, 'Melli', 'حساب تست ربات', 'CARD', '0095', '0095', 1, '{}', 0, 0)
+       ON CONFLICT (id) DO NOTHING`,
+    )
+    .bind(FIXTURE_ACCOUNT_ID)
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO payment_cards
+         (id, financial_account_id, card_digits, label, holder_name, status, created_at)
+       VALUES ('sim-bot-card', ?1, ?2, 'کارت تست', 'تست شیکو', 'ACTIVE', 0)
+       ON CONFLICT (card_digits) DO NOTHING`,
+    )
+    .bind(FIXTURE_ACCOUNT_ID, FIXTURE_CARD)
+    .run();
 }
 
 export async function providerId(code: string): Promise<number> {

@@ -21,6 +21,7 @@ import type { CatalogPlan } from './catalog.js';
 import { priceForUser } from './money.js';
 
 export interface PlacedOrder {
+  id: number;
   publicId: string;
   totalIrr: number;
   /** True when this returned an order the customer already had. */
@@ -32,7 +33,7 @@ export interface PlacedOrder {
  * ('b5baf9f689'), so support staff read one format everywhere. Collisions are
  * caught by the UNIQUE index rather than assumed away.
  */
-function newPublicId(): string {
+export function newPublicId(): string {
   return randomBytes(5).toString('hex');
 }
 
@@ -49,7 +50,7 @@ export async function placeOrder(
   // quietly charging yesterday's price is worse than a duplicate row.
   const open = await tx
     .prepare(
-      `SELECT public_id, total_irr
+      `SELECT id, public_id, total_irr
          FROM orders
         WHERE user_id = ?1
           AND plan_id = ?2
@@ -59,9 +60,9 @@ export async function placeOrder(
         LIMIT 1`,
     )
     .bind(userId, plan.planId, price.totalIrr)
-    .first<{ public_id: string; total_irr: number }>();
+    .first<{ id: number; public_id: string; total_irr: number }>();
   if (open) {
-    return { publicId: open.public_id, totalIrr: open.total_irr, reused: true };
+    return { id: open.id, publicId: open.public_id, totalIrr: open.total_irr, reused: true };
   }
 
   const row = await tx
@@ -70,11 +71,11 @@ export async function placeOrder(
          (public_id, user_id, kind, plan_id, quantity,
           unit_price_irr, discount_irr, total_irr, status)
        VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, ?4, ?5, ?6, 'AWAITING_PAYMENT')
-       RETURNING public_id, total_irr`,
+       RETURNING id, public_id, total_irr`,
     )
     .bind(newPublicId(), userId, plan.planId, price.unitPriceIrr, price.discountIrr, price.totalIrr)
-    .first<{ public_id: string; total_irr: number }>();
+    .first<{ id: number; public_id: string; total_irr: number }>();
   if (!row) throw new Error('order insert returned no row');
 
-  return { publicId: row.public_id, totalIrr: row.total_irr, reused: false };
+  return { id: row.id, publicId: row.public_id, totalIrr: row.total_irr, reused: false };
 }

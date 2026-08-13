@@ -57,7 +57,8 @@ describe('every button we draw', () => {
     menu.planMenu([PLAN]),
     menu.planMenu([]),
     menu.planDetailMenu(PLAN),
-    menu.orderPlacedMenu(),
+    menu.checkoutMenu(4242),
+    menu.afterPaidMenu(),
   ];
 
   it('carries callback data our own parser accepts', () => {

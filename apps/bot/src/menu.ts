@@ -143,18 +143,85 @@ export function planDetailMenu(plan: CatalogPlan): InlineKeyboard {
   ];
 }
 
-export function orderPlaced(publicId: string, plan: CatalogPlan, totalIrr: number): string {
-  return [
-    '✅ سفارش شما ثبت شد.',
+/**
+ * The checkout screen: what to pay, where to pay it, and the one button that
+ * says it is done.
+ *
+ * The amount is spelled out in full and never rounded for display. Card-to-card
+ * verification compares the bank's number against this one exactly — no
+ * tolerance — so a customer who sends a "close enough" amount lands in manual
+ * review. Telling them the precise number is the cheapest way to prevent that.
+ */
+export function checkout(
+  publicId: string,
+  plan: CatalogPlan,
+  totalIrr: number,
+  cardDigits: string,
+  cardHolder: string | null,
+): string {
+  const lines = [
+    '🧾 سفارش شما ثبت شد. برای تکمیل، مبلغ زیر را کارت‌به‌کارت کنید.',
     '',
     `🔖 شمارهٔ سفارش: ${publicId}`,
     `🔐 سرویس: ${plan.productName}`,
-    `💳 مبلغ: ${formatToman(totalIrr)}`,
+    `💳 مبلغ دقیق: ${formatToman(totalIrr)}`,
     '',
-    'مرحلهٔ پرداخت هنوز فعال نشده است. سفارش شما ثبت و نگهداری می‌شود.',
+    '🏦 شمارهٔ کارت:',
+    formatCard(cardDigits),
+  ];
+  if (cardHolder) lines.push(`👤 به نام: ${cardHolder}`);
+  lines.push(
+    '',
+    'لطفاً دقیقاً همین مبلغ را واریز کنید — مبلغ متفاوت بررسی دستی می‌خواهد و طول می‌کشد.',
+    'بعد از واریز، دکمهٔ زیر را بزنید.',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * `6037997512345678` -> `6037-9975-1234-5678`.
+ *
+ * Grouped because a customer types this into a banking app by hand and an
+ * unbroken 16-digit run is where the typo happens. Messages carry no
+ * `parse_mode`, so there is no code formatting to lean on — the grouping is
+ * the whole affordance.
+ */
+export function formatCard(digits: string): string {
+  return digits.replace(/(\d{4})(?=\d)/g, '$1-');
+}
+
+export function checkoutMenu(orderId: number): InlineKeyboard {
+  return [
+    [{ text: '✅ پرداخت کردم', callback_data: encode('paid', orderId) }],
+    [{ text: BACK_TO_MENU, callback_data: encode('menu') }],
+  ];
+}
+
+/** Every card is disabled or busy. Honest about it, and does not pretend. */
+export const NO_CARD_AVAILABLE =
+  'در حال حاضر امکان دریافت شمارهٔ کارت نیست. لطفاً چند دقیقهٔ دیگر دوباره تلاش کنید یا به پشتیبانی پیام دهید.';
+
+export function paidRecorded(publicId: string): string {
+  return [
+    '🕓 ممنون. پرداخت شما ثبت شد و در حال بررسی است.',
+    '',
+    `🔖 شمارهٔ پیگیری: ${publicId}`,
+    '',
+    'به‌محض تایید تراکنش، سرویس برایتان ارسال می‌شود. معمولاً چند دقیقه طول می‌کشد.',
   ].join('\n');
 }
 
-export function orderPlacedMenu(): InlineKeyboard {
+/** Second press of a button that is already spent. Same screen, no scolding. */
+export function paidAlready(publicId: string): string {
+  return [
+    '🕓 پرداخت این سفارش قبلاً ثبت شده و در حال بررسی است.',
+    '',
+    `🔖 شمارهٔ پیگیری: ${publicId}`,
+  ].join('\n');
+}
+
+export const ORDER_GONE = 'این سفارش پیدا نشد. لطفاً از منوی خرید دوباره اقدام کنید.';
+
+export function afterPaidMenu(): InlineKeyboard {
   return [[{ text: BACK_TO_MENU, callback_data: encode('menu') }]];
 }

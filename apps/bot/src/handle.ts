@@ -26,7 +26,9 @@ import { decode } from './callback.js';
 import { panelsForUser, plansOnPanel, purchasablePlan } from './catalog.js';
 import * as menu from './menu.js';
 import { priceForUser } from './money.js';
-import { placeOrder } from './order.js';
+import { newPublicId, placeOrder } from './order.js';
+import { orderForUser } from './owned.js';
+import { checkoutFor, recordPaidClick } from './payment.js';
 import type {
   InlineKeyboard,
   TelegramCallbackQuery,
@@ -244,10 +246,40 @@ async function handleCallback(
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
       const placed = await placeOrder(tx, user.id, plan, user.discount_percent);
-      return screen(
-        menu.orderPlaced(placed.publicId, plan, placed.totalIrr),
-        menu.orderPlacedMenu(),
+      const checkout = await checkoutFor(
+        tx,
+        user.id,
+        placed.id,
+        placed.totalIrr,
+        newPublicId(),
       );
+      if (!checkout) {
+        return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
+      }
+      if (checkout.claimed) {
+        return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+      }
+      return screen(
+        menu.checkout(placed.publicId, plan, placed.totalIrr, checkout.cardDigits, checkout.cardHolder),
+        menu.checkoutMenu(placed.id),
+      );
+    }
+
+    case 'paid': {
+      if (action.id === undefined) return IGNORED;
+      // The order id came off a button, so it is checked against its owner
+      // before anything is written. A forged id belongs to nobody.
+      const order = await orderForUser(tx, user.id, action.id);
+      if (!order) return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      const result = await recordPaidClick(tx, user.id, order.id, query.from.id);
+      switch (result.outcome) {
+        case 'claimed':
+          return screen(menu.paidRecorded(result.publicId), menu.afterPaidMenu());
+        case 'already':
+          return screen(menu.paidAlready(result.publicId), menu.afterPaidMenu());
+        case 'none':
+          return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      }
     }
   }
 }
