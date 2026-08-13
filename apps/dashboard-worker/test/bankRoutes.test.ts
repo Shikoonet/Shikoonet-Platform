@@ -52,11 +52,16 @@ describe('the ReDoS gate', () => {
   });
 
   it('returns quickly even for the patterns it rejects', () => {
-    // The failure that started this file was a check that never returned. One
-    // second is far above the measured worst case (~600ms) and far below "hung".
+    // The failure that started this file was a check that never returned, so
+    // the only distinction worth asserting is "returned" against "hung" — the
+    // bait is 2^26 backtracking steps and a JS regex cannot be interrupted
+    // partway, so how long that takes is a property of the machine, not of the
+    // code. ~600ms here, 1034ms on a loaded CI runner, which failed a 1000ms
+    // ceiling for no reason anyone should act on. Five seconds still catches
+    // the regression this test exists for.
     const started = performance.now();
     overBudget(row({ detectRe: '^(a|a)+$' }));
-    expect(performance.now() - started).toBeLessThan(1000);
+    expect(performance.now() - started).toBeLessThan(5000);
   });
 
   it('says nothing about a pattern that does not compile', () => {
