@@ -81,6 +81,13 @@ export function start(): { stop: () => Promise<void> } {
   // server side — every unknown path is the same index.html.
   const spaRoot = process.env.SPA_DIST ?? join(process.cwd(), '../dashboard-web/dist');
   app.use('/assets/*', serveStatic({ root: spaRoot }));
+  // Vite copies everything in `public/` to the ROOT of dist, not into assets/ —
+  // the logo, the favicon, robots.txt. Mounting only `/assets/*` meant every one
+  // of those fell through to the SPA fallback below and was answered with
+  // index.html: `/shikoonet-logo.png` returned 853 bytes of HTML, so the header
+  // logo rendered as a broken image on every screen. A miss here calls next(),
+  // so unknown paths still reach the fallback and the SPA still works.
+  app.use('/*', serveStatic({ root: spaRoot }));
   app.get('*', async (c, next) => {
     if (c.req.path.startsWith('/api/')) return next();
     try {
