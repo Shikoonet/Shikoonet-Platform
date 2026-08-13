@@ -256,19 +256,89 @@ async function migrateAdmins(ctx: Ctx): Promise<number> {
   );
 }
 
+const PROVIDER_CLAIMED = [
+  'id',
+  'code_panel',
+  'name_panel',
+  'type',
+  'version_panel', // becomes part of `kind`; see providerKind below
+  'status',
+  'url_panel',
+  'username_panel',
+  'password_panel',
+  'limit_panel',
+];
+
+/**
+ * Columns that must never reach `provisioning_providers.config`.
+ *
+ * `datelogin` holds a cached admin session for the panel — a live JWT in every
+ * production row — and `secret_code` is the Hiddify API key column. The schema
+ * comment on that row promises it is safe to dump and log; it was not, and
+ * dropping these is half of making that true. (The other half is in the comment
+ * itself: `config.proxies` still carries a hysteria shared secret, which cannot
+ * be dropped because provisioning sends it.)
+ */
+const PROVIDER_SECRETS = ['password_panel', 'datelogin', 'secret_code'];
+
+/**
+ * Which panel software this row actually is.
+ *
+ * Mirzabot has no `pasarguard` type. `legacy/mirzabot-php/admin.php:749-750`
+ * takes the admin's PasarGuard choice, stores it as `type='marzban'`, and puts
+ * the truth in a second column:
+ *
+ *     $version_panel = $userdata['type'] == "pasarguard" ? "1" : "0";
+ *     $userdata['type'] = $userdata['type'] == "pasarguard" ? "marzban" : ...;
+ *
+ * All five production panels are `version_panel='1'`, so all five are
+ * PasarGuard — which is also why `Marzban.php:229` sends them `group_ids` and
+ * `proxy_settings` instead of `inbounds` and `proxies`. Carrying the alias
+ * forward would have meant a genuine classic-Marzban panel one day landing on
+ * the same `kind` and being handed field names it drops in silence.
+ */
+export function providerKind(r: Row): string {
+  if (r.version_panel === '1') return 'pasarguard';
+  return (r.type ?? 'marzban').toLowerCase();
+}
+
+/**
+ * One `marzban_panel` row, as it lands in `provisioning_providers`.
+ *
+ * Exported so the test can drive the real mapping instead of a second copy of
+ * it. A hand-written expectation of "what the importer produces" is a fixture
+ * that agrees with itself; this one is fed rows straight out of the production
+ * dump in the simulation MySQL.
+ */
+export function providerRow(r: Row): unknown[] {
+  return [
+    Number(r.id),
+    r.code_panel ?? `panel-${r.id}`,
+    r.name_panel ?? `panel-${r.id}`,
+    providerKind(r),
+    r.status === 'active' ? 'ACTIVE' : 'DISABLED',
+    r.url_panel,
+    // 'unlimited' is the legacy sentinel; NULL means unlimited here.
+    r.limit_panel && /^\d+$/.test(r.limit_panel) ? Number(r.limit_panel) : null,
+    // Panel credentials stay out of the row; secret_ref is wired up at deploy.
+    JSON.stringify(t.parseJsonStrings(t.legacyAttrs(r, PROVIDER_CLAIMED, PROVIDER_SECRETS))),
+  ];
+}
+
+/** The column order `providerRow` fills. */
+export const PROVIDER_COLUMNS = [
+  'legacy_id',
+  'code',
+  'name',
+  'kind',
+  'status',
+  'base_url',
+  'capacity',
+  'config',
+] as const;
+
 async function migrateProviders(ctx: Ctx): Promise<number> {
   const rows = await mysqlRows<Row>(ctx.my, 'SELECT * FROM marzban_panel');
-  const claimed = [
-    'id',
-    'code_panel',
-    'name_panel',
-    'type',
-    'status',
-    'url_panel',
-    'username_panel',
-    'password_panel',
-    'limit_panel',
-  ];
   return insertBatch(
     ctx.pg,
     'provisioning_providers',
@@ -282,18 +352,7 @@ async function migrateProviders(ctx: Ctx): Promise<number> {
       'capacity',
       ['config', (p) => `${p}::jsonb`],
     ]),
-    rows.map((r) => [
-      Number(r.id),
-      r.code_panel ?? `panel-${r.id}`,
-      r.name_panel ?? `panel-${r.id}`,
-      (r.type ?? 'marzban').toLowerCase(),
-      r.status === 'active' ? 'ACTIVE' : 'DISABLED',
-      r.url_panel,
-      // 'unlimited' is the legacy sentinel; NULL means unlimited here.
-      r.limit_panel && /^\d+$/.test(r.limit_panel) ? Number(r.limit_panel) : null,
-      // Panel credentials stay out of the row; secret_ref is wired up at deploy.
-      JSON.stringify(t.legacyAttrs(r, claimed, ['password_panel'])),
-    ]),
+    rows.map(providerRow),
     { conflict: '(legacy_id)' },
   );
 }

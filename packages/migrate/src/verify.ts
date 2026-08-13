@@ -322,6 +322,24 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
     );
   }
 
+  // Two things that were both true at once and neither of which any count could
+  // see: JSON columns arriving as text (`"[42,2]"` instead of `[42,2]`, which
+  // the panel answers 422 to), and a live admin JWT riding along in `config`.
+  // Checked on the target side because that is where the damage would be.
+  const badConfig = await pgScalar(
+    pgc,
+    `
+    SELECT COUNT(*) FROM provisioning_providers p, jsonb_each(p.config) AS kv(k, v)
+     WHERE jsonb_typeof(kv.v) = 'string'
+       AND ((kv.v #>> '{}') ~ '^\\s*[\\[{]' OR (kv.v #>> '{}') ~ 'eyJ[A-Za-z0-9_-]{10,}\\.')`,
+  );
+  if (badConfig === 0n) {
+    report.ok('no provider config holds JSON-as-text or a credential');
+  } else {
+    allExact = false;
+    report.fail(`${badConfig} provider config value(s) are unparsed JSON or look like a token`);
+  }
+
   report.title(allExact ? 'verified' : 'VERIFICATION FAILED');
   console.log(
     allExact

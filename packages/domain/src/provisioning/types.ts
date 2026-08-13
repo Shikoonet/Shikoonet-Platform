@@ -190,9 +190,12 @@ export interface ProviderContext {
   baseUrl: string | null;
   /**
    * Resolved credentials, looked up from the environment by `secret_ref` —
-   * never read out of the database. `provisioning_providers` stays safe to
-   * dump, log and hand to a support agent, which is why the column holds a
-   * name and not a password.
+   * never read out of the database, which is why the column holds a name and
+   * not a password.
+   *
+   * That keeps the login out of the row. It does not make the row harmless:
+   * `config.proxies` carries a hysteria shared secret, because provisioning
+   * sends it. See `migrations/0002_catalog.sql`.
    */
   credentials: { username: string; password: string } | null;
   config: Record<string, unknown>;

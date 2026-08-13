@@ -1,5 +1,18 @@
 /**
- * Marzban — the only panel type in production.
+ * PasarGuard — the only panel software in production, under Marzban's name.
+ *
+ * This file is called `marzban.ts` because the wire protocol descends from
+ * Marzban's and the legacy driver is `Marzban.php`. The panels are not Marzban.
+ * Mirzabot has no `pasarguard` type, so it files the admin's choice under the
+ * Marzban name and records the truth in a second column —
+ * `legacy/mirzabot-php/admin.php:749-750`:
+ *
+ *     $version_panel = $userdata['type'] == "pasarguard" ? "1" : "0";
+ *     $userdata['type'] = $userdata['type'] == "pasarguard" ? "marzban" : ...;
+ *
+ * So `version 1` in the table below does not mean "an old Marzban". It means
+ * PasarGuard, on every row. That is exactly why the branch this file
+ * implements is the one that sends `group_ids` and `proxy_settings`.
  *
  * The legacy `Marzban.php:adduser` branches four ways: two API shapes
  * (`version_panel`) crossed with two expiry behaviours (`conecton`, plus a
@@ -13,9 +26,10 @@
  *     13  ...                      active   1        offconecton   onsublink
  *     14  ...                      disable  1        offconecton   onsublink
  *
- * Every panel is version 1 and every one is `offconecton`. So this file
- * implements one path — `group_ids` + `proxy_settings` + an absolute ISO
- * expiry — rather than porting branches nothing selects. The two `on_hold`
+ * Every panel is version 1 — that is, PasarGuard — and every one is
+ * `offconecton`. So this file implements one path — `group_ids` +
+ * `proxy_settings` + an absolute ISO expiry — rather than porting branches
+ * nothing selects. The two `on_hold`
  * variants are not dead code we deleted; they are code we never wrote, and the
  * table above is why. If a panel ever arrives with different settings, that is
  * the moment to add the branch, with a row to point at.
@@ -211,7 +225,7 @@ function pick(request: ProvisionRequest, key: string): unknown {
 }
 
 export const marzbanAdapter: ProvisioningAdapter = {
-  kind: 'marzban',
+  kind: 'pasarguard',
 
   async provision(request: ProvisionRequest, provider: ProviderContext): Promise<ProvisionResult> {
     try {

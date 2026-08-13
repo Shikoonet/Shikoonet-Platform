@@ -25,7 +25,14 @@ CREATE TABLE provisioning_providers (
                  CHECK (status IN ('ACTIVE','DISABLED')),
   base_url     text,
   -- Credentials are NOT stored here. This names a secret in the runtime secret
-  -- store; the row stays safe to dump, log, and hand to a support agent.
+  -- store, so the row is safe to dump and to keep in a backup.
+  --
+  -- It is NOT safe to hand to a support agent, and this comment used to say it
+  -- was. Two things were wrong. The importer carried `datelogin` — a live panel
+  -- admin JWT — straight into `config`; that is fixed and guarded by a test
+  -- (`packages/migrate/test/providers.mysql.test.ts`). The other cannot be
+  -- fixed: `config.proxies` holds a hysteria shared secret, because
+  -- provisioning has to send it. Treat this row as panel-operator material.
   secret_ref   text,
   -- Everything adapter-specific: inbounds, proxies, sublink, MethodUsername,
   -- on_hold behaviour, per-panel price overrides. Each adapter validates its

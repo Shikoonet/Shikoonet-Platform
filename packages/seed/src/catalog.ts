@@ -37,6 +37,7 @@ import type { D1Database } from '@shikoo/database';
 
 /** `kind` values the schema allows for a provider (0002_catalog.sql). */
 type ProviderKind =
+  | 'pasarguard'
   | 'marzban'
   | 'marzneshin'
   | 'hiddify'
@@ -80,7 +81,7 @@ interface ProductSpec {
  * active, two disabled.
  */
 const PROVIDERS: ProviderSpec[] = [
-  { code: 'sim-vip', name: '🥇 سرویس VIP (شبیه‌سازی)', kind: 'marzban', capacity: 500 },
+  { code: 'sim-vip', name: '🥇 سرویس VIP (شبیه‌سازی)', kind: 'pasarguard', capacity: 500 },
   { code: 'sim-gold', name: '🥈 سرویس طلایی (شبیه‌سازی)', kind: 'hiddify', capacity: 200 },
   // Fulfilled by hand. The one adapter that cannot fail for a network reason,
   // which makes it the right control in any provisioning test.
@@ -93,7 +94,7 @@ const PROVIDERS: ProviderSpec[] = [
   {
     code: 'sim-off',
     name: '🚫 لوکیشن غیرفعال (شبیه‌سازی)',
-    kind: 'marzban',
+    kind: 'pasarguard',
     capacity: null,
     status: 'DISABLED',
   },
@@ -253,9 +254,17 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
   for (const [i, p] of PROVIDERS.entries()) {
     await db
       .prepare(
+        // DO UPDATE, not DO NOTHING. This file promises the database converges
+        // on what is written here, and DO NOTHING only promises re-running adds
+        // nothing. The difference bit: when `sim-vip` moved from kind 'marzban'
+        // to 'pasarguard', every already-seeded database kept the old value —
+        // and 'marzban' has no adapter, so the panel silently became a manual
+        // one. Nothing would have said so.
         `INSERT INTO provisioning_providers (code, name, kind, status, capacity, sort_order)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT (code) DO NOTHING`,
+         ON CONFLICT (code) DO UPDATE SET
+           name = EXCLUDED.name, kind = EXCLUDED.kind, status = EXCLUDED.status,
+           capacity = EXCLUDED.capacity, sort_order = EXCLUDED.sort_order`,
       )
       .bind(p.code, p.name, p.kind, p.status ?? 'ACTIVE', p.capacity, i)
       .run();
@@ -276,7 +285,10 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
       .prepare(
         `INSERT INTO products (code, name, kind, provider_id, status, once_per_user, resellers_only, sort_order)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-         ON CONFLICT (code) DO NOTHING`,
+         ON CONFLICT (code) DO UPDATE SET
+           name = EXCLUDED.name, kind = EXCLUDED.kind, provider_id = EXCLUDED.provider_id,
+           status = EXCLUDED.status, once_per_user = EXCLUDED.once_per_user,
+           resellers_only = EXCLUDED.resellers_only, sort_order = EXCLUDED.sort_order`,
       )
       .bind(
         prod.code,

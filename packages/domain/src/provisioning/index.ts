@@ -14,14 +14,21 @@ export { manualAdapter } from './manual.js';
 /**
  * The kinds we can actually deliver.
  *
- * `provisioning_providers.kind` allows eight values because the schema was
- * written for the product model, not for what is built. Five of them —
- * marzneshin, hiddify, xui, wireguard, ai_account, spotify — have no adapter
- * yet and every one of them falls to `manual` below, which puts the order in a
- * human's queue instead of pretending.
+ * `provisioning_providers.kind` allows nine values because the schema was
+ * written for the product model, not for what is built. Seven of them —
+ * marzban, marzneshin, hiddify, xui, wireguard, ai_account, spotify — have no
+ * adapter and every one of them falls to `manual` below, which puts the order
+ * in a human's queue instead of pretending.
  *
  * That is not a placeholder to be embarrassed about: all five panels in
- * production are `marzban`, so this covers every live provider today.
+ * production are `pasarguard`, so this covers every live provider today.
+ *
+ * `marzban` being on the unbuilt list is deliberate, not an oversight. Every
+ * live panel is PasarGuard filed under Marzban's name (see the header of
+ * `marzban.ts`), and PasarGuard's field names are not Marzban's. A classic
+ * Marzban panel routed to this adapter would be sent `group_ids` and
+ * `proxy_settings`, drop both without an error, and hand the customer an
+ * account with no inbounds. Falling to manual is the loud failure.
  */
 const ADAPTERS = new Map<string, ProvisioningAdapter>([
   [marzbanAdapter.kind, marzbanAdapter],

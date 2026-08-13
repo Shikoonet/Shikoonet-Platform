@@ -156,6 +156,39 @@ export const ORDER_KIND = {
 } as const;
 export const orderKind = strictMap(ORDER_KIND, 'service_other.type');
 
+/**
+ * Legacy `marzban_panel.type`, restricted to the ones that survive the import.
+ *
+ * Mirzabot can store eleven types (`keyboard.php:1204-1225`). Only these three
+ * lowercase into a value `provisioning_providers.kind` allows, so anything else
+ * would fail the CHECK at insert time. Naming them here turns that into a
+ * preflight BLOCKER with the panel's name in it, before the migration runs.
+ *
+ * `pasarguard` is deliberately absent: `admin.php:750` rewrites it to `marzban`
+ * on the way in, so it can never appear in this column. The distinction lives
+ * in `version_panel` — see PANEL_VERSION.
+ */
+export const PANEL_TYPE = {
+  marzban: 'marzban',
+  marzneshin: 'marzneshin',
+  hiddify: 'hiddify',
+} as const;
+
+/**
+ * `marzban_panel.version_panel` — which API generation, and therefore which
+ * panel software. '1' is PasarGuard (`admin.php:749`).
+ *
+ * The column is NOT NULL in the legacy schema, so the case to guard is the
+ * empty string, and it is deliberately not mapped: a panel nobody has set is
+ * one a person should look at, not one that defaults into a kind speaking the
+ * wrong protocol. Verified by inserting `version_panel = ''` into the
+ * simulation MySQL and watching preflight refuse the migration.
+ */
+export const PANEL_VERSION = {
+  '0': 'marzban',
+  '1': 'pasarguard',
+} as const;
+
 export const LEASE_STATUS = {
   ACTIVE: 'ACTIVE',
   COMPLETED: 'COMPLETED',
@@ -403,6 +436,32 @@ export function json(value: string | null | undefined, fallback: unknown = {}): 
   } catch {
     return fallback;
   }
+}
+
+/**
+ * Turns JSON-shaped text back into JSON.
+ *
+ * MySQL hands every one of these columns back as a string, and `legacyAttrs`
+ * stores what it is handed, so `inbounds` arrived in `config` as the six
+ * characters `"[42,2]"` rather than as a list. Nothing noticed, because the
+ * only reader is a panel we had never called with a migrated row — and it
+ * answers 422, not something a test would see.
+ *
+ * A string that does not parse is left exactly as it was. Rewriting it into
+ * `{}` (which is what `json()` alone would do) would turn a value we do not
+ * understand into a value we invented.
+ *
+ * ponytail: applied at the provider call site, not inside `legacyAttrs`.
+ * `products.attrs` holds JSON-as-text for the same reason, but nothing reads it
+ * and no production row has a value — widen this the day something does.
+ */
+export function parseJsonStrings(attrs: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(attrs)) {
+    const looksJson = typeof v === 'string' && (v.startsWith('[') || v.startsWith('{'));
+    out[k] = looksJson ? json(v, v) : v;
+  }
+  return out;
 }
 
 /** Legacy columns with no home in the new schema, minus the ones we drop. */

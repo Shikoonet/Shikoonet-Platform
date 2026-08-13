@@ -334,9 +334,17 @@ describe('the marzban adapter', () => {
 });
 
 describe('choosing an adapter', () => {
-  it('uses marzban for marzban', () => {
-    expect(adapterFor('marzban')).toBe(marzbanAdapter);
-    expect(isAutomated('marzban')).toBe(true);
+  it('uses the panel adapter for pasarguard, which is what production runs', () => {
+    expect(adapterFor('pasarguard')).toBe(marzbanAdapter);
+    expect(isAutomated('pasarguard')).toBe(true);
+  });
+
+  it('sends a classic marzban panel to a human rather than to this adapter', () => {
+    // Not an oversight. PasarGuard takes `group_ids`/`proxy_settings`; classic
+    // Marzban takes `inbounds`/`proxies` and drops the others in silence, so a
+    // customer would get an account with no inbounds and no error anywhere.
+    expect(adapterFor('marzban')).toBe(manualAdapter);
+    expect(isAutomated('marzban')).toBe(false);
   });
 
   it('falls back to manual for every kind without an adapter', () => {

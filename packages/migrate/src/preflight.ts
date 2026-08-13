@@ -28,6 +28,11 @@ const ENUM_CHECKS = [
   { table: 'invoice', column: 'Status', map: t.SUBSCRIPTION_STATUS },
   { table: 'service_other', column: 'type', map: t.ORDER_KIND },
   { table: 'card_assignment_leases', column: 'status', map: t.LEASE_STATUS },
+  // Which panel software each provider is. A sixth panel of a type we cannot
+  // store, or one with no `version_panel`, has to stop the migration and name
+  // itself — not quietly become a `kind` that speaks a different protocol.
+  { table: 'marzban_panel', column: 'type', map: t.PANEL_TYPE },
+  { table: 'marzban_panel', column: 'version_panel', map: t.PANEL_VERSION },
 ] as const;
 
 export async function preflight(cfg: Config, my: Connection, pgc: pg.Client): Promise<Finding[]> {

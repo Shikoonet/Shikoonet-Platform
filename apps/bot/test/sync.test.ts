@@ -118,7 +118,7 @@ beforeAll(async () => {
   await db
     .prepare(
       `UPDATE provisioning_providers
-          SET base_url = 'https://sync.test', secret_ref = ?2, kind = 'marzban'
+          SET base_url = 'https://sync.test', secret_ref = ?2, kind = 'pasarguard'
         WHERE id = ?1`,
     )
     .bind(panelId, PROVIDER_CODE)
