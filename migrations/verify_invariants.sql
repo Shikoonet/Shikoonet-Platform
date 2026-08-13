@@ -220,13 +220,24 @@ $$, 'the same gift code cannot be redeemed twice by one user');
 -- ==========================================================================
 -- 7. THE CONFIG SHELF — one config to one order, and only once
 -- ==========================================================================
+-- The migrations create the catalog tables but put nothing in them, so this
+-- section brings its own plan and provider. It used to reach for whatever
+-- `ORDER BY id LIMIT 1` returned, which is a row that exists on a seeded
+-- database and nowhere else.
+INSERT INTO products (code, name, kind)
+     VALUES ('__inv-product', 'invariant fixture', 'vpn');
+INSERT INTO product_plans (product_id, name, price_irr)
+     VALUES ((SELECT id FROM products WHERE code = '__inv-product'), '__inv-plan', 1800000);
+INSERT INTO provisioning_providers (code, name, kind)
+     VALUES ('__inv-provider', 'invariant fixture', 'pasarguard');
+
 INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url)
-     VALUES ((SELECT id FROM product_plans ORDER BY id LIMIT 1),
-             (SELECT id FROM provisioning_providers ORDER BY id LIMIT 1),
+     VALUES ((SELECT id FROM product_plans WHERE name = '__inv-plan'),
+             (SELECT id FROM provisioning_providers WHERE code = '__inv-provider'),
              '__inv-stock-a', 'https://example.invalid/sub/a');
 INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url)
-     VALUES ((SELECT id FROM product_plans ORDER BY id LIMIT 1),
-             (SELECT id FROM provisioning_providers ORDER BY id LIMIT 1),
+     VALUES ((SELECT id FROM product_plans WHERE name = '__inv-plan'),
+             (SELECT id FROM provisioning_providers WHERE code = '__inv-provider'),
              '__inv-stock-b', 'https://example.invalid/sub/b');
 
 UPDATE provisioning_stock SET status = 'USED', order_id = (SELECT id FROM orders WHERE public_id = '__inv-ok-1')
@@ -243,8 +254,8 @@ $$, 'a config cannot be marked sold without naming the order that took it');
 
 SELECT assert_rejects($$
   INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url)
-       VALUES ((SELECT id FROM product_plans ORDER BY id LIMIT 1),
-               (SELECT id FROM provisioning_providers ORDER BY id LIMIT 1),
+       VALUES ((SELECT id FROM product_plans WHERE name = '__inv-plan'),
+               (SELECT id FROM provisioning_providers WHERE code = '__inv-provider'),
                '__inv-stock-a', 'https://example.invalid/sub/again')
 $$, 'the same panel account cannot be shelved twice');
 
