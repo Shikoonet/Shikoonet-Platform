@@ -875,6 +875,24 @@ a {
   margin: 0;
 }
 
+/* A strip is `min-width: max-content` below, so its labels never wrap — which
+   also means that on a phone it is wider than the screen. With nothing around
+   it that scrolls, that width propagated all the way out: 872px of tabs inside
+   a 326px column stretched the document to 997px, and every screen on the
+   dashboard scrolled sideways. The strip keeps its intrinsic width; the rail
+   around it is what scrolls. */
+.ops-nav,
+.hub-nav {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  /* A sideways flick on the tabs must not drag the page behind it. */
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  /* Room for the active tab's outline, which a scroll container would clip. */
+  padding-block: 2px;
+}
+
 .ops-nav__strip,
 .hub-nav__strip {
   display: inline-flex;
@@ -1108,6 +1126,15 @@ a {
 
 .txn-table-wrap {
   overflow-x: auto;
+  /* `overflow-x` alone was not enough, and that is the whole trap here. These
+     tables are ~1000px of nowrap columns; the wrapper scrolled them correctly,
+     yet the table's max-content width still propagated up through the
+     ancestors' intrinsic sizing and stretched the document to 997px on a 375px
+     phone. Layout leaks through size calculation, not through painting, so no
+     amount of `overflow: hidden/clip` stops it — `contain: layout` does.
+     Deliberately not `contain: paint`, which would additionally clip any menu
+     a row opens. Measured at 375px, 2026-08-12. */
+  contain: layout;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--surface-2);
@@ -1240,6 +1267,13 @@ a {
 }
 
 .stats-rail__grid {
+  /* The global `dl` rule makes every definition list a two-column grid. This
+     one holds `.stats-rail__grid-row` wrappers that already lay themselves out
+     with flex, so inheriting that grid dropped the rows into two columns and
+     squeezed the right one to 64px — narrow enough that `word-break` split
+     "2,813,647 Toman" down the column, one fragment per line. Seen on the
+     payments screen at both 1440px and 1920px, 2026-08-12. */
+  display: block;
   margin: 0;
 }
 
@@ -1428,13 +1462,32 @@ a {
     grid-template-columns: 1fr;
   }
 
+  /* The header asked for 578px inside 366: hamburger 44 + wordmark block 217 +
+     controls 317. The brand collapsed to zero width but kept painting its full
+     217px, so "SHIKOONET" sat on top of the environment badge and the date
+     picker. Measured at 390px, 2026-08-12.
+
+     The wordmark is what goes: the logo is still the link home, and the badge,
+     date range, notifications and operator menu are all things an operator acts
+     on. Sizing the brand column to its content and letting the controls wrap
+     keeps every one of them reachable instead of stacking them on each other. */
+  .shikoonet-header__bar {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
   .shikoonet-header__wordmark {
-    font-size: 1rem;
+    display: none;
+  }
+
+  .shikoonet-header__right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
   }
 
   .shikoonet-header__logo {
-    width: 44px;
-    height: 44px;
+    width: 36px;
+    height: 36px;
   }
 }
 
