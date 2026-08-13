@@ -155,3 +155,73 @@ describe('the plan detail', () => {
     expect(targets).toContain('panel:7');
   });
 });
+
+describe('the usage bar', () => {
+  const GIB = 1024 ** 3;
+  /** The drawing alone, without the isolates that wrap it. */
+  const cells = (bar: string) => bar.replace(/[\u2066\u2069]/g, '').split(' ')[0] ?? '';
+
+  it('fills one cell per tenth of the quota', () => {
+    expect(cells(menu.usageBar(5 * GIB, 10))).toBe('█████░░░░░');
+    expect(menu.usageBar(5 * GIB, 10)).toContain('50%');
+  });
+
+  it('says what the database says', () => {
+    // 62% of 20 GiB, to the byte, off the sim row this screen was walked with.
+    // The division lands a hair under and a floor turned it into 61% — which
+    // is what the browser showed on 2026-08-14 and no test here had caught.
+    expect(menu.usageBar(13_314_398_617, 20)).toContain('62%');
+  });
+
+  it('shows an untouched quota as empty and a finished one as full', () => {
+    expect(cells(menu.usageBar(0, 10))).toBe('░░░░░░░░░░');
+    expect(cells(menu.usageBar(10 * GIB, 10))).toBe('██████████');
+    expect(menu.usageBar(10 * GIB, 10)).toContain('100%');
+  });
+
+  it('never claims a quota is finished before it is', () => {
+    // 99.7% — the case a rounded bar gets wrong, and the customer who is told
+    // their service is dead while it still works comes to support.
+    const bar = menu.usageBar(9.97 * GIB, 10);
+    expect(bar).toContain('99%');
+    expect(cells(bar)).not.toContain('██████████');
+    expect(cells(bar)).toContain('░');
+  });
+
+  it('stops at full for a service that went over its quota', () => {
+    // Panels report usage past the limit; the bar has nowhere to go.
+    const bar = menu.usageBar(14 * GIB, 10);
+    expect(bar).toContain('100%');
+    expect(cells(bar)).toBe('██████████');
+  });
+
+  it('is isolated from the Persian around it', () => {
+    // Block characters have no direction of their own. Without the isolates
+    // they take the message's, and the bar fills from the opposite end.
+    const bar = menu.usageBar(3 * GIB, 10);
+    expect(bar.startsWith('\u2066')).toBe(true);
+    expect(bar.endsWith('\u2069')).toBe(true);
+  });
+
+  it('is drawn on the service screen, and only where there is a quota', () => {
+    const service: menu.ServiceView = {
+      id: 1,
+      status: 'ACTIVE',
+      plan_name_at_sale: '۱ماهه - ۱۰ گیگ',
+      volume_gb: 10,
+      used_bytes: 5 * GIB,
+      expires_at: null,
+      public_id: 'shk-1',
+      provider_name_at_sale: '🥇 سرویس VIP',
+      remote_username: 'u_1',
+      subscription_url: 'https://panel.test/sub/u_1',
+    };
+    expect(menu.serviceDetail(service, Date.now())).toContain('█████░░░░░ 50%');
+    // Unmetered, and metered but never synced: nothing to draw, and no bar
+    // drawn from a null.
+    expect(menu.serviceDetail({ ...service, volume_gb: null }, Date.now())).not.toContain('░');
+    expect(menu.serviceDetail({ ...service, used_bytes: null }, Date.now())).not.toContain('░');
+    // A migrated row with a zero quota would divide by zero.
+    expect(menu.serviceDetail({ ...service, volume_gb: 0 }, Date.now())).not.toContain('NaN');
+  });
+});

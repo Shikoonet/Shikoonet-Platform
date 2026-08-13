@@ -488,6 +488,39 @@ export function myServicesMenu(
   return keyboard;
 }
 
+/** Ten cells: one per ten percent, and short enough not to wrap on a phone. */
+const BAR_CELLS = 10;
+
+/**
+ * The quota, drawn.
+ *
+ * Faoxima does this as an 800×400 PNG through GD — a dark card, a circular
+ * gauge, a bundled Persian font, a temp file per view. Ten characters do the
+ * same job: no image library, no font file, nothing written to disk, and every
+ * Telegram client already renders them, because they are text.
+ *
+ * The isolate is not decoration. This line sits inside a message whose
+ * paragraph direction is right-to-left, and block characters carry no
+ * direction of their own; between `\u2066` and `\u2069` the bar fills from the
+ * same end everywhere, instead of from whichever end the surrounding Persian
+ * happens to impose.
+ *
+ * The percentage rounds, but 100 is reserved: a quota at 99.7% reads 99%, and
+ * only a quota that is genuinely finished reads 100%. Telling a customer their
+ * service is finished while it still works is a support ticket; being a
+ * fraction of a percent out is not.
+ *
+ * Flooring instead was the first attempt and the browser found it: 62.00% in
+ * the database came out as 61% on the screen, because the division lands a
+ * hair under.
+ */
+export function usageBar(usedBytes: number, volumeGb: number): string {
+  const ratio = usedBytes / (volumeGb * BYTES_PER_GB);
+  const percent = ratio >= 1 ? 100 : ratio <= 0 ? 0 : Math.min(99, Math.round(ratio * 100));
+  const filled = Math.floor((percent * BAR_CELLS) / 100);
+  return `\u2066${'█'.repeat(filled)}${'░'.repeat(BAR_CELLS - filled)} ${percent}%\u2069`;
+}
+
 /** `1288490188` -> `'1.2 گیگابایت'`. Latin digits, like every other number here. */
 export function formatGigabytes(bytes: number): string {
   const gb = bytes / BYTES_PER_GB;
@@ -529,6 +562,8 @@ export function serviceDetail(service: ServiceView, now: number): string {
     lines.push(`📦 حجم: ${service.volume_gb.toLocaleString('en-US')} گیگابایت`);
     if (service.used_bytes !== null) {
       const remaining = Math.max(0, service.volume_gb * BYTES_PER_GB - service.used_bytes);
+      // A zero quota would divide by zero, and a migrated row can carry one.
+      if (service.volume_gb > 0) lines.push(usageBar(service.used_bytes, service.volume_gb));
       lines.push(`📊 مصرف شده: ${formatGigabytes(service.used_bytes)}`);
       lines.push(`🎯 باقی‌مانده: ${formatGigabytes(remaining)}`);
     }
