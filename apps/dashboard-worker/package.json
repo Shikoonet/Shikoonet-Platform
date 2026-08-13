@@ -16,6 +16,7 @@
     "@shikoo/database": "workspace:*",
     "@shikoo/db": "workspace:*",
     "@shikoo/domain": "workspace:*",
+    "@shikoo/sms-parser": "workspace:*",
     "hono": "4.6.7",
     "jose": "5.9.6",
     "zod": "3.23.8"
@@ -23,7 +24,6 @@
   "devDependencies": {
     "@playwright/test": "^1.49.0",
     "@shikoo/seed": "workspace:*",
-    "@shikoo/sms-parser": "workspace:*",
     "@types/node": "^22.9.0",
     "typescript": "5.6.3",
     "vitest": "2.1.4"

@@ -1,0 +1,44 @@
+# The Telegram bot.
+#
+# Opens no port at all — it long-polls Telegram outbound. That is why it can sit
+# on a host with no inbound firewall rule, no TLS certificate, and no DNS name,
+# and it is the whole reason the certbot failure that threatens the old PHP bot
+# has no equivalent here.
+#
+#   systemctl enable --now shikoo-bot
+
+[Unit]
+Description=Shikoo Telegram bot
+Documentation=file:///opt/shikoo/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shikoo
+Group=shikoo
+WorkingDirectory=/opt/shikoo/bot
+# DATABASE_URL and TELEGRAM_BOT_TOKEN. Neither is ever logged; see telegram.ts.
+# Keep this file 0600 and owned by root — the bot token is a full takeover of
+# the bot if it leaks.
+EnvironmentFile=/etc/shikoo/bot.env
+ExecStart=/usr/bin/node dist/server.js
+Restart=always
+RestartSec=5
+
+# The bot reads and writes Postgres and talks to Telegram. It needs nothing
+# else on the filesystem.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shikoo-bot
+
+[Install]
+WantedBy=multi-user.target

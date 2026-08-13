@@ -1,0 +1,43 @@
+# The dashboard: Hono API plus the built SPA, on 8788.
+#
+# Binds 127.0.0.1. The public edge is a Cloudflare Tunnel, so this host needs no
+# open inbound port. Authentication is a Cloudflare Access JWT verified against
+# the issuer's JWKS — unchanged by where the process runs.
+#
+#   systemctl enable --now shikoo-dashboard
+
+[Unit]
+Description=Shikoo dashboard (API + SPA)
+Documentation=file:///opt/shikoo/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shikoo
+Group=shikoo
+WorkingDirectory=/opt/shikoo/dashboard
+# DATABASE_URL, ACCESS_AUD, ACCESS_ISSUER, SPA_DIST, ENV_NAME=production.
+# TEST_ACCESS_USER must NOT appear here — the process refuses to start with it
+# set while ENV_NAME=production, because it bypasses JWT verification entirely.
+EnvironmentFile=/etc/shikoo/dashboard.env
+ExecStart=/usr/bin/node dist/server.js
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# The only thing it listens on.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shikoo-dashboard
+
+[Install]
+WantedBy=multi-user.target
