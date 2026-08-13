@@ -31,31 +31,54 @@ export interface CheckoutPayment {
 }
 
 /**
- * Least-recently-used ACTIVE card, marked as assigned in the same statement.
- *
- * `idx_payment_cards_rotation` was built for exactly this read. SKIP LOCKED is
- * what makes two simultaneous checkouts take two different cards instead of
- * queueing behind one row, and it is why this needs no lease table — the
- * legacy bot keeps leases in the PHP repo, and none of that complexity buys
- * anything here.
+ * How far a card's cursor advances per assignment, before its weight divides
+ * it. Large enough that integer division still has resolution at the maximum
+ * weight of 20 (the smallest step is 50,000), small enough that a bigint never
+ * comes close to running out.
  */
-async function rotateCard(
+const ROTATION_STEP = 1_000_000;
+
+/**
+ * The next ACTIVE card to hand out, marked as assigned in the same statement.
+ *
+ * Weighted round-robin over a virtual clock. Each card carries a cursor; the
+ * smallest cursor is taken and advanced by ROTATION_STEP/weight. A card with
+ * weight 3 advances a third as far per turn, so it comes up three times as
+ * often — the ratio is exactly the weight ratio.
+ *
+ * It also cannot become exclusive, which is the part the head admin actually
+ * asked for. The cursor of the card just picked strictly increases, so after a
+ * finite number of turns it passes every other card and their turn comes. That
+ * is a property worth testing rather than asserting, and `pay.test.ts` does.
+ *
+ * This replaced a plain `ORDER BY last_assigned_at NULLS FIRST`, which had the
+ * opposite behaviour: a freshly added card has NULL there, so it won EVERY
+ * checkout until it had been used more recently than all the others.
+ *
+ * `idx_payment_cards_rotation` covers this read. SKIP LOCKED is what makes two
+ * simultaneous checkouts take two different cards instead of queueing behind
+ * one row, and it is why this needs no lease table — the legacy bot keeps
+ * leases in the PHP repo, and none of that complexity buys anything here.
+ */
+export async function rotateCard(
   tx: D1DatabaseSession,
   now: number,
 ): Promise<{ card_digits: string; holder_name: string | null; financial_account_id: string } | null> {
   return tx
     .prepare(
-      `UPDATE payment_cards SET last_assigned_at = ?1
+      `UPDATE payment_cards
+          SET rotation_cursor  = rotation_cursor + ?1 / display_weight,
+              last_assigned_at = ?2
         WHERE id = (
           SELECT id FROM payment_cards
            WHERE status = 'ACTIVE'
-           ORDER BY last_assigned_at NULLS FIRST, id
+           ORDER BY rotation_cursor, id
            LIMIT 1
            FOR UPDATE SKIP LOCKED
         )
         RETURNING card_digits, holder_name, financial_account_id`,
     )
-    .bind(now)
+    .bind(ROTATION_STEP, now)
     .first<{ card_digits: string; holder_name: string | null; financial_account_id: string }>();
 }
 
