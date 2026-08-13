@@ -4,7 +4,7 @@
 
 import { marzbanAdapter } from './marzban.js';
 import { manualAdapter } from './manual.js';
-import type { ProvisioningAdapter } from './types.js';
+import type { ProvisioningAdapter, RenewMode } from './types.js';
 
 export * from './types.js';
 export { marzbanAdapter } from './marzban.js';
@@ -42,6 +42,44 @@ export function adapterFor(kind: string): ProvisioningAdapter {
 /** True when `kind` has a real adapter rather than falling back to manual. */
 export function isAutomated(kind: string): boolean {
   return ADAPTERS.has(kind) && kind !== manualAdapter.kind;
+}
+
+/**
+ * Renewal is per panel, and the setting arrived with the migration.
+ *
+ * `provisioning_providers.config` keeps every legacy column the schema did not
+ * claim a place for, so the two the admin set in the old bot are already there:
+ *
+ *     status_extend  'on_extend' | 'off_extend'   — may this panel be renewed
+ *     Methodextend   a Persian phrase             — how
+ *
+ * Matching on a Persian phrase from a settings table is not something to build
+ * on, so `renew_mode` is read first and is what an admin sets from here on. The
+ * legacy key is only the fallback that makes the five live panels work on the
+ * day this ships, and 'ADD' is spelled out rather than defaulted to: getting
+ * this wrong the other way — RESET on a panel meant to accumulate — silently
+ * deletes volume a customer already paid for.
+ */
+const LEGACY_ADD_METHOD = 'اضافه شدن زمان و حجم به ماه بعد';
+
+export function renewModeFor(config: Record<string, unknown>): RenewMode {
+  const explicit = config['renew_mode'];
+  if (typeof explicit === 'string' && explicit.toUpperCase() === 'ADD') return 'ADD';
+  if (typeof explicit === 'string' && explicit.toUpperCase() === 'RESET') return 'RESET';
+  return config['Methodextend'] === LEGACY_ADD_METHOD ? 'ADD' : 'RESET';
+}
+
+/**
+ * Whether this panel may be renewed at all.
+ *
+ * One production panel is `off_extend`, and honouring that is the difference
+ * between "the admin turned this off" and "the admin's setting was ignored by
+ * the new bot".
+ */
+export function renewAllowed(config: Record<string, unknown>): boolean {
+  const explicit = config['renew_enabled'];
+  if (typeof explicit === 'boolean') return explicit;
+  return config['status_extend'] !== 'off_extend';
 }
 
 /**

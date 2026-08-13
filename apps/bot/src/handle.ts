@@ -22,14 +22,18 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { renewAllowed, renewModeFor } from '@shikoo/domain';
 import { decode } from './callback.js';
 import { panelsForUser, plansOnPanel, purchasablePlan } from './catalog.js';
 import * as menu from './menu.js';
 import { priceForUser } from './money.js';
-import { newPublicId, placeOrder } from './order.js';
+import { newPublicId, placeOrder, placeRenewalOrder } from './order.js';
 import {
+  countRenewableForUser,
   countSubscriptionsForUser,
   orderForUser,
+  renewableForUser,
+  renewableForUserById,
   subscriptionForUser,
   subscriptionsForUser,
 } from './owned.js';
@@ -300,6 +304,83 @@ async function handleCallback(
       const service = await subscriptionForUser(tx, user.id, action.id);
       if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
       return screen(menu.serviceDetail(service, Date.now()), menu.serviceDetailMenu());
+    }
+
+    case 'renew': {
+      const total = await countRenewableForUser(tx, user.id);
+      if (total === 0) {
+        return screen(menu.NOTHING_TO_RENEW, menu.mainMenu(user.is_reseller));
+      }
+      const pages = Math.ceil(total / menu.SERVICES_PER_PAGE);
+      const page = Math.min(action.id ?? 1, pages);
+      const services = await renewableForUser(
+        tx,
+        user.id,
+        menu.SERVICES_PER_PAGE,
+        (page - 1) * menu.SERVICES_PER_PAGE,
+      );
+      return screen(
+        menu.CHOOSE_SERVICE_TO_RENEW,
+        menu.renewMenu(services, Date.now(), page, pages),
+      );
+    }
+
+    case 'rnw': {
+      if (action.id === undefined) return IGNORED;
+      const service = await renewableForUserById(tx, user.id, action.id);
+      if (!service) return screen(menu.RENEWAL_GONE, menu.renewMenu([], Date.now(), 1, 1));
+      if (!renewAllowed(service.provider_config ?? {})) {
+        return screen(menu.RENEWAL_CLOSED, menu.afterPaidMenu());
+      }
+      // The plans on the panel this service already lives on, through the same
+      // visibility rule the shop uses. The plan it was originally sold under is
+      // gone for roughly half of the migrated services, so offering only that
+      // would tell most customers their service cannot be renewed.
+      const plans = await plansOnPanel(tx, user.id, service.provider_id);
+      if (plans.length === 0) {
+        return screen(menu.NO_RENEWAL_PLAN, menu.afterPaidMenu());
+      }
+      return screen(
+        menu.renewIntro(service, renewModeFor(service.provider_config ?? {}) === 'ADD'),
+        menu.renewPlanMenu(service.id, plans, user.discount_percent),
+      );
+    }
+
+    case 'rord': {
+      if (action.id === undefined || action.id2 === undefined) return IGNORED;
+      // Both ids came off a button, so both are checked again: the service
+      // against its owner, the plan against the same rule the list used.
+      const service = await renewableForUserById(tx, user.id, action.id);
+      if (!service) return screen(menu.RENEWAL_GONE, menu.renewMenu([], Date.now(), 1, 1));
+      if (!renewAllowed(service.provider_config ?? {})) {
+        return screen(menu.RENEWAL_CLOSED, menu.afterPaidMenu());
+      }
+      const plan = await purchasablePlan(tx, user.id, action.id2);
+      // A plan from another panel is not a renewal of THIS service, whatever
+      // the button said. Checking the provider is what stops a cheap plan on
+      // one panel being used to extend an expensive service on another.
+      if (!plan || plan.providerId !== service.provider_id) {
+        return screen(menu.PLAN_GONE, menu.afterPaidMenu());
+      }
+      const placed = await placeRenewalOrder(tx, user.id, plan, user.discount_percent, service.id);
+      const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
+      if (!checkout) {
+        return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
+      }
+      if (checkout.claimed) {
+        return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+      }
+      return screen(
+        menu.renewCheckout(
+          placed.publicId,
+          service.plan_name_at_sale,
+          plan,
+          placed.totalIrr,
+          checkout.cardDigits,
+          checkout.cardHolder,
+        ),
+        menu.checkoutMenu(placed.id),
+      );
     }
 
     case 'paid': {

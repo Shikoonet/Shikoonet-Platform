@@ -43,11 +43,40 @@ export async function placeOrder(
   plan: CatalogPlan,
   discountPercent: number,
 ): Promise<PlacedOrder> {
+  return place(tx, userId, plan, discountPercent, 'NEW_PURCHASE', null);
+}
+
+/**
+ * The same thing, pointed at a service the customer already has.
+ *
+ * `target_subscription_id` is what makes it a renewal rather than a purchase,
+ * and it is part of the open-order lookup: a customer renewing two services
+ * onto the same plan is placing two orders, not pressing one button twice.
+ */
+export async function placeRenewalOrder(
+  tx: D1DatabaseSession,
+  userId: number,
+  plan: CatalogPlan,
+  discountPercent: number,
+  subscriptionId: number,
+): Promise<PlacedOrder> {
+  return place(tx, userId, plan, discountPercent, 'RENEWAL', subscriptionId);
+}
+
+async function place(
+  tx: D1DatabaseSession,
+  userId: number,
+  plan: CatalogPlan,
+  discountPercent: number,
+  kind: 'NEW_PURCHASE' | 'RENEWAL',
+  subscriptionId: number | null,
+): Promise<PlacedOrder> {
   const price = priceForUser(plan.priceIrr, discountPercent);
 
-  // Same plan, same price, still waiting to be paid. A price change makes the
-  // old order stale, so it is left alone and a new one is written instead —
-  // quietly charging yesterday's price is worse than a duplicate row.
+  // Same plan, same price, same target, still waiting to be paid. A price
+  // change makes the old order stale, so it is left alone and a new one is
+  // written instead — quietly charging yesterday's price is worse than a
+  // duplicate row.
   const open = await tx
     .prepare(
       `SELECT id, public_id, total_irr
@@ -55,11 +84,13 @@ export async function placeOrder(
         WHERE user_id = ?1
           AND plan_id = ?2
           AND total_irr = ?3
+          AND kind = ?4
+          AND target_subscription_id IS NOT DISTINCT FROM ?5
           AND status = 'AWAITING_PAYMENT'
         ORDER BY created_at DESC
         LIMIT 1`,
     )
-    .bind(userId, plan.planId, price.totalIrr)
+    .bind(userId, plan.planId, price.totalIrr, kind, subscriptionId)
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (open) {
     return { id: open.id, publicId: open.public_id, totalIrr: open.total_irr, reused: true };
@@ -68,12 +99,21 @@ export async function placeOrder(
   const row = await tx
     .prepare(
       `INSERT INTO orders
-         (public_id, user_id, kind, plan_id, quantity,
+         (public_id, user_id, kind, plan_id, target_subscription_id, quantity,
           unit_price_irr, discount_irr, total_irr, status)
-       VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, ?4, ?5, ?6, 'AWAITING_PAYMENT')
+       VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, 'AWAITING_PAYMENT')
        RETURNING id, public_id, total_irr`,
     )
-    .bind(newPublicId(), userId, plan.planId, price.unitPriceIrr, price.discountIrr, price.totalIrr)
+    .bind(
+      newPublicId(),
+      userId,
+      kind,
+      plan.planId,
+      subscriptionId,
+      price.unitPriceIrr,
+      price.discountIrr,
+      price.totalIrr,
+    )
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (!row) throw new Error('order insert returned no row');
 

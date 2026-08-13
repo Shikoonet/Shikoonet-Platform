@@ -14,8 +14,11 @@ import {
   manualAdapter,
   marzbanAdapter,
   remoteUsernameFor,
+  renewAllowed,
+  renewModeFor,
   type ProviderContext,
   type ProvisionRequest,
+  type RenewRequest,
 } from '../src/index.js';
 
 const NOW = Date.UTC(2026, 7, 13, 12, 0, 0);
@@ -456,5 +459,165 @@ describe('listing every account on a panel', () => {
 
   it('is not offered at all by the manual adapter', () => {
     expect(manualAdapter.listAccounts).toBeUndefined();
+  });
+});
+
+/**
+ * Which renewal mode a panel uses, read from the settings the admin already
+ * made in the old bot.
+ *
+ * Anchored on the exact strings in the production `marzban_panel` rows rather
+ * than on the constant in the source, so a typo in one is not a typo in both.
+ */
+describe('reading the panel’s renewal settings', () => {
+  const LEGACY_ADD = 'اضافه شدن زمان و حجم به ماه بعد';
+  const LEGACY_RESET = 'ریست حجم و زمان';
+
+  it('matches the five live panels', () => {
+    // panel 1 accumulates; 8, 12, 13 and 14 reset.
+    expect(renewModeFor({ Methodextend: LEGACY_ADD })).toBe('ADD');
+    expect(renewModeFor({ Methodextend: LEGACY_RESET })).toBe('RESET');
+  });
+
+  it('resets rather than accumulates when the setting is missing or unknown', () => {
+    // The safe direction: RESET gives the customer exactly the plan they paid
+    // for. Defaulting to ADD would hand out a month on top of whatever was
+    // there, on every panel nobody configured.
+    expect(renewModeFor({})).toBe('RESET');
+    expect(renewModeFor({ Methodextend: 'ریست زمان و اضافه کردن حجم قبلی' })).toBe('RESET');
+  });
+
+  it('lets an explicit setting win over the legacy one', () => {
+    expect(renewModeFor({ renew_mode: 'add', Methodextend: LEGACY_RESET })).toBe('ADD');
+    expect(renewModeFor({ renew_mode: 'RESET', Methodextend: LEGACY_ADD })).toBe('RESET');
+  });
+
+  it('honours the one panel the admin switched renewal off for', () => {
+    expect(renewAllowed({ status_extend: 'off_extend' })).toBe(false);
+    expect(renewAllowed({ status_extend: 'on_extend' })).toBe(true);
+    // Nothing configured means allowed: every panel but one is on_extend, and
+    // a silent no would look like a broken button rather than a setting.
+    expect(renewAllowed({})).toBe(true);
+    expect(renewAllowed({ renew_enabled: false, status_extend: 'on_extend' })).toBe(false);
+  });
+});
+
+describe('extending an account', () => {
+  function renewRequest(over: Partial<RenewRequest> = {}): RenewRequest {
+    return {
+      username: '369469521_84702b7df0',
+      volumeGb: 50,
+      durationDays: 30,
+      note: 'shikoo b5baf9f689',
+      providerConfig: {},
+      planAttrs: {},
+      mode: 'RESET',
+      renewFrom: new Date(NOW),
+      ...over,
+    };
+  }
+
+  /** A panel holding one account, recording the PUT it is asked to make. */
+  function panelWith(account: Record<string, unknown> | null) {
+    const puts: Record<string, unknown>[] = [];
+    const resets: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.endsWith('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok' }), { status: 200 });
+      }
+      if (method === 'POST' && url.endsWith('/reset')) {
+        resets.push(url);
+        return new Response('{}', { status: 200 });
+      }
+      if (method === 'GET') {
+        return account === null
+          ? new Response('{}', { status: 404 })
+          : new Response(JSON.stringify(account), { status: 200 });
+      }
+      if (method === 'PUT') {
+        puts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ username: 'x', subscription_url: '/sub/x' }), {
+          status: 200,
+        });
+      }
+      return new Response('{}', { status: 500 });
+    }) as unknown as typeof globalThis.fetch;
+    return { puts, resets, fetchImpl };
+  }
+
+  it('reads an expiry the panel reports as a unix timestamp', async () => {
+    // Marzban has reported this both ways across versions. Reading only ISO
+    // would treat a timestamp as "no expiry" and, in ADD mode, silently throw
+    // away every day the customer had left.
+    const panel = panelWith({ expire: Math.floor((NOW + 10 * 86_400_000) / 1000), data_limit: 0 });
+
+    await marzbanAdapter.renew!(
+      renewRequest({ mode: 'ADD' }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    expect(panel.puts[0]?.['expire']).toBe(new Date(NOW + 40 * 86_400_000).toISOString());
+  });
+
+  it('keeps an unmetered account unmetered', async () => {
+    const panel = panelWith({ expire: 0, data_limit: 0 });
+
+    await marzbanAdapter.renew!(
+      renewRequest({ mode: 'ADD' }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    // Adding fifty gigabytes to "no limit" must not impose a fifty-gigabyte cap.
+    expect(panel.puts[0]?.['data_limit']).toBe(0);
+  });
+
+  it('stops before touching anything when the account is gone', async () => {
+    const panel = panelWith(null);
+
+    const result = await marzbanAdapter.renew!(
+      renewRequest(),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    expect(result).toMatchObject({ ok: false, retryable: false });
+    expect(panel.puts).toHaveLength(0);
+    expect(panel.resets).toHaveLength(0);
+  });
+
+  it('does nothing the second time, having recognised its own note', async () => {
+    const panel = panelWith({ expire: 0, data_limit: 0, note: 'shikoo b5baf9f689' });
+
+    const result = await marzbanAdapter.renew!(
+      renewRequest(),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    expect(result).toMatchObject({ ok: true, alreadyExisted: true });
+    expect(panel.puts).toHaveLength(0);
+    // And the counter is not zeroed a second time either, which on a RESET
+    // renewal would hand the customer a free month of usage.
+    expect(panel.resets).toHaveLength(0);
+  });
+
+  it('does not mistake a different order’s note for its own', async () => {
+    const panel = panelWith({ expire: 0, data_limit: 0, note: 'shikoo 0000000000' });
+
+    await marzbanAdapter.renew!(renewRequest(), provider({ fetch: panel.fetchImpl }));
+
+    expect(panel.puts).toHaveLength(1);
+  });
+
+  it('does not reset the counter when the mode accumulates', async () => {
+    const panel = panelWith({ expire: 0, data_limit: 10 * 1024 ** 3 });
+
+    await marzbanAdapter.renew!(
+      renewRequest({ mode: 'ADD' }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    expect(panel.resets).toHaveLength(0);
+    expect(panel.puts[0]?.['data_limit']).toBe(60 * 1024 ** 3);
   });
 });

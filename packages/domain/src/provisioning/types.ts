@@ -36,6 +36,52 @@ export interface ProvisionRequest {
   expiresAt: Date | null;
 }
 
+/**
+ * The two ways a renewal is applied, both of them live.
+ *
+ * Legacy `panels.php:extend` offers five, selected per panel by
+ * `marzban_panel.Methodextend`. The production rows use exactly two:
+ *
+ *     panel  Methodextend                         mode
+ *       1    اضافه شدن زمان و حجم به ماه بعد        ADD
+ *       8    ریست حجم و زمان                       RESET
+ *      12    ریست حجم و زمان                       RESET
+ *      13    ریست حجم و زمان                       RESET  (renewal switched off)
+ *      14    ریست حجم و زمان                       RESET
+ *
+ * The other three are not implemented for the same reason the `on_hold` branches
+ * of `provision` are not: nothing selects them, and a branch nobody runs is a
+ * branch nobody notices is wrong.
+ *
+ * RESET  — the usage counter goes to zero, the quota becomes the plan's, and
+ *          the clock starts again from the moment of renewal.
+ * ADD    — the plan's volume is added to what is already there and its days are
+ *          added to whatever time is left, so a customer who renews early loses
+ *          nothing. Usage is NOT reset; the quota grows instead.
+ */
+export type RenewMode = 'RESET' | 'ADD';
+
+/** What a renewal buys, flattened the same way `ProvisionRequest` is. */
+export interface RenewRequest {
+  /** The account already on the panel. Not derived — read off the subscription. */
+  username: string;
+  /** The plan's volume. NULL means unmetered. */
+  volumeGb: number | null;
+  /** The plan's duration. NULL means no expiry. */
+  durationDays: number | null;
+  note: string;
+  providerConfig: Record<string, unknown>;
+  planAttrs: Record<string, unknown>;
+  mode: RenewMode;
+  /**
+   * The moment the renewal takes effect, resolved by the caller so the adapter
+   * still has no clock. In ADD mode the new expiry is measured from whichever
+   * is later, this or the account's own remaining time — which is what stops an
+   * early renewal from throwing away the days already paid for.
+   */
+  renewFrom: Date;
+}
+
 export interface ProvisionOk {
   ok: true;
   /** Goes to `subscriptions.remote_username`. */
@@ -53,6 +99,19 @@ export interface ProvisionOk {
    * must not be treated as a failure.
    */
   alreadyExisted: boolean;
+  /**
+   * What the account's limits are now, as the adapter set them.
+   *
+   * Only a renewal fills these in, and only because the answer is not
+   * derivable outside the adapter: in ADD mode the new expiry is measured from
+   * the panel's own remaining time and the new quota from the panel's own
+   * counter. Recomputing either in the caller would be two implementations of
+   * one rule, drifting apart the first time a panel's clock does.
+   *
+   * `undefined` means "unchanged / not applicable"; `null` means "no limit".
+   */
+  expiresAt?: Date | null;
+  volumeGb?: number | null;
 }
 
 export interface ProvisionFailed {
@@ -97,6 +156,17 @@ export interface ProvisioningAdapter {
    * that calls it can be interrupted at any point and will call again.
    */
   provision(request: ProvisionRequest, provider: ProviderContext): Promise<ProvisionResult>;
+  /**
+   * Extend an account that already exists.
+   *
+   * Not idempotent the way `provision` is, and cannot be: adding thirty days
+   * twice adds sixty. The caller is what makes it safe — an order is claimed
+   * out of PAID before this runs and only ever reaches here once.
+   *
+   * Optional. Without it a renewal falls to a person, which is the right
+   * answer for a product nobody automated.
+   */
+  renew?(request: RenewRequest, provider: ProviderContext): Promise<ProvisionResult>;
   /**
    * Every account this provider holds, for the sweep that refreshes what the
    * customer sees.

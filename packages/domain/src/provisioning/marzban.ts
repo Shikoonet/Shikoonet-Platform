@@ -31,6 +31,7 @@ import type {
   ProvisionResult,
   ProvisioningAdapter,
   RemoteAccount,
+  RenewRequest,
 } from './types.js';
 
 const GB = 1024 * 1024 * 1024;
@@ -56,6 +57,8 @@ interface MarzbanUser {
   expire?: unknown;
   status?: unknown;
   used_traffic?: unknown;
+  data_limit?: unknown;
+  note?: unknown;
 }
 
 function asString(value: unknown): string | null {
@@ -173,6 +176,35 @@ function isPanelFault(status: number): boolean {
   return status >= 500;
 }
 
+/**
+ * The account's current expiry, in epoch milliseconds, or null for unmetered.
+ *
+ * Marzban has reported this both ways across versions — a unix timestamp on the
+ * older API and an ISO string on the newer one — and the same field is written
+ * back as ISO by `provision`. Reading only one shape would silently treat the
+ * other as "no expiry", which in ADD mode means renewing from today and
+ * throwing away every day the customer had left.
+ */
+function expiryMs(raw: unknown): number | null {
+  if (typeof raw === 'number') return raw > 0 ? raw * 1000 : null;
+  if (typeof raw === 'string' && raw.length > 0) {
+    // A numeric string is a timestamp; anything else is a date.
+    if (/^\d+$/.test(raw)) {
+      const seconds = Number(raw);
+      return seconds > 0 ? seconds * 1000 : null;
+    }
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/** The account's current quota in bytes, or null when it is unmetered. */
+function quotaBytes(raw: unknown): number | null {
+  const n = asByteCount(raw);
+  return n === null || n === 0 ? null : n;
+}
+
 /** Plan-level settings win over panel-level ones, same precedence as the legacy bot. */
 function pick(request: ProvisionRequest, key: string): unknown {
   return request.planAttrs[key] ?? request.providerConfig[key];
@@ -277,6 +309,141 @@ export const marzbanAdapter: ProvisioningAdapter = {
     } catch (error) {
       // A timeout, a DNS failure, a panel that is down. All worth another pass;
       // none worth losing the order over.
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}`, retryable: true };
+    }
+  },
+
+  /**
+   * Extend an account that is already on the panel.
+   *
+   * Unlike `provision`, the operation is not naturally idempotent — in ADD mode
+   * a second attempt adds a second month. The retry window is real: the sweep
+   * returns an order to PAID on a timeout, and a timeout is exactly the case
+   * where the panel may have applied the change and lost the answer.
+   *
+   * So the order's own id is written into the account's `note` in the same
+   * request that applies the change. A retry reads it back first and stops. The
+   * note is ours — `provision` already writes `shikoo <order>` into it, and it
+   * is what the admin reads in the panel to see where an account came from.
+   */
+  async renew(request: RenewRequest, provider: ProviderContext): Promise<ProvisionResult> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error, retryable: true };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+
+      const found = await getUser(provider, auth.token, request.username);
+      if (found.state === 'failed') {
+        return {
+          ok: false,
+          reason: `panel would not answer for this account (HTTP ${found.status})`,
+          retryable: isPanelFault(found.status),
+        };
+      }
+      if (found.state === 'missing') {
+        // Renewing something that is not there cannot be fixed by trying again.
+        // The customer has paid, so this has to reach a person.
+        return {
+          ok: false,
+          reason: `account "${request.username}" is no longer on the panel`,
+          retryable: false,
+        };
+      }
+
+      const already = asString(found.user.note)?.includes(request.note) ?? false;
+      if (already) {
+        const currentQuota = quotaBytes(found.user.data_limit);
+        const currentExpiry = expiryMs(found.user.expire);
+        return {
+          ok: true,
+          remoteUsername: request.username,
+          remoteRef: { panel: provider.code, username: request.username },
+          subscriptionUrl: absoluteSubUrl(found.user.subscription_url, base),
+          alreadyExisted: true,
+          expiresAt: currentExpiry === null ? null : new Date(currentExpiry),
+          volumeGb: currentQuota === null ? null : currentQuota / GB,
+        };
+      }
+
+      const addedBytes = request.volumeGb === null ? null : Math.round(request.volumeGb * GB);
+      const addedMs = request.durationDays === null ? null : request.durationDays * 86_400_000;
+      const from = request.renewFrom.getTime();
+
+      let dataLimit: number;
+      let expire: string | number;
+      if (request.mode === 'ADD') {
+        // Measured from whatever time is left, so renewing early keeps the days
+        // already paid for. `time() - expire > 0 ? time() : expire` in the PHP.
+        const current = expiryMs(found.user.expire);
+        const anchor = current !== null && current > from ? current : from;
+        expire = addedMs === null ? 0 : new Date(anchor + addedMs).toISOString();
+        const currentQuota = quotaBytes(found.user.data_limit);
+        // Adding to an unmetered account, or adding unmetered volume, leaves it
+        // unmetered — anything else would put a cap on a service that had none.
+        dataLimit = addedBytes === null || currentQuota === null ? 0 : currentQuota + addedBytes;
+      } else {
+        expire = addedMs === null ? 0 : new Date(from + addedMs).toISOString();
+        dataLimit = addedBytes ?? 0;
+      }
+
+      if (request.mode === 'RESET') {
+        // Legacy resets before it modifies, and the order matters: zeroing after
+        // the new quota is set would still be correct, but a failure between the
+        // two would leave the customer with a new quota and last month's usage
+        // already counted against it.
+        const reset = await withTimeout((signal) =>
+          provider.fetch(`${base}/api/user/${encodeURIComponent(request.username)}/reset`, {
+            method: 'POST',
+            headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+            signal,
+          }),
+        );
+        if (!reset.ok) {
+          return {
+            ok: false,
+            reason: `panel would not reset the usage counter (HTTP ${reset.status})`,
+            retryable: isPanelFault(reset.status),
+          };
+        }
+      }
+
+      const res = await withTimeout((signal) =>
+        provider.fetch(`${base}/api/user/${encodeURIComponent(request.username)}`, {
+          method: 'PUT',
+          headers: {
+            accept: 'application/json',
+            'content-type': 'application/json',
+            authorization: `Bearer ${auth.token}`,
+          },
+          body: JSON.stringify({ data_limit: dataLimit, expire, note: request.note }),
+          signal,
+        }),
+      );
+      if (!res.ok) {
+        return {
+          ok: false,
+          reason: `panel refused to extend the account (HTTP ${res.status})`,
+          retryable: res.status >= 500,
+        };
+      }
+
+      const updated = (await res.json()) as MarzbanUser;
+      return {
+        ok: true,
+        remoteUsername: asString(updated.username) ?? request.username,
+        remoteRef: { panel: provider.code, username: request.username },
+        subscriptionUrl:
+          absoluteSubUrl(updated.subscription_url, base) ??
+          absoluteSubUrl(found.user.subscription_url, base),
+        alreadyExisted: false,
+        // What was asked for, not what came back: a panel that echoes the
+        // request is agreeing, and a panel that echoes something else has
+        // already been accepted by the `res.ok` above.
+        expiresAt: expire === 0 ? null : new Date(expire),
+        volumeGb: dataLimit === 0 ? null : dataLimit / GB,
+      };
+    } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return { ok: false, reason: `could not reach the panel: ${reason}`, retryable: true };
     }

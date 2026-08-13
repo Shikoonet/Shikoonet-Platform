@@ -16,6 +16,7 @@ import { handleUpdate, type HandleStatus } from './handle.js';
 import { settleVerifiedPayments, type Notification } from './settle.js';
 import { provisionPaidOrders } from './provision.js';
 import { syncSubscriptions } from './sync.js';
+import { warnExpiringServices } from './warn.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 
 export interface PollResult {
@@ -212,6 +213,9 @@ export async function run(
       } catch (err) {
         console.error('[bot] subscription sync failed, will retry', err);
       }
+      // After the sync, so a service is warned about the volume the panel
+      // reports rather than the figure from ten minutes ago.
+      await sweep(api, 'warning about services running out', () => warnExpiringServices(db));
     } catch (err) {
       // A shutdown aborts the poll in flight, which surfaces here as a fetch
       // error. It is not a failure and must not be logged as one.

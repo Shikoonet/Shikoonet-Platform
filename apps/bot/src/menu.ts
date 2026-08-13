@@ -52,7 +52,7 @@ const BACK_TO_MENU = 'بازگشت به منو ⬅️';
 export function mainMenu(isReseller: boolean): InlineKeyboard {
   const keyboard: InlineKeyboard = [
     [
-      { text: '♻️ تمدید سرویس', callback_data: encode('soon') },
+      { text: '♻️ تمدید سرویس', callback_data: encode('renew') },
       { text: '🔐 خرید اشتراک', callback_data: encode('buy') },
     ],
     [
@@ -334,21 +334,31 @@ export type ServiceState =
   | 'REMOVED'
   | 'FAILED';
 
-/** The fields of a subscription any of these screens is allowed to read. */
-export interface ServiceView {
+/**
+ * What a row in a list needs, and no more.
+ *
+ * Narrow on purpose: the renewal list reads a different query than the service
+ * list, and widening this to the full row would have meant filling in fields
+ * that query never selects with plausible-looking nulls.
+ */
+export interface ServiceListItem {
   id: number;
-  public_id: string;
   status: string;
   plan_name_at_sale: string;
-  provider_name_at_sale: string | null;
-  remote_username: string | null;
-  subscription_url: string | null;
   volume_gb: number | null;
   used_bytes: number | null;
   expires_at: string | null;
 }
 
-export function serviceState(service: ServiceView, now: number): ServiceState {
+/** Everything the detail screen shows. */
+export interface ServiceView extends ServiceListItem {
+  public_id: string;
+  provider_name_at_sale: string | null;
+  remote_username: string | null;
+  subscription_url: string | null;
+}
+
+export function serviceState(service: ServiceListItem, now: number): ServiceState {
   if (service.status !== 'ACTIVE') {
     switch (service.status) {
       case 'ON_HOLD':
@@ -417,7 +427,7 @@ export function myServicesTitle(total: number, page: number, pages: number): str
  * to this customer. The worst a forged page can produce is an empty list.
  */
 export function myServicesMenu(
-  services: ServiceView[],
+  services: ServiceListItem[],
   now: number,
   page: number,
   pages: number,
@@ -515,6 +525,190 @@ export function serviceDetailMenu(): InlineKeyboard {
       { text: BACK_TO_MENU, callback_data: encode('menu') },
     ],
   ];
+}
+
+// ---------------------------------------------------------------------------
+// «تمدید سرویس»
+// ---------------------------------------------------------------------------
+
+export const NOTHING_TO_RENEW = [
+  'سرویسی برای تمدید ندارید.',
+  '',
+  'اگر سرویس فعالی دارید و اینجا نمی‌بینید، به پشتیبانی پیام دهید.',
+].join('\n');
+
+export const CHOOSE_SERVICE_TO_RENEW = '♻️ کدام سرویس را تمدید می‌کنید؟';
+
+export const RENEWAL_GONE = 'این سرویس قابل تمدید نیست. لطفاً از فهرست تمدید دوباره انتخاب کنید.';
+
+/** The panel the service lives on has renewal switched off — the admin's own
+ *  `status_extend` setting, carried over from the old bot. */
+export const RENEWAL_CLOSED = [
+  'تمدید روی لوکیشن این سرویس فعال نیست.',
+  '',
+  'می‌توانید از بخش «خرید اشتراک» سرویس جدیدی بگیرید یا به پشتیبانی پیام دهید.',
+].join('\n');
+
+export const NO_RENEWAL_PLAN = [
+  'در حال حاضر پلنی برای تمدید این سرویس موجود نیست.',
+  '',
+  'لطفاً کمی بعد دوباره امتحان کنید یا به پشتیبانی پیام دهید.',
+].join('\n');
+
+/** The list of services, keyed to the renewal flow rather than the detail one. */
+export function renewMenu(
+  services: ServiceListItem[],
+  now: number,
+  page: number,
+  pages: number,
+): InlineKeyboard {
+  const keyboard: InlineKeyboard = services.map((service) => [
+    {
+      text: `${STATE_GLYPH[serviceState(service, now)]} ${shortName(service.plan_name_at_sale)}`,
+      callback_data: encode('rnw', service.id),
+    },
+  ]);
+  if (pages > 1) {
+    const paging: InlineKeyboard[number] = [];
+    if (page > 1) paging.push({ text: '« قبلی', callback_data: encode('renew', page - 1) });
+    if (page < pages) paging.push({ text: 'بعدی »', callback_data: encode('renew', page + 1) });
+    keyboard.push(paging);
+  }
+  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
+  return keyboard;
+}
+
+/**
+ * What the customer is about to extend, before they pick what to extend it
+ * with.
+ *
+ * The current expiry is spelled out because the two renewal modes behave
+ * differently and the customer cannot see which one their panel uses: on a
+ * panel that adds, renewing three days early keeps those three days; on one
+ * that resets, it does not. Showing today's date is what makes that visible.
+ */
+export function renewIntro(
+  service: { plan_name_at_sale: string; public_id: string; expires_at: string | null },
+  addsToWhatIsLeft: boolean,
+): string {
+  const lines = [
+    `♻️ تمدید سرویس`,
+    '',
+    `🔐 ${service.plan_name_at_sale}`,
+    `🔖 شمارهٔ سرویس: ${service.public_id}`,
+  ];
+  if (service.expires_at !== null) {
+    lines.push(`📅 اعتبار فعلی تا: ${formatTehranDate(new Date(service.expires_at))}`);
+  }
+  lines.push(
+    '',
+    addsToWhatIsLeft
+      ? 'زمان و حجم پلنی که انتخاب می‌کنید به باقی‌ماندهٔ فعلی اضافه می‌شود.'
+      : 'با تمدید، زمان و حجم از نو شروع می‌شود و مصرف قبلی صفر می‌گردد.',
+    '',
+    '🛍 پلن تمدید را انتخاب کنید:',
+  );
+  return lines.join('\n');
+}
+
+/** One row per plan, each carrying BOTH the service and the plan. */
+export function renewPlanMenu(
+  subscriptionId: number,
+  plans: CatalogPlan[],
+  discountPercent = 0,
+): InlineKeyboard {
+  const keyboard: InlineKeyboard = plans.map((plan) => {
+    const price = priceForUser(plan.priceIrr, discountPercent);
+    const quoted = price.discountIrr === 0 && nameMentionsPrice(plan.productName, plan.priceIrr);
+    return [
+      {
+        text: quoted ? plan.productName : `${plan.productName} — ${formatToman(price.totalIrr)}`,
+        callback_data: encode('rord', subscriptionId, plan.planId),
+      },
+    ];
+  });
+  keyboard.push([
+    { text: 'بازگشت به سرویس‌ها ⬅️', callback_data: encode('renew') },
+    { text: BACK_TO_MENU, callback_data: encode('menu') },
+  ]);
+  return keyboard;
+}
+
+/** The checkout screen for a renewal — same money, different sentence. */
+export function renewCheckout(
+  publicId: string,
+  serviceName: string,
+  plan: CatalogPlan,
+  totalIrr: number,
+  cardDigits: string,
+  cardHolder: string | null,
+): string {
+  const lines = [
+    '🧾 درخواست تمدید ثبت شد. برای تکمیل، مبلغ زیر را کارت‌به‌کارت کنید.',
+    '',
+    `🔖 شمارهٔ سفارش: ${publicId}`,
+    `♻️ تمدید سرویس: ${serviceName}`,
+    `🔐 با پلن: ${plan.productName}`,
+    `💳 مبلغ دقیق: ${formatToman(totalIrr)}`,
+    '',
+    '🏦 شمارهٔ کارت:',
+    formatCard(cardDigits),
+  ];
+  if (cardHolder) lines.push(`👤 به نام: ${cardHolder}`);
+  lines.push(
+    '',
+    'لطفاً دقیقاً همین مبلغ را واریز کنید — مبلغ متفاوت بررسی دستی می‌خواهد و طول می‌کشد.',
+    'بعد از واریز، دکمهٔ زیر را بزنید.',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * The renewal is done. Deliberately does not repeat the subscription link:
+ * nothing about it changed, and a second link in the chat is one more thing to
+ * import by mistake.
+ */
+export function serviceRenewed(serviceName: string, expiresAt: Date | null): string {
+  const lines = ['♻️ سرویس شما تمدید شد.', '', `🔐 ${serviceName}`];
+  if (expiresAt !== null) {
+    lines.push(`📅 اعتبار جدید تا: ${formatTehranDate(expiresAt)}`);
+  }
+  lines.push('', 'لینک اشتراک شما تغییری نکرده و همان قبلی است.');
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// The two warnings, sent unprompted
+// ---------------------------------------------------------------------------
+
+/**
+ * Both say which service, and both point at the same button.
+ *
+ * The service is named because a customer with several — and 1,687 of them have
+ * more than one — cannot act on "your service is running out". Mirzabot names
+ * it too, by remote username; the plan name is what the customer actually
+ * recognises.
+ */
+export function timeRunningOut(serviceName: string, daysLeft: number): string {
+  return [
+    '⏳ سرویس شما رو به پایان است.',
+    '',
+    `🔐 ${serviceName}`,
+    `📅 ${daysLeft.toLocaleString('en-US')} روز تا پایان اعتبار`,
+    '',
+    'برای اینکه سرویس‌تان قطع نشود، از دکمهٔ «♻️ تمدید سرویس» در منوی اصلی استفاده کنید.',
+  ].join('\n');
+}
+
+export function volumeRunningOut(serviceName: string, remainingBytes: number): string {
+  return [
+    '📉 حجم سرویس شما رو به پایان است.',
+    '',
+    `🔐 ${serviceName}`,
+    `📦 باقی‌مانده: ${formatGigabytes(remainingBytes)}`,
+    '',
+    'برای اینکه سرویس‌تان قطع نشود، از دکمهٔ «♻️ تمدید سرویس» در منوی اصلی استفاده کنید.',
+  ].join('\n');
 }
 
 /**

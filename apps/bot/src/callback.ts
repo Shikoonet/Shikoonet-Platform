@@ -37,6 +37,9 @@ export const CALLBACK_ACTIONS = [
   'paid', // <orderId> — the customer says they have paid
   'mine', // [page] — the services this customer already owns
   'sub', // <subscriptionId> — one owned service, with its link
+  'renew', // [page] — the services that can be extended
+  'rnw', // <subscriptionId> — the plans this service can be extended onto
+  'rord', // <subscriptionId>:<planId> — extend that service with that plan
   'soon', // a menu entry that has no implementation yet
 ] as const;
 
@@ -46,9 +49,30 @@ export interface Callback {
   action: CallbackAction;
   /** Present only for actions that carry one. Digits, already range-checked. */
   id?: number;
+  /**
+   * A second id, for the one action that names two rows at once: extending a
+   * particular service with a particular plan.
+   *
+   * Carried in the button rather than in `bot_sessions` on purpose. A session
+   * would have to be written, read back a tap later, and expire — and a
+   * customer with Telegram open on a phone and a desktop would have two flows
+   * writing one row. Both ids are re-checked against the database anyway, so
+   * there is nothing a session would protect that this does not.
+   */
+  id2?: number;
 }
 
 const ActionSchema = z.enum(CALLBACK_ACTIONS);
+
+/**
+ * The actions that carry two ids — a closed set, like the actions themselves.
+ *
+ * Without this, `panel:1:2` would parse. No handler reads the second id, so
+ * nothing would go wrong today; the check is here because "nothing reads it
+ * yet" is not a property anybody can rely on, and an action's arity is part of
+ * its shape in the same way its name is.
+ */
+const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord']);
 
 /**
  * Telegram's limit is 64 bytes. Our longest is `order:<bigint>` — well inside
@@ -57,8 +81,12 @@ const ActionSchema = z.enum(CALLBACK_ACTIONS);
  */
 export const CALLBACK_MAX_BYTES = 64;
 
-export function encode(action: CallbackAction, id?: number): string {
-  const data = id === undefined ? action : `${action}:${id}`;
+export function encode(action: CallbackAction, id?: number, id2?: number): string {
+  if (id === undefined && id2 !== undefined) {
+    throw new Error('a second callback id without a first is not a shape we produce');
+  }
+  const parts = [action, id, id2].filter((part) => part !== undefined);
+  const data = parts.join(':');
   const bytes = new TextEncoder().encode(data).length;
   if (bytes > CALLBACK_MAX_BYTES) {
     throw new Error(`callback_data is ${bytes} bytes, over Telegram's ${CALLBACK_MAX_BYTES}`);
@@ -76,8 +104,8 @@ export function encode(action: CallbackAction, id?: number): string {
  */
 export function decode(data: string | undefined): Callback | null {
   if (data === undefined) return null;
-  const [rawAction, rawId, ...rest] = data.split(':');
-  // More than one colon is not a shape we ever produce.
+  const [rawAction, rawId, rawId2, ...rest] = data.split(':');
+  // More than two colons is not a shape we ever produce.
   if (rest.length > 0) return null;
 
   const action = ActionSchema.safeParse(rawAction);
@@ -85,11 +113,22 @@ export function decode(data: string | undefined): Callback | null {
 
   if (rawId === undefined) return { action: action.data };
 
-  // Digits only: no sign, no whitespace, no exponent, no leading zeros to make
-  // two spellings of one id.
-  if (!/^[1-9][0-9]{0,18}$/.test(rawId)) return null;
-  const id = Number(rawId);
-  if (!Number.isSafeInteger(id)) return null;
+  const id = parseId(rawId);
+  if (id === null) return null;
+  if (rawId2 === undefined) return { action: action.data, id };
+  if (!TWO_ID_ACTIONS.has(action.data)) return null;
 
-  return { action: action.data, id };
+  const id2 = parseId(rawId2);
+  if (id2 === null) return null;
+  return { action: action.data, id, id2 };
+}
+
+/**
+ * Digits only: no sign, no whitespace, no exponent, and no leading zeros to
+ * make two spellings of one id.
+ */
+function parseId(raw: string): number | null {
+  if (!/^[1-9][0-9]{0,18}$/.test(raw)) return null;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) ? id : null;
 }

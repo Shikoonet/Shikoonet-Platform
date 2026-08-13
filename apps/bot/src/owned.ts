@@ -120,6 +120,106 @@ export async function countSubscriptionsForUser(db: Db, userId: number): Promise
 }
 
 /**
+ * A service that can be extended, together with the panel it lives on.
+ *
+ * `provider_config` comes along because two of the admin's own settings live
+ * in it — whether this panel may be renewed at all, and whether a renewal adds
+ * to what is there or resets it. Both were set in the old bot and both are
+ * honoured (`renewAllowed`, `renewModeFor`).
+ */
+export interface RenewableSubscription {
+  id: number;
+  public_id: string;
+  status: string;
+  plan_name_at_sale: string;
+  remote_username: string;
+  expires_at: string | null;
+  volume_gb: number | null;
+  used_bytes: number | null;
+  provider_id: number;
+  provider_name: string;
+  provider_kind: string;
+  provider_config: Record<string, unknown> | null;
+}
+
+/**
+ * Which of this customer's services can be extended.
+ *
+ * The plan they originally bought is deliberately not part of the condition.
+ * Half the live services were sold under a product that no longer exists —
+ * 1,687 of 3,139 match a current product by name, and `subscriptions.plan_id`
+ * is NULL for every migrated row — so requiring the original plan would tell
+ * most customers their service cannot be renewed. What is required is an
+ * account on a panel that is still there; the plan is chosen at the next step.
+ *
+ * `status = 'ACTIVE'` includes services whose date has passed. Those are the
+ * ones most in need of renewal, and the row's status does not move on its own
+ * (see `menu.serviceState`).
+ */
+const RENEWABLE = `
+  s.status = 'ACTIVE'
+  AND s.remote_username IS NOT NULL
+  AND pv.status = 'ACTIVE'
+`;
+
+const RENEWABLE_COLUMNS = `
+  s.id, s.public_id, s.status, s.plan_name_at_sale, s.remote_username, s.expires_at,
+  s.volume_gb, s.used_bytes,
+  pv.id AS provider_id, pv.name AS provider_name, pv.kind AS provider_kind,
+  pv.config AS provider_config
+`;
+
+export async function renewableForUser(
+  db: Db,
+  userId: number,
+  limit: number,
+  offset = 0,
+): Promise<RenewableSubscription[]> {
+  const rows = await db
+    .prepare(
+      `SELECT ${RENEWABLE_COLUMNS}
+         FROM subscriptions s
+         JOIN provisioning_providers pv ON pv.id = s.provider_id
+        WHERE s.user_id = ?1 AND ${RENEWABLE}
+        ORDER BY s.expires_at NULLS LAST, s.id
+        LIMIT ?2 OFFSET ?3`,
+    )
+    .bind(userId, limit, offset)
+    .all<RenewableSubscription>();
+  return rows.results;
+}
+
+export async function countRenewableForUser(db: Db, userId: number): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*)::int AS n
+         FROM subscriptions s
+         JOIN provisioning_providers pv ON pv.id = s.provider_id
+        WHERE s.user_id = ?1 AND ${RENEWABLE}`,
+    )
+    .bind(userId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/** One renewable service, and only if it is this customer's. */
+export async function renewableForUserById(
+  db: Db,
+  userId: number,
+  subscriptionId: number,
+): Promise<RenewableSubscription | null> {
+  return db
+    .prepare(
+      `SELECT ${RENEWABLE_COLUMNS}
+         FROM subscriptions s
+         JOIN provisioning_providers pv ON pv.id = s.provider_id
+        WHERE s.id = ?1 AND s.user_id = ?2 AND ${RENEWABLE}`,
+    )
+    .bind(subscriptionId, userId)
+    .first<RenewableSubscription>();
+}
+
+/**
  * The lookup Mirzabot gets wrong. `subscriptionurl_<id>` there loads by id
  * alone and returns the subscription URL to whoever asked; here the row simply
  * does not exist for anyone but its owner.

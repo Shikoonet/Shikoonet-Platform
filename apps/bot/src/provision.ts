@@ -27,6 +27,7 @@ import type { D1Database } from '@shikoo/database';
 import {
   adapterFor,
   remoteUsernameFor,
+  renewModeFor,
   type ProviderContext,
   type ProvisionRequest,
 } from '@shikoo/domain';
@@ -43,9 +44,15 @@ const STALLED_MS = 5 * 60 * 1000;
 interface PendingOrder {
   order_id: number;
   order_public_id: string;
+  order_kind: string;
   user_id: number;
   telegram_id: number | null;
   plan_id: number | null;
+  target_subscription_id: number | null;
+  target_username: string | null;
+  target_name: string | null;
+  target_volume_gb: number | null;
+  target_expires_at: string | null;
   plan_name: string | null;
   plan_attrs: Record<string, unknown> | null;
   volume_gb: string | number | null;
@@ -117,29 +124,42 @@ export async function provisionPaidOrders(
 
   const { results } = await db
     .prepare(
+      // A renewal's panel is the one the ACCOUNT lives on, not the one the
+      // plan's product points at. They agree — the handler checks it before
+      // writing the order — but the account is the thing being changed, so it
+      // is the account's panel that decides where the call goes.
       `SELECT o.id            AS order_id,
               o.public_id     AS order_public_id,
               o.user_id       AS user_id,
+              o.kind          AS order_kind,
               u.telegram_id   AS telegram_id,
               o.plan_id       AS plan_id,
               o.total_irr     AS total_irr,
+              o.target_subscription_id AS target_subscription_id,
+              s.remote_username AS target_username,
+              s.plan_name_at_sale AS target_name,
+              s.volume_gb     AS target_volume_gb,
+              s.expires_at    AS target_expires_at,
               pl.name         AS plan_name,
               pl.attrs        AS plan_attrs,
               pl.volume_gb    AS volume_gb,
               pl.duration_days AS duration_days,
               pr.name         AS product_name,
-              pv.id           AS provider_id,
-              pv.code         AS provider_code,
-              pv.name         AS provider_name,
-              pv.kind         AS provider_kind,
-              pv.base_url     AS provider_base_url,
-              pv.secret_ref   AS provider_secret_ref,
-              pv.config       AS provider_config
+              COALESCE(spv.id, pv.id)                 AS provider_id,
+              COALESCE(spv.code, pv.code)             AS provider_code,
+              COALESCE(spv.name, pv.name)             AS provider_name,
+              COALESCE(spv.kind, pv.kind)             AS provider_kind,
+              COALESCE(spv.base_url, pv.base_url)     AS provider_base_url,
+              COALESCE(spv.secret_ref, pv.secret_ref) AS provider_secret_ref,
+              COALESCE(spv.config, pv.config)         AS provider_config
          FROM orders o
          JOIN users u              ON u.id = o.user_id
          LEFT JOIN product_plans pl ON pl.id = o.plan_id
          LEFT JOIN products pr      ON pr.id = pl.product_id
          LEFT JOIN provisioning_providers pv ON pv.id = pr.provider_id
+         LEFT JOIN subscriptions s  ON s.id = o.target_subscription_id
+                                   AND s.user_id = o.user_id
+         LEFT JOIN provisioning_providers spv ON spv.id = s.provider_id
         WHERE o.status = 'PAID'
         ORDER BY o.id
         LIMIT 20`,
@@ -180,6 +200,10 @@ async function deliver(
   if (row.plan_id === null || row.provider_id === null || row.provider_kind === null) {
     await fail(db, row.order_id, 'the plan or its provider no longer exists');
     return menu.serviceNeedsHelp(row.order_public_id);
+  }
+
+  if (row.order_kind === 'RENEWAL') {
+    return renew(db, row, fetchImpl, now);
   }
 
   const durationDays = row.duration_days;
@@ -275,6 +299,132 @@ async function deliver(
   return result.subscriptionUrl === null
     ? menu.serviceBeingPrepared(row.order_public_id)
     : menu.serviceReady(result.subscriptionUrl, result.remoteUsername, expiresAt);
+}
+
+/**
+ * Extending a service the customer already has.
+ *
+ * Separate from `deliver` rather than a branch inside it, because almost
+ * nothing is shared: no new subscription row is written, no new account is
+ * created, and the operation is not naturally repeatable — thirty days added
+ * twice is sixty. The order status is what keeps it to once, and the adapter
+ * carries a second guard of its own (the order id in the account's note).
+ */
+async function renew(
+  db: D1Database,
+  row: PendingOrder,
+  fetchImpl: typeof globalThis.fetch,
+  now: number,
+): Promise<string | null> {
+  // The subscription is joined on `user_id = o.user_id`, so a NULL here also
+  // covers a renewal order pointed at somebody else's service.
+  if (row.target_subscription_id === null || row.target_username === null) {
+    await fail(db, row.order_id, 'the service this renewal points at no longer exists');
+    return menu.serviceNeedsHelp(row.order_public_id);
+  }
+
+  const serviceName = row.target_name ?? row.plan_name ?? row.product_name ?? 'سرویس';
+  const adapter = adapterFor(row.provider_kind!);
+  const mode = renewModeFor(row.provider_config ?? {});
+
+  if (!adapter.renew) {
+    // A manual product, or a panel type nobody automated. The money is real and
+    // the sale happened; what is outstanding is somebody's action.
+    await complete(db, row.order_id);
+    return menu.serviceBeingPrepared(row.order_public_id);
+  }
+
+  const result = await adapter.renew(
+    {
+      username: row.target_username,
+      volumeGb: toNumber(row.volume_gb),
+      durationDays: row.duration_days,
+      note: `shikoo ${row.order_public_id}`,
+      providerConfig: row.provider_config ?? {},
+      planAttrs: row.plan_attrs ?? {},
+      mode,
+      renewFrom: new Date(now),
+    },
+    {
+      id: row.provider_id!,
+      code: row.provider_code ?? String(row.provider_id),
+      name: row.provider_name ?? 'panel',
+      baseUrl: row.provider_base_url,
+      credentials: credentialsFor(row.provider_secret_ref),
+      config: row.provider_config ?? {},
+      fetch: fetchImpl,
+    },
+  );
+
+  if (!result.ok) {
+    if (result.retryable) {
+      await db
+        .prepare(`UPDATE orders SET status = 'PAID', updated_at = now() WHERE id = ?1`)
+        .bind(row.order_id)
+        .run();
+      console.error(`[bot] renewal ${row.order_public_id} will retry: ${result.reason}`);
+      return null;
+    }
+    await fail(db, row.order_id, result.reason);
+    console.error(`[bot] renewal ${row.order_public_id} needs a human: ${result.reason}`);
+    return menu.serviceNeedsHelp(row.order_public_id);
+  }
+
+  const expiresAt = result.expiresAt ?? null;
+  await db.withSession(async (tx) => {
+    await tx
+      .prepare(
+        `UPDATE subscriptions
+            SET plan_id           = ?2,
+                plan_name_at_sale = ?3,
+                duration_days     = ?4,
+                volume_gb         = ?5,
+                expires_at        = ?6,
+                -- RESET zeroed the counter on the panel, so the stored figure
+                -- must go with it or the service reads as exhausted until the
+                -- next sync. ADD leaves it alone: the quota grew, the usage
+                -- did not.
+                used_bytes        = CASE WHEN ?7 THEN 0 ELSE used_bytes END,
+                -- The warning sweep has already told this customer their
+                -- service was running out. It is not, any more.
+                notify            = '{}'::jsonb,
+                -- Ask the panel again sooner rather than trusting the figures
+                -- above until the interval is up.
+                last_synced_at    = NULL,
+                status            = 'ACTIVE',
+                updated_at        = now()
+          WHERE id = ?1`,
+      )
+      .bind(
+        row.target_subscription_id,
+        row.plan_id,
+        row.plan_name ?? row.product_name ?? serviceName,
+        row.duration_days,
+        result.volumeGb ?? null,
+        expiresAt === null ? null : expiresAt.toISOString(),
+        mode === 'RESET',
+      )
+      .run();
+    await tx
+      .prepare(
+        `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
+          WHERE id = ?1 AND status = 'PROVISIONING'`,
+      )
+      .bind(row.order_id)
+      .run();
+  });
+
+  return menu.serviceRenewed(serviceName, expiresAt);
+}
+
+async function complete(db: D1Database, orderId: number): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
+        WHERE id = ?1 AND status = 'PROVISIONING'`,
+    )
+    .bind(orderId)
+    .run();
 }
 
 async function fail(db: D1Database, orderId: number, reason: string): Promise<void> {
