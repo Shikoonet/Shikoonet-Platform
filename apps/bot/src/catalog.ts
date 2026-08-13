@@ -95,6 +95,8 @@ export async function panelsForUser(db: Db, userId: number): Promise<Panel[]> {
 
 export interface CatalogPlan {
   planId: number;
+  /** The product the plan belongs to. A discount code can be scoped to one. */
+  productId: number;
   productName: string;
   planName: string;
   priceIrr: number;
@@ -107,6 +109,7 @@ export interface CatalogPlan {
 
 interface PlanRow {
   plan_id: number;
+  product_id: number;
   product_name: string;
   plan_name: string;
   price_irr: number;
@@ -119,6 +122,7 @@ interface PlanRow {
 
 const PLAN_COLUMNS = `
   pl.id           AS plan_id,
+  p.id            AS product_id,
   p.name          AS product_name,
   pl.name         AS plan_name,
   pl.price_irr    AS price_irr,
@@ -139,6 +143,7 @@ const PLAN_FROM = `
 function toPlan(row: PlanRow): CatalogPlan {
   return {
     planId: row.plan_id,
+    productId: row.product_id,
     productName: row.product_name,
     planName: row.plan_name,
     priceIrr: row.price_irr,

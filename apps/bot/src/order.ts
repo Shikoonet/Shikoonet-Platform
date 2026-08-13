@@ -42,9 +42,32 @@ export async function placeOrder(
   userId: number,
   plan: CatalogPlan,
   discountPercent: number,
+  /** A code the customer typed and `checkCode` allowed, already in IRR. */
+  codeDiscountIrr = 0,
 ): Promise<PlacedOrder> {
-  return place(tx, userId, plan.planId, priceForUser(plan.priceIrr, discountPercent),
-    'NEW_PURCHASE', null);
+  return place(
+    tx,
+    userId,
+    plan.planId,
+    withCode(priceForUser(plan.priceIrr, discountPercent), codeDiscountIrr),
+    'NEW_PURCHASE',
+    null,
+  );
+}
+
+/**
+ * A typed code on top of the customer's standing discount.
+ *
+ * Both come off the same total and the schema checks the arithmetic
+ * (`total = unit x quantity - discount`), so they are added into one
+ * `discount_irr` rather than modelled as two. The floor at zero is the PHP's
+ * (`index.php:4285`): a 100% code plus a standing discount would otherwise
+ * produce a negative price, which is an order that pays the customer.
+ */
+function withCode(price: Price, codeDiscountIrr: number): Price {
+  if (codeDiscountIrr <= 0) return price;
+  const discountIrr = Math.min(price.unitPriceIrr, price.discountIrr + codeDiscountIrr);
+  return { ...price, discountIrr, totalIrr: price.unitPriceIrr - discountIrr };
 }
 
 /**
@@ -60,9 +83,16 @@ export async function placeRenewalOrder(
   plan: CatalogPlan,
   discountPercent: number,
   subscriptionId: number,
+  codeDiscountIrr = 0,
 ): Promise<PlacedOrder> {
-  return place(tx, userId, plan.planId, priceForUser(plan.priceIrr, discountPercent),
-    'RENEWAL', subscriptionId);
+  return place(
+    tx,
+    userId,
+    plan.planId,
+    withCode(priceForUser(plan.priceIrr, discountPercent), codeDiscountIrr),
+    'RENEWAL',
+    subscriptionId,
+  );
 }
 
 /**

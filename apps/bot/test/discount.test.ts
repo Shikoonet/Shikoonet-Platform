@@ -1,0 +1,429 @@
+/**
+ * Discount codes, from the button to the row.
+ *
+ * The conditions under test are the PHP's (`index.php:4218`), and three of them
+ * were unreachable until 2026-08-14 because the importer never carried the
+ * columns they read: an expired code, a code for another panel, and a code for
+ * renewals only. `packages/migrate/test/discounts.mysql.test.ts` measures the
+ * import against the real dump; this file measures what the bot does with the
+ * result.
+ *
+ * The money assertions read the ORDER row, not the screen. A screen that says
+ * "20% off" over an order charging full price is the failure this is for.
+ */
+
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { handleUpdate } from '../src/handle.js';
+import * as menu from '../src/menu.js';
+import type { TelegramUpdate } from '../src/telegram.js';
+import { db } from './helpers/env.js';
+import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
+
+const NOW_MS = Date.UTC(2026, 7, 14, 9, 0, 0);
+const DAY = 86_400_000;
+
+let nextId = 1;
+function ids(): { updateId: number; telegramId: number } {
+  const n = nextId++ * 10;
+  return { updateId: 900_000 + n, telegramId: 920_000 + n };
+}
+
+function press(updateId: number, telegramId: number, data: string): TelegramUpdate {
+  return {
+    update_id: updateId,
+    callback_query: {
+      id: `cq-${updateId}`,
+      from: { id: telegramId, username: `dsc${telegramId}` },
+      message: { message_id: 7, chat: { id: telegramId } },
+      data,
+    },
+  };
+}
+
+function types(updateId: number, telegramId: number, text: string): TelegramUpdate {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      chat: { id: telegramId },
+      from: { id: telegramId, username: `dsc${telegramId}` },
+      text,
+    },
+  };
+}
+
+interface CodeOptions {
+  kind?: 'PERCENT_OFF' | 'AMOUNT_OFF' | 'GIFT_BALANCE';
+  percent?: number;
+  amountIrr?: number;
+  expiresInDays?: number | null;
+  maxUses?: number | null;
+  firstPurchaseOnly?: boolean;
+  resellersOnly?: boolean;
+  productId?: number | null;
+  providerId?: number | null;
+  appliesTo?: 'ALL' | 'BUY' | 'RENEW';
+}
+
+async function makeCode(code: string, options: CodeOptions = {}): Promise<number> {
+  const row = await db
+    .prepare(
+      `INSERT INTO discount_codes
+         (code, kind, percent, amount_irr, expires_at, max_uses, first_purchase_only,
+          resellers_only, product_id, provider_id, applies_to)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+       ON CONFLICT (code) DO UPDATE SET code = EXCLUDED.code
+       RETURNING id`,
+    )
+    .bind(
+      code,
+      options.kind ?? 'PERCENT_OFF',
+      options.percent ?? (options.kind === 'PERCENT_OFF' || !options.kind ? 20 : null),
+      options.amountIrr ?? null,
+      options.expiresInDays === undefined || options.expiresInDays === null
+        ? null
+        : new Date(NOW_MS + options.expiresInDays * DAY).toISOString(),
+      options.maxUses ?? null,
+      options.firstPurchaseOnly ?? false,
+      options.resellersOnly ?? false,
+      options.productId ?? null,
+      options.providerId ?? null,
+      options.appliesTo ?? 'ALL',
+    )
+    .first<{ id: number }>();
+  if (!row) throw new Error(`code fixture ${code} failed`);
+  return row.id;
+}
+
+async function lastOrder(userId: number) {
+  return db
+    .prepare(
+      `SELECT id, unit_price_irr, discount_irr, total_irr, status
+         FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`,
+    )
+    .bind(userId)
+    .first<{
+      id: number;
+      unit_price_irr: number;
+      discount_irr: number;
+      total_irr: number;
+      status: string;
+    }>();
+}
+
+async function orderCount(userId: number): Promise<number> {
+  const row = await db
+    .prepare(`SELECT count(*)::int AS n FROM orders WHERE user_id = ?1`)
+    .bind(userId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/** Types a code against a plan: press the button, then send the code. */
+async function useCode(
+  updateId: number,
+  telegramId: number,
+  plan: number,
+  code: string,
+): Promise<string> {
+  await handleUpdate(db, press(updateId, telegramId, `dsc:${plan}`));
+  const out = await handleUpdate(db, types(updateId + 1, telegramId, code));
+  return out.replies[0]?.text ?? '';
+}
+
+let VIP_PLAN = 0;
+let VIP_PROVIDER = 0;
+let GOLD_PROVIDER = 0;
+/** The fixture plan's list price, read rather than assumed. */
+let VIP_PRICE = 0;
+
+beforeAll(async () => {
+  await ensureCatalog();
+  VIP_PLAN = await planId('sim-vip-1m-50');
+  VIP_PROVIDER = await providerId('sim-vip');
+  GOLD_PROVIDER = await providerId('sim-gold');
+  const row = await db
+    .prepare(`SELECT price_irr FROM product_plans WHERE id = ?1`)
+    .bind(VIP_PLAN)
+    .first<{ price_irr: number }>();
+  VIP_PRICE = row!.price_irr;
+});
+
+beforeEach(async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('a code that works', () => {
+  it('takes its percentage off the order, not off the screen', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('save20');
+
+    const said = await useCode(updateId, telegramId, VIP_PLAN, 'save20');
+    expect(said).toContain('save20');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+
+    const order = await lastOrder(userId);
+    expect(order).toMatchObject({
+      unit_price_irr: VIP_PRICE,
+      discount_irr: Math.round(VIP_PRICE * 0.2),
+      total_irr: VIP_PRICE - Math.round(VIP_PRICE * 0.2),
+    });
+  });
+
+  it('is written down as redeemed, against the order it paid for', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const codeId = await makeCode('mark1');
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'mark1');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+
+    const order = await lastOrder(userId);
+    const redemption = await db
+      .prepare(
+        `SELECT order_id, amount_irr FROM discount_redemptions
+          WHERE code_id = ?1 AND user_id = ?2`,
+      )
+      .bind(codeId, userId)
+      .first<{ order_id: number; amount_irr: number }>();
+    expect(redemption).toMatchObject({
+      order_id: order!.id,
+      amount_irr: Math.round(VIP_PRICE * 0.2),
+    });
+  });
+
+  it('is typed the way a customer types it', async () => {
+    // Production holds `off15`; a phone capitalises and people add spaces.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('mixed9', { percent: 10 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, '  MiXeD9 ');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+
+    expect((await lastOrder(userId))?.discount_irr).toBe(Math.round(VIP_PRICE * 0.1));
+  });
+
+  it('stacks with a standing discount without ever going below zero', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId, { discountPercent: 60 });
+    await makeCode('half50', { percent: 100 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'half50');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+
+    // 60% standing + 100% code is 160% of the price. The order is free, not
+    // negative — the schema's CHECK (total_irr >= 0) would refuse it anyway,
+    // which is the point: the arithmetic is not this code's to get wrong.
+    expect(await lastOrder(userId)).toMatchObject({ discount_irr: VIP_PRICE, total_irr: 0 });
+  });
+});
+
+describe('a code that does not', () => {
+  it('refuses one whose date has passed', async () => {
+    // 31 of the 33 production codes are in this state.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('gone1', { expiresInDays: -1 });
+
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'gone1')).toBe(
+      menu.DISCOUNT_REFUSED['EXPIRED'],
+    );
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+    expect((await lastOrder(userId))?.discount_irr).toBe(0);
+  });
+
+  it('refuses one belonging to another panel, and allows the one for this panel', async () => {
+    // Both halves, because a scope check that refuses everything passes the
+    // first half on its own. 23 production codes are tied to a panel.
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('gold1', { providerId: GOLD_PROVIDER });
+    await makeCode('vip1', { providerId: VIP_PROVIDER, percent: 5 });
+
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'gold1')).toBe(
+      menu.DISCOUNT_REFUSED['NOT_FOR_THIS'],
+    );
+    expect(await useCode(updateId + 2, telegramId, VIP_PLAN, 'vip1')).toContain('vip1');
+  });
+
+  it('refuses a renewal code on a purchase', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('ext1', { appliesTo: 'RENEW' });
+
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'ext1')).toBe(
+      menu.DISCOUNT_REFUSED['NOT_FOR_THIS'],
+    );
+  });
+
+  it('refuses a first-purchase code to somebody who already bought', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('first1', { firstPurchaseOnly: true });
+    await db
+      .prepare(
+        `INSERT INTO subscriptions (public_id, user_id, plan_name_at_sale, price_irr,
+                                    status, purchased_at)
+         VALUES (?1, ?2, 'already owned', 1000000, 'ACTIVE', now())`,
+      )
+      .bind(`own-${telegramId}`, userId)
+      .run();
+
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'first1')).toBe(
+      menu.DISCOUNT_REFUSED['FIRST_PURCHASE_ONLY'],
+    );
+  });
+
+  it('refuses a reseller code to an ordinary customer', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('agent1', { resellersOnly: true });
+
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'agent1')).toBe(
+      menu.DISCOUNT_REFUSED['NOT_FOR_YOU'],
+    );
+  });
+
+  it('refuses one whose uses are gone', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const codeId = await makeCode('full1', { maxUses: 1 });
+    const other = await makeCustomer(ids().telegramId);
+    await db
+      .prepare(`INSERT INTO discount_redemptions (code_id, user_id) VALUES (?1, ?2)`)
+      .bind(codeId, other)
+      .run();
+
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'full1')).toBe(
+      menu.DISCOUNT_REFUSED['USED_UP'],
+    );
+  });
+
+  it('refuses a code nobody issued, and says so', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'nosuchcode')).toBe(
+      menu.DISCOUNT_REFUSED['UNKNOWN_CODE'],
+    );
+  });
+
+  it('will not spend a gift code on a purchase', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('gift9', { kind: 'GIFT_BALANCE', amountIrr: 500_000 });
+
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'gift9')).toBe(
+      menu.DISCOUNT_REFUSED['NOT_FOR_THIS'],
+    );
+  });
+});
+
+describe('using one twice', () => {
+  it('does not let the same customer use it on a second purchase', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('once1', { percent: 25 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'once1');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+    // That order is paid for and gone; the code should not come back.
+    await db
+      .prepare(`UPDATE orders SET status = 'PAID' WHERE user_id = ?1`)
+      .bind(userId)
+      .run();
+
+    expect(await useCode(updateId + 3, telegramId, VIP_PLAN, 'once1')).toBe(
+      menu.DISCOUNT_REFUSED['ALREADY_USED'],
+    );
+  });
+
+  it('answers a second tap on «ثبت سفارش» with the order they already have', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('twice1', { percent: 30 });
+    const before = await orderCount(userId);
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'twice1');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+    await handleUpdate(db, press(updateId + 3, telegramId, `order:${VIP_PLAN}`));
+
+    // Without the open-order check the second tap loses the discount, prices
+    // the plan at full, and writes a second order for the same purchase.
+    expect(await orderCount(userId)).toBe(before + 1);
+    expect((await lastOrder(userId))?.discount_irr).toBe(Math.round(VIP_PRICE * 0.3));
+  });
+});
+
+describe('a gift code', () => {
+  it('credits the wallet once, whatever the customer types after', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('cash1', { kind: 'GIFT_BALANCE', amountIrr: 750_000 });
+
+    await handleUpdate(db, press(updateId, telegramId, 'gft'));
+    const first = await handleUpdate(db, types(updateId + 1, telegramId, 'cash1'));
+    expect(first.replies[0]?.text).toContain('75,000 تومان');
+
+    // Ask again and type the same code: the wallet must not move twice.
+    await handleUpdate(db, press(updateId + 2, telegramId, 'gft'));
+    const second = await handleUpdate(db, types(updateId + 3, telegramId, 'cash1'));
+    expect(second.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['ALREADY_USED']);
+
+    const wallet = await db
+      .prepare(
+        `SELECT count(*)::int AS n, coalesce(sum(amount_irr), 0)::bigint AS total
+           FROM wallet_entries WHERE user_id = ?1 AND kind = 'GIFT_CODE'`,
+      )
+      .bind(userId)
+      .first<{ n: number; total: number }>();
+    expect(wallet).toMatchObject({ n: 1, total: 750_000 });
+    // And it reads as Persian on the wallet screen. Found on the browser: a new
+    // wallet kind with no label falls through to the raw `GIFT_CODE`.
+    const screen = menu.walletHome(750_000, [{ amount_irr: 750_000, kind: 'GIFT_CODE' }]);
+    expect(screen).toContain('کد هدیه');
+    expect(screen).not.toContain('GIFT_CODE');
+  });
+
+  it('refuses the production gift code that credits nothing', async () => {
+    // `15off` in the dump has a NULL price. The migration reproduced it rather
+    // than repairing it, so the bot must not hand a customer a gift of zero.
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('empty1', { kind: 'GIFT_BALANCE', amountIrr: 0 });
+
+    await handleUpdate(db, press(updateId, telegramId, 'gft'));
+    const out = await handleUpdate(db, types(updateId + 1, telegramId, 'empty1'));
+    expect(out.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['UNKNOWN_CODE']);
+  });
+
+  it('will not credit a purchase code into the wallet', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('percent1', { percent: 50 });
+
+    await handleUpdate(db, press(updateId, telegramId, 'gft'));
+    const out = await handleUpdate(db, types(updateId + 1, telegramId, 'percent1'));
+
+    expect(out.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['NOT_FOR_THIS']);
+    const wallet = await db
+      .prepare(`SELECT count(*)::int AS n FROM wallet_entries WHERE user_id = ?1`)
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(wallet?.n).toBe(0);
+  });
+});
+
+describe('a code nobody asked for', () => {
+  it('is ignored when typed out of the blue', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const out = await handleUpdate(db, types(updateId, telegramId, 'save20'));
+    expect(out.status).toBe('ignored');
+  });
+});

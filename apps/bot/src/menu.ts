@@ -113,7 +113,13 @@ export function planMenu(plans: CatalogPlan[], discountPercent = 0): InlineKeybo
   return keyboard;
 }
 
-export function planDetail(plan: CatalogPlan, price: Price): string {
+/** A code the customer typed and the checker allowed, as the screen shows it. */
+export interface AppliedCode {
+  code: string;
+  discountIrr: number;
+}
+
+export function planDetail(plan: CatalogPlan, price: Price, applied?: AppliedCode | null): string {
   const lines = [
     `🔐 ${plan.productName}`,
     `📍 لوکیشن: ${plan.providerName}`,
@@ -125,22 +131,74 @@ export function planDetail(plan: CatalogPlan, price: Price): string {
     lines.push(`👥 کاربر همزمان: ${plan.userLimit}`);
   }
   lines.push('');
-  if (price.discountIrr > 0) {
+  const codeOff = applied?.discountIrr ?? 0;
+  if (price.discountIrr > 0 || codeOff > 0) {
     lines.push(`💵 قیمت: ${formatToman(price.unitPriceIrr)}`);
+  }
+  if (price.discountIrr > 0) {
     lines.push(`🎁 تخفیف شما: ${formatToman(price.discountIrr)}`);
   }
-  lines.push(`💳 قابل پرداخت: ${formatToman(price.totalIrr)}`);
+  if (applied && codeOff > 0) {
+    lines.push(`🏷 کد «${applied.code}»: ${formatToman(codeOff)}`);
+  }
+  // The floor is the same one `order.ts` applies, and for the same reason: two
+  // discounts on one price must not add up to more than the price.
+  const payable = Math.max(0, price.totalIrr - codeOff);
+  lines.push(`💳 قابل پرداخت: ${formatToman(payable)}`);
   return lines.join('\n');
 }
 
-export function planDetailMenu(plan: CatalogPlan): InlineKeyboard {
+export function planDetailMenu(plan: CatalogPlan, applied?: AppliedCode | null): InlineKeyboard {
   return [
     [{ text: '✅ ثبت سفارش', callback_data: encode('order', plan.planId) }],
+    [
+      applied
+        ? { text: '🏷 برداشتن کد تخفیف', callback_data: encode('dsx', plan.planId) }
+        : { text: '🏷 کد تخفیف دارم', callback_data: encode('dsc', plan.planId) },
+    ],
     [
       { text: 'بازگشت ⬅️', callback_data: encode('panel', plan.providerId) },
       { text: BACK_TO_MENU, callback_data: encode('menu') },
     ],
   ];
+}
+
+export const ASK_DISCOUNT_CODE = [
+  '🏷 کد تخفیف را بفرستید.',
+  '',
+  'اگر پشیمان شدید، دکمهٔ بازگشت را بزنید.',
+].join('\n');
+
+export const ASK_GIFT_CODE = '🎁 کد هدیه را بفرستید.';
+
+export const DISCOUNT_TAKEN_OFF = 'کد تخفیف برداشته شد.';
+
+/**
+ * Why a code was refused, in the customer's words.
+ *
+ * Each reason gets its own sentence. The legacy bot answers "code is not valid"
+ * to an expired code, a used-up code and a code for another product alike, and
+ * support then has to ask which of the three it was.
+ */
+export const DISCOUNT_REFUSED: Record<string, string> = {
+  UNKNOWN_CODE: '❌ چنین کدی وجود ندارد. املای آن را بررسی کنید.',
+  EXPIRED: '❌ مهلت این کد تمام شده است.',
+  USED_UP: '❌ ظرفیت این کد پر شده است.',
+  ALREADY_USED: '❌ شما قبلاً از این کد استفاده کرده‌اید.',
+  NOT_FOR_THIS: '❌ این کد برای این خرید نیست.',
+  NOT_FOR_YOU: '❌ این کد برای حساب شما نیست.',
+  FIRST_PURCHASE_ONLY: '❌ این کد فقط برای اولین خرید است.',
+};
+
+export function discountApplied(code: string, offIrr: number): string {
+  return `✅ کد «${code}» اعمال شد — ${formatToman(offIrr)} تخفیف.`;
+}
+
+export function giftCredited(amountIrr: number, balanceIrr: number): string {
+  return [
+    `🎁 کد هدیه اعمال شد و ${formatToman(amountIrr)} به کیف پول شما اضافه شد.`,
+    `💰 موجودی: ${formatToman(balanceIrr)}`,
+  ].join('\n');
 }
 
 /**
@@ -1004,6 +1062,7 @@ const ENTRY_LABEL: Record<string, string> = {
   WHEEL_PRIZE: 'جایزهٔ گردونه',
   TRANSFER_IN: 'انتقال دریافتی',
   TRANSFER_OUT: 'انتقال ارسالی',
+  GIFT_CODE: 'کد هدیه',
 };
 
 /**
@@ -1042,6 +1101,7 @@ export interface WalletEntryView {
 export function walletMenu(): InlineKeyboard {
   return [
     [{ text: '💰 افزایش موجودی', callback_data: encode('top') }],
+    [{ text: '🎁 کد هدیه', callback_data: encode('gft') }],
     [{ text: BACK_TO_MENU, callback_data: encode('menu') }],
   ];
 }

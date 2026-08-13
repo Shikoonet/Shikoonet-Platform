@@ -482,9 +482,49 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
  * most-used first, then gift over sell, then oldest row. Every loser is
  * counted and reported rather than dropped quietly.
  */
+/**
+ * `DiscountSell.time` — unix seconds, or the string '0' for "never expires".
+ *
+ * Exported because the test measures the real function: 31 of the 33 production
+ * codes are already past their date, and a mapping that quietly returned NULL
+ * would turn all 31 back on the day the bot starts reading this table.
+ */
+export function expiryFromLegacy(time: string | null | undefined): string | null {
+  const seconds = Number(time ?? 0);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return new Date(seconds * 1000).toISOString();
+}
+
+/**
+ * `DiscountSell.type` — which purchase a code is for.
+ *
+ * `index.php:4218` matches `type IN ('all','buy')` when buying and `:1740`
+ * matches `type IN ('all','extend')` when renewing. Null for anything else,
+ * and the caller drops the row: a fourth value matches neither SELECT, so that
+ * code applies to nothing in the live bot and must not start applying to
+ * everything in this one. The dump has only the three.
+ */
+export function appliesTo(type: string | null | undefined): 'ALL' | 'BUY' | 'RENEW' | null {
+  if (type === 'all') return 'ALL';
+  if (type === 'buy') return 'BUY';
+  if (type === 'extend') return 'RENEW';
+  return null;
+}
+
 async function migrateDiscounts(ctx: Ctx): Promise<number> {
   const gifts = await mysqlRows<Row>(ctx.my, 'SELECT * FROM Discount');
   const sells = await mysqlRows<Row>(ctx.my, 'SELECT * FROM DiscountSell');
+
+  // Both are imported ahead of this step, so a scoped code can be resolved to
+  // the row it is scoped to rather than losing its scope.
+  const { rows: productRows } = await ctx.pg.query<{ id: string; code: string }>(
+    'SELECT id, code FROM products',
+  );
+  const productByCode = new Map(productRows.map((p) => [p.code, p.id]));
+  const { rows: providerRows } = await ctx.pg.query<{ id: string; code: string }>(
+    'SELECT id, code FROM provisioning_providers',
+  );
+  const providerByCode = new Map(providerRows.map((p) => [p.code, p.id]));
 
   interface Candidate {
     code: string;
@@ -518,6 +558,12 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
         Number.isFinite(limit) && limit > 0 ? limit : null,
         false,
         false,
+        // A gift code credits a wallet. It is not scoped to a product or a
+        // panel, does not expire, and `Discount` has no column for any of it.
+        null,
+        null,
+        null,
+        'ALL',
       ],
     });
   }
@@ -531,6 +577,30 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
     const percent = Number(r.price ?? 0);
     if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
       skip(ctx, 'discount codes: percentage outside 0-100');
+      continue;
+    }
+    // A code tied to a product or a panel that no longer exists can never
+    // apply to anything. Importing it without its scope would not preserve it —
+    // it would widen it to every product on every panel.
+    let productId: string | null = null;
+    if (r.code_product && r.code_product !== 'all') {
+      productId = productByCode.get(r.code_product) ?? null;
+      if (productId === null) {
+        skip(ctx, 'discount codes: scoped to a product that is gone');
+        continue;
+      }
+    }
+    let providerId: string | null = null;
+    if (r.code_panel && r.code_panel !== '/all') {
+      providerId = providerByCode.get(r.code_panel) ?? null;
+      if (providerId === null) {
+        skip(ctx, 'discount codes: scoped to a panel that is gone');
+        continue;
+      }
+    }
+    const scope = appliesTo(r.type);
+    if (scope === null) {
+      skip(ctx, 'discount codes: type matches neither buying nor renewing');
       continue;
     }
     candidates.push({
@@ -548,6 +618,10 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
         Number.isFinite(limit) && limit > 0 ? limit : null,
         r.usefirst === '1',
         r.agent === 'n',
+        productId,
+        providerId,
+        expiryFromLegacy(r.time),
+        scope,
       ],
     });
   }
@@ -582,6 +656,10 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
       'max_uses',
       'first_purchase_only',
       'resellers_only',
+      'product_id',
+      'provider_id',
+      'expires_at',
+      'applies_to',
     ]),
     [...winners.values()].map((c) => c.values),
     { conflict: '(legacy_table, legacy_id)' },

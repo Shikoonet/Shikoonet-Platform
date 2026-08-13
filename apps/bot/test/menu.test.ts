@@ -11,6 +11,7 @@ function buttons(keyboard: InlineKeyboard) {
 
 const PLAN: CatalogPlan = {
   planId: 42,
+  productId: 7,
   productName: '۱ماهه - ۵۰ گیگ',
   planName: '۱ماهه - ۵۰ گیگ',
   priceIrr: 1_950_000,

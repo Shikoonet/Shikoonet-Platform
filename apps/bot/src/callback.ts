@@ -56,6 +56,9 @@ export const CALLBACK_ACTIONS = [
   'xt', // <subscriptionId> — ask how many days to add
   'off', // <subscriptionId> — turn the account off at the panel
   'on', // <subscriptionId> — turn it back on
+  'dsc', // <planId> — ask for a discount code to put on that plan
+  'dsx', // <planId> — take the code back off it
+  'gft', // ask for a gift code to credit the wallet
   'soon', // a menu entry that has no implementation yet
 ] as const;
 

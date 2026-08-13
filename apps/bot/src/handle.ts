@@ -24,8 +24,17 @@
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { extraPricingFor, isAutomated, renewAllowed, renewModeFor } from '@shikoo/domain';
 import { actOnService } from './actions.js';
-import { decode } from './callback.js';
+import { decode, encode } from './callback.js';
+import type { CatalogPlan } from './catalog.js';
 import { panelsForUser, plansOnPanel, purchasablePlan } from './catalog.js';
+import {
+  checkCode,
+  type DiscountCode,
+  discountFor,
+  redeem,
+  redeemGift,
+  redemptionOnOpenOrder,
+} from './discount.js';
 import * as menu from './menu.js';
 import { priceForUser } from './money.js';
 import {
@@ -170,8 +179,9 @@ export async function handleUpdate(
     if (command(message.text) === '/start') {
       return handleStart(tx, message);
     }
-    // The one flow that needs a typed answer: how many gigabytes, how many days.
-    return handleAddonAmount(tx, message);
+    // Everything else typed is an answer to something the bot asked, and what
+    // it asked is in the session — never in the message.
+    return handleTypedAnswer(tx, message);
   });
 }
 
@@ -254,7 +264,19 @@ export const ADDON_MAX = 1000;
  * a session that carried a price would be a price the customer's own row could
  * be made to disagree with.
  */
-async function handleAddonAmount(
+interface Session {
+  step: string;
+  data: Record<string, unknown>;
+}
+
+/**
+ * A typed message that is not a command.
+ *
+ * Which question it answers is decided by `bot_sessions.step` — a row scoped to
+ * the user — and never by the text. A customer who was asked nothing gets
+ * nothing: an unprompted message is ignored rather than guessed at.
+ */
+async function handleTypedAnswer(
   tx: D1DatabaseSession,
   message: TelegramMessage,
 ): Promise<HandleOutcome> {
@@ -268,14 +290,53 @@ async function handleAddonAmount(
     .first<Caller>();
   if (!user || user.status === 'BLOCKED') return IGNORED;
 
-  const session = await tx
+  const row = await tx
     .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
     .bind(user.id)
     .first<{ step: string | null; data: Record<string, unknown> | null }>();
-  const step = session?.step ?? '';
-  if (!step.startsWith('addon:')) return IGNORED;
-  const kind = step === 'addon:ADD_VOLUME' ? 'ADD_VOLUME' : 'ADD_TIME';
-  const subscriptionId = Number(session?.data?.['subscriptionId']);
+  const session: Session = { step: row?.step ?? '', data: row?.data ?? {} };
+
+  if (session.step.startsWith('addon:')) return handleAddonAmount(tx, message, user, session);
+  if (session.step === 'code') return handleDiscountCode(tx, message, user, session);
+  if (session.step === 'gift') return handleGiftCode(tx, message, user);
+  return IGNORED;
+}
+
+/** Clears the question, once it has been answered in a way that ends the flow. */
+async function clearSession(tx: D1DatabaseSession, userId: number): Promise<void> {
+  await tx
+    .prepare(`UPDATE bot_sessions SET step = NULL, data = '{}'::jsonb, updated_at = now()
+               WHERE user_id = ?1`)
+    .bind(userId)
+    .run();
+}
+
+/** Asks a question and remembers that it was asked. */
+async function ask(
+  tx: D1DatabaseSession,
+  userId: number,
+  step: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  await tx
+    .prepare(
+      `INSERT INTO bot_sessions (user_id, step, data, updated_at)
+       VALUES (?1, ?2, ?3::jsonb, now())
+       ON CONFLICT (user_id) DO UPDATE
+         SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now()`,
+    )
+    .bind(userId, step, JSON.stringify(data))
+    .run();
+}
+
+async function handleAddonAmount(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  session: Session,
+): Promise<HandleOutcome> {
+  const kind = session.step === 'addon:ADD_VOLUME' ? 'ADD_VOLUME' : 'ADD_TIME';
+  const subscriptionId = Number(session.data['subscriptionId']);
   if (!Number.isSafeInteger(subscriptionId)) return IGNORED;
 
   const reply = (text: string, keyboard?: InlineKeyboard): HandleOutcome => ({
@@ -313,11 +374,7 @@ async function handleAddonAmount(
 
   // The step is cleared here and not before: a customer who typed something
   // unusable is still in the flow and can simply type again.
-  await tx
-    .prepare(`UPDATE bot_sessions SET step = NULL, data = '{}'::jsonb, updated_at = now()
-               WHERE user_id = ?1`)
-    .bind(user.id)
-    .run();
+  await clearSession(tx, user.id);
 
   return reply(
     menu.addonCheckout(
@@ -334,6 +391,137 @@ async function handleAddonAmount(
       totalIrr: placed.totalIrr,
     }),
   );
+}
+
+/**
+ * A discount code typed against a plan.
+ *
+ * Nothing is decided here that is not decided again at `order`. What the
+ * session keeps is the CODE, never the discount: a stored amount is an amount
+ * the plan's own price can be changed out from under, and the customer would
+ * then pay a total the catalog no longer agrees with.
+ */
+async function handleDiscountCode(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  session: Session,
+): Promise<HandleOutcome> {
+  const planId = Number(session.data['planId']);
+  if (!Number.isSafeInteger(planId)) return IGNORED;
+  const answer = (text: string, keyboard?: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, ...(keyboard ? { keyboard } : {}) }],
+  });
+
+  // Read again rather than trusted from the session: between asking and
+  // answering, the plan can have been hidden or repriced.
+  const plan = await purchasablePlan(tx, user.id, planId);
+  if (!plan) return answer(menu.PLAN_GONE, menu.planMenu([]));
+
+  const price = priceForUser(plan.priceIrr, user.discount_percent);
+  const check = await checkCode(
+    tx,
+    user.id,
+    user.is_reseller,
+    message.text!,
+    {
+      kind: 'BUY',
+      priceIrr: price.totalIrr,
+      productId: plan.productId,
+      providerId: plan.providerId,
+    },
+    Date.now(),
+  );
+  if (!check.ok) {
+    // The question stays open: the customer mistyped and can type again.
+    return answer(
+      menu.DISCOUNT_REFUSED[check.reason] ?? menu.DISCOUNT_REFUSED['UNKNOWN_CODE']!,
+      menu.planDetailMenu(plan),
+    );
+  }
+
+  await ask(tx, user.id, 'code:held', { planId, code: check.code.code });
+  const applied = { code: check.code.code, discountIrr: check.discountIrr };
+  return answer(
+    `${menu.discountApplied(check.code.code, check.discountIrr)}\n\n${menu.planDetail(plan, price, applied)}`,
+    menu.planDetailMenu(plan, applied),
+  );
+}
+
+/** A gift code typed at the wallet. The credit itself is `redeemGift`. */
+async function handleGiftCode(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+): Promise<HandleOutcome> {
+  const result = await redeemGift(tx, user.id, user.is_reseller, message.text!, Date.now());
+  if (!result.ok) {
+    return {
+      status: 'processed',
+      replies: [
+        {
+          chatId: message.chat.id,
+          text: menu.DISCOUNT_REFUSED[result.reason] ?? menu.DISCOUNT_REFUSED['UNKNOWN_CODE']!,
+          keyboard: menu.walletMenu(),
+        },
+      ],
+    };
+  }
+  await clearSession(tx, user.id);
+  return {
+    status: 'processed',
+    replies: [
+      {
+        chatId: message.chat.id,
+        text: menu.giftCredited(result.amountIrr, await balanceFor(tx, user.id)),
+        keyboard: menu.walletMenu(),
+      },
+    ],
+  };
+}
+
+/**
+ * The code the customer is holding against this plan, if any, re-checked.
+ *
+ * Held in the session as a string and validated on every screen that shows a
+ * price, so a code that expired or ran out between typing it and pressing
+ * "order" simply stops applying instead of being honoured from memory.
+ */
+async function heldCode(
+  tx: D1DatabaseSession,
+  user: Caller,
+  plan: CatalogPlan,
+  priceIrr: number,
+): Promise<{ code: DiscountCode; discountIrr: number } | null> {
+  const row = await tx
+    .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
+    .bind(user.id)
+    .first<{ step: string | null; data: Record<string, unknown> | null }>();
+  if (row?.step !== 'code:held') return null;
+  const data = row.data ?? {};
+  if (Number(data['planId']) !== plan.planId) return null;
+  const typed = data['code'];
+  if (typeof typed !== 'string') return null;
+
+  const check = await checkCode(
+    tx,
+    user.id,
+    user.is_reseller,
+    typed,
+    { kind: 'BUY', priceIrr, productId: plan.productId, providerId: plan.providerId },
+    Date.now(),
+  );
+  if (check.ok) return { code: check.code, discountIrr: check.discountIrr };
+  // Their own redemption, on an order they have not paid for, is this order.
+  if (
+    check.reason === 'ALREADY_USED' &&
+    check.code &&
+    (await redemptionOnOpenOrder(tx, check.code.id, user.id, plan.planId))
+  ) {
+    return { code: check.code, discountIrr: discountFor(check.code, priceIrr) };
+  }
+  return null;
 }
 
 async function handleCallback(
@@ -400,7 +588,40 @@ async function handleCallback(
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
       const price = priceForUser(plan.priceIrr, user.discount_percent);
-      return screen(menu.planDetail(plan, price), menu.planDetailMenu(plan));
+      const held = await heldCode(tx, user, plan, price.totalIrr);
+      const applied = held ? { code: held.code.code, discountIrr: held.discountIrr } : null;
+      return screen(menu.planDetail(plan, price, applied), menu.planDetailMenu(plan, applied));
+    }
+
+    case 'dsc': {
+      if (action.id === undefined) return IGNORED;
+      // Checked here as well: a forged `dsc` for a hidden plan must not open a
+      // flow that ends in an order for it.
+      const plan = await purchasablePlan(tx, user.id, action.id);
+      if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
+      await ask(tx, user.id, 'code', { planId: plan.planId });
+      return screen(menu.ASK_DISCOUNT_CODE, [
+        [{ text: 'بازگشت ⬅️', callback_data: encode('plan', plan.planId) }],
+      ]);
+    }
+
+    case 'dsx': {
+      if (action.id === undefined) return IGNORED;
+      const plan = await purchasablePlan(tx, user.id, action.id);
+      if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
+      await clearSession(tx, user.id);
+      const price = priceForUser(plan.priceIrr, user.discount_percent);
+      return screen(
+        `${menu.DISCOUNT_TAKEN_OFF}\n\n${menu.planDetail(plan, price)}`,
+        menu.planDetailMenu(plan),
+      );
+    }
+
+    case 'gft': {
+      await ask(tx, user.id, 'gift', {});
+      return screen(menu.ASK_GIFT_CODE, [
+        [{ text: 'بازگشت ⬅️', callback_data: encode('wal') }],
+      ]);
     }
 
     case 'order': {
@@ -409,7 +630,22 @@ async function handleCallback(
       // is not evidence that a button was ever offered for this plan.
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
-      const placed = await placeOrder(tx, user.id, plan, user.discount_percent);
+      // The code is checked once more, here, in the transaction that writes the
+      // order and the redemption together. Two taps cannot both spend it: the
+      // second `redeem` writes no row, and the order is placed at full price.
+      const listed = priceForUser(plan.priceIrr, user.discount_percent);
+      const held = await heldCode(tx, user, plan, listed.totalIrr);
+      const placed = await placeOrder(
+        tx,
+        user.id,
+        plan,
+        user.discount_percent,
+        held?.discountIrr ?? 0,
+      );
+      // Not cleared afterwards, deliberately: the held code is what lets a
+      // second tap re-price the same plan the same way and land back on the
+      // order that already exists. `/start` and «برداشتن کد» clear it.
+      if (held) await redeem(tx, held.code.id, user.id, placed.id, held.discountIrr);
       const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
       if (!checkout) {
         return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
