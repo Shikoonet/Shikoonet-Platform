@@ -15,6 +15,7 @@
 
 import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
+import { creditTopup } from './wallet.js';
 
 export interface Notification {
   chatId: number;
@@ -26,6 +27,9 @@ interface SettleRow {
   payment_public_id: string;
   order_id: number | null;
   order_status: string | null;
+  order_kind: string | null;
+  order_total_irr: number | null;
+  order_user_id: number | null;
   telegram_id: number | null;
 }
 
@@ -47,6 +51,9 @@ export async function settleVerifiedPayments(db: D1Database): Promise<Notificati
               p.public_id     AS payment_public_id,
               p.order_id      AS order_id,
               o.status        AS order_status,
+              o.kind          AS order_kind,
+              o.total_irr     AS order_total_irr,
+              o.user_id       AS order_user_id,
               u.telegram_id   AS telegram_id
          FROM payment_claims c
          JOIN payments p ON ('shikoo:' || p.public_id) = c.external_order_id
@@ -62,6 +69,8 @@ export async function settleVerifiedPayments(db: D1Database): Promise<Notificati
   const notifications: Notification[] = [];
 
   for (const row of results ?? []) {
+    /** The deposit this sweep credited, so the customer is told the right thing. */
+    let credited: number | null = null;
     const settled = await db.withSession(async (tx) => {
       // The money genuinely arrived, so the payment is paid whatever state the
       // order is in. Guarded on the old status so a concurrent sweep — or this
@@ -74,11 +83,32 @@ export async function settleVerifiedPayments(db: D1Database): Promise<Notificati
       if (paid.meta.changes === 0) return false;
 
       if (row.order_id !== null) {
+        // A deposit has nothing to provision, so it finishes here rather than
+        // going to PAID. Two reasons, and either alone would be enough: the
+        // provisioning sweep takes every PAID order and fails any without a
+        // plan, and a deposit that sat in PAID would be money the customer
+        // cannot see in their balance.
+        const isTopup = row.order_kind === 'WALLET_TOPUP';
         const moved = await tx
-          .prepare(`UPDATE orders SET status = 'PAID', updated_at = now()
-                     WHERE id = ?1 AND status = 'AWAITING_PAYMENT'`)
+          .prepare(
+            isTopup
+              ? `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
+                  WHERE id = ?1 AND status = 'AWAITING_PAYMENT'`
+              : `UPDATE orders SET status = 'PAID', updated_at = now()
+                  WHERE id = ?1 AND status = 'AWAITING_PAYMENT'`,
+          )
           .bind(row.order_id)
           .run();
+        if (moved.meta.changes === 1 && isTopup) {
+          // Same transaction as the status move, so the balance and the order
+          // can never disagree. The credit is idempotent on its own key too, so
+          // it survives this running twice for any other reason.
+          if (row.order_user_id === null || row.order_total_irr === null) {
+            throw new Error(`top-up order ${row.order_id} has no user or no amount`);
+          }
+          await creditTopup(tx, row.order_user_id, row.order_id, row.order_total_irr);
+          credited = row.order_total_irr;
+        }
         if (moved.meta.changes === 0) {
           // Somebody paid for an order that is no longer waiting to be paid —
           // cancelled, expired, or already settled by another route. The payment
@@ -96,7 +126,10 @@ export async function settleVerifiedPayments(db: D1Database): Promise<Notificati
     if (settled && row.telegram_id !== null) {
       notifications.push({
         chatId: row.telegram_id,
-        text: menu.paymentConfirmed(row.payment_public_id),
+        text:
+          credited === null
+            ? menu.paymentConfirmed(row.payment_public_id)
+            : menu.walletToppedUp(credited),
       });
     }
   }

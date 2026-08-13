@@ -27,7 +27,7 @@ import { decode } from './callback.js';
 import { panelsForUser, plansOnPanel, purchasablePlan } from './catalog.js';
 import * as menu from './menu.js';
 import { priceForUser } from './money.js';
-import { newPublicId, placeOrder, placeRenewalOrder } from './order.js';
+import { newPublicId, placeOrder, placeRenewalOrder, placeTopupOrder } from './order.js';
 import {
   countRenewableForUser,
   countSubscriptionsForUser,
@@ -38,6 +38,16 @@ import {
   subscriptionsForUser,
 } from './owned.js';
 import { checkoutFor, recordPaidClick } from './payment.js';
+import {
+  balanceFor,
+  entriesFor,
+  spendOnOrder,
+  topupAmount,
+  topupNeededIrr,
+  TOPUP_AMOUNTS_IRR,
+  TOPUP_MAX_IRR,
+  TOPUP_MIN_IRR,
+} from './wallet.js';
 import type {
   InlineKeyboard,
   TelegramCallbackQuery,
@@ -270,7 +280,10 @@ async function handleCallback(
           checkout.cardDigits,
           checkout.cardHolder,
         ),
-        menu.checkoutMenu(placed.id),
+        menu.checkoutMenu(placed.id, {
+          balanceIrr: await balanceFor(tx, user.id),
+          totalIrr: placed.totalIrr,
+        }),
       );
     }
 
@@ -379,7 +392,10 @@ async function handleCallback(
           checkout.cardDigits,
           checkout.cardHolder,
         ),
-        menu.checkoutMenu(placed.id),
+        menu.checkoutMenu(placed.id, {
+          balanceIrr: await balanceFor(tx, user.id),
+          totalIrr: placed.totalIrr,
+        }),
       );
     }
 
@@ -399,5 +415,100 @@ async function handleCallback(
           return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       }
     }
+
+    case 'wal': {
+      const [balance, entries] = await Promise.all([
+        balanceFor(tx, user.id),
+        entriesFor(tx, user.id, WALLET_HISTORY),
+      ]);
+      return screen(menu.walletHome(balance, entries), menu.walletMenu());
+    }
+
+    case 'top':
+      return screen(
+        menu.chooseTopupAmount(TOPUP_MIN_IRR, TOPUP_MAX_IRR),
+        menu.topupMenu(TOPUP_AMOUNTS_IRR),
+      );
+
+    case 'tp': {
+      if (action.id === undefined) return IGNORED;
+      // The button carries which choice was pressed, not how much it is worth.
+      // An id that is not one of ours buys nothing.
+      const amount = topupAmount(action.id);
+      if (amount === null) return IGNORED;
+      return topup(tx, user.id, amount, screen);
+    }
+
+    case 'tpo': {
+      if (action.id === undefined) return IGNORED;
+      const order = await orderForUser(tx, user.id, action.id);
+      if (!order) return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      // Recomputed from the order and the balance as they are now. The amount
+      // is never taken from the button, because a customer could name their own.
+      const needed = topupNeededIrr(order.total_irr, await balanceFor(tx, user.id));
+      if (needed === null) return screen(menu.MENU_TITLE, menu.mainMenu(user.is_reseller));
+      return topup(tx, user.id, needed, screen);
+    }
+
+    case 'wpay': {
+      if (action.id === undefined) return IGNORED;
+      const order = await orderForUser(tx, user.id, action.id);
+      if (!order || order.status !== 'AWAITING_PAYMENT') {
+        return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      }
+      const spent = await spendOnOrder(tx, user.id, order.id, order.total_irr);
+      if (spent === 'INSUFFICIENT') {
+        return screen(menu.WALLET_TOO_LITTLE, menu.walletMenu());
+      }
+      // The money is ours now, so the order is paid and the provisioning sweep
+      // owns it from here. A WALLET payment row is written so the sale reads
+      // the same as any other in the reports.
+      await tx
+        .prepare(
+          `UPDATE orders SET status = 'PAID', updated_at = now()
+            WHERE id = ?1 AND status = 'AWAITING_PAYMENT'`,
+        )
+        .bind(order.id)
+        .run();
+      await tx
+        .prepare(
+          `INSERT INTO payments
+             (public_id, user_id, order_id, amount_irr, method, status, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, 'WALLET', 'PAID', now(), now())
+           ON CONFLICT (public_id) DO NOTHING`,
+        )
+        .bind(newPublicId(), user.id, order.id, order.total_irr)
+        .run();
+      return screen(
+        menu.walletPaid(order.public_id, await balanceFor(tx, user.id)),
+        menu.afterPaidMenu(),
+      );
+    }
   }
 }
+
+/** How many movements the wallet screen shows. Enough to explain a balance. */
+const WALLET_HISTORY = 8;
+
+/**
+ * Turns a chosen amount into an order and a card to pay it into.
+ *
+ * Shared by the two ways a deposit starts — a preset button and "top up what
+ * this order still needs" — so both produce the same row and the same screen.
+ */
+async function topup(
+  tx: D1DatabaseSession,
+  userId: number,
+  amountIrr: number,
+  screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+): Promise<HandleOutcome> {
+  const placed = await placeTopupOrder(tx, userId, amountIrr);
+  const checkout = await checkoutFor(tx, userId, placed.id, placed.totalIrr, newPublicId());
+  if (!checkout) return screen(menu.NO_CARD_AVAILABLE, menu.walletMenu());
+  if (checkout.claimed) return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+  return screen(
+    menu.topupCheckout(placed.publicId, placed.totalIrr, checkout.cardDigits, checkout.cardHolder),
+    menu.checkoutMenu(placed.id),
+  );
+}
+

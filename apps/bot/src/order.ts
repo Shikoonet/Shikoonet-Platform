@@ -18,7 +18,7 @@
 import { randomBytes } from 'node:crypto';
 import type { D1DatabaseSession } from '@shikoo/database';
 import type { CatalogPlan } from './catalog.js';
-import { priceForUser } from './money.js';
+import { priceForUser, type Price } from './money.js';
 
 export interface PlacedOrder {
   id: number;
@@ -43,7 +43,8 @@ export async function placeOrder(
   plan: CatalogPlan,
   discountPercent: number,
 ): Promise<PlacedOrder> {
-  return place(tx, userId, plan, discountPercent, 'NEW_PURCHASE', null);
+  return place(tx, userId, plan.planId, priceForUser(plan.priceIrr, discountPercent),
+    'NEW_PURCHASE', null);
 }
 
 /**
@@ -60,18 +61,46 @@ export async function placeRenewalOrder(
   discountPercent: number,
   subscriptionId: number,
 ): Promise<PlacedOrder> {
-  return place(tx, userId, plan, discountPercent, 'RENEWAL', subscriptionId);
+  return place(tx, userId, plan.planId, priceForUser(plan.priceIrr, discountPercent),
+    'RENEWAL', subscriptionId);
+}
+
+/**
+ * Money in, not a thing out.
+ *
+ * A top-up carries no plan, so `plan_id` is NULL and there is nothing to
+ * provision — `settleVerifiedPayments` completes it by crediting the wallet.
+ *
+ * The standing discount is deliberately NOT applied. It is a discount on
+ * merchandise; applied to a deposit it would mean paying 90,000 Toman to
+ * receive 100,000, which is not a discount but a mint.
+ */
+export async function placeTopupOrder(
+  tx: D1DatabaseSession,
+  userId: number,
+  amountIrr: number,
+): Promise<PlacedOrder> {
+  if (!Number.isSafeInteger(amountIrr) || amountIrr <= 0) {
+    throw new Error(`top-up amount ${amountIrr} is not a usable amount`);
+  }
+  return place(
+    tx,
+    userId,
+    null,
+    { unitPriceIrr: amountIrr, discountIrr: 0, totalIrr: amountIrr },
+    'WALLET_TOPUP',
+    null,
+  );
 }
 
 async function place(
   tx: D1DatabaseSession,
   userId: number,
-  plan: CatalogPlan,
-  discountPercent: number,
-  kind: 'NEW_PURCHASE' | 'RENEWAL',
+  planId: number | null,
+  price: Price,
+  kind: 'NEW_PURCHASE' | 'RENEWAL' | 'WALLET_TOPUP',
   subscriptionId: number | null,
 ): Promise<PlacedOrder> {
-  const price = priceForUser(plan.priceIrr, discountPercent);
 
   // Same plan, same price, same target, still waiting to be paid. A price
   // change makes the old order stale, so it is left alone and a new one is
@@ -79,10 +108,13 @@ async function place(
   // duplicate row.
   const open = await tx
     .prepare(
+      // `IS NOT DISTINCT FROM` on plan_id, not `=`: a top-up has no plan, and
+      // `NULL = NULL` is unknown, so `=` would never match its own open order
+      // and every tap would write another one.
       `SELECT id, public_id, total_irr
          FROM orders
         WHERE user_id = ?1
-          AND plan_id = ?2
+          AND plan_id IS NOT DISTINCT FROM ?2
           AND total_irr = ?3
           AND kind = ?4
           AND target_subscription_id IS NOT DISTINCT FROM ?5
@@ -90,7 +122,7 @@ async function place(
         ORDER BY created_at DESC
         LIMIT 1`,
     )
-    .bind(userId, plan.planId, price.totalIrr, kind, subscriptionId)
+    .bind(userId, planId, price.totalIrr, kind, subscriptionId)
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (open) {
     return { id: open.id, publicId: open.public_id, totalIrr: open.total_irr, reused: true };
@@ -108,7 +140,7 @@ async function place(
       newPublicId(),
       userId,
       kind,
-      plan.planId,
+      planId,
       subscriptionId,
       price.unitPriceIrr,
       price.discountIrr,

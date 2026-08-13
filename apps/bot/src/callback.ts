@@ -40,6 +40,14 @@ export const CALLBACK_ACTIONS = [
   'renew', // [page] — the services that can be extended
   'rnw', // <subscriptionId> — the plans this service can be extended onto
   'rord', // <subscriptionId>:<planId> — extend that service with that plan
+  'wal', // the balance and the last movements on it
+  'top', // the deposit amounts on offer
+  'tp', // <presetIndex> — deposit that preset. An INDEX, never an amount:
+  //        the customer controls this field, so the number it means is
+  //        looked up in `TOPUP_AMOUNTS_IRR` rather than read off the wire.
+  'tpo', // <orderId> — deposit exactly what this order still needs, computed
+  //        from the order row for the same reason.
+  'wpay', // <orderId> — pay that order out of the balance
   'soon', // a menu entry that has no implementation yet
 ] as const;
 

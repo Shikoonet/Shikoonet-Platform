@@ -56,7 +56,7 @@ export function mainMenu(isReseller: boolean): InlineKeyboard {
       { text: '🔐 خرید اشتراک', callback_data: encode('buy') },
     ],
     [
-      { text: '🏦 کیف پول + شارژ', callback_data: encode('soon') },
+      { text: '🏦 کیف پول + شارژ', callback_data: encode('wal') },
       { text: '🛍 سرویس های من', callback_data: encode('mine') },
     ],
     [
@@ -190,11 +190,38 @@ export function formatCard(digits: string): string {
   return digits.replace(/(\d{4})(?=\d)/g, '$1-');
 }
 
-export function checkoutMenu(orderId: number): InlineKeyboard {
-  return [
-    [{ text: '✅ پرداخت کردم', callback_data: encode('paid', orderId) }],
-    [{ text: BACK_TO_MENU, callback_data: encode('menu') }],
-  ];
+/**
+ * The buttons under a checkout screen.
+ *
+ * `wallet` is omitted for a deposit — paying a deposit out of the balance is a
+ * circle — and present for anything being sold. When the balance covers the
+ * order the customer never has to visit a bank at all, which is the whole point
+ * of the wallet; when it does not, the offer is to deposit the difference
+ * rather than to work it out themselves.
+ */
+export function checkoutMenu(
+  orderId: number,
+  wallet?: { balanceIrr: number; totalIrr: number },
+): InlineKeyboard {
+  const keyboard: InlineKeyboard = [];
+  if (wallet && wallet.balanceIrr >= wallet.totalIrr) {
+    keyboard.push([
+      {
+        text: `💰 پرداخت از کیف پول (${formatToman(wallet.balanceIrr)})`,
+        callback_data: encode('wpay', orderId),
+      },
+    ]);
+  } else if (wallet && wallet.balanceIrr > 0) {
+    keyboard.push([
+      {
+        text: `💰 شارژ کیف پول (موجودی: ${formatToman(wallet.balanceIrr)})`,
+        callback_data: encode('tpo', orderId),
+      },
+    ]);
+  }
+  keyboard.push([{ text: '✅ پرداخت کردم', callback_data: encode('paid', orderId) }]);
+  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
+  return keyboard;
 }
 
 /** Every card is disabled or busy. Honest about it, and does not pretend. */
@@ -739,3 +766,139 @@ function formatTehranDate(when: Date): string {
     day: 'numeric',
   }).format(when);
 }
+
+// ---------------------------------------------------------------------------
+// wallet
+// ---------------------------------------------------------------------------
+
+/** What a ledger entry is called in a sentence a customer reads. */
+const ENTRY_LABEL: Record<string, string> = {
+  OPENING: 'موجودی اولیه',
+  TOPUP: 'شارژ کیف پول',
+  PURCHASE: 'خرید',
+  REFUND: 'بازگشت وجه',
+  ADMIN_ADJUST: 'اصلاح توسط پشتیبانی',
+  REFERRAL_BONUS: 'پاداش زیرمجموعه',
+  WHEEL_PRIZE: 'جایزهٔ گردونه',
+  TRANSFER_IN: 'انتقال دریافتی',
+  TRANSFER_OUT: 'انتقال ارسالی',
+};
+
+/**
+ * The balance, and where it came from.
+ *
+ * The history is shown because the balance alone is what Mirzabot has, and a
+ * balance nobody can explain is the thing that produced a customer sitting at
+ * -5,940,000 Toman with no way to find out why.
+ *
+ * A negative balance is stated plainly rather than hidden or clamped to zero.
+ * Production contains one, and a customer who owes money is owed the truth.
+ */
+export function walletHome(balanceIrr: number, entries: WalletEntryView[]): string {
+  const lines = ['🏦 کیف پول شما', '', `💰 موجودی: ${formatToman(balanceIrr)}`];
+  if (balanceIrr < 0) {
+    lines.push('', '⚠️ موجودی شما منفی است. تا تسویه نشود امکان خرید از کیف پول نیست.');
+  }
+  if (entries.length === 0) {
+    lines.push('', 'هنوز تراکنشی ندارید.');
+    return lines.join('\n');
+  }
+  lines.push('', '🧾 آخرین تراکنش‌ها:');
+  for (const entry of entries) {
+    const sign = entry.amount_irr < 0 ? '➖' : '➕';
+    const label = ENTRY_LABEL[entry.kind] ?? entry.kind;
+    lines.push(`${sign} ${formatToman(Math.abs(entry.amount_irr))} — ${label}`);
+  }
+  return lines.join('\n');
+}
+
+export interface WalletEntryView {
+  amount_irr: number;
+  kind: string;
+}
+
+export function walletMenu(): InlineKeyboard {
+  return [
+    [{ text: '💰 افزایش موجودی', callback_data: encode('top') }],
+    [{ text: BACK_TO_MENU, callback_data: encode('menu') }],
+  ];
+}
+
+export function chooseTopupAmount(minIrr: number, maxIrr: number): string {
+  return [
+    '💰 چه مبلغی به کیف پول اضافه شود؟',
+    '',
+    `کمترین مبلغ ${formatToman(minIrr)} و بیشترین ${formatToman(maxIrr)} است.`,
+    'بعد از انتخاب، شمارهٔ کارت برایتان فرستاده می‌شود.',
+  ].join('\n');
+}
+
+/**
+ * One button per allowed amount.
+ *
+ * The button carries the CHOICE, not the amount. `callback_data` is a field the
+ * customer can write whatever they like into, and a deposit is the one place in
+ * this bot where a number from them would otherwise be believed.
+ */
+export function topupMenu(amountsIrr: readonly number[]): InlineKeyboard {
+  const keyboard: InlineKeyboard = [];
+  for (let i = 0; i < amountsIrr.length; i += 2) {
+    const row = amountsIrr.slice(i, i + 2).map((amount, offset) => ({
+      text: formatToman(amount),
+      callback_data: encode('tp', i + offset + 1),
+    }));
+    keyboard.push(row);
+  }
+  keyboard.push([{ text: '🏦 کیف پول', callback_data: encode('wal') }]);
+  return keyboard;
+}
+
+/** The card screen for a deposit — same money, no service being bought. */
+export function topupCheckout(
+  publicId: string,
+  amountIrr: number,
+  cardDigits: string,
+  cardHolder: string | null,
+): string {
+  const lines = [
+    '🧾 درخواست شارژ ثبت شد. برای تکمیل، مبلغ زیر را کارت‌به‌کارت کنید.',
+    '',
+    `🔖 شمارهٔ پیگیری: ${publicId}`,
+    `💳 مبلغ دقیق: ${formatToman(amountIrr)}`,
+    '',
+    '🏦 شمارهٔ کارت:',
+    formatCard(cardDigits),
+  ];
+  if (cardHolder) lines.push(`👤 به نام: ${cardHolder}`);
+  lines.push(
+    '',
+    'لطفاً دقیقاً همین مبلغ را واریز کنید — مبلغ متفاوت بررسی دستی می‌خواهد و طول می‌کشد.',
+    'بعد از واریز، دکمهٔ زیر را بزنید.',
+  );
+  return lines.join('\n');
+}
+
+/** Sent by the settle sweep, not by a button: the deposit has landed. */
+export function walletToppedUp(amountIrr: number): string {
+  return [
+    '✅ کیف پول شما شارژ شد.',
+    '',
+    `💰 مبلغ: ${formatToman(amountIrr)}`,
+    '',
+    'حالا می‌توانید بدون کارت‌به‌کارت خرید کنید.',
+  ].join('\n');
+}
+
+export function walletPaid(serviceName: string, remainingIrr: number): string {
+  return [
+    '✅ پرداخت از کیف پول انجام شد.',
+    '',
+    `🔐 ${serviceName}`,
+    `💰 موجودی باقی‌مانده: ${formatToman(remainingIrr)}`,
+    '',
+    'سرویس در حال آماده‌سازی است و تا لحظاتی دیگر فرستاده می‌شود.',
+  ].join('\n');
+}
+
+export const WALLET_TOO_LITTLE =
+  'موجودی کیف پول شما برای این خرید کافی نیست. اول کیف پول را شارژ کنید.';

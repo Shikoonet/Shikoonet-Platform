@@ -161,6 +161,13 @@ export async function provisionPaidOrders(
                                    AND s.user_id = o.user_id
          LEFT JOIN provisioning_providers spv ON spv.id = s.provider_id
         WHERE o.status = 'PAID'
+          -- A deposit is money in, not a thing out: it has no plan, so the
+          -- plan_id IS NULL guard below would fail it and tell the customer
+          -- their service needs help. settleVerifiedPayments completes those
+          -- itself and they never reach PAID — this is the second lock on the
+          -- same door, because relying on the order two sweeps run in is not a
+          -- guarantee.
+          AND o.kind <> 'WALLET_TOPUP'
         ORDER BY o.id
         LIMIT 20`,
     )
