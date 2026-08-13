@@ -242,3 +242,70 @@ export function paymentConfirmed(publicId: string): string {
 export function afterPaidMenu(): InlineKeyboard {
   return [[{ text: BACK_TO_MENU, callback_data: encode('menu') }]];
 }
+
+/**
+ * The message the whole purchase exists to produce: the service itself.
+ *
+ * The subscription link goes on its own line with nothing after it, because
+ * Telegram's autolinker stops at whitespace and a customer who taps a link with
+ * a trailing Persian word gets a broken address. No `parse_mode` is used
+ * anywhere in this file, so the URL is never inside markup either.
+ */
+export function serviceReady(
+  subscriptionUrl: string,
+  username: string,
+  expiresAt: Date | null,
+): string {
+  const lines = ['🎉 سرویس شما آماده است.', '', `👤 نام کاربری: ${username}`];
+  if (expiresAt !== null) {
+    lines.push(`📅 اعتبار تا: ${formatTehranDate(expiresAt)}`);
+  }
+  lines.push('', '🔗 لینک اشتراک:', subscriptionUrl, '', 'این لینک را در برنامهٔ خود وارد کنید.');
+  return lines.join('\n');
+}
+
+/**
+ * Sold, paid, and waiting on a person — a manual product, or a kind whose
+ * adapter is not written yet. Distinct from the failure message on purpose:
+ * nothing is wrong, it is simply not instant.
+ */
+export function serviceBeingPrepared(publicId: string): string {
+  return [
+    '✅ پرداخت شما تایید شد و سفارش ثبت شد.',
+    '',
+    `🔖 شمارهٔ پیگیری: ${publicId}`,
+    '',
+    'این سرویس به‌صورت دستی آماده می‌شود و به‌زودی برایتان ارسال می‌گردد.',
+  ].join('\n');
+}
+
+/**
+ * Something went wrong that trying again will not fix.
+ *
+ * Says the money is safe first. That is the customer's actual question, and the
+ * order is sitting in FAILED with a reason attached for whoever picks it up.
+ */
+export function serviceNeedsHelp(publicId: string): string {
+  return [
+    '⚠️ پرداخت شما ثبت شده و محفوظ است، ولی آماده‌سازی سرویس به مشکل خورد.',
+    '',
+    `🔖 شمارهٔ پیگیری: ${publicId}`,
+    '',
+    'همکاران ما پیگیری می‌کنند. لطفاً این شماره را نگه دارید.',
+  ].join('\n');
+}
+
+/**
+ * Tehran calendar date, from `Intl` rather than by adding 3.5 hours.
+ *
+ * Doing this arithmetically is what put the "today" window seven hours out and
+ * hid every transaction between midnight and 07:00 from the daily report.
+ */
+function formatTehranDate(when: Date): string {
+  return new Intl.DateTimeFormat('fa-IR', {
+    timeZone: 'Asia/Tehran',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  }).format(when);
+}

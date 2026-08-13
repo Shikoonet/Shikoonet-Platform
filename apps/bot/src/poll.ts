@@ -13,7 +13,8 @@
 
 import type { D1Database } from '@shikoo/database';
 import { handleUpdate, type HandleStatus } from './handle.js';
-import { settleVerifiedPayments } from './settle.js';
+import { settleVerifiedPayments, type Notification } from './settle.js';
+import { provisionPaidOrders } from './provision.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 
 export interface PollResult {
@@ -127,22 +128,26 @@ async function answer(api: TelegramApi, update: TelegramUpdate): Promise<void> {
  * stop doing that. It is logged and retried next cycle, because the rows still
  * qualify.
  */
-async function settle(db: D1Database, api: TelegramApi): Promise<void> {
+async function sweep(
+  api: TelegramApi,
+  name: string,
+  produce: () => Promise<Notification[]>,
+): Promise<void> {
   let notifications;
   try {
-    notifications = await settleVerifiedPayments(db);
+    notifications = await produce();
   } catch (err) {
-    console.error('[bot] settling verified payments failed, will retry', err);
+    console.error(`[bot] ${name} failed, will retry`, err);
     return;
   }
   for (const note of notifications) {
     try {
       await api.sendMessage(note.chatId, note.text);
     } catch (err) {
-      // The row is already settled, so this message will not be produced again.
-      // Losing it is the cost of not sending it twice, and the payment itself is
-      // visible on the dashboard either way.
-      console.error(`[bot] payment confirmation for chat ${note.chatId} was not delivered`, err);
+      // The row is already advanced, so this message will not be produced again.
+      // Losing it is the cost of not sending it twice, and the payment and the
+      // order are both visible on the dashboard either way.
+      console.error(`[bot] ${name}: message to chat ${note.chatId} was not delivered`, err);
     }
   }
 }
@@ -192,7 +197,12 @@ export async function run(
       // call us back. Sweeping here rather than adding a cron keeps it to one
       // running service, and a 25-second poll makes "verified" and "the customer
       // was told" at most one cycle apart.
-      await settle(db, api);
+      await sweep(api, 'settling verified payments', () => settleVerifiedPayments(db));
+      // Delivery is its own sweep rather than a step inside settlement. The two
+      // fail for unrelated reasons — a claim that cannot be settled is a money
+      // problem, a panel that will not answer is not — and a panel being down
+      // must never hold up telling a customer their payment was confirmed.
+      await sweep(api, 'provisioning paid orders', () => provisionPaidOrders(db));
     } catch (err) {
       // A shutdown aborts the poll in flight, which surfaces here as a fetch
       // error. It is not a failure and must not be logged as one.

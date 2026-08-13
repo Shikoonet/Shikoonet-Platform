@@ -15,6 +15,7 @@
     "@shikoo/contracts": "workspace:*",
     "@shikoo/database": "workspace:*",
     "@shikoo/db": "workspace:*",
+    "@shikoo/domain": "workspace:*",
     "zod": "3.23.8"
   },
   "devDependencies": {

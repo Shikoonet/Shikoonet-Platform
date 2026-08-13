@@ -41,6 +41,9 @@ importers:
       '@shikoo/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@shikoo/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       zod:
         specifier: 3.23.8
         version: 3.23.8
