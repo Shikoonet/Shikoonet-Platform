@@ -13,7 +13,16 @@ import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
-import { ensureCatalog, FIXTURE_CARD, makeCustomer, planId } from './helpers/shop.js';
+import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
+
+/** Checked against `payment_cards` itself, not against a constant this file owns. */
+async function activeCard(digits: string): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT status FROM payment_cards WHERE card_digits = ?1`)
+    .bind(digits)
+    .first<{ status: string }>();
+  return row?.status === 'ACTIVE';
+}
 
 let nextId = 1;
 function ids(): { updateId: number; telegramId: number } {
@@ -95,18 +104,23 @@ describe('the checkout screen', () => {
 
     const placed = await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
 
-    const text = placed.replies[0]?.text ?? '';
-    expect(text).toContain('195,000 تومان');
-    expect(text).toContain('6037-0000-0000-0095');
-
     const payments = await paymentsOf(user);
     expect(payments).toHaveLength(1);
     expect(payments[0]).toMatchObject({
       amount_irr: 1_950_000,
       method: 'CARD_TO_CARD',
       status: 'PENDING',
-      assigned_card_number: FIXTURE_CARD,
     });
+
+    const text = placed.replies[0]?.text ?? '';
+    expect(text).toContain('195,000 تومان');
+    // Which card is not this test's business — rotation hands out the
+    // least-recently-used one of however many the database holds. What must
+    // hold is that the number on the screen is the number on the row, and that
+    // the row names a card that really is active.
+    const card = payments[0]!.assigned_card_number!;
+    expect(text).toContain(menu.formatCard(card));
+    expect(await activeCard(card)).toBe(true);
     // Nothing to review until the customer says they paid.
     expect(await claimsOf(user)).toHaveLength(0);
   });
@@ -162,9 +176,12 @@ describe('"I have paid"', () => {
       // the auto-verification engine filter on.
       source_system: MIRZABOT_SOURCE,
       status: 'PENDING',
-      card_digits: FIXTURE_CARD,
       customer_reference: String(telegramId),
     });
+    // The claim must carry the card the customer was actually shown, or the
+    // matcher looks for the money on the wrong account.
+    const payments = await paymentsOf(user);
+    expect(claim.card_digits).toBe(payments[0]?.assigned_card_number);
     // The card resolved to an account, so the engine can compare a bank SMS
     // against it instead of reporting UNMAPPED_CARD.
     expect(claim.target_financial_account_id).not.toBeNull();
@@ -173,7 +190,6 @@ describe('"I have paid"', () => {
     // Anchors the ±5 minute window the matcher compares against.
     expect(claim.paid_clicked_at).toBeGreaterThanOrEqual(before);
 
-    const payments = await paymentsOf(user);
     expect(payments[0]?.status).toBe('AWAITING_REVIEW');
   });
 

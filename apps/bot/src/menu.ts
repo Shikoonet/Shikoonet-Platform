@@ -222,6 +222,23 @@ export function paidAlready(publicId: string): string {
 
 export const ORDER_GONE = 'این سفارش پیدا نشد. لطفاً از منوی خرید دوباره اقدام کنید.';
 
+/**
+ * Sent unprompted once the bank transaction is matched to the payment.
+ *
+ * Deliberately does not promise the service in the next breath — provisioning
+ * is a separate step and may still fail. Saying "confirmed" is true now; saying
+ * "here it is" would not be.
+ */
+export function paymentConfirmed(publicId: string): string {
+  return [
+    '✅ پرداخت شما تایید شد.',
+    '',
+    `🔖 شمارهٔ پیگیری: ${publicId}`,
+    '',
+    'سفارش شما در صف آماده‌سازی قرار گرفت.',
+  ].join('\n');
+}
+
 export function afterPaidMenu(): InlineKeyboard {
   return [[{ text: BACK_TO_MENU, callback_data: encode('menu') }]];
 }

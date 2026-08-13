@@ -13,6 +13,7 @@
 
 import type { D1Database } from '@shikoo/database';
 import { handleUpdate, type HandleStatus } from './handle.js';
+import { settleVerifiedPayments } from './settle.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 
 export interface PollResult {
@@ -117,6 +118,35 @@ async function answer(api: TelegramApi, update: TelegramUpdate): Promise<void> {
   }
 }
 
+/**
+ * Settles whatever the hub has verified since the last cycle and tells the
+ * customers.
+ *
+ * A sweep that throws must not take the poll loop down with it — the loop's job
+ * is to keep answering Telegram, and a database hiccup here is not a reason to
+ * stop doing that. It is logged and retried next cycle, because the rows still
+ * qualify.
+ */
+async function settle(db: D1Database, api: TelegramApi): Promise<void> {
+  let notifications;
+  try {
+    notifications = await settleVerifiedPayments(db);
+  } catch (err) {
+    console.error('[bot] settling verified payments failed, will retry', err);
+    return;
+  }
+  for (const note of notifications) {
+    try {
+      await api.sendMessage(note.chatId, note.text);
+    } catch (err) {
+      // The row is already settled, so this message will not be produced again.
+      // Losing it is the cost of not sending it twice, and the payment itself is
+      // visible on the dashboard either way.
+      console.error(`[bot] payment confirmation for chat ${note.chatId} was not delivered`, err);
+    }
+  }
+}
+
 /** Drops claims old enough that Telegram can no longer redeliver them. */
 export async function pruneUpdates(db: D1Database, olderThanDays = 7): Promise<number> {
   const result = await db
@@ -158,6 +188,11 @@ export async function run(
       // produced 350 attempts and 6,000 log lines, hammering a database that
       // was trying to come back and earning a 429 from Telegram on the way.
       if (stalled) await sleep(backoffMs, options.signal);
+      // A payment is verified by the hub, in another process, with nothing to
+      // call us back. Sweeping here rather than adding a cron keeps it to one
+      // running service, and a 25-second poll makes "verified" and "the customer
+      // was told" at most one cycle apart.
+      await settle(db, api);
     } catch (err) {
       // A shutdown aborts the poll in flight, which surfaces here as a fetch
       // error. It is not a failure and must not be logged as one.
