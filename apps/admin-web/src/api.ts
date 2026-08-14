@@ -126,6 +126,41 @@ export interface PanelItem {
 }
 
 /**
+ * A discount or gift code.
+ *
+ * `state` is derived by the server from the same three conditions the bot
+ * applies when a customer redeems — expiry, redemption count against
+ * `maxUses`, and the kind. It is not a stored column, and this screen must not
+ * recompute it: two derivations of one rule is how they drift apart.
+ */
+export interface DiscountItem {
+  id: number;
+  code: string;
+  kind: string;
+  amountIrr: number | null;
+  percent: number | null;
+  maxUses: number | null;
+  used: number;
+  appliesTo: string;
+  firstPurchaseOnly: boolean;
+  resellersOnly: boolean;
+  product: { id: number; name: string | null } | null;
+  provider: { id: number; name: string | null } | null;
+  expiresAt: string | null;
+  createdAt: string;
+  state: 'USABLE' | 'EXPIRED' | 'USED_UP';
+}
+
+export interface RedemptionRow {
+  id: number;
+  amountIrr: number;
+  createdAt: string;
+  orderId: number | null;
+  telegramId: number;
+  username: string | null;
+}
+
+/**
  * The error carries the server's own code, not a rendered sentence.
  *
  * Screens branch on `code` (`admin_access_not_configured` is a different
@@ -244,6 +279,41 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(patch),
     });
+  },
+
+  discounts(params: { q?: string; state?: string; page: number; pageSize: number }) {
+    const qs = new URLSearchParams({
+      page: String(params.page),
+      pageSize: String(params.pageSize),
+    });
+    if (params.q) qs.set('q', params.q);
+    if (params.state) qs.set('state', params.state);
+    return req<{
+      ok: boolean;
+      total: number;
+      page: number;
+      pageSize: number;
+      filteredByState: string | null;
+      items: DiscountItem[];
+    }>(`/discounts?${qs.toString()}`);
+  },
+
+  createDiscount(body: Record<string, unknown>) {
+    return req<{ ok: boolean; discount: DiscountItem }>('/discounts', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  expireDiscount(id: number) {
+    return req<{ ok: boolean; changed: boolean; discount: DiscountItem }>(
+      `/discounts/${id}/expire`,
+      { method: 'POST' },
+    );
+  },
+
+  redemptions(id: number) {
+    return req<{ ok: boolean; items: RedemptionRow[] }>(`/discounts/${id}/redemptions`);
   },
 
   overview() {

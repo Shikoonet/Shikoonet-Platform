@@ -55,7 +55,7 @@ export const NAV: NavGroup[] = [
     label: 'مدیریت',
     items: [
       { id: 'panels', label: 'مدیریت پنل‌ها', icon: 'server', built: true },
-      { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket', built: false },
+      { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket', built: true },
     ],
   },
   {

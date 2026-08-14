@@ -20,6 +20,7 @@ import { DashboardPage } from './pages/DashboardPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
 import { ProductsPage } from './pages/ProductsPage.js';
 import { PanelsPage } from './pages/PanelsPage.js';
+import { DiscountsPage } from './pages/DiscountsPage.js';
 import { NotBuiltPage } from './pages/NotBuiltPage.js';
 import './theme.css';
 
@@ -111,6 +112,8 @@ export function App() {
             <ProductsPage />
           ) : page === 'panels' ? (
             <PanelsPage />
+          ) : page === 'discounts' ? (
+            <DiscountsPage />
           ) : (
             <NotBuiltPage id={page} />
           )}
