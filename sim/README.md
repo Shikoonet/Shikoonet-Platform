@@ -91,7 +91,22 @@ Post it with `deviceId` set to that same device code (`phone-a` … `phone-f`) a
 a body the parsers accept, e.g.
 `مبلغ 3,000,000 ریال به کارت *6030 واریز شد. مانده 72,222,222 ریال`.
 
-Two things the walk gets wrong if you improvise:
+**The body is one message per request, with the key in it** — `{apiKey, deviceId,
+deviceName, sender, message, timestamp}`, not a header and not an array. That
+contract is frozen because the Android app sends exactly this.
+
+**Send it as a UTF-8 file, not a shell argument.** `curl -d "…"` with Persian
+text from Git Bash on Windows mangles the bytes, and ingest then answers
+`DIRECTION_UNCERTAIN_IGNORED` — which is correct, because what arrived is not
+Persian. It cost half an hour on 2026-08-14 and looked exactly like a parser bug:
+
+```bash
+node -e "require('fs').writeFileSync('sms.json', JSON.stringify({…}), 'utf8')"
+curl -s -X POST http://127.0.0.1:8787/api/v1/sms \
+  -H 'content-type: application/json; charset=utf-8' --data-binary @sms.json
+```
+
+Two more things the walk gets wrong if you improvise:
 
 - **Auto-match is off unless you ask for it.** Start ingest with
   `MIRZABOT_INTEGRATION_ENABLED=true AUTO_MATCH_ENABLED=true`, otherwise the SMS
