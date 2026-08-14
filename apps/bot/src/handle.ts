@@ -22,9 +22,26 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { extraPricingFor, isAutomated, renewAllowed, renewModeFor } from '@shikoo/domain';
+import {
+  extraPricingFor,
+  isAutomated,
+  renewAllowed,
+  renewModeFor,
+  verifyMirzabotClaim,
+  verifyMirzabotClaimWithoutTransaction,
+} from '@shikoo/domain';
+import {
+  adminFor,
+  audit,
+  type BotAdmin,
+  candidateTransactions,
+  claimById,
+  claimsAwaitingReview,
+  countClaimsAwaitingReview,
+  rejectClaim,
+} from './admin.js';
 import { actOnService } from './actions.js';
-import { decode, encode } from './callback.js';
+import { type Callback, decode, encode } from './callback.js';
 import type { CatalogPlan } from './catalog.js';
 import { panelsForUser, plansOnPanel, purchasablePlan } from './catalog.js';
 import {
@@ -189,6 +206,18 @@ export async function handleUpdate(
 
     if (command(message.text) === '/start') {
       return handleStart(tx, message);
+    }
+    // The one command that is not for customers. It answers nothing at all to
+    // anyone who is not in `admins` — not "you are not an admin", which would
+    // confirm the command exists.
+    if (command(message.text) === '/panel') {
+      const admin = message.from ? await adminFor(tx, message.from.id) : null;
+      if (!admin) return IGNORED;
+      const waiting = await countClaimsAwaitingReview(tx);
+      return {
+        status: 'processed',
+        replies: [reply(message.chat.id, menu.adminHome(waiting), menu.adminMenu(waiting))],
+      };
     }
     // Everything else typed is an answer to something the bot asked, and what
     // it asked is in the session — never in the message.
@@ -682,6 +711,200 @@ async function heldCode(
   return null;
 }
 
+/** How many payments one review screen lists. */
+const CLAIMS_PER_PAGE = 6;
+
+/**
+ * The admin panel's callbacks, after `admins` has already said yes.
+ *
+ * The claim being worked on lives in `bot_sessions` rather than in the button:
+ * a claim id and a transaction id are both UUIDs and the two together do not
+ * fit in Telegram's 64 bytes. It is re-read and re-checked on every step, so
+ * the session is a convenience, never an authority.
+ */
+async function handleAdmin(
+  tx: D1DatabaseSession,
+  admin: BotAdmin,
+  action: Callback,
+  screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+  telegramId: number,
+): Promise<HandleOutcome> {
+  const home = async (): Promise<HandleOutcome> => {
+    const waiting = await countClaimsAwaitingReview(tx);
+    return screen(menu.adminHome(waiting), menu.adminMenu(waiting));
+  };
+
+  /** The claim this admin is looking at, re-read every time. */
+  const currentClaim = async () => {
+    const userId = await adminSessionUser(tx, telegramId);
+    if (userId === null) return null;
+    const row = await tx
+      .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
+      .bind(userId)
+      .first<{ step: string | null; data: Record<string, unknown> | null }>();
+    if (row?.step !== 'admin:claim') return null;
+    const id = row.data?.['claimId'];
+    return typeof id === 'string' ? await claimById(tx, id) : null;
+  };
+
+  /** Remembers which confirmable action was asked for, keeping the claim. */
+  const askToConfirm = async (
+    decision: 'APPROVE_NO_TX' | 'REJECT',
+    text: string,
+  ): Promise<HandleOutcome> => {
+    const claim = await currentClaim();
+    const userId = await adminSessionUser(tx, telegramId);
+    if (!claim || userId === null) return screen(menu.CLAIM_GONE, menu.adminMenu(0));
+    await ask(tx, userId, 'admin:claim', { claimId: claim.id, decision });
+    return screen(text, menu.confirmMenu());
+  };
+
+  const showList = async (page: number): Promise<HandleOutcome> => {
+    const total = await countClaimsAwaitingReview(tx);
+    if (total === 0) return screen(menu.NO_CLAIMS, menu.adminMenu(0));
+    const pages = Math.max(1, Math.ceil(total / CLAIMS_PER_PAGE));
+    const at = Math.min(Math.max(page, 1), pages);
+    const claims = await claimsAwaitingReview(tx, CLAIMS_PER_PAGE, (at - 1) * CLAIMS_PER_PAGE);
+    return screen(menu.claimList(at, pages, total), menu.claimListMenu(claims, at, pages));
+  };
+
+  const showClaim = async (claimId: string): Promise<HandleOutcome> => {
+    const claim = await claimById(tx, claimId);
+    if (!claim || !['PENDING', 'MATCH_SUGGESTED'].includes(claim.status)) {
+      return screen(menu.CLAIM_GONE, menu.adminMenu(await countClaimsAwaitingReview(tx)));
+    }
+    const candidates = await candidateTransactions(tx, claim.id);
+    await rememberClaim(tx, telegramId, claim.id);
+    return screen(menu.claimDetail(claim, candidates), menu.claimDetailMenu(candidates));
+  };
+
+  switch (action.action) {
+    case 'pnl':
+      return home();
+
+    case 'clm':
+      return showList(action.id ?? 1);
+
+    case 'clv':
+      return action.ref === undefined ? IGNORED : showClaim(action.ref);
+
+    case 'apv': {
+      if (action.ref === undefined) return IGNORED;
+      const claim = await currentClaim();
+      if (!claim) return screen(menu.CLAIM_GONE, menu.adminMenu(0));
+      // `verifyMirzabotClaim` is the only path allowed to settle one of these.
+      // It re-checks the account, the amount and both sides being unconsumed,
+      // and writes through the partial unique indexes that stop one bank
+      // transaction paying for two orders.
+      const result = await verifyMirzabotClaim(tx as unknown as D1Database, {
+        claimId: claim.id,
+        transactionId: action.ref,
+        mode: 'ADMIN_APPROVED',
+        actorEmail: null,
+      });
+      if (!result.ok) {
+        await audit(tx, admin, 'claim.approve.failed', 'payment_claim', claim.id, {
+          reason: result.error,
+        });
+        return screen(menu.claimNotApproved(result.error), menu.adminMenu(0));
+      }
+      await audit(tx, admin, 'claim.approve', 'payment_claim', claim.id, {
+        after: { transactionId: action.ref, amountIrr: claim.expected_amount_irr },
+      });
+      await clearAdminSession(tx, telegramId);
+      return screen(
+        menu.claimApproved(claim.expected_amount_irr),
+        menu.adminMenu(await countClaimsAwaitingReview(tx)),
+      );
+    }
+
+    case 'apx':
+      return askToConfirm('APPROVE_NO_TX', menu.CONFIRM_APPROVE_WITHOUT_TX);
+
+    case 'rej':
+      return askToConfirm('REJECT', menu.CONFIRM_REJECT);
+
+    case 'cnf': {
+      const pending = await pendingDecision(tx, telegramId);
+      const claim = await currentClaim();
+      if (!claim || pending === null) return screen(menu.CLAIM_GONE, menu.adminMenu(0));
+      if (pending === 'REJECT') {
+        const done = await rejectClaim(tx, claim.id);
+        if (!done) return screen(menu.CLAIM_GONE, menu.adminMenu(0));
+        await audit(tx, admin, 'claim.reject', 'payment_claim', claim.id, {
+          after: { amountIrr: claim.expected_amount_irr },
+        });
+        await clearAdminSession(tx, telegramId);
+        return screen(
+          menu.claimRejected(claim.expected_amount_irr),
+          menu.adminMenu(await countClaimsAwaitingReview(tx)),
+        );
+      }
+      const result = await verifyMirzabotClaimWithoutTransaction(
+        tx as unknown as D1Database,
+        { claimId: claim.id, actorEmail: null },
+      );
+      if (!result.ok) {
+        await audit(tx, admin, 'claim.approve.failed', 'payment_claim', claim.id, {
+          reason: result.error,
+        });
+        return screen(menu.claimNotApproved(result.error), menu.adminMenu(0));
+      }
+      await audit(tx, admin, 'claim.approve.no_transaction', 'payment_claim', claim.id, {
+        after: { amountIrr: claim.expected_amount_irr },
+        reason: 'settled without a bank transaction',
+      });
+      await clearAdminSession(tx, telegramId);
+      return screen(
+        menu.claimApproved(claim.expected_amount_irr),
+        menu.adminMenu(await countClaimsAwaitingReview(tx)),
+      );
+    }
+
+    default:
+      return IGNORED;
+  }
+}
+
+/** An admin is a customer too — the session row is keyed by `users.id`. */
+async function adminSessionUser(tx: D1DatabaseSession, telegramId: number): Promise<number | null> {
+  const row = await tx
+    .prepare(`SELECT id FROM users WHERE telegram_id = ?1`)
+    .bind(telegramId)
+    .first<{ id: number }>();
+  return row?.id ?? null;
+}
+
+async function rememberClaim(
+  tx: D1DatabaseSession,
+  telegramId: number,
+  claimId: string,
+): Promise<void> {
+  const userId = await adminSessionUser(tx, telegramId);
+  if (userId === null) return;
+  await ask(tx, userId, 'admin:claim', { claimId });
+}
+
+/** Which of the two confirmable actions was asked for, if either. */
+async function pendingDecision(
+  tx: D1DatabaseSession,
+  telegramId: number,
+): Promise<'APPROVE_NO_TX' | 'REJECT' | null> {
+  const userId = await adminSessionUser(tx, telegramId);
+  if (userId === null) return null;
+  const row = await tx
+    .prepare(`SELECT data FROM bot_sessions WHERE user_id = ?1`)
+    .bind(userId)
+    .first<{ data: Record<string, unknown> | null }>();
+  const decision = row?.data?.['decision'];
+  return decision === 'APPROVE_NO_TX' || decision === 'REJECT' ? decision : null;
+}
+
+async function clearAdminSession(tx: D1DatabaseSession, telegramId: number): Promise<void> {
+  const userId = await adminSessionUser(tx, telegramId);
+  if (userId !== null) await clearSession(tx, userId);
+}
+
 async function handleCallback(
   tx: D1DatabaseSession,
   query: TelegramCallbackQuery,
@@ -780,6 +1003,21 @@ async function handleCallback(
       return screen(menu.ASK_GIFT_CODE, [
         [{ text: 'بازگشت ⬅️', callback_data: encode('wal') }],
       ]);
+    }
+
+    // --- the admin panel -----------------------------------------------
+    // Every one of these asks `admins` first. A customer who forges `clv:<id>`
+    // is ignored exactly as they would be for any unknown callback.
+    case 'pnl':
+    case 'clm':
+    case 'clv':
+    case 'apv':
+    case 'apx':
+    case 'rej':
+    case 'cnf': {
+      const admin = await adminFor(tx, query.from.id);
+      if (!admin) return IGNORED;
+      return handleAdmin(tx, admin, action, screen, query.from.id);
     }
 
     case 'sup': {

@@ -21,7 +21,7 @@
  * 11,240 'fa' to one 'en'; wire up a second language when it has a customer.
  */
 
-import { encode } from './callback.js';
+import { encode, encodeRef } from './callback.js';
 import type { CatalogPlan, Panel } from './catalog.js';
 import { formatToman, nameMentionsPrice, priceForUser, type Price } from './money.js';
 import type { InlineKeyboard } from './telegram.js';
@@ -248,6 +248,161 @@ export function helpArticleScreen(title: string, body: string): string {
 export const APPS_EMPTY = 'هنوز برنامه‌ای ثبت نشده است.';
 
 export const REFERRAL_WELCOME = '👥 شما با لینک دعوت یکی از کاربران وارد شدید.';
+
+// ---------------------------------------------------------------------------
+// The admin panel. Every screen below is drawn only after `admins` said yes.
+// ---------------------------------------------------------------------------
+
+export const ADMIN_HOME = '🛠 پنل ادمین';
+
+export function adminHome(waiting: number): string {
+  return [
+    ADMIN_HOME,
+    '',
+    waiting === 0
+      ? '✅ رسیدی در انتظار بررسی نیست.'
+      : `🧾 ${waiting.toLocaleString('en-US')} پرداخت در انتظار تصمیم شماست.`,
+  ].join('\n');
+}
+
+export function adminMenu(waiting: number): InlineKeyboard {
+  const keyboard: InlineKeyboard = [];
+  if (waiting > 0) {
+    keyboard.push([{ text: '🧾 بررسی پرداخت‌ها', callback_data: encode('clm') }]);
+  }
+  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
+  return keyboard;
+}
+
+export const NO_CLAIMS = '✅ در حال حاضر پرداختی در انتظار بررسی نیست.';
+
+/** One line per waiting payment: who, how much, and what the engine thought. */
+export function claimList(page: number, pages: number, total: number): string {
+  const head = `🧾 پرداخت‌های در انتظار (${total.toLocaleString('en-US')} مورد)`;
+  return pages > 1 ? `${head}\n\nصفحهٔ ${page} از ${pages}` : head;
+}
+
+export interface ClaimRow {
+  id: string;
+  expected_amount_irr: number;
+  username: string | null;
+  telegram_id: number | null;
+  suspect_reason: string | null;
+}
+
+export function claimListMenu(
+  claims: ClaimRow[],
+  page: number,
+  pages: number,
+): InlineKeyboard {
+  const keyboard: InlineKeyboard = claims.map((c) => [
+    {
+      text: `${formatToman(c.expected_amount_irr)} — ${c.username ?? c.telegram_id ?? '؟'}`,
+      callback_data: encodeRef('clv', c.id),
+    },
+  ]);
+  if (pages > 1) {
+    const paging: InlineKeyboard[number] = [];
+    if (page > 1) paging.push({ text: '« قبلی', callback_data: encode('clm', page - 1) });
+    if (page < pages) paging.push({ text: 'بعدی »', callback_data: encode('clm', page + 1) });
+    keyboard.push(paging);
+  }
+  keyboard.push([{ text: '🛠 پنل ادمین', callback_data: encode('pnl') }]);
+  return keyboard;
+}
+
+/**
+ * One payment, with everything an admin needs to decide and nothing they do
+ * not — no card number in full, and no raw SMS text.
+ */
+export function claimDetail(
+  claim: {
+    external_order_id: string;
+    expected_amount_irr: number;
+    card_digits: string | null;
+    paid_clicked_at: number | null;
+    suspect_reason: string | null;
+    username: string | null;
+    telegram_id: number | null;
+  },
+  candidates: { amount_irr: number; bank_timestamp: number; sender: string | null }[],
+): string {
+  const lines = [
+    '🧾 بررسی پرداخت',
+    '',
+    `👤 مشتری: ${claim.username ? `@${claim.username}` : (claim.telegram_id ?? '؟')}`,
+    `💳 مبلغ: ${formatToman(claim.expected_amount_irr)}`,
+    `🔖 مرجع: ${claim.external_order_id}`,
+  ];
+  if (claim.card_digits) lines.push(`🏦 کارت مقصد: ${claim.card_digits.slice(-4)}`);
+  if (claim.paid_clicked_at !== null) {
+    lines.push(`🕓 «پرداخت کردم»: ${formatTehranDate(new Date(claim.paid_clicked_at))}`);
+  }
+  if (claim.suspect_reason) lines.push(`⚠️ نظر سامانه: ${claim.suspect_reason}`);
+  lines.push('');
+  lines.push(
+    candidates.length === 0
+      ? '🔍 هیچ تراکنش بانکی متناظری پیدا نشد.'
+      : `🔍 ${candidates.length} تراکنش بانکی با همین مبلغ و همین حساب:`,
+  );
+  for (const c of candidates) {
+    lines.push(
+      `• ${formatToman(c.amount_irr)} — ${formatTehranDate(new Date(c.bank_timestamp))}` +
+        (c.sender ? ` — ${c.sender}` : ''),
+    );
+  }
+  return lines.join('\n');
+}
+
+export function claimDetailMenu(
+  candidates: { id: string; bank_timestamp: number }[],
+): InlineKeyboard {
+  const keyboard: InlineKeyboard = candidates.map((c) => [
+    {
+      text: `✅ تایید با تراکنش ${formatTehranTime(new Date(c.bank_timestamp))}`,
+      callback_data: encodeRef('apv', c.id),
+    },
+  ]);
+  keyboard.push([{ text: '⚠️ تایید بدون تراکنش', callback_data: encode('apx') }]);
+  keyboard.push([{ text: '❌ رد کردن', callback_data: encode('rej') }]);
+  keyboard.push([{ text: 'بازگشت ⬅️', callback_data: encode('clm') }]);
+  return keyboard;
+}
+
+export const CONFIRM_APPROVE_WITHOUT_TX = [
+  '⚠️ تایید بدون تراکنش بانکی',
+  '',
+  'یعنی این پرداخت فقط با تصمیم شما تسویه می‌شود و هیچ تراکنش بانکی پشتش نیست.',
+  'این کار در دفتر ممیزی به نام شما ثبت می‌شود.',
+].join('\n');
+
+export const CONFIRM_REJECT = [
+  '❌ رد کردن این پرداخت',
+  '',
+  'مشتری سرویس نمی‌گیرد و پرداخت به حالت رد شده می‌رود.',
+  'این کار در دفتر ممیزی به نام شما ثبت می‌شود.',
+].join('\n');
+
+export function confirmMenu(): InlineKeyboard {
+  return [
+    [{ text: 'بله، انجام شود', callback_data: encode('cnf') }],
+    [{ text: 'بازگشت ⬅️', callback_data: encode('clm') }],
+  ];
+}
+
+export const CLAIM_GONE = 'این پرداخت دیگر در انتظار بررسی نیست.';
+
+export function claimApproved(amountIrr: number): string {
+  return `✅ پرداخت ${formatToman(amountIrr)} تایید شد و سفارش مشتری به جریان افتاد.`;
+}
+
+export function claimRejected(amountIrr: number): string {
+  return `❌ پرداخت ${formatToman(amountIrr)} رد شد.`;
+}
+
+export function claimNotApproved(reason: string): string {
+  return `⛔ تایید انجام نشد: ${reason}`;
+}
 
 /**
  * The referral screen.
@@ -1201,6 +1356,21 @@ function formatTehranDate(when: Date): string {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
+  }).format(when);
+}
+
+/**
+ * The clock time in Tehran.
+ *
+ * Only the admin screens use it, and they need it: two bank transactions for
+ * the same amount on the same day are told apart by the minute they arrived,
+ * and a button that said only the date would name both.
+ */
+function formatTehranTime(when: Date): string {
+  return new Intl.DateTimeFormat('fa-IR', {
+    timeZone: 'Asia/Tehran',
+    hour: '2-digit',
+    minute: '2-digit',
   }).format(when);
 }
 
