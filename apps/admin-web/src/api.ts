@@ -58,6 +58,51 @@ export interface CustomerDetail {
 }
 
 /**
+ * One sellable combination: a plan, with the product it belongs to.
+ *
+ * The panel this replaces has a single `product` row carrying all of it, so
+ * this is the shape an admin already reads. Here the two are separate tables
+ * and the join happens in SQL.
+ */
+export interface PlanRow {
+  id: number;
+  name: string;
+  priceIrr: number;
+  durationDays: number | null;
+  volumeGb: number | null;
+  userLimit: number | null;
+  status: string;
+  sortOrder: number;
+  product: {
+    id: number;
+    code: string;
+    name: string;
+    kind: string;
+    status: string;
+    resellersOnly: boolean;
+    oncePerUser: boolean;
+  };
+  provider: { id: number; name: string | null; code: string | null; status: string | null } | null;
+  categoryName: string | null;
+  ordersCount: number;
+}
+
+export interface ProviderOption {
+  id: number;
+  code: string;
+  name: string;
+  status: string;
+}
+
+export interface PlanPatch {
+  name?: string;
+  priceIrr?: number;
+  durationDays?: number | null;
+  volumeGb?: number | null;
+  status?: 'ACTIVE' | 'HIDDEN' | 'DISABLED';
+}
+
+/**
  * The error carries the server's own code, not a rendered sentence.
  *
  * Screens branch on `code` (`admin_access_not_configured` is a different
@@ -118,6 +163,44 @@ export const api = {
     return req<{ ok: boolean; changed: boolean; status: string }>(`/customers/${id}/status`, {
       method: 'POST',
       body: JSON.stringify(body),
+    });
+  },
+
+  products(params: {
+    q?: string;
+    status?: string;
+    providerId?: number;
+    page: number;
+    pageSize: number;
+  }) {
+    const qs = new URLSearchParams({
+      page: String(params.page),
+      pageSize: String(params.pageSize),
+    });
+    if (params.q) qs.set('q', params.q);
+    if (params.status) qs.set('status', params.status);
+    if (params.providerId) qs.set('providerId', String(params.providerId));
+    return req<{
+      ok: boolean;
+      total: number;
+      page: number;
+      pageSize: number;
+      items: PlanRow[];
+      providers: ProviderOption[];
+    }>(`/products?${qs.toString()}`);
+  },
+
+  updatePlan(id: number, patch: PlanPatch) {
+    return req<{ ok: boolean; plan: PlanRow }>(`/products/plans/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  setProductStatus(id: number, status: 'ACTIVE' | 'HIDDEN' | 'DISABLED') {
+    return req<{ ok: boolean; status: string }>(`/products/${id}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ status }),
     });
   },
 

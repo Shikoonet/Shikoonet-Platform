@@ -34,7 +34,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 
-type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
+import { audit, type Ident } from './adminAudit.js';
 
 /**
  * The largest correction a single adjustment may make, in IRR.
@@ -51,36 +51,6 @@ type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
 export const ADJUST_MAX_IRR = 100_000_000;
 
 const PAGE_SIZE_MAX = 100;
-
-async function audit(
-  db: D1Database,
-  ident: Ident,
-  action: string,
-  entityId: string,
-  before: unknown,
-  after: unknown,
-  reason: string | null,
-): Promise<void> {
-  await db
-    .prepare(
-      `INSERT INTO audit_logs
-         (id, actor_email, actor_role, action, entity_type, entity_id,
-          before_json, after_json, reason, request_id, created_at)
-       VALUES (?1, ?2, ?3, ?4, 'CUSTOMER', ?5, ?6, ?7, ?8, NULL, ?9)`,
-    )
-    .bind(
-      crypto.randomUUID(),
-      ident.email,
-      ident.role,
-      action,
-      entityId,
-      before === null ? null : JSON.stringify(before),
-      after === null ? null : JSON.stringify(after),
-      reason,
-      Date.now(),
-    )
-    .run();
-}
 
 const ListQuery = z.object({
   q: z.string().trim().max(64).optional(),
@@ -342,6 +312,7 @@ export function registerCustomerRoutes(
       c.env.DB,
       ident,
       'customer.wallet_adjusted',
+      'CUSTOMER',
       String(id),
       { balance_irr: before.balance_irr },
       { balance_irr: balanceIrr, amount_irr: amountIrr },
@@ -386,6 +357,7 @@ export function registerCustomerRoutes(
       c.env.DB,
       ident,
       status === 'BLOCKED' ? 'customer.blocked' : 'customer.unblocked',
+      'CUSTOMER',
       String(id),
       before,
       { status, blocked_reason: blockedReason },

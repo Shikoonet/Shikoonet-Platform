@@ -46,7 +46,7 @@ export const NAV: NavGroup[] = [
       { id: 'customers', label: 'کاربران', icon: 'users', built: true },
       { id: 'orders', label: 'سفارشات', icon: 'receipt', built: false },
       { id: 'services', label: 'سرویس‌ها', icon: 'package', built: false },
-      { id: 'products', label: 'محصولات', icon: 'grid', built: false },
+      { id: 'products', label: 'محصولات', icon: 'grid', built: true },
       { id: 'transactions', label: 'تراکنش‌ها', icon: 'wallet', built: false },
       { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list', built: false },
     ],

@@ -37,7 +37,7 @@ describe('navigation', () => {
   it('marks exactly the sections that have a screen as built', () => {
     // The list of implemented pages, kept by hand — this is the assertion, so
     // it must not be derived from the same flag it is checking.
-    const implemented: PageId[] = ['dashboard', 'customers'];
+    const implemented: PageId[] = ['dashboard', 'customers', 'products'];
     const flagged = ALL.filter((id) => navItem(id)!.built);
     expect(flagged.sort()).toEqual([...implemented].sort());
   });

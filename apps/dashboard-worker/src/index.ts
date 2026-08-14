@@ -39,6 +39,7 @@ import { registerAnalyticsRoutes } from './analyticsRoutes.js';
 import { registerBankRoutes } from './bankRoutes.js';
 import { registerCustomerRoutes } from './customerRoutes.js';
 import { registerAdminOverviewRoutes } from './adminOverviewRoutes.js';
+import { registerProductRoutes } from './productRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
 /**
@@ -4428,6 +4429,7 @@ registerAnalyticsRoutes(app);
 registerBankRoutes(app);
 registerCustomerRoutes(app);
 registerAdminOverviewRoutes(app);
+registerProductRoutes(app);
 
 export default app;
 export { app };

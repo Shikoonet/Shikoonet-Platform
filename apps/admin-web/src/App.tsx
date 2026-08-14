@@ -18,6 +18,7 @@ import { NAV, pageLabel, type PageId } from './nav.js';
 import { Icon } from './icons.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
+import { ProductsPage } from './pages/ProductsPage.js';
 import { NotBuiltPage } from './pages/NotBuiltPage.js';
 import './theme.css';
 
@@ -101,9 +102,15 @@ export function App() {
 
       <section id="main-content">
         <div className="wrapper">
-          {page === 'dashboard' && <DashboardPage onGo={go} />}
-          {page === 'customers' && <CustomersPage />}
-          {page !== 'dashboard' && page !== 'customers' && <NotBuiltPage id={page} />}
+          {page === 'dashboard' ? (
+            <DashboardPage onGo={go} />
+          ) : page === 'customers' ? (
+            <CustomersPage />
+          ) : page === 'products' ? (
+            <ProductsPage />
+          ) : (
+            <NotBuiltPage id={page} />
+          )}
         </div>
       </section>
     </>
