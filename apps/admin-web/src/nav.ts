@@ -61,8 +61,8 @@ export const NAV: NavGroup[] = [
   {
     label: 'پیکربندی',
     items: [
-      { id: 'texts', label: 'متن‌های ربات', icon: 'text', built: false },
-      { id: 'keyboard', label: 'چیدمان کیبورد', icon: 'keyboard', built: false },
+      { id: 'texts', label: 'متن‌های ربات', icon: 'text', built: true },
+      { id: 'keyboard', label: 'چیدمان کیبورد', icon: 'keyboard', built: true },
       { id: 'settings', label: 'تنظیمات', icon: 'settings', built: true },
     ],
   },

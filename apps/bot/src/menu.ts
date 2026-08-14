@@ -23,56 +23,131 @@
 
 import { encode, encodeRef } from './callback.js';
 import type { CatalogPlan, Panel } from './catalog.js';
+import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
+import { buildMainMenu, DEFAULT_LAYOUT, type ButtonPlacement } from './keyboard.js';
+import { DEFAULT_TEXTS, type Texts } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, type Price } from './money.js';
 import type { InlineKeyboard } from './telegram.js';
 
-export const WELCOME = 'به شیکو خوش آمدید 👋\n\nاز منوی زیر انتخاب کنید.';
-
-export const MENU_TITLE = 'منوی اصلی — چه کاری برایتان انجام دهم؟';
-
-export const SOON = 'این بخش هنوز آماده نیست. به‌زودی 🙏';
-
-export const CHOOSE_PANEL = '📌 لوکیشن سرویس را انتخاب کنید.';
-
-export const CHOOSE_PLAN = '🛍 سرویس مورد نظرتان را انتخاب کنید.';
-
+/**
+ * The sentences an admin may rewrite.
+ *
+ * These are `let`, not `const`, and that is the whole wiring: ES module exports
+ * are live bindings, so `applyContent` reassigning them is seen by every
+ * `menu.X` in `handle.ts` without a single call site changing. The defaults come
+ * from `texts.ts`, which is where they now live — one definition, editable and
+ * rendered from the same place.
+ *
+ * Safe because the bot handles one update at a time (`poll.ts` awaits each
+ * `handleUpdate` in a plain `for` loop). If that ever becomes concurrent, this
+ * becomes shared mutable state between customers and must be threaded through
+ * instead.
+ */
+export let WELCOME = DEFAULT_TEXTS.raw('WELCOME');
+export let MENU_TITLE = DEFAULT_TEXTS.raw('MENU_TITLE');
+export let SOON = DEFAULT_TEXTS.raw('SOON');
+export let CHOOSE_PANEL = DEFAULT_TEXTS.raw('CHOOSE_PANEL');
+export let CHOOSE_PLAN = DEFAULT_TEXTS.raw('CHOOSE_PLAN');
 /** Shown when a panel that was listed a moment ago now has nothing on it. */
-export const PANEL_EMPTY = 'در حال حاضر محصولی روی این لوکیشن موجود نیست.';
-
+export let PANEL_EMPTY = DEFAULT_TEXTS.raw('PANEL_EMPTY');
 /** No panel has anything this customer can buy. */
-export const SHOP_EMPTY = 'در حال حاضر سرویسی برای فروش موجود نیست. کمی بعد دوباره سر بزنید.';
-
+export let SHOP_EMPTY = DEFAULT_TEXTS.raw('SHOP_EMPTY');
 /** The one answer to a plan that is gone, hidden, or was never theirs to see. */
-export const PLAN_GONE = 'این سرویس در دسترس شما نیست. لطفاً از منوی خرید دوباره انتخاب کنید.';
-
-export const NOT_REGISTERED = 'برای شروع لطفاً /start را بزنید.';
-
-const BACK_TO_MENU = 'بازگشت به منو ⬅️';
+export let PLAN_GONE = DEFAULT_TEXTS.raw('PLAN_GONE');
+export let NOT_REGISTERED = DEFAULT_TEXTS.raw('NOT_REGISTERED');
 /** For the few screens handle.ts builds a one-button keyboard for itself. */
-export const BACK_TO_MENU_LABEL = BACK_TO_MENU;
+export let BACK_TO_MENU_LABEL = DEFAULT_TEXTS.raw('BACK_TO_MENU_LABEL');
+
+export let ASK_DISCOUNT_CODE = DEFAULT_TEXTS.raw('ASK_DISCOUNT_CODE');
+export let ASK_GIFT_CODE = DEFAULT_TEXTS.raw('ASK_GIFT_CODE');
+export let ASK_RESELLER_REQUEST = DEFAULT_TEXTS.raw('ASK_RESELLER_REQUEST');
+export let RESELLER_REQUEST_FILED = DEFAULT_TEXTS.raw('RESELLER_REQUEST_FILED');
+export let RESELLER_REQUEST_OPEN = DEFAULT_TEXTS.raw('RESELLER_REQUEST_OPEN');
+export let ALREADY_RESELLER = DEFAULT_TEXTS.raw('ALREADY_RESELLER');
+export let RESELLER_REQUEST_EMPTY = DEFAULT_TEXTS.raw('RESELLER_REQUEST_EMPTY');
+export let SUPPORT_UNAVAILABLE = DEFAULT_TEXTS.raw('SUPPORT_UNAVAILABLE');
+export let HELP_EMPTY = DEFAULT_TEXTS.raw('HELP_EMPTY');
+export let CHOOSE_HELP = DEFAULT_TEXTS.raw('CHOOSE_HELP');
+export let APPS_EMPTY = DEFAULT_TEXTS.raw('APPS_EMPTY');
+export let REFERRAL_WELCOME = DEFAULT_TEXTS.raw('REFERRAL_WELCOME');
+export let NO_CARD_AVAILABLE = DEFAULT_TEXTS.raw('NO_CARD_AVAILABLE');
+export let MY_SERVICES_EMPTY = DEFAULT_TEXTS.raw('MY_SERVICES_EMPTY');
+export let SERVICE_GONE = DEFAULT_TEXTS.raw('SERVICE_GONE');
+export let ACTION_UNSUPPORTED = DEFAULT_TEXTS.raw('ACTION_UNSUPPORTED');
+export let CONFIRM_REVOKE = DEFAULT_TEXTS.raw('CONFIRM_REVOKE');
+export let ADDON_NOT_A_NUMBER = DEFAULT_TEXTS.raw('ADDON_NOT_A_NUMBER');
+export let NOTHING_TO_RENEW = DEFAULT_TEXTS.raw('NOTHING_TO_RENEW');
+export let CHOOSE_SERVICE_TO_RENEW = DEFAULT_TEXTS.raw('CHOOSE_SERVICE_TO_RENEW');
+export let RENEWAL_GONE = DEFAULT_TEXTS.raw('RENEWAL_GONE');
+export let RENEWAL_CLOSED = DEFAULT_TEXTS.raw('RENEWAL_CLOSED');
+export let NO_RENEWAL_PLAN = DEFAULT_TEXTS.raw('NO_RENEWAL_PLAN');
+export let WALLET_TOO_LITTLE = DEFAULT_TEXTS.raw('WALLET_TOO_LITTLE');
+export let DISCOUNT_TAKEN_OFF = DEFAULT_TEXTS.raw('DISCOUNT_TAKEN_OFF');
+export let ORDER_GONE = DEFAULT_TEXTS.raw('ORDER_GONE');
+
+/** The active texts, for the screens that fill in a slot rather than read one. */
+let TEXTS_NOW: Texts = DEFAULT_TEXTS;
+/** The active main-menu layout. */
+let LAYOUT_NOW: readonly ButtonPlacement[] = DEFAULT_LAYOUT;
+
+let BACK_TO_MENU = BACK_TO_MENU_LABEL;
+
+/**
+ * Points this module at the content the admin has saved.
+ *
+ * Called once per update, before anything is drawn. Everything it touches is a
+ * live binding, so nothing downstream has to know it happened.
+ */
+export function applyContent(content: BotContent): void {
+  const t = content.texts;
+  TEXTS_NOW = t;
+  LAYOUT_NOW = content.layout;
+  WELCOME = t.raw('WELCOME');
+  MENU_TITLE = t.raw('MENU_TITLE');
+  SOON = t.raw('SOON');
+  CHOOSE_PANEL = t.raw('CHOOSE_PANEL');
+  CHOOSE_PLAN = t.raw('CHOOSE_PLAN');
+  PANEL_EMPTY = t.raw('PANEL_EMPTY');
+  SHOP_EMPTY = t.raw('SHOP_EMPTY');
+  PLAN_GONE = t.raw('PLAN_GONE');
+  NOT_REGISTERED = t.raw('NOT_REGISTERED');
+  BACK_TO_MENU_LABEL = t.raw('BACK_TO_MENU_LABEL');
+  BACK_TO_MENU = BACK_TO_MENU_LABEL;
+  ASK_DISCOUNT_CODE = t.raw('ASK_DISCOUNT_CODE');
+  ASK_GIFT_CODE = t.raw('ASK_GIFT_CODE');
+  ASK_RESELLER_REQUEST = t.raw('ASK_RESELLER_REQUEST');
+  RESELLER_REQUEST_FILED = t.raw('RESELLER_REQUEST_FILED');
+  RESELLER_REQUEST_OPEN = t.raw('RESELLER_REQUEST_OPEN');
+  ALREADY_RESELLER = t.raw('ALREADY_RESELLER');
+  RESELLER_REQUEST_EMPTY = t.raw('RESELLER_REQUEST_EMPTY');
+  SUPPORT_UNAVAILABLE = t.raw('SUPPORT_UNAVAILABLE');
+  HELP_EMPTY = t.raw('HELP_EMPTY');
+  CHOOSE_HELP = t.raw('CHOOSE_HELP');
+  APPS_EMPTY = t.raw('APPS_EMPTY');
+  REFERRAL_WELCOME = t.raw('REFERRAL_WELCOME');
+  NO_CARD_AVAILABLE = t.raw('NO_CARD_AVAILABLE');
+  MY_SERVICES_EMPTY = t.raw('MY_SERVICES_EMPTY');
+  SERVICE_GONE = t.raw('SERVICE_GONE');
+  ACTION_UNSUPPORTED = t.raw('ACTION_UNSUPPORTED');
+  CONFIRM_REVOKE = t.raw('CONFIRM_REVOKE');
+  ADDON_NOT_A_NUMBER = t.raw('ADDON_NOT_A_NUMBER');
+  NOTHING_TO_RENEW = t.raw('NOTHING_TO_RENEW');
+  CHOOSE_SERVICE_TO_RENEW = t.raw('CHOOSE_SERVICE_TO_RENEW');
+  RENEWAL_GONE = t.raw('RENEWAL_GONE');
+  RENEWAL_CLOSED = t.raw('RENEWAL_CLOSED');
+  NO_RENEWAL_PLAN = t.raw('NO_RENEWAL_PLAN');
+  WALLET_TOO_LITTLE = t.raw('WALLET_TOO_LITTLE');
+  DISCOUNT_TAKEN_OFF = t.raw('DISCOUNT_TAKEN_OFF');
+  ORDER_GONE = t.raw('ORDER_GONE');
+}
+
+/** Back to what the code ships. Tests call this so one does not colour the next. */
+export function resetContent(): void {
+  applyContent(DEFAULT_CONTENT);
+}
 
 export function mainMenu(isReseller: boolean): InlineKeyboard {
-  const keyboard: InlineKeyboard = [
-    [
-      { text: '♻️ تمدید سرویس', callback_data: encode('renew') },
-      { text: '🔐 خرید اشتراک', callback_data: encode('buy') },
-    ],
-    [
-      { text: '🏦 کیف پول + شارژ', callback_data: encode('wal') },
-      { text: '🛍 سرویس های من', callback_data: encode('mine') },
-    ],
-    [
-      { text: '☎️ پشتیبانی', callback_data: encode('sup') },
-      { text: '📚 آموزش', callback_data: encode('hlp') },
-      { text: '👥 زیر مجموعه گیری', callback_data: encode('ref') },
-    ],
-  ];
-  // Production appends this only for non-resellers, and only while
-  // `setting.statusagentrequest` is on — which it is.
-  if (!isReseller) {
-    keyboard.push([{ text: '👨‍💻 درخواست نمایندگی', callback_data: encode('agr') }]);
-  }
-  return keyboard;
+  return buildMainMenu(LAYOUT_NOW, isReseller);
 }
 
 export function panelMenu(panels: Panel[]): InlineKeyboard {
@@ -165,41 +240,6 @@ export function planDetailMenu(plan: CatalogPlan, applied?: AppliedCode | null):
   ];
 }
 
-export const ASK_DISCOUNT_CODE = [
-  '🏷 کد تخفیف را بفرستید.',
-  '',
-  'اگر پشیمان شدید، دکمهٔ بازگشت را بزنید.',
-].join('\n');
-
-export const ASK_GIFT_CODE = '🎁 کد هدیه را بفرستید.';
-
-/**
- * The reseller application.
- *
- * The legacy text asks for a description and nothing else, so this does too —
- * a form with fields nobody reads is worse than one free-text box the admin
- * actually looks at.
- */
-export const ASK_RESELLER_REQUEST = [
-  '👨‍💻 درخواست نمایندگی',
-  '',
-  'در یک پیام بنویسید چه می‌فروشید، چند مشتری دارید، و چرا نمایندگی می‌خواهید.',
-  'همین پیام برای ادمین فرستاده می‌شود.',
-].join('\n');
-
-export const RESELLER_REQUEST_FILED = [
-  '✅ درخواست شما ثبت شد.',
-  '',
-  'بعد از بررسی، نتیجه همین‌جا به شما اطلاع داده می‌شود.',
-].join('\n');
-
-export const RESELLER_REQUEST_OPEN =
-  '🕓 درخواست شما ثبت شده و در حال بررسی است. تا اعلام نتیجه، درخواست تازه لازم نیست.';
-
-export const ALREADY_RESELLER = '✅ شما از قبل نماینده هستید.';
-
-export const RESELLER_REQUEST_EMPTY = 'لطفاً توضیح‌تان را در یک پیام متنی بفرستید.';
-
 /**
  * Support.
  *
@@ -213,21 +253,12 @@ export const RESELLER_REQUEST_EMPTY = 'لطفاً توضیح‌تان را در 
  * needs no markup and cannot be broken by a handle with an underscore in it.
  */
 export function supportScreen(handle: string): string {
-  return [
-    '☎️ پشتیبانی',
-    '',
-    `برای گفتگو با پشتیبانی به @${handle} پیام بدهید.`,
-    '',
-    '🔖 اگر دربارهٔ یک سفارش است، شمارهٔ سفارش را هم بفرستید.',
-  ].join('\n');
+  // The one screen an admin may rewrite that still has to carry a value. The
+  // slot is filled here rather than concatenated, so an override that moves
+  // «@{handle}» to a different line still says who to contact — and one that
+  // drops it never reaches the database.
+  return TEXTS_NOW.render('SUPPORT_SCREEN', { handle });
 }
-
-export const SUPPORT_UNAVAILABLE =
-  'راه ارتباط با پشتیبانی هنوز تنظیم نشده است. کمی بعد دوباره امتحان کنید.';
-
-export const HELP_EMPTY = 'هنوز مطلب آموزشی ثبت نشده است.';
-
-export const CHOOSE_HELP = '📚 آموزش — یک مورد را انتخاب کنید.';
 
 export function helpMenu(
   articles: { id: number; title: string }[],
@@ -244,10 +275,6 @@ export function helpMenu(
 export function helpArticleScreen(title: string, body: string): string {
   return body.trim() === '' ? `📚 ${title}` : `📚 ${title}\n\n${body}`;
 }
-
-export const APPS_EMPTY = 'هنوز برنامه‌ای ثبت نشده است.';
-
-export const REFERRAL_WELCOME = '👥 شما با لینک دعوت یکی از کاربران وارد شدید.';
 
 // ---------------------------------------------------------------------------
 // The admin panel. Every screen below is drawn only after `admins` said yes.
@@ -467,7 +494,6 @@ export function discountHeldForRenewal(code: string): string {
   ].join('\n');
 }
 
-export const DISCOUNT_TAKEN_OFF = 'کد تخفیف برداشته شد.';
 
 /**
  * Why a code was refused, in the customer's words.
@@ -579,8 +605,6 @@ export function checkoutMenu(
 }
 
 /** Every card is disabled or busy. Honest about it, and does not pretend. */
-export const NO_CARD_AVAILABLE =
-  'در حال حاضر امکان دریافت شمارهٔ کارت نیست. لطفاً چند دقیقهٔ دیگر دوباره تلاش کنید یا به پشتیبانی پیام دهید.';
 
 export function paidRecorded(publicId: string): string {
   return [
@@ -601,7 +625,6 @@ export function paidAlready(publicId: string): string {
   ].join('\n');
 }
 
-export const ORDER_GONE = 'این سفارش پیدا نشد. لطفاً از منوی خرید دوباره اقدام کنید.';
 
 /**
  * Sent unprompted once the bank transaction is matched to the payment.
@@ -693,13 +716,6 @@ export function serviceNeedsHelp(publicId: string, refundedIrr: number | null = 
 // «سرویس های من» — what the customer already owns
 // ---------------------------------------------------------------------------
 
-export const MY_SERVICES_EMPTY = [
-  'هنوز سرویسی ندارید.',
-  '',
-  'از دکمهٔ «خرید اشتراک» می‌توانید اولین سرویس‌تان را بگیرید.',
-].join('\n');
-
-export const SERVICE_GONE = 'این سرویس پیدا نشد. لطفاً از فهرست سرویس‌ها دوباره انتخاب کنید.';
 
 /** How many services fit on one screen without the keyboard becoming a wall. */
 export const SERVICES_PER_PAGE = 8;
@@ -1022,8 +1038,6 @@ export function askAddonAmount(kind: 'ADD_VOLUME' | 'ADD_TIME', unitIrr: number)
 }
 
 /** The customer typed something that is not a count. */
-export const ADDON_NOT_A_NUMBER =
-  'لطفاً فقط یک عدد بفرستید — مثلاً 5. برای انصراف /start را بزنید.';
 
 export function addonTooMuch(max: number): string {
   return `بیشترین مقدار در هر خرید ${max.toLocaleString('en-US')} است. عدد کوچک‌تری بفرستید.`;
@@ -1096,12 +1110,6 @@ export function addonApplied(
   return lines.join('\n');
 }
 
-export const CONFIRM_REVOKE = [
-  '⚠️ لینک اشتراک این سرویس عوض می‌شود.',
-  '',
-  'لینک فعلی از کار می‌افتد و باید لینک جدید را روی همهٔ دستگاه‌هایتان دوباره وارد کنید.',
-  'حجم و تاریخ سرویس دست‌نخورده می‌ماند.',
-].join('\n');
 
 export function confirmRevokeMenu(subscriptionId: number): InlineKeyboard {
   return [
@@ -1132,36 +1140,14 @@ export function actionFailed(reason: string): string {
   return ['⚠️ این کار انجام نشد.', '', reason, '', 'کمی بعد دوباره امتحان کنید.'].join('\n');
 }
 
-export const ACTION_UNSUPPORTED =
-  'این سرویس به‌صورت دستی آماده شده و از این طریق قابل تغییر نیست. لطفاً به پشتیبانی پیام دهید.';
 
 // ---------------------------------------------------------------------------
 // «تمدید سرویس»
 // ---------------------------------------------------------------------------
 
-export const NOTHING_TO_RENEW = [
-  'سرویسی برای تمدید ندارید.',
-  '',
-  'اگر سرویس فعالی دارید و اینجا نمی‌بینید، به پشتیبانی پیام دهید.',
-].join('\n');
-
-export const CHOOSE_SERVICE_TO_RENEW = '♻️ کدام سرویس را تمدید می‌کنید؟';
-
-export const RENEWAL_GONE = 'این سرویس قابل تمدید نیست. لطفاً از فهرست تمدید دوباره انتخاب کنید.';
 
 /** The panel the service lives on has renewal switched off — the admin's own
  *  `status_extend` setting, carried over from the old bot. */
-export const RENEWAL_CLOSED = [
-  'تمدید روی لوکیشن این سرویس فعال نیست.',
-  '',
-  'می‌توانید از بخش «خرید اشتراک» سرویس جدیدی بگیرید یا به پشتیبانی پیام دهید.',
-].join('\n');
-
-export const NO_RENEWAL_PLAN = [
-  'در حال حاضر پلنی برای تمدید این سرویس موجود نیست.',
-  '',
-  'لطفاً کمی بعد دوباره امتحان کنید یا به پشتیبانی پیام دهید.',
-].join('\n');
 
 /** The list of services, keyed to the renewal flow rather than the detail one. */
 export function renewMenu(
@@ -1515,5 +1501,3 @@ export function walletPaid(publicId: string, remainingIrr: number): string {
   ].join('\n');
 }
 
-export const WALLET_TOO_LITTLE =
-  'موجودی کیف پول شما برای این خرید کافی نیست. اول کیف پول را شارژ کنید.';

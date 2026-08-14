@@ -23,6 +23,7 @@ import { PanelsPage } from './pages/PanelsPage.js';
 import { DiscountsPage } from './pages/DiscountsPage.js';
 import { OrdersPage, ServicesPage, TransactionsPage } from './pages/LedgerPages.js';
 import { SettingsPage, RequestsPage } from './pages/SettingsPage.js';
+import { BotTextsPage, KeyboardPage } from './pages/BotContentPages.js';
 import { NotBuiltPage } from './pages/NotBuiltPage.js';
 import './theme.css';
 
@@ -56,6 +57,10 @@ function Body({ page, go }: { page: PageId; go: (id: PageId) => void }) {
       return <RequestsPage />;
     case 'settings':
       return <SettingsPage />;
+    case 'texts':
+      return <BotTextsPage />;
+    case 'keyboard':
+      return <KeyboardPage />;
     default:
       return <NotBuiltPage id={page} />;
   }

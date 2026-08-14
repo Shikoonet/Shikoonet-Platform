@@ -44,6 +44,7 @@ import { registerPanelRoutes } from './panelRoutes.js';
 import { registerDiscountRoutes } from './discountRoutes.js';
 import { registerSalesRoutes } from './salesRoutes.js';
 import { registerSettingsRoutes } from './settingsRoutes.js';
+import { registerBotContentRoutes } from './botContentRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
 /**
@@ -4438,6 +4439,7 @@ registerPanelRoutes(app);
 registerDiscountRoutes(app);
 registerSalesRoutes(app);
 registerSettingsRoutes(app);
+registerBotContentRoutes(app);
 
 export default app;
 export { app };

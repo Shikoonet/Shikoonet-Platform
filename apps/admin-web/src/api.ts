@@ -235,6 +235,39 @@ export interface ResellerRequestRow {
 }
 
 /**
+ * One editable sentence.
+ *
+ * `default` travels with it so the screen can show what it would say if reset,
+ * and `customised` is whether a row exists — not whether the value differs,
+ * which the client could compute and get subtly wrong.
+ */
+export interface BotTextRow {
+  key: string;
+  group: string;
+  hint: string;
+  placeholders: string[];
+  default: string;
+  value: string;
+  customised: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export interface KeyboardButton {
+  action: string;
+  label: string;
+  rowIndex: number;
+  colIndex: number;
+  visible: boolean;
+}
+
+export interface MenuActionInfo {
+  action: string;
+  label: string;
+  hint: string;
+}
+
+/**
  * The error carries the server's own code, not a rendered sentence.
  *
  * Screens branch on `code` (`admin_access_not_configured` is a different
@@ -449,6 +482,38 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ status }),
     });
+  },
+
+  botTexts() {
+    return req<{ ok: boolean; items: BotTextRow[]; maxLength: number }>('/bot-texts');
+  },
+
+  saveBotText(key: string, value: string) {
+    return req<{ ok: boolean; customised: boolean }>('/bot-texts', {
+      method: 'POST',
+      body: JSON.stringify({ key, value }),
+    });
+  },
+
+  botKeyboard() {
+    return req<{
+      ok: boolean;
+      customised: boolean;
+      buttons: KeyboardButton[];
+      actions: MenuActionInfo[];
+      maxLabelLength: number;
+    }>('/bot-keyboard');
+  },
+
+  saveBotKeyboard(buttons: KeyboardButton[]) {
+    return req<{ ok: boolean }>('/bot-keyboard', {
+      method: 'POST',
+      body: JSON.stringify({ buttons }),
+    });
+  },
+
+  resetBotKeyboard() {
+    return req<{ ok: boolean }>('/bot-keyboard/reset', { method: 'POST' });
   },
 
   overview() {

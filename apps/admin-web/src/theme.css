@@ -585,3 +585,39 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 16px;
 }
+
+/* ---------------------------------------------------------------------------
+   The keyboard preview.
+
+   Deliberately looks like Telegram's inline keyboard rather than like the rest
+   of this panel: an admin moving buttons is asking "what will the customer
+   see", and a preview styled as an admin table answers a different question.
+   --------------------------------------------------------------------------- */
+.preview-keyboard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-soft);
+  max-width: 480px;
+}
+
+.preview-row {
+  display: flex;
+  gap: 6px;
+}
+
+.preview-button {
+  flex: 1;
+  text-align: center;
+  padding: 10px 8px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-mid);
+  font-size: 0.9rem;
+  /* A long label wraps rather than stretching the row, which is what Telegram
+     does and is the whole reason the label length is capped. */
+  overflow-wrap: anywhere;
+}

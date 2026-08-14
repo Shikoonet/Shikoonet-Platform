@@ -37,10 +37,9 @@ describe('navigation', () => {
   it('marks exactly the sections that have a screen as built', () => {
     // The list of implemented pages, kept by hand — this is the assertion, so
     // it must not be derived from the same flag it is checking.
-    // Everything except the two that have no table to read from: the bot's
-    // texts and its keyboard layout exist in neither Postgres nor the
-    // production MySQL dump, so they need a migration before a screen means
-    // anything.
+    // All twelve. The last two arrived with migration 0015, which gave the
+    // bot's wording and keyboard a table of their own — they had none before,
+    // in Postgres or in the production dump.
     const implemented: PageId[] = [
       'dashboard',
       'customers',
@@ -52,6 +51,8 @@ describe('navigation', () => {
       'transactions',
       'requests',
       'settings',
+      'texts',
+      'keyboard',
     ];
     const flagged = ALL.filter((id) => navItem(id)!.built);
     expect(flagged.sort()).toEqual([...implemented].sort());

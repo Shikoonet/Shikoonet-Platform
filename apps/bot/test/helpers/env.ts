@@ -28,7 +28,9 @@ export async function assertSchema(): Promise<void> {
   if ((row?.n ?? 0) < BOT_TABLES.length) {
     throw new Error(
       `expected ${BOT_TABLES.length} bot tables, found ${row?.n ?? 0}. ` +
-        'Apply migrations/000*.sql to DATABASE_URL first (pnpm sim:up).',
+        // `0*.sql`, not `000*.sql`: the latter stops at 0009 and leaves the
+        // schema half applied, which reads as a different failure entirely.
+        'Apply migrations/0*.sql to DATABASE_URL first (pnpm sim:up).',
     );
   }
 }

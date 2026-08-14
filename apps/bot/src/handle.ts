@@ -52,6 +52,7 @@ import {
   redeemGift,
   redemptionOnOpenOrder,
 } from './discount.js';
+import { loadBotContent } from './botContent.js';
 import * as menu from './menu.js';
 import { priceForUser } from './money.js';
 import {
@@ -184,6 +185,12 @@ export async function handleUpdate(
   // only handlers that leave the process.
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<HandleOutcome> {
+  // The admin's wording and keyboard, before anything is drawn. Cached for
+  // thirty seconds and falling back to the code's defaults, so this cannot
+  // fail the update — see `botContent.ts`. Outside the session because it is a
+  // read of shop-wide configuration, not of this customer's data.
+  menu.applyContent(await loadBotContent(db));
+
   return db.withSession(async (tx) => {
     const claim = await tx
       .prepare(`INSERT INTO telegram_updates (update_id) VALUES (?1) ON CONFLICT DO NOTHING`)
