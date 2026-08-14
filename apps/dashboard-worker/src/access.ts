@@ -21,6 +21,23 @@
  * That is why `expectedAudience` is a parameter rather than always
  * `env.ACCESS_AUD`. Passing the wrong one is not a soft failure: `jwtVerify`
  * rejects it.
+ *
+ * ## The development bypass yields to a real deployment
+ *
+ * `TEST_ACCESS_USER` skips verification entirely and returns an ADMIN. There is
+ * a guard in `server.ts` that refuses to start when it is set alongside
+ * `ENV_NAME=production`, and that guard is correct — but it lives in one entry
+ * point and depends on somebody having remembered to set `ENV_NAME`. Two
+ * omissions at once (a stray `TEST_ACCESS_USER` in the deployment environment
+ * and a missing `ENV_NAME`) would open the whole panel to anyone who reached
+ * the origin.
+ *
+ * So the bypass is also refused here, at the only place that can actually grant
+ * an identity, whenever the deployment is configured for Cloudflare Access at
+ * all: `ACCESS_ISSUER` is present only on a real deployment, and never in
+ * `sim/.env.local`. A machine that has both is misconfigured, and the safe
+ * reading of "verify against Access, but also trust this env var" is the
+ * former.
  */
 
 import type { AccessRole } from '@shikoo/contracts';
@@ -31,13 +48,29 @@ export interface VerifiedIdentity {
   role: AccessRole;
 }
 
+/**
+ * Whether the development identity bypass applies to this environment.
+ *
+ * Exported so the admin surface's "is this door configured at all" check and
+ * the identity check cannot disagree about it. One of them concluding the
+ * bypass is live while the other concludes it is not would mean a request that
+ * passes the gate and then has no identity, or worse.
+ */
+export function devBypassActive(env: {
+  TEST_ACCESS_USER?: string;
+  ACCESS_ISSUER?: string;
+}): boolean {
+  return Boolean(env.TEST_ACCESS_USER) && !env.ACCESS_ISSUER;
+}
+
 export async function verifyAccess(
   req: Request,
   env: { TEST_ACCESS_USER?: string; ACCESS_AUD?: string; ACCESS_ISSUER?: string },
   expectedAudience?: string,
 ): Promise<VerifiedIdentity | null> {
-  if (env.TEST_ACCESS_USER) {
-    return { email: env.TEST_ACCESS_USER, role: 'ADMIN' };
+  // Never on a deployment that has Access configured — see the header.
+  if (devBypassActive(env)) {
+    return { email: env.TEST_ACCESS_USER as string, role: 'ADMIN' };
   }
   const jwt = req.headers.get('Cf-Access-Jwt-Assertion');
   if (!jwt) return null;

@@ -209,10 +209,44 @@ async function migrateWallets(ctx: Ctx): Promise<number> {
   );
 }
 
+/**
+ * Whether a settings key carries a credential and must not be imported.
+ *
+ * `PaySetting` is not a table of switches. It holds `apinowpayment`,
+ * `apiiranpay`, `apiternado`, `merchant_zarinpal`, `merchant_id_aqayepardakht`,
+ * `marchent_floypay`, `marchent_tronseller` and `walletaddress` — live payment
+ * gateway keys and merchant identifiers, in plaintext. Copying them into
+ * `settings` put them one `SELECT` away from any screen, which is the same
+ * mistake `PROVIDER_SECRETS` exists to prevent one table over.
+ *
+ * They are dropped rather than carried, for the same reason `password_panel`
+ * is: nothing in this platform speaks to a payment gateway yet — the shop takes
+ * card-to-card only — so there is no reader to break. When a gateway is
+ * implemented its credential belongs in the runtime secret store, named by a
+ * reference, exactly like `provisioning_providers.secret_ref`.
+ *
+ * `marchent` is not a typo. It is how three of the legacy columns are spelled,
+ * and matching only the correct spelling would let all three through.
+ */
+export function isSettingSecret(scope: string, key: string): boolean {
+  if (scope !== 'pay' && scope !== 'panel') return false;
+  return /(api|token|secret|password|passwd|merchant|marchent|walletaddress|privkey|hmac)/i.test(
+    key,
+  );
+}
+
 async function migrateSettings(ctx: Ctx): Promise<number> {
   const out: unknown[][] = [];
-  const push = (scope: string, key: string, value: unknown) =>
+  let dropped = 0;
+  const push = (scope: string, key: string, value: unknown) => {
+    if (isSettingSecret(scope, key)) {
+      // Counted and reported, never silently swallowed: an admin who sees
+      // "gateway not configured" later must be able to find out why.
+      dropped++;
+      return;
+    }
     out.push([scope, key, JSON.stringify(value ?? null)]);
+  };
 
   // `setting` is a single row whose 51 columns are the settings.
   const [botRow] = await mysqlRows<Row>(ctx.my, 'SELECT * FROM `setting` LIMIT 1');
@@ -229,6 +263,13 @@ async function migrateSettings(ctx: Ctx): Promise<number> {
   if (aff) for (const [k, v] of Object.entries(aff)) push('shop', `affiliate_${k}`, v);
   for (const r of await mysqlRows<Row>(ctx.my, 'SELECT * FROM topicid')) {
     push('bot', `topic_${String(r.report)}`, r.idreport);
+  }
+
+  if (dropped > 0) {
+    console.log(
+      `  settings: ${dropped} gateway credential${dropped === 1 ? '' : 's'} not imported — ` +
+        `they belong in the secret store, see isSettingSecret`,
+    );
   }
 
   return insertBatch(

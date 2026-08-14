@@ -32,7 +32,7 @@ import {
   buildSmsRelayConfig,
   MIRZABOT_SOURCE,
 } from '@shikoo/contracts';
-import { lookupRole, verifyAccess } from './access.js';
+import { devBypassActive, lookupRole, verifyAccess } from './access.js';
 import { securityHeaders, originGuard } from './security.js';
 import { registerMirzabotRoutes, loadPaymentCardsForAccounts } from './mirzabotRoutes.js';
 import { registerAnalyticsRoutes } from './analyticsRoutes.js';
@@ -137,7 +137,7 @@ app.use('*', async (c, next) => {
   // payment hub's audience, which would put the shop's wallet and catalog
   // behind the payment operator's door. Same reasoning as INGEST_URL: a
   // missing setting answers 503, it does not improvise a default.
-  if (admin && !c.env.TEST_ACCESS_USER && !c.env.ADMIN_ACCESS_AUD) {
+  if (admin && !devBypassActive(c.env) && !c.env.ADMIN_ACCESS_AUD) {
     return c.json({ ok: false, error: 'admin_access_not_configured' }, 503);
   }
   const ident = await verifyAccess(

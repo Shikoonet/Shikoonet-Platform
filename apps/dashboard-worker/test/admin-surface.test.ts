@@ -37,6 +37,71 @@ function deployedEnv(adminAud?: string): Env {
   } as Env;
 }
 
+describe('the development identity bypass', () => {
+  /**
+   * The deployment shape plus a `TEST_ACCESS_USER` that should not be there.
+   *
+   * This is the two-mistake case the guard in `server.ts` cannot catch: that
+   * one refuses to start when `ENV_NAME=production`, so it depends on somebody
+   * having set `ENV_NAME` — and it only runs in that one entry point.
+   */
+  function deployedEnvWithStrayTestUser(): Env {
+    return {
+      ...deployedEnv('admin-audience-tag'),
+      ENV_NAME: 'local', // the second mistake: nobody set it
+      TEST_ACCESS_USER: 'attacker@example.com',
+    } as Env;
+  }
+
+  it('is ignored when the deployment is configured for Access', async () => {
+    const env = deployedEnvWithStrayTestUser();
+    for (const path of ['/api/v1/admin/customers', '/api/v1/customers']) {
+      const res = await app.request(path, {}, env);
+      // 401, not 200: a stray env var must not mint an ADMIN identity on a
+      // deployment whose door is Cloudflare Access.
+      expect(res.status).toBe(401);
+    }
+  });
+
+  it('still works where there is no Access configuration at all', async () => {
+    // Local development and every other suite in this package rely on it, so
+    // the hardening must not amount to "TEST_ACCESS_USER never works".
+    //
+    // The email is granted here rather than borrowed from another suite: with
+    // an ungranted one the route answers 403, which would look like the bypass
+    // failing when it is only the role lookup — two different outcomes that
+    // must not be confused.
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at)
+       VALUES (?1, ?2, 'ADMIN', 1, ?3, ?3)`,
+    )
+      .bind(crypto.randomUUID(), 'bypass-dev@example.com', Date.now())
+      .run();
+
+    const { ACCESS_ISSUER: _drop, ...local } = deployedEnvWithStrayTestUser() as Env & {
+      ACCESS_ISSUER?: string;
+    };
+    const res = await app.request(
+      '/api/v1/admin/customers',
+      {},
+      { ...local, TEST_ACCESS_USER: 'bypass-dev@example.com' } as Env,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('does not let a stray test user turn the 503 into an open admin panel', async () => {
+    // With no ADMIN_ACCESS_AUD the admin surface must stay closed. Before the
+    // shared `devBypassActive`, a stray TEST_ACCESS_USER satisfied the gate's
+    // own condition and skipped the 503 — leaving the door decided by a
+    // different rule than the one that grants identity.
+    const { ADMIN_ACCESS_AUD: _drop, ...env } = deployedEnvWithStrayTestUser() as Env & {
+      ADMIN_ACCESS_AUD?: string;
+    };
+    const res = await app.request('/api/v1/admin/customers', {}, env as Env);
+    expect(res.status).toBe(503);
+  });
+});
+
 describe('isAdminSurface', () => {
   it('claims the admin page and its API, and nothing else', () => {
     for (const p of ['/admin', '/admin/', '/admin/customers', '/api/v1/admin/customers']) {
