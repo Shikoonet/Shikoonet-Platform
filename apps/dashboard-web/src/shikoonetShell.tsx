@@ -80,14 +80,7 @@ function VersionBadge() {
   );
 }
 
-type AppSection =
-  | 'payments'
-  | 'statistics'
-  | 'today'
-  | 'devices'
-  | 'accounts'
-  | 'banks'
-  | 'customers';
+type AppSection = 'payments' | 'statistics' | 'today' | 'devices' | 'accounts' | 'banks';
 
 interface ShikoonetHeaderProps {
   cache: Cache;
@@ -135,7 +128,6 @@ function OperatorMenu({
     { value: 'devices', label: 'Devices' },
     { value: 'accounts', label: 'Accounts' },
     { value: 'banks', label: 'Banks' },
-    { value: 'customers', label: 'Customers' },
   ];
 
   return (

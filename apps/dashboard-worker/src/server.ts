@@ -44,6 +44,9 @@ function positiveInt(name: string, fallback: number): number {
 const PASSTHROUGH = [
   'ACCESS_AUD',
   'ACCESS_ISSUER',
+  // The second Cloudflare Access application's audience — the shop's admin
+  // panel. Unset means this deployment serves no admin panel at all.
+  'ADMIN_ACCESS_AUD',
   'ENABLE_PURCHASE_TYPE',
   'DEV_BLOCK_DEVICE_ADMIN',
   'INGEST_URL',
@@ -83,6 +86,24 @@ export function start(): { stop: () => Promise<void> } {
   // serving with an SPA fallback, because the dashboard has no router on the
   // server side — every unknown path is the same index.html.
   const spaRoot = process.env.SPA_DIST ?? join(process.cwd(), '../dashboard-web/dist');
+
+  // The admin panel is a second, entirely separate build. It is mounted first
+  // and only under /admin/, so nothing about it can be reached from the
+  // payment hub's paths and nothing of the hub's leaks into it. Its Vite
+  // config sets `base: '/admin/'`, which is why its own asset URLs land back
+  // inside this mount rather than in the hub's /assets.
+  const adminRoot = process.env.ADMIN_DIST ?? join(process.cwd(), '../admin-web/dist');
+  app.use('/admin/assets/*', serveStatic({ root: adminRoot, rewriteRequestPath: (p) => p.slice('/admin'.length) }));
+  app.get('/admin', (c) => c.redirect('/admin/', 302));
+  app.get('/admin/*', async (c, next) => {
+    if (c.req.path.startsWith('/admin/assets/')) return next();
+    try {
+      return c.html(await readFile(join(adminRoot, 'index.html'), 'utf8'));
+    } catch {
+      return c.text('Admin panel build not found — run `pnpm --filter @shikoo/admin-web build`', 500);
+    }
+  });
+
   app.use('/assets/*', serveStatic({ root: spaRoot }));
   // Vite copies everything in `public/` to the ROOT of dist, not into assets/ —
   // the logo, the favicon, robots.txt. Mounting only `/assets/*` meant every one

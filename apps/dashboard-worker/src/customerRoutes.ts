@@ -1,10 +1,12 @@
 /**
- * Customers and their wallets, for the dashboard.
+ * Customers and their wallets — the shop's admin panel, not the payment hub.
  *
- * The dashboard has been a payment-reconciliation tool and nothing else: six
- * tabs, none of which reads `users`, `wallets` or `orders`. This is the first
- * screen that does, and it exists because an admin has to be able to look a
- * customer up and correct a balance without opening a SQL client.
+ * Everything here is under `/api/v1/admin/`, which is a different Cloudflare
+ * Access application with a different audience: a token minted for the payment
+ * dashboard does not verify against it. The two surfaces answer two different
+ * questions — "is this one payment real" versus "how is the shop doing" — and
+ * the people who need them are not the same people. See `isAdminSurface` in
+ * `index.ts` for the gate, and `admin/AdminApp.tsx` for the page.
  *
  * Three rules shape the whole file, and each of them is a thing the PHP panel
  * this replaces gets wrong.
@@ -129,7 +131,7 @@ export function registerCustomerRoutes(
 ) {
   // --- list ---------------------------------------------------------------
 
-  app.get('/api/v1/customers', async (c) => {
+  app.get('/api/v1/admin/customers', async (c) => {
     const parsed = ListQuery.safeParse({
       q: c.req.query('q') || undefined,
       status: c.req.query('status') || undefined,
@@ -210,7 +212,7 @@ export function registerCustomerRoutes(
 
   // --- one customer -------------------------------------------------------
 
-  app.get('/api/v1/customers/:id', async (c) => {
+  app.get('/api/v1/admin/customers/:id', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
@@ -286,7 +288,7 @@ export function registerCustomerRoutes(
 
   // --- adjust the wallet --------------------------------------------------
 
-  app.post('/api/v1/customers/:id/wallet', async (c) => {
+  app.post('/api/v1/admin/customers/:id/wallet', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
 
@@ -355,7 +357,7 @@ export function registerCustomerRoutes(
 
   // --- block / unblock ----------------------------------------------------
 
-  app.post('/api/v1/customers/:id/status', async (c) => {
+  app.post('/api/v1/admin/customers/:id/status', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
 

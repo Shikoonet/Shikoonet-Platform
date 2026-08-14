@@ -114,12 +114,12 @@ beforeEach(async () => {
 
 afterAll(purgeOurCustomers);
 
-describe('GET /api/v1/customers', () => {
+describe('GET /api/v1/admin/customers', () => {
   it('pages in SQL and reports the full total', async () => {
     for (let i = 0; i < 5; i++) await makeCustomer(`pager_${i}`);
 
     const res = await app.request(
-      '/api/v1/customers?q=pager_&page=1&pageSize=2',
+      '/api/v1/admin/customers?q=pager_&page=1&pageSize=2',
       {},
       envAs(ADMIN),
     );
@@ -132,7 +132,7 @@ describe('GET /api/v1/customers', () => {
     expect(body.items).toHaveLength(2);
 
     const page3 = await app.request(
-      '/api/v1/customers?q=pager_&page=3&pageSize=2',
+      '/api/v1/admin/customers?q=pager_&page=3&pageSize=2',
       {},
       envAs(ADMIN),
     );
@@ -142,11 +142,11 @@ describe('GET /api/v1/customers', () => {
   it('finds a customer by telegram id and by @handle', async () => {
     const { id, telegramId } = await makeCustomer('findme_one');
 
-    const byId = await app.request(`/api/v1/customers?q=${telegramId}`, {}, envAs(ADMIN));
+    const byId = await app.request(`/api/v1/admin/customers?q=${telegramId}`, {}, envAs(ADMIN));
     const byIdBody = (await byId.json()) as { items: { id: number }[] };
     expect(byIdBody.items.map((i) => i.id)).toContain(id);
 
-    const byHandle = await app.request('/api/v1/customers?q=@findme_one', {}, envAs(ADMIN));
+    const byHandle = await app.request('/api/v1/admin/customers?q=@findme_one', {}, envAs(ADMIN));
     const byHandleBody = (await byHandle.json()) as { items: { id: number }[] };
     expect(byHandleBody.items.map((i) => i.id)).toContain(id);
   });
@@ -155,7 +155,7 @@ describe('GET /api/v1/customers', () => {
     await makeCustomer('st_active');
     const blocked = await makeCustomer('st_blocked', { status: 'BLOCKED' });
 
-    const res = await app.request('/api/v1/customers?q=st_&status=BLOCKED', {}, envAs(ADMIN));
+    const res = await app.request('/api/v1/admin/customers?q=st_&status=BLOCKED', {}, envAs(ADMIN));
     const body = (await res.json()) as { total: number; items: { id: number }[] };
     expect(body.total).toBe(1);
     expect(body.items[0]!.id).toBe(blocked.id);
@@ -163,7 +163,7 @@ describe('GET /api/v1/customers', () => {
 
   it('reports a customer who has never had an entry as zero, not missing', async () => {
     const { id } = await makeCustomer('nowallet');
-    const res = await app.request('/api/v1/customers?q=nowallet', {}, envAs(ADMIN));
+    const res = await app.request('/api/v1/admin/customers?q=nowallet', {}, envAs(ADMIN));
     const body = (await res.json()) as { items: { id: number; balanceIrr: number }[] };
     expect(body.items.find((i) => i.id === id)!.balanceIrr).toBe(0);
     // And there is genuinely no wallets row yet — the trigger writes it on the
@@ -172,17 +172,17 @@ describe('GET /api/v1/customers', () => {
   });
 
   it('rejects a page size above the ceiling instead of honouring it', async () => {
-    const res = await app.request('/api/v1/customers?pageSize=5000', {}, envAs(ADMIN));
+    const res = await app.request('/api/v1/admin/customers?pageSize=5000', {}, envAs(ADMIN));
     expect(res.status).toBe(400);
   });
 });
 
-describe('POST /api/v1/customers/:id/wallet', () => {
+describe('POST /api/v1/admin/customers/:id/wallet', () => {
   it('moves the balance by writing an entry, and the ledger agrees', async () => {
     const { id } = await makeCustomer('adj_credit');
 
     const res = await app.request(
-      `/api/v1/customers/${id}/wallet`,
+      `/api/v1/admin/customers/${id}/wallet`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -220,7 +220,7 @@ describe('POST /api/v1/customers/:id/wallet', () => {
     const { id } = await makeCustomer('adj_double');
     const send = () =>
       app.request(
-        `/api/v1/customers/${id}/wallet`,
+        `/api/v1/admin/customers/${id}/wallet`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -249,7 +249,7 @@ describe('POST /api/v1/customers/:id/wallet', () => {
     const { id } = await makeCustomer('adj_concurrent');
     const adjust = (amount: number, key: string) =>
       app.request(
-        `/api/v1/customers/${id}/wallet`,
+        `/api/v1/admin/customers/${id}/wallet`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -270,7 +270,7 @@ describe('POST /api/v1/customers/:id/wallet', () => {
   it('lets a correction go negative and says so', async () => {
     const { id } = await makeCustomer('adj_negative');
     const res = await app.request(
-      `/api/v1/customers/${id}/wallet`,
+      `/api/v1/admin/customers/${id}/wallet`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -291,7 +291,7 @@ describe('POST /api/v1/customers/:id/wallet', () => {
     const { id } = await makeCustomer('adj_bounds');
     for (const amountIrr of [0, ADJUST_MAX_IRR + 1, -(ADJUST_MAX_IRR + 1)]) {
       const res = await app.request(
-        `/api/v1/customers/${id}/wallet`,
+        `/api/v1/admin/customers/${id}/wallet`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -307,7 +307,7 @@ describe('POST /api/v1/customers/:id/wallet', () => {
   it('writes an audit row carrying the balance before and after', async () => {
     const { id } = await makeCustomer('adj_audit');
     await app.request(
-      `/api/v1/customers/${id}/wallet`,
+      `/api/v1/admin/customers/${id}/wallet`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -350,7 +350,7 @@ describe('POST /api/v1/customers/:id/wallet', () => {
     const { id } = await makeCustomer('adj_replay_audit');
     const send = () =>
       app.request(
-        `/api/v1/customers/${id}/wallet`,
+        `/api/v1/admin/customers/${id}/wallet`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -370,7 +370,7 @@ describe('POST /api/v1/customers/:id/wallet', () => {
   it('refuses a reviewer, and moves nothing', async () => {
     const { id } = await makeCustomer('adj_reviewer');
     const res = await app.request(
-      `/api/v1/customers/${id}/wallet`,
+      `/api/v1/admin/customers/${id}/wallet`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -385,7 +385,7 @@ describe('POST /api/v1/customers/:id/wallet', () => {
 
   it('404s on a customer that does not exist, without writing an entry', async () => {
     const res = await app.request(
-      '/api/v1/customers/99999999/wallet',
+      '/api/v1/admin/customers/99999999/wallet',
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -397,11 +397,11 @@ describe('POST /api/v1/customers/:id/wallet', () => {
   });
 });
 
-describe('POST /api/v1/customers/:id/status', () => {
+describe('POST /api/v1/admin/customers/:id/status', () => {
   it('blocks with a reason and audits it', async () => {
     const { id } = await makeCustomer('blockme');
     const res = await app.request(
-      `/api/v1/customers/${id}/status`,
+      `/api/v1/admin/customers/${id}/status`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -433,7 +433,7 @@ describe('POST /api/v1/customers/:id/status', () => {
       .run();
 
     await app.request(
-      `/api/v1/customers/${id}/status`,
+      `/api/v1/admin/customers/${id}/status`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -450,7 +450,7 @@ describe('POST /api/v1/customers/:id/status', () => {
   it('is a no-op when the status already matches, and audits nothing', async () => {
     const { id } = await makeCustomer('already_active');
     const res = await app.request(
-      `/api/v1/customers/${id}/status`,
+      `/api/v1/admin/customers/${id}/status`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -468,7 +468,7 @@ describe('POST /api/v1/customers/:id/status', () => {
   it('refuses a reviewer', async () => {
     const { id } = await makeCustomer('status_reviewer');
     const res = await app.request(
-      `/api/v1/customers/${id}/status`,
+      `/api/v1/admin/customers/${id}/status`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -484,11 +484,11 @@ describe('POST /api/v1/customers/:id/status', () => {
   });
 });
 
-describe('GET /api/v1/customers/:id', () => {
+describe('GET /api/v1/admin/customers/:id', () => {
   it('returns the customer with the ledger behind the balance', async () => {
     const { id, telegramId } = await makeCustomer('detail_one');
     await app.request(
-      `/api/v1/customers/${id}/wallet`,
+      `/api/v1/admin/customers/${id}/wallet`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -497,7 +497,7 @@ describe('GET /api/v1/customers/:id', () => {
       envAs(ADMIN),
     );
 
-    const res = await app.request(`/api/v1/customers/${id}`, {}, envAs(ADMIN));
+    const res = await app.request(`/api/v1/admin/customers/${id}`, {}, envAs(ADMIN));
     const body = (await res.json()) as {
       customer: { telegramId: number; balanceIrr: number; orderCount: number };
       entries: { amountIrr: number; kind: string; actor: string }[];
@@ -514,7 +514,7 @@ describe('GET /api/v1/customers/:id', () => {
   });
 
   it('404s on an unknown id', async () => {
-    const res = await app.request('/api/v1/customers/99999999', {}, envAs(ADMIN));
+    const res = await app.request('/api/v1/admin/customers/99999999', {}, envAs(ADMIN));
     expect(res.status).toBe(404);
   });
 });

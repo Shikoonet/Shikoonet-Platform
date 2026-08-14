@@ -7,13 +7,12 @@ import { AccountsView } from './AccountsView.js';
 import { PaymentsView } from './PaymentsView.js';
 import { StatisticsView } from './StatisticsView.js';
 import { BanksView } from './BanksView.js';
-import { CustomersView } from './CustomersView.js';
 import { Drawer } from './Drawer.js';
 import { ShikoonetHeader } from './shikoonetShell.js';
 import { syncPaymentTabToLocation } from './paymentsNav.js';
 import { useMediaQuery } from './useMediaQuery.js';
 
-type Tab = 'payments' | 'statistics' | 'today' | 'devices' | 'accounts' | 'banks' | 'customers';
+type Tab = 'payments' | 'statistics' | 'today' | 'devices' | 'accounts' | 'banks';
 
 const TAB_ITEMS = [
   { value: 'payments', label: 'Payments' },
@@ -22,7 +21,6 @@ const TAB_ITEMS = [
   { value: 'devices', label: 'Devices' },
   { value: 'accounts', label: 'Accounts' },
   { value: 'banks', label: 'Banks' },
-  { value: 'customers', label: 'Customers' },
 ] as const;
 
 export function App() {
@@ -98,7 +96,6 @@ export function App() {
         {tab === 'payments' && <PaymentsView cache={cache} />}
         {tab === 'statistics' && <StatisticsView cache={cache} />}
         {tab === 'banks' && <BanksView />}
-        {tab === 'customers' && <CustomersView />}
       </ShikoonetHeader>
     </div>
   );

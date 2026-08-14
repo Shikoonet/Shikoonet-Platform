@@ -38,6 +38,7 @@ import { registerMirzabotRoutes, loadPaymentCardsForAccounts } from './mirzabotR
 import { registerAnalyticsRoutes } from './analyticsRoutes.js';
 import { registerBankRoutes } from './bankRoutes.js';
 import { registerCustomerRoutes } from './customerRoutes.js';
+import { registerAdminOverviewRoutes } from './adminOverviewRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
 /**
@@ -69,6 +70,13 @@ export interface Env {
   TEST_ACCESS_USER?: string;
   ACCESS_AUD?: string;
   ACCESS_ISSUER?: string;
+  /**
+   * The audience tag of the *second* Cloudflare Access application — the one
+   * in front of the shop's admin panel. Unset means the panel does not exist
+   * on this deployment; it is never inferred from ACCESS_AUD, because that
+   * would put the wallet and the catalog behind the payment operator's door.
+   */
+  ADMIN_ACCESS_AUD?: string;
   // "dev" | "production". Set in each wrangler config; drives the header badge.
   ENV_NAME?: string;
   // Injected at deploy time by scripts/release.sh via `wrangler deploy --var`,
@@ -102,10 +110,36 @@ type AppContext = Context<AppBindings>;
 
 const app = new Hono<AppBindings>();
 
+/**
+ * Which surface a path belongs to.
+ *
+ * The shop's admin panel and the payment hub are two separate Cloudflare
+ * Access applications with two separate audiences, so which one a request must
+ * prove it came through is decided here, by path, before anything is verified.
+ * `/admin` is the panel's page and `/api/v1/admin/*` is its API; everything
+ * else is the payment hub.
+ */
+export function isAdminSurface(path: string): boolean {
+  return path === '/admin' || path.startsWith('/admin/') || path.startsWith('/api/v1/admin/');
+}
+
 app.use('*', securityHeaders);
 app.use('*', originGuard);
 app.use('*', async (c, next) => {
-  const ident = await verifyAccess(c.req.raw, c.env);
+  const admin = isAdminSurface(c.req.path);
+  // Fails closed. A deployment that has not been given the admin application's
+  // audience has no admin panel at all — it does not quietly fall back to the
+  // payment hub's audience, which would put the shop's wallet and catalog
+  // behind the payment operator's door. Same reasoning as INGEST_URL: a
+  // missing setting answers 503, it does not improvise a default.
+  if (admin && !c.env.TEST_ACCESS_USER && !c.env.ADMIN_ACCESS_AUD) {
+    return c.json({ ok: false, error: 'admin_access_not_configured' }, 503);
+  }
+  const ident = await verifyAccess(
+    c.req.raw,
+    c.env,
+    admin ? c.env.ADMIN_ACCESS_AUD : c.env.ACCESS_AUD,
+  );
   if (!ident) return c.json({ ok: false, error: 'unauthorized' }, 401);
   const role = await lookupRole(c.env.DB, ident.email);
   if (!role) return c.json({ ok: false, error: 'forbidden' }, 403);
@@ -4393,6 +4427,7 @@ registerMirzabotRoutes(app);
 registerAnalyticsRoutes(app);
 registerBankRoutes(app);
 registerCustomerRoutes(app);
+registerAdminOverviewRoutes(app);
 
 export default app;
 export { app };
