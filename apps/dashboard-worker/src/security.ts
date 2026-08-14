@@ -19,12 +19,29 @@
 
 import type { MiddlewareHandler } from 'hono';
 
-const ALLOWED_ORIGINS = new Set([
-  'https://dashboard-worker.samsos.workers.dev',
-  'https://reconciliation-hub.pages.dev',
-  'http://localhost:8787',
-  'http://localhost:5173',
-]);
+/**
+ * The origins that may post to this worker from somewhere else.
+ *
+ * Same-origin is always allowed and is computed from the request, so this list
+ * only ever names a SECOND host — the SPA on its own domain, and the two
+ * development servers. It was four hard-coded strings including a
+ * `.workers.dev` hostname that stops being ours the day the platform moves,
+ * which is exactly the deploy this was blocking.
+ *
+ * `ALLOWED_ORIGINS` is read from the environment, comma-separated. An unset or
+ * empty value leaves only same-origin and the development servers, which is the
+ * safe direction to fail: a missing setting locks the second host out rather
+ * than letting an unknown one in.
+ */
+const DEV_ORIGINS = ['http://localhost:8787', 'http://localhost:5173'];
+
+export function allowedOrigins(configured: string | undefined): Set<string> {
+  const extra = (configured ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin !== '');
+  return new Set([...DEV_ORIGINS, ...extra]);
+}
 
 function isApiPath(path: string): boolean {
   return path.startsWith('/api/');
@@ -90,7 +107,8 @@ export const originGuard: MiddlewareHandler = async (c, next) => {
   }
 
   // Accept explicitly configured alternative and development origins.
-  if (!ALLOWED_ORIGINS.has(origin)) {
+  const configured = (c.env as { ALLOWED_ORIGINS?: string } | undefined)?.ALLOWED_ORIGINS;
+  if (!allowedOrigins(configured).has(origin)) {
     return c.json(
       {
         ok: false,

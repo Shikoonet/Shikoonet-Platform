@@ -27,6 +27,10 @@ export const env: Env = {
   TEST_ACCESS_USER: 'admin@example.com',
   ENV_NAME: 'test',
   APP_VERSION: 'test',
+  // Stated, not defaulted. The device routes refuse to issue a relay
+  // configuration without it — see `deploy-config.test.ts` for why a default
+  // was the wrong kind of convenience.
+  INGEST_URL: 'https://ingest.test/api/v1/sms',
 };
 
 export { pool };

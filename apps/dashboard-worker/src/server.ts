@@ -47,6 +47,9 @@ const PASSTHROUGH = [
   'ENABLE_PURCHASE_TYPE',
   'DEV_BLOCK_DEVICE_ADMIN',
   'INGEST_URL',
+  // Comma-separated. Names the SPA's own host when it is served from a second
+  // domain; same-origin never needs listing. Unset means "nowhere else".
+  'ALLOWED_ORIGINS',
 ] as const satisfies readonly (keyof Env)[];
 
 export function buildEnv(db: Env['DB']): Env {

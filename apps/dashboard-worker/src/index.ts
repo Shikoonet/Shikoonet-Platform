@@ -39,7 +39,29 @@ import { registerAnalyticsRoutes } from './analyticsRoutes.js';
 import { registerBankRoutes } from './bankRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
-const DEFAULT_INGEST_URL = 'https://ingest-worker.samsos.workers.dev/api/v1/sms';
+/**
+ * Where the Android relay should post SMS.
+ *
+ * This used to fall back to a hard-coded `.workers.dev` hostname, which is the
+ * wrong kind of default: the value ends up inside a configuration an admin
+ * pastes into a phone, and a phone quietly posting to a host that is no longer
+ * ours produces a relay that looks configured and delivers nothing. The
+ * contract with that app is frozen (`POST /api/v1/sms`) and only its URL ever
+ * changes — so the URL is the one thing that must be stated, not guessed.
+ *
+ * Returns null when unset, and the routes answer 503 rather than handing out a
+ * configuration nobody can use.
+ */
+export function ingestUrl(env: { INGEST_URL?: string }): string | null {
+  const url = env.INGEST_URL?.trim();
+  return url === undefined || url === '' ? null : url;
+}
+
+const INGEST_URL_MISSING = {
+  ok: false as const,
+  error: 'ingest_url_not_configured',
+  message: 'INGEST_URL is not set on this worker, so a relay configuration cannot be issued.',
+};
 
 export interface Env {
   DB: D1Database;
@@ -54,7 +76,10 @@ export interface Env {
   // DEV-only feature flags. Production workers never set these.
   ENABLE_PURCHASE_TYPE?: string;
   DEV_BLOCK_DEVICE_ADMIN?: string;
+  /** Where the Android relay posts. No default — see `ingestUrl` below. */
   INGEST_URL?: string;
+  /** Comma-separated second hosts allowed to POST here. Same-origin is implicit. */
+  ALLOWED_ORIGINS?: string;
 }
 
 type DB = D1Database;
@@ -338,6 +363,10 @@ const CreateDeviceBody = z
 app.post('/api/v1/devices', async (c) => {
   const ident = c.get('identity');
   if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
+  // Before anything is written: a device with no relay URL to hand back is a
+  // device nobody can point at us.
+  const relayUrl = ingestUrl(c.env);
+  if (relayUrl === null) return c.json(INGEST_URL_MISSING, 503);
   const parsed = CreateDeviceBody.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
   const v = validateDeviceCode(parsed.data.deviceCode);
@@ -424,7 +453,7 @@ app.post('/api/v1/devices', async (c) => {
       status: 'ACTIVE',
       shownOnce: true,
     },
-    configuration: buildSmsRelayConfig(apiKey, v.code, parsed.data.displayName.trim(), c.env.INGEST_URL ?? DEFAULT_INGEST_URL),
+    configuration: buildSmsRelayConfig(apiKey, v.code, parsed.data.displayName.trim(), relayUrl),
   });
 });
 
@@ -480,6 +509,10 @@ async function findDeviceByIdOrCode(
 app.post('/api/v1/devices/:idOrCode/credentials', async (c) => {
   const ident = c.get('identity');
   if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
+  // Before anything is written: a device with no relay URL to hand back is a
+  // device nobody can point at us.
+  const relayUrl = ingestUrl(c.env);
+  if (relayUrl === null) return c.json(INGEST_URL_MISSING, 503);
   const idOrCode = c.req.param('idOrCode');
   const device = await findDeviceByIdOrCode(c.env.DB, idOrCode);
   if (!device) return c.json({ ok: false, error: 'device_not_found' }, 404);
@@ -548,7 +581,7 @@ app.post('/api/v1/devices/:idOrCode/credentials', async (c) => {
       status: 'ACTIVE',
       shownOnce: true,
     },
-    configuration: buildSmsRelayConfig(apiKey, device.device_code, device.display_name, c.env.INGEST_URL ?? DEFAULT_INGEST_URL),
+    configuration: buildSmsRelayConfig(apiKey, device.device_code, device.display_name, relayUrl),
   });
 });
 
@@ -562,6 +595,10 @@ app.post('/api/v1/devices/:idOrCode/credentials', async (c) => {
 app.post('/api/v1/devices/:idOrCode/credentials/rotate', async (c) => {
   const ident = c.get('identity');
   if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
+  // Before anything is written: a device with no relay URL to hand back is a
+  // device nobody can point at us.
+  const relayUrl = ingestUrl(c.env);
+  if (relayUrl === null) return c.json(INGEST_URL_MISSING, 503);
   const idOrCode = c.req.param('idOrCode');
   const device = await findDeviceByIdOrCode(c.env.DB, idOrCode);
   if (!device) return c.json({ ok: false, error: 'device_not_found' }, 404);
@@ -639,7 +676,7 @@ app.post('/api/v1/devices/:idOrCode/credentials/rotate', async (c) => {
       status: 'ACTIVE',
       shownOnce: true,
     },
-    configuration: buildSmsRelayConfig(apiKey, device.device_code, device.display_name, c.env.INGEST_URL ?? DEFAULT_INGEST_URL),
+    configuration: buildSmsRelayConfig(apiKey, device.device_code, device.display_name, relayUrl),
   });
 });
 

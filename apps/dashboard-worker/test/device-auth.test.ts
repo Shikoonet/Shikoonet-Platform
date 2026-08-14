@@ -135,7 +135,10 @@ describe('POST /api/v1/devices — create', () => {
     expect(body.credential.tokenPrefix).toHaveLength(4);
     expect(body.credential.tokenPrefix).toBe(body.credential.apiKey.slice(0, 4));
     expect(body.credential.shownOnce).toBe(true);
-    expect(body.configuration.url).toBe('https://ingest-worker.samsos.workers.dev/api/v1/sms');
+    // Whatever INGEST_URL says, not a constant in the source. This line used to
+    // assert the hard-coded `.workers.dev` host, which is the thing that made
+    // moving hosts a code change.
+    expect(body.configuration.url).toBe(env.INGEST_URL);
     expect(body.configuration.method).toBe('POST');
   });
 

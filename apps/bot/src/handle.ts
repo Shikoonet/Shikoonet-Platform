@@ -252,7 +252,7 @@ interface Caller {
  */
 async function upsertUser(
   tx: D1DatabaseSession,
-  from: { id: number; username?: string },
+  from: { id: number; username?: string | undefined },
 ): Promise<Caller> {
   const user = await tx
     .prepare(
