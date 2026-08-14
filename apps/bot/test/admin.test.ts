@@ -196,6 +196,27 @@ describe('who may see the panel', () => {
 
     expect(out.replies[0]?.text).toContain(menu.ADMIN_HOME);
   });
+
+  it('works for an admin who has never been a customer', async () => {
+    // Found on the browser: `/panel` opened for an admin with no `users` row
+    // and then every button answered "press /start", because the callback
+    // handler reads `users` first and the review session is keyed by its id.
+    const { updateId, telegramId } = ids();
+    await db
+      .prepare(
+        `INSERT INTO admins (telegram_id, username, role, active)
+         VALUES (?1, 'never-started', 'ADMIN', true)
+         ON CONFLICT (telegram_id) DO UPDATE SET active = true`,
+      )
+      .bind(telegramId)
+      .run();
+
+    await handleUpdate(db, types(updateId, telegramId, '/panel'));
+    const listed = await handleUpdate(db, press(updateId + 1, telegramId, 'clm'));
+
+    expect(listed.replies[0]?.text).not.toBe(menu.NOT_REGISTERED);
+    expect(listed.status).toBe('processed');
+  });
 });
 
 describe('approving a payment', () => {

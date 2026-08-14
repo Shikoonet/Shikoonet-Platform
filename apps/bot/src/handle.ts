@@ -213,6 +213,11 @@ export async function handleUpdate(
     if (command(message.text) === '/panel') {
       const admin = message.from ? await adminFor(tx, message.from.id) : null;
       if (!admin) return IGNORED;
+      // An admin is a customer row too, and every screen after this one needs
+      // it: the callback handler reads `users` before it does anything, and the
+      // session the review flow keeps is keyed by `users.id`. Found by walking
+      // it — `/panel` opened and then every button said "press /start".
+      await upsertUser(tx, message.from!);
       const waiting = await countClaimsAwaitingReview(tx);
       return {
         status: 'processed',
@@ -239,6 +244,32 @@ interface Caller {
   discount_percent: number;
 }
 
+/**
+ * The customer row for whoever sent this, created if it is their first message.
+ *
+ * Upsert rather than SELECT-then-INSERT: two messages cannot race into two rows
+ * for one telegram_id, because the unique index decides, not this code.
+ */
+async function upsertUser(
+  tx: D1DatabaseSession,
+  from: { id: number; username?: string },
+): Promise<Caller> {
+  const user = await tx
+    .prepare(
+      `INSERT INTO users (telegram_id, username, registered_at, last_seen_at)
+       VALUES (?1, ?2, now(), now())
+       ON CONFLICT (telegram_id) DO UPDATE
+         SET username = EXCLUDED.username,
+             last_seen_at = now(),
+             updated_at = now()
+       RETURNING id, status, is_reseller, discount_percent`,
+    )
+    .bind(from.id, from.username ?? null)
+    .first<Caller>();
+  if (!user) throw new Error('user upsert returned no row');
+  return user;
+}
+
 async function handleStart(
   tx: D1DatabaseSession,
   message: TelegramMessage,
@@ -255,19 +286,7 @@ async function handleStart(
   // customer wants to be sold in. The legacy bot reads language_code too and
   // likewise never assigns it; language is an explicit choice in the menu. The
   // column defaults to 'fa'.
-  const user = await tx
-    .prepare(
-      `INSERT INTO users (telegram_id, username, registered_at, last_seen_at)
-       VALUES (?1, ?2, now(), now())
-       ON CONFLICT (telegram_id) DO UPDATE
-         SET username = EXCLUDED.username,
-             last_seen_at = now(),
-             updated_at = now()
-       RETURNING id, status, is_reseller, discount_percent`,
-    )
-    .bind(from.id, from.username ?? null)
-    .first<Caller>();
-  if (!user) throw new Error('user upsert returned no row');
+  const user = await upsertUser(tx, from);
 
   // A blocked customer is still recorded as seen — that is what `last_seen_at`
   // is for — but gets no reply and no session.
