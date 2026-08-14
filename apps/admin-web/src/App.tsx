@@ -19,6 +19,7 @@ import { Icon } from './icons.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
 import { ProductsPage } from './pages/ProductsPage.js';
+import { PanelsPage } from './pages/PanelsPage.js';
 import { NotBuiltPage } from './pages/NotBuiltPage.js';
 import './theme.css';
 
@@ -108,6 +109,8 @@ export function App() {
             <CustomersPage />
           ) : page === 'products' ? (
             <ProductsPage />
+          ) : page === 'panels' ? (
+            <PanelsPage />
           ) : (
             <NotBuiltPage id={page} />
           )}

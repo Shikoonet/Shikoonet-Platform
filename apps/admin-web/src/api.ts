@@ -103,6 +103,29 @@ export interface PlanPatch {
 }
 
 /**
+ * A fulfilment panel.
+ *
+ * There is no credential on this type and there is no route that returns one:
+ * `secret_ref` names a secret in the runtime store and `config` carries a
+ * shared secret provisioning has to send. `hasSecretRef` is the whole of what
+ * this screen is allowed to know about it.
+ */
+export interface PanelItem {
+  id: number;
+  code: string;
+  name: string;
+  kind: string;
+  status: string;
+  baseUrl: string | null;
+  capacity: number | null;
+  sortOrder: number;
+  hasSecretRef: boolean;
+  productCount: number;
+  planCount: number;
+  liveSubscriptions: number;
+}
+
+/**
  * The error carries the server's own code, not a rendered sentence.
  *
  * Screens branch on `code` (`admin_access_not_configured` is a different
@@ -201,6 +224,25 @@ export const api = {
     return req<{ ok: boolean; status: string }>(`/products/${id}/status`, {
       method: 'POST',
       body: JSON.stringify({ status }),
+    });
+  },
+
+  panels() {
+    return req<{ ok: boolean; items: PanelItem[] }>('/panels');
+  },
+
+  updatePanel(
+    id: number,
+    patch: {
+      name?: string;
+      status?: 'ACTIVE' | 'DISABLED';
+      capacity?: number | null;
+      sortOrder?: number;
+    },
+  ) {
+    return req<{ ok: boolean; panel: PanelItem; liveSubscriptions: number }>(`/panels/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(patch),
     });
   },
 

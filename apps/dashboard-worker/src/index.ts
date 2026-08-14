@@ -40,6 +40,7 @@ import { registerBankRoutes } from './bankRoutes.js';
 import { registerCustomerRoutes } from './customerRoutes.js';
 import { registerAdminOverviewRoutes } from './adminOverviewRoutes.js';
 import { registerProductRoutes } from './productRoutes.js';
+import { registerPanelRoutes } from './panelRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
 /**
@@ -4430,6 +4431,7 @@ registerBankRoutes(app);
 registerCustomerRoutes(app);
 registerAdminOverviewRoutes(app);
 registerProductRoutes(app);
+registerPanelRoutes(app);
 
 export default app;
 export { app };
