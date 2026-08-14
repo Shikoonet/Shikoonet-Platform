@@ -24,7 +24,19 @@ export interface PollResult {
   offset: number;
   counts: Record<HandleStatus, number>;
   failed: number;
+  /** Updates given up on this cycle after exhausting their attempts. */
+  abandoned: number;
 }
+
+/**
+ * How many healthy-cycle failures an update gets before it is dropped.
+ *
+ * "Healthy" is doing the work here: a cycle in which every update failed is an
+ * outage, and its failures are forgiven rather than counted (see `pollOnce`).
+ * So this is three failures the database was demonstrably alive for, which no
+ * transient fault produces and every genuine poison update does.
+ */
+export const MAX_UPDATE_ATTEMPTS = 3;
 
 export const EMPTY_COUNTS: Record<HandleStatus, number> = {
   processed: 0,
@@ -49,10 +61,14 @@ export const EMPTY_COUNTS: Record<HandleStatus, number> = {
  * 'duplicate'. Telegram returns updates in ascending update_id order, which is
  * what makes "before the first failure" well defined.
  *
- * ponytail: an update that fails forever is retried forever, loudly, once per
- * cycle. The alternative — confirming past it — loses real work in the far more
- * likely case of a transient database outage. If a genuine poison update ever
- * appears, give it a failure count and skip it after N cycles.
+ * An update that keeps failing is eventually dropped rather than retried for
+ * ever. Retrying for ever was the old behaviour and it is how one customer
+ * stops the bot for everybody: the offset never advances, so no update behind
+ * the poison one is ever acknowledged. What made that safe to change is
+ * separating the two reasons a handler throws. A cycle where EVERY update
+ * failed is an outage — the database is down, the update is innocent, and its
+ * attempts are forgiven. A failure in a cycle where something else succeeded is
+ * the update's own; three of those and it goes.
  */
 export async function pollOnce(
   db: D1Database,
@@ -60,20 +76,40 @@ export async function pollOnce(
   offset: number,
   timeoutSec = 25,
   signal?: AbortSignal,
+  /** Failures per update id, carried across cycles by `run`. */
+  attempts: Map<number, number> = new Map(),
 ): Promise<PollResult> {
   const updates = await api.getUpdates(offset, timeoutSec, signal);
   const counts = { ...EMPTY_COUNTS };
   let failed = 0;
+  let abandoned = 0;
   let confirmedThrough = offset - 1;
   let sawFailure = false;
 
   for (const update of updates) {
+    if ((attempts.get(update.update_id) ?? 0) >= MAX_UPDATE_ATTEMPTS) {
+      // Given up on. Acknowledging it is the whole point — it is what lets the
+      // offset move past and unblocks every update behind it. The row in
+      // `telegram_updates` was rolled back with each failure, so nothing here
+      // claims it; if Telegram ever redelivers it the count is gone and it gets
+      // a fresh set of attempts, which is the right answer after a restart.
+      abandoned++;
+      attempts.delete(update.update_id);
+      console.error(
+        `[bot] update ${update.update_id} failed ${MAX_UPDATE_ATTEMPTS} times and was dropped`,
+      );
+      if (!sawFailure) confirmedThrough = update.update_id;
+      await answer(api, update);
+      continue;
+    }
+
     let outcome;
     try {
       outcome = await handleUpdate(db, update);
     } catch (err) {
       failed++;
       sawFailure = true;
+      attempts.set(update.update_id, (attempts.get(update.update_id) ?? 0) + 1);
       console.error(`[bot] update ${update.update_id} failed, will be retried`, err);
       // Still stop the client's spinner. A button that keeps spinning through a
       // database outage reads as a bot that died, and answering says nothing
@@ -81,6 +117,7 @@ export async function pollOnce(
       await answer(api, update);
       continue;
     }
+    attempts.delete(update.update_id);
     if (!sawFailure) confirmedThrough = update.update_id;
     counts[outcome.status]++;
     for (const reply of outcome.replies) {
@@ -100,7 +137,15 @@ export async function pollOnce(
     await answer(api, update);
   }
 
-  return { offset: confirmedThrough + 1, counts, failed };
+  // Everything failed, so the fault is shared and none of it belongs to any one
+  // update. Forgiving the whole batch is what stops a database outage from
+  // spending three attempts on every message waiting in it — the case the old
+  // comment was right to be afraid of.
+  if (updates.length > 0 && failed === updates.length) {
+    for (const update of updates) attempts.delete(update.update_id);
+  }
+
+  return { offset: confirmedThrough + 1, counts, failed, abandoned };
 }
 
 /**
@@ -182,10 +227,14 @@ export async function run(
   const backoffMs = options.backoffMs ?? 5_000;
   let offset = 0;
   let cycles = 0;
+  // Deliberately in memory and deliberately not persisted, like the offset
+  // above: a restart is a legitimate second chance, and an update that only
+  // fails because of the state a crashed process left behind deserves one.
+  const attempts = new Map<number, number>();
 
   while (!options.signal?.aborted) {
     try {
-      const result = await pollOnce(db, api, offset, timeoutSec, options.signal);
+      const result = await pollOnce(db, api, offset, timeoutSec, options.signal, attempts);
       const stalled = result.failed > 0 && result.offset === offset;
       offset = result.offset;
       // Nothing in the batch could be acknowledged, so getUpdates will hand the

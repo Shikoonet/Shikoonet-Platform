@@ -29,6 +29,16 @@ export interface PlacedOrder {
 }
 
 /**
+ * `null` from any of the `place*` functions means the order came to nothing and
+ * was refused. It is a return value rather than a throw on purpose: the whole
+ * update runs inside one transaction, so a throw rolls back the
+ * `telegram_updates` row that makes delivery once-only, and the poller then
+ * hands the same update back for ever. One customer's free order would stop the
+ * bot for everybody.
+ */
+export type PlaceResult = PlacedOrder | null;
+
+/**
  * Ten hex characters, the shape production already uses for `payments.public_id`
  * ('b5baf9f689'), so support staff read one format everywhere. Collisions are
  * caught by the UNIQUE index rather than assumed away.
@@ -44,7 +54,7 @@ export async function placeOrder(
   discountPercent: number,
   /** A code the customer typed and `checkCode` allowed, already in IRR. */
   codeDiscountIrr = 0,
-): Promise<PlacedOrder> {
+): Promise<PlaceResult> {
   return place(
     tx,
     userId,
@@ -84,7 +94,7 @@ export async function placeRenewalOrder(
   discountPercent: number,
   subscriptionId: number,
   codeDiscountIrr = 0,
-): Promise<PlacedOrder> {
+): Promise<PlaceResult> {
   return place(
     tx,
     userId,
@@ -109,7 +119,7 @@ export async function placeTopupOrder(
   tx: D1DatabaseSession,
   userId: number,
   amountIrr: number,
-): Promise<PlacedOrder> {
+): Promise<PlaceResult> {
   if (!Number.isSafeInteger(amountIrr) || amountIrr <= 0) {
     throw new Error(`top-up amount ${amountIrr} is not a usable amount`);
   }
@@ -142,7 +152,7 @@ export async function placeAddonOrder(
   quantity: number,
   unitPriceIrr: number,
   discountPercent: number,
-): Promise<PlacedOrder> {
+): Promise<PlaceResult> {
   if (!Number.isSafeInteger(quantity) || quantity <= 0) {
     throw new Error(`add-on quantity ${quantity} is not a usable amount`);
   }
@@ -174,7 +184,21 @@ async function place(
    *  `total = unit x quantity - discount` check is what keeps the three
    *  honest, so the caller cannot quietly disagree with itself. */
   quantity = 1,
-): Promise<PlacedOrder> {
+): Promise<PlaceResult> {
+  // An order that costs nothing is refused here, once, for all four callers.
+  //
+  // Downstream nothing survives it. `checkoutMenu` renders «pay from wallet»
+  // because `0 >= 0`; `spendOnOrder`'s overdraft guard passes because `0 < 0`
+  // is false; and the ledger row it then writes is `-0`, which
+  // `CHECK (amount_irr <> 0)` refuses — deliberately, since an entry that moves
+  // no money is not an entry. The card path does not throw but strands the
+  // order instead: a claim for 0 IRR is one no bank transaction can ever match.
+  //
+  // Free fulfilment is the other possible answer and is not written, because
+  // the dump says nobody needs it: the single production account with
+  // `pricediscount = 100` has zero invoices and zero payments. Building the
+  // path would mean a second money path for a case that has never happened.
+  if (!Number.isSafeInteger(price.totalIrr) || price.totalIrr <= 0) return null;
 
   // Same plan, same price, same target, still waiting to be paid. A price
   // change makes the old order stale, so it is left alone and a new one is

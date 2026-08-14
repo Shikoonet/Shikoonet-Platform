@@ -221,6 +221,47 @@ describe('when delivery cannot finish', () => {
     expect(note?.text).toContain(order.publicId);
   });
 
+  it('does not end an order it cannot refund', async () => {
+    // Ending the order and returning the credit used to be two autocommitted
+    // statements. Anything that stopped the process between them — a deploy, an
+    // OOM kill — left the order FAILED with the money gone, and nothing sweeps
+    // a FAILED order: `reclaimStalled` only picks up PROVISIONING. The customer
+    // was not even told, because the message is built from what `fail` returns.
+    //
+    // The failure here is Postgres's own, not a mock: the wallet balance is a
+    // bigint, and a refund large enough to overflow it makes the trigger throw
+    // inside the refund — exactly where a crash would have landed.
+    const order = await paidOrder();
+    await db
+      .prepare(
+        `INSERT INTO wallet_entries (user_id, amount_irr, kind, idempotency_key)
+         VALUES (?1, 1, 'TOPUP', ?2)`,
+      )
+      .bind(order.userId, `m1:${order.orderId}:seed`)
+      .run();
+    await db
+      .prepare(
+        `INSERT INTO payments (public_id, order_id, user_id, amount_irr, method, status, created_at)
+         VALUES (?1, ?2, ?3, 9223372036854775807, 'WALLET', 'PAID', now())`,
+      )
+      .bind(`m1${order.publicId}`, order.orderId, order.userId)
+      .run();
+
+    await expect(provisionPaidOrders(db, brokenRequest)).rejects.toThrow();
+
+    // Rolled back together: still PROVISIONING, so the next sweep retries it.
+    // Before the fix this row read FAILED and stayed that way for ever.
+    const row = await orderRow(order.orderId);
+    expect(row?.status).not.toBe('FAILED');
+    const refunds = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM wallet_entries WHERE order_id = ?1 AND kind = 'REFUND'`,
+      )
+      .bind(order.orderId)
+      .first<{ n: number }>();
+    expect(refunds?.n).toBe(0);
+  });
+
   it('takes back an order left mid-flight by a sweep that died', async () => {
     const order = await paidOrder();
     await db

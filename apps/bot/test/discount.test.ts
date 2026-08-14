@@ -209,7 +209,7 @@ describe('a code that works', () => {
     expect((await lastOrder(userId))?.discount_irr).toBe(Math.round(VIP_PRICE * 0.1));
   });
 
-  it('stacks with a standing discount without ever going below zero', async () => {
+  it('stacks with a standing discount, and refuses the order the stack empties', async () => {
     const { updateId, telegramId } = ids();
     const userId = await makeCustomer(telegramId, { discountPercent: 60 });
     await makeCode('half50', { percent: 100 });
@@ -217,10 +217,31 @@ describe('a code that works', () => {
     await useCode(updateId, telegramId, VIP_PLAN, 'half50');
     await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
 
-    // 60% standing + 100% code is 160% of the price. The order is free, not
-    // negative — the schema's CHECK (total_irr >= 0) would refuse it anyway,
-    // which is the point: the arithmetic is not this code's to get wrong.
-    expect(await lastOrder(userId)).toMatchObject({ discount_irr: VIP_PRICE, total_irr: 0 });
+    // 60% standing + 100% code is 160% of the price, so the arithmetic floors
+    // at free rather than going negative — that part was always right.
+    //
+    // What this used to assert was `total_irr: 0`, and it stopped exactly there.
+    // One press further was the outage: see `zero-total.test.ts`. No row now.
+    expect(await lastOrder(userId)).toBeNull();
+  });
+
+  it('leaves a code unspent when the order it would have paid for is refused', async () => {
+    // The redemption is written after the order, so a refusal must not burn a
+    // single-use code on a purchase that never happened.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId, { discountPercent: 60 });
+    const codeId = await makeCode('unspent1', { percent: 100 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'unspent1');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+
+    const spent = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1 AND user_id = ?2`,
+      )
+      .bind(codeId, userId)
+      .first<{ n: number }>();
+    expect(spent?.n).toBe(0);
   });
 });
 

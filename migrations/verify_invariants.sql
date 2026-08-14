@@ -281,6 +281,43 @@ SELECT assert_eq(
     WHERE user_id = (SELECT id FROM users WHERE telegram_id = 900000001)),
   2, 'a rejected applicant may apply again');
 
+-- ---------------------------------------------------------------------------
+-- payments — an order is paid once (0016)
+-- ---------------------------------------------------------------------------
+--
+-- The bot used to carry this alone, with an `ON CONFLICT (public_id)` whose
+-- conflict could never fire because `public_id` is minted fresh each time. It
+-- held only because the poll loop is serial — a fact about the caller, not
+-- about the data.
+
+INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr, total_irr, status)
+     VALUES ('__inv-ord-1', (SELECT id FROM users WHERE telegram_id = 900000001),
+             'WALLET_TOPUP', 1, 500000, 500000, 'AWAITING_PAYMENT');
+
+INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+     VALUES ('__inv-pay-1', (SELECT id FROM users WHERE telegram_id = 900000001),
+             (SELECT id FROM orders WHERE public_id = '__inv-ord-1'),
+             500000, 'WALLET', 'PAID', now());
+
+SELECT assert_rejects($$
+  INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+       VALUES ('__inv-pay-2', (SELECT id FROM users WHERE telegram_id = 900000001),
+               (SELECT id FROM orders WHERE public_id = '__inv-ord-1'),
+               500000, 'WALLET', 'PAID', now())
+$$, 'one order cannot be paid twice');
+
+-- And the deliberate opening: a customer shown a card and then paying from
+-- their balance leaves two payment rows for one order. Only one may be PAID,
+-- which is why the index is scoped to that status and not to order_id alone.
+INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+     VALUES ('__inv-pay-3', (SELECT id FROM users WHERE telegram_id = 900000001),
+             (SELECT id FROM orders WHERE public_id = '__inv-ord-1'),
+             500000, 'CARD_TO_CARD', 'PENDING', now());
+SELECT assert_eq(
+  (SELECT count(*) FROM payments
+    WHERE order_id = (SELECT id FROM orders WHERE public_id = '__inv-ord-1')),
+  2, 'an unpaid card row may sit beside the paid one');
+
 \echo ''
 \echo '  All invariants hold.'
 \echo ''

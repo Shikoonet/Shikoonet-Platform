@@ -170,16 +170,25 @@ describe('walking from /start to an order', () => {
     }
   });
 
-  it('can buy the free plan', async () => {
+  it('refuses a plan that costs nothing instead of writing an unpayable order', async () => {
+    // This asserted the opposite until 2026-08-14, and the order it allowed was
+    // the one that took the bot down: total 0 renders «pay from wallet»,
+    // the overdraft guard passes on `0 < 0`, and the `-0` ledger row breaks
+    // `CHECK (amount_irr <> 0)` inside the transaction that also holds the
+    // once-only `telegram_updates` row.
+    //
+    // A free plan is a fixture invention, not a shop: the dump has 21 products
+    // and none priced at or below zero — the cheapest is 100,000 IRR. Free
+    // trials in the legacy bot are their own feature (`limit_usertest`), gated
+    // by `OFFTestAccount`, and are not a plan you buy for nothing.
     const { updateId, telegramId } = ids();
     const user = await makeCustomer(telegramId);
     const plan = await planId('sim-vip-trial');
 
-    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const out = await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
 
-    const orders = await orderRows(user);
-    expect(orders).toHaveLength(1);
-    expect(orders[0]?.total_irr).toBe(0);
+    expect(await orderRows(user)).toHaveLength(0);
+    expect(out.replies[0]?.text ?? '').not.toBe('');
   });
 });
 

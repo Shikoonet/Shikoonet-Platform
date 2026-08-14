@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { pollOnce, pruneUpdates, run } from '../src/poll.js';
+import { MAX_UPDATE_ATTEMPTS, pollOnce, pruneUpdates, run } from '../src/poll.js';
 import type { TelegramApi, TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 
@@ -132,6 +132,69 @@ describe('pollOnce', () => {
 
     expect(result.failed).toBe(2);
     expect(result.offset).toBe(a.updateId);
+  });
+
+  it('gives up on a poison update and unblocks everything behind it', async () => {
+    // The outage this closes: the offset never advances past an update that
+    // always throws, so no later update is ever acknowledged and the same batch
+    // is handed back for ever. One customer stops the bot for everybody.
+    const bad = ids();
+    const good = ids();
+    const broken = startUpdate(bad.updateId, bad.telegramId);
+    broken.message!.from!.id = 9_300_000_000_000_000_002;
+
+    const attempts = new Map<number, number>();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    // A healthy batch each cycle: the poison update fails, the other succeeds.
+    // Redelivery is what a blocked offset produces, so the same pair comes back.
+    let last;
+    for (let cycle = 0; cycle < MAX_UPDATE_ATTEMPTS + 1; cycle++) {
+      const { api } = fakeApi([broken, startUpdate(good.updateId, good.telegramId)]);
+      last = await pollOnce(db, api, bad.updateId, 25, undefined, attempts);
+    }
+    errors.mockRestore();
+
+    expect(last?.abandoned).toBe(1);
+    // Past the poison update AND past the good one behind it — the queue moves.
+    expect(last?.offset).toBe(good.updateId + 1);
+  });
+
+  it('does not spend a poison update budget on a database outage', async () => {
+    // Every update failing is an outage, not a poison update. Counting those
+    // would drop a whole batch of real customer messages after three cycles of
+    // a database being down — the exact loss the old comment refused to accept.
+    const a = ids();
+    const b = ids();
+    const brokenA = startUpdate(a.updateId, a.telegramId);
+    const brokenB = startUpdate(b.updateId, b.telegramId);
+    brokenA.message!.from!.id = 9_300_000_000_000_000_003;
+    brokenB.message!.from!.id = 9_300_000_000_000_000_004;
+
+    const attempts = new Map<number, number>();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    for (let cycle = 0; cycle < MAX_UPDATE_ATTEMPTS + 2; cycle++) {
+      const { api } = fakeApi([brokenA, brokenB]);
+      const result = await pollOnce(db, api, a.updateId, 25, undefined, attempts);
+      // Never abandoned, however long the outage lasts, and never acknowledged.
+      expect(result.abandoned).toBe(0);
+      expect(result.offset).toBe(a.updateId);
+    }
+    errors.mockRestore();
+    expect(attempts.size).toBe(0);
+  });
+
+  it('forgets a failure once the same update succeeds', async () => {
+    // A transient fault must not leave a mark that a later, unrelated failure
+    // can add to and tip over the edge.
+    const { updateId, telegramId } = ids();
+    const attempts = new Map<number, number>([[updateId, MAX_UPDATE_ATTEMPTS - 1]]);
+    const { api } = fakeApi([startUpdate(updateId, telegramId)]);
+
+    const result = await pollOnce(db, api, updateId, 25, undefined, attempts);
+
+    expect(result.counts.processed).toBe(1);
+    expect(attempts.has(updateId)).toBe(false);
   });
 
   it('acknowledges the run of successes before the first failure', async () => {

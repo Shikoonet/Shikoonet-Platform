@@ -507,16 +507,29 @@ async function complete(db: D1Database, orderId: number): Promise<void> {
  * customer's money. Returns what was put back so the customer can be told.
  */
 async function fail(db: D1Database, orderId: number, reason: string): Promise<number | null> {
-  const ended = await db
-    .prepare(
-      `UPDATE orders SET status = 'FAILED', failure_reason = ?2, updated_at = now()
-        WHERE id = ?1 AND status = 'PROVISIONING'`,
-    )
-    .bind(orderId, reason)
-    .run();
-  // Guarded on this sweep being the one that ended it, so two sweeps racing
-  // cannot both refund. The idempotency key would stop the second anyway; this
-  // keeps the message honest as well as the ledger.
-  if (ended.meta.changes === 0) return null;
-  return refundOrder(db, orderId);
+  // Both statements or neither.
+  //
+  // They used to be two autocommits, and the window between them had no way
+  // back: the order was already FAILED, so the credit that paid for it was
+  // simply gone. Nothing sweeps a FAILED order — `reclaimStalled` only picks up
+  // PROVISIONING — so no later cycle would have found it, and the customer is
+  // not even told, because the message is built from this function's return.
+  // A process killed mid-deploy is enough.
+  //
+  // The idempotency key already stopped a double refund. What it could not do
+  // is produce the missing one.
+  return db.withSession(async (tx) => {
+    const ended = await tx
+      .prepare(
+        `UPDATE orders SET status = 'FAILED', failure_reason = ?2, updated_at = now()
+          WHERE id = ?1 AND status = 'PROVISIONING'`,
+      )
+      .bind(orderId, reason)
+      .run();
+    // Guarded on this sweep being the one that ended it, so two sweeps racing
+    // cannot both refund. The idempotency key would stop the second anyway; this
+    // keeps the message honest as well as the ledger.
+    if (ended.meta.changes === 0) return null;
+    return refundOrder(tx, orderId);
+  });
 }

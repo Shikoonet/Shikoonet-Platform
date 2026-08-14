@@ -450,6 +450,10 @@ async function handleAddonAmount(
     unit,
     user.discount_percent,
   );
+  if (!placed) {
+    await clearSession(tx, user.id);
+    return reply(menu.ORDER_NOT_PAYABLE, menu.serviceDetailMenu());
+  }
   const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
   if (!checkout) return reply(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
   if (checkout.claimed) return reply(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
@@ -741,6 +745,15 @@ async function heldCode(
 const CLAIMS_PER_PAGE = 6;
 
 /**
+ * The admin actions that move money, as opposed to look at it.
+ *
+ * `apx` and `rej` only write the pending decision to `bot_sessions`, but they
+ * are here too: an operator who cannot confirm has no business being asked to,
+ * and refusing at the button is a clearer answer than refusing at the end.
+ */
+const ADMIN_WRITE_ACTIONS: ReadonlySet<string> = new Set(['apv', 'apx', 'rej', 'cnf']);
+
+/**
  * The admin panel's callbacks, after `admins` has already said yes.
  *
  * The claim being worked on lives in `bot_sessions` rather than in the button:
@@ -803,6 +816,27 @@ async function handleAdmin(
     await rememberClaim(tx, telegramId, claim.id);
     return screen(menu.claimDetail(claim, candidates), menu.claimDetailMenu(candidates));
   };
+
+  // Reading a claim is not deciding one.
+  //
+  // `adminFor` proves the sender is an admin; until now nothing proved WHICH.
+  // `admin.role` was carried through this whole function and read exactly once,
+  // inside `audit()`, to translate SUPPORT into the dashboard's REVIEWER — so a
+  // SUPPORT operator marking an order paid with no bank transaction behind it
+  // was written down faithfully and never stopped. A record is not a guard.
+  //
+  // The dashboard has answered this since it was written: every one of its 14
+  // write routes is behind `role !== 'ADMIN'`. Same operation, same money, so
+  // the same standard.
+  //
+  // Coarse on purpose. Per-action permissions and a screen to set them are
+  // their own slice; the gap this closes is live now and one condition shuts it.
+  if (ADMIN_WRITE_ACTIONS.has(action.action) && admin.role === 'SUPPORT') {
+    await audit(tx, admin, 'claim.action.refused', 'payment_claim', action.ref ?? '-', {
+      reason: `role ${admin.role} may not ${action.action}`,
+    });
+    return screen(menu.ADMIN_NOT_ALLOWED, menu.adminMenu(await countClaimsAwaitingReview(tx)));
+  }
 
   switch (action.action) {
     case 'pnl':
@@ -1131,6 +1165,9 @@ async function handleCallback(
         user.discount_percent,
         held?.discountIrr ?? 0,
       );
+      // A total of zero is refused rather than written. The code is left
+      // unredeemed on purpose: nothing was bought with it.
+      if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.planDetailMenu(plan));
       // Not cleared afterwards, deliberately: the held code is what lets a
       // second tap re-price the same plan the same way and land back on the
       // order that already exists. `/start` and «برداشتن کد» clear it.
@@ -1353,6 +1390,7 @@ async function handleCallback(
         service.id,
         held?.discountIrr ?? 0,
       );
+      if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.serviceDetailMenu());
       // Same rule as a purchase: the redemption is written in the transaction
       // that writes the order, and the held code stays put so a second tap
       // re-prices identically and lands on the order that already exists.
@@ -1458,10 +1496,15 @@ async function handleCallback(
       await payReferralCommission(tx, order.id);
       await tx
         .prepare(
+          // On the PAID-per-order index from 0016, not on `public_id`: that one
+          // is minted fresh on every call, so the conflict it named could never
+          // happen and the clause protected nothing. Naming the real index
+          // turns a racing second press into a no-op instead of an exception.
           `INSERT INTO payments
              (public_id, user_id, order_id, amount_irr, method, status, created_at, updated_at)
            VALUES (?1, ?2, ?3, ?4, 'WALLET', 'PAID', now(), now())
-           ON CONFLICT (public_id) DO NOTHING`,
+           ON CONFLICT (order_id) WHERE order_id IS NOT NULL AND status = 'PAID'
+           DO NOTHING`,
         )
         .bind(newPublicId(), user.id, order.id, order.total_irr)
         .run();
@@ -1489,6 +1532,11 @@ async function topup(
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
 ): Promise<HandleOutcome> {
   const placed = await placeTopupOrder(tx, userId, amountIrr);
+  // Unreachable today — `placeTopupOrder` already throws on a non-positive
+  // amount and no discount touches a deposit — but the floor is in `place()`
+  // for every caller, so this branch exists rather than a non-null assertion
+  // that would become a lie the day deposits gain a discount.
+  if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.walletMenu());
   const checkout = await checkoutFor(tx, userId, placed.id, placed.totalIrr, newPublicId());
   if (!checkout) return screen(menu.NO_CARD_AVAILABLE, menu.walletMenu());
   if (checkout.claimed) return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());

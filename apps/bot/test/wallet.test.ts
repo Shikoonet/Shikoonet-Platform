@@ -12,7 +12,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { newPublicId, placeTopupOrder } from '../src/order.js';
+import { newPublicId, placeTopupOrder, type PlacedOrder } from '../src/order.js';
 import { provisionPaidOrders } from '../src/provision.js';
 import { settleVerifiedPayments } from '../src/settle.js';
 import {
@@ -29,6 +29,20 @@ import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 beforeEach(async () => {
   await ensureCatalog();
 });
+
+/**
+ * A deposit order, insisting it exists.
+ *
+ * `placeTopupOrder` can now refuse — an order that comes to nothing is not
+ * written — and every deposit here is for a positive amount, so a null is a
+ * broken fixture rather than a case to handle. Failing loudly beats eleven
+ * non-null assertions that would each go stale on their own.
+ */
+async function topupOrder(userId: number, amountIrr: number): Promise<PlacedOrder> {
+  const placed = await db.withSession(async (tx) => placeTopupOrder(tx, userId, amountIrr));
+  if (!placed) throw new Error(`fixture deposit of ${amountIrr} was refused`);
+  return placed;
+}
 
 /** Puts money in the way the settle sweep does, without the sweep. */
 async function credit(userId: number, amountIrr: number, key: string): Promise<void> {
@@ -73,12 +87,82 @@ describe('what a customer may deposit', () => {
   });
 });
 
+describe('one order is paid once, and the database is what says so', () => {
+  // The application used to carry this on its own, with an
+  // `ON CONFLICT (public_id) DO NOTHING` whose conflict could never fire —
+  // `public_id` is minted fresh on every insert. It was safe only because the
+  // poll loop is serial, which is a fact about today's caller rather than about
+  // the data. Migration 0016 moved it into a partial unique index.
+  //
+  // Asked of Postgres directly rather than through the bot: the guard has to
+  // hold for a webhook, a second process or an admin route that does not exist
+  // yet, and none of those would go through `handleUpdate`.
+
+  it('refuses a second PAID payment for the same order', async () => {
+    const userId = await makeCustomer(920_100_050);
+    const order = await topupOrder(userId, 1_000_000);
+    // `place` hands back the open order this customer already had, so on a
+    // second run of the suite the PAID row written below is still attached to
+    // it and the first insert — the one that is meant to succeed — would be the
+    // one that conflicts. Clearing makes the test say what it means.
+    await db.prepare(`DELETE FROM payments WHERE order_id = ?1`).bind(order.id).run();
+
+    await db
+      .prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+         VALUES (?1, ?2, ?3, 1000000, 'WALLET', 'PAID', now())`,
+      )
+      .bind(newPublicId(), userId, order.id)
+      .run();
+
+    await expect(
+      db
+        .prepare(
+          `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+           VALUES (?1, ?2, ?3, 1000000, 'WALLET', 'PAID', now())`,
+        )
+        .bind(newPublicId(), userId, order.id)
+        .run(),
+    ).rejects.toThrow();
+  });
+
+  it('still allows the card row beside the wallet row', async () => {
+    // A customer shown a card and then paying from their balance leaves two
+    // payment rows for one order. Only one of them may be PAID, which is why
+    // the index is scoped to that status rather than to `order_id` alone.
+    const userId = await makeCustomer(920_100_051);
+    const order = await topupOrder(userId, 1_000_000);
+    await db.prepare(`DELETE FROM payments WHERE order_id = ?1`).bind(order.id).run();
+
+    await db
+      .prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+         VALUES (?1, ?2, ?3, 1000000, 'CARD_TO_CARD', 'PENDING', now())`,
+      )
+      .bind(newPublicId(), userId, order.id)
+      .run();
+    await db
+      .prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+         VALUES (?1, ?2, ?3, 1000000, 'WALLET', 'PAID', now())`,
+      )
+      .bind(newPublicId(), userId, order.id)
+      .run();
+
+    const rows = await db
+      .prepare(`SELECT count(*)::int AS n FROM payments WHERE order_id = ?1`)
+      .bind(order.id)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(2);
+  });
+});
+
 describe('spending the balance', () => {
   it('pays an order and leaves the balance exactly short of it', async () => {
     const userId = await makeCustomer(920_100_001);
     await credit(userId, 3_000_000, `t:${userId}:a`);
 
-    const order = await db.withSession(async (tx) => placeTopupOrder(tx, userId, 1_000_000));
+    const order = await topupOrder(userId, 1_000_000);
     const result = await db.withSession(async (tx) =>
       spendOnOrder(tx, userId, order.id, 1_200_000),
     );
@@ -90,7 +174,7 @@ describe('spending the balance', () => {
   it('refuses to go negative rather than lending', async () => {
     const userId = await makeCustomer(920_100_002);
     await credit(userId, 1_000_000, `t:${userId}:a`);
-    const order = await db.withSession(async (tx) => placeTopupOrder(tx, userId, 1_000_000));
+    const order = await topupOrder(userId, 1_000_000);
 
     const result = await db.withSession(async (tx) =>
       spendOnOrder(tx, userId, order.id, 1_000_001),
@@ -103,7 +187,7 @@ describe('spending the balance', () => {
   it('charges once for one order, however many times the button is pressed', async () => {
     const userId = await makeCustomer(920_100_003);
     await credit(userId, 5_000_000, `t:${userId}:a`);
-    const order = await db.withSession(async (tx) => placeTopupOrder(tx, userId, 1_000_000));
+    const order = await topupOrder(userId, 1_000_000);
 
     const first = await db.withSession(async (tx) => spendOnOrder(tx, userId, order.id, 2_000_000));
     const second = await db.withSession(async (tx) =>
@@ -118,7 +202,7 @@ describe('spending the balance', () => {
 
   it('lets a customer with no wallet row spend nothing', async () => {
     const userId = await makeCustomer(920_100_004);
-    const order = await db.withSession(async (tx) => placeTopupOrder(tx, userId, 1_000_000));
+    const order = await topupOrder(userId, 1_000_000);
 
     expect(await balanceFor(db, userId)).toBe(0);
     expect(await db.withSession(async (tx) => spendOnOrder(tx, userId, order.id, 10))).toBe(
@@ -137,7 +221,7 @@ describe('spending the balance', () => {
       )
       .bind(userId, `debt:${userId}`)
       .run();
-    const order = await db.withSession(async (tx) => placeTopupOrder(tx, userId, 1_000_000));
+    const order = await topupOrder(userId, 1_000_000);
 
     expect(await balanceFor(db, userId)).toBe(-59_400_000);
     expect(await db.withSession(async (tx) => spendOnOrder(tx, userId, order.id, 1))).toBe(
@@ -150,7 +234,7 @@ describe('a deposit that is paid for', () => {
   /** Drives a top-up order all the way through the hub, as the sweeps do. */
   async function payTopup(telegramId: number, amountIrr: number) {
     const userId = await makeCustomer(telegramId);
-    const order = await db.withSession(async (tx) => placeTopupOrder(tx, userId, amountIrr));
+    const order = await topupOrder(userId, amountIrr);
     const payment = await db
       .prepare(
         `INSERT INTO payments
@@ -208,7 +292,7 @@ describe('a deposit that is paid for', () => {
     // a hand-fixed row, an admin tool, a future second settle path — and a
     // guard with no test is a guard that quietly stops working.
     const userId = await makeCustomer(920_100_013);
-    const order = await db.withSession(async (tx) => placeTopupOrder(tx, userId, 1_000_000));
+    const order = await topupOrder(userId, 1_000_000);
     await db.prepare(`UPDATE orders SET status = 'PAID' WHERE id = ?1`).bind(order.id).run();
 
     await provisionPaidOrders(db, (async () =>
@@ -236,7 +320,7 @@ describe('the balance and its history', () => {
     const userId = await makeCustomer(920_100_020);
     await credit(userId, 3_000_000, `t:${userId}:a`);
     await credit(userId, 1_500_000, `t:${userId}:b`);
-    const order = await db.withSession(async (tx) => placeTopupOrder(tx, userId, 1_000_000));
+    const order = await topupOrder(userId, 1_000_000);
     await db.withSession(async (tx) => spendOnOrder(tx, userId, order.id, 2_000_000));
 
     const summed = await db

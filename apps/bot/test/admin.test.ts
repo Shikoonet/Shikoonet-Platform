@@ -140,6 +140,16 @@ async function auditRows(claimId: string) {
 
 beforeAll(async () => {
   await ensureCatalog();
+  // `ids()` restarts at the same numbers every run, but `admins` rows do not
+  // go away — so a Telegram id that this file made an admin in one run is
+  // still an admin in the next, and whichever test happens to draw that number
+  // next silently gets a different answer. It bit "a customer who types
+  // /panel": adding tests above it shifted the sequence onto an id an earlier
+  // run had promoted, and a test about customers started asserting on an admin.
+  //
+  // Scoped to this file's own range rather than emptying the table, because the
+  // suite shares one database.
+  await db.prepare(`DELETE FROM admins WHERE telegram_id BETWEEN 500000 AND 599999`).run();
 });
 
 beforeEach(() => {
@@ -216,6 +226,122 @@ describe('who may see the panel', () => {
 
     expect(listed.replies[0]?.text).not.toBe(menu.NOT_REGISTERED);
     expect(listed.status).toBe('processed');
+  });
+});
+
+describe('what a SUPPORT operator may do', () => {
+  // Until 2026-08-14 the answer was "everything". `adminFor` proved the sender
+  // was an admin and nothing ever asked which kind; `admin.role` reached one
+  // line of the whole file, inside `audit()`, to translate SUPPORT into
+  // REVIEWER for the log. So the escalation was recorded and permitted.
+  //
+  // Measured against the dashboard rather than against itself: the same
+  // operation over HTTP is behind `role !== 'ADMIN'` on all 14 write routes.
+
+  it('may still read the queue', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT');
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId } = await makeClaim(customer);
+
+    for (const [i, data] of ['pnl', 'clm', `clv:${claimId}`].entries()) {
+      const out = await handleUpdate(db, press(updateId + i, telegramId, data));
+      expect(out.status, data).toBe('processed');
+      expect(out.replies[0]?.text, data).not.toContain('دسترس نقش شما');
+    }
+  });
+
+  it('cannot mark an order paid with no bank transaction behind it', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT');
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId } = await makeClaim(customer);
+
+    await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+    const asked = await handleUpdate(db, press(updateId + 1, telegramId, 'apx'));
+    const confirmed = await handleUpdate(db, press(updateId + 2, telegramId, 'cnf'));
+
+    expect(asked.replies[0]?.text).toBe(menu.ADMIN_NOT_ALLOWED);
+    expect(confirmed.replies[0]?.text).toBe(menu.ADMIN_NOT_ALLOWED);
+    // The claim is untouched — this is the assertion that matters.
+    const claim = await db
+      .prepare(`SELECT status FROM payment_claims WHERE id = ?1`)
+      .bind(claimId)
+      .first<{ status: string }>();
+    expect(claim?.status).toBe('PENDING');
+  });
+
+  it('cannot approve against a real transaction either', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT');
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId, transactionId } = await makeClaim(customer, { withTransaction: true });
+
+    await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+    const out = await handleUpdate(db, press(updateId + 1, telegramId, `apv:${transactionId}`));
+
+    expect(out.replies[0]?.text).toBe(menu.ADMIN_NOT_ALLOWED);
+    const match = await db
+      .prepare(`SELECT count(*)::int AS n FROM reconciliation_matches WHERE payment_claim_id = ?1`)
+      .bind(claimId)
+      .first<{ n: number }>();
+    expect(match?.n).toBe(0);
+  });
+
+  it('cannot reject one', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT');
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId } = await makeClaim(customer);
+
+    await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+    await handleUpdate(db, press(updateId + 1, telegramId, 'rej'));
+    await handleUpdate(db, press(updateId + 2, telegramId, 'cnf'));
+
+    const claim = await db
+      .prepare(`SELECT status FROM payment_claims WHERE id = ?1`)
+      .bind(claimId)
+      .first<{ status: string }>();
+    expect(claim?.status).toBe('PENDING');
+  });
+
+  it('leaves the refusal in the audit log', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT');
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId } = await makeClaim(customer);
+
+    await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+    await handleUpdate(db, press(updateId + 1, telegramId, 'apx'));
+
+    const row = await db
+      .prepare(
+        `SELECT action, reason FROM audit_logs
+          WHERE actor_telegram_id = ?1 AND action = 'claim.action.refused'`,
+      )
+      .bind(telegramId)
+      .first<{ action: string; reason: string | null }>();
+    expect(row?.reason).toContain('SUPPORT');
+  });
+
+  it('does not stop an OWNER or an ADMIN', async () => {
+    for (const role of ['OWNER', 'ADMIN'] as const) {
+      const { updateId, telegramId } = ids();
+      await makeAdmin(telegramId, role);
+      const customer = ids().telegramId;
+      await makeCustomer(customer);
+      const { claimId, transactionId } = await makeClaim(customer, { withTransaction: true });
+
+      await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+      const out = await handleUpdate(db, press(updateId + 1, telegramId, `apv:${transactionId}`));
+
+      expect(out.replies[0]?.text, role).toContain('تایید شد');
+    }
   });
 });
 

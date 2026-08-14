@@ -71,6 +71,7 @@ export let CHOOSE_HELP = DEFAULT_TEXTS.raw('CHOOSE_HELP');
 export let APPS_EMPTY = DEFAULT_TEXTS.raw('APPS_EMPTY');
 export let REFERRAL_WELCOME = DEFAULT_TEXTS.raw('REFERRAL_WELCOME');
 export let NO_CARD_AVAILABLE = DEFAULT_TEXTS.raw('NO_CARD_AVAILABLE');
+export let ORDER_NOT_PAYABLE = DEFAULT_TEXTS.raw('ORDER_NOT_PAYABLE');
 export let MY_SERVICES_EMPTY = DEFAULT_TEXTS.raw('MY_SERVICES_EMPTY');
 export let SERVICE_GONE = DEFAULT_TEXTS.raw('SERVICE_GONE');
 export let ACTION_UNSUPPORTED = DEFAULT_TEXTS.raw('ACTION_UNSUPPORTED');
@@ -126,6 +127,7 @@ export function applyContent(content: BotContent): void {
   APPS_EMPTY = t.raw('APPS_EMPTY');
   REFERRAL_WELCOME = t.raw('REFERRAL_WELCOME');
   NO_CARD_AVAILABLE = t.raw('NO_CARD_AVAILABLE');
+  ORDER_NOT_PAYABLE = t.raw('ORDER_NOT_PAYABLE');
   MY_SERVICES_EMPTY = t.raw('MY_SERVICES_EMPTY');
   SERVICE_GONE = t.raw('SERVICE_GONE');
   ACTION_UNSUPPORTED = t.raw('ACTION_UNSUPPORTED');
@@ -302,6 +304,16 @@ export function adminMenu(waiting: number): InlineKeyboard {
 }
 
 export const NO_CLAIMS = '✅ در حال حاضر پرداختی در انتظار بررسی نیست.';
+
+/**
+ * Says which role is missing rather than just "no".
+ *
+ * An operator who does not know they are SUPPORT reads a bare refusal as a
+ * broken button and presses it again; naming the reason sends them to whoever
+ * can change it instead.
+ */
+export const ADMIN_NOT_ALLOWED =
+  '⛔ این کار از دسترس نقش شما بیرون است.\n\nبررسی و تایید پرداخت فقط برای نقش ادمین و مالک باز است. اگر لازمش دارید از مالک ربات بخواهید نقش شما را تغییر دهد.';
 
 /** One line per waiting payment: who, how much, and what the engine thought. */
 export function claimList(page: number, pages: number, total: number): string {
