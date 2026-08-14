@@ -37,6 +37,7 @@ import { securityHeaders, originGuard } from './security.js';
 import { registerMirzabotRoutes, loadPaymentCardsForAccounts } from './mirzabotRoutes.js';
 import { registerAnalyticsRoutes } from './analyticsRoutes.js';
 import { registerBankRoutes } from './bankRoutes.js';
+import { registerCustomerRoutes } from './customerRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
 /**
@@ -4391,6 +4392,7 @@ app.post('/api/v1/admin/cleanup-debits/apply', async (c) => {
 registerMirzabotRoutes(app);
 registerAnalyticsRoutes(app);
 registerBankRoutes(app);
+registerCustomerRoutes(app);
 
 export default app;
 export { app };
