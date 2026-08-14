@@ -44,11 +44,11 @@ export const NAV: NavGroup[] = [
     items: [
       { id: 'dashboard', label: 'داشبورد', icon: 'home', built: true },
       { id: 'customers', label: 'کاربران', icon: 'users', built: true },
-      { id: 'orders', label: 'سفارشات', icon: 'receipt', built: false },
-      { id: 'services', label: 'سرویس‌ها', icon: 'package', built: false },
+      { id: 'orders', label: 'سفارشات', icon: 'receipt', built: true },
+      { id: 'services', label: 'سرویس‌ها', icon: 'package', built: true },
       { id: 'products', label: 'محصولات', icon: 'grid', built: true },
-      { id: 'transactions', label: 'تراکنش‌ها', icon: 'wallet', built: false },
-      { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list', built: false },
+      { id: 'transactions', label: 'تراکنش‌ها', icon: 'wallet', built: true },
+      { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list', built: true },
     ],
   },
   {
@@ -63,7 +63,7 @@ export const NAV: NavGroup[] = [
     items: [
       { id: 'texts', label: 'متن‌های ربات', icon: 'text', built: false },
       { id: 'keyboard', label: 'چیدمان کیبورد', icon: 'keyboard', built: false },
-      { id: 'settings', label: 'تنظیمات', icon: 'settings', built: false },
+      { id: 'settings', label: 'تنظیمات', icon: 'settings', built: true },
     ],
   },
 ];

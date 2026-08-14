@@ -160,6 +160,80 @@ export interface RedemptionRow {
   username: string | null;
 }
 
+export interface CustomerRef {
+  id: number;
+  telegramId: number;
+  username: string | null;
+}
+
+export interface OrderRow {
+  id: number;
+  publicId: string;
+  kind: string;
+  status: string;
+  quantity: number;
+  unitPriceIrr: number;
+  discountIrr: number;
+  totalIrr: number;
+  failureReason: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  customer: CustomerRef;
+  planName: string | null;
+}
+
+export interface SubscriptionRow {
+  id: number;
+  publicId: string;
+  status: string;
+  planName: string;
+  providerName: string | null;
+  priceIrr: number;
+  volumeGb: number | null;
+  durationDays: number | null;
+  remoteUsername: string | null;
+  purchasedAt: string;
+  expiresAt: string | null;
+  lastSyncedAt: string | null;
+  customer: CustomerRef;
+}
+
+export interface EntryRow {
+  id: number;
+  amountIrr: number;
+  kind: string;
+  actor: string | null;
+  note: string | null;
+  createdAt: string;
+  orderId: number | null;
+  paymentId: number | null;
+  customer: CustomerRef;
+}
+
+/**
+ * `value` is null for a secret key and always will be — the server does not
+ * send it. `isSet` is the whole of what this screen may know about one.
+ */
+export interface SettingRow {
+  scope: string;
+  key: string;
+  secret: boolean;
+  value: unknown;
+  isSet: boolean;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+export interface ResellerRequestRow {
+  id: number;
+  description: string | null;
+  kind: string | null;
+  status: string;
+  createdAt: string;
+  decidedAt: string | null;
+  customer: CustomerRef & { isReseller: boolean };
+}
+
 /**
  * The error carries the server's own code, not a rendered sentence.
  *
@@ -314,6 +388,67 @@ export const api = {
 
   redemptions(id: number) {
     return req<{ ok: boolean; items: RedemptionRow[] }>(`/discounts/${id}/redemptions`);
+  },
+
+  orders(p: { q?: string; status?: string; kind?: string; page: number; pageSize: number }) {
+    const qs = new URLSearchParams({ page: String(p.page), pageSize: String(p.pageSize) });
+    if (p.q) qs.set('q', p.q);
+    if (p.status) qs.set('status', p.status);
+    if (p.kind) qs.set('kind', p.kind);
+    return req<{ ok: boolean; total: number; items: OrderRow[] }>(`/orders?${qs.toString()}`);
+  },
+
+  subscriptions(p: { q?: string; status?: string; page: number; pageSize: number }) {
+    const qs = new URLSearchParams({ page: String(p.page), pageSize: String(p.pageSize) });
+    if (p.q) qs.set('q', p.q);
+    if (p.status) qs.set('status', p.status);
+    return req<{ ok: boolean; total: number; items: SubscriptionRow[] }>(
+      `/subscriptions?${qs.toString()}`,
+    );
+  },
+
+  walletEntries(p: { q?: string; kind?: string; page: number; pageSize: number }) {
+    const qs = new URLSearchParams({ page: String(p.page), pageSize: String(p.pageSize) });
+    if (p.q) qs.set('q', p.q);
+    if (p.kind) qs.set('kind', p.kind);
+    return req<{
+      ok: boolean;
+      total: number;
+      creditIrr: number;
+      debitIrr: number;
+      items: EntryRow[];
+    }>(`/wallet-entries?${qs.toString()}`);
+  },
+
+  settings(p: { scope?: string; q?: string } = {}) {
+    const qs = new URLSearchParams();
+    if (p.scope) qs.set('scope', p.scope);
+    if (p.q) qs.set('q', p.q);
+    return req<{ ok: boolean; items: SettingRow[]; hiddenCount: number }>(
+      `/settings?${qs.toString()}`,
+    );
+  },
+
+  updateSetting(body: { scope: string; key: string; value: string }) {
+    return req<{ ok: boolean; setting: SettingRow }>('/settings', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  resellerRequests(status?: string) {
+    const qs = new URLSearchParams();
+    if (status) qs.set('status', status);
+    return req<{ ok: boolean; items: ResellerRequestRow[] }>(
+      `/reseller-requests?${qs.toString()}`,
+    );
+  },
+
+  decideResellerRequest(id: number, status: 'APPROVED' | 'REJECTED') {
+    return req<{ ok: boolean; status: string }>(`/reseller-requests/${id}`, {
+      method: 'POST',
+      body: JSON.stringify({ status }),
+    });
   },
 
   overview() {

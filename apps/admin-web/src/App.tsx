@@ -21,8 +21,45 @@ import { CustomersPage } from './pages/CustomersPage.js';
 import { ProductsPage } from './pages/ProductsPage.js';
 import { PanelsPage } from './pages/PanelsPage.js';
 import { DiscountsPage } from './pages/DiscountsPage.js';
+import { OrdersPage, ServicesPage, TransactionsPage } from './pages/LedgerPages.js';
+import { SettingsPage, RequestsPage } from './pages/SettingsPage.js';
 import { NotBuiltPage } from './pages/NotBuiltPage.js';
 import './theme.css';
+
+/**
+ * Which screen the selected section shows.
+ *
+ * A switch rather than a lookup table so the compiler checks the section list
+ * for us: `PageId` is a closed union, and a section added to `nav.ts` without a
+ * screen falls to `NotBuiltPage` — which is the honest default, since the
+ * «به‌زودی» badge beside it in the sidebar says the same thing.
+ */
+function Body({ page, go }: { page: PageId; go: (id: PageId) => void }) {
+  switch (page) {
+    case 'dashboard':
+      return <DashboardPage onGo={go} />;
+    case 'customers':
+      return <CustomersPage />;
+    case 'products':
+      return <ProductsPage />;
+    case 'panels':
+      return <PanelsPage />;
+    case 'discounts':
+      return <DiscountsPage />;
+    case 'orders':
+      return <OrdersPage />;
+    case 'services':
+      return <ServicesPage />;
+    case 'transactions':
+      return <TransactionsPage />;
+    case 'requests':
+      return <RequestsPage />;
+    case 'settings':
+      return <SettingsPage />;
+    default:
+      return <NotBuiltPage id={page} />;
+  }
+}
 
 export function App() {
   const [page, setPage] = useState<PageId>('dashboard');
@@ -104,19 +141,7 @@ export function App() {
 
       <section id="main-content">
         <div className="wrapper">
-          {page === 'dashboard' ? (
-            <DashboardPage onGo={go} />
-          ) : page === 'customers' ? (
-            <CustomersPage />
-          ) : page === 'products' ? (
-            <ProductsPage />
-          ) : page === 'panels' ? (
-            <PanelsPage />
-          ) : page === 'discounts' ? (
-            <DiscountsPage />
-          ) : (
-            <NotBuiltPage id={page} />
-          )}
+          <Body page={page} go={go} />
         </div>
       </section>
     </>
