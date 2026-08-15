@@ -179,7 +179,44 @@ beforeAll(async () => {
   // Scoped to this file's own range rather than emptying the table, because the
   // suite shares one database.
   await db.prepare(`DELETE FROM admins WHERE telegram_id BETWEEN 500000 AND 599999`).run();
+  await purgeClaims();
 });
+
+/**
+ * Clears the claims and transactions this file made on its own accounts.
+ *
+ * Without it the fixture is only unique WITHIN a run: `ids()` and the amount
+ * counter both restart, so run N recreates run N−1's claim — same account, same
+ * amount, same `NOW_MS` — and the matcher correctly reports
+ * AMBIGUOUS_TRANSACTIONS, so «✅ تایید با این تراکنش» disappears and a test about
+ * PERMISSIONS fails for a reason that has nothing to do with permissions.
+ *
+ * It only fired when the previous run happened to leave a claim still PENDING,
+ * which is why it read as weather. A unique amount per claim was the first fix
+ * and was not enough; uniqueness has to survive the process, not the loop.
+ *
+ * In dependency order, and scoped by `adm-acct-%` — the suite shares one
+ * database and the payment hub's own tests live in these tables too.
+ */
+async function purgeClaims(): Promise<void> {
+  const mine = `(SELECT id FROM financial_accounts WHERE id LIKE 'adm-acct-%')`;
+  await db
+    .prepare(
+      `DELETE FROM reconciliation_matches
+        WHERE payment_claim_id IN (SELECT id FROM payment_claims
+                                    WHERE target_financial_account_id IN ${mine})
+           OR transaction_candidate_id IN (SELECT id FROM transaction_candidates
+                                            WHERE financial_account_id IN ${mine})`,
+    )
+    .run();
+  await db
+    .prepare(`DELETE FROM transaction_candidates WHERE financial_account_id IN ${mine}`)
+    .run();
+  await db.prepare(`DELETE FROM raw_sms_events WHERE device_id = 'adm-dev'`).run();
+  await db
+    .prepare(`DELETE FROM payment_claims WHERE target_financial_account_id IN ${mine}`)
+    .run();
+}
 
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);

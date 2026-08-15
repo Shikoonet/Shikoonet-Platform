@@ -223,11 +223,23 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
-  // The sweep takes every PAID order, not just this test's. Without this the
-  // panel counters below are counting somebody else's renewal too — which is
-  // exactly how a green assertion ends up proving nothing.
+  // The sweep takes every PAID order, not just this test's, so the panel
+  // counters below would otherwise be counting somebody else's renewal — which
+  // is exactly how a green assertion ends up proving nothing.
+  //
+  // Scoped to THIS FILE'S customers, and that scope is the whole point. It used
+  // to cancel every PAID order in the database, and the files in this package
+  // run side by side: `stock.test.ts` would create a paid order, this
+  // `beforeEach` would fire in the gap before its sweep, and the order it
+  // asserted was still PAID had been cancelled by a test file it has never
+  // heard of. Rare enough to look like weather until six more renewal tests
+  // arrived and widened the window.
   await db
-    .prepare(`UPDATE orders SET status = 'CANCELLED' WHERE status IN ('PAID', 'PROVISIONING')`)
+    .prepare(
+      `UPDATE orders SET status = 'CANCELLED'
+        WHERE status IN ('PAID', 'PROVISIONING')
+          AND user_id IN (SELECT id FROM users WHERE telegram_id BETWEEN 640000 AND 649999)`,
+    )
     .run();
   await setPanelConfig(panelId, { Methodextend: 'ریست حجم و زمان', status_extend: 'on_extend' });
   await setPanelConfig(otherPanelId, { status_extend: 'on_extend' });

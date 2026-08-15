@@ -102,6 +102,13 @@ async function migrateUsers(ctx: Ctx): Promise<number> {
     Number(r.limit_usertest ?? 0),
     Number(r.score ?? 0),
     percentOrZero(r.pricediscount),
+    // `roll_Status` is "has accepted the shop's rules" and used to be written
+    // into `notify_enabled`, the only column gating both expiry warnings
+    // (`warn.ts:80,94`). 963 customers hold `0`, so 963 customers would have
+    // arrived unable to be told their service was ending — and nobody reports
+    // a message that never arrives. `notify_enabled` is left to its own default
+    // of true: the legacy schema carries no per-customer notification
+    // preference, `index.php` warns everybody.
     r.roll_Status !== '0',
     t.epochSeconds(r.register, 'user.register'),
     JSON.stringify(t.legacyAttrs(r, claimed, dropped)),
@@ -123,7 +130,7 @@ async function migrateUsers(ctx: Ctx): Promise<number> {
       'test_quota_used',
       'score',
       'discount_percent',
-      'notify_enabled',
+      'rules_accepted',
       ['registered_at', ts.epochS.expr],
       ['legacy_attrs', (p) => `${p}::jsonb`],
     ]),
