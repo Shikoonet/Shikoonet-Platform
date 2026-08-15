@@ -100,7 +100,8 @@ export type ScreenId =
   | 'adminHome'
   | 'adminClaims'
   | 'adminClaimDetail'
-  | 'adminConfirm';
+  | 'adminConfirm'
+  | 'adminStats';
 
 /** The Persian name of each screen, for the admin panel's grouping. */
 export const SCREENS: Record<ScreenId, string> = {
@@ -130,6 +131,7 @@ export const SCREENS: Record<ScreenId, string> = {
   adminClaims: 'پنل ادمین — فهرست پرداخت‌ها',
   adminClaimDetail: 'پنل ادمین — یک پرداخت',
   adminConfirm: 'پنل ادمین — تاییدیه‌ها',
+  adminStats: 'پنل ادمین — آمار',
 };
 
 export const SCREEN_IDS = Object.keys(SCREENS) as ScreenId[];
@@ -1644,6 +1646,77 @@ export const TEXTS = {
     placeholders: ['reason'],
     screen: 'adminConfirm',
     hint: 'وقتی تایید در لحظهٔ آخر رد شد',
+  },
+
+  // --- پنل ادمین — آمار -----------------------------------------------------
+  // Every line is its own entry, so a shop that wants a shorter screen deletes
+  // the wording it does not read rather than editing one blob and losing a
+  // number by accident.
+  ADMIN_STATS_TITLE: {
+    default: '📊 آمار فروشگاه',
+    placeholders: [],
+    screen: 'adminStats',
+    hint: 'خط اول صفحهٔ آمار',
+  },
+  ADMIN_STATS_TODAY: {
+    default: '— امروز —',
+    placeholders: [],
+    screen: 'adminStats',
+    hint: 'سرتیتر بخش امروز (به وقت تهران)',
+  },
+  ADMIN_STATS_ORDERS_TODAY: {
+    default: '🧾 سفارش امروز: {count}',
+    placeholders: ['count'],
+    screen: 'adminStats',
+    hint: 'همهٔ سفارش‌های امروز، پرداخت‌شده یا نه',
+  },
+  ADMIN_STATS_REVENUE_TODAY: {
+    default: '💰 فروش امروز: {amount}',
+    placeholders: ['amount'],
+    screen: 'adminStats',
+    hint: 'فقط سفارش‌های تحویل‌شده — پرداخت‌شدهٔ تحویل‌نشده شمرده نمی‌شود',
+  },
+  ADMIN_STATS_CUSTOMERS_TODAY: {
+    default: '👤 کاربر تازه امروز: {count}',
+    placeholders: ['count'],
+    screen: 'adminStats',
+    hint: 'کسانی که امروز اولین بار /start زده‌اند',
+  },
+  ADMIN_STATS_ALL_TIME: {
+    default: '— از ابتدا —',
+    placeholders: [],
+    screen: 'adminStats',
+    hint: 'سرتیتر بخش کل',
+  },
+  ADMIN_STATS_CUSTOMERS: {
+    default: '👥 کل کاربران: {count}',
+    placeholders: ['count'],
+    screen: 'adminStats',
+    hint: 'همهٔ کسانی که ربات را باز کرده‌اند',
+  },
+  ADMIN_STATS_SUBSCRIPTIONS: {
+    default: '🟢 سرویس فعال: {count}',
+    placeholders: ['count'],
+    screen: 'adminStats',
+    hint: 'اشتراک‌هایی که همین حالا فعال‌اند',
+  },
+  ADMIN_STATS_REVENUE: {
+    default: '💵 فروش کل: {amount}',
+    placeholders: ['amount'],
+    screen: 'adminStats',
+    hint: 'فقط سفارش‌های تحویل‌شده',
+  },
+  ADMIN_STATS_WALLET: {
+    default: '🏦 مجموع کیف پول‌ها: {amount}',
+    placeholders: ['amount'],
+    screen: 'adminStats',
+    hint: 'پولی که مشتری‌ها شارژ کرده‌اند و هنوز خرج نشده — بدهی فروشگاه است، نه درآمد',
+  },
+  ADMIN_STATS_WAITING: {
+    default: '🧾 در انتظار بررسی: {count}',
+    placeholders: ['count'],
+    screen: 'adminStats',
+    hint: 'همان صف رسیدها',
   },
 } as const satisfies Record<string, TextEntry>;
 

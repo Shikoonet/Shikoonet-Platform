@@ -24,4 +24,5 @@ export * from './paymentNotifications.js';
 export * from './financialAnalytics.js';
 export * from './accountDeviceInference.js';
 export * from './cardBalancing.js';
+export * from './shopStats.js';
 export type { D1Database } from '@shikoo/database';

@@ -11,6 +11,7 @@
  * both exist.
  */
 
+import { CUSTOMER, RESELLER } from './helpers/viewers.js';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
@@ -149,10 +150,10 @@ describe('applying', () => {
   });
 
   it('does not offer the button to a reseller at all', async () => {
-    const texts = menu.mainMenu(true).flat().map((b) => b.text);
+    const texts = menu.mainMenu(RESELLER).flat().map((b) => b.text);
     expect(texts).not.toContain('👨‍💻 درخواست نمایندگی');
     // And it is a real button for everyone else, not the "coming soon" stub.
-    const targets = menu.mainMenu(false).flat().map((b) => b.callback_data);
+    const targets = menu.mainMenu(CUSTOMER).flat().map((b) => b.callback_data);
     expect(targets).toContain('agr');
   });
 

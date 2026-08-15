@@ -14,6 +14,7 @@
  * condition is where it can win: removing it from the SQL turns these red.
  */
 
+import { ADMIN_PERMISSIONS } from '@shikoo/contracts';
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
@@ -356,7 +357,11 @@ describe('the bot’s operators', () => {
     const of = (tg: number) => body.items.find((i) => i.telegramId === tg)!.effective;
     expect(of(TG_BASE + 13)).toEqual(['claims.view']);
     expect(of(TG_BASE + 14)).toContain('claims.approve_without_tx');
-    expect(of(TG_BASE + 15)).toHaveLength(4);
+    // Every one of them, whatever the list has grown to. A literal count here
+    // said "4" and turned adding a permission into a failing test about
+    // something else — the claim being made is "an owner always may", not "there
+    // are four things one may do".
+    expect(of(TG_BASE + 15)).toEqual([...ADMIN_PERMISSIONS]);
   });
 
   it('keeps the last active owner', async () => {

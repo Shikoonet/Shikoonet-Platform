@@ -15,6 +15,7 @@
 
 import type { Hono } from 'hono';
 import type { D1Database } from '@shikoo/database';
+import { shopStats } from '@shikoo/domain';
 
 type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
 
@@ -27,41 +28,12 @@ export function registerAdminOverviewRoutes(
   app.get('/api/v1/admin/overview', async (c) => {
     const db = c.env.DB;
 
-    // Tehran's day, not UTC's and not the browser's. `date_trunc` at a named
-    // zone is the database answering the question, which is the only source
-    // that agrees with what the bot told the customer.
-    const sinceToday = `date_trunc('day', now() AT TIME ZONE 'Asia/Tehran') AT TIME ZONE 'Asia/Tehran'`;
-
-    const [customers, subs, revenue, orders, wallet] = await Promise.all([
-      db
-        .prepare(
-          `SELECT COUNT(*)::int AS total,
-                  COUNT(*) FILTER (WHERE registered_at >= ${sinceToday})::int AS today
-             FROM users`,
-        )
-        .first<{ total: number; today: number }>(),
-      db
-        .prepare(`SELECT COUNT(*)::int AS n FROM subscriptions WHERE status = 'ACTIVE'`)
-        .first<{ n: number }>(),
-      // Completed orders only. An order that is merely PAID has money against
-      // it but nothing delivered, and counting it as revenue is how a refund
-      // later makes the headline wrong.
-      db
-        .prepare(
-          `SELECT COALESCE(SUM(total_irr), 0)::bigint AS irr
-             FROM orders WHERE status = 'COMPLETED'`,
-        )
-        .first<{ irr: number }>(),
-      db
-        .prepare(`SELECT COUNT(*)::int AS n FROM orders WHERE created_at >= ${sinceToday}`)
-        .first<{ n: number }>(),
-      // What the shop owes its customers. Negative balances are included as
-      // they are — netting them out would hide exactly the accounts worth
-      // looking at.
-      db
-        .prepare(`SELECT COALESCE(SUM(balance_irr), 0)::bigint AS irr FROM wallets`)
-        .first<{ irr: number }>(),
-    ]);
+    // The six numbers come from `shopStats`, not from SQL written here. The bot
+    // draws the same figures on its own «آمار» screen, and two definitions of
+    // "revenue" or of "today" is how an admin ends up with two answers and
+    // trusts neither. What stays here is the two recent lists, which only this
+    // screen has.
+    const stats = await shopStats(db);
 
     const recentCustomers = await db
       .prepare(
@@ -108,12 +80,12 @@ export function registerAdminOverviewRoutes(
 
     return c.json({
       ok: true,
-      customers: customers?.total ?? 0,
-      customersToday: customers?.today ?? 0,
-      activeSubscriptions: subs?.n ?? 0,
-      revenueIrr: Number(revenue?.irr ?? 0),
-      ordersToday: orders?.n ?? 0,
-      walletHeldIrr: Number(wallet?.irr ?? 0),
+      customers: stats.customers,
+      customersToday: stats.customersToday,
+      activeSubscriptions: stats.activeSubscriptions,
+      revenueIrr: stats.revenueIrr,
+      ordersToday: stats.ordersToday,
+      walletHeldIrr: stats.walletHeldIrr,
       recentCustomers: (recentCustomers.results ?? []).map((r) => ({
         id: r.id,
         telegramId: r.telegram_id,

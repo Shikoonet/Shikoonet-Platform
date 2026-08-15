@@ -26,6 +26,7 @@
 import { encode, type CallbackAction } from './callback.js';
 import type { InlineKeyboard } from './telegram.js';
 import {
+  ADMIN_ONLY,
   DEFAULT_LAYOUTS,
   isMenuAction,
   MENUS,
@@ -117,18 +118,37 @@ export function buildMenu(
 }
 
 /**
+ * Who is looking at the main menu.
+ *
+ * One object rather than two booleans, and passed whole rather than unpacked at
+ * the call site, because the main menu is drawn from sixteen places. Two
+ * positional flags is sixteen chances to answer one of them and forget the
+ * other — and the failure mode is silent: the shop's admin sees their button on
+ * `/start` and then watches it vanish the moment they press «بازگشت به منو».
+ */
+export interface MenuViewer {
+  is_reseller: boolean;
+  is_admin: boolean;
+}
+
+/**
  * The main menu.
  *
- * Its own function because the one rule it needs — hide «درخواست نمایندگی»
- * from a reseller — depends on who is looking, which a layout cannot know and
- * a `applies` callback at every call site would have to repeat.
+ * Its own function because the two rules it needs — hide «درخواست نمایندگی»
+ * from a reseller, hide «پنل مدیریت» from everyone else — depend on who is
+ * looking, which a layout cannot know and an `applies` callback at every call
+ * site would have to repeat.
  */
 export function buildMainMenu(
   buttons: readonly ButtonPlacement[],
-  isReseller: boolean,
+  viewer: MenuViewer,
 ): InlineKeyboard {
   return buildMenu('main', buttons, {
-    applies: (action) => !(isReseller && RESELLER_ONLY_HIDDEN.has(action)),
+    applies: (action) => {
+      if (viewer.is_reseller && RESELLER_ONLY_HIDDEN.has(action)) return false;
+      if (!viewer.is_admin && ADMIN_ONLY.has(action)) return false;
+      return true;
+    },
   });
 }
 

@@ -42,6 +42,7 @@ import {
   MENU_ACTIONS,
   type ButtonPlacement,
   type MenuId,
+  type MenuViewer,
 } from './keyboard.js';
 import type { Layouts } from './botContent.js';
 import {
@@ -51,6 +52,7 @@ import {
   type Texts,
 } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
+import type { ShopStats } from '@shikoo/domain';
 import { MAX_COPY_TEXT_LENGTH, type InlineButton, type InlineKeyboard } from './telegram.js';
 
 /**
@@ -280,8 +282,8 @@ export function resetContent(): void {
   applyContent(DEFAULT_CONTENT);
 }
 
-export function mainMenu(isReseller: boolean): InlineKeyboard {
-  return buildMainMenu(layout('main'), isReseller);
+export function mainMenu(viewer: MenuViewer): InlineKeyboard {
+  return buildMainMenu(layout('main'), viewer);
 }
 
 /**
@@ -474,9 +476,48 @@ export function adminHome(waiting: number): string {
  */
 export function adminMenu(waiting: number, allowed: readonly AdminPermission[]): InlineKeyboard {
   return buildMenu('adminHome', layout('adminHome'), {
-    applies: (action) =>
-      action === 'clm' ? waiting > 0 && allowed.includes('claims.view') : true,
+    applies: (action) => {
+      if (action === 'clm') return waiting > 0 && allowed.includes('claims.view');
+      if (action === 'sts') return allowed.includes('stats.view');
+      return true;
+    },
   });
+}
+
+/**
+ * The shop's numbers, as one message.
+ *
+ * Amounts in Toman, like every other amount the bot shows — the admin reading
+ * this on a phone is the same person who priced the plans in Toman, and IRR is
+ * the database's unit, not theirs.
+ *
+ * The wallet total is labelled as what it is. It is the shop's debt to its
+ * customers, sitting one line under two revenue figures, and an admin adding
+ * the column up is the failure this label exists to prevent.
+ */
+export function statsScreen(stats: ShopStats): string {
+  const t = TEXTS_NOW;
+  const n = (value: number) => value.toLocaleString('en-US');
+  return [
+    t.raw('ADMIN_STATS_TITLE'),
+    '',
+    t.raw('ADMIN_STATS_TODAY'),
+    t.render('ADMIN_STATS_ORDERS_TODAY', { count: n(stats.ordersToday) }),
+    t.render('ADMIN_STATS_REVENUE_TODAY', { amount: formatToman(stats.revenueTodayIrr) }),
+    t.render('ADMIN_STATS_CUSTOMERS_TODAY', { count: n(stats.customersToday) }),
+    '',
+    t.raw('ADMIN_STATS_ALL_TIME'),
+    t.render('ADMIN_STATS_CUSTOMERS', { count: n(stats.customers) }),
+    t.render('ADMIN_STATS_SUBSCRIPTIONS', { count: n(stats.activeSubscriptions) }),
+    t.render('ADMIN_STATS_REVENUE', { amount: formatToman(stats.revenueIrr) }),
+    t.render('ADMIN_STATS_WALLET', { amount: formatToman(stats.walletHeldIrr) }),
+    '',
+    t.render('ADMIN_STATS_WAITING', { count: n(stats.claimsWaiting) }),
+  ].join('\n');
+}
+
+export function statsMenu(): InlineKeyboard {
+  return buildMenu('adminStats', layout('adminStats'));
 }
 
 /** One line per waiting payment: who, how much, and what the engine thought. */

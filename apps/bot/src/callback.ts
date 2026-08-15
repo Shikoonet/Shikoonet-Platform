@@ -74,6 +74,7 @@ export const CALLBACK_ACTIONS = [
   'apx', // settle it with no transaction at all — the admin's word alone
   'rej', // refuse it
   'cnf', // confirm whichever of the two was asked for
+  'sts', // the shop's headline numbers
   'hlp', // [articleId] — the education list, or one article
   'app', // the client apps and their links
   'soon', // a menu entry that has no implementation yet

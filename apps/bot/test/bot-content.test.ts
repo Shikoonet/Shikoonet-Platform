@@ -9,6 +9,7 @@
  * wiring removed.
  */
 
+import { CUSTOMER, RESELLER } from './helpers/viewers.js';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { assertSchema, db } from './helpers/env.js';
 import { handleUpdate } from '../src/handle.js';
@@ -216,7 +217,7 @@ describe('the keyboard', () => {
     // The label is what changed; `callback_data` is what the bot dispatches on,
     // and an admin renaming a button must not detach it from its handler.
     const renamed = DEFAULT_LAYOUT.map((b) => ({ ...b, label: `x ${b.action}` }));
-    const rows = buildMainMenu(renamed, false);
+    const rows = buildMainMenu(renamed, CUSTOMER);
     const data = rows.flat().map((b) => b.callback_data);
     for (const action of ['renew', 'buy', 'wal', 'mine', 'sup', 'hlp', 'ref', 'agr']) {
       expect(data).toContain(action);
@@ -224,7 +225,7 @@ describe('the keyboard', () => {
   });
 
   it('still hides the reseller button from a reseller, whatever the layout says', () => {
-    const rows = buildMainMenu(DEFAULT_LAYOUT, true);
+    const rows = buildMainMenu(DEFAULT_LAYOUT, RESELLER);
     expect(rows.flat().map((b) => b.callback_data)).not.toContain('agr');
   });
 
@@ -234,7 +235,7 @@ describe('the keyboard', () => {
         { action: 'buy', label: 'خرید', rowIndex: 0, colIndex: 0, visible: true },
         { action: 'gone', label: 'قدیمی', rowIndex: 0, colIndex: 1, visible: true },
       ],
-      false,
+      CUSTOMER,
     );
     expect(rows.flat().map((b) => b.text)).toEqual(['خرید']);
   });
@@ -246,7 +247,7 @@ describe('the keyboard', () => {
         { action: 'wal', label: 'کیف', rowIndex: 1, colIndex: 0, visible: false },
         { action: 'sup', label: 'پشتیبانی', rowIndex: 2, colIndex: 0, visible: true },
       ],
-      false,
+      CUSTOMER,
     );
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.length > 0)).toBe(true);
@@ -276,6 +277,19 @@ describe('layout validation', () => {
     expect(
       checkLayout('main', [
         { action: 'agr', label: 'نمایندگی', rowIndex: 0, colIndex: 0, visible: true },
+      ]),
+    ).toEqual({ kind: 'NOTHING_VISIBLE' });
+  });
+
+  it('refuses one that leaves an ordinary customer with nothing', () => {
+    // Neither of these is visible to somebody who is not a reseller and not an
+    // admin — and they are the audience the shop actually sells to. Each button
+    // alone was already refused; the pair is the case a check written against
+    // one list at a time lets through.
+    expect(
+      checkLayout('main', [
+        { action: 'agr', label: 'نمایندگی', rowIndex: 0, colIndex: 0, visible: true },
+        { action: 'pnl', label: 'پنل', rowIndex: 1, colIndex: 0, visible: true },
       ]),
     ).toEqual({ kind: 'NOTHING_VISIBLE' });
   });

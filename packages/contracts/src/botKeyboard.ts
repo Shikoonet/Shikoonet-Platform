@@ -128,6 +128,11 @@ export const MENUS = {
         label: '👨‍💻 درخواست نمایندگی',
         hint: 'فقط به کاربران غیرنماینده نشان داده می‌شود',
       },
+      {
+        action: 'pnl',
+        label: '👨‍💼 پنل مدیریت',
+        hint: 'فقط به ادمین‌ها نشان داده می‌شود — بقیه اصلاً نمی‌بینندش',
+      },
     ],
   },
   panels: {
@@ -337,7 +342,21 @@ export const MENUS = {
         hint: 'فقط وقتی پرداختی در انتظار باشد',
         conditional: true,
       },
+      {
+        action: 'sts',
+        label: '📊 آمار فروشگاه',
+        hint: 'فقط به اپراتوری که دسترسی دیدن آمار دارد',
+        conditional: true,
+      },
       BACK_TO_MENU,
+    ],
+  },
+  adminStats: {
+    label: 'پنل ادمین — آمار',
+    hint: 'اعداد سرانگشتی فروشگاه',
+    buttons: [
+      { action: 'sts', label: '🔄 بروزرسانی', hint: 'همان صفحه را دوباره می‌خواند' },
+      { action: 'pnl', label: '🛠 پنل ادمین', hint: 'برگشت به خانهٔ پنل', required: true },
     ],
   },
   adminClaims: {
@@ -405,6 +424,21 @@ export const MENU_ACTIONS: readonly MenuAction[] = MENUS.main.buttons;
  */
 export const RESELLER_ONLY_HIDDEN: ReadonlySet<string> = new Set(['agr']);
 
+/**
+ * Actions only an admin ever sees.
+ *
+ * The live PHP bot appends its admin button to the main menu the same way, and
+ * `/panel` alone is a command an operator has to remember. This is the second
+ * door to the same screen, not a second authority: `handleAdmin` re-reads
+ * `admins` for every press, so the button is a convenience and its absence is
+ * not a guard. Hiding it merely keeps a customer from tapping something that
+ * would ignore them.
+ */
+export const ADMIN_ONLY: ReadonlySet<string> = new Set(['pnl']);
+
+/** Buttons that some viewers never see, whoever they are. */
+const AUDIENCE_LIMITED: ReadonlySet<string> = new Set([...RESELLER_ONLY_HIDDEN, ...ADMIN_ONLY]);
+
 export interface ButtonPlacement {
   action: string;
   label: string;
@@ -430,6 +464,10 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
     ['hlp', 2, 1],
     ['ref', 2, 2],
     ['agr', 3, 0],
+    // Its own row, last. A reseller-admin would otherwise be left with `agr`'s
+    // hole beside it, and the admin door is not something to put next to a
+    // customer's.
+    ['pnl', 4, 0],
   ],
   panels: [['menu', 0, 0]],
   plans: [
@@ -485,7 +523,12 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
   prompt: [['back', 0, 0]],
   adminHome: [
     ['clm', 0, 0],
-    ['menu', 1, 0],
+    ['sts', 1, 0],
+    ['menu', 2, 0],
+  ],
+  adminStats: [
+    ['sts', 0, 0],
+    ['pnl', 1, 0],
   ],
   adminClaims: [['pnl', 0, 0]],
   adminClaimDetail: [
@@ -623,10 +666,19 @@ export function checkLayout(menuId: string, buttons: ButtonPlacement[]): LayoutP
   }
 
   // A layout whose only visible buttons are ones this customer never sees is
-  // still empty for them, so `agr` alone visible would strand every reseller.
+  // still empty for them, so `agr` alone visible would strand every reseller —
+  // and `agr` plus «پنل مدیریت» would strand every ordinary customer, who is
+  // neither. Judged against the union rather than against either list, because
+  // the question is whether *somebody* is left with a blank screen.
+  //
+  // On `main` only, because that is the one keyboard whose audience varies —
+  // `buildMainMenu` is where both rules are consulted. An action name does not
+  // carry the rule with it: `pnl` on the claims list is the way back to the
+  // panel, on a screen only an admin ever reaches, and judging it by the main
+  // menu's rule would refuse the layout this file itself ships.
   const visible = buttons.filter((b) => b.visible);
   if (visible.length === 0) return { kind: 'NOTHING_VISIBLE' };
-  if (visible.every((b) => RESELLER_ONLY_HIDDEN.has(b.action))) {
+  if (menuId === 'main' && visible.every((b) => AUDIENCE_LIMITED.has(b.action))) {
     return { kind: 'NOTHING_VISIBLE' };
   }
   return null;

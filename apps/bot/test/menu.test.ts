@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { CUSTOMER, RESELLER } from './helpers/viewers.js';
 import { CALLBACK_MAX_BYTES, decode } from '../src/callback.js';
 import type { CatalogPlan } from '../src/catalog.js';
 import * as menu from '../src/menu.js';
@@ -40,7 +41,7 @@ describe('the main menu', () => {
   it('is the production layout', () => {
     // setting.keyboardmain on the 2026-08-11 dump, in order. Customers have this
     // muscle memory and the replacement must not move their buttons.
-    const rows = menu.mainMenu(false).map((row) => row.map((b) => b.text));
+    const rows = menu.mainMenu(CUSTOMER).map((row) => row.map((b) => b.text));
     expect(rows).toEqual([
       ['♻️ تمدید سرویس', '🔐 خرید اشتراک'],
       ['🏦 کیف پول + شارژ', '🛍 سرویس های من'],
@@ -50,21 +51,21 @@ describe('the main menu', () => {
   });
 
   it('does not offer a reseller the chance to apply for what they already are', () => {
-    const texts = buttons(menu.mainMenu(true)).map((b) => b.text);
+    const texts = buttons(menu.mainMenu(RESELLER)).map((b) => b.text);
     expect(texts).not.toContain('👨‍💻 درخواست نمایندگی');
     expect(texts).toContain('🔐 خرید اشتراک');
   });
 
   it('has exactly one way into the shop', () => {
-    const buy = buttons(menu.mainMenu(false)).filter((b) => b.callback_data === 'buy');
+    const buy = buttons(menu.mainMenu(CUSTOMER)).filter((b) => b.callback_data === 'buy');
     expect(buy).toHaveLength(1);
   });
 });
 
 describe('every button we draw', () => {
   const keyboards: InlineKeyboard[] = [
-    menu.mainMenu(false),
-    menu.mainMenu(true),
+    menu.mainMenu(CUSTOMER),
+    menu.mainMenu(RESELLER),
     menu.panelMenu([
       { id: 1, name: 'یک', plans: 2 },
       { id: 999_999_999, name: 'دو', plans: 1 },

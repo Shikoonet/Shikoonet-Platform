@@ -27,6 +27,7 @@ import {
   isAutomated,
   renewAllowed,
   renewModeFor,
+  shopStats,
   verifyMirzabotClaim,
   verifyMirzabotClaimWithoutTransaction,
 } from '@shikoo/domain';
@@ -312,7 +313,23 @@ interface Caller {
   status: string;
   is_reseller: boolean;
   discount_percent: number;
+  /**
+   * Whether `admins` holds an active row for this Telegram id.
+   *
+   * Only the main menu reads it, to decide whether to draw «پنل مدیریت». It is
+   * NOT what lets an admin action through — every one of those calls `adminFor`
+   * again and re-reads the row, because `callback_data` is a field anyone can
+   * post and the admin actions are the ones worth forging.
+   *
+   * Read in the statement that loads the customer rather than in a second
+   * query: the two are then one snapshot, and no caller can draw the menu
+   * having forgotten to ask.
+   */
+  is_admin: boolean;
 }
+
+/** Same expression in both places a `Caller` is loaded, so they cannot drift. */
+const IS_ADMIN = `EXISTS (SELECT 1 FROM admins a WHERE a.telegram_id = ?1 AND a.active) AS is_admin`;
 
 /**
  * The customer row for whoever sent this, created if it is their first message.
@@ -332,7 +349,7 @@ async function upsertUser(
          SET username = EXCLUDED.username,
              last_seen_at = now(),
              updated_at = now()
-       RETURNING id, status, is_reseller, discount_percent`,
+       RETURNING id, status, is_reseller, discount_percent, ${IS_ADMIN}`,
     )
     .bind(from.id, from.username ?? null)
     .first<Caller>();
@@ -428,7 +445,7 @@ async function handleStart(
       reply(
         message.chat.id,
         claimed ? `${menu.REFERRAL_WELCOME}\n\n${menu.WELCOME}` : menu.WELCOME,
-        menu.mainMenu(user.is_reseller),
+        menu.mainMenu(user),
       ),
     ],
   };
@@ -762,7 +779,7 @@ async function handleResellerRequest(
       : result === 'ALREADY_PENDING'
         ? menu.RESELLER_REQUEST_OPEN
         : menu.ALREADY_RESELLER;
-  return said(answer, menu.mainMenu(user.is_reseller));
+  return said(answer, menu.mainMenu(user));
 }
 
 /** A gift code typed at the wallet. The credit itself is `redeemGift`. */
@@ -865,6 +882,7 @@ const ACTION_PERMISSIONS: Record<string, readonly AdminPermission[]> = {
   // nothing has nothing to confirm. Which decision it actually is gets checked
   // again below, against the session, because the two can differ.
   cnf: ['claims.reject', 'claims.approve_without_tx'],
+  sts: ['stats.view'],
 };
 
 /** What `cnf` is really doing, once the pending decision is known. */
@@ -983,6 +1001,9 @@ async function handleAdmin(
   switch (action.action) {
     case 'pnl':
       return home();
+
+    case 'sts':
+      return screen(menu.statsScreen(await shopStats(tx)), menu.statsMenu());
 
     case 'clm':
       return showList(action.id ?? 1);
@@ -1135,7 +1156,7 @@ async function handleCallback(
     .prepare(
       `UPDATE users SET last_seen_at = now(), updated_at = now()
         WHERE telegram_id = ?1
-        RETURNING id, status, is_reseller, discount_percent`,
+        RETURNING id, status, is_reseller, discount_percent, ${IS_ADMIN}`,
     )
     .bind(query.from.id)
     .first<Caller>();
@@ -1148,15 +1169,15 @@ async function handleCallback(
 
   switch (action.action) {
     case 'menu':
-      return screen(menu.MENU_TITLE, menu.mainMenu(user.is_reseller));
+      return screen(menu.MENU_TITLE, menu.mainMenu(user));
 
     case 'soon':
-      return screen(menu.SOON, menu.mainMenu(user.is_reseller));
+      return screen(menu.SOON, menu.mainMenu(user));
 
     case 'buy': {
       const panels = await panelsForUser(tx, user.id);
       if (panels.length === 0) {
-        return screen(menu.SHOP_EMPTY, menu.mainMenu(user.is_reseller));
+        return screen(menu.SHOP_EMPTY, menu.mainMenu(user));
       }
       return screen(menu.CHOOSE_PANEL, menu.panelMenu(panels));
     }
@@ -1213,6 +1234,7 @@ async function handleCallback(
     // Every one of these asks `admins` first. A customer who forges `clv:<id>`
     // is ignored exactly as they would be for any unknown callback.
     case 'pnl':
+    case 'sts':
     case 'clm':
     case 'clv':
     case 'apv':
@@ -1233,14 +1255,14 @@ async function handleCallback(
         : null;
       return screen(
         handle === null ? menu.SUPPORT_UNAVAILABLE : menu.supportScreen(handle),
-        menu.mainMenu(user.is_reseller),
+        menu.mainMenu(user),
       );
     }
 
     case 'hlp': {
       if (action.id !== undefined) {
         const article = await helpArticle(tx, action.id);
-        if (!article) return screen(menu.HELP_EMPTY, menu.mainMenu(user.is_reseller));
+        if (!article) return screen(menu.HELP_EMPTY, menu.mainMenu(user));
         return screen(
           menu.helpArticleScreen(article.title, article.body),
           menu.helpMenu([], (await clientApps(tx)).length > 0),
@@ -1249,14 +1271,14 @@ async function handleCallback(
       const articles = await helpArticles(tx);
       const apps = await clientApps(tx);
       if (articles.length === 0 && apps.length === 0) {
-        return screen(menu.HELP_EMPTY, menu.mainMenu(user.is_reseller));
+        return screen(menu.HELP_EMPTY, menu.mainMenu(user));
       }
       return screen(menu.CHOOSE_HELP, menu.helpMenu(articles, apps.length > 0));
     }
 
     case 'app': {
       const apps = await clientApps(tx);
-      if (apps.length === 0) return screen(menu.APPS_EMPTY, menu.mainMenu(user.is_reseller));
+      if (apps.length === 0) return screen(menu.APPS_EMPTY, menu.mainMenu(user));
       return screen(menu.appsScreen(apps), menu.helpMenu([], false));
     }
 
@@ -1264,7 +1286,7 @@ async function handleCallback(
       const username = await settingText(tx, 'bot', 'username');
       if (username === null) {
         // Nothing here is worth showing without a link that works.
-        return screen(menu.SOON, menu.mainMenu(user.is_reseller));
+        return screen(menu.SOON, menu.mainMenu(user));
       }
       const summary = await referralSummary(tx, user.id);
       return screen(
@@ -1281,9 +1303,9 @@ async function handleCallback(
     case 'agr': {
       // Both answers before the question: a reseller has nothing to apply for,
       // and somebody already waiting does not need to write it out twice.
-      if (user.is_reseller) return screen(menu.ALREADY_RESELLER, menu.mainMenu(true));
+      if (user.is_reseller) return screen(menu.ALREADY_RESELLER, menu.mainMenu(user));
       if (await hasOpenRequest(tx, user.id)) {
-        return screen(menu.RESELLER_REQUEST_OPEN, menu.mainMenu(false));
+        return screen(menu.RESELLER_REQUEST_OPEN, menu.mainMenu(user));
       }
       await ask(tx, user.id, 'agent', {});
       return screen(menu.ASK_RESELLER_REQUEST, menu.promptMenu(encode('menu')));
@@ -1342,7 +1364,7 @@ async function handleCallback(
       // page can do is show them nothing.
       const total = await countSubscriptionsForUser(tx, user.id);
       if (total === 0) {
-        return screen(menu.MY_SERVICES_EMPTY, menu.mainMenu(user.is_reseller));
+        return screen(menu.MY_SERVICES_EMPTY, menu.mainMenu(user));
       }
       const pages = Math.ceil(total / menu.SERVICES_PER_PAGE);
       const page = Math.min(action.id ?? 1, pages);
@@ -1441,7 +1463,7 @@ async function handleCallback(
     case 'renew': {
       const total = await countRenewableForUser(tx, user.id);
       if (total === 0) {
-        return screen(menu.NOTHING_TO_RENEW, menu.mainMenu(user.is_reseller));
+        return screen(menu.NOTHING_TO_RENEW, menu.mainMenu(user));
       }
       const pages = Math.ceil(total / menu.SERVICES_PER_PAGE);
       const page = Math.min(action.id ?? 1, pages);
@@ -1614,7 +1636,7 @@ async function handleCallback(
         await balanceFor(tx, user.id),
         SHOP.topupMinIrr,
       );
-      if (needed === null) return screen(menu.MENU_TITLE, menu.mainMenu(user.is_reseller));
+      if (needed === null) return screen(menu.MENU_TITLE, menu.mainMenu(user));
       return topup(tx, user.id, needed, screen);
     }
 

@@ -16,6 +16,7 @@ export const ADMIN_PERMISSIONS = [
   'claims.approve',
   'claims.reject',
   'claims.approve_without_tx',
+  'stats.view',
 ] as const;
 
 export type AdminPermission = (typeof ADMIN_PERMISSIONS)[number];
@@ -28,6 +29,7 @@ export const ADMIN_PERMISSION_FA: Record<AdminPermission, string> = {
   'claims.approve': 'تایید پرداخت با تراکنش بانکی',
   'claims.reject': 'رد کردن پرداخت',
   'claims.approve_without_tx': 'تایید پرداخت بدون تراکنش بانکی',
+  'stats.view': 'دیدن آمار فروشگاه (فروش، موجودی کیف پول‌ها)',
 };
 
 /**
@@ -44,6 +46,9 @@ export const ADMIN_PERMISSION_FA: Record<AdminPermission, string> = {
  */
 const ROLE_DEFAULTS: Record<'ADMIN' | 'SUPPORT', readonly AdminPermission[]> = {
   ADMIN: ADMIN_PERMISSIONS,
+  // Not `stats.view`. Mirza's three tiers put the figures with `Seller` and
+  // withheld them from `support`, and the money the shop took today is not a
+  // support operator's business. A shop that disagrees ticks the box.
   SUPPORT: ['claims.view'],
 };
 

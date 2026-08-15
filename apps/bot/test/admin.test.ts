@@ -234,6 +234,60 @@ describe('who may see the panel', () => {
   });
 });
 
+describe('the way in from the main menu', () => {
+  // `/panel` is a command an operator has to have been told about. The live PHP
+  // bot puts a button on the main menu instead, so this is parity — and it is
+  // drawn from the customer's own row, not from anything the caller passes.
+  //
+  // Judged on the keyboard the bot actually sends, not on `mainMenu()` called
+  // with a hand-built viewer: what is being tested is that the answer travels
+  // from `admins` to the button, and a unit call would supply that answer
+  // itself. Rule 6.
+  const dataOf = (out: Awaited<ReturnType<typeof handleUpdate>>): string[] =>
+    (out.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data ?? '');
+
+  it('draws the admin button for an admin', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'menu'));
+
+    expect(dataOf(out)).toContain('pnl');
+  });
+
+  it('does not draw it for an ordinary customer', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'menu'));
+
+    expect(dataOf(out)).not.toContain('pnl');
+  });
+
+  it('stops drawing it the moment the row is switched off', async () => {
+    // The button is a convenience, never the permission. An admin who has just
+    // been deactivated must not still be looking at their own door — and the
+    // press behind it is refused whether or not the button was ever drawn,
+    // which the forgery tests above cover.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+    await db.prepare(`UPDATE admins SET active = false WHERE telegram_id = ?1`).bind(telegramId).run();
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'menu'));
+
+    expect(dataOf(out)).not.toContain('pnl');
+  });
+
+  it('reaches the panel when pressed', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'pnl'));
+
+    expect(out.replies[0]?.text).toContain(menu.ADMIN_HOME);
+  });
+});
+
 describe('what a SUPPORT operator may do', () => {
   // Until 2026-08-14 the answer was "everything". `adminFor` proved the sender
   // was an admin and nothing ever asked which kind; `admin.role` reached one
