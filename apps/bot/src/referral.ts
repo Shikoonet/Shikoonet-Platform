@@ -31,10 +31,13 @@ import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 type Db = D1Database | D1DatabaseSession;
 
 /**
- * ponytail: the rate lives here, not in `settings`, for the same reason the
- * top-up limits do — nothing can edit it yet, so a deploy is the only way it
- * changes either way. `settings` already carries the migrated value under
- * `bot/affiliatespercentage`; read it here the day an admin screen can write it.
+ * The rate when the setting cannot be read.
+ *
+ * The live rate is `bot/affiliatespercentage` in `settings`, which the
+ * migration filled with production's own 10 and nothing read until now. It is
+ * passed in rather than looked up here so this file stays free of the database
+ * beyond the transaction it is handed, and so a test can state the rate it is
+ * asserting instead of importing the constant it is checking.
  */
 export const COMMISSION_PERCENT = 10;
 
@@ -117,6 +120,7 @@ export async function referralSummary(db: Db, userId: number): Promise<ReferralS
 export async function payReferralCommission(
   tx: D1DatabaseSession,
   orderId: number,
+  commissionPercent: number = COMMISSION_PERCENT,
 ): Promise<number | null> {
   const order = await tx
     .prepare(
@@ -148,7 +152,7 @@ export async function payReferralCommission(
 
   // Rounded down: a commission is money leaving, and the half Rial that
   // rounding up would invent has to come from somewhere.
-  const amountIrr = Math.floor((order.total_irr * COMMISSION_PERCENT) / 100);
+  const amountIrr = Math.floor((order.total_irr * commissionPercent) / 100);
   if (amountIrr <= 0) return null;
 
   const done = await tx
@@ -161,7 +165,7 @@ export async function payReferralCommission(
       order.referred_by,
       amountIrr,
       order.id,
-      `${COMMISSION_PERCENT}% of a first purchase`,
+      `${commissionPercent}% of a first purchase`,
       `referral:${order.id}`,
     )
     .run();

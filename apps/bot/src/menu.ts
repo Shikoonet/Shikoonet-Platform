@@ -1140,9 +1140,9 @@ export function serviceDetailMenu(actions?: ServiceActions | null): InlineKeyboa
         case 'rvk':
           return actions != null;
         case 'off':
-          return actions != null && !actions.disabled;
+          return actions != null && actions.canSwitch !== false && !actions.disabled;
         case 'on':
-          return actions != null && actions.disabled;
+          return actions != null && actions.canSwitch !== false && actions.disabled;
         default:
           return true;
       }
@@ -1164,9 +1164,18 @@ export type { CustomerTier } from '@shikoo/domain';
 export interface ServiceActions {
   id: number;
   disabled: boolean;
-  /** Null when this panel does not sell that add-on. */
+  /** Null when this panel does not sell that add-on, or the shop has it off. */
   volumeIrrPerGb: number | null;
   timeIrrPerDay: number | null;
+  /**
+   * Whether the customer may turn their own service off and on.
+   *
+   * The shop's `statuschangeservice` switch, which has been off in production
+   * for years while this bot drew the buttons anyway. Optional so a caller that
+   * has not been given the setting keeps the old behaviour rather than silently
+   * removing a working button.
+   */
+  canSwitch?: boolean;
 }
 
 /** What the customer is buying, as one phrase both the invoice and the receipt

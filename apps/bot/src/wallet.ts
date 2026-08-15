@@ -24,25 +24,25 @@ type Db = D1Database | D1DatabaseSession;
 /**
  * The admin's own limits on a card-to-card deposit, in IRR.
  *
- * Not invented — read out of the production `PaySetting` rows on 2026-08-13:
+ * Read from `settings` now — `pay/minbalancecart` and `pay/maxbalancecart`,
+ * both Toman in the legacy schema — with these as the fallback when the read
+ * fails. See `settings.ts`.
  *
- *     minbalancecart  80000            Toman, card-to-card floor
- *     maxbalancecart  10000000         Toman, card-to-card ceiling
- *     minbalance      {"f":0,"n":100000,"n2":20000}        per reseller tier
- *     maxbalance      {"f":10000000,"n":400000,"n2":1000000}
+ * The numbers are production's, verified against the dump on 2026-08-15:
  *
- * The first draft of this file offered a 50,000 Toman button, which the admin's
- * own floor forbids, and a 500,000 one, which the ordinary tier's ceiling
- * forbids. Both were guesses that looked reasonable.
+ *     minbalancecart  80,000       Toman
+ *     maxbalancecart  10,000,000   Toman
  *
- * ponytail: the tier ceilings are collapsed to the tightest one (400,000) and
- * the numbers live here rather than in `settings`. Read them from the database
- * the day an admin can edit them — until then a deploy is the only way they
- * change anyway, and three tiers of arithmetic would model a distinction
- * nothing can currently set.
+ * The first draft of this file collapsed the tier-keyed `maxbalance` JSON to
+ * its tightest value, 400,000 Toman, and applied it to everyone. That was
+ * wrong twice over: the tier that applies to an ordinary customer is `f`, whose
+ * ceiling is 10,000,000 — and the card path does not read the tier JSON at all.
+ * `index.php:4712` enforces `minbalancecart`/`maxbalancecart` and uses the
+ * tier values only to word the "not enough balance" message. A 400,000 Toman
+ * ceiling was 25× too low for every customer the shop has.
  */
 export const TOPUP_MIN_IRR = 800_000;
-export const TOPUP_MAX_IRR = 4_000_000;
+export const TOPUP_MAX_IRR = 100_000_000;
 
 /**
  * What a customer may deposit, in IRR.
@@ -53,7 +53,28 @@ export const TOPUP_MAX_IRR = 4_000_000;
  * one case where the amount really is theirs to choose, so the choice is
  * offered as an index into this list and the number never crosses the wire.
  * `topupAmount` is the only way to turn a tap into an amount.
+ *
+ * Derived from the shop's own floor and ceiling rather than fixed, because both
+ * are now editable and a preset outside them is a button that leads to a
+ * refusal. Six of them: enough to cover a range of 125× without a wall of
+ * buttons on a phone.
  */
+export function topupPresetsIrr(minIrr: number, maxIrr: number): readonly number[] {
+  if (!(minIrr > 0) || maxIrr < minIrr) return TOPUP_AMOUNTS_IRR;
+  const steps = 6;
+  const presets: number[] = [];
+  for (let i = 0; i < steps; i++) {
+    // Geometric, so the small amounts most customers use are not crowded out by
+    // the ceiling: a linear spread from 80,000 to 10,000,000 Toman would make
+    // every button but the first useless.
+    const value = minIrr * Math.pow(maxIrr / minIrr, i / (steps - 1));
+    // Rounded to a whole Toman, which is the only unit a customer can transfer.
+    const rounded = Math.round(value / 10) * 10;
+    if (!presets.includes(rounded)) presets.push(rounded);
+  }
+  return presets;
+}
+
 export const TOPUP_AMOUNTS_IRR = [1_000_000, 2_000_000, 3_000_000, 4_000_000] as const;
 
 /**
@@ -62,9 +83,16 @@ export const TOPUP_AMOUNTS_IRR = [1_000_000, 2_000_000, 3_000_000, 4_000_000] as
  * One-based, and not by taste: `decode` accepts an id matching
  * `/^[1-9][0-9]{0,18}$/`, so a zero cannot survive the round trip. A
  * zero-based index would make the first button the one that never works.
+ *
+ * The list is passed in rather than read from a constant, because it now
+ * depends on the shop's limits — and the presets a tap is resolved against
+ * must be the same ones the buttons were drawn from.
  */
-export function topupAmount(choice: number): number | null {
-  return TOPUP_AMOUNTS_IRR[choice - 1] ?? null;
+export function topupAmount(
+  choice: number,
+  presets: readonly number[] = TOPUP_AMOUNTS_IRR,
+): number | null {
+  return presets[choice - 1] ?? null;
 }
 
 export interface WalletEntry {
@@ -216,8 +244,12 @@ export async function refundOrder(db: Db, orderId: number): Promise<number | nul
  * would not cover it the honest answer is the shortfall itself — capped is a
  * decision for the caller, not a silent truncation here.
  */
-export function topupNeededIrr(totalIrr: number, balanceIrr: number): number | null {
+export function topupNeededIrr(
+  totalIrr: number,
+  balanceIrr: number,
+  minIrr: number = TOPUP_MIN_IRR,
+): number | null {
   const missing = totalIrr - balanceIrr;
   if (missing <= 0) return null;
-  return Math.max(TOPUP_MIN_IRR, Math.ceil(missing / 10) * 10);
+  return Math.max(minIrr, Math.ceil(missing / 10) * 10);
 }

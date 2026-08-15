@@ -65,14 +65,19 @@ import {
 import { clientApps, helpArticle, helpArticles } from './content.js';
 import {
   claimReferrer,
-  COMMISSION_PERCENT,
   payReferralCommission,
   referralLink,
   referralSummary,
   referrerFromPayload,
 } from './referral.js';
 import { applyForReseller, hasOpenRequest } from './reseller.js';
-import { settingIs, settingText } from './settings.js';
+import {
+  DEFAULT_SHOP_SETTINGS,
+  loadShopSettings,
+  settingIs,
+  settingText,
+  type ShopSettings,
+} from './settings.js';
 import {
   countRenewableForUser,
   countSubscriptionsForUser,
@@ -90,9 +95,7 @@ import {
   spendOnOrder,
   topupAmount,
   topupNeededIrr,
-  TOPUP_AMOUNTS_IRR,
-  TOPUP_MAX_IRR,
-  TOPUP_MIN_IRR,
+  topupPresetsIrr,
 } from './wallet.js';
 import type {
   InlineKeyboard,
@@ -127,6 +130,17 @@ export interface HandleOutcome {
 const IGNORED: HandleOutcome = { status: 'ignored', replies: [] };
 
 /**
+ * The shop's switches for the update being handled.
+ *
+ * Module-level for the same reason `menu.ts` keeps its wording that way, and
+ * safe for the same reason: `poll.ts` awaits each `handleUpdate` in a plain
+ * `for` loop, so one update finishes before the next begins. If that ever
+ * becomes concurrent this becomes shared mutable state between customers and
+ * must be threaded through instead.
+ */
+let SHOP: ShopSettings = DEFAULT_SHOP_SETTINGS;
+
+/**
  * Whether this service gets panel buttons, and which way the on/off one points.
  *
  * Null for a manual product, for a row whose panel was deleted, and for one the
@@ -145,8 +159,12 @@ function actionsFor(
   return {
     id: service.id,
     disabled: service.status === 'DISABLED',
-    volumeIrrPerGb: pricing.volumeIrrPerGb,
-    timeIrrPerDay: pricing.timeIrrPerDay,
+    // A panel that prices an add-on can still be a shop that does not sell it.
+    // Production has had both of these switched off for years while our bot
+    // drew the buttons anyway.
+    volumeIrrPerGb: SHOP.sellsExtraVolume ? pricing.volumeIrrPerGb : null,
+    timeIrrPerDay: SHOP.sellsExtraTime ? pricing.timeIrrPerDay : null,
+    canSwitch: SHOP.allowsServiceSwitch,
   };
 }
 
@@ -189,7 +207,11 @@ export async function handleUpdate(
   // thirty seconds and falling back to the code's defaults, so this cannot
   // fail the update — see `botContent.ts`. Outside the session because it is a
   // read of shop-wide configuration, not of this customer's data.
-  menu.applyContent(await loadBotContent(db));
+  // Both are shop-wide configuration read outside the session, both fall back
+  // to what the code ships, and neither can fail the update.
+  const [content, shop] = await Promise.all([loadBotContent(db), loadShopSettings(db)]);
+  menu.applyContent(content);
+  SHOP = shop;
 
   return db.withSession(async (tx) => {
     const claim = await tx
@@ -1122,7 +1144,7 @@ async function handleCallback(
           referralLink(username, user.id),
           summary.invited,
           summary.earnedIrr,
-          COMMISSION_PERCENT,
+          SHOP.commissionPercent,
         ),
         menu.referralMenu(),
       );
@@ -1436,15 +1458,17 @@ async function handleCallback(
 
     case 'top':
       return screen(
-        menu.chooseTopupAmount(TOPUP_MIN_IRR, TOPUP_MAX_IRR),
-        menu.topupMenu(TOPUP_AMOUNTS_IRR),
+        menu.chooseTopupAmount(SHOP.topupMinIrr, SHOP.topupMaxIrr),
+        menu.topupMenu(topupPresetsIrr(SHOP.topupMinIrr, SHOP.topupMaxIrr)),
       );
 
     case 'tp': {
       if (action.id === undefined) return IGNORED;
       // The button carries which choice was pressed, not how much it is worth.
-      // An id that is not one of ours buys nothing.
-      const amount = topupAmount(action.id);
+      // An id that is not one of ours buys nothing. Resolved against the same
+      // presets the buttons were drawn from, so a limit changed between the two
+      // taps cannot turn a stale index into an amount the shop refuses.
+      const amount = topupAmount(action.id, topupPresetsIrr(SHOP.topupMinIrr, SHOP.topupMaxIrr));
       if (amount === null) return IGNORED;
       return topup(tx, user.id, amount, screen);
     }
@@ -1455,7 +1479,11 @@ async function handleCallback(
       if (!order) return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       // Recomputed from the order and the balance as they are now. The amount
       // is never taken from the button, because a customer could name their own.
-      const needed = topupNeededIrr(order.total_irr, await balanceFor(tx, user.id));
+      const needed = topupNeededIrr(
+        order.total_irr,
+        await balanceFor(tx, user.id),
+        SHOP.topupMinIrr,
+      );
       if (needed === null) return screen(menu.MENU_TITLE, menu.mainMenu(user.is_reseller));
       return topup(tx, user.id, needed, screen);
     }
@@ -1483,7 +1511,7 @@ async function handleCallback(
       // Paying from the balance is a purchase like any other, so it earns the
       // referrer the same commission a card-to-card payment does. Both paths
       // call the same function, which is what stops the two disagreeing.
-      await payReferralCommission(tx, order.id);
+      await payReferralCommission(tx, order.id, SHOP.commissionPercent);
       await tx
         .prepare(
           // On the PAID-per-order index from 0016, not on `public_id`: that one

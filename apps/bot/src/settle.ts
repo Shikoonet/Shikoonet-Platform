@@ -16,6 +16,7 @@
 import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
 import { payReferralCommission } from './referral.js';
+import { loadShopSettings } from './settings.js';
 import { creditTopup } from './wallet.js';
 
 export interface Notification {
@@ -46,6 +47,11 @@ interface SettleRow {
  * sending belongs after the commit, in the caller.
  */
 export async function settleVerifiedPayments(db: D1Database): Promise<Notification[]> {
+  // Read once per sweep rather than per payment: it is shop-wide configuration
+  // and it is cached anyway, but a sweep of fifty payments should not ask fifty
+  // times. Falls back to the shipped rate, so a failed read pays commission at
+  // last release's percentage instead of paying none.
+  const { commissionPercent } = await loadShopSettings(db);
   const { results } = await db
     .prepare(
       `SELECT p.id            AS payment_id,
@@ -114,7 +120,7 @@ export async function settleVerifiedPayments(db: D1Database): Promise<Notificati
           // Whoever brought this customer is paid here, in the same transaction
           // that made the order real — not in a sweep that could run against an
           // order that later turned out not to be paid at all.
-          await payReferralCommission(tx, row.order_id);
+          await payReferralCommission(tx, row.order_id, commissionPercent);
         }
         if (moved.meta.changes === 0) {
           // Somebody paid for an order that is no longer waiting to be paid —

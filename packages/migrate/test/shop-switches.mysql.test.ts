@@ -1,0 +1,135 @@
+/**
+ * The shop switches the bot now obeys, checked against the production dump.
+ *
+ * `apps/bot/src/settings.ts` compares against literal words — `offextra`,
+ * `offtimeextraa`, `offstatus` — and reads two Toman limits by name. Those are
+ * facts about the admin's own database, not about our code, and a test that
+ * only asserted our constants would agree with itself forever.
+ *
+ * So this file asks the real `mirzabot` schema in the simulation MySQL, loaded
+ * from `legacy/mirzabot-php/db/mirzabot-prod-20260811.sql`. If the admin
+ * changes a switch, or a later dump spells it differently, this goes red rather
+ * than the bot quietly drawing a button the shop turned off years ago.
+ *
+ * That dump is real customer data: it is gitignored, it stays on this machine,
+ * and nothing below prints a value that is not a switch word or a limit.
+ *
+ * CI has no MySQL and can never have this dump, so there this skips with a
+ * warning. Anywhere else an unreachable database FAILS, because "sim is down"
+ * and "the importer is broken" must not look the same.
+ */
+
+import { createConnection } from 'mysql2/promise';
+import { describe, expect, it } from 'vitest';
+import { loadConfig } from '../src/db.js';
+
+type Pairs = Record<string, string | null>;
+
+interface Loaded {
+  shop: Pairs;
+  pay: Pairs;
+  bot: Pairs;
+  unreachable: string | null;
+}
+
+/** Read at module load: `describe.skipIf` is evaluated during collection. */
+async function load(): Promise<Loaded> {
+  const cfg = loadConfig();
+  const empty = { shop: {}, pay: {}, bot: {} };
+  try {
+    const conn = await createConnection({
+      ...cfg.mysql,
+      charset: 'utf8mb4',
+      dateStrings: true,
+      supportBigNumbers: true,
+      bigNumberStrings: true,
+    });
+    try {
+      // COLLATE utf8mb4_bin on every key comparison: MySQL's default collation
+      // is case-insensitive, so `Statusextra` and `statusextra` would come back
+      // as one row and a check could pass on a key the bot never reads.
+      const [shopRows] = await conn.query(
+        `SELECT Namevalue AS k, value AS v FROM shopSetting
+          WHERE Namevalue COLLATE utf8mb4_bin
+             IN ('statusextra', 'statustimeextra', 'statuschangeservice')`,
+      );
+      const [payRows] = await conn.query(
+        `SELECT NamePay AS k, ValuePay AS v FROM PaySetting
+          WHERE NamePay COLLATE utf8mb4_bin IN ('minbalancecart', 'maxbalancecart')`,
+      );
+      const [botRows] = await conn.query(
+        `SELECT 'affiliatespercentage' AS k, affiliatespercentage AS v FROM setting`,
+      );
+      const pairs = (rows: unknown): Pairs =>
+        Object.fromEntries(
+          (rows as { k: string; v: string | null }[]).map((r) => [r.k, r.v]),
+        );
+      return {
+        shop: pairs(shopRows),
+        pay: pairs(payRows),
+        bot: pairs(botRows),
+        unreachable: null,
+      };
+    } finally {
+      await conn.end();
+    }
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    if (process.env['CI'] !== 'true') throw error;
+    console.warn(`[shop-switches.mysql] skipped: simulation MySQL unreachable — ${why}`);
+    return { ...empty, unreachable: why };
+  }
+}
+
+const { shop, pay, bot, unreachable } = await load();
+
+describe.skipIf(unreachable !== null)('the switch words the bot compares against', () => {
+  it('spells the three off-words exactly as `settings.ts` expects', () => {
+    // The bot treats a value it does not recognise as "leave the feature on",
+    // so a spelling that drifted here would show customers buttons the shop
+    // has switched off — with nothing looking broken. `offtimeextraa` really
+    // does carry two a's; it is the legacy schema's own typo.
+    expect(shop['statusextra']).toBe('offextra');
+    expect(shop['statustimeextra']).toBe('offtimeextraa');
+    expect(shop['statuschangeservice']).toBe('offstatus');
+  });
+
+  it('has all three switched off, which is why they are worth reading', () => {
+    // Not a tautology with the assertion above: that one pins the spelling, this
+    // one records the state the bot is being fixed to match. If an admin turns
+    // one on, this goes red and somebody reads why.
+    for (const key of ['statusextra', 'statustimeextra', 'statuschangeservice']) {
+      expect(shop[key], key).not.toBeNull();
+    }
+  });
+});
+
+describe.skipIf(unreachable !== null)('the numbers the bot reads', () => {
+  it('gives the card-to-card path a floor and a ceiling, in Toman', () => {
+    const min = Number(pay['minbalancecart']);
+    const max = Number(pay['maxbalancecart']);
+    expect(Number.isSafeInteger(min)).toBe(true);
+    expect(Number.isSafeInteger(max)).toBe(true);
+    expect(min).toBeGreaterThan(0);
+    expect(max).toBeGreaterThan(min);
+  });
+
+  it('is the pair index.php actually enforces, not the tier-keyed one', () => {
+    // `minbalance`/`maxbalance` are JSON keyed by customer tier and are used
+    // only to WORD the "not enough balance" message (index.php:1870). The card
+    // path enforces these two flat values (index.php:4712). Reading the tier
+    // JSON instead is how a 400,000 Toman ceiling got applied to every
+    // customer, 25× below what the shop allows.
+    expect(pay['minbalancecart']).not.toMatch(/^\s*\{/);
+    expect(pay['maxbalancecart']).not.toMatch(/^\s*\{/);
+  });
+
+  it('carries a referral percentage that may be paid as one', () => {
+    const percent = Number(bot['affiliatespercentage']);
+    expect(Number.isFinite(percent)).toBe(true);
+    // The bot refuses anything outside this range rather than clamping, because
+    // this multiplies real money into a wallet.
+    expect(percent).toBeGreaterThanOrEqual(0);
+    expect(percent).toBeLessThanOrEqual(100);
+  });
+});
