@@ -117,8 +117,65 @@ Two more things the walk gets wrong if you improvise:
   ambiguous: the claim then sits at `AMBIGUOUS_TRANSACTIONS`, which is the
   matcher being right, not broken.
 
+## Walking the bot's admin panel
+
+The panel behind `/panel` cannot be reached without a row in `admins`, and the
+seed does not write one — deliberately, since an admin is not simulation data.
+So a walk starts with three minutes of setup, and this is it.
+
+**`pnpm seed:sim` empties `users`.** Everything below assumes you have just run
+it, which is also what the test suite leaves behind. Re-create the catalogue and
+a few customers to act on:
+
+```sql
+-- after `pnpm --filter @shikoo/seed seed:sim`, and after /start in the bot
+INSERT INTO users (telegram_id, username, registered_at, last_seen_at) VALUES
+  (910000001, 'reza_the_buyer', now(), now()),
+  (910000002, 'sara_test',      now(), now())
+ON CONFLICT (telegram_id) DO NOTHING;
+```
+
+The catalogue comes from `seedCatalog` in `@shikoo/seed`; without it «خرید
+اشتراک» is empty, which is correct and looks broken.
+
+Then press `/start` in the test bot so your own `users` row exists, read your
+Telegram id out of it, and promote yourself:
+
+```sql
+INSERT INTO admins (telegram_id, username, role, permissions, active)
+VALUES (<your telegram id>, '<you>', 'OWNER', '{}'::jsonb, true)
+ON CONFLICT (telegram_id) DO UPDATE SET role = 'OWNER', active = true;
+```
+
+Press `/start` again. «👨‍💼 پنل مدیریت» appears on the main menu — and the
+`/start` before the promotion is the negative case, sitting right above it in
+the same chat.
+
+**Two things to know before you drive it:**
+
+- **The bulk buttons reach every `ACTIVE` row in the simulation.** With a
+  handful of fixtures that is the point; after loading a large dump it is
+  thousands of Telegram calls. Check `SELECT count(*) FROM users WHERE status =
+  'ACTIVE'` first — the confirmation screen tells you too, which is what it is
+  for.
+- **A broadcast to a made-up Telegram id fails, and that is the interesting
+  case.** The recipient lands as `FAILED` with Telegram's own words in `error`
+  («Bad Request: chat not found»), the real account gets the message, and
+  `broadcasts.finished_at` is stamped once nothing is pending. One query shows
+  all of it:
+
+```sql
+SELECT telegram_id, status, left(coalesce(error, ''), 60) FROM broadcast_recipients;
+```
+
+**Testing a permission end to end takes both surfaces.** Untick a box on
+«دسترسی‌ها» in the shop admin panel and the bot stops drawing that button on the
+next press. An OWNER's boxes are disabled — an owner always may — so switch the
+row to ADMIN first, and note that demoting the only OWNER is refused by design.
+
 ## What is not here yet
 
-The fake Telegram API and the fake provisioning panel. They arrive with the bot
-— there is nothing to fake until there is a bot pointing at them. Playwright MCP
-verification of the dashboard likewise starts when the dashboard does.
+Playwright scenarios as committed specs. The walk above is done by hand against
+the real test bot; `apps/bot/test` covers the same ground automatically, but
+nothing yet drives Telegram in CI, and nothing should — the walk depends on a
+logged-in account.
