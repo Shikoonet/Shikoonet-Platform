@@ -300,7 +300,14 @@ export const MENUS = {
   topup: {
     label: 'شارژ کیف پول',
     hint: 'زیر مبلغ‌های آمادهٔ شارژ',
-    buttons: [{ action: 'wal', label: '🏦 کیف پول', hint: 'برگشت به کیف پول', required: true }],
+    buttons: [
+      {
+        action: 'tpx',
+        label: '✏️ مبلغ دلخواه',
+        hint: 'مشتری مبلغ را خودش تایپ می‌کند — بین کف و سقف شارژ',
+      },
+      { action: 'wal', label: '🏦 کیف پول', hint: 'برگشت به کیف پول', required: true },
+    ],
   },
   help: {
     label: 'آموزش',
@@ -610,7 +617,10 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
     ['gft', 1, 0],
     ['menu', 2, 0],
   ],
-  topup: [['wal', 0, 0]],
+  topup: [
+    ['tpx', 0, 0],
+    ['wal', 1, 0],
+  ],
   help: [
     ['app', 0, 0],
     ['menu', 1, 0],

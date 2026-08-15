@@ -509,6 +509,7 @@ async function handleTypedAnswer(
   if (session.step === 'code') return handleDiscountCode(tx, message, user, session);
   if (session.step === 'coder') return handleRenewalCode(tx, message, user, session);
   if (session.step === 'gift') return handleGiftCode(tx, message, user);
+  if (session.step === 'topup') return handleTopupAmount(tx, message, user);
   if (session.step === 'agent') return handleResellerRequest(tx, message, user);
   // The admin steps re-prove the sender is an admin before they read anything.
   // Being asked a question a minute ago is not authority: the row could have
@@ -1112,6 +1113,55 @@ async function handleGiftCode(
       },
     ],
   };
+}
+
+/**
+ * A deposit the customer named themselves.
+ *
+ * The amount arrives as a message rather than in `callback_data`, which is the
+ * point: the presets exist because a number the customer controls must not be
+ * trusted, and a typed one is trusted no further. It is read in Toman — the
+ * only unit a bank transfer has — converted once, and then checked against the
+ * shop's own floor and ceiling, the same pair `index.php:4712` enforces.
+ *
+ * Refusing keeps the step open. A customer who typed the wrong thing types
+ * again rather than starting from the wallet.
+ */
+async function handleTopupAmount(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+): Promise<HandleOutcome> {
+  const reply = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, keyboard }],
+  });
+  const back = menu.promptMenu(encode('top'));
+
+  // Persian digits, and the separators a person types into a chat: `100,000`
+  // and `۱۰۰٬۰۰۰` are both what somebody means by a hundred thousand.
+  const typed = message
+    .text!.trim()
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[,٬\s]/g, '');
+  if (!/^[0-9]{1,12}$/.test(typed)) {
+    return reply(menu.askTopupAmount(SHOP.topupMinIrr, SHOP.topupMaxIrr), back);
+  }
+  const amountIrr = Number(typed) * IRR_PER_TOMAN;
+  if (!Number.isSafeInteger(amountIrr) || amountIrr <= 0) {
+    return reply(menu.askTopupAmount(SHOP.topupMinIrr, SHOP.topupMaxIrr), back);
+  }
+  if (amountIrr < SHOP.topupMinIrr || amountIrr > SHOP.topupMaxIrr) {
+    return reply(menu.topupOutOfRange(SHOP.topupMinIrr, SHOP.topupMaxIrr), back);
+  }
+
+  // Cleared only once the amount is usable, for the same reason the add-on step
+  // clears late: an unusable answer leaves the customer inside the flow.
+  await clearSession(tx, user.id);
+  return topup(tx, user.id, amountIrr, (text, keyboard) => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, ...(keyboard ? { keyboard } : {}) }],
+  }));
 }
 
 /**
@@ -2187,6 +2237,17 @@ async function handleCallback(
       if (amount === null) return IGNORED;
       return topup(tx, user.id, amount, screen);
     }
+
+    case 'tpx':
+      // The presets cover a 125× range in six buttons, which still leaves the
+      // customer who wants 75,000 Toman choosing between paying 100,000 and
+      // giving up. Mirzabot has always let them type it (`index.php:4712`
+      // enforces the same floor and ceiling on whatever they send).
+      await ask(tx, user.id, 'topup', {});
+      return screen(
+        menu.askTopupAmount(SHOP.topupMinIrr, SHOP.topupMaxIrr),
+        menu.promptMenu(encode('top')),
+      );
 
     case 'tpo': {
       if (action.id === undefined) return IGNORED;

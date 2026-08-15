@@ -1989,6 +1989,26 @@ export function chooseTopupAmount(minIrr: number, maxIrr: number): string {
   ].join('\n');
 }
 
+/** The question behind «مبلغ دلخواه», with the limits it will be judged by. */
+export function askTopupAmount(minIrr: number, maxIrr: number): string {
+  const t = TEXTS_NOW;
+  return [
+    t.raw('TOPUP_ASK_AMOUNT'),
+    '',
+    t.render('TOPUP_RANGE', { min: formatToman(minIrr), max: formatToman(maxIrr) }),
+  ].join('\n');
+}
+
+/** Said when the typed amount is a number, but not one the shop accepts. */
+export function topupOutOfRange(minIrr: number, maxIrr: number): string {
+  const t = TEXTS_NOW;
+  return [
+    t.raw('TOPUP_OUT_OF_RANGE'),
+    '',
+    t.render('TOPUP_RANGE', { min: formatToman(minIrr), max: formatToman(maxIrr) }),
+  ].join('\n');
+}
+
 /**
  * One button per allowed amount.
  *

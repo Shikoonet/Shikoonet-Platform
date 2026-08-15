@@ -15,7 +15,7 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { assertSchema, db } from './helpers/env.js';
-import { ensureCatalog, makeCustomer, providerId } from './helpers/shop.js';
+import { ensureCatalog, ensurePaymentCard, makeCustomer, providerId } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 import {
   DEFAULT_SHOP_SETTINGS,
@@ -264,5 +264,115 @@ describe('the deposit limits', () => {
     expect(text).toContain('10,000,000 تومان');
     // The old ceiling, 25× too low, must not be what a customer is offered.
     expect(text).not.toContain('400,000 تومان');
+  });
+});
+
+/**
+ * «مبلغ دلخواه» — the deposit a customer names themselves.
+ *
+ * Six presets span a 125× range, which still leaves anybody who wants an
+ * in-between amount choosing between overpaying and giving up. Mirzabot has
+ * always let them type it, against this same floor and ceiling
+ * (`index.php:4712`).
+ *
+ * What is asserted below is that the typed number is judged by the SHOP's
+ * limits and not believed on sight — a deposit is the one place in this bot
+ * where a number from the customer is legitimate, so it is also the one place
+ * where the bounds have to be re-read rather than assumed.
+ */
+describe('a deposit the customer types', () => {
+  function typed(updateId: number, telegramId: number, text: string) {
+    return {
+      update_id: updateId,
+      message: {
+        message_id: updateId,
+        from: { id: telegramId, username: `sw${telegramId}` },
+        chat: { id: telegramId },
+        text,
+      },
+    };
+  }
+
+  /** Reaches the prompt, with the shop's limits already in place. */
+  async function asking(): Promise<{ updateId: number; telegramId: number }> {
+    await ensurePaymentCard();
+    await put('pay', 'minbalancecart', '80000');
+    await put('pay', 'maxbalancecart', '10000000');
+    const { updateId, telegramId } = ids();
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+    const asked = await handleUpdate(db, press(updateId + 1, telegramId, 'tpx'));
+    expect(asked.replies[0]?.text ?? '').toContain('80,000 تومان');
+    return { updateId: updateId + 2, telegramId };
+  }
+
+  async function openOrder(telegramId: number) {
+    return db
+      .prepare(
+        `SELECT o.total_irr, o.kind FROM orders o
+           JOIN users u ON u.id = o.user_id
+          WHERE u.telegram_id = ?1 ORDER BY o.id DESC LIMIT 1`,
+      )
+      .bind(telegramId)
+      .first<{ total_irr: number; kind: string }>();
+  }
+
+  it('books exactly what was typed, converted once from Toman', async () => {
+    const { updateId, telegramId } = await asking();
+
+    const invoice = await handleUpdate(db, typed(updateId, telegramId, '750000'));
+
+    // 750,000 Toman — an amount no preset offers, which is the whole point.
+    expect(await openOrder(telegramId)).toMatchObject({
+      total_irr: 7_500_000,
+      kind: 'WALLET_TOPUP',
+    });
+    expect(invoice.replies[0]?.text ?? '').toContain('750,000 تومان');
+  });
+
+  it('reads the digits and separators a Persian keyboard actually produces', async () => {
+    const { updateId, telegramId } = await asking();
+
+    await handleUpdate(db, typed(updateId, telegramId, '۱٬۲۵۰٬۰۰۰'));
+
+    expect(await openOrder(telegramId)).toMatchObject({ total_irr: 12_500_000 });
+  });
+
+  it('refuses an amount outside the shop’s own range and lets them type again', async () => {
+    const { updateId, telegramId } = await asking();
+
+    const tooSmall = await handleUpdate(db, typed(updateId, telegramId, '5000'));
+    const tooBig = await handleUpdate(db, typed(updateId + 1, telegramId, '99000000'));
+
+    expect(tooSmall.replies[0]?.text ?? '').toContain('خارج از بازهٔ مجاز');
+    expect(tooBig.replies[0]?.text ?? '').toContain('خارج از بازهٔ مجاز');
+    // No order, and the question is still open — the second attempt above only
+    // works because the first did not close the step.
+    expect(await openOrder(telegramId)).toBeNull();
+
+    const ok = await handleUpdate(db, typed(updateId + 2, telegramId, '100000'));
+    expect(ok.replies[0]?.text ?? '').toContain('100,000 تومان');
+    expect(await openOrder(telegramId)).toMatchObject({ total_irr: 1_000_000 });
+  });
+
+  it('follows the ceiling the admin lowered, not the one it was asked with', async () => {
+    // The limits are re-read when the answer arrives, not captured when the
+    // question was asked. An admin who lowers the ceiling in between is obeyed.
+    const { updateId, telegramId } = await asking();
+    await put('pay', 'maxbalancecart', '200000');
+    invalidateShopSettings();
+
+    const refused = await handleUpdate(db, typed(updateId, telegramId, '750000'));
+
+    expect(refused.replies[0]?.text ?? '').toContain('خارج از بازهٔ مجاز');
+    expect(await openOrder(telegramId)).toBeNull();
+  });
+
+  it('says nothing usable to a message that is not a number', async () => {
+    const { updateId, telegramId } = await asking();
+
+    const nonsense = await handleUpdate(db, typed(updateId, telegramId, 'سلام'));
+
+    expect(nonsense.replies[0]?.text ?? '').toContain('مبلغ دلخواه');
+    expect(await openOrder(telegramId)).toBeNull();
   });
 });

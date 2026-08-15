@@ -103,11 +103,21 @@ const deadPanel = (async () =>
   Promise.reject(new Error('ETIMEDOUT'))) as unknown as typeof globalThis.fetch;
 
 /** Sets how this panel renews, exactly as the migration carries it. */
+/**
+ * Adds the renewal keys to a panel, keeping whatever else it carries.
+ *
+ * `||` and not `=`. This writes to a CATALOGUE row that the whole bot package
+ * shares, and the panel's `config` is also where the add-on prices live — so
+ * replacing it wholesale silently took «افزودن حجم» and «افزودن زمان» off every
+ * service, and `shop-settings.test.ts` then failed in a full run while passing
+ * on its own. Two files, one row, and only one of them knew.
+ */
 async function setPanelConfig(provider: number, config: Record<string, unknown>): Promise<void> {
   await db
     .prepare(
       `UPDATE provisioning_providers
-          SET base_url = 'https://renew.test', secret_ref = ?2, kind = 'pasarguard', config = ?3::jsonb
+          SET base_url = 'https://renew.test', secret_ref = ?2, kind = 'pasarguard',
+              config = coalesce(config, '{}'::jsonb) || ?3::jsonb
         WHERE id = ?1`,
     )
     .bind(provider, PROVIDER_CODE, JSON.stringify(config))

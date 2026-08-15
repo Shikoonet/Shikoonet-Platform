@@ -47,6 +47,9 @@ export const CALLBACK_ACTIONS = [
   //        looked up in `TOPUP_AMOUNTS_IRR` rather than read off the wire.
   'tpo', // <orderId> — deposit exactly what this order still needs, computed
   //        from the order row for the same reason.
+  'tpx', // ask the customer to type an amount. The number then arrives as a
+  //        MESSAGE, not in callback data, and is checked against the shop's
+  //        own floor and ceiling before it becomes an order.
   'wpay', // <orderId> — pay that order out of the balance
   'rvk', // <subscriptionId> — ask before replacing the subscription link
   'rvk2', // <subscriptionId> — do it. Separate action rather than a flag: the
