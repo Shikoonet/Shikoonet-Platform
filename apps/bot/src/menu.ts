@@ -17,6 +17,17 @@
  * `oninline` — so it is an inline keyboard, not a reply keyboard. Customers
  * have this muscle memory; the replacement bot should not move their buttons.
  *
+ * ## Where the words come from
+ *
+ * Not from here. Every sentence below is `TEXTS_NOW.render(KEY, …)` or a live
+ * binding filled from the same place, and the defaults live in
+ * `@shikoo/contracts`. What stays in this file is the part that cannot be a
+ * string: which line appears, in what order, and under what condition.
+ *
+ * That is the whole split. An admin gets every line of every screen; the
+ * conditions stay type-checked in TypeScript instead of becoming a template
+ * language that can fail halfway through answering a customer.
+ *
  * ponytail: Persian only, inline. The `lang` column exists and production is
  * 11,240 'fa' to one 'en'; wire up a second language when it has a customer.
  */
@@ -24,19 +35,38 @@
 import { encode, encodeRef } from './callback.js';
 import type { CatalogPlan, Panel } from './catalog.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
-import { buildMainMenu, DEFAULT_LAYOUT, type ButtonPlacement } from './keyboard.js';
-import { DEFAULT_TEXTS, type Texts } from '@shikoo/contracts';
+import { buildMainMenu, DEFAULT_LAYOUT, MENU_ACTIONS, type ButtonPlacement } from './keyboard.js';
+import { DEFAULT_TEXTS, type TextKey, type Texts } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, type Price } from './money.js';
 import type { InlineKeyboard } from './telegram.js';
 
 /**
- * The sentences an admin may rewrite.
+ * A refusal reason, as `discount.ts` names it, mapped to the sentence for it.
+ *
+ * Declared before the exported bindings below because those are initialised at
+ * module load and read this — a `const` further down would be in its temporal
+ * dead zone by then, which is exactly how the first version of this file failed
+ * to import at all.
+ */
+const REASON_TEXT_KEY: Record<string, TextKey> = {
+  UNKNOWN_CODE: 'DISCOUNT_REFUSED_UNKNOWN_CODE',
+  EXPIRED: 'DISCOUNT_REFUSED_EXPIRED',
+  USED_UP: 'DISCOUNT_REFUSED_USED_UP',
+  ALREADY_USED: 'DISCOUNT_REFUSED_ALREADY_USED',
+  NOT_FOR_THIS: 'DISCOUNT_REFUSED_NOT_FOR_THIS',
+  NOT_FOR_YOU: 'DISCOUNT_REFUSED_NOT_FOR_YOU',
+  FIRST_PURCHASE_ONLY: 'DISCOUNT_REFUSED_FIRST_PURCHASE_ONLY',
+};
+
+/**
+ * The sentences an admin may rewrite, for the screens that are one sentence.
  *
  * These are `let`, not `const`, and that is the whole wiring: ES module exports
  * are live bindings, so `applyContent` reassigning them is seen by every
- * `menu.X` in `handle.ts` without a single call site changing. The defaults come
- * from `texts.ts`, which is where they now live — one definition, editable and
- * rendered from the same place.
+ * `menu.X` in `handle.ts` without a single call site changing.
+ *
+ * Screens built out of several lines do not appear here — they are functions
+ * further down that render their lines one at a time.
  *
  * Safe because the bot handles one update at a time (`poll.ts` awaits each
  * `handleUpdate` in a plain `for` loop). If that ever becomes concurrent, this
@@ -85,13 +115,84 @@ export let NO_RENEWAL_PLAN = DEFAULT_TEXTS.raw('NO_RENEWAL_PLAN');
 export let WALLET_TOO_LITTLE = DEFAULT_TEXTS.raw('WALLET_TOO_LITTLE');
 export let DISCOUNT_TAKEN_OFF = DEFAULT_TEXTS.raw('DISCOUNT_TAKEN_OFF');
 export let ORDER_GONE = DEFAULT_TEXTS.raw('ORDER_GONE');
+/** The one reason `handle.ts` passes to `actionFailed` itself. */
+export let ACTION_FAILED_NO_LINK = DEFAULT_TEXTS.raw('ACTION_FAILED_NO_LINK');
 
-/** The active texts, for the screens that fill in a slot rather than read one. */
+// The admin screens. Editable like the rest now — an operator's wording is as
+// much the shop's as a customer's.
+export let ADMIN_HOME = DEFAULT_TEXTS.raw('ADMIN_HOME_TITLE');
+export let NO_CLAIMS = DEFAULT_TEXTS.raw('ADMIN_NO_CLAIMS');
+export let CLAIM_GONE = DEFAULT_TEXTS.raw('ADMIN_CLAIM_GONE');
+
+/**
+ * Says which role is missing rather than just "no".
+ *
+ * An operator who does not know they are SUPPORT reads a bare refusal as a
+ * broken button and presses it again; naming the reason sends them to whoever
+ * can change it instead.
+ */
+export let ADMIN_NOT_ALLOWED = DEFAULT_TEXTS.raw('ADMIN_NOT_ALLOWED');
+
+export let CONFIRM_APPROVE_WITHOUT_TX = buildConfirmApprove(DEFAULT_TEXTS);
+export let CONFIRM_REJECT = buildConfirmReject(DEFAULT_TEXTS);
+
+/**
+ * Why a code was refused, in the customer's words.
+ *
+ * Each reason gets its own sentence. The legacy bot answers "code is not valid"
+ * to an expired code, a used-up code and a code for another product alike, and
+ * support then has to ask which of the three it was.
+ */
+export let DISCOUNT_REFUSED: Record<string, string> = buildDiscountRefused(DEFAULT_TEXTS);
+
+/** The active texts, for the screens that fill in slots. */
 let TEXTS_NOW: Texts = DEFAULT_TEXTS;
 /** The active main-menu layout. */
 let LAYOUT_NOW: readonly ButtonPlacement[] = DEFAULT_LAYOUT;
 
 let BACK_TO_MENU = BACK_TO_MENU_LABEL;
+
+function buildDiscountRefused(t: Texts): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(REASON_TEXT_KEY).map(([reason, key]) => [reason, t.raw(key)]),
+  );
+}
+
+function buildConfirmApprove(t: Texts): string {
+  return [
+    t.raw('ADMIN_CONFIRM_APX_TITLE'),
+    '',
+    t.raw('ADMIN_CONFIRM_APX_BODY'),
+    t.raw('ADMIN_CONFIRM_AUDIT_NOTE'),
+  ].join('\n');
+}
+
+function buildConfirmReject(t: Texts): string {
+  return [
+    t.raw('ADMIN_CONFIRM_REJ_TITLE'),
+    '',
+    t.raw('ADMIN_CONFIRM_REJ_BODY'),
+    t.raw('ADMIN_CONFIRM_AUDIT_NOTE'),
+  ].join('\n');
+}
+
+/**
+ * The renew button's label, as the customer currently sees it.
+ *
+ * Three screens tell a customer to press that button. They used to quote its
+ * wording as a literal, so an admin who renamed it in the panel left three
+ * messages pointing at a button that no longer exists — and nothing about the
+ * result looks broken. Reading the live layout is what keeps them in step.
+ *
+ * Falls back to the shipped label when the saved layout has dropped the button
+ * entirely, which is legal: the sentence is then wrong in a smaller way than a
+ * literal `{renewButton}` on a customer's screen would be.
+ */
+function renewButtonLabel(): string {
+  const placed = LAYOUT_NOW.find((b) => b.action === 'renew' && b.visible);
+  if (placed) return placed.label;
+  return MENU_ACTIONS.find((a) => a.action === 'renew')?.label ?? 'تمدید سرویس';
+}
 
 /**
  * Points this module at the content the admin has saved.
@@ -141,6 +242,14 @@ export function applyContent(content: BotContent): void {
   WALLET_TOO_LITTLE = t.raw('WALLET_TOO_LITTLE');
   DISCOUNT_TAKEN_OFF = t.raw('DISCOUNT_TAKEN_OFF');
   ORDER_GONE = t.raw('ORDER_GONE');
+  ACTION_FAILED_NO_LINK = t.raw('ACTION_FAILED_NO_LINK');
+  ADMIN_HOME = t.raw('ADMIN_HOME_TITLE');
+  NO_CLAIMS = t.raw('ADMIN_NO_CLAIMS');
+  CLAIM_GONE = t.raw('ADMIN_CLAIM_GONE');
+  ADMIN_NOT_ALLOWED = t.raw('ADMIN_NOT_ALLOWED');
+  CONFIRM_APPROVE_WITHOUT_TX = buildConfirmApprove(t);
+  CONFIRM_REJECT = buildConfirmReject(t);
+  DISCOUNT_REFUSED = buildDiscountRefused(t);
 }
 
 /** Back to what the code ships. Tests call this so one does not colour the next. */
@@ -199,31 +308,38 @@ export interface AppliedCode {
 }
 
 export function planDetail(plan: CatalogPlan, price: Price, applied?: AppliedCode | null): string {
+  const t = TEXTS_NOW;
   const lines = [
-    `🔐 ${plan.productName}`,
-    `📍 لوکیشن: ${plan.providerName}`,
+    t.render('PLAN_TITLE', { product: plan.productName }),
+    t.render('PLAN_LOCATION', { provider: plan.providerName }),
     '',
-    `📦 حجم: ${plan.volumeGb === null ? 'نامحدود' : `${plan.volumeGb} گیگابایت`}`,
-    `⏳ مدت: ${plan.durationDays === null ? 'بدون محدودیت زمان' : `${plan.durationDays} روز`}`,
+    plan.volumeGb === null
+      ? t.raw('PLAN_VOLUME_UNLIMITED')
+      : t.render('PLAN_VOLUME', { volume: plan.volumeGb }),
+    plan.durationDays === null
+      ? t.raw('PLAN_DURATION_UNLIMITED')
+      : t.render('PLAN_DURATION', { days: plan.durationDays }),
   ];
   if (plan.userLimit !== null) {
-    lines.push(`👥 کاربر همزمان: ${plan.userLimit}`);
+    lines.push(t.render('PLAN_USER_LIMIT', { limit: plan.userLimit }));
   }
   lines.push('');
   const codeOff = applied?.discountIrr ?? 0;
   if (price.discountIrr > 0 || codeOff > 0) {
-    lines.push(`💵 قیمت: ${formatToman(price.unitPriceIrr)}`);
+    lines.push(t.render('PLAN_PRICE', { price: formatToman(price.unitPriceIrr) }));
   }
   if (price.discountIrr > 0) {
-    lines.push(`🎁 تخفیف شما: ${formatToman(price.discountIrr)}`);
+    lines.push(t.render('PLAN_STANDING_DISCOUNT', { amount: formatToman(price.discountIrr) }));
   }
   if (applied && codeOff > 0) {
-    lines.push(`🏷 کد «${applied.code}»: ${formatToman(codeOff)}`);
+    lines.push(
+      t.render('PLAN_CODE_DISCOUNT', { code: applied.code, amount: formatToman(codeOff) }),
+    );
   }
   // The floor is the same one `order.ts` applies, and for the same reason: two
   // discounts on one price must not add up to more than the price.
   const payable = Math.max(0, price.totalIrr - codeOff);
-  lines.push(`💳 قابل پرداخت: ${formatToman(payable)}`);
+  lines.push(t.render('PLAN_PAYABLE', { amount: formatToman(payable) }));
   return lines.join('\n');
 }
 
@@ -275,22 +391,22 @@ export function helpMenu(
 }
 
 export function helpArticleScreen(title: string, body: string): string {
-  return body.trim() === '' ? `📚 ${title}` : `📚 ${title}\n\n${body}`;
+  const head = TEXTS_NOW.render('HELP_ARTICLE_TITLE', { title });
+  return body.trim() === '' ? head : `${head}\n\n${body}`;
 }
 
 // ---------------------------------------------------------------------------
 // The admin panel. Every screen below is drawn only after `admins` said yes.
 // ---------------------------------------------------------------------------
 
-export const ADMIN_HOME = '🛠 پنل ادمین';
-
 export function adminHome(waiting: number): string {
+  const t = TEXTS_NOW;
   return [
-    ADMIN_HOME,
+    t.raw('ADMIN_HOME_TITLE'),
     '',
     waiting === 0
-      ? '✅ رسیدی در انتظار بررسی نیست.'
-      : `🧾 ${waiting.toLocaleString('en-US')} پرداخت در انتظار تصمیم شماست.`,
+      ? t.raw('ADMIN_NO_WAITING')
+      : t.render('ADMIN_WAITING', { count: waiting.toLocaleString('en-US') }),
   ].join('\n');
 }
 
@@ -303,22 +419,11 @@ export function adminMenu(waiting: number): InlineKeyboard {
   return keyboard;
 }
 
-export const NO_CLAIMS = '✅ در حال حاضر پرداختی در انتظار بررسی نیست.';
-
-/**
- * Says which role is missing rather than just "no".
- *
- * An operator who does not know they are SUPPORT reads a bare refusal as a
- * broken button and presses it again; naming the reason sends them to whoever
- * can change it instead.
- */
-export const ADMIN_NOT_ALLOWED =
-  '⛔ این کار از دسترس نقش شما بیرون است.\n\nبررسی و تایید پرداخت فقط برای نقش ادمین و مالک باز است. اگر لازمش دارید از مالک ربات بخواهید نقش شما را تغییر دهد.';
-
 /** One line per waiting payment: who, how much, and what the engine thought. */
 export function claimList(page: number, pages: number, total: number): string {
-  const head = `🧾 پرداخت‌های در انتظار (${total.toLocaleString('en-US')} مورد)`;
-  return pages > 1 ? `${head}\n\nصفحهٔ ${page} از ${pages}` : head;
+  const t = TEXTS_NOW;
+  const head = t.render('ADMIN_CLAIM_LIST_TITLE', { total: total.toLocaleString('en-US') });
+  return pages > 1 ? `${head}\n\n${t.render('ADMIN_CLAIM_LIST_PAGE', { page, pages })}` : head;
 }
 
 export interface ClaimRow {
@@ -366,28 +471,42 @@ export function claimDetail(
   },
   candidates: { amount_irr: number; bank_timestamp: number; sender: string | null }[],
 ): string {
+  const t = TEXTS_NOW;
   const lines = [
-    '🧾 بررسی پرداخت',
+    t.raw('ADMIN_CLAIM_TITLE'),
     '',
-    `👤 مشتری: ${claim.username ? `@${claim.username}` : (claim.telegram_id ?? '؟')}`,
-    `💳 مبلغ: ${formatToman(claim.expected_amount_irr)}`,
-    `🔖 مرجع: ${claim.external_order_id}`,
+    t.render('ADMIN_CLAIM_CUSTOMER', {
+      customer: claim.username ? `@${claim.username}` : (claim.telegram_id ?? '؟'),
+    }),
+    t.render('ADMIN_CLAIM_AMOUNT', { amount: formatToman(claim.expected_amount_irr) }),
+    t.render('ADMIN_CLAIM_REF', { ref: claim.external_order_id }),
   ];
-  if (claim.card_digits) lines.push(`🏦 کارت مقصد: ${claim.card_digits.slice(-4)}`);
-  if (claim.paid_clicked_at !== null) {
-    lines.push(`🕓 «پرداخت کردم»: ${formatTehranDate(new Date(claim.paid_clicked_at))}`);
+  if (claim.card_digits) {
+    lines.push(t.render('ADMIN_CLAIM_CARD', { last4: claim.card_digits.slice(-4) }));
   }
-  if (claim.suspect_reason) lines.push(`⚠️ نظر سامانه: ${claim.suspect_reason}`);
+  if (claim.paid_clicked_at !== null) {
+    lines.push(
+      t.render('ADMIN_CLAIM_PAID_AT', {
+        when: formatTehranDate(new Date(claim.paid_clicked_at)),
+      }),
+    );
+  }
+  if (claim.suspect_reason) {
+    lines.push(t.render('ADMIN_CLAIM_SUSPECT', { reason: claim.suspect_reason }));
+  }
   lines.push('');
   lines.push(
     candidates.length === 0
-      ? '🔍 هیچ تراکنش بانکی متناظری پیدا نشد.'
-      : `🔍 ${candidates.length} تراکنش بانکی با همین مبلغ و همین حساب:`,
+      ? t.raw('ADMIN_CLAIM_NO_TX')
+      : t.render('ADMIN_CLAIM_TX_COUNT', { count: candidates.length }),
   );
   for (const c of candidates) {
+    const amount = formatToman(c.amount_irr);
+    const when = formatTehranDate(new Date(c.bank_timestamp));
     lines.push(
-      `• ${formatToman(c.amount_irr)} — ${formatTehranDate(new Date(c.bank_timestamp))}` +
-        (c.sender ? ` — ${c.sender}` : ''),
+      c.sender
+        ? t.render('ADMIN_CLAIM_TX_LINE_SENDER', { amount, when, sender: c.sender })
+        : t.render('ADMIN_CLAIM_TX_LINE', { amount, when }),
     );
   }
   return lines.join('\n');
@@ -408,20 +527,6 @@ export function claimDetailMenu(
   return keyboard;
 }
 
-export const CONFIRM_APPROVE_WITHOUT_TX = [
-  '⚠️ تایید بدون تراکنش بانکی',
-  '',
-  'یعنی این پرداخت فقط با تصمیم شما تسویه می‌شود و هیچ تراکنش بانکی پشتش نیست.',
-  'این کار در دفتر ممیزی به نام شما ثبت می‌شود.',
-].join('\n');
-
-export const CONFIRM_REJECT = [
-  '❌ رد کردن این پرداخت',
-  '',
-  'مشتری سرویس نمی‌گیرد و پرداخت به حالت رد شده می‌رود.',
-  'این کار در دفتر ممیزی به نام شما ثبت می‌شود.',
-].join('\n');
-
 export function confirmMenu(): InlineKeyboard {
   return [
     [{ text: 'بله، انجام شود', callback_data: encode('cnf') }],
@@ -429,18 +534,16 @@ export function confirmMenu(): InlineKeyboard {
   ];
 }
 
-export const CLAIM_GONE = 'این پرداخت دیگر در انتظار بررسی نیست.';
-
 export function claimApproved(amountIrr: number): string {
-  return `✅ پرداخت ${formatToman(amountIrr)} تایید شد و سفارش مشتری به جریان افتاد.`;
+  return TEXTS_NOW.render('ADMIN_CLAIM_APPROVED', { amount: formatToman(amountIrr) });
 }
 
 export function claimRejected(amountIrr: number): string {
-  return `❌ پرداخت ${formatToman(amountIrr)} رد شد.`;
+  return TEXTS_NOW.render('ADMIN_CLAIM_REJECTED', { amount: formatToman(amountIrr) });
 }
 
 export function claimNotApproved(reason: string): string {
-  return `⛔ تایید انجام نشد: ${reason}`;
+  return TEXTS_NOW.render('ADMIN_CLAIM_NOT_APPROVED', { reason });
 }
 
 /**
@@ -457,16 +560,17 @@ export function referralScreen(
   earnedIrr: number,
   percent: number,
 ): string {
+  const t = TEXTS_NOW;
   return [
-    '👥 زیرمجموعه‌گیری',
+    t.raw('REFERRAL_TITLE'),
     '',
     // No parse_mode anywhere in this bot, so emphasis is quotation marks.
-    `هر کسی با لینک شما وارد شود، از «اولین خرید» او ${percent}٪ به کیف پول شما اضافه می‌شود.`,
+    t.render('REFERRAL_TERMS', { percent }),
     '',
-    `👤 دعوت‌شده‌ها: ${invited.toLocaleString('en-US')}`,
-    `💰 درآمد تا امروز: ${formatToman(earnedIrr)}`,
+    t.render('REFERRAL_INVITED', { count: invited.toLocaleString('en-US') }),
+    t.render('REFERRAL_EARNED', { amount: formatToman(earnedIrr) }),
     '',
-    '🔗 لینک دعوت شما:',
+    t.raw('REFERRAL_LINK_LABEL'),
     link,
   ].join('\n');
 }
@@ -483,9 +587,14 @@ export function referralMenu(): InlineKeyboard {
  * of text that read perfectly well as text.
  */
 export function appsScreen(apps: { name: string; platform: string | null; link: string }[]): string {
-  const lines = ['📱 برنامه‌های پیشنهادی', ''];
+  const t = TEXTS_NOW;
+  const lines = [t.raw('APPS_TITLE'), ''];
   for (const app of apps) {
-    lines.push(app.platform ? `• ${app.name} — ${app.platform}` : `• ${app.name}`);
+    lines.push(
+      app.platform
+        ? t.render('APPS_ITEM', { name: app.name, platform: app.platform })
+        : t.render('APPS_ITEM_NO_PLATFORM', { name: app.name }),
+    );
     lines.push(app.link, '');
   }
   return lines.join('\n').trimEnd();
@@ -499,40 +608,38 @@ export function appsScreen(apps: { name: string; platform: string | null; link: 
  * only honest thing to say here is that it will be applied where it fits.
  */
 export function discountHeldForRenewal(code: string): string {
-  return [
-    `✅ کد «${code}» ثبت شد.`,
-    '',
-    'حالا پلن تمدید را انتخاب کنید؛ اگر کد به آن پلن بخورد، روی فاکتور اعمال می‌شود.',
-  ].join('\n');
+  const t = TEXTS_NOW;
+  return [t.render('DISCOUNT_HELD_TITLE', { code }), '', t.raw('DISCOUNT_HELD_BODY')].join('\n');
 }
 
-
-/**
- * Why a code was refused, in the customer's words.
- *
- * Each reason gets its own sentence. The legacy bot answers "code is not valid"
- * to an expired code, a used-up code and a code for another product alike, and
- * support then has to ask which of the three it was.
- */
-export const DISCOUNT_REFUSED: Record<string, string> = {
-  UNKNOWN_CODE: '❌ چنین کدی وجود ندارد. املای آن را بررسی کنید.',
-  EXPIRED: '❌ مهلت این کد تمام شده است.',
-  USED_UP: '❌ ظرفیت این کد پر شده است.',
-  ALREADY_USED: '❌ شما قبلاً از این کد استفاده کرده‌اید.',
-  NOT_FOR_THIS: '❌ این کد برای این خرید نیست.',
-  NOT_FOR_YOU: '❌ این کد برای حساب شما نیست.',
-  FIRST_PURCHASE_ONLY: '❌ این کد فقط برای اولین خرید است.',
-};
-
 export function discountApplied(code: string, offIrr: number): string {
-  return `✅ کد «${code}» اعمال شد — ${formatToman(offIrr)} تخفیف.`;
+  return TEXTS_NOW.render('DISCOUNT_APPLIED', { code, amount: formatToman(offIrr) });
 }
 
 export function giftCredited(amountIrr: number, balanceIrr: number): string {
+  const t = TEXTS_NOW;
   return [
-    `🎁 کد هدیه اعمال شد و ${formatToman(amountIrr)} به کیف پول شما اضافه شد.`,
-    `💰 موجودی: ${formatToman(balanceIrr)}`,
+    t.render('GIFT_CREDITED', { amount: formatToman(amountIrr) }),
+    t.render('GIFT_BALANCE', { balance: formatToman(balanceIrr) }),
   ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// The four card-to-card invoices
+//
+// They were four near-identical blocks with the same four sentences typed out
+// each time. What actually differs between them is the opening line and the two
+// middle lines naming what is being bought; the rest — the amount, the card, the
+// exact-amount warning — is one screen wearing four hats.
+// ---------------------------------------------------------------------------
+
+/** The card, the warning, and the closing line. Shared by all four invoices. */
+function checkoutTail(cardDigits: string, cardHolder: string | null): string[] {
+  const t = TEXTS_NOW;
+  const lines = [t.raw('CHECKOUT_CARD_LABEL'), formatCard(cardDigits)];
+  if (cardHolder) lines.push(t.render('CHECKOUT_CARD_HOLDER', { name: cardHolder }));
+  lines.push('', t.raw('CHECKOUT_EXACT_WARNING'), t.raw('CHECKOUT_PRESS_BUTTON'));
+  return lines;
 }
 
 /**
@@ -551,23 +658,16 @@ export function checkout(
   cardDigits: string,
   cardHolder: string | null,
 ): string {
-  const lines = [
-    '🧾 سفارش شما ثبت شد. برای تکمیل، مبلغ زیر را کارت‌به‌کارت کنید.',
+  const t = TEXTS_NOW;
+  return [
+    t.raw('CHECKOUT_INTRO'),
     '',
-    `🔖 شمارهٔ سفارش: ${publicId}`,
-    `🔐 سرویس: ${plan.productName}`,
-    `💳 مبلغ دقیق: ${formatToman(totalIrr)}`,
+    t.render('CHECKOUT_ORDER_ID', { id: publicId }),
+    t.render('CHECKOUT_SERVICE', { product: plan.productName }),
+    t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
     '',
-    '🏦 شمارهٔ کارت:',
-    formatCard(cardDigits),
-  ];
-  if (cardHolder) lines.push(`👤 به نام: ${cardHolder}`);
-  lines.push(
-    '',
-    'لطفاً دقیقاً همین مبلغ را واریز کنید — مبلغ متفاوت بررسی دستی می‌خواهد و طول می‌کشد.',
-    'بعد از واریز، دکمهٔ زیر را بزنید.',
-  );
-  return lines.join('\n');
+    ...checkoutTail(cardDigits, cardHolder),
+  ].join('\n');
 }
 
 /**
@@ -616,27 +716,24 @@ export function checkoutMenu(
   return keyboard;
 }
 
-/** Every card is disabled or busy. Honest about it, and does not pretend. */
-
 export function paidRecorded(publicId: string): string {
+  const t = TEXTS_NOW;
   return [
-    '🕓 ممنون. پرداخت شما ثبت شد و در حال بررسی است.',
+    t.raw('PAID_RECORDED_TITLE'),
     '',
-    `🔖 شمارهٔ پیگیری: ${publicId}`,
+    t.render('PAID_TRACKING_ID', { id: publicId }),
     '',
-    'به‌محض تایید تراکنش، سرویس برایتان ارسال می‌شود. معمولاً چند دقیقه طول می‌کشد.',
+    t.raw('PAID_WAIT'),
   ].join('\n');
 }
 
 /** Second press of a button that is already spent. Same screen, no scolding. */
 export function paidAlready(publicId: string): string {
-  return [
-    '🕓 پرداخت این سفارش قبلاً ثبت شده و در حال بررسی است.',
-    '',
-    `🔖 شمارهٔ پیگیری: ${publicId}`,
-  ].join('\n');
+  const t = TEXTS_NOW;
+  return [t.raw('PAID_ALREADY_TITLE'), '', t.render('PAID_TRACKING_ID', { id: publicId })].join(
+    '\n',
+  );
 }
-
 
 /**
  * Sent unprompted once the bank transaction is matched to the payment.
@@ -646,12 +743,13 @@ export function paidAlready(publicId: string): string {
  * "here it is" would not be.
  */
 export function paymentConfirmed(publicId: string): string {
+  const t = TEXTS_NOW;
   return [
-    '✅ پرداخت شما تایید شد.',
+    t.raw('PAYMENT_CONFIRMED_TITLE'),
     '',
-    `🔖 شمارهٔ پیگیری: ${publicId}`,
+    t.render('PAID_TRACKING_ID', { id: publicId }),
     '',
-    'سفارش شما در صف آماده‌سازی قرار گرفت.',
+    t.raw('PAYMENT_CONFIRMED_QUEUED'),
   ].join('\n');
 }
 
@@ -672,11 +770,18 @@ export function serviceReady(
   username: string,
   expiresAt: Date | null,
 ): string {
-  const lines = ['🎉 سرویس شما آماده است.', '', `👤 نام کاربری: ${username}`];
+  const t = TEXTS_NOW;
+  const lines = [t.raw('SERVICE_READY_TITLE'), '', t.render('SERVICE_READY_USERNAME', { username })];
   if (expiresAt !== null) {
-    lines.push(`📅 اعتبار تا: ${formatTehranDate(expiresAt)}`);
+    lines.push(t.render('SERVICE_READY_EXPIRES', { date: formatTehranDate(expiresAt) }));
   }
-  lines.push('', '🔗 لینک اشتراک:', subscriptionUrl, '', 'این لینک را در برنامهٔ خود وارد کنید.');
+  lines.push(
+    '',
+    t.raw('SERVICE_READY_LINK_LABEL'),
+    subscriptionUrl,
+    '',
+    t.raw('SERVICE_READY_HOWTO'),
+  );
   return lines.join('\n');
 }
 
@@ -686,22 +791,19 @@ export function serviceReady(
  * nothing is wrong, it is simply not instant.
  */
 export function serviceBeingPrepared(publicId: string): string {
+  const t = TEXTS_NOW;
   return [
-    '✅ پرداخت شما تایید شد و سفارش ثبت شد.',
+    t.raw('SERVICE_MANUAL_TITLE'),
     '',
-    `🔖 شمارهٔ پیگیری: ${publicId}`,
+    t.render('SERVICE_MANUAL_TRACKING_ID', { id: publicId }),
     '',
-    'این سرویس به‌صورت دستی آماده می‌شود و به‌زودی برایتان ارسال می‌گردد.',
+    t.raw('SERVICE_MANUAL_BODY'),
   ].join('\n');
 }
 
 /**
  * Something went wrong that trying again will not fix.
  *
- * Says the money is safe first. That is the customer's actual question, and the
- * order is sitting in FAILED with a reason attached for whoever picks it up.
- */
-/**
  * `refundedIrr` is what went back into the wallet, or null when nothing did.
  *
  * The old wording said the payment "is safe" whatever had happened. For a bank
@@ -710,24 +812,22 @@ export function serviceBeingPrepared(publicId: string): string {
  * arrived, so "safe" meant "we still have your money". Say which one it was.
  */
 export function serviceNeedsHelp(publicId: string, refundedIrr: number | null = null): string {
+  const t = TEXTS_NOW;
   const lines = [
-    refundedIrr === null
-      ? '⚠️ پرداخت شما ثبت شده و محفوظ است، ولی آماده‌سازی سرویس به مشکل خورد.'
-      : '⚠️ آماده‌سازی سرویس به مشکل خورد.',
+    refundedIrr === null ? t.raw('SERVICE_FAILED_SAFE') : t.raw('SERVICE_FAILED_REFUNDED'),
     '',
-    `🔖 شمارهٔ پیگیری: ${publicId}`,
+    t.render('SERVICE_FAILED_TRACKING_ID', { id: publicId }),
   ];
   if (refundedIrr !== null) {
-    lines.push(`💰 مبلغ ${formatToman(refundedIrr)} به کیف پول شما برگشت.`);
+    lines.push(t.render('SERVICE_FAILED_REFUND_LINE', { amount: formatToman(refundedIrr) }));
   }
-  lines.push('', 'همکاران ما پیگیری می‌کنند. لطفاً این شماره را نگه دارید.');
+  lines.push('', t.raw('SERVICE_FAILED_FOOTER'));
   return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
 // «سرویس های من» — what the customer already owns
 // ---------------------------------------------------------------------------
-
 
 /** How many services fit on one screen without the keyboard becoming a wall. */
 export const SERVICES_PER_PAGE = 8;
@@ -818,15 +918,15 @@ const STATE_GLYPH: Record<ServiceState, string> = {
   FAILED: '⚠️',
 };
 
-const STATE_LABEL: Record<ServiceState, string> = {
-  ACTIVE: 'فعال',
-  EXPIRED: 'تاریخ انقضا گذشته',
-  EXHAUSTED: 'حجم تمام شده',
-  ON_HOLD: 'در انتظار فعال‌سازی',
-  DISABLED: 'غیرفعال',
-  REMOVED: 'حذف شده',
-  FAILED: 'مشکل در آماده‌سازی',
-};
+const STATE_TEXT_KEY = {
+  ACTIVE: 'STATE_ACTIVE',
+  EXPIRED: 'STATE_EXPIRED',
+  EXHAUSTED: 'STATE_EXHAUSTED',
+  ON_HOLD: 'STATE_ON_HOLD',
+  DISABLED: 'STATE_DISABLED',
+  REMOVED: 'STATE_REMOVED',
+  FAILED: 'STATE_FAILED',
+} as const satisfies Record<ServiceState, TextKey>;
 
 /** Telegram wraps a long button onto several lines and the list stops being
  *  scannable. The name carries the plan, the duration and the price, so the
@@ -837,8 +937,9 @@ function shortName(name: string): string {
 }
 
 export function myServicesTitle(total: number, page: number, pages: number): string {
-  const head = `🛍 سرویس‌های شما (${total} مورد)`;
-  return pages > 1 ? `${head}\n\nصفحهٔ ${page} از ${pages}` : head;
+  const t = TEXTS_NOW;
+  const head = t.render('MY_SERVICES_TITLE', { total });
+  return pages > 1 ? `${head}\n\n${t.render('MY_SERVICES_PAGE', { page, pages })}` : head;
 }
 
 /**
@@ -883,7 +984,7 @@ const BAR_CELLS = 10;
  *
  * The isolate is not decoration. This line sits inside a message whose
  * paragraph direction is right-to-left, and block characters carry no
- * direction of their own; between `\u2066` and `\u2069` the bar fills from the
+ * direction of their own; between `⁦` and `⁩` the bar fills from the
  * same end everywhere, instead of from whichever end the surrounding Persian
  * happens to impose.
  *
@@ -900,7 +1001,7 @@ export function usageBar(usedBytes: number, volumeGb: number): string {
   const ratio = usedBytes / (volumeGb * BYTES_PER_GB);
   const percent = ratio >= 1 ? 100 : ratio <= 0 ? 0 : Math.min(99, Math.round(ratio * 100));
   const filled = Math.floor((percent * BAR_CELLS) / 100);
-  return `\u2066${'█'.repeat(filled)}${'░'.repeat(BAR_CELLS - filled)} ${percent}%\u2069`;
+  return `⁦${'█'.repeat(filled)}${'░'.repeat(BAR_CELLS - filled)} ${percent}%⁩`;
 }
 
 /** `1288490188` -> `'1.2 گیگابایت'`. Latin digits, like every other number here. */
@@ -921,56 +1022,68 @@ export function formatGigabytes(bytes: number): string {
  * and nothing on the screen said so.
  */
 export function serviceDetail(service: ServiceView, now: number): string {
+  const t = TEXTS_NOW;
   const state = serviceState(service, now);
   const lines = [
-    `${STATE_GLYPH[state]} ${service.plan_name_at_sale}`,
-    `وضعیت: ${STATE_LABEL[state]}`,
+    t.render('SERVICE_DETAIL_TITLE', {
+      glyph: STATE_GLYPH[state],
+      name: service.plan_name_at_sale,
+    }),
+    t.render('SERVICE_DETAIL_STATE', { state: t.raw(STATE_TEXT_KEY[state]) }),
   ];
   if (service.provider_name_at_sale) {
-    lines.push(`📍 لوکیشن: ${service.provider_name_at_sale}`);
+    lines.push(
+      t.render('SERVICE_DETAIL_LOCATION', { provider: service.provider_name_at_sale }),
+    );
   }
-  lines.push(`🔖 شمارهٔ سرویس: ${service.public_id}`);
+  lines.push(t.render('SERVICE_DETAIL_ID', { id: service.public_id }));
   if (service.remote_username) {
-    lines.push(`👤 نام کاربری: ${service.remote_username}`);
+    lines.push(t.render('SERVICE_DETAIL_USERNAME', { username: service.remote_username }));
   }
 
   lines.push('');
   if (service.volume_gb === null) {
-    lines.push('📦 حجم: نامحدود');
+    lines.push(t.raw('SERVICE_DETAIL_VOLUME_UNLIMITED'));
     if (service.used_bytes !== null) {
-      lines.push(`📊 مصرف شده: ${formatGigabytes(service.used_bytes)}`);
+      lines.push(t.render('SERVICE_DETAIL_USED', { used: formatGigabytes(service.used_bytes) }));
     }
   } else {
-    lines.push(`📦 حجم: ${service.volume_gb.toLocaleString('en-US')} گیگابایت`);
+    lines.push(
+      t.render('SERVICE_DETAIL_VOLUME', { volume: service.volume_gb.toLocaleString('en-US') }),
+    );
     if (service.used_bytes !== null) {
       const remaining = Math.max(0, service.volume_gb * BYTES_PER_GB - service.used_bytes);
       // A zero quota would divide by zero, and a migrated row can carry one.
       if (service.volume_gb > 0) lines.push(usageBar(service.used_bytes, service.volume_gb));
-      lines.push(`📊 مصرف شده: ${formatGigabytes(service.used_bytes)}`);
-      lines.push(`🎯 باقی‌مانده: ${formatGigabytes(remaining)}`);
+      lines.push(t.render('SERVICE_DETAIL_USED', { used: formatGigabytes(service.used_bytes) }));
+      lines.push(
+        t.render('SERVICE_DETAIL_REMAINING', { remaining: formatGigabytes(remaining) }),
+      );
     }
   }
 
   if (service.expires_at === null) {
-    lines.push('📅 اعتبار: بدون محدودیت زمان');
+    lines.push(t.raw('SERVICE_DETAIL_NO_EXPIRY'));
   } else {
     const expiry = new Date(service.expires_at);
-    lines.push(`📅 اعتبار تا: ${formatTehranDate(expiry)}`);
+    lines.push(t.render('SERVICE_DETAIL_EXPIRES', { date: formatTehranDate(expiry) }));
     const daysLeft = Math.ceil((expiry.getTime() - now) / 86_400_000);
-    if (daysLeft > 0) lines.push(`⏳ ${daysLeft.toLocaleString('en-US')} روز باقی مانده`);
+    if (daysLeft > 0) {
+      lines.push(t.render('SERVICE_DETAIL_DAYS_LEFT', { days: daysLeft.toLocaleString('en-US') }));
+    }
   }
 
   if (state === 'ACTIVE' && service.subscription_url) {
-    lines.push('', '🔗 لینک اشتراک:', service.subscription_url);
+    lines.push('', t.raw('SERVICE_DETAIL_LINK_LABEL'), service.subscription_url);
   } else if (state === 'ACTIVE') {
     // Provisioned by a person, or a row migrated from the old bot that the sync
     // has not reached yet. Saying so beats an empty space where a link goes.
-    lines.push('', 'لینک این سرویس هنوز در دسترس نیست. لطفاً به پشتیبانی پیام دهید.');
+    lines.push('', t.raw('SERVICE_DETAIL_NO_LINK'));
   } else if (state === 'EXPIRED' || state === 'EXHAUSTED') {
     // Seen on the real screen: a dead service showed its status, withheld its
     // link, and then said nothing at all — leaving the customer on a screen
     // with no way forward. This is the one thing they can do about it.
-    lines.push('', 'برای استفادهٔ دوباره، از دکمهٔ «♻️ تمدید سرویس» در منوی اصلی اقدام کنید.');
+    lines.push('', t.render('SERVICE_DETAIL_DEAD_HINT', { renewButton: renewButtonLabel() }));
   }
   return lines.join('\n');
 }
@@ -1026,33 +1139,37 @@ export interface ServiceActions {
   timeIrrPerDay: number | null;
 }
 
-/** `1_950_000` → `'195,000 تومان'`. The customer's currency, at the edge only. */
-function toman(irr: number): string {
-  return `${Math.round(irr / 10).toLocaleString('en-US')} تومان`;
+/** What the customer is buying, as one phrase both the invoice and the receipt
+ *  drop into a sentence. */
+function addonQuantity(kind: 'ADD_VOLUME' | 'ADD_TIME', quantity: number): string {
+  const shown = quantity.toLocaleString('en-US');
+  return kind === 'ADD_VOLUME'
+    ? TEXTS_NOW.render('ADDON_QUANTITY_VOLUME', { quantity: shown })
+    : TEXTS_NOW.render('ADDON_QUANTITY_TIME', { quantity: shown });
 }
 
 export function askAddonAmount(kind: 'ADD_VOLUME' | 'ADD_TIME', unitIrr: number): string {
+  const t = TEXTS_NOW;
+  const price = formatToman(unitIrr);
   return kind === 'ADD_VOLUME'
     ? [
-        '➕ خرید حجم اضافه',
+        t.raw('ADDON_VOLUME_TITLE'),
         '',
-        `قیمت هر گیگابایت: ${toman(unitIrr)}`,
+        t.render('ADDON_VOLUME_PRICE', { price }),
         '',
-        'چند گیگابایت می‌خواهید؟ فقط عدد بفرستید — مثلاً 5',
+        t.raw('ADDON_VOLUME_ASK'),
       ].join('\n')
     : [
-        '⏳ خرید زمان اضافه',
+        t.raw('ADDON_TIME_TITLE'),
         '',
-        `قیمت هر روز: ${toman(unitIrr)}`,
+        t.render('ADDON_TIME_PRICE', { price }),
         '',
-        'چند روز می‌خواهید؟ فقط عدد بفرستید — مثلاً 30',
+        t.raw('ADDON_TIME_ASK'),
       ].join('\n');
 }
 
-/** The customer typed something that is not a count. */
-
 export function addonTooMuch(max: number): string {
-  return `بیشترین مقدار در هر خرید ${max.toLocaleString('en-US')} است. عدد کوچک‌تری بفرستید.`;
+  return TEXTS_NOW.render('ADDON_TOO_MUCH', { max: max.toLocaleString('en-US') });
 }
 
 export function addonInvoice(
@@ -1060,19 +1177,22 @@ export function addonInvoice(
   quantity: number,
   totalIrr: number,
 ): string {
-  const what =
-    kind === 'ADD_VOLUME'
-      ? `${quantity.toLocaleString('en-US')} گیگابایت حجم`
-      : `${quantity.toLocaleString('en-US')} روز زمان`;
-  return ['🧾 فاکتور شما:', '', `📦 ${what}`, `💳 مبلغ: ${toman(totalIrr)}`].join('\n');
+  const t = TEXTS_NOW;
+  return [
+    t.raw('ADDON_INVOICE_TITLE'),
+    '',
+    t.render('ADDON_INVOICE_ITEM', { what: addonQuantity(kind, quantity) }),
+    t.render('ADDON_INVOICE_AMOUNT', { amount: formatToman(totalIrr) }),
+  ].join('\n');
 }
 
 /**
  * The checkout for an add-on.
  *
- * Its own screen rather than the plan checkout with a fake plan pushed through
- * it: what is being bought here is a quantity, not a product, and the two lines
- * that differ are exactly the two a customer checks before transferring money.
+ * Its own opening lines rather than the plan checkout with a fake plan pushed
+ * through it: what is being bought here is a quantity, not a product, and the
+ * two lines that differ are exactly the two a customer checks before
+ * transferring money. Everything below them is the shared invoice.
  */
 export function addonCheckout(
   publicId: string,
@@ -1083,27 +1203,19 @@ export function addonCheckout(
   cardDigits: string,
   cardHolder: string | null,
 ): string {
-  const what =
-    kind === 'ADD_VOLUME'
-      ? `${quantity.toLocaleString('en-US')} گیگابایت حجم`
-      : `${quantity.toLocaleString('en-US')} روز زمان`;
-  const lines = [
-    '🧾 سفارش شما ثبت شد. برای تکمیل، مبلغ زیر را کارت‌به‌کارت کنید.',
+  const t = TEXTS_NOW;
+  return [
+    t.raw('CHECKOUT_INTRO'),
     '',
-    `🔖 شمارهٔ سفارش: ${publicId}`,
-    `📦 ${what} برای «${serviceName}»`,
-    `💳 مبلغ دقیق: ${toman(totalIrr)}`,
+    t.render('CHECKOUT_ORDER_ID', { id: publicId }),
+    t.render('CHECKOUT_ADDON_ITEM', {
+      what: addonQuantity(kind, quantity),
+      service: serviceName,
+    }),
+    t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
     '',
-    '🏦 شمارهٔ کارت:',
-    formatCard(cardDigits),
-  ];
-  if (cardHolder) lines.push(`👤 به نام: ${cardHolder}`);
-  lines.push(
-    '',
-    'لطفاً دقیقاً همین مبلغ را واریز کنید — مبلغ متفاوت بررسی دستی می‌خواهد و طول می‌کشد.',
-    'بعد از واریز، دکمهٔ زیر را بزنید.',
-  );
-  return lines.join('\n');
+    ...checkoutTail(cardDigits, cardHolder),
+  ].join('\n');
 }
 
 export function addonApplied(
@@ -1112,16 +1224,19 @@ export function addonApplied(
   serviceName: string,
   expiresAt: Date | null,
 ): string {
+  const t = TEXTS_NOW;
+  const shown = quantity.toLocaleString('en-US');
   const lines = [
     kind === 'ADD_VOLUME'
-      ? `✅ ${quantity.toLocaleString('en-US')} گیگابایت به «${serviceName}» اضافه شد.`
-      : `✅ ${quantity.toLocaleString('en-US')} روز به «${serviceName}» اضافه شد.`,
+      ? t.render('ADDON_APPLIED_VOLUME', { quantity: shown, service: serviceName })
+      : t.render('ADDON_APPLIED_TIME', { quantity: shown, service: serviceName }),
   ];
-  if (expiresAt !== null) lines.push(`📅 اعتبار تا: ${formatTehranDate(expiresAt)}`);
-  lines.push('', 'لینک اشتراک شما عوض نشده و همان قبلی است.');
+  if (expiresAt !== null) {
+    lines.push(t.render('ADDON_APPLIED_EXPIRES', { date: formatTehranDate(expiresAt) }));
+  }
+  lines.push('', t.raw('ADDON_APPLIED_LINK_NOTE'));
   return lines.join('\n');
 }
-
 
 export function confirmRevokeMenu(subscriptionId: number): InlineKeyboard {
   return [
@@ -1131,35 +1246,32 @@ export function confirmRevokeMenu(subscriptionId: number): InlineKeyboard {
 }
 
 export function linkReplaced(subscriptionUrl: string): string {
+  const t = TEXTS_NOW;
   return [
-    '✅ لینک اشتراک عوض شد.',
+    t.raw('LINK_REPLACED_TITLE'),
     '',
-    '🔗 لینک جدید:',
+    t.raw('LINK_REPLACED_LABEL'),
     subscriptionUrl,
     '',
-    'لینک قبلی دیگر کار نمی‌کند.',
+    t.raw('LINK_REPLACED_NOTE'),
   ].join('\n');
 }
 
 export function serviceSwitched(enabled: boolean): string {
   return enabled
-    ? '💡 سرویس روشن شد و دوباره قابل استفاده است.'
-    : '⛔ سرویس خاموش شد. هر وقت خواستید از همین صفحه روشنش کنید — حجم و تاریخ سرویس حساب می‌شود.';
+    ? TEXTS_NOW.raw('SERVICE_SWITCHED_ON')
+    : TEXTS_NOW.raw('SERVICE_SWITCHED_OFF');
 }
 
 /** The panel said no. The reason is the adapter's, and it is written for a person. */
 export function actionFailed(reason: string): string {
-  return ['⚠️ این کار انجام نشد.', '', reason, '', 'کمی بعد دوباره امتحان کنید.'].join('\n');
+  const t = TEXTS_NOW;
+  return [t.raw('ACTION_FAILED_TITLE'), '', reason, '', t.raw('ACTION_FAILED_RETRY')].join('\n');
 }
-
 
 // ---------------------------------------------------------------------------
 // «تمدید سرویس»
 // ---------------------------------------------------------------------------
-
-
-/** The panel the service lives on has renewal switched off — the admin's own
- *  `status_extend` setting, carried over from the old bot. */
 
 /** The list of services, keyed to the renewal flow rather than the detail one. */
 export function renewMenu(
@@ -1198,14 +1310,19 @@ export function renewIntro(
   mode: 'ADD' | 'RESET',
   now: number,
 ): string {
+  const t = TEXTS_NOW;
   const lines = [
-    `♻️ تمدید سرویس`,
+    t.raw('RENEW_INTRO_TITLE'),
     '',
-    `🔐 ${service.plan_name_at_sale}`,
-    `🔖 شمارهٔ سرویس: ${service.public_id}`,
+    t.render('RENEW_INTRO_SERVICE', { service: service.plan_name_at_sale }),
+    t.render('RENEW_INTRO_ID', { id: service.public_id }),
   ];
   if (service.expires_at !== null) {
-    lines.push(`📅 اعتبار فعلی تا: ${formatTehranDate(new Date(service.expires_at))}`);
+    lines.push(
+      t.render('RENEW_INTRO_CURRENT_EXPIRY', {
+        date: formatTehranDate(new Date(service.expires_at)),
+      }),
+    );
   }
   // An ADD panel adds to whatever is left — but only if anything IS left. Seen
   // on the real screen: a service four days past its date, on an ADD panel,
@@ -1216,12 +1333,12 @@ export function renewIntro(
   lines.push(
     '',
     mode === 'ADD' && somethingLeft
-      ? 'زمان و حجم پلنی که انتخاب می‌کنید به باقی‌ماندهٔ فعلی اضافه می‌شود.'
+      ? t.raw('RENEW_MODE_ADD')
       : mode === 'ADD'
-        ? 'اعتبار این سرویس تمام شده، پس زمان پلن جدید از امروز حساب می‌شود.'
-        : 'با تمدید، زمان و حجم از نو شروع می‌شود و مصرف قبلی صفر می‌گردد.',
+        ? t.raw('RENEW_MODE_ADD_EXPIRED')
+        : t.raw('RENEW_MODE_RESET'),
     '',
-    '🛍 پلن تمدید را انتخاب کنید:',
+    t.raw('RENEW_CHOOSE_PLAN'),
   );
   return lines.join('\n');
 }
@@ -1259,7 +1376,7 @@ export function renewPlanMenu(
   return keyboard;
 }
 
-/** The checkout screen for a renewal — same money, different sentence. */
+/** The checkout screen for a renewal — same money, different opening lines. */
 export function renewCheckout(
   publicId: string,
   serviceName: string,
@@ -1269,27 +1386,26 @@ export function renewCheckout(
   cardHolder: string | null,
   applied?: AppliedCode | null,
 ): string {
+  const t = TEXTS_NOW;
   const lines = [
-    '🧾 درخواست تمدید ثبت شد. برای تکمیل، مبلغ زیر را کارت‌به‌کارت کنید.',
+    t.raw('CHECKOUT_INTRO_RENEW'),
     '',
-    `🔖 شمارهٔ سفارش: ${publicId}`,
-    `♻️ تمدید سرویس: ${serviceName}`,
-    `🔐 با پلن: ${plan.productName}`,
+    t.render('CHECKOUT_ORDER_ID', { id: publicId }),
+    t.render('CHECKOUT_RENEW_SERVICE', { service: serviceName }),
+    t.render('CHECKOUT_RENEW_PLAN', { plan: plan.productName }),
   ];
   if (applied && applied.discountIrr > 0) {
-    lines.push(`🏷 کد «${applied.code}»: ${formatToman(applied.discountIrr)} تخفیف`);
+    lines.push(
+      t.render('CHECKOUT_CODE_DISCOUNT', {
+        code: applied.code,
+        amount: formatToman(applied.discountIrr),
+      }),
+    );
   }
   lines.push(
-    `💳 مبلغ دقیق: ${formatToman(totalIrr)}`,
+    t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
     '',
-    '🏦 شمارهٔ کارت:',
-    formatCard(cardDigits),
-  );
-  if (cardHolder) lines.push(`👤 به نام: ${cardHolder}`);
-  lines.push(
-    '',
-    'لطفاً دقیقاً همین مبلغ را واریز کنید — مبلغ متفاوت بررسی دستی می‌خواهد و طول می‌کشد.',
-    'بعد از واریز، دکمهٔ زیر را بزنید.',
+    ...checkoutTail(cardDigits, cardHolder),
   );
   return lines.join('\n');
 }
@@ -1300,11 +1416,16 @@ export function renewCheckout(
  * import by mistake.
  */
 export function serviceRenewed(serviceName: string, expiresAt: Date | null): string {
-  const lines = ['♻️ سرویس شما تمدید شد.', '', `🔐 ${serviceName}`];
+  const t = TEXTS_NOW;
+  const lines = [
+    t.raw('SERVICE_RENEWED_TITLE'),
+    '',
+    t.render('SERVICE_RENEWED_SERVICE', { service: serviceName }),
+  ];
   if (expiresAt !== null) {
-    lines.push(`📅 اعتبار جدید تا: ${formatTehranDate(expiresAt)}`);
+    lines.push(t.render('SERVICE_RENEWED_EXPIRES', { date: formatTehranDate(expiresAt) }));
   }
-  lines.push('', 'لینک اشتراک شما تغییری نکرده و همان قبلی است.');
+  lines.push('', t.raw('SERVICE_RENEWED_LINK_NOTE'));
   return lines.join('\n');
 }
 
@@ -1313,7 +1434,8 @@ export function serviceRenewed(serviceName: string, expiresAt: Date | null): str
 // ---------------------------------------------------------------------------
 
 /**
- * Both say which service, and both point at the same button.
+ * Both say which service, and both point at the same button — by its live
+ * label, not by a copy of it.
  *
  * The service is named because a customer with several — and 1,687 of them have
  * more than one — cannot act on "your service is running out". Mirzabot names
@@ -1321,24 +1443,26 @@ export function serviceRenewed(serviceName: string, expiresAt: Date | null): str
  * recognises.
  */
 export function timeRunningOut(serviceName: string, daysLeft: number): string {
+  const t = TEXTS_NOW;
   return [
-    '⏳ سرویس شما رو به پایان است.',
+    t.raw('WARN_TIME_TITLE'),
     '',
-    `🔐 ${serviceName}`,
-    `📅 ${daysLeft.toLocaleString('en-US')} روز تا پایان اعتبار`,
+    t.render('WARN_SERVICE', { service: serviceName }),
+    t.render('WARN_TIME_DAYS', { days: daysLeft.toLocaleString('en-US') }),
     '',
-    'برای اینکه سرویس‌تان قطع نشود، از دکمهٔ «♻️ تمدید سرویس» در منوی اصلی استفاده کنید.',
+    t.render('WARN_RENEW_HINT', { renewButton: renewButtonLabel() }),
   ].join('\n');
 }
 
 export function volumeRunningOut(serviceName: string, remainingBytes: number): string {
+  const t = TEXTS_NOW;
   return [
-    '📉 حجم سرویس شما رو به پایان است.',
+    t.raw('WARN_VOLUME_TITLE'),
     '',
-    `🔐 ${serviceName}`,
-    `📦 باقی‌مانده: ${formatGigabytes(remainingBytes)}`,
+    t.render('WARN_SERVICE', { service: serviceName }),
+    t.render('WARN_VOLUME_REMAINING', { remaining: formatGigabytes(remainingBytes) }),
     '',
-    'برای اینکه سرویس‌تان قطع نشود، از دکمهٔ «♻️ تمدید سرویس» در منوی اصلی استفاده کنید.',
+    t.render('WARN_RENEW_HINT', { renewButton: renewButtonLabel() }),
   ].join('\n');
 }
 
@@ -1377,17 +1501,17 @@ function formatTehranTime(when: Date): string {
 // ---------------------------------------------------------------------------
 
 /** What a ledger entry is called in a sentence a customer reads. */
-const ENTRY_LABEL: Record<string, string> = {
-  OPENING: 'موجودی اولیه',
-  TOPUP: 'شارژ کیف پول',
-  PURCHASE: 'خرید',
-  REFUND: 'بازگشت وجه',
-  ADMIN_ADJUST: 'اصلاح توسط پشتیبانی',
-  REFERRAL_BONUS: 'پاداش زیرمجموعه',
-  WHEEL_PRIZE: 'جایزهٔ گردونه',
-  TRANSFER_IN: 'انتقال دریافتی',
-  TRANSFER_OUT: 'انتقال ارسالی',
-  GIFT_CODE: 'کد هدیه',
+const ENTRY_TEXT_KEY: Record<string, TextKey> = {
+  OPENING: 'ENTRY_OPENING',
+  TOPUP: 'ENTRY_TOPUP',
+  PURCHASE: 'ENTRY_PURCHASE',
+  REFUND: 'ENTRY_REFUND',
+  ADMIN_ADJUST: 'ENTRY_ADMIN_ADJUST',
+  REFERRAL_BONUS: 'ENTRY_REFERRAL_BONUS',
+  WHEEL_PRIZE: 'ENTRY_WHEEL_PRIZE',
+  TRANSFER_IN: 'ENTRY_TRANSFER_IN',
+  TRANSFER_OUT: 'ENTRY_TRANSFER_OUT',
+  GIFT_CODE: 'ENTRY_GIFT_CODE',
 };
 
 /**
@@ -1401,19 +1525,31 @@ const ENTRY_LABEL: Record<string, string> = {
  * Production contains one, and a customer who owes money is owed the truth.
  */
 export function walletHome(balanceIrr: number, entries: WalletEntryView[]): string {
-  const lines = ['🏦 کیف پول شما', '', `💰 موجودی: ${formatToman(balanceIrr)}`];
+  const t = TEXTS_NOW;
+  const lines = [
+    t.raw('WALLET_TITLE'),
+    '',
+    t.render('WALLET_BALANCE', { balance: formatToman(balanceIrr) }),
+  ];
   if (balanceIrr < 0) {
-    lines.push('', '⚠️ موجودی شما منفی است. تا تسویه نشود امکان خرید از کیف پول نیست.');
+    lines.push('', t.raw('WALLET_NEGATIVE'));
   }
   if (entries.length === 0) {
-    lines.push('', 'هنوز تراکنشی ندارید.');
+    lines.push('', t.raw('WALLET_NO_ENTRIES'));
     return lines.join('\n');
   }
-  lines.push('', '🧾 آخرین تراکنش‌ها:');
+  lines.push('', t.raw('WALLET_HISTORY_TITLE'));
   for (const entry of entries) {
-    const sign = entry.amount_irr < 0 ? '➖' : '➕';
-    const label = ENTRY_LABEL[entry.kind] ?? entry.kind;
-    lines.push(`${sign} ${formatToman(Math.abs(entry.amount_irr))} — ${label}`);
+    const key = ENTRY_TEXT_KEY[entry.kind];
+    lines.push(
+      t.render('WALLET_ENTRY_LINE', {
+        sign: entry.amount_irr < 0 ? '➖' : '➕',
+        amount: formatToman(Math.abs(entry.amount_irr)),
+        // An unmapped kind falls back to its own name. A row written by a
+        // future release must still be readable rather than blank.
+        label: key ? t.raw(key) : entry.kind,
+      }),
+    );
   }
   return lines.join('\n');
 }
@@ -1432,11 +1568,12 @@ export function walletMenu(): InlineKeyboard {
 }
 
 export function chooseTopupAmount(minIrr: number, maxIrr: number): string {
+  const t = TEXTS_NOW;
   return [
-    '💰 چه مبلغی به کیف پول اضافه شود؟',
+    t.raw('TOPUP_TITLE'),
     '',
-    `کمترین مبلغ ${formatToman(minIrr)} و بیشترین ${formatToman(maxIrr)} است.`,
-    'بعد از انتخاب، شمارهٔ کارت برایتان فرستاده می‌شود.',
+    t.render('TOPUP_RANGE', { min: formatToman(minIrr), max: formatToman(maxIrr) }),
+    t.raw('TOPUP_NEXT'),
   ].join('\n');
 }
 
@@ -1467,32 +1604,26 @@ export function topupCheckout(
   cardDigits: string,
   cardHolder: string | null,
 ): string {
-  const lines = [
-    '🧾 درخواست شارژ ثبت شد. برای تکمیل، مبلغ زیر را کارت‌به‌کارت کنید.',
+  const t = TEXTS_NOW;
+  return [
+    t.raw('CHECKOUT_INTRO_TOPUP'),
     '',
-    `🔖 شمارهٔ پیگیری: ${publicId}`,
-    `💳 مبلغ دقیق: ${formatToman(amountIrr)}`,
+    t.render('CHECKOUT_TRACKING_ID', { id: publicId }),
+    t.render('CHECKOUT_AMOUNT', { amount: formatToman(amountIrr) }),
     '',
-    '🏦 شمارهٔ کارت:',
-    formatCard(cardDigits),
-  ];
-  if (cardHolder) lines.push(`👤 به نام: ${cardHolder}`);
-  lines.push(
-    '',
-    'لطفاً دقیقاً همین مبلغ را واریز کنید — مبلغ متفاوت بررسی دستی می‌خواهد و طول می‌کشد.',
-    'بعد از واریز، دکمهٔ زیر را بزنید.',
-  );
-  return lines.join('\n');
+    ...checkoutTail(cardDigits, cardHolder),
+  ].join('\n');
 }
 
 /** Sent by the settle sweep, not by a button: the deposit has landed. */
 export function walletToppedUp(amountIrr: number): string {
+  const t = TEXTS_NOW;
   return [
-    '✅ کیف پول شما شارژ شد.',
+    t.raw('WALLET_TOPPED_UP_TITLE'),
     '',
-    `💰 مبلغ: ${formatToman(amountIrr)}`,
+    t.render('WALLET_TOPPED_UP_AMOUNT', { amount: formatToman(amountIrr) }),
     '',
-    'حالا می‌توانید بدون کارت‌به‌کارت خرید کنید.',
+    t.raw('WALLET_TOPPED_UP_FOOTER'),
   ].join('\n');
 }
 
@@ -1503,13 +1634,13 @@ export function walletToppedUp(amountIrr: number): string {
  * opening the screen showed it.
  */
 export function walletPaid(publicId: string, remainingIrr: number): string {
+  const t = TEXTS_NOW;
   return [
-    '✅ پرداخت از کیف پول انجام شد.',
+    t.raw('WALLET_PAID_TITLE'),
     '',
-    `🔖 شمارهٔ سفارش: ${publicId}`,
-    `💰 موجودی باقی‌مانده: ${formatToman(remainingIrr)}`,
+    t.render('WALLET_PAID_ORDER_ID', { id: publicId }),
+    t.render('WALLET_PAID_REMAINING', { balance: formatToman(remainingIrr) }),
     '',
-    'سرویس در حال آماده‌سازی است و تا لحظاتی دیگر فرستاده می‌شود.',
+    t.raw('WALLET_PAID_FOOTER'),
   ].join('\n');
 }
-

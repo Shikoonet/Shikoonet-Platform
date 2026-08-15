@@ -116,6 +116,37 @@ function redact(message: string, token: string): string {
   return token === '' ? message : message.split(token).join('<token>');
 }
 
+/**
+ * Telegram's hard limit on a message body. Beyond it the call is rejected
+ * outright, so the customer gets nothing at all.
+ */
+export const MAX_MESSAGE_LENGTH = 4096;
+
+/** What replaces the tail, so a cut screen reads as cut rather than as finished. */
+export const TRUNCATION_MARK = '\n…';
+
+/**
+ * A message that is too long, shortened rather than refused.
+ *
+ * Each editable line is capped on its own, which used to be the same thing as
+ * capping the message — a screen was one line. It is not any more: a screen is
+ * now assembled from many lines an admin can lengthen independently, and their
+ * sum is what gets sent. Nothing in the write path can see that sum, because it
+ * depends on the data filling the slots.
+ *
+ * So the last guard sits here, at the one place every screen passes through. A
+ * shop that writes an essay into every line gets a truncated screen; the
+ * alternative is a bot that silently fails to answer, which is how the customer
+ * would otherwise find out.
+ *
+ * The slice is by UTF-16 code unit, matching Telegram's own count.
+ */
+function clamp(text: string): string {
+  if (text.length <= MAX_MESSAGE_LENGTH) return text;
+  console.error(`[telegram] message of ${text.length} characters truncated to fit`);
+  return text.slice(0, MAX_MESSAGE_LENGTH - TRUNCATION_MARK.length) + TRUNCATION_MARK;
+}
+
 /** Omitted entirely when there is no keyboard, so a menu is never sent as `null`. */
 function markup(keyboard?: InlineKeyboard): Record<string, unknown> {
   return keyboard === undefined ? {} : { reply_markup: { inline_keyboard: keyboard } };
@@ -199,14 +230,14 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     },
 
     async sendMessage(chatId, text, keyboard) {
-      await call('sendMessage', { chat_id: chatId, text, ...markup(keyboard) }, 15_000);
+      await call('sendMessage', { chat_id: chatId, text: clamp(text), ...markup(keyboard) }, 15_000);
     },
 
     async editMessageText(chatId, messageId, text, keyboard) {
       try {
         await call(
           'editMessageText',
-          { chat_id: chatId, message_id: messageId, text, ...markup(keyboard) },
+          { chat_id: chatId, message_id: messageId, text: clamp(text), ...markup(keyboard) },
           15_000,
         );
       } catch (err) {

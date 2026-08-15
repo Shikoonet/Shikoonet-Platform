@@ -30,6 +30,8 @@ import {
   MAX_LABEL_LENGTH,
   MAX_TEXT_LENGTH,
   MENU_ACTIONS,
+  SCREEN_IDS,
+  SCREENS,
   TEXT_KEYS,
   TEXTS,
   type ButtonPlacement,
@@ -110,6 +112,10 @@ export function registerBotContentRoutes(
 
     return c.json({
       ok: true,
+      // The screen list travels with the texts rather than being repeated in the
+      // panel: a screen added here must appear there without a second edit, and
+      // a panel with its own copy is a panel that can disagree with the bot.
+      screens: SCREEN_IDS.map((id) => ({ id, label: SCREENS[id] })),
       // The registry is the list, not the table: a text nobody has edited still
       // has to be visible and editable, and it has no row.
       items: TEXT_KEYS.map((key) => {
@@ -117,7 +123,7 @@ export function registerBotContentRoutes(
         const row = overrides.get(key);
         return {
           key,
-          group: entry.group,
+          screen: entry.screen,
           hint: entry.hint,
           placeholders: entry.placeholders,
           default: entry.default,

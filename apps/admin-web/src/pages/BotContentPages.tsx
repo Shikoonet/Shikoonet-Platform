@@ -16,23 +16,12 @@ import { useEffect, useState } from 'react';
 import {
   api,
   ApiError,
+  type BotScreen,
   type BotTextRow,
   type KeyboardButton,
   type MenuActionInfo,
 } from '../api.js';
 import { count, dateTime } from '../format.js';
-
-const GROUP_FA: Record<string, string> = {
-  welcome: 'خوش‌آمد و منو',
-  buy: 'خرید',
-  services: 'سرویس‌های من',
-  renew: 'تمدید',
-  wallet: 'کیف پول',
-  discount: 'کد تخفیف',
-  support: 'پشتیبانی و آموزش',
-  reseller: 'نمایندگی',
-  errors: 'پیام‌های خطا',
-};
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -48,8 +37,10 @@ function message(e: unknown): string {
 
 export function BotTextsPage() {
   const [rows, setRows] = useState<BotTextRow[]>([]);
+  const [screens, setScreens] = useState<BotScreen[]>([]);
   const [maxLength, setMaxLength] = useState(4096);
-  const [group, setGroup] = useState('');
+  const [screen, setScreen] = useState('');
+  const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [err, setErr] = useState<string | null>(null);
@@ -61,6 +52,7 @@ export function BotTextsPage() {
     try {
       const d = await api.botTexts();
       setRows(d.items);
+      setScreens(d.screens);
       setMaxLength(d.maxLength);
     } catch (e) {
       setErr(message(e));
@@ -87,7 +79,18 @@ export function BotTextsPage() {
     }
   }
 
-  const shown = group ? rows.filter((r) => r.group === group) : rows;
+  const screenLabel = (id: string) => screens.find((s) => s.id === id)?.label ?? id;
+
+  // Search covers what the admin actually remembers: the sentence itself, and
+  // the note saying where it appears. Not the key — that is ours, not theirs.
+  const needle = query.trim().toLowerCase();
+  const shown = rows.filter(
+    (r) =>
+      (screen === '' || r.screen === screen) &&
+      (needle === '' ||
+        r.value.toLowerCase().includes(needle) ||
+        r.hint.toLowerCase().includes(needle)),
+  );
   const customised = rows.filter((r) => r.customised).length;
 
   return (
@@ -104,22 +107,35 @@ export function BotTextsPage() {
       <div className="card">
         <div className="filters">
           <div>
-            <label className="form-label" htmlFor="text-group">
-              بخش
+            <label className="form-label" htmlFor="text-screen">
+              صفحه
             </label>
             <select
-              id="text-group"
+              id="text-screen"
               className="form-control"
-              value={group}
-              onChange={(e) => setGroup(e.target.value)}
+              value={screen}
+              onChange={(e) => setScreen(e.target.value)}
             >
-              <option value="">همه</option>
-              {Object.entries(GROUP_FA).map(([v, label]) => (
-                <option key={v} value={v}>
-                  {label}
+              <option value="">همه صفحه‌ها</option>
+              {screens.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
                 </option>
               ))}
             </select>
+          </div>
+          <div>
+            <label className="form-label" htmlFor="text-search">
+              جستجو
+            </label>
+            <input
+              id="text-search"
+              className="form-control"
+              type="search"
+              placeholder="بخشی از جمله یا توضیحش"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
           </div>
         </div>
 
@@ -169,7 +185,7 @@ export function BotTextsPage() {
                     )}
                   </td>
                   <td>
-                    <div>{GROUP_FA[r.group] ?? r.group}</div>
+                    <div>{screenLabel(r.screen)}</div>
                     <div className="page-head__sub">{r.hint}</div>
                   </td>
                   <td>

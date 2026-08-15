@@ -1290,7 +1290,7 @@ async function handleCallback(
       const said =
         kind === 'REVOKE'
           ? outcome.subscriptionUrl === null
-            ? menu.actionFailed('پنل لینک جدیدی برنگرداند')
+            ? menu.actionFailed(menu.ACTION_FAILED_NO_LINK)
             : menu.linkReplaced(outcome.subscriptionUrl)
           : menu.serviceSwitched(kind === 'ENABLE');
       return screen(`${said}\n\n${detail}`, menu.serviceDetailMenu(actionsFor(outcome.service)));

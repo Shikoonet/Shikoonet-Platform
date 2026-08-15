@@ -235,6 +235,18 @@ export interface ResellerRequestRow {
 }
 
 /**
+ * A bot screen, as the registry names it.
+ *
+ * Sent by the server rather than listed here: the screens are defined next to
+ * the texts in `@shikoo/contracts`, and a second list in this file would be the
+ * one that goes stale the first time a screen is added.
+ */
+export interface BotScreen {
+  id: string;
+  label: string;
+}
+
+/**
  * One editable sentence.
  *
  * `default` travels with it so the screen can show what it would say if reset,
@@ -243,7 +255,8 @@ export interface ResellerRequestRow {
  */
 export interface BotTextRow {
   key: string;
-  group: string;
+  /** Which bot screen this line belongs to. Labels come from `BotScreen`. */
+  screen: string;
   hint: string;
   placeholders: string[];
   default: string;
@@ -485,7 +498,12 @@ export const api = {
   },
 
   botTexts() {
-    return req<{ ok: boolean; items: BotTextRow[]; maxLength: number }>('/bot-texts');
+    return req<{
+      ok: boolean;
+      screens: BotScreen[];
+      items: BotTextRow[];
+      maxLength: number;
+    }>('/bot-texts');
   },
 
   saveBotText(key: string, value: string) {
