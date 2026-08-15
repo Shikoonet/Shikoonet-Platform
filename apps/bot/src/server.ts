@@ -8,6 +8,7 @@
 import { createPostgresD1 } from '@shikoo/db';
 import { run } from './poll.js';
 import { createTelegramApi, TELEGRAM_API_BASE } from './telegram.js';
+import { disableCustomEmoji } from './settings.js';
 
 function required(name: string): string {
   const value = process.env[name];
@@ -33,6 +34,9 @@ export function start(): { stop: () => Promise<void> } {
     // Never logged, never echoed back — see telegram.ts.
     token: required('TELEGRAM_BOT_TOKEN'),
     baseUrl: process.env.TELEGRAM_API_BASE ?? TELEGRAM_API_BASE,
+    // There is no API that says whether the bot's owner has Telegram Premium,
+    // so the bot learns it by being refused once and then stops asking.
+    onCustomEmojiRefused: () => disableCustomEmoji(db),
   });
 
   // The bot's own username, learned rather than configured, so the referral

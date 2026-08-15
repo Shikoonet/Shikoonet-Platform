@@ -12,6 +12,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { invalidateBotContent } from './botContent.js';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -100,6 +101,14 @@ export interface ShopSettings {
   /** Card-to-card deposit floor and ceiling, in IRR. */
   topupMinIrr: number;
   topupMaxIrr: number;
+  /**
+   * Whether admin-written text may carry Telegram custom emoji.
+   *
+   * Ours to invent — there is no legacy column for it. Off unless the row says
+   * `true`, because it only works when the bot's *owner* has Telegram Premium
+   * and nothing can check that in advance; the bot finds out by being refused.
+   */
+  customEmoji: boolean;
 }
 
 /**
@@ -117,7 +126,11 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   commissionPercent: 10,
   topupMinIrr: 800_000,
   topupMaxIrr: 100_000_000,
+  customEmoji: false,
 };
+
+/** Where the custom emoji switch lives, named once so nothing mistypes it. */
+export const CUSTOM_EMOJI_SETTING = { scope: 'bot', key: 'custom_emoji' } as const;
 
 const CACHE_MS = 30_000;
 let cached: { at: number; value: ShopSettings } | null = null;
@@ -127,6 +140,34 @@ let warned = false;
 export function invalidateShopSettings(): void {
   cached = null;
   warned = false;
+}
+
+/**
+ * Switches custom emoji off because Telegram refused one.
+ *
+ * Called from the send path's fallback, so it must not throw: the customer's
+ * message has already gone out plain and the only thing left is to stop trying.
+ * A shop that turns this on without the owner having Premium loses the emoji,
+ * not the bot.
+ */
+export async function disableCustomEmoji(db: Db): Promise<void> {
+  try {
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value) VALUES (?1, ?2, 'false'::jsonb)
+         ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value, updated_at = now()`,
+      )
+      .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key)
+      .run();
+    console.error('[bot] telegram refused a custom emoji — the setting is now off');
+  } catch (err) {
+    console.error('[bot] could not switch custom emoji off', err);
+  }
+  invalidateShopSettings();
+  // The wording is cached with the stripping decision baked in, so both caches
+  // have to go or the next thirty seconds keep sending the markup that was
+  // just refused.
+  invalidateBotContent();
 }
 
 /**
@@ -177,13 +218,14 @@ function tomanLimit(value: number | null, fallback: number): number {
 export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSettings> {
   if (cached && now - cached.at < CACHE_MS) return cached.value;
   try {
-    const [extra, timeExtra, switchService, commission, min, max] = await Promise.all([
+    const [extra, timeExtra, switchService, commission, min, max, emoji] = await Promise.all([
       settingText(db, 'shop', 'statusextra'),
       settingText(db, 'shop', 'statustimeextra'),
       settingText(db, 'shop', 'statuschangeservice'),
       settingNumber(db, 'bot', 'affiliatespercentage'),
       settingNumber(db, 'pay', 'minbalancecart'),
       settingNumber(db, 'pay', 'maxbalancecart'),
+      settingText(db, CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key),
     ]);
     const value: ShopSettings = {
       // The "off" words are the legacy schema's, typos included:
@@ -194,6 +236,12 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       commissionPercent: percent(commission, DEFAULT_SHOP_SETTINGS.commissionPercent),
       topupMinIrr: tomanLimit(min, DEFAULT_SHOP_SETTINGS.topupMinIrr),
       topupMaxIrr: tomanLimit(max, DEFAULT_SHOP_SETTINGS.topupMaxIrr),
+      // Opt-in, and only on the exact word — the opposite of the legacy
+      // switches above, which stay ON unless they hold their own off-word.
+      // The difference is deliberate: those describe a shop that has been
+      // selling for years, this one describes a Premium subscription the bot
+      // cannot verify it has.
+      customEmoji: emoji === 'true',
     };
     // A floor above the ceiling would leave no amount a customer could deposit.
     // Two rows edited one at a time can pass through that state, so the pair is

@@ -696,7 +696,15 @@ export const api = {
       screens: BotScreen[];
       items: BotTextRow[];
       maxLength: number;
+      customEmoji: boolean;
     }>('/bot-texts');
+  },
+
+  setCustomEmoji(enabled: boolean) {
+    return req<{ ok: boolean; enabled: boolean }>('/bot-custom-emoji', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    });
   },
 
   saveBotText(key: string, value: string) {

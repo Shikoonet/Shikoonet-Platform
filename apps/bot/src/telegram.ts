@@ -17,6 +17,7 @@
  */
 
 import { z } from 'zod';
+import { hasCustomEmoji, stripCustomEmoji, toTelegramHtml } from '@shikoo/contracts';
 
 const TelegramUserSchema = z.object({
   id: z.number().int(),
@@ -107,6 +108,16 @@ export interface TelegramApiOptions {
   /** Points at the fake in tests and at api.telegram.org in production. */
   baseUrl?: string;
   fetch?: typeof globalThis.fetch;
+  /**
+   * Called once when Telegram refuses a message that carried custom emoji.
+   *
+   * The bot cannot know whether its owner has Premium — there is no API that
+   * says so — so it finds out by being told no. The caller uses this to switch
+   * the feature off, so the shop stops paying a failed send and a retry for
+   * every screen. An admin who turns it on without Premium must not be able to
+   * stop their own bot answering.
+   */
+  onCustomEmojiRefused?: () => void | Promise<void>;
 }
 
 export const TELEGRAM_API_BASE = 'https://api.telegram.org';
@@ -195,6 +206,44 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     return envelope.data.result;
   }
 
+  /**
+   * Sends a body, and lands safely if it carried custom emoji Telegram refused.
+   *
+   * Plain text is the ordinary path and is untouched — `parse_mode` is still set
+   * nowhere for a message with no markup in it, so a Persian sentence full of
+   * `<` and `&` is as safe as it was before this feature existed.
+   *
+   * A message that does carry markup goes as HTML with everything outside the
+   * tags escaped. If Telegram *rejects* it — which is what happens when the
+   * bot's owner has no Premium, and there is no API that would have told us
+   * beforehand — the tags become their own fallback emoji and the message is
+   * sent once more as plain text. The customer gets the screen; the shop gets
+   * the feature switched off rather than a bot that has stopped answering.
+   *
+   * A network failure is not a refusal and is rethrown. `call()` says which is
+   * which: "rejected" is Telegram answering, "failed" is not reaching it. Auto
+   * disabling on a dropped connection would turn a blip into a setting change.
+   */
+  async function withEmojiFallback(
+    text: string,
+    send: (body: Record<string, unknown>) => Promise<unknown>,
+  ): Promise<void> {
+    const clamped = clamp(text);
+    if (!hasCustomEmoji(clamped)) {
+      await send({ text: clamped });
+      return;
+    }
+    try {
+      await send({ text: toTelegramHtml(clamped), parse_mode: 'HTML' });
+      return;
+    } catch (err) {
+      if (!String(err).includes('rejected')) throw err;
+      console.error('[telegram] custom emoji refused, falling back to plain text');
+    }
+    await send({ text: stripCustomEmoji(clamped) });
+    await options.onCustomEmojiRefused?.();
+  }
+
   return {
     async getMe() {
       const result = await call('getMe', {}, 15_000);
@@ -230,15 +279,19 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     },
 
     async sendMessage(chatId, text, keyboard) {
-      await call('sendMessage', { chat_id: chatId, text: clamp(text), ...markup(keyboard) }, 15_000);
+      await withEmojiFallback(text, (body) =>
+        call('sendMessage', { chat_id: chatId, ...body, ...markup(keyboard) }, 15_000),
+      );
     },
 
     async editMessageText(chatId, messageId, text, keyboard) {
       try {
-        await call(
-          'editMessageText',
-          { chat_id: chatId, message_id: messageId, text: clamp(text), ...markup(keyboard) },
-          15_000,
+        await withEmojiFallback(text, (body) =>
+          call(
+            'editMessageText',
+            { chat_id: chatId, message_id: messageId, ...body, ...markup(keyboard) },
+            15_000,
+          ),
         );
       } catch (err) {
         // Pressing the same button twice asks Telegram to replace a message

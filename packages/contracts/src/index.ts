@@ -9,6 +9,7 @@
 export * from './device-auth.js';
 export * from './money.js';
 export * from './adminPermissions.js';
+export * from './customEmoji.js';
 export * from './mirzabot.js';
 export * from './botTexts.js';
 export * from './botKeyboard.js';

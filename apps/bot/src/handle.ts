@@ -211,7 +211,13 @@ export async function handleUpdate(
   // read of shop-wide configuration, not of this customer's data.
   // Both are shop-wide configuration read outside the session, both fall back
   // to what the code ships, and neither can fail the update.
-  const [content, shop] = await Promise.all([loadBotContent(db), loadShopSettings(db)]);
+  //
+  // In series rather than in parallel: `Texts` needs to know whether the shop
+  // has custom emoji on before it decides whether to keep the markup in an
+  // override or strip it to the fallback emoji. Both are cached for thirty
+  // seconds, so this is one extra round trip twice a minute, not per update.
+  const shop = await loadShopSettings(db);
+  const content = await loadBotContent(db, Date.now(), shop.customEmoji);
   menu.applyContent(content);
   SHOP = shop;
 

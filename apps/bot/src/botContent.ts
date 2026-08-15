@@ -133,7 +133,19 @@ async function half<T>(what: string, read: () => Promise<T>, fallback: T): Promi
   }
 }
 
-export async function loadBotContent(db: Db, now = Date.now()): Promise<BotContent> {
+/**
+ * @param customEmoji whether the shop has Telegram custom emoji switched on.
+ *
+ * Passed in rather than read here, because `loadShopSettings` already reads it
+ * and two readers of one switch is one too many — they would disagree for the
+ * length of a cache window, and the disagreement would show as angle brackets
+ * in front of a customer.
+ */
+export async function loadBotContent(
+  db: Db,
+  now = Date.now(),
+  customEmoji = false,
+): Promise<BotContent> {
   if (cached && now - cached.at < CONTENT_CACHE_MS) return cached.content;
   failed = false;
   const [overrides, layouts] = await Promise.all([
@@ -141,8 +153,11 @@ export async function loadBotContent(db: Db, now = Date.now()): Promise<BotConte
     half('the bot keyboards', () => readLayouts(db), DEFAULT_LAYOUTS as Layouts),
   ]);
   // `Texts` drops any override that fails its own check, so a row written by
-  // hand cannot reach a customer even though the API would have refused it.
-  const content: BotContent = { texts: new Texts(overrides), layouts };
+  // hand cannot reach a customer even though the API would have refused it. It
+  // also strips custom emoji markup when the shop has the feature off, which is
+  // what makes switching it off — or having it switched off automatically —
+  // leave the shop's own wording in place.
+  const content: BotContent = { texts: new Texts(overrides, customEmoji), layouts };
   // A failed read is not cached. Caching it would hold the defaults for the
   // next thirty seconds after the database came back, for no gain.
   if (failed) {

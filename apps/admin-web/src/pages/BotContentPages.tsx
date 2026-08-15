@@ -40,6 +40,7 @@ export function BotTextsPage() {
   const [rows, setRows] = useState<BotTextRow[]>([]);
   const [screens, setScreens] = useState<BotScreen[]>([]);
   const [maxLength, setMaxLength] = useState(4096);
+  const [customEmoji, setCustomEmoji] = useState(false);
   const [screen, setScreen] = useState('');
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
@@ -55,8 +56,28 @@ export function BotTextsPage() {
       setRows(d.items);
       setScreens(d.screens);
       setMaxLength(d.maxLength);
+      setCustomEmoji(d.customEmoji);
     } catch (e) {
       setErr(message(e));
+    }
+  }
+
+  async function toggleCustomEmoji(next: boolean) {
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await api.setCustomEmoji(next);
+      setCustomEmoji(next);
+      setDone(
+        next
+          ? 'ایموجی سفارشی روشن شد. اگر صاحب ربات پرمیوم نداشته باشد، ربات اولین بار که تلگرام رد کند خودش خاموشش می‌کند.'
+          : 'ایموجی سفارشی خاموش شد. متن‌هایی که تگ دارند با همان ایموجی جایگزین فرستاده می‌شوند.',
+      );
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -103,6 +124,27 @@ export function BotTextsPage() {
             {count(rows.length)} متن · {count(customised)} تغییر داده شده
           </div>
         </div>
+      </div>
+
+      <div className="card">
+        <div className="card__head">
+          <span className="card__title">ایموجی سفارشی تلگرام</span>
+          <button
+            type="button"
+            className={customEmoji ? 'btn btn-primary' : 'btn'}
+            disabled={busy}
+            onClick={() => void toggleCustomEmoji(!customEmoji)}
+          >
+            {customEmoji ? 'روشن' : 'خاموش'}
+          </button>
+        </div>
+        <p className="muted" style={{ marginBlockStart: 0 }}>
+          وقتی روشن باشد می‌توانید داخل هر متن{' '}
+          <span className="ltr">{'<tg-emoji emoji-id="…">🔥</tg-emoji>'}</span> بنویسید. این فقط
+          زمانی کار می‌کند که <strong>صاحب ربات</strong> اشتراک تلگرام پرمیوم داشته باشد — و راهی
+          نیست که از قبل بشود فهمید. اگر تلگرام رد کند، همان پیام با ایموجی جایگزین فرستاده می‌شود و
+          این کلید خودکار خاموش می‌شود؛ نوشتهٔ شما دست‌نخورده می‌ماند.
+        </p>
       </div>
 
       <div className="card">

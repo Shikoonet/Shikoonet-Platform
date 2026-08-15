@@ -48,6 +48,12 @@
  * sentences silently.
  */
 
+import {
+  checkCustomEmoji,
+  stripCustomEmoji,
+  type CustomEmojiProblem,
+} from './customEmoji.js';
+
 /** A slot in a text, as an admin writes it. */
 const PLACEHOLDER = /\{([a-zA-Z][a-zA-Z0-9_]*)\}/g;
 
@@ -1590,7 +1596,8 @@ export type OverrideProblem =
   | { kind: 'EMPTY' }
   | { kind: 'TOO_LONG'; limit: number }
   | { kind: 'MISSING_PLACEHOLDER'; names: string[] }
-  | { kind: 'UNKNOWN_PLACEHOLDER'; names: string[] };
+  | { kind: 'UNKNOWN_PLACEHOLDER'; names: string[] }
+  | CustomEmojiProblem;
 
 /**
  * Telegram refuses a message body longer than this.
@@ -1609,10 +1616,19 @@ export const MAX_TEXT_LENGTH = 4096;
  * Returns null when the override is acceptable. Pure, so the admin API and the
  * bot can reach the same verdict without either calling the other.
  */
-export function checkOverride(key: string, value: string): OverrideProblem | null {
+export function checkOverride(
+  key: string,
+  value: string,
+  options: { customEmoji?: boolean } = {},
+): OverrideProblem | null {
   if (!isTextKey(key)) return { kind: 'UNKNOWN_KEY' };
   if (value.trim() === '') return { kind: 'EMPTY' };
   if (value.length > MAX_TEXT_LENGTH) return { kind: 'TOO_LONG', limit: MAX_TEXT_LENGTH };
+  // Off by default. A caller that does not know whether the shop has custom
+  // emoji switched on is a caller that must not accept markup — the failure of
+  // guessing "on" is angle brackets in front of a customer.
+  const emoji = checkCustomEmoji(value, options.customEmoji === true);
+  if (emoji !== null) return emoji;
 
   // Widened on purpose: `as const` makes this a union of literal tuples, and
   // the comparison below is against slots an admin typed, which are plain
@@ -1636,10 +1652,23 @@ export function checkOverride(key: string, value: string): OverrideProblem | nul
 export class Texts {
   private readonly overrides: Partial<Record<TextKey, string>>;
 
-  constructor(overrides: Record<string, string> = {}) {
+  /**
+   * @param customEmoji whether the shop has custom emoji switched on.
+   *
+   * When it is off, markup in a stored override is **stripped to its fallback
+   * emoji**, not rejected. Rejecting would drop the whole override and put the
+   * shipped default in front of the customer — so switching the feature off, or
+   * having it switched off automatically after Telegram refused, would silently
+   * throw away every sentence the shop had rewritten. Falling back to the
+   * fallback is what the markup is for.
+   */
+  constructor(overrides: Record<string, string> = {}, customEmoji = false) {
     const kept: Partial<Record<TextKey, string>> = {};
-    for (const [key, value] of Object.entries(overrides)) {
-      if (isTextKey(key) && checkOverride(key, value) === null) kept[key] = value;
+    for (const [key, raw] of Object.entries(overrides)) {
+      const value = customEmoji ? raw : stripCustomEmoji(raw);
+      if (isTextKey(key) && checkOverride(key, value, { customEmoji }) === null) {
+        kept[key] = value;
+      }
     }
     this.overrides = kept;
   }

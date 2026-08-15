@@ -79,7 +79,27 @@ function textProblem(problem: NonNullable<ReturnType<typeof checkOverride>>): st
       return `این متن باید ${problem.names.map((n) => `{${n}}`).join('، ')} را داشته باشد، وگرنه مقدارش به مشتری نمی‌رسد.`;
     case 'UNKNOWN_PLACEHOLDER':
       return `${problem.names.map((n) => `{${n}}`).join('، ')} برای این متن معنا ندارد و عیناً به مشتری نشان داده می‌شود.`;
+    case 'NOT_ALLOWED':
+      return 'ایموجی سفارشی خاموش است. کلیدش بالای همین صفحه است — و فقط وقتی کار می‌کند که صاحب ربات اشتراک تلگرام پرمیوم داشته باشد.';
+    case 'MALFORMED_TAG':
+      return 'تگ درست نیست. شکل صحیح: <tg-emoji emoji-id="۵۳۶۸…">🔥</tg-emoji> و هیچ تگ دیگری پذیرفته نمی‌شود.';
+    case 'BAD_FALLBACK':
+      return 'بین دو تگ باید دقیقاً یک ایموجی باشد — همان چیزی که به مشتری بدون پرمیوم نشان داده می‌شود.';
   }
+}
+
+/**
+ * Whether the shop has custom emoji on, read at save time.
+ *
+ * Not cached here. This runs when an admin presses save, a few times a day, and
+ * a stale answer would either refuse markup the shop just enabled or accept
+ * markup it just turned off.
+ */
+async function customEmojiOn(db: D1Database): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT value FROM settings WHERE scope = 'bot' AND key = 'custom_emoji'`)
+    .first<{ value: unknown }>();
+  return row?.value === true || row?.value === 'true';
 }
 
 function layoutProblem(problem: NonNullable<ReturnType<typeof checkLayout>>): string {
@@ -146,7 +166,51 @@ export function registerBotContentRoutes(
         };
       }),
       maxLength: MAX_TEXT_LENGTH,
+      // Sent with the texts so the editor can say whether markup will be
+      // accepted before the admin types it, rather than after they press save.
+      customEmoji: await customEmojiOn(c.env.DB),
     });
+  });
+
+  /**
+   * The custom emoji switch, on its own route.
+   *
+   * Separate from `/settings` because turning it on is not a settings edit like
+   * the others — it is a claim about a Telegram Premium subscription this code
+   * cannot verify, and the bot switches it back off the first time Telegram
+   * refuses a message. The panel needs to be able to say that in one place.
+   */
+  app.post('/api/v1/admin/bot-custom-emoji', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const body = z
+      .object({ enabled: z.boolean() })
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+
+    const before = await customEmojiOn(c.env.DB);
+    await c.env.DB.prepare(
+      `INSERT INTO settings (scope, key, value, updated_by)
+       VALUES ('bot', 'custom_emoji', ?1::jsonb, ?2)
+       ON CONFLICT (scope, key) DO UPDATE
+         SET value = excluded.value, updated_at = now(), updated_by = excluded.updated_by`,
+    )
+      .bind(body.data.enabled ? 'true' : 'false', ident.email)
+      .run();
+
+    await audit(
+      c.env.DB,
+      ident,
+      'bot.custom_emoji_switched',
+      'SETTING',
+      'bot/custom_emoji',
+      { enabled: before },
+      { enabled: body.data.enabled },
+      null,
+    );
+    return c.json({ ok: true, enabled: body.data.enabled });
   });
 
   app.post('/api/v1/admin/bot-texts', async (c) => {
@@ -159,7 +223,7 @@ export function registerBotContentRoutes(
 
     if (!isTextKey(key)) return c.json({ ok: false, error: 'unknown_key' }, 404);
 
-    const problem = checkOverride(key, value);
+    const problem = checkOverride(key, value, { customEmoji: await customEmojiOn(c.env.DB) });
     if (problem) {
       return c.json({ ok: false, error: 'invalid_text', detail: textProblem(problem) }, 400);
     }

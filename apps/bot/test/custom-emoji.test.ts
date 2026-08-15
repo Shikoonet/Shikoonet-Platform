@@ -1,0 +1,305 @@
+/**
+ * Telegram custom emoji: the escape, the switch, and the safe landing.
+ *
+ * Three things are being defended here, and they fail in different directions.
+ *
+ * The **escape** is a trust boundary. Every message the bot sends today is plain
+ * text — `parse_mode` is set nowhere — so a Persian sentence containing `<` or
+ * `&` is harmless. The moment one message goes as HTML, those characters become
+ * a parse error and the customer gets nothing. So HTML is used for exactly the
+ * messages that carry the markup, and everything outside the tags is escaped.
+ *
+ * The **switch** decides whether markup may be stored at all, and turning it off
+ * must not throw away the shop's wording.
+ *
+ * The **landing** is what happens when Telegram says no — which is what it does
+ * when the bot's owner has no Premium, and there is no API that would have said
+ * so first.
+ */
+
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  checkCustomEmoji,
+  checkOverride,
+  hasCustomEmoji,
+  stripCustomEmoji,
+  Texts,
+  toTelegramHtml,
+} from '@shikoo/contracts';
+import { assertSchema, db } from './helpers/env.js';
+import { ensureCatalog, makeCustomer } from './helpers/shop.js';
+import { handleUpdate } from '../src/handle.js';
+import { createTelegramApi } from '../src/telegram.js';
+import {
+  CUSTOM_EMOJI_SETTING,
+  disableCustomEmoji,
+  invalidateShopSettings,
+  loadShopSettings,
+} from '../src/settings.js';
+import { invalidateBotContent } from '../src/botContent.js';
+
+const FIRE = '<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji>';
+
+let nextId = 0;
+function ids(): { updateId: number; telegramId: number } {
+  const n = ++nextId * 10;
+  return { updateId: 977_000 + n, telegramId: 866_000 + n };
+}
+
+function startUpdate(updateId: number, telegramId: number) {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      from: { id: telegramId, username: `ce${telegramId}` },
+      chat: { id: telegramId },
+      text: '/start',
+    },
+  };
+}
+
+async function setSwitch(on: boolean): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO settings (scope, key, value) VALUES (?1, ?2, ?3::jsonb)
+       ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+    )
+    .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key, on ? 'true' : 'false')
+    .run();
+  invalidateShopSettings();
+  invalidateBotContent();
+}
+
+async function putText(key: string, value: string): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO bot_texts (key, value) VALUES (?1, ?2)
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    )
+    .bind(key, value)
+    .run();
+  invalidateBotContent();
+}
+
+async function clearAll(): Promise<void> {
+  await db.prepare(`DELETE FROM bot_texts`).run();
+  await db
+    .prepare(`DELETE FROM settings WHERE scope = ?1 AND key = ?2`)
+    .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key)
+    .run();
+  invalidateShopSettings();
+  invalidateBotContent();
+}
+
+beforeAll(async () => {
+  await assertSchema();
+  await ensureCatalog();
+});
+beforeEach(clearAll);
+afterEach(async () => {
+  await clearAll();
+  vi.restoreAllMocks();
+});
+
+describe('the markup itself', () => {
+  it('recognises a well-formed tag and nothing else', () => {
+    expect(hasCustomEmoji(`سلام ${FIRE}`)).toBe(true);
+    expect(hasCustomEmoji('سلام 🔥')).toBe(false);
+    // An id that is not digits is not a tag we will send.
+    expect(hasCustomEmoji('<tg-emoji emoji-id="abc">🔥</tg-emoji>')).toBe(false);
+  });
+
+  it('refuses a fallback that is not exactly one emoji', () => {
+    // Telegram requires one, and the fallback is the whole of what a customer
+    // without Premium sees — two of them, or a letter, is a broken screen for
+    // most of the shop's customers rather than a cosmetic problem.
+    expect(checkCustomEmoji('<tg-emoji emoji-id="5">🔥🔥</tg-emoji>', true)).toEqual({
+      kind: 'BAD_FALLBACK',
+    });
+    expect(checkCustomEmoji('<tg-emoji emoji-id="5">x</tg-emoji>', true)).toEqual({
+      kind: 'BAD_FALLBACK',
+    });
+    // A family emoji is several code points and still one emoji.
+    expect(checkCustomEmoji('<tg-emoji emoji-id="5">👨‍👩‍👧</tg-emoji>', true)).toBeNull();
+  });
+
+  it('refuses any other tag, so nothing else reaches an HTML parser', () => {
+    for (const bad of [`<b>پررنگ</b> ${FIRE}`, '<tg-emoji emoji-id="5">🔥']) {
+      expect(checkCustomEmoji(bad, true), bad).toEqual({ kind: 'MALFORMED_TAG' });
+    }
+  });
+
+  it('escapes everything outside the tags', () => {
+    // The failure this prevents: one message goes as HTML, and a `<` an admin
+    // typed in an ordinary sentence becomes a parse error Telegram answers 400
+    // to. The customer gets nothing and the log says "bad request".
+    const html = toTelegramHtml(`قیمت < ۱۰۰ & ${FIRE} "نقل"`);
+    expect(html).toContain('&lt;');
+    expect(html).toContain('&amp;');
+    expect(html).toContain('&quot;');
+    expect(html).toContain('<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji>');
+    // Exactly one tag survives — nothing an admin typed became markup.
+    expect(html.match(/<tg-emoji/g)).toHaveLength(1);
+    expect(html.match(/<(?!tg-emoji|\/tg-emoji)/g)).toBeNull();
+  });
+
+  it('falls back to the emoji between the tags', () => {
+    expect(stripCustomEmoji(`سلام ${FIRE} خوش آمدید`)).toBe('سلام 🔥 خوش آمدید');
+  });
+});
+
+describe('the switch', () => {
+  it('is off unless the row says so, and is not a legacy off-word', async () => {
+    // The shop switches read "on unless it holds its off-word", because they
+    // describe a shop that has been selling for years. This one describes a
+    // Premium subscription the bot cannot verify it has, so it is the other way
+    // round.
+    expect((await loadShopSettings(db)).customEmoji).toBe(false);
+    await setSwitch(true);
+    expect((await loadShopSettings(db)).customEmoji).toBe(true);
+    await setSwitch(false);
+    expect((await loadShopSettings(db)).customEmoji).toBe(false);
+  });
+
+  it('refuses markup at the write path while it is off', () => {
+    expect(checkOverride('WELCOME', `سلام ${FIRE}`)).toEqual({ kind: 'NOT_ALLOWED' });
+    expect(checkOverride('WELCOME', `سلام ${FIRE}`, { customEmoji: true })).toBeNull();
+  });
+
+  it('strips markup rather than dropping the shop’s sentence', async () => {
+    // The important one. Rejecting the override would put the SHIPPED default
+    // in front of the customer, so turning the feature off — or having it
+    // turned off automatically — would silently throw away every sentence the
+    // shop had rewritten.
+    const rewritten = `به فروشگاه ما خوش آمدید ${FIRE}`;
+    const off = new Texts({ WELCOME: rewritten }, false);
+    expect(off.raw('WELCOME')).toBe('به فروشگاه ما خوش آمدید 🔥');
+
+    const on = new Texts({ WELCOME: rewritten }, true);
+    expect(on.raw('WELCOME')).toBe(rewritten);
+  });
+
+  it('sends the fallback to a real customer while it is off', async () => {
+    await putText('WELCOME', `خوش آمدید ${FIRE}`);
+    await setSwitch(false);
+
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const out = await handleUpdate(db, startUpdate(updateId, telegramId));
+    const text = out.replies[0]?.text ?? '';
+    expect(text).toContain('خوش آمدید 🔥');
+    expect(text).not.toContain('tg-emoji');
+
+    // And with the switch on, the markup survives to the send path, which is
+    // where it becomes HTML.
+    await setSwitch(true);
+    const again = ids();
+    await makeCustomer(again.telegramId);
+    const on = await handleUpdate(db, startUpdate(again.updateId, again.telegramId));
+    expect(on.replies[0]?.text ?? '').toContain('tg-emoji');
+  });
+});
+
+describe('sending it, and being refused', () => {
+  /** A Telegram that answers however the test says, and records what it got. */
+  function fakeTelegram(answers: ('ok' | 'reject' | 'network')[]) {
+    const bodies: Record<string, unknown>[] = [];
+    let call = 0;
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+      const answer = answers[call++] ?? 'ok';
+      if (answer === 'network') throw new Error('socket hang up');
+      return new Response(
+        JSON.stringify(
+          answer === 'ok'
+            ? { ok: true, result: {} }
+            : { ok: false, description: 'Bad Request: CUSTOM_EMOJI_INVALID' },
+        ),
+        { status: answer === 'ok' ? 200 : 400 },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    return { bodies, fetchImpl };
+  }
+
+  it('leaves a plain message plain', async () => {
+    // The ordinary path, and the one that must not change: `parse_mode` is
+    // still set nowhere for a message with no markup, so a sentence full of `<`
+    // is as safe as it was before this feature existed.
+    const { bodies, fetchImpl } = fakeTelegram(['ok']);
+    const api = createTelegramApi({ token: 't', baseUrl: 'https://x.test', fetch: fetchImpl });
+    await api.sendMessage(1, 'قیمت < ۱۰۰ هزار');
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]!['parse_mode']).toBeUndefined();
+    expect(bodies[0]!['text']).toBe('قیمت < ۱۰۰ هزار');
+  });
+
+  it('sends markup as escaped HTML', async () => {
+    const { bodies, fetchImpl } = fakeTelegram(['ok']);
+    const api = createTelegramApi({ token: 't', baseUrl: 'https://x.test', fetch: fetchImpl });
+    await api.sendMessage(1, `قیمت < ۱۰۰ ${FIRE}`);
+    expect(bodies[0]!['parse_mode']).toBe('HTML');
+    expect(bodies[0]!['text']).toContain('&lt;');
+    expect(bodies[0]!['text']).toContain('<tg-emoji');
+  });
+
+  it('lands the message plain when Telegram refuses, and says so once', async () => {
+    // No API tells the bot whether its owner has Premium. It finds out here.
+    const refused = vi.fn();
+    const { bodies, fetchImpl } = fakeTelegram(['reject', 'ok']);
+    const api = createTelegramApi({
+      token: 't',
+      baseUrl: 'https://x.test',
+      fetch: fetchImpl,
+      onCustomEmojiRefused: refused,
+    });
+
+    await expect(api.sendMessage(1, `خوش آمدید ${FIRE}`)).resolves.toBeUndefined();
+    expect(bodies).toHaveLength(2);
+    // The customer got the screen, with the fallback emoji in it.
+    expect(bodies[1]!['text']).toBe('خوش آمدید 🔥');
+    expect(bodies[1]!['parse_mode']).toBeUndefined();
+    expect(refused).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not switch the feature off because the network dropped', async () => {
+    // A blip is not a refusal. Auto-disabling on one would turn a dropped
+    // connection into a setting change nobody made.
+    const refused = vi.fn();
+    const { fetchImpl } = fakeTelegram(['network']);
+    const api = createTelegramApi({
+      token: 't',
+      baseUrl: 'https://x.test',
+      fetch: fetchImpl,
+      onCustomEmojiRefused: refused,
+    });
+
+    await expect(api.sendMessage(1, `خوش آمدید ${FIRE}`)).rejects.toThrow();
+    expect(refused).not.toHaveBeenCalled();
+  });
+
+  it('turns the setting off in the database, and the bot obeys it', async () => {
+    await setSwitch(true);
+    await putText('WELCOME', `خوش آمدید ${FIRE}`);
+
+    // Warm BOTH caches by sending a real screen first. Without this the test
+    // proves nothing about the second cache: the wording is loaded with the
+    // stripping decision already baked in, so an empty content cache would
+    // reload correctly no matter what `disableCustomEmoji` invalidated.
+    const warm = ids();
+    await makeCustomer(warm.telegramId);
+    const before = await handleUpdate(db, startUpdate(warm.updateId, warm.telegramId));
+    expect(before.replies[0]?.text ?? '').toContain('tg-emoji');
+    expect((await loadShopSettings(db)).customEmoji).toBe(true);
+
+    await disableCustomEmoji(db);
+
+    expect((await loadShopSettings(db)).customEmoji).toBe(false);
+    // Both caches went, so the very next screen is already plain — not thirty
+    // seconds of sending the markup that was just refused.
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const out = await handleUpdate(db, startUpdate(updateId, telegramId));
+    expect(out.replies[0]?.text ?? '').toContain('خوش آمدید 🔥');
+    expect(out.replies[0]?.text ?? '').not.toContain('tg-emoji');
+  });
+});
