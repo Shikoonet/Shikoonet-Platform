@@ -52,16 +52,21 @@ function types(updateId: number, telegramId: number, text: string): TelegramUpda
   };
 }
 
-async function makeAdmin(telegramId: number, role = 'ADMIN'): Promise<number> {
+async function makeAdmin(
+  telegramId: number,
+  role = 'ADMIN',
+  permissions: Record<string, boolean> = {},
+): Promise<number> {
   await makeCustomer(telegramId);
   const row = await db
     .prepare(
-      `INSERT INTO admins (telegram_id, username, role, active)
-       VALUES (?1, ?2, ?3, true)
-       ON CONFLICT (telegram_id) DO UPDATE SET active = true, role = EXCLUDED.role
+      `INSERT INTO admins (telegram_id, username, role, permissions, active)
+       VALUES (?1, ?2, ?3, ?4::jsonb, true)
+       ON CONFLICT (telegram_id) DO UPDATE
+         SET active = true, role = EXCLUDED.role, permissions = EXCLUDED.permissions
        RETURNING id`,
     )
-    .bind(telegramId, `adm${telegramId}`, role)
+    .bind(telegramId, `adm${telegramId}`, role, JSON.stringify(permissions))
     .first<{ id: number }>();
   return row!.id;
 }
@@ -342,6 +347,140 @@ describe('what a SUPPORT operator may do', () => {
 
       expect(out.replies[0]?.text, role).toContain('تایید شد');
     }
+  });
+});
+
+describe('per-operator permissions', () => {
+  // The role is now a default, not the rule. `admins.permissions` has existed
+  // since `0005_ops.sql` and nothing ever read it; every production row holds
+  // `{}`, which is why an empty object has to keep meaning what the role has
+  // always meant rather than deny-all.
+
+  const buttons = (out: { replies: { keyboard?: { callback_data: string }[][] }[] }) =>
+    (out.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data);
+
+  it('lets a SUPPORT operator reject once that is granted, and no more', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT', { 'claims.reject': true });
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId } = await makeClaim(customer);
+
+    await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+    await handleUpdate(db, press(updateId + 1, telegramId, 'rej'));
+    await handleUpdate(db, press(updateId + 2, telegramId, 'cnf'));
+
+    const claim = await db
+      .prepare(`SELECT status FROM payment_claims WHERE id = ?1`)
+      .bind(claimId)
+      .first<{ status: string }>();
+    expect(claim?.status).toBe('REJECTED');
+
+    // Granting one decision grants exactly one: approving without a bank
+    // transaction is still refused.
+    const other = ids();
+    const { claimId: second } = await makeClaim(other.telegramId);
+    await handleUpdate(db, press(updateId + 3, telegramId, `clv:${second}`));
+    const refused = await handleUpdate(db, press(updateId + 4, telegramId, 'apx'));
+    expect(refused.replies[0]?.text).toBe(menu.ADMIN_NOT_ALLOWED);
+  });
+
+  it('takes a decision away from an ADMIN when it is revoked', async () => {
+    // The other direction: the default is "everything", and `false` overrides.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'ADMIN', { 'claims.approve_without_tx': false });
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId } = await makeClaim(customer);
+
+    await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+    const out = await handleUpdate(db, press(updateId + 1, telegramId, 'apx'));
+    expect(out.replies[0]?.text).toBe(menu.ADMIN_NOT_ALLOWED);
+
+    const claim = await db
+      .prepare(`SELECT status FROM payment_claims WHERE id = ?1`)
+      .bind(claimId)
+      .first<{ status: string }>();
+    expect(claim?.status).toBe('PENDING');
+  });
+
+  it('does not draw a button the operator would be refused', async () => {
+    // Not a guard — `callback_data` is a field anyone can post and the refusal
+    // above stands on its own. This is so the shop does not look broken.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT');
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId, transactionId } = await makeClaim(customer, { withTransaction: true });
+
+    const detail = await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+    const shown = buttons(detail);
+    expect(shown).not.toContain('apx');
+    expect(shown).not.toContain('rej');
+    expect(shown.some((d) => d.startsWith('apv:'))).toBe(false);
+    // The way back is not a permission, and is still there.
+    expect(shown).toContain('clm');
+
+    // An ADMIN on the same claim sees all three.
+    const boss = ids();
+    await makeAdmin(boss.telegramId, 'ADMIN');
+    const asAdmin = await handleUpdate(db, press(boss.updateId, boss.telegramId, `clv:${claimId}`));
+    const bossButtons = buttons(asAdmin);
+    expect(bossButtons).toContain('apx');
+    expect(bossButtons).toContain('rej');
+    expect(bossButtons).toContain(`apv:${transactionId}`);
+  });
+
+  it('hides the queue from an operator who may not read it', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT', { 'claims.view': false });
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    await makeClaim(customer);
+
+    const panel = await handleUpdate(db, types(updateId, telegramId, '/panel'));
+    expect(buttons(panel)).not.toContain('clm');
+
+    // And pressing it anyway is refused, because the keyboard is not the guard.
+    const forged = await handleUpdate(db, press(updateId + 1, telegramId, 'clm'));
+    expect(forged.replies[0]?.text).toBe(menu.ADMIN_NOT_ALLOWED);
+  });
+
+  it('never locks an OWNER out of their own shop', async () => {
+    // An owner who could revoke their own `claims.view` would close the payment
+    // queue with no way back that does not involve SQL.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'OWNER', {
+      'claims.view': false,
+      'claims.approve': false,
+      'claims.reject': false,
+      'claims.approve_without_tx': false,
+    });
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId } = await makeClaim(customer);
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+    expect(out.replies[0]?.text).not.toBe(menu.ADMIN_NOT_ALLOWED);
+    expect(buttons(out)).toContain('apx');
+  });
+
+  it('ignores a permissions column that is not an object', async () => {
+    // Hand-edited rows exist. An array or a string reads as "nothing set",
+    // which falls back to the role — not to deny-all, and not to a crash.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'ADMIN');
+    await db
+      .prepare(`UPDATE admins SET permissions = '["claims.approve"]'::jsonb WHERE telegram_id = ?1`)
+      .bind(telegramId)
+      .run();
+
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId } = await makeClaim(customer);
+    const out = await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+    expect(out.replies[0]?.text).not.toBe(menu.ADMIN_NOT_ALLOWED);
+    expect(buttons(out)).toContain('rej');
   });
 });
 

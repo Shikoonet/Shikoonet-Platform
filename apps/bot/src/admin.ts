@@ -22,6 +22,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { may, type AdminPermission, type BotAdminRole } from '@shikoo/contracts';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -29,25 +30,52 @@ export interface BotAdmin {
   id: number;
   telegramId: number;
   username: string | null;
-  role: 'OWNER' | 'ADMIN' | 'SUPPORT';
+  role: BotAdminRole;
+  /** `admins.permissions`, raw. Read it through `can()`, never directly. */
+  permissions: Record<string, unknown>;
 }
 
 /** The admin row for a Telegram id, or null. Inactive rows are not admins. */
 export async function adminFor(db: Db, telegramId: number): Promise<BotAdmin | null> {
   const row = await db
     .prepare(
-      `SELECT id, telegram_id, username, role FROM admins
+      `SELECT id, telegram_id, username, role, permissions FROM admins
         WHERE telegram_id = ?1 AND active`,
     )
     .bind(telegramId)
-    .first<{ id: number; telegram_id: number; username: string | null; role: string }>();
+    .first<{
+      id: number;
+      telegram_id: number;
+      username: string | null;
+      role: string;
+      permissions: unknown;
+    }>();
   if (!row) return null;
   return {
     id: row.id,
     telegramId: row.telegram_id,
     username: row.username,
-    role: row.role as BotAdmin['role'],
+    role: row.role as BotAdminRole,
+    // jsonb arrives parsed, but a hand-edited row could hold an array or a
+    // string. Anything that is not a plain object reads as "nothing set", which
+    // falls back to what the role has always meant rather than to deny-all.
+    permissions:
+      row.permissions !== null && typeof row.permissions === 'object' && !Array.isArray(row.permissions)
+        ? (row.permissions as Record<string, unknown>)
+        : {},
   };
+}
+
+/**
+ * Whether this admin may do this.
+ *
+ * The one question every admin action asks, so that the answer cannot differ
+ * between the button that is drawn and the branch that runs. Drawing a button
+ * an operator is then refused is not a security failure, but it is a way to
+ * make somebody think the shop is broken.
+ */
+export function can(admin: BotAdmin, permission: AdminPermission): boolean {
+  return may(admin.role, admin.permissions, permission);
 }
 
 /**

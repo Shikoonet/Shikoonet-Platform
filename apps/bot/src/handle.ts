@@ -30,9 +30,11 @@ import {
   verifyMirzabotClaim,
   verifyMirzabotClaimWithoutTransaction,
 } from '@shikoo/domain';
+import { permissionsOf, type AdminPermission } from '@shikoo/contracts';
 import {
   adminFor,
   audit,
+  can,
   type BotAdmin,
   candidateTransactions,
   claimById,
@@ -250,7 +252,13 @@ export async function handleUpdate(
       const waiting = await countClaimsAwaitingReview(tx);
       return {
         status: 'processed',
-        replies: [reply(message.chat.id, menu.adminHome(waiting), menu.adminMenu(waiting))],
+        replies: [
+          reply(
+            message.chat.id,
+            menu.adminHome(waiting),
+            menu.adminMenu(waiting, permissionsOf(admin.role, admin.permissions)),
+          ),
+        ],
       };
     }
     // Everything else typed is an answer to something the bot asked, and what
@@ -765,13 +773,34 @@ async function heldCode(
 const CLAIMS_PER_PAGE = 6;
 
 /**
- * The admin actions that move money, as opposed to look at it.
+ * Which permission each admin action needs.
  *
- * `apx` and `rej` only write the pending decision to `bot_sessions`, but they
- * are here too: an operator who cannot confirm has no business being asked to,
+ * `apx` and `rej` are here even though they only write a pending decision to
+ * `bot_sessions`: an operator who cannot confirm has no business being asked to,
  * and refusing at the button is a clearer answer than refusing at the end.
+ *
+ * `cnf` is absent because it carries no verb of its own — what it confirms is
+ * whatever was asked for, so it is checked against the pending decision instead.
+ * A single permission on `cnf` would be either too weak (a rejecter confirming
+ * an approve-without-transaction) or too strong.
  */
-const ADMIN_WRITE_ACTIONS: ReadonlySet<string> = new Set(['apv', 'apx', 'rej', 'cnf']);
+const ACTION_PERMISSIONS: Record<string, readonly AdminPermission[]> = {
+  clm: ['claims.view'],
+  clv: ['claims.view'],
+  apv: ['claims.approve'],
+  apx: ['claims.approve_without_tx'],
+  rej: ['claims.reject'],
+  // Any one of these gets `cnf` through the door — an operator who can decide
+  // nothing has nothing to confirm. Which decision it actually is gets checked
+  // again below, against the session, because the two can differ.
+  cnf: ['claims.reject', 'claims.approve_without_tx'],
+};
+
+/** What `cnf` is really doing, once the pending decision is known. */
+const DECISION_PERMISSION: Record<'APPROVE_NO_TX' | 'REJECT', AdminPermission> = {
+  APPROVE_NO_TX: 'claims.approve_without_tx',
+  REJECT: 'claims.reject',
+};
 
 /**
  * The admin panel's callbacks, after `admins` has already said yes.
@@ -788,9 +817,22 @@ async function handleAdmin(
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
   telegramId: number,
 ): Promise<HandleOutcome> {
+  const allowed = permissionsOf(admin.role, admin.permissions);
+
   const home = async (): Promise<HandleOutcome> => {
     const waiting = await countClaimsAwaitingReview(tx);
-    return screen(menu.adminHome(waiting), menu.adminMenu(waiting));
+    return screen(menu.adminHome(waiting), menu.adminMenu(waiting, allowed));
+  };
+
+  /** Refuses, writes it down, and puts the operator back on a screen they own. */
+  const refuse = async (...permissions: AdminPermission[]): Promise<HandleOutcome> => {
+    await audit(tx, admin, 'claim.action.refused', 'payment_claim', action.ref ?? '-', {
+      reason: `role ${admin.role} may not ${permissions.join(' or ')}`,
+    });
+    return screen(
+      menu.ADMIN_NOT_ALLOWED,
+      menu.adminMenu(await countClaimsAwaitingReview(tx), allowed),
+    );
   };
 
   /** The claim this admin is looking at, re-read every time. */
@@ -813,14 +855,14 @@ async function handleAdmin(
   ): Promise<HandleOutcome> => {
     const claim = await currentClaim();
     const userId = await adminSessionUser(tx, telegramId);
-    if (!claim || userId === null) return screen(menu.CLAIM_GONE, menu.adminMenu(0));
+    if (!claim || userId === null) return screen(menu.CLAIM_GONE, menu.adminMenu(0, allowed));
     await ask(tx, userId, 'admin:claim', { claimId: claim.id, decision });
     return screen(text, menu.confirmMenu());
   };
 
   const showList = async (page: number): Promise<HandleOutcome> => {
     const total = await countClaimsAwaitingReview(tx);
-    if (total === 0) return screen(menu.NO_CLAIMS, menu.adminMenu(0));
+    if (total === 0) return screen(menu.NO_CLAIMS, menu.adminMenu(0, allowed));
     const pages = Math.max(1, Math.ceil(total / CLAIMS_PER_PAGE));
     const at = Math.min(Math.max(page, 1), pages);
     const claims = await claimsAwaitingReview(tx, CLAIMS_PER_PAGE, (at - 1) * CLAIMS_PER_PAGE);
@@ -830,33 +872,27 @@ async function handleAdmin(
   const showClaim = async (claimId: string): Promise<HandleOutcome> => {
     const claim = await claimById(tx, claimId);
     if (!claim || !['PENDING', 'MATCH_SUGGESTED'].includes(claim.status)) {
-      return screen(menu.CLAIM_GONE, menu.adminMenu(await countClaimsAwaitingReview(tx)));
+      return screen(menu.CLAIM_GONE, menu.adminMenu(await countClaimsAwaitingReview(tx), allowed));
     }
     const candidates = await candidateTransactions(tx, claim.id);
     await rememberClaim(tx, telegramId, claim.id);
-    return screen(menu.claimDetail(claim, candidates), menu.claimDetailMenu(candidates));
+    return screen(menu.claimDetail(claim, candidates), menu.claimDetailMenu(candidates, allowed));
   };
 
-  // Reading a claim is not deciding one.
+  // Reading a claim is not deciding one, and neither is drawing the button.
   //
-  // `adminFor` proves the sender is an admin; until now nothing proved WHICH.
-  // `admin.role` was carried through this whole function and read exactly once,
-  // inside `audit()`, to translate SUPPORT into the dashboard's REVIEWER — so a
-  // SUPPORT operator marking an order paid with no bank transaction behind it
-  // was written down faithfully and never stopped. A record is not a guard.
+  // `adminFor` proves the sender is an admin; it does not say which. `role` used
+  // to be read exactly once in this whole function, inside `audit()`, to
+  // translate SUPPORT into the dashboard's REVIEWER — so a SUPPORT operator
+  // marking an order paid with no bank transaction behind it was written down
+  // faithfully and never stopped. A record is not a guard.
   //
-  // The dashboard has answered this since it was written: every one of its 14
-  // write routes is behind `role !== 'ADMIN'`. Same operation, same money, so
-  // the same standard.
-  //
-  // Coarse on purpose. Per-action permissions and a screen to set them are
-  // their own slice; the gap this closes is live now and one condition shuts it.
-  if (ADMIN_WRITE_ACTIONS.has(action.action) && admin.role === 'SUPPORT') {
-    await audit(tx, admin, 'claim.action.refused', 'payment_claim', action.ref ?? '-', {
-      reason: `role ${admin.role} may not ${action.action}`,
-    });
-    return screen(menu.ADMIN_NOT_ALLOWED, menu.adminMenu(await countClaimsAwaitingReview(tx)));
-  }
+  // That gap was shut with one condition over four action names. This is its
+  // generalisation: the same question, per action, answered from the row rather
+  // than from a hard-coded role. `callback_data` is a field anyone can post, so
+  // this runs whether or not the button was ever drawn.
+  const needed = ACTION_PERMISSIONS[action.action];
+  if (needed !== undefined && !needed.some((p) => can(admin, p))) return refuse(...needed);
 
   switch (action.action) {
     case 'pnl':
@@ -871,7 +907,7 @@ async function handleAdmin(
     case 'apv': {
       if (action.ref === undefined) return IGNORED;
       const claim = await currentClaim();
-      if (!claim) return screen(menu.CLAIM_GONE, menu.adminMenu(0));
+      if (!claim) return screen(menu.CLAIM_GONE, menu.adminMenu(0, allowed));
       // `verifyMirzabotClaim` is the only path allowed to settle one of these.
       // It re-checks the account, the amount and both sides being unconsumed,
       // and writes through the partial unique indexes that stop one bank
@@ -886,7 +922,7 @@ async function handleAdmin(
         await audit(tx, admin, 'claim.approve.failed', 'payment_claim', claim.id, {
           reason: result.error,
         });
-        return screen(menu.claimNotApproved(result.error), menu.adminMenu(0));
+        return screen(menu.claimNotApproved(result.error), menu.adminMenu(0, allowed));
       }
       await audit(tx, admin, 'claim.approve', 'payment_claim', claim.id, {
         after: { transactionId: action.ref, amountIrr: claim.expected_amount_irr },
@@ -894,7 +930,7 @@ async function handleAdmin(
       await clearAdminSession(tx, telegramId);
       return screen(
         menu.claimApproved(claim.expected_amount_irr),
-        menu.adminMenu(await countClaimsAwaitingReview(tx)),
+        menu.adminMenu(await countClaimsAwaitingReview(tx), allowed),
       );
     }
 
@@ -907,17 +943,23 @@ async function handleAdmin(
     case 'cnf': {
       const pending = await pendingDecision(tx, telegramId);
       const claim = await currentClaim();
-      if (!claim || pending === null) return screen(menu.CLAIM_GONE, menu.adminMenu(0));
+      if (!claim || pending === null) return screen(menu.CLAIM_GONE, menu.adminMenu(0, allowed));
+      // Checked here rather than at the top: `cnf` means whatever the session
+      // says it means. An operator whose permission was taken away while the
+      // confirmation screen was open is refused now, not carried through by a
+      // decision they were allowed to ask for a minute ago.
+      const forDecision = DECISION_PERMISSION[pending];
+      if (!can(admin, forDecision)) return refuse(forDecision);
       if (pending === 'REJECT') {
         const done = await rejectClaim(tx, claim.id);
-        if (!done) return screen(menu.CLAIM_GONE, menu.adminMenu(0));
+        if (!done) return screen(menu.CLAIM_GONE, menu.adminMenu(0, allowed));
         await audit(tx, admin, 'claim.reject', 'payment_claim', claim.id, {
           after: { amountIrr: claim.expected_amount_irr },
         });
         await clearAdminSession(tx, telegramId);
         return screen(
           menu.claimRejected(claim.expected_amount_irr),
-          menu.adminMenu(await countClaimsAwaitingReview(tx)),
+          menu.adminMenu(await countClaimsAwaitingReview(tx), allowed),
         );
       }
       const result = await verifyMirzabotClaimWithoutTransaction(
@@ -928,7 +970,7 @@ async function handleAdmin(
         await audit(tx, admin, 'claim.approve.failed', 'payment_claim', claim.id, {
           reason: result.error,
         });
-        return screen(menu.claimNotApproved(result.error), menu.adminMenu(0));
+        return screen(menu.claimNotApproved(result.error), menu.adminMenu(0, allowed));
       }
       await audit(tx, admin, 'claim.approve.no_transaction', 'payment_claim', claim.id, {
         after: { amountIrr: claim.expected_amount_irr },
@@ -937,7 +979,7 @@ async function handleAdmin(
       await clearAdminSession(tx, telegramId);
       return screen(
         menu.claimApproved(claim.expected_amount_irr),
-        menu.adminMenu(await countClaimsAwaitingReview(tx)),
+        menu.adminMenu(await countClaimsAwaitingReview(tx), allowed),
       );
     }
 

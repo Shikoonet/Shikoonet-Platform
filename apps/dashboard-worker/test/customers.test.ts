@@ -245,6 +245,89 @@ describe('POST /api/v1/admin/customers/:id/wallet', () => {
     expect(await ledgerSum(id)).toBe(-1_000_000);
   });
 
+  it('lets a corrected amount through instead of swallowing it', async () => {
+    // The failure this catches: an admin types 500,000, sees the mistake before
+    // it lands, corrects it to 5,000,000 and submits again. The form keeps the
+    // key it generated when it opened, so with the amount outside the key the
+    // second submit is a silent no-op — the response says the money moved, and
+    // it did, at the wrong number. Nothing anywhere reports a problem.
+    const { id } = await makeCustomer('adj_corrected');
+    const send = (amountIrr: number) =>
+      app.request(
+        `/api/v1/admin/customers/${id}/wallet`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ amountIrr, note: 'refund', idempotencyKey: 'form-open-9912' }),
+        },
+        envAs(ADMIN),
+      );
+
+    const typo = (await (await send(500_000)).json()) as { applied: boolean };
+    const fixed = (await (await send(5_000_000)).json()) as { applied: boolean };
+    expect(typo.applied).toBe(true);
+    expect(fixed.applied).toBe(true);
+    expect(await entryCount(id)).toBe(2);
+
+    // And the double-submit this key exists for still collapses.
+    const again = (await (await send(5_000_000)).json()) as { applied: boolean };
+    expect(again.applied).toBe(false);
+    expect(await entryCount(id)).toBe(2);
+    expect(await ledgerSum(id)).toBe(5_500_000);
+  });
+
+  it('writes down the balance its own entry produced, not a passer-by’s', async () => {
+    // `wallets.balance_irr` is derived by a trigger, and the INSERT and the
+    // read-back used to be two statements with no transaction around them. The
+    // window between them is not theoretical: the trigger's
+    // `INSERT … ON CONFLICT DO UPDATE` takes a row lock on the wallet and holds
+    // it until COMMIT, so with the two in one transaction nobody else can move
+    // that balance in between — and without it, the lock is released the moment
+    // the entry lands and the next writer's total is what gets written down.
+    //
+    // Eight adjustments at once, on one wallet. Every audit row must satisfy
+    // after = before + amount; a row that recorded somebody else's total will
+    // not. The failing rows are named rather than counted, because "some row is
+    // wrong" is not a useful thing to read at 3am.
+    const { id } = await makeCustomer('adj_interleaved');
+    const amounts = [100_000, 200_000, 300_000, 400_000, 500_000, 600_000, 700_000, 800_000];
+
+    await Promise.all(
+      amounts.map((amountIrr, i) =>
+        app.request(
+          `/api/v1/admin/customers/${id}/wallet`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              amountIrr,
+              note: `concurrent ${i}`,
+              idempotencyKey: `interleaved-${i}`,
+            }),
+          },
+          envAs(ADMIN),
+        ),
+      ),
+    );
+
+    const logs = await baseEnv.DB.prepare(
+      `SELECT before_json, after_json FROM audit_logs
+        WHERE entity_type = 'CUSTOMER' AND entity_id = ?1 AND action = 'customer.wallet_adjusted'`,
+    )
+      .bind(String(id))
+      .all<{ before_json: string; after_json: string }>();
+
+    expect(logs.results).toHaveLength(amounts.length);
+    const wrong = (logs.results ?? [])
+      .map((row) => ({ before: JSON.parse(row.before_json), after: JSON.parse(row.after_json) }))
+      .filter((r) => r.before.balance_irr + r.after.amount_irr !== r.after.balance_irr);
+    expect(wrong).toEqual([]);
+
+    // And the ledger still adds up, which is the outer guarantee.
+    expect(await ledgerSum(id)).toBe(3_600_000);
+    expect(await walletBalance(id)).toBe(3_600_000);
+  });
+
   it('keeps two admins editing the same wallet from overwriting each other', async () => {
     const { id } = await makeCustomer('adj_concurrent');
     const adjust = (amount: number, key: string) =>

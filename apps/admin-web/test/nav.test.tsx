@@ -56,6 +56,7 @@ describe('navigation', () => {
       'settings',
       'texts',
       'keyboard',
+      'access',
     ];
     expect([...ALL].sort()).toEqual([...implemented].sort());
   });

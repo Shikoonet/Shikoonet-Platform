@@ -25,6 +25,7 @@ export type PageId =
   | 'discounts'
   | 'texts'
   | 'keyboard'
+  | 'access'
   | 'settings';
 
 export interface NavItem {
@@ -56,6 +57,7 @@ export const NAV: NavGroup[] = [
     items: [
       { id: 'panels', label: 'مدیریت پنل‌ها', icon: 'server' },
       { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket' },
+      { id: 'access', label: 'دسترسی‌ها', icon: 'users' },
     ],
   },
   {
@@ -67,6 +69,27 @@ export const NAV: NavGroup[] = [
     ],
   },
 ];
+
+/**
+ * The sections a READ_ONLY operator can actually open.
+ *
+ * The server decides this — `mayRead` in `apps/dashboard-worker/src/access.ts`
+ * is the guard, and it answers 403 whatever this file says. What this list is
+ * for is not drawing a section that will only ever show an error: a panel that
+ * offers a door and then refuses it reads as broken rather than as a boundary.
+ *
+ * Kept here rather than derived from a route, because a section is not a path —
+ * «سرویس‌ها» reads `/subscriptions` and the sidebar has no idea.
+ */
+export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
+  'dashboard',
+  'products',
+  'panels',
+  'discounts',
+  'texts',
+  'keyboard',
+  'settings',
+]);
 
 const BY_ID = new Map(NAV.flatMap((g) => g.items).map((i) => [i.id, i]));
 

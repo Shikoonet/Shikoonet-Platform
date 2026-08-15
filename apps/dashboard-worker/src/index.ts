@@ -32,7 +32,7 @@ import {
   buildSmsRelayConfig,
   MIRZABOT_SOURCE,
 } from '@shikoo/contracts';
-import { devBypassActive, lookupRole, verifyAccess } from './access.js';
+import { devBypassActive, lookupRole, mayRead, verifyAccess } from './access.js';
 import { securityHeaders, originGuard } from './security.js';
 import { registerMirzabotRoutes, loadPaymentCardsForAccounts } from './mirzabotRoutes.js';
 import { registerAnalyticsRoutes } from './analyticsRoutes.js';
@@ -44,6 +44,7 @@ import { registerPanelRoutes } from './panelRoutes.js';
 import { registerDiscountRoutes } from './discountRoutes.js';
 import { registerSalesRoutes } from './salesRoutes.js';
 import { registerSettingsRoutes } from './settingsRoutes.js';
+import { registerAdminAccessRoutes } from './adminAccessRoutes.js';
 import { registerBotContentRoutes } from './botContentRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
@@ -149,6 +150,13 @@ app.use('*', async (c, next) => {
   if (!ident) return c.json({ ok: false, error: 'unauthorized' }, 401);
   const role = await lookupRole(c.env.DB, ident.email);
   if (!role) return c.json({ ok: false, error: 'forbidden' }, 403);
+  // Reading is not free on this surface. Writes have always been ADMIN-only per
+  // route; reads were open to every signed-in role, which made READ_ONLY a
+  // label rather than a limit. One check here rather than fifteen in the
+  // routes, so route sixteen inherits it.
+  if (admin && !mayRead(c.req.path, role)) {
+    return c.json({ ok: false, error: 'forbidden', detail: 'این بخش از دسترس نقش شما بیرون است.' }, 403);
+  }
   c.set('identity', { email: ident.email, role });
   await next();
 });
@@ -4439,6 +4447,7 @@ registerPanelRoutes(app);
 registerDiscountRoutes(app);
 registerSalesRoutes(app);
 registerSettingsRoutes(app);
+registerAdminAccessRoutes(app);
 registerBotContentRoutes(app);
 
 export default app;

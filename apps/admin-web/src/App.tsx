@@ -13,8 +13,10 @@
  * is already handled server-side.
  */
 
-import { useState } from 'react';
-import { NAV, pageLabel, type PageId } from './nav.js';
+import { useEffect, useState } from 'react';
+import { NAV, pageLabel, READABLE_BY_READER, type PageId } from './nav.js';
+import { api, type PanelRole } from './api.js';
+import { AccessPage } from './pages/AccessPage.js';
 import { Icon } from './icons.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
@@ -36,7 +38,15 @@ import './theme.css';
  * admin. That badge, and the placeholder page behind it, are gone with the last
  * unbuilt section.
  */
-function Body({ page, go }: { page: PageId; go: (id: PageId) => void }) {
+function Body({
+  page,
+  go,
+  role,
+}: {
+  page: PageId;
+  go: (id: PageId) => void;
+  role: PanelRole | null;
+}) {
   switch (page) {
     case 'dashboard':
       return <DashboardPage onGo={go} />;
@@ -62,12 +72,27 @@ function Body({ page, go }: { page: PageId; go: (id: PageId) => void }) {
       return <BotTextsPage />;
     case 'keyboard':
       return <KeyboardPage />;
+    case 'access':
+      return <AccessPage role={role} />;
   }
 }
 
 export function App() {
   const [page, setPage] = useState<PageId>('dashboard');
   const [navOpen, setNavOpen] = useState(false);
+  const [role, setRole] = useState<PanelRole | null>(null);
+
+  // Asked once. Until it answers, `role` is null and every section is drawn —
+  // the alternative is a sidebar that visibly rearranges itself a moment after
+  // the page opens. The server refuses whatever this gets wrong.
+  useEffect(() => {
+    void api
+      .me()
+      .then((m) => setRole(m.role))
+      .catch(() => setRole(null));
+  }, []);
+
+  const visible = (id: PageId) => role !== 'READ_ONLY' || READABLE_BY_READER.has(id);
 
   function go(id: PageId) {
     setPage(id);
@@ -107,7 +132,7 @@ export function App() {
         {NAV.map((group) => (
           <div key={group.label}>
             <div className="sidebar-section-label">{group.label}</div>
-            {group.items.map((item) => (
+            {group.items.filter((item) => visible(item.id)).map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -141,7 +166,7 @@ export function App() {
 
       <section id="main-content">
         <div className="wrapper">
-          <Body page={page} go={go} />
+          <Body page={page} go={go} role={role} />
         </div>
       </section>
     </>

@@ -146,6 +146,44 @@ export interface CategoryRow {
   productsCount: number;
 }
 
+export type PanelRole = 'ADMIN' | 'REVIEWER' | 'READ_ONLY';
+
+export interface Me {
+  email: string;
+  role: PanelRole;
+}
+
+export interface AccessUserRow {
+  id: string;
+  email: string;
+  displayName: string | null;
+  role: PanelRole;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type BotAdminRoleName = 'OWNER' | 'ADMIN' | 'SUPPORT';
+
+export interface BotAdminRow {
+  id: number;
+  telegramId: number;
+  username: string | null;
+  role: BotAdminRoleName;
+  active: boolean;
+  /** What was stored. The screen edits this. */
+  permissions: Record<string, boolean>;
+  /** What it comes to once the role's own meaning is applied. The screen shows this. */
+  effective: string[];
+  decisionsCount: number;
+  ticketsCount: number;
+}
+
+export interface PermissionInfo {
+  key: string;
+  label: string;
+}
+
 /** What a refused delete counts, so the panel can say what is attached. */
 export interface InUseCounts {
   orders: number;
@@ -379,6 +417,59 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  me() {
+    return req<{ ok: boolean } & Me>('/me');
+  },
+
+  accessUsers() {
+    return req<{ ok: boolean; you: string; items: AccessUserRow[] }>('/access-users');
+  },
+
+  createAccessUser(body: { email: string; role: PanelRole; displayName?: string | null }) {
+    return req<{ ok: boolean; id: string }>('/access-users', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  updateAccessUser(id: string, body: { role?: PanelRole; active?: boolean }) {
+    return req<{ ok: boolean }>(`/access-users/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  deleteAccessUser(id: string) {
+    return req<{ ok: boolean }>(`/access-users/${id}`, { method: 'DELETE' });
+  },
+
+  botAdmins() {
+    return req<{ ok: boolean; permissions: PermissionInfo[]; items: BotAdminRow[] }>('/bot-admins');
+  },
+
+  createBotAdmin(body: {
+    telegramId: number;
+    username?: string | null;
+    role: BotAdminRoleName;
+    permissions?: Record<string, boolean>;
+  }) {
+    return req<{ ok: boolean; id: number }>('/bot-admins', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  updateBotAdmin(
+    id: number,
+    body: { role?: BotAdminRoleName; active?: boolean; permissions?: Record<string, boolean> },
+  ) {
+    return req<{ ok: boolean }>(`/bot-admins/${id}`, { method: 'POST', body: JSON.stringify(body) });
+  },
+
+  deleteBotAdmin(id: number) {
+    return req<{ ok: boolean }>(`/bot-admins/${id}`, { method: 'DELETE' });
+  },
+
   customers(params: { q?: string; status?: string; page: number; pageSize: number }) {
     const qs = new URLSearchParams({
       page: String(params.page),

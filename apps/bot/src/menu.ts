@@ -44,7 +44,12 @@ import {
   type MenuId,
 } from './keyboard.js';
 import type { Layouts } from './botContent.js';
-import { DEFAULT_TEXTS, type TextKey, type Texts } from '@shikoo/contracts';
+import {
+  DEFAULT_TEXTS,
+  type AdminPermission,
+  type TextKey,
+  type Texts,
+} from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, type Price } from './money.js';
 import type { InlineKeyboard } from './telegram.js';
 
@@ -449,9 +454,18 @@ export function adminHome(waiting: number): string {
   ].join('\n');
 }
 
-export function adminMenu(waiting: number): InlineKeyboard {
+/**
+ * The admin panel's home.
+ *
+ * `allowed` is what this operator may do, so a button they would be refused is
+ * not drawn at all. The refusal still exists behind it — `handleAdmin` checks
+ * the same permission before acting, because `callback_data` is a field anyone
+ * can post and a keyboard is not an authorisation.
+ */
+export function adminMenu(waiting: number, allowed: readonly AdminPermission[]): InlineKeyboard {
   return buildMenu('adminHome', layout('adminHome'), {
-    applies: (action) => (action === 'clm' ? waiting > 0 : true),
+    applies: (action) =>
+      action === 'clm' ? waiting > 0 && allowed.includes('claims.view') : true,
   });
 }
 
@@ -548,18 +562,28 @@ export function claimDetail(
 
 export function claimDetailMenu(
   candidates: { id: string; bank_timestamp: number }[],
+  allowed: readonly AdminPermission[],
 ): InlineKeyboard {
-  return withChrome(
-    candidates.map((c) => [
-      {
-        text: TEXTS_NOW.render('ADMIN_APPROVE_WITH_TX', {
-          when: formatTehranTime(new Date(c.bank_timestamp)),
-        }),
-        callback_data: encodeRef('apv', c.id),
-      },
-    ]),
-    'adminClaimDetail',
-  );
+  // The candidate transactions are data rows, so the permission filters the
+  // list rather than the chrome: an operator who may not approve sees the claim
+  // and its evidence, with nothing to press.
+  const rows = allowed.includes('claims.approve')
+    ? candidates.map((c) => [
+        {
+          text: TEXTS_NOW.render('ADMIN_APPROVE_WITH_TX', {
+            when: formatTehranTime(new Date(c.bank_timestamp)),
+          }),
+          callback_data: encodeRef('apv', c.id),
+        },
+      ])
+    : [];
+  return withChrome(rows, 'adminClaimDetail', {
+    applies: (action) => {
+      if (action === 'apx') return allowed.includes('claims.approve_without_tx');
+      if (action === 'rej') return allowed.includes('claims.reject');
+      return true;
+    },
+  });
 }
 
 export function confirmMenu(): InlineKeyboard {
