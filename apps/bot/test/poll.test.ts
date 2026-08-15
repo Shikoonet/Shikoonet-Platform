@@ -34,6 +34,7 @@ function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
     sendPhoto: async () => undefined,
     editMessageText: async () => undefined,
     answerCallbackQuery: async () => undefined,
+    getChatMember: async () => 'member',
     ...overrides,
   };
 }

@@ -112,7 +112,9 @@ export async function pollOnce(
 
     let outcome;
     try {
-      outcome = await handleUpdate(db, update);
+      // `api` for the membership gate's one call back to Telegram. The default
+      // `fetch` is named explicitly only because it sits between them.
+      outcome = await handleUpdate(db, update, globalThis.fetch, api);
     } catch (err) {
       failed++;
       sawFailure = true;

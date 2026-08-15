@@ -34,6 +34,7 @@
 
 import { encode, encodeRef } from './callback.js';
 import type { CatalogPlan, Panel } from './catalog.js';
+import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
 import {
   buildMainMenu,
@@ -94,6 +95,9 @@ export let WELCOME = DEFAULT_TEXTS.raw('WELCOME');
 /** The only thing a customer is told while `Bot_Status` is off. */
 export let SHOP_CLOSED = DEFAULT_TEXTS.raw('SHOP_CLOSED');
 export let MENU_TITLE = DEFAULT_TEXTS.raw('MENU_TITLE');
+/** The rules, and the only thing a customer sees until they accept them. */
+export let GATE_RULES = DEFAULT_TEXTS.raw('GATE_RULES');
+export let GATE_RULES_ACCEPTED = DEFAULT_TEXTS.raw('GATE_RULES_ACCEPTED');
 export let SOON = DEFAULT_TEXTS.raw('SOON');
 export let CHOOSE_PANEL = DEFAULT_TEXTS.raw('CHOOSE_PANEL');
 export let CHOOSE_PLAN = DEFAULT_TEXTS.raw('CHOOSE_PLAN');
@@ -237,6 +241,7 @@ function buttonLabel(menuId: MenuId, action: string, shipped: string): string {
 
 const renewButtonLabel = (): string => buttonLabel('main', 'renew', 'تمدید سرویس');
 const paidButtonLabel = (): string => buttonLabel('checkout', 'paid', 'پرداخت کردم');
+const joinedButtonLabel = (): string => buttonLabel('gateChannels', 'chk', 'عضو شدم');
 
 /**
  * Points this module at the content the admin has saved.
@@ -251,6 +256,8 @@ export function applyContent(content: BotContent): void {
   WELCOME = t.raw('WELCOME');
   SHOP_CLOSED = t.raw('SHOP_CLOSED');
   MENU_TITLE = t.raw('MENU_TITLE');
+  GATE_RULES = t.raw('GATE_RULES');
+  GATE_RULES_ACCEPTED = t.raw('GATE_RULES_ACCEPTED');
   SOON = t.raw('SOON');
   CHOOSE_PANEL = t.raw('CHOOSE_PANEL');
   CHOOSE_PLAN = t.raw('CHOOSE_PLAN');
@@ -357,6 +364,39 @@ function paging(action: 'mine' | 'renew' | 'clm', page: number, pages: number): 
     row.push({ text: TEXTS_NOW.raw('PAGING_NEXT'), callback_data: encode(action, page + 1) });
   }
   return row.length > 0 ? [row] : [];
+}
+
+/**
+ * The join-the-channel screen, and the same screen after «عضو شدم» found them
+ * still outside.
+ *
+ * Two sentences rather than one because re-sending the identical text is how
+ * this screen dead-ends: pressing the button and getting the very same message
+ * back reads as a bot that ignored you, and if it is ever drawn as an edit
+ * instead Telegram refuses it outright as "message is not modified".
+ */
+export function gateChannels(retried = false): string {
+  return TEXTS_NOW.render(retried ? 'GATE_NOT_JOINED_YET' : 'GATE_CHANNELS', {
+    joinedButton: joinedButtonLabel(),
+  });
+}
+
+/**
+ * One link per channel above the shop's chrome, exactly as the live bot draws it
+ * (`index.php:434`): the channel's own name on a button that opens it.
+ *
+ * `url` buttons, so nothing here ever calls back — what happened is asked of
+ * Telegram afterwards by «عضو شدم», never reported by the client.
+ */
+export function gateChannelsMenu(missing: RequiredChannel[]): InlineKeyboard {
+  return withChrome(
+    missing.map((channel) => [{ text: channel.title, url: channel.join_link }]),
+    'gateChannels',
+  );
+}
+
+export function gateRulesMenu(): InlineKeyboard {
+  return buildMenu('gateRules', layout('gateRules'));
 }
 
 export function panelMenu(panels: Panel[]): InlineKeyboard {

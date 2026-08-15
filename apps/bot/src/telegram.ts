@@ -74,13 +74,18 @@ export type TelegramCallbackQuery = z.infer<typeof CallbackQuerySchema>;
  *
  * `callback_data` is capped at 64 BYTES, not characters. `copy_text` puts its
  * payload on the clipboard instead of calling back, and is capped at 256
- * characters. Both are optional here because both are optional there — a button
- * carrying neither is refused by Telegram, which is why nothing builds one.
+ * characters. `url` opens a link and never calls back at all — the only button
+ * the bot draws that it will never hear about again, which is exactly right for
+ * «join this channel»: what happened is asked of Telegram afterwards, not
+ * reported by the client. All three are optional here because all three are
+ * optional there — a button carrying none of them is refused by Telegram, which
+ * is why nothing builds one.
  */
 export interface InlineButton {
   text: string;
   callback_data?: string;
   copy_text?: { text: string };
+  url?: string;
 }
 
 /** Telegram's cap on what a copy button may carry. */
@@ -132,6 +137,18 @@ export interface TelegramApi {
    * seconds otherwise, which reads as a hung bot.
    */
   answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void>;
+  /**
+   * This customer's standing in one chat, as Telegram's own word for it —
+   * `creator`, `administrator`, `member`, `restricted`, `left` or `kicked`.
+   *
+   * Throws when Telegram refuses, and the distinction is the whole reason this
+   * returns a status rather than a boolean. "Not a member" and "we could not
+   * ask" look identical to a caller that only sees true/false, and they must not
+   * be treated alike: the first closes a door on a customer, the second is our
+   * problem and closing the shop over it would be the wrong way round. The
+   * caller decides; see `gate.ts`.
+   */
+  getChatMember(chatRef: string, userId: number): Promise<string>;
 }
 
 export interface TelegramApiOptions {
@@ -334,6 +351,17 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
         }
       }
       return updates;
+    },
+
+    async getChatMember(chatRef, userId) {
+      const result = await call('getChatMember', { chat_id: chatRef, user_id: userId }, 10_000);
+      const parsed = z.object({ status: z.string() }).safeParse(result);
+      // An answer we cannot read is not "left". It goes back as a throw so the
+      // caller treats it as "we could not ask", which is what it is.
+      if (!parsed.success) {
+        throw new Error('telegram getChatMember returned no status');
+      }
+      return parsed.data.status;
     },
 
     async sendMessage(chatId, text, keyboard) {

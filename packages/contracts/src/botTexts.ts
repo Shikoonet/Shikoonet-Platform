@@ -76,6 +76,7 @@ export interface TextEntry {
  */
 export type ScreenId =
   | 'welcome'
+  | 'gate'
   | 'panels'
   | 'plans'
   | 'planDetail'
@@ -108,6 +109,7 @@ export type ScreenId =
 /** The Persian name of each screen, for the admin panel's grouping. */
 export const SCREENS: Record<ScreenId, string> = {
   welcome: 'خوش‌آمد و منوی اصلی',
+  gate: 'عضویت کانال و پذیرش قوانین',
   panels: 'انتخاب لوکیشن',
   plans: 'فهرست پلن‌ها',
   planDetail: 'جزئیات پلن',
@@ -193,6 +195,35 @@ export const TEXTS = {
   // in `botKeyboard.ts` — one per screen, so a shop can word the way back out
   // of the invoice differently from the way back out of the wallet. Two
   // registries owning one label is the drift this project keeps paying for.
+
+  // --- عضویت کانال و پذیرش قوانین -------------------------------------------
+  GATE_CHANNELS: {
+    default:
+      'برای استفاده از ربات، لطفاً ابتدا در کانال‌های زیر عضو شوید و سپس «{joinedButton}» را بزنید.',
+    placeholders: ['joinedButton'],
+    screen: 'gate',
+    hint: 'وقتی کاربر عضو یکی از کانال‌های اجباری نیست — دکمهٔ هر کانال بالای این پیام می‌آید',
+  },
+  GATE_NOT_JOINED_YET: {
+    default:
+      'هنوز عضویت شما تایید نشد. لطفاً در همهٔ کانال‌های بالا عضو شوید و دوباره «{joinedButton}» را بزنید.',
+    placeholders: ['joinedButton'],
+    screen: 'gate',
+    hint: 'وقتی کاربر «عضو شدم» را زده ولی هنوز عضو نشده — بدون این، فشردن دکمه هیچ اثری به نظر نمی‌رسد',
+  },
+  GATE_RULES: {
+    default:
+      '📜 قوانین فروشگاه\n\nبا ادامه دادن، قوانین فروشگاه را می‌پذیرید.\n\nمتن قوانین را از پنل مدیریت اینجا بنویسید.',
+    placeholders: [],
+    screen: 'gate',
+    hint: 'متن قوانین — تا وقتی کاربر نپذیرفته، تنها چیزی است که می‌بیند',
+  },
+  GATE_RULES_ACCEPTED: {
+    default: '✅ ممنون، قوانین را پذیرفتید.',
+    placeholders: [],
+    screen: 'gate',
+    hint: 'بالای منوی اصلی، بلافاصله بعد از پذیرش قوانین',
+  },
 
   // --- انتخاب لوکیشن -------------------------------------------------------
   CHOOSE_PANEL: {

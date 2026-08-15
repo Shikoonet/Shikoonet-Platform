@@ -58,6 +58,7 @@ import {
   redemptionOnOpenOrder,
 } from './discount.js';
 import { loadBotContent } from './botContent.js';
+import { acceptRules, gateFor, type GateVerdict, type MembershipApi } from './gate.js';
 import * as menu from './menu.js';
 import { IRR_PER_TOMAN, priceForUser } from './money.js';
 import { customerDetail, findCustomers, normalizeQuery } from './customers.js';
@@ -245,6 +246,10 @@ export async function handleUpdate(
   // Injected so a test can answer for the panel. The service buttons are the
   // only handlers that leave the process.
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  // The one call the gate makes back to Telegram mid-update. Optional because
+  // the gate fails open without it, which is the same answer it gives when
+  // Telegram refuses — see `gate.ts`.
+  api?: MembershipApi,
 ): Promise<HandleOutcome> {
   await refreshShopContent(db);
 
@@ -276,8 +281,30 @@ export async function handleUpdate(
       return { status: 'processed', replies: [reply(chatId, menu.SHOP_CLOSED)] };
     }
 
+    // Channel membership and the shop's rules, at the same single point and for
+    // the same reason: `index.php:393` and `:410` sit above the dispatch too, so
+    // the live bot re-asks on every update rather than only on /start. A gate
+    // that only guards one command is walked past by any button press, and
+    // `callback_data` is a field anyone can post.
+    //
+    // Three things are let through. The two buttons the gate itself draws —
+    // otherwise the screen is a dead end that can only ask again. And /start,
+    // which runs the gate itself a few lines later, after it has recorded the
+    // session reset and the referral the customer arrived on: gating it here
+    // would throw away the referrer of everyone who arrives on a link and is not
+    // yet in the channel.
+    const action = update.callback_query ? decode(update.callback_query.data)?.action : null;
+    const isStart =
+      update.message?.text !== undefined && command(update.message.text) === '/start';
+    if (from && chatId !== undefined && action !== 'chk' && action !== 'acc' && !isStart) {
+      const gated = (await adminFor(tx, from.id))
+        ? null
+        : await gateFor(tx, api, from.id, SHOP.requiresRules);
+      if (gated) return gateScreen(chatId, gated);
+    }
+
     if (update.callback_query) {
-      return handleCallback(tx, update.callback_query, fetchImpl);
+      return handleCallback(tx, update.callback_query, fetchImpl, api);
     }
 
     const message = update.message;
@@ -299,7 +326,7 @@ export async function handleUpdate(
     }
 
     if (command(message.text) === '/start') {
-      return handleStart(tx, message);
+      return handleStart(tx, message, api);
     }
     // The one command that is not for customers. It answers nothing at all to
     // anyone who is not in `admins` — not "you are not an admin", which would
@@ -328,6 +355,24 @@ export async function handleUpdate(
     // it asked is in the session — never in the message.
     return handleTypedAnswer(tx, message);
   });
+}
+
+/**
+ * Whichever door the customer is standing behind, drawn.
+ *
+ * `retried` is the difference between «عضو شوید» and «هنوز عضویت شما تایید
+ * نشد» — pressing the button and getting the identical sentence back reads as a
+ * bot that ignored the press.
+ */
+function gateScreen(chatId: number, gated: NonNullable<GateVerdict>, retried = false): HandleOutcome {
+  return {
+    status: 'processed',
+    replies: [
+      gated.kind === 'channels'
+        ? reply(chatId, menu.gateChannels(retried), menu.gateChannelsMenu(gated.missing))
+        : reply(chatId, menu.GATE_RULES, menu.gateRulesMenu()),
+    ],
+  };
 }
 
 /** `/start@some_bot payload` -> `/start`. */
@@ -427,6 +472,7 @@ async function handleReceipt(
 async function handleStart(
   tx: D1DatabaseSession,
   message: TelegramMessage,
+  api?: MembershipApi,
 ): Promise<HandleOutcome> {
   const from = message.from;
   if (!from) return IGNORED;
@@ -467,6 +513,19 @@ async function handleStart(
   const referrer = referrerFromPayload(message.text!.trim().split(/\s+/)[1]);
   const claimed =
     referrer === null ? false : await claimReferrer(tx, user.id, referrer);
+
+  // The gate runs here rather than above the dispatch, and only for /start.
+  // Everything before this line is what the customer's arrival MEANS — the
+  // session reset, and who invited them — and none of it can be recovered by
+  // asking again once they have joined the channel. The live bot loses exactly
+  // that: `index.php:450` has to dig the referrer back out of a scratch column
+  // afterwards, because its own gate returned before recording it.
+  //
+  // Admins are exempt, as they are for the closed sign and at the single point.
+  if (!(await adminFor(tx, from.id))) {
+    const gated = await gateFor(tx, api, from.id, SHOP.requiresRules);
+    if (gated) return gateScreen(message.chat.id, gated);
+  }
 
   return {
     status: 'processed',
@@ -1760,6 +1819,7 @@ async function handleCallback(
   tx: D1DatabaseSession,
   query: TelegramCallbackQuery,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  api?: MembershipApi,
 ): Promise<HandleOutcome> {
   const action = decode(query.data);
   if (!action) return IGNORED;
@@ -1790,6 +1850,31 @@ async function handleCallback(
   if (user.status === 'BLOCKED') return IGNORED;
 
   switch (action.action) {
+    // The two buttons the gate draws, and the only ones it lets past. Both end
+    // by re-running the gate rather than by trusting the press: «عضو شدم» is a
+    // customer's claim about Telegram, not evidence from it, and accepting the
+    // rules while still outside the channel must land back on the channel.
+    //
+    // A fresh message rather than an edit. The customer just came back from the
+    // channel and their last screen may be several messages up, and an edit of
+    // an unchanged screen is refused by Telegram outright.
+    case 'chk':
+    case 'acc': {
+      if (action.action === 'acc') await acceptRules(tx, query.from.id);
+      // No admin exemption here, unlike the two places the gate is imposed. An
+      // admin is never shown these buttons — the gate that draws them exempts
+      // them — so the only way to arrive is by pressing one on purpose, and the
+      // honest answer to that is the same one everybody else gets. An exemption
+      // no test could reach is a claim, not a guard.
+      const gated = await gateFor(tx, api, query.from.id, SHOP.requiresRules);
+      if (gated) return gateScreen(chatId, gated, action.action === 'chk');
+      const opening = action.action === 'acc' ? `${menu.GATE_RULES_ACCEPTED}\n\n` : '';
+      return {
+        status: 'processed',
+        replies: [reply(chatId, `${opening}${menu.WELCOME}`, menu.mainMenu(user))],
+      };
+    }
+
     case 'menu':
       return screen(menu.MENU_TITLE, menu.mainMenu(user));
 

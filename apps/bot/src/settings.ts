@@ -132,6 +132,20 @@ export interface ShopSettings {
   warnDays: number;
   warnVolumeGb: number;
   /**
+   * Whether a customer must accept the shop's rules before anything else —
+   * `setting.roll_Status`, which is `rolleon` in production.
+   *
+   * Off by default, and the reason is the same shape as `renewCashbackPercent`'s:
+   * every other switch here defaults to what the bot already did, and the bot
+   * has never had a rules gate. A settings read that fails must not put a screen
+   * in front of 11,241 customers that only an admin can take back down.
+   *
+   * The gate's own text has a placeholder default, so turning this on before
+   * writing the rules shows a screen that says so. That is the shop's mistake to
+   * see, not ours to guess at.
+   */
+  requiresRules: boolean;
+  /**
    * Whether admin-written text may carry Telegram custom emoji.
    *
    * Ours to invent — there is no legacy column for it. Off unless the row says
@@ -160,6 +174,7 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   topupMaxIrr: 100_000_000,
   warnDays: 2,
   warnVolumeGb: 1,
+  requiresRules: false,
   customEmoji: false,
 };
 
@@ -205,6 +220,7 @@ export const SHOP_SETTING_KEYS = [
   [CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key],
   ['bot', 'daywarn'],
   ['bot', 'volumewarn'],
+  ['bot', 'roll_Status'],
 ] as const satisfies readonly (readonly [SettingScope, string])[];
 
 type ShopSettingKey = (typeof SHOP_SETTING_KEYS)[number][1];
@@ -337,6 +353,11 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       topupMaxIrr: tomanLimit(num('maxbalancecart'), DEFAULT_SHOP_SETTINGS.topupMaxIrr),
       warnDays: wholeCount(num('daywarn'), DEFAULT_SHOP_SETTINGS.warnDays),
       warnVolumeGb: wholeCount(num('volumewarn'), DEFAULT_SHOP_SETTINGS.warnVolumeGb),
+      // On only for the exact word, like `customEmoji` and unlike the three
+      // legacy switches above. Those describe selling the shop has been doing
+      // for years, so an unreadable value leaves it alone; this one puts a wall
+      // in front of every customer, so an unreadable value must not build it.
+      requiresRules: text('roll_Status') === 'rolleon',
       // Opt-in, and only on the exact word — the opposite of the legacy
       // switches above, which stay ON unless they hold their own off-word.
       // The difference is deliberate: those describe a shop that has been

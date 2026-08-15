@@ -29,6 +29,11 @@ import { z } from 'zod';
  * action nobody added here cannot reach a handler, whatever a client sends.
  */
 export const CALLBACK_ACTIONS = [
+  'chk', // «عضو شدم» — ask Telegram again whether this customer is in the
+  //        required channels. Carries nothing: which channels are required is
+  //        the shop's row, and who is asking is the update's `from`.
+  'acc', // «قوانین را می‌پذیرم» — the one thing a customer behind the rules gate
+  //        is allowed to do
   'menu', // back to the main menu
   'buy', // the panel/location list
   'panel', // <providerId> — the products on one panel

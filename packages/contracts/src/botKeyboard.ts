@@ -135,6 +135,30 @@ export const MENUS = {
       },
     ],
   },
+  gateChannels: {
+    label: 'عضویت اجباری کانال',
+    hint: 'وقتی کاربر عضو کانال‌های اجباری نیست — دکمهٔ خود کانال‌ها بالای این‌ها می‌آید',
+    buttons: [
+      {
+        action: 'chk',
+        label: '✅ عضو شدم',
+        hint: 'دوباره از تلگرام می‌پرسد — تنها راه رد شدن از این صفحه',
+        required: true,
+      },
+    ],
+  },
+  gateRules: {
+    label: 'پذیرش قوانین',
+    hint: 'تا وقتی کاربر قوانین را نپذیرفته، تنها صفحه‌ای است که می‌بیند',
+    buttons: [
+      {
+        action: 'acc',
+        label: '✅ قوانین را می‌پذیرم',
+        hint: 'تنها راه رد شدن از این صفحه — بدون آن ربات برای کاربر بن‌بست است',
+        required: true,
+      },
+    ],
+  },
   panels: {
     label: 'انتخاب لوکیشن',
     hint: 'زیر فهرست لوکیشن‌ها',
@@ -572,6 +596,8 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
     // customer's.
     ['pnl', 4, 0],
   ],
+  gateChannels: [['chk', 0, 0]],
+  gateRules: [['acc', 0, 0]],
   panels: [['menu', 0, 0]],
   plans: [
     ['buy', 0, 0],
