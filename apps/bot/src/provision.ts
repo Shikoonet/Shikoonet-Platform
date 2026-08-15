@@ -34,7 +34,8 @@ import {
 import * as menu from './menu.js';
 import type { Notification } from './settle.js';
 import { deliverFromStock } from './stock.js';
-import { refundOrder } from './wallet.js';
+import { creditRenewalCashback, refundOrder } from './wallet.js';
+import { loadShopSettings } from './settings.js';
 
 /**
  * How long an order may sit in PROVISIONING before a later sweep takes it back.
@@ -442,6 +443,12 @@ async function renew(
     return menu.addonApplied(addon.kind, addon.quantity, serviceName, expiresAt);
   }
 
+  // Read once per renewal rather than inside the transaction: it is cached
+  // shop-wide configuration, and a failed read must not roll back a renewal the
+  // panel has already applied.
+  const { renewCashbackPercent } = await loadShopSettings(db);
+  let cashbackIrr: number | null = null;
+
   await db.withSession(async (tx) => {
     await tx
       .prepare(
@@ -483,9 +490,12 @@ async function renew(
       )
       .bind(row.order_id)
       .run();
+    // In the same transaction as COMPLETED, so a renewal that ends up rolled
+    // back cannot leave a customer credited for a service they did not get.
+    cashbackIrr = await creditRenewalCashback(tx, row.order_id, renewCashbackPercent);
   });
 
-  return menu.serviceRenewed(serviceName, expiresAt);
+  return menu.serviceRenewed(serviceName, expiresAt, cashbackIrr);
 }
 
 async function complete(db: D1Database, orderId: number): Promise<void> {

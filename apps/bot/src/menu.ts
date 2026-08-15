@@ -216,10 +216,10 @@ function buildConfirmReject(t: Texts): string {
 }
 
 /**
- * The renew button's label, as the customer currently sees it.
+ * A button's label, as the customer currently sees it.
  *
- * Three screens tell a customer to press that button. They used to quote its
- * wording as a literal, so an admin who renamed it in the panel left three
+ * Several screens tell a customer to press a button. They used to quote its
+ * wording as a literal, so an admin who renamed it in the panel left those
  * messages pointing at a button that no longer exists — and nothing about the
  * result looks broken. Reading the live layout is what keeps them in step.
  *
@@ -227,11 +227,14 @@ function buildConfirmReject(t: Texts): string {
  * entirely, which is legal: the sentence is then wrong in a smaller way than a
  * literal `{renewButton}` on a customer's screen would be.
  */
-function renewButtonLabel(): string {
-  const placed = layout('main').find((b) => b.action === 'renew' && b.visible);
+function buttonLabel(menuId: MenuId, action: string, shipped: string): string {
+  const placed = layout(menuId).find((b) => b.action === action && b.visible);
   if (placed) return placed.label;
-  return MENU_ACTIONS.find((a) => a.action === 'renew')?.label ?? 'تمدید سرویس';
+  return MENU_ACTIONS.find((a) => a.action === action)?.label ?? shipped;
 }
+
+const renewButtonLabel = (): string => buttonLabel('main', 'renew', 'تمدید سرویس');
+const paidButtonLabel = (): string => buttonLabel('checkout', 'paid', 'پرداخت کردم');
 
 /**
  * Points this module at the content the admin has saved.
@@ -971,6 +974,21 @@ function checkoutTail(cardDigits: string, cardHolder: string | null): string[] {
   const lines = [t.raw('CHECKOUT_CARD_LABEL'), formatCard(cardDigits)];
   if (cardHolder) lines.push(t.render('CHECKOUT_CARD_HOLDER', { name: cardHolder }));
   lines.push('', t.raw('CHECKOUT_EXACT_WARNING'), t.raw('CHECKOUT_PRESS_BUTTON'));
+  // `PaySetting.helpcart`, live in production and shown before every card
+  // invoice there. It is on the invoice itself here so it cannot be scrolled
+  // past, and it is on all four because `checkoutTail` is the one place the
+  // four builders share.
+  lines.push(
+    '',
+    t.raw('CHECKOUT_NOTES_TITLE'),
+    t.raw('CHECKOUT_NOTE_WORDS'),
+    t.raw('CHECKOUT_NOTE_TRANSFER'),
+    // The one note that names a button. It reads the live label for the same
+    // reason the three renewal messages do: an admin who renames «پرداخت کردم»
+    // would otherwise leave every invoice pointing at a button nobody can find.
+    t.render('CHECKOUT_NOTE_PRESS', { paidButton: paidButtonLabel() }),
+    t.raw('CHECKOUT_NOTE_WAIT'),
+  );
   return lines;
 }
 
@@ -1801,7 +1819,12 @@ export function renewCheckout(
  * nothing about it changed, and a second link in the chat is one more thing to
  * import by mistake.
  */
-export function serviceRenewed(serviceName: string, expiresAt: Date | null): string {
+export function serviceRenewed(
+  serviceName: string,
+  expiresAt: Date | null,
+  /** The renewal cashback just credited, when the shop pays one. */
+  cashbackIrr: number | null = null,
+): string {
   const t = TEXTS_NOW;
   const lines = [
     t.raw('SERVICE_RENEWED_TITLE'),
@@ -1810,6 +1833,12 @@ export function serviceRenewed(serviceName: string, expiresAt: Date | null): str
   ];
   if (expiresAt !== null) {
     lines.push(t.render('SERVICE_RENEWED_EXPIRES', { date: formatTehranDate(expiresAt) }));
+  }
+  // Said in the same message rather than a second one. The legacy bot sends two
+  // («تبریک 🎉 … حساب شما شارژ گردید», then the renewal), and two notifications
+  // for one action is a habit worth not carrying over.
+  if (cashbackIrr !== null && cashbackIrr > 0) {
+    lines.push('', t.render('SERVICE_RENEWED_CASHBACK', { amount: formatToman(cashbackIrr) }));
   }
   lines.push('', t.raw('SERVICE_RENEWED_LINK_NOTE'));
   return lines.join('\n');
@@ -1894,6 +1923,7 @@ const ENTRY_TEXT_KEY: Record<string, TextKey> = {
   REFUND: 'ENTRY_REFUND',
   ADMIN_ADJUST: 'ENTRY_ADMIN_ADJUST',
   REFERRAL_BONUS: 'ENTRY_REFERRAL_BONUS',
+  RENEWAL_CASHBACK: 'ENTRY_RENEWAL_CASHBACK',
   WHEEL_PRIZE: 'ENTRY_WHEEL_PRIZE',
   TRANSFER_IN: 'ENTRY_TRANSFER_IN',
   TRANSFER_OUT: 'ENTRY_TRANSFER_OUT',

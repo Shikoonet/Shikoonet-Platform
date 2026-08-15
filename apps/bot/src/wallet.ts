@@ -155,6 +155,61 @@ export async function creditTopup(
   return done.meta.changes > 0;
 }
 
+/**
+ * Pays the shop's renewal cashback into the customer's own wallet.
+ *
+ * `shopSetting.chashbackextend` is 5 in production and has been for years, so a
+ * customer who renews today gets five percent back and would have got nothing
+ * the day after cutover. It is the only parity gap that costs the CUSTOMER
+ * money, which is why it is built and the rest of that list is a decision.
+ *
+ * Called from inside the transaction that marks a renewal COMPLETED, not when
+ * the order is paid. A renewal whose panel call fails is refunded, and cashback
+ * on top of a refund is the shop paying a customer to have a bad night.
+ *
+ * Paid once by `wallet_entries.idempotency_key`, like every other movement here
+ * — the sweep retries, and the customer is credited once. The percentage is in
+ * the key: an admin who corrects the rate and re-runs is making a second, real
+ * decision, and silently collapsing it onto the first would hide that.
+ */
+export async function creditRenewalCashback(
+  tx: D1DatabaseSession,
+  orderId: number,
+  percent: number,
+): Promise<number | null> {
+  if (!Number.isFinite(percent) || percent <= 0) return null;
+
+  const order = await tx
+    .prepare(`SELECT user_id, total_irr, kind FROM orders WHERE id = ?1`)
+    .bind(orderId)
+    .first<{ user_id: number; total_irr: number; kind: string }>();
+  // Renewals only. `function.php:1147` and `index.php:1952` are both inside the
+  // extend path and nowhere else; paying it on a first purchase would be a
+  // discount the shop never agreed to.
+  if (!order || order.kind !== 'RENEWAL' || order.total_irr <= 0) return null;
+
+  // Rounded down, like the referral commission: money leaving the shop does not
+  // get the benefit of a half Rial nobody has.
+  const amountIrr = Math.floor((order.total_irr * percent) / 100);
+  if (amountIrr <= 0) return null;
+
+  const done = await tx
+    .prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, order_id, note, idempotency_key)
+       VALUES (?1, ?2, 'RENEWAL_CASHBACK', ?3, ?4, ?5)
+       ON CONFLICT (idempotency_key) DO NOTHING`,
+    )
+    .bind(
+      order.user_id,
+      amountIrr,
+      orderId,
+      `${percent}% of a renewal`,
+      `cashback:${orderId}:${percent}`,
+    )
+    .run();
+  return done.meta.changes > 0 ? amountIrr : null;
+}
+
 export type SpendResult = 'PAID' | 'INSUFFICIENT' | 'ALREADY_PAID';
 
 /**

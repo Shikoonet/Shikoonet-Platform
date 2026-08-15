@@ -22,6 +22,9 @@ import { provisionPaidOrders } from '../src/provision.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
+import { invalidateShopSettings } from '../src/settings.js';
+import { creditRenewalCashback } from '../src/wallet.js';
+import { formatToman } from '../src/money.js';
 
 const NOW_MS = Date.UTC(2026, 7, 13, 12, 0, 0);
 const DAY = 86_400_000;
@@ -540,5 +543,166 @@ describe('applying it', () => {
     expect(notes.find((n) => n.chatId === target.telegramId)?.text).toContain(
       target.order.publicId,
     );
+  });
+});
+
+/**
+ * `shopSetting.chashbackextend` — five percent of every renewal, paid back into
+ * the customer's wallet, live in production for years and read by nothing here
+ * until now.
+ *
+ * The rate is not asserted against our own constant. What the shop actually
+ * charges is checked in `packages/migrate/test/shop-switches.mysql.test.ts`
+ * against the dump; this file sets a rate and proves the bot obeys it, which is
+ * the only half a Postgres-only test can honestly cover.
+ */
+describe('the renewal cashback', () => {
+  async function setCashback(percent: number): Promise<void> {
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value) VALUES ('shop', 'chashbackextend', ?1::jsonb)
+         ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind(JSON.stringify(String(percent)))
+      .run();
+    invalidateShopSettings();
+  }
+
+  async function cashbackRows(userId: number) {
+    const { results } = await db
+      .prepare(
+        `SELECT amount_irr, note, order_id FROM wallet_entries
+          WHERE user_id = ?1 AND kind = 'RENEWAL_CASHBACK' ORDER BY id`,
+      )
+      .bind(userId)
+      .all<{ amount_irr: number; note: string | null; order_id: number | null }>();
+    return results ?? [];
+  }
+
+  async function paidRenewal() {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const subId = await makeService(userId, panelId, {
+      publicId: `cb-${telegramId}`,
+      username: `c_${telegramId}`,
+      expiresInDays: 5,
+    });
+    const plan = await planId('sim-vip-1m-50');
+    await handleUpdate(db, press(updateId, telegramId, `rord:${subId}:${plan}`));
+    const order = await markPaid(userId);
+    const total = await db
+      .prepare(`SELECT total_irr FROM orders WHERE id = ?1`)
+      .bind(order.id)
+      .first<{ total_irr: number }>();
+    return { userId, subId, order, telegramId, username: `c_${telegramId}`, totalIrr: total!.total_irr };
+  }
+
+  afterEach(async () => {
+    await setCashback(0);
+  });
+
+  it('pays the shop’s percentage into the wallet and says so in the same message', async () => {
+    await setCashback(5);
+    const target = await paidRenewal();
+    const panel = fakePanel({
+      [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
+    });
+
+    const notes = await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    const rows = await cashbackRows(target.userId);
+    expect(rows).toHaveLength(1);
+    // Against the order's own total read back from the database, not against a
+    // price this test wrote down: the plan's price is the catalogue's business.
+    expect(rows[0]?.amount_irr).toBe(Math.floor((target.totalIrr * 5) / 100));
+    expect(rows[0]?.order_id).toBe(target.order.id);
+    // And the customer is actually told, in the renewal message itself.
+    const said = notes.find((n) => n.chatId === target.telegramId)?.text ?? '';
+    expect(said).toContain(formatToman(Math.floor((target.totalIrr * 5) / 100)));
+  });
+
+  it('pays nothing, and says nothing, when the shop has no cashback', async () => {
+    await setCashback(0);
+    const target = await paidRenewal();
+    const panel = fakePanel({
+      [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
+    });
+
+    const notes = await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(await cashbackRows(target.userId)).toHaveLength(0);
+    expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
+    // The gift line is absent rather than rendered with a zero.
+    expect(notes.find((n) => n.chatId === target.telegramId)?.text).not.toContain('هدیهٔ تمدید');
+  });
+
+  it('pays once when a lost answer makes the sweep run the renewal again', async () => {
+    // The same retry that must not add thirty days twice must not pay twice
+    // either. Both guarantees are the database's — one is the panel call being
+    // skipped, this one is `wallet_entries.idempotency_key`.
+    await setCashback(5);
+    const target = await paidRenewal();
+    const panel = fakePanel({
+      [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
+    });
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+    await db.prepare(`UPDATE orders SET status = 'PAID' WHERE id = ?1`).bind(target.order.id).run();
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(await cashbackRows(target.userId)).toHaveLength(1);
+  });
+
+  it('pays nothing when the renewal failed and the money went back', async () => {
+    // The reason the credit is written inside the COMPLETED transaction rather
+    // than when the order was paid: a renewal that never reached the account is
+    // refunded, and cashback on top of a refund is the shop paying a customer
+    // for a bad night.
+    await setCashback(5);
+    const target = await paidRenewal();
+    const panel = fakePanel({}); // the account is not on the panel any more
+
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(await orderRow(target.order.id)).toMatchObject({ status: 'FAILED' });
+    expect(await cashbackRows(target.userId)).toHaveLength(0);
+  });
+
+  it('is a renewal’s gift and not a purchase’s', async () => {
+    await setCashback(5);
+    const { telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+    const order = await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
+                             unit_price_irr, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, 1000000, 0, 1000000, 'PAID')
+         RETURNING id`,
+      )
+      .bind(`cbp-${telegramId}`, userId, plan)
+      .first<{ id: number }>();
+
+    const paid = await db.withSession((tx) => creditRenewalCashback(tx, order!.id, 5));
+
+    expect(paid).toBeNull();
+    expect(await cashbackRows(userId)).toHaveLength(0);
+  });
+
+  it('treats a corrected rate as a second decision, not a silent no-op', async () => {
+    // The percentage is inside the idempotency key on purpose. An admin who
+    // notices the rate was wrong and re-runs is making a real decision; keying
+    // on the order alone would swallow it and look like it worked.
+    await setCashback(5);
+    const target = await paidRenewal();
+    const panel = fakePanel({
+      [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
+    });
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    const again = await db.withSession((tx) => creditRenewalCashback(tx, target.order.id, 7));
+
+    expect(again).toBe(Math.floor((target.totalIrr * 7) / 100));
+    expect(await cashbackRows(target.userId)).toHaveLength(2);
   });
 });

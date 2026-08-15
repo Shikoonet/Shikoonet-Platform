@@ -51,7 +51,8 @@ async function load(): Promise<Loaded> {
       const [shopRows] = await conn.query(
         `SELECT Namevalue AS k, value AS v FROM shopSetting
           WHERE Namevalue COLLATE utf8mb4_bin
-             IN ('statusextra', 'statustimeextra', 'statuschangeservice')`,
+             IN ('statusextra', 'statustimeextra', 'statuschangeservice',
+                 'chashbackextend')`,
       );
       const [payRows] = await conn.query(
         `SELECT NamePay AS k, ValuePay AS v FROM PaySetting
@@ -122,6 +123,25 @@ describe.skipIf(unreachable !== null)('the numbers the bot reads', () => {
     // customer, 25× below what the shop allows.
     expect(pay['minbalancecart']).not.toMatch(/^\s*\{/);
     expect(pay['maxbalancecart']).not.toMatch(/^\s*\{/);
+  });
+
+  it('pays a renewal cashback today, which is why the bot must pay one too', () => {
+    // The one parity gap that costs the CUSTOMER money rather than the shop: a
+    // renewal has been paying this percentage back for years, and the day the
+    // PHP is switched off they would silently get nothing. The assertion is
+    // "greater than zero", not "equals 5", because what matters is that the
+    // shop pays one at all — the rate itself is the admin's to change and the
+    // bot reads it from this same row.
+    //
+    // `chashbackextend` is spelled without the first `c` of "cash" in the
+    // legacy schema. Reading the correct spelling finds nothing and pays
+    // nobody, which is exactly the failure this file exists to catch — and
+    // proved on 2026-08-16 by querying `cashbackextend` and watching it go red.
+    const percent = Number(shop['chashbackextend']);
+    expect(shop['chashbackextend'], 'chashbackextend is missing').not.toBeUndefined();
+    expect(Number.isFinite(percent)).toBe(true);
+    expect(percent).toBeGreaterThan(0);
+    expect(percent).toBeLessThanOrEqual(100);
   });
 
   it('carries a referral percentage that may be paid as one', () => {

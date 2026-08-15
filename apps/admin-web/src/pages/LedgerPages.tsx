@@ -60,6 +60,7 @@ const ENTRY_KIND_FA: Record<string, string> = {
   ADMIN_ADJUST: 'اصلاح توسط ادمین',
   GIFT_CODE: 'کد هدیه',
   REFERRAL_BONUS: 'پورسانت زیرمجموعه',
+  RENEWAL_CASHBACK: 'هدیهٔ تمدید',
   WHEEL_PRIZE: 'جایزهٔ گردونه',
   TRANSFER_IN: 'انتقال ورودی',
   TRANSFER_OUT: 'انتقال خروجی',

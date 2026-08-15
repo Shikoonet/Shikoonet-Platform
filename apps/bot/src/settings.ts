@@ -98,6 +98,16 @@ export interface ShopSettings {
   allowsServiceSwitch: boolean;
   /** Referral commission on a referred customer's first purchase, in percent. */
   commissionPercent: number;
+  /**
+   * What a renewal pays back into the customer's wallet, in percent —
+   * `shopSetting.chashbackextend`, which is 5 in production.
+   *
+   * Its default is 0 while every other field's default is what production does,
+   * and the difference is deliberate: the others describe behaviour the bot
+   * already had, this one moves money out of the shop. A settings read that
+   * fails must not start paying a percentage nobody could confirm.
+   */
+  renewCashbackPercent: number;
   /** Card-to-card deposit floor and ceiling, in IRR. */
   topupMinIrr: number;
   topupMaxIrr: number;
@@ -124,6 +134,7 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   sellsExtraTime: true,
   allowsServiceSwitch: true,
   commissionPercent: 10,
+  renewCashbackPercent: 0,
   topupMinIrr: 800_000,
   topupMaxIrr: 100_000_000,
   customEmoji: false,
@@ -218,15 +229,19 @@ function tomanLimit(value: number | null, fallback: number): number {
 export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSettings> {
   if (cached && now - cached.at < CACHE_MS) return cached.value;
   try {
-    const [extra, timeExtra, switchService, commission, min, max, emoji] = await Promise.all([
-      settingText(db, 'shop', 'statusextra'),
-      settingText(db, 'shop', 'statustimeextra'),
-      settingText(db, 'shop', 'statuschangeservice'),
-      settingNumber(db, 'bot', 'affiliatespercentage'),
-      settingNumber(db, 'pay', 'minbalancecart'),
-      settingNumber(db, 'pay', 'maxbalancecart'),
-      settingText(db, CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key),
-    ]);
+    const [extra, timeExtra, switchService, commission, cashback, min, max, emoji] =
+      await Promise.all([
+        settingText(db, 'shop', 'statusextra'),
+        settingText(db, 'shop', 'statustimeextra'),
+        settingText(db, 'shop', 'statuschangeservice'),
+        settingNumber(db, 'bot', 'affiliatespercentage'),
+        // Misspelled in the legacy schema and matched as it is actually
+        // written, like `offtimeextraa` below.
+        settingNumber(db, 'shop', 'chashbackextend'),
+        settingNumber(db, 'pay', 'minbalancecart'),
+        settingNumber(db, 'pay', 'maxbalancecart'),
+        settingText(db, CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key),
+      ]);
     const value: ShopSettings = {
       // The "off" words are the legacy schema's, typos included:
       // `offtimeextraa` really does carry two a's in production.
@@ -234,6 +249,11 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       sellsExtraTime: !isOff(timeExtra, 'offtimeextraa'),
       allowsServiceSwitch: !isOff(switchService, 'offstatus'),
       commissionPercent: percent(commission, DEFAULT_SHOP_SETTINGS.commissionPercent),
+      // `chashbackextend_agent` holds a per-reseller override — `{"n":"5","n2":0}`
+      // in production — and is deliberately not read: the reseller panel is a
+      // later round, and both live tiers are already covered by the shop rate
+      // (5) or by paying nothing (0).
+      renewCashbackPercent: percent(cashback, DEFAULT_SHOP_SETTINGS.renewCashbackPercent),
       topupMinIrr: tomanLimit(min, DEFAULT_SHOP_SETTINGS.topupMinIrr),
       topupMaxIrr: tomanLimit(max, DEFAULT_SHOP_SETTINGS.topupMaxIrr),
       // Opt-in, and only on the exact word — the opposite of the legacy

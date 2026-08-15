@@ -225,6 +225,40 @@ describe('the copy buttons on an invoice', () => {
   });
 });
 
+describe('the card-to-card notes', () => {
+  const CARD = '6037997512345678';
+
+  /** The four invoices a customer can be shown, all built the real way. */
+  const invoices = (): [string, string][] => [
+    ['purchase', menu.checkout('ORD-1', PLAN, 1_950_000, CARD, 'سام')],
+    ['add-on', menu.addonCheckout('ORD-2', 'ADD_VOLUME', 10, 'سرویس من', 300_000, CARD, 'سام')],
+    ['renewal', menu.renewCheckout('ORD-3', 'سرویس من', PLAN, 1_950_000, CARD, 'سام')],
+    ['top-up', menu.topupCheckout('ORD-4', 1_000_000, CARD, 'سام')],
+  ];
+
+  it('reaches every invoice, because all four are built from one tail', () => {
+    // `PaySetting.helpcart` is live in production and shown before EVERY card
+    // invoice there. A shop that prints the rules on one screen out of four has
+    // customers reading them once and paying three more times without them.
+    for (const [which, text] of invoices()) {
+      expect(text, which).toContain('نکات مهم قبل از کارت به کارت');
+      expect(text, which).toContain('فیلترشکن');
+      expect(text, which).toContain('ساتنا');
+      expect(text, which).toContain('۱۰ دقیقه');
+    }
+  });
+
+  it('leaves room on the longest invoice for Telegram to accept it', () => {
+    // The notes are ~350 characters added to a message that already carried an
+    // order, a plan, a price, a card and a warning. Telegram refuses a message
+    // over 4096 whole — the customer would get no invoice at all — and the
+    // notes are the largest single thing ever appended to these four.
+    for (const [which, text] of invoices()) {
+      expect(text.length, which).toBeLessThan(4096);
+    }
+  });
+});
+
 describe('the usage bar', () => {
   const GIB = 1024 ** 3;
   /** The drawing alone, without the isolates that wrap it. */

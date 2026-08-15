@@ -68,6 +68,7 @@ const EntryQuery = z.object({
       'REFUND',
       'ADMIN_ADJUST',
       'REFERRAL_BONUS',
+      'RENEWAL_CASHBACK',
       'WHEEL_PRIZE',
       'TRANSFER_IN',
       'TRANSFER_OUT',

@@ -42,10 +42,10 @@
  * others, so the keyboard is edited as a layout rather than as a list of
  * sentences, and `botKeyboard.ts` owns it.
  *
- * The one crossing point is `{renewButton}`: three screens tell the customer to
- * press the renew button, and they read its label from the live layout instead
- * of quoting it. An admin who renames that button used to break those three
- * sentences silently.
+ * The crossing points are `{renewButton}` and `{paidButton}`: some screens tell
+ * the customer to press a named button, and they read its label from the live
+ * layout instead of quoting it. An admin who renames that button used to break
+ * those sentences silently.
  */
 
 import {
@@ -383,6 +383,46 @@ export const TEXTS = {
     placeholders: [],
     screen: 'checkout',
     hint: 'خط آخر فاکتور',
+  },
+  // The four notes below are `PaySetting.helpcart`, the live production text
+  // read out of the dump on 2026-08-15. The legacy bot sends them as a separate
+  // message just before every card invoice (`index.php:4811`); here they are
+  // part of the invoice, so a customer cannot scroll past them.
+  //
+  // They are not decoration. Automatic verification has zero tolerance on the
+  // amount and matches on the bank's own SMS, so notes 2 and 3 are what keep a
+  // payment out of the manual queue, and note 1 is what keeps the transfer from
+  // being refused by the bank at all. Dropping them lengthens the queue.
+  CHECKOUT_NOTES_TITLE: {
+    default: 'نکات مهم قبل از کارت به کارت:',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'سرصفحهٔ نکات کارت به کارت — روی هر چهار فاکتور',
+  },
+  CHECKOUT_NOTE_WORDS: {
+    default:
+      '۱- به هیچ عنوان از کلمات مشکل‌دار مثل VPN، فیلترشکن، قندشکن و … در توضیحات رسید استفاده نکنید.',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'نکتهٔ ۱ — کلمات مشکل‌دار در توضیحات واریز',
+  },
+  CHECKOUT_NOTE_TRANSFER: {
+    default: '۲- از انتقال پل، پایا و ساتنا استفاده نکنید؛ تراکنش با تاخیر می‌رسد.',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'نکتهٔ ۲ — پل/پایا/ساتنا تایید خودکار را از پنجرهٔ ۵ دقیقه بیرون می‌برد',
+  },
+  CHECKOUT_NOTE_PRESS: {
+    default: '۳- بعد از واریز حتماً دکمهٔ «{paidButton}» را بزنید و بعد عکس رسید را بفرستید.',
+    placeholders: ['paidButton'],
+    screen: 'checkout',
+    hint: 'نکتهٔ ۳ — بدون این دکمه هیچ claimی باز نمی‌شود · {paidButton} نام زندهٔ دکمه است',
+  },
+  CHECKOUT_NOTE_WAIT: {
+    default: '۴- رسید را برای ادمین نفرستید؛ در صورت واریز درست، حداکثر تا ۱۰ دقیقه تایید می‌شود.',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'نکتهٔ ۴ — ۱۰ دقیقه همان پنجرهٔ انتظار تطبیق است',
   },
   CHECKOUT_COPY_CARD: {
     default: '📋 کپی شمارهٔ کارت',
@@ -998,6 +1038,12 @@ export const TEXTS = {
     screen: 'renew',
     hint: 'تاریخ انقضای تازه',
   },
+  SERVICE_RENEWED_CASHBACK: {
+    default: '🎁 به عنوان هدیهٔ تمدید، {amount} به کیف پول شما اضافه شد.',
+    placeholders: ['amount'],
+    screen: 'renew',
+    hint: 'هدیهٔ تمدید — فقط وقتی درصد کش‌بک صفر نباشد نمایش داده می‌شود',
+  },
   SERVICE_RENEWED_LINK_NOTE: {
     default: 'لینک اشتراک شما تغییری نکرده و همان قبلی است.',
     placeholders: [],
@@ -1145,6 +1191,12 @@ export const TEXTS = {
     placeholders: [],
     screen: 'wallet',
     hint: 'نوع تراکنش: پورسانت زیرمجموعه',
+  },
+  ENTRY_RENEWAL_CASHBACK: {
+    default: 'هدیهٔ تمدید',
+    placeholders: [],
+    screen: 'wallet',
+    hint: 'نوع تراکنش: کش‌بک تمدید',
   },
   ENTRY_WHEEL_PRIZE: {
     default: 'جایزهٔ گردونه',
