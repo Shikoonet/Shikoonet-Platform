@@ -15,10 +15,12 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { DEFAULT_CONTENT, invalidateBotContent } from '../src/botContent.js';
 import { expireUnpaidOrders, ORDER_TTL_MS } from '../src/expire.js';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
-import type { TelegramUpdate } from '../src/telegram.js';
+import { run } from '../src/poll.js';
+import type { TelegramApi, TelegramUpdate } from '../src/telegram.js';
 import { balanceFor } from '../src/wallet.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
@@ -229,6 +231,60 @@ describe('an invoice with a deadline', () => {
 
     expect(first.filter((n) => n.chatId === sale.telegramId)).toHaveLength(1);
     expect(second.filter((n) => n.chatId === sale.telegramId)).toEqual([]);
+  });
+});
+
+describe('a sweep that runs on a bot nobody is talking to', () => {
+  it('still speaks the shop own words, not the ones the code ships', async () => {
+    // A restart at night. The sweeps run, no update ever arrives, and only
+    // `handleUpdate` refreshed the module bindings these messages are built
+    // from — so a customer was told about their own money in the wording the
+    // code ships rather than the sentence the shop wrote, and the shop's words
+    // appeared only once some unrelated customer happened to say hello.
+    // Exactly the bug 6ac5f1b closed on the update path, left open on this one.
+    //
+    // Driven through `run` rather than by calling the sweep directly, because
+    // the sweep was never wrong: the wiring around it was.
+    const sale = await buy('sim-gold-10');
+    await age(sale.order.id);
+    await db
+      .prepare(
+        `INSERT INTO bot_texts (key, value) VALUES (?1, ?2)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind('ORDER_EXPIRED_TITLE', 'سفارش شما بسته شد چون پرداخت نشد')
+      .run();
+
+    // The state a process is in before its first update: bindings at defaults.
+    invalidateBotContent();
+    menu.applyContent(DEFAULT_CONTENT);
+
+    const sent: { chatId: number; text: string }[] = [];
+    const controller = new AbortController();
+    const api: TelegramApi = {
+      getMe: async () => ({ username: null }),
+      // One cycle, and never a single update — which is the whole point.
+      getUpdates: async () => {
+        controller.abort();
+        return [];
+      },
+      sendMessage: async (chatId, text) => {
+        sent.push({ chatId, text });
+      },
+      sendPhoto: async () => undefined,
+      editMessageText: async () => undefined,
+      answerCallbackQuery: async () => undefined,
+    };
+
+    await run(db, api, { signal: controller.signal, timeoutSec: 1 });
+
+    const mine = sent.filter((m) => m.chatId === sale.telegramId);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]?.text).toContain('سفارش شما بسته شد چون پرداخت نشد');
+
+    await db.prepare(`DELETE FROM bot_texts WHERE key = 'ORDER_EXPIRED_TITLE'`).run();
+    invalidateBotContent();
+    menu.applyContent(DEFAULT_CONTENT);
   });
 });
 

@@ -175,6 +175,22 @@ export async function spendOnOrder(
   orderId: number,
   amountIrr: number,
 ): Promise<SpendResult> {
+  // The amount was taken on trust, and both ways of getting that wrong end
+  // badly. A negative one becomes `-amountIrr` — a positive entry — so a
+  // purchase credits the buyer and the sale pays them. A zero one writes an
+  // entry of nothing, which violates `CHECK (amount_irr <> 0)`, and that
+  // exception rolls back the whole update including the `telegram_updates` row
+  // that makes handling exactly-once: the C1 freeze, reached from the one
+  // direction the floor in `place()` cannot cover, an order that was already
+  // there. Its sibling `payReferralCommission` has guarded this since it was
+  // written; this one did not.
+  //
+  // Zero is 'PAID' rather than a refusal because it is true — nothing is owed,
+  // so nothing is charged, and what must not happen is a ledger row for no
+  // money.
+  if (!Number.isSafeInteger(amountIrr) || amountIrr < 0) return 'INSUFFICIENT';
+  if (amountIrr === 0) return 'PAID';
+
   const locked = await tx
     .prepare(`SELECT balance_irr FROM wallets WHERE user_id = ?1 FOR UPDATE`)
     .bind(userId)

@@ -56,6 +56,8 @@
  * per button instead of per keyboard.
  */
 
+import { checkCustomEmoji } from './customEmoji.js';
+
 /** A slot in a button label, as an admin writes it. Same contract as the texts. */
 const PLACEHOLDER = /\{([a-zA-Z][a-zA-Z0-9_]*)\}/g;
 
@@ -530,7 +532,8 @@ export type LayoutProblem =
   | { kind: 'REQUIRED_MISSING'; actions: string[] }
   | { kind: 'REQUIRED_HIDDEN'; actions: string[] }
   | { kind: 'LABEL_MISSING_PLACEHOLDER'; action: string; names: string[] }
-  | { kind: 'LABEL_UNKNOWN_PLACEHOLDER'; action: string; names: string[] };
+  | { kind: 'LABEL_UNKNOWN_PLACEHOLDER'; action: string; names: string[] }
+  | { kind: 'LABEL_MARKUP'; actions: string[] };
 
 /** Telegram truncates beyond this and the row stops being readable on a phone. */
 export const MAX_LABEL_LENGTH = 64;
@@ -580,6 +583,20 @@ export function checkLayout(menuId: string, buttons: ButtonPlacement[]): LayoutP
   if (long.length > 0) {
     return { kind: 'LABEL_TOO_LONG', actions: long, limit: MAX_LABEL_LENGTH };
   }
+
+  // The text path has checked this since custom emoji shipped; this one had
+  // nothing, so a label carrying `<tg-emoji …>` saved with a 200 and every
+  // customer then read the raw tag off the button.
+  //
+  // `false`, unconditionally, rather than taking the shop's switch as an
+  // argument like `checkOverride` does. An inline button's `text` is plain in
+  // the Bot API — no entities, nothing to set `parse_mode` on — so the markup
+  // cannot render there whatever the shop has switched on. Passing the switch
+  // in would imply there is a setting that makes it work.
+  const marked = buttons
+    .filter((b) => checkCustomEmoji(b.label, false) !== null)
+    .map((b) => b.action);
+  if (marked.length > 0) return { kind: 'LABEL_MARKUP', actions: marked };
 
   // A label carries a value or it does not. Dropping `{balance}` from the
   // wallet button leaves the customer guessing whether it covers the order;

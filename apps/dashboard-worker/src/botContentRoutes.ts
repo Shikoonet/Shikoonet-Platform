@@ -128,6 +128,11 @@ function layoutProblem(problem: NonNullable<ReturnType<typeof checkLayout>>): st
       return `عنوان این دکمه‌ها خالی است: ${problem.actions.join('، ')}`;
     case 'LABEL_TOO_LONG':
       return `عنوان این دکمه‌ها بلندتر از ${problem.limit} کاراکتر است: ${problem.actions.join('، ')}`;
+    case 'LABEL_MARKUP':
+      // Deliberately does not mention the custom-emoji switch: turning it on
+      // would not help. Telegram parses no markup on a button label at all, so
+      // the tag would reach the customer as characters either way.
+      return `روی دکمه نمی‌شود ایموجی سفارشی گذاشت — تلگرام عنوان دکمه را خام می‌فرستد و تگ عیناً به مشتری نشان داده می‌شود. از ایموجی معمولی استفاده کنید: ${problem.actions.join('، ')}`;
   }
 }
 

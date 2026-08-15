@@ -12,7 +12,7 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { handleUpdate, type HandleStatus } from './handle.js';
+import { handleUpdate, refreshShopContent, type HandleStatus } from './handle.js';
 import { settleVerifiedPayments, type Notification } from './settle.js';
 import { provisionPaidOrders } from './provision.js';
 import { syncSubscriptions } from './sync.js';
@@ -257,6 +257,13 @@ export async function run(
       // produced 350 attempts and 6,000 log lines, hammering a database that
       // was trying to come back and earning a 429 from Telegram on the way.
       if (stalled) await sleep(backoffMs, options.signal);
+      // Every sweep below sends the customer a sentence the shop is allowed to
+      // have rewritten, and the bindings those sentences are built from were
+      // only ever refreshed while handling an update. A quiet night — no
+      // updates at all — meant a settled payment or an expired invoice was
+      // announced in the wording the code ships. Cached for thirty seconds, so
+      // on a busy bot this is the same read `handleUpdate` just did.
+      await refreshShopContent(db);
       // A payment is verified by the hub, in another process, with nothing to
       // call us back. Sweeping here rather than adding a cron keeps it to one
       // running service, and a 25-second poll makes "verified" and "the customer

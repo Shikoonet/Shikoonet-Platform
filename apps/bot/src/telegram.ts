@@ -197,6 +197,26 @@ function markup(keyboard?: InlineKeyboard): Record<string, unknown> {
   return keyboard === undefined ? {} : { reply_markup: { inline_keyboard: keyboard } };
 }
 
+/** Telegram answered. `call()` says "failed" when we never reached it at all. */
+function isRejection(err: unknown): boolean {
+  return String(err).includes('rejected');
+}
+
+/**
+ * Asking Telegram to replace a message with itself.
+ *
+ * It answers 400, so it reaches us as a rejection like any other — but nothing
+ * was refused. The screen already says what we wanted it to say, and the only
+ * thing that happened is that a customer pressed the same button twice.
+ *
+ * Named once and consulted from both places on purpose: while this test lived
+ * only in `editMessageText`, `withEmojiFallback` ran first and read the same
+ * error as "the owner has no Premium".
+ */
+function isNotModified(err: unknown): boolean {
+  return String(err).includes('message is not modified');
+}
+
 export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
   const base = (options.baseUrl ?? TELEGRAM_API_BASE).replace(/\/+$/, '');
   const doFetch = options.fetch ?? globalThis.fetch;
@@ -271,7 +291,11 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       await send({ text: toTelegramHtml(clamped), parse_mode: 'HTML' });
       return;
     } catch (err) {
-      if (!String(err).includes('rejected')) throw err;
+      // Two ways this is not a refusal. A network error means Telegram never
+      // answered, and a "not modified" means it answered about something else
+      // entirely — the caller knows what to do with that one, so it goes back
+      // up untouched rather than being read here as a verdict on Premium.
+      if (!isRejection(err) || isNotModified(err)) throw err;
       console.error('[telegram] custom emoji refused, falling back to plain text');
     }
     await send({ text: stripCustomEmoji(clamped) });
@@ -348,7 +372,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
         // wanted it to say, so this is the success case wearing an error's
         // clothes — and treating it as a failure fills the log during ordinary
         // use. Seen on the first live run of the menu.
-        if (String(err).includes('message is not modified')) return;
+        if (isNotModified(err)) return;
         throw err;
       }
     },

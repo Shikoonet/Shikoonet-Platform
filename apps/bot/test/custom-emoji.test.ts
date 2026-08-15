@@ -202,13 +202,19 @@ describe('the switch', () => {
 
 describe('sending it, and being refused', () => {
   /** A Telegram that answers however the test says, and records what it got. */
-  function fakeTelegram(answers: ('ok' | 'reject' | 'network')[]) {
+  function fakeTelegram(answers: ('ok' | 'reject' | 'network' | 'notmodified')[]) {
     const bodies: Record<string, unknown>[] = [];
     let call = 0;
     const fetchImpl = (async (_url: string, init: { body: string }) => {
       bodies.push(JSON.parse(init.body) as Record<string, unknown>);
       const answer = answers[call++] ?? 'ok';
       if (answer === 'network') throw new Error('socket hang up');
+      if (answer === 'notmodified') {
+        return new Response(
+          JSON.stringify({ ok: false, description: 'Bad Request: message is not modified' }),
+          { status: 400 },
+        );
+      }
       return new Response(
         JSON.stringify(
           answer === 'ok'
@@ -259,6 +265,36 @@ describe('sending it, and being refused', () => {
     expect(bodies[1]!['text']).toBe('خوش آمدید 🔥');
     expect(bodies[1]!['parse_mode']).toBeUndefined();
     expect(refused).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not switch the feature off because a customer pressed twice', async () => {
+    // Replacing a message with itself is answered 400 «message is not
+    // modified» — and `call()` puts the word "rejected" on every 400, so it
+    // arrived here looking exactly like Telegram refusing the emoji. It then
+    // resent the message stripped, which of course succeeded (no entities makes
+    // it a real change), concluded the owner has no Premium, and switched the
+    // shop's feature off. Any customer could do it to the whole shop with two
+    // taps, and nothing said why.
+    const refused = vi.fn();
+    const { bodies, fetchImpl } = fakeTelegram(['notmodified']);
+    const api = createTelegramApi({
+      // A token shaped like a real one, unlike the `'t'` the tests above use.
+      // `call()` redacts the token out of every description it reports, and a
+      // one-character token redacts a letter out of every English word — which
+      // makes the message this test is about unrecognisable to the code reading
+      // it. Harmless in production, where a token is 46 characters, and quietly
+      // fatal to a test that matches on wording.
+      token: '8000000000:AAHfakefakefakefakefakefakefakefakefake',
+      baseUrl: 'https://x.test',
+      fetch: fetchImpl,
+      onCustomEmojiRefused: refused,
+    });
+
+    await expect(api.editMessageText(1, 5, `خوش آمدید ${FIRE}`)).resolves.toBeUndefined();
+
+    // Nothing resent: the screen already said what we wanted it to say.
+    expect(bodies).toHaveLength(1);
+    expect(refused).not.toHaveBeenCalled();
   });
 
   it('does not switch the feature off because the network dropped', async () => {

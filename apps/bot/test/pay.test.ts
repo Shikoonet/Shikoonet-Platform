@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
+import { checkoutFor } from '../src/payment.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
@@ -123,6 +124,38 @@ describe('the checkout screen', () => {
     expect(await activeCard(card)).toBe(true);
     // Nothing to review until the customer says they paid.
     expect(await claimsOf(user)).toHaveLength(0);
+  });
+
+  it('will not open a checkout for an order with nothing to pay', async () => {
+    // The other half of C1. A claim opened at `expected_amount_irr = 0` can
+    // never be settled — auto-verification matches the amount exactly, with no
+    // tolerance — so the order would sit in AWAITING_PAYMENT for good while the
+    // customer looks at a card and a total of nothing.
+    //
+    // Asked of the function rather than through the bot on purpose: `place()`
+    // refuses to write a zero-total order, so the only way to reach this is the
+    // way production would — a row that was already there.
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const order = await db
+      .prepare(`SELECT id FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`)
+      .bind(user)
+      .first<{ id: number }>();
+
+    const checkout = await db.withSession(async (tx) =>
+      checkoutFor(tx, user, order!.id, 0, 'zero-total-fixture'),
+    );
+
+    expect(checkout).toBeNull();
+    const claims = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM payments WHERE order_id = ?1 AND amount_irr = 0`,
+      )
+      .bind(order!.id)
+      .first<{ n: number }>();
+    expect(claims?.n).toBe(0);
   });
 
   it('keeps showing the same card when the customer taps back and forth', async () => {

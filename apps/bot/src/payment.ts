@@ -90,6 +90,14 @@ export async function rotateCard(
  * Returns null when no card is free to hand out. That is a real state — every
  * card disabled, or every row locked by a simultaneous checkout — and it is the
  * caller's job to say so rather than to show a checkout with no destination.
+ *
+ * Also null for an order with nothing to pay. A checkout at zero opens a claim
+ * with `expected_amount_irr = 0`, and auto-verification matches on the exact
+ * amount with no tolerance — so no bank transfer that ever arrives can settle
+ * it and the order waits in AWAITING_PAYMENT for good. `place()` refuses to
+ * write such an order now; this covers the one it cannot, a row that predates
+ * that floor. Silent, because the order screen already has a way to say the
+ * checkout could not be drawn.
  */
 export async function checkoutFor(
   tx: D1DatabaseSession,
@@ -99,6 +107,8 @@ export async function checkoutFor(
   publicId: string,
   now: number = Date.now(),
 ): Promise<CheckoutPayment | null> {
+  if (!Number.isSafeInteger(totalIrr) || totalIrr <= 0) return null;
+
   const existing = await tx
     .prepare(
       `SELECT public_id, amount_irr, assigned_card_number, assigned_card_name, status

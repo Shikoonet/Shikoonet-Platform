@@ -199,6 +199,25 @@ async function place(
   // the dump says nobody needs it: the single production account with
   // `pricediscount = 100` has zero invoices and zero payments. Building the
   // path would mean a second money path for a case that has never happened.
+  //
+  // ## Why this floor is here and NOT in the schema
+  //
+  // The project rule is that a guarantee belongs to Postgres, so the obvious
+  // next step is tightening `orders.total_irr >= 0` to `> 0` in a migration.
+  // Measured against the production dump on 2026-08-15, that migration would
+  // fail: **937 of 5,131 `invoice` rows are priced at zero** — 705 of them
+  // `send_on_hold`, and `cron_status.on_hold` is switched on — so the CHECK
+  // would refuse legitimate history on cutover night, with the shop down.
+  //
+  // Zero-priced orders are a real part of what this shop sells. What must not
+  // exist is a zero-priced order somebody can still be asked to *pay for*, and
+  // that is a rule about the AWAITING_PAYMENT path rather than about the
+  // column. The same dump says none arrive that way — of the 22 `unpaid`
+  // `service_other` rows, the only ones the migration writes as
+  // AWAITING_PAYMENT, zero are priced at nothing.
+  //
+  // So: the floor here for new orders, matching guards in `spendOnOrder` and
+  // `checkoutFor` for rows that predate it, and the column left alone.
   if (!Number.isSafeInteger(price.totalIrr) || price.totalIrr <= 0) return null;
 
   // Same plan, same price, same target, still waiting to be paid. A price

@@ -263,6 +263,35 @@ describe('the buttons a shop may not remove', () => {
     });
   });
 
+  it('refuses custom emoji markup on a label, switch on or off', () => {
+    // The text path checks this and the keyboard path did not, so an admin
+    // could save `<tg-emoji …>🔥</tg-emoji> خرید` and get a 200 — then every
+    // customer saw the raw tag on the button, which `botTexts.ts` itself calls
+    // the worst outcome there is.
+    //
+    // Stricter than the rule for texts on purpose, and this is the part the
+    // audit did not have: an inline button's `text` is plain, always. Telegram
+    // parses no entities there at all, so there is no `parse_mode` to set and
+    // no shop switch that could make this work. It is refused even with custom
+    // emoji fully on, because on a button it can only ever be characters.
+    const marked = DEFAULT_LAYOUTS.main.map((b) =>
+      b.action === 'buy' ? { ...b, label: '<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji> خرید' } : b,
+    );
+    expect(checkLayout('main', marked)).toEqual({ kind: 'LABEL_MARKUP', actions: ['buy'] });
+
+    // A typo'd tag is refused for the same reason, and named the same way.
+    const broken = DEFAULT_LAYOUTS.main.map((b) =>
+      b.action === 'buy' ? { ...b, label: '<tg-emoji emoji-id="5"> خرید' } : b,
+    );
+    expect(checkLayout('main', broken)).toEqual({ kind: 'LABEL_MARKUP', actions: ['buy'] });
+
+    // And an ordinary emoji is still an ordinary emoji.
+    const plain = DEFAULT_LAYOUTS.main.map((b) =>
+      b.action === 'buy' ? { ...b, label: '🔥 خرید' } : b,
+    );
+    expect(checkLayout('main', plain)).toBeNull();
+  });
+
   it('refuses a slot the button is never given a value for', () => {
     const invented = DEFAULT_LAYOUTS.checkout.map((b) =>
       b.action === 'paid' ? { ...b, label: '✅ پرداخت کردم {total}' } : b,

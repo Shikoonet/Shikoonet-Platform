@@ -202,6 +202,32 @@ function reply(
   };
 }
 
+/**
+ * Loads the shop's wording, keyboards and switches into the module bindings
+ * every screen is drawn from.
+ *
+ * Called before an update is handled AND before the sweeps run, because both
+ * of them send the customer sentences the shop is allowed to have rewritten.
+ * While this lived only inside `handleUpdate`, a bot that restarted overnight
+ * and settled a payment or expired an invoice before anyone pressed anything
+ * spoke in the wording the code ships — the shop's own words arriving only
+ * once some unrelated customer happened to say hello.
+ *
+ * Cached for thirty seconds and falling back to the defaults, so it cannot
+ * fail what it precedes — see `botContent.ts`. Outside any session, because it
+ * is shop-wide configuration rather than one customer's data.
+ *
+ * In series rather than in parallel: `Texts` needs to know whether the shop has
+ * custom emoji on before it decides whether to keep the markup in an override
+ * or strip it to the fallback emoji.
+ */
+export async function refreshShopContent(db: D1Database): Promise<void> {
+  const shop = await loadShopSettings(db);
+  const content = await loadBotContent(db, Date.now(), shop.customEmoji);
+  menu.applyContent(content);
+  SHOP = shop;
+}
+
 export async function handleUpdate(
   db: D1Database,
   update: TelegramUpdate,
@@ -209,21 +235,7 @@ export async function handleUpdate(
   // only handlers that leave the process.
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<HandleOutcome> {
-  // The admin's wording and keyboard, before anything is drawn. Cached for
-  // thirty seconds and falling back to the code's defaults, so this cannot
-  // fail the update — see `botContent.ts`. Outside the session because it is a
-  // read of shop-wide configuration, not of this customer's data.
-  // Both are shop-wide configuration read outside the session, both fall back
-  // to what the code ships, and neither can fail the update.
-  //
-  // In series rather than in parallel: `Texts` needs to know whether the shop
-  // has custom emoji on before it decides whether to keep the markup in an
-  // override or strip it to the fallback emoji. Both are cached for thirty
-  // seconds, so this is one extra round trip twice a minute, not per update.
-  const shop = await loadShopSettings(db);
-  const content = await loadBotContent(db, Date.now(), shop.customEmoji);
-  menu.applyContent(content);
-  SHOP = shop;
+  await refreshShopContent(db);
 
   return db.withSession(async (tx) => {
     const claim = await tx

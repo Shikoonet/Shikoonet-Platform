@@ -200,6 +200,38 @@ describe('spending the balance', () => {
     expect(await balanceFor(db, userId)).toBe(3_000_000);
   });
 
+  it('has nothing to charge for an order priced at zero, and does not crash trying', async () => {
+    // C1's remaining half. `place()` refuses to write a zero-total order now,
+    // but this function took the amount on trust — and a zero entry violates
+    // `CHECK (amount_irr <> 0)`, whose exception rolls back the whole update
+    // including the `telegram_updates` row that makes handling exactly-once.
+    // That rollback is the entire C1 freeze, reached from the one direction the
+    // floor in `place()` does not cover: a row that was already there.
+    //
+    // 'PAID' rather than a refusal, because it is true: nothing is owed, so
+    // nothing is charged. What must not happen is a ledger row for no money.
+    const userId = await makeCustomer(920_100_006);
+    await credit(userId, 1_000_000, `t:${userId}:a`);
+    const order = await topupOrder(userId, 1_000_000);
+
+    expect(await db.withSession(async (tx) => spendOnOrder(tx, userId, order.id, 0))).toBe('PAID');
+    expect(await balanceFor(db, userId)).toBe(1_000_000);
+  });
+
+  it('refuses a negative price instead of paying the customer for buying', async () => {
+    // Worth its own test because the failure is not a crash. `-amountIrr` on a
+    // negative amount is a positive one, so a purchase became a deposit and the
+    // balance went UP — a sale that pays the buyer.
+    const userId = await makeCustomer(920_100_007);
+    await credit(userId, 1_000_000, `t:${userId}:a`);
+    const order = await topupOrder(userId, 1_000_000);
+
+    expect(await db.withSession(async (tx) => spendOnOrder(tx, userId, order.id, -500_000))).toBe(
+      'INSUFFICIENT',
+    );
+    expect(await balanceFor(db, userId)).toBe(1_000_000);
+  });
+
   it('lets a customer with no wallet row spend nothing', async () => {
     const userId = await makeCustomer(920_100_004);
     const order = await topupOrder(userId, 1_000_000);
