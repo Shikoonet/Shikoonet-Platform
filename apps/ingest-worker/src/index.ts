@@ -19,7 +19,11 @@ export interface Env {
   // Injected at deploy time by scripts/release.sh via `wrangler deploy --var`.
   APP_VERSION?: string;
   INGEST_MAX_BODY_BYTES?: string;
-  LOG_SMS_BODY?: string;
+  // `LOG_SMS_BODY` was declared here and passed through from the environment
+  // and read by nothing, so `deploy/README.md`'s "leave unset" instruction
+  // protected nothing and implied a switch that could turn the logging on.
+  // Removed rather than implemented: a raw bank SMS body is never written to a
+  // log, and a setting that suggests otherwise is worse than no setting.
   MIRZABOT_INTEGRATION_ENABLED?: string;
   MIRZABOT_INTEGRATION_HMAC_SECRET?: string;
   MIRZABOT_INTEGRATION_ID?: string;

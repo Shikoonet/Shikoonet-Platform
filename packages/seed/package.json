@@ -7,7 +7,8 @@
   "scripts": {
     "seed:sim": "tsx --env-file=../../sim/.env.local src/run.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --max-warnings 0"
+    "lint": "eslint src test --max-warnings 0",
+    "test": "vitest run"
   },
   "dependencies": {
     "@shikoo/contracts": "workspace:*",
@@ -19,6 +20,7 @@
   "devDependencies": {
     "@types/node": "^22.9.0",
     "tsx": "^4.19.2",
-    "typescript": "5.6.3"
+    "typescript": "5.6.3",
+    "vitest": "2.1.4"
   }
 }

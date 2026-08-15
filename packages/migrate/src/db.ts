@@ -18,6 +18,21 @@ export interface Config {
 
 export function loadConfig(): Config {
   const env = process.env;
+  // The one value with no default, and the asymmetry is deliberate. Everything
+  // else here is a SOURCE: a wrong one fails to connect, or reads the wrong
+  // rows and the verify step refuses to agree. `DATABASE_URL` is the
+  // DESTINATION. With a default it invented for itself, a cutover run where
+  // somebody forgot to export one would migrate production into the simulation
+  // database on this laptop, report zero Rial of difference, and be right —
+  // about the wrong database. The tests that want the local one say so in
+  // `vitest.config.ts`.
+  const connectionString = env.DATABASE_URL;
+  if (connectionString === undefined || connectionString === '') {
+    throw new Error(
+      'DATABASE_URL is required: this writes a whole migration into it, so it is ' +
+        'never guessed. Export the destination explicitly.',
+    );
+  }
   return {
     mysql: {
       host: env.MYSQL_HOST ?? '127.0.0.1',
@@ -26,9 +41,7 @@ export function loadConfig(): Config {
       password: env.MYSQL_PASSWORD ?? 'shikoo_local',
       database: env.MYSQL_DATABASE ?? 'mirzabot',
     },
-    postgres: {
-      connectionString: env.DATABASE_URL ?? 'postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo',
-    },
+    postgres: { connectionString },
     d1ExportDir:
       env.D1_EXPORT_DIR ??
       new URL(

@@ -22,8 +22,10 @@ Type=simple
 User=shikoo
 Group=shikoo
 WorkingDirectory=/opt/shikoo/ingest
-# DATABASE_URL plus the Mirzabot integration secrets. LOG_SMS_BODY must stay
-# unset — a raw bank SMS body is never written to a log.
+# DATABASE_URL plus the Mirzabot integration secrets. In production the process
+# refuses to start unless MIRZABOT_INTEGRATION_ENABLED and AUTO_MATCH_ENABLED
+# have both been decided — absent, they mean off, and off looks exactly like
+# working while no payment is ever verified.
 EnvironmentFile=/etc/shikoo/ingest.env
 ExecStart=/usr/bin/node dist/server.js
 Restart=always

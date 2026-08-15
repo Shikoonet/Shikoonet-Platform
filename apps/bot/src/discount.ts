@@ -85,9 +85,26 @@ export interface PurchaseContext {
  * Codes are matched case-insensitively. Production holds `off15` and customers
  * type `OFF15`; the legacy comparison is MySQL's, which is case-insensitive by
  * collation, so matching exactly here would reject codes that work today.
+ *
+ * Bounded here rather than at each of the four screens that read a typed code,
+ * because all four reach the lookup through this one function — a cap at the
+ * call sites would be four chances to forget. Nothing is at risk in the
+ * database (the value is only ever a parameterised `WHERE` operand, and what
+ * gets stored is the shop's own canonical code), so this is about work: a
+ * Telegram message may be 4,096 characters and every one of them would
+ * otherwise be lowercased and matched against an index, on demand, for free.
+ *
+ * The cap is set from the dump rather than from taste: the longest real code is
+ * 14 characters across the 33 in `DiscountSell`, and 10 across the 4 gift codes
+ * in `Discount`. The legacy columns are `varchar(2000)` and `varchar(1000)`,
+ * which is what a limit looks like when nobody chose it. Sixty-four leaves room
+ * for a code four times longer than any that has ever existed and still refuses
+ * a message that was never a code at all.
  */
+export const MAX_CODE_LENGTH = 64;
+
 export function normalizeCode(typed: string): string {
-  return typed.trim().toLowerCase();
+  return typed.trim().slice(0, MAX_CODE_LENGTH).toLowerCase();
 }
 
 /** The row, or null. Case-insensitive, and never more than one row: `code` is UNIQUE. */

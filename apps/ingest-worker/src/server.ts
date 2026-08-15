@@ -46,7 +46,6 @@ function positiveInt(name: string, fallback: number): number {
 /** Optional settings, read straight from the environment by name. */
 const PASSTHROUGH = [
   'INGEST_MAX_BODY_BYTES',
-  'LOG_SMS_BODY',
   'MIRZABOT_INTEGRATION_ENABLED',
   'MIRZABOT_INTEGRATION_HMAC_SECRET',
   'MIRZABOT_INTEGRATION_ID',
@@ -54,6 +53,66 @@ const PASSTHROUGH = [
   'AUTO_FULFILLMENT_ENABLED',
   'MIRZABOT_WEBHOOK_URL',
 ] as const satisfies readonly (keyof Env)[];
+
+/**
+ * The two switches that decide whether money is ever verified.
+ *
+ * Every consumer compares against the literal `'true'`, so anything else —
+ * absent, `True`, `1`, `yes` — means off, and off is indistinguishable from
+ * working: the SMS is stored, the transaction candidate is written, and no
+ * claim is ever decided. No error, no log, no failed request. It cost an
+ * afternoon on this machine on 2026-08-15 and it is documented in
+ * `sim/README.md` precisely because it had already cost one before.
+ */
+const MUST_BE_DECIDED = ['MIRZABOT_INTEGRATION_ENABLED', 'AUTO_MATCH_ENABLED'] as const;
+
+/**
+ * Refuses to start rather than to work.
+ *
+ * Only in production, and deliberately so: the simulation is started by hand a
+ * dozen times a day with defaults that are written down, and demanding five
+ * variables there would teach everyone to export them without reading them.
+ */
+function assertProductionConfig(env: Env): void {
+  if (env.ENV_NAME !== 'production') return;
+
+  const undecided = MUST_BE_DECIDED.filter(
+    (key) => env[key] !== 'true' && env[key] !== 'false',
+  );
+  if (undecided.length > 0) {
+    throw new Error(
+      `${undecided.join(' and ')} must be set to exactly "true" or "false" when ` +
+        'ENV_NAME=production. Left unset — or set to anything else, which reads the ' +
+        'same — a bank SMS is stored and a transaction is written, but no payment is ' +
+        'ever verified, and nothing says so.',
+    );
+  }
+
+  if (env.MIRZABOT_INTEGRATION_ENABLED === 'true') {
+    // `MIRZABOT_INTEGRATION_ID` falls back to 'mirzabot-test' where it is read,
+    // so without this a production integration signs and records itself under a
+    // test identity. The secret's absence is quieter still: every claim the PHP
+    // bot posts is answered 503, which from the other end looks like an outage.
+    const unconfigured = (
+      ['MIRZABOT_INTEGRATION_HMAC_SECRET', 'MIRZABOT_INTEGRATION_ID'] as const
+    ).filter((key) => env[key] === undefined);
+    if (unconfigured.length > 0) {
+      throw new Error(
+        `${unconfigured.join(' and ')} must be set when MIRZABOT_INTEGRATION_ENABLED=true ` +
+          'in production: the integration would otherwise answer every claim 503, or ' +
+          'record itself as the test integration.',
+      );
+    }
+  }
+
+  // Said out loud once, because an operator who meant it should still see it in
+  // the log they check after a deploy, next to the port and the version.
+  for (const key of MUST_BE_DECIDED) {
+    if (env[key] !== 'true') {
+      console.warn(`[ingest] ${key}=false — payments will not be verified automatically`);
+    }
+  }
+}
 
 export function buildEnv(db: Env['DB']): Env {
   const env: Env = {
@@ -77,6 +136,7 @@ export function buildEnv(db: Env['DB']): Env {
     const value = optional(key);
     if (value !== undefined) env[key] = value;
   }
+  assertProductionConfig(env);
   return env;
 }
 

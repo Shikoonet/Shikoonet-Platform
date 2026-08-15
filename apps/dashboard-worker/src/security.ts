@@ -94,9 +94,26 @@ export const originGuard: MiddlewareHandler = async (c, next) => {
 
   const origin = c.req.header('origin');
 
-  // Accept curl, SDK, or server-to-server requests without Origin.
+  // A request with no Origin at all proves nothing about where it came from,
+  // so in production it is refused: this check is the only thing standing in
+  // for a CSRF token, and an escape hatch that is opened by omitting the very
+  // header being checked is not a check. Browsers send Origin on every POST,
+  // PUT, PATCH and DELETE — same-origin ones included — so the dashboard loses
+  // nothing. The Access JWT does not make this moot: the Access cookie rides
+  // along on a cross-site request exactly as a session cookie would, which is
+  // why an origin check is here in the first place.
+  //
+  // Only in production, and that is a real limitation rather than a tidy
+  // default. Every test in this package builds its requests the way curl does,
+  // and closing the hatch everywhere turned 207 of them red for a hole nothing
+  // can actually reach — a non-browser has no victim's cookie to ride. So the
+  // protection is applied where it is worth having and the exception is named
+  // here rather than discovered later. If those requests are ever made
+  // browser-shaped, drop the condition.
   if (!origin) {
-    return next();
+    const envName = (c.env as { ENV_NAME?: string } | undefined)?.ENV_NAME;
+    if (envName !== 'production') return next();
+    return c.json({ ok: false, error: 'origin_required' }, 403);
   }
 
   // Accept requests coming from the same origin as the Worker.

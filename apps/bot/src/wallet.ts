@@ -164,10 +164,24 @@ export type SpendResult = 'PAID' | 'INSUFFICIENT' | 'ALREADY_PAID';
  * see the same funds; the second waits and then finds them gone. Without that
  * lock a customer with one plan's worth of credit could buy two.
  *
+ * With one exception, and it is said out loud because the sentence above is
+ * otherwise a small lie: **a customer who has no `wallets` row is not locked at
+ * all.** `SELECT … FOR UPDATE` on a row that does not exist locks nothing, so
+ * two transactions both walk straight past it. That is safe today for a reason
+ * that has nothing to do with locking — no row means no entries, which means a
+ * balance of zero, so the overdraft refusal below stops both of them. It is the
+ * absence of money, not the presence of a lock, and if a `wallets` row ever
+ * starts being created ahead of the first entry that changes silently.
+ *
  * Refuses to go negative. The schema deliberately has no `CHECK (balance >= 0)`
  * — production contains a negative balance and the migration had to reproduce
  * reality rather than launder it — so the overdraft policy lives here, at the
  * point of spend, which is the only place that can tell a customer why.
+ *
+ * The second guarantee is not this lock and is worth separating: paying twice
+ * for the SAME order is stopped by `wallet_entries.idempotency_key` being
+ * UNIQUE, in the database, whatever the callers do. The lock only settles two
+ * DIFFERENT orders racing for one balance.
  */
 export async function spendOnOrder(
   tx: D1DatabaseSession,

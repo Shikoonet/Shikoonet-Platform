@@ -98,7 +98,10 @@ No `PORT`. The bot does not listen.
 | `SWEEP_INTERVAL_MS` | no | Default 60000 |
 | `DEVICE_RATE_LIMIT`, `IP_RATE_LIMIT`, `RATE_LIMIT_WINDOW_MS` | no | Second layer; the edge is the first |
 | `MIRZABOT_INTEGRATION_*`, `AUTO_MATCH_ENABLED`, `AUTO_FULFILLMENT_ENABLED` | while the PHP bot lives | HMAC integration with the legacy bot |
-| `LOG_SMS_BODY` | **leave unset** | A raw bank SMS body is never written to a log |
+
+A raw bank SMS body is never written to a log, under any setting. There used to
+be a `LOG_SMS_BODY` row here; the variable was read by nothing, so the
+instruction protected nothing and implied a switch that could turn it on.
 
 ## Postgres, when a service is on another host
 

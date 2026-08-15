@@ -13,6 +13,7 @@
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MAX_CODE_LENGTH, normalizeCode } from '../src/discount.js';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
@@ -155,6 +156,25 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('what counts as a code at all', () => {
+  it('bounds what a customer can type before it reaches the lookup', () => {
+    // Telegram will carry 4,096 characters and the longest code that has ever
+    // existed here is 14. Everything past the cap is lowercased and matched
+    // against an index for nothing, once per message, for free.
+    const essay = 'x'.repeat(4_096);
+    expect(normalizeCode(essay)).toHaveLength(MAX_CODE_LENGTH);
+    // The cap is applied before the lowering, so it cannot be walked past by
+    // a string whose case-folded form is longer than its input.
+    expect(normalizeCode(essay)).toBe('x'.repeat(MAX_CODE_LENGTH));
+  });
+
+  it('leaves a real code exactly as the shop stored it', () => {
+    // The cap must not become a truncation bug: every code in production fits.
+    expect(normalizeCode('  OFF15  ')).toBe('off15');
+    expect(normalizeCode('sale-1404-nowruz')).toBe('sale-1404-nowruz');
+  });
 });
 
 describe('a code that works', () => {

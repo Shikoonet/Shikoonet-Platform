@@ -4450,7 +4450,10 @@ registerSettingsRoutes(app);
 registerAdminAccessRoutes(app);
 registerBotContentRoutes(app);
 
-export default app;
+// No default export: it was `export default { fetch }`'s descendant, from when
+// this ran as a Worker. Nothing has imported it since — `server.ts` and every
+// test take the named one — and leaving it suggested a second entry point that
+// does not exist.
 export { app };
 
 // ponytail: this exists — sample-analyzer `scoreMatch` import kept so future

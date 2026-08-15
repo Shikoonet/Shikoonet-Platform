@@ -126,7 +126,11 @@ describe('dashboard worker — access smoke', () => {
     expect(r.status).toBe(403);
   });
 
-  it('allows same-origin POST (no Origin header) without CSRF block', async () => {
+  it('allows a POST with no Origin outside production, which is how this suite writes', async () => {
+    // Kept, and its name changed to say what it actually asserts. Every test in
+    // this package constructs requests the way curl does rather than the way a
+    // browser does, so this is a statement about the harness, not a statement
+    // that no-Origin writes are acceptable.
     const email = 'admin@example.com';
     const now = Date.now();
     await baseEnv.DB.prepare(
@@ -146,6 +150,59 @@ describe('dashboard worker — access smoke', () => {
         }),
       }),
       envBypass,
+    );
+    expect(r.status).toBe(200);
+  });
+
+  it('refuses a write with no Origin once ENV_NAME is production', async () => {
+    // The guard this pair exists for. `originGuard` is the only stand-in for a
+    // CSRF token on these routes, and it used to be skippable by simply not
+    // sending the header it inspects.
+    const email = 'admin@example.com';
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at) VALUES (?1, ?2, 'ADMIN', 1, ?3, ?3)`,
+    )
+      .bind(crypto.randomUUID(), email, now)
+      .run();
+    const envProd = { ...baseEnv, TEST_ACCESS_USER: email, ENV_NAME: 'production' };
+    const r = await app.fetch(
+      new Request('https://example.com/api/v1/comment', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          entityType: 'MATCH',
+          entityId: crypto.randomUUID(),
+          body: 'test comment',
+        }),
+      }),
+      envProd,
+    );
+    expect(r.status).toBe(403);
+  });
+
+  it('still allows the write the SPA really makes, in production', async () => {
+    // The other half, so "refuse no Origin" cannot be satisfied by refusing
+    // everything: the request a browser actually sends must still succeed.
+    const email = 'admin@example.com';
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at) VALUES (?1, ?2, 'ADMIN', 1, ?3, ?3)`,
+    )
+      .bind(crypto.randomUUID(), email, now)
+      .run();
+    const envProd = { ...baseEnv, TEST_ACCESS_USER: email, ENV_NAME: 'production' };
+    const r = await app.fetch(
+      new Request('https://example.com/api/v1/comment', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://example.com' },
+        body: JSON.stringify({
+          entityType: 'MATCH',
+          entityId: crypto.randomUUID(),
+          body: 'test comment',
+        }),
+      }),
+      envProd,
     );
     expect(r.status).toBe(200);
   });

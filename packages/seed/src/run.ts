@@ -33,11 +33,47 @@ const KEEP = new Set(['schema_meta', 'bank_card_prefixes']);
  * runner that will happily wipe it is one pasted connection string away from
  * doing so.
  */
-function assertLocal(connectionString: string): void {
+export function assertLocal(connectionString: string): void {
   const host = new URL(connectionString).hostname;
   if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
     throw new Error(
       `refusing to seed a non-local database (host ${host}). This wipes every table.`,
+    );
+  }
+  // A hostname is not evidence of anything. `127.0.0.1` is exactly what the far
+  // end of an SSH tunnel looks like, and a cutover is largely conducted through
+  // one — so the check above would have waved through the single worst command
+  // in this repository on the single worst night to run it.
+  if (process.env.ENV_NAME === 'production') {
+    throw new Error('refusing to seed with ENV_NAME=production. This wipes every table.');
+  }
+}
+
+/**
+ * How many users make a database somebody else's.
+ *
+ * Production holds 11,241. The simulation seed creates none at all, and the bot
+ * suite leaves at most a few dozen behind, so this sits an order of magnitude
+ * clear of both — it cannot fire on a working laptop and cannot miss a
+ * migrated one.
+ */
+const NOT_A_SIMULATION = 1_000;
+
+/**
+ * Asks the database what it is, rather than asking the connection string.
+ *
+ * This is the guard that would actually have stopped the accident: the address
+ * can be forged by a tunnel, but eleven thousand customers cannot.
+ */
+export async function assertNotRealData(db: ReturnType<typeof createPostgresD1>['db']): Promise<void> {
+  const row = await db
+    .prepare(`SELECT count(*)::int AS n FROM users`)
+    .first<{ n: number }>();
+  const users = row?.n ?? 0;
+  if (users >= NOT_A_SIMULATION) {
+    throw new Error(
+      `refusing to seed: this database holds ${users} users, which is not a simulation. ` +
+        'This wipes every table.',
     );
   }
 }
@@ -83,6 +119,10 @@ export async function main(): Promise<void> {
 
   const { db, pool } = createPostgresD1({ connectionString });
   try {
+    // After the connection is open, because this one asks the database rather
+    // than the string that reached it.
+    await assertNotRealData(db);
+
     const wiped = await wipe(db);
     console.log(`wiped ${wiped.length} tables`);
 
