@@ -22,6 +22,7 @@ import { DashboardPage } from './pages/DashboardPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
 import { ProductsPage } from './pages/ProductsPage.js';
 import { PanelsPage } from './pages/PanelsPage.js';
+import { ContentPage } from './pages/ContentPage.js';
 import { DiscountsPage } from './pages/DiscountsPage.js';
 import { OrdersPage, ServicesPage, TransactionsPage } from './pages/LedgerPages.js';
 import { SettingsPage, RequestsPage } from './pages/SettingsPage.js';
@@ -72,6 +73,8 @@ function Body({
       return <BotTextsPage />;
     case 'keyboard':
       return <KeyboardPage />;
+    case 'content':
+      return <ContentPage />;
     case 'access':
       return <AccessPage role={role} />;
   }

@@ -146,6 +146,44 @@ export interface CategoryRow {
   productsCount: number;
 }
 
+export interface HelpArticleRow {
+  id: number;
+  title: string;
+  category: string | null;
+  body: string;
+  /** Whether an image came over with the row. The Telegram file id itself never
+   *  leaves the server: it belongs to the old bot and sending it from this one
+   *  fails at Telegram with nothing on screen to explain why. */
+  hasMedia: boolean;
+  sortOrder: number;
+  active: boolean;
+}
+
+export interface HelpArticleBody {
+  title: string;
+  category?: string | null;
+  body: string;
+  sortOrder?: number;
+  active?: boolean;
+}
+
+export interface ClientAppRow {
+  id: number;
+  name: string;
+  platform: string | null;
+  link: string;
+  sortOrder: number;
+  active: boolean;
+}
+
+export interface ClientAppBody {
+  name: string;
+  platform?: string | null;
+  link: string;
+  sortOrder?: number;
+  active?: boolean;
+}
+
 export type PanelRole = 'ADMIN' | 'REVIEWER' | 'READ_ONLY';
 
 export interface Me {
@@ -573,6 +611,36 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ status }),
     });
+  },
+
+  helpArticles() {
+    return req<{ ok: boolean; items: HelpArticleRow[] }>('/help-articles');
+  },
+
+  saveHelpArticle(id: number | null, body: HelpArticleBody) {
+    return req<{ ok: boolean; article: HelpArticleRow }>(
+      id === null ? '/help-articles' : `/help-articles/${id}`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+  },
+
+  deleteHelpArticle(id: number) {
+    return req<{ ok: boolean }>(`/help-articles/${id}`, { method: 'DELETE' });
+  },
+
+  clientApps() {
+    return req<{ ok: boolean; items: ClientAppRow[] }>('/client-apps');
+  },
+
+  saveClientApp(id: number | null, body: ClientAppBody) {
+    return req<{ ok: boolean; app: ClientAppRow }>(
+      id === null ? '/client-apps' : `/client-apps/${id}`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+  },
+
+  deleteClientApp(id: number) {
+    return req<{ ok: boolean }>(`/client-apps/${id}`, { method: 'DELETE' });
   },
 
   panels() {

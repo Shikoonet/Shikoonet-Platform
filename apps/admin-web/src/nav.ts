@@ -25,6 +25,7 @@ export type PageId =
   | 'discounts'
   | 'texts'
   | 'keyboard'
+  | 'content'
   | 'access'
   | 'settings';
 
@@ -65,6 +66,7 @@ export const NAV: NavGroup[] = [
     items: [
       { id: 'texts', label: 'متن‌های ربات', icon: 'text' },
       { id: 'keyboard', label: 'چیدمان کیبورد', icon: 'keyboard' },
+      { id: 'content', label: 'آموزش و برنامه‌ها', icon: 'text' },
       { id: 'settings', label: 'تنظیمات', icon: 'settings' },
     ],
   },
@@ -88,6 +90,9 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'discounts',
   'texts',
   'keyboard',
+  // Reading what the shop tells its customers is shop operation, not customer
+  // data — the same line «متن‌های ربات» sits on.
+  'content',
   'settings',
 ]);
 

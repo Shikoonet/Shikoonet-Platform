@@ -40,10 +40,12 @@ describe('navigation', () => {
   it('lists every section that has a screen, so none is unreachable', () => {
     // The list of pages with a screen, kept by hand — this is the assertion, so
     // it must not be derived from `NAV` itself.
-    // All twelve. The last two arrived with migration 0015, which gave the
-    // bot's wording and keyboard a table of their own — they had none before,
-    // in Postgres or in the production dump.
+    // `texts` and `keyboard` arrived with migration 0015, which gave the bot's
+    // wording and keyboard a table of their own. `content` is the two tables the
+    // bot has read since «آموزش» was built and nobody could edit: `help_articles`
+    // and `client_apps` were changed in the legacy admin panel until 2026-08-16.
     const implemented: PageId[] = [
+      'content',
       'dashboard',
       'customers',
       'products',
