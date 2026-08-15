@@ -18,6 +18,12 @@ import { provisionPaidOrders } from './provision.js';
 import { syncSubscriptions } from './sync.js';
 import { warnExpiringServices } from './warn.js';
 import { expireUnpaidOrders } from './expire.js';
+import {
+  claimBroadcastBatch,
+  closeFinishedBroadcasts,
+  markBroadcastFailed,
+  SEND_GAP_MS,
+} from './broadcast.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 
 export interface PollResult {
@@ -212,6 +218,51 @@ async function sweep(
   }
 }
 
+/**
+ * Sends the next slice of whatever broadcast is outstanding.
+ *
+ * Its own sweep rather than a `sweep()` call, because the generic helper throws
+ * the send result away and a broadcast is the one place the shop is owed a
+ * count. A failure here is recorded against the recipient — almost always a
+ * customer who blocked the bot — and never retried.
+ *
+ * Paced rather than fired off at once. `SEND_GAP_MS` keeps this under
+ * Telegram's bulk ceiling; the cost is a few seconds added to the cycle while a
+ * broadcast is running, which is why the admin is told it takes some minutes.
+ */
+export async function sweepBroadcasts(
+  db: D1Database,
+  api: TelegramApi,
+  signal?: AbortSignal,
+): Promise<number> {
+  let batch;
+  try {
+    batch = await claimBroadcastBatch(db);
+  } catch (err) {
+    console.error('[bot] broadcast batch could not be claimed, will retry', err);
+    return 0;
+  }
+  let sent = 0;
+  for (const message of batch) {
+    if (signal?.aborted) break;
+    try {
+      await api.sendMessage(message.chatId, message.text);
+      sent += 1;
+    } catch (err) {
+      await markBroadcastFailed(db, message.broadcastId, message.userId, String(err)).catch(
+        (e) => console.error('[bot] could not record a failed broadcast recipient', e),
+      );
+    }
+    await sleep(SEND_GAP_MS, signal);
+  }
+  if (batch.length > 0) {
+    await closeFinishedBroadcasts(db).catch((err) =>
+      console.error('[bot] could not close finished broadcasts', err),
+    );
+  }
+  return sent;
+}
+
 /** Drops claims old enough that Telegram can no longer redeliver them. */
 export async function pruneUpdates(db: D1Database, olderThanDays = 7): Promise<number> {
   const result = await db
@@ -289,6 +340,10 @@ export async function run(
       // advancing it, and an order settled or delivered earlier in this same
       // cycle must have moved out of AWAITING_PAYMENT before this looks.
       await sweep(api, 'expiring unpaid orders', () => expireUnpaidOrders(db));
+      // Last of all, and after everything that a customer is waiting on. A
+      // broadcast is the only sweep that is allowed to take seconds rather than
+      // milliseconds, so nothing time-sensitive queues behind it.
+      await sweepBroadcasts(db, api, options.signal);
     } catch (err) {
       // A shutdown aborts the poll in flight, which surfaces here as a fetch
       // error. It is not a failure and must not be logged as one.

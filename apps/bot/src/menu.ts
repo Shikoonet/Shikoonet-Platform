@@ -54,6 +54,7 @@ import {
 import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
 import type { ShopStats } from '@shikoo/domain';
 import type { CustomerDetail, CustomerHit } from './customers.js';
+import { MAX_MESSAGE_LENGTH } from './broadcast.js';
 import { MAX_COPY_TEXT_LENGTH, type InlineButton, type InlineKeyboard } from './telegram.js';
 
 /**
@@ -160,6 +161,13 @@ export let ADMIN_USER_ASK_DEBIT = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_DEBIT');
 export let ADMIN_USER_AMOUNT_BAD = DEFAULT_TEXTS.raw('ADMIN_USER_AMOUNT_BAD');
 export let ADMIN_USER_BLOCKED = DEFAULT_TEXTS.raw('ADMIN_USER_BLOCKED');
 export let ADMIN_USER_UNBLOCKED = DEFAULT_TEXTS.raw('ADMIN_USER_UNBLOCKED');
+export let ADMIN_USER_ASK_DISCOUNT = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_DISCOUNT');
+export let ADMIN_USER_DISCOUNT_BAD = DEFAULT_TEXTS.raw('ADMIN_USER_DISCOUNT_BAD');
+export let ADMIN_USER_ASK_MESSAGE = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_MESSAGE');
+export let ADMIN_USER_MESSAGE_SENT = DEFAULT_TEXTS.raw('ADMIN_USER_MESSAGE_SENT');
+export let ADMIN_BULK_ASK_CREDIT = DEFAULT_TEXTS.raw('ADMIN_BULK_ASK_CREDIT');
+export let ADMIN_BULK_ASK_MESSAGE = DEFAULT_TEXTS.raw('ADMIN_BULK_ASK_MESSAGE');
+export let ADMIN_BULK_NOBODY = DEFAULT_TEXTS.raw('ADMIN_BULK_NOBODY');
 
 export let CONFIRM_APPROVE_WITHOUT_TX = buildConfirmApprove(DEFAULT_TEXTS);
 export let CONFIRM_REJECT = buildConfirmReject(DEFAULT_TEXTS);
@@ -289,6 +297,13 @@ export function applyContent(content: BotContent): void {
   ADMIN_USER_AMOUNT_BAD = t.raw('ADMIN_USER_AMOUNT_BAD');
   ADMIN_USER_BLOCKED = t.raw('ADMIN_USER_BLOCKED');
   ADMIN_USER_UNBLOCKED = t.raw('ADMIN_USER_UNBLOCKED');
+  ADMIN_USER_ASK_DISCOUNT = t.raw('ADMIN_USER_ASK_DISCOUNT');
+  ADMIN_USER_DISCOUNT_BAD = t.raw('ADMIN_USER_DISCOUNT_BAD');
+  ADMIN_USER_ASK_MESSAGE = t.raw('ADMIN_USER_ASK_MESSAGE');
+  ADMIN_USER_MESSAGE_SENT = t.raw('ADMIN_USER_MESSAGE_SENT');
+  ADMIN_BULK_ASK_CREDIT = t.raw('ADMIN_BULK_ASK_CREDIT');
+  ADMIN_BULK_ASK_MESSAGE = t.raw('ADMIN_BULK_ASK_MESSAGE');
+  ADMIN_BULK_NOBODY = t.raw('ADMIN_BULK_NOBODY');
   CONFIRM_APPROVE_WITHOUT_TX = buildConfirmApprove(t);
   CONFIRM_REJECT = buildConfirmReject(t);
   DISCOUNT_REFUSED = buildDiscountRefused(t);
@@ -496,6 +511,9 @@ export function adminMenu(waiting: number, allowed: readonly AdminPermission[]):
     applies: (action) => {
       if (action === 'clm') return waiting > 0 && allowed.includes('claims.view');
       if (action === 'sts') return allowed.includes('stats.view');
+      if (action === 'usf') return allowed.includes('users.view');
+      if (action === 'bcr') return allowed.includes('bulk.credit');
+      if (action === 'bct') return allowed.includes('bulk.message');
       return true;
     },
   });
@@ -551,6 +569,58 @@ export function userConfirmMenu(customerId: number): InlineKeyboard {
   });
 }
 
+export function discountSet(percent: number): string {
+  return TEXTS_NOW.render('ADMIN_USER_DISCOUNT_DONE', {
+    percent: percent.toLocaleString('en-US'),
+  });
+}
+
+export function messageFromShop(body: string): string {
+  return TEXTS_NOW.render('ADMIN_USER_MESSAGE_FROM_SHOP', { body });
+}
+
+/**
+ * The confirmation for a group credit.
+ *
+ * The total is on it deliberately. An extra zero is invisible in «۵۰٬۰۰۰ تومان»
+ * and unmissable in the sum across every customer, and the sum is the only
+ * number on this screen that changes by a factor of ten when the mistake is
+ * made.
+ */
+export function confirmBulkCredit(amountIrr: number, count: number): string {
+  return TEXTS_NOW.render('ADMIN_BULK_CREDIT_CONFIRM', {
+    amount: formatToman(amountIrr),
+    count: count.toLocaleString('en-US'),
+    total: formatToman(amountIrr * count),
+  });
+}
+
+export function bulkCreditDone(count: number): string {
+  return TEXTS_NOW.render('ADMIN_BULK_CREDIT_DONE', { count: count.toLocaleString('en-US') });
+}
+
+/** The message exactly as every customer will read it, before it is sent. */
+export function confirmBroadcast(body: string, count: number): string {
+  return TEXTS_NOW.render('ADMIN_BULK_MESSAGE_CONFIRM', {
+    count: count.toLocaleString('en-US'),
+    body,
+  });
+}
+
+export function broadcastQueued(count: number): string {
+  return TEXTS_NOW.render('ADMIN_BULK_MESSAGE_QUEUED', { count: count.toLocaleString('en-US') });
+}
+
+export function bulkTextTooLong(): string {
+  return TEXTS_NOW.render('ADMIN_BULK_TEXT_TOO_LONG', {
+    max: MAX_MESSAGE_LENGTH.toLocaleString('en-US'),
+  });
+}
+
+export function bulkConfirmMenu(): InlineKeyboard {
+  return buildMenu('adminBulkConfirm', layout('adminBulkConfirm'));
+}
+
 export function adminAmountTooBig(maxIrr: number): string {
   return TEXTS_NOW.render('ADMIN_USER_AMOUNT_TOO_BIG', { max: formatToman(maxIrr) });
 }
@@ -574,7 +644,7 @@ export function walletAdjusted(beforeIrr: number, afterIrr: number): string {
 }
 
 /** The buttons on a customer's page that carry that customer's id. */
-const USER_ACTIONS = ['uwp', 'uwm', 'ubl', 'uub'] as const;
+const USER_ACTIONS = ['uwp', 'uwm', 'ubl', 'uub', 'udp', 'umg'] as const;
 function isUserAction(action: string): action is (typeof USER_ACTIONS)[number] {
   return (USER_ACTIONS as readonly string[]).includes(action);
 }
@@ -648,6 +718,8 @@ export function userMenu(
   return buildMenu('adminUser', layout('adminUser'), {
     applies: (action) => {
       if (action === 'uwp' || action === 'uwm') return allowed.includes('users.wallet');
+      if (action === 'udp') return allowed.includes('users.discount');
+      if (action === 'umg') return allowed.includes('users.message');
       if (action === 'ubl') return !blocked && allowed.includes('users.block');
       if (action === 'uub') return blocked && allowed.includes('users.block');
       return true;

@@ -62,6 +62,13 @@ import * as menu from './menu.js';
 import { IRR_PER_TOMAN, priceForUser } from './money.js';
 import { customerDetail, findCustomers, normalizeQuery } from './customers.js';
 import {
+  activeCustomerCount,
+  creditEveryone,
+  MAX_MESSAGE_LENGTH,
+  newBatchId,
+  queueBroadcast,
+} from './broadcast.js';
+import {
   newPublicId,
   placeAddonOrder,
   placeOrder,
@@ -511,7 +518,188 @@ async function handleTypedAnswer(
   if (session.step === 'admin:wallet') {
     return handleAdminWalletAmount(tx, message, user, session, from.id);
   }
+  if (session.step === 'admin:discount') return handleAdminDiscount(tx, message, user, from.id);
+  if (session.step === 'admin:message') return handleAdminMessage(tx, message, user, from.id);
+  if (session.step === 'admin:bulkCredit' || session.step === 'admin:bulkMessage') {
+    return handleAdminBulk(tx, message, user, session.step, from.id);
+  }
   return IGNORED;
+}
+
+/**
+ * The one thing every admin typed-answer handler must do first.
+ *
+ * Being asked a question a minute ago is not authority: the row could have been
+ * switched off, or the tick removed, in between. Null means say nothing at all.
+ */
+async function adminAnswering(
+  tx: D1DatabaseSession,
+  telegramId: number,
+  permission: AdminPermission,
+): Promise<BotAdmin | null> {
+  const admin = await adminFor(tx, telegramId);
+  return admin && can(admin, permission) ? admin : null;
+}
+
+/** The typed answer to «چند درصد تخفیف همیشگی». */
+async function handleAdminDiscount(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  telegramId: number,
+): Promise<HandleOutcome> {
+  const admin = await adminAnswering(tx, telegramId, 'users.discount');
+  if (!admin) return IGNORED;
+  const allowed = permissionsOf(admin.role, admin.permissions);
+  const said = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, keyboard }],
+  });
+
+  const customerId = await sessionCustomer(tx, user.id);
+  if (customerId === null) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+
+  const typed = normalizeQuery(message.text!);
+  const percent = Number(typed);
+  if (!/^[0-9]+$/.test(typed) || !Number.isInteger(percent) || percent > 100) {
+    return said(menu.ADMIN_USER_DISCOUNT_BAD, menu.promptMenu(encode('usr', customerId)));
+  }
+
+  const done = await tx
+    .prepare(`UPDATE users SET discount_percent = ?2, updated_at = now() WHERE id = ?1`)
+    .bind(customerId, percent)
+    .run();
+  if (done.meta.changes === 0) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+  await audit(tx, admin, 'customer.discount_set', 'CUSTOMER', String(customerId), {
+    after: { discount_percent: percent },
+  });
+  await clearSession(tx, user.id);
+
+  const found = await customerDetail(tx, customerId);
+  if (!found) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+  return said(
+    `${menu.discountSet(percent)}\n\n${menu.userScreen(found)}`,
+    menu.userMenu(found, allowed),
+  );
+}
+
+/**
+ * The typed answer to «متنی که برای این کاربر فرستاده شود».
+ *
+ * Two replies come back: the message itself, addressed to the customer's own
+ * chat, and the confirmation to the admin. The bot's private chat id equals the
+ * Telegram user id, which is why one field carries both.
+ *
+ * The shop's name goes in front of the text. An unattributed message from a bot
+ * the customer bought a subscription from reads as a scam, and this is the
+ * screen most likely to be used while somebody is already anxious about money.
+ */
+async function handleAdminMessage(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  telegramId: number,
+): Promise<HandleOutcome> {
+  const admin = await adminAnswering(tx, telegramId, 'users.message');
+  if (!admin) return IGNORED;
+  const allowed = permissionsOf(admin.role, admin.permissions);
+  const said = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, keyboard }],
+  });
+
+  const customerId = await sessionCustomer(tx, user.id);
+  if (customerId === null) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+  const body = message.text!.trim();
+  if (body === '') return said(menu.ADMIN_USER_ASK_MESSAGE, menu.promptMenu(encode('usr', customerId)));
+
+  const found = await customerDetail(tx, customerId);
+  if (!found) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+  const text = menu.messageFromShop(body);
+  if (text.length > MAX_MESSAGE_LENGTH) {
+    return said(menu.bulkTextTooLong(), menu.promptMenu(encode('usr', customerId)));
+  }
+
+  await audit(tx, admin, 'customer.messaged', 'CUSTOMER', String(customerId), {
+    after: { length: body.length },
+  });
+  await clearSession(tx, user.id);
+  return {
+    status: 'processed',
+    replies: [
+      { chatId: found.telegram_id, text },
+      {
+        chatId: message.chat.id,
+        text: `${menu.ADMIN_USER_MESSAGE_SENT}\n\n${menu.userScreen(found)}`,
+        keyboard: menu.userMenu(found, allowed),
+      },
+    ],
+  };
+}
+
+/**
+ * The typed answer to a bulk question — an amount, or a message body.
+ *
+ * Nothing happens here. What this writes is the decision and the identity it
+ * will be carried out under, and the admin then has to press the confirmation.
+ * Generating the batch id now rather than at confirmation time is what makes a
+ * redelivered confirmation a no-op instead of a second credit.
+ */
+async function handleAdminBulk(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  step: 'admin:bulkCredit' | 'admin:bulkMessage',
+  telegramId: number,
+): Promise<HandleOutcome> {
+  const credit = step === 'admin:bulkCredit';
+  const admin = await adminAnswering(tx, telegramId, credit ? 'bulk.credit' : 'bulk.message');
+  if (!admin) return IGNORED;
+  const allowed = permissionsOf(admin.role, admin.permissions);
+  const said = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, keyboard }],
+  });
+
+  const reach = await activeCustomerCount(tx);
+  if (reach === 0) return said(menu.ADMIN_BULK_NOBODY, menu.adminMenu(0, allowed));
+
+  if (credit) {
+    const typed = normalizeQuery(message.text!);
+    if (!/^[0-9]+$/.test(typed)) {
+      return said(menu.ADMIN_USER_AMOUNT_BAD, menu.promptMenu(encode('pnl')));
+    }
+    const toman = Number(typed);
+    if (toman <= 0 || !Number.isSafeInteger(toman)) {
+      return said(menu.ADMIN_USER_AMOUNT_BAD, menu.promptMenu(encode('pnl')));
+    }
+    const amountIrr = toman * IRR_PER_TOMAN;
+    // The same per-person ceiling a single correction has. The number that
+    // actually stops a mistake here is the total on the confirmation screen:
+    // an extra zero is invisible in «۵۰٬۰۰۰ تومان» and unmissable in the sum
+    // across eleven thousand customers.
+    if (amountIrr > MAX_SINGLE_PAYMENT_IRR) {
+      return said(menu.adminAmountTooBig(MAX_SINGLE_PAYMENT_IRR), menu.promptMenu(encode('pnl')));
+    }
+    await ask(tx, user.id, 'admin:bulkCredit', {
+      amountIrr,
+      batchId: newBatchId(),
+      decision: 'BULK_CREDIT',
+    });
+    return said(menu.confirmBulkCredit(amountIrr, reach), menu.bulkConfirmMenu());
+  }
+
+  const body = message.text!.trim();
+  if (body === '') return said(menu.ADMIN_BULK_ASK_MESSAGE, menu.promptMenu(encode('pnl')));
+  if (body.length > MAX_MESSAGE_LENGTH) {
+    return said(menu.bulkTextTooLong(), menu.promptMenu(encode('pnl')));
+  }
+  await ask(tx, user.id, 'admin:bulkMessage', {
+    body,
+    broadcastId: newBatchId(),
+    decision: 'BROADCAST',
+  });
+  return said(menu.confirmBroadcast(body, reach), menu.bulkConfirmMenu());
 }
 
 /** The typed answer to «شناسهٔ تلگرام، نام کاربری، یا شمارهٔ سفارش». */
@@ -972,7 +1160,7 @@ async function heldCode(
 /** How many payments one review screen lists. */
 const CLAIMS_PER_PAGE = 6;
 
-type PendingDecision = 'APPROVE_NO_TX' | 'REJECT' | 'BLOCK' | 'UNBLOCK';
+type PendingDecision = 'APPROVE_NO_TX' | 'REJECT' | 'BLOCK' | 'UNBLOCK' | 'BULK_CREDIT' | 'BROADCAST';
 
 /**
  * What `cnf` is really doing, once the pending decision is known.
@@ -987,6 +1175,8 @@ const DECISION_PERMISSION: Record<PendingDecision, AdminPermission> = {
   REJECT: 'claims.reject',
   BLOCK: 'users.block',
   UNBLOCK: 'users.block',
+  BULK_CREDIT: 'bulk.credit',
+  BROADCAST: 'bulk.message',
 };
 
 /**
@@ -1018,6 +1208,10 @@ const ACTION_PERMISSIONS: Record<string, readonly AdminPermission[]> = {
   uwm: ['users.wallet'],
   ubl: ['users.block'],
   uub: ['users.block'],
+  udp: ['users.discount'],
+  umg: ['users.message'],
+  bcr: ['bulk.credit'],
+  bct: ['bulk.message'],
 };
 
 
@@ -1139,6 +1333,29 @@ async function handleAdmin(
     );
   };
 
+  /** Any question that is about one customer: the id is kept, not the button. */
+  const askAboutCustomer = async (
+    customerId: number,
+    step: string,
+    question: string,
+  ): Promise<HandleOutcome> => {
+    const userId = await adminSessionUser(tx, telegramId);
+    const found = await customerDetail(tx, customerId);
+    if (userId === null || !found) return screen(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+    await ask(tx, userId, step, { userId: customerId });
+    return screen(question, menu.promptMenu(encode('usr', customerId)));
+  };
+
+  /** A question about everybody. Nothing is decided until the confirmation. */
+  const askBulk = async (step: string, question: string): Promise<HandleOutcome> => {
+    const userId = await adminSessionUser(tx, telegramId);
+    if (userId === null) return IGNORED;
+    const reach = await activeCustomerCount(tx);
+    if (reach === 0) return screen(menu.ADMIN_BULK_NOBODY, menu.adminMenu(0, allowed));
+    await ask(tx, userId, step, {});
+    return screen(question, menu.promptMenu(encode('pnl')));
+  };
+
   const askToConfirmBlock = async (customerId: number, block: boolean): Promise<HandleOutcome> => {
     const userId = await adminSessionUser(tx, telegramId);
     const found = await customerDetail(tx, customerId);
@@ -1184,6 +1401,71 @@ async function handleAdmin(
     return screen(
       `${block ? menu.ADMIN_USER_BLOCKED : menu.ADMIN_USER_UNBLOCKED}\n\n${menu.userScreen(found)}`,
       menu.userMenu(found, allowed),
+    );
+  };
+
+  /** The admin's own pending bulk job, as it was written at confirmation time. */
+  const pendingBulk = async (): Promise<Record<string, unknown> | null> => {
+    const userId = await adminSessionUser(tx, telegramId);
+    if (userId === null) return null;
+    const row = await tx
+      .prepare(`SELECT data FROM bot_sessions WHERE user_id = ?1`)
+      .bind(userId)
+      .first<{ data: Record<string, unknown> | null }>();
+    return row?.data ?? null;
+  };
+
+  /**
+   * Credits every active customer.
+   *
+   * The amount and the batch id both come from the session — written when the
+   * amount was typed, so a redelivered confirmation reuses the same batch and
+   * the per-customer idempotency key absorbs it.
+   */
+  const applyBulkCredit = async (): Promise<HandleOutcome> => {
+    const data = await pendingBulk();
+    const amountIrr = data?.['amountIrr'];
+    const batchId = data?.['batchId'];
+    if (typeof amountIrr !== 'number' || typeof batchId !== 'string') {
+      return screen(menu.ADMIN_BULK_NOBODY, menu.adminMenu(0, allowed));
+    }
+    const credited = await creditEveryone(
+      tx,
+      batchId,
+      amountIrr,
+      `admin:${admin.telegramId}`,
+      'bot admin panel — bulk credit',
+    );
+    await audit(tx, admin, 'customers.bulk_credited', 'CUSTOMER', batchId, {
+      after: { amount_irr: amountIrr, wallets: credited },
+    });
+    await clearAdminSession(tx, telegramId);
+    return screen(
+      menu.bulkCreditDone(credited),
+      menu.adminMenu(await countClaimsAwaitingReview(tx), allowed),
+    );
+  };
+
+  /**
+   * Queues the broadcast. Nothing is sent from here: the recipient list is
+   * written down and the poll loop drains it, which is what survives this
+   * process being restarted in the middle.
+   */
+  const applyBroadcast = async (): Promise<HandleOutcome> => {
+    const data = await pendingBulk();
+    const body = data?.['body'];
+    const broadcastId = data?.['broadcastId'];
+    if (typeof body !== 'string' || typeof broadcastId !== 'string') {
+      return screen(menu.ADMIN_BULK_NOBODY, menu.adminMenu(0, allowed));
+    }
+    const queued = await queueBroadcast(tx, broadcastId, body, admin.telegramId);
+    await audit(tx, admin, 'customers.broadcast_queued', 'CUSTOMER', broadcastId, {
+      after: { recipients: queued },
+    });
+    await clearAdminSession(tx, telegramId);
+    return screen(
+      menu.broadcastQueued(queued),
+      menu.adminMenu(await countClaimsAwaitingReview(tx), allowed),
     );
   };
 
@@ -1261,6 +1543,22 @@ async function handleAdmin(
     case 'uwm':
       return action.id === undefined ? IGNORED : askForAmount(action.id, action.action === 'uwp');
 
+    case 'udp':
+      return action.id === undefined
+        ? IGNORED
+        : askAboutCustomer(action.id, 'admin:discount', menu.ADMIN_USER_ASK_DISCOUNT);
+
+    case 'umg':
+      return action.id === undefined
+        ? IGNORED
+        : askAboutCustomer(action.id, 'admin:message', menu.ADMIN_USER_ASK_MESSAGE);
+
+    case 'bcr':
+      return askBulk('admin:bulkCredit', menu.ADMIN_BULK_ASK_CREDIT);
+
+    case 'bct':
+      return askBulk('admin:bulkMessage', menu.ADMIN_BULK_ASK_MESSAGE);
+
     case 'ubl':
     case 'uub':
       return action.id === undefined
@@ -1277,6 +1575,8 @@ async function handleAdmin(
       const forDecision = DECISION_PERMISSION[pending];
       if (!can(admin, forDecision)) return refuse(forDecision);
       if (pending === 'BLOCK' || pending === 'UNBLOCK') return applyBlock(pending === 'BLOCK');
+      if (pending === 'BULK_CREDIT') return applyBulkCredit();
+      if (pending === 'BROADCAST') return applyBroadcast();
 
       const claim = await currentClaim();
       if (!claim) return screen(menu.CLAIM_GONE, menu.adminMenu(0, allowed));
@@ -1362,11 +1662,13 @@ async function pendingDecision(
  * cannot arrive carrying somebody else's id. That property is what actually
  * stops the forgery — `cnf` has no id on it at all.
  *
- * The step check below is belt and braces and is honestly labelled as such:
- * removing it turns no test red today, because the only two steps that write a
- * `userId` are these two. It is here so that a third step which happens to
- * store a `userId` for some unrelated reason cannot be confirmed into a block.
+ * The step list is the second half. It began as belt and braces — with two
+ * steps it turned no test red — and stopped being so the moment «تخفیف» and
+ * «پیام» were added: a step missing from it reads as "no customer selected"
+ * and the screen says the customer is gone. Which is the right failure, and it
+ * is why the list is here rather than repeated at the call sites.
  */
+const STEPS_ABOUT_A_CUSTOMER = ['admin:user', 'admin:wallet', 'admin:discount', 'admin:message'];
 async function sessionCustomer(
   tx: D1DatabaseSession,
   adminUserId: number,
@@ -1375,7 +1677,7 @@ async function sessionCustomer(
     .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
     .bind(adminUserId)
     .first<{ step: string | null; data: Record<string, unknown> | null }>();
-  if (row?.step !== 'admin:user' && row?.step !== 'admin:wallet') return null;
+  if (row?.step == null || !STEPS_ABOUT_A_CUSTOMER.includes(row.step)) return null;
   const id = row.data?.['userId'];
   return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : null;
 }
@@ -1492,6 +1794,10 @@ async function handleCallback(
     case 'uwm':
     case 'ubl':
     case 'uub':
+    case 'udp':
+    case 'umg':
+    case 'bcr':
+    case 'bct':
     case 'clm':
     case 'clv':
     case 'apv':

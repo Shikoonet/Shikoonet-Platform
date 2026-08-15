@@ -284,6 +284,77 @@ describe('moving a customer’s money', () => {
   });
 });
 
+describe('the standing discount', () => {
+  it('sets it, and the page shows it back', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+    const targetId = await makeCustomer(ids().telegramId);
+
+    await handleUpdate(db, press(updateId, telegramId, `udp:${targetId}`));
+    const out = await handleUpdate(db, types(updateId + 1, telegramId, '15'));
+
+    const row = await db
+      .prepare(`SELECT discount_percent FROM users WHERE id = ?1`)
+      .bind(targetId)
+      .first<{ discount_percent: number }>();
+    expect(Number(row?.discount_percent)).toBe(15);
+    expect(out.replies[0]?.text).toContain('15');
+  });
+
+  it('refuses more than a hundred percent, and writes nothing', async () => {
+    // A discount over 100 prices the plan below zero, and the order guards
+    // would then refuse every purchase this customer made — a support call
+    // that looks like a broken shop.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+    const targetId = await makeCustomer(ids().telegramId);
+
+    await handleUpdate(db, press(updateId, telegramId, `udp:${targetId}`));
+    const out = await handleUpdate(db, types(updateId + 1, telegramId, '150'));
+
+    expect(out.replies[0]?.text).toBe(menu.ADMIN_USER_DISCOUNT_BAD);
+    const row = await db
+      .prepare(`SELECT discount_percent FROM users WHERE id = ?1`)
+      .bind(targetId)
+      .first<{ discount_percent: number }>();
+    expect(Number(row?.discount_percent)).toBe(0);
+  });
+});
+
+describe('messaging one customer', () => {
+  it('sends it to them and confirms to the admin', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+    const target = ids().telegramId;
+    const targetId = await makeCustomer(target);
+
+    await handleUpdate(db, press(updateId, telegramId, `umg:${targetId}`));
+    const out = await handleUpdate(db, types(updateId + 1, telegramId, 'سرویس شما تمدید شد'));
+
+    // Two replies: the customer's chat first, then the operator's own screen.
+    expect(out.replies[0]?.chatId).toBe(target);
+    expect(out.replies[0]?.text).toContain('سرویس شما تمدید شد');
+    // Attributed. An unattributed message from the bot somebody bought a
+    // subscription through reads as a scam.
+    expect(out.replies[0]?.text).not.toBe('سرویس شما تمدید شد');
+    expect(out.replies[1]?.chatId).toBe(telegramId);
+  });
+
+  it('is a SUPPORT operator’s job, and is drawn for them', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT');
+    const targetId = await makeCustomer(ids().telegramId);
+
+    const page = await handleUpdate(db, press(updateId, telegramId, `usr:${targetId}`));
+    const shown = dataOf(page);
+
+    expect(shown).toContain(`umg:${targetId}`);
+    // And still not the two that change the account.
+    expect(shown).not.toContain(`udp:${targetId}`);
+    expect(shown).not.toContain(`uwp:${targetId}`);
+  });
+});
+
 describe('blocking somebody', () => {
   it('asks first, and does nothing until the confirmation', async () => {
     const { updateId, telegramId } = ids();

@@ -20,6 +20,10 @@ export const ADMIN_PERMISSIONS = [
   'users.view',
   'users.wallet',
   'users.block',
+  'users.discount',
+  'users.message',
+  'bulk.credit',
+  'bulk.message',
 ] as const;
 
 export type AdminPermission = (typeof ADMIN_PERMISSIONS)[number];
@@ -36,6 +40,10 @@ export const ADMIN_PERMISSION_FA: Record<AdminPermission, string> = {
   'users.view': 'جستجوی کاربر و دیدن صفحهٔ او',
   'users.wallet': 'کم و زیاد کردن موجودی کیف پول کاربر',
   'users.block': 'مسدود کردن و رفع مسدودی کاربر',
+  'users.discount': 'تعیین درصد تخفیف همیشگی کاربر',
+  'users.message': 'فرستادن پیام به یک کاربر',
+  'bulk.credit': 'شارژ گروهی — افزودن موجودی به همهٔ کاربران',
+  'bulk.message': 'پیام همگانی به همهٔ کاربران',
 };
 
 /**
@@ -60,7 +68,12 @@ const ROLE_DEFAULTS: Record<'ADMIN' | 'SUPPORT', readonly AdminPermission[]> = {
   // legacy `support` tier had it, and an operator who cannot see who they are
   // talking to has nothing to answer with. Changing that customer's money or
   // blocking them is a different question and stays off.
-  SUPPORT: ['claims.view', 'users.view'],
+  // `users.message` too: answering a customer is the job. What SUPPORT may not
+  // do is change an account or reach everybody at once. ADMIN keeps both bulk
+  // permissions, which is what production's four `administrator` rows have
+  // today — the control over the riskiest button is unticking it for one
+  // operator, not withholding it from the role that has always had it.
+  SUPPORT: ['claims.view', 'users.view', 'users.message'],
 };
 
 export function isAdminPermission(value: unknown): value is AdminPermission {

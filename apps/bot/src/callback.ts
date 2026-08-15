@@ -81,6 +81,10 @@ export const CALLBACK_ACTIONS = [
   'uwm', // <userId> — ask how much to take off it
   'ubl', // <userId> — block them, after a confirmation
   'uub', // <userId> — let them back in
+  'udp', // <userId> — ask for their standing discount percentage
+  'umg', // <userId> — ask for a message to send them
+  'bcr', // ask how much to add to every active customer's wallet
+  'bct', // ask for a message to send to every customer
   'hlp', // [articleId] — the education list, or one article
   'app', // the client apps and their links
   'soon', // a menu entry that has no implementation yet

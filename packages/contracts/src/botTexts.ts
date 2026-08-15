@@ -102,7 +102,8 @@ export type ScreenId =
   | 'adminClaimDetail'
   | 'adminConfirm'
   | 'adminStats'
-  | 'adminUser';
+  | 'adminUser'
+  | 'adminBulk';
 
 /** The Persian name of each screen, for the admin panel's grouping. */
 export const SCREENS: Record<ScreenId, string> = {
@@ -134,6 +135,7 @@ export const SCREENS: Record<ScreenId, string> = {
   adminConfirm: 'پنل ادمین — تاییدیه‌ها',
   adminStats: 'پنل ادمین — آمار',
   adminUser: 'پنل ادمین — کاربر',
+  adminBulk: 'پنل ادمین — کارهای گروهی',
 };
 
 export const SCREEN_IDS = Object.keys(SCREENS) as ScreenId[];
@@ -1865,6 +1867,96 @@ export const TEXTS = {
     default: '✅ مسدودی برداشته شد.',
     placeholders: [],
     screen: 'adminUser',
+    hint: '',
+  },
+  ADMIN_USER_ASK_DISCOUNT: {
+    default:
+      '🏷 چند درصد تخفیف همیشگی؟ عددی بین ۰ تا ۱۰۰ بفرستید. صفر یعنی برداشتن تخفیف.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'پرسش درصد تخفیف شخصی',
+  },
+  ADMIN_USER_DISCOUNT_BAD: {
+    default: '⛔ فقط عددی بین ۰ تا ۱۰۰. دوباره بفرستید.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: '',
+  },
+  ADMIN_USER_DISCOUNT_DONE: {
+    default: '✅ تخفیف همیشگی روی {percent}٪ تنظیم شد.',
+    placeholders: ['percent'],
+    screen: 'adminUser',
+    hint: '',
+  },
+  ADMIN_USER_ASK_MESSAGE: {
+    default: '✉️ متنی که برای این کاربر فرستاده شود را بنویسید.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'پرسش متن پیام به یک کاربر',
+  },
+  ADMIN_USER_MESSAGE_SENT: {
+    default: '✅ پیام فرستاده شد.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: '',
+  },
+  ADMIN_USER_MESSAGE_FROM_SHOP: {
+    default: '✉️ پیامی از پشتیبانی:\n\n{body}',
+    placeholders: ['body'],
+    screen: 'adminUser',
+    hint: 'همان چیزی که مشتری می‌بیند. سرخط عمداً جدا از متن است تا پیام ناشناس نباشد — نام فروشگاه را همین‌جا بنویسید',
+  },
+
+  // --- پنل ادمین — کارهای گروهی ---------------------------------------------
+  ADMIN_BULK_ASK_CREDIT: {
+    default: '💳 چه مبلغی (به تومان) به موجودی هر کاربر فعال اضافه شود؟',
+    placeholders: [],
+    screen: 'adminBulk',
+    hint: 'پرسش مبلغ شارژ گروهی',
+  },
+  ADMIN_BULK_CREDIT_CONFIRM: {
+    default:
+      '⚠️ {amount} به موجودی {count} کاربر فعال اضافه می‌شود.\n\nجمع کل: {total}\n\nاین کار برگشت‌پذیر نیست.',
+    placeholders: ['amount', 'count', 'total'],
+    screen: 'adminBulk',
+    hint: 'تاییدیهٔ شارژ گروهی — جمع کل عمداً نوشته می‌شود، چون یک صفر اضافه فقط همان‌جا دیده می‌شود',
+  },
+  ADMIN_BULK_CREDIT_DONE: {
+    default: '✅ {count} کیف پول شارژ شد.',
+    placeholders: ['count'],
+    screen: 'adminBulk',
+    hint: '',
+  },
+  ADMIN_BULK_ASK_MESSAGE: {
+    default:
+      '📢 متن پیام همگانی را بنویسید.\n\nهمان‌طور که می‌نویسید فرستاده می‌شود — بدون هیچ قالب‌بندی.',
+    placeholders: [],
+    screen: 'adminBulk',
+    hint: 'پرسش متن پیام همگانی',
+  },
+  ADMIN_BULK_MESSAGE_CONFIRM: {
+    default: '⚠️ این پیام برای {count} کاربر فرستاده می‌شود:\n\n{body}\n\nجلوی آن را نمی‌شود گرفت.',
+    placeholders: ['count', 'body'],
+    screen: 'adminBulk',
+    hint: 'تاییدیهٔ پیام همگانی — متن عیناً نشان داده می‌شود',
+  },
+  ADMIN_BULK_MESSAGE_QUEUED: {
+    default:
+      '✅ پیام در صف {count} کاربر قرار گرفت. ارسال چند دقیقه طول می‌کشد و ربات در این مدت کار می‌کند.',
+    placeholders: ['count'],
+    screen: 'adminBulk',
+    hint: '',
+  },
+  ADMIN_BULK_NOBODY: {
+    default: '🔍 هیچ کاربری برای این کار نیست.',
+    placeholders: [],
+    screen: 'adminBulk',
+    hint: 'وقتی مخاطبی وجود ندارد',
+  },
+  ADMIN_BULK_TEXT_TOO_LONG: {
+    default: '⛔ متن بلندتر از حدی است که تلگرام در یک پیام می‌فرستد ({max} نویسه).',
+    placeholders: ['max'],
+    screen: 'adminBulk',
     hint: '',
   },
 } as const satisfies Record<string, TextEntry>;
