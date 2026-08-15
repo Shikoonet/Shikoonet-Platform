@@ -46,6 +46,7 @@ describe('navigation', () => {
     // and `client_apps` were changed in the legacy admin panel until 2026-08-16.
     const implemented: PageId[] = [
       'content',
+      'stock',
       'dashboard',
       'customers',
       'products',

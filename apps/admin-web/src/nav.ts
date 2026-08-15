@@ -22,6 +22,7 @@ export type PageId =
   | 'transactions'
   | 'requests'
   | 'panels'
+  | 'stock'
   | 'discounts'
   | 'texts'
   | 'keyboard'
@@ -57,6 +58,7 @@ export const NAV: NavGroup[] = [
     label: 'مدیریت',
     items: [
       { id: 'panels', label: 'مدیریت پنل‌ها', icon: 'server' },
+      { id: 'stock', label: 'قفسهٔ انبار', icon: 'package' },
       { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket' },
       { id: 'access', label: 'دسترسی‌ها', icon: 'users' },
     ],
@@ -87,6 +89,10 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'dashboard',
   'products',
   'panels',
+  // Counting the shelf is stock control; the accounts on it are not handed
+  // over — `stockRoutes.ts` withholds the subscription link from anyone but an
+  // ADMIN, so reading this page is safe for a reviewer.
+  'stock',
   'discounts',
   'texts',
   'keyboard',

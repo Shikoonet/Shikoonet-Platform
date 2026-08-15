@@ -23,6 +23,7 @@ import { CustomersPage } from './pages/CustomersPage.js';
 import { ProductsPage } from './pages/ProductsPage.js';
 import { PanelsPage } from './pages/PanelsPage.js';
 import { ContentPage } from './pages/ContentPage.js';
+import { StockPage } from './pages/StockPage.js';
 import { DiscountsPage } from './pages/DiscountsPage.js';
 import { OrdersPage, ServicesPage, TransactionsPage } from './pages/LedgerPages.js';
 import { SettingsPage, RequestsPage } from './pages/SettingsPage.js';
@@ -57,6 +58,8 @@ function Body({
       return <ProductsPage />;
     case 'panels':
       return <PanelsPage />;
+    case 'stock':
+      return <StockPage />;
     case 'discounts':
       return <DiscountsPage />;
     case 'orders':

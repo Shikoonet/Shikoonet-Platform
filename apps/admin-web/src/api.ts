@@ -146,6 +146,47 @@ export interface CategoryRow {
   productsCount: number;
 }
 
+export interface StockRow {
+  id: number;
+  planId: number;
+  planName: string;
+  productName: string;
+  providerName: string;
+  remoteUsername: string;
+  /** Null for a sold or retired row, and for anyone who is not an ADMIN: the
+   *  link is the credential, and counting the shelf is not being handed it. */
+  subscriptionUrl: string | null;
+  status: 'AVAILABLE' | 'USED' | 'RETIRED';
+  orderPublicId: string | null;
+  note: string | null;
+  createdAt: string;
+  usedAt: string | null;
+}
+
+export interface ShelfCount {
+  planId: number;
+  planName: string;
+  productName: string;
+  available: number;
+  used: number;
+}
+
+export interface StockPage {
+  ok: boolean;
+  total: number;
+  page: number;
+  pageSize: number;
+  items: StockRow[];
+  shelves: ShelfCount[];
+}
+
+export interface StockBody {
+  planId: number;
+  remoteUsername: string;
+  subscriptionUrl: string;
+  note?: string | null;
+}
+
 export interface HelpArticleRow {
   id: number;
   title: string;
@@ -611,6 +652,31 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ status }),
     });
+  },
+
+  stock(params: { planId?: number; status?: string; page: number; pageSize: number }) {
+    const qs = new URLSearchParams({
+      page: String(params.page),
+      pageSize: String(params.pageSize),
+    });
+    if (params.planId !== undefined) qs.set('planId', String(params.planId));
+    if (params.status) qs.set('status', params.status);
+    return req<StockPage>(`/stock?${qs.toString()}`);
+  },
+
+  addStock(body: StockBody) {
+    return req<{ ok: boolean; id: number }>('/stock', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  retireStock(id: number) {
+    return req<{ ok: boolean }>(`/stock/${id}/retire`, { method: 'POST', body: '{}' });
+  },
+
+  deleteStock(id: number) {
+    return req<{ ok: boolean }>(`/stock/${id}`, { method: 'DELETE' });
   },
 
   helpArticles() {
