@@ -83,6 +83,7 @@ import {
 import {
   countRenewableForUser,
   countSubscriptionsForUser,
+  lockOrderForUser,
   orderForUser,
   renewableForUser,
   renewableForUserById,
@@ -1607,7 +1608,11 @@ async function handleCallback(
 
     case 'wpay': {
       if (action.id === undefined) return IGNORED;
-      const order = await orderForUser(tx, user.id, action.id);
+      // Held, not merely read: the expiry sweep locks its candidates and closes
+      // them, so an unlocked read here decides on a status that can already be
+      // stale by the time the balance is debited. The card path takes the same
+      // lock in `recordPaidClick` and this one went without it until 2026-08-15.
+      const order = await lockOrderForUser(tx, user.id, action.id);
       if (!order || order.status !== 'AWAITING_PAYMENT') {
         return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       }
@@ -1618,13 +1623,21 @@ async function handleCallback(
       // The money is ours now, so the order is paid and the provisioning sweep
       // owns it from here. A WALLET payment row is written so the sale reads
       // the same as any other in the reports.
-      await tx
+      const claimed = await tx
         .prepare(
           `UPDATE orders SET status = 'PAID', updated_at = now()
             WHERE id = ?1 AND status = 'AWAITING_PAYMENT'`,
         )
         .bind(order.id)
         .run();
+      if (claimed.meta.changes === 0) {
+        // Unreachable while the lock above is held, and thrown rather than
+        // returned for exactly that reason: reaching it means the lock is gone,
+        // and the only safe answer then is to roll the whole handler back —
+        // which takes the debit with it — instead of telling a customer their
+        // money bought an order that no longer accepts it.
+        throw new Error(`order ${order.id} moved out of AWAITING_PAYMENT under a held lock`);
+      }
       // Paying from the balance is a purchase like any other, so it earns the
       // referrer the same commission a card-to-card payment does. Both paths
       // call the same function, which is what stops the two disagreeing.

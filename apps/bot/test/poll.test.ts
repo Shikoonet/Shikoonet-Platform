@@ -185,6 +185,30 @@ describe('pollOnce', () => {
     expect(attempts.size).toBe(0);
   });
 
+  it('still gives up on a poison update that arrives alone', async () => {
+    // The hole the outage rule left behind. "Every update failed" is evidence
+    // of an outage only when there were several to fail; in a batch of one it
+    // is the same observation for both causes and carries no information at
+    // all. Forgiving it anyway meant the counter was wiped every cycle, so
+    // MAX_UPDATE_ATTEMPTS was never reached and a quiet bot — nights, which is
+    // most of them — froze on one bad press exactly as it did before M3.
+    const bad = ids();
+    const broken = startUpdate(bad.updateId, bad.telegramId);
+    broken.message!.from!.id = 9_300_000_000_000_000_005;
+
+    const attempts = new Map<number, number>();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let last;
+    for (let cycle = 0; cycle < MAX_UPDATE_ATTEMPTS + 1; cycle++) {
+      const { api } = fakeApi([broken]);
+      last = await pollOnce(db, api, bad.updateId, 25, undefined, attempts);
+    }
+    errors.mockRestore();
+
+    expect(last?.abandoned).toBe(1);
+    expect(last?.offset).toBe(bad.updateId + 1);
+  });
+
   it('forgets a failure once the same update succeeds', async () => {
     // A transient fault must not leave a mark that a later, unrelated failure
     // can add to and tip over the edge.

@@ -144,7 +144,17 @@ export async function pollOnce(
   // update. Forgiving the whole batch is what stops a database outage from
   // spending three attempts on every message waiting in it — the case the old
   // comment was right to be afraid of.
-  if (updates.length > 0 && failed === updates.length) {
+  //
+  // `> 1`, not `> 0`, and the difference is the whole rule. "Everything failed"
+  // is evidence about the cause only when there was more than one thing to
+  // fail; in a batch of one it is the identical observation whether the
+  // database is down or the update is poison, so it distinguishes nothing.
+  // Forgiving it anyway wiped the counter every cycle on a quiet bot — which is
+  // every night — so MAX_UPDATE_ATTEMPTS was never reached and one bad press
+  // froze the bot for everybody, exactly the failure this counter exists to
+  // stop. Where the signal is absent the safe default is to count: the cost is
+  // a bounded few messages during a real outage, against an unbounded freeze.
+  if (updates.length > 1 && failed === updates.length) {
     for (const update of updates) attempts.delete(update.update_id);
   }
 

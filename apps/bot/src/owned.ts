@@ -36,19 +36,36 @@ export interface OwnedOrder {
  * somebody else. The caller cannot tell those apart, which is deliberate: a
  * different answer for "not yours" turns this into an enumeration oracle.
  */
+const ORDER_FOR_USER = `SELECT id, public_id, status, total_irr, plan_id
+     FROM orders
+    WHERE id = ?1 AND user_id = ?2`;
+
 export async function orderForUser(
   db: Db,
   userId: number,
   orderId: number,
 ): Promise<OwnedOrder | null> {
-  return db
-    .prepare(
-      `SELECT id, public_id, status, total_irr, plan_id
-         FROM orders
-        WHERE id = ?1 AND user_id = ?2`,
-    )
-    .bind(orderId, userId)
-    .first<OwnedOrder>();
+  return db.prepare(ORDER_FOR_USER).bind(orderId, userId).first<OwnedOrder>();
+}
+
+/**
+ * The same row, held until the transaction ends.
+ *
+ * For the callers about to act on `status` — spend a balance, open a claim — a
+ * plain read is count-then-act: the expiry sweep can close the order in the gap
+ * and the decision is made against a status that is no longer true. The lock is
+ * what makes the status the caller reads still the status when it writes.
+ *
+ * One statement, not a read followed by a lock, and one SQL string shared with
+ * the unlocked version: ownership has to be proved in the same snapshot the
+ * lock is taken in, and two copies of this query would drift.
+ */
+export async function lockOrderForUser(
+  db: Db,
+  userId: number,
+  orderId: number,
+): Promise<OwnedOrder | null> {
+  return db.prepare(`${ORDER_FOR_USER} FOR UPDATE`).bind(orderId, userId).first<OwnedOrder>();
 }
 
 export interface OwnedSubscription {

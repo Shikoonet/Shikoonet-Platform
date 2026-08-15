@@ -19,6 +19,7 @@ import { expireUnpaidOrders, ORDER_TTL_MS } from '../src/expire.js';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
+import { balanceFor } from '../src/wallet.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
@@ -73,6 +74,47 @@ async function age(orderId: number): Promise<void> {
     .bind(orderId)
     .first();
   if (!aged) throw new Error(`order ${orderId} was written with no deadline to age`);
+}
+
+/** Puts money in the way the settle sweep does, without the sweep. */
+async function credit(userId: number, amountIrr: number, key: string): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO wallet_entries (user_id, amount_irr, kind, idempotency_key)
+       VALUES (?1, ?2, 'TOPUP', ?3) ON CONFLICT (idempotency_key) DO NOTHING`,
+    )
+    .bind(userId, amountIrr, key)
+    .run();
+}
+
+/**
+ * Holds the lock the sweep takes, runs `press`, then expires the order under it.
+ *
+ * The 200ms is not a guess at how long the handler takes — it is long enough for
+ * the press to have reached the lock and stopped there, which is the only state
+ * this can be in once it has stopped making progress.
+ */
+async function raceAgainstExpiry(
+  orderId: number,
+  press: () => Promise<{ replies: { text: string }[] }>,
+) {
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  const sweeping = db.withSession(async (tx) => {
+    await tx.prepare(`SELECT id FROM orders WHERE id = ?1 FOR UPDATE`).bind(orderId).first();
+    await held;
+    await tx.prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?1`).bind(orderId).run();
+  });
+
+  const pressing = press();
+  await new Promise((r) => setTimeout(r, 200));
+  release();
+
+  await sweeping;
+  return pressing;
 }
 
 async function statuses(orderId: number) {
@@ -203,34 +245,9 @@ describe('a press that arrives while the sweep is running', () => {
     const sale = await buy('sim-vip-1m-50');
     await age(sale.order.id);
 
-    let release: () => void = () => undefined;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    const sweeping = db.withSession(async (tx) => {
-      await tx
-        .prepare(`SELECT id FROM orders WHERE id = ?1 FOR UPDATE`)
-        .bind(sale.order.id)
-        .first();
-      // The press is now started and blocked behind this lock.
-      await held;
-      await tx
-        .prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?1`)
-        .bind(sale.order.id)
-        .run();
-    });
-
-    const pressing = handleUpdate(
-      db,
-      press(sale.updateId + 1, sale.telegramId, `paid:${sale.order.id}`),
+    const out = await raceAgainstExpiry(sale.order.id, () =>
+      handleUpdate(db, press(sale.updateId + 1, sale.telegramId, `paid:${sale.order.id}`)),
     );
-    // Long enough for the press to have reached the lock and stopped there.
-    await new Promise((r) => setTimeout(r, 200));
-    release();
-
-    await sweeping;
-    const out = await pressing;
 
     expect(out.replies[0]?.text).toBe(menu.ORDER_EXPIRED);
     const claims = await db
@@ -242,5 +259,37 @@ describe('a press that arrives while the sweep is running', () => {
       .bind(sale.order.id)
       .first<{ n: number }>();
     expect(claims?.n).toBe(0);
+  });
+
+  it('never takes the balance for an order it then refuses to deliver', async () => {
+    // The same race as above, down the other payment path — and until
+    // 2026-08-15 this one was open, because `wpay` read the order with a plain
+    // SELECT and judged its status in application code while the card path
+    // three files away held a lock.
+    //
+    // What the customer got was the worst shape a money bug has: the balance
+    // debited, a PAID payment row written, «پرداخت شد» on screen, an order left
+    // EXPIRED that `provisionPaidOrders` only ever skips, and no refund —
+    // because `refundOrder` runs when provisioning fails, and provisioning
+    // never started.
+    const sale = await buy('sim-vip-1m-50');
+    await credit(sale.userId, 9_000_000, `exp:${sale.userId}:a`);
+    const before = await balanceFor(db, sale.userId);
+    await age(sale.order.id);
+
+    const out = await raceAgainstExpiry(sale.order.id, () =>
+      handleUpdate(db, press(sale.updateId + 1, sale.telegramId, `wpay:${sale.order.id}`)),
+    );
+
+    expect(out.replies[0]?.text).toBe(menu.ORDER_GONE);
+    // The assertion that matters: their money is still theirs.
+    expect(await balanceFor(db, sale.userId)).toBe(before);
+    const paid = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM payments WHERE order_id = ?1 AND status = 'PAID'`,
+      )
+      .bind(sale.order.id)
+      .first<{ n: number }>();
+    expect(paid?.n).toBe(0);
   });
 });

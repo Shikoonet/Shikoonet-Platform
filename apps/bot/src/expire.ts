@@ -40,6 +40,7 @@ export const ORDER_TTL_MS = 24 * 60 * 60 * 1000;
 const BATCH = 100;
 
 interface ExpiredRow {
+  id: number;
   public_id: string;
   telegram_id: number | null;
 }
@@ -106,7 +107,7 @@ export async function expireUnpaidOrders(
               SELECT 1 FROM payments p
                WHERE p.order_id = o.id
                  AND p.status IN ('AWAITING_REVIEW', 'PROCESSING', 'PAID'))
-        RETURNING o.public_id, u.telegram_id`,
+        RETURNING o.id, o.public_id, u.telegram_id`,
       )
       .bind(ids)
       .all<ExpiredRow>();
@@ -115,12 +116,23 @@ export async function expireUnpaidOrders(
     // The checkout attempt goes with the order it was for. Left PENDING it
     // keeps the card attached to a dead invoice, and `checkoutFor` would hand
     // that same stale card back if the order were ever reopened.
+    //
+    // Bound to the orders that actually expired, not to the candidates we
+    // locked. The two sets differ by the orders somebody has claimed to have
+    // paid, and unreachably so today: a claimed order's payment row is
+    // AWAITING_REVIEW, which `status = 'PENDING'` already excludes, and
+    // `checkoutFor` reuses the single live row rather than adding a second.
+    // Said rather than demonstrated, because a test for it would have to build
+    // a state this code cannot produce. What it costs to be right is one
+    // column in the RETURNING, and what it buys is that the statement means
+    // what the sentence above it says — so the day a second payment row
+    // becomes possible, this does not quietly kill a live checkout.
     await tx
       .prepare(
         `UPDATE payments SET status = 'EXPIRED', updated_at = now()
           WHERE order_id = ANY(?1) AND status = 'PENDING'`,
       )
-      .bind(ids)
+      .bind((expired ?? []).map((r) => r.id))
       .run();
 
     return expired ?? [];
