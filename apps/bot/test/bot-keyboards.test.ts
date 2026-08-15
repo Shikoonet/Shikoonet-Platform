@@ -88,8 +88,12 @@ async function applySaved(): Promise<void> {
 }
 
 const labels = (rows: { text: string }[][] | undefined) => (rows ?? []).map((r) => r.map((b) => b.text));
-const datas = (rows: { callback_data: string }[][] | undefined) =>
-  (rows ?? []).flat().map((b) => b.callback_data);
+// A copy button carries no `callback_data` and never reaches the bot, so it is
+// not one of the targets these assertions are about.
+const datas = (rows: { callback_data?: string }[][] | undefined) =>
+  (rows ?? []).flat().flatMap((b) => (b.callback_data === undefined ? [] : [b.callback_data]));
+/** Any card; these tests are about the chrome under the copy row, not the card. */
+const CARD = '6037997512345678';
 
 beforeAll(async () => {
   await assertSchema();
@@ -159,8 +163,8 @@ describe('a button whose precondition is not met', () => {
     // The wallet row on an invoice: with no balance there is nothing to offer,
     // and «پرداخت از کیف پول» pointing at an empty wallet is worse than no
     // button. Its whole row goes rather than leaving a gap.
-    const withBalance = menu.checkoutMenu(7, { balanceIrr: 2_000_000, totalIrr: 1_950_000 });
-    const without = menu.checkoutMenu(7);
+    const withBalance = menu.checkoutMenu(7, 1_950_000, CARD, { balanceIrr: 2_000_000, totalIrr: 1_950_000 });
+    const without = menu.checkoutMenu(7, 1_950_000, CARD);
 
     expect(datas(withBalance)).toContain('wpay:7');
     expect(datas(without)).not.toContain('wpay:7');
@@ -171,20 +175,20 @@ describe('a button whose precondition is not met', () => {
   });
 
   it('offers a top-up instead when the balance is there but not enough', () => {
-    const short = menu.checkoutMenu(9, { balanceIrr: 500_000, totalIrr: 1_950_000 });
+    const short = menu.checkoutMenu(9, 1_950_000, CARD, { balanceIrr: 500_000, totalIrr: 1_950_000 });
     expect(datas(short)).toContain('tpo:9');
     expect(datas(short)).not.toContain('wpay:9');
   });
 
   it('fills the slot in its label from the live values', () => {
-    const rows = menu.checkoutMenu(11, { balanceIrr: 2_000_000, totalIrr: 1_950_000 });
+    const rows = menu.checkoutMenu(11, 1_950_000, CARD, { balanceIrr: 2_000_000, totalIrr: 1_950_000 });
     expect(labels(rows).flat()).toContain('💰 پرداخت از کیف پول (200,000 تومان)');
   });
 
   it('never leaves a raw slot on a button', () => {
     for (const rows of [
-      menu.checkoutMenu(1),
-      menu.checkoutMenu(1, { balanceIrr: 10, totalIrr: 5 }),
+      menu.checkoutMenu(1, 1_950_000, CARD),
+      menu.checkoutMenu(1, 5, CARD, { balanceIrr: 10, totalIrr: 5 }),
       menu.serviceDetailMenu(null),
       menu.walletMenu(),
     ]) {

@@ -17,6 +17,7 @@ import { settleVerifiedPayments, type Notification } from './settle.js';
 import { provisionPaidOrders } from './provision.js';
 import { syncSubscriptions } from './sync.js';
 import { warnExpiringServices } from './warn.js';
+import { expireUnpaidOrders } from './expire.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 
 export interface PollResult {
@@ -122,7 +123,9 @@ export async function pollOnce(
     counts[outcome.status]++;
     for (const reply of outcome.replies) {
       try {
-        if (reply.editMessageId === undefined) {
+        if (reply.photo !== undefined) {
+          await api.sendPhoto(reply.chatId, reply.photo, reply.text);
+        } else if (reply.editMessageId === undefined) {
           await api.sendMessage(reply.chatId, reply.text, reply.keyboard);
         } else {
           await api.editMessageText(reply.chatId, reply.editMessageId, reply.text, reply.keyboard);
@@ -265,6 +268,10 @@ export async function run(
       // After the sync, so a service is warned about the volume the panel
       // reports rather than the figure from ten minutes ago.
       await sweep(api, 'warning about services running out', () => warnExpiringServices(db));
+      // Last, because it is the only sweep that closes something rather than
+      // advancing it, and an order settled or delivered earlier in this same
+      // cycle must have moved out of AWAITING_PAYMENT before this looks.
+      await sweep(api, 'expiring unpaid orders', () => expireUnpaidOrders(db));
     } catch (err) {
       // A shutdown aborts the poll in flight, which surfaces here as a fetch
       // error. It is not a failure and must not be logged as one.

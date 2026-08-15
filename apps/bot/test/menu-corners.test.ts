@@ -134,7 +134,7 @@ describe('education', () => {
     const first = list.replies[0]?.keyboard?.[0]?.[0];
     expect(first?.callback_data).toMatch(/^hlp:\d+$/);
 
-    const article = await handleUpdate(db, press(updateId + 1, telegramId, first!.callback_data));
+    const article = await handleUpdate(db, press(updateId + 1, telegramId, first!.callback_data!));
     expect(article.replies[0]?.text).toContain('اتصال در اندروید');
   });
 

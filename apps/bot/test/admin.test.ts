@@ -257,6 +257,43 @@ describe('what a SUPPORT operator may do', () => {
     }
   });
 
+  it('is shown the receipt the customer sent, not told that one exists', async () => {
+    // The gap this closes: the operator decides where somebody's money goes on
+    // the screen that appears exactly when automatic verification found nothing
+    // — the case where a document matters most. A SUPPORT operator may read the
+    // queue, so they get the picture too.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT');
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId } = await makeClaim(customer);
+    await db
+      .prepare(`UPDATE payment_claims SET receipt_url_or_r2_key = ?2 WHERE id = ?1`)
+      .bind(claimId, 'AgACAgQAAxkBAaReceiptFileId')
+      .run();
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+
+    // First, and as its own message: the detail screen replaces itself in place
+    // on every press, and a photo cannot be edited into a text message.
+    expect(out.replies[0]?.photo).toBe('AgACAgQAAxkBAaReceiptFileId');
+    expect(out.replies[0]?.editMessageId).toBeUndefined();
+    expect(out.replies[1]?.text).toContain('بررسی پرداخت');
+  });
+
+  it('gets no empty photo message when the customer sent no receipt', async () => {
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId, 'SUPPORT');
+    const customer = ids().telegramId;
+    await makeCustomer(customer);
+    const { claimId } = await makeClaim(customer);
+
+    const out = await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+
+    expect(out.replies).toHaveLength(1);
+    expect(out.replies[0]?.photo).toBeUndefined();
+  });
+
   it('cannot mark an order paid with no bank transaction behind it', async () => {
     const { updateId, telegramId } = ids();
     await makeAdmin(telegramId, 'SUPPORT');
@@ -356,8 +393,10 @@ describe('per-operator permissions', () => {
   // `{}`, which is why an empty object has to keep meaning what the role has
   // always meant rather than deny-all.
 
-  const buttons = (out: { replies: { keyboard?: { callback_data: string }[][] }[] }) =>
-    (out.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data);
+  const buttons = (out: { replies: { keyboard?: { callback_data?: string }[][] }[] }) =>
+    (out.replies[0]?.keyboard ?? [])
+      .flat()
+      .flatMap((b) => (b.callback_data === undefined ? [] : [b.callback_data]));
 
   it('lets a SUPPORT operator reject once that is granted, and no more', async () => {
     const { updateId, telegramId } = ids();

@@ -1,0 +1,246 @@
+/**
+ * Closing an invoice nobody paid — and never closing one somebody did.
+ *
+ * `orders.expires_at` and the partial index over it have been in the schema
+ * since `0003_sales.sql` and nothing wrote either. Four sweeps ran every poll
+ * cycle and none of them expired anything, so a card-to-card invoice — with a
+ * specific card number printed on it — stayed open in a customer's chat for
+ * ever, long after that card had been rotated out.
+ *
+ * The dangerous half is the other direction. An order expired while a claim is
+ * live is money that arrives, verifies, and settles onto an order `settle.ts`
+ * will not advance, because it guards on AWAITING_PAYMENT. The customer has
+ * paid, the admin has approved, and nothing happens. The last test here is that
+ * one, driven as an actual race rather than as a sequence.
+ */
+
+import { beforeAll, describe, expect, it } from 'vitest';
+import { expireUnpaidOrders, ORDER_TTL_MS } from '../src/expire.js';
+import { handleUpdate } from '../src/handle.js';
+import * as menu from '../src/menu.js';
+import type { TelegramUpdate } from '../src/telegram.js';
+import { db } from './helpers/env.js';
+import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
+
+let nextId = 1;
+function ids(): { updateId: number; telegramId: number } {
+  const n = nextId++ * 10;
+  return { updateId: 730_000 + n, telegramId: 731_000 + n };
+}
+
+function press(updateId: number, telegramId: number, data: string): TelegramUpdate {
+  return {
+    update_id: updateId,
+    callback_query: {
+      id: `cq-${updateId}`,
+      from: { id: telegramId, username: `exp${telegramId}` },
+      message: { message_id: 55, chat: { id: telegramId } },
+      data,
+    },
+  };
+}
+
+/** Buys something and stops at the invoice, without pressing «پرداخت کردم». */
+async function buy(productCode: string) {
+  const { updateId, telegramId } = ids();
+  const userId = await makeCustomer(telegramId);
+  const plan = await planId(productCode);
+  await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+  const order = await db
+    .prepare(
+      `SELECT id, public_id, expires_at FROM orders
+        WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`,
+    )
+    .bind(userId)
+    .first<{ id: number; public_id: string; expires_at: string | null }>();
+  return { updateId, telegramId, userId, order: order! };
+}
+
+/**
+ * Ages an invoice past its deadline without waiting a day for it.
+ *
+ * Refuses an order that has no deadline instead of inventing one. Otherwise
+ * every test below would keep passing with the deadline taken back out of
+ * `place()` — the fixture would be supplying the very thing under test.
+ */
+async function age(orderId: number): Promise<void> {
+  const aged = await db
+    .prepare(
+      `UPDATE orders SET expires_at = now() - interval '1 minute'
+        WHERE id = ?1 AND expires_at IS NOT NULL
+      RETURNING id`,
+    )
+    .bind(orderId)
+    .first();
+  if (!aged) throw new Error(`order ${orderId} was written with no deadline to age`);
+}
+
+async function statuses(orderId: number) {
+  const order = await db
+    .prepare(`SELECT status FROM orders WHERE id = ?1`)
+    .bind(orderId)
+    .first<{ status: string }>();
+  const payment = await db
+    .prepare(`SELECT status FROM payments WHERE order_id = ?1 ORDER BY id DESC LIMIT 1`)
+    .bind(orderId)
+    .first<{ status: string }>();
+  return { order: order?.status, payment: payment?.status };
+}
+
+beforeAll(async () => {
+  await ensureCatalog();
+});
+
+describe('an invoice with a deadline', () => {
+  it('gets one, a day out, the moment the order is written', async () => {
+    // Measured against the wall clock the database keeps, not against our own
+    // constant echoed back: the column has to hold a real timestamp a day away,
+    // which is what the sweep and the index both read.
+    const { order } = await buy('sim-vip-1m-50');
+    expect(order.expires_at).not.toBeNull();
+
+    const gap = new Date(order.expires_at!).getTime() - Date.now();
+    expect(gap).toBeGreaterThan(ORDER_TTL_MS - 60_000);
+    expect(gap).toBeLessThanOrEqual(ORDER_TTL_MS + 60_000);
+  });
+
+  it('is left alone until the deadline passes', async () => {
+    const sale = await buy('sim-gold-10');
+    const notes = await expireUnpaidOrders(db);
+    expect(notes.filter((n) => n.chatId === sale.telegramId)).toEqual([]);
+    expect((await statuses(sale.order.id)).order).toBe('AWAITING_PAYMENT');
+  });
+
+  it('is closed once it does, and the customer is warned off the stale card', async () => {
+    const sale = await buy('sim-vip-1m-20');
+    await age(sale.order.id);
+
+    const notes = await expireUnpaidOrders(db);
+
+    expect(await statuses(sale.order.id)).toEqual({ order: 'EXPIRED', payment: 'EXPIRED' });
+    const mine = notes.filter((n) => n.chatId === sale.telegramId);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]?.text).toContain(sale.order.public_id);
+    // The invoice with the card on it is still sitting in their chat. Telling
+    // them the order expired without telling them not to pay it is half a
+    // message.
+    expect(mine[0]?.text).toContain('واریز نکنید');
+  });
+
+  it('says so, rather than opening a claim, when the button is pressed too late', async () => {
+    const sale = await buy('sim-vip-1m-50');
+    await age(sale.order.id);
+    await expireUnpaidOrders(db);
+
+    const out = await handleUpdate(
+      db,
+      press(sale.updateId + 1, sale.telegramId, `paid:${sale.order.id}`),
+    );
+
+    expect(out.replies[0]?.text).toBe(menu.ORDER_EXPIRED);
+    const claims = await db
+      .prepare(
+        `SELECT count(*)::int AS n
+           FROM payment_claims c JOIN payments p ON c.external_order_id = 'shikoo:' || p.public_id
+          WHERE p.order_id = ?1`,
+      )
+      .bind(sale.order.id)
+      .first<{ n: number }>();
+    expect(claims?.n).toBe(0);
+  });
+
+  it('tells each customer about their own order and nobody else’s', async () => {
+    const a = await buy('sim-vip-1m-50');
+    const b = await buy('sim-gold-10');
+    await age(a.order.id);
+    await age(b.order.id);
+
+    const notes = await expireUnpaidOrders(db);
+    const to = (id: number) => notes.filter((n) => n.chatId === id);
+
+    expect(to(a.telegramId)).toHaveLength(1);
+    expect(to(a.telegramId)[0]?.text).toContain(a.order.public_id);
+    expect(to(a.telegramId)[0]?.text).not.toContain(b.order.public_id);
+    expect(to(b.telegramId)).toHaveLength(1);
+  });
+
+  it('is not closed once somebody has said they paid it', async () => {
+    const sale = await buy('sim-vip-1m-20');
+    await handleUpdate(db, press(sale.updateId + 1, sale.telegramId, `paid:${sale.order.id}`));
+    await age(sale.order.id);
+
+    const notes = await expireUnpaidOrders(db);
+
+    expect(notes.filter((n) => n.chatId === sale.telegramId)).toEqual([]);
+    expect(await statuses(sale.order.id)).toEqual({
+      order: 'AWAITING_PAYMENT',
+      payment: 'AWAITING_REVIEW',
+    });
+  });
+
+  it('expires once, however many times the sweep runs', async () => {
+    const sale = await buy('sim-gold-10');
+    await age(sale.order.id);
+
+    const first = await expireUnpaidOrders(db);
+    const second = await expireUnpaidOrders(db);
+
+    expect(first.filter((n) => n.chatId === sale.telegramId)).toHaveLength(1);
+    expect(second.filter((n) => n.chatId === sale.telegramId)).toEqual([]);
+  });
+});
+
+describe('a press that arrives while the sweep is running', () => {
+  it('never leaves a live claim against an expired order', async () => {
+    // The race, driven rather than described. A transaction holds the lock the
+    // sweep takes on its candidates; the press starts, blocks on that lock, and
+    // only continues once the order has been expired underneath it.
+    //
+    // Remove the `SELECT … FOR UPDATE` from `recordPaidClick` and this goes red:
+    // the press reads an order that is still AWAITING_PAYMENT in its own
+    // snapshot and opens a claim for money that will verify onto an order
+    // `settle.ts` will never advance.
+    const sale = await buy('sim-vip-1m-50');
+    await age(sale.order.id);
+
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const sweeping = db.withSession(async (tx) => {
+      await tx
+        .prepare(`SELECT id FROM orders WHERE id = ?1 FOR UPDATE`)
+        .bind(sale.order.id)
+        .first();
+      // The press is now started and blocked behind this lock.
+      await held;
+      await tx
+        .prepare(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?1`)
+        .bind(sale.order.id)
+        .run();
+    });
+
+    const pressing = handleUpdate(
+      db,
+      press(sale.updateId + 1, sale.telegramId, `paid:${sale.order.id}`),
+    );
+    // Long enough for the press to have reached the lock and stopped there.
+    await new Promise((r) => setTimeout(r, 200));
+    release();
+
+    await sweeping;
+    const out = await pressing;
+
+    expect(out.replies[0]?.text).toBe(menu.ORDER_EXPIRED);
+    const claims = await db
+      .prepare(
+        `SELECT count(*)::int AS n
+           FROM payment_claims c JOIN payments p ON c.external_order_id = 'shikoo:' || p.public_id
+          WHERE p.order_id = ?1`,
+      )
+      .bind(sale.order.id)
+      .first<{ n: number }>();
+    expect(claims?.n).toBe(0);
+  });
+});

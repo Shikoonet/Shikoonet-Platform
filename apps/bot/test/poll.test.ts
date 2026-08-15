@@ -31,6 +31,7 @@ function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
     getMe: async () => ({ username: 'Test_Shikoo_bot' }),
     getUpdates: async () => [],
     sendMessage: async () => undefined,
+    sendPhoto: async () => undefined,
     editMessageText: async () => undefined,
     answerCallbackQuery: async () => undefined,
     ...overrides,

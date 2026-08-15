@@ -50,8 +50,8 @@ import {
   type TextKey,
   type Texts,
 } from '@shikoo/contracts';
-import { formatToman, nameMentionsPrice, priceForUser, type Price } from './money.js';
-import type { InlineKeyboard } from './telegram.js';
+import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
+import { MAX_COPY_TEXT_LENGTH, type InlineButton, type InlineKeyboard } from './telegram.js';
 
 /**
  * A refusal reason, as `discount.ts` names it, mapped to the sentence for it.
@@ -127,6 +127,11 @@ export let NO_RENEWAL_PLAN = DEFAULT_TEXTS.raw('NO_RENEWAL_PLAN');
 export let WALLET_TOO_LITTLE = DEFAULT_TEXTS.raw('WALLET_TOO_LITTLE');
 export let DISCOUNT_TAKEN_OFF = DEFAULT_TEXTS.raw('DISCOUNT_TAKEN_OFF');
 export let ORDER_GONE = DEFAULT_TEXTS.raw('ORDER_GONE');
+export let ORDER_EXPIRED = DEFAULT_TEXTS.raw('ORDER_EXPIRED');
+export let RECEIPT_REPLACED = DEFAULT_TEXTS.raw('RECEIPT_REPLACED');
+export let RECEIPT_SETTLED = DEFAULT_TEXTS.raw('RECEIPT_SETTLED');
+export let RECEIPT_NOTHING_WAITING = DEFAULT_TEXTS.raw('RECEIPT_NOTHING_WAITING');
+export let ADMIN_RECEIPT_CAPTION = DEFAULT_TEXTS.raw('ADMIN_RECEIPT_CAPTION');
 /** The one reason `handle.ts` passes to `actionFailed` itself. */
 export let ACTION_FAILED_NO_LINK = DEFAULT_TEXTS.raw('ACTION_FAILED_NO_LINK');
 
@@ -255,6 +260,11 @@ export function applyContent(content: BotContent): void {
   WALLET_TOO_LITTLE = t.raw('WALLET_TOO_LITTLE');
   DISCOUNT_TAKEN_OFF = t.raw('DISCOUNT_TAKEN_OFF');
   ORDER_GONE = t.raw('ORDER_GONE');
+  ORDER_EXPIRED = t.raw('ORDER_EXPIRED');
+  RECEIPT_REPLACED = t.raw('RECEIPT_REPLACED');
+  RECEIPT_SETTLED = t.raw('RECEIPT_SETTLED');
+  RECEIPT_NOTHING_WAITING = t.raw('RECEIPT_NOTHING_WAITING');
+  ADMIN_RECEIPT_CAPTION = t.raw('ADMIN_RECEIPT_CAPTION');
   ACTION_FAILED_NO_LINK = t.raw('ACTION_FAILED_NO_LINK');
   ADMIN_HOME = t.raw('ADMIN_HOME_TITLE');
   NO_CLAIMS = t.raw('ADMIN_NO_CLAIMS');
@@ -762,17 +772,51 @@ export function formatCard(digits: string): string {
  */
 export function checkoutMenu(
   orderId: number,
+  totalIrr: number,
+  cardDigits: string,
   wallet?: { balanceIrr: number; totalIrr: number },
 ): InlineKeyboard {
   const covers = wallet !== undefined && wallet.balanceIrr >= wallet.totalIrr;
   const someBalance = wallet !== undefined && wallet.balanceIrr > 0;
-  return buildMenu('checkout', layout('checkout'), {
+  const chrome = buildMenu('checkout', layout('checkout'), {
     applies: (action) =>
       action === 'wpay' ? covers : action === 'tpo' ? someBalance && !covers : true,
     target: (action) =>
       action === 'menu' ? encode('menu') : encode(action as 'paid', orderId),
     values: { balance: wallet ? formatToman(wallet.balanceIrr) : '' },
   });
+  const copy = copyRow(cardDigits, totalIrr);
+  // Above the chrome, like every other data row on every other screen. The
+  // layout an admin saves describes the buttons below this one.
+  return copy.length > 0 ? [copy, ...chrome] : chrome;
+}
+
+/**
+ * The two buttons that stop a customer typing.
+ *
+ * Card-to-card verification compares the bank's amount against ours EXACTLY —
+ * no tolerance, no rounding — and the destination is sixteen digits copied by
+ * eye into a banking app. Every mistyped digit is either a payment that lands
+ * in the manual queue or money sent to somebody else entirely. `copy_text`
+ * puts both on the clipboard, so neither is ever retyped.
+ *
+ * A value Telegram would refuse drops its own button rather than the invoice.
+ * The cap is 256 characters and a card number is sixteen, so this can only fire
+ * on a card row somebody has filled with something that is not a card — and
+ * when it does, the number is still written in the message above, which is
+ * where it was read from before this existed.
+ */
+function copyRow(cardDigits: string, totalIrr: number): InlineButton[] {
+  const t = TEXTS_NOW;
+  const row: InlineButton[] = [];
+  const add = (label: string, value: string): void => {
+    if (value.length > 0 && value.length <= MAX_COPY_TEXT_LENGTH) {
+      row.push({ text: label, copy_text: { text: value } });
+    }
+  };
+  add(t.raw('CHECKOUT_COPY_CARD'), cardDigits);
+  add(t.raw('CHECKOUT_COPY_AMOUNT'), tomanDigits(totalIrr));
+  return row;
 }
 
 export function paidRecorded(publicId: string): string {
@@ -783,7 +827,39 @@ export function paidRecorded(publicId: string): string {
     t.render('PAID_TRACKING_ID', { id: publicId }),
     '',
     t.raw('PAID_WAIT'),
+    // Asked for here and nowhere else. A receipt matters most in the one case
+    // the customer cannot see coming: automatic verification found nothing, and
+    // an admin is about to decide about their money with no document in front
+    // of them.
+    t.raw('PAID_SEND_RECEIPT'),
   ].join('\n');
+}
+
+/**
+ * Sent unprompted when an invoice runs out of time.
+ *
+ * It names the order so a customer can tell which of theirs it was, and says
+ * the card is no longer valid — the invoice with that card on it is still
+ * sitting in their chat, and «منقضی شد» alone would not stop anybody scrolling
+ * up and paying it.
+ */
+export function orderExpired(publicId: string): string {
+  const t = TEXTS_NOW;
+  return [
+    t.raw('ORDER_EXPIRED_TITLE'),
+    '',
+    t.render('PAID_TRACKING_ID', { id: publicId }),
+    '',
+    t.raw('ORDER_EXPIRED_CARD_STALE'),
+  ].join('\n');
+}
+
+/** The receipt landed and is attached to the claim under review. */
+export function receiptReceived(publicId: string): string {
+  const t = TEXTS_NOW;
+  return [t.raw('RECEIPT_RECEIVED_TITLE'), '', t.render('PAID_TRACKING_ID', { id: publicId })].join(
+    '\n',
+  );
 }
 
 /** Second press of a button that is already spent. Same screen, no scolding. */

@@ -73,8 +73,8 @@ async function clearSettings(): Promise<void> {
   invalidateShopSettings();
 }
 
-const datas = (rows: { callback_data: string }[][] | undefined) =>
-  (rows ?? []).flat().map((b) => b.callback_data);
+const datas = (rows: { callback_data?: string }[][] | undefined) =>
+  (rows ?? []).flat().flatMap((b) => (b.callback_data === undefined ? [] : [b.callback_data]));
 
 /** A service on a panel that prices both add-ons and is currently running. */
 const SELLING_PANEL = {

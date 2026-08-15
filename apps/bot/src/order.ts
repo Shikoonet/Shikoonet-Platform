@@ -18,6 +18,7 @@
 import { randomBytes } from 'node:crypto';
 import type { D1DatabaseSession } from '@shikoo/database';
 import type { CatalogPlan } from './catalog.js';
+import { ORDER_TTL_MS } from './expire.js';
 import { priceForUser, type Price } from './money.js';
 
 export interface PlacedOrder {
@@ -227,12 +228,18 @@ async function place(
     return { id: open.id, publicId: open.public_id, totalIrr: open.total_irr, reused: true };
   }
 
+  // `expires_at` is set here and never refreshed, including on the reuse above.
+  // The deadline belongs to the invoice, and a customer who could push it out by
+  // tapping the same plan again would be keeping a card-to-card invoice — and
+  // the card printed on it — alive indefinitely. `expire.ts` says what that
+  // costs.
   const row = await tx
     .prepare(
       `INSERT INTO orders
          (public_id, user_id, kind, plan_id, target_subscription_id, quantity,
-          unit_price_irr, discount_irr, total_irr, status)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8, 'AWAITING_PAYMENT')
+          unit_price_irr, discount_irr, total_irr, status, expires_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8, 'AWAITING_PAYMENT',
+               now() + make_interval(secs => ?10))
        RETURNING id, public_id, total_irr`,
     )
     .bind(
@@ -245,6 +252,7 @@ async function place(
       price.discountIrr,
       price.totalIrr,
       quantity,
+      ORDER_TTL_MS / 1000,
     )
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (!row) throw new Error('order insert returned no row');

@@ -9,6 +9,20 @@ function buttons(keyboard: InlineKeyboard) {
   return keyboard.flat();
 }
 
+/**
+ * The buttons that call back, which is every button except a copy one.
+ *
+ * A copy button carries no `callback_data` by design — it never reaches the
+ * bot at all — so the assertions about callback data are about these.
+ */
+function callbacks(keyboard: InlineKeyboard): { text: string; callback_data: string }[] {
+  return keyboard
+    .flat()
+    .flatMap((b) =>
+      b.callback_data === undefined ? [] : [{ text: b.text, callback_data: b.callback_data }],
+    );
+}
+
 const PLAN: CatalogPlan = {
   planId: 42,
   productId: 7,
@@ -58,21 +72,33 @@ describe('every button we draw', () => {
     menu.planMenu([PLAN]),
     menu.planMenu([]),
     menu.planDetailMenu(PLAN),
-    menu.checkoutMenu(4242),
+    menu.checkoutMenu(4242, 1_950_000, '6037997512345678'),
     menu.afterPaidMenu(),
   ];
 
   it('carries callback data our own parser accepts', () => {
     for (const keyboard of keyboards) {
-      for (const button of buttons(keyboard)) {
+      for (const button of callbacks(keyboard)) {
         expect(decode(button.callback_data), button.callback_data).not.toBeNull();
+      }
+    }
+  });
+
+  it('does exactly one thing per button', () => {
+    // Telegram's own rule: a label plus exactly one action field. A button with
+    // both is refused, and a button with neither does nothing when pressed —
+    // and either one takes the whole screen down with it, not just the button.
+    for (const keyboard of keyboards) {
+      for (const button of buttons(keyboard)) {
+        const actions = [button.callback_data, button.copy_text].filter((a) => a !== undefined);
+        expect(actions, button.text).toHaveLength(1);
       }
     }
   });
 
   it('fits inside Telegram’s 64-byte limit', () => {
     for (const keyboard of keyboards) {
-      for (const button of buttons(keyboard)) {
+      for (const button of callbacks(keyboard)) {
         const bytes = new TextEncoder().encode(button.callback_data).length;
         expect(bytes, button.callback_data).toBeLessThanOrEqual(CALLBACK_MAX_BYTES);
       }
@@ -81,7 +107,7 @@ describe('every button we draw', () => {
 
   it('always leaves a way back', () => {
     for (const keyboard of keyboards.slice(2)) {
-      const targets = buttons(keyboard).map((b) => b.callback_data);
+      const targets = callbacks(keyboard).map((b) => b.callback_data);
       expect(targets.some((t) => t === 'menu' || t === 'buy' || t.startsWith('panel:'))).toBe(true);
     }
   });
@@ -112,10 +138,7 @@ describe('the plan list', () => {
 
   it('is just a way back when there is nothing to list', () => {
     expect(
-      menu
-        .planMenu([])
-        .flat()
-        .every((b) => /^(buy|menu)$/.test(b.callback_data)),
+      callbacks(menu.planMenu([])).every((b) => /^(buy|menu)$/.test(b.callback_data)),
     ).toBe(true);
   });
 });
@@ -154,6 +177,50 @@ describe('the plan detail', () => {
     const targets = buttons(menu.planDetailMenu(PLAN)).map((b) => b.callback_data);
     expect(targets).toContain('order:42');
     expect(targets).toContain('panel:7');
+  });
+});
+
+describe('the copy buttons on an invoice', () => {
+  const CARD = '6037997512345678';
+  const TOTAL = 1_950_000;
+
+  /** What the two buttons put on the clipboard, in the order they are drawn. */
+  const copied = (keyboard: InlineKeyboard): string[] =>
+    keyboard.flat().flatMap((b) => (b.copy_text === undefined ? [] : [b.copy_text.text]));
+
+  it('copies exactly the card and the amount the invoice names', () => {
+    // Measured against the message the customer reads, not against the helper
+    // that built the button. These are two independent renderings of the same
+    // two numbers, and the whole point of the buttons is that they agree — a
+    // customer who copies one number and is quoted another is worse off than
+    // one who types.
+    const text = menu.checkout('ORD-1', PLAN, TOTAL, CARD, 'سام');
+    const [card, amount] = copied(menu.checkoutMenu(4242, TOTAL, CARD));
+
+    // The invoice groups the card for reading; the clipboard carries the digits
+    // a banking app accepts.
+    expect(text).toContain('6037-9975-1234-5678');
+    expect(card).toBe('6037997512345678');
+
+    const quoted = /💳 مبلغ دقیق: ([\d,]+) تومان/.exec(text)?.[1];
+    expect(quoted).toBe('195,000');
+    expect(amount).toBe(quoted!.replace(/,/g, ''));
+  });
+
+  it('sits above the buttons an admin can rearrange', () => {
+    const rows = menu.checkoutMenu(4242, TOTAL, CARD);
+    expect(rows[0]?.every((b) => b.copy_text !== undefined)).toBe(true);
+    expect(callbacks(rows).map((b) => b.callback_data)).toEqual(['paid:4242', 'menu']);
+  });
+
+  it('drops its own button rather than the invoice when a card is not a card', () => {
+    // 256 characters is Telegram's cap and a message that breaks it is refused
+    // whole — the customer would get no invoice at all. The number is still
+    // written in the message above, which is where it was read from before
+    // these buttons existed.
+    const rows = menu.checkoutMenu(4242, TOTAL, '9'.repeat(257));
+    expect(copied(rows)).toEqual(['195000']);
+    expect(callbacks(rows).map((b) => b.callback_data)).toContain('paid:4242');
   });
 });
 

@@ -90,7 +90,7 @@ import {
   subscriptionsForUser,
   type OwnedSubscriptionOnPanel,
 } from './owned.js';
-import { checkoutFor, recordPaidClick } from './payment.js';
+import { checkoutFor, recordPaidClick, recordReceipt } from './payment.js';
 import {
   balanceFor,
   entriesFor,
@@ -113,6 +113,9 @@ export interface Reply {
   /** Replaces this message instead of sending a new one, so a menu does not
    *  leave a trail of dead screens behind it. */
   editMessageId?: number;
+  /** A Telegram `file_id` to send as a photo, with `text` as its caption.
+   *  Only the receipt uses this, and only towards an admin. */
+  photo?: string;
 }
 
 export type HandleStatus =
@@ -237,7 +240,18 @@ export async function handleUpdate(
     const message = update.message;
     // Claimed on purpose: we have genuinely seen this update, and re-fetching it
     // would produce the same nothing.
-    if (!message?.text || !message.from) {
+    if (!message?.from) {
+      return IGNORED;
+    }
+
+    // A receipt is a photo, and a photo has no `text`. Every other handler in
+    // this file reads `text`, so before this line a picture fell through all of
+    // them and was thrown away — which is exactly where the admin's evidence
+    // was going.
+    const photo = message.photo?.at(-1);
+    if (photo) return handleReceipt(tx, message, photo.file_id);
+
+    if (!message.text) {
       return IGNORED;
     }
 
@@ -311,6 +325,44 @@ async function upsertUser(
     .first<Caller>();
   if (!user) throw new Error('user upsert returned no row');
   return user;
+}
+
+/**
+ * A photo from a customer is a payment receipt.
+ *
+ * There is nothing else a customer can usefully send this bot as a picture, and
+ * the alternative — a step the customer must be in — is what the legacy bot
+ * does and how it loses them: its step is cleared by any other tap, and a
+ * receipt that arrives afterwards is dropped without a word to anybody.
+ *
+ * A blocked customer is recorded as seen and told nothing, exactly as /start
+ * treats them.
+ */
+async function handleReceipt(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  fileId: string,
+): Promise<HandleOutcome> {
+  const from = message.from;
+  if (!from) return IGNORED;
+  const user = await upsertUser(tx, from);
+  if (user.status === 'BLOCKED') return IGNORED;
+
+  const result = await recordReceipt(tx, user.id, fileId);
+  const say = (text: string): HandleOutcome => ({
+    status: 'processed',
+    replies: [reply(message.chat.id, text)],
+  });
+  switch (result.outcome) {
+    case 'received':
+      return say(menu.receiptReceived(result.publicId));
+    case 'replaced':
+      return say(menu.RECEIPT_REPLACED);
+    case 'settled':
+      return say(menu.RECEIPT_SETTLED);
+    case 'none':
+      return say(menu.RECEIPT_NOTHING_WAITING);
+  }
 }
 
 async function handleStart(
@@ -508,7 +560,7 @@ async function handleAddonAmount(
       checkout.cardDigits,
       checkout.cardHolder,
     ),
-    menu.checkoutMenu(placed.id, {
+    menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
       balanceIrr: await balanceFor(tx, user.id),
       totalIrr: placed.totalIrr,
     }),
@@ -822,6 +874,9 @@ async function handleAdmin(
   action: Callback,
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
   telegramId: number,
+  /** Where a message that is not the screen goes. Not assumed equal to the
+   *  Telegram id, even though in a private chat it is. */
+  chatId: number,
 ): Promise<HandleOutcome> {
   const allowed = permissionsOf(admin.role, admin.permissions);
 
@@ -882,7 +937,19 @@ async function handleAdmin(
     }
     const candidates = await candidateTransactions(tx, claim.id);
     await rememberClaim(tx, telegramId, claim.id);
-    return screen(menu.claimDetail(claim, candidates), menu.claimDetailMenu(candidates, allowed));
+    const out = screen(menu.claimDetail(claim, candidates), menu.claimDetailMenu(candidates, allowed));
+    if (!claim.receipt_url_or_r2_key) return out;
+    // The receipt goes first, as its own message. The detail screen replaces
+    // itself in place on every press and a photo cannot be edited into a text
+    // message — and an operator about to decide where somebody's money goes
+    // should be looking at the document, not at a line saying one exists.
+    return {
+      ...out,
+      replies: [
+        { chatId, text: menu.ADMIN_RECEIPT_CAPTION, photo: claim.receipt_url_or_r2_key },
+        ...out.replies,
+      ],
+    };
   };
 
   // Reading a claim is not deciding one, and neither is drawing the button.
@@ -1141,7 +1208,7 @@ async function handleCallback(
     case 'cnf': {
       const admin = await adminFor(tx, query.from.id);
       if (!admin) return IGNORED;
-      return handleAdmin(tx, admin, action, screen, query.from.id);
+      return handleAdmin(tx, admin, action, screen, query.from.id, chatId);
     }
 
     case 'sup': {
@@ -1249,7 +1316,7 @@ async function handleCallback(
           checkout.cardDigits,
           checkout.cardHolder,
         ),
-        menu.checkoutMenu(placed.id, {
+        menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
           balanceIrr: await balanceFor(tx, user.id),
           totalIrr: placed.totalIrr,
         }),
@@ -1472,7 +1539,7 @@ async function handleCallback(
           checkout.cardHolder,
           held ? { code: held.code.code, discountIrr: held.discountIrr } : null,
         ),
-        menu.checkoutMenu(placed.id, {
+        menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
           balanceIrr: await balanceFor(tx, user.id),
           totalIrr: placed.totalIrr,
         }),
@@ -1491,6 +1558,8 @@ async function handleCallback(
           return screen(menu.paidRecorded(result.publicId), menu.afterPaidMenu());
         case 'already':
           return screen(menu.paidAlready(result.publicId), menu.afterPaidMenu());
+        case 'expired':
+          return screen(menu.ORDER_EXPIRED, menu.afterPaidMenu());
         case 'none':
           return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       }
@@ -1608,7 +1677,7 @@ async function topup(
   if (checkout.claimed) return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
   return screen(
     menu.topupCheckout(placed.publicId, placed.totalIrr, checkout.cardDigits, checkout.cardHolder),
-    menu.checkoutMenu(placed.id),
+    menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits),
   );
 }
 

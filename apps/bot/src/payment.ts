@@ -156,7 +156,9 @@ export type PaidResult =
   /** They had already told us; the earlier claim stands. */
   | { outcome: 'already'; publicId: string }
   /** No open checkout to claim — the order was never at the payment step. */
-  | { outcome: 'none' };
+  | { outcome: 'none' }
+  /** The invoice ran out before they pressed it. The card on it may be stale. */
+  | { outcome: 'expired' };
 
 /**
  * "I have paid."
@@ -176,6 +178,25 @@ export async function recordPaidClick(
   telegramId: number,
   now: number = Date.now(),
 ): Promise<PaidResult> {
+  // The order is locked before anything else is read, and this is the only
+  // reason the expiry sweep is safe. `expire.ts` cannot ask "has anybody said
+  // they paid" in the same statement that expires the order — a write blocked
+  // on a row re-checks that row and nothing joined to it — so it locks its
+  // candidates first. A press arriving after that lock waits here and then sees
+  // EXPIRED; a press already holding this lock makes the sweep skip the order
+  // entirely. Without the lock both sides read a world where the other has not
+  // happened yet, and the result is a claim against an expired order: money
+  // that verifies onto an order `settle.ts` will never advance.
+  //
+  // Deliberately not filtered on status. Anything other than EXPIRED falls
+  // through to the payment lookup below, which has always been what decides
+  // 'already' from 'none'.
+  const order = await tx
+    .prepare(`SELECT status FROM orders WHERE id = ?1 FOR UPDATE`)
+    .bind(orderId)
+    .first<{ status: string }>();
+  if (order?.status === 'EXPIRED') return { outcome: 'expired' };
+
   const payment = await tx
     .prepare(
       `SELECT id, public_id, amount_irr, assigned_card_number, status
@@ -239,4 +260,100 @@ export async function recordPaidClick(
   return inserted.meta.changes === 0
     ? { outcome: 'already', publicId: payment.public_id }
     : { outcome: 'claimed', publicId: payment.public_id };
+}
+
+/**
+ * What a `file_id` may look like.
+ *
+ * Telegram's own handles are a few dozen base64url characters. This is an
+ * untrusted field on an untrusted update — anyone can post an update-shaped
+ * body at a bot — and it ends up in a row we later hand back to `sendPhoto`.
+ * A shape that is not a handle is not one, and a megabyte of text in a column
+ * nobody bounded is a nuisance we do not have to accept.
+ */
+const FILE_ID = /^[A-Za-z0-9_-]{16,200}$/;
+
+export type ReceiptResult =
+  /** Attached, and it is the first one for this claim. */
+  | { outcome: 'received'; publicId: string }
+  /** Attached, replacing an earlier one. The waiting window did not move. */
+  | { outcome: 'replaced'; publicId: string }
+  /** Nothing of theirs is waiting for a receipt. */
+  | { outcome: 'none' }
+  /** There is a claim, but it has already been decided. */
+  | { outcome: 'settled'; publicId: string };
+
+/**
+ * Attaches a receipt photo to whatever the customer is waiting on.
+ *
+ * No session, no step, no button to press first. A photo from a customer with
+ * one claim under review can only be about that claim, and asking them to press
+ * something before sending it is how the legacy bot lost receipts — its
+ * `cart_to_cart_user` step is cleared by any other tap, and the picture that
+ * arrives afterwards is dropped without a word.
+ *
+ * The claim keeps the handle, never the picture. Nothing is downloaded, so a
+ * receipt costs no storage and no egress, and the admin sees the original
+ * rather than a copy of one.
+ *
+ * `receipt_submitted_at` is stamped ONCE. It is the anchor for the ten minutes
+ * the matcher will keep waiting for a bank SMS before it gives up, and a
+ * customer who could move it by sending another photo could hold their claim
+ * out of the manual queue for as long as they liked. The newest picture is kept
+ * — that is the evidence the admin should be looking at — and the clock is not
+ * restarted by it.
+ */
+export async function recordReceipt(
+  tx: D1DatabaseSession,
+  userId: number,
+  fileId: string,
+  now: number = Date.now(),
+): Promise<ReceiptResult> {
+  if (!FILE_ID.test(fileId)) return { outcome: 'none' };
+
+  const claim = await tx
+    .prepare(
+      `SELECT c.id, c.status, p.public_id
+         FROM payments p
+         JOIN payment_claims c ON c.external_order_id = 'shikoo:' || p.public_id
+        WHERE p.user_id = ?1 AND p.status = 'AWAITING_REVIEW'
+        ORDER BY p.updated_at DESC, p.id DESC
+        LIMIT 1`,
+    )
+    .bind(userId)
+    .first<{ id: string; status: string; public_id: string }>();
+  if (!claim) return { outcome: 'none' };
+
+  // The status is checked in the statement, not above it. A claim verified
+  // between the read and the write must not take a receipt: the money is
+  // settled, the row is history, and quietly stamping it would make the audit
+  // trail disagree with what happened.
+  const updated = await tx
+    .prepare(
+      `UPDATE payment_claims
+          SET receipt_url_or_r2_key = ?2,
+              receipt_submitted_at  = COALESCE(receipt_submitted_at, ?3),
+              updated_at            = ?3
+        WHERE id = ?1 AND status IN ('PENDING', 'MATCH_SUGGESTED')
+      RETURNING receipt_submitted_at`,
+    )
+    .bind(claim.id, fileId, now)
+    .first<{ receipt_submitted_at: number }>();
+  if (!updated) return { outcome: 'settled', publicId: claim.public_id };
+
+  return updated.receipt_submitted_at === now
+    ? { outcome: 'received', publicId: claim.public_id }
+    : { outcome: 'replaced', publicId: claim.public_id };
+}
+
+/** The receipt an admin is about to look at, if the customer sent one. */
+export async function receiptFor(
+  tx: D1DatabaseSession,
+  claimId: string,
+): Promise<string | null> {
+  const row = await tx
+    .prepare(`SELECT receipt_url_or_r2_key FROM payment_claims WHERE id = ?1`)
+    .bind(claimId)
+    .first<{ receipt_url_or_r2_key: string | null }>();
+  return row?.receipt_url_or_r2_key ?? null;
 }

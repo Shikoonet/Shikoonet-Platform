@@ -25,11 +25,22 @@ const TelegramUserSchema = z.object({
   language_code: z.string().optional(),
 });
 
+/**
+ * One rendition of a photo. Telegram sends several sizes; the last is the
+ * largest, and the only one worth keeping for a receipt somebody has to read.
+ *
+ * `file_id` is not a URL and not a secret — it is an opaque handle that can be
+ * handed straight back to `sendPhoto`, which is how an admin sees the receipt
+ * without the image ever being downloaded or stored anywhere.
+ */
+const PhotoSizeSchema = z.object({ file_id: z.string() });
+
 const MessageSchema = z.object({
   message_id: z.number().int(),
   from: TelegramUserSchema.optional(),
   chat: z.object({ id: z.number().int() }),
   text: z.string().optional(),
+  photo: z.array(PhotoSizeSchema).optional(),
 });
 
 /**
@@ -58,11 +69,22 @@ export type TelegramUpdate = z.infer<typeof UpdateSchema>;
 export type TelegramMessage = z.infer<typeof MessageSchema>;
 export type TelegramCallbackQuery = z.infer<typeof CallbackQuerySchema>;
 
-/** One button. `callback_data` is capped at 64 BYTES by Telegram, not characters. */
+/**
+ * One button, in Telegram's own shape: a label plus exactly one action field.
+ *
+ * `callback_data` is capped at 64 BYTES, not characters. `copy_text` puts its
+ * payload on the clipboard instead of calling back, and is capped at 256
+ * characters. Both are optional here because both are optional there — a button
+ * carrying neither is refused by Telegram, which is why nothing builds one.
+ */
 export interface InlineButton {
   text: string;
-  callback_data: string;
+  callback_data?: string;
+  copy_text?: { text: string };
 }
+
+/** Telegram's cap on what a copy button may carry. */
+export const MAX_COPY_TEXT_LENGTH = 256;
 
 export type InlineKeyboard = InlineButton[][];
 
@@ -89,6 +111,15 @@ export interface TelegramApi {
    */
   getUpdates(offset: number, timeoutSec: number, signal?: AbortSignal): Promise<TelegramUpdate[]>;
   sendMessage(chatId: number, text: string, keyboard?: InlineKeyboard): Promise<void>;
+  /**
+   * Re-sends a photo we were sent, by its `file_id`.
+   *
+   * Nothing is downloaded and nothing is stored: the receipt lives on
+   * Telegram's servers and the claim keeps only the handle. The caption is
+   * short on purpose — Telegram caps it at 1024 characters, well below a
+   * message, so the screen that goes with the picture is sent separately.
+   */
+  sendPhoto(chatId: number, fileId: string, caption?: string): Promise<void>;
   /** Replaces a message in place, so a menu does not leave a trail behind it. */
   editMessageText(
     chatId: number,
@@ -132,6 +163,9 @@ function redact(message: string, token: string): string {
  * outright, so the customer gets nothing at all.
  */
 export const MAX_MESSAGE_LENGTH = 4096;
+
+/** Telegram's cap on a photo caption — a quarter of a message's. */
+export const MAX_CAPTION_LENGTH = 1024;
 
 /** What replaces the tail, so a cut screen reads as cut rather than as finished. */
 export const TRUNCATION_MARK = '\n…';
@@ -281,6 +315,21 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     async sendMessage(chatId, text, keyboard) {
       await withEmojiFallback(text, (body) =>
         call('sendMessage', { chat_id: chatId, ...body, ...markup(keyboard) }, 15_000),
+      );
+    },
+
+    async sendPhoto(chatId, fileId, caption) {
+      await call(
+        'sendPhoto',
+        {
+          chat_id: chatId,
+          photo: fileId,
+          // Not run through `withEmojiFallback`: a caption is one short line the
+          // bot writes itself, never an admin's override, so there is no markup
+          // here to escape and nothing to land back from.
+          ...(caption === undefined ? {} : { caption: caption.slice(0, MAX_CAPTION_LENGTH) }),
+        },
+        15_000,
       );
     },
 

@@ -125,6 +125,8 @@ export interface PendingClaim {
   status: string;
   telegram_id: number | null;
   username: string | null;
+  /** The Telegram handle for the receipt the customer sent, if they sent one. */
+  receipt_url_or_r2_key: string | null;
 }
 
 /** What a claim's `customer_reference` is: the Telegram id of whoever paid. */
@@ -143,6 +145,7 @@ export async function claimsAwaitingReview(db: Db, limit: number, offset = 0): P
     .prepare(
       `SELECT c.id, c.external_order_id, c.expected_amount_irr, c.card_digits,
               c.paid_clicked_at, c.suspect_reason, c.status,
+              c.receipt_url_or_r2_key,
               u.telegram_id, u.username
          FROM payment_claims c ${CLAIM_JOIN}
         WHERE c.status IN ('PENDING', 'MATCH_SUGGESTED')
@@ -169,6 +172,7 @@ export async function claimById(db: Db, claimId: string): Promise<PendingClaim |
     .prepare(
       `SELECT c.id, c.external_order_id, c.expected_amount_irr, c.card_digits,
               c.paid_clicked_at, c.suspect_reason, c.status,
+              c.receipt_url_or_r2_key,
               u.telegram_id, u.username
          FROM payment_claims c ${CLAIM_JOIN}
         WHERE c.id = ?1`,

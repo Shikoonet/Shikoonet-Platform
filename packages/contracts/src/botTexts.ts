@@ -378,6 +378,18 @@ export const TEXTS = {
     screen: 'checkout',
     hint: 'خط آخر فاکتور',
   },
+  CHECKOUT_COPY_CARD: {
+    default: '📋 کپی شمارهٔ کارت',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'دکمه‌ای که شمارهٔ کارت را در حافظه کپی می‌کند — بدون تایپ دستی',
+  },
+  CHECKOUT_COPY_AMOUNT: {
+    default: '📋 کپی مبلغ',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'دکمه‌ای که مبلغ را به تومان و بدون جداکننده کپی می‌کند',
+  },
   ORDER_GONE: {
     default: 'این سفارش پیدا نشد. لطفاً از منوی خرید دوباره اقدام کنید.',
     placeholders: [],
@@ -390,6 +402,26 @@ export const TEXTS = {
     placeholders: [],
     screen: 'checkout',
     hint: 'وقتی همهٔ کارت‌ها غیرفعال یا مشغول‌اند',
+  },
+  ORDER_EXPIRED: {
+    default:
+      'مهلت این فاکتور تمام شده و شمارهٔ کارت روی آن دیگر معتبر نیست. لطفاً از منوی خرید دوباره اقدام کنید.',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'وقتی «پرداخت کردم» روی فاکتوری زده می‌شود که منقضی شده',
+  },
+  ORDER_EXPIRED_TITLE: {
+    default: '⌛ مهلت پرداخت این سفارش تمام شد.',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'خط اول پیامی که خودکار برای سفارش پرداخت‌نشده فرستاده می‌شود',
+  },
+  ORDER_EXPIRED_CARD_STALE: {
+    default:
+      '⚠️ به شمارهٔ کارت آن فاکتور واریز نکنید؛ دیگر معتبر نیست. برای خرید، از منوی اصلی دوباره شروع کنید.',
+    placeholders: [],
+    screen: 'checkout',
+    hint: 'هشدار واریز نکردن به کارت کهنه — فاکتور قدیمی هنوز در چت مشتری است',
   },
   ORDER_NOT_PAYABLE: {
     default:
@@ -423,6 +455,37 @@ export const TEXTS = {
     placeholders: [],
     screen: 'paid',
     hint: 'خط آخر پیام ثبت پرداخت',
+  },
+  PAID_SEND_RECEIPT: {
+    default: '📸 اگر رسید واریز دارید، همین‌جا عکسش را بفرستید. بررسی را سریع‌تر می‌کند.',
+    placeholders: [],
+    screen: 'paid',
+    hint: 'دعوت به فرستادن عکس رسید، بعد از «پرداخت کردم»',
+  },
+  RECEIPT_RECEIVED_TITLE: {
+    default: '📸 رسید شما دریافت شد و به پروندهٔ پرداخت اضافه شد.',
+    placeholders: [],
+    screen: 'paid',
+    hint: 'وقتی اولین عکس رسید می‌رسد',
+  },
+  RECEIPT_REPLACED: {
+    default: '📸 رسید تازه ثبت شد و جایگزین قبلی شد. زمان بررسی تغییری نمی‌کند.',
+    placeholders: [],
+    screen: 'paid',
+    hint: 'وقتی مشتری عکس دوم را می‌فرستد',
+  },
+  RECEIPT_SETTLED: {
+    default: 'این پرداخت قبلاً بررسی و تعیین‌تکلیف شده است.',
+    placeholders: [],
+    screen: 'paid',
+    hint: 'وقتی رسید برای پرداختی می‌رسد که تایید یا رد شده',
+  },
+  RECEIPT_NOTHING_WAITING: {
+    default:
+      'الان پرداختی در انتظار بررسی ندارید. اگر واریز کرده‌اید، اول روی فاکتور دکمهٔ «پرداخت کردم» را بزنید.',
+    placeholders: [],
+    screen: 'paid',
+    hint: 'وقتی عکسی می‌رسد و هیچ پرداختی در صف بررسی نیست',
   },
   PAYMENT_CONFIRMED_TITLE: {
     default: '✅ پرداخت شما تایید شد.',
@@ -1495,6 +1558,12 @@ export const TEXTS = {
     placeholders: ['reason'],
     screen: 'adminClaimDetail',
     hint: 'دلیلی که موتور تطبیق داده',
+  },
+  ADMIN_RECEIPT_CAPTION: {
+    default: '📸 رسیدی که مشتری فرستاده است.',
+    placeholders: [],
+    screen: 'adminClaimDetail',
+    hint: 'زیرنویس عکس رسید، بالای صفحهٔ بررسی پرداخت',
   },
   ADMIN_CLAIM_NO_TX: {
     default: '🔍 هیچ تراکنش بانکی متناظری پیدا نشد.',
