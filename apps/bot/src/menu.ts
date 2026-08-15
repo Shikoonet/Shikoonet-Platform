@@ -35,7 +35,15 @@
 import { encode, encodeRef } from './callback.js';
 import type { CatalogPlan, Panel } from './catalog.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
-import { buildMainMenu, DEFAULT_LAYOUT, MENU_ACTIONS, type ButtonPlacement } from './keyboard.js';
+import {
+  buildMainMenu,
+  buildMenu,
+  DEFAULT_LAYOUTS,
+  MENU_ACTIONS,
+  type ButtonPlacement,
+  type MenuId,
+} from './keyboard.js';
+import type { Layouts } from './botContent.js';
 import { DEFAULT_TEXTS, type TextKey, type Texts } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, type Price } from './money.js';
 import type { InlineKeyboard } from './telegram.js';
@@ -86,7 +94,6 @@ export let SHOP_EMPTY = DEFAULT_TEXTS.raw('SHOP_EMPTY');
 export let PLAN_GONE = DEFAULT_TEXTS.raw('PLAN_GONE');
 export let NOT_REGISTERED = DEFAULT_TEXTS.raw('NOT_REGISTERED');
 /** For the few screens handle.ts builds a one-button keyboard for itself. */
-export let BACK_TO_MENU_LABEL = DEFAULT_TEXTS.raw('BACK_TO_MENU_LABEL');
 
 export let ASK_DISCOUNT_CODE = DEFAULT_TEXTS.raw('ASK_DISCOUNT_CODE');
 export let ASK_GIFT_CODE = DEFAULT_TEXTS.raw('ASK_GIFT_CODE');
@@ -147,10 +154,13 @@ export let DISCOUNT_REFUSED: Record<string, string> = buildDiscountRefused(DEFAU
 
 /** The active texts, for the screens that fill in slots. */
 let TEXTS_NOW: Texts = DEFAULT_TEXTS;
-/** The active main-menu layout. */
-let LAYOUT_NOW: readonly ButtonPlacement[] = DEFAULT_LAYOUT;
+/** The active keyboard for every screen. */
+let LAYOUTS_NOW: Layouts = DEFAULT_LAYOUTS;
 
-let BACK_TO_MENU = BACK_TO_MENU_LABEL;
+/** One menu's saved layout, or the shipped one. */
+function layout(id: MenuId): readonly ButtonPlacement[] {
+  return LAYOUTS_NOW[id];
+}
 
 function buildDiscountRefused(t: Texts): Record<string, string> {
   return Object.fromEntries(
@@ -189,7 +199,7 @@ function buildConfirmReject(t: Texts): string {
  * literal `{renewButton}` on a customer's screen would be.
  */
 function renewButtonLabel(): string {
-  const placed = LAYOUT_NOW.find((b) => b.action === 'renew' && b.visible);
+  const placed = layout('main').find((b) => b.action === 'renew' && b.visible);
   if (placed) return placed.label;
   return MENU_ACTIONS.find((a) => a.action === 'renew')?.label ?? 'تمدید سرویس';
 }
@@ -203,7 +213,7 @@ function renewButtonLabel(): string {
 export function applyContent(content: BotContent): void {
   const t = content.texts;
   TEXTS_NOW = t;
-  LAYOUT_NOW = content.layout;
+  LAYOUTS_NOW = content.layouts;
   WELCOME = t.raw('WELCOME');
   MENU_TITLE = t.raw('MENU_TITLE');
   SOON = t.raw('SOON');
@@ -213,8 +223,6 @@ export function applyContent(content: BotContent): void {
   SHOP_EMPTY = t.raw('SHOP_EMPTY');
   PLAN_GONE = t.raw('PLAN_GONE');
   NOT_REGISTERED = t.raw('NOT_REGISTERED');
-  BACK_TO_MENU_LABEL = t.raw('BACK_TO_MENU_LABEL');
-  BACK_TO_MENU = BACK_TO_MENU_LABEL;
   ASK_DISCOUNT_CODE = t.raw('ASK_DISCOUNT_CODE');
   ASK_GIFT_CODE = t.raw('ASK_GIFT_CODE');
   ASK_RESELLER_REQUEST = t.raw('ASK_RESELLER_REQUEST');
@@ -258,15 +266,49 @@ export function resetContent(): void {
 }
 
 export function mainMenu(isReseller: boolean): InlineKeyboard {
-  return buildMainMenu(LAYOUT_NOW, isReseller);
+  return buildMainMenu(layout('main'), isReseller);
+}
+
+/**
+ * The rows that come from the database, above the shop's chrome.
+ *
+ * Always in that order. A plan, a service or a bank transaction is a row that
+ * does not exist until the query runs, so letting the shop position it would
+ * need an anchor scheme for something with no fixed identity — and nobody has
+ * asked for one.
+ */
+function withChrome(
+  dataRows: InlineKeyboard,
+  menuId: MenuId,
+  ctx?: Parameters<typeof buildMenu>[2],
+): InlineKeyboard {
+  return [...dataRows, ...buildMenu(menuId, layout(menuId), ctx)];
+}
+
+/**
+ * The previous/next row, when there is more than one screenful.
+ *
+ * Generated rather than placed by the shop, because both buttons fire the same
+ * callback with a different page number and the layout table is keyed by
+ * action. Only their wording is editable, and that lives with the texts.
+ */
+function paging(action: 'mine' | 'renew' | 'clm', page: number, pages: number): InlineKeyboard {
+  if (pages <= 1) return [];
+  const row: InlineKeyboard[number] = [];
+  if (page > 1) {
+    row.push({ text: TEXTS_NOW.raw('PAGING_PREV'), callback_data: encode(action, page - 1) });
+  }
+  if (page < pages) {
+    row.push({ text: TEXTS_NOW.raw('PAGING_NEXT'), callback_data: encode(action, page + 1) });
+  }
+  return row.length > 0 ? [row] : [];
 }
 
 export function panelMenu(panels: Panel[]): InlineKeyboard {
-  const keyboard: InlineKeyboard = panels.map((panel) => [
-    { text: panel.name, callback_data: encode('panel', panel.id) },
-  ]);
-  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
-  return keyboard;
+  return withChrome(
+    panels.map((panel) => [{ text: panel.name, callback_data: encode('panel', panel.id) }]),
+    'panels',
+  );
 }
 
 /**
@@ -284,21 +326,19 @@ export function panelMenu(panels: Panel[]): InlineKeyboard {
  * button and a different one at checkout.
  */
 export function planMenu(plans: CatalogPlan[], discountPercent = 0): InlineKeyboard {
-  const keyboard: InlineKeyboard = plans.map((plan) => {
-    const price = priceForUser(plan.priceIrr, discountPercent);
-    const quoted = price.discountIrr === 0 && nameMentionsPrice(plan.productName, plan.priceIrr);
-    return [
-      {
-        text: quoted ? plan.productName : `${plan.productName} — ${formatToman(price.totalIrr)}`,
-        callback_data: encode('plan', plan.planId),
-      },
-    ];
-  });
-  keyboard.push([
-    { text: 'بازگشت به لوکیشن‌ها ⬅️', callback_data: encode('buy') },
-    { text: BACK_TO_MENU, callback_data: encode('menu') },
-  ]);
-  return keyboard;
+  return withChrome(
+    plans.map((plan) => {
+      const price = priceForUser(plan.priceIrr, discountPercent);
+      const quoted = price.discountIrr === 0 && nameMentionsPrice(plan.productName, plan.priceIrr);
+      return [
+        {
+          text: quoted ? plan.productName : `${plan.productName} — ${formatToman(price.totalIrr)}`,
+          callback_data: encode('plan', plan.planId),
+        },
+      ];
+    }),
+    'plans',
+  );
 }
 
 /** A code the customer typed and the checker allowed, as the screen shows it. */
@@ -344,18 +384,18 @@ export function planDetail(plan: CatalogPlan, price: Price, applied?: AppliedCod
 }
 
 export function planDetailMenu(plan: CatalogPlan, applied?: AppliedCode | null): InlineKeyboard {
-  return [
-    [{ text: '✅ ثبت سفارش', callback_data: encode('order', plan.planId) }],
-    [
-      applied
-        ? { text: '🏷 برداشتن کد تخفیف', callback_data: encode('dsx', plan.planId) }
-        : { text: '🏷 کد تخفیف دارم', callback_data: encode('dsc', plan.planId) },
-    ],
-    [
-      { text: 'بازگشت ⬅️', callback_data: encode('panel', plan.providerId) },
-      { text: BACK_TO_MENU, callback_data: encode('menu') },
-    ],
-  ];
+  return buildMenu('planDetail', layout('planDetail'), {
+    // Exactly one of the two code buttons applies, and which one depends on
+    // whether a code is already on the plan. Both are in the layout so the shop
+    // can word each one; the bot picks.
+    applies: (action) => (action === 'dsx' ? applied != null : action === 'dsc' ? applied == null : true),
+    target: (action) =>
+      action === 'panel'
+        ? encode('panel', plan.providerId)
+        : action === 'menu'
+          ? encode('menu')
+          : encode(action as 'order', plan.planId),
+  });
 }
 
 /**
@@ -382,12 +422,11 @@ export function helpMenu(
   articles: { id: number; title: string }[],
   hasApps: boolean,
 ): InlineKeyboard {
-  const keyboard: InlineKeyboard = articles.map((a) => [
-    { text: shortName(a.title), callback_data: encode('hlp', a.id) },
-  ]);
-  if (hasApps) keyboard.push([{ text: '📱 برنامه‌ها', callback_data: encode('app') }]);
-  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
-  return keyboard;
+  return withChrome(
+    articles.map((a) => [{ text: shortName(a.title), callback_data: encode('hlp', a.id) }]),
+    'help',
+    { applies: (action) => (action === 'app' ? hasApps : true) },
+  );
 }
 
 export function helpArticleScreen(title: string, body: string): string {
@@ -411,12 +450,9 @@ export function adminHome(waiting: number): string {
 }
 
 export function adminMenu(waiting: number): InlineKeyboard {
-  const keyboard: InlineKeyboard = [];
-  if (waiting > 0) {
-    keyboard.push([{ text: '🧾 بررسی پرداخت‌ها', callback_data: encode('clm') }]);
-  }
-  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
-  return keyboard;
+  return buildMenu('adminHome', layout('adminHome'), {
+    applies: (action) => (action === 'clm' ? waiting > 0 : true),
+  });
 }
 
 /** One line per waiting payment: who, how much, and what the engine thought. */
@@ -439,20 +475,18 @@ export function claimListMenu(
   page: number,
   pages: number,
 ): InlineKeyboard {
-  const keyboard: InlineKeyboard = claims.map((c) => [
-    {
-      text: `${formatToman(c.expected_amount_irr)} — ${c.username ?? c.telegram_id ?? '؟'}`,
-      callback_data: encodeRef('clv', c.id),
-    },
-  ]);
-  if (pages > 1) {
-    const paging: InlineKeyboard[number] = [];
-    if (page > 1) paging.push({ text: '« قبلی', callback_data: encode('clm', page - 1) });
-    if (page < pages) paging.push({ text: 'بعدی »', callback_data: encode('clm', page + 1) });
-    keyboard.push(paging);
-  }
-  keyboard.push([{ text: '🛠 پنل ادمین', callback_data: encode('pnl') }]);
-  return keyboard;
+  return withChrome(
+    [
+      ...claims.map((c) => [
+        {
+          text: `${formatToman(c.expected_amount_irr)} — ${c.username ?? c.telegram_id ?? '؟'}`,
+          callback_data: encodeRef('clv', c.id),
+        },
+      ]),
+      ...paging('clm', page, pages),
+    ],
+    'adminClaims',
+  );
 }
 
 /**
@@ -515,23 +549,21 @@ export function claimDetail(
 export function claimDetailMenu(
   candidates: { id: string; bank_timestamp: number }[],
 ): InlineKeyboard {
-  const keyboard: InlineKeyboard = candidates.map((c) => [
-    {
-      text: `✅ تایید با تراکنش ${formatTehranTime(new Date(c.bank_timestamp))}`,
-      callback_data: encodeRef('apv', c.id),
-    },
-  ]);
-  keyboard.push([{ text: '⚠️ تایید بدون تراکنش', callback_data: encode('apx') }]);
-  keyboard.push([{ text: '❌ رد کردن', callback_data: encode('rej') }]);
-  keyboard.push([{ text: 'بازگشت ⬅️', callback_data: encode('clm') }]);
-  return keyboard;
+  return withChrome(
+    candidates.map((c) => [
+      {
+        text: TEXTS_NOW.render('ADMIN_APPROVE_WITH_TX', {
+          when: formatTehranTime(new Date(c.bank_timestamp)),
+        }),
+        callback_data: encodeRef('apv', c.id),
+      },
+    ]),
+    'adminClaimDetail',
+  );
 }
 
 export function confirmMenu(): InlineKeyboard {
-  return [
-    [{ text: 'بله، انجام شود', callback_data: encode('cnf') }],
-    [{ text: 'بازگشت ⬅️', callback_data: encode('clm') }],
-  ];
+  return buildMenu('adminConfirm', layout('adminConfirm'));
 }
 
 export function claimApproved(amountIrr: number): string {
@@ -576,7 +608,20 @@ export function referralScreen(
 }
 
 export function referralMenu(): InlineKeyboard {
-  return [[{ text: BACK_TO_MENU, callback_data: encode('menu') }]];
+  return buildMenu('referral', layout('referral'));
+}
+
+/**
+ * The keyboard under a question the bot has asked.
+ *
+ * One button, and where it goes depends on what was asked — back to the plan
+ * whose discount code was being typed, back to the service being extended, back
+ * to the wallet. Six screens built this by hand, four of them quoting «بازگشت
+ * ⬅️» letter for letter and two reading a shared constant, which is what a
+ * half-finished extraction looks like.
+ */
+export function promptMenu(back: string): InlineKeyboard {
+  return buildMenu('prompt', layout('prompt'), { target: () => back });
 }
 
 /**
@@ -695,25 +740,15 @@ export function checkoutMenu(
   orderId: number,
   wallet?: { balanceIrr: number; totalIrr: number },
 ): InlineKeyboard {
-  const keyboard: InlineKeyboard = [];
-  if (wallet && wallet.balanceIrr >= wallet.totalIrr) {
-    keyboard.push([
-      {
-        text: `💰 پرداخت از کیف پول (${formatToman(wallet.balanceIrr)})`,
-        callback_data: encode('wpay', orderId),
-      },
-    ]);
-  } else if (wallet && wallet.balanceIrr > 0) {
-    keyboard.push([
-      {
-        text: `💰 شارژ کیف پول (موجودی: ${formatToman(wallet.balanceIrr)})`,
-        callback_data: encode('tpo', orderId),
-      },
-    ]);
-  }
-  keyboard.push([{ text: '✅ پرداخت کردم', callback_data: encode('paid', orderId) }]);
-  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
-  return keyboard;
+  const covers = wallet !== undefined && wallet.balanceIrr >= wallet.totalIrr;
+  const someBalance = wallet !== undefined && wallet.balanceIrr > 0;
+  return buildMenu('checkout', layout('checkout'), {
+    applies: (action) =>
+      action === 'wpay' ? covers : action === 'tpo' ? someBalance && !covers : true,
+    target: (action) =>
+      action === 'menu' ? encode('menu') : encode(action as 'paid', orderId),
+    values: { balance: wallet ? formatToman(wallet.balanceIrr) : '' },
+  });
 }
 
 export function paidRecorded(publicId: string): string {
@@ -754,7 +789,7 @@ export function paymentConfirmed(publicId: string): string {
 }
 
 export function afterPaidMenu(): InlineKeyboard {
-  return [[{ text: BACK_TO_MENU, callback_data: encode('menu') }]];
+  return buildMenu('afterPaid', layout('afterPaid'));
 }
 
 /**
@@ -955,20 +990,18 @@ export function myServicesMenu(
   page: number,
   pages: number,
 ): InlineKeyboard {
-  const keyboard: InlineKeyboard = services.map((service) => [
-    {
-      text: `${STATE_GLYPH[serviceState(service, now)]} ${shortName(service.plan_name_at_sale)}`,
-      callback_data: encode('sub', service.id),
-    },
-  ]);
-  if (pages > 1) {
-    const paging: InlineKeyboard[number] = [];
-    if (page > 1) paging.push({ text: '« قبلی', callback_data: encode('mine', page - 1) });
-    if (page < pages) paging.push({ text: 'بعدی »', callback_data: encode('mine', page + 1) });
-    keyboard.push(paging);
-  }
-  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
-  return keyboard;
+  return withChrome(
+    [
+      ...services.map((service) => [
+        {
+          text: `${STATE_GLYPH[serviceState(service, now)]} ${shortName(service.plan_name_at_sale)}`,
+          callback_data: encode('sub', service.id),
+        },
+      ]),
+      ...paging('mine', page, pages),
+    ],
+    'myServices',
+  );
 }
 
 /** Ten cells: one per ten percent, and short enough not to wrap on a phone. */
@@ -1094,32 +1127,29 @@ export function serviceDetail(service: ServiceView, now: number): string {
  * customers in production one extra tap.
  */
 export function serviceDetailMenu(actions?: ServiceActions | null): InlineKeyboard {
-  const keyboard: InlineKeyboard = [];
-  if (actions) {
-    const addons: InlineKeyboard[number] = [];
-    // Each button appears only if that panel has a price for it. The admin sets
-    // them per panel, and one panel has extending switched off entirely.
-    if (actions.volumeIrrPerGb !== null) {
-      addons.push({ text: '➕ حجم اضافه', callback_data: encode('xv', actions.id) });
-    }
-    if (actions.timeIrrPerDay !== null) {
-      addons.push({ text: '⏳ زمان اضافه', callback_data: encode('xt', actions.id) });
-    }
-    if (addons.length > 0) keyboard.push(addons);
-    keyboard.push([
-      { text: '🔄 تغییر لینک اشتراک', callback_data: encode('rvk', actions.id) },
-    ]);
-    keyboard.push([
-      actions.disabled
-        ? { text: '💡 روشن کردن سرویس', callback_data: encode('on', actions.id) }
-        : { text: '⛔ خاموش کردن سرویس', callback_data: encode('off', actions.id) },
-    ]);
-  }
-  keyboard.push([
-    { text: 'بازگشت به سرویس‌ها ⬅️', callback_data: encode('mine') },
-    { text: BACK_TO_MENU, callback_data: encode('menu') },
-  ]);
-  return keyboard;
+  return buildMenu('serviceDetail', layout('serviceDetail'), {
+    // Each panel button appears only if that panel can actually do it: the shop
+    // prices the add-ons per panel, and one panel has extending switched off
+    // entirely. A service no panel can be asked about gets none of them.
+    applies: (action) => {
+      switch (action) {
+        case 'xv':
+          return actions != null && actions.volumeIrrPerGb !== null;
+        case 'xt':
+          return actions != null && actions.timeIrrPerDay !== null;
+        case 'rvk':
+          return actions != null;
+        case 'off':
+          return actions != null && !actions.disabled;
+        case 'on':
+          return actions != null && actions.disabled;
+        default:
+          return true;
+      }
+    },
+    target: (action) =>
+      action === 'mine' || action === 'menu' ? action : encode(action as 'rvk', actions!.id),
+  });
 }
 
 /**
@@ -1239,10 +1269,9 @@ export function addonApplied(
 }
 
 export function confirmRevokeMenu(subscriptionId: number): InlineKeyboard {
-  return [
-    [{ text: '✅ بله، لینک را عوض کن', callback_data: encode('rvk2', subscriptionId) }],
-    [{ text: 'بازگشت ⬅️', callback_data: encode('sub', subscriptionId) }],
-  ];
+  return buildMenu('revokeConfirm', layout('revokeConfirm'), {
+    target: (action) => encode(action as 'rvk2', subscriptionId),
+  });
 }
 
 export function linkReplaced(subscriptionUrl: string): string {
@@ -1280,20 +1309,18 @@ export function renewMenu(
   page: number,
   pages: number,
 ): InlineKeyboard {
-  const keyboard: InlineKeyboard = services.map((service) => [
-    {
-      text: `${STATE_GLYPH[serviceState(service, now)]} ${shortName(service.plan_name_at_sale)}`,
-      callback_data: encode('rnw', service.id),
-    },
-  ]);
-  if (pages > 1) {
-    const paging: InlineKeyboard[number] = [];
-    if (page > 1) paging.push({ text: '« قبلی', callback_data: encode('renew', page - 1) });
-    if (page < pages) paging.push({ text: 'بعدی »', callback_data: encode('renew', page + 1) });
-    keyboard.push(paging);
-  }
-  keyboard.push([{ text: BACK_TO_MENU, callback_data: encode('menu') }]);
-  return keyboard;
+  return withChrome(
+    [
+      ...services.map((service) => [
+        {
+          text: `${STATE_GLYPH[serviceState(service, now)]} ${shortName(service.plan_name_at_sale)}`,
+          callback_data: encode('rnw', service.id),
+        },
+      ]),
+      ...paging('renew', page, pages),
+    ],
+    'renewList',
+  );
 }
 
 /**
@@ -1364,16 +1391,13 @@ export function renewPlanMenu(
       },
     ];
   });
-  keyboard.push([
-    heldCode
-      ? { text: `🏷 برداشتن کد «${heldCode}»`, callback_data: encode('dxr', subscriptionId) }
-      : { text: '🏷 کد تخفیف دارم', callback_data: encode('dsr', subscriptionId) },
-  ]);
-  keyboard.push([
-    { text: 'بازگشت به سرویس‌ها ⬅️', callback_data: encode('renew') },
-    { text: BACK_TO_MENU, callback_data: encode('menu') },
-  ]);
-  return keyboard;
+  return withChrome(keyboard, 'renewPlans', {
+    applies: (action) =>
+      action === 'dxr' ? heldCode != null : action === 'dsr' ? heldCode == null : true,
+    target: (action) =>
+      action === 'renew' || action === 'menu' ? action : encode(action as 'dsr', subscriptionId),
+    values: { code: heldCode ?? '' },
+  });
 }
 
 /** The checkout screen for a renewal — same money, different opening lines. */
@@ -1560,11 +1584,7 @@ export interface WalletEntryView {
 }
 
 export function walletMenu(): InlineKeyboard {
-  return [
-    [{ text: '💰 افزایش موجودی', callback_data: encode('top') }],
-    [{ text: '🎁 کد هدیه', callback_data: encode('gft') }],
-    [{ text: BACK_TO_MENU, callback_data: encode('menu') }],
-  ];
+  return buildMenu('wallet', layout('wallet'));
 }
 
 export function chooseTopupAmount(minIrr: number, maxIrr: number): string {
@@ -1593,8 +1613,7 @@ export function topupMenu(amountsIrr: readonly number[]): InlineKeyboard {
     }));
     keyboard.push(row);
   }
-  keyboard.push([{ text: '🏦 کیف پول', callback_data: encode('wal') }]);
-  return keyboard;
+  return withChrome(keyboard, 'topup');
 }
 
 /** The card screen for a deposit — same money, no service being bought. */

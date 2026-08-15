@@ -25,11 +25,13 @@ import type { D1Database } from '@shikoo/database';
 import {
   checkLayout,
   checkOverride,
-  DEFAULT_LAYOUT,
+  DEFAULT_LAYOUTS,
   isTextKey,
   MAX_LABEL_LENGTH,
   MAX_TEXT_LENGTH,
-  MENU_ACTIONS,
+  isMenuId,
+  MENU_IDS,
+  MENUS,
   SCREEN_IDS,
   SCREENS,
   TEXT_KEYS,
@@ -84,6 +86,16 @@ function layoutProblem(problem: NonNullable<ReturnType<typeof checkLayout>>): st
   switch (problem.kind) {
     case 'EMPTY':
       return 'کیبورد نمی‌تواند بدون دکمه باشد.';
+    case 'UNKNOWN_MENU':
+      return 'چنین صفحه‌ای در ربات وجود ندارد.';
+    case 'REQUIRED_MISSING':
+      return `بدون این دکمه‌ها صفحه بن‌بست می‌شود و مشتری راهی ندارد: ${problem.actions.join('، ')}`;
+    case 'REQUIRED_HIDDEN':
+      return `این دکمه‌ها را می‌شود تغییر نام داد و جابه‌جا کرد، ولی نمی‌شود پنهان کرد: ${problem.actions.join('، ')}`;
+    case 'LABEL_MISSING_PLACEHOLDER':
+      return `عنوان دکمهٔ «${problem.action}» باید ${problem.names.map((n) => `{${n}}`).join('، ')} را داشته باشد، وگرنه مقدارش به مشتری نمی‌رسد.`;
+    case 'LABEL_UNKNOWN_PLACEHOLDER':
+      return `${problem.names.map((n) => `{${n}}`).join('، ')} برای دکمهٔ «${problem.action}» معنا ندارد و عیناً روی دکمه نوشته می‌شود.`;
     case 'NOTHING_VISIBLE':
       return 'دست‌کم یک دکمه باید برای مشتری قابل دیدن باشد، وگرنه منو راه خروج ندارد.';
     case 'UNKNOWN_ACTION':
@@ -188,21 +200,31 @@ export function registerBotContentRoutes(
 
   // --- چیدمان کیبورد -------------------------------------------------------
 
-  app.get('/api/v1/admin/bot-keyboard', async (c) => {
+  app.get('/api/v1/admin/bot-keyboard/:menu', async (c) => {
+    const menu = c.req.param('menu');
+    if (!isMenuId(menu)) return c.json({ ok: false, error: 'unknown_menu' }, 404);
+
     const rows = await c.env.DB.prepare(
       `SELECT action, label, row_index, col_index, visible FROM bot_keyboard_buttons
+        WHERE menu = ?1
         ORDER BY row_index, col_index`,
-    ).all<{
-      action: string;
-      label: string;
-      row_index: number;
-      col_index: number;
-      visible: boolean;
-    }>();
+    )
+      .bind(menu)
+      .all<{
+        action: string;
+        label: string;
+        row_index: number;
+        col_index: number;
+        visible: boolean;
+      }>();
     const saved = rows.results ?? [];
 
     return c.json({
       ok: true,
+      menu,
+      // Which keyboards exist, so the panel's selector is the bot's own list
+      // and cannot go stale when a screen is added.
+      menus: MENU_IDS.map((id) => ({ id, label: MENUS[id].label, hint: MENUS[id].hint })),
       customised: saved.length > 0,
       buttons:
         saved.length > 0
@@ -213,44 +235,48 @@ export function registerBotContentRoutes(
               colIndex: Number(b.col_index),
               visible: b.visible,
             }))
-          : DEFAULT_LAYOUT,
-      // The palette: everything the bot can dispatch, so the admin can add back
-      // a button they removed.
-      actions: MENU_ACTIONS,
+          : DEFAULT_LAYOUTS[menu],
+      // The palette: everything this screen can carry, so the admin can add
+      // back a button they removed.
+      actions: MENUS[menu].buttons,
       maxLabelLength: MAX_LABEL_LENGTH,
     });
   });
 
-  app.post('/api/v1/admin/bot-keyboard', async (c) => {
+  app.post('/api/v1/admin/bot-keyboard/:menu', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const menu = c.req.param('menu');
+    if (!isMenuId(menu)) return c.json({ ok: false, error: 'unknown_menu' }, 404);
 
     const parsed = LayoutBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const buttons = parsed.data.buttons as ButtonPlacement[];
 
-    const problem = checkLayout(buttons);
+    const problem = checkLayout(menu, buttons);
     if (problem) {
       return c.json({ ok: false, error: 'invalid_layout', detail: layoutProblem(problem) }, 400);
     }
 
-    // Whole-layout replacement in one transaction: there is no moment at which
-    // the bot could read half of it.
+    // Whole-layout replacement for THIS keyboard in one transaction: there is
+    // no moment at which the bot could read half of it, and no moment at which
+    // another screen's buttons are missing.
     const statements = [
-      c.env.DB.prepare(`DELETE FROM bot_keyboard_buttons`),
+      c.env.DB.prepare(`DELETE FROM bot_keyboard_buttons WHERE menu = ?1`).bind(menu),
       ...buttons.map((b) =>
         c.env.DB
           .prepare(
             `INSERT INTO bot_keyboard_buttons
-               (action, label, row_index, col_index, visible, updated_by)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+               (menu, action, label, row_index, col_index, visible, updated_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
           )
-          .bind(b.action, b.label, b.rowIndex, b.colIndex, b.visible, ident.email),
+          .bind(menu, b.action, b.label, b.rowIndex, b.colIndex, b.visible, ident.email),
       ),
     ];
     await c.env.DB.batch(statements);
 
-    await audit(c.env.DB, ident, 'bot_keyboard.updated', 'BOT_KEYBOARD', 'main', null, {
+    await audit(c.env.DB, ident, 'bot_keyboard.updated', 'BOT_KEYBOARD', menu, null, {
       buttons: buttons.map((b) => ({
         action: b.action,
         label: b.label,
@@ -263,14 +289,17 @@ export function registerBotContentRoutes(
     return c.json({ ok: true });
   });
 
-  app.post('/api/v1/admin/bot-keyboard/reset', async (c) => {
+  app.post('/api/v1/admin/bot-keyboard/:menu/reset', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
 
-    // Emptying the table is the reset: the bot reads "no rows" as "use the
-    // layout the code ships".
-    await c.env.DB.prepare(`DELETE FROM bot_keyboard_buttons`).run();
-    await audit(c.env.DB, ident, 'bot_keyboard.reset', 'BOT_KEYBOARD', 'main', null, null, null);
+    const menu = c.req.param('menu');
+    if (!isMenuId(menu)) return c.json({ ok: false, error: 'unknown_menu' }, 404);
+
+    // Emptying this keyboard's rows is the reset: the bot reads "no rows for
+    // this menu" as "use the layout the code ships".
+    await c.env.DB.prepare(`DELETE FROM bot_keyboard_buttons WHERE menu = ?1`).bind(menu).run();
+    await audit(c.env.DB, ident, 'bot_keyboard.reset', 'BOT_KEYBOARD', menu, null, null, null);
     return c.json({ ok: true });
   });
 }

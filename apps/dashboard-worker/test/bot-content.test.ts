@@ -29,9 +29,9 @@ async function saveText(key: string, value: string, email = ADMIN) {
   );
 }
 
-async function saveLayout(buttons: unknown, email = ADMIN) {
+async function saveLayout(buttons: unknown, email = ADMIN, menu = 'main') {
   return app.request(
-    '/api/v1/admin/bot-keyboard',
+    `/api/v1/admin/bot-keyboard/${menu}`,
     { method: 'POST', body: JSON.stringify({ buttons }) },
     envAs(email),
   );
@@ -45,9 +45,10 @@ async function textRow(key: string) {
 
 async function layoutRows() {
   const rows = await baseEnv.DB.prepare(
-    `SELECT action, label, row_index, col_index, visible FROM bot_keyboard_buttons
-      ORDER BY row_index, col_index`,
+    `SELECT menu, action, label, row_index, col_index, visible FROM bot_keyboard_buttons
+      ORDER BY menu, row_index, col_index`,
   ).all<{
+    menu: string;
     action: string;
     label: string;
     row_index: number;
@@ -166,7 +167,7 @@ describe('the keyboard', () => {
   ];
 
   it('returns the default layout while nothing is saved', async () => {
-    const res = await app.request('/api/v1/admin/bot-keyboard', {}, envAs(ADMIN));
+    const res = await app.request('/api/v1/admin/bot-keyboard/main', {}, envAs(ADMIN));
     const body = (await res.json()) as {
       customised: boolean;
       buttons: Array<{ action: string }>;
@@ -220,7 +221,7 @@ describe('the keyboard', () => {
   it('resets by emptying the table', async () => {
     await saveLayout(valid);
     const res = await app.request(
-      '/api/v1/admin/bot-keyboard/reset',
+      '/api/v1/admin/bot-keyboard/main/reset',
       { method: 'POST' },
       envAs(ADMIN),
     );
@@ -229,7 +230,7 @@ describe('the keyboard', () => {
     // later release reaches a shop that reset.
     expect(await layoutRows()).toHaveLength(0);
 
-    const after = await app.request('/api/v1/admin/bot-keyboard', {}, envAs(ADMIN));
+    const after = await app.request('/api/v1/admin/bot-keyboard/main', {}, envAs(ADMIN));
     expect(((await after.json()) as { customised: boolean }).customised).toBe(false);
   });
 

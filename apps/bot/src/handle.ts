@@ -570,7 +570,7 @@ async function handleRenewalCode(
   if (!check.ok) {
     return answer(
       menu.DISCOUNT_REFUSED[check.reason] ?? menu.DISCOUNT_REFUSED['UNKNOWN_CODE']!,
-      [[{ text: 'بازگشت ⬅️', callback_data: encode('rnw', subscriptionId) }]],
+      menu.promptMenu(encode('rnw', subscriptionId)),
     );
   }
   await ask(tx, user.id, 'coder:held', { subscriptionId, code: check.code.code });
@@ -652,9 +652,7 @@ async function handleResellerRequest(
   const result = await applyForReseller(tx, user.id, user.is_reseller, message.text!);
   if (result === 'EMPTY') {
     // The question stays open — they can simply type again.
-    return said(menu.RESELLER_REQUEST_EMPTY, [
-      [{ text: menu.BACK_TO_MENU_LABEL, callback_data: encode('menu') }],
-    ]);
+    return said(menu.RESELLER_REQUEST_EMPTY, menu.promptMenu(encode('menu')));
   }
   await clearSession(tx, user.id);
   const answer =
@@ -1041,9 +1039,7 @@ async function handleCallback(
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
       await ask(tx, user.id, 'code', { planId: plan.planId });
-      return screen(menu.ASK_DISCOUNT_CODE, [
-        [{ text: 'بازگشت ⬅️', callback_data: encode('plan', plan.planId) }],
-      ]);
+      return screen(menu.ASK_DISCOUNT_CODE, menu.promptMenu(encode('plan', plan.planId)));
     }
 
     case 'dsx': {
@@ -1060,9 +1056,7 @@ async function handleCallback(
 
     case 'gft': {
       await ask(tx, user.id, 'gift', {});
-      return screen(menu.ASK_GIFT_CODE, [
-        [{ text: 'بازگشت ⬅️', callback_data: encode('wal') }],
-      ]);
+      return screen(menu.ASK_GIFT_CODE, menu.promptMenu(encode('wal')));
     }
 
     // --- the admin panel -----------------------------------------------
@@ -1142,9 +1136,7 @@ async function handleCallback(
         return screen(menu.RESELLER_REQUEST_OPEN, menu.mainMenu(false));
       }
       await ask(tx, user.id, 'agent', {});
-      return screen(menu.ASK_RESELLER_REQUEST, [
-        [{ text: menu.BACK_TO_MENU_LABEL, callback_data: encode('menu') }],
-      ]);
+      return screen(menu.ASK_RESELLER_REQUEST, menu.promptMenu(encode('menu')));
     }
 
     case 'order': {
@@ -1347,9 +1339,7 @@ async function handleCallback(
       const service = await renewableForUserById(tx, user.id, action.id);
       if (!service) return screen(menu.RENEWAL_GONE, menu.renewMenu([], Date.now(), 1, 1));
       await ask(tx, user.id, 'coder', { subscriptionId: service.id });
-      return screen(menu.ASK_DISCOUNT_CODE, [
-        [{ text: 'بازگشت ⬅️', callback_data: encode('rnw', service.id) }],
-      ]);
+      return screen(menu.ASK_DISCOUNT_CODE, menu.promptMenu(encode('rnw', service.id)));
     }
 
     case 'dxr': {

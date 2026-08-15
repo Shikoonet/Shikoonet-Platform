@@ -189,8 +189,8 @@ describe('the renew button is quoted from the live keyboard', () => {
     for (const b of DEFAULT_LAYOUT) {
       await db
         .prepare(
-          `INSERT INTO bot_keyboard_buttons (action, label, row_index, col_index, visible)
-           VALUES (?1, ?2, ?3, ?4, ?5)`,
+          `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
+           VALUES ('main', ?1, ?2, ?3, ?4, ?5)`,
         )
         .bind(
           b.action,
@@ -233,8 +233,8 @@ describe('the renew button is quoted from the live keyboard', () => {
     for (const b of DEFAULT_LAYOUT.filter((x) => x.action !== 'renew')) {
       await db
         .prepare(
-          `INSERT INTO bot_keyboard_buttons (action, label, row_index, col_index, visible)
-           VALUES (?1, ?2, ?3, ?4, ?5)`,
+          `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
+           VALUES ('main', ?1, ?2, ?3, ?4, ?5)`,
         )
         .bind(b.action, b.label, b.rowIndex, b.colIndex, b.visible)
         .run();

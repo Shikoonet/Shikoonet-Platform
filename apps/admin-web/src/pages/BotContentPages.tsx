@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react';
 import {
   api,
   ApiError,
+  type BotMenu,
   type BotScreen,
   type BotTextRow,
   type KeyboardButton,
@@ -260,6 +261,8 @@ export function BotTextsPage() {
 }
 
 export function KeyboardPage() {
+  const [menu, setMenu] = useState('main');
+  const [menus, setMenus] = useState<BotMenu[]>([]);
   const [buttons, setButtons] = useState<KeyboardButton[]>([]);
   const [actions, setActions] = useState<MenuActionInfo[]>([]);
   const [customised, setCustomised] = useState(false);
@@ -271,9 +274,10 @@ export function KeyboardPage() {
   async function load() {
     setErr(null);
     try {
-      const d = await api.botKeyboard();
+      const d = await api.botKeyboard(menu);
       setButtons(d.buttons);
       setActions(d.actions);
+      setMenus(d.menus);
       setCustomised(d.customised);
       setMaxLabel(d.maxLabelLength);
     } catch (e) {
@@ -281,9 +285,12 @@ export function KeyboardPage() {
     }
   }
 
+  // Reloading on `menu` is the whole navigation: each keyboard is its own saved
+  // layout, and switching screens must not carry the previous one's unsaved
+  // edits across.
   useEffect(() => {
     void load();
-  }, []);
+  }, [menu]);
 
   function update(action: string, patch: Partial<KeyboardButton>) {
     setButtons((bs) => bs.map((b) => (b.action === action ? { ...b, ...patch } : b)));
@@ -310,7 +317,7 @@ export function KeyboardPage() {
     setErr(null);
     setDone(null);
     try {
-      await api.saveBotKeyboard(buttons);
+      await api.saveBotKeyboard(menu, buttons);
       setDone('کیبورد ذخیره شد. ربات تا نیم دقیقهٔ دیگر آن را نشان می‌دهد.');
       await load();
     } catch (e) {
@@ -326,7 +333,7 @@ export function KeyboardPage() {
     setErr(null);
     setDone(null);
     try {
-      await api.resetBotKeyboard();
+      await api.resetBotKeyboard(menu);
       setDone('به چیدمان پیش‌فرض برگشت.');
       await load();
     } catch (e) {
@@ -347,7 +354,8 @@ export function KeyboardPage() {
         <div>
           <div className="page-head__title">چیدمان کیبورد</div>
           <div className="page-head__sub">
-            منوی اصلی ربات · {customised ? 'تغییر داده شده' : 'پیش‌فرض'}
+            {menus.find((m) => m.id === menu)?.label ?? menu} ·{' '}
+            {customised ? 'تغییر داده شده' : 'پیش‌فرض'}
           </div>
         </div>
         <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void save()}>
@@ -359,9 +367,34 @@ export function KeyboardPage() {
         {err && <div className="alert alert-error">{err}</div>}
         {done && <div className="alert alert-info">{done}</div>}
 
+        <div className="filters">
+          <div>
+            <label className="form-label" htmlFor="keyboard-menu">
+              صفحه
+            </label>
+            <select
+              id="keyboard-menu"
+              className="form-control"
+              value={menu}
+              onChange={(e) => setMenu(e.target.value)}
+            >
+              {menus.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <p className="muted" style={{ marginBlockEnd: 0 }}>
+              {menus.find((m) => m.id === menu)?.hint ?? ''}
+            </p>
+          </div>
+        </div>
+
         <h4>پیش‌نمایش</h4>
         <p className="muted" style={{ marginBlockStart: 0 }}>
-          همان‌طور که مشتری می‌بیند. دکمهٔ «درخواست نمایندگی» به نماینده‌ها نشان داده نمی‌شود.
+          ردیف‌هایی که از دیتابیس می‌آیند — پلن‌ها، سرویس‌ها، تراکنش‌ها — همیشه بالای این دکمه‌ها
+          می‌نشینند و این‌جا دیده نمی‌شوند. دکمه‌های «شرطی» فقط وقتی کشیده می‌شوند که ربات بتواند
+          کارشان را انجام دهد؛ وگرنه حذف می‌شوند و جایشان بسته می‌شود.
         </p>
         <div className="preview-keyboard">
           {rows.map((r) => {
@@ -402,6 +435,17 @@ export function KeyboardPage() {
                     <td>
                       <div className="ltr">{b.action}</div>
                       <div className="page-head__sub">{info?.hint ?? '—'}</div>
+                      {info?.required && <span className="badge">لازم</span>}{' '}
+                      {info?.conditional && <span className="badge">شرطی</span>}
+                      {info?.placeholders && info.placeholders.length > 0 && (
+                        <div className="page-head__sub">
+                          عنوانش باید{' '}
+                          <span className="ltr">
+                            {info.placeholders.map((p) => `{${p}}`).join('، ')}
+                          </span>{' '}
+                          را داشته باشد.
+                        </div>
+                      )}
                     </td>
                     <td>
                       <input
@@ -440,13 +484,18 @@ export function KeyboardPage() {
                       />
                     </td>
                     <td>
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => remove(b.action)}
-                      >
-                        حذف
-                      </button>
+                      {/* A required button has no delete: the server refuses the
+                          save anyway, and offering the click is a promise the
+                          screen cannot keep. */}
+                      {!info?.required && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => remove(b.action)}
+                        >
+                          حذف
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );

@@ -90,6 +90,7 @@ export type ScreenId =
   | 'referral'
   | 'reseller'
   | 'warnings'
+  | 'paging'
   | 'adminHome'
   | 'adminClaims'
   | 'adminClaimDetail'
@@ -118,6 +119,7 @@ export const SCREENS: Record<ScreenId, string> = {
   referral: 'زیرمجموعه‌گیری',
   reseller: 'نمایندگی',
   warnings: 'هشدارهای خودکار',
+  paging: 'دکمه‌های صفحه‌بندی',
   adminHome: 'پنل ادمین — خانه',
   adminClaims: 'پنل ادمین — فهرست پرداخت‌ها',
   adminClaimDetail: 'پنل ادمین — یک پرداخت',
@@ -169,12 +171,10 @@ export const TEXTS = {
     screen: 'welcome',
     hint: 'بخشی که هنوز ساخته نشده',
   },
-  BACK_TO_MENU_LABEL: {
-    default: 'بازگشت به منو ⬅️',
-    placeholders: [],
-    screen: 'welcome',
-    hint: 'دکمهٔ بازگشت در همهٔ صفحه‌ها',
-  },
+  // `BACK_TO_MENU_LABEL` used to live here. It is a button, and buttons are now
+  // in `botKeyboard.ts` — one per screen, so a shop can word the way back out
+  // of the invoice differently from the way back out of the wallet. Two
+  // registries owning one label is the drift this project keeps paying for.
 
   // --- انتخاب لوکیشن -------------------------------------------------------
   CHOOSE_PANEL: {
@@ -1363,6 +1363,29 @@ export const TEXTS = {
     placeholders: ['remaining'],
     screen: 'warnings',
     hint: 'حجم باقی‌مانده',
+  },
+
+  // --- صفحه‌بندی -------------------------------------------------------------
+  // Buttons, but here rather than in the keyboard registry: «قبلی» and «بعدی»
+  // are one callback with a different page number, so they cannot be two rows
+  // in a table keyed by action. Their wording is still the shop's.
+  ADMIN_APPROVE_WITH_TX: {
+    default: '✅ تایید با تراکنش {when}',
+    placeholders: ['when'],
+    screen: 'adminClaimDetail',
+    hint: 'یک دکمه به‌ازای هر تراکنش بانکی نامزد — ساعتش تهران است',
+  },
+  PAGING_PREV: {
+    default: '« قبلی',
+    placeholders: [],
+    screen: 'paging',
+    hint: 'دکمهٔ صفحهٔ قبل در فهرست‌های چندصفحه‌ای',
+  },
+  PAGING_NEXT: {
+    default: 'بعدی »',
+    placeholders: [],
+    screen: 'paging',
+    hint: 'دکمهٔ صفحهٔ بعد در فهرست‌های چندصفحه‌ای',
   },
   WARN_SERVICE: {
     default: '🔐 {service}',

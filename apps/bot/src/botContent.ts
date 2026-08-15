@@ -25,20 +25,22 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { DEFAULT_LAYOUT, type ButtonPlacement } from './keyboard.js';
+import { DEFAULT_LAYOUTS, isMenuId, type ButtonPlacement, type MenuId } from './keyboard.js';
 import { Texts } from '@shikoo/contracts';
 
 type Db = D1Database | D1DatabaseSession;
 
+export type Layouts = Record<MenuId, readonly ButtonPlacement[]>;
+
 export interface BotContent {
   texts: Texts;
-  layout: readonly ButtonPlacement[];
+  layouts: Layouts;
 }
 
 /** The content as the code ships it, for tests and for a failed read. */
 export const DEFAULT_CONTENT: BotContent = {
   texts: new Texts(),
-  layout: DEFAULT_LAYOUT,
+  layouts: DEFAULT_LAYOUTS,
 };
 
 export const CONTENT_CACHE_MS = 30_000;
@@ -46,6 +48,8 @@ export const CONTENT_CACHE_MS = 30_000;
 let cached: { at: number; content: BotContent } | null = null;
 /** Logged once per outage rather than once per update. */
 let warned = false;
+/** Whether either half of the current load fell back. */
+let failed = false;
 
 /** Drops the cache. For tests, and after an admin edit that must be seen now. */
 export function invalidateBotContent(): void {
@@ -61,48 +65,91 @@ async function readTexts(db: Db): Promise<Record<string, string>> {
   return Object.fromEntries((rows.results ?? []).map((r) => [r.key, r.value]));
 }
 
-async function readLayout(db: Db): Promise<readonly ButtonPlacement[]> {
+/**
+ * Every customised keyboard, in one query.
+ *
+ * Grouped in memory rather than asked for per screen: there are twenty menus
+ * and a shop customises one or two, so twenty round trips would be nineteen
+ * questions with the same answer.
+ *
+ * A menu absent from the result keeps the code's layout, and that is per menu,
+ * not all-or-nothing across the table — a shop that renamed one invoice button
+ * still gets a later release's improvements to every other screen.
+ */
+async function readLayouts(db: Db): Promise<Layouts> {
   const rows = await db
     .prepare(
-      `SELECT action, label, row_index, col_index, visible
+      `SELECT menu, action, label, row_index, col_index, visible
          FROM bot_keyboard_buttons
-        ORDER BY row_index, col_index`,
+        ORDER BY menu, row_index, col_index`,
     )
     .all<{
+      menu: string;
       action: string;
       label: string;
       row_index: number;
       col_index: number;
       visible: boolean;
     }>();
-  const buttons = rows.results ?? [];
-  // Empty means "not customised", not "a keyboard with no buttons" — the table
-  // holds a whole layout or nothing at all.
-  if (buttons.length === 0) return DEFAULT_LAYOUT;
-  return buttons.map((b) => ({
-    action: b.action,
-    label: b.label,
-    rowIndex: Number(b.row_index),
-    colIndex: Number(b.col_index),
-    visible: b.visible,
-  }));
+
+  const saved = new Map<MenuId, ButtonPlacement[]>();
+  for (const b of rows.results ?? []) {
+    // A row naming a menu this build does not have is skipped rather than
+    // guessed at. It can only come from a hand-written row or a screen removed
+    // by a later release, and neither is a keyboard to draw.
+    if (!isMenuId(b.menu)) continue;
+    const into = saved.get(b.menu) ?? [];
+    into.push({
+      action: b.action,
+      label: b.label,
+      rowIndex: Number(b.row_index),
+      colIndex: Number(b.col_index),
+      visible: b.visible,
+    });
+    saved.set(b.menu, into);
+  }
+
+  const layouts = { ...DEFAULT_LAYOUTS };
+  for (const [menu, buttons] of saved) layouts[menu] = buttons;
+  return layouts;
+}
+
+/**
+ * One half of the content, or the code's defaults for that half.
+ *
+ * Separately rather than around both, and the reason is a real failure: the two
+ * reads shared one `try`, so a migration that had not been applied yet made the
+ * keyboard query throw and took the wording down with it. The shop's texts were
+ * in the table, valid, and silently ignored — the worst shape of failure, since
+ * nothing on any screen says which half was lost.
+ */
+async function half<T>(what: string, read: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await read();
+  } catch (err) {
+    if (!warned) console.warn(`[bot] could not load ${what}, using defaults`, err);
+    failed = true;
+    return fallback;
+  }
 }
 
 export async function loadBotContent(db: Db, now = Date.now()): Promise<BotContent> {
   if (cached && now - cached.at < CONTENT_CACHE_MS) return cached.content;
-  try {
-    const [overrides, layout] = await Promise.all([readTexts(db), readLayout(db)]);
-    // `Texts` drops any override that fails its own check, so a row written by
-    // hand cannot reach a customer even though the API would have refused it.
-    const content: BotContent = { texts: new Texts(overrides), layout };
-    cached = { at: now, content };
-    warned = false;
+  failed = false;
+  const [overrides, layouts] = await Promise.all([
+    half('the bot texts', () => readTexts(db), {} as Record<string, string>),
+    half('the bot keyboards', () => readLayouts(db), DEFAULT_LAYOUTS as Layouts),
+  ]);
+  // `Texts` drops any override that fails its own check, so a row written by
+  // hand cannot reach a customer even though the API would have refused it.
+  const content: BotContent = { texts: new Texts(overrides), layouts };
+  // A failed read is not cached. Caching it would hold the defaults for the
+  // next thirty seconds after the database came back, for no gain.
+  if (failed) {
+    warned = true;
     return content;
-  } catch (err) {
-    if (!warned) {
-      warned = true;
-      console.warn('[bot] could not load editable content, using defaults', err);
-    }
-    return DEFAULT_CONTENT;
   }
+  cached = { at: now, content };
+  warned = false;
+  return content;
 }

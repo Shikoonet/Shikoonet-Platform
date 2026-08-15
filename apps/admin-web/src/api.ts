@@ -278,6 +278,19 @@ export interface MenuActionInfo {
   action: string;
   label: string;
   hint: string;
+  /** Cannot be removed or hidden — the screen is a dead end without it. */
+  required?: boolean;
+  /** The bot decides at draw time whether it applies at all. */
+  conditional?: boolean;
+  /** Slots the label must keep, e.g. `balance`. */
+  placeholders?: string[];
+}
+
+/** One keyboard the bot draws, as the panel's selector lists it. */
+export interface BotMenu {
+  id: string;
+  label: string;
+  hint: string;
 }
 
 /**
@@ -513,25 +526,27 @@ export const api = {
     });
   },
 
-  botKeyboard() {
+  botKeyboard(menu: string) {
     return req<{
       ok: boolean;
+      menu: string;
+      menus: BotMenu[];
       customised: boolean;
       buttons: KeyboardButton[];
       actions: MenuActionInfo[];
       maxLabelLength: number;
-    }>('/bot-keyboard');
+    }>(`/bot-keyboard/${menu}`);
   },
 
-  saveBotKeyboard(buttons: KeyboardButton[]) {
-    return req<{ ok: boolean }>('/bot-keyboard', {
+  saveBotKeyboard(menu: string, buttons: KeyboardButton[]) {
+    return req<{ ok: boolean }>(`/bot-keyboard/${menu}`, {
       method: 'POST',
       body: JSON.stringify({ buttons }),
     });
   },
 
-  resetBotKeyboard() {
-    return req<{ ok: boolean }>('/bot-keyboard/reset', { method: 'POST' });
+  resetBotKeyboard(menu: string) {
+    return req<{ ok: boolean }>(`/bot-keyboard/${menu}/reset`, { method: 'POST' });
   },
 
   overview() {

@@ -13,7 +13,15 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { assertSchema, db } from './helpers/env.js';
 import { handleUpdate } from '../src/handle.js';
 import { invalidateBotContent, loadBotContent, DEFAULT_CONTENT } from '../src/botContent.js';
-import { buildMainMenu, checkLayout, DEFAULT_LAYOUT, MENU_ACTIONS } from '../src/keyboard.js';
+import {
+  allMenuActions,
+  buildMainMenu,
+  checkLayout,
+  DEFAULT_LAYOUT,
+  DEFAULT_LAYOUTS,
+  MENU_IDS,
+  MENUS,
+} from '../src/keyboard.js';
 import { checkOverride, TEXTS, TEXT_KEYS, Texts, MAX_TEXT_LENGTH } from '@shikoo/contracts';
 import { decode } from '../src/callback.js';
 import * as menu from '../src/menu.js';
@@ -189,8 +197,8 @@ describe('the keyboard', () => {
       ['mine', 'سرویس‌ها', 2, 0, false],
     ] as const) {
       await db.prepare(
-        `INSERT INTO bot_keyboard_buttons (action, label, row_index, col_index, visible)
-         VALUES (?1, ?2, ?3, ?4, ?5)`,
+        `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
+         VALUES ('main', ?1, ?2, ?3, ?4, ?5)`,
       )
         .bind(action, label, row, col, visible)
         .run();
@@ -250,41 +258,58 @@ describe('layout validation', () => {
     { action: 'buy', label: 'خرید', rowIndex: 0, colIndex: 0, visible: true, ...over },
   ];
 
-  it('accepts the default layout', () => {
-    expect(checkLayout([...DEFAULT_LAYOUT])).toBeNull();
+  it('accepts every layout the code ships', () => {
+    for (const id of MENU_IDS) {
+      expect(checkLayout(id, [...DEFAULT_LAYOUTS[id]]), `menu ${id}`).toBeNull();
+    }
   });
 
   it('refuses a keyboard with nothing visible', () => {
     // A customer left on a screen with no button has no way forward and no way
     // back, and only an admin who realises what they did can fix it.
-    expect(checkLayout(ok({ visible: false }))).toEqual({ kind: 'NOTHING_VISIBLE' });
+    expect(checkLayout('main', ok({ visible: false }))).toEqual({ kind: 'NOTHING_VISIBLE' });
   });
 
   it('refuses one whose only visible button no customer sees', () => {
     // `agr` is hidden from resellers, so a layout of just `agr` is empty for
     // every reseller — a subtler version of the same trap.
     expect(
-      checkLayout([{ action: 'agr', label: 'نمایندگی', rowIndex: 0, colIndex: 0, visible: true }]),
+      checkLayout('main', [
+        { action: 'agr', label: 'نمایندگی', rowIndex: 0, colIndex: 0, visible: true },
+      ]),
     ).toEqual({ kind: 'NOTHING_VISIBLE' });
   });
 
   it('refuses an action the bot cannot dispatch', () => {
-    expect(checkLayout(ok({ action: 'nope' }))).toEqual({
+    expect(checkLayout('main', ok({ action: 'nope' }))).toEqual({
       kind: 'UNKNOWN_ACTION',
       actions: ['nope'],
     });
   });
 
+  it('refuses an action that belongs to a different screen', () => {
+    // `paid` is a real callback and a real button — on the invoice. On the main
+    // menu it would fire with no order behind it.
+    expect(checkLayout('main', ok({ action: 'paid' }))).toEqual({
+      kind: 'UNKNOWN_ACTION',
+      actions: ['paid'],
+    });
+  });
+
+  it('refuses a menu it has never heard of', () => {
+    expect(checkLayout('nosuchscreen', ok())).toEqual({ kind: 'UNKNOWN_MENU' });
+  });
+
   it('refuses the same button twice and the same cell twice', () => {
     expect(
-      checkLayout([
+      checkLayout('main', [
         { action: 'buy', label: 'a', rowIndex: 0, colIndex: 0, visible: true },
         { action: 'buy', label: 'b', rowIndex: 0, colIndex: 1, visible: true },
       ]),
     ).toEqual({ kind: 'DUPLICATE_ACTION', actions: ['buy'] });
 
     expect(
-      checkLayout([
+      checkLayout('main', [
         { action: 'buy', label: 'a', rowIndex: 0, colIndex: 0, visible: true },
         { action: 'wal', label: 'b', rowIndex: 0, colIndex: 0, visible: true },
       ]),
@@ -292,29 +317,39 @@ describe('layout validation', () => {
   });
 
   it('refuses an empty or over-long label', () => {
-    expect(checkLayout(ok({ label: '  ' }))).toEqual({ kind: 'LABEL_EMPTY', actions: ['buy'] });
-    expect(checkLayout(ok({ label: 'ا'.repeat(65) }))?.kind).toBe('LABEL_TOO_LONG');
+    expect(checkLayout('main', ok({ label: '  ' }))).toEqual({
+      kind: 'LABEL_EMPTY',
+      actions: ['buy'],
+    });
+    expect(checkLayout('main', ok({ label: 'ا'.repeat(65) }))?.kind).toBe('LABEL_TOO_LONG');
   });
 
   it('refuses an empty layout', () => {
-    expect(checkLayout([])).toEqual({ kind: 'EMPTY' });
+    expect(checkLayout('main', [])).toEqual({ kind: 'EMPTY' });
   });
 
   it('names only actions the bot can actually dispatch', () => {
-    // `MENU_ACTIONS` lives in `@shikoo/contracts`, which cannot import the
-    // bot's `CallbackAction` union — so the contract that used to be checked by
-    // the compiler is checked here instead. An action the palette offers and
+    // `MENUS` lives in `@shikoo/contracts`, which cannot import the bot's
+    // `CallbackAction` union — so the contract that used to be checked by the
+    // compiler is checked here instead. An action the palette offers and
     // `parseCallback` rejects is a button that draws and does nothing.
-    for (const { action } of MENU_ACTIONS) {
-      expect(decode(action), `menu action ${action}`).not.toBeNull();
+    for (const { menu: menuId, action } of allMenuActions()) {
+      // `back` is the one button whose destination the bot supplies, so there
+      // is nothing for `decode` to recognise.
+      if (action === 'back') continue;
+      expect(decode(action), `${menuId} → ${action}`).not.toBeNull();
     }
   });
 
-  it('offers every action the default layout uses', () => {
-    // The admin screen builds its palette from MENU_ACTIONS. An action in the
-    // default layout but missing from the palette would be a button the admin
-    // could delete and never add back.
-    const offered = new Set(MENU_ACTIONS.map((a) => a.action));
-    for (const b of DEFAULT_LAYOUT) expect(offered.has(b.action as never)).toBe(true);
+  it('offers every action its default layout uses', () => {
+    // The admin screen builds its palette from `MENUS`. An action in a default
+    // layout but missing from the palette would be a button the admin could
+    // delete and never add back.
+    for (const id of MENU_IDS) {
+      const offered = new Set(MENUS[id].buttons.map((b) => b.action));
+      for (const b of DEFAULT_LAYOUTS[id]) {
+        expect(offered.has(b.action as never), `${id} → ${b.action}`).toBe(true);
+      }
+    }
   });
 });
