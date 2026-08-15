@@ -159,6 +159,12 @@ export const TEXTS = {
     screen: 'welcome',
     hint: 'اولین پیام بعد از /start',
   },
+  SHOP_CLOSED: {
+    default: '🔧 فروشگاه موقتاً بسته است. لطفاً کمی بعد دوباره امتحان کنید.',
+    placeholders: [],
+    screen: 'welcome',
+    hint: 'تنها چیزی که مشتری می‌بیند وقتی `Bot_Status` خاموش است — ادمین‌ها می‌بینندش نمی‌شوند',
+  },
   MENU_TITLE: {
     default: 'منوی اصلی — چه کاری برایتان انجام دهم؟',
     placeholders: [],

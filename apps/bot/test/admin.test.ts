@@ -22,6 +22,23 @@ import { ensureCatalog, makeCustomer } from './helpers/shop.js';
 const NOW_MS = Date.UTC(2026, 7, 14, 9, 0, 0);
 const AMOUNT_IRR = 1_950_000;
 
+/**
+ * A fresh amount per claim, so a run cannot be poisoned by the run before it.
+ *
+ * The fixtures reuse Telegram ids — the counter restarts every run — and the
+ * account is derived from the id, so a second run against the same database met
+ * yesterday's claim and yesterday's transaction sitting on the same account for
+ * the same amount inside the same window. That is AMBIGUOUS_TRANSACTIONS doing
+ * its job, so «✅ تایید با این تراکنش» correctly disappeared and a test about
+ * PERMISSIONS failed for a reason that had nothing to do with permissions.
+ *
+ * Passing was conditional on somebody having re-seeded first. A test that is
+ * green only on a freshly seeded database is a test that goes red the day the
+ * suite is run twice.
+ */
+let nextAmount = 0;
+const uniqueAmountIrr = (): number => AMOUNT_IRR + ++nextAmount * 10;
+
 let nextId = 1;
 function ids(): { updateId: number; telegramId: number } {
   const n = nextId++ * 10;
@@ -75,8 +92,13 @@ async function makeAdmin(
 async function makeClaim(
   customerTelegramId: number,
   options: { withTransaction?: boolean; amountIrr?: number } = {},
-): Promise<{ claimId: string; transactionId: string | null; accountId: string }> {
-  const amount = options.amountIrr ?? AMOUNT_IRR;
+): Promise<{
+  claimId: string;
+  transactionId: string | null;
+  accountId: string;
+  amountIrr: number;
+}> {
+  const amount = options.amountIrr ?? uniqueAmountIrr();
   const accountId = `adm-acct-${customerTelegramId}`;
   await db
     .prepare(
@@ -101,7 +123,9 @@ async function makeClaim(
     .bind(claimId, `shikoo:${claimId.slice(0, 10)}`, String(customerTelegramId), amount, accountId, NOW_MS)
     .run();
 
-  if (!options.withTransaction) return { claimId, transactionId: null, accountId };
+  if (!options.withTransaction) {
+    return { claimId, transactionId: null, accountId, amountIrr: amount };
+  }
 
   const smsId = randomUUID();
   const txId = randomUUID();
@@ -129,7 +153,7 @@ async function makeClaim(
     )
     .bind(txId, smsId, amount, NOW_MS + 20_000, accountId)
     .run();
-  return { claimId, transactionId: txId, accountId };
+  return { claimId, transactionId: txId, accountId, amountIrr: amount };
 }
 
 async function auditRows(claimId: string) {
@@ -680,7 +704,7 @@ describe('approving a payment', () => {
             source_system, status, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 'MIRZABOT', 'PENDING', ?6, ?6)`,
       )
-      .bind(second, `shikoo:${second.slice(0, 10)}`, String(first), AMOUNT_IRR, one.accountId, NOW_MS)
+      .bind(second, `shikoo:${second.slice(0, 10)}`, String(first), one.amountIrr, one.accountId, NOW_MS)
       .run();
 
     await handleUpdate(db, press(updateId, telegramId, `clv:${one.claimId}`));

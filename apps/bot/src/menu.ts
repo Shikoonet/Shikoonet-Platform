@@ -91,6 +91,8 @@ const REASON_TEXT_KEY: Record<string, TextKey> = {
  * instead.
  */
 export let WELCOME = DEFAULT_TEXTS.raw('WELCOME');
+/** The only thing a customer is told while `Bot_Status` is off. */
+export let SHOP_CLOSED = DEFAULT_TEXTS.raw('SHOP_CLOSED');
 export let MENU_TITLE = DEFAULT_TEXTS.raw('MENU_TITLE');
 export let SOON = DEFAULT_TEXTS.raw('SOON');
 export let CHOOSE_PANEL = DEFAULT_TEXTS.raw('CHOOSE_PANEL');
@@ -247,6 +249,7 @@ export function applyContent(content: BotContent): void {
   TEXTS_NOW = t;
   LAYOUTS_NOW = content.layouts;
   WELCOME = t.raw('WELCOME');
+  SHOP_CLOSED = t.raw('SHOP_CLOSED');
   MENU_TITLE = t.raw('MENU_TITLE');
   SOON = t.raw('SOON');
   CHOOSE_PANEL = t.raw('CHOOSE_PANEL');

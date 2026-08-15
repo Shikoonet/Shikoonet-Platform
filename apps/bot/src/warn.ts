@@ -20,11 +20,19 @@
 
 import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
+import { loadShopSettings } from './settings.js';
 import type { Notification } from './settle.js';
 
-/** `setting.volumewarn` = 1, in bytes. */
+/**
+ * The thresholds when the settings cannot be read, in bytes and days.
+ *
+ * Production's own numbers, so a failed read warns exactly as the last release
+ * did. The live values are `setting.volumewarn` and `setting.daywarn` and they
+ * come from `loadShopSettings` — these two were plain constants until
+ * 2026-08-16, which meant an admin could move either number in the panel and
+ * the bot would keep warning on the old one with nothing looking broken.
+ */
 export const VOLUME_WARN_BYTES = 1024 ** 3;
-/** `setting.daywarn` = 2. */
 export const DAYS_WARN = 2;
 
 /**
@@ -55,6 +63,9 @@ export async function warnExpiringServices(
   db: D1Database,
   now: number = Date.now(),
 ): Promise<Notification[]> {
+  // Read once per sweep, like the commission in `settle.ts`: it is shop-wide,
+  // it is cached, and a sweep of fifty services should not ask fifty times.
+  const { warnDays, warnVolumeGb } = await loadShopSettings(db);
   const { results } = await db
     .prepare(
       // Only what is genuinely still running: expired and exhausted services are
@@ -96,7 +107,7 @@ export async function warnExpiringServices(
 
          LIMIT ?5`,
     )
-    .bind(now, DAYS_WARN, VOLUME_WARN_BYTES, 1024 ** 3, BATCH)
+    .bind(now, warnDays, warnVolumeGb * 1024 ** 3, 1024 ** 3, BATCH)
     .all<DueRow>();
 
   const notifications: Notification[] = [];

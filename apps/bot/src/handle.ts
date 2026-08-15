@@ -257,6 +257,25 @@ export async function handleUpdate(
       return { status: 'duplicate', replies: [] };
     }
 
+    // The shop's closed sign, before anything else reads a button.
+    //
+    // `setting.Bot_Status` has been switchable from the legacy admin panel for
+    // years and this bot sold straight through it. Here rather than per
+    // handler, because "closed" that a forged `callback_data` walks past is not
+    // closed — `index.php:405` guards the same single point.
+    //
+    // Admins are exempt, which is what makes it usable rather than a kill
+    // switch: the cutover window is an announced pause where the shop stops
+    // selling and the people running it still need to walk every screen.
+    //
+    // The update stays claimed. It really was seen, and re-fetching it would
+    // produce the same closed sign for ever.
+    const from = update.callback_query?.from ?? update.message?.from;
+    const chatId = update.callback_query?.message?.chat.id ?? update.message?.chat.id;
+    if (!SHOP.open && from && chatId !== undefined && !(await adminFor(tx, from.id))) {
+      return { status: 'processed', replies: [reply(chatId, menu.SHOP_CLOSED)] };
+    }
+
     if (update.callback_query) {
       return handleCallback(tx, update.callback_query, fetchImpl);
     }

@@ -21,8 +21,10 @@ import {
   DEFAULT_SHOP_SETTINGS,
   invalidateShopSettings,
   loadShopSettings,
+  SHOP_SETTING_KEYS,
 } from '../src/settings.js';
 import { topupNeededIrr, topupPresetsIrr } from '../src/wallet.js';
+import { warnExpiringServices } from '../src/warn.js';
 import * as menu from '../src/menu.js';
 
 let nextId = 0;
@@ -66,10 +68,18 @@ async function put(scope: string, key: string, value: string): Promise<void> {
   invalidateShopSettings();
 }
 
+/**
+ * Puts the shop back to "nothing configured".
+ *
+ * Driven off `SHOP_SETTING_KEYS`, the same list the loader reads from, so it
+ * cannot fall behind. The hand-written version cleared two scopes and one `bot`
+ * key; three more `bot` keys arrived later and their leftovers closed the shop
+ * for every describe block after the one that switched it off.
+ */
 async function clearSettings(): Promise<void> {
-  await db
-    .prepare(`DELETE FROM settings WHERE scope IN ('shop', 'pay') OR key = 'affiliatespercentage'`)
-    .run();
+  for (const [scope, key] of SHOP_SETTING_KEYS) {
+    await db.prepare(`DELETE FROM settings WHERE scope = ?1 AND key = ?2`).bind(scope, key).run();
+  }
   invalidateShopSettings();
 }
 
@@ -93,6 +103,28 @@ const SELLING_PANEL = {
 async function makeService(telegramId: number): Promise<void> {
   const userId = await makeCustomer(telegramId);
   const provider = await providerId('sim-vip');
+  // Priced here rather than assumed. This file used to read the add-on rates
+  // off whatever `addon.test.ts` had left on the shared `sim-vip` row, so
+  // «افزودن حجم» appeared only when that file happened to run first — and the
+  // assertion that the button EXISTS before the switch is turned off then fails
+  // for a reason that has nothing to do with the switch. A test that depends on
+  // another file's fixture is a test that passes by luck.
+  await db
+    .prepare(
+      `UPDATE provisioning_providers
+          SET base_url = coalesce(base_url, 'https://panel.test'),
+              kind = 'pasarguard',
+              config = coalesce(config, '{}'::jsonb) || ?2::jsonb
+        WHERE id = ?1`,
+    )
+    .bind(
+      provider,
+      JSON.stringify({
+        priceextravolume: '{"f":"50000","n":"5000","n2":"5000"}',
+        priceextratime: '{"f":"15000","n":"4000","n2":"4000"}',
+      }),
+    )
+    .run();
   await db
     .prepare(
       `INSERT INTO subscriptions
@@ -125,6 +157,14 @@ beforeEach(clearSettings);
 afterEach(clearSettings);
 
 describe('reading the shop settings', () => {
+  it('names every row it reads exactly once, whatever the scope', async () => {
+    // The loader looks a value up by KEY alone, so two scopes carrying the same
+    // key would silently make one of them unreadable. This is the assumption
+    // that makes the list usable as a list; it is checked rather than trusted.
+    const keys = SHOP_SETTING_KEYS.map(([, key]) => key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
   it('behaves as the last release did when nothing is set', async () => {
     // A shop with no rows must keep selling what it sold yesterday. Defaulting
     // a missing switch to OFF would close a working shop on a failed read.
@@ -264,6 +304,136 @@ describe('the deposit limits', () => {
     expect(text).toContain('10,000,000 تومان');
     // The old ceiling, 25× too low, must not be what a customer is offered.
     expect(text).not.toContain('400,000 تومان');
+  });
+});
+
+/**
+ * `setting.Bot_Status` — the admin's closed sign.
+ *
+ * Switchable from the legacy admin panel for years, and this bot sold straight
+ * through it. It matters most in the week it was written for: the cutover is an
+ * announced pause, and the tool that makes a pause possible is one that stops
+ * customers without stopping the people running it.
+ */
+describe('the shop’s closed sign', () => {
+  async function makeAdmin(telegramId: number): Promise<void> {
+    await db
+      .prepare(
+        `INSERT INTO admins (telegram_id, username, role, permissions, active)
+         VALUES (?1, ?2, 'OWNER', '[]'::jsonb, true)
+         ON CONFLICT (telegram_id) DO UPDATE SET active = true, role = 'OWNER'`,
+      )
+      .bind(telegramId, `adm${telegramId}`)
+      .run();
+  }
+
+  it('leaves the shop open on any value it does not recognise', async () => {
+    await put('bot', 'Bot_Status', 'botstatuson');
+    expect((await loadShopSettings(db)).open).toBe(true);
+    // A typo, or a word from a newer admin panel. Closing a working shop
+    // because a string was unreadable is the worse failure — the same rule the
+    // three feature switches follow.
+    await put('bot', 'Bot_Status', 'botstatusofff');
+    expect((await loadShopSettings(db)).open).toBe(true);
+    await put('bot', 'Bot_Status', 'botstatusoff');
+    expect((await loadShopSettings(db)).open).toBe(false);
+  });
+
+  it('answers a customer with the sign and nothing else, on both doors', async () => {
+    const { updateId, telegramId } = ids();
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+    await put('bot', 'Bot_Status', 'botstatusoff');
+
+    const started = await handleUpdate(db, startUpdate(updateId + 1, telegramId));
+    // The callback door too, and that is the half worth having: a customer
+    // still holding yesterday's invoice can press «پرداخت کردم» without ever
+    // sending a message.
+    const pressed = await handleUpdate(db, press(updateId + 2, telegramId, 'buy'));
+
+    for (const out of [started, pressed]) {
+      expect(out.status).toBe('processed');
+      expect(out.replies).toHaveLength(1);
+      expect(out.replies[0]?.text).toContain('فروشگاه موقتاً بسته است');
+      // No menu underneath: a closed shop that still draws its buttons is a
+      // shop that looks open.
+      expect(out.replies[0]?.keyboard).toBeUndefined();
+    }
+  });
+
+  it('lets an admin keep working while it is closed', async () => {
+    const { updateId, telegramId } = ids();
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+    await makeAdmin(telegramId);
+    await put('bot', 'Bot_Status', 'botstatusoff');
+
+    const started = await handleUpdate(db, startUpdate(updateId + 1, telegramId));
+
+    expect(started.replies[0]?.text).not.toContain('فروشگاه موقتاً بسته است');
+    expect(started.replies[0]?.keyboard).toBeDefined();
+  });
+
+  it('still consumes the update, so the poller does not hand it back for ever', async () => {
+    const { updateId, telegramId } = ids();
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+    await put('bot', 'Bot_Status', 'botstatusoff');
+
+    const first = await handleUpdate(db, startUpdate(updateId + 1, telegramId));
+    const again = await handleUpdate(db, startUpdate(updateId + 1, telegramId));
+
+    expect(first.status).toBe('processed');
+    expect(again.status).toBe('duplicate');
+  });
+});
+
+/**
+ * `setting.daywarn` and `setting.volumewarn` — when the two «running out»
+ * messages fire.
+ *
+ * They were constants holding production's own values, with a comment saying
+ * where they came from. Right on the day, and silently wrong the first time the
+ * admin moves either number.
+ */
+describe('when the shop warns a customer', () => {
+  it('takes both thresholds from the settings the admin edits', async () => {
+    await put('bot', 'daywarn', '7');
+    await put('bot', 'volumewarn', '5');
+    const shop = await loadShopSettings(db);
+    expect(shop.warnDays).toBe(7);
+    expect(shop.warnVolumeGb).toBe(5);
+  });
+
+  it('keeps warning on the shipped numbers when a row is unusable', async () => {
+    // Zero would mean the warning never fires and a negative row is broken.
+    // Neither is an instruction to stop telling customers their service ends.
+    for (const bad of ['0', '-3', 'خیلی', '1000']) {
+      await put('bot', 'daywarn', bad);
+      expect((await loadShopSettings(db)).warnDays, bad).toBe(DEFAULT_SHOP_SETTINGS.warnDays);
+    }
+  });
+
+  it('warns at the day the admin chose, through a real sweep', async () => {
+    // Six days out: silent on production's 2, warned on the admin's 7. Measured
+    // against what the sweep actually sends, not against the setting.
+    const telegramId = 855_930_001;
+    const userId = await makeCustomer(telegramId);
+    await db
+      .prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
+            remote_username, subscription_url, volume_gb, used_bytes,
+            status, purchased_at, expires_at, notify)
+         VALUES (?1, ?2, ?3, 'یک‌ماهه', 1950000, ?4, 'https://panel.test/s', 50, 0,
+                 'ACTIVE', now(), now() + interval '6 days', '{}'::jsonb)
+         ON CONFLICT (public_id) DO NOTHING`,
+      )
+      .bind(`warn${telegramId}`, userId, await providerId('sim-vip'), `w_${telegramId}`)
+      .run();
+
+    await put('bot', 'daywarn', '2');
+    expect((await warnExpiringServices(db)).some((n) => n.chatId === telegramId)).toBe(false);
+
+    await put('bot', 'daywarn', '7');
+    expect((await warnExpiringServices(db)).some((n) => n.chatId === telegramId)).toBe(true);
   });
 });
 

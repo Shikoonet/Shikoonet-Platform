@@ -90,6 +90,15 @@ export async function settingIs(
  * last release did, rather than silently closing the shop.
  */
 export interface ShopSettings {
+  /**
+   * Whether the shop is open to customers at all — `setting.Bot_Status`.
+   *
+   * The admin's closed sign. Admins keep full access while it is down, which is
+   * what makes it usable: `index.php:405` exempts them for the same reason, and
+   * it is exactly the tool the cutover window needs — an announced pause where
+   * the shop stops selling and the people running it can still walk the screens.
+   */
+  open: boolean;
   /** «افزودن حجم» — `shopSetting.statusextra`. */
   sellsExtraVolume: boolean;
   /** «افزودن زمان» — `shopSetting.statustimeextra`. */
@@ -112,6 +121,17 @@ export interface ShopSettings {
   topupMinIrr: number;
   topupMaxIrr: number;
   /**
+   * When the two «running out» warnings fire — `setting.daywarn` and
+   * `setting.volumewarn`, both 2 and 1 in production.
+   *
+   * These were constants carrying exactly the production values, with a comment
+   * saying where they came from. That is the same shape as every other setting
+   * this bot used to ignore: right on the day it was written, and silently wrong
+   * the first time the admin moves the number.
+   */
+  warnDays: number;
+  warnVolumeGb: number;
+  /**
    * Whether admin-written text may carry Telegram custom emoji.
    *
    * Ours to invent — there is no legacy column for it. Off unless the row says
@@ -130,6 +150,7 @@ export interface ShopSettings {
  * 2026-08-15 — see `wallet.ts` for how the two card limits were established.
  */
 export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
+  open: true,
   sellsExtraVolume: true,
   sellsExtraTime: true,
   allowsServiceSwitch: true,
@@ -137,11 +158,56 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   renewCashbackPercent: 0,
   topupMinIrr: 800_000,
   topupMaxIrr: 100_000_000,
+  warnDays: 2,
+  warnVolumeGb: 1,
   customEmoji: false,
 };
 
+/**
+ * A whole count of days or gigabytes that a warning may be scheduled on.
+ *
+ * Refused rather than clamped, like `percent`. Zero would mean the warning
+ * never fires, and a negative one means the row is broken — neither is an
+ * instruction to stop warning customers their service is about to end.
+ */
+function wholeCount(value: number | null, fallback: number): number {
+  return value !== null && Number.isSafeInteger(value) && value > 0 && value <= 365
+    ? value
+    : fallback;
+}
+
 /** Where the custom emoji switch lives, named once so nothing mistypes it. */
 export const CUSTOM_EMOJI_SETTING = { scope: 'bot', key: 'custom_emoji' } as const;
+
+/**
+ * Every row `loadShopSettings` consults, in one place.
+ *
+ * The reads are driven off this list rather than described by it, which is the
+ * difference between a comment and a guarantee. A test that resets the shop's
+ * configuration clears exactly these — before this existed, `shop-settings
+ * .test.ts` cleared two scopes by hand, three `bot` keys were added over time,
+ * and the leftovers from one describe block closed the shop for the next.
+ *
+ * Keys are unique across scopes, and there is a test that says so: the lookup
+ * below matches on the key alone.
+ */
+export const SHOP_SETTING_KEYS = [
+  ['bot', 'Bot_Status'],
+  ['shop', 'statusextra'],
+  ['shop', 'statustimeextra'],
+  ['shop', 'statuschangeservice'],
+  ['bot', 'affiliatespercentage'],
+  // Misspelled in the legacy schema and matched as it is actually written,
+  // like `offtimeextraa` above.
+  ['shop', 'chashbackextend'],
+  ['pay', 'minbalancecart'],
+  ['pay', 'maxbalancecart'],
+  [CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key],
+  ['bot', 'daywarn'],
+  ['bot', 'volumewarn'],
+] as const satisfies readonly (readonly [SettingScope, string])[];
+
+type ShopSettingKey = (typeof SHOP_SETTING_KEYS)[number][1];
 
 const CACHE_MS = 30_000;
 let cached: { at: number; value: ShopSettings } | null = null;
@@ -229,39 +295,54 @@ function tomanLimit(value: number | null, fallback: number): number {
 export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSettings> {
   if (cached && now - cached.at < CACHE_MS) return cached.value;
   try {
-    const [extra, timeExtra, switchService, commission, cashback, min, max, emoji] =
-      await Promise.all([
-        settingText(db, 'shop', 'statusextra'),
-        settingText(db, 'shop', 'statustimeextra'),
-        settingText(db, 'shop', 'statuschangeservice'),
-        settingNumber(db, 'bot', 'affiliatespercentage'),
-        // Misspelled in the legacy schema and matched as it is actually
-        // written, like `offtimeextraa` below.
-        settingNumber(db, 'shop', 'chashbackextend'),
-        settingNumber(db, 'pay', 'minbalancecart'),
-        settingNumber(db, 'pay', 'maxbalancecart'),
-        settingText(db, CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key),
-      ]);
+    // Read from the one list, so nothing can consult a row this file has not
+    // declared and no test can clear a set that has fallen behind the reads.
+    const raw = await Promise.all(
+      SHOP_SETTING_KEYS.map(([scope, key]) => settingText(db, scope, key)),
+    );
+    const text = (key: ShopSettingKey): string | null =>
+      raw[SHOP_SETTING_KEYS.findIndex(([, k]) => k === key)] ?? null;
+    // Every numeric setting arrived from MySQL as text, so there is one
+    // conversion here rather than a second query shape.
+    const num = (key: ShopSettingKey): number | null => {
+      const value = text(key);
+      if (value === null) return null;
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    };
+
     const value: ShopSettings = {
+      // Closed only on the exact word. Anything unrecognised leaves the shop
+      // open, which is the same rule as the switches below and matters more
+      // here: an unreadable value must never be what stops the shop selling.
+      open: !isOff(text('Bot_Status'), 'botstatusoff'),
       // The "off" words are the legacy schema's, typos included:
       // `offtimeextraa` really does carry two a's in production.
-      sellsExtraVolume: !isOff(extra, 'offextra'),
-      sellsExtraTime: !isOff(timeExtra, 'offtimeextraa'),
-      allowsServiceSwitch: !isOff(switchService, 'offstatus'),
-      commissionPercent: percent(commission, DEFAULT_SHOP_SETTINGS.commissionPercent),
+      sellsExtraVolume: !isOff(text('statusextra'), 'offextra'),
+      sellsExtraTime: !isOff(text('statustimeextra'), 'offtimeextraa'),
+      allowsServiceSwitch: !isOff(text('statuschangeservice'), 'offstatus'),
+      commissionPercent: percent(
+        num('affiliatespercentage'),
+        DEFAULT_SHOP_SETTINGS.commissionPercent,
+      ),
       // `chashbackextend_agent` holds a per-reseller override — `{"n":"5","n2":0}`
       // in production — and is deliberately not read: the reseller panel is a
       // later round, and both live tiers are already covered by the shop rate
       // (5) or by paying nothing (0).
-      renewCashbackPercent: percent(cashback, DEFAULT_SHOP_SETTINGS.renewCashbackPercent),
-      topupMinIrr: tomanLimit(min, DEFAULT_SHOP_SETTINGS.topupMinIrr),
-      topupMaxIrr: tomanLimit(max, DEFAULT_SHOP_SETTINGS.topupMaxIrr),
+      renewCashbackPercent: percent(
+        num('chashbackextend'),
+        DEFAULT_SHOP_SETTINGS.renewCashbackPercent,
+      ),
+      topupMinIrr: tomanLimit(num('minbalancecart'), DEFAULT_SHOP_SETTINGS.topupMinIrr),
+      topupMaxIrr: tomanLimit(num('maxbalancecart'), DEFAULT_SHOP_SETTINGS.topupMaxIrr),
+      warnDays: wholeCount(num('daywarn'), DEFAULT_SHOP_SETTINGS.warnDays),
+      warnVolumeGb: wholeCount(num('volumewarn'), DEFAULT_SHOP_SETTINGS.warnVolumeGb),
       // Opt-in, and only on the exact word — the opposite of the legacy
       // switches above, which stay ON unless they hold their own off-word.
       // The difference is deliberate: those describe a shop that has been
       // selling for years, this one describes a Premium subscription the bot
       // cannot verify it has.
-      customEmoji: emoji === 'true',
+      customEmoji: text(CUSTOM_EMOJI_SETTING.key) === 'true',
     };
     // A floor above the ceiling would leave no amount a customer could deposit.
     // Two rows edited one at a time can pass through that state, so the pair is
