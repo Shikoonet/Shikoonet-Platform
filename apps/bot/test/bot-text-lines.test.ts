@@ -97,6 +97,30 @@ describe('the registry and the code agree', () => {
     expect(unread).toEqual([]);
   });
 
+  it('refreshes every live binding when content is applied', () => {
+    // The silent gap this whole file exists to catch, in its purest form: an
+    // `export let` initialised from the defaults but never reassigned in
+    // `applyContent` reads correctly at boot and then ignores every override
+    // for the life of the process. Nothing throws, nothing logs, and the admin
+    // just watches their edit not happen.
+    const menuSrc = readFileSync(join(import.meta.dirname, '..', 'src', 'menu.ts'), 'utf8');
+    const apply = menuSrc.slice(
+      menuSrc.indexOf('export function applyContent'),
+      menuSrc.indexOf('export function resetContent'),
+    );
+    expect(apply.length).toBeGreaterThan(0);
+
+    const bindings = [
+      ...menuSrc.matchAll(/^export let ([A-Z_0-9]+) = DEFAULT_TEXTS\.raw\('([A-Z_0-9]+)'\);/gm),
+    ].map((m) => ({ binding: m[1] as string, key: m[2] as string }));
+    expect(bindings.length).toBeGreaterThan(30);
+
+    const stale = bindings
+      .filter(({ binding, key }) => !apply.includes(`${binding} = t.raw('${key}')`))
+      .map(({ binding }) => binding);
+    expect(stale).toEqual([]);
+  });
+
   it('puts every key on a screen the panel can name', () => {
     const known = new Set(SCREEN_IDS);
     for (const key of TEXT_KEYS) {
