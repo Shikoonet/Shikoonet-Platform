@@ -17,6 +17,9 @@ export const ADMIN_PERMISSIONS = [
   'claims.reject',
   'claims.approve_without_tx',
   'stats.view',
+  'users.view',
+  'users.wallet',
+  'users.block',
 ] as const;
 
 export type AdminPermission = (typeof ADMIN_PERMISSIONS)[number];
@@ -30,6 +33,9 @@ export const ADMIN_PERMISSION_FA: Record<AdminPermission, string> = {
   'claims.reject': 'رد کردن پرداخت',
   'claims.approve_without_tx': 'تایید پرداخت بدون تراکنش بانکی',
   'stats.view': 'دیدن آمار فروشگاه (فروش، موجودی کیف پول‌ها)',
+  'users.view': 'جستجوی کاربر و دیدن صفحهٔ او',
+  'users.wallet': 'کم و زیاد کردن موجودی کیف پول کاربر',
+  'users.block': 'مسدود کردن و رفع مسدودی کاربر',
 };
 
 /**
@@ -49,7 +55,12 @@ const ROLE_DEFAULTS: Record<'ADMIN' | 'SUPPORT', readonly AdminPermission[]> = {
   // Not `stats.view`. Mirza's three tiers put the figures with `Seller` and
   // withheld them from `support`, and the money the shop took today is not a
   // support operator's business. A shop that disagrees ticks the box.
-  SUPPORT: ['claims.view'],
+  //
+  // `users.view` is here because looking a customer up is the whole job — the
+  // legacy `support` tier had it, and an operator who cannot see who they are
+  // talking to has nothing to answer with. Changing that customer's money or
+  // blocking them is a different question and stays off.
+  SUPPORT: ['claims.view', 'users.view'],
 };
 
 export function isAdminPermission(value: unknown): value is AdminPermission {

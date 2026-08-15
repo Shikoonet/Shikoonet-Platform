@@ -26,12 +26,14 @@ import {
   extraPricingFor,
   isAutomated,
   renewAllowed,
+  adjustWallet,
   renewModeFor,
+  setCustomerStatus,
   shopStats,
   verifyMirzabotClaim,
   verifyMirzabotClaimWithoutTransaction,
 } from '@shikoo/domain';
-import { permissionsOf, type AdminPermission } from '@shikoo/contracts';
+import { MAX_SINGLE_PAYMENT_IRR, permissionsOf, type AdminPermission } from '@shikoo/contracts';
 import {
   adminFor,
   audit,
@@ -57,7 +59,8 @@ import {
 } from './discount.js';
 import { loadBotContent } from './botContent.js';
 import * as menu from './menu.js';
-import { priceForUser } from './money.js';
+import { IRR_PER_TOMAN, priceForUser } from './money.js';
+import { customerDetail, findCustomers, normalizeQuery } from './customers.js';
 import {
   newPublicId,
   placeAddonOrder,
@@ -482,7 +485,8 @@ async function handleTypedAnswer(
   if (!from) return IGNORED;
   const user = await tx
     .prepare(
-      `SELECT id, status, is_reseller, discount_percent FROM users WHERE telegram_id = ?1`,
+      `SELECT id, status, is_reseller, discount_percent, ${IS_ADMIN}
+         FROM users WHERE telegram_id = ?1`,
     )
     .bind(from.id)
     .first<Caller>();
@@ -499,7 +503,115 @@ async function handleTypedAnswer(
   if (session.step === 'coder') return handleRenewalCode(tx, message, user, session);
   if (session.step === 'gift') return handleGiftCode(tx, message, user);
   if (session.step === 'agent') return handleResellerRequest(tx, message, user);
+  // The admin steps re-prove the sender is an admin before they read anything.
+  // Being asked a question a minute ago is not authority: the row could have
+  // been switched off in between, and the session lives in a table keyed by
+  // `users.id` like every customer's.
+  if (session.step === 'admin:findUser') return handleAdminUserSearch(tx, message, user, from.id);
+  if (session.step === 'admin:wallet') {
+    return handleAdminWalletAmount(tx, message, user, session, from.id);
+  }
   return IGNORED;
+}
+
+/** The typed answer to «شناسهٔ تلگرام، نام کاربری، یا شمارهٔ سفارش». */
+async function handleAdminUserSearch(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  telegramId: number,
+): Promise<HandleOutcome> {
+  const admin = await adminFor(tx, telegramId);
+  if (!admin || !can(admin, 'users.view')) return IGNORED;
+  const allowed = permissionsOf(admin.role, admin.permissions);
+
+  const said = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, keyboard }],
+  });
+
+  const hits = await findCustomers(tx, message.text!);
+  if (hits.length === 0) {
+    // The question stays open — an admin who mistyped can simply type again.
+    return said(menu.ADMIN_USER_NONE, menu.promptMenu(encode('pnl')));
+  }
+  await clearSession(tx, user.id);
+  if (hits.length === 1) {
+    const only = await customerDetail(tx, hits[0]!.id);
+    if (!only) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+    return said(menu.userScreen(only), menu.userMenu(only, allowed));
+  }
+  return said(menu.userList(hits), menu.userListMenu(hits));
+}
+
+/**
+ * The typed answer to «چه مبلغی».
+ *
+ * Toman in, IRR out, through the one conversion the project has. The ceiling is
+ * the shop's own card-to-card limit: a correction larger than the largest
+ * deposit it will accept is far more likely to be a typed extra zero than an
+ * intent, and an extra zero on a debit is the failure with no undo.
+ */
+async function handleAdminWalletAmount(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  session: Session,
+  telegramId: number,
+): Promise<HandleOutcome> {
+  const admin = await adminFor(tx, telegramId);
+  if (!admin || !can(admin, 'users.wallet')) return IGNORED;
+  const allowed = permissionsOf(admin.role, admin.permissions);
+
+  const said = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, keyboard }],
+  });
+
+  const customerId = await sessionCustomer(tx, user.id);
+  if (customerId === null) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+  const credit = session.data['credit'] === true;
+
+  const typed = normalizeQuery(message.text!);
+  if (!/^[0-9]+$/.test(typed)) {
+    return said(menu.ADMIN_USER_AMOUNT_BAD, menu.promptMenu(encode('usr', customerId)));
+  }
+  const toman = Number(typed);
+  if (toman <= 0 || !Number.isSafeInteger(toman)) {
+    return said(menu.ADMIN_USER_AMOUNT_BAD, menu.promptMenu(encode('usr', customerId)));
+  }
+  const magnitude = toman * IRR_PER_TOMAN;
+  if (magnitude > MAX_SINGLE_PAYMENT_IRR) {
+    return said(
+      menu.adminAmountTooBig(MAX_SINGLE_PAYMENT_IRR),
+      menu.promptMenu(encode('usr', customerId)),
+    );
+  }
+
+  const outcome = await adjustWallet(tx, {
+    userId: customerId,
+    amountIrr: credit ? magnitude : -magnitude,
+    note: `bot admin panel — ${admin.username ?? admin.telegramId}`,
+    actor: `admin:${admin.telegramId}`,
+    // Telegram's own message id, so a redelivered update collapses onto the row
+    // it already wrote instead of paying twice. The amount is folded in by
+    // `adjustWallet`, which is what makes a corrected amount a new write.
+    idempotencyKey: `tg:${message.chat.id}:${message.message_id}`,
+  });
+  if (!outcome) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+
+  await clearSession(tx, user.id);
+  if (outcome.applied) {
+    await audit(tx, admin, 'customer.wallet_adjusted', 'CUSTOMER', String(customerId), {
+      before: { balance_irr: outcome.beforeIrr },
+      after: { balance_irr: outcome.balanceIrr, amount_irr: credit ? magnitude : -magnitude },
+    });
+  }
+
+  const found = await customerDetail(tx, customerId);
+  if (!found) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+  const done = menu.walletAdjusted(outcome.beforeIrr, outcome.balanceIrr);
+  return said(`${done}\n\n${menu.userScreen(found)}`, menu.userMenu(found, allowed));
 }
 
 /** Clears the question, once it has been answered in a way that ends the flow. */
@@ -860,6 +972,23 @@ async function heldCode(
 /** How many payments one review screen lists. */
 const CLAIMS_PER_PAGE = 6;
 
+type PendingDecision = 'APPROVE_NO_TX' | 'REJECT' | 'BLOCK' | 'UNBLOCK';
+
+/**
+ * What `cnf` is really doing, once the pending decision is known.
+ *
+ * This is the authority. `cnf` carries no verb of its own — what it confirms is
+ * whatever the session says was asked for — so a single permission on the
+ * button would be either too weak (a rejecter confirming an
+ * approve-without-transaction) or too strong.
+ */
+const DECISION_PERMISSION: Record<PendingDecision, AdminPermission> = {
+  APPROVE_NO_TX: 'claims.approve_without_tx',
+  REJECT: 'claims.reject',
+  BLOCK: 'users.block',
+  UNBLOCK: 'users.block',
+};
+
 /**
  * Which permission each admin action needs.
  *
@@ -867,29 +996,30 @@ const CLAIMS_PER_PAGE = 6;
  * `bot_sessions`: an operator who cannot confirm has no business being asked to,
  * and refusing at the button is a clearer answer than refusing at the end.
  *
- * `cnf` is absent because it carries no verb of its own — what it confirms is
- * whatever was asked for, so it is checked against the pending decision instead.
- * A single permission on `cnf` would be either too weak (a rejecter confirming
- * an approve-without-transaction) or too strong.
+ * `cnf` needs *any* decision permission — an operator who can decide nothing has
+ * nothing to confirm — and the list is derived from `DECISION_PERMISSION` rather
+ * than repeated. It was written out by hand until 2026-08-15, naming the two
+ * claim permissions, and the day a confirmable action existed that was not about
+ * a claim it refused the operator who was allowed through. Not a hole — the map
+ * below still decided — but the refusal said «این پرداخت دیگر در انتظار بررسی
+ * نیست» to somebody whose real problem was their role.
  */
 const ACTION_PERMISSIONS: Record<string, readonly AdminPermission[]> = {
+  cnf: [...new Set(Object.values(DECISION_PERMISSION))],
   clm: ['claims.view'],
   clv: ['claims.view'],
   apv: ['claims.approve'],
   apx: ['claims.approve_without_tx'],
   rej: ['claims.reject'],
-  // Any one of these gets `cnf` through the door — an operator who can decide
-  // nothing has nothing to confirm. Which decision it actually is gets checked
-  // again below, against the session, because the two can differ.
-  cnf: ['claims.reject', 'claims.approve_without_tx'],
   sts: ['stats.view'],
+  usf: ['users.view'],
+  usr: ['users.view'],
+  uwp: ['users.wallet'],
+  uwm: ['users.wallet'],
+  ubl: ['users.block'],
+  uub: ['users.block'],
 };
 
-/** What `cnf` is really doing, once the pending decision is known. */
-const DECISION_PERMISSION: Record<'APPROVE_NO_TX' | 'REJECT', AdminPermission> = {
-  APPROVE_NO_TX: 'claims.approve_without_tx',
-  REJECT: 'claims.reject',
-};
 
 /**
  * The admin panel's callbacks, after `admins` has already said yes.
@@ -983,6 +1113,80 @@ async function handleAdmin(
     };
   };
 
+  // --- the customer's page ------------------------------------------------
+
+  const askForCustomer = async (): Promise<HandleOutcome> => {
+    const userId = await adminSessionUser(tx, telegramId);
+    if (userId === null) return IGNORED;
+    await ask(tx, userId, 'admin:findUser', {});
+    return screen(menu.ADMIN_USER_ASK, menu.promptMenu(encode('pnl')));
+  };
+
+  const showCustomer = async (customerId: number): Promise<HandleOutcome> => {
+    const found = await customerDetail(tx, customerId);
+    if (!found) return screen(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+    return screen(menu.userScreen(found), menu.userMenu(found, allowed));
+  };
+
+  const askForAmount = async (customerId: number, credit: boolean): Promise<HandleOutcome> => {
+    const userId = await adminSessionUser(tx, telegramId);
+    const found = await customerDetail(tx, customerId);
+    if (userId === null || !found) return screen(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+    await ask(tx, userId, 'admin:wallet', { userId: customerId, credit });
+    return screen(
+      credit ? menu.ADMIN_USER_ASK_CREDIT : menu.ADMIN_USER_ASK_DEBIT,
+      menu.promptMenu(encode('usr', customerId)),
+    );
+  };
+
+  const askToConfirmBlock = async (customerId: number, block: boolean): Promise<HandleOutcome> => {
+    const userId = await adminSessionUser(tx, telegramId);
+    const found = await customerDetail(tx, customerId);
+    if (userId === null || !found) return screen(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+    await ask(tx, userId, 'admin:user', {
+      userId: customerId,
+      decision: block ? 'BLOCK' : 'UNBLOCK',
+    });
+    return screen(menu.confirmBlock(found, block), menu.userConfirmMenu(customerId));
+  };
+
+  /**
+   * Blocks or unblocks, after the confirmation.
+   *
+   * The customer id comes from the session rather than from the button, exactly
+   * as the claim does: the id and the decision were written together, and a
+   * `cnf` forged with somebody else's id would otherwise decide about them.
+   */
+  const applyBlock = async (block: boolean): Promise<HandleOutcome> => {
+    const userId = await adminSessionUser(tx, telegramId);
+    const target = userId === null ? null : await sessionCustomer(tx, userId);
+    if (target === null) return screen(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+
+    const outcome = await setCustomerStatus(tx, {
+      userId: target,
+      status: block ? 'BLOCKED' : 'ACTIVE',
+      reason: block ? 'blocked from the bot admin panel' : null,
+    });
+    if (!outcome) return screen(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+    if (outcome.changed) {
+      await audit(
+        tx,
+        admin,
+        block ? 'customer.blocked' : 'customer.unblocked',
+        'CUSTOMER',
+        String(target),
+        { before: outcome.before, after: { status: block ? 'BLOCKED' : 'ACTIVE' } },
+      );
+    }
+    await clearAdminSession(tx, telegramId);
+    const found = await customerDetail(tx, target);
+    if (!found) return screen(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
+    return screen(
+      `${block ? menu.ADMIN_USER_BLOCKED : menu.ADMIN_USER_UNBLOCKED}\n\n${menu.userScreen(found)}`,
+      menu.userMenu(found, allowed),
+    );
+  };
+
   // Reading a claim is not deciding one, and neither is drawing the button.
   //
   // `adminFor` proves the sender is an admin; it does not say which. `role` used
@@ -1047,16 +1251,35 @@ async function handleAdmin(
     case 'rej':
       return askToConfirm('REJECT', menu.CONFIRM_REJECT);
 
+    case 'usf':
+      return askForCustomer();
+
+    case 'usr':
+      return action.id === undefined ? IGNORED : showCustomer(action.id);
+
+    case 'uwp':
+    case 'uwm':
+      return action.id === undefined ? IGNORED : askForAmount(action.id, action.action === 'uwp');
+
+    case 'ubl':
+    case 'uub':
+      return action.id === undefined
+        ? IGNORED
+        : askToConfirmBlock(action.id, action.action === 'ubl');
+
     case 'cnf': {
       const pending = await pendingDecision(tx, telegramId);
-      const claim = await currentClaim();
-      if (!claim || pending === null) return screen(menu.CLAIM_GONE, menu.adminMenu(0, allowed));
+      if (pending === null) return screen(menu.CLAIM_GONE, menu.adminMenu(0, allowed));
       // Checked here rather than at the top: `cnf` means whatever the session
       // says it means. An operator whose permission was taken away while the
       // confirmation screen was open is refused now, not carried through by a
       // decision they were allowed to ask for a minute ago.
       const forDecision = DECISION_PERMISSION[pending];
       if (!can(admin, forDecision)) return refuse(forDecision);
+      if (pending === 'BLOCK' || pending === 'UNBLOCK') return applyBlock(pending === 'BLOCK');
+
+      const claim = await currentClaim();
+      if (!claim) return screen(menu.CLAIM_GONE, menu.adminMenu(0, allowed));
       if (pending === 'REJECT') {
         const done = await rejectClaim(tx, claim.id);
         if (!done) return screen(menu.CLAIM_GONE, menu.adminMenu(0, allowed));
@@ -1114,11 +1337,11 @@ async function rememberClaim(
   await ask(tx, userId, 'admin:claim', { claimId });
 }
 
-/** Which of the two confirmable actions was asked for, if either. */
+/** Which confirmable action was asked for, if any. */
 async function pendingDecision(
   tx: D1DatabaseSession,
   telegramId: number,
-): Promise<'APPROVE_NO_TX' | 'REJECT' | null> {
+): Promise<PendingDecision | null> {
   const userId = await adminSessionUser(tx, telegramId);
   if (userId === null) return null;
   const row = await tx
@@ -1126,7 +1349,35 @@ async function pendingDecision(
     .bind(userId)
     .first<{ data: Record<string, unknown> | null }>();
   const decision = row?.data?.['decision'];
-  return decision === 'APPROVE_NO_TX' || decision === 'REJECT' ? decision : null;
+  return typeof decision === 'string' && decision in DECISION_PERMISSION
+    ? (decision as PendingDecision)
+    : null;
+}
+
+/**
+ * Which customer an admin's own session is about.
+ *
+ * Read from the session and never from the button, for the same reason the
+ * claim is: the id and the decision were written together, so a forged `cnf`
+ * cannot arrive carrying somebody else's id. That property is what actually
+ * stops the forgery — `cnf` has no id on it at all.
+ *
+ * The step check below is belt and braces and is honestly labelled as such:
+ * removing it turns no test red today, because the only two steps that write a
+ * `userId` are these two. It is here so that a third step which happens to
+ * store a `userId` for some unrelated reason cannot be confirmed into a block.
+ */
+async function sessionCustomer(
+  tx: D1DatabaseSession,
+  adminUserId: number,
+): Promise<number | null> {
+  const row = await tx
+    .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
+    .bind(adminUserId)
+    .first<{ step: string | null; data: Record<string, unknown> | null }>();
+  if (row?.step !== 'admin:user' && row?.step !== 'admin:wallet') return null;
+  const id = row.data?.['userId'];
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
 async function clearAdminSession(tx: D1DatabaseSession, telegramId: number): Promise<void> {
@@ -1235,6 +1486,12 @@ async function handleCallback(
     // is ignored exactly as they would be for any unknown callback.
     case 'pnl':
     case 'sts':
+    case 'usf':
+    case 'usr':
+    case 'uwp':
+    case 'uwm':
+    case 'ubl':
+    case 'uub':
     case 'clm':
     case 'clv':
     case 'apv':

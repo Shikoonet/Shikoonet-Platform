@@ -75,6 +75,12 @@ export const CALLBACK_ACTIONS = [
   'rej', // refuse it
   'cnf', // confirm whichever of the two was asked for
   'sts', // the shop's headline numbers
+  'usf', // ask for a customer to look up
+  'usr', // <userId> — that customer's page
+  'uwp', // <userId> — ask how much to add to their wallet
+  'uwm', // <userId> — ask how much to take off it
+  'ubl', // <userId> — block them, after a confirmation
+  'uub', // <userId> — let them back in
   'hlp', // [articleId] — the education list, or one article
   'app', // the client apps and their links
   'soon', // a menu entry that has no implementation yet

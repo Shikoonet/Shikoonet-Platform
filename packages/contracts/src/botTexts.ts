@@ -101,7 +101,8 @@ export type ScreenId =
   | 'adminClaims'
   | 'adminClaimDetail'
   | 'adminConfirm'
-  | 'adminStats';
+  | 'adminStats'
+  | 'adminUser';
 
 /** The Persian name of each screen, for the admin panel's grouping. */
 export const SCREENS: Record<ScreenId, string> = {
@@ -132,6 +133,7 @@ export const SCREENS: Record<ScreenId, string> = {
   adminClaimDetail: 'پنل ادمین — یک پرداخت',
   adminConfirm: 'پنل ادمین — تاییدیه‌ها',
   adminStats: 'پنل ادمین — آمار',
+  adminUser: 'پنل ادمین — کاربر',
 };
 
 export const SCREEN_IDS = Object.keys(SCREENS) as ScreenId[];
@@ -1717,6 +1719,153 @@ export const TEXTS = {
     placeholders: ['count'],
     screen: 'adminStats',
     hint: 'همان صف رسیدها',
+  },
+
+  // --- پنل ادمین — کاربر ----------------------------------------------------
+  ADMIN_USER_ASK: {
+    default:
+      '👤 شناسهٔ عددی تلگرام، نام کاربری، یا شمارهٔ سفارش را بفرستید.\n\nنام کاربری را می‌شود ناقص نوشت؛ شمارهٔ سفارش باید کامل باشد.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'پرسش جستجوی کاربر',
+  },
+  ADMIN_USER_NONE: {
+    default: '🔍 کسی با این مشخصات پیدا نشد.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'وقتی جستجو نتیجه ندارد',
+  },
+  ADMIN_USER_LIST_TITLE: {
+    default: '👥 {count} نفر پیدا شد. یکی را انتخاب کنید:',
+    placeholders: ['count'],
+    screen: 'adminUser',
+    hint: 'سرتیتر فهرست نتیجه',
+  },
+  ADMIN_USER_GONE: {
+    default: '⛔ این کاربر دیگر نیست.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'وقتی کاربر بین دو فشار حذف شده',
+  },
+  ADMIN_USER_TITLE: {
+    default: '👤 {name}',
+    placeholders: ['name'],
+    screen: 'adminUser',
+    hint: 'خط اول صفحهٔ کاربر — نام کاربری یا شناسهٔ عددی',
+  },
+  ADMIN_USER_TELEGRAM: {
+    default: '🆔 شناسهٔ تلگرام: {id}',
+    placeholders: ['id'],
+    screen: 'adminUser',
+    hint: '',
+  },
+  ADMIN_USER_PHONE: {
+    default: '📞 شماره: {phone}',
+    placeholders: ['phone'],
+    screen: 'adminUser',
+    hint: 'وقتی شماره ثبت شده',
+  },
+  ADMIN_USER_BALANCE: {
+    default: '🏦 موجودی: {amount}',
+    placeholders: ['amount'],
+    screen: 'adminUser',
+    hint: '',
+  },
+  ADMIN_USER_STATUS_BLOCKED: {
+    default: '⛔ مسدود — {reason}',
+    placeholders: ['reason'],
+    screen: 'adminUser',
+    hint: 'وقتی کاربر مسدود است',
+  },
+  ADMIN_USER_RESELLER: {
+    default: '🤝 نماینده',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'فقط برای نماینده‌ها',
+  },
+  ADMIN_USER_DISCOUNT: {
+    default: '🏷 تخفیف همیشگی: {percent}٪',
+    placeholders: ['percent'],
+    screen: 'adminUser',
+    hint: 'وقتی درصد تخفیف شخصی دارد',
+  },
+  ADMIN_USER_ORDERS: {
+    default: '🧾 {count} سفارش — {amount} تحویل‌شده',
+    placeholders: ['count', 'amount'],
+    screen: 'adminUser',
+    hint: '',
+  },
+  ADMIN_USER_SERVICES: {
+    default: '🟢 {count} سرویس فعال',
+    placeholders: ['count'],
+    screen: 'adminUser',
+    hint: '',
+  },
+  ADMIN_USER_SEEN: {
+    default: '🕘 آخرین بار: {when}',
+    placeholders: ['when'],
+    screen: 'adminUser',
+    hint: '',
+  },
+  ADMIN_USER_ASK_CREDIT: {
+    default: '➕ چه مبلغی (به تومان) به موجودی اضافه شود؟',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'پرسش مبلغ افزایش',
+  },
+  ADMIN_USER_ASK_DEBIT: {
+    default: '➖ چه مبلغی (به تومان) از موجودی کم شود؟',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'پرسش مبلغ کاهش',
+  },
+  ADMIN_USER_AMOUNT_BAD: {
+    default: '⛔ فقط عدد، به تومان. دوباره بفرستید.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'وقتی چیزی که تایپ شد عدد نبود',
+  },
+  ADMIN_USER_AMOUNT_TOO_BIG: {
+    default: '⛔ بیشتر از سقف یک تصحیح ({max}) است.',
+    placeholders: ['max'],
+    screen: 'adminUser',
+    hint: 'سقف همان سقف یک واریز کارت‌به‌کارت است — یک صفر اضافه بازپرداختی ندارد',
+  },
+  ADMIN_USER_WALLET_DONE: {
+    default: '✅ انجام شد. موجودی از {before} شد {after}.',
+    placeholders: ['before', 'after'],
+    screen: 'adminUser',
+    hint: 'بعد از تصحیح موفق',
+  },
+  ADMIN_USER_WALLET_NEGATIVE: {
+    default: '⚠️ موجودی این کاربر حالا منفی است.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'وقتی کاهش، موجودی را زیر صفر برد — رد نمی‌شود، فقط گفته می‌شود',
+  },
+  ADMIN_USER_CONFIRM_BLOCK: {
+    default: '⛔ {name} مسدود شود؟\n\nدیگر نه می‌تواند خرید کند و نه ربات جوابش را می‌دهد.',
+    placeholders: ['name'],
+    screen: 'adminUser',
+    hint: 'تاییدیهٔ مسدود کردن',
+  },
+  ADMIN_USER_CONFIRM_UNBLOCK: {
+    default: '✅ مسدودی {name} برداشته شود؟',
+    placeholders: ['name'],
+    screen: 'adminUser',
+    hint: 'تاییدیهٔ رفع مسدودی',
+  },
+  ADMIN_USER_BLOCKED: {
+    default: '⛔ مسدود شد.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: '',
+  },
+  ADMIN_USER_UNBLOCKED: {
+    default: '✅ مسدودی برداشته شد.',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: '',
   },
 } as const satisfies Record<string, TextEntry>;
 

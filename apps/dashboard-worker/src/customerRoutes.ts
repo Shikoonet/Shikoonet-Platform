@@ -35,6 +35,7 @@ import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
+import { adjustWallet, setCustomerStatus } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 /**
@@ -274,76 +275,17 @@ export function registerCustomerRoutes(
     }
     const { amountIrr, note, idempotencyKey } = parsed.data;
 
-    // Namespaced so a key the client picked cannot collide with the keys the
-    // bot writes (`order:<id>:purchase`, `referral:<id>`) — and the AMOUNT is
-    // part of it.
-    //
-    // Without the amount, an admin who types 500,000, notices the mistake,
-    // corrects it to 5,000,000 and submits again gets a silent no-op: the form
-    // keeps its key, the key is already spent, and the response says the money
-    // moved. It did — the wrong amount, once. Keying by what is being written
-    // means a corrected amount is a different write, while the double-submit
-    // this exists for still collapses onto one row.
-    const key = `admin-adjust:${id}:${amountIrr}:${idempotencyKey}`;
-
-    // The read, the insert and the read-back are one transaction, and it opens
-    // by locking the customer's row.
-    //
-    // The transaction alone is not enough, and believing it was is how the
-    // first version of this went out: `wallets.balance_irr` is derived by a
-    // trigger whose `INSERT … ON CONFLICT DO UPDATE` locks the wallet only from
-    // the moment the entry lands, so two adjustments still both read the same
-    // balance BEFORE either inserts. Eight of them at once produced eight audit
-    // rows claiming the same starting balance and eight different totals — the
-    // test names them.
-    //
-    // So the lock is taken on `users` — a row that always exists, where the
-    // wallet may not yet — and it is taken by a statement of its own.
-    //
-    // That separation is the second thing this got wrong. Locking and reading
-    // the balance in one joined statement does not work: a query that blocks on
-    // `FOR UPDATE` re-checks only the locked table when it wakes and keeps its
-    // original snapshot for everything joined to it, so seven waiting
-    // adjustments all reported the balance as it was when they started. Under
-    // READ COMMITTED a second statement takes a fresh snapshot, and by then the
-    // lock is held.
-    //
-    // It does not serialise against the bot spending on the same wallet; that
-    // would need the same lock on the bot's path, and the bot's own guard is
-    // `spendOnOrder`. What this row claims — "your adjustment took the balance
-    // from X to Y" — is true of every adjustment made here.
-    const outcome = await c.env.DB.withSession(async (tx) => {
-      const exists = await tx
-        .prepare(`SELECT id FROM users WHERE id = ?1 FOR UPDATE`)
-        .bind(id)
-        .first<{ id: number }>();
-      if (!exists) return null;
-
-      const before = await tx
-        .prepare(`SELECT COALESCE(balance_irr, 0) AS balance_irr FROM wallets WHERE user_id = ?1`)
-        .bind(id)
-        .first<{ balance_irr: number }>();
-
-      const done = await tx
-        .prepare(
-          `INSERT INTO wallet_entries (user_id, amount_irr, kind, actor, note, idempotency_key)
-           VALUES (?1, ?2, 'ADMIN_ADJUST', ?3, ?4, ?5)
-           ON CONFLICT (idempotency_key) DO NOTHING`,
-        )
-        .bind(id, amountIrr, ident.email, note, key)
-        .run();
-
-      const after = await tx
-        .prepare(`SELECT COALESCE(balance_irr, 0) AS balance_irr FROM wallets WHERE user_id = ?1`)
-        .bind(id)
-        .first<{ balance_irr: number }>();
-
-      return {
-        // No wallet row yet means no entries yet, which is a balance of zero.
-        beforeIrr: Number(before?.balance_irr ?? 0),
-        balanceIrr: Number(after?.balance_irr ?? 0),
-        applied: done.meta.changes !== 0,
-      };
+    // The write itself — the lock, the entry, the read-back and the reasons all
+    // three are shaped the way they are — is `adjustWallet` in `@shikoo/domain`.
+    // It moved there when the bot's admin panel needed the same operation on a
+    // phone: two ways to move a customer's money would agree today and drift on
+    // the first fix applied to only one of them.
+    const outcome = await adjustWallet(c.env.DB, {
+      userId: id,
+      amountIrr,
+      note,
+      actor: ident.email,
+      idempotencyKey,
     });
 
     if (outcome === null) return c.json({ ok: false, error: 'not_found' }, 404);
@@ -387,28 +329,18 @@ export function registerCustomerRoutes(
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const { status, reason } = parsed.data;
 
-    const before = await c.env.DB.prepare(
-      `SELECT status, blocked_reason FROM users WHERE id = ?1`,
-    )
-      .bind(id)
-      .first<{ status: string; blocked_reason: string | null }>();
-    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
-    if (before.status === status) return c.json({ ok: true, changed: false, status });
+    const outcome = await setCustomerStatus(c.env.DB, { userId: id, status, reason });
+    if (!outcome) return c.json({ ok: false, error: 'not_found' }, 404);
+    if (!outcome.changed) return c.json({ ok: true, changed: false, status });
 
-    const blockedReason = status === 'BLOCKED' ? reason : null;
-    await c.env.DB.prepare(
-      `UPDATE users SET status = ?1, blocked_reason = ?2, updated_at = now() WHERE id = ?3`,
-    )
-      .bind(status, blockedReason, id)
-      .run();
     await audit(
       c.env.DB,
       ident,
       status === 'BLOCKED' ? 'customer.blocked' : 'customer.unblocked',
       'CUSTOMER',
       String(id),
-      before,
-      { status, blocked_reason: blockedReason },
+      outcome.before,
+      { status, blocked_reason: outcome.blockedReason },
       reason,
     );
     return c.json({ ok: true, changed: true, status });

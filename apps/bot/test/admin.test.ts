@@ -278,6 +278,22 @@ describe('the way in from the main menu', () => {
     expect(dataOf(out)).not.toContain('pnl');
   });
 
+  it('draws it on the menu a typed answer returns to, as well', async () => {
+    // The customer row is loaded in three places and each one has to carry the
+    // answer. The third — the one that handles a typed reply — did not, and
+    // nothing caught it: the row is read with an unchecked cast, so a missing
+    // column is `undefined`, and `undefined` is falsy, and a falsy answer draws
+    // the same menu as "not an admin". Exactly the shape the viewer object was
+    // introduced to make impossible at the call sites.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+
+    await handleUpdate(db, press(updateId, telegramId, 'agr'));
+    const out = await handleUpdate(db, types(updateId + 1, telegramId, 'یک فروشگاه دارم'));
+
+    expect(dataOf(out)).toContain('pnl');
+  });
+
   it('reaches the panel when pressed', async () => {
     const { updateId, telegramId } = ids();
     await makeAdmin(telegramId);

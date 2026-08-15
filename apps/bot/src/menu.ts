@@ -53,6 +53,7 @@ import {
 } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
 import type { ShopStats } from '@shikoo/domain';
+import type { CustomerDetail, CustomerHit } from './customers.js';
 import { MAX_COPY_TEXT_LENGTH, type InlineButton, type InlineKeyboard } from './telegram.js';
 
 /**
@@ -151,6 +152,14 @@ export let CLAIM_GONE = DEFAULT_TEXTS.raw('ADMIN_CLAIM_GONE');
  * can change it instead.
  */
 export let ADMIN_NOT_ALLOWED = DEFAULT_TEXTS.raw('ADMIN_NOT_ALLOWED');
+export let ADMIN_USER_ASK = DEFAULT_TEXTS.raw('ADMIN_USER_ASK');
+export let ADMIN_USER_NONE = DEFAULT_TEXTS.raw('ADMIN_USER_NONE');
+export let ADMIN_USER_GONE = DEFAULT_TEXTS.raw('ADMIN_USER_GONE');
+export let ADMIN_USER_ASK_CREDIT = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_CREDIT');
+export let ADMIN_USER_ASK_DEBIT = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_DEBIT');
+export let ADMIN_USER_AMOUNT_BAD = DEFAULT_TEXTS.raw('ADMIN_USER_AMOUNT_BAD');
+export let ADMIN_USER_BLOCKED = DEFAULT_TEXTS.raw('ADMIN_USER_BLOCKED');
+export let ADMIN_USER_UNBLOCKED = DEFAULT_TEXTS.raw('ADMIN_USER_UNBLOCKED');
 
 export let CONFIRM_APPROVE_WITHOUT_TX = buildConfirmApprove(DEFAULT_TEXTS);
 export let CONFIRM_REJECT = buildConfirmReject(DEFAULT_TEXTS);
@@ -272,6 +281,14 @@ export function applyContent(content: BotContent): void {
   NO_CLAIMS = t.raw('ADMIN_NO_CLAIMS');
   CLAIM_GONE = t.raw('ADMIN_CLAIM_GONE');
   ADMIN_NOT_ALLOWED = t.raw('ADMIN_NOT_ALLOWED');
+  ADMIN_USER_ASK = t.raw('ADMIN_USER_ASK');
+  ADMIN_USER_NONE = t.raw('ADMIN_USER_NONE');
+  ADMIN_USER_GONE = t.raw('ADMIN_USER_GONE');
+  ADMIN_USER_ASK_CREDIT = t.raw('ADMIN_USER_ASK_CREDIT');
+  ADMIN_USER_ASK_DEBIT = t.raw('ADMIN_USER_ASK_DEBIT');
+  ADMIN_USER_AMOUNT_BAD = t.raw('ADMIN_USER_AMOUNT_BAD');
+  ADMIN_USER_BLOCKED = t.raw('ADMIN_USER_BLOCKED');
+  ADMIN_USER_UNBLOCKED = t.raw('ADMIN_USER_UNBLOCKED');
   CONFIRM_APPROVE_WITHOUT_TX = buildConfirmApprove(t);
   CONFIRM_REJECT = buildConfirmReject(t);
   DISCOUNT_REFUSED = buildDiscountRefused(t);
@@ -518,6 +535,129 @@ export function statsScreen(stats: ShopStats): string {
 
 export function statsMenu(): InlineKeyboard {
   return buildMenu('adminStats', layout('adminStats'));
+}
+
+export function confirmBlock(user: CustomerDetail, block: boolean): string {
+  const name = user.username ? `@${user.username}` : String(user.telegram_id);
+  return TEXTS_NOW.render(block ? 'ADMIN_USER_CONFIRM_BLOCK' : 'ADMIN_USER_CONFIRM_UNBLOCK', {
+    name,
+  });
+}
+
+/** The confirmation, with a way back to the customer rather than to the queue. */
+export function userConfirmMenu(customerId: number): InlineKeyboard {
+  return buildMenu('adminUserConfirm', layout('adminUserConfirm'), {
+    target: (action) => (action === 'usr' ? encode('usr', customerId) : undefined),
+  });
+}
+
+export function adminAmountTooBig(maxIrr: number): string {
+  return TEXTS_NOW.render('ADMIN_USER_AMOUNT_TOO_BIG', { max: formatToman(maxIrr) });
+}
+
+/**
+ * What the correction did.
+ *
+ * A negative result is reported, not refused: an admin correcting a credit the
+ * customer has already spent has to be able to leave the balance below zero,
+ * and `spendOnOrder` refuses to spend from a negative wallet anyway — so it
+ * cannot become a free service. The same reasoning, and the same sentence, as
+ * the panel's route.
+ */
+export function walletAdjusted(beforeIrr: number, afterIrr: number): string {
+  const t = TEXTS_NOW;
+  const line = t.render('ADMIN_USER_WALLET_DONE', {
+    before: formatToman(beforeIrr),
+    after: formatToman(afterIrr),
+  });
+  return afterIrr < 0 ? `${line}\n${t.raw('ADMIN_USER_WALLET_NEGATIVE')}` : line;
+}
+
+/** The buttons on a customer's page that carry that customer's id. */
+const USER_ACTIONS = ['uwp', 'uwm', 'ubl', 'uub'] as const;
+function isUserAction(action: string): action is (typeof USER_ACTIONS)[number] {
+  return (USER_ACTIONS as readonly string[]).includes(action);
+}
+
+/** One line per person the search found: who they are and what they hold. */
+export function userList(hits: readonly CustomerHit[]): string {
+  return TEXTS_NOW.render('ADMIN_USER_LIST_TITLE', {
+    count: hits.length.toLocaleString('en-US'),
+  });
+}
+
+export function userListMenu(hits: readonly CustomerHit[]): InlineKeyboard {
+  return withChrome(
+    hits.map((h) => [
+      {
+        text: `${h.username ? `@${h.username}` : h.telegram_id} — ${formatToman(h.balance_irr ?? 0)}`,
+        callback_data: encode('usr', h.id),
+      },
+    ]),
+    'adminUsers',
+  );
+}
+
+/** What an admin needs to know about a customer before doing anything to them. */
+export function userScreen(user: CustomerDetail): string {
+  const t = TEXTS_NOW;
+  const n = (value: number) => value.toLocaleString('en-US');
+  const lines = [
+    t.render('ADMIN_USER_TITLE', { name: user.username ? `@${user.username}` : String(user.telegram_id) }),
+    t.render('ADMIN_USER_TELEGRAM', { id: String(user.telegram_id) }),
+  ];
+  if (user.phone) lines.push(t.render('ADMIN_USER_PHONE', { phone: user.phone }));
+  lines.push(t.render('ADMIN_USER_BALANCE', { amount: formatToman(user.balance_irr ?? 0) }));
+  if (user.status === 'BLOCKED') {
+    // The reason is shown as written, or the line still appears without one —
+    // "blocked" with no explanation is itself the thing an operator needs to
+    // see, and hiding the line because the reason is empty hides the block.
+    lines.push(t.render('ADMIN_USER_STATUS_BLOCKED', { reason: user.blocked_reason ?? '—' }));
+  }
+  if (user.is_reseller) lines.push(t.raw('ADMIN_USER_RESELLER'));
+  if (user.discount_percent > 0) {
+    lines.push(t.render('ADMIN_USER_DISCOUNT', { percent: n(user.discount_percent) }));
+  }
+  lines.push(
+    t.render('ADMIN_USER_ORDERS', {
+      count: n(user.order_count),
+      amount: formatToman(user.completed_irr),
+    }),
+    t.render('ADMIN_USER_SERVICES', { count: n(user.active_services) }),
+  );
+  if (user.last_seen_at) {
+    lines.push(
+      t.render('ADMIN_USER_SEEN', { when: formatTehranDate(new Date(user.last_seen_at)) }),
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The customer's page.
+ *
+ * Block and unblock are one place on the screen, never both at once — the pair
+ * that is not applicable is dropped and its place closed up, the same rule the
+ * service screen uses for on/off.
+ */
+export function userMenu(
+  user: CustomerDetail,
+  allowed: readonly AdminPermission[],
+): InlineKeyboard {
+  const blocked = user.status === 'BLOCKED';
+  return buildMenu('adminUser', layout('adminUser'), {
+    applies: (action) => {
+      if (action === 'uwp' || action === 'uwm') return allowed.includes('users.wallet');
+      if (action === 'ubl') return !blocked && allowed.includes('users.block');
+      if (action === 'uub') return blocked && allowed.includes('users.block');
+      return true;
+    },
+    // Every action on this screen except the two back buttons needs to say
+    // WHICH customer. `usf` and `pnl` name no row, so they fall through to the
+    // bare action.
+    target: (action) =>
+      isUserAction(action) ? encode(action, user.id) : undefined,
+  });
 }
 
 /** One line per waiting payment: who, how much, and what the engine thought. */

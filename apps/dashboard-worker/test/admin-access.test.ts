@@ -355,7 +355,11 @@ describe('the bot’s operators', () => {
       items: Array<{ telegramId: number; effective: string[] }>;
     };
     const of = (tg: number) => body.items.find((i) => i.telegramId === tg)!.effective;
-    expect(of(TG_BASE + 13)).toEqual(['claims.view']);
+    // SUPPORT reads and does not decide: it may look at the payment queue and
+    // look a customer up, and it may not approve, reject, move money, block, or
+    // see what the shop took today. Written out rather than counted, because
+    // the list is the claim.
+    expect(of(TG_BASE + 13)).toEqual(['claims.view', 'users.view']);
     expect(of(TG_BASE + 14)).toContain('claims.approve_without_tx');
     // Every one of them, whatever the list has grown to. A literal count here
     // said "4" and turned adding a permission into a failing test about

@@ -348,6 +348,12 @@ export const MENUS = {
         hint: 'فقط به اپراتوری که دسترسی دیدن آمار دارد',
         conditional: true,
       },
+      {
+        action: 'usf',
+        label: '👤 جستجوی کاربر',
+        hint: 'فقط به اپراتوری که دسترسی دیدن کاربر دارد',
+        conditional: true,
+      },
       BACK_TO_MENU,
     ],
   },
@@ -357,6 +363,59 @@ export const MENUS = {
     buttons: [
       { action: 'sts', label: '🔄 بروزرسانی', hint: 'همان صفحه را دوباره می‌خواند' },
       { action: 'pnl', label: '🛠 پنل ادمین', hint: 'برگشت به خانهٔ پنل', required: true },
+    ],
+  },
+  adminUsers: {
+    label: 'پنل ادمین — نتیجهٔ جستجوی کاربر',
+    hint: 'زیر فهرست کاربرانی که با جستجو خواندند',
+    buttons: [
+      { action: 'usf', label: '🔍 جستجوی دیگر', hint: 'دوباره می‌پرسد' },
+      { action: 'pnl', label: '🛠 پنل ادمین', hint: 'برگشت به خانهٔ پنل', required: true },
+    ],
+  },
+  adminUser: {
+    label: 'پنل ادمین — صفحهٔ یک کاربر',
+    hint: 'کارهایی که روی یک مشتری می‌شود کرد',
+    buttons: [
+      {
+        action: 'uwp',
+        label: '➕ افزایش موجودی',
+        hint: 'فقط با دسترسی کیف پول',
+        conditional: true,
+      },
+      {
+        action: 'uwm',
+        label: '➖ کاهش موجودی',
+        hint: 'فقط با دسترسی کیف پول',
+        conditional: true,
+      },
+      {
+        action: 'ubl',
+        label: '⛔ مسدود کردن',
+        hint: 'وقتی کاربر فعال است — فقط با دسترسی مسدودسازی',
+        conditional: true,
+      },
+      {
+        action: 'uub',
+        label: '✅ رفع مسدودی',
+        hint: 'به‌جای دکمهٔ بالا، وقتی کاربر مسدود است',
+        conditional: true,
+      },
+      { action: 'usf', label: '🔍 جستجوی دیگر', hint: 'یک کاربر دیگر' },
+      { action: 'pnl', label: '🛠 پنل ادمین', hint: 'برگشت به خانهٔ پنل', required: true },
+    ],
+  },
+  adminUserConfirm: {
+    label: 'پنل ادمین — تاییدیهٔ مسدودسازی',
+    hint: 'قبل از مسدود کردن یا رفع مسدودی یک کاربر',
+    buttons: [
+      {
+        action: 'cnf',
+        label: 'بله، انجام شود',
+        hint: 'تنها راه تایید — بدون آن صفحه بن‌بست است',
+        required: true,
+      },
+      { action: 'usr', label: 'بازگشت ⬅️', hint: 'انصراف — برگشت به همان کاربر' },
     ],
   },
   adminClaims: {
@@ -524,11 +583,28 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
   adminHome: [
     ['clm', 0, 0],
     ['sts', 1, 0],
+    ['usf', 1, 1],
     ['menu', 2, 0],
   ],
   adminStats: [
     ['sts', 0, 0],
     ['pnl', 1, 0],
+  ],
+  adminUsers: [
+    ['usf', 0, 0],
+    ['pnl', 0, 1],
+  ],
+  adminUserConfirm: [
+    ['cnf', 0, 0],
+    ['usr', 1, 0],
+  ],
+  adminUser: [
+    ['uwp', 0, 0],
+    ['uwm', 0, 1],
+    ['ubl', 1, 0],
+    ['uub', 1, 1],
+    ['usf', 2, 0],
+    ['pnl', 2, 1],
   ],
   adminClaims: [['pnl', 0, 0]],
   adminClaimDetail: [
