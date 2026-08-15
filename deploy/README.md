@@ -41,30 +41,65 @@ behaviour is identical, only later.
 
 ## Building a deployable copy
 
-`pnpm deploy` produces a self-contained directory with workspace dependencies
-resolved and devDependencies pruned:
+One image, three services. `SERVICE` picks which entry point runs — there is no
+default, because an image that guesses starts the wrong process on a typo and
+looks healthy doing it.
 
 ```bash
-corepack pnpm install
-corepack pnpm --filter @shikoo/dashboard-web build   # dashboard only: builds the SPA
-corepack pnpm deploy --filter @shikoo/bot        --prod /tmp/out/bot
-corepack pnpm deploy --filter @shikoo/dashboard  --prod /tmp/out/dashboard
-corepack pnpm deploy --filter @shikoo/ingest     --prod /tmp/out/ingest
+docker build -t shikoo .
+docker run -e SERVICE=bot       -e DATABASE_URL=... -e TELEGRAM_BOT_TOKEN=... shikoo
+docker run -e SERVICE=ingest    -e DATABASE_URL=... -p 8787:8787 shikoo
+docker run -e SERVICE=dashboard -e DATABASE_URL=... -p 8788:8788 shikoo
 ```
 
-Then `robocopy`/`rsync` the one directory you need to the one host that needs
-it, into `/opt/shikoo/<service>`.
+Measured on 2026-08-15: **18 s to build, 587 MB image, and 49–54 MB of memory
+per running service.**
 
-Because the prune is real, **a runtime import from a devDependency breaks the
-deployed copy and nothing else**. That was already true of one package:
-`apps/dashboard-worker` imports `@shikoo/sms-parser` at runtime in `index.ts`
-while declaring it under `devDependencies`. It is a `dependencies` entry now.
-If you add an import, check which list it is in.
+### What used to be written here, and why none of it worked
+
+This section described `pnpm deploy --prod` into `/opt/shikoo/<service>`, run by
+the three `*.service` units. That recipe could not start the project, for three
+independent reasons, and the units are retired along with it:
+
+1. All three units ran `node dist/server.js`. **No package has a `build` script
+   and no `tsconfig` has an `outDir`** — `dist/` was never produced by anything.
+2. The alternative, `pnpm start` → `tsx src/server.ts`, needs `tsx`, which was
+   a root devDependency. `--prod` prunes exactly that. `tsx` is a real
+   dependency of each of the three apps now.
+3. **`pnpm deploy` does not run in this workspace at all**:
+   `ERR_PNPM_DEPLOY_NONINJECTED_WORKSPACE`, because `inject-workspace-packages`
+   is not set.
+
+A plain `tsc` emit would not have rescued it either: the tree is written for
+`moduleResolution: "Bundler"`, so imports carry no file extension and the output
+is not loadable by Node ESM. That is why TypeScript is still TypeScript at
+runtime here, with `tsx` resolving it.
+
+The old warning still applies in a new form: **a runtime import from a
+devDependency is a deploy-time failure and nothing else.** It has already
+happened once — `apps/dashboard-worker` imported `@shikoo/sms-parser` at runtime
+while declaring it under `devDependencies`. If you add an import, check which
+list it is in.
+
+### Health checks
+
+Deliberately not in the Dockerfile, because they differ per service and a
+Dockerfile `HEALTHCHECK` takes precedence over the panel's. Configure them in
+Coolify:
+
+| Service | Check |
+| --- | --- |
+| `ingest` | `GET /health` on 8787 |
+| `dashboard` | `GET /health` on 8788 |
+| `bot` | **none — disable it.** The bot opens no port; it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name |
 
 ## Environment, per service
 
-Keep each of these at mode 0600. They hold the bot token, the HMAC secret and
-the database password.
+On Coolify these are the environment variables of each application, not files.
+The tables below keep their old headings because the variable names are what
+matter; wherever one says `/etc/shikoo/*.env`, read "this service's environment
+in Coolify". They hold the bot token, the HMAC secret and the database
+password, so they are secrets there too.
 
 ### `/etc/shikoo/bot.env`
 
@@ -84,9 +119,10 @@ No `PORT`. The bot does not listen.
 | `DATABASE_URL` | yes | |
 | `ACCESS_AUD`, `ACCESS_ISSUER` | yes in production | Cloudflare Access JWT verification |
 | `ENV_NAME` | yes | Set to `production` |
-| `SPA_DIST` | no | Defaults to `../dashboard-web/dist` relative to cwd |
+| `SPA_DIST` | no | The payment hub SPA. Set absolutely in the image |
+| `ADMIN_DIST` | no | **The shop admin panel SPA**, served at `/admin`. One process serves both; this row was missing while the code read it, and an unbuilt SPA is a 500 rather than a failed deploy |
 | `PORT`, `HOST` | no | Default `8788`, `127.0.0.1` |
-| `INGEST_URL` | recommended | Printed into the SMS-relay phone configuration. The compiled fallback still points at the retired Workers hostname |
+| `INGEST_URL` | recommended | Printed into the SMS-relay phone configuration. There is no fallback any more: the routes that need it answer 503 `INGEST_URL_MISSING` |
 | `TEST_ACCESS_USER` | **never in production** | Bypasses JWT verification. The process refuses to start with it set while `ENV_NAME=production` |
 
 ### `/etc/shikoo/ingest.env`
@@ -136,12 +172,10 @@ Branding is confined to `apps/dashboard-web` — the page title, the logo file,
 the wordmark, the theme storage key. Those are build-time today; making them
 env-driven is the work if and when a second brand is sold.
 
-## Still hardcoded at deploy time
+## ~~Still hardcoded at deploy time~~ — settled
 
-Two strings assume the retired Cloudflare hostnames. Neither blocks running the
-services on separate hosts — same-origin requests are always accepted, and
-`INGEST_URL` overrides the second — but both should be settled before a second
-deployment exists:
-
-- `apps/dashboard-worker/src/security.ts` — the cross-origin allowlist
-- `apps/dashboard-worker/src/index.ts` — `DEFAULT_INGEST_URL`
+Both strings that assumed the retired Cloudflare hostnames are gone.
+`security.ts` reads `ALLOWED_ORIGINS` from the environment, and
+`DEFAULT_INGEST_URL` was replaced by a nullable `ingestUrl()` — the routes that
+need it answer 503 `INGEST_URL_MISSING` rather than pointing a phone at a
+hostname that is no longer ours.

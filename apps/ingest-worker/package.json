@@ -18,6 +18,7 @@
     "@shikoo/domain": "workspace:*",
     "@shikoo/sms-parser": "workspace:*",
     "hono": "4.6.7",
+    "tsx": "^4.23.7",
     "zod": "3.23.8"
   },
   "devDependencies": {

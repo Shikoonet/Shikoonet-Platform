@@ -16,6 +16,7 @@
     "@shikoo/database": "workspace:*",
     "@shikoo/db": "workspace:*",
     "@shikoo/domain": "workspace:*",
+    "tsx": "^4.23.7",
     "zod": "3.23.8"
   },
   "devDependencies": {

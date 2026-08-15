@@ -1,0 +1,40 @@
+# What never reaches a build context, and therefore never reaches a server.
+#
+# Coolify builds from the git repository, where most of this is absent already.
+# This file is for the other case — `docker build .` from a working tree — and
+# the first entry is the reason it exists rather than a tidiness measure.
+
+# Real customer data. `legacy/mirzabot-php/db/` holds the production MySQL dump:
+# 11,241 Telegram identities, 4,629 payments, card numbers. It is gitignored, so
+# it is only ever here, on this machine — and a build context is exactly how it
+# would stop being only here.
+legacy/
+
+node_modules
+**/node_modules
+
+# Rebuilt inside the image. Copying a Windows-built dist into a Linux image is
+# how a stale asset ships without anyone choosing it.
+**/dist
+**/build
+**/coverage
+**/*.tsbuildinfo
+
+.git
+.github
+graphify-out/
+.playwright-mcp/
+.claude/
+
+# Secrets. `sim/.env.local` carries the test bot token.
+.env
+.env.*
+!.env.example
+sim/.env.local
+
+# Nothing in the image reads these.
+docs/
+**/*.md
+!deploy/README.md
+test-results
+playwright-report

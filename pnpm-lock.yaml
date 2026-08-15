@@ -81,6 +81,9 @@ importers:
       '@shikoo/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      tsx:
+        specifier: ^4.23.7
+        version: 4.23.12
       zod:
         specifier: 3.23.8
         version: 3.23.8
@@ -164,6 +167,9 @@ importers:
       jose:
         specifier: 5.9.6
         version: 5.9.6
+      tsx:
+        specifier: ^4.23.7
+        version: 4.23.12
       zod:
         specifier: 3.23.8
         version: 3.23.8
@@ -207,6 +213,9 @@ importers:
       hono:
         specifier: 4.6.7
         version: 4.6.7
+      tsx:
+        specifier: ^4.23.7
+        version: 4.23.12
       zod:
         specifier: 3.23.8
         version: 3.23.8
