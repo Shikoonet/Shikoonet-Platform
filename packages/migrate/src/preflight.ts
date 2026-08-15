@@ -345,7 +345,9 @@ export async function preflight(cfg: Config, my: Connection, pgc: pg.Client): Pr
   const tableCount = Number(tableRows[0]?.n ?? 0);
   if (tableCount < 50) {
     report.fail(`only ${tableCount} tables — migrations 0001-0005 are not applied`);
-    add('BLOCKER', 'target schema', 'apply migrations/000*.sql first');
+    // `0*.sql`, never `000*.sql`: the second silently stops at 0009 and leaves
+    // every migration from 0010 on unapplied, which reads as a clean run.
+    add('BLOCKER', 'target schema', 'apply migrations/0*.sql first');
   } else {
     report.ok(`${tableCount} tables present`);
   }
