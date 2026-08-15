@@ -34,21 +34,18 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 
+import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 
 /**
- * The largest correction a single adjustment may make, in IRR.
- *
- * Not a taste call: 100,000,000 IRR is the admin's own card-to-card ceiling
- * (`maxbalancecart = 10000000` Toman, read from the production `PaySetting`
- * rows on 2026-08-13). A correction larger than the largest deposit the shop
- * will accept is far more likely to be a typed extra zero than an intent, and
- * an extra zero on a debit is the failure that has no undo.
+ * A correction larger than the largest deposit the shop will accept is far more
+ * likely to be a typed extra zero than an intent, and an extra zero on a debit
+ * is the failure that has no undo. The bound itself is the shop's own
+ * card-to-card ceiling — see `MAX_SINGLE_PAYMENT_IRR`.
  *
  * ponytail: one flat bound rather than per-role limits. There is one admin
  * role that can reach this route at all.
  */
-export const ADJUST_MAX_IRR = 100_000_000;
 
 const PAGE_SIZE_MAX = 100;
 
@@ -68,7 +65,10 @@ const AdjustBody = z
       .number()
       .int()
       .refine((n) => n !== 0, 'amount must not be zero')
-      .refine((n) => Math.abs(n) <= ADJUST_MAX_IRR, 'amount exceeds the single-adjustment ceiling'),
+      .refine(
+        (n) => Math.abs(n) <= MAX_SINGLE_PAYMENT_IRR,
+        'amount exceeds the single-adjustment ceiling',
+      ),
     note: z.string().trim().min(1).max(500),
     // Supplied by the client so a double-submitted form collapses onto one
     // row in the database rather than being deduped by a disabled button.

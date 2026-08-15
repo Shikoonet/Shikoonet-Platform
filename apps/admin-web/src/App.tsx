@@ -24,16 +24,17 @@ import { DiscountsPage } from './pages/DiscountsPage.js';
 import { OrdersPage, ServicesPage, TransactionsPage } from './pages/LedgerPages.js';
 import { SettingsPage, RequestsPage } from './pages/SettingsPage.js';
 import { BotTextsPage, KeyboardPage } from './pages/BotContentPages.js';
-import { NotBuiltPage } from './pages/NotBuiltPage.js';
 import './theme.css';
 
 /**
  * Which screen the selected section shows.
  *
  * A switch rather than a lookup table so the compiler checks the section list
- * for us: `PageId` is a closed union, and a section added to `nav.ts` without a
- * screen falls to `NotBuiltPage` — which is the honest default, since the
- * «به‌زودی» badge beside it in the sidebar says the same thing.
+ * for us. Every `PageId` now has a screen, so there is no default arm: adding a
+ * section to `nav.ts` without building it is a type error here, which is a
+ * better place to find out than a «به‌زودی» badge in front of a customer's
+ * admin. That badge, and the placeholder page behind it, are gone with the last
+ * unbuilt section.
  */
 function Body({ page, go }: { page: PageId; go: (id: PageId) => void }) {
   switch (page) {
@@ -61,8 +62,6 @@ function Body({ page, go }: { page: PageId; go: (id: PageId) => void }) {
       return <BotTextsPage />;
     case 'keyboard':
       return <KeyboardPage />;
-    default:
-      return <NotBuiltPage id={page} />;
   }
 }
 
@@ -120,10 +119,6 @@ export function App() {
                   <Icon name={item.icon} />
                 </span>
                 <span>{item.label}</span>
-                {/* Unbuilt sections stay listed and stay labelled. Hiding them
-                    would make the panel look finished, and an admin cannot
-                    tell "dropped" from "not yet" by absence. */}
-                {!item.built && <span className="badge">به‌زودی</span>}
               </button>
             ))}
           </div>

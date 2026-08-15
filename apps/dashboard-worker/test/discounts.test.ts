@@ -18,7 +18,7 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
-import { CODE_MAX_IRR } from '../src/discountRoutes.js';
+import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 
 const ADMIN = 'admin@example.com';
 const REVIEWER = 'reviewer-discounts@example.com';
@@ -185,8 +185,8 @@ describe('creating a code', () => {
   });
 
   it('refuses an amount above the ceiling', async () => {
-    expect((await create(gift(`${PREFIX}max`, { amountIrr: CODE_MAX_IRR }))).status).toBe(201);
-    expect((await create(gift(`${PREFIX}over`, { amountIrr: CODE_MAX_IRR + 1 }))).status).toBe(400);
+    expect((await create(gift(`${PREFIX}max`, { amountIrr: MAX_SINGLE_PAYMENT_IRR }))).status).toBe(201);
+    expect((await create(gift(`${PREFIX}over`, { amountIrr: MAX_SINGLE_PAYMENT_IRR + 1 }))).status).toBe(400);
   });
 
   it('refuses to narrow a gift code to a product, panel or action', async () => {

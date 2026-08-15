@@ -27,16 +27,8 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
+import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
-
-/**
- * The largest value a single code may carry, in IRR.
- *
- * The same 100,000,000 the wallet adjustment and the plan price use: it is the
- * admin's own card-to-card ceiling, and a gift code is a credit to a wallet by
- * another name.
- */
-export const CODE_MAX_IRR = 100_000_000;
 
 const PAGE_SIZE_MAX = 100;
 
@@ -60,7 +52,9 @@ const CreateBody = z
   .object({
     code: z.string().trim().regex(CODE_PATTERN, 'code must be 3-64 of A-Z, 0-9, - or _'),
     kind: z.enum(['GIFT_BALANCE', 'PERCENT_OFF', 'AMOUNT_OFF']),
-    amountIrr: z.number().int().min(1).max(CODE_MAX_IRR).nullable().default(null),
+    // A gift code is a credit to a wallet by another name, so it is bounded by
+    // the same ceiling as a deposit.
+    amountIrr: z.number().int().min(1).max(MAX_SINGLE_PAYMENT_IRR).nullable().default(null),
     percent: z.number().min(0.01).max(100).nullable().default(null),
     maxUses: z.number().int().min(1).max(1_000_000).nullable().default(null),
     appliesTo: z.enum(['ALL', 'BUY', 'RENEW']).default('ALL'),

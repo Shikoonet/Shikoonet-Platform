@@ -15,7 +15,7 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
-import { PLAN_MAX_PRICE_IRR } from '../src/productRoutes.js';
+import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 
 const ADMIN = 'admin@example.com';
 const REVIEWER = 'reviewer-products@example.com';
@@ -81,6 +81,50 @@ async function makeCatalog(
   return { providerId, productId, planId: Number(plan!.id) };
 }
 
+/**
+ * A customer of this suite's own, keyed by a telegram id in a range nothing
+ * else uses so the purge can find them again.
+ */
+async function makeUser(telegramId: number): Promise<number> {
+  const row = await baseEnv.DB.prepare(
+    `INSERT INTO users (telegram_id, username, registered_at)
+     VALUES (?1, ?2, now())
+     ON CONFLICT (telegram_id) DO UPDATE SET username = excluded.username
+     RETURNING id`,
+  )
+    .bind(telegramId, `${PREFIX}${telegramId}`)
+    .first<{ id: number }>();
+  return Number(row!.id);
+}
+
+/** An order pointing at a plan — the reference the delete guard exists for. */
+async function placeOrder(planId: number, telegramId: number): Promise<number> {
+  const userId = await makeUser(telegramId);
+  const row = await baseEnv.DB.prepare(
+    `INSERT INTO orders (public_id, user_id, kind, plan_id, unit_price_irr, total_irr, status)
+     VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1000000, 1000000, 'COMPLETED') RETURNING id`,
+  )
+    .bind(`${PREFIX}o${telegramId}`, userId, planId)
+    .first<{ id: number }>();
+  return Number(row!.id);
+}
+
+/** A subscription pointing at a plan. */
+async function giveSubscription(
+  planId: number,
+  providerId: number,
+  telegramId: number,
+): Promise<void> {
+  const userId = await makeUser(telegramId);
+  await baseEnv.DB.prepare(
+    `INSERT INTO subscriptions
+       (public_id, user_id, plan_id, provider_id, plan_name_at_sale, price_irr, status, purchased_at)
+     VALUES (?1, ?2, ?3, ?4, 'پلن فروخته‌شده', 1000000, 'ACTIVE', now())`,
+  )
+    .bind(`${PREFIX}s${telegramId}`, userId, planId, providerId)
+    .run();
+}
+
 /** What the database says, not what the route said. */
 async function planRow(id: number) {
   return baseEnv.DB.prepare(
@@ -109,11 +153,21 @@ async function auditRows(entityType: string, entityId: number) {
 }
 
 async function purge(): Promise<void> {
-  // Plans cascade from products; products and providers go by their prefix.
-  await baseEnv.DB.prepare(`DELETE FROM products WHERE code LIKE ?1`).bind(`${PREFIX}%`).run();
-  await baseEnv.DB.prepare(`DELETE FROM provisioning_providers WHERE code LIKE ?1`)
-    .bind(`${PREFIX}%`)
-    .run();
+  // Outside in: stock and sales first, because the delete guard the suite is
+  // testing is exactly what would otherwise stop `products` from going. Plans
+  // cascade from products; products, providers and users go by their prefix.
+  for (const sql of [
+    `DELETE FROM provisioning_stock WHERE remote_username LIKE ?1`,
+    `DELETE FROM subscriptions WHERE public_id LIKE ?1`,
+    `DELETE FROM discount_codes WHERE code LIKE ?1`,
+    `DELETE FROM orders WHERE public_id LIKE ?1`,
+    `DELETE FROM products WHERE code LIKE ?1`,
+    `DELETE FROM provisioning_providers WHERE code LIKE ?1`,
+    `DELETE FROM product_categories WHERE name LIKE ?1`,
+    `DELETE FROM users WHERE username LIKE ?1`,
+  ]) {
+    await baseEnv.DB.prepare(sql).bind(`${PREFIX}%`).run();
+  }
 }
 
 beforeAll(async () => {
@@ -261,12 +315,12 @@ describe('POST /api/v1/admin/products/plans/:id', () => {
     // extra zero. 100,000,000 IRR is already 13× the priciest real product.
     const { planId } = await makeCatalog('ceiling', { priceIrr: 7_500_000 });
 
-    const ok = await patch(planId, { priceIrr: PLAN_MAX_PRICE_IRR });
+    const ok = await patch(planId, { priceIrr: MAX_SINGLE_PAYMENT_IRR });
     expect(ok.status).toBe(200);
 
-    const tooMuch = await patch(planId, { priceIrr: PLAN_MAX_PRICE_IRR + 1 });
+    const tooMuch = await patch(planId, { priceIrr: MAX_SINGLE_PAYMENT_IRR + 1 });
     expect(tooMuch.status).toBe(400);
-    expect(Number((await planRow(planId))!.price_irr)).toBe(PLAN_MAX_PRICE_IRR);
+    expect(Number((await planRow(planId))!.price_irr)).toBe(MAX_SINGLE_PAYMENT_IRR);
   });
 
   it('refuses a negative price', async () => {
@@ -298,17 +352,94 @@ describe('POST /api/v1/admin/products/plans/:id', () => {
     expect((await patch(2_000_000_001, { priceIrr: 100 })).status).toBe(404);
   });
 
-  it('offers no way to delete a plan', async () => {
-    // Deliberate: `orders.plan_id` is ON DELETE SET NULL, so a delete would
-    // silently detach the sales history. DISABLED is the supported retirement.
-    const { planId } = await makeCatalog('no-delete');
-    const res = await app.request(
-      `/api/v1/admin/products/plans/${planId}`,
-      { method: 'DELETE' },
-      envAs(ADMIN),
-    );
-    expect(res.status).toBe(404);
+  it('can move a plan up the list and cap how many share it', async () => {
+    // Two columns the panel had no write path for at all: a plan's position on
+    // the customer's screen, and `user_limit`.
+    const { planId } = await makeCatalog('ordering');
+    expect((await patch(planId, { sortOrder: 7, userLimit: 3 })).status).toBe(200);
+    const row = await baseEnv.DB.prepare(
+      `SELECT sort_order, user_limit FROM product_plans WHERE id = ?1`,
+    )
+      .bind(planId)
+      .first<{ sort_order: number; user_limit: number | null }>();
+    expect(row!.sort_order).toBe(7);
+    expect(row!.user_limit).toBe(3);
+  });
+});
+
+describe('DELETE /api/v1/admin/products/plans/:id', () => {
+  function del(id: number, email = ADMIN) {
+    return app.request(`/api/v1/admin/products/plans/${id}`, { method: 'DELETE' }, envAs(email));
+  }
+
+  it('removes a plan nothing points at, and says so in the ledger', async () => {
+    const { planId } = await makeCatalog('deletable');
+    expect((await del(planId)).status).toBe(200);
+    expect(await planRow(planId)).toBeNull();
+
+    const logs = await auditRows('PRODUCT_PLAN', planId);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]!.action).toBe('catalog.plan_deleted');
+    // The row that is gone is written down before it goes; after is null.
+    expect(JSON.parse(logs[0]!.before_json).name).toBe('پلن deletable');
+    expect(logs[0]!.after_json).toBeNull();
+  });
+
+  it('refuses a plan an order points at, and names the count', async () => {
+    const { planId } = await makeCatalog('sold');
+    await placeOrder(planId, 991_000_001);
+
+    const res = await del(planId);
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; detail: string; counts: { orders: number } };
+    expect(body.error).toBe('in_use');
+    expect(body.counts.orders).toBe(1);
+    expect(body.detail).toContain('1 سفارش');
+
+    // And the order still knows what it bought — the failure this guard exists
+    // to prevent is not an error, it is a silent NULL in `orders.plan_id`.
     expect(await planRow(planId)).not.toBeNull();
+    const order = await baseEnv.DB.prepare(
+      `SELECT plan_id FROM orders WHERE plan_id = ?1`,
+    )
+      .bind(planId)
+      .first<{ plan_id: number }>();
+    expect(Number(order!.plan_id)).toBe(planId);
+  });
+
+  it('refuses a plan a sold subscription points at', async () => {
+    const { planId, providerId } = await makeCatalog('subscribed');
+    await giveSubscription(planId, providerId, 991_000_002);
+
+    const res = await del(planId);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { counts: { subscriptions: number } }).counts.subscriptions).toBe(1);
+    expect(await planRow(planId)).not.toBeNull();
+  });
+
+  it('refuses a plan with a config still on the shelf', async () => {
+    const { planId, providerId } = await makeCatalog('stocked');
+    await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_stock (plan_id, provider_id, remote_username, subscription_url)
+       VALUES (?1, ?2, ?3, 'https://panel.test/sub/stocked')`,
+    )
+      .bind(planId, providerId, `${PREFIX}stocked-user`)
+      .run();
+
+    const res = await del(planId);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { counts: { stock: number } }).counts.stock).toBe(1);
+    expect(await planRow(planId)).not.toBeNull();
+  });
+
+  it('is refused for a reviewer', async () => {
+    const { planId } = await makeCatalog('reviewer-delete');
+    expect((await del(planId, REVIEWER)).status).toBe(403);
+    expect(await planRow(planId)).not.toBeNull();
+  });
+
+  it('404s on a plan that does not exist', async () => {
+    expect((await del(2_000_000_002)).status).toBe(404);
   });
 });
 
@@ -356,5 +487,297 @@ describe('POST /api/v1/admin/products/:id/status', () => {
       .bind(productId)
       .first<{ status: string }>();
     expect(row!.status).toBe('ACTIVE');
+  });
+});
+
+describe('creating a product and its plans', () => {
+  function post(path: string, body: unknown, email = ADMIN) {
+    return app.request(
+      `/api/v1/admin/${path}`,
+      { method: 'POST', body: JSON.stringify(body) },
+      envAs(email),
+    );
+  }
+
+  it('writes every field the panel had no way to set before', async () => {
+    // These eight columns existed in `0002_catalog.sql` from the first day and
+    // no route could write any of them: the panel could only edit five fields
+    // of an already-imported plan.
+    const provider = await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind) VALUES (?1, 'پنل تازه', 'marzban')
+       RETURNING id`,
+    )
+      .bind(`${PREFIX}new-prod`)
+      .first<{ id: number }>();
+
+    const cat = await post('product-categories', { name: `${PREFIX}دستهٔ تازه`, sortOrder: 2 });
+    expect(cat.status).toBe(201);
+    const categoryId = ((await cat.json()) as { category: { id: number } }).category.id;
+
+    const res = await post('products', {
+      code: `${PREFIX}fresh`,
+      name: 'محصول تازه',
+      kind: 'spotify',
+      providerId: Number(provider!.id),
+      categoryId,
+      description: 'یک خط توضیح',
+      resellersOnly: true,
+      oncePerUser: true,
+      sortOrder: 5,
+      status: 'HIDDEN',
+    });
+    expect(res.status).toBe(201);
+    const productId = ((await res.json()) as { productId: number }).productId;
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT code, name, kind, provider_id, category_id, description,
+              resellers_only, once_per_user, sort_order, status
+         FROM products WHERE id = ?1`,
+    )
+      .bind(productId)
+      .first<Record<string, unknown>>();
+    expect(row!['code']).toBe(`${PREFIX}fresh`);
+    expect(row!['kind']).toBe('spotify');
+    expect(Number(row!['provider_id'])).toBe(Number(provider!.id));
+    expect(Number(row!['category_id'])).toBe(categoryId);
+    expect(row!['description']).toBe('یک خط توضیح');
+    expect(row!['resellers_only']).toBe(true);
+    expect(row!['once_per_user']).toBe(true);
+    expect(row!['sort_order']).toBe(5);
+    expect(row!['status']).toBe('HIDDEN');
+  });
+
+  it('makes a plan unmetered and undying by default rather than guessing', async () => {
+    // The one thing a create form must not do is substitute 0 GB or 30 days
+    // for "not filled in" — those are prices the shop never agreed to.
+    const { productId } = await makeCatalog('defaults');
+    const res = await post(`products/${productId}/plans`, {
+      name: 'پلن نامحدود',
+      priceIrr: 2_000_000,
+    });
+    expect(res.status).toBe(201);
+    const plan = (await res.json()) as {
+      plan: { id: number; volumeGb: number | null; durationDays: number | null; status: string };
+    };
+    expect(plan.plan.volumeGb).toBeNull();
+    expect(plan.plan.durationDays).toBeNull();
+
+    const row = (await planRow(plan.plan.id))!;
+    expect(row.volume_gb).toBeNull();
+    expect(row.duration_days).toBeNull();
+    expect(row.status).toBe('ACTIVE');
+  });
+
+  it('sells the new plan through the same list the panel reads', async () => {
+    const { productId } = await makeCatalog('listed');
+    await post(`products/${productId}/plans`, {
+      name: 'پلن دوم',
+      priceIrr: 3_300_000,
+      durationDays: 90,
+      volumeGb: 120,
+    });
+    const list = await app.request('/api/v1/admin/products?q=listed', {}, envAs(ADMIN));
+    const body = (await list.json()) as { total: number; items: Array<{ name: string }> };
+    expect(body.total).toBe(2);
+    expect(body.items.map((i) => i.name)).toContain('پلن دوم');
+  });
+
+  it('refuses a duplicate code instead of raising', async () => {
+    await makeCatalog('dupe');
+    const res = await post('products', {
+      code: `${PREFIX}dupe`,
+      name: 'محصول تکراری',
+      kind: 'vpn',
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('refuses a panel that does not exist instead of raising', async () => {
+    const res = await post('products', {
+      code: `${PREFIX}ghost-panel`,
+      name: 'محصول بی‌پنل',
+      kind: 'vpn',
+      providerId: 2_000_000_003,
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('refuses a code with a space in it', async () => {
+    // `products.code` is UNIQUE and joined on in every report; free text there
+    // reads as two columns downstream.
+    expect(
+      (await post('products', { code: `${PREFIX}two words`, name: 'x', kind: 'vpn' })).status,
+    ).toBe(400);
+  });
+
+  it('refuses a price above the ceiling on create, not only on edit', async () => {
+    const { productId } = await makeCatalog('create-ceiling');
+    const res = await post(`products/${productId}/plans`, {
+      name: 'پلن گران',
+      priceIrr: MAX_SINGLE_PAYMENT_IRR + 1,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('404s when the product a plan is added to does not exist', async () => {
+    expect(
+      (await post('products/2000000004/plans', { name: 'x', priceIrr: 1000 })).status,
+    ).toBe(404);
+  });
+
+  it('is refused for a reviewer, and nothing is written', async () => {
+    const res = await post('products', { code: `${PREFIX}rev`, name: 'x', kind: 'vpn' }, REVIEWER);
+    expect(res.status).toBe(403);
+    const row = await baseEnv.DB.prepare(`SELECT id FROM products WHERE code = ?1`)
+      .bind(`${PREFIX}rev`)
+      .first();
+    expect(row).toBeNull();
+  });
+});
+
+describe('POST /api/v1/admin/products/:id', () => {
+  function edit(id: number, body: unknown, email = ADMIN) {
+    return app.request(
+      `/api/v1/admin/products/${id}`,
+      { method: 'POST', body: JSON.stringify(body) },
+      envAs(email),
+    );
+  }
+
+  it('moves a product to another panel and records both sides', async () => {
+    const { productId } = await makeCatalog('moving');
+    const other = await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind) VALUES (?1, 'مقصد', 'hiddify')
+       RETURNING id`,
+    )
+      .bind(`${PREFIX}dest`)
+      .first<{ id: number }>();
+
+    expect((await edit(productId, { providerId: Number(other!.id) })).status).toBe(200);
+    const row = await baseEnv.DB.prepare(`SELECT provider_id FROM products WHERE id = ?1`)
+      .bind(productId)
+      .first<{ provider_id: number }>();
+    expect(Number(row!.provider_id)).toBe(Number(other!.id));
+
+    const logs = await auditRows('PRODUCT', productId);
+    expect(logs[0]!.action).toBe('catalog.product_updated');
+    expect(JSON.parse(logs[0]!.after_json).provider_id).toBe(Number(other!.id));
+  });
+
+  it('can take a product off a panel entirely', async () => {
+    const { productId } = await makeCatalog('unpanelled');
+    expect((await edit(productId, { providerId: null })).status).toBe(200);
+    const row = await baseEnv.DB.prepare(`SELECT provider_id FROM products WHERE id = ?1`)
+      .bind(productId)
+      .first<{ provider_id: number | null }>();
+    expect(row!.provider_id).toBeNull();
+  });
+
+  it('refuses an empty patch and a field it does not know', async () => {
+    const { productId } = await makeCatalog('strict');
+    expect((await edit(productId, {})).status).toBe(400);
+    expect((await edit(productId, { priceIrr: 5 })).status).toBe(400);
+  });
+
+  it('is refused for a reviewer', async () => {
+    const { productId } = await makeCatalog('reviewer-edit');
+    expect((await edit(productId, { name: 'تغییر' }, REVIEWER)).status).toBe(403);
+  });
+});
+
+describe('DELETE /api/v1/admin/products/:id', () => {
+  function del(id: number, email = ADMIN) {
+    return app.request(`/api/v1/admin/products/${id}`, { method: 'DELETE' }, envAs(email));
+  }
+
+  async function productRow(id: number) {
+    return baseEnv.DB.prepare(`SELECT id FROM products WHERE id = ?1`).bind(id).first();
+  }
+
+  it('removes a product and its plans when nothing points at them', async () => {
+    const { productId, planId } = await makeCatalog('removable');
+    expect((await del(productId)).status).toBe(200);
+    expect(await productRow(productId)).toBeNull();
+    // `product_plans.product_id` is ON DELETE CASCADE; the plan goes with it.
+    expect(await planRow(planId)).toBeNull();
+  });
+
+  it('refuses a product whose plan carries an order, one join further out', async () => {
+    // The guard on a product has to reach through `product_plans`, because
+    // deleting the product cascades the plan away and the order's `plan_id`
+    // would be SET NULL on the way past.
+    const { productId, planId } = await makeCatalog('sold-product');
+    await placeOrder(planId, 991_000_010);
+
+    const res = await del(productId);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { counts: { orders: number } }).counts.orders).toBe(1);
+    expect(await productRow(productId)).not.toBeNull();
+    expect(await planRow(planId)).not.toBeNull();
+  });
+
+  it('refuses a product a discount code is scoped to', async () => {
+    // `discount_codes.product_id` is CASCADE and `discount_redemptions` cascades
+    // from the code — so this delete would reach a record of money given.
+    const { productId } = await makeCatalog('discounted');
+    await baseEnv.DB.prepare(
+      `INSERT INTO discount_codes (code, kind, percent) VALUES (?1, 'PERCENT_OFF', 20)`,
+    )
+      .bind(`${PREFIX}code`)
+      .run();
+    await baseEnv.DB.prepare(`UPDATE discount_codes SET product_id = ?1 WHERE code = ?2`)
+      .bind(productId, `${PREFIX}code`)
+      .run();
+
+    const res = await del(productId);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { counts: { discounts: number } }).counts.discounts).toBe(1);
+  });
+
+  it('is refused for a reviewer, and 404s on a product that is not there', async () => {
+    const { productId } = await makeCatalog('reviewer-del');
+    expect((await del(productId, REVIEWER)).status).toBe(403);
+    expect(await productRow(productId)).not.toBeNull();
+    expect((await del(2_000_000_005)).status).toBe(404);
+  });
+});
+
+describe('product categories', () => {
+  it('lists them with how many products each holds', async () => {
+    const made = await app.request(
+      '/api/v1/admin/product-categories',
+      { method: 'POST', body: JSON.stringify({ name: `${PREFIX}شمارش` }) },
+      envAs(ADMIN),
+    );
+    const categoryId = ((await made.json()) as { category: { id: number } }).category.id;
+    const { productId } = await makeCatalog('categorised');
+    await app.request(
+      `/api/v1/admin/products/${productId}`,
+      { method: 'POST', body: JSON.stringify({ categoryId }) },
+      envAs(ADMIN),
+    );
+
+    const res = await app.request('/api/v1/admin/product-categories', {}, envAs(ADMIN));
+    const body = (await res.json()) as {
+      items: Array<{ id: number; name: string; productsCount: number }>;
+    };
+    const mine = body.items.find((i) => i.id === categoryId);
+    expect(mine!.productsCount).toBe(1);
+  });
+
+  it('refuses a second category with the same name', async () => {
+    const body = JSON.stringify({ name: `${PREFIX}تکراری` });
+    const first = await app.request(
+      '/api/v1/admin/product-categories',
+      { method: 'POST', body },
+      envAs(ADMIN),
+    );
+    expect(first.status).toBe(201);
+    const again = await app.request(
+      '/api/v1/admin/product-categories',
+      { method: 'POST', body },
+      envAs(ADMIN),
+    );
+    expect(again.status).toBe(409);
   });
 });

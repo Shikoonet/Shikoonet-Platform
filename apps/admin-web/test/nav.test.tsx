@@ -1,11 +1,14 @@
 /**
  * The navigation and what actually renders behind it must agree.
  *
- * `built: false` draws a «به‌زودی» badge. If somebody ships a page and forgets
- * to flip the flag, the panel tells the admin a working screen is not ready;
- * if they flip it without shipping, the admin clicks into an empty page. Both
- * are silent, and neither shows up in a typecheck — so the flag is compared
- * against what `App` renders, not trusted on its own.
+ * There used to be a `built: false` flag here drawing a «به‌زودی» badge, and
+ * this file existed to stop it drifting from what `App` actually renders. Both
+ * are gone: every section has a screen, so `App`'s switch has no default arm
+ * and a section added to `nav.ts` without one is a type error.
+ *
+ * What the compiler still cannot see is the other direction — a `PageId` with a
+ * screen but no row in `NAV` is a page no admin can reach, and nothing about it
+ * looks broken. That is what the hand-kept list below is for.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -34,9 +37,9 @@ describe('navigation', () => {
     }
   });
 
-  it('marks exactly the sections that have a screen as built', () => {
-    // The list of implemented pages, kept by hand — this is the assertion, so
-    // it must not be derived from the same flag it is checking.
+  it('lists every section that has a screen, so none is unreachable', () => {
+    // The list of pages with a screen, kept by hand — this is the assertion, so
+    // it must not be derived from `NAV` itself.
     // All twelve. The last two arrived with migration 0015, which gave the
     // bot's wording and keyboard a table of their own — they had none before,
     // in Postgres or in the production dump.
@@ -54,21 +57,22 @@ describe('navigation', () => {
       'texts',
       'keyboard',
     ];
-    const flagged = ALL.filter((id) => navItem(id)!.built);
-    expect(flagged.sort()).toEqual([...implemented].sort());
+    expect([...ALL].sort()).toEqual([...implemented].sort());
   });
 });
 
 describe('the shell', () => {
-  it('renders every section as a link, with «به‌زودی» only on the unbuilt ones', () => {
+  it('renders every section as a link, and promises nothing', () => {
     render(<App />);
     for (const group of NAV) {
       for (const item of group.items) {
         const link = screen.getByRole('button', { name: new RegExp(item.label) });
         expect(link).toBeTruthy();
-        expect(link.textContent?.includes('به‌زودی')).toBe(!item.built);
       }
     }
+    // No «به‌زودی» anywhere: a badge left behind after the section it belonged
+    // to was built tells the admin a working screen is not ready.
+    expect(document.body.textContent).not.toContain('به‌زودی');
   });
 
   it('opens on the dashboard', () => {

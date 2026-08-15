@@ -6,10 +6,11 @@
  * things that decide what can be sold, پیکربندی for the bot's own text and
  * layout. Keeping the order means an admin's muscle memory survives the move.
  *
- * `built: false` is deliberate and stays visible. Hiding a section until it
- * exists makes the panel look finished when it is not, and the admin cannot
- * tell "we decided against this" from "it is coming". Every one of these has a
- * table in Postgres already — see `docs/admin-panel-roadmap.md` for the order.
+ * There was a `built: false` flag here and a «به‌زودی» badge beside the sections
+ * that carried it. Both are gone because no section carries it any more —
+ * catalogue create/edit/delete was the last one. A flag that is true on every
+ * row is not documentation, it is a claim nobody checks; `App.tsx` now proves
+ * the same thing at compile time by having no default arm.
  */
 
 export type PageId =
@@ -30,7 +31,6 @@ export interface NavItem {
   id: PageId;
   label: string;
   icon: string;
-  built: boolean;
 }
 
 export interface NavGroup {
@@ -42,28 +42,28 @@ export const NAV: NavGroup[] = [
   {
     label: 'منوی اصلی',
     items: [
-      { id: 'dashboard', label: 'داشبورد', icon: 'home', built: true },
-      { id: 'customers', label: 'کاربران', icon: 'users', built: true },
-      { id: 'orders', label: 'سفارشات', icon: 'receipt', built: true },
-      { id: 'services', label: 'سرویس‌ها', icon: 'package', built: true },
-      { id: 'products', label: 'محصولات', icon: 'grid', built: true },
-      { id: 'transactions', label: 'تراکنش‌ها', icon: 'wallet', built: true },
-      { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list', built: true },
+      { id: 'dashboard', label: 'داشبورد', icon: 'home' },
+      { id: 'customers', label: 'کاربران', icon: 'users' },
+      { id: 'orders', label: 'سفارشات', icon: 'receipt' },
+      { id: 'services', label: 'سرویس‌ها', icon: 'package' },
+      { id: 'products', label: 'محصولات', icon: 'grid' },
+      { id: 'transactions', label: 'تراکنش‌ها', icon: 'wallet' },
+      { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list' },
     ],
   },
   {
     label: 'مدیریت',
     items: [
-      { id: 'panels', label: 'مدیریت پنل‌ها', icon: 'server', built: true },
-      { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket', built: true },
+      { id: 'panels', label: 'مدیریت پنل‌ها', icon: 'server' },
+      { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket' },
     ],
   },
   {
     label: 'پیکربندی',
     items: [
-      { id: 'texts', label: 'متن‌های ربات', icon: 'text', built: true },
-      { id: 'keyboard', label: 'چیدمان کیبورد', icon: 'keyboard', built: true },
-      { id: 'settings', label: 'تنظیمات', icon: 'settings', built: true },
+      { id: 'texts', label: 'متن‌های ربات', icon: 'text' },
+      { id: 'keyboard', label: 'چیدمان کیبورد', icon: 'keyboard' },
+      { id: 'settings', label: 'تنظیمات', icon: 'settings' },
     ],
   },
 ];

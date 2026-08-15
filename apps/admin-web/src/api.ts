@@ -79,6 +79,9 @@ export interface PlanRow {
     name: string;
     kind: string;
     status: string;
+    description: string | null;
+    sortOrder: number;
+    categoryId: number | null;
     resellersOnly: boolean;
     oncePerUser: boolean;
   };
@@ -94,12 +97,61 @@ export interface ProviderOption {
   status: string;
 }
 
+export type CatalogStatus = 'ACTIVE' | 'HIDDEN' | 'DISABLED';
+
 export interface PlanPatch {
   name?: string;
   priceIrr?: number;
   durationDays?: number | null;
   volumeGb?: number | null;
-  status?: 'ACTIVE' | 'HIDDEN' | 'DISABLED';
+  userLimit?: number | null;
+  sortOrder?: number;
+  status?: CatalogStatus;
+}
+
+/**
+ * A new plan.
+ *
+ * `durationDays` and `volumeGb` are optional and mean NULL when absent —
+ * unmetered, and no expiry. The server defaults them the same way rather than
+ * substituting a number nobody chose.
+ */
+export interface PlanCreate {
+  name: string;
+  priceIrr: number;
+  durationDays?: number | null;
+  volumeGb?: number | null;
+  userLimit?: number | null;
+  sortOrder?: number;
+  status?: CatalogStatus;
+}
+
+export interface ProductBody {
+  code?: string;
+  name?: string;
+  kind?: string;
+  providerId?: number | null;
+  categoryId?: number | null;
+  description?: string | null;
+  resellersOnly?: boolean;
+  oncePerUser?: boolean;
+  sortOrder?: number;
+  status?: CatalogStatus;
+}
+
+export interface CategoryRow {
+  id: number;
+  name: string;
+  sortOrder: number;
+  productsCount: number;
+}
+
+/** What a refused delete counts, so the panel can say what is attached. */
+export interface InUseCounts {
+  orders: number;
+  subscriptions: number;
+  stock: number;
+  discounts?: number;
 }
 
 /**
@@ -388,7 +440,44 @@ export const api = {
     });
   },
 
-  setProductStatus(id: number, status: 'ACTIVE' | 'HIDDEN' | 'DISABLED') {
+  createPlan(productId: number, plan: PlanCreate) {
+    return req<{ ok: boolean; plan: PlanRow }>(`/products/${productId}/plans`, {
+      method: 'POST',
+      body: JSON.stringify(plan),
+    });
+  },
+
+  deletePlan(id: number) {
+    return req<{ ok: boolean }>(`/products/plans/${id}`, { method: 'DELETE' });
+  },
+
+  createProduct(body: ProductBody) {
+    return req<{ ok: boolean; productId: number }>('/products', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  updateProduct(id: number, body: ProductBody) {
+    return req<{ ok: boolean }>(`/products/${id}`, { method: 'POST', body: JSON.stringify(body) });
+  },
+
+  deleteProduct(id: number) {
+    return req<{ ok: boolean }>(`/products/${id}`, { method: 'DELETE' });
+  },
+
+  productCategories() {
+    return req<{ ok: boolean; items: CategoryRow[] }>('/product-categories');
+  },
+
+  createCategory(name: string, sortOrder = 0) {
+    return req<{ ok: boolean; category: CategoryRow }>('/product-categories', {
+      method: 'POST',
+      body: JSON.stringify({ name, sortOrder }),
+    });
+  },
+
+  setProductStatus(id: number, status: CatalogStatus) {
     return req<{ ok: boolean; status: string }>(`/products/${id}/status`, {
       method: 'POST',
       body: JSON.stringify({ status }),

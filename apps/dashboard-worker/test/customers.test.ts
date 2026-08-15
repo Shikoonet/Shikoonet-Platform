@@ -13,7 +13,7 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
-import { ADJUST_MAX_IRR } from '../src/customerRoutes.js';
+import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 
 const ADMIN = 'admin@example.com';
 const REVIEWER = 'reviewer-customers@example.com';
@@ -289,7 +289,7 @@ describe('POST /api/v1/admin/customers/:id/wallet', () => {
 
   it('refuses zero, and an amount past the ceiling', async () => {
     const { id } = await makeCustomer('adj_bounds');
-    for (const amountIrr of [0, ADJUST_MAX_IRR + 1, -(ADJUST_MAX_IRR + 1)]) {
+    for (const amountIrr of [0, MAX_SINGLE_PAYMENT_IRR + 1, -(MAX_SINGLE_PAYMENT_IRR + 1)]) {
       const res = await app.request(
         `/api/v1/admin/customers/${id}/wallet`,
         {

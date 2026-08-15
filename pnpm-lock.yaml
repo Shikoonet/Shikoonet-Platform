@@ -292,6 +292,9 @@ importers:
 
   packages/migrate:
     dependencies:
+      '@shikoo/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       mysql2:
         specifier: ^3.11.4
         version: 3.23.3(@types/node@22.20.1)
