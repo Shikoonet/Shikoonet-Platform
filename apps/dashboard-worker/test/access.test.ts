@@ -206,4 +206,58 @@ describe('dashboard worker — access smoke', () => {
     );
     expect(r.status).toBe(200);
   });
+
+  it('allows the SPA write when TLS ended at the proxy and the container saw http', async () => {
+    // The deployed shape, which the test above cannot reach because it builds
+    // the request and the Origin from the same string.
+    //
+    // Behind the Cloudflare Tunnel there is no TLS on the last hop: the browser
+    // sends `Origin: https://<host>` and the container is handed a plain http
+    // request for the same host. Comparing whole origins made those two
+    // unequal, and every write from the panel came back `cross_origin_forbidden`
+    // on the first real deployment — «دسترسی‌ها» could list operators and not
+    // add one. Measured against the running container on 2026-08-16: identical
+    // requests differing only in the Origin's scheme, one refused, one not.
+    const email = 'admin@example.com';
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at) VALUES (?1, ?2, 'ADMIN', 1, ?3, ?3)`,
+    )
+      .bind(crypto.randomUUID(), email, now)
+      .run();
+    const envProd = { ...baseEnv, TEST_ACCESS_USER: email, ENV_NAME: 'production' };
+    const r = await app.fetch(
+      new Request('http://shikoo.example/api/v1/comment', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'https://shikoo.example',
+        },
+        body: JSON.stringify({
+          entityType: 'MATCH',
+          entityId: crypto.randomUUID(),
+          body: 'test comment',
+        }),
+      }),
+      envProd,
+    );
+    expect(r.status).toBe(200);
+  });
+
+  it('still refuses a different host, whatever the scheme', async () => {
+    // So the fix above is "ignore the scheme", not "ignore the origin".
+    const envProd = { ...baseEnv, TEST_ACCESS_USER: 'admin@example.com', ENV_NAME: 'production' };
+    for (const origin of ['https://evil.example', 'http://evil.example']) {
+      const r = await app.fetch(
+        new Request('http://shikoo.example/api/v1/comment', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin },
+          body: JSON.stringify({ entityType: 'MATCH', entityId: crypto.randomUUID(), body: 'x' }),
+        }),
+        envProd,
+      );
+      expect(r.status).toBe(403);
+      expect(await r.json()).toMatchObject({ error: 'cross_origin_forbidden' });
+    }
+  });
 });

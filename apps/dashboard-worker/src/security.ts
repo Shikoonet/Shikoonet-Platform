@@ -116,10 +116,33 @@ export const originGuard: MiddlewareHandler = async (c, next) => {
     return c.json({ ok: false, error: 'origin_required' }, 403);
   }
 
-  // Accept requests coming from the same origin as the Worker.
-  const requestOrigin = new URL(c.req.url).origin;
-
-  if (origin === requestOrigin) {
+  // Accept requests coming from the same host as this service.
+  //
+  // Host, not origin, and the difference is the whole deployment. TLS ends at
+  // Cloudflare and the tunnel forwards plain HTTP to the container, so
+  // `new URL(c.req.url).origin` is `http://shikoo.mahamsteel.ir` while the
+  // browser sends `https://shikoo.mahamsteel.ir`. Comparing the two strings
+  // refused every write the panel made — «دسترسی‌ها» answered
+  // `cross_origin_forbidden` on the first real deployment, 2026-08-16, and
+  // measured against the container it was the scheme and nothing else.
+  //
+  // Dropping the scheme from the comparison costs nothing this check was
+  // protecting. It stands in for a CSRF token; what it has to establish is that
+  // the page making the request is *this* site. A page served over http from
+  // this same host is already this site — reaching that position means holding
+  // the DNS name, at which point an origin check is not what is left.
+  //
+  // The alternative was trusting `X-Forwarded-Proto` to rebuild the scheme,
+  // which makes a security decision out of a header, or naming our own domain
+  // in `ALLOWED_ORIGINS`, which would make "same-origin never needs listing"
+  // false for every deployment and quietly break the next hostname too.
+  let sameHost = false;
+  try {
+    sameHost = new URL(origin).host === new URL(c.req.url).host;
+  } catch {
+    // An unparseable Origin is not a same-host request; fall through.
+  }
+  if (sameHost) {
     return next();
   }
 
