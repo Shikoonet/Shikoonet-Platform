@@ -138,7 +138,35 @@ async function rulesAccepted(telegramId: number): Promise<boolean> {
 const buttons = (rows: { text: string; url?: string; callback_data?: string }[][] | undefined) =>
   (rows ?? []).flat();
 
-beforeAll(assertSchema);
+/**
+ * Channels this file did not create, switched off for its duration.
+ *
+ * Every assertion below counts `getChatMember` calls or asserts which screen
+ * comes back, and both answers change if ANY other channel is active — so
+ * deleting only its own rows left this file's result depending on what some
+ * other package's suite happened to leave behind. It did: a guard-removal probe
+ * in `dashboard-worker/test/channels.test.ts` wrote a row its purge did not
+ * match, and five tests here went red on a channel they had never heard of.
+ *
+ * Switched off and switched back rather than deleted, because one of them is
+ * the shop's real `@shikoonet` row from the migration and this file does not
+ * own it.
+ */
+let borrowed: number[] = [];
+
+beforeAll(async () => {
+  await assertSchema();
+  const { results } = await db
+    .prepare(`SELECT id FROM required_channels WHERE active AND chat_ref NOT LIKE '@gate_test%'`)
+    .all<{ id: number }>();
+  borrowed = results.map((r) => Number(r.id));
+  if (borrowed.length > 0) {
+    await db
+      .prepare(`UPDATE required_channels SET active = false WHERE id = ANY(?1)`)
+      .bind(borrowed)
+      .run();
+  }
+});
 
 beforeEach(async () => {
   await db.prepare(`DELETE FROM required_channels WHERE chat_ref LIKE '@gate_test%'`).run();
@@ -170,6 +198,12 @@ afterAll(async () => {
     .prepare(`DELETE FROM users WHERE telegram_id BETWEEN ?1 AND ?2`)
     .bind(BASE_TELEGRAM, BASE_TELEGRAM + 9999)
     .run();
+  if (borrowed.length > 0) {
+    await db
+      .prepare(`UPDATE required_channels SET active = true WHERE id = ANY(?1)`)
+      .bind(borrowed)
+      .run();
+  }
 });
 
 describe('the channel gate', () => {

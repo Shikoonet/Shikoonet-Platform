@@ -70,7 +70,7 @@ export const NAV: NavGroup[] = [
     items: [
       { id: 'texts', label: 'متن‌های ربات', icon: 'text' },
       { id: 'keyboard', label: 'چیدمان کیبورد', icon: 'keyboard' },
-      { id: 'content', label: 'آموزش و برنامه‌ها', icon: 'text' },
+      { id: 'content', label: 'آموزش، برنامه‌ها و کانال‌ها', icon: 'text' },
       { id: 'settings', label: 'تنظیمات', icon: 'settings' },
     ],
   },

@@ -217,6 +217,21 @@ export interface RevenueAdjustmentPage {
   totals: RevenueTotals;
 }
 
+/**
+ * A channel the bot makes customers join. `chatRef` is what `getChatMember` is
+ * given — an `@username` or a numeric `-100…` id, never a `t.me` URL — and
+ * `joinLink` is what the button opens. The two are different things and the
+ * form says so, because pasting the link into both is the mistake that leaves
+ * the gate silently inert.
+ */
+export interface ChannelRow {
+  id: number;
+  title: string;
+  chatRef: string;
+  joinLink: string;
+  active: boolean;
+}
+
 export interface HelpArticleRow {
   id: number;
   title: string;
@@ -732,6 +747,28 @@ export const api = {
 
   deleteRevenueAdjustment(id: number) {
     return req<{ ok: boolean }>(`/revenue-adjustments/${id}`, { method: 'DELETE' });
+  },
+
+  requiredChannels() {
+    return req<{ ok: boolean; items: ChannelRow[] }>('/required-channels');
+  },
+
+  addRequiredChannel(body: { title: string; chatRef: string; joinLink: string }) {
+    return req<{ ok: boolean; id: number }>('/required-channels', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  setRequiredChannelActive(id: number, active: boolean) {
+    return req<{ ok: boolean }>(`/required-channels/${id}/active`, {
+      method: 'POST',
+      body: JSON.stringify({ active }),
+    });
+  },
+
+  deleteRequiredChannel(id: number) {
+    return req<{ ok: boolean }>(`/required-channels/${id}`, { method: 'DELETE' });
   },
 
   helpArticles() {

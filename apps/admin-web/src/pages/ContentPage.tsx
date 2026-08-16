@@ -1,5 +1,6 @@
 /**
- * آموزش و برنامه‌ها — the two lists the bot draws and nobody could edit.
+ * آموزش، برنامه‌ها و کانال‌ها — the three lists the bot reads and nobody could
+ * edit.
  *
  * `help_articles` and `client_apps` came over with the migration and the bot has
  * read both since «آموزش» was built, but every change still had to be made in
@@ -25,6 +26,7 @@ import { useEffect, useState } from 'react';
 import {
   api,
   ApiError,
+  type ChannelRow,
   type ClientAppRow,
   type HelpArticleRow,
 } from '../api.js';
@@ -39,12 +41,26 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-type Tab = 'articles' | 'apps';
+type Tab = 'articles' | 'apps' | 'channels';
+
+/**
+ * The third list is a gate rather than content, and it is here because it is the
+ * same job: a row the bot reads on every update that no screen could write.
+ *
+ * What makes it different is that getting it wrong is silent. `gate.ts` fails
+ * open on purpose — a Telegram that will not answer must not stop the shop
+ * selling — so a `chat_ref` with a typo in it, or a bot that was never made an
+ * administrator of the channel, produces a gate that never fires and is
+ * indistinguishable from a shop where everybody is already a member. The server
+ * refuses a shape `getChatMember` cannot take, and the note under the table says
+ * the rest, because no amount of validation can check the admin bit.
+ */
 
 export function ContentPage() {
   const [tab, setTab] = useState<Tab>('articles');
   const [articles, setArticles] = useState<HelpArticleRow[]>([]);
   const [apps, setApps] = useState<ClientAppRow[]>([]);
+  const [channels, setChannels] = useState<ChannelRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -54,9 +70,14 @@ export function ContentPage() {
     setLoading(true);
     setErr(null);
     try {
-      const [a, b] = await Promise.all([api.helpArticles(), api.clientApps()]);
+      const [a, b, ch] = await Promise.all([
+        api.helpArticles(),
+        api.clientApps(),
+        api.requiredChannels(),
+      ]);
       setArticles(a.items);
       setApps(b.items);
+      setChannels(ch.items);
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -74,8 +95,21 @@ export function ContentPage() {
     setDone(null);
     try {
       if (kind === 'articles') await api.deleteHelpArticle(id);
-      else await api.deleteClientApp(id);
+      else if (kind === 'apps') await api.deleteClientApp(id);
+      else await api.deleteRequiredChannel(id);
       setDone('حذف شد.');
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    }
+  }
+
+  async function toggleChannel(ch: ChannelRow): Promise<void> {
+    setErr(null);
+    setDone(null);
+    try {
+      await api.setRequiredChannelActive(ch.id, !ch.active);
+      setDone(ch.active ? 'کانال خاموش شد.' : 'کانال روشن شد.');
       await load();
     } catch (e) {
       setErr(message(e));
@@ -91,9 +125,10 @@ export function ContentPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">آموزش و برنامه‌ها</div>
+          <div className="page-head__title">آموزش، برنامه‌ها و کانال‌ها</div>
           <div className="page-head__sub">
-            {count(articles.length)} مطلب · {count(apps.length)} برنامه
+            {count(articles.length)} مطلب · {count(apps.length)} برنامه ·{' '}
+            {count(channels.filter((c) => c.active).length)} کانال اجباری
           </div>
         </div>
         <button
@@ -101,7 +136,7 @@ export function ContentPage() {
           className="btn btn-primary"
           onClick={() => setEditing({ kind: tab, id: null })}
         >
-          {tab === 'articles' ? 'مطلب تازه' : 'برنامهٔ تازه'}
+          {tab === 'articles' ? 'مطلب تازه' : tab === 'apps' ? 'برنامهٔ تازه' : 'کانال تازه'}
         </button>
       </div>
 
@@ -124,10 +159,68 @@ export function ContentPage() {
           >
             برنامه‌ها
           </button>
+          <button
+            type="button"
+            className={tab === 'channels' ? 'btn btn-primary btn-sm' : 'btn btn-sm'}
+            onClick={() => setTab('channels')}
+          >
+            کانال اجباری
+          </button>
         </div>
 
         <div className="table-wrap">
-          {tab === 'articles' ? (
+          {tab === 'channels' ? (
+            <table className="app-table">
+              <thead>
+                <tr>
+                  <th>نام کانال</th>
+                  <th>شناسه</th>
+                  <th>لینک عضویت</th>
+                  <th>وضعیت</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {channels.length === 0 && !loading && (
+                  <tr>
+                    <td className="empty" colSpan={5}>
+                      هیچ کانال اجباری‌ای ثبت نشده — گیت عضویت خاموش است.
+                    </td>
+                  </tr>
+                )}
+                {channels.map((ch) => (
+                  <tr key={ch.id}>
+                    <td>{ch.title}</td>
+                    <td className="ltr">{ch.chatRef}</td>
+                    <td className="ltr">{ch.joinLink}</td>
+                    <td>
+                      <span className={ch.active ? 'badge badge-active' : 'badge badge-block'}>
+                        {ch.active ? 'فعال' : 'خاموش'}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => void toggleChannel(ch)}
+                      >
+                        {ch.active ? 'خاموش کن' : 'روشن کن'}
+                      </button>{' '}
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={ch.active}
+                        title={ch.active ? 'اول خاموشش کنید' : ''}
+                        onClick={() => void remove('channels', ch.id, ch.title)}
+                      >
+                        حذف
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : tab === 'articles' ? (
             <table className="app-table">
               <thead>
                 <tr>
@@ -238,6 +331,14 @@ export function ContentPage() {
           )}
         </div>
 
+        {tab === 'channels' && (
+          <p className="muted">
+            برای اینکه گیت واقعاً کار کند، ربات باید <b>ادمین آن کانال</b> باشد — بدون آن تلگرام
+            به پرسش عضویت خطا می‌دهد، ربات عمداً همه را رد می‌کند، و گیت بی‌صدا هرگز شلیک نمی‌شود.
+            هیچ اعتبارسنجی‌ای این را نمی‌تواند بررسی کند؛ فقط یک بار امتحان کردن با یک حساب غیرعضو.
+          </p>
+        )}
+
         <p className="muted">
           «پنهان» یعنی مشتری دیگر آن را نمی‌بیند و هر وقت خواستید برمی‌گردد. حذف فقط روی چیزی که از
           قبل پنهان شده انجام می‌شود — سرور هم همین را می‌گوید، نه فقط این دکمه.
@@ -247,6 +348,15 @@ export function ContentPage() {
       {editing?.kind === 'articles' && (editing.id === null || editingArticle) && (
         <ArticleEditor
           article={editingArticle}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            void load();
+          }}
+        />
+      )}
+      {editing?.kind === 'channels' && editing.id === null && (
+        <ChannelEditor
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -507,6 +617,115 @@ function AppEditor({
           onClick={() => void save()}
         >
           ذخیره
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Adding a channel, and refusing the paste that looks right.
+ *
+ * `https://t.me/shikoonet` is what an admin has in their clipboard and it is not
+ * a `chat_id`: given to `getChatMember` it names a chat that does not exist, the
+ * gate fails open on the error, and nothing anywhere says the feature stopped
+ * working. The server refuses it; this refuses it before the round trip and says
+ * which field it belongs in.
+ *
+ * Editing is deliberately absent. A channel has three fields and two of them are
+ * its identity — changing `chat_ref` is not an edit, it is a different channel,
+ * and doing it in place would silently move every customer's gate.
+ */
+function ChannelEditor({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [title, setTitle] = useState('');
+  const [chatRef, setChatRef] = useState('');
+  const [joinLink, setJoinLink] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const ref = chatRef.trim();
+  const refOk = /^(@[A-Za-z0-9_]{4,32}|-100\d{5,17})$/.test(ref);
+  const linkOk = /^https?:\/\//i.test(joinLink.trim());
+
+  async function save() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.addRequiredChannel({
+        title: title.trim(),
+        chatRef: ref,
+        joinLink: joinLink.trim(),
+      });
+      onSaved();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <span className="card__title">کانال اجباری تازه</span>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن
+        </button>
+      </div>
+
+      {err && <div className="alert alert-error">{err}</div>}
+
+      <label className="form-label" htmlFor="ch-title">
+        نامی که روی دکمه می‌آید
+      </label>
+      <input
+        id="ch-title"
+        className="form-control"
+        type="text"
+        maxLength={200}
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+      />
+
+      <label className="form-label" htmlFor="ch-ref">
+        شناسهٔ کانال
+      </label>
+      <input
+        id="ch-ref"
+        className="form-control ltr"
+        type="text"
+        placeholder="@shikoonet"
+        value={chatRef}
+        onChange={(e) => setChatRef(e.target.value)}
+      />
+      <div className="page-head__sub">
+        {ref === '' || refOk
+          ? 'به شکل @username یا عدد -100… — همان چیزی که تلگرام می‌پذیرد'
+          : 'لینک t.me اینجا کار نمی‌کند. فقط @username یا عدد -100…'}
+      </div>
+
+      <label className="form-label" htmlFor="ch-link">
+        لینک عضویت
+      </label>
+      <input
+        id="ch-link"
+        className="form-control ltr"
+        type="url"
+        placeholder="https://t.me/shikoonet"
+        maxLength={500}
+        value={joinLink}
+        onChange={(e) => setJoinLink(e.target.value)}
+      />
+      <div className="page-head__sub">این همان چیزی است که دکمهٔ کانال بازش می‌کند.</div>
+
+      <div className="filters" style={{ marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || title.trim() === '' || !refOk || !linkOk}
+          onClick={() => void save()}
+        >
+          افزودن
         </button>
       </div>
     </div>
