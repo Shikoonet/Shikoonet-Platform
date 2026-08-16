@@ -7,7 +7,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv } from './helpers/env.js';
+import { applySchema, env as baseEnv, signIn } from './helpers/env.js';
 import { app } from '../src/index.js';
 
 // Schema now comes from migrations/000*.sql, applied to the test database.
@@ -191,11 +191,14 @@ describe('dashboard worker — access smoke', () => {
     )
       .bind(crypto.randomUUID(), email, now)
       .run();
-    const envProd = { ...baseEnv, TEST_ACCESS_USER: email, ENV_NAME: 'production' };
+    // No TEST_ACCESS_USER: the bypass is refused under ENV_NAME=production, which
+    // is the point of it. A production-shaped request needs a real session.
+    const cookie = await signIn(email);
+    const envProd = { ...baseEnv, TEST_ACCESS_USER: '', ENV_NAME: 'production' };
     const r = await app.fetch(
       new Request('https://example.com/api/v1/comment', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', origin: 'https://example.com' },
+        headers: { 'content-type': 'application/json', origin: 'https://example.com', cookie },
         body: JSON.stringify({
           entityType: 'MATCH',
           entityId: crypto.randomUUID(),
@@ -225,11 +228,13 @@ describe('dashboard worker — access smoke', () => {
     )
       .bind(crypto.randomUUID(), email, now)
       .run();
-    const envProd = { ...baseEnv, TEST_ACCESS_USER: email, ENV_NAME: 'production' };
+    const cookie = await signIn(email);
+    const envProd = { ...baseEnv, TEST_ACCESS_USER: '', ENV_NAME: 'production' };
     const r = await app.fetch(
       new Request('http://shikoo.example/api/v1/comment', {
         method: 'POST',
         headers: {
+          cookie,
           'content-type': 'application/json',
           origin: 'https://shikoo.example',
         },

@@ -80,13 +80,15 @@ ENV NODE_ENV=production
 # behaviours, deliberately unequal:
 #
 #   ingest      GET /health              expects 200
-#   dashboard   GET /api/v1/health       expects 401
+#   dashboard   GET /api/v1/health       expects 200
 #   bot         nothing                  exits 0
 #
-# The dashboard's 401 is not a workaround for missing configuration — it is the
-# steady state. Every path is behind the Cloudflare Access middleware, and this
-# probe runs from inside the container, where no Access JWT exists and never
-# will. 200 is accepted too, for a local run with `TEST_ACCESS_USER`.
+# The dashboard used to be expected to answer 401: every path sat behind the
+# Cloudflare Access middleware and this probe runs from inside the container,
+# where no Access JWT existed and never would. Access is gone (2026-08-16) and
+# `/api/v1/health` is now deliberately outside the session gate — for exactly
+# this probe, and because it reveals nothing. 401 is still accepted so an older
+# image and a newer one report the same thing while a deploy is half done.
 #
 # The bot's branch proves only that PID 1 is alive, which Docker already knew.
 # Said plainly rather than dressed up: the bot opens no port, so there is

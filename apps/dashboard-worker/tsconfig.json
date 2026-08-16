@@ -9,6 +9,7 @@
     "src",
     "test",
     "e2e",
+    "scripts",
     "playwright.config.ts"
   ]
 }

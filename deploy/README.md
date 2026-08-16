@@ -117,13 +117,40 @@ No `PORT`. The bot does not listen.
 | Variable | Required | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | |
-| `ACCESS_AUD`, `ACCESS_ISSUER` | yes in production | Cloudflare Access JWT verification |
+| ~~`ACCESS_AUD`, `ACCESS_ISSUER`, `ADMIN_ACCESS_AUD`~~ | **gone** | Cloudflare Access was removed 2026-08-16. The panel has its own login; see «اپراتورها» below |
 | `ENV_NAME` | yes | Set to `production` |
 | `SPA_DIST` | no | The payment hub SPA. Set absolutely in the image |
 | `ADMIN_DIST` | no | **The shop admin panel SPA**, served at `/admin`. One process serves both; this row was missing while the code read it, and an unbuilt SPA is a 500 rather than a failed deploy |
 | `PORT`, `HOST` | no | Default `8788`, `127.0.0.1` |
 | `INGEST_URL` | recommended | Printed into the SMS-relay phone configuration. There is no fallback any more: the routes that need it answer 503 `INGEST_URL_MISSING` |
-| `TEST_ACCESS_USER` | **never in production** | Bypasses JWT verification. The process refuses to start with it set while `ENV_NAME=production` |
+| `TEST_ACCESS_USER` | **never in production** | Skips the login and pins an identity. Refused twice: the process will not start with it set while `ENV_NAME=production`, and the identity path refuses it there again |
+
+### اپراتورها — the bootstrap nobody can skip
+
+Access used to decide who reached the panel. It does not exist any more, so the
+only way in is a row in `access_users` **with a password**, and the screen that
+creates that row is itself behind the panel. Somebody has to make the first one
+from outside, once:
+
+```bash
+export DATABASE_URL=...                      # never guessed; the script refuses without it
+corepack pnpm --filter @shikoo/dashboard operator create you@example.com ADMIN
+corepack pnpm --filter @shikoo/dashboard operator set-password you@example.com
+corepack pnpm --filter @shikoo/dashboard operator enroll-totp you@example.com   # optional
+corepack pnpm --filter @shikoo/dashboard operator list
+```
+
+The password is read from stdin, never from the command line — an argument is
+visible in `ps` to every user on the box and lands in a shell history file.
+
+Rows migrated from the Access era have no password and **cannot sign in** until
+`set-password` runs on them. That is the intended direction of failure: an
+operator who cannot get in says so immediately, where a default password nobody
+changed says nothing at all.
+
+`enroll-totp` prints the secret once and then asks for a code before it enables
+anything, so a second factor is never switched on for an app that cannot produce
+it. `operator unlock` clears a lockout (five wrong passwords, fifteen minutes).
 
 ### `/etc/shikoo/ingest.env`
 

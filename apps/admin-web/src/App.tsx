@@ -1,11 +1,14 @@
 /**
  * The panel's frame: header across the top, navigation down the right.
  *
- * This is a separate application from the payment hub — separate build,
- * separate stylesheet, separate Cloudflare Access audience. It shares nothing
- * with it but the Postgres underneath, and that is the point: the two answer
- * different questions for different people, and a shop admin should not have
- * to learn a reconciliation tool to change a price.
+ * This is still a separate build from the payment hub, but no longer a separate
+ * door: Cloudflare Access is gone and both surfaces sit behind one login
+ * (`LoginPage`), which is the first step of merging them into a single panel.
+ *
+ * Nothing renders until `/api/v1/auth/me` has answered. That is a deliberate
+ * flash of nothing rather than a flash of the panel — every screen here fetches
+ * on mount, and drawing them before the identity is known means a signed-out
+ * visitor watches a dozen requests fail behind a login form.
  *
  * Navigation is state, not a router. Twelve sections with no deep links and no
  * shareable URLs do not need one, and adding a router would mean the worker's
@@ -16,6 +19,7 @@
 import { useEffect, useState } from 'react';
 import { NAV, pageLabel, READABLE_BY_READER, type PageId } from './nav.js';
 import { api, type PanelRole } from './api.js';
+import { LoginPage } from './LoginPage.js';
 import { AccessPage } from './pages/AccessPage.js';
 import { Icon } from './icons.js';
 import { DashboardPage } from './pages/DashboardPage.js';
@@ -90,16 +94,31 @@ export function App() {
   const [page, setPage] = useState<PageId>('dashboard');
   const [navOpen, setNavOpen] = useState(false);
   const [role, setRole] = useState<PanelRole | null>(null);
+  // null = still asking. The three states are distinct on purpose: "asking",
+  // "signed out" and "signed in" each draw something different, and collapsing
+  // the first two shows a login form to somebody who is already signed in.
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
 
-  // Asked once. Until it answers, `role` is null and every section is drawn —
-  // the alternative is a sidebar that visibly rearranges itself a moment after
-  // the page opens. The server refuses whatever this gets wrong.
+  // Asked once, and again after a sign-in. Until it answers, `role` is null and
+  // every section is drawn — the alternative is a sidebar that visibly
+  // rearranges itself a moment after the page opens. The server refuses
+  // whatever this gets wrong.
+  const [reload, setReload] = useState(0);
   useEffect(() => {
     void api
       .me()
-      .then((m) => setRole(m.role))
-      .catch(() => setRole(null));
-  }, []);
+      .then((m) => {
+        setRole(m.role);
+        setSignedIn(true);
+      })
+      .catch(() => {
+        setRole(null);
+        setSignedIn(false);
+      });
+  }, [reload]);
+
+  if (signedIn === null) return <div className="boot" />;
+  if (!signedIn) return <LoginPage onSignedIn={() => setReload((n) => n + 1)} />;
 
   const visible = (id: PageId) => role !== 'READ_ONLY' || READABLE_BY_READER.has(id);
 
@@ -126,6 +145,20 @@ export function App() {
             <div className="app-header__crumb">شیکو / {pageLabel(page)}</div>
           </div>
         </div>
+        {/* There was nowhere to sign out from before, because there was nowhere
+            to sign in. A session lasts twelve hours of use, so on a shared or
+            borrowed machine this is the only way to end it. */}
+        <button
+          type="button"
+          className="app-header__signout"
+          onClick={() => {
+            void fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).finally(
+              () => setReload((n) => n + 1),
+            );
+          }}
+        >
+          خروج
+        </button>
       </header>
 
       <aside className={navOpen ? 'app-sidebar open' : 'app-sidebar'}>

@@ -216,14 +216,16 @@ describe('POST /rerun-assignment-preview — auth', () => {
       bank: 'PARSIAN',
       accountHint: ACCOUNT_NUMBER,
     });
+    // The identity comes from the environment, not from the request header:
+    // `cf-access-authenticated-user-email` is attacker-controlled and the
+    // worker has never read it. Passing it here made this test green for the
+    // wrong reason — the actor was `admin@example.com`, which `resetTables`
+    // had just deleted, so the 403 meant "no such operator" rather than
+    // "READ_ONLY may not do this". Naming the identity where the worker
+    // actually looks is what makes it test its own title.
     const r = await app.fetch(
-      req(
-        'POST',
-        `/api/v1/accounts/${accountId}/rerun-assignment-preview`,
-        undefined,
-        'readonly@example.com',
-      ),
-      ENV,
+      req('POST', `/api/v1/accounts/${accountId}/rerun-assignment-preview`),
+      { ...ENV, TEST_ACCESS_USER: 'readonly@example.com' },
     );
     expect(r.status).toBe(403);
     const body = (await r.json()) as { ok: boolean; error: string };

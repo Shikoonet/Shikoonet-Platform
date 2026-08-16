@@ -323,12 +323,20 @@ describe('security: access JWT / RBAC', () => {
     );
     expect(r1.status).toBe(401);
 
-    // set TEST_ACCESS_USER but no access_users row → 403 forbidden
+    // set TEST_ACCESS_USER but no access_users row → 401
+    //
+    // This was 403 while Cloudflare Access granted the identity and the role
+    // was looked up afterwards: "we know who you are, you may not". With the
+    // login that replaced Access (2026-08-16) an address with no operator row
+    // is nobody, so it is 401 — and that is the better answer rather than a
+    // tolerated change. The SPA turns 401 into the sign-in form, so an operator
+    // whose row is deleted or deactivated mid-session is asked to sign in
+    // instead of staring at a panel that refuses every request.
     const r2 = await dashboardApp.fetch(
       new Request('https://dashboard.example.com/api/v1/devices'),
       { ...env, TEST_ACCESS_USER: 'nobody@x.com' },
     );
-    expect(r2.status).toBe(403);
+    expect(r2.status).toBe(401);
 
     // existing row → 200
     await seedAccessUser('admin@x.com', 'ADMIN');
@@ -345,7 +353,9 @@ describe('security: access JWT / RBAC', () => {
       new Request('https://dashboard.example.com/api/v1/devices'),
       { ...env, TEST_ACCESS_USER: 'inactive@x.com' },
     );
-    expect(r.status).toBe(403);
+    // 401 rather than 403, for the reason spelled out above: a deactivated
+    // operator is not a known one.
+    expect(r.status).toBe(401);
   });
 
   it('READ_ONLY cannot approve/reject, but can read', async () => {

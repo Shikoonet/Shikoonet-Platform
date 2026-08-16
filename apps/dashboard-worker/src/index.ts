@@ -32,7 +32,13 @@ import {
   buildSmsRelayConfig,
   MIRZABOT_SOURCE,
 } from '@shikoo/contracts';
-import { devBypassActive, lookupRole, mayRead, verifyAccess } from './access.js';
+import { mayRead } from './access.js';
+import {
+  identityFor,
+  isPublicAuthPath,
+  registerAuthRoutes,
+  sessionCookie,
+} from './operatorSession.js';
 import { securityHeaders, originGuard } from './security.js';
 import { registerMirzabotRoutes, loadPaymentCardsForAccounts } from './mirzabotRoutes.js';
 import { registerAnalyticsRoutes } from './analyticsRoutes.js';
@@ -78,16 +84,12 @@ const INGEST_URL_MISSING = {
 
 export interface Env {
   DB: D1Database;
-  TEST_ACCESS_USER?: string;
-  ACCESS_AUD?: string;
-  ACCESS_ISSUER?: string;
   /**
-   * The audience tag of the *second* Cloudflare Access application — the one
-   * in front of the shop's admin panel. Unset means the panel does not exist
-   * on this deployment; it is never inferred from ACCESS_AUD, because that
-   * would put the wallet and the catalog behind the payment operator's door.
+   * Skips the login and pins this identity. Local development and the test
+   * suites only — `server.ts` refuses to start with it under
+   * `ENV_NAME=production`, and `devBypassActive` refuses it there again.
    */
-  ADMIN_ACCESS_AUD?: string;
+  TEST_ACCESS_USER?: string;
   // "dev" | "production". Set in each wrangler config; drives the header badge.
   ENV_NAME?: string;
   // Injected at deploy time by scripts/release.sh via `wrangler deploy --var`,
@@ -136,32 +138,38 @@ export function isAdminSurface(path: string): boolean {
 
 app.use('*', securityHeaders);
 app.use('*', originGuard);
+registerAuthRoutes(app as unknown as Hono<never>);
 app.use('*', async (c, next) => {
-  const admin = isAdminSurface(c.req.path);
-  // Fails closed. A deployment that has not been given the admin application's
-  // audience has no admin panel at all — it does not quietly fall back to the
-  // payment hub's audience, which would put the shop's wallet and catalog
-  // behind the payment operator's door. Same reasoning as INGEST_URL: a
-  // missing setting answers 503, it does not improvise a default.
-  if (admin && !devBypassActive(c.env) && !c.env.ADMIN_ACCESS_AUD) {
-    return c.json({ ok: false, error: 'admin_access_not_configured' }, 503);
-  }
-  const ident = await verifyAccess(
-    c.req.raw,
-    c.env,
-    admin ? c.env.ADMIN_ACCESS_AUD : c.env.ACCESS_AUD,
-  );
+  // Documents and assets are public, and that is the change Access made
+  // necessary. Somebody who is not signed in has to be able to load the page
+  // that signs them in; when Cloudflare Access stood in front of the origin it
+  // served that page itself, and now the SPA does. The bundle holds no secret —
+  // it asks `/api/v1/auth/me`, is told 401, and draws the login form.
+  //
+  // Everything that answers with data is below this line.
+  if (!c.req.path.startsWith('/api/')) return next();
+
+  // Login and logout must answer before anybody has an identity.
+  if (isPublicAuthPath(c.req.path)) return next();
+
+  // The container's own health probe runs inside the container, where there is
+  // no cookie and never will be. It reveals nothing.
+  if (c.req.path === '/api/v1/health') return next();
+
+  const ident = await identityFor(c.env, sessionCookie(c));
   if (!ident) return c.json({ ok: false, error: 'unauthorized' }, 401);
-  const role = await lookupRole(c.env.DB, ident.email);
-  if (!role) return c.json({ ok: false, error: 'forbidden' }, 403);
-  // Reading is not free on this surface. Writes have always been ADMIN-only per
-  // route; reads were open to every signed-in role, which made READ_ONLY a
-  // label rather than a limit. One check here rather than fifteen in the
-  // routes, so route sixteen inherits it.
-  if (admin && !mayRead(c.req.path, role)) {
+
+  // Reading is not free on the admin surface. Writes have always been
+  // ADMIN-only per route; reads were open to every signed-in role, which made
+  // READ_ONLY a label rather than a limit. One check here rather than fifteen
+  // in the routes, so route sixteen inherits it.
+  //
+  // `isAdminSurface` no longer chooses between two Cloudflare audiences — there
+  // is one door now — but it still marks which paths that rule covers.
+  if (isAdminSurface(c.req.path) && !mayRead(c.req.path, ident.role)) {
     return c.json({ ok: false, error: 'forbidden', detail: 'این بخش از دسترس نقش شما بیرون است.' }, 403);
   }
-  c.set('identity', { email: ident.email, role });
+  c.set('identity', ident);
   await next();
 });
 

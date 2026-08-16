@@ -84,3 +84,40 @@ export async function applySchema(): Promise<void> {
 export async function resetHub(): Promise<void> {
   await db.prepare(`TRUNCATE ${HUB_TABLES.join(', ')} RESTART IDENTITY CASCADE`).run();
 }
+
+/**
+ * A real signed-in session, as the login route would create one.
+ *
+ * Cloudflare Access is gone, and with it the `TEST_ACCESS_USER` bypass as a way
+ * to test anything that runs with `ENV_NAME=production` — the bypass is refused
+ * there on purpose, because a bypass that survives into production is the hole
+ * `server.ts` already refuses to start on.
+ *
+ * So tests that need production behaviour need a real session. This builds one
+ * the same way `operatorSession.ts` does — a random token, only its hash
+ * stored — and hands back the Cookie header to send. Using the production
+ * helpers rather than hand-writing a row means a change to how tokens are
+ * hashed breaks this too, instead of leaving the tests passing against a shape
+ * nothing uses any more.
+ */
+export async function signIn(email: string, role = 'ADMIN'): Promise<string> {
+  const now = Date.now();
+  await db
+    .prepare(
+      `INSERT INTO access_users (id, email, role, active, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 1, ?4, ?4)
+       ON CONFLICT (email) DO UPDATE SET role = EXCLUDED.role, active = 1`,
+    )
+    .bind(crypto.randomUUID(), email, role, now)
+    .run();
+  const { newSessionToken } = await import('@shikoo/domain');
+  const { token, hash } = newSessionToken();
+  await db
+    .prepare(
+      `INSERT INTO operator_sessions (id, access_user_id, token_hash, expires_at)
+       SELECT ?1, u.id, ?2, now() + interval '1 hour' FROM access_users u WHERE u.email = ?3`,
+    )
+    .bind(crypto.randomUUID(), hash, email)
+    .run();
+  return `shikoo_session=${token}`;
+}

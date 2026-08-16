@@ -1,98 +1,20 @@
 /**
- * Cloudflare Access JWT validation.
+ * Who may read what, once they are signed in.
  *
- * Production path: fetch JWKS from `${ISSUER}/.well-known/jwks.json`, verify
- * the `Cf-Access-Jwt-Assertion` header with `jose.jwtVerify`. The dev/test
- * path: if `TEST_ACCESS_USER` is set in env, skip JWT verification and pin
- * that identity — useful for local development and Playwright.
+ * This file used to verify Cloudflare Access JWTs. Access is gone — Sam's
+ * decision, 2026-08-16 — and the login that replaced it lives in
+ * `operatorSession.ts`. What stays here is the part Access never did: the role
+ * a signed-in operator has, and the line between running the shop and reading
+ * about its customers.
  *
- * The Worker NEVER trusts an email header directly. Only the verified JWT
- * claim `email` is used as the actor identity.
- *
- * ## Two doors, not one
- *
- * The payment hub and the shop's admin panel are separate surfaces with
- * separate audiences. Each Cloudflare Access application issues a JWT whose
- * `aud` is that application's tag, so a token minted for the payment dashboard
- * simply does not verify against the admin panel's audience — the boundary is
- * the Access policy itself, enforced by the signature, not a role column
- * somebody can edit.
- *
- * That is why `expectedAudience` is a parameter rather than always
- * `env.ACCESS_AUD`. Passing the wrong one is not a soft failure: `jwtVerify`
- * rejects it.
- *
- * ## The development bypass yields to a real deployment
- *
- * `TEST_ACCESS_USER` skips verification entirely and returns an ADMIN. There is
- * a guard in `server.ts` that refuses to start when it is set alongside
- * `ENV_NAME=production`, and that guard is correct — but it lives in one entry
- * point and depends on somebody having remembered to set `ENV_NAME`. Two
- * omissions at once (a stray `TEST_ACCESS_USER` in the deployment environment
- * and a missing `ENV_NAME`) would open the whole panel to anyone who reached
- * the origin.
- *
- * So the bypass is also refused here, at the only place that can actually grant
- * an identity, whenever the deployment is configured for Cloudflare Access at
- * all: `ACCESS_ISSUER` is present only on a real deployment, and never in
- * `sim/.env.local`. A machine that has both is misconfigured, and the safe
- * reading of "verify against Access, but also trust this env var" is the
- * former.
+ * That line matters more now, not less. There used to be two Cloudflare Access
+ * applications with two audiences, so a payment operator's token simply did not
+ * verify against the admin panel — the boundary was a signature. With one door,
+ * `mayRead` and the per-route ADMIN checks are the whole of it.
  */
 
 import type { AccessRole } from '@shikoo/contracts';
 import type { D1Database } from '@shikoo/database';
-
-export interface VerifiedIdentity {
-  email: string;
-  role: AccessRole;
-}
-
-/**
- * Whether the development identity bypass applies to this environment.
- *
- * Exported so the admin surface's "is this door configured at all" check and
- * the identity check cannot disagree about it. One of them concluding the
- * bypass is live while the other concludes it is not would mean a request that
- * passes the gate and then has no identity, or worse.
- */
-export function devBypassActive(env: {
-  TEST_ACCESS_USER?: string;
-  ACCESS_ISSUER?: string;
-}): boolean {
-  return Boolean(env.TEST_ACCESS_USER) && !env.ACCESS_ISSUER;
-}
-
-export async function verifyAccess(
-  req: Request,
-  env: { TEST_ACCESS_USER?: string; ACCESS_AUD?: string; ACCESS_ISSUER?: string },
-  expectedAudience?: string,
-): Promise<VerifiedIdentity | null> {
-  // Never on a deployment that has Access configured — see the header.
-  if (devBypassActive(env)) {
-    return { email: env.TEST_ACCESS_USER as string, role: 'ADMIN' };
-  }
-  const jwt = req.headers.get('Cf-Access-Jwt-Assertion');
-  if (!jwt) return null;
-  // An unset audience is a closed door, never an open one. The caller decides
-  // which audience this surface requires; if it has none configured there is
-  // nothing to verify against and the request does not get in.
-  const audience = expectedAudience ?? env.ACCESS_AUD;
-  if (!audience || !env.ACCESS_ISSUER) return null;
-  try {
-    const { jwtVerify, createRemoteJWKSet } = await import('jose');
-    const jwks = createRemoteJWKSet(new URL(`${env.ACCESS_ISSUER}/cdn-cgi/access/certs`));
-    const { payload } = await jwtVerify(jwt, jwks, {
-      audience,
-      issuer: env.ACCESS_ISSUER,
-    });
-    const email = payload['email'];
-    if (typeof email !== 'string') return null;
-    return { email, role: 'ADMIN' }; // role comes from `access_users` table in real flow
-  } catch {
-    return null;
-  }
-}
 
 /**
  * What a READ_ONLY operator may not read on the admin surface.

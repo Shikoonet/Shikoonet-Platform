@@ -11,8 +11,8 @@
  * looks broken. That is what the hand-kept list below is for.
  */
 
-import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
 import { NAV, navItem, pageLabel, type PageId } from '../src/nav.js';
 import { App } from '../src/App.js';
 
@@ -70,8 +70,49 @@ describe('navigation', () => {
 });
 
 describe('the shell', () => {
-  it('renders every section as a link, and promises nothing', () => {
+  // The panel now waits for `/api/v1/auth/me` before drawing anything: signed
+  // out it shows the login form instead. Without an answer here these two would
+  // assert against that form and fail for a reason that has nothing to do with
+  // navigation.
+  // A plain object rather than `new Response(...)`: what `api.ts` touches is
+  // `ok`, `status` and `json()`, and building a real Response here made the
+  // stub itself throw — which sent the panel down the signed-out path and made
+  // the login test below pass for the wrong reason.
+  const answer = (status: number, body: unknown) =>
+    vi.fn(async () => ({ ok: status < 400, status, json: async () => body }));
+
+  // Only `/me` is answered. Handing the identity payload to every other request
+  // is worse than refusing them: the dashboard reads it as an overview and
+  // throws, so the shell never finishes rendering. Refusing is also what these
+  // tests saw before the login existed — each screen catches its own failure
+  // and the navigation still draws, which is the thing under test.
+  const signedIn = () =>
+    vi.fn(async (url: string) =>
+      String(url).endsWith('/me')
+        ? { ok: true, status: 200, json: async () => ({ ok: true, email: 'a@b.c', role: 'ADMIN' }) }
+        : Promise.reject(new Error('not stubbed')),
+    );
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', signedIn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('shows the login form when nobody is signed in', async () => {
+    // The other half: if `me` refuses, the panel must not draw itself. A shell
+    // that renders behind a login form fires a dozen requests that all 401.
+    vi.stubGlobal('fetch', answer(401, { ok: false, error: 'unauthorized' }));
     render(<App />);
+    await waitFor(() => expect(screen.getByText('ورود به پنل مدیریت')).toBeTruthy());
+    expect(document.querySelector('.sidebar-link')).toBeNull();
+  });
+
+  it('renders every section as a link, and promises nothing', async () => {
+    render(<App />);
+    await waitFor(() => expect(document.querySelector('.sidebar-link')).toBeTruthy());
     for (const group of NAV) {
       for (const item of group.items) {
         const link = screen.getByRole('button', { name: new RegExp(item.label) });
@@ -83,8 +124,9 @@ describe('the shell', () => {
     expect(document.body.textContent).not.toContain('به‌زودی');
   });
 
-  it('opens on the dashboard', () => {
+  it('opens on the dashboard', async () => {
     render(<App />);
+    await waitFor(() => expect(document.querySelector('.sidebar-link.active')).toBeTruthy());
     const active = document.querySelector('.sidebar-link.active');
     expect(active?.textContent).toContain('داشبورد');
   });

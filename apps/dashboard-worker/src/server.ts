@@ -7,10 +7,11 @@
  *   env bindings        -> process.env
  *   wrangler [assets]   -> serveStatic over the SPA build
  *
- * Authentication is unchanged. `access.ts` still verifies a Cloudflare Access
- * JWT with `jose` against the issuer's JWKS, which works the same behind a
- * Cloudflare Tunnel as it did on Workers. The app never trusts an email header,
- * only a verified `email` claim.
+ * Authentication is this deployment's own, as of 2026-08-16: a password, an
+ * optional TOTP code and a session cookie, in `operatorSession.ts`. It replaced
+ * Cloudflare Access, which used to stand in front of the origin — so the origin
+ * is now the only wall, and `TEST_ACCESS_USER` below is refused in production
+ * for that reason rather than out of tidiness.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -42,11 +43,6 @@ function positiveInt(name: string, fallback: number): number {
 }
 
 const PASSTHROUGH = [
-  'ACCESS_AUD',
-  'ACCESS_ISSUER',
-  // The second Cloudflare Access application's audience — the shop's admin
-  // panel. Unset means this deployment serves no admin panel at all.
-  'ADMIN_ACCESS_AUD',
   'ENABLE_PURCHASE_TYPE',
   'DEV_BLOCK_DEVICE_ADMIN',
   'INGEST_URL',
@@ -65,9 +61,11 @@ export function buildEnv(db: Env['DB']): Env {
     const value = optional(key);
     if (value !== undefined) env[key] = value;
   }
-  // TEST_ACCESS_USER bypasses JWT verification entirely. It is a local and
-  // Playwright convenience and must never reach a deployed environment, so it
-  // is only honoured when the app is not running as production.
+  // TEST_ACCESS_USER skips the login entirely. It is a local and Playwright
+  // convenience and must never reach a deployed environment. Refused twice, on
+  // purpose: here at startup, and again in `devBypassActive` at the moment an
+  // identity would be granted — one refusal living in a single entry point is
+  // how a bypass reaches production.
   const testUser = optional('TEST_ACCESS_USER');
   if (testUser !== undefined) {
     if (env.ENV_NAME === 'production') {

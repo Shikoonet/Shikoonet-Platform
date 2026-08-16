@@ -61,6 +61,17 @@ loadSimEnv();
 // serving, with whatever environment it happens to have.
 const PORT = 8799;
 
+/**
+ * A second server, without `TEST_ACCESS_USER`.
+ *
+ * The login form cannot be walked on the first one: the bypass signs an
+ * identity in before the form is ever drawn, so a spec there would assert
+ * against a panel that is already open. Two ports is the smallest way to have
+ * both — the bypass for the twelve specs that are about the panel, and a real
+ * front door for the ones that are about getting through it.
+ */
+export const LOGIN_PORT = 8800;
+
 const spaPath = (relative: string): string =>
   fileURLToPath(new URL(relative, import.meta.url));
 
@@ -81,7 +92,8 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${PORT}`,
     trace: 'retain-on-failure',
   },
-  webServer: {
+  webServer: [
+    {
     // The same entry point production runs, not a test double: `server.ts` is
     // where the SPA mounts, where `/admin` is split from `/`, and where a
     // mistake in any of that would not show up in a route-level test.
@@ -103,6 +115,29 @@ export default defineConfig({
       // pathname on Windows carries a leading slash before the drive letter.
       SPA_DIST: spaPath('../dashboard-web/dist'),
       ADMIN_DIST: spaPath('../admin-web/dist'),
+      },
     },
-  },
+    {
+      // No `--env-file`: that is where `TEST_ACCESS_USER` comes from, and the
+      // whole point of this one is not having it. `loadSimEnv` above already
+      // put `DATABASE_URL` in this process, so it is passed on explicitly.
+      command: 'tsx src/server.ts',
+      url: `http://127.0.0.1:${LOGIN_PORT}/api/v1/health`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+      env: {
+        PORT: String(LOGIN_PORT),
+        ENV_NAME: 'local',
+        DATABASE_URL: process.env.DATABASE_URL ?? '',
+        // Emptied on purpose, and this is the whole trick. Playwright merges
+        // `process.env` into a webServer's environment, and `loadSimEnv` put
+        // `TEST_ACCESS_USER` there — so dropping `--env-file` was not enough:
+        // this server inherited the bypass anyway and served an already-open
+        // panel. Every login spec failed against a page that was signed in.
+        TEST_ACCESS_USER: '',
+        SPA_DIST: spaPath('../dashboard-web/dist'),
+        ADMIN_DIST: spaPath('../admin-web/dist'),
+      },
+    },
+  ],
 });

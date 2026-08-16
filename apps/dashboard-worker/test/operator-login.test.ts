@@ -1,0 +1,330 @@
+/**
+ * The login that replaced Cloudflare Access.
+ *
+ * Access was an identity layer in front of the origin. These routes are what is
+ * left, so the cases worth writing are the ones that decide whether this is a
+ * wall or a formality: the lockout actually locking, a wrong password and an
+ * unknown address being told apart by nobody, a TOTP code that cannot be spent
+ * twice, and a session that dies when it is revoked.
+ *
+ * Every assertion here goes through `app.fetch` rather than calling the helpers,
+ * because the helpers agreeing with themselves is not the question.
+ */
+
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { hashPassword, codeForStep, generateSecret, stepAt } from '@shikoo/domain';
+import { applySchema, env as baseEnv } from './helpers/env.js';
+import { app, type Env } from '../src/index.js';
+
+const EMAIL = 'login@example.com';
+const PASSWORD = 'a perfectly ordinary password';
+
+/** No TEST_ACCESS_USER: the bypass would answer every one of these for free. */
+const ENV = { ...baseEnv, TEST_ACCESS_USER: '' } as Env;
+
+async function login(body: unknown, extra: Record<string, string> = {}): Promise<Response> {
+  return app.fetch(
+    new Request('https://example.com/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://example.com', ...extra },
+      body: JSON.stringify(body),
+    }),
+    ENV,
+  );
+}
+
+async function seedOperator(
+  over: { totpSecret?: string; role?: string; password?: string } = {},
+): Promise<void> {
+  const now = Date.now();
+  await baseEnv.DB.prepare(`DELETE FROM access_users WHERE email = ?1`).bind(EMAIL).run();
+  await baseEnv.DB.prepare(
+    `INSERT INTO access_users
+       (id, email, role, active, created_at, updated_at, password_hash, totp_secret, totp_enabled)
+     VALUES (?1, ?2, ?3, 1, ?4, ?4, ?5, ?6, ?7)`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      EMAIL,
+      over.role ?? 'ADMIN',
+      now,
+      await hashPassword(over.password ?? PASSWORD),
+      over.totpSecret ?? null,
+      over.totpSecret ? true : false,
+    )
+    .run();
+}
+
+/** The cookie a Set-Cookie header carries, or null. */
+function sessionFrom(res: Response): string | null {
+  const raw = res.headers.get('set-cookie');
+  if (!raw) return null;
+  const match = /shikoo_session=([^;]*)/.exec(raw);
+  return match?.[1] ? match[1] : null;
+}
+
+beforeAll(applySchema);
+beforeEach(seedOperator);
+
+describe('POST /api/v1/auth/login', () => {
+  it('accepts the right password and hands back a session', async () => {
+    const res = await login({ email: EMAIL, password: PASSWORD });
+    expect(res.status).toBe(200);
+    const token = sessionFrom(res);
+    expect(token).toBeTruthy();
+
+    // The session must actually open a door — a Set-Cookie nothing honours is
+    // the failure this catches.
+    const after = await app.request(
+      '/api/v1/admin/customers',
+      { headers: { cookie: `shikoo_session=${token}` } },
+      ENV,
+    );
+    expect(after.status).toBe(200);
+  });
+
+  it('stores only the hash, so the table cannot give a session away', async () => {
+    const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
+    const row = await baseEnv.DB.prepare(
+      `SELECT token_hash FROM operator_sessions ORDER BY created_at DESC LIMIT 1`,
+    ).first<{ token_hash: string }>();
+    expect(row?.token_hash).toBeTruthy();
+    expect(row?.token_hash).not.toBe(token);
+  });
+
+  it('sets the cookie HttpOnly, so script cannot read it', async () => {
+    const raw = (await login({ email: EMAIL, password: PASSWORD })).headers.get('set-cookie') ?? '';
+    expect(raw.toLowerCase()).toContain('httponly');
+    expect(raw).toMatch(/SameSite=Lax/i);
+    expect(raw).toMatch(/Path=\//);
+  });
+
+  it('sets Secure on a production deployment', async () => {
+    const res = await app.fetch(
+      new Request('https://example.com/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://example.com' },
+        body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
+      }),
+      { ...ENV, ENV_NAME: 'production' } as Env,
+    );
+    expect((res.headers.get('set-cookie') ?? '').toLowerCase()).toContain('secure');
+  });
+
+  it('refuses a wrong password', async () => {
+    const res = await login({ email: EMAIL, password: 'not it' });
+    expect(res.status).toBe(401);
+    expect(sessionFrom(res)).toBeNull();
+  });
+
+  it('answers an unknown address exactly as it answers a wrong password', async () => {
+    // Anything that tells the two apart — the status, the body, the presence of
+    // a cookie — hands an attacker a list of which operators exist.
+    const wrong = await login({ email: EMAIL, password: 'not it' });
+    const unknown = await login({ email: 'nobody@example.com', password: 'not it' });
+    expect(unknown.status).toBe(wrong.status);
+    expect(await unknown.json()).toEqual(await wrong.json());
+  });
+
+  it('refuses an operator who has no password set', async () => {
+    // Rows migrated from the Access era have password_hash NULL. They must not
+    // be treated as "no password required".
+    await baseEnv.DB.prepare(`UPDATE access_users SET password_hash = NULL WHERE email = ?1`)
+      .bind(EMAIL)
+      .run();
+    expect((await login({ email: EMAIL, password: '' })).status).toBe(401);
+    expect((await login({ email: EMAIL, password: PASSWORD })).status).toBe(401);
+  });
+
+  it('refuses a deactivated operator', async () => {
+    await baseEnv.DB.prepare(`UPDATE access_users SET active = 0 WHERE email = ?1`)
+      .bind(EMAIL)
+      .run();
+    expect((await login({ email: EMAIL, password: PASSWORD })).status).toBe(401);
+  });
+
+  it('ignores case and surrounding space in the address', async () => {
+    const res = await login({ email: `  ${EMAIL.toUpperCase()} `, password: PASSWORD });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('the lockout', () => {
+  it('closes the door after five wrong guesses, and then refuses the right password', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      expect((await login({ email: EMAIL, password: `guess ${i}` })).status).toBe(401);
+    }
+    const locked = await login({ email: EMAIL, password: PASSWORD });
+    expect(locked.status).toBe(423);
+    expect(((await locked.json()) as { error: string }).error).toBe('account_locked');
+  });
+
+  it('counts each simultaneous guess, because the count lives in the UPDATE', async () => {
+    // The race the guard exists for. Read-then-write would let five parallel
+    // guesses all read zero and all write one, so the lockout would cost an
+    // attacker nothing but connections.
+    await Promise.all(
+      Array.from({ length: 5 }, (_, i) => login({ email: EMAIL, password: `parallel ${i}` })),
+    );
+    const row = await baseEnv.DB.prepare(
+      `SELECT failed_attempts, locked_until FROM access_users WHERE email = ?1`,
+    )
+      .bind(EMAIL)
+      .first<{ failed_attempts: number; locked_until: string | null }>();
+    expect(row?.failed_attempts).toBe(5);
+    expect(row?.locked_until).not.toBeNull();
+  });
+
+  it('forgets the failures once the right password arrives', async () => {
+    for (let i = 0; i < 3; i += 1) await login({ email: EMAIL, password: 'wrong' });
+    expect((await login({ email: EMAIL, password: PASSWORD })).status).toBe(200);
+    const row = await baseEnv.DB.prepare(
+      `SELECT failed_attempts, locked_until FROM access_users WHERE email = ?1`,
+    )
+      .bind(EMAIL)
+      .first<{ failed_attempts: number; locked_until: string | null }>();
+    expect(row?.failed_attempts).toBe(0);
+    expect(row?.locked_until).toBeNull();
+  });
+
+  it('opens again once the lock has expired', async () => {
+    for (let i = 0; i < 5; i += 1) await login({ email: EMAIL, password: 'wrong' });
+    await baseEnv.DB.prepare(
+      `UPDATE access_users SET locked_until = now() - interval '1 minute' WHERE email = ?1`,
+    )
+      .bind(EMAIL)
+      .run();
+    expect((await login({ email: EMAIL, password: PASSWORD })).status).toBe(200);
+  });
+});
+
+describe('the second factor', () => {
+  const SECRET = generateSecret();
+
+  beforeEach(async () => {
+    await seedOperator({ totpSecret: SECRET });
+  });
+
+  it('asks for a code rather than letting the password alone in', async () => {
+    const res = await login({ email: EMAIL, password: PASSWORD });
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: string }).error).toBe('totp_required');
+    expect(sessionFrom(res)).toBeNull();
+  });
+
+  it('accepts the current code', async () => {
+    const code = codeForStep(SECRET, stepAt(Date.now()));
+    const res = await login({ email: EMAIL, password: PASSWORD, code });
+    expect(res.status).toBe(200);
+    expect(sessionFrom(res)).toBeTruthy();
+  });
+
+  it('refuses the same code a second time', async () => {
+    // A code is live for about ninety seconds across the drift window, which is
+    // long enough for somebody who read it over a shoulder to spend it again.
+    const code = codeForStep(SECRET, stepAt(Date.now()));
+    expect((await login({ email: EMAIL, password: PASSWORD, code })).status).toBe(200);
+    const replay = await login({ email: EMAIL, password: PASSWORD, code });
+    expect(replay.status).toBe(401);
+    expect(sessionFrom(replay)).toBeNull();
+  });
+
+  it('refuses a wrong code even with the right password', async () => {
+    const res = await login({ email: EMAIL, password: PASSWORD, code: '000000' });
+    expect(res.status).toBe(401);
+    expect(sessionFrom(res)).toBeNull();
+  });
+
+  it('refuses a right code with a wrong password', async () => {
+    const code = codeForStep(SECRET, stepAt(Date.now()));
+    expect((await login({ email: EMAIL, password: 'wrong', code })).status).toBe(401);
+  });
+
+  it('counts a bad code towards the lockout', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await login({ email: EMAIL, password: PASSWORD, code: '000000' });
+    }
+    const code = codeForStep(SECRET, stepAt(Date.now()));
+    expect((await login({ email: EMAIL, password: PASSWORD, code })).status).toBe(423);
+  });
+
+  it('does not count a missing code, because that is the form asking', async () => {
+    for (let i = 0; i < 6; i += 1) await login({ email: EMAIL, password: PASSWORD });
+    const row = await baseEnv.DB.prepare(
+      `SELECT failed_attempts FROM access_users WHERE email = ?1`,
+    )
+      .bind(EMAIL)
+      .first<{ failed_attempts: number }>();
+    expect(row?.failed_attempts).toBe(0);
+  });
+});
+
+describe('logout and me', () => {
+  it('revokes the session it was given', async () => {
+    const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
+    const cookie = `shikoo_session=${token}`;
+
+    const out = await app.fetch(
+      new Request('https://example.com/api/v1/auth/logout', {
+        method: 'POST',
+        headers: { cookie, origin: 'https://example.com' },
+      }),
+      ENV,
+    );
+    expect(out.status).toBe(200);
+
+    const after = await app.request('/api/v1/admin/customers', { headers: { cookie } }, ENV);
+    expect(after.status).toBe(401);
+  });
+
+  it('answers 401 with no session and the identity with one', async () => {
+    expect((await app.request('/api/v1/auth/me', {}, ENV)).status).toBe(401);
+
+    const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
+    const res = await app.request(
+      '/api/v1/auth/me',
+      { headers: { cookie: `shikoo_session=${token}` } },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ email: EMAIL, role: 'ADMIN', totpEnabled: false });
+  });
+
+  it('never returns the TOTP secret', async () => {
+    await seedOperator({ totpSecret: generateSecret() });
+    const code = codeForStep(
+      (await baseEnv.DB.prepare(`SELECT totp_secret FROM access_users WHERE email = ?1`)
+        .bind(EMAIL)
+        .first<{ totp_secret: string }>())!.totp_secret,
+      stepAt(Date.now()),
+    );
+    const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD, code }));
+    const res = await app.request(
+      '/api/v1/auth/me',
+      { headers: { cookie: `shikoo_session=${token}` } },
+      ENV,
+    );
+    const body = JSON.stringify(await res.json());
+    expect(body).not.toContain('totpSecret');
+    expect(body).not.toContain('totp_secret');
+  });
+});
+
+describe('the audit trail', () => {
+  it('records the login and the refusal, and neither carries the password', async () => {
+    await login({ email: EMAIL, password: 'wrong' });
+    await login({ email: EMAIL, password: PASSWORD });
+    const rows = await baseEnv.DB.prepare(
+      `SELECT action, before_json, after_json FROM audit_logs
+        WHERE actor_email = ?1 ORDER BY created_at`,
+    )
+      .bind(EMAIL)
+      .all<{ action: string; before_json: string | null; after_json: string | null }>();
+    const actions = (rows.results ?? []).map((r) => r.action);
+    expect(actions).toContain('auth.login.failed');
+    expect(actions).toContain('auth.login');
+    const dump = JSON.stringify(rows.results);
+    expect(dump).not.toContain(PASSWORD);
+    expect(dump).not.toContain('wrong');
+  });
+});

@@ -621,3 +621,136 @@ body {
      does and is the whole reason the label length is capped. */
   overflow-wrap: anywhere;
 }
+
+/* ---------------------------------------------------------------------------
+   Sign-in
+   The panel had no login screen while Cloudflare Access stood in front of it.
+   Deliberately plain: this is the one page a stranger can reach, so it says the
+   shop's name and asks two questions, and nothing else.
+
+   Every colour here is a token that exists in :root above. The first version
+   invented four that did not (--bg-surface, --border, --text-strong,
+   --danger-bg); CSS resolves an undefined variable to nothing, so the card had
+   no border and the two inputs were completely invisible — a form nobody could
+   see they were meant to type into. Nothing failed, and no test could have
+   caught it. Looking at the rendered page did.
+   --------------------------------------------------------------------------- */
+
+.boot {
+  min-height: 100vh;
+  background: var(--bg-body);
+}
+
+.login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg-body);
+}
+
+.login__card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 32px 28px;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+
+.login__brand {
+  font-size: 28px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--text-main);
+}
+
+.login__sub {
+  text-align: center;
+  color: var(--text-muted);
+  margin-bottom: 18px;
+}
+
+.login__label {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+.login__input {
+  padding: 10px 12px;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+  background: var(--bg-body);
+  color: var(--text-main);
+  font: inherit;
+}
+
+.login__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.login__input:disabled {
+  opacity: 0.55;
+}
+
+/* The code is six digits and reads left to right; letter-spacing makes a
+   mistyped digit visible before Enter rather than after a refusal. */
+.login__input--code {
+  text-align: center;
+  letter-spacing: 8px;
+  font-size: 20px;
+}
+
+.login__error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.login__submit {
+  margin-top: 20px;
+  padding: 11px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login__submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.login__back {
+  margin-top: 8px;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.app-header__signout {
+  margin-inline-start: auto;
+  padding: 6px 12px;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
