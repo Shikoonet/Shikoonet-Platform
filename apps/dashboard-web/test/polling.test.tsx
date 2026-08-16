@@ -20,7 +20,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // Vitest runs with cwd at the package root. Resolving from there is both
@@ -287,21 +287,14 @@ describe('adaptive polling — timer + cache invariants', () => {
   it('production callers do not register an intervalMs < 30 000 ms', () => {
     // Static invariant: no useQuery call in src/ should pass an explicit
     // intervalMs (production must rely on the default 30 s floor).
+    // Read from the directory rather than from a list written by hand. The
+    // list used to name six files and skip silently past any it could not
+    // open, so deleting a screen quietly shrank what this checked — and adding
+    // one never widened it. `MatchList.tsx` was on that list and was deleted on
+    // 2026-08-16; nothing would have said so.
     const offenders: string[] = [];
-    for (const file of [
-      'TodayView.tsx',
-      'DevicesView.tsx',
-      'AccountsView.tsx',
-      'MatchList.tsx',
-      'NotificationBell.tsx',
-      'App.tsx',
-    ]) {
-      let body: string;
-      try {
-        body = readFileSync(SRC(file), 'utf8');
-      } catch {
-        continue;
-      }
+    for (const file of readdirSync(SRC('.')).filter((f) => f.endsWith('.tsx'))) {
+      const body = readFileSync(SRC(file), 'utf8');
       const m = body.match(/cache\.useQuery[^)]*intervalMs\s*:\s*\d+/g);
       if (m) offenders.push(`${file}: ${m.join(', ')}`);
     }
