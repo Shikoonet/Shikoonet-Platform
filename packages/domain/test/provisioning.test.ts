@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   adapterFor,
+  groupIdsFor,
   isAutomated,
   manualAdapter,
   marzbanAdapter,
@@ -205,6 +206,58 @@ describe('the marzban adapter', () => {
 
     const create = createCall(panel.calls)!;
     expect(create.body).toMatchObject({ group_ids: [83] });
+  });
+
+  /**
+   * `groupIdsFor` exists so the panel preflight can say, before cutover, which
+   * groups an order would ask for. It is only worth anything if it answers the
+   * same thing the wire carries — so every case here asserts the function
+   * against the body the fake panel actually received, never against a second
+   * expectation written by hand. Delete the `groupIdsFor` call inside
+   * `provision` and every one of these goes red.
+   */
+  describe('groupIdsFor answers what the wire carries', () => {
+    const cases: { name: string; over: Partial<ProvisionRequest> }[] = [
+      { name: 'the panel default', over: {} },
+      { name: 'a plan override', over: { planAttrs: { group_ids: [83] } } },
+      {
+        name: 'the legacy `inbounds` spelling on the panel',
+        over: { providerConfig: { inbounds: [7] }, planAttrs: {} },
+      },
+      {
+        name: 'a plan `group_ids` beating a panel `inbounds`',
+        over: { providerConfig: { inbounds: [7] }, planAttrs: { group_ids: [9] } },
+      },
+      {
+        name: 'a plan `inbounds` beating a panel `inbounds`',
+        over: { providerConfig: { inbounds: [7] }, planAttrs: { inbounds: [11] } },
+      },
+    ];
+
+    for (const { name, over } of cases) {
+      it(name, async () => {
+        const panel = fakePanel();
+        const req = request(over);
+
+        await marzbanAdapter.provision(req, provider({ fetch: panel.fetchImpl }));
+
+        const sent = (createCall(panel.calls)!.body as { group_ids?: unknown }).group_ids;
+        expect(groupIdsFor(req)).toEqual(sent);
+      });
+    }
+
+    it('says undefined when nothing is configured, and then nothing is sent', async () => {
+      const panel = fakePanel();
+      const req = request({ providerConfig: {}, planAttrs: {} });
+
+      await marzbanAdapter.provision(req, provider({ fetch: panel.fetchImpl }));
+
+      // Not the same as an empty list. The preflight has to tell "this plan
+      // lets the panel decide" apart from "this plan asks for no groups",
+      // because only the second one is worth reporting.
+      expect(groupIdsFor(req)).toBeUndefined();
+      expect(createCall(panel.calls)!.body).not.toHaveProperty('group_ids');
+    });
   });
 
   describe('running it twice', () => {

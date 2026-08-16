@@ -8,8 +8,9 @@
     "start": "tsx src/server.ts",
     "start:local": "tsx --env-file=../../sim/.env.local src/server.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src test --max-warnings 0",
-    "test": "vitest run"
+    "lint": "eslint src test scripts --max-warnings 0",
+    "test": "vitest run",
+    "panel:preflight": "tsx scripts/panel-preflight.ts"
   },
   "dependencies": {
     "@shikoo/contracts": "workspace:*",

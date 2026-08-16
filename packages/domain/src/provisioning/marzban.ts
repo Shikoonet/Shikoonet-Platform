@@ -250,6 +250,24 @@ function pick(request: ProvisionRequest, key: string): unknown {
   return request.planAttrs[key] ?? request.providerConfig[key];
 }
 
+/**
+ * The `group_ids` a create would send for this plan, or undefined for none.
+ *
+ * Exported because the panel preflight has to answer the same question before
+ * cutover, and answering it a second time is how the two answers drift apart.
+ * `inbounds` is the legacy spelling the importer carried across; both are read
+ * here so a caller never has to know which one a given row uses.
+ *
+ * This exists because of a real miss. The migrated configuration sends
+ * `[42, 2]`, group 42 was deleted from the live panel some time after the
+ * 2026-08-11 dump, and PasarGuard answers `404 "Group not found"` — which
+ * `login`'s sibling classifies as non-retryable, so every VIP order would have
+ * gone FAILED and refunded in front of the customer on the first day.
+ */
+export function groupIdsFor(request: ProvisionRequest): unknown {
+  return pick(request, 'group_ids') ?? pick(request, 'inbounds');
+}
+
 export const marzbanAdapter: ProvisioningAdapter = {
   kind: 'pasarguard',
 
@@ -292,7 +310,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       };
       const proxySettings = pick(request, 'proxy_settings') ?? pick(request, 'proxies');
       if (proxySettings !== undefined) body['proxy_settings'] = proxySettings;
-      const groups = pick(request, 'group_ids') ?? pick(request, 'inbounds');
+      const groups = groupIdsFor(request);
       if (groups !== undefined) body['group_ids'] = groups;
 
       const res = await withTimeout((signal) =>
