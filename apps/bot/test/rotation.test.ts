@@ -97,7 +97,23 @@ afterEach(async () => {
   await db.prepare(`UPDATE payment_cards SET status = 'ACTIVE'`).run();
 });
 
-describe('card rotation', () => {
+/**
+ * A generous timeout, and the reason for it.
+ *
+ * `draw()` runs one real transaction per checkout against the simulation
+ * Postgres, so these cases are bound by database round-trips rather than by
+ * anything they compute. Alone they finish in about two seconds; on 2026-08-16
+ * one of them crossed vitest's 5s default during a full serial run while the
+ * machine was also rebuilding a Docker daemon, and failed with a timeout rather
+ * than an assertion.
+ *
+ * That is the worst kind of red: nothing was wrong, and a suite that fails when
+ * the machine is busy teaches everybody to re-run it instead of reading it. The
+ * limit is raised rather than the work reduced — the counts are the assertion,
+ * and fewer draws would make the ratio noisy, which is a flake with a different
+ * shape.
+ */
+describe('card rotation', { timeout: 30_000 }, () => {
   it('splits evenly when every card has the same weight', async () => {
     const cards = await pool(5);
 
