@@ -135,12 +135,12 @@ function openAddDevice() {
 }
 
 async function fillAndCreateDevice() {
-  const nameInput = screen.getByPlaceholderText('Poyan Android Phone 2');
+  const nameInput = screen.getByPlaceholderText('گوشی اندروید پویان ۲');
   fireEvent.change(nameInput, { target: { value: 'Poyan test' } });
   await waitFor(() => {
     expect((screen.getByDisplayValue('poyan-test') as HTMLInputElement).value).toBe('poyan-test');
   });
-  fireEvent.click(screen.getByText('Create device'));
+  fireEvent.click(screen.getByText('ساخت دستگاه'));
 }
 
 describe('DevicesView Add-Device modal — close flow', () => {
@@ -150,21 +150,21 @@ describe('DevicesView Add-Device modal — close flow', () => {
     globalThis.fetch = mockFetch(routes);
 
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (0)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۰)'));
 
     openAddDevice();
-    expect(screen.getByRole('dialog', { name: 'Add device' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'افزودن دستگاه' })).toBeTruthy();
 
     await fillAndCreateDevice();
     await waitFor(() => screen.getByTestId('setup-done'));
 
-    expect(screen.getByRole('dialog', { name: 'Device setup' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeTruthy();
     expect(screen.getByTestId('token-text').textContent).toBe('•'.repeat(TOKEN.length));
 
     fireEvent.click(screen.getByTestId('setup-done'));
 
     await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Device setup' })).toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull();
     });
     expect(document.querySelector('.modal-backdrop')).toBeNull();
     expect(screen.queryByTestId('close-confirmation')).toBeNull();
@@ -177,7 +177,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     globalThis.fetch = mockFetch(routes);
 
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (0)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۰)'));
 
     openAddDevice();
     await fillAndCreateDevice();
@@ -185,18 +185,18 @@ describe('DevicesView Add-Device modal — close flow', () => {
 
     fireEvent.click(screen.getByTestId('setup-close'));
     expect(screen.getByTestId('close-confirmation')).toBeTruthy();
-    expect(screen.getByRole('dialog', { name: 'Device setup' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('close-confirmation-cancel'));
     await waitFor(() => expect(screen.queryByTestId('close-confirmation')).toBeNull());
-    expect(screen.getByRole('dialog', { name: 'Device setup' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('setup-close'));
     expect(screen.getByTestId('close-confirmation')).toBeTruthy();
     fireEvent.click(screen.getByTestId('close-confirmation-confirm'));
 
     await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Device setup' })).toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull();
     });
     expect(document.body.textContent).not.toContain(TOKEN);
   });
@@ -208,7 +208,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     globalThis.fetch = mockFetch(routes);
 
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (0)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۰)'));
 
     openAddDevice();
     await fillAndCreateDevice();
@@ -221,7 +221,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
 
     fireEvent.click(screen.getByTestId('setup-close'));
     await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Device setup' })).toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull();
     });
     expect(screen.queryByTestId('close-confirmation')).toBeNull();
   });
@@ -232,7 +232,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     globalThis.fetch = mockFetch(routes);
 
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (0)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۰)'));
 
     openAddDevice();
     await fillAndCreateDevice();
@@ -243,13 +243,13 @@ describe('DevicesView Add-Device modal — close flow', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByTestId('close-confirmation')).toBeNull());
-    expect(screen.getByRole('dialog', { name: 'Device setup' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeTruthy();
 
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.getByTestId('close-confirmation')).toBeTruthy();
     fireEvent.click(screen.getByTestId('close-confirmation-confirm'));
     await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Device setup' })).toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull();
     });
   });
 
@@ -259,7 +259,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     globalThis.fetch = mockFetch(routes);
 
     const { container } = render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (0)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۰)'));
 
     openAddDevice();
     await fillAndCreateDevice();
@@ -279,7 +279,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     fireEvent.click(screen.getByTestId('close-confirmation-confirm'));
     await waitFor(() => expect(screen.queryByTestId('close-confirmation')).toBeNull());
     await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Device setup' })).toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull();
     });
   });
 
@@ -292,7 +292,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     const removeSpy = vi.spyOn(window, 'removeEventListener');
 
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (0)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۰)'));
 
     openAddDevice();
     await fillAndCreateDevice();
@@ -302,7 +302,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
 
     fireEvent.click(screen.getByTestId('setup-done'));
     await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Device setup' })).toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull();
     });
     expect(removeSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
   });
@@ -314,7 +314,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     globalThis.fetch = mockFetch(routes);
 
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (0)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۰)'));
 
     openAddDevice();
     await fillAndCreateDevice();
@@ -326,19 +326,19 @@ describe('DevicesView Add-Device modal — close flow', () => {
       });
     }
 
-    expect(screen.getByRole('dialog', { name: 'Device setup' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeTruthy();
     expect(screen.getByTestId('token-text').textContent).toBe('•'.repeat(TOKEN.length));
     expect(screen.queryByTestId('close-confirmation')).toBeNull();
 
     fireEvent.click(screen.getByTestId('setup-done'));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Device setup' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull());
 
     for (let i = 0; i < 1; i++) {
       await act(async () => {
         vi.advanceTimersByTime(30_000);
       });
     }
-    expect(screen.queryByRole('dialog', { name: 'Device setup' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull();
   });
 
   it('focus returns to the Add Device trigger after close', async () => {
@@ -347,7 +347,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     globalThis.fetch = mockFetch(routes);
 
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (0)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۰)'));
 
     const trigger = openAddDevice();
     await fillAndCreateDevice();
@@ -355,7 +355,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
 
     fireEvent.click(screen.getByTestId('setup-done'));
     await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Device setup' })).toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull();
     });
     expect(document.activeElement).toBe(trigger);
   });

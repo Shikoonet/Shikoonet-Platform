@@ -148,7 +148,7 @@ describe('DevicesView Delete permanently — desktop path', () => {
       [`GET ${DEVICES_PATH}`]: devicesListResponse([ACTIVE_DEVICE, INACTIVE_DEVICE]),
     });
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (2)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۲)'));
     // There should be exactly one Delete permanently button — for the inactive row.
     const buttons = screen.getAllByTestId('device-delete');
     expect(buttons.length).toBe(1);
@@ -164,12 +164,12 @@ describe('DevicesView Delete permanently — desktop path', () => {
         deletePreviewResponse(INACTIVE_DEVICE),
     });
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (1)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۱)'));
 
     fireEvent.click(screen.getByTestId('device-delete'));
 
-    await waitFor(() => screen.getByRole('dialog', { name: 'Delete device permanently' }));
-    const dialog = screen.getByRole('dialog', { name: 'Delete device permanently' });
+    await waitFor(() => screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' }));
+    const dialog = screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' });
     const confirm = dialog.querySelector('button.danger') as HTMLButtonElement;
     expect(confirm).toBeTruthy();
     // Disabled while input is empty.
@@ -205,23 +205,23 @@ describe('DevicesView Delete permanently — desktop path', () => {
         deleteDeviceResponse(deviceId),
     });
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (1)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۱)'));
 
     fireEvent.click(screen.getByTestId('device-delete'));
-    await waitFor(() => screen.getByRole('dialog', { name: 'Delete device permanently' }));
-    const dialog = screen.getByRole('dialog', { name: 'Delete device permanently' });
+    await waitFor(() => screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' }));
+    const dialog = screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' });
     const input = dialog.querySelector('input[type="text"]') as HTMLInputElement;
     fireEvent.change(input, { target: { value: INACTIVE_DEVICE.display_name } });
     fireEvent.click(dialog.querySelector('button.danger') as HTMLButtonElement);
 
     // Modal closes.
     await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Delete device permanently' })).toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'حذف همیشگی دستگاه' })).toBeNull();
     });
     // Success banner shown.
-    expect(screen.getByRole('status').textContent).toMatch(/Pixel Inactive deleted/);
+    expect(screen.getByRole('status').textContent).toMatch(/دستگاه Pixel Inactive حذف شد/);
     // Row removed.
-    await waitFor(() => screen.getByText('Devices (0)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۰)'));
     expect(screen.queryByText('Pixel Inactive')).toBeNull();
   });
 });
@@ -233,7 +233,7 @@ describe('DevicesView Delete permanently — mobile path', () => {
       [`GET ${DEVICES_PATH}`]: devicesListResponse([ACTIVE_DEVICE, INACTIVE_DEVICE]),
     });
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (2)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۲)'));
     expect(screen.getAllByTestId('device-delete').length).toBe(1);
   });
 });
@@ -248,11 +248,11 @@ describe('DevicesView Delete permanently — regression: polling does not reopen
         deletePreviewResponse(INACTIVE_DEVICE),
     });
     render(<DevicesView cache={createCache()} />);
-    await waitFor(() => screen.getByText('Devices (1)'));
+    await waitFor(() => screen.getByText('دستگاه‌ها (۱)'));
 
     fireEvent.click(screen.getByTestId('device-delete'));
-    await waitFor(() => screen.getByRole('dialog', { name: 'Delete device permanently' }));
-    const dialog = screen.getByRole('dialog', { name: 'Delete device permanently' });
+    await waitFor(() => screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' }));
+    const dialog = screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' });
     const input = dialog.querySelector('input[type="text"]') as HTMLInputElement;
     fireEvent.change(input, { target: { value: INACTIVE_DEVICE.display_name } });
 
@@ -262,7 +262,7 @@ describe('DevicesView Delete permanently — regression: polling does not reopen
     });
 
     // Modal still mounted, typed input preserved.
-    const dialogAfter = screen.getByRole('dialog', { name: 'Delete device permanently' });
+    const dialogAfter = screen.getByRole('dialog', { name: 'حذف همیشگی دستگاه' });
     expect(dialogAfter).toBeTruthy();
     expect((dialogAfter.querySelector('input[type="text"]') as HTMLInputElement).value).toBe(
       INACTIVE_DEVICE.display_name,

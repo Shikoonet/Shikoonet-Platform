@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Cache } from './query.js';
 import { useMediaQuery } from './useMediaQuery.js';
 import { forMutation, QK } from './queries.js';
+import { count } from '../format.js';
 import { formatTime } from './format.js';
 import { api, type DeviceListItem } from './api.js';
 import { SortableHeader } from './SortableHeader.js';
@@ -26,15 +27,15 @@ interface DevicesViewProps {
 }
 
 const DEVICE_COLUMNS = [
-  { key: 'display_name', label: 'Name', type: 'text' as ColumnType },
-  { key: 'device_code', label: 'Code', type: 'text' as ColumnType },
-  { key: 'status', label: 'Status', type: 'text' as ColumnType },
-  { key: 'connection', label: 'Connection', type: 'text' as ColumnType },
-  { key: 'token', label: 'Token', type: 'text' as ColumnType },
-  { key: 'created_at', label: 'Created', type: 'date' as ColumnType },
-  { key: 'last_seen_at', label: 'Last seen', type: 'date' as ColumnType },
-  { key: 'last_success_at', label: 'Last success', type: 'date' as ColumnType },
-  { key: 'last_auth_failure_at', label: 'Last auth failure', type: 'date' as ColumnType },
+  { key: 'display_name', label: 'نام', type: 'text' as ColumnType },
+  { key: 'device_code', label: 'کد', type: 'text' as ColumnType },
+  { key: 'status', label: 'وضعیت', type: 'text' as ColumnType },
+  { key: 'connection', label: 'اتصال', type: 'text' as ColumnType },
+  { key: 'token', label: 'توکن', type: 'text' as ColumnType },
+  { key: 'created_at', label: 'ساخته‌شده', type: 'date' as ColumnType },
+  { key: 'last_seen_at', label: 'آخرین حضور', type: 'date' as ColumnType },
+  { key: 'last_success_at', label: 'آخرین موفقیت', type: 'date' as ColumnType },
+  { key: 'last_auth_failure_at', label: 'آخرین خطای احراز', type: 'date' as ColumnType },
 ];
 
 function deviceAccessor(col: string) {
@@ -76,23 +77,23 @@ function connectionStateLabel(d: DeviceListItem): {
   label: string;
   tone: 'good' | 'warn' | 'idle' | 'bad' | 'muted';
 } {
-  if (!d.active) return { label: 'Inactive', tone: 'muted' };
-  if (!d.credential) return { label: 'Token required', tone: 'warn' };
+  if (!d.active) return { label: 'غیرفعال', tone: 'muted' };
+  if (!d.credential) return { label: 'نیازمند توکن', tone: 'warn' };
   if (
     d.last_auth_failure_at &&
     (!d.last_success_at || d.last_auth_failure_at > d.last_success_at)
   ) {
-    return { label: 'Authentication failing', tone: 'bad' };
+    return { label: 'احراز هویت ناموفق', tone: 'bad' };
   }
-  if (!d.last_seen_at) return { label: 'Never connected', tone: 'idle' };
+  if (!d.last_seen_at) return { label: 'هرگز وصل نشده', tone: 'idle' };
   const now = Date.now();
   const age = now - d.last_seen_at;
-  if (age < 60_000) return { label: 'Connected', tone: 'good' };
-  if (age < 5 * 60_000) return { label: 'Recently active', tone: 'good' };
+  if (age < 60_000) return { label: 'متصل', tone: 'good' };
+  if (age < 5 * 60_000) return { label: 'به‌تازگی فعال', tone: 'good' };
   if (d.last_success_at && now - d.last_success_at < 24 * 60 * 60 * 1000) {
-    return { label: 'Recently active', tone: 'good' };
+    return { label: 'به‌تازگی فعال', tone: 'good' };
   }
-  return { label: 'Inactive', tone: 'muted' };
+  return { label: 'غیرفعال', tone: 'muted' };
 }
 
 export function DevicesView({ cache }: DevicesViewProps) {
@@ -154,13 +155,13 @@ export function DevicesView({ cache }: DevicesViewProps) {
     }
   }
 
-  if (status === 'loading' && !data) return <p className="muted">Loading…</p>;
+  if (status === 'loading' && !data) return <p className="muted">در حال بارگذاری…</p>;
   if (error && !data) {
     return (
       <p className="error">
-        Failed to load devices.{' '}
+        بارگذاری دستگاه‌ها ناموفق بود.{' '}
         <button type="button" onClick={() => cache.refetch(QK.devices)}>
-          Retry
+          تلاش دوباره
         </button>
       </p>
     );
@@ -169,7 +170,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
   return (
     <div className="devices">
       <div className="row toolbar">
-        <h2>Devices ({items.length})</h2>
+        <h2>دستگاه‌ها ({count(items.length)})</h2>
         <div className="spacer" />
         <button
           type="button"
@@ -177,7 +178,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
           onClick={() => setCreateOpen(true)}
           data-testid="open-add-device"
         >
-          + Add device
+          + افزودن دستگاه
         </button>
       </div>
       {rowError && <div className="error">{rowError}</div>}
@@ -194,7 +195,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
           onClose={() => setDeleteFor(null)}
           onDeleted={() => {
             setDeleteFor(null);
-            setNotice(`Device ${deleteFor.display_name} deleted.`);
+            setNotice(`دستگاه ${deleteFor.display_name} حذف شد.`);
             cache.invalidate(...forMutation('deviceDeleted'));
           }}
         />
@@ -202,12 +203,12 @@ export function DevicesView({ cache }: DevicesViewProps) {
 
       {items.length === 0 ? (
         <p className="empty">
-          No devices registered. Click <strong>+ Add device</strong> to create one.
+          هیچ دستگاهی ثبت نشده. برای ساختن یکی روی <strong>+ افزودن دستگاه</strong> بزن.
         </p>
       ) : isMobile ? (
         <>
           <div className="row toolbar sort-dropdown">
-            <label htmlFor="sort-devices">Sort by:</label>
+            <label htmlFor="sort-devices">مرتب‌سازی:</label>
             <select
               id="sort-devices"
               value={sort.column ? `${sort.column}-${sort.direction}` : ''}
@@ -216,15 +217,15 @@ export function DevicesView({ cache }: DevicesViewProps) {
                 setSort({ column: col ?? '', direction: (dir as 'asc' | 'desc') ?? 'asc' });
               }}
             >
-              <option value="display_name-asc">Name (A → Z)</option>
-              <option value="display_name-desc">Name (Z → A)</option>
-              <option value="last_seen_at-desc">Most recent</option>
-              <option value="last_seen_at-asc">Oldest activity</option>
-              <option value="created_at-desc">Newest</option>
-              <option value="created_at-asc">Oldest</option>
+              <option value="display_name-asc">نام: صعودی</option>
+              <option value="display_name-desc">نام: نزولی</option>
+              <option value="last_seen_at-desc">آخرین حضور: تازه‌ترین</option>
+              <option value="last_seen_at-asc">آخرین حضور: قدیمی‌ترین</option>
+              <option value="created_at-desc">ساخت: تازه‌ترین</option>
+              <option value="created_at-asc">ساخت: قدیمی‌ترین</option>
             </select>
           </div>
-          <ul className="card-list" aria-label="Devices">
+          <ul className="card-list" aria-label="دستگاه‌ها">
             {sortedItems.map((d) => (
               <DeviceCard
                 key={d.id}
@@ -268,7 +269,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
                     onChange={setSort}
                   />
                 ))}
-                <th>Actions</th>
+                <th>عملیات</th>
               </tr>
             </thead>
             <tbody>
@@ -282,7 +283,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
                     </td>
                     <td>
                       <span className={`status-pill status-${d.active ? 'active' : 'inactive'}`}>
-                        {d.active ? 'active' : 'inactive'}
+                        {d.active ? 'فعال' : 'غیرفعال'}
                       </span>
                     </td>
                     <td>
@@ -292,7 +293,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
                       {d.credential ? (
                         <code className="masked">{d.credential.token_prefix}…</code>
                       ) : (
-                        <span className="muted">none</span>
+                        <span className="muted">ندارد</span>
                       )}
                     </td>
                     <td>{formatTime(d.created_at)}</td>
@@ -371,58 +372,58 @@ function DeviceCard({
         <span className={`status-pill status-${cs.tone}`}>{cs.label}</span>
       </div>
       <div className="card-row">
-        <span className="label">Code</span>
+        <span className="label">کد</span>
         <code>{d.device_code}</code>
       </div>
       <div className="card-row">
-        <span className="label">Token</span>
+        <span className="label">توکن</span>
         {d.credential ? (
           <code className="masked">{d.credential.token_prefix}…</code>
         ) : (
-          <span className="muted">none</span>
+          <span className="muted">ندارد</span>
         )}
       </div>
       <div className="card-row">
-        <span className="label">Status</span>
+        <span className="label">وضعیت</span>
         <span className={`status-pill status-${d.active ? 'active' : 'inactive'}`}>
-          {d.active ? 'active' : 'inactive'}
+          {d.active ? 'فعال' : 'غیرفعال'}
         </span>
       </div>
       <div className="card-row">
-        <span className="label">Last seen</span>
+        <span className="label">آخرین حضور</span>
         <span>{d.last_seen_at ? formatTime(d.last_seen_at) : '—'}</span>
       </div>
       <div className="card-row">
-        <span className="label">Last success</span>
+        <span className="label">آخرین موفقیت</span>
         <span>{d.last_success_at ? formatTime(d.last_success_at) : '—'}</span>
       </div>
       <div className="card-row">
-        <span className="label">Auth failure</span>
+        <span className="label">خطای احراز</span>
         <span>{d.last_auth_failure_at ? formatTime(d.last_auth_failure_at) : '—'}</span>
       </div>
       <div className="card-actions">
         {d.active && d.credential && (
           <button type="button" disabled={busy} onClick={onRotate}>
-            Rotate
+            چرخش توکن
           </button>
         )}
         {d.active && d.credential && (
           <button type="button" className="danger" disabled={busy} onClick={onRevoke}>
-            Revoke
+            ابطال توکن
           </button>
         )}
         {d.active && !d.credential && (
           <button type="button" className="primary" disabled={busy} onClick={onGenerate}>
-            Generate token
+            ساخت توکن
           </button>
         )}
         {d.active ? (
           <button type="button" className="danger" disabled={busy} onClick={onDeactivate}>
-            Deactivate
+            غیرفعال‌کردن
           </button>
         ) : (
           <button type="button" disabled={busy} onClick={onReactivate}>
-            Reactivate
+            فعال‌کردن دوباره
           </button>
         )}
         {!d.active && (
@@ -433,7 +434,7 @@ function DeviceCard({
             onClick={onDelete}
             data-testid="device-delete"
           >
-            Delete permanently
+            حذف همیشگی
           </button>
         )}
       </div>
@@ -464,7 +465,7 @@ function DeviceActions({
     return (
       <>
         <button type="button" disabled={busy} onClick={onReactivate}>
-          Reactivate
+          فعال‌کردن دوباره
         </button>
         <button
           type="button"
@@ -473,7 +474,7 @@ function DeviceActions({
           onClick={onDelete}
           data-testid="device-delete"
         >
-          Delete permanently
+          حذف همیشگی
         </button>
       </>
     );
@@ -482,21 +483,21 @@ function DeviceActions({
     <>
       {d.credential && (
         <button type="button" disabled={busy} onClick={onRotate}>
-          Rotate
+          چرخش توکن
         </button>
       )}
       {d.credential && (
         <button type="button" className="danger" disabled={busy} onClick={onRevoke}>
-          Revoke
+          ابطال توکن
         </button>
       )}
       {!d.credential && (
         <button type="button" className="primary" disabled={busy} onClick={onGenerate}>
-          Generate token
+          ساخت توکن
         </button>
       )}{' '}
       <button type="button" className="danger" disabled={busy} onClick={onDeactivate}>
-        Deactivate
+        غیرفعال‌کردن
       </button>
     </>
   );
@@ -679,7 +680,7 @@ function CreateDeviceModal({ cache, onClose }: { cache: Cache; onClose: () => vo
     } catch (e) {
       const msg = String(e);
       if (msg.includes('409') || msg.includes('duplicate_device_code')) {
-        setSubmitError('That device code is already taken. Pick a different one.');
+        setSubmitError('این کد دستگاه قبلاً گرفته شده. یکی دیگر انتخاب کن.');
       } else {
         setSubmitError(msg);
       }
@@ -694,7 +695,7 @@ function CreateDeviceModal({ cache, onClose }: { cache: Cache; onClose: () => vo
   };
 
   const isSetup = state.kind === 'setup' && state.setup !== null;
-  const ariaLabel = isSetup ? 'Device setup' : 'Add device';
+  const ariaLabel = isSetup ? 'راه‌اندازی دستگاه' : 'افزودن دستگاه';
 
   return (
     <div
@@ -708,24 +709,24 @@ function CreateDeviceModal({ cache, onClose }: { cache: Cache; onClose: () => vo
         {!isSetup ? (
           <>
             <div className="row toolbar">
-              <h3>Add device</h3>
+              <h3>افزودن دستگاه</h3>
               <div className="spacer" />
               <button
                 type="button"
                 onClick={requestClose}
-                aria-label="Close"
+                aria-label="بستن"
                 data-testid="device-modal-close"
               >
                 ×
               </button>
             </div>
             <p className="muted">
-              Register a new Android phone running SMS Relay. After creating the device, you'll get
-              a one-time API token plus a copyable JSON configuration to paste into the app.
+              یک گوشی اندروید تازه که SMS Relay رویش نصب است ثبت کن. بعد از ساخت دستگاه، یک توکن
+              یک‌بارمصرف می‌گیری به‌علاوهٔ یک پیکربندی JSON قابل کپی که در اپ می‌چسبانی.
             </p>
             <div className="form">
               <label>
-                <span>Device name</span>
+                <span>نام دستگاه</span>
                 <input
                   type="text"
                   value={displayName}
@@ -736,42 +737,48 @@ function CreateDeviceModal({ cache, onClose }: { cache: Cache; onClose: () => vo
                       setDeviceCode(suggestDeviceCode(v));
                     }
                   }}
-                  placeholder="Poyan Android Phone 2"
+                  placeholder="گوشی اندروید پویان ۲"
                   autoFocus
                 />
               </label>
               <label>
-                <span>Device ID / code</span>
+                <span>شناسه / کد دستگاه</span>
                 <input
                   type="text"
                   value={deviceCode}
                   onChange={(e) => setDeviceCode(e.target.value.trim().toLowerCase())}
                   placeholder={suggestedCode || 'phone-poyan-02'}
                 />
+                {/* Latin, because this code goes into a URL and into the JSON
+                    the Android app is configured with. A Persian device name is
+                    fine and common, but it suggests no code — say so here rather
+                    than leaving the operator with a disabled button and no
+                    reason. */}
                 <small className="muted">
-                  Lowercase letters, digits, hyphens. 3–64 chars. Must be unique.
+                  حروف کوچک لاتین، رقم و خط تیره. ۳ تا ۶۴ نویسه. باید یکتا باشد. اگر نام دستگاه
+                  فارسی است، کد را خودت بنویس.
                   {suggestedCode && deviceCode !== suggestedCode ? (
                     <>
                       {' '}
-                      Suggested from name: <code>{suggestedCode}</code>
+                      پیشنهاد از روی نام: <code>{suggestedCode}</code>
                     </>
                   ) : null}
                 </small>
               </label>
               <label>
-                <span>Description (optional)</span>
+                <span>توضیح (اختیاری)</span>
                 <input
                   type="text"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Spare phone, backup SIM, etc."
+                  placeholder="گوشی یدک، سیم‌کارت پشتیبان و مانند آن"
                 />
               </label>
             </div>
             {submitError && <div className="error">{submitError}</div>}
             <div className="row toolbar modal-actions">
               <button type="button" onClick={requestClose}>
-                Cancel
+                انصراف
               </button>
               <div className="spacer" />
               <button
@@ -780,7 +787,7 @@ function CreateDeviceModal({ cache, onClose }: { cache: Cache; onClose: () => vo
                 disabled={submitting || !codeValid || !nameValid}
                 onClick={submit}
               >
-                Create device
+                ساخت دستگاه
               </button>
             </div>
           </>
@@ -866,11 +873,11 @@ function OneTimeSetupScreen({
         document.execCommand('copy');
         document.body.removeChild(ta);
       }
-      setToast(`${label} copied`);
+      setToast(`${label} کپی شد`);
       setTimeout(() => setToast(null), 1500);
       if (secret) onCopySaved();
     } catch {
-      setToast('Copy failed — select the text and press Cmd/Ctrl-C');
+      setToast('کپی نشد — متن را انتخاب کن و Ctrl-C بزن');
       setTimeout(() => setToast(null), 2500);
     }
   }
@@ -883,14 +890,14 @@ function OneTimeSetupScreen({
           data-testid="close-confirmation"
           role="alertdialog"
           aria-modal="true"
-          aria-label="Discard API token?"
+          aria-label="دور انداختن توکن؟"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="modal-body">
-            <h3>Close without saving?</h3>
+            <h3>بدون ذخیره بسته شود؟</h3>
             <p>
-              The API token is shown only once. If you discard this dialog the token will be lost —
-              you'll need to rotate to get a new one.
+              توکن فقط یک بار نمایش داده می‌شود. اگر این پنجره را ببندی توکن از دست می‌رود — برای
+              گرفتن یکی تازه باید توکن را بچرخانی.
             </p>
             <div className="row toolbar modal-actions">
               <button
@@ -899,7 +906,7 @@ function OneTimeSetupScreen({
                 autoFocus
                 data-testid="close-confirmation-cancel"
               >
-                Keep token on screen
+                توکن روی صفحه بماند
               </button>
               <div className="spacer" />
               <button
@@ -908,36 +915,36 @@ function OneTimeSetupScreen({
                 onClick={onConfirmDiscard}
                 data-testid="close-confirmation-confirm"
               >
-                Discard and close
+                دور بینداز و ببند
               </button>
             </div>
           </div>
         </div>
       )}
       <div className="row toolbar">
-        <h3>Device created — save your API token</h3>
+        <h3>دستگاه ساخته شد — توکن را ذخیره کن</h3>
         <div className="spacer" />
-        <button type="button" onClick={onRequestClose} aria-label="Close" data-testid="setup-close">
+        <button type="button" onClick={onRequestClose} aria-label="بستن" data-testid="setup-close">
           ×
         </button>
       </div>
       <p>
-        <strong>Device ID:</strong> <code>{setup.device.deviceCode}</code>
+        <strong>شناسهٔ دستگاه:</strong> <code>{setup.device.deviceCode}</code>
       </p>
       <p>
-        <strong>Device name:</strong> {setup.device.displayName}
+        <strong>نام دستگاه:</strong> {setup.device.displayName}
       </p>
       <p>
-        <strong>Method:</strong> {setup.configuration.method}
+        <strong>روش:</strong> {setup.configuration.method}
       </p>
       <p>
-        <strong>URL:</strong> <code>{setup.configuration.url}</code>
+        <strong>نشانی:</strong> <code>{setup.configuration.url}</code>
       </p>
       <p>
-        <strong>Content type:</strong> <code>{setup.configuration.contentType}</code>
+        <strong>نوع محتوا:</strong> <code>{setup.configuration.contentType}</code>
       </p>
       <div className="token-block">
-        <strong>API token:</strong>
+        <strong>توکن API:</strong>
         <div className="row">
           <code aria-hidden={!tokenShown} className="token-text" data-testid="token-text">
             {tokenShown ? setup.credential.apiKey : '•'.repeat(setup.credential.apiKey.length)}
@@ -945,41 +952,41 @@ function OneTimeSetupScreen({
         </div>
         <div className="row toolbar">
           <button type="button" onClick={() => setTokenShown((s) => !s)}>
-            {tokenShown ? 'Hide' : 'Show'}
+            {tokenShown ? 'پنهان‌کردن' : 'نمایش'}
           </button>
           <button
             type="button"
-            onClick={() => copy('API token', setup.credential.apiKey, true)}
+            onClick={() => copy('توکن API', setup.credential.apiKey, true)}
             data-testid="copy-token"
           >
-            Copy API token
+            کپی توکن API
           </button>
-          <button type="button" onClick={() => copy('URL', setup.configuration.url, false)}>
-            Copy URL
+          <button type="button" onClick={() => copy('نشانی', setup.configuration.url, false)}>
+            کپی نشانی
           </button>
         </div>
         <p className="warn small">
-          This token is shown only once. Save it now. You cannot view it again.
+          این توکن فقط یک بار نمایش داده می‌شود. همین حالا ذخیره‌اش کن. دیگر نمی‌توانی ببینی‌اش.
         </p>
       </div>
       <details>
-        <summary>JSON body</summary>
+        <summary>بدنهٔ JSON</summary>
         <pre className="code-scrollable">{jsonBodyText}</pre>
         <div className="row toolbar">
           <button
             type="button"
-            onClick={() => copy('JSON body', jsonBodyText, containsToken(jsonBodyText))}
+            onClick={() => copy('بدنهٔ JSON', jsonBodyText, containsToken(jsonBodyText))}
           >
-            Copy JSON (pretty)
+            کپی JSON (چندخطی)
           </button>
           <button
             type="button"
-            onClick={() => copy('JSON body', jsonBodyOneLine, containsToken(jsonBodyOneLine))}
+            onClick={() => copy('بدنهٔ JSON', jsonBodyOneLine, containsToken(jsonBodyOneLine))}
           >
-            Copy JSON (one line)
+            کپی JSON (یک‌خطی)
           </button>
-          <button type="button" onClick={() => copy('Setup', setupBlock, true)}>
-            Copy complete setup
+          <button type="button" onClick={() => copy('پیکربندی', setupBlock, true)}>
+            کپی کل پیکربندی
           </button>
           <button
             type="button"
@@ -996,22 +1003,33 @@ function OneTimeSetupScreen({
               onCopySaved();
             }}
           >
-            Download setup
+            دانلود پیکربندی
           </button>
         </div>
       </details>
       <details>
-        <summary>Phone setup instructions</summary>
+        <summary>راهنمای راه‌اندازی گوشی</summary>
+        {/* The app's own labels stay in English on purpose: SMS Relay is
+            frozen and its screens say «Add Remote» and «Use JSON». Translating
+            them would send the operator looking for buttons that do not exist. */}
         <ol className="instructions">
-          <li>SMS Relay → Settings → Add Remote</li>
-          <li>Remote Name: Payment Hub</li>
-          <li>Method: POST</li>
-          <li>Paste URL</li>
-          <li>Select Use JSON</li>
-          <li>Paste JSON body</li>
-          <li>Save</li>
-          <li>Allow SMS and notification permissions</li>
-          <li>Send a test SMS from another phone</li>
+          <li>
+            در SMS Relay برو به <code>Settings → Add Remote</code>
+          </li>
+          <li>
+            <code>Remote Name</code> را بگذار <code>Payment Hub</code>
+          </li>
+          <li>
+            <code>Method</code> را بگذار <code>POST</code>
+          </li>
+          <li>نشانی را بچسبان</li>
+          <li>
+            گزینهٔ <code>Use JSON</code> را انتخاب کن
+          </li>
+          <li>بدنهٔ JSON را بچسبان</li>
+          <li>ذخیره کن</li>
+          <li>دسترسی پیامک و اعلان را بده</li>
+          <li>از یک گوشی دیگر یک پیامک آزمایشی بفرست</li>
         </ol>
       </details>
       {toast && (
@@ -1021,7 +1039,7 @@ function OneTimeSetupScreen({
       )}
       <div className="row toolbar modal-actions">
         <button type="button" className="primary" onClick={onDone} data-testid="setup-done">
-          Done
+          تمام
         </button>
       </div>
     </>

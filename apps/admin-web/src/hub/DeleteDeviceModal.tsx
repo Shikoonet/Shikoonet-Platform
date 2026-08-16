@@ -12,6 +12,7 @@
  * ADMIN-only endpoint; a non-admin caller sees a 403 here.
  */
 import { useEffect, useState } from 'react';
+import { count } from '../format.js';
 import type { DeviceListItem } from './api.js';
 import { api } from './api.js';
 
@@ -67,9 +68,9 @@ export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceMo
   const refs = preview?.references;
   const blocked = !preview || !preview.canDelete;
   const reasonText: Record<string, string> = {
-    device_must_be_inactive: 'Device is still active — deactivate it first.',
+    device_must_be_inactive: 'دستگاه هنوز فعال است — اول غیرفعالش کن.',
     device_in_use:
-      'Device has SMS history, financial accounts, or transactions. These are never cascade-deleted.',
+      'این دستگاه سابقهٔ پیامک، حساب مالی یا تراکنش دارد. این‌ها هیچ‌وقت آبشاری حذف نمی‌شوند.',
   };
   // Accept either display name OR device code so the user has a short,
   // easy-to-type confirmation phrase for a phone with a long display name.
@@ -97,40 +98,40 @@ export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceMo
       className="modal-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Delete device permanently"
+      aria-label="حذف همیشگی دستگاه"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div className="modal-body modal-body--danger">
         <div className="row toolbar">
-          <h3>Delete device permanently</h3>
+          <h3>حذف همیشگی دستگاه</h3>
           <div className="spacer" />
-          <button type="button" onClick={onClose} aria-label="Close">
+          <button type="button" onClick={onClose} aria-label="بستن">
             ×
           </button>
         </div>
         <p>
-          This deletes <strong>{device.display_name}</strong> (<code>{device.device_code}</code>)
-          from the database. <strong>This cannot be undone.</strong>
+          این کار <strong>{device.display_name}</strong> (<code>{device.device_code}</code>) را از
+          دیتابیس حذف می‌کند. <strong>برگشت‌پذیر نیست.</strong>
         </p>
         <p className="muted small">
-          SMS history, financial accounts, and transactions are NEVER cascade-deleted. Only the
-          device row and any associated credentials are removed.
+          سابقهٔ پیامک، حساب‌های مالی و تراکنش‌ها هیچ‌وقت آبشاری حذف نمی‌شوند. فقط ردیف دستگاه و
+          توکن‌های مربوط به آن برداشته می‌شوند.
         </p>
         {loadError && <div className="error">{loadError}</div>}
         {preview && (
           <>
-            <h4>Linked references</h4>
+            <h4>ارجاع‌های مرتبط</h4>
             <dl className="ref-counts">
-              <dt>Raw SMS events</dt>
-              <dd>{refs?.rawSmsEvents ?? 0}</dd>
-              <dt>Financial accounts</dt>
-              <dd>{refs?.financialAccounts ?? 0}</dd>
-              <dt>Credentials</dt>
-              <dd>{refs?.credentials ?? 0}</dd>
-              <dt>Transactions</dt>
-              <dd>{refs?.transactions ?? 0}</dd>
+              <dt>رویدادهای خام پیامک</dt>
+              <dd>{count(refs?.rawSmsEvents ?? 0)}</dd>
+              <dt>حساب‌های مالی</dt>
+              <dd>{count(refs?.financialAccounts ?? 0)}</dd>
+              <dt>توکن‌ها</dt>
+              <dd>{count(refs?.credentials ?? 0)}</dd>
+              <dt>تراکنش‌ها</dt>
+              <dd>{count(refs?.transactions ?? 0)}</dd>
             </dl>
             {preview.blockingReasons.length > 0 && (
               <div className="warn-banner">
@@ -145,8 +146,8 @@ export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceMo
           <div className="form">
             <label>
               <span>
-                Type <code>{preview.device.displayName}</code> or{' '}
-                <code>{preview.device.deviceCode}</code> to confirm:
+                برای تایید <code>{preview.device.displayName}</code> یا{' '}
+                <code>{preview.device.deviceCode}</code> را بنویس:
               </span>
               <input
                 type="text"
@@ -161,7 +162,7 @@ export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceMo
         {err && <div className="error">{err}</div>}
         <div className="row toolbar modal-actions">
           <button type="button" onClick={onClose}>
-            Cancel
+            انصراف
           </button>
           <div className="spacer" />
           <button
@@ -171,13 +172,13 @@ export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceMo
             onClick={confirm}
             title={
               blocked
-                ? 'Device cannot be deleted in its current state.'
+                ? 'دستگاه در وضعیت فعلی‌اش حذف‌شدنی نیست.'
                 : !matchesTyped
-                  ? 'Type the device display name or code exactly to confirm.'
-                  : 'Delete this device forever'
+                  ? 'برای تایید، نام یا کد دستگاه را دقیقاً بنویس.'
+                  : 'این دستگاه برای همیشه حذف شود'
             }
           >
-            {busy ? 'Deleting…' : 'Delete permanently'}
+            {busy ? 'در حال حذف…' : 'حذف همیشگی'}
           </button>
         </div>
       </div>
