@@ -7,8 +7,9 @@
   "scripts": {
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src test --max-warnings 0",
-    "test": "vitest run"
+    "lint": "eslint src test e2e --max-warnings 0",
+    "test": "vitest run",
+    "e2e": "corepack pnpm --filter @shikoo/admin-web --filter @shikoo/dashboard-web build && playwright test"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
