@@ -68,12 +68,31 @@ ENV SPA_DIST=/app/apps/dashboard-web/dist
 ENV ADMIN_DIST=/app/apps/admin-web/dist
 ENV NODE_ENV=production
 
-# Deliberately no HEALTHCHECK. Coolify's own health check is used instead, and
-# it has to differ per service: ingest and the dashboard answer `/health`, while
-# the bot opens no port at all — it long-polls outward, which is the reason it
-# needs no inbound rule, no certificate and no DNS name. A Dockerfile
-# HEALTHCHECK takes precedence over the panel, so defining one here would force
-# all three to be checked the same way.
+# The health check has to live here, not in the panel.
+#
+# Coolify's own check shells `curl` (falling back to `wget`) into the container,
+# and this image has neither — `node:22-slim` ships no HTTP client but Node
+# itself. Enabled in the panel, it would mark all three services unhealthy while
+# all three were fine, which is the worse failure: a red light that means
+# nothing teaches you to ignore the light.
+#
+# So Node does it, and reads `SERVICE` to know what it is checking. Three
+# behaviours, deliberately unequal:
+#
+#   ingest      GET /health              expects 200
+#   dashboard   GET /api/v1/health       expects 401
+#   bot         nothing                  exits 0
+#
+# The dashboard's 401 is not a workaround for missing configuration — it is the
+# steady state. Every path is behind the Cloudflare Access middleware, and this
+# probe runs from inside the container, where no Access JWT exists and never
+# will. 200 is accepted too, for a local run with `TEST_ACCESS_USER`.
+#
+# The bot's branch proves only that PID 1 is alive, which Docker already knew.
+# Said plainly rather than dressed up: the bot opens no port, so there is
+# nothing to ask it. Its real failure mode is exiting, and an exited container
+# is already visible without a probe.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 CMD ["node","-e","const s=process.env.SERVICE;if(s!=='ingest'&&s!=='dashboard')process.exit(0);const p=process.env.PORT||(s==='ingest'?8787:8788);const u='http://127.0.0.1:'+p+(s==='ingest'?'/health':'/api/v1/health');fetch(u).then(r=>process.exit(r.status===200||(s==='dashboard'&&r.status===401)?0:1),()=>process.exit(1))"]
 
 # Not root. Nothing here writes to the filesystem; the image ships with a user
 # that could not anyway.
