@@ -570,6 +570,13 @@ export const TEXTS = {
     screen: 'paid',
     hint: 'وقتی عکسی می‌رسد و هیچ پرداختی در صف بررسی نیست',
   },
+  RECEIPT_WRONG_FILE: {
+    default:
+      'این فایل رسید نیست. لطفاً تصویر رسید را بفرستید — عکس، یا فایل عکس، یا PDF بانک.',
+    placeholders: [],
+    screen: 'paid',
+    hint: 'وقتی مشتری فایلی می‌فرستد که عکس یا PDF نیست — بدون این، فایل بی‌صدا دور انداخته می‌شد',
+  },
   PAYMENT_CONFIRMED_TITLE: {
     default: '✅ پرداخت شما تایید شد.',
     placeholders: [],

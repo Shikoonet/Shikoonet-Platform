@@ -133,6 +133,8 @@ export async function pollOnce(
       try {
         if (reply.photo !== undefined) {
           await api.sendPhoto(reply.chatId, reply.photo, reply.text);
+        } else if (reply.document !== undefined) {
+          await api.sendDocument(reply.chatId, reply.document, reply.text);
         } else if (reply.editMessageId === undefined) {
           await api.sendMessage(reply.chatId, reply.text, reply.keyboard);
         } else {

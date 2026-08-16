@@ -15,7 +15,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import { handleUpdate } from '../src/handle.js';
+import { handleUpdate, type Reply } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
@@ -51,6 +51,31 @@ function sendsPhoto(updateId: number, telegramId: number, fileIds: string[]): Te
       chat: { id: telegramId },
       from: { id: telegramId, username: `rcpt${telegramId}` },
       photo: fileIds.map((file_id) => ({ file_id })),
+    },
+  };
+}
+
+/**
+ * The same receipt, sent with «Send as File» — a `document`, not a `photo`.
+ *
+ * Which is what somebody sending a bank slip taps, because it arrives
+ * uncompressed and therefore readable. Before this it fell through every
+ * handler and was dropped without a word, which is the exact failure this
+ * file's header attributes to the legacy bot — reintroduced by the fix for it.
+ */
+function sendsFile(
+  updateId: number,
+  telegramId: number,
+  fileId: string,
+  mimeType?: string,
+): TelegramUpdate {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      chat: { id: telegramId },
+      from: { id: telegramId, username: `rcpt${telegramId}` },
+      document: { file_id: fileId, ...(mimeType === undefined ? {} : { mime_type: mimeType }) },
     },
   };
 }
@@ -94,6 +119,29 @@ async function claimRow(claimId: string) {
       receipt_url_or_r2_key: string | null;
       status: string;
     }>();
+}
+
+/**
+ * Walks the admin to the claim screen and returns the reply that carries the
+ * receipt, whichever way it is carried.
+ *
+ * Through `handleUpdate` and `clv:` rather than by reading the column, because
+ * the thing under test is which API call the operator's screen will make — and
+ * a test that read the column would be green with the wrong one chosen.
+ */
+async function showsReceiptToAdmin(claimId: string): Promise<Partial<Reply>> {
+  const { updateId, telegramId } = ids();
+  await db
+    .prepare(
+      `INSERT INTO admins (telegram_id, role, active) VALUES (?1, 'ADMIN', true)
+       ON CONFLICT (telegram_id) DO UPDATE SET active = true`,
+    )
+    .bind(telegramId)
+    .run();
+  await makeCustomer(telegramId);
+  const out = await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
+  await db.prepare(`DELETE FROM admins WHERE telegram_id = ?1`).bind(telegramId).run();
+  return out.replies[0] ?? {};
 }
 
 beforeAll(async () => {
@@ -209,5 +257,90 @@ describe('a customer sending their receipt', () => {
 
     expect(out.status).toBe('processed');
     expect(out.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain('buy');
+  });
+});
+
+describe('a receipt sent as a file', () => {
+  it('is attached, just as a photo is', async () => {
+    const sale = await buyAndClaim('sim-gold-10');
+
+    const out = await handleUpdate(
+      db,
+      sendsFile(sale.updateId + 2, sale.telegramId, 'AgACdocreceipt0000001', 'image/jpeg'),
+    );
+
+    expect(out.status).toBe('processed');
+    const row = await claimRow(sale.claimId);
+    expect(row?.receipt_submitted_at).not.toBeNull();
+    // Stored with its kind, because Telegram keeps documents and photos in
+    // separate id spaces and refuses each other's handles. Without the mark the
+    // admin's screen would show nothing at the one moment it matters.
+    expect(row?.receipt_url_or_r2_key).toBe('doc:AgACdocreceipt0000001');
+  });
+
+  it('takes a bank PDF, which is the other thing a receipt arrives as', async () => {
+    const sale = await buyAndClaim('sim-vip-1m-20');
+    await handleUpdate(
+      db,
+      sendsFile(sale.updateId + 2, sale.telegramId, 'AgACdocreceipt0000002', 'application/pdf'),
+    );
+    expect((await claimRow(sale.claimId))?.receipt_url_or_r2_key).toBe(
+      'doc:AgACdocreceipt0000002',
+    );
+  });
+
+  it('refuses anything that is not a receipt, and says so', async () => {
+    // Told rather than ignored. A customer who sent the wrong thing and heard
+    // nothing assumes it arrived, and then waits for a service.
+    const sale = await buyAndClaim('sim-vip-1m-50');
+
+    const out = await handleUpdate(
+      db,
+      sendsFile(sale.updateId + 2, sale.telegramId, 'AgACdocreceipt0000003', 'application/zip'),
+    );
+
+    expect(out.replies[0]?.text).toBe(menu.RECEIPT_WRONG_FILE);
+    expect((await claimRow(sale.claimId))?.receipt_url_or_r2_key).toBeNull();
+  });
+
+  it('refuses a file whose type Telegram did not state', async () => {
+    // `mime_type` is optional in the API, so its absence says nothing — and
+    // "unknown" is not "image".
+    const sale = await buyAndClaim('sim-gold-10');
+
+    const out = await handleUpdate(
+      db,
+      sendsFile(sale.updateId + 2, sale.telegramId, 'AgACdocreceipt0000004'),
+    );
+
+    expect(out.replies[0]?.text).toBe(menu.RECEIPT_WRONG_FILE);
+    expect((await claimRow(sale.claimId))?.receipt_url_or_r2_key).toBeNull();
+  });
+
+  it('is handed back to the admin as a file, not as a photo', async () => {
+    // `sendPhoto` refuses a document handle outright, so an operator would see
+    // nothing at all — while the claim screen behind it still said a receipt
+    // had been sent.
+    const sale = await buyAndClaim('sim-vip-1m-20');
+    await handleUpdate(
+      db,
+      sendsFile(sale.updateId + 2, sale.telegramId, 'AgACdocreceipt0000005', 'image/png'),
+    );
+
+    const admin = await showsReceiptToAdmin(sale.claimId);
+    expect(admin.document).toBe('AgACdocreceipt0000005');
+    expect(admin.photo).toBeUndefined();
+  });
+
+  it('is handed back as a photo when it arrived as one', async () => {
+    const sale = await buyAndClaim('sim-vip-1m-50');
+    await handleUpdate(
+      db,
+      sendsPhoto(sale.updateId + 2, sale.telegramId, ['AgACphotoreceipt000006']),
+    );
+
+    const admin = await showsReceiptToAdmin(sale.claimId);
+    expect(admin.photo).toBe('AgACphotoreceipt000006');
+    expect(admin.document).toBeUndefined();
   });
 });

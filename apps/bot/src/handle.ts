@@ -103,7 +103,7 @@ import {
   subscriptionsForUser,
   type OwnedSubscriptionOnPanel,
 } from './owned.js';
-import { checkoutFor, recordPaidClick, recordReceipt } from './payment.js';
+import { checkoutFor, receiptRef, recordPaidClick, recordReceipt } from './payment.js';
 import {
   balanceFor,
   entriesFor,
@@ -129,6 +129,10 @@ export interface Reply {
   /** A Telegram `file_id` to send as a photo, with `text` as its caption.
    *  Only the receipt uses this, and only towards an admin. */
   photo?: string;
+  /** The same, for a receipt the customer sent with «Send as File». Telegram
+   *  keeps the two id spaces apart and refuses each other's handles, so which
+   *  one this is has to be decided here rather than discovered on send. */
+  document?: string;
 }
 
 export type HandleStatus =
@@ -319,7 +323,24 @@ export async function handleUpdate(
     // them and was thrown away — which is exactly where the admin's evidence
     // was going.
     const photo = message.photo?.at(-1);
-    if (photo) return handleReceipt(tx, message, photo.file_id);
+    if (photo) return handleReceipt(tx, message, photo.file_id, false);
+
+    // «Send as File» — the same receipt, uncompressed, which is exactly what
+    // somebody sending a bank slip taps. It arrives as a `document` and used to
+    // fall through every handler below and be dropped without a word, which is
+    // the failure this file's own header attributes to the legacy bot.
+    const document = message.document;
+    if (document) {
+      if (!isReceiptFile(document.mime_type)) {
+        // Told, not ignored. A customer who sent the wrong thing and heard
+        // nothing assumes it arrived — and then waits for a service.
+        return {
+          status: 'processed',
+          replies: [reply(message.chat.id, menu.RECEIPT_WRONG_FILE)],
+        };
+      }
+      return handleReceipt(tx, message, document.file_id, true);
+    }
 
     if (!message.text) {
       return IGNORED;
@@ -442,17 +463,33 @@ async function upsertUser(
  * A blocked customer is recorded as seen and told nothing, exactly as /start
  * treats them.
  */
+/**
+ * Whether a file a customer sent can be a payment receipt.
+ *
+ * An image because that is a photo sent uncompressed, and a PDF because that is
+ * what a banking app exports. Everything else — a video, an archive, an APK —
+ * is not a receipt, and accepting one would put a file an operator cannot read
+ * in front of them at the moment they decide about money.
+ *
+ * A missing `mime_type` is refused rather than assumed. The field is optional in
+ * Telegram's API, so its absence says nothing, and "unknown" is not "image".
+ */
+function isReceiptFile(mimeType: string | undefined): boolean {
+  return mimeType !== undefined && (/^image\//i.test(mimeType) || mimeType === 'application/pdf');
+}
+
 async function handleReceipt(
   tx: D1DatabaseSession,
   message: TelegramMessage,
   fileId: string,
+  isDocument: boolean,
 ): Promise<HandleOutcome> {
   const from = message.from;
   if (!from) return IGNORED;
   const user = await upsertUser(tx, from);
   if (user.status === 'BLOCKED') return IGNORED;
 
-  const result = await recordReceipt(tx, user.id, fileId);
+  const result = await recordReceipt(tx, user.id, fileId, Date.now(), isDocument);
   const say = (text: string): HandleOutcome => ({
     status: 'processed',
     replies: [reply(message.chat.id, text)],
@@ -1426,10 +1463,19 @@ async function handleAdmin(
     // itself in place on every press and a photo cannot be edited into a text
     // message — and an operator about to decide where somebody's money goes
     // should be looking at the document, not at a line saying one exists.
+    // Sent back the way it arrived. Telegram keeps documents and photos in
+    // separate id spaces, so a receipt the customer sent with «Send as File»
+    // is refused by `sendPhoto` — and the operator would see nothing at all,
+    // at the one moment they are deciding where somebody's money goes.
+    const ref = receiptRef(claim.receipt_url_or_r2_key);
     return {
       ...out,
       replies: [
-        { chatId, text: menu.ADMIN_RECEIPT_CAPTION, photo: claim.receipt_url_or_r2_key },
+        {
+          chatId,
+          text: menu.ADMIN_RECEIPT_CAPTION,
+          ...(ref.isDocument ? { document: ref.fileId } : { photo: ref.fileId }),
+        },
         ...out.replies,
       ],
     };

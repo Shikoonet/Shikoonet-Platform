@@ -35,12 +35,30 @@ const TelegramUserSchema = z.object({
  */
 const PhotoSizeSchema = z.object({ file_id: z.string() });
 
+/**
+ * The same receipt, sent with «Send as File».
+ *
+ * Telegram makes this a `document` rather than a `photo`, and it is what a
+ * customer taps when they want the image to arrive uncompressed — which is
+ * exactly what somebody sending a bank receipt wants, so it is common rather
+ * than exotic. A banking app's PDF arrives the same way.
+ *
+ * `mime_type` is optional in the API and is therefore treated as unknown rather
+ * than absent: what is done with it is decided in `handle.ts`, where the
+ * decision is about what counts as a receipt.
+ */
+const DocumentSchema = z.object({
+  file_id: z.string(),
+  mime_type: z.string().optional(),
+});
+
 const MessageSchema = z.object({
   message_id: z.number().int(),
   from: TelegramUserSchema.optional(),
   chat: z.object({ id: z.number().int() }),
   text: z.string().optional(),
   photo: z.array(PhotoSizeSchema).optional(),
+  document: DocumentSchema.optional(),
 });
 
 /**
@@ -125,6 +143,16 @@ export interface TelegramApi {
    * message, so the screen that goes with the picture is sent separately.
    */
   sendPhoto(chatId: number, fileId: string, caption?: string): Promise<void>;
+  /**
+   * The same, for a receipt that arrived as a file.
+   *
+   * A separate call rather than a smarter `sendPhoto`, because Telegram refuses
+   * a document's `file_id` given to `sendPhoto` and vice versa — the two id
+   * spaces are distinct, and finding out which one you hold by being rejected
+   * costs an API call and an error string to match on. Which to use is decided
+   * from what was stored, not from what comes back.
+   */
+  sendDocument(chatId: number, fileId: string, caption?: string): Promise<void>;
   /** Replaces a message in place, so a menu does not leave a trail behind it. */
   editMessageText(
     chatId: number,
@@ -379,6 +407,20 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
           // Not run through `withEmojiFallback`: a caption is one short line the
           // bot writes itself, never an admin's override, so there is no markup
           // here to escape and nothing to land back from.
+          ...(caption === undefined ? {} : { caption: caption.slice(0, MAX_CAPTION_LENGTH) }),
+        },
+        15_000,
+      );
+    },
+
+    async sendDocument(chatId, fileId, caption) {
+      await call(
+        'sendDocument',
+        {
+          chat_id: chatId,
+          document: fileId,
+          // Not run through `withEmojiFallback`, for the same reason `sendPhoto`
+          // is not: a caption here is one short line the bot writes itself.
           ...(caption === undefined ? {} : { caption: caption.slice(0, MAX_CAPTION_LENGTH) }),
         },
         15_000,
