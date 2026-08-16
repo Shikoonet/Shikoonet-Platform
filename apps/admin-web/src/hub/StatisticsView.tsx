@@ -37,8 +37,8 @@ export function StatisticsView({ cache }: { cache: Cache }) {
     <section className="panel statistics">
       <header className="page-header">
         <div className="page-header__text">
-          <h2 className="page-header__title">Statistics</h2>
-          <p className="page-header__subtitle muted">Sales and account activity</p>
+          <h2 className="page-header__title">آمار مالی</h2>
+          <p className="page-header__subtitle muted">فروش و فعالیت حساب‌ها</p>
         </div>
         <div className="page-header__actions">
           <HistoryDateNav value={rangeState} onChange={setRangeState} />
@@ -46,11 +46,9 @@ export function StatisticsView({ cache }: { cache: Cache }) {
       </header>
 
       {analyticsStatus === 'error' && (
-        <p className="error">Could not load statistics. Try refreshing.</p>
+        <p className="error">بارگذاری آمار ناموفق بود. صفحه را تازه کنید.</p>
       )}
-      {!analytics && analyticsStatus !== 'error' && (
-        <p className="muted">Loading statistics…</p>
-      )}
+      {!analytics && analyticsStatus !== 'error' && <p className="muted">در حال بارگذاری آمار…</p>}
 
       {analytics && (
         <>

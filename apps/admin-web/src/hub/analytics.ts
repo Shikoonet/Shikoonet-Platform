@@ -115,15 +115,15 @@ export interface CardAnalyticsResponse {
 export function formatPercentChange(pc: PercentChange): string {
   switch (pc.kind) {
     case 'all_time':
-      return 'All-time';
+      return 'از ابتدا';
     case 'new':
-      return 'New';
+      return 'تازه';
     case 'no_baseline':
-      return 'No previous-period baseline';
+      return 'بازهٔ قبلی برای مقایسه نیست';
     case 'change': {
       const abs = Math.abs(pc.percent ?? 0);
       const arrow = (pc.percent ?? 0) >= 0 ? '↑' : '↓';
-      return `${arrow} ${abs.toFixed(1)}%`;
+      return `${arrow} ${new Intl.NumberFormat('fa-IR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(abs)}٪`;
     }
   }
 }

@@ -1,4 +1,5 @@
 import type { Cache } from './query.js';
+import { count } from '../format.js';
 import { formatCompactIrr, type AccountAnalyticsResponse } from './analytics.js';
 import { type HistoryRangeState, appendHistoryRangeQuery } from './paymentReview.js';
 
@@ -8,8 +9,12 @@ function accountUsageLabel(a: AccountAnalyticsResponse['items'][number]): string
   return `${hint} · ${owner}`;
 }
 
+// Two digits so the ranks line up in a column; `minimumIntegerDigits` rather
+// than `padStart` because the pad character has to be a Persian zero too.
+const RANK = new Intl.NumberFormat('fa-IR', { minimumIntegerDigits: 2, useGrouping: false });
+
 function formatRank(index: number): string {
-  return String(index + 1).padStart(2, '0');
+  return RANK.format(index + 1);
 }
 
 export function AccountUsagePanel({
@@ -31,18 +36,18 @@ export function AccountUsagePanel({
   });
 
   if (status === 'error') {
-    return <p className="error">Could not load account usage.</p>;
+    return <p className="error">بارگذاری میزان استفاده از حساب‌ها ناموفق بود.</p>;
   }
-  if (!data) return <p className="muted">Loading account usage…</p>;
+  if (!data) return <p className="muted">در حال بارگذاری میزان استفاده از حساب‌ها…</p>;
 
   return (
-    <section className="account-usage-ranking" aria-label="Account usage">
+    <section className="account-usage-ranking" aria-label="میزان استفاده از حساب‌ها">
       <header className="account-usage-ranking__header">
-        <h3 className="account-usage-ranking__title">Account usage</h3>
+        <h3 className="account-usage-ranking__title">میزان استفاده از حساب‌ها</h3>
         <span className="account-usage-ranking__cols muted" aria-hidden>
-          <span>Account</span>
-          <span>Purchases</span>
-          <span>Balance</span>
+          <span>حساب</span>
+          <span>خرید</span>
+          <span>موجودی</span>
         </span>
       </header>
       {data.items.length === 0 ? (
@@ -50,10 +55,10 @@ export function AccountUsagePanel({
           <span className="payments-empty__mark" aria-hidden>
             ✓
           </span>
-          No account activity in this range.
+          در این بازه فعالیتی روی حساب‌ها نبوده.
         </p>
       ) : (
-        <ul className="account-usage-list" aria-label="Account usage ranking">
+        <ul className="account-usage-list" aria-label="رتبه‌بندی استفاده از حساب‌ها">
           {data.items.map((a, index) => (
             <li key={a.accountId} className="account-usage-row">
               <span className="account-usage-row__rank" aria-hidden>
@@ -62,9 +67,7 @@ export function AccountUsagePanel({
               <div className="account-usage-row__body">
                 <div className="account-usage-row__head">
                   <strong className="account-usage-row__label">{accountUsageLabel(a)}</strong>
-                  <span className="account-usage-row__purchases">
-                    {a.purchaseCount} {a.purchaseCount === 1 ? 'purchase' : 'purchases'}
-                  </span>
+                  <span className="account-usage-row__purchases">{count(a.purchaseCount)} خرید</span>
                   <span className="account-usage-row__balance tabular-nums">
                     {a.currentBalanceIrr != null ? (
                       formatCompactIrr(a.currentBalanceIrr)

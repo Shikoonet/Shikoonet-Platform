@@ -1137,7 +1137,7 @@ function AllFilters({
       <label>
         وضعیت
         <select value={filters.status} onChange={(e) => set({ status: e.target.value })}>
-          <option value="">Any</option>
+          <option value="">همه</option>
           {ALL_TAB_STATES.map((s) => (
             <option key={s} value={s}>
               {stateLabel(s)}
@@ -1148,7 +1148,7 @@ function AllFilters({
       <label>
         حساب
         <select value={filters.accountId} onChange={(e) => set({ accountId: e.target.value })}>
-          <option value="">Any</option>
+          <option value="">همه</option>
           {(data?.items ?? []).map((a) => (
             <option key={a.id} value={a.id}>
               {a.display_name}
@@ -1159,7 +1159,7 @@ function AllFilters({
       <label>
         دلیل
         <select value={filters.reason} onChange={(e) => set({ reason: e.target.value })}>
-          <option value="">Any</option>
+          <option value="">همه</option>
           {reasons.map((r) => (
             <option key={r} value={r}>
               {reasonText(r)}

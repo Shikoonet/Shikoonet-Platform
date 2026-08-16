@@ -131,7 +131,7 @@ afterEach(() => {
 describe('StatisticsView', () => {
   it('shows three top metrics and sales trend', async () => {
     render(<StatisticsView cache={createCache()} />);
-    expect(await screen.findByText('Statistics')).toBeTruthy();
+    expect(await screen.findByText('آمار مالی')).toBeTruthy();
     expect(await screen.findByText('موجودی کل')).toBeTruthy();
     expect(await screen.findByText('فروش ربات')).toBeTruthy();
     expect(await screen.findByText('فروش نمایندگی')).toBeTruthy();
@@ -142,16 +142,16 @@ describe('StatisticsView', () => {
 
   it('shows simplified account usage rows', async () => {
     render(<StatisticsView cache={createCache()} />);
-    expect(await screen.findByText('Account usage')).toBeTruthy();
+    expect(await screen.findByText('میزان استفاده از حساب‌ها')).toBeTruthy();
     expect(screen.getAllByText(/7613/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Puyan/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('5 purchases').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('۵ خرید').length).toBeGreaterThan(0);
     expect(screen.queryByText(/دستگاه/i)).toBeNull();
   });
 
   it('shows card balancing diagnostic panel', async () => {
     render(<StatisticsView cache={createCache()} />);
-    expect(await screen.findByText('Card balancing (diagnostic)')).toBeTruthy();
-    expect(screen.getByText(/max−min gap: 5/)).toBeTruthy();
+    expect(await screen.findByText('توازن کارت‌ها (تشخیصی)')).toBeTruthy();
+    expect(screen.getByText(/فاصلهٔ بیشترین تا کمترین: ۵/)).toBeTruthy();
   });
 });

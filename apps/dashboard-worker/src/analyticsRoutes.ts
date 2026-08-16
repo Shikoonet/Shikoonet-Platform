@@ -519,8 +519,9 @@ export async function loadCardAnalytics(
     range,
     entity: 'card_number' as const,
     metric: 'hub_auto_verified_purchases' as const,
-    note:
-      'Hub verified purchases by mapped card. Card-assignment balancing uses Mirzabot lease completions (COMPLETED), not this chart.',
+    // Sent to the browser and rendered verbatim, so it is written in the
+    // language the screen is in.
+    note: 'خریدهای تاییدشده به تفکیک کارت نگاشت‌شده. توازن تخصیص کارت بر پایهٔ اجاره‌های تکمیل‌شدهٔ ربات است، نه این نمودار.',
     distribution,
     items: items.map((i) => ({
       ...i,

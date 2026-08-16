@@ -1,4 +1,5 @@
 import type { Cache } from './query.js';
+import { count } from '../format.js';
 import type { CardAnalyticsResponse } from './analytics.js';
 import { type HistoryRangeState, appendHistoryRangeQuery } from './paymentReview.js';
 
@@ -8,8 +9,10 @@ function cardUsageLabel(item: CardAnalyticsResponse['items'][number]): string {
   return `${item.cardMasked} · ${hint} · ${owner}`;
 }
 
+const RANK = new Intl.NumberFormat('fa-IR', { minimumIntegerDigits: 2, useGrouping: false });
+
 function formatRank(index: number): string {
-  return String(index + 1).padStart(2, '0');
+  return RANK.format(index + 1);
 }
 
 export function CardBalancingPanel({
@@ -31,38 +34,38 @@ export function CardBalancingPanel({
   });
 
   if (status === 'error') {
-    return <p className="error">Could not load card balancing diagnostic.</p>;
+    return <p className="error">بارگذاری تشخیص توازن کارت‌ها ناموفق بود.</p>;
   }
-  if (!data) return <p className="muted">Loading card balancing diagnostic…</p>;
+  if (!data) return <p className="muted">در حال بارگذاری تشخیص توازن کارت‌ها…</p>;
 
   const zeroUseEligible = data.items.filter((i) => i.purchaseCount === 0 && i.hubEligible);
 
   return (
-    <section className="account-usage-ranking card-balancing-panel" aria-label="Card balancing diagnostic">
+    <section className="account-usage-ranking card-balancing-panel" aria-label="توازن کارت‌ها">
       <header className="account-usage-ranking__header">
         <div>
-          <h3 className="account-usage-ranking__title">Card balancing (diagnostic)</h3>
+          <h3 className="account-usage-ranking__title">توازن کارت‌ها (تشخیصی)</h3>
           <p className="muted card-balancing-panel__note">{data.note}</p>
         </div>
         <span className="account-usage-ranking__cols muted" aria-hidden>
-          <span>Card</span>
-          <span>Hub purchases</span>
-          <span>Eligible</span>
+          <span>کارت</span>
+          <span>خرید</span>
+          <span>واجد شرایط</span>
         </span>
       </header>
       <p className="muted card-balancing-panel__summary">
-        Range: {data.range} · max−min gap: {data.distribution.gap} · zero-use Hub-eligible cards:{' '}
-        {zeroUseEligible.length}
+        فاصلهٔ بیشترین تا کمترین: {count(data.distribution.gap)} · کارت‌های واجد شرایط بدون هیچ
+        خرید: {count(zeroUseEligible.length)}
       </p>
       {data.items.length === 0 ? (
         <p className="payments-empty payments-empty--inline" role="status">
           <span className="payments-empty__mark" aria-hidden>
             ✓
           </span>
-          No mapped cards in Hub.
+          هیچ کارت نگاشت‌شده‌ای نیست.
         </p>
       ) : (
-        <ul className="account-usage-list" aria-label="Card balancing ranking">
+        <ul className="account-usage-list" aria-label="رتبه‌بندی توازن کارت‌ها">
           {data.items.map((item, index) => (
             <li key={item.cardDigits} className="account-usage-row">
               <span className="account-usage-row__rank" aria-hidden>
@@ -72,22 +75,22 @@ export function CardBalancingPanel({
                 <div className="account-usage-row__head">
                   <strong className="account-usage-row__label">{cardUsageLabel(item)}</strong>
                   <span className="account-usage-row__purchases">
-                    {item.purchaseCount} {item.purchaseCount === 1 ? 'purchase' : 'purchases'}
+                    {count(item.purchaseCount)} خرید
                   </span>
                   {/* Only shown when it is not 1. A weight beside every card
                       would be noise; a weight beside the one card being pushed
                       is the reminder to set it back once the count catches up. */}
                   {item.displayWeight > 1 && (
-                    <span className="badge" title="Rotation weight — set on the account screen">
-                      shown {item.displayWeight}× as often
+                    <span className="badge" title="وزن چرخش — در صفحهٔ حساب‌ها تنظیم می‌شود">
+                      {count(item.displayWeight)}× بیشتر نشان داده می‌شود
                     </span>
                   )}
                   <span className="account-usage-row__balance">
                     {item.hubEligible ? (
-                      <span className="muted">eligible</span>
+                      <span className="muted">واجد شرایط</span>
                     ) : (
                       <span className="muted" title={item.exclusionReason}>
-                        excluded
+                        کنار گذاشته‌شده
                       </span>
                     )}
                   </span>

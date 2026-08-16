@@ -157,7 +157,7 @@ export function TransactionReassignPicker({
         <label>
           حساب
           <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-            <option value="">Any</option>
+            <option value="">همه</option>
             {(accounts?.items ?? []).map((a) => (
               <option key={a.id} value={a.id}>
                 {a.display_name}

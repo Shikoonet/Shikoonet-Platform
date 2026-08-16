@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Cache } from './query.js';
+import { count } from '../format.js';
 import { formatTomanFromIrr, formatTime } from './format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { NewBadge } from './NewBadge.js';
@@ -7,14 +8,13 @@ import {
   bankName,
   formatToman,
   type AccountRefLike,
-  type FinancialSummary,
   type HistoryRange,
   HISTORY_RANGE_OPTIONS,
   type IncomeItem,
   type PaymentItem,
   type ResellerItem,
 } from './paymentReview.js';
-import { formatPercentChange, type AnalyticsResponse } from './analytics.js';
+import type { AnalyticsResponse } from './analytics.js';
 import { IconBalance, IconBotSales, IconResellerSales } from './paymentsIcons.js';
 
 function AccountRef({ account }: { account: AccountRefLike }) {
@@ -49,97 +49,6 @@ export function HistoryRangeSelect({
   );
 }
 
-export function FinancialSummaryBar({
-  summary,
-  counts,
-}: {
-  summary: FinancialSummary | undefined;
-  counts: Record<string, number> | undefined;
-}) {
-  if (!summary) return null;
-  return (
-    <div className="payments-summary payments-summary--financial">
-      <div className="payments-summary__stats">
-        <span>
-          <strong>{formatTomanFromIrr(summary.bankIncomeIrr)}</strong> درآمد بانکی
-        </span>
-        <span>
-          <strong>{summary.botAutoVerified.payments}</strong> Bot auto verified ·{' '}
-          {formatTomanFromIrr(summary.botAutoVerified.amountIrr)}
-        </span>
-        <span>
-          <strong>{summary.reseller.payments}</strong> Reseller · {formatTomanFromIrr(summary.reseller.amountIrr)}
-        </span>
-        <span>
-          <strong>{summary.unassignedIncome.count}</strong> واریزی تخصیص‌نیافته ·{' '}
-          {formatTomanFromIrr(summary.unassignedIncome.amountIrr)}
-        </span>
-        <span>
-          <strong>{counts?.needsReview ?? '—'}</strong> نیاز به بررسی
-        </span>
-        <span>
-          <strong>{counts?.waiting ?? '—'}</strong> در انتظار
-        </span>
-        <span>
-          <strong>{counts?.suspectedFake ?? '—'}</strong> مشکوک به جعل
-        </span>
-      </div>
-    </div>
-  );
-}
-
-export function OpenQueueHint() {
-  return <p className="muted payments-queue-hint">صف‌های باز همیشه همهٔ پرداخت‌های تعیین‌تکلیف‌نشده را دارند.</p>;
-}
-
-export function AnalyticsSummaryBar({
-  analytics,
-  counts,
-}: {
-  analytics: AnalyticsResponse | undefined;
-  counts: Record<string, number> | undefined;
-}) {
-  if (!analytics) return null;
-  return (
-    <div className="payments-summary payments-summary--financial payments-summary--analytics">
-      <div className="payments-summary__stats">
-        <span className="payments-summary__highlight">
-          <strong>{formatTomanFromIrr(analytics.sales.amountIrr)}</strong> Sales ·{' '}
-          {analytics.sales.count} payments{' '}
-          <em className="muted">({formatPercentChange(analytics.sales.amountChange)})</em>
-        </span>
-        <span>
-          <strong>{formatTomanFromIrr(analytics.bankInflowIrr)}</strong> ورودی بانکی
-        </span>
-        <span>
-          <strong>{analytics.botAutoVerified.count}</strong> Bot auto verified ·{' '}
-          {formatTomanFromIrr(analytics.botAutoVerified.amountIrr)}
-        </span>
-        <span>
-          <strong>{analytics.manualVerified.count}</strong> Manual verified ·{' '}
-          {formatTomanFromIrr(analytics.manualVerified.amountIrr)}
-        </span>
-        <span>
-          <strong>{analytics.reseller.count}</strong> Reseller · {formatTomanFromIrr(analytics.reseller.amountIrr)}
-        </span>
-        <span>
-          <strong>{analytics.unassignedIncome.count}</strong> واریزی تخصیص‌نیافته ·{' '}
-          {formatTomanFromIrr(analytics.unassignedIncome.amountIrr)}
-        </span>
-        <span>
-          <strong>{formatTomanFromIrr(analytics.balances.totalKnownIrr)}</strong> Known bank balance ·{' '}
-          {analytics.balances.knownAccounts}/{analytics.balances.totalActiveAccounts} accounts
-        </span>
-        <span>
-          <strong>{counts?.needsReview ?? '—'}</strong> Needs review ·{' '}
-          <strong>{counts?.waiting ?? '—'}</strong> Waiting ·{' '}
-          <strong>{counts?.suspectedFake ?? '—'}</strong> مشکوک به جعل
-        </span>
-      </div>
-    </div>
-  );
-}
-
 export function SalesTrendChart({
   analytics,
   className,
@@ -164,7 +73,7 @@ export function SalesTrendChart({
       <div className="sales-trend__header">
         <h3 className="sales-trend__title section-heading">روند فروش</h3>
         <p className="sales-trend__subtitle muted tabular-nums">
-          {analytics.sales.count} payments · {formatTomanFromIrr(analytics.sales.amountIrr)}
+          {count(analytics.sales.count)} پرداخت · {formatTomanFromIrr(analytics.sales.amountIrr)}
         </p>
       </div>
       <div className="sales-trend__chart">
@@ -173,7 +82,7 @@ export function SalesTrendChart({
             <div
               className="sales-trend__bar"
               style={{ height: `${Math.max(4, (b.salesAmountIrr / max) * 100)}%` }}
-              title={`${b.label}\n${b.salesCount} sales\n${formatTomanFromIrr(b.salesAmountIrr)}`}
+              title={`${b.label}\n${count(b.salesCount)} فروش\n${formatTomanFromIrr(b.salesAmountIrr)}`}
             />
             <span className="sales-trend__label">{b.label}</span>
           </div>
@@ -196,7 +105,8 @@ export function TopMetricsSummary({ analytics }: { analytics: AnalyticsResponse 
             {formatTomanFromIrr(analytics.balances.totalKnownIrr)}
           </span>
           <span className="metrics-strip__meta muted">
-            {analytics.balances.knownAccounts}/{analytics.balances.totalActiveAccounts} accounts
+            {count(analytics.balances.knownAccounts)} حساب از{' '}
+            {count(analytics.balances.totalActiveAccounts)}
           </span>
         </div>
       </article>
@@ -209,7 +119,9 @@ export function TopMetricsSummary({ analytics }: { analytics: AnalyticsResponse 
           <span className="metrics-strip__value tabular-nums">
             {formatTomanFromIrr(analytics.botAutoVerified.amountIrr)}
           </span>
-          <span className="metrics-strip__meta muted">{analytics.botAutoVerified.count} payments</span>
+          <span className="metrics-strip__meta muted">
+            {count(analytics.botAutoVerified.count)} پرداخت
+          </span>
         </div>
       </article>
       <article className="metrics-strip__item">
@@ -219,93 +131,9 @@ export function TopMetricsSummary({ analytics }: { analytics: AnalyticsResponse 
         <div className="metrics-strip__body">
           <span className="metrics-strip__label">فروش نمایندگی</span>
           <span className="metrics-strip__value tabular-nums">{formatTomanFromIrr(analytics.reseller.amountIrr)}</span>
-          <span className="metrics-strip__meta muted">{analytics.reseller.count} payments</span>
+          <span className="metrics-strip__meta muted">{count(analytics.reseller.count)} پرداخت</span>
         </div>
       </article>
-    </div>
-  );
-}
-
-/** @deprecated Use TopMetricsSummary */
-export function StatisticsOverview({
-  analytics,
-  counts: _counts,
-}: {
-  analytics: AnalyticsResponse;
-  counts: Record<string, number> | undefined;
-}) {
-  return <TopMetricsSummary analytics={analytics} />;
-}
-
-export function VerificationMixChart({ analytics }: { analytics: AnalyticsResponse }) {
-  const bot = analytics.botAutoVerified.amountIrr;
-  const manual = analytics.manualVerified.amountIrr;
-  const total = bot + manual;
-  if (total <= 0) {
-    return (
-      <div className="statistics-chart-card">
-        <h3>ترکیب تایید</h3>
-        <p className="muted">در این بازه پرداخت تاییدشده‌ای نیست.</p>
-      </div>
-    );
-  }
-  const botPct = Math.round((bot / total) * 100);
-  const manualPct = 100 - botPct;
-  return (
-    <div className="statistics-chart-card" aria-label="ترکیب تایید">
-      <h3>ترکیب تایید</h3>
-      <div className="mix-bar" role="img" aria-label={`Bot ${botPct}%, Manual ${manualPct}%`}>
-        <div className="mix-bar__bot" style={{ width: `${botPct}%` }} title={`Bot ${botPct}%`} />
-        <div
-          className="mix-bar__manual"
-          style={{ width: `${manualPct}%` }}
-          title={`Manual ${manualPct}%`}
-        />
-      </div>
-      <div className="mix-bar__legend">
-        <span>
-          <i className="mix-bar__swatch mix-bar__swatch--bot" aria-hidden /> Bot {botPct}% ·{' '}
-          {formatTomanFromIrr(bot)}
-        </span>
-        <span>
-          <i className="mix-bar__swatch mix-bar__swatch--manual" aria-hidden /> Manual {manualPct}% ·{' '}
-          {formatTomanFromIrr(manual)}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-export function VolumeBreakdownChart({ analytics }: { analytics: AnalyticsResponse }) {
-  const rows = [
-    { label: 'Sales', amount: analytics.sales.amountIrr, tone: 'sales' as const },
-    { label: 'ورودی بانکی', amount: analytics.bankInflowIrr, tone: 'inflow' as const },
-    { label: 'نمایندگی', amount: analytics.reseller.amountIrr, tone: 'reseller' as const },
-    {
-      label: 'واریزی تخصیص‌نیافته',
-      amount: analytics.unassignedIncome.amountIrr,
-      tone: 'income' as const,
-    },
-  ];
-  const max = Math.max(...rows.map((r) => r.amount), 1);
-  return (
-    <div className="statistics-chart-card" aria-label="تفکیک حجم">
-      <h3>تفکیک حجم</h3>
-      <ul className="volume-bars">
-        {rows.map((r) => (
-          <li key={r.label} className="volume-bars__row">
-            <span className="volume-bars__label">{r.label}</span>
-            <div className="volume-bars__track">
-              <div
-                className={`volume-bars__fill volume-bars__fill--${r.tone}`}
-                style={{ width: `${Math.max(r.amount > 0 ? 4 : 0, (r.amount / max) * 100)}%` }}
-                title={formatTomanFromIrr(r.amount)}
-              />
-            </div>
-            <span className="volume-bars__amount">{formatTomanFromIrr(r.amount)}</span>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }
@@ -675,7 +503,7 @@ export function MarkResellerModal({
             onChange={(e) => setNewName(e.target.value)}
           />
           <button type="button" disabled={busy} onClick={() => void addReseller()}>
-            + Add reseller
+            + افزودن نماینده
           </button>
         </div>
         <label>
@@ -786,18 +614,16 @@ export function AssignToPaymentModal({
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal-body">
         <h3>تخصیص به پرداخت</h3>
-        <p className="muted">Transaction {transactionId}</p>
+        <p className="muted">تراکنش {transactionId}</p>
         {receivedToman != null && (
-          <p className="tabular-nums">
-            Received: {formatToman(receivedToman)}
-          </p>
+          <p className="tabular-nums">دریافت‌شده: {formatToman(receivedToman)}</p>
         )}
         <label>
           جست‌وجوی پرداخت
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Username, user ID, order, amount…"
+            placeholder="نام کاربری، شناسهٔ کاربر، سفارش، مبلغ…"
           />
         </label>
         <label>
@@ -815,7 +641,7 @@ export function AssignToPaymentModal({
         {selected && (
           <>
             <p className="muted">
-              @{selected.telegramUsername ?? selected.telegramUserId} · Order {selected.orderId}
+              @{selected.telegramUsername ?? selected.telegramUserId} · سفارش {selected.orderId}
             </p>
             <dl className="payment-review__facts">
               <dt>مبلغ مورد انتظار</dt>
@@ -827,7 +653,7 @@ export function AssignToPaymentModal({
                   <dt>اختلاف</dt>
                   <dd className={`tabular-nums${overpayment ? ' payment-warning' : ''}`}>
                     {differenceToman > 0 ? '+' : ''}
-                    {formatToman(Math.abs(differenceToman)).replace(' Toman', '')} Toman
+                    {formatToman(Math.abs(differenceToman))}
                   </dd>
                 </>
               )}
