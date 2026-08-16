@@ -59,10 +59,10 @@ export function SortableHeader({
         onKeyDown={onKey}
         aria-label={
           active
-            ? `${label}, sorted ${ariaSort}, click to ${
-                state.direction === 'asc' ? 'sort descending' : 'reset'
-              }`
-            : `${label}, click to sort ascending`
+            ? `${label}، مرتب‌شده ${ariaSort === 'ascending' ? 'صعودی' : 'نزولی'}، برای ${
+                state.direction === 'asc' ? 'مرتب‌سازی نزولی' : 'برداشتن مرتب‌سازی'
+              } کلیک کنید`
+            : `${label}، برای مرتب‌سازی صعودی کلیک کنید`
         }
       >
         <span className="th-label">{label}</span>

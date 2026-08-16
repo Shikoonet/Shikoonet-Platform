@@ -11,6 +11,8 @@
  * For secrets (one-time device tokens), use the dedicated Copy button in
  * the device-setup flow, not this component.
  */
+import { count } from '../format.js';
+
 export interface IdentifierTextProps {
   value: string | null | undefined;
   /** Optional small label that goes inline with the value (e.g. "(ACCOUNT_NUMBER)"). */
@@ -89,17 +91,17 @@ export function DetectedIdentifierList({
     confidence: number;
   }>;
 }) {
-  if (detected.length === 0) return <p className="muted">No identifiers detected.</p>;
+  if (detected.length === 0) return <p className="muted">شناسه‌ای تشخیص داده نشد.</p>;
   return (
     <ul className="list-plain detected-list">
       {detected.map((d) => (
         <li key={`${d.type}-${d.normalized_value}`} className="identifier">
           <IdentifierText value={d.normalized_value} />{' '}
           <small className="muted">
-            {d.type} — confidence {Math.round(d.confidence * 100)}%
+            {d.type} — اطمینان {count(Math.round(d.confidence * 100))}٪
           </small>
           <br />
-          <small className="muted">parsed by {d.parser_id}</small>
+          <small className="muted">تحلیل‌شده توسط {d.parser_id}</small>
         </li>
       ))}
     </ul>

@@ -114,13 +114,13 @@ describe('DetectedIdentifierList', () => {
     const { container } = render(<DetectedIdentifierList detected={detected} />);
     expect(container.textContent).toContain('110.7007.2377306.1');
     expect(container.textContent).toContain('ACCOUNT_NUMBER');
-    expect(container.textContent).toContain('confidence 95%');
+    expect(container.textContent).toContain('اطمینان ۹۵٪');
     expect(container.textContent).toContain('compact-signed-v1');
     expect(container.querySelector('button')).toBeNull();
   });
 
   it('shows fallback message when no identifiers', () => {
     const { container } = render(<DetectedIdentifierList detected={[]} />);
-    expect(container.textContent).toMatch(/no identifiers detected/i);
+    expect(container.textContent).toMatch(/شناسه‌ای تشخیص داده نشد/);
   });
 });

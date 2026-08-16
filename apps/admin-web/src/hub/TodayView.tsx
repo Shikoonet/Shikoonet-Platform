@@ -10,6 +10,7 @@ import {
   directionLabel,
   statusLabel,
 } from './format.js';
+import { count } from '../format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { DeviceName } from './DeviceName.js';
 import { AccountCell } from './AccountCell.js';
@@ -25,28 +26,28 @@ interface TodayViewProps {
 }
 
 const COLUMNS = [
-  { key: 'direction', label: 'Direction', type: 'text' as ColumnType },
-  { key: 'amount_irr', label: 'Amount (Toman)', type: 'numeric' as ColumnType },
-  { key: 'balance_irr', label: 'Balance', type: 'numeric' as ColumnType },
-  { key: 'account_display', label: 'Account', type: 'text' as ColumnType },
-  { key: 'account_hint', label: 'Account hint', type: 'identifier' as ColumnType },
-  { key: 'device', label: 'Device', type: 'text' as ColumnType },
-  { key: 'sms_timestamp', label: 'SMS time', type: 'date' as ColumnType },
-  { key: 'received_at', label: 'Server received', type: 'date' as ColumnType },
-  { key: 'parser_id', label: 'Parser', type: 'text' as ColumnType },
-  { key: 'status', label: 'Status', type: 'text' as ColumnType },
+  { key: 'direction', label: 'نوع', type: 'text' as ColumnType },
+  { key: 'amount_irr', label: 'مبلغ (تومان)', type: 'numeric' as ColumnType },
+  { key: 'balance_irr', label: 'موجودی', type: 'numeric' as ColumnType },
+  { key: 'account_display', label: 'حساب', type: 'text' as ColumnType },
+  { key: 'account_hint', label: 'نشانهٔ حساب', type: 'identifier' as ColumnType },
+  { key: 'device', label: 'دستگاه', type: 'text' as ColumnType },
+  { key: 'sms_timestamp', label: 'زمان پیامک', type: 'date' as ColumnType },
+  { key: 'received_at', label: 'دریافت سرور', type: 'date' as ColumnType },
+  { key: 'parser_id', label: 'تحلیل‌گر', type: 'text' as ColumnType },
+  { key: 'status', label: 'وضعیت', type: 'text' as ColumnType },
 ];
 
 // Compact-desktop (1200–1439px) drops the standalone Device column and
 // folds display_name + device_code into the Account cell.
 const COMPACT_COLUMNS = [
-  { key: 'direction', label: 'Direction', type: 'text' as ColumnType },
-  { key: 'amount_irr', label: 'Amount', type: 'numeric' as ColumnType },
-  { key: 'balance_irr', label: 'Balance', type: 'numeric' as ColumnType },
-  { key: 'account_display', label: 'Account', type: 'text' as ColumnType },
-  { key: 'sms_timestamp', label: 'SMS time', type: 'date' as ColumnType },
-  { key: 'received_at', label: 'Server received', type: 'date' as ColumnType },
-  { key: 'status', label: 'Status', type: 'text' as ColumnType },
+  { key: 'direction', label: 'نوع', type: 'text' as ColumnType },
+  { key: 'amount_irr', label: 'مبلغ', type: 'numeric' as ColumnType },
+  { key: 'balance_irr', label: 'موجودی', type: 'numeric' as ColumnType },
+  { key: 'account_display', label: 'حساب', type: 'text' as ColumnType },
+  { key: 'sms_timestamp', label: 'زمان پیامک', type: 'date' as ColumnType },
+  { key: 'received_at', label: 'دریافت سرور', type: 'date' as ColumnType },
+  { key: 'status', label: 'وضعیت', type: 'text' as ColumnType },
 ];
 
 // Sort accessor for the Device column: primary = display_name, fallback =
@@ -109,34 +110,35 @@ export function TodayView({ cache }: TodayViewProps) {
     return () => clearTimeout(t);
   }, [newIds, markSeen]);
 
-  if (status === 'loading' && !data) return <div className="muted">Loading…</div>;
+  if (status === 'loading' && !data) return <div className="muted">در حال بارگذاری…</div>;
   if (error && status === 'error' && !data) {
     return (
       <div className="error">
-        Failed to load today. {'message' in (error as Error) ? (error as Error).message : ''}{' '}
+        بارگذاری تراکنش‌های امروز ناموفق بود.{' '}
+        {'message' in (error as Error) ? (error as Error).message : ''}{' '}
         <button type="button" onClick={() => cache.refetch(QK.today)}>
-          Retry
+          تلاش دوباره
         </button>
       </div>
     );
   }
-  if (!data) return <div className="muted">No data yet.</div>;
+  if (!data) return <div className="muted">هنوز داده‌ای نیست.</div>;
 
   return (
     <div className="today">
       <h2>
-        Today&apos;s transactions ({data.count})
+        تراکنش‌های امروز ({count(data.count)})
         {newIds.length > 0 && (
           <span className="new-banner" aria-live="polite">
-            <strong>{newIds.length}</strong> new transaction{newIds.length > 1 ? 's' : ''} received
+            <strong>{count(newIds.length)}</strong> تراکنش تازه رسید
             <button type="button" onClick={() => markSeen()}>
-              Mark seen
+              خواندم
             </button>
           </span>
         )}
       </h2>
       {items.length === 0 ? (
-        <p className="empty">No transactions today.</p>
+        <p className="empty">امروز تراکنشی نبوده.</p>
       ) : isMobile ? (
         <>
           <MobileSortControl
@@ -148,60 +150,60 @@ export function TodayView({ cache }: TodayViewProps) {
                 value: 'received_at-desc',
                 column: 'received_at',
                 direction: 'desc',
-                label: 'Server received: newest',
+                label: 'دریافت سرور: تازه‌ترین',
               },
               {
                 value: 'received_at-asc',
                 column: 'received_at',
                 direction: 'asc',
-                label: 'Server received: oldest',
+                label: 'دریافت سرور: قدیمی‌ترین',
               },
               {
                 value: 'sms_timestamp-desc',
                 column: 'sms_timestamp',
                 direction: 'desc',
-                label: 'SMS time: newest',
+                label: 'زمان پیامک: تازه‌ترین',
               },
               {
                 value: 'sms_timestamp-asc',
                 column: 'sms_timestamp',
                 direction: 'asc',
-                label: 'SMS time: oldest',
+                label: 'زمان پیامک: قدیمی‌ترین',
               },
               {
                 value: 'amount_irr-desc',
                 column: 'amount_irr',
                 direction: 'desc',
-                label: 'Amount: high to low',
+                label: 'مبلغ: زیاد به کم',
               },
               {
                 value: 'amount_irr-asc',
                 column: 'amount_irr',
                 direction: 'asc',
-                label: 'Amount: low to high',
+                label: 'مبلغ: کم به زیاد',
               },
               {
                 value: 'device-asc',
                 column: 'device',
                 direction: 'asc',
-                label: 'Device name: A–Z',
+                label: 'نام دستگاه: صعودی',
               },
               {
                 value: 'device-desc',
                 column: 'device',
                 direction: 'desc',
-                label: 'Device name: Z–A',
+                label: 'نام دستگاه: نزولی',
               },
               {
                 value: 'account_display-asc',
                 column: 'account_display',
                 direction: 'asc',
-                label: 'Account (A→Z)',
+                label: 'حساب: صعودی',
               },
             ]}
             onChange={(col, dir) => setSort({ column: col, direction: dir })}
           />
-          <ul className="card-list" aria-label="Today's transactions">
+          <ul className="card-list" aria-label="تراکنش‌های امروز">
             {sortedItems.map((t) => (
               <TodayTxCard
                 key={t.id}
@@ -322,7 +324,7 @@ export function TodayView({ cache }: TodayViewProps) {
                     <td>{formatTomanFromIrr(t.balance_irr)}</td>
                     <td>
                       {t.account_display ?? (
-                        <span className="muted">{t.account_hint ? `unmapped` : '—'}</span>
+                        <span className="muted">{t.account_hint ? 'نگاشت‌نشده' : '—'}</span>
                       )}
                     </td>
                     <td>
@@ -391,41 +393,41 @@ function TodayTxCard({
         </span>
       </div>
       <div className="card-row">
-        <span className="label">Account</span>
+        <span className="label">حساب</span>
         <span>
           {t.account_display ?? (
-            <span className="muted">{t.account_hint ? `unmapped` : 'Not assigned'}</span>
+            <span className="muted">{t.account_hint ? 'نگاشت‌نشده' : 'اختصاص نیافته'}</span>
           )}
         </span>
       </div>
       {t.account_hint && !t.account_display && (
         <div className="card-row">
-          <span className="label">Detected</span>
+          <span className="label">شناسایی‌شده</span>
           <IdentifierText value={t.account_hint} />
         </div>
       )}
       <div className="card-row">
-        <span className="label">Bank</span>
+        <span className="label">بانک</span>
         <span>
           {t.account_bank ?? '—'} <code className="parser-id">{t.parser_id ?? '—'}</code>
         </span>
       </div>
       <div className="card-row">
-        <span className="label">SMS received on phone</span>
+        <span className="label">دریافت پیامک روی گوشی</span>
         <span>{t.sms_timestamp ? formatTimeSeconds(t.sms_timestamp) : '—'}</span>
       </div>
       <div className="card-row">
-        <span className="label">Received by server</span>
+        <span className="label">دریافت توسط سرور</span>
         <span>{t.received_at ? formatTimeSeconds(t.received_at) : '—'}</span>
       </div>
       {t.bank_timestamp && (
         <div className="card-row">
-          <span className="label">Bank transaction time</span>
+          <span className="label">زمان تراکنش بانکی</span>
           <span>{formatTime(t.bank_timestamp)}</span>
         </div>
       )}
       <div className="card-row">
-        <span className="label">Device</span>
+        <span className="label">دستگاه</span>
         <span>
           <DeviceName displayName={t.device_display_name} deviceCode={t.device_code} />
         </span>
@@ -457,7 +459,7 @@ function MobileSortControl({
   const value = currentColumn ? `${currentColumn}-${currentDirection}` : '';
   return (
     <div className="row toolbar sort-dropdown">
-      <label htmlFor={`sort-${tableKey}`}>Sort by:</label>
+      <label htmlFor={`sort-${tableKey}`}>مرتب‌سازی:</label>
       <select
         id={`sort-${tableKey}`}
         value={value}

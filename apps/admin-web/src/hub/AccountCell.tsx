@@ -39,10 +39,10 @@ export function AccountCell({ accountDisplay, deviceDisplayName, deviceCode }: A
     <div className="account-cell">
       <span
         className="account-cell__primary table-ellipsis"
-        title={accountDisplay ?? 'Not assigned'}
+        title={accountDisplay ?? 'اختصاص نیافته'}
         style={{ display: 'block', maxWidth: '100%' }}
       >
-        {accountDisplay ?? <span className="muted">Not assigned</span>}
+        {accountDisplay ?? <span className="muted">اختصاص نیافته</span>}
       </span>
       {hasDevice && (
         <div className="account-cell__device">

@@ -134,8 +134,8 @@ describe('TodayView', () => {
       },
     ]);
     render(<TodayView cache={cache} />);
-    await waitFor(() => screen.getByText(/new transaction/));
-    expect(screen.getByText(/Mark seen/)).toBeTruthy();
+    await waitFor(() => screen.getByText(/تراکنش تازه رسید/));
+    expect(screen.getByText(/خواندم/)).toBeTruthy();
   });
 
   it('shows session_expired error on 401', async () => {
@@ -143,7 +143,7 @@ describe('TodayView', () => {
     const cache = createCache();
     const { container } = render(<TodayView cache={cache} />);
     await waitFor(() => {
-      expect(container.textContent).toMatch(/Failed to load|Session|Retry/);
+      expect(container.textContent).toMatch(/ناموفق بود|session_expired|تلاش دوباره/);
     });
   });
 });

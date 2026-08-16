@@ -197,7 +197,7 @@ describe('Today — desktop device column', () => {
     globalThis.fetch = vi.fn().mockResolvedValueOnce(todayResponse([b, a]));
     render(<TodayView cache={createCache()} />);
     // Default sort is received_at desc; we explicitly click Device asc/desc.
-    const deviceHeader = await screen.findByText('Device');
+    const deviceHeader = await screen.findByText('دستگاه');
     // Asc.
     fireEvent.click(deviceHeader);
     const tbody = document.querySelector('tbody')!;
@@ -226,7 +226,7 @@ describe('Today — mobile card device row', () => {
     await screen.findByText('Poyan Android Phone');
     const card = screen.getByText('Poyan Android Phone').closest('.card') as HTMLElement;
     expect(within(card).getByText('poyan-01')).toBeTruthy();
-    expect(within(card).getByText('Device')).toBeTruthy();
+    expect(within(card).getByText('دستگاه')).toBeTruthy();
   });
 
   it('exposes a mobile sort option for device A–Z / Z–A', async () => {
@@ -243,8 +243,8 @@ describe('Today — mobile card device row', () => {
     const select = document.querySelector('#sort-today') as HTMLSelectElement;
     expect(select).toBeTruthy();
     const labels = Array.from(select.options).map((o) => o.text);
-    expect(labels).toContain('Device name: A–Z');
-    expect(labels).toContain('Device name: Z–A');
+    expect(labels).toContain('نام دستگاه: صعودی');
+    expect(labels).toContain('نام دستگاه: نزولی');
   });
 });
 
@@ -269,7 +269,7 @@ describe('Today sort state survives polling', () => {
     ];
     globalThis.fetch = vi.fn().mockResolvedValue(todayResponse(items));
     render(<TodayView cache={createCache()} />);
-    const deviceHeader = await screen.findByText('Device');
+    const deviceHeader = await screen.findByText('دستگاه');
     fireEvent.click(deviceHeader);
     let tbody = document.querySelector('tbody')!;
     let rows = Array.from(tbody.querySelectorAll('tr'));
