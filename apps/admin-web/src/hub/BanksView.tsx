@@ -14,6 +14,8 @@
  */
 
 import { useEffect, useState } from 'react';
+import { count } from '../format.js';
+import { directionLabel } from './format.js';
 
 interface PrefixRow {
   prefix: string;
@@ -100,7 +102,7 @@ function CardPrefixesPanel() {
   async function load() {
     const r = await fetch('/api/v1/banks/prefixes');
     if (!r.ok) {
-      setErr(`Could not load prefixes (${r.status})`);
+      setErr(`بارگذاری پیش‌شماره‌ها ناموفق بود (${r.status})`);
       return;
     }
     setRows((await readJson<{ items: PrefixRow[] }>(r)).items ?? []);
@@ -134,7 +136,7 @@ function CardPrefixesPanel() {
   async function remove(p: string) {
     setBusy(true);
     const r = await fetch(`/api/v1/banks/prefixes/${p}`, { method: 'DELETE' });
-    if (!r.ok) setErr(`Delete failed (${r.status})`);
+    if (!r.ok) setErr(`حذف ناموفق بود (${r.status})`);
     await load();
     setBusy(false);
   }
@@ -160,24 +162,24 @@ function CardPrefixesPanel() {
 
   return (
     <section className="banks-panel">
-      <h3>Card number prefixes</h3>
+      <h3>پیش‌شمارهٔ کارت‌ها</h3>
       <p className="muted">
-        The first six digits of a card name the bank that issued it. Longest matching prefix wins, so
-        a bank that splits a range later needs one more row here and no code change.
+        شش رقم اول یک کارت می‌گوید کدام بانک آن را صادر کرده. طولانی‌ترین پیش‌شمارهٔ منطبق برنده
+        است، پس اگر بانکی بعدها یک بازه را تقسیم کند فقط یک ردیف این‌جا لازم است، نه تغییر کد.
       </p>
       {err && <div className="error">{err}</div>}
 
       <div className="banks-test">
-        <h4>Try a card number</h4>
+        <h4>یک شمارهٔ کارت را امتحان کن</h4>
         <div className="row toolbar">
           <input
             placeholder="5054-1617-0627-7062"
             value={cardInput}
             onChange={(e) => setCardInput(e.target.value)}
-            aria-label="Card number to test"
+            aria-label="شمارهٔ کارت برای آزمایش"
           />
           <button type="button" disabled={busy || !cardInput.trim()} onClick={() => void runTest()}>
-            Test
+            آزمایش
           </button>
         </div>
         {test &&
@@ -185,20 +187,20 @@ function CardPrefixesPanel() {
             <p className="muted">{test.message}</p>
           ) : (
             <dl className="banks-test__result">
-              <dt>Number</dt>
+              <dt>شماره</dt>
               <dd>{test.display}</dd>
-              <dt>Check digit</dt>
+              <dt>رقم کنترلی</dt>
               <dd>
                 {test.luhnOk ? (
-                  'valid'
+                  'درست'
                 ) : (
-                  <span className="badge badge-danger">fails — this cannot be a real card</span>
+                  <span className="badge badge-danger">نادرست — این نمی‌تواند کارت واقعی باشد</span>
                 )}
               </dd>
-              <dt>Prefix</dt>
-              <dd>{test.matchedPrefix ?? 'no row matches'}</dd>
-              <dt>Bank</dt>
-              <dd>{test.bankName ?? 'unknown to this table'}</dd>
+              <dt>پیش‌شماره</dt>
+              <dd>{test.matchedPrefix ?? 'هیچ ردیفی منطبق نیست'}</dd>
+              <dt>بانک</dt>
+              <dd>{test.bankName ?? 'برای این جدول ناشناخته است'}</dd>
             </dl>
           ))}
       </div>
@@ -207,9 +209,9 @@ function CardPrefixesPanel() {
         <table className="banks-table">
           <thead>
             <tr>
-              <th scope="col">Prefix</th>
-              <th scope="col">Bank</th>
-              <th scope="col">Last changed by</th>
+              <th scope="col">پیش‌شماره</th>
+              <th scope="col">بانک</th>
+              <th scope="col">آخرین تغییر توسط</th>
               <th scope="col" />
             </tr>
           </thead>
@@ -226,7 +228,7 @@ function CardPrefixesPanel() {
                     disabled={busy}
                     onClick={() => void remove(r.prefix)}
                   >
-                    Remove
+                    حذف
                   </button>
                 </td>
               </tr>
@@ -237,23 +239,23 @@ function CardPrefixesPanel() {
 
       <div className="row toolbar">
         <input
-          placeholder="Prefix (4–8 digits)"
+          placeholder="پیش‌شماره (۴ تا ۸ رقم)"
           value={prefix}
           onChange={(e) => setPrefix(e.target.value.replace(/\D/g, '').slice(0, 8))}
-          aria-label="Prefix"
+          aria-label="پیش‌شماره"
         />
         <input
-          placeholder="Bank name"
+          placeholder="نام بانک"
           value={bankName}
           onChange={(e) => setBankName(e.target.value)}
-          aria-label="Bank name"
+          aria-label="نام بانک"
         />
         <button
           type="button"
           disabled={busy || prefix.length < 4 || !bankName.trim()}
           onClick={() => void save()}
         >
-          Add or update
+          افزودن یا به‌روزرسانی
         </button>
       </div>
     </section>
@@ -272,7 +274,7 @@ function SmsPatternsPanel() {
   async function load() {
     const r = await fetch('/api/v1/banks/sms-patterns');
     if (!r.ok) {
-      setErr(`Could not load patterns (${r.status})`);
+      setErr(`بارگذاری الگوها ناموفق بود (${r.status})`);
       return;
     }
     setRows((await readJson<{ items: PatternRow[] }>(r)).items ?? []);
@@ -321,7 +323,7 @@ function SmsPatternsPanel() {
   async function remove(id: string) {
     setBusy(true);
     const r = await fetch(`/api/v1/banks/sms-patterns/${id}`, { method: 'DELETE' });
-    if (!r.ok) setErr(`Delete failed (${r.status})`);
+    if (!r.ok) setErr(`حذف ناموفق بود (${r.status})`);
     await load();
     setBusy(false);
   }
@@ -347,11 +349,12 @@ function SmsPatternsPanel() {
 
   return (
     <section className="banks-panel">
-      <h3>Bank SMS patterns</h3>
+      <h3>الگوهای پیامک بانک</h3>
       <p className="muted">
-        These only run where the built-in parsers named no bank. They can add a bank name, or read a
-        message nothing else understood — they can never change an amount a built-in already read,
-        and they never see a one-time password. Use them when a bank changes the wording of its SMS.
+        این‌ها فقط جایی اجرا می‌شوند که تحلیل‌گرهای داخلی هیچ بانکی را نشناخته باشند. می‌توانند نام
+        بانک اضافه کنند یا پیامی را بخوانند که هیچ‌چیز دیگری نفهمیده — اما هرگز نمی‌توانند مبلغی را
+        که یک تحلیل‌گر داخلی خوانده عوض کنند، و هرگز رمز یک‌بارمصرف را نمی‌بینند. وقتی بانکی متن
+        پیامکش را عوض کرد از این‌ها استفاده کن.
       </p>
       {err && <div className="error">{err}</div>}
       {problems.length > 0 && (
@@ -363,47 +366,52 @@ function SmsPatternsPanel() {
       )}
 
       <div className="banks-test">
-        <h4>Try a message</h4>
+        <h4>یک پیام را امتحان کن</h4>
         <p className="muted">
-          Runs the real pipeline, including every enabled pattern below. The text is not stored, not
-          logged, and not sent back.
+          خط لولهٔ واقعی را اجرا می‌کند، شامل همهٔ الگوهای فعال پایین. متن نه ذخیره می‌شود، نه لاگ
+          می‌شود، و نه برگردانده می‌شود.
         </p>
         <textarea
           rows={6}
           placeholder={'بانک نمونه\nواریز مبلغ 1,000,000 ریال\nحساب: 0201234567001\nمانده: 5,000,000'}
           value={smsInput}
           onChange={(e) => setSmsInput(e.target.value)}
-          aria-label="SMS text to test"
+          aria-label="متن پیامک برای آزمایش"
         />
         <div className="row toolbar">
           <button type="button" disabled={busy || !smsInput.trim()} onClick={() => void runTest()}>
-            Test
+            آزمایش
           </button>
         </div>
         {test && (
           <dl className="banks-test__result">
-            <dt>Read as</dt>
+            <dt>خوانده شد به‌عنوان</dt>
             <dd>
               {test.classification}
-              {test.matched ? '' : ' (not matched)'}
+              {test.matched ? '' : ' (منطبق نشد)'}
             </dd>
-            <dt>Parser</dt>
+            <dt>تحلیل‌گر</dt>
             <dd>
               {test.parserId ?? '—'}
-              {test.fromPattern && <span className="badge">from pattern {test.fromPattern}</span>}
+              {test.fromPattern && <span className="badge">از الگوی {test.fromPattern}</span>}
             </dd>
-            <dt>Bank</dt>
+            <dt>بانک</dt>
             <dd>{test.bankName ?? '—'}</dd>
-            <dt>Amount (IRR)</dt>
-            <dd>{test.amountIrr === null ? '—' : test.amountIrr.toLocaleString('en-US')}</dd>
-            <dt>Balance (IRR)</dt>
-            <dd>{test.balanceIrr === null ? '—' : test.balanceIrr.toLocaleString('en-US')}</dd>
-            <dt>Direction</dt>
-            <dd>{test.direction}</dd>
-            <dt>Account hint</dt>
+            {/* Rial, not Toman: this box exists to show what the parser read out
+                of the message, and the parser reads Rial. */}
+            <dt>مبلغ (ریال)</dt>
+            <dd>{count(test.amountIrr)}</dd>
+            <dt>مانده (ریال)</dt>
+            <dd>{count(test.balanceIrr)}</dd>
+            <dt>جهت</dt>
+            {/* The same word Today puts on the same field. The classification
+                and parser id beside it stay in the parser's own vocabulary,
+                because that is what an operator matches against a pattern. */}
+            <dd>{directionLabel(test.direction as 'CREDIT' | 'DEBIT' | 'UNKNOWN')}</dd>
+            <dt>نشانهٔ حساب</dt>
             <dd>{test.accountHint ?? '—'}</dd>
-            <dt>Warnings</dt>
-            <dd>{test.warnings.length === 0 ? '—' : test.warnings.join(', ')}</dd>
+            <dt>هشدارها</dt>
+            <dd>{test.warnings.length === 0 ? '—' : test.warnings.join('، ')}</dd>
           </dl>
         )}
       </div>
@@ -412,11 +420,11 @@ function SmsPatternsPanel() {
         <table className="banks-table">
           <thead>
             <tr>
-              <th scope="col">Id</th>
-              <th scope="col">Bank</th>
-              <th scope="col">On</th>
-              <th scope="col">Order</th>
-              <th scope="col">Detects</th>
+              <th scope="col">شناسه</th>
+              <th scope="col">بانک</th>
+              <th scope="col">فعال</th>
+              <th scope="col">ترتیب</th>
+              <th scope="col">تشخیص</th>
               <th scope="col" />
             </tr>
           </thead>
@@ -424,7 +432,7 @@ function SmsPatternsPanel() {
             {rows.length === 0 && (
               <tr>
                 <td colSpan={6} className="muted">
-                  No patterns yet. Everything is handled by the built-in parsers.
+                  هنوز الگویی نیست. همه‌چیز را تحلیل‌گرهای داخلی می‌خوانند.
                 </td>
               </tr>
             )}
@@ -432,14 +440,14 @@ function SmsPatternsPanel() {
               <tr key={r.id}>
                 <td>{r.id}</td>
                 <td>{r.bank_name}</td>
-                <td>{r.enabled ? 'yes' : <span className="muted">draft</span>}</td>
-                <td>{r.priority}</td>
+                <td>{r.enabled ? 'بله' : <span className="muted">پیش‌نویس</span>}</td>
+                <td>{count(r.priority)}</td>
                 <td>
                   <code>{r.detect_re}</code>
                 </td>
                 <td>
                   <button type="button" className="btn-sm" disabled={busy} onClick={() => setDraft(r)}>
-                    Edit
+                    ویرایش
                   </button>
                   <button
                     type="button"
@@ -447,7 +455,7 @@ function SmsPatternsPanel() {
                     disabled={busy}
                     onClick={() => void remove(r.id)}
                   >
-                    Remove
+                    حذف
                   </button>
                 </td>
               </tr>
@@ -456,10 +464,10 @@ function SmsPatternsPanel() {
         </table>
       </div>
 
-      <h4>{rows.some((r) => r.id === draft.id) ? `Editing ${draft.id}` : 'New pattern'}</h4>
+      <h4>{rows.some((r) => r.id === draft.id) ? `ویرایش ${draft.id}` : 'الگوی تازه'}</h4>
       <div className="banks-form">
         <label>
-          Id
+          شناسه
           <input
             value={draft.id}
             onChange={(e) => setDraft({ ...draft, id: e.target.value })}
@@ -467,7 +475,7 @@ function SmsPatternsPanel() {
           />
         </label>
         <label>
-          Bank
+          بانک
           <input
             value={draft.bank_name}
             onChange={(e) => setDraft({ ...draft, bank_name: e.target.value })}
@@ -475,7 +483,7 @@ function SmsPatternsPanel() {
           />
         </label>
         <label>
-          Order
+          ترتیب
           <input
             type="number"
             value={draft.priority}
@@ -483,31 +491,31 @@ function SmsPatternsPanel() {
           />
         </label>
         <label>
-          Amount is in
+          واحد مبلغ
           <select
             value={draft.amount_unit}
             onChange={(e) =>
               setDraft({ ...draft, amount_unit: e.target.value as PatternRow['amount_unit'] })
             }
           >
-            <option value="IRR">Rial</option>
-            <option value="TOMAN">Toman (×10)</option>
+            <option value="IRR">ریال</option>
+            <option value="TOMAN">تومان (×۱۰)</option>
           </select>
         </label>
         <label>
-          Direction
+          جهت
           <select
             value={draft.direction}
             onChange={(e) =>
               setDraft({ ...draft, direction: e.target.value as PatternRow['direction'] })
             }
           >
-            <option value="CREDIT">Money in</option>
-            <option value="DEBIT">Money out</option>
+            <option value="CREDIT">واریز</option>
+            <option value="DEBIT">برداشت</option>
           </select>
         </label>
         <label className="banks-form__wide">
-          Detect (claims the message)
+          تشخیص (پیام را از آن خود می‌کند)
           <input
             value={draft.detect_re}
             onChange={(e) => setDraft({ ...draft, detect_re: e.target.value })}
@@ -515,7 +523,7 @@ function SmsPatternsPanel() {
           />
         </label>
         <label className="banks-form__wide">
-          Amount — group 1 is the digits
+          مبلغ — گروه ۱ همان ارقام است
           <input
             value={draft.amount_re}
             onChange={(e) => setDraft({ ...draft, amount_re: e.target.value })}
@@ -523,21 +531,21 @@ function SmsPatternsPanel() {
           />
         </label>
         <label className="banks-form__wide">
-          Balance (optional)
+          مانده (اختیاری)
           <input
             value={draft.balance_re ?? ''}
             onChange={(e) => setDraft({ ...draft, balance_re: e.target.value })}
           />
         </label>
         <label className="banks-form__wide">
-          Account (optional)
+          حساب (اختیاری)
           <input
             value={draft.account_re ?? ''}
             onChange={(e) => setDraft({ ...draft, account_re: e.target.value })}
           />
         </label>
         <label className="banks-form__wide">
-          Notes
+          یادداشت
           <input
             value={draft.notes ?? ''}
             onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
@@ -549,7 +557,7 @@ function SmsPatternsPanel() {
             checked={draft.enabled}
             onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
           />
-          Live — leave off to save a draft
+          فعال — خاموش بگذار تا پیش‌نویس ذخیره شود
         </label>
       </div>
       <div className="row toolbar">
@@ -558,10 +566,10 @@ function SmsPatternsPanel() {
           disabled={busy || !draft.id.trim() || !draft.bank_name.trim() || !draft.amount_re.trim()}
           onClick={() => void save()}
         >
-          Save pattern
+          ذخیرهٔ الگو
         </button>
         <button type="button" className="btn-sm" onClick={() => setDraft(EMPTY_PATTERN)}>
-          Clear
+          پاک‌کردن
         </button>
       </div>
     </section>

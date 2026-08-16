@@ -29,7 +29,7 @@ import { BanksView } from './BanksView.js';
 import { ShikoonetHeader } from './shikoonetShell.js';
 
 /** Screens whose copy is Persian, and which therefore read right-to-left. */
-const TRANSLATED: ReadonlySet<HubPageId> = new Set<HubPageId>(['payments', 'today', 'statistics']);
+const TRANSLATED: ReadonlySet<HubPageId> = new Set<HubPageId>(['payments', 'today', 'statistics', 'banks']);
 
 export function HubSection({
   section,
