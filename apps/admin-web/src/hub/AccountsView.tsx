@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Cache } from './query.js';
 import { useMediaQuery } from './useMediaQuery.js';
 import { forMutation, QK } from './queries.js';
+import { count } from '../format.js';
 import { formatTomanFromIrr, formatTime } from './format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { SortableHeader } from './SortableHeader.js';
@@ -18,16 +19,16 @@ interface AccountsViewProps {
 }
 
 const ACCOUNTS_COLUMNS = [
-  { key: 'display_name', label: 'Name', type: 'text' as ColumnType },
-  { key: 'bank_name', label: 'Bank', type: 'text' as ColumnType },
-  { key: 'account_hint', label: 'Account / card', type: 'identifier' as ColumnType },
-  { key: 'status', label: 'Status', type: 'text' as ColumnType },
+  { key: 'display_name', label: 'نام', type: 'text' as ColumnType },
+  { key: 'bank_name', label: 'بانک', type: 'text' as ColumnType },
+  { key: 'account_hint', label: 'حساب / کارت', type: 'identifier' as ColumnType },
+  { key: 'status', label: 'وضعیت', type: 'text' as ColumnType },
 ];
 
 const MOBILE_SORT_OPTIONS = [
-  { value: 'name-asc', label: 'Name (A→Z)', column: 'display_name', direction: 'asc' as const },
-  { value: 'name-desc', label: 'Name (Z→A)', column: 'display_name', direction: 'desc' as const },
-  { value: 'recent', label: 'Most recent', column: 'created_at', direction: 'desc' as const },
+  { value: 'name-asc', label: 'نام: صعودی', column: 'display_name', direction: 'asc' as const },
+  { value: 'name-desc', label: 'نام: نزولی', column: 'display_name', direction: 'desc' as const },
+  { value: 'recent', label: 'تازه‌ترین', column: 'created_at', direction: 'desc' as const },
 ];
 
 function formatPaymentCardCell(a: AccountListItem): string {
@@ -113,7 +114,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
   }
 
   async function deactivate(id: string) {
-    if (!window.confirm('Deactivate this account?')) return;
+    if (!window.confirm('این حساب غیرفعال شود؟')) return;
     setBusy(id);
     setError(null);
     try {
@@ -137,11 +138,11 @@ export function AccountsView({ cache }: AccountsViewProps) {
     action: 'accept' | 'mute' | 'unmute' | 'decline' | 'restore',
   ) {
     const labels: Record<typeof action, string> = {
-      accept: 'Accept this account into the active review?',
-      mute: 'Mute this account? Transactions will keep arriving but stay out of Today / totals / matching.',
-      unmute: 'Unmute this account? It will re-enter Today / totals / matching.',
-      decline: 'Decline this account? Transactions will keep arriving but stay out of operational views.',
-      restore: 'Restore this account to the review queue?',
+      accept: 'این حساب پذیرفته و وارد بررسی فعال شود؟',
+      mute: 'این حساب بی‌صدا شود؟ تراکنش‌ها همچنان می‌رسند اما از «امروز»، جمع‌ها و تطبیق بیرون می‌مانند.',
+      unmute: 'صدای این حساب برگردد؟ دوباره وارد «امروز»، جمع‌ها و تطبیق می‌شود.',
+      decline: 'این حساب رد شود؟ تراکنش‌ها همچنان می‌رسند اما از نماهای عملیاتی بیرون می‌مانند.',
+      restore: 'این حساب به صف بررسی برگردد؟',
     };
     if (!window.confirm(labels[action])) return;
     setBusy(id);
@@ -159,7 +160,10 @@ export function AccountsView({ cache }: AccountsViewProps) {
                 : api.restoreAccount;
       const r = await fn(id);
       const acc = items.find((x) => x.id === id);
-      setSuccess(`"${acc?.display_name ?? id}" → ${r.status}.`);
+      // `statusLabel`, not the raw enum: the pill on the row beside this banner
+      // already says «فعال», and printing `ACTIVE` here would be a second name
+      // for the same state.
+      setSuccess(`«${acc?.display_name ?? id}» → ${statusLabel(r.status)}.`);
       cache.invalidate(...forMutation('accountStatusTransition'));
       setTimeout(() => setSuccess(null), 4000);
     } catch (e) {
@@ -173,7 +177,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
     setDeletingId(null);
     setError(null);
     const acc = items.find((x) => x.id === deletedId);
-    setSuccess(`Account "${acc?.display_name ?? deletedId}" permanently deleted.`);
+    setSuccess(`حساب «${acc?.display_name ?? deletedId}» برای همیشه حذف شد.`);
     cache.invalidate(
       QK.accounts,
       QK.accountTotals('today'),
@@ -190,22 +194,22 @@ export function AccountsView({ cache }: AccountsViewProps) {
   return (
     <div className="accounts">
       <div className="row toolbar">
-        <h2>Accounts ({items.length})</h2>
+        <h2>حساب‌ها ({count(items.length)})</h2>
         <div className="spacer" />
         <button type="button" onClick={() => setCreating(true)}>
-          + New account
+          + حساب تازه
         </button>
       </div>
       {error && <div className="error">{error}</div>}
       {success && <div className="info">{success}</div>}
 
       {pendingItems.length > 0 && (
-        <div className="review-queue" role="region" aria-label="Accounts review queue">
-          <h3>Review queue ({pendingItems.length})</h3>
+        <div className="review-queue" role="region" aria-label="صف بررسی حساب‌ها">
+          <h3>صف بررسی ({count(pendingItems.length)})</h3>
           <p className="muted">
-            Newly auto-discovered accounts land here. Accept to include them in Today / matching /
-            totals, Decline to keep them out of operational views. Restore a declined account to
-            move it back to the queue.
+            حساب‌هایی که تازه خودکار کشف شده‌اند این‌جا می‌نشینند. «پذیرش» آن‌ها را وارد «امروز»،
+            تطبیق و جمع‌ها می‌کند و «رد» بیرون نگهشان می‌دارد. یک حساب ردشده را می‌شود «بازگرداند»
+            تا دوباره به صف بیاید.
           </p>
           <ul className="card-list">
             {pendingItems.map((a) => (
@@ -217,7 +221,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                   </span>
                 </div>
                 <div className="card-row">
-                  <span className="label">Bank</span>
+                  <span className="label">بانک</span>
                   <span>{a.bank_name || '—'}</span>
                 </div>
                 {(a.account_hint ||
@@ -226,7 +230,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                   a.account_last_four ||
                   a.iban) && (
                   <div className="card-row">
-                    <span className="label">Identifiers</span>
+                    <span className="label">شناسه‌ها</span>
                     <span className="ids">
                       <IdentifierText value={a.account_hint} />
                       {(a.payment_cards?.length ?? 0) > 0 ? (
@@ -240,8 +244,8 @@ export function AccountsView({ cache }: AccountsViewProps) {
                   </div>
                 )}
                 <div className="card-row">
-                  <span className="label">Detected</span>
-                  <span>{new Date(a.created_at).toLocaleString()}</span>
+                  <span className="label">شناسایی‌شده</span>
+                  <span>{formatTime(a.created_at)}</span>
                 </div>
                 <div className="card-actions">
                   {a.status === 'PENDING' && (
@@ -251,7 +255,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         disabled={busy === a.id}
                         onClick={() => runStatusTransition(a.id, 'accept')}
                       >
-                        Accept
+                        پذیرش
                       </button>
                       <button
                         type="button"
@@ -259,7 +263,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         disabled={busy === a.id}
                         onClick={() => runStatusTransition(a.id, 'decline')}
                       >
-                        Decline
+                        رد
                       </button>
                     </>
                   )}
@@ -269,7 +273,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                       disabled={busy === a.id}
                       onClick={() => runStatusTransition(a.id, 'restore')}
                     >
-                      Restore
+                      بازگرداندن
                     </button>
                   )}
                   <button
@@ -278,7 +282,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                       setEditing(a.id);
                     }}
                   >
-                    Edit
+                    ویرایش
                   </button>
                 </div>
               </li>
@@ -298,16 +302,16 @@ export function AccountsView({ cache }: AccountsViewProps) {
       )}
 
       {items.length === 0 ? (
-        <p className="empty">No accounts registered.</p>
+        <p className="empty">هیچ حسابی ثبت نشده.</p>
       ) : isMobile ? (
         <>
           <SortDropdown
-            label="Sort accounts"
+            label="مرتب‌سازی حساب‌ها"
             value={mobileSortKey}
             options={MOBILE_SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
             onChange={onMobileSort}
           />
-          <ul className="card-list" aria-label="Accounts">
+          <ul className="card-list" aria-label="حساب‌ها">
             {sortedAccounts.map((a) => (
               <AccountCard
                 key={a.id}
@@ -340,7 +344,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                     onChange={setAccountsSort}
                   />
                 ))}
-                <th>Actions</th>
+                <th>عملیات</th>
               </tr>
             </thead>
             <tbody>
@@ -360,14 +364,14 @@ export function AccountsView({ cache }: AccountsViewProps) {
                   </td>
                   <td className="actions-cell">
                     <button type="button" onClick={() => setEditing(a.id)}>
-                      Edit
+                      ویرایش
                     </button>{' '}
                     <button
                       type="button"
                       disabled={a.status !== 'ACTIVE'}
                       onClick={() => setRerunAssignmentFor(a.id)}
                     >
-                      Re-run assignment
+                      اجرای دوبارهٔ تخصیص
                     </button>
                     {a.status === 'PENDING' && (
                       <>
@@ -376,7 +380,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                           disabled={busy === a.id}
                           onClick={() => runStatusTransition(a.id, 'accept')}
                         >
-                          Accept
+                          پذیرش
                         </button>
                         <button
                           type="button"
@@ -384,7 +388,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                           disabled={busy === a.id}
                           onClick={() => runStatusTransition(a.id, 'decline')}
                         >
-                          Decline
+                          رد
                         </button>
                       </>
                     )}
@@ -394,7 +398,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         disabled={busy === a.id}
                         onClick={() => runStatusTransition(a.id, 'mute')}
                       >
-                        Mute
+                        بی‌صدا
                       </button>
                     )}
                     {a.status === 'MUTED' && (
@@ -403,7 +407,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         disabled={busy === a.id}
                         onClick={() => runStatusTransition(a.id, 'unmute')}
                       >
-                        Unmute
+                        باصدا
                       </button>
                     )}
                     {a.status === 'DECLINED' && (
@@ -412,7 +416,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         disabled={busy === a.id}
                         onClick={() => runStatusTransition(a.id, 'restore')}
                       >
-                        Restore
+                        بازگرداندن
                       </button>
                     )}
                     {a.active ? (
@@ -422,7 +426,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         disabled={busy === a.id}
                         onClick={() => deactivate(a.id)}
                       >
-                        Deactivate
+                        غیرفعال‌کردن
                       </button>
                     ) : (
                       <button
@@ -431,7 +435,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         disabled={busy === a.id}
                         onClick={() => setDeletingId(a.id)}
                       >
-                        Delete permanently
+                        حذف همیشگی
                       </button>
                     )}
                   </td>
@@ -504,7 +508,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
               QK.suggested,
               QK.reviewedMatches,
             );
-            setSuccess(deleted ? 'Source account merged and deleted.' : 'References moved.');
+            setSuccess(deleted ? 'حساب مبدأ ادغام و حذف شد.' : 'ارجاع‌ها منتقل شدند.');
           }}
         />
       )}
@@ -526,7 +530,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
       {success && (
         <div className="success-banner" role="status">
           {success}
-          <button type="button" onClick={() => setSuccess(null)} aria-label="Dismiss">
+          <button type="button" onClick={() => setSuccess(null)} aria-label="بستن">
             ×
           </button>
         </div>
@@ -568,13 +572,13 @@ function emptyAccountStub(id: string): AccountListItem {
 function statusLabel(status: 'PENDING' | 'ACTIVE' | 'MUTED' | 'DECLINED'): string {
   switch (status) {
     case 'PENDING':
-      return 'Pending review';
+      return 'در انتظار بررسی';
     case 'ACTIVE':
-      return 'Active';
+      return 'فعال';
     case 'MUTED':
-      return 'Muted';
+      return 'بی‌صدا';
     case 'DECLINED':
-      return 'Declined';
+      return 'ردشده';
   }
 }
 
@@ -635,7 +639,7 @@ function AccountCard({
         </span>
       </div>
       <div className="card-row">
-        <span className="label">Bank</span>
+        <span className="label">بانک</span>
         <span>{a.bank_name}</span>
       </div>
       {(a.account_hint ||
@@ -644,7 +648,7 @@ function AccountCard({
         a.account_last_four ||
         a.iban) && (
         <div className="card-row">
-          <span className="label">Identifiers</span>
+          <span className="label">شناسه‌ها</span>
           <span className="ids">
             <IdentifierText value={a.account_hint} />
             {(a.payment_cards?.length ?? 0) > 0 ? (
@@ -660,43 +664,43 @@ function AccountCard({
 
       <div className="card-actions">
         <button type="button" onClick={onEdit}>
-          Edit
+          ویرایش
         </button>
         <button type="button" disabled={a.status !== 'ACTIVE'} onClick={onRerunAssignment}>
-          Re-run assignment
+          اجرای دوبارهٔ تخصیص
         </button>
         {a.status === 'PENDING' && (
           <>
             <button type="button" disabled={busy} onClick={onAccept}>
-              Accept
+              پذیرش
             </button>
             <button type="button" className="danger" disabled={busy} onClick={onDecline}>
-              Decline
+              رد
             </button>
           </>
         )}
         {a.status === 'ACTIVE' && (
           <button type="button" disabled={busy} onClick={onMute}>
-            Mute
+            بی‌صدا
           </button>
         )}
         {a.status === 'MUTED' && (
           <button type="button" disabled={busy} onClick={onUnmute}>
-            Unmute
+            باصدا
           </button>
         )}
         {a.status === 'DECLINED' && (
           <button type="button" disabled={busy} onClick={onRestore}>
-            Restore
+            بازگرداندن
           </button>
         )}
         {a.active ? (
           <button type="button" className="danger" disabled={busy} onClick={onDeactivate}>
-            Deactivate
+            غیرفعال‌کردن
           </button>
         ) : (
           <button type="button" className="danger" disabled={busy} onClick={onDelete}>
-            Delete permanently
+            حذف همیشگی
           </button>
         )}
       </div>
@@ -758,7 +762,7 @@ function PaymentCardsPanel({
   async function load() {
     const r = await fetch(`/api/v1/accounts/${accountId}/payment-cards`);
     if (!r.ok) {
-      setErr(`Could not load cards (${r.status})`);
+      setErr(`بارگذاری کارت‌ها ناموفق بود (${r.status})`);
       return;
     }
     const j = (await r.json()) as { items: PaymentCardRow[] };
@@ -774,7 +778,7 @@ function PaymentCardsPanel({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ displayWeight }),
       });
-      if (!r.ok) throw new Error(`Could not change weight (${r.status})`);
+      if (!r.ok) throw new Error(`تغییر وزن ناموفق بود (${r.status})`);
       await load();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -805,7 +809,7 @@ function PaymentCardsPanel({
         if (j.error === 'card_already_mapped' && !moveIfMapped) {
           setMoveOffer({
             cardNumber: newCard,
-            message: j.message ?? 'This card is mapped to another account.',
+            message: j.message ?? 'این کارت به حساب دیگری نگاشت شده است.',
           });
           return;
         }
@@ -826,7 +830,7 @@ function PaymentCardsPanel({
     setBusy(true);
     setErr(null);
     const r = await fetch(`/api/v1/payment-cards/${id}`, { method: 'DELETE' });
-    if (!r.ok) setErr(`Remove failed (${r.status})`);
+    if (!r.ok) setErr(`حذف ناموفق بود (${r.status})`);
     await load();
     onChanged?.();
     setBusy(false);
@@ -834,22 +838,22 @@ function PaymentCardsPanel({
 
   return (
     <div className="payment-cards-panel">
-      <h4>Mirzabot payment cards</h4>
+      <h4>کارت‌های پرداخت ربات</h4>
       <p className="muted">
-        Map destination card numbers shown to Mirzabot customers → this financial account. Enter only
-        the 16-digit card (not the account name).
+        شماره‌کارت‌هایی که به مشتری نشان داده می‌شود را به این حساب مالی نگاشت کن. فقط خودِ کارت
+        ۱۶ رقمی را بنویس، نه نام حساب.
       </p>
       {err && <div className="error">{err}</div>}
       {moveOffer && (
         <div className="info">
           <p>{moveOffer.message}</p>
           <button type="button" disabled={busy} onClick={() => addCard(true)}>
-            Move card to this account
+            انتقال کارت به این حساب
           </button>
         </div>
       )}
       <ul className="payment-cards-list">
-        {cards.length === 0 && <li className="muted">No cards mapped to this account yet.</li>}
+        {cards.length === 0 && <li className="muted">هنوز کارتی به این حساب نگاشت نشده.</li>}
         {cards.map((c) => (
           <li key={c.id}>
             <span className="payment-cards-list__id">
@@ -859,12 +863,12 @@ function PaymentCardsPanel({
               {/* A card number that fails its own check digit cannot exist. One
                   such row is live in production and quietly broke claim-to-account
                   resolution for a whole bank until a human counted the digits. */}
-              {!c.luhn_ok && <span className="badge badge-danger">check digit fails</span>}
+              {!c.luhn_ok && <span className="badge badge-danger">رقم کنترلی نادرست</span>}
               {c.status !== 'ACTIVE' && <span className="badge">{c.status}</span>}
             </span>
             <span className="payment-cards-list__actions">
               <label>
-                Shown{' '}
+                نمایش{' '}
                 <select
                   value={c.display_weight}
                   disabled={busy}
@@ -872,23 +876,22 @@ function PaymentCardsPanel({
                 >
                   {Array.from({ length: 20 }, (_, i) => i + 1).map((w) => (
                     <option key={w} value={w}>
-                      {w === 1 ? 'normally (1×)' : `${w}× as often`}
+                      {w === 1 ? 'معمولی (۱×)' : `${count(w)}× بیشتر`}
                     </option>
                   ))}
                 </select>
               </label>
               <button type="button" className="btn-sm" disabled={busy} onClick={() => removeCard(c.id)}>
-                Remove
+                حذف
               </button>
             </span>
           </li>
         ))}
       </ul>
       <p className="muted">
-        Rotation hands out the card that is furthest behind. A weight of 3 means this card comes up
-        three times as often as a normal one — it never becomes the only card shown. Raise it for a
-        newly added card until its transaction count on the Statistics screen catches up, then set it
-        back to 1.
+        چرخش، کارتی را می‌دهد که بیش از همه عقب افتاده است. وزن ۳ یعنی این کارت سه برابر یک کارت
+        معمولی بالا می‌آید — اما هیچ‌وقت تنها کارتِ نشان‌داده‌شده نمی‌شود. برای کارتی که تازه اضافه
+        شده وزن را بالا ببر تا شمار تراکنش‌هایش در صفحهٔ «آمار مالی» به بقیه برسد، بعد به ۱ برگردان.
       </p>
       <div className="row toolbar">
         <input
@@ -896,9 +899,9 @@ function PaymentCardsPanel({
           value={newCard}
           onChange={(e) => setNewCard(e.target.value)}
         />
-        <input placeholder="Label (optional)" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <input placeholder="برچسب (اختیاری)" value={label} onChange={(e) => setLabel(e.target.value)} />
         <button type="button" disabled={busy || !newCard.trim()} onClick={() => addCard(false)}>
-          Add card
+          افزودن کارت
         </button>
       </div>
     </div>
@@ -942,37 +945,37 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
   }
 
   return (
-    <Modal onClose={onClose} label={account ? 'Edit account' : 'New account'}>
+    <Modal onClose={onClose} label={account ? 'ویرایش حساب' : 'حساب تازه'}>
       {err && <div className="error">{err}</div>}
       <div className="form">
         <label>
-          <span>Bank name</span>
+          <span>نام بانک</span>
           <input value={bankName} onChange={(e) => setBankName(e.target.value)} />
         </label>
         <label>
-          <span>Display name</span>
+          <span>نام نمایشی</span>
           <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
         </label>
         <label>
-          <span>Account type</span>
+          <span>نوع حساب</span>
           <select
             value={accountType}
             onChange={(e) =>
               setAccountType(e.target.value as 'CARD' | 'ACCOUNT' | 'IBAN' | 'OTHER')
             }
           >
-            <option value="ACCOUNT">ACCOUNT</option>
-            <option value="CARD">CARD</option>
-            <option value="IBAN">IBAN</option>
-            <option value="OTHER">OTHER</option>
+            <option value="ACCOUNT">حساب</option>
+            <option value="CARD">کارت</option>
+            <option value="IBAN">شبا</option>
+            <option value="OTHER">دیگر</option>
           </select>
         </label>
         <label>
-          <span>Account hint (full number)</span>
+          <span>شمارهٔ کامل حساب</span>
           <input value={accountHint} onChange={(e) => setAccountHint(e.target.value)} />
         </label>
         <label>
-          <span>Card last 4</span>
+          <span>۴ رقم آخر کارت</span>
           <input
             value={cardLastFour}
             maxLength={4}
@@ -980,7 +983,7 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
           />
         </label>
         <label>
-          <span>Account last 4</span>
+          <span>۴ رقم آخر حساب</span>
           <input
             value={accountLastFour}
             maxLength={4}
@@ -988,7 +991,7 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
           />
         </label>
         <label>
-          <span>IBAN</span>
+          <span>شبا</span>
           <input value={iban} onChange={(e) => setIban(e.target.value)} />
         </label>
       </div>
@@ -1000,11 +1003,11 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
       )}
       <div className="row toolbar modal-actions">
         <button type="button" onClick={onClose}>
-          Cancel
+          انصراف
         </button>
         <div className="spacer" />
         <button type="button" disabled={busy || !bankName || !displayName} onClick={save}>
-          {account ? 'Save' : 'Create'}
+          {account ? 'ذخیره' : 'ساخت'}
         </button>
       </div>
     </Modal>
@@ -1032,7 +1035,7 @@ function Modal({ label, onClose, children }: ModalProps) {
         <div className="row toolbar">
           <h3>{label}</h3>
           <div className="spacer" />
-          <button type="button" onClick={onClose} aria-label="Close">
+          <button type="button" onClick={onClose} aria-label="بستن">
             ×
           </button>
         </div>
@@ -1114,7 +1117,7 @@ export function RerunAssignmentModal({
         const r = await api.rerunAssignmentPreview(account.id);
         if (cancelled) return;
         if (!r.ok) {
-          setErr('Preview failed');
+          setErr('پیش‌نمایش ناموفق بود');
           setStep('preview');
           return;
         }
@@ -1176,7 +1179,7 @@ export function RerunAssignmentModal({
         .filter((v): v is string => !!v);
       const r = await api.applyRerunAssignment(account.id, previewId, selectedTxIds);
       if (!r.ok) {
-        setErr('Apply failed');
+        setErr('اعمال ناموفق بود');
         setStep('preview');
         return;
       }
@@ -1206,35 +1209,35 @@ export function RerunAssignmentModal({
   return (
     <Modal
       onClose={step === 'applying' ? () => undefined : onClose}
-      label={`Re-run account assignment — ${account.display_name}`}
+      label={`اجرای دوبارهٔ تخصیص حساب — ${account.display_name}`}
     >
       {err && <div className="error">{err}</div>}
       {step === 'analyzing' && (
         <p className="muted">
-          Analyzing historical transactions against this account&apos;s identifiers…
+          در حال بررسی تراکنش‌های گذشته در برابر شناسه‌های این حساب…
         </p>
       )}
       {step === 'preview' && counts && (
         <>
           <div className="row" style={{ gap: '1rem', flexWrap: 'wrap' }}>
             <div>
-              <strong>{counts.willAssign}</strong> will assign
+              <strong>{count(counts.willAssign)}</strong> تخصیص می‌یابد
             </div>
             <div>
-              <strong>{counts.willRepairHistory}</strong> will repair history
+              <strong>{count(counts.willRepairHistory)}</strong> تاریخچه اصلاح می‌شود
             </div>
             <div>
-              <strong>{counts.alreadyCorrect}</strong> already correct
+              <strong>{count(counts.alreadyCorrect)}</strong> از قبل درست است
             </div>
             <div>
-              <strong>{counts.manualAssignmentsSkipped}</strong> manual preserved
+              <strong>{count(counts.manualAssignmentsSkipped)}</strong> تخصیص دستی حفظ می‌شود
             </div>
             <div>
-              <strong>{counts.ambiguous}</strong> ambiguous
+              <strong>{count(counts.ambiguous)}</strong> مبهم
             </div>
           </div>
           {items.length === 0 ? (
-            <p className="muted">No candidate transactions found.</p>
+            <p className="muted">هیچ تراکنش نامزدی پیدا نشد.</p>
           ) : (
             <ul className="list-plain">
               {items.map((it) => {
@@ -1257,12 +1260,12 @@ export function RerunAssignmentModal({
                         onChange={() => toggleSelected(it.id)}
                       />
                       <span>
-                        {it.disposition === 'WILL_REPAIR_HISTORY' ? 'Repair history' : 'Assign'} ·{' '}
+                        {it.disposition === 'WILL_REPAIR_HISTORY' ? 'اصلاح تاریخچه' : 'تخصیص'} ·{' '}
                         {it.identifierType ?? '—'}={it.normalizedIdentifier ?? '—'} ·{' '}
                         {it.amountIrr != null ? formatTomanFromIrr(it.amountIrr) : '—'}
                         {it.bankTimestamp != null ? ` · ${formatTime(it.bankTimestamp)}` : ''}
                         {isAmbiguous && (
-                          <span className="muted"> · identifier resolves to multiple accounts</span>
+                          <span className="muted"> · این شناسه به چند حساب می‌خورد</span>
                         )}
                       </span>
                     </label>
@@ -1273,7 +1276,7 @@ export function RerunAssignmentModal({
           )}
           <div className="row toolbar modal-actions">
             <button type="button" onClick={onDecline} disabled={step !== 'preview'}>
-              Decline
+              رد
             </button>
             <div className="spacer" />
             <button
@@ -1281,26 +1284,26 @@ export function RerunAssignmentModal({
               disabled={step !== 'preview' || selectedIds.size === 0}
               onClick={onAccept}
             >
-              Accept ({selectedIds.size})
+              پذیرش ({count(selectedIds.size)})
             </button>
           </div>
         </>
       )}
-      {step === 'applying' && <p className="muted">Applying…</p>}
+      {step === 'applying' && <p className="muted">در حال اعمال…</p>}
       {step === 'result' && result && (
         <>
           <div className="row" style={{ gap: '1rem', flexWrap: 'wrap' }}>
             <div>
-              <strong>{result.applied}</strong> applied
+              <strong>{count(result.applied)}</strong> اعمال شد
             </div>
             <div>
-              <strong>{result.skipped}</strong> skipped
+              <strong>{count(result.skipped)}</strong> رد شد
             </div>
             <div>
-              <strong>{result.conflicts}</strong> conflicts
+              <strong>{count(result.conflicts)}</strong> تعارض
             </div>
             <div>
-              <strong>{result.manualPreserved}</strong> manual preserved
+              <strong>{count(result.manualPreserved)}</strong> تخصیص دستی حفظ شد
             </div>
           </div>
           <div className="row toolbar modal-actions">

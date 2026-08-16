@@ -10,6 +10,7 @@
  * query keys, and shows a success notification.
  */
 import { useEffect, useState } from 'react';
+import { count } from '../format.js';
 import type { AccountListItem } from './api.js';
 import { api } from './api.js';
 
@@ -71,8 +72,8 @@ export function DeleteAccountModal({
   const refs = preview?.references;
   const blocked = !preview || !preview.canDelete;
   const reasonText: Record<string, string> = {
-    account_must_be_inactive: 'Account is still active — deactivate it first.',
-    account_in_use: 'Account has linked transactions or payment claims.',
+    account_must_be_inactive: 'حساب هنوز فعال است — اول غیرفعالش کن.',
+    account_in_use: 'این حساب تراکنش یا ادعای پرداخت مرتبط دارد.',
   };
   const matchesTyped = typed.trim() === preview?.account.displayName.trim();
   const canSubmit = !!preview && preview.canDelete && matchesTyped && !busy;
@@ -96,34 +97,34 @@ export function DeleteAccountModal({
       className="modal-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Delete account permanently"
+      aria-label="حذف همیشگی حساب"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div className="modal-body modal-body--danger">
         <div className="row toolbar">
-          <h3>Delete account permanently</h3>
+          <h3>حذف همیشگی حساب</h3>
           <div className="spacer" />
-          <button type="button" onClick={onClose} aria-label="Close">
+          <button type="button" onClick={onClose} aria-label="بستن">
             ×
           </button>
         </div>
         <p>
-          This deletes <strong>{account.display_name}</strong> ({account.bank_name}) from the
-          database. <strong>This cannot be undone.</strong>
+          این کار <strong>{account.display_name}</strong> ({account.bank_name}) را از دیتابیس حذف
+          می‌کند. <strong>برگشت‌پذیر نیست.</strong>
         </p>
         {loadError && <div className="error">{loadError}</div>}
         {preview && (
           <>
-            <h4>Linked references</h4>
+            <h4>ارجاع‌های مرتبط</h4>
             <dl className="ref-counts">
-              <dt>Transactions</dt>
-              <dd>{refs?.transactions ?? 0}</dd>
-              <dt>Payment claims</dt>
-              <dd>{refs?.paymentClaims ?? 0}</dd>
-              <dt>Additional identifiers</dt>
-              <dd>{refs?.identifiers ?? 0}</dd>
+              <dt>تراکنش‌ها</dt>
+              <dd>{count(refs?.transactions ?? 0)}</dd>
+              <dt>ادعاهای پرداخت</dt>
+              <dd>{count(refs?.paymentClaims ?? 0)}</dd>
+              <dt>شناسه‌های اضافی</dt>
+              <dd>{count(refs?.identifiers ?? 0)}</dd>
             </dl>
             {preview.blockingReasons.length > 0 && (
               <div className="warn-banner">
@@ -132,8 +133,7 @@ export function DeleteAccountModal({
                 ))}
                 {refs && (refs.transactions > 0 || refs.paymentClaims > 0) && (
                   <p>
-                    Reassign or merge its transactions and payment claims before deleting. Use the
-                    account detail view to migrate references.
+                    قبل از حذف، تراکنش‌ها و ادعاهای پرداختش را به حساب دیگری بده یا ادغام کن.
                   </p>
                 )}
                 {onMoveReferences && refs && (refs.transactions > 0 || refs.paymentClaims > 0) && (
@@ -143,7 +143,7 @@ export function DeleteAccountModal({
                     style={{ marginTop: '0.75rem' }}
                     onClick={onMoveReferences}
                   >
-                    Move references to another account…
+                    انتقال ارجاع‌ها به حساب دیگر…
                   </button>
                 )}
               </div>
@@ -154,7 +154,7 @@ export function DeleteAccountModal({
           <div className="form">
             <label>
               <span>
-                Type <code>{preview.account.displayName}</code> to confirm:
+                برای تایید <code>{preview.account.displayName}</code> را بنویس:
               </span>
               <input
                 type="text"
@@ -169,7 +169,7 @@ export function DeleteAccountModal({
         {err && <div className="error">{err}</div>}
         <div className="row toolbar modal-actions">
           <button type="button" onClick={onClose}>
-            Cancel
+            انصراف
           </button>
           <div className="spacer" />
           <button
@@ -179,13 +179,13 @@ export function DeleteAccountModal({
             onClick={confirm}
             title={
               blocked
-                ? 'Account cannot be deleted in its current state.'
+                ? 'حساب در وضعیت فعلی‌اش حذف‌شدنی نیست.'
                 : !matchesTyped
-                  ? 'Type the account display name exactly to confirm.'
-                  : 'Delete this account forever'
+                  ? 'برای تایید، نام نمایشی حساب را دقیقاً بنویس.'
+                  : 'این حساب برای همیشه حذف شود'
             }
           >
-            {busy ? 'Deleting…' : 'Delete permanently'}
+            {busy ? 'در حال حذف…' : 'حذف همیشگی'}
           </button>
         </div>
       </div>

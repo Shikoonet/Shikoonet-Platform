@@ -22,6 +22,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { count } from '../format.js';
 import type { AccountListItem } from './api.js';
 import { api } from './api.js';
 
@@ -123,15 +124,15 @@ export function MoveReferencesModal({
     >
       <div className="modal-body">
         <div className="row toolbar">
-          <h3>Move references — {source.display_name}</h3>
+          <h3>انتقال ارجاع‌ها — {source.display_name}</h3>
           <div className="spacer" />
           <button type="button" onClick={onClose} aria-label="بستن">
             ×
           </button>
         </div>
         <p>
-          انتقال هر چیزی که به این وصل است <strong>{source.display_name}</strong> ({source.bank_name}) to
-          a different account. The move is atomic — if any step fails, nothing changes.
+          هر چیزی که به <strong>{source.display_name}</strong> ({source.bank_name}) وصل است به حساب
+          دیگری منتقل می‌شود. انتقال اتمیک است — اگر هر مرحله شکست بخورد، هیچ‌چیز عوض نمی‌شود.
         </p>
         {eligible.length === 0 ? (
           <div className="warn-banner">
@@ -156,7 +157,7 @@ export function MoveReferencesModal({
                 type="text"
                 value={reason}
                 maxLength={500}
-                placeholder="e.g. duplicate account created in error"
+                placeholder="مثلاً: حساب تکراری که اشتباهی ساخته شد"
                 onChange={(e) => setReason(e.target.value)}
               />
             </label>
@@ -203,9 +204,9 @@ export function MoveReferencesModal({
           <div className="preview-box">
             <h4>پیش‌نمایش</h4>
             <p>
-              منتقل می‌شود <strong>{preview.counts.transactions}</strong> transaction(s),{' '}
-              <strong>{preview.counts.paymentClaims}</strong> payment claim(s), and{' '}
-              <strong>{preview.counts.identifiers}</strong> identifier(s) to the target.
+              <strong>{count(preview.counts.transactions)}</strong> تراکنش،{' '}
+              <strong>{count(preview.counts.paymentClaims)}</strong> ادعای پرداخت و{' '}
+              <strong>{count(preview.counts.identifiers)}</strong> شناسه به حساب مقصد منتقل می‌شود.
             </p>
             {preview.identifiers.length > 0 && (
               <ul className="ref-list">
@@ -232,7 +233,7 @@ export function MoveReferencesModal({
             disabled={busy || !targetId || noop}
             onClick={submit}
           >
-            {busy ? 'Moving…' : 'تایید انتقال'}
+            {busy ? 'در حال انتقال…' : 'تایید انتقال'}
           </button>
         </div>
       </div>

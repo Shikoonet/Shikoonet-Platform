@@ -7,15 +7,15 @@
  * one. What survives is the part that was actually the hub — the query cache
  * and the six views.
  *
- * The direction is per screen while the translation is in progress. A screen
- * whose copy is still English reads worse mirrored than it does left-to-right,
- * so it keeps `ltr` until its words are Persian and then flips with them. The
- * set below is the whole of the bookkeeping, and it deletes itself: when all
- * six are in it, the attribute becomes a constant and then nothing at all.
+ * The direction used to be decided per screen, from a set naming the ones whose
+ * copy had been translated — a screen still in English reads worse mirrored than
+ * it does left-to-right. All six are Persian now, so the set is gone and `dir`
+ * is a constant. It stays written out rather than inherited from `<html>`,
+ * because this div is the boundary between the two stylesheets and should say
+ * which way its half runs.
  *
- * `className="hub"` is not cosmetic: `styles.css` hangs its design tokens and
- * its element rules off it, so this div is the boundary between the two design
- * languages.
+ * `className="hub"` is not cosmetic either: `styles.css` hangs its design tokens
+ * and its element rules off it.
  */
 
 import type { Cache } from './query.js';
@@ -28,9 +28,6 @@ import { StatisticsView } from './StatisticsView.js';
 import { BanksView } from './BanksView.js';
 import { ShikoonetHeader } from './shikoonetShell.js';
 
-/** Screens whose copy is Persian, and which therefore read right-to-left. */
-const TRANSLATED: ReadonlySet<HubPageId> = new Set<HubPageId>(['payments', 'today', 'statistics', 'banks', 'devices']);
-
 export function HubSection({
   section,
   cache,
@@ -41,7 +38,7 @@ export function HubSection({
   onGo: (id: HubPageId, search?: string) => void;
 }) {
   return (
-    <div className="hub" dir={TRANSLATED.has(section) ? 'rtl' : 'ltr'}>
+    <div className="hub" dir="rtl">
       <ShikoonetHeader
         cache={cache}
         opsMode={section === 'payments'}

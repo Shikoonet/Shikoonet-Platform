@@ -12,7 +12,8 @@
 import { useEffect, useState } from 'react';
 import type { AccountListItem } from './api.js';
 import { api } from './api.js';
-import { formatTomanFromIrr } from './format.js';
+import { count } from '../format.js';
+import { directionLabel, formatTime, formatTomanFromIrr, statusLabel } from './format.js';
 
 interface ReferencesResponse {
   ok: boolean;
@@ -84,25 +85,27 @@ export function ReferencesModal({ account, onClose, onMove }: ReferencesModalPro
     >
       <div className="modal-body">
         <div className="row toolbar">
-          <h3>References — {account.display_name}</h3>
+          <h3>ارجاع‌ها — {account.display_name}</h3>
           <div className="spacer" />
           <button type="button" onClick={onClose} aria-label="بستن">
             ×
           </button>
         </div>
         <p>
-          <strong>{account.bank_name}</strong> · v{account.active ? 'active' : 'inactive'}
+          {/* The stray `v` in front of the state was a leftover; there is no
+              version here, only whether the account is switched on. */}
+          <strong>{account.bank_name}</strong> · {account.active ? 'فعال' : 'غیرفعال'}
         </p>
         {err && <div className="error">{err}</div>}
         {preview && (
           <>
             <dl className="ref-counts">
               <dt>تراکنش‌ها</dt>
-              <dd>{total?.transactions ?? 0}</dd>
+              <dd>{count(total?.transactions ?? 0)}</dd>
               <dt>ادعاهای پرداخت</dt>
-              <dd>{total?.paymentClaims ?? 0}</dd>
+              <dd>{count(total?.paymentClaims ?? 0)}</dd>
               <dt>شناسه‌ها</dt>
-              <dd>{total?.identifiers ?? 0}</dd>
+              <dd>{count(total?.identifiers ?? 0)}</dd>
             </dl>
             <h4>تراکنش‌ها (۵۰ مورد آخر)</h4>
             {preview.references.transactions.length === 0 ? (
@@ -111,13 +114,15 @@ export function ReferencesModal({ account, onClose, onMove }: ReferencesModalPro
               <ul className="ref-list">
                 {preview.references.transactions.map((t) => (
                   <li key={t.id}>
-                    <span className="ref-dir">{t.direction}</span>
-                    <span className="ref-amount">
-                      {formatTomanFromIrr(t.amount_irr)}
+                    <span className="ref-dir">
+                      {directionLabel(t.direction as 'CREDIT' | 'DEBIT' | 'UNKNOWN')}
                     </span>
-                    <span className="ref-status">{t.status}</span>
+                    <span className="ref-amount">{formatTomanFromIrr(t.amount_irr)}</span>
+                    <span className="ref-status">{statusLabel(t.status)}</span>
+                    {/* Tehran and Jalali, like every other timestamp in the
+                        panel — this was the browser's own zone and calendar. */}
                     <span className="ref-when">
-                      {t.bank_timestamp ? new Date(t.bank_timestamp).toLocaleString('en-US') : '—'}
+                      {t.bank_timestamp ? formatTime(t.bank_timestamp) : '—'}
                     </span>
                   </li>
                 ))}
@@ -131,13 +136,9 @@ export function ReferencesModal({ account, onClose, onMove }: ReferencesModalPro
                 {preview.references.paymentClaims.map((c) => (
                   <li key={c.id}>
                     <span className="ref-claim-id">{c.external_order_id}</span>
-                    <span className="ref-amount">
-                      {formatTomanFromIrr(c.expected_amount_irr)}
-                    </span>
-                    <span className="ref-status">{c.status}</span>
-                    <span className="ref-when">
-                      {new Date(c.submitted_at).toLocaleString('en-US')}
-                    </span>
+                    <span className="ref-amount">{formatTomanFromIrr(c.expected_amount_irr)}</span>
+                    <span className="ref-status">{statusLabel(c.status)}</span>
+                    <span className="ref-when">{formatTime(c.submitted_at)}</span>
                   </li>
                 ))}
               </ul>

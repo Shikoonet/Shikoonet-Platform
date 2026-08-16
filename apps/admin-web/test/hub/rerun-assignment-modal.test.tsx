@@ -161,12 +161,12 @@ describe('RerunAssignmentModal', () => {
 
     render(<Harness account={ACCOUNT} onApplied={() => undefined} />);
     await waitFor(() => {
-      expect(screen.getByText('Accept (2)')).toBeTruthy();
+      expect(screen.getByText('پذیرش (۲)')).toBeTruthy();
     });
-    expect(screen.getByText(/will assign/i)).toBeTruthy();
-    expect(screen.getByText(/will repair history/i)).toBeTruthy();
-    expect(screen.getByText(/already correct/i)).toBeTruthy();
-    expect(screen.getByText(/manual preserved/i)).toBeTruthy();
+    expect(screen.getByText(/تخصیص می‌یابد/)).toBeTruthy();
+    expect(screen.getByText(/تاریخچه اصلاح می‌شود/)).toBeTruthy();
+    expect(screen.getByText(/از قبل درست است/)).toBeTruthy();
+    expect(screen.getByText(/تخصیص دستی حفظ می‌شود/)).toBeTruthy();
     // Two listable items → two checkboxes.
     const checkboxes = screen.getAllByRole('checkbox');
     expect(checkboxes.length).toBe(2);
@@ -213,10 +213,10 @@ describe('RerunAssignmentModal', () => {
 
     render(<Harness account={ACCOUNT} onApplied={() => undefined} />);
     await waitFor(() => {
-      expect(screen.getByText(/Accept \(1\)/)).toBeTruthy();
+      expect(screen.getByText(/پذیرش \(۱\)/)).toBeTruthy();
     });
     await act(async () => {
-      fireEvent.click(screen.getByText(/Accept \(1\)/));
+      fireEvent.click(screen.getByText(/پذیرش \(۱\)/));
     });
     await waitFor(() => {
       expect(api.applyRerunAssignment).toHaveBeenCalledTimes(1);
@@ -256,10 +256,10 @@ describe('RerunAssignmentModal', () => {
 
     render(<Harness account={ACCOUNT} onApplied={() => undefined} />);
     await waitFor(() => {
-      expect(screen.getByText('Decline')).toBeTruthy();
+      expect(screen.getByText('رد')).toBeTruthy();
     });
     await act(async () => {
-      fireEvent.click(screen.getByText('Decline'));
+      fireEvent.click(screen.getByText('رد'));
     });
     await waitFor(() => {
       expect(api.declineRerunAssignment).toHaveBeenCalledTimes(1);
@@ -298,15 +298,15 @@ describe('RerunAssignmentModal', () => {
 
     render(<Harness account={ACCOUNT} onApplied={() => undefined} />);
     await waitFor(() => {
-      expect(screen.getByText(/Accept \(1\)/)).toBeTruthy();
+      expect(screen.getByText(/پذیرش \(۱\)/)).toBeTruthy();
     });
     // Simulate a 5-second poll invalidating the cache underneath.
     await act(async () => {
       fireEvent.click(screen.getByTestId('invalidate-cache'));
     });
     // The modal is still there — state survived.
-    expect(screen.getByText(/Accept \(1\)/)).toBeTruthy();
-    expect(screen.getByText('Decline')).toBeTruthy();
+    expect(screen.getByText(/پذیرش \(۱\)/)).toBeTruthy();
+    expect(screen.getByText('رد')).toBeTruthy();
   });
 
   it('result step shows four counts after Apply', async () => {
@@ -362,18 +362,23 @@ describe('RerunAssignmentModal', () => {
 
     render(<Harness account={ACCOUNT} onApplied={() => undefined} />);
     await waitFor(() => {
-      expect(screen.getByText(/Accept \(2\)/)).toBeTruthy();
+      expect(screen.getByText(/پذیرش \(۲\)/)).toBeTruthy();
     });
     await act(async () => {
-      fireEvent.click(screen.getByText(/Accept \(2\)/));
+      fireEvent.click(screen.getByText(/پذیرش \(۲\)/));
     });
     await waitFor(() => {
-      expect(screen.getByText(/applied/i)).toBeTruthy();
+      expect(screen.getByText(/اعمال شد/)).toBeTruthy();
     });
-    // The result step renders four distinct counts (applied, skipped,
-    // conflicts, manualPreserved). The numbers are visible on the page.
-    expect(document.body.textContent).toMatch(/2[^A-Za-z]/); // applied count
-    expect(document.body.textContent).toMatch(/1[^A-Za-z]/); // conflicts count
+    // The result step renders four counts. This used to search the whole
+    // document for a bare `2` and a bare `1`, which the account name or a
+    // timestamp could satisfy on their own; each number is now asserted next to
+    // the word it belongs to, in the digits the screen actually prints.
+    const result = screen.getByText(/اعمال شد/).closest('div')!.parentElement!;
+    expect(result.textContent).toContain('۲ اعمال شد');
+    expect(result.textContent).toContain('۰ رد شد');
+    expect(result.textContent).toContain('۱ تعارض');
+    expect(result.textContent).toContain('۰ تخصیص دستی حفظ شد');
   });
 
   it('Accept button is disabled when zero items are selected', async () => {
@@ -408,9 +413,9 @@ describe('RerunAssignmentModal', () => {
 
     render(<Harness account={ACCOUNT} onApplied={() => undefined} />);
     await waitFor(() => {
-      expect(screen.getByText(/Accept \(0\)/)).toBeTruthy();
+      expect(screen.getByText(/پذیرش \(۰\)/)).toBeTruthy();
     });
-    const acceptBtn = screen.getByText(/Accept \(0\)/).closest('button');
+    const acceptBtn = screen.getByText(/پذیرش \(۰\)/).closest('button');
     expect(acceptBtn).toBeTruthy();
     expect(acceptBtn!.hasAttribute('disabled')).toBe(true);
   });
