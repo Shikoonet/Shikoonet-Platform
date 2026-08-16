@@ -79,16 +79,21 @@ ENV NODE_ENV=production
 # that could not anyway.
 USER node
 
-# `chmod` here rather than relying on the mode the file arrives with.
+# `--chmod`, rather than trusting the mode the file arrives with.
 #
 # It arrived with 100644 and the image built perfectly and then could not start
 # a single container: `exec: "/usr/local/bin/entrypoint.sh": permission denied`,
-# on the first real deploy, after everything else had already worked. `COPY`
-# carries the source file's mode, and that mode is a bit in the git index which
-# a Windows checkout, a zip export or an archive extraction will not reproduce —
-# so the image was depending on how it happened to be fetched.
+# on the first real deploy, after everything else had already worked. A plain
+# `COPY` carries the source file's mode, and that mode is a bit in the git index
+# which a Windows checkout, a zip export or an archive extraction will not
+# reproduce — so the image was depending on how it happened to be fetched.
 #
-# The committed mode is fixed too, but this line is the one that cannot regress.
-COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# The obvious repair is a `RUN chmod +x` on the next line, and it fails too:
+# `USER node` is already in force above, the file belongs to root, and an
+# unprivileged chmod on somebody else's file is «Operation not permitted». The
+# flag does it at copy time instead, as root, in the layer that was being
+# written anyway.
+#
+# The committed mode is fixed as well, but this is the half that cannot regress.
+COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
