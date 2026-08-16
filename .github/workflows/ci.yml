@@ -50,3 +50,27 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f migrations/verify_invariants.sql
 
       - run: pnpm test
+
+      # The only gate that measures the artifact rather than the source.
+      #
+      # On 2026-08-16 every check above was green, the image built and pushed,
+      # and not one container could start: `deploy/entrypoint.sh` was committed
+      # 100644 and `COPY` carries the source mode, so `runc` refused the
+      # entrypoint with «permission denied». Nothing that reads TypeScript can
+      # see that, and the first thing that did was a production deploy.
+      #
+      # The run is deliberately the cheapest possible: no database, no token, no
+      # network. What is asserted is only that the container reaches its
+      # entrypoint — and the proof is the entrypoint's own refusal to guess which
+      # of the three services it is, which is a message it can only print if it
+      # ran. A `Cannot find module` or a `permission denied` fails this.
+      #
+      # ponytail: builds the image on every run, which is the slow part of this
+      # workflow. Cache it with buildx if the wait ever matters more than the
+      # certainty.
+      - name: The image reaches its entrypoint
+        run: |
+          docker build -t shikoo-ci .
+          out=$(docker run --rm shikoo-ci 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q 'SERVICE is required'
