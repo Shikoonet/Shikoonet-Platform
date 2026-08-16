@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>پنل مدیریت شیکو</title>
+    <!--
+      The payment hub's theme bootstrap used to run here — an inline script that
+      read `localStorage` and stamped `data-theme` before first paint. It is gone
+      with the light theme: the panel is dark, the finance screens now take the
+      panel's palette, and there is nothing left for it to choose. Removing it
+      also takes the page's only inline script, which is one fewer thing a
+      Content-Security-Policy has to make an exception for.
+    -->
   </head>
   <body>
     <div id="root"></div>

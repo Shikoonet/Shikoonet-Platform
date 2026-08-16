@@ -6,10 +6,10 @@
   "main": "./src/index.ts",
   "scripts": {
     "start": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p e2e",
     "lint": "eslint src test e2e scripts --max-warnings 0",
     "test": "vitest run",
-    "e2e": "corepack pnpm --filter @shikoo/admin-web --filter @shikoo/dashboard-web build && playwright test",
+    "e2e": "corepack pnpm --filter @shikoo/admin-web build && playwright test",
     "operator": "tsx scripts/operator.ts"
   },
   "dependencies": {

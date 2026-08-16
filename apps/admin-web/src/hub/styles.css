@@ -1,0 +1,4549 @@
+/*
+ * The payment hub's stylesheet, scoped to `.hub`.
+ *
+ * Both sheets load into one document now. Before the merge this file owned the
+ * page: it set tokens on `:root`, painted `body`, and styled bare `button`,
+ * `table` and `input`. Loaded next to the panel's own sheet, those would repaint
+ * the panel — every panel button was gold for as long as it took to notice.
+ *
+ * So everything that could reach outside the hub's own markup is prefixed with
+ * `.hub`, and `test/hub/css-scope.test.ts` fails the build if a new rule is not.
+ * Hub-only class names are left bare: they appear in no panel markup, and
+ * prefixing 500 of them would be a 4,500-line diff for no guarantee.
+ *
+ * The ten tokens both sheets define (`--accent`, `--danger`, `--radius`, …) are
+ * declared here on `.hub` and there on `:root`, so each side wins inside itself.
+ */
+
+/*
+ * === Design tokens — the admin panel's, wearing the hub's names ===
+ *
+ * These were black-and-gold, a second design language for a second build. Sam's
+ * instruction on 2026-08-16, once the merged panel was on screen: make it match
+ * the panel. So every value here now comes from `theme.css`, and only the names
+ * stay — five hundred rules and thirty components read `var(--gold)` and
+ * `var(--panel)`, and renaming them would be a four-thousand-line diff that
+ * changes no pixel.
+ *
+ * `--gold` is blue. That reads wrong and it is deliberate: the alternative is a
+ * rename with real risk and no visible result. It comes out in the pass that
+ * translates these screens, which is rewriting their markup anyway.
+ *
+ * Where the two sheets use the same token name — ten of them — the value is
+ * written out rather than referenced, because `--accent: var(--accent)` inside
+ * this block would resolve to itself. The rest reference the panel's tokens by
+ * their own names, so a change over there arrives here.
+ *
+ * The light theme is gone with them. The panel is dark, one look, and a switch
+ * that half-worked was worse than none.
+ */
+.hub {
+  --background: var(--bg-body);
+  /* Panel `--surface-1` / `--surface-2` — same names, written out. */
+  --surface-1: rgba(20, 22, 30, 0.48);
+  --surface-2: rgba(28, 30, 40, 0.74);
+  --surface: var(--surface-1);
+  --surface-muted: var(--surface-2);
+  --surface-elevated: var(--surface-3);
+  --surface-hover: var(--glass-sheen);
+  --text-primary: var(--text-main);
+  --text-secondary: #8b94a6;
+  --text-muted: #8b94a6;
+  /* Panel `--accent` and its two tints. */
+  --gold: #3b82f6;
+  --gold-muted: rgba(59, 130, 246, 0.15);
+  --border-gold: rgba(59, 130, 246, 0.35);
+  --accent: #3b82f6;
+  --accent-strong: #2563eb;
+  --accent-muted: rgba(59, 130, 246, 0.15);
+  --accent-glow: rgba(59, 130, 246, 0.35);
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --border: var(--border-soft);
+  --border-subtle: var(--border-soft);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 8px 32px rgba(0, 0, 0, 0.55);
+  --shadow-glow: 0 0 0 1px var(--glass-border), 0 4px 20px rgba(59, 130, 246, 0.1);
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 0.75rem;
+  --space-lg: 1rem;
+  --space-xl: 1.5rem;
+  /* Panel `--radius-sm` / `--radius` / `--radius-lg`. */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --transition-theme: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+
+  /* Legacy aliases */
+  --bg: var(--background);
+  --panel: var(--surface);
+  --text: var(--text-primary);
+  --muted: var(--text-muted);
+  --warn: var(--warning);
+  --ok: var(--success);
+  --radius: 14px;
+  --code-bg: rgba(148, 163, 184, 0.12);
+  --hover: var(--glass-sheen);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(.hub) {
+    --transition-theme: none;
+  }
+}
+
+/*
+ * Inherit the panel rather than repaint over it.
+ *
+ * This was `html, body` — a full-page background, the system font stack and a
+ * 1.5 line-height, all correct when the hub owned the document. Inside the
+ * panel it drew a second, differently-coloured page on top of the first, in a
+ * different typeface. What is left is the box model; the ground, the Vazirmatn
+ * stack and the line-height come from `theme.css` through inheritance.
+ */
+:where(.hub) {
+  box-sizing: border-box;
+  -webkit-text-size-adjust: 100%;
+}
+
+:where(.hub) button,
+:where(.hub) input,
+:where(.hub) select,
+:where(.hub) textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:where(.hub) button {
+  background: var(--gold);
+  color: var(--bg);
+  border: 0;
+  padding: 0.55rem 0.95rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  min-height: 44px;
+  min-width: 44px;
+}
+
+:where(.hub) button:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+:where(.hub) button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+:where(.hub) button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+:where(.hub) button.danger {
+  background: var(--danger);
+}
+
+/* Text-like controls only. Radios and checkboxes are toggles: stretching one to
+   full width and a 44px tap target makes it swallow the row its label needs —
+   in the review drawer that squeezed account numbers until they split. */
+:where(.hub) input:not([type='radio'], [type='checkbox']),
+:where(.hub) select,
+:where(.hub) textarea {
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 0.55rem 0.75rem;
+  width: 100%;
+  min-height: 44px;
+}
+
+:where(.hub) input[type='radio'],
+:where(.hub) input[type='checkbox'] {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+:where(.hub) textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+:where(.hub) a {
+  color: var(--accent);
+}
+
+.app {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 1rem 1.25rem 4rem;
+}
+
+.app--ops {
+  max-width: none;
+  width: calc(100% - 48px);
+  margin: 0 auto;
+  padding: 24px 0 5rem;
+}
+
+/* === Shikoonet app header === */
+.shikoonet-header {
+  margin-bottom: 0;
+}
+
+.shikoonet-header--ops .shikoonet-header__bar {
+  border-bottom: 0;
+  padding-bottom: var(--space-md);
+}
+
+/* Two columns, not three. The first used to hold the SHIKOONET brand, with the
+   centre track between two equal 1fr rails so the tabs sat in the middle of the
+   page. The brand moved to the panel's own header, and the leftover empty third
+   column pushed the tab strip into a 1fr rail narrow enough to scroll — the
+   first tab was cut off at the edge and the version badge landed on top of the
+   last one. */
+.shikoonet-header__bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* The brand block's rules were here — logo, wordmark, link. The markup went
+   when the panel's own header took over the identity; leaving the CSS behind is
+   how a stylesheet ends up 4,500 lines long. */
+
+.shikoonet-header__center {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.shikoonet-header__right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.shikoonet-header__date {
+  margin-inline-end: var(--space-xs);
+}
+
+/* Build identity. Production is deliberately understated; any non-production
+   environment is loud, because dev and prod are otherwise indistinguishable. */
+.env-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  opacity: 0.55;
+}
+
+.env-badge--nonprod {
+  color: #f5a524;
+  background: rgba(59, 130, 246, 0.12);
+  opacity: 1;
+}
+
+.shikoonet-header__icon-btn {
+  min-height: 40px;
+  min-width: 40px;
+  padding: 0.35rem;
+  border-radius: var(--radius-sm);
+}
+
+.shikoonet-header__secondary {
+  padding-top: var(--space-sm);
+}
+
+.app-tabs {
+  margin: 0;
+  border-bottom: 0;
+  gap: 0.15rem;
+}
+
+.app-tabs .tab {
+  padding: 0.45rem 0.85rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border-bottom: 0;
+  color: var(--text-muted);
+}
+
+.app-tabs .tab.active {
+  color: var(--gold);
+  background: var(--gold-muted);
+  box-shadow: inset 0 0 0 1px var(--border-gold);
+}
+
+@media (max-width: 1023px) {
+  .shikoonet-header__bar {
+    grid-template-columns: 1fr auto;
+  }
+
+  .shikoonet-header__center {
+    display: none;
+  }
+}
+
+/* === Theme switcher === */
+.theme-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.15rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.theme-switcher__btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 0;
+  padding: 0.3rem 0.45rem;
+  min-height: 0;
+  min-width: 0;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  line-height: 1;
+  transition: var(--transition-theme);
+}
+
+.theme-switcher__btn--active {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.theme-switcher--menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.25rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.theme-switcher__menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  padding: 0.45rem 0.65rem;
+  min-height: 0;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  font-size: 0.8125rem;
+  text-align: start;
+  cursor: pointer;
+}
+
+.theme-switcher__menu-item--active {
+  background: var(--gold-muted);
+  color: var(--gold);
+}
+
+/* === Operator menu === */
+.operator-menu {
+  position: relative;
+}
+
+.operator-menu__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-gold);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem 0.2rem 0.2rem;
+  min-height: 40px;
+  min-width: 0;
+}
+
+.operator-menu__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: var(--gold-muted);
+  color: var(--gold);
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.operator-menu__chevron {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.operator-menu__panel {
+  position: absolute;
+  inset-inline-end: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 40;
+  min-width: 12rem;
+  padding: 0.35rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.operator-menu__item {
+  display: block;
+  width: 100%;
+  background: transparent;
+  color: var(--text-primary);
+  border: 0;
+  padding: 0.5rem 0.65rem;
+  min-height: 0;
+  text-align: start;
+  font-size: 0.8125rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.operator-menu__item:hover {
+  background: var(--surface-hover);
+}
+
+.operator-menu__divider {
+  height: 1px;
+  margin: 0.25rem 0;
+  background: var(--border-subtle);
+}
+
+/* === Unified date control === */
+.unified-date-control {
+  position: relative;
+}
+
+.unified-date-control__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  list-style: none;
+  cursor: pointer;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-gold);
+  border-radius: 999px;
+  padding: 0.4rem 0.85rem;
+  min-height: 40px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.unified-date-control__trigger::-webkit-details-marker {
+  display: none;
+}
+
+.unified-date-control__sep {
+  color: var(--text-muted);
+}
+
+.unified-date-control__relative {
+  color: var(--gold);
+  font-weight: 600;
+}
+
+.unified-date-control__icon {
+  opacity: 0.85;
+}
+
+.unified-date-control__panel {
+  position: absolute;
+  inset-inline-end: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 16rem;
+  padding: 0.65rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.unified-date-control__day {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.unified-date-control__nav,
+.unified-date-control__today {
+  min-height: 0;
+  min-width: 0;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.8125rem;
+}
+
+.unified-date-control__picker input[type='date'] {
+  max-width: 9rem;
+  min-height: 0;
+}
+
+/* === Page header === */
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md) var(--space-lg);
+  margin-bottom: var(--space-lg);
+}
+
+.page-header__title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.page-header__subtitle {
+  margin: 0.15rem 0 0;
+  font-size: 0.875rem;
+}
+
+.page-header__actions {
+  flex-shrink: 0;
+}
+
+.page-header--compact {
+  margin-bottom: var(--space-md);
+}
+
+.page-header--compact .page-header__title {
+  font-size: 1.1rem;
+}
+
+.section-heading {
+  margin: 0 0 var(--space-md);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.panel-subtle {
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.empty-state {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  padding: var(--space-md) 0;
+  margin: 0;
+}
+
+/* === Payments premium shell === */
+.payments-shell__header-slot {
+  margin-bottom: var(--space-sm);
+}
+
+.payments-shell__header-slot .ops-nav__strip--primary {
+  width: 100%;
+}
+
+.payments-shell__date-slot {
+  margin-bottom: var(--space-sm);
+}
+
+.payments-shell {
+  position: relative;
+  margin: 0;
+}
+
+.payments-shell__surface {
+  position: relative;
+  z-index: 1;
+  background: var(--surface-1);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-glow);
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.payments-shell__decor {
+  pointer-events: none;
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  height: 42vh;
+  z-index: 0;
+  opacity: 0.14;
+  background:
+    url('/shikoonet-logo.png') center calc(100% - 2rem) / min(420px, 55vw) no-repeat,
+    linear-gradient(180deg, transparent 0%, rgba(59, 130, 246, 0.06) 55%, rgba(59, 130, 246, 0.12) 100%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 35%);
+}
+
+.payments-shell__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.payments-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.payments-header__brand {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.payments-header__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-md);
+  background: var(--accent-muted);
+  color: var(--accent);
+  flex-shrink: 0;
+  box-shadow: var(--shadow-glow);
+}
+
+.payments-header__title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.payments-header__desc {
+  margin: 0.15rem 0 0;
+  font-size: 0.8125rem;
+}
+
+.payments-header__actions {
+  flex-shrink: 0;
+}
+
+.compact-empty,
+.payments-empty {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: var(--space-sm) 0;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.payments-empty--inline {
+  margin: var(--space-sm) 0 0;
+}
+
+.compact-empty__mark,
+.payments-empty__mark {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.status-chip--review {
+  color: var(--gold);
+  background: var(--gold-muted);
+  border-color: var(--border-gold);
+}
+
+.status-chip--waiting {
+  color: var(--warning);
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.25);
+}
+
+.status-chip--suspected {
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.25);
+}
+
+.status-chip--verified,
+.status-badge--verified {
+  color: var(--success);
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.25);
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.status-badge--bot {
+  color: #1a1510;
+  background: linear-gradient(135deg, var(--accent), #8a6f16);
+  border-color: rgba(59, 130, 246, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.625rem;
+}
+
+.status-badge--match {
+  color: var(--gold);
+  background: var(--gold-muted);
+  border-color: var(--border-gold);
+  font-size: 0.6875rem;
+}
+
+.status-chip--neutral,
+.status-badge--neutral {
+  color: var(--text-secondary);
+  background: var(--surface-muted);
+  border-color: var(--border-subtle);
+}
+
+.payment-reason__text {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.payment-table-header {
+  padding: 0.35rem 0.65rem;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-subtle);
+  border-bottom: 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+
+.payment-table-header--split {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.payment-table-header--end {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.payment-table-header .bulk-toolbar {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.payment-tab-read-all {
+  flex-shrink: 0;
+  margin-inline-start: auto;
+}
+
+.payment-table-header__action {
+  font-size: 0.8125rem;
+}
+
+@media (max-width: 639px) {
+  .payments-shell__surface {
+    padding: var(--space-md);
+    border-radius: var(--radius-md);
+  }
+
+  .payments-header__actions {
+    width: 100%;
+  }
+}
+
+/* === Ops navigation (Shikoonet segmented) === */
+.ops-nav,
+.hub-nav {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.ops-nav--subnav {
+  margin: 0;
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ops-nav__strip--review {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  gap: 0.35rem;
+}
+
+.ops-nav__strip--review .ops-nav__subtab {
+  min-height: 46px;
+  padding: 0.45rem 0.95rem;
+  font-size: 0.875rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+}
+
+.ops-nav__strip--review .ops-nav__subtab--active {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25), 0 0 18px rgba(59, 130, 246, 0.12);
+}
+
+.ops-nav__level1,
+.ops-nav__level2,
+.hub-nav__level1,
+.hub-nav__level2 {
+  margin: 0;
+}
+
+/* A strip is `min-width: max-content` below, so its labels never wrap — which
+   also means that on a phone it is wider than the screen. With nothing around
+   it that scrolls, that width propagated all the way out: 872px of tabs inside
+   a 326px column stretched the document to 997px, and every screen on the
+   dashboard scrolled sideways. The strip keeps its intrinsic width; the rail
+   around it is what scrolls. */
+.ops-nav,
+.hub-nav {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  /* A sideways flick on the tabs must not drag the page behind it. */
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  /* Room for the active tab's outline, which a scroll container would clip. */
+  padding-block: 2px;
+}
+
+.ops-nav__strip,
+.hub-nav__strip {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0.2rem;
+  min-width: max-content;
+  padding: 0.2rem;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.ops-nav__strip--primary,
+.hub-nav__strip--primary {
+  width: 100%;
+  max-width: 100%;
+}
+
+.shikoonet-header__center .ops-nav__strip--primary {
+  width: auto;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  gap: 0.35rem;
+}
+
+.shikoonet-header__center .ops-nav__tab {
+  min-height: 44px;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.9375rem;
+  border-radius: var(--radius-sm);
+}
+
+.shikoonet-header__center .ops-nav__tab--active {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25), 0 0 20px rgba(59, 130, 246, 0.14);
+}
+
+.ops-nav__strip--secondary,
+.hub-nav__strip--secondary {
+  width: auto;
+}
+
+.ops-nav__tab,
+.ops-nav__subtab,
+.hub-nav__tab,
+.hub-nav__subtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-md) - 2px);
+  padding: 0.5rem 0.85rem;
+  min-height: 40px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease,
+    border-color 140ms ease;
+}
+
+.ops-nav__subtab,
+.hub-nav__subtab {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.ops-nav__tab-icon,
+.ops-nav__subtab-icon,
+.hub-nav__tab-icon,
+.hub-nav__subtab-icon {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.ops-nav__tab--active,
+.ops-nav__subtab--active,
+.hub-nav__tab--active,
+.hub-nav__subtab--active {
+  color: var(--gold);
+  background: var(--gold-muted);
+  border-color: var(--border-gold);
+  box-shadow: var(--shadow-glow);
+}
+
+.ops-nav__tab--active .ops-nav__tab-icon,
+.ops-nav__subtab--active .ops-nav__subtab-icon,
+.hub-nav__tab--active .hub-nav__tab-icon,
+.hub-nav__subtab--active .hub-nav__subtab-icon {
+  color: var(--gold);
+  opacity: 1;
+}
+
+.ops-nav__badge,
+.hub-nav__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  padding: 0 0.35rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  line-height: 1.35rem;
+}
+
+.ops-nav__badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  margin-inline-start: 0.35rem;
+}
+
+.ops-nav__badge--new,
+.hub-nav__badge--new {
+  color: var(--background);
+  background: var(--gold);
+}
+
+.hub-nav__count {
+  margin-inline-start: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* === Bot verified metrics + table === */
+.bot-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.metric-card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.metric-card::before {
+  content: '';
+  position: absolute;
+  inset-inline-end: -20%;
+  top: -30%;
+  width: 55%;
+  height: 120%;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.12), transparent 70%);
+  pointer-events: none;
+}
+
+.metric-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: var(--gold-muted);
+  color: var(--gold);
+  border: 1px solid var(--border-gold);
+  flex-shrink: 0;
+}
+
+.metric-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.metric-card--accent {
+  background: linear-gradient(135deg, var(--gold-muted), transparent);
+  border-color: var(--border-gold);
+  box-shadow: var(--shadow-glow);
+}
+
+.metric-card__label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.metric-card__value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.metric-card__meta {
+  font-size: 0.75rem;
+}
+
+.bot-verified-layout--wide {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 290px;
+  gap: var(--space-lg);
+  align-items: start;
+}
+
+.bot-verified-layout__main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.bot-verified-layout__rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  position: sticky;
+  top: 5rem;
+}
+
+.txn-table-wrap {
+  overflow-x: auto;
+  /* `overflow-x` alone was not enough, and that is the whole trap here. These
+     tables are ~1000px of nowrap columns; the wrapper scrolled them correctly,
+     yet the table's max-content width still propagated up through the
+     ancestors' intrinsic sizing and stretched the document to 997px on a 375px
+     phone. Layout leaks through size calculation, not through painting, so no
+     amount of `overflow: hidden/clip` stops it — `contain: layout` does.
+     Deliberately not `contain: paint`, which would additionally clip any menu
+     a row opens. Measured at 375px, 2026-08-12. */
+  contain: layout;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.txn-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.txn-table thead th {
+  text-align: start;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.txn-table tbody td {
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
+  height: 58px;
+}
+
+.txn-row:hover td {
+  background: var(--surface-hover);
+}
+
+.txn-row--new td:first-child {
+  box-shadow: inset 3px 0 0 0 var(--gold);
+}
+
+.txn-row__amount {
+  font-weight: 600;
+}
+
+.txn-row__verified-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: var(--gold-muted);
+  color: var(--gold);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.txn-row__customer strong {
+  display: block;
+  font-weight: 600;
+}
+
+.txn-row__account-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.txn-row__card-hint {
+  font-size: 0.75rem;
+}
+
+.txn-row__menu {
+  min-height: 0;
+  min-width: 0;
+  padding: 0.2rem 0.45rem;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.txn-row__action {
+  min-height: 0;
+  min-width: 0;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.75rem;
+}
+
+.stats-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.stats-rail__block--live {
+  padding: var(--space-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--radius-md);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.stats-rail__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.stats-rail__live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--success);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stats-rail__live-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--success);
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.55);
+}
+
+.stats-rail__grid {
+  /* The global `dl` rule makes every definition list a two-column grid. This
+     one holds `.stats-rail__grid-row` wrappers that already lay themselves out
+     with flex, so inheriting that grid dropped the rows into two columns and
+     squeezed the right one to 64px — narrow enough that `word-break` split
+     "2,813,647 Toman" down the column, one fragment per line. Seen on the
+     payments screen at both 1440px and 1920px, 2026-08-12. */
+  display: block;
+  margin: 0;
+}
+
+.stats-rail__grid-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-md);
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 0.8125rem;
+  min-width: 0;
+}
+
+.stats-rail__grid-row:last-child {
+  border-bottom: 0;
+}
+
+.stats-rail__grid-row dt {
+  color: var(--text-muted);
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.stats-rail__grid-row dd {
+  margin: 0;
+  text-align: end;
+  font-weight: 600;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+.stats-rail__title,
+.recent-activity__title {
+  margin: 0 0 var(--space-sm);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--gold);
+}
+
+.stats-rail__list {
+  margin: 0;
+}
+
+.stats-rail__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 0.8125rem;
+}
+
+.stats-rail__row:last-child {
+  border-bottom: 0;
+}
+
+.stats-rail__row dt {
+  color: var(--text-muted);
+}
+
+.stats-rail__row dd {
+  margin: 0;
+  text-align: end;
+  font-weight: 600;
+}
+
+.stats-rail__sub {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.recent-activity {
+  padding: var(--space-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--radius-md);
+}
+
+.recent-activity__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.recent-activity__item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 0.1rem 0.5rem;
+  width: 100%;
+  text-align: start;
+  padding: 0.55rem 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  border-bottom: 1px solid var(--border-subtle);
+  min-height: 0;
+  cursor: pointer;
+}
+
+.recent-activity__item:last-child {
+  border-bottom: 0;
+}
+
+.recent-activity__check {
+  grid-row: 1 / span 2;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: var(--gold-muted);
+  color: var(--gold);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.recent-activity__customer {
+  grid-column: 2 / -1;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.recent-activity__amount {
+  grid-column: 2;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.recent-activity__time {
+  grid-column: 3;
+  font-size: 0.75rem;
+  text-align: end;
+}
+
+.recent-activity__more {
+  width: 100%;
+  margin-top: 0.35rem;
+  min-height: 0;
+  font-size: 0.8125rem;
+  color: var(--gold);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 1199px) {
+  .bot-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bot-verified-layout--wide {
+    grid-template-columns: 1fr;
+  }
+
+  .bot-verified-layout__rail {
+    position: static;
+  }
+}
+
+@media (max-width: 639px) {
+  .app--ops {
+    width: calc(100% - 24px);
+    padding: 12px 0 4rem;
+  }
+
+  .bot-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  /* The header asked for 578px inside 366: hamburger 44 + wordmark block 217 +
+     controls 317. The brand collapsed to zero width but kept painting its full
+     217px, so "SHIKOONET" sat on top of the environment badge and the date
+     picker. Measured at 390px, 2026-08-12.
+
+     The wordmark is what goes: the logo is still the link home, and the badge,
+     date range, notifications and operator menu are all things an operator acts
+     on. Sizing the brand column to its content and letting the controls wrap
+     keeps every one of them reachable instead of stacking them on each other. */
+  .shikoonet-header__bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .shikoonet-header__right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+}
+
+/* === Context metrics (compact inline totals per filter) === */
+.hub-context-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  margin: 0 0 var(--space-md);
+  padding: 0.45rem 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.hub-context-metrics__sep {
+  color: var(--text-muted);
+  opacity: 0.65;
+}
+
+.hub-context-metrics__breakdown {
+  flex-basis: 100%;
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0;
+}
+
+.hub-context-metrics__breakdown-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: 0.2rem 0;
+  font-size: 0.8125rem;
+}
+
+/* === Metrics strip === */
+.metrics-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-sm);
+  margin: 0;
+}
+
+.metrics-strip__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: var(--surface-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.metrics-strip__item--accent {
+  background: linear-gradient(135deg, var(--gold-muted), transparent);
+  border-color: var(--border-gold);
+  box-shadow: var(--shadow-glow);
+}
+
+.metrics-strip__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.metrics-strip__icon--accent {
+  color: var(--gold);
+  background: var(--gold-muted);
+  border-color: var(--border-gold);
+}
+
+.metrics-strip__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.metrics-strip__label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.metrics-strip__value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.metrics-strip__meta {
+  font-size: 0.75rem;
+}
+
+@media (max-width: 639px) {
+  .metrics-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* === Account usage ranking === */
+.account-usage-ranking {
+  padding: var(--space-md);
+  background: var(--surface-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.account-usage-ranking__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.account-usage-ranking__title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.account-usage-ranking__cols {
+  display: none;
+  gap: 1rem;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+@media (min-width: 720px) {
+  .account-usage-ranking__cols {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 2rem;
+    min-width: 12rem;
+  }
+}
+
+/* === Hub list rows === */
+.hub-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-muted);
+}
+
+.hub-list--table {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.hub-list-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface);
+  transition: background-color 120ms ease;
+}
+
+.hub-list-row:last-child {
+  border-bottom: 0;
+}
+
+.hub-list-row:hover {
+  background: var(--surface-elevated);
+}
+
+.hub-list-row--new {
+  box-shadow: inset 3px 0 0 0 var(--gold);
+}
+
+.hub-list-row--selected {
+  background: var(--accent-muted);
+}
+
+.hub-list-row__button {
+  flex: 1;
+  display: block;
+  width: 100%;
+  text-align: start;
+  padding: 0.55rem 0.75rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  min-height: 0;
+  min-width: 0;
+}
+
+.hub-list-row__button--static {
+  cursor: default;
+}
+
+.hub-list-row__checkbox {
+  display: flex;
+  align-items: center;
+  padding: 0.55rem 0 0.55rem 0.75rem;
+}
+
+.hub-list-row__line1,
+.hub-list-row__line2,
+.hub-list-row__line3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.75rem;
+}
+
+.hub-list-row__line2,
+.hub-list-row__line3 {
+  font-size: 0.85rem;
+  margin-top: 0.15rem;
+}
+
+.hub-list-row__identity {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.hub-list-row__amount {
+  margin-inline-start: auto;
+  font-weight: 600;
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+
+.hub-list-row__spacer {
+  flex: 1;
+}
+
+.hub-list-row__actions,
+.hub-list-row__inline-actions {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.35rem 0.5rem;
+  border-inline-start: 1px solid var(--border);
+}
+
+.hub-list-row__inline-actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.hub-list-row__action {
+  min-height: 0;
+  min-width: 0;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.8rem;
+}
+
+.hub-list-row--manual {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: stretch;
+}
+
+.hub-list-row__menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding-right: var(--space-sm);
+}
+
+.hub-list-row__menu-trigger {
+  min-width: 2rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.hub-list-row__menu-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  min-width: 10rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+}
+
+.hub-list-row__menu-panel button {
+  text-align: left;
+  padding: 0.55rem 0.75rem;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.hub-list-row__menu-panel button:hover {
+  background: var(--surface-hover);
+}
+
+.hub-list-row__menu-panel button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.hub-list-row__menu-panel button:disabled:hover {
+  background: transparent;
+}
+
+.toast {
+  margin: 0 0 var(--space-sm);
+  padding: 0.55rem 0.85rem;
+  border-radius: var(--radius-sm);
+}
+
+.toast--success {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text);
+}
+
+.payment-warning {
+  color: var(--warning, #c9a227);
+  font-weight: 500;
+}
+
+/* === Bulk toolbar === */
+.bulk-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) 0;
+  margin-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border);
+}
+
+.bulk-toolbar__select-all {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* === Drawer sections === */
+.drawer-title {
+  margin: 0 0 var(--space-lg);
+  font-size: 1.1rem;
+}
+
+.drawer-section {
+  margin-bottom: var(--space-xl);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-section:last-child {
+  border-bottom: 0;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.drawer-section__heading {
+  margin: 0 0 var(--space-sm);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+/* === Account usage ranked list === */
+.account-analytics--compact .account-usage-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.account-usage-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+  transition: background-color 120ms ease;
+}
+
+.account-usage-row:last-child {
+  border-bottom: 0;
+}
+
+.account-usage-row:hover {
+  background: var(--surface-muted);
+  margin: 0 calc(-1 * var(--space-md));
+  padding-inline: var(--space-md);
+  border-radius: var(--radius-sm);
+}
+
+.account-usage-row__rank {
+  flex-shrink: 0;
+  width: 1.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  padding-top: 0.1rem;
+}
+
+.account-usage-row__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.account-usage-row__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem 1rem;
+  width: 100%;
+}
+
+.account-usage-row__label {
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.account-usage-row__purchases {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.account-usage-row__balance {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-inline-start: auto;
+}
+
+.account-usage-row__bar-track {
+  width: 100%;
+  height: 0.3rem;
+  margin-top: 0.4rem;
+  background: var(--surface-muted);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.account-usage-row__bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+/* === Sales trend (minimal) === */
+.sales-trend {
+  margin: var(--space-lg) 0;
+}
+
+.sales-trend__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.sales-trend__chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.35rem;
+  height: 100px;
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.sales-trend__bar {
+  background: var(--accent);
+  opacity: 0.85;
+}
+
+.sales-trend__bar-wrap {
+  min-width: 2rem;
+}
+
+.sales-trend__label {
+  font-size: 0.65rem;
+}
+
+/* === Notification bell (restyled) === */
+.notification-bell__button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.notification-bell__dropdown {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-md);
+  border-radius: var(--radius-md);
+}
+
+.notification-bell__counts .count {
+  background: var(--surface-muted);
+  transition: border-color 120ms ease;
+}
+
+.notification-bell__item:hover {
+  background: var(--surface-muted);
+}
+
+.notification-bell__badge {
+  background: var(--accent);
+  color: var(--background);
+}
+
+.refresh-button {
+  background: none;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  color: inherit;
+}
+
+.refresh-button:hover {
+  background: var(--hover, rgba(0, 0, 0, 0.04));
+}
+
+:where(.hub) .muted {
+  color: var(--muted);
+}
+
+.error,
+.error-inline {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin: 0 0 1rem;
+}
+
+.info {
+  background: var(--gold-muted);
+  color: var(--accent);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin: 0 0 1rem;
+}
+
+:where(.hub) .empty {
+  color: var(--muted);
+  padding: 1rem;
+  text-align: center;
+}
+
+.dim {
+  opacity: 0.55;
+}
+
+.parser-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background: rgba(148, 163, 184, 0.15);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
+
+:where(.hub) code.masked {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: rgba(148, 163, 184, 0.18);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+:where(.hub) code.hint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: rgba(245, 158, 11, 0.18);
+  color: var(--warn);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+.list-plain {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.row.toolbar {
+  flex-wrap: wrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.form label > span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.checkbox-row {
+  flex-direction: row;
+  align-items: center;
+}
+
+.checkbox-row > span {
+  margin-inline-start: 0.5rem;
+}
+
+.checkbox-row {
+  min-height: 44px;
+}
+
+.checkbox-row input {
+  width: auto;
+  min-height: 0;
+}
+
+.block {
+  width: 100%;
+}
+
+/* === Header hamburger + drawer === */
+.hamburger {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.7rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  z-index: 50;
+}
+
+.drawer {
+  width: min(320px, 80vw);
+  background: var(--panel);
+  border-inline-end: 1px solid var(--border);
+  padding: 1rem;
+  outline: none;
+}
+
+/* Right-side variant — used for the Comments panel at compact-desktop
+   and tablet widths so the transaction table gets the full content width. */
+.drawer--right {
+  margin-inline-start: auto;
+  width: min(360px, 90vw);
+  border-inline-end: 0;
+  border-inline-start: 1px solid var(--border);
+  max-height: 100vh;
+  overflow-y: auto;
+}
+
+.drawer-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.drawer-link {
+  background: transparent;
+  color: var(--text);
+  border: 0;
+  text-align: start;
+  padding: 0.85rem 1rem;
+  border-radius: 6px;
+  font-size: 1rem;
+  min-height: 44px;
+  border-bottom: 2px solid transparent;
+}
+
+.drawer-link.active {
+  background: var(--gold-muted);
+  border-bottom-color: var(--gold);
+}
+
+/* === Tabs === */
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin: 1rem 0;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.tab {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  min-height: 44px;
+  border-radius: 0;
+}
+
+.tab.active {
+  color: var(--gold);
+  border-bottom-color: var(--gold);
+}
+
+.tabs-scroll {
+  overflow-x: auto;
+  /* Critical: shrink-to-fit inside flex parents so the inner
+     `min-width: max-content` row does not push the page wider
+     than the viewport. */
+  min-width: 0;
+}
+
+.tabs--scroll {
+  flex-wrap: nowrap;
+  min-width: max-content;
+}
+
+/* === Live status === */
+.live-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.live-status .dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--ok);
+  display: inline-block;
+}
+
+.live-status .refresh-now {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  min-height: 0;
+  min-width: 0;
+  font-size: 0.8rem;
+  border-radius: 999px;
+}
+
+.live-status--refreshing .dot {
+  background: var(--accent);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.live-status--error .dot {
+  background: var(--warn);
+}
+
+.live-status--offline .dot,
+.live-status--paused .dot {
+  background: var(--muted);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* === Notification bell === */
+.notification-bell {
+  position: relative;
+  display: inline-block;
+}
+
+.notification-bell__button {
+  background: var(--surface-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 0.45rem 0.65rem;
+  font-size: 1rem;
+  cursor: pointer;
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  box-shadow: var(--shadow-sm);
+  color: var(--text-secondary);
+}
+
+.notification-bell__button:hover {
+  background: var(--surface-elevated);
+  border-color: var(--border-gold);
+  color: var(--accent);
+}
+
+.notification-bell__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.notification-bell__badge {
+  display: inline-block;
+  min-width: 1.15rem;
+  padding: 0 0.35rem;
+  margin-inline-start: 0.15rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--background);
+  background: var(--accent-strong);
+  border-radius: 999px;
+  line-height: 1.25rem;
+  text-align: center;
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.notification-bell__badge--error {
+  background: var(--danger, #c0392b);
+}
+
+@keyframes bell-shake {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  20% {
+    transform: rotate(-8deg);
+  }
+  40% {
+    transform: rotate(8deg);
+  }
+  60% {
+    transform: rotate(-5deg);
+  }
+  80% {
+    transform: rotate(5deg);
+  }
+}
+
+.notification-bell__button--shake .notification-bell__icon {
+  animation: bell-shake 0.4s ease-in-out 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification-bell__button--shake .notification-bell__icon {
+    animation: none;
+  }
+}
+
+.notification-bell__sound {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.notification-bell__mute {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.payments-tab-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0.5rem 0;
+}
+
+.income-bulk-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+  padding: 0.5rem 0;
+}
+
+.income-bulk-toolbar__count {
+  font-weight: 600;
+}
+
+.income-bulk-toolbar--with-header {
+  border-bottom: 1px solid var(--border, #ddd);
+}
+
+.income-bulk-toolbar__select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.history-date-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.history-day-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.history-day-nav__label {
+  font-weight: 600;
+  min-width: 9rem;
+  text-align: center;
+}
+
+.history-day-nav__picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.history-day-nav__picker input[type='date'] {
+  max-width: 9rem;
+}
+
+.statistics-overview--three {
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+}
+
+.account-analytics--compact .account-usage-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+}
+
+.account-usage-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--border, #eee);
+}
+
+.account-usage-row__metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.payment-row__select {
+  align-self: flex-start;
+  margin-inline-end: 0.5rem;
+}
+
+.payment-row--declined-income {
+  border-inline-start: 3px solid var(--muted, #888);
+}
+
+.notification-bell__dropdown {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  inset-inline-end: 0;
+  min-width: 320px;
+  max-width: 380px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  padding: 0.75rem;
+}
+
+.notification-bell__counts {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.notification-bell__counts .count {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  text-align: start;
+  font-family: inherit;
+  font-size: 0.85rem;
+  min-height: 0;
+  min-width: 0;
+}
+
+.notification-bell__counts .count:hover {
+  border-color: var(--accent);
+}
+
+.notification-bell__counts .count-label {
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.notification-bell__counts .count-value {
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.notification-bell__recent {
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+.notification-bell__heading {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
+.notification-bell__recent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.notification-bell__recent-header .notification-bell__heading {
+  margin: 0;
+}
+
+.notification-bell__mark-all {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  min-height: 0;
+  min-width: 0;
+}
+
+.notification-bell__mark-all:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.notification-bell__empty {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0;
+}
+
+.notification-bell__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.notification-bell__item {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr 1.5fr auto;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: start;
+  font-family: inherit;
+  font-size: 0.85rem;
+  min-height: 0;
+  min-width: 0;
+}
+
+.notification-bell__item:hover {
+  background: var(--panel);
+}
+
+.notification-bell__item .dir {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.notification-bell__item .account {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-bell__item .status {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+/* === New banner === */
+.new-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-inline-start: 0.75rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  background: var(--gold-muted);
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 500;
+  flex-wrap: wrap;
+  /* Stay within the column even with long bodies. */
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.new-banner button {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 0.2rem 0.5rem;
+  min-height: 0;
+  min-width: 0;
+  font-size: 0.8rem;
+  border-radius: 999px;
+}
+
+/* === Per-row NEW indicator === */
+.transaction-row--new {
+  position: relative;
+  background: var(--gold-muted);
+  box-shadow: inset 3px 0 0 0 var(--accent);
+}
+.transaction-row--new:hover {
+  background: var(--gold-muted);
+}
+.transaction-row--new .new-badge {
+  margin-inline-start: 0.5rem;
+}
+.new-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.35rem;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--background);
+  background: var(--accent-strong);
+  border-radius: 4px;
+  line-height: 1.2;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.card-row--top-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .transaction-row--new,
+  .new-badge {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* === Tables === */
+:where(.hub) table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+:where(.hub) th,
+:where(.hub) td {
+  padding: 0.75rem 1rem;
+  text-align: start;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+:where(.hub) th {
+  background: var(--surface-2);
+  font-weight: 500;
+  color: var(--muted);
+  /* Headers must never break letter-by-letter. */
+  white-space: nowrap;
+}
+
+/* Wrap the desktop table so any future ultra-wide row scrolls inside the
+   table pane rather than the whole page. */
+.data-table-wrapper {
+  overflow-x: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Truncate long identifiers (parser ID, full masked value, UUID) inside
+   a fixed cell width with ellipsis. The full value is exposed in the
+   View-details modal or via the `title` attribute. */
+.table-ellipsis {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.actions-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.actions-cell button {
+  margin: 0;
+}
+
+/* "More" dropdown menu shown inside .actions-cell. Native <details> +
+   <summary> so no extra state — opens on click, closes when the user
+   clicks outside or selects an item. */
+.actions-more {
+  position: relative;
+}
+
+.actions-more summary {
+  list-style: none;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.55rem 0.95rem;
+  border-radius: 6px;
+  font-weight: 500;
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.actions-more summary::-webkit-details-marker {
+  display: none;
+}
+
+.actions-more summary::after {
+  content: '▾';
+  font-size: 0.8em;
+  opacity: 0.8;
+}
+
+.actions-more[open] summary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+
+.actions-more[open] summary::after {
+  content: '▴';
+}
+
+.actions-more-menu {
+  position: absolute;
+  inset-inline-end: 0;
+  top: calc(100% + 0.25rem);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem;
+  min-width: 200px;
+  z-index: 5;
+  display: grid;
+  gap: 0.4rem;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.actions-more-menu button {
+  width: 100%;
+  text-align: start;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid transparent;
+  padding: 0.55rem 0.75rem;
+  border-radius: 4px;
+  min-height: 44px;
+}
+
+.actions-more-menu button:hover {
+  border-color: var(--border);
+  background: var(--gold-muted);
+}
+
+.actions-more-menu button.danger {
+  background: transparent;
+  color: var(--danger);
+}
+
+/* === Portal-based "More" menu (replaces native <details>) ===
+   .data-table-wrapper's `overflow-x: auto` clips position:absolute
+   descendants — so the More menu must escape the wrapper via a React
+   portal into document.body. The trigger stays in-flow; the menu is
+   position:fixed with coordinates recomputed from the trigger's
+   getBoundingClientRect().
+
+   Structure is two divs:
+     .more-menu-portal  — outer wrapper, position:fixed, z-index:1200
+     .more-menu-panel   — inner panel with the opaque background
+
+   The panel MUST be opaque (no rgba, no alpha) — it sits above table
+   rows and any transparency would leak the underlying text through. */
+.actions-more-trigger {
+  list-style: none;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.55rem 0.95rem;
+  border-radius: 6px;
+  font-weight: 500;
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: inherit;
+  font-size: 1rem;
+}
+.actions-more-trigger[aria-expanded='true'] {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.actions-more-trigger__caret {
+  font-size: 0.8em;
+  opacity: 0.8;
+}
+.more-menu-portal {
+  /* Wrapper — no background, just the positioning shell. */
+  background: transparent;
+  opacity: 1;
+  isolation: isolate;
+  position: fixed;
+  z-index: 1200;
+}
+.more-menu-panel {
+  /* The opaque panel. background-color uses var(--surface-elevated) with
+     a hard opaque fallback so computed-style alpha is always 1. */
+  background-color: #1e293b;
+  background-color: var(--surface-elevated, #1e293b);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem;
+  min-width: 180px;
+  max-height: 360px;
+  overflow: hidden;
+  display: grid;
+  gap: 0.4rem;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  opacity: 1;
+  isolation: isolate;
+}
+.more-menu-portal__item {
+  width: 100%;
+  text-align: start;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid transparent;
+  padding: 0.55rem 0.75rem;
+  border-radius: 4px;
+  min-height: 44px;
+  font-family: inherit;
+  font-size: 1rem;
+}
+.more-menu-portal__item:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--gold-muted);
+}
+.more-menu-portal__item--danger {
+  background: transparent;
+  color: var(--danger);
+}
+.more-menu-portal__item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* === Compact-desktop table (1200–1439px) ===
+   Only used by the Unmatched compact 6-column table. The fixed layout
+   here lets us guarantee the 6 columns split the available width with
+   no per-cell wrapping of short fields. */
+.unmatched-table--compact {
+  table-layout: fixed;
+  min-width: 720px;
+}
+
+.unmatched-table--compact th,
+.unmatched-table--compact td {
+  overflow-wrap: normal;
+}
+
+/* === Compact tables for Today / Suggested / Reviewed (1200–1439px) ===
+   The compact variant drops the standalone Device column and folds
+   display_name + device_code into the Account cell. Same shared rules as
+   the Unmatched compact table: fixed layout, no per-letter wrapping, no
+   document overflow. */
+.today-table--compact,
+.suggested-table--compact,
+.reviewed-table--compact {
+  table-layout: fixed;
+  min-width: 0;
+}
+
+.today-table--compact th,
+.today-table--compact td,
+.suggested-table--compact th,
+.suggested-table--compact td,
+.reviewed-table--compact th,
+.reviewed-table--compact td {
+  overflow-wrap: normal;
+}
+
+/* === Account cell with device folded underneath (compact only) === */
+.account-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.account-cell__primary {
+  /* table-ellipsis class on the element already caps + ellipsises it. */
+  line-height: 1.2;
+}
+
+.account-cell__device {
+  /* Always sit underneath, never expand the parent column. */
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* === Card list (mobile) === */
+.card-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+:where(.hub) .card {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-inline-start: 4px solid var(--accent);
+  /* Stay inside the viewport — descendant long strings must wrap. */
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+:where(.hub) .card.selected {
+  border-inline-start-color: var(--ok);
+  outline: 1px solid var(--accent);
+}
+
+.card-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+  font-size: 0.95rem;
+  flex-wrap: wrap;
+  /* Children with long unbroken strings must shrink rather than expand the row. */
+  min-width: 0;
+}
+
+.card-row > * {
+  min-width: 0;
+}
+
+.card-row--top {
+  font-size: 1.05rem;
+  margin-bottom: 0.25rem;
+}
+
+.card-row .label {
+  color: var(--muted);
+  font-size: 0.85rem;
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.card-row .amount {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* Cards contain `<code class="masked">` for identifiers. Long hex / account
+   strings must wrap or shrink — never push the card past its container. */
+:where(.hub) .card code,
+:where(.hub) .card .masked,
+:where(.hub) .card .parser-id {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+.card-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  width: 100%;
+  /* Two rows of two columns works at 320px and up. Stack to a single
+     column only at the very narrowest widths where even two columns
+     would overflow. */
+}
+
+.card-actions button {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+}
+
+@media (max-width: 359px) {
+  .card-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* `inline-block` and `nowrap` are new. It was a bare inline span, which held up
+   only while this table had the whole viewport; inside the panel the column is
+   270px narrower and «Active» broke across two lines, half of it outside the
+   pill. */
+.status-pill {
+  display: inline-block;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  background: rgba(59, 130, 246, 0.22);
+  color: var(--accent);
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+}
+
+.status-pill.status-accepted {
+  background: rgba(34, 197, 94, 0.18);
+  color: var(--ok);
+}
+
+.status-pill.status-rejected {
+  background: rgba(239, 68, 68, 0.18);
+  color: var(--danger);
+}
+
+/* === Payment review inbox === */
+.payments-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.payments-summary h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.payments-summary__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.25rem;
+  color: var(--muted, #94a3b8);
+  font-size: 0.9rem;
+}
+
+.payments-summary__stats strong {
+  color: inherit;
+  font-size: 1.05rem;
+  margin-inline-end: 0.25rem;
+}
+
+.payments-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.payments-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+}
+
+.payment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.payment-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+}
+
+.payment-row--review {
+  border-inline-start: 4px solid var(--warn);
+}
+
+.payment-row--auto {
+  border-inline-start: 4px solid var(--ok);
+}
+
+.payments-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.payments-nav__dropdown {
+  position: relative;
+}
+
+.payments-nav__trigger,
+.payments-nav__reseller {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  background: var(--bg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.payments-nav__trigger--open,
+.payments-nav__reseller--active {
+  border-color: var(--accent, #2563eb);
+  box-shadow: inset 0 0 0 1px var(--accent, #2563eb);
+}
+
+.payments-nav__menu {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  inset-inline-start: 0;
+  min-width: 12rem;
+  background: var(--bg);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+  z-index: 20;
+  padding: 0.35rem;
+}
+
+.payments-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  text-align: start;
+  padding: 0.45rem 0.55rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.payments-nav__item:hover,
+.payments-nav__item--active {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.payments-nav__check {
+  width: 1rem;
+  color: var(--accent, #2563eb);
+}
+
+.payment-row--auto-compact {
+  padding: 0;
+  border-inline-start: 3px solid var(--ok);
+}
+
+.payment-row--auto-compact__button {
+  display: block;
+  width: 100%;
+  text-align: start;
+  padding: 0.45rem 0.65rem;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.payment-row--auto-compact__line1,
+.payment-row--auto-compact__line2,
+.payment-row--auto-compact__line3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.payment-row--auto-compact__line2,
+.payment-row--auto-compact__line3 {
+  font-size: 0.9rem;
+  margin-top: 0.1rem;
+}
+
+.account-usage-row__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem 1rem;
+  width: 100%;
+}
+
+.account-usage-row__bar-track {
+  width: 100%;
+  height: 0.35rem;
+  margin-top: 0.35rem;
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.account-usage-row__bar-fill {
+  height: 100%;
+  background: var(--accent, #2563eb);
+  border-radius: 999px;
+}
+
+.notification-bell__counts--scoped {
+  grid-template-columns: 1fr 1fr;
+}
+
+.payment-row__main {
+  flex: 1 1 18rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.payment-row__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.payment-row__time {
+  margin-inline-start: auto;
+  font-size: 0.8rem;
+}
+
+.payment-row__amount {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.payment-row__target {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.payment-row__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+
+.payment-row__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: flex-end;
+  max-width: 14rem;
+  text-align: end;
+}
+
+.payment-review__remove {
+  width: 100%;
+}
+
+.payments-toolbar {
+  margin-bottom: 0.75rem;
+}
+
+.history-range {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.payments-summary--financial .payments-summary__stats {
+  flex-wrap: wrap;
+}
+
+.payments-queue-hint {
+  margin: 0;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: transparent;
+  border-inline-start: 2px solid var(--accent);
+}
+
+.income-totals,
+.reseller-stats {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+}
+
+.reseller-stats__table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.reseller-stats__table th,
+.reseller-stats__table td {
+  text-align: start;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border, #eee);
+}
+
+.payments-summary--analytics .payments-summary__highlight {
+  flex-basis: 100%;
+}
+
+.sales-trend {
+  margin: 0.75rem 0 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+}
+
+.sales-trend__title {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.sales-trend__chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.35rem;
+  min-height: 120px;
+  overflow-x: auto;
+}
+
+.sales-trend__bar-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 2.5rem;
+  flex: 1;
+}
+
+.sales-trend__bar {
+  width: 100%;
+  max-width: 2rem;
+  background: var(--accent, #38bdf8);
+  border-radius: 3px 3px 0 0;
+  min-height: 4px;
+}
+
+.sales-trend__label {
+  font-size: 0.65rem;
+  color: var(--muted, #94a3b8);
+  margin-top: 0.25rem;
+  white-space: nowrap;
+}
+
+.sales-trend__subtitle {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+}
+
+.statistics__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.statistics__title {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.statistics__charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.statistics__chart-card {
+  grid-column: 1 / -1;
+}
+
+.statistics__summary-muted {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+  font-size: 0.9rem;
+}
+
+.statistics-overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+:where(.hub) .stat-card {
+  padding: 0.75rem;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  background: var(--panel, #fff);
+}
+
+:where(.hub) .stat-card--highlight {
+  border-color: var(--accent, #38bdf8);
+  background: color-mix(in srgb, var(--accent, #38bdf8) 8%, transparent);
+}
+
+:where(.hub) .stat-card--wide {
+  grid-column: 1 / -1;
+}
+
+:where(.hub) .stat-card h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+:where(.hub) .stat-card__value {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+:where(.hub) .stat-card__meta {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted, #64748b);
+}
+
+:where(.hub) .stat-card__queue-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  font-size: 0.9rem;
+}
+
+.statistics-chart-card {
+  padding: 0.75rem;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+}
+
+.statistics-chart-card h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+}
+
+.mix-bar {
+  display: flex;
+  height: 1.25rem;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--border, #e2e8f0);
+}
+
+.mix-bar__bot {
+  background: var(--accent, #38bdf8);
+}
+
+.mix-bar__manual {
+  background: #a78bfa;
+}
+
+.mix-bar__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.mix-bar__swatch {
+  display: inline-block;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 2px;
+  margin-inline-end: 0.25rem;
+  vertical-align: middle;
+}
+
+.mix-bar__swatch--bot {
+  background: var(--accent, #38bdf8);
+}
+
+.mix-bar__swatch--manual {
+  background: #a78bfa;
+}
+
+.volume-bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.volume-bars__row {
+  display: grid;
+  grid-template-columns: 7rem 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.volume-bars__track {
+  height: 0.65rem;
+  background: var(--border, #e2e8f0);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.volume-bars__fill {
+  height: 100%;
+  border-radius: 3px;
+  min-width: 0;
+}
+
+.volume-bars__fill--sales {
+  background: var(--accent, #38bdf8);
+}
+
+.volume-bars__fill--inflow {
+  background: #34d399;
+}
+
+.volume-bars__fill--reseller {
+  background: #fbbf24;
+}
+
+.volume-bars__fill--income {
+  background: #94a3b8;
+}
+
+.volume-bars__amount {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.account-analytics {
+  margin-top: 2rem;
+}
+
+.account-analytics__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.account-bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.account-bar-row {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border, #eee);
+}
+
+.account-bar-row__head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.account-bar-row__metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.account-bar-row__bar {
+  height: 0.45rem;
+  background: var(--accent, #38bdf8);
+  border-radius: 3px;
+  max-width: 100%;
+}
+
+.account-bar-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.warn {
+  color: var(--warn, #f59e0b);
+}
+
+.account-ref {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+/* The drawer is too narrow to hold a bank name and an account number on one
+   line; side by side, the number splits mid-digit. Stack them everywhere in
+   the drawer — a misread account number is how a wrong approval happens. */
+.payment-review .account-ref {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+}
+
+.payment-reason {
+  margin: 0.25rem 0 0;
+}
+
+.payment-reason__flag {
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+.payment-review__facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.9rem;
+  margin: 0 0 1rem;
+}
+
+.payment-review__facts dt {
+  color: var(--muted, #94a3b8);
+  font-size: 0.8rem;
+}
+
+.payment-review__facts dd {
+  margin: 0;
+}
+
+.payment-candidates {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.payment-candidates label {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.payment-candidates label:has(input:checked) {
+  border-color: var(--accent);
+}
+
+.payment-review__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.payment-review__reject {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.payment-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  align-items: baseline;
+  margin-bottom: 0.75rem;
+}
+
+.payment-review__reassign,
+.payment-review__manual-anyway {
+  width: 100%;
+}
+
+.transaction-reassign__filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.transaction-reassign__results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.transaction-reassign__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+}
+
+.transaction-reassign__results li.picked .transaction-reassign__row {
+  border-color: var(--accent, #2563eb);
+}
+
+.transaction-reassign__sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 0.75rem 0;
+}
+
+.claim-change-account {
+  margin: 0.75rem 0;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+/* Only applies at wide-desktop (>=1440px). At narrower widths Comments
+   opens as a right-side drawer — see .drawer--right below. */
+.split--with-side {
+  grid-template-columns: 1fr 320px;
+}
+
+.matches-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.match-list-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  /* Without `min-width: 0`, this flex column inherits its content's
+     intrinsic min-width (long identifiers, wide tabs) and pushes the
+     parent wider than the viewport. */
+  min-width: 0;
+}
+
+/* === Modal === */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 60;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.modal-body {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem 1.25rem;
+  width: min(560px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+
+.modal-body h3 {
+  margin: 0;
+}
+
+.modal-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.modal-actions button {
+  margin-inline-start: 0;
+}
+
+/* === Devices === */
+.devices h2 {
+  margin: 0 0 1rem;
+}
+
+.accounts h2,
+.accounts h4,
+.matches-section h4 {
+  margin: 1rem 0 0.5rem;
+}
+
+.accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* === Comments === */
+.panel {
+  background: var(--panel);
+  padding: 1rem;
+  border-radius: var(--radius);
+}
+
+.panel h3 {
+  margin: 0 0 0.75rem;
+}
+
+.panel ul {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+}
+
+.panel li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel textarea {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.55rem;
+  font-family: inherit;
+  min-height: 80px;
+}
+
+.reason {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.identifier {
+  margin-bottom: 0.2rem;
+}
+
+.ids {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+:where(.hub) dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0 0 1rem;
+}
+
+:where(.hub) dl dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.analysis h4 {
+  margin-top: 0.75rem;
+}
+
+/* === Responsive === */
+@media (min-width: 640px) {
+  .app {
+    padding: 1.25rem 1.5rem 3rem;
+  }
+  .form {
+    grid-template-columns: 1fr 1fr;
+  }
+  .card-actions button {
+    flex: 0 0 auto;
+  }
+}
+
+@media (min-width: 1024px) {
+  .app {
+    padding: 1.5rem 2rem 4rem;
+  }
+  .hamburger {
+    display: none;
+  }
+}
+
+@media (min-width: 1440px) {
+  .app {
+    max-width: 1600px;
+  }
+  .split--with-side {
+    grid-template-columns: 1fr 380px;
+  }
+}
+
+@media (max-width: 639px) {
+  :where(.hub) .app-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  :where(.hub) .app-header .muted {
+    margin: 0;
+  }
+  .tab {
+    padding: 0.6rem 0.7rem;
+    font-size: 0.95rem;
+  }
+  .match-list-scroll {
+    max-height: none;
+  }
+}
+
+/* === A11y === */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* === Sortable header button (fills <th>) === */
+.th-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: start;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.th-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.th-button .sort-glyph {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+.th-button[aria-sort='ascending'] .sort-glyph,
+.th-button[aria-sort='descending'] .sort-glyph {
+  opacity: 1;
+}
+
+/* === Mobile sort dropdown === */
+.sort-dropdown {
+  gap: 0.5rem;
+}
+.sort-dropdown select {
+  flex: 0 0 auto;
+  min-width: 8rem;
+}
+
+/* === Identifier text (LTR, monospace, selectable) === */
+.identifier-text {
+  display: inline-block;
+  max-width: 100%;
+  min-width: 0;
+}
+.identifier-text code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  padding: 0.05rem 0.35rem;
+  background: var(--code-bg, rgba(0, 0, 0, 0.06));
+  border-radius: 3px;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  display: inline-block;
+  /* Plain text selection only — never allow the long string to push the
+     page wider than the viewport. */
+  user-select: text;
+  cursor: text;
+}
+
+/* === Detected identifier stack === */
+.detected-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.detected-stack--rows .identifier {
+  margin-bottom: 0;
+}
+
+/* === Danger / wider modal for delete === */
+.modal-body--danger {
+  max-width: 520px;
+}
+.warn-banner {
+  background: rgba(255, 100, 0, 0.12);
+  border-inline-start: 3px solid var(--danger, #c0392b);
+  padding: 0.6rem 0.8rem;
+  margin: 0.75rem 0;
+}
+.warn-banner p {
+  margin: 0.5rem 0 0;
+}
+.ref-counts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+.ref-counts dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.ref-counts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* === Detected identifiers list (in modals) === */
+.detected-list .identifier {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
+}
+
+/* === Tables: don't let cells force document overflow === */
+.data-table-wrapper {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.data-table {
+  table-layout: auto;
+  min-width: 0;
+}
+.data-table th,
+.data-table td {
+  overflow: hidden;
+  word-break: break-word;
+}
+.data-table td > code {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+.data-table .identifier-text {
+  min-width: 0;
+  max-width: 100%;
+}
+.data-table .identifier-text code {
+  display: inline-block;
+  max-width: 100%;
+}
+
+/* === Compact (1024-1439) layout: table doesn't bloat the document === */
+@media (min-width: 1200px) and (max-width: 1439px) {
+  .data-table {
+    font-size: 0.85rem;
+  }
+}
+
+/* === Wide layout (1440+) has more breathing room === */
+@media (min-width: 1440px) {
+  .data-table {
+    font-size: 0.95rem;
+  }
+  .data-table th,
+  .data-table td {
+    padding: 0.5rem 0.75rem;
+  }
+}
+
+/* === DEV: Bot Auto Verified segmented control strip === */
+.bot-filter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.segmented {
+  display: inline-flex;
+  align-self: flex-start;
+  background: var(--surface-2);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  gap: 4px;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.segmented__btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  padding: 0.45rem 0.85rem;
+  border-radius: calc(var(--radius-md) - 2px);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.segmented__btn:hover:not(.segmented__btn--active) {
+  background: var(--surface-1);
+  color: var(--text-base);
+}
+
+.segmented__btn--active {
+  background: var(--gold);
+  color: #0a0a0a;
+}
+
+.segmented--dates .segmented__btn--active {
+  background: var(--success, #34d399);
+  color: #0a0a0a;
+}
+
+@media (min-width: 1200px) {
+  .bot-filter {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+  .segmented--dates {
+    align-self: flex-end;
+  }
+}
+
+.bot-verified-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+/* === DEV: Telegram ID cell on Bot Auto Verified table === */
+.telegram-id-cell {
+  font-variant-numeric: tabular-nums;
+  user-select: all;
+  font-feature-settings: 'tnum';
+  color: var(--text-base);
+}
+
+.txn-row__telegram-id {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 9rem;
+}
+
+/* === DEV: exact Verified At === */
+.txn-row__verified-at {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* === DEV: Bot Auto Verified live statistics desktop fix ===
+   Resolves cramped / overflowing layout at 1366 / 1440 / 1920 widths. */
+.bot-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (min-width: 1100px) {
+  .bot-metrics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .bot-metrics {
+    grid-template-columns: 1fr;
+  }
+}
+
+.metric-card {
+  min-width: 0;
+}
+
+.metric-card__body {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.metric-card__value {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.15;
+}
+
+.stats-rail__grid-row dd,
+.stats-rail__row dd {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+/* === DEV: Bot Auto Verified table — prevent Telegram ID / Verified At from
+   breaking row alignment on narrow widths === */
+.txn-table--bot-auto-verified th:nth-child(4),
+.txn-table--bot-auto-verified td:nth-child(4),
+.txn-table--bot-auto-verified th:nth-child(10),
+.txn-table--bot-auto-verified td:nth-child(10) {
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+   Payment cards — issuer badges and the rotation weight control
+   --------------------------------------------------------------------------- */
+/* The row wraps rather than scrolls. The last responsive pass on this dashboard
+   found 622px of phantom horizontal page scroll coming out of a row that could
+   not shrink; `flex-wrap` plus `min-width: 0` is what stops that at the source. */
+.payment-cards-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.payment-cards-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.payment-cards-list__id,
+.payment-cards-list__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.payment-cards-list__actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--text-muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+:where(.hub) .badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 0.75em;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+:where(.hub) .badge-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* ---------------------------------------------------------------------------
+   Banks — card prefixes, SMS patterns, and the two test boxes
+   --------------------------------------------------------------------------- */
+.banks-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  min-width: 0;
+}
+
+.banks-panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  padding: var(--space-lg);
+}
+
+.banks-panel > h3 {
+  margin-top: 0;
+}
+
+.banks-test {
+  margin: var(--space-lg) 0;
+  padding: var(--space-md);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.banks-test textarea {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+/* The global `dl { display: grid }` rule split money figures mid-number on the
+   payments screen. Two explicit columns here, collapsing to one on a phone. */
+.banks-test__result {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  gap: var(--space-xs) var(--space-md);
+  margin: var(--space-md) 0 0;
+  min-width: 0;
+}
+
+.banks-test__result dt {
+  color: var(--text-muted);
+}
+
+.banks-test__result dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Wide content scrolls inside its own box; the page body never scrolls
+   sideways. `contain: layout` is what stops the table's intrinsic width from
+   propagating out — `overflow` alone did not, on this dashboard, in this
+   layout. */
+.banks-panel .table-wrap {
+  overflow-x: auto;
+  contain: layout;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.banks-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.banks-table th,
+.banks-table td {
+  text-align: start;
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
+}
+
+.banks-table code {
+  overflow-wrap: anywhere;
+}
+
+.banks-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+  min-width: 0;
+}
+
+.banks-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  color: var(--text-muted);
+  font-size: 0.85em;
+  min-width: 0;
+}
+
+.banks-form input,
+.banks-form select {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text-primary);
+}
+
+.banks-form__wide {
+  grid-column: 1 / -1;
+}
+
+/* `.banks-form label` is (0,1,1) and would out-specify a lone class here, which
+   is why this one is qualified — without it the checkbox stacked above its own
+   label instead of sitting beside it. */
+.banks-form label.banks-form__check {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-sm);
+}
+
+.banks-form label.banks-form__check input {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+/* 44 issuer rows is a lot of page to scroll past before reaching the SMS
+   patterns below. Cap the list and let it scroll inside itself — vertically
+   here, on top of the horizontal scroll the wrapper already does. */
+.banks-panel .table-wrap {
+  max-height: 26rem;
+  overflow-y: auto;
+}

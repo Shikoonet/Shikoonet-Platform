@@ -1,27 +1,31 @@
 /**
  * The panel's frame: header across the top, navigation down the right.
  *
- * This is still a separate build from the payment hub, but no longer a separate
- * door: Cloudflare Access is gone and both surfaces sit behind one login
- * (`LoginPage`), which is the first step of merging them into a single panel.
+ * One build, one door, one menu. Until 2026-08-16 the shop was run from two
+ * separate SPAs behind two separate Cloudflare Access applications — the
+ * payment hub at `/` and this panel at `/admin/` — and nothing could be done
+ * from both. Access is gone, the hub's six screens are the «پول» group in the
+ * sidebar below, and `/` is a redirect.
  *
  * Nothing renders until `/api/v1/auth/me` has answered. That is a deliberate
  * flash of nothing rather than a flash of the panel — every screen here fetches
  * on mount, and drawing them before the identity is known means a signed-out
  * visitor watches a dozen requests fail behind a login form.
  *
- * Navigation is state, not a router. Twelve sections with no deep links and no
- * shareable URLs do not need one, and adding a router would mean the worker's
- * SPA fallback has to know every path. The one path that matters — /admin —
- * is already handled server-side.
+ * Navigation is a real URL now (`route.ts`), not `useState`. Twenty-two
+ * sections that cannot be linked to is a panel where «look at this payment» has
+ * to be described rather than sent.
  */
 
-import { useEffect, useState } from 'react';
-import { NAV, pageLabel, READABLE_BY_READER, type PageId } from './nav.js';
+import { useEffect, useMemo, useState } from 'react';
+import { NAV, pageLabel, READABLE_BY_READER, type HubPageId, type PageId } from './nav.js';
 import { api, type PanelRole } from './api.js';
+import { useRoute } from './route.js';
 import { LoginPage } from './LoginPage.js';
 import { AccessPage } from './pages/AccessPage.js';
 import { Icon } from './icons.js';
+import { HubSection } from './hub/HubSection.js';
+import { createCache } from './hub/query.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
 import { ProductsPage } from './pages/ProductsPage.js';
@@ -34,6 +38,23 @@ import { OrdersPage, ServicesPage, TransactionsPage } from './pages/LedgerPages.
 import { SettingsPage, RequestsPage } from './pages/SettingsPage.js';
 import { BotTextsPage, KeyboardPage } from './pages/BotContentPages.js';
 import './theme.css';
+// Second, and the order is load-bearing: `styles.css` scopes everything it can
+// reach to `.hub`, but where the two sheets declare the same property at equal
+// specificity the later one wins, and inside the hub that should be the hub.
+import './hub/styles.css';
+
+const HUB_PAGES: ReadonlySet<PageId> = new Set<HubPageId>([
+  'payments',
+  'statistics',
+  'today',
+  'accounts',
+  'banks',
+  'devices',
+]);
+
+function isHubPage(id: PageId): id is HubPageId {
+  return HUB_PAGES.has(id);
+}
 
 /**
  * Which screen the selected section shows.
@@ -49,11 +70,16 @@ function Body({
   page,
   go,
   role,
+  cache,
 }: {
   page: PageId;
-  go: (id: PageId) => void;
+  go: (id: PageId, search?: string) => void;
   role: PanelRole | null;
+  cache: ReturnType<typeof createCache>;
 }) {
+  if (isHubPage(page)) {
+    return <HubSection section={page} cache={cache} onGo={go} />;
+  }
   switch (page) {
     case 'dashboard':
       return <DashboardPage onGo={go} />;
@@ -91,8 +117,14 @@ function Body({
 }
 
 export function App() {
-  const [page, setPage] = useState<PageId>('dashboard');
+  const [page, setPage] = useRoute();
   const [navOpen, setNavOpen] = useState(false);
+  // One cache for the whole session, not one per visit to a finance screen: it
+  // is what holds the polling intervals and the seen-markers, and `query.ts`
+  // warns in dev if a second instance appears. Building it costs nothing until
+  // a view subscribes — no timer starts before then — so it is created even for
+  // an operator who never opens the «پول» group.
+  const cache = useMemo(() => createCache(), []);
   const [role, setRole] = useState<PanelRole | null>(null);
   // null = still asking. The three states are distinct on purpose: "asking",
   // "signed out" and "signed in" each draw something different, and collapsing
@@ -122,8 +154,12 @@ export function App() {
 
   const visible = (id: PageId) => role !== 'READ_ONLY' || READABLE_BY_READER.has(id);
 
-  function go(id: PageId) {
-    setPage(id);
+  // `search` is forwarded, not dropped. The notification bell asks for a
+  // section *and* a sub-tab, and the sub-tab lives in the query — swallowing
+  // the second argument here sent every bell entry to the default tab while
+  // looking, from the sidebar, entirely correct.
+  function go(id: PageId, search?: string) {
+    setPage(id, search);
     setNavOpen(false);
   }
 
@@ -208,7 +244,7 @@ export function App() {
 
       <section id="main-content">
         <div className="wrapper">
-          <Body page={page} go={go} role={role} />
+          <Body page={page} go={go} role={role} cache={cache} />
         </div>
       </section>
     </>

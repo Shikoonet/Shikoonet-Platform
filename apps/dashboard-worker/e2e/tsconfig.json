@@ -1,0 +1,19 @@
+{
+  // The only files in this package that run inside a browser.
+  //
+  // `page.evaluate` bodies are shipped to the page and executed there, so they
+  // legitimately use `document` and `getComputedStyle` — which the parent
+  // config deliberately does not provide, because the server must never be able
+  // to reference them by accident. Adding `DOM` to the parent would buy these
+  // six lines at the cost of that guard on thirteen thousand lines of Hono.
+  //
+  // Worth having rather than casting the bodies to strings: an untyped
+  // `page.evaluate('...')` is browser code nothing checks, and it was a wrong
+  // selector in exactly such a body that made the login page's inputs invisible
+  // while every test stayed green.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": [".", "../playwright.config.ts"]
+}

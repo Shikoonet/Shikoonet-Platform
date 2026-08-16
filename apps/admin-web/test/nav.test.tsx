@@ -24,7 +24,11 @@ describe('navigation', () => {
   });
 
   it('keeps the groups and their order from the panel this replaces', () => {
-    expect(NAV.map((g) => g.label)).toEqual(['منوی اصلی', 'مدیریت', 'پیکربندی']);
+    // «پول» is the payment hub, which was its own build at `/` until
+    // 2026-08-16. Sam placed it third after seeing the merged sidebar; the
+    // other three keep the order they had in `panel/header.php`.
+    expect(NAV.map((g) => g.label)).toEqual(['منوی اصلی', 'مدیریت', 'پول', 'پیکربندی']);
+    expect(NAV[2]!.items[0]!.id).toBe('payments');
     // داشبورد first and کاربران second is the order an admin's hand already
     // knows; reordering it is a decision, not a refactor.
     expect(NAV[0]!.items.slice(0, 2).map((i) => i.id)).toEqual(['dashboard', 'customers']);
@@ -45,6 +49,15 @@ describe('navigation', () => {
     // bot has read since «آموزش» was built and nobody could edit: `help_articles`
     // and `client_apps` were changed in the legacy admin panel until 2026-08-16.
     const implemented: PageId[] = [
+      // The six that came from the payment hub on 2026-08-16. They are listed
+      // here for the same reason as the rest: a screen `App` can draw but `NAV`
+      // does not name is a screen nobody can reach, and it looks fine.
+      'payments',
+      'statistics',
+      'today',
+      'accounts',
+      'banks',
+      'devices',
       'content',
       'stock',
       // `revenue_adjustments` arrived with migration 0005 and nothing read a row

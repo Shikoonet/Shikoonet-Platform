@@ -80,18 +80,25 @@ export function start(): { stop: () => Promise<void> } {
   const { db, pool } = createPostgresD1({ connectionString: required('DATABASE_URL') });
   const env = buildEnv(db);
 
-  // wrangler mounted ../dashboard-web/dist as [assets]; here it is plain static
-  // serving with an SPA fallback, because the dashboard has no router on the
-  // server side — every unknown path is the same index.html.
-  const spaRoot = process.env.SPA_DIST ?? join(process.cwd(), '../dashboard-web/dist');
-
-  // The admin panel is a second, entirely separate build. It is mounted first
-  // and only under /admin/, so nothing about it can be reached from the
-  // payment hub's paths and nothing of the hub's leaks into it. Its Vite
-  // config sets `base: '/admin/'`, which is why its own asset URLs land back
-  // inside this mount rather than in the hub's /assets.
+  // One build now. There used to be two mounts here — the payment hub at `/`
+  // and the admin panel under `/admin/` — because they were two SPAs behind two
+  // Cloudflare Access applications. They are one package as of 2026-08-16, so
+  // `/` has nothing of its own left to serve and redirects.
+  //
+  // The Vite config sets `base: '/admin/'`, which is why the bundle's own asset
+  // URLs land back inside this mount. `rewriteRequestPath` strips the prefix
+  // because `dist/` has no `admin/` directory in it.
   const adminRoot = process.env.ADMIN_DIST ?? join(process.cwd(), '../admin-web/dist');
-  app.use('/admin/assets/*', serveStatic({ root: adminRoot, rewriteRequestPath: (p) => p.slice('/admin'.length) }));
+  app.use(
+    '/admin/assets/*',
+    serveStatic({ root: adminRoot, rewriteRequestPath: (p) => p.slice('/admin'.length) }),
+  );
+  // Vite copies everything in `public/` to the ROOT of dist, not into assets/ —
+  // the logo, the favicon. Without this they fall through to the SPA fallback
+  // and are answered with index.html: `/shikoonet-logo.png` used to return 853
+  // bytes of HTML, so the header logo was a broken image on every screen. A
+  // miss calls next(), so unknown paths still reach the fallback.
+  app.use('/admin/*', serveStatic({ root: adminRoot, rewriteRequestPath: (p) => p.slice('/admin'.length) }));
   app.get('/admin', (c) => c.redirect('/admin/', 302));
   app.get('/admin/*', async (c, next) => {
     if (c.req.path.startsWith('/admin/assets/')) return next();
@@ -102,22 +109,19 @@ export function start(): { stop: () => Promise<void> } {
     }
   });
 
-  app.use('/assets/*', serveStatic({ root: spaRoot }));
-  // Vite copies everything in `public/` to the ROOT of dist, not into assets/ —
-  // the logo, the favicon, robots.txt. Mounting only `/assets/*` meant every one
-  // of those fell through to the SPA fallback below and was answered with
-  // index.html: `/shikoonet-logo.png` returned 853 bytes of HTML, so the header
-  // logo rendered as a broken image on every screen. A miss here calls next(),
-  // so unknown paths still reach the fallback and the SPA still works.
-  app.use('/*', serveStatic({ root: spaRoot }));
+  // Everything that is not the API and not the panel is an address somebody
+  // bookmarked before the merge — the payment hub's old home, or one of the
+  // `?tab=` links its notification mails and its own bell have been handing out
+  // for months. A redirect rather than a 404, and `?tab=` is what says the
+  // bookmark meant the payments screen rather than the panel's front page.
+  // `async` so both arms return a promise. Hono resolves the handler overload
+  // from the return type, and a mix of `next()` and a bare `Response` matches
+  // neither the handler nor the middleware signature.
   app.get('*', async (c, next) => {
     if (c.req.path.startsWith('/api/')) return next();
-    try {
-      const html = await readFile(join(spaRoot, 'index.html'), 'utf8');
-      return c.html(html);
-    } catch {
-      return c.text('SPA build not found — run `pnpm --filter @shikoo/dashboard-web build`', 500);
-    }
+    const url = new URL(c.req.url);
+    const section = url.searchParams.has('tab') ? 'payments' : '';
+    return c.redirect(`/admin/${section}${url.search}`, 302);
   });
 
   const port = positiveInt('PORT', 8788);

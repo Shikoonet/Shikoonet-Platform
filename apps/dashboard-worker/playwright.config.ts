@@ -110,13 +110,12 @@ export default defineConfig({
     timeout: 60_000,
     env: {
       PORT: String(PORT),
-      // The two SPA builds, absolute because `server.ts` resolves its defaults
+      // The SPA build, absolute because `server.ts` resolves its default
       // against the working directory. `import.meta.url` is a file: URL, whose
       // pathname on Windows carries a leading slash before the drive letter.
-      SPA_DIST: spaPath('../dashboard-web/dist'),
       ADMIN_DIST: spaPath('../admin-web/dist'),
-      },
     },
+  },
     {
       // No `--env-file`: that is where `TEST_ACCESS_USER` comes from, and the
       // whole point of this one is not having it. `loadSimEnv` above already
@@ -135,7 +134,6 @@ export default defineConfig({
         // this server inherited the bypass anyway and served an already-open
         // panel. Every login spec failed against a page that was signed in.
         TEST_ACCESS_USER: '',
-        SPA_DIST: spaPath('../dashboard-web/dist'),
         ADMIN_DIST: spaPath('../admin-web/dist'),
       },
     },

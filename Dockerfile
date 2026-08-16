@@ -40,7 +40,6 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/bot/package.json                 apps/bot/
 COPY apps/ingest-worker/package.json       apps/ingest-worker/
 COPY apps/dashboard-worker/package.json    apps/dashboard-worker/
-COPY apps/dashboard-web/package.json       apps/dashboard-web/
 COPY apps/admin-web/package.json           apps/admin-web/
 COPY packages/contracts/package.json       packages/contracts/
 COPY packages/database/package.json        packages/database/
@@ -52,19 +51,19 @@ COPY packages/sms-parser/package.json      packages/sms-parser/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
 # ---------------------------------------------------------------------- build
-# Both single-page apps, because one process serves both: the payment hub at `/`
-# and the shop admin panel at `/admin`. `deploy/README.md` documented only the
-# first for a while, and a missing build is a 500 rather than a failed deploy.
+# One single-page app. There were two — the payment hub at `/` and the shop
+# admin panel at `/admin` — until they were merged on 2026-08-16; `/` is a
+# redirect now. A missing build is a 500 rather than a failed deploy, so this
+# stage failing is the cheaper of the two places to find out.
 FROM deps AS build
 COPY . .
-RUN pnpm --filter @shikoo/dashboard-web --filter @shikoo/admin-web build
+RUN pnpm --filter @shikoo/admin-web build
 
 # -------------------------------------------------------------------- runtime
 FROM build AS runtime
 
-# Absolute, because the defaults in `server.ts` are relative to the working
+# Absolute, because the default in `server.ts` is relative to the working
 # directory and would resolve outside /app.
-ENV SPA_DIST=/app/apps/dashboard-web/dist
 ENV ADMIN_DIST=/app/apps/admin-web/dist
 ENV NODE_ENV=production
 

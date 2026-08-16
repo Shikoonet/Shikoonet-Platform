@@ -13,7 +13,17 @@
  * the same thing at compile time by having no default arm.
  */
 
+/**
+ * The six screens that came from the payment hub.
+ *
+ * Kept as their own type because `App.tsx` hands exactly these to `HubSection`
+ * and nothing else: the compiler, not a comment, is what stops «کاربران» being
+ * routed into a screen that expects a payment cache.
+ */
+export type HubPageId = 'payments' | 'statistics' | 'today' | 'accounts' | 'banks' | 'devices';
+
 export type PageId =
+  | HubPageId
   | 'dashboard'
   | 'customers'
   | 'orders'
@@ -66,6 +76,22 @@ export const NAV: NavGroup[] = [
     ],
   },
   {
+    // The payment hub, which until 2026-08-16 was a separate build behind a
+    // separate Cloudflare Access application at `/`. Third, in the position Sam
+    // put it after seeing the merged sidebar — the two groups above are what
+    // the shop's admin opens the panel for, and this is the one an operator
+    // sits in rather than visits.
+    label: 'پول',
+    items: [
+      { id: 'payments', label: 'پرداخت‌ها', icon: 'money' },
+      { id: 'statistics', label: 'آمار مالی', icon: 'grid' },
+      { id: 'today', label: 'امروز', icon: 'receipt' },
+      { id: 'accounts', label: 'حساب‌ها', icon: 'wallet' },
+      { id: 'banks', label: 'بانک‌ها', icon: 'list' },
+      { id: 'devices', label: 'دستگاه‌ها', icon: 'server' },
+    ],
+  },
+  {
     label: 'پیکربندی',
     items: [
       { id: 'texts', label: 'متن‌های ربات', icon: 'text' },
@@ -89,6 +115,19 @@ export const NAV: NavGroup[] = [
  */
 export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'dashboard',
+  // All six finance screens. Not an oversight and not generosity: reviewing
+  // payments is the entire reason the READ_ONLY role exists, and `mayRead`
+  // withholds nothing on these paths — its list is `/api/v1/admin/*` only, and
+  // the hub's routes have never been under it. Every *write* on them already
+  // answers 403 for this role, checked per route in `index.ts`. Leaving them
+  // out of this set would hide from a reviewer exactly the work they were
+  // given the account to do.
+  'payments',
+  'statistics',
+  'today',
+  'accounts',
+  'banks',
+  'devices',
   'products',
   'panels',
   // Counting the shelf is stock control; the accounts on it are not handed
@@ -111,6 +150,17 @@ const BY_ID = new Map(NAV.flatMap((g) => g.items).map((i) => [i.id, i]));
 
 export function navItem(id: PageId): NavItem | undefined {
   return BY_ID.get(id);
+}
+
+/**
+ * Whether a URL segment names a section.
+ *
+ * Derived from `NAV` rather than from a second list of strings, so a section
+ * that exists in the sidebar is linkable and one that does not is not — there
+ * is no third state where the router accepts a path nothing can draw.
+ */
+export function isPageId(value: string): value is PageId {
+  return BY_ID.has(value as PageId);
 }
 
 /** The label shown in the header crumb and the page heading. */

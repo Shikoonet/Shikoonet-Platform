@@ -5,11 +5,10 @@
       "node"
     ]
   },
+  "//": "`e2e` is checked by its own config — it is the only browser code here, and giving this one the DOM lib would let the server reference `document` without a type error.",
   "include": [
     "src",
     "test",
-    "e2e",
-    "scripts",
-    "playwright.config.ts"
+    "scripts"
   ]
 }
