@@ -99,6 +99,19 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
     },
   });
 
+  // The admin's own running total is the source, not the log's sum, and the
+  // difference is the point: `setting.revenue_adjustment` is the number the
+  // legacy panel PRINTS, arrived at independently of how we read the rows. A
+  // sign flipped on import shows up here and nowhere else — the row count stays
+  // identical, every other total stays identical, and the books move by twice
+  // the deductions. That is the exact failure the importer's dead `subtract`
+  // branch was one keystroke away from causing.
+  money.push({
+    name: 'revenue adjustments (IRR)',
+    source: (await scalar(my, 'SELECT revenue_adjustment FROM setting LIMIT 1')) * 10n,
+    target: await pgScalar(pgc, 'SELECT COALESCE(SUM(amount_irr),0) FROM revenue_adjustments'),
+  });
+
   money.push({
     name: 'add-on orders (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price AS SIGNED)) FROM service_other')) * 10n,

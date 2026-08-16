@@ -74,9 +74,17 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId) => void }) {
         <Stat
           tone="tone-green"
           icon="money"
-          value={tomanCompact(data.revenueIrr)}
+          value={tomanCompact(data.revenueIrr + data.revenueAdjustmentIrr)}
           label="درآمد کل"
-          foot="فقط سفارش‌های تکمیل‌شده"
+          // The adjustment is named rather than absorbed, exactly as
+          // `panel/index.php:72-75` names it. A figure that silently differs
+          // from the sum of the orders is one an admin stops trusting the first
+          // time they add it up themselves.
+          foot={
+            data.revenueAdjustmentIrr === 0
+              ? 'فقط سفارش‌های تکمیل‌شده'
+              : `سفارش‌های تکمیل‌شده ${data.revenueAdjustmentIrr < 0 ? '−' : '+'} ${tomanCompact(Math.abs(data.revenueAdjustmentIrr))} تعدیل دستی`
+          }
         />
         <Stat
           tone="tone-orange"

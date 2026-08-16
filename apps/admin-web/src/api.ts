@@ -187,6 +187,36 @@ export interface StockBody {
   note?: string | null;
 }
 
+/**
+ * One line of the shop's own books. `amountIrr` is SIGNED — negative is a cost —
+ * because that is how the row is stored and how the legacy log stored it too.
+ * There is no `type` field to disagree with the sign.
+ */
+export interface RevenueAdjustmentRow {
+  id: number;
+  amountIrr: number;
+  note: string;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+/** Over the whole ledger, never over the page. */
+export interface RevenueTotals {
+  /** Negative or zero. */
+  expensesIrr: number;
+  creditsIrr: number;
+  netIrr: number;
+}
+
+export interface RevenueAdjustmentPage {
+  ok: boolean;
+  total: number;
+  page: number;
+  pageSize: number;
+  items: RevenueAdjustmentRow[];
+  totals: RevenueTotals;
+}
+
 export interface HelpArticleRow {
   id: number;
   title: string;
@@ -679,6 +709,31 @@ export const api = {
     return req<{ ok: boolean }>(`/stock/${id}`, { method: 'DELETE' });
   },
 
+  revenueAdjustments(params: { direction?: string; page: number; pageSize: number }) {
+    const qs = new URLSearchParams({
+      page: String(params.page),
+      pageSize: String(params.pageSize),
+    });
+    if (params.direction) qs.set('direction', params.direction);
+    return req<RevenueAdjustmentPage>(`/revenue-adjustments?${qs.toString()}`);
+  },
+
+  /** A positive amount and a direction — never a signed amount. */
+  addRevenueAdjustment(body: {
+    amountToman: number;
+    direction: 'expense' | 'credit';
+    note: string;
+  }) {
+    return req<{ ok: boolean; id: number; amountIrr: number }>('/revenue-adjustments', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  deleteRevenueAdjustment(id: number) {
+    return req<{ ok: boolean }>(`/revenue-adjustments/${id}`, { method: 'DELETE' });
+  },
+
   helpArticles() {
     return req<{ ok: boolean; items: HelpArticleRow[] }>('/help-articles');
   },
@@ -878,6 +933,8 @@ export const api = {
       customersToday: number;
       activeSubscriptions: number;
       revenueIrr: number;
+      /** Signed, and NOT included in `revenueIrr` — the dashboard adds them. */
+      revenueAdjustmentIrr: number;
       ordersToday: number;
       walletHeldIrr: number;
       recentCustomers: CustomerListItem[];

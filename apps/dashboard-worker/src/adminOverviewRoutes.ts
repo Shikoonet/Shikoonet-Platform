@@ -35,6 +35,26 @@ export function registerAdminOverviewRoutes(
     // screen has.
     const stats = await shopStats(db);
 
+    /**
+     * What the admin has added to or taken off the revenue figure by hand.
+     *
+     * Returned beside `revenueIrr` rather than folded into it, and the split is
+     * what keeps the comment above true. `shopStats` is the bot's «آمار» screen
+     * as well as this one, and it means completed sales on both; changing what
+     * it counts to keep this screen at parity would change what the bot tells an
+     * operator, which nobody asked for.
+     *
+     * Parity is still met, because `panel/index.php:28` does exactly this split
+     * too — `$totalRevenue = $baseRevenue + $manualRevenueAdjustment`, with a
+     * line underneath naming the adjustment whenever it is not zero. Production
+     * currently carries −309,070,750 Toman of it, so a dashboard that quietly
+     * dropped it would show a revenue figure 309 million higher than the one the
+     * admin reads today, on the first morning after the cutover.
+     */
+    const adjustment = await db
+      .prepare(`SELECT COALESCE(SUM(amount_irr), 0) AS net FROM revenue_adjustments`)
+      .first<{ net: string | number }>();
+
     const recentCustomers = await db
       .prepare(
         `SELECT u.id, u.telegram_id, u.username, u.phone, u.status, u.is_reseller,
@@ -84,6 +104,7 @@ export function registerAdminOverviewRoutes(
       customersToday: stats.customersToday,
       activeSubscriptions: stats.activeSubscriptions,
       revenueIrr: stats.revenueIrr,
+      revenueAdjustmentIrr: Number(adjustment?.net ?? 0),
       ordersToday: stats.ordersToday,
       walletHeldIrr: stats.walletHeldIrr,
       recentCustomers: (recentCustomers.results ?? []).map((r) => ({

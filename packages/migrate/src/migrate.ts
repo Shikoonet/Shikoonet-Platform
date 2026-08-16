@@ -1146,11 +1146,24 @@ async function migrateOps(ctx: Ctx): Promise<number> {
     'revenue_adjustments',
     cols(['legacy_id', 'amount_irr', 'note', 'created_by', ['created_at', ts.tehran.expr]]),
     (await mysqlRows<Row>(ctx.my, 'SELECT * FROM revenue_adjustment_log')).map((r) => {
-      // `type` decides the sign; `amount` is stored unsigned.
-      const magnitude = t.tomanToIrr(r.amount);
+      // `amount` is already signed, and `type` is a label rather than the sign.
+      //
+      // This used to read "`type` decides the sign; `amount` is stored
+      // unsigned" and negate whenever `type === 'subtract'`. Both halves were
+      // wrong, and they cancelled: no row is typed `subtract` — the word is
+      // `deduct` — so the branch never fired and the already-correct signs went
+      // through untouched. A comment that is itself false, guarding a branch
+      // that never runs, producing the right answer.
+      //
+      // Measured on the 2026-08-11 dump: all 99 `deduct` rows are negative, all
+      // 37 `add` rows are positive, and `SUM(amount)` equals
+      // `setting.revenue_adjustment` to the Toman. That equality is the proof,
+      // and `verify.ts` now asserts it — because the obvious "fix" here is to
+      // correct the typo to `deduct`, which would flip 99 rows and move the
+      // admin's books by twice 364,899,750 Toman with every count still green.
       return [
         Number(r.id),
-        (r.type === 'subtract' ? -magnitude : magnitude).toString(),
+        t.tomanToIrr(r.amount).toString(),
         r.note ?? '',
         r.created_by || null,
         t.tehranString(r.created_at, 'revenue_adjustment_log.created_at'),

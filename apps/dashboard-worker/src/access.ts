@@ -120,6 +120,11 @@ const PERSONAL_DATA_PREFIXES = [
   // Who may operate the shop is not an operations detail.
   '/api/v1/admin/access-users',
   '/api/v1/admin/bot-admins',
+  // Nor is what the shop spends. Not personal data — the other reason a path is
+  // on this list — but the same answer: `nav.ts` does not draw «هزینه‌ها و
+  // تعدیل‌ها» for a READ_ONLY operator, and a section hidden in the sidebar
+  // while the API still answers is decoration rather than a boundary.
+  '/api/v1/admin/revenue-adjustments',
 ];
 
 /**

@@ -47,6 +47,10 @@ describe('navigation', () => {
     const implemented: PageId[] = [
       'content',
       'stock',
+      // `revenue_adjustments` arrived with migration 0005 and nothing read a row
+      // of it until 2026-08-16; production has 136 entries that would have
+      // migrated in and stayed invisible.
+      'expenses',
       'dashboard',
       'customers',
       'products',

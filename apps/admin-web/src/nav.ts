@@ -20,6 +20,7 @@ export type PageId =
   | 'services'
   | 'products'
   | 'transactions'
+  | 'expenses'
   | 'requests'
   | 'panels'
   | 'stock'
@@ -51,6 +52,7 @@ export const NAV: NavGroup[] = [
       { id: 'services', label: 'سرویس‌ها', icon: 'package' },
       { id: 'products', label: 'محصولات', icon: 'grid' },
       { id: 'transactions', label: 'تراکنش‌ها', icon: 'wallet' },
+      { id: 'expenses', label: 'هزینه‌ها و تعدیل‌ها', icon: 'wallet' },
       { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list' },
     ],
   },
@@ -94,6 +96,9 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   // ADMIN, so reading this page is safe for a reviewer.
   'stock',
   'discounts',
+  // «هزینه‌ها و تعدیل‌ها» is deliberately absent. It is not customer data, which
+  // is the usual reason to withhold a page — it is the shop's own costs, and
+  // what the shop spends is not part of reviewing a payment.
   'texts',
   'keyboard',
   // Reading what the shop tells its customers is shop operation, not customer
