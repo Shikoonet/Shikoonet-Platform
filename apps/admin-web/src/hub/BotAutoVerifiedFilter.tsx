@@ -1,5 +1,5 @@
 /**
- * DEV-only filter strip for the "Bot Auto Verified" view.
+ * DEV-only filter strip for the "تایید خودکار ربات" view.
  *
  * Renders two segmented controls:
  *
@@ -7,9 +7,9 @@
  *   [ All | Today | Yesterday | Day Before Yesterday ]
  *
  * Defaults:
- *   - Purchase-type segment = "New Purchases" the first time the user opens
+ *   - Purchase-type segment = "خریدهای جدید" the first time the user opens
  *     Bot Auto Verified.
- *   - Date filter           = "Today".
+ *   - Date filter           = "امروز".
  *
  * State persists in URL query string so refresh / back-nav keeps the chosen
  * segment. Keys:
@@ -17,7 +17,7 @@
  *   ?dateFilter=all|today|yesterday|day_before_yesterday
  *
  * The worker accepts the existing `range=today` and `day=YYYY-MM-DD` parameters
- * for date filtering. For "Yesterday" / "Day Before Yesterday" we send
+ * for date filtering. For "دیروز" / "پریروز" we send
  *   range=day&day=<Tehran YYYY-MM-DD for that day>
  * which the worker already supports (see packages/domain/src/historyRange.ts).
  */
@@ -157,15 +157,15 @@ export function useBotAutoVerifiedFilter(): {
 }
 
 const SEGMENT_OPTIONS: Array<{ value: BotAutoVerifiedSegment; label: string }> = [
-  { value: 'NEW_PURCHASE', label: 'New Purchases' },
-  { value: 'RENEWAL', label: 'Renewals' },
+  { value: 'NEW_PURCHASE', label: 'خریدهای جدید' },
+  { value: 'RENEWAL', label: 'تمدیدها' },
 ];
 
 const DATE_OPTIONS: Array<{ value: BotAutoVerifiedDateFilter; label: string }> = [
-  { value: 'TODAY', label: 'Today' },
-  { value: 'YESTERDAY', label: 'Yesterday' },
-  { value: 'DAY_BEFORE_YESTERDAY', label: 'Day Before Yesterday' },
-  { value: 'ALL', label: 'All' },
+  { value: 'TODAY', label: 'امروز' },
+  { value: 'YESTERDAY', label: 'دیروز' },
+  { value: 'DAY_BEFORE_YESTERDAY', label: 'پریروز' },
+  { value: 'ALL', label: 'همه' },
 ];
 
 export function BotAutoVerifiedFilter({
@@ -182,7 +182,7 @@ export function BotAutoVerifiedFilter({
       <div
         className="segmented"
         role="tablist"
-        aria-label="Filter verified payments by purchase type"
+        aria-label="فیلتر پرداخت‌های تاییدشده بر اساس نوع خرید"
       >
         {SEGMENT_OPTIONS.map((opt) => {
           const selected = value.segment === opt.value;
@@ -203,7 +203,7 @@ export function BotAutoVerifiedFilter({
       <div
         className="segmented segmented--dates"
         role="tablist"
-        aria-label="Filter verified payments by verified-at date"
+        aria-label="فیلتر پرداخت‌های تاییدشده بر اساس تاریخ تایید"
       >
         {DATE_OPTIONS.map((opt) => {
           const selected = value.date === opt.value;

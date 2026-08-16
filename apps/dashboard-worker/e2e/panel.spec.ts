@@ -59,7 +59,7 @@ test('a finance section can be opened by its address alone', async ({ page }) =>
   // an instruction to click.
   await page.goto('/admin/payments');
   await expect(page.locator('.sidebar-link.active')).toHaveText('پرداخت‌ها');
-  await expect(page.getByRole('tablist', { name: 'Payment sections' })).toBeVisible();
+  await expect(page.getByRole('tablist', { name: 'بخش‌های پرداخت' })).toBeVisible();
 });
 
 test('the old payment hub address redirects into the panel', async ({ page }) => {

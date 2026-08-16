@@ -104,7 +104,7 @@ describe('one panel', () => {
     await sidebar();
 
     fireEvent.click(screen.getByRole('button', { name: /پرداخت‌ها/ }));
-    await screen.findByRole('tablist', { name: 'Payment sections' });
+    await screen.findByRole('tablist', { name: 'بخش‌های پرداخت' });
     expect(window.location.pathname).toBe('/payments');
 
     // `popstate` rather than a re-render: this is the browser's own Back, which
@@ -141,11 +141,11 @@ describe('one panel', () => {
     fireEvent.click(screen.getByRole('button', { name: /امروز/ }));
     await waitFor(() => expect(window.location.pathname).toBe('/today'));
 
-    fireEvent.click(await screen.findByRole('button', { name: /Notifications/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /اعلان‌ها/ }));
     // The panel lists one entry per payment bucket; «Income» is the one whose
     // destination differs from the default, which is what makes it the case
     // worth asserting.
-    const entries = await screen.findAllByRole('button', { name: /INCOME/i });
+    const entries = await screen.findAllByRole('button', { name: /واریزی/i });
     fireEvent.click(entries[0]!);
 
     await waitFor(() => expect(window.location.pathname).toBe('/payments'));
@@ -156,14 +156,14 @@ describe('one panel', () => {
     render(<App />);
     await sidebar();
     fireEvent.click(screen.getByRole('button', { name: /پرداخت‌ها/ }));
-    await screen.findByRole('tablist', { name: 'Payment sections' });
+    await screen.findByRole('tablist', { name: 'بخش‌های پرداخت' });
 
     // The operator menu survives — it refreshes every view and switches the
     // theme. What it must not do any more is offer «Statistics», «Devices» and
     // the rest a second time, one row below the sidebar that already has them.
-    fireEvent.click(screen.getByRole('button', { name: 'Operator menu' }));
+    fireEvent.click(screen.getByRole('button', { name: 'منوی اپراتور' }));
     const menu = screen.getByRole('menu');
-    expect(within(menu).getByRole('menuitem', { name: 'Refresh all views' })).toBeTruthy();
+    expect(within(menu).getByRole('menuitem', { name: 'تازه‌سازی همهٔ نماها' })).toBeTruthy();
     for (const gone of ['Statistics', 'Today', 'Devices', 'Accounts', 'Banks']) {
       expect(within(menu).queryByRole('menuitem', { name: gone })).toBeNull();
     }

@@ -58,16 +58,59 @@ const TEHRAN_DATE = new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
   day: '2-digit',
 });
 
+/**
+ * Seconds included, for the finance screens only.
+ *
+ * A payment claim carries two timestamps that can be a few seconds apart — when
+ * the phone received the bank SMS and when the server ingested it — and the
+ * five-minute auto-verify window is decided on their difference. Rounded to the
+ * minute they look identical, which is exactly the case an operator is looking
+ * at the screen to understand.
+ */
+const TEHRAN_SECONDS = new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
+  timeZone: 'Asia/Tehran',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+
+/**
+ * Epoch milliseconds as well as ISO strings.
+ *
+ * The panel's own API answers ISO; the finance screens, which came from the
+ * payment hub, carry `bank_timestamp` and friends as numbers. One formatter
+ * taking both is what let the second copy of this module be deleted — and the
+ * second copy formatted in the browser's own zone, so an admin travelling saw a
+ * different time than the bot had shown the customer.
+ */
+type Stamp = string | number | null | undefined;
+
+function msOf(value: Stamp): number | null {
+  if (value == null || value === '') return null;
+  const ms = typeof value === 'number' ? value : Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+}
+
 /** Jalali date and time, Tehran. Returns the raw value if it will not parse. */
-export function dateTime(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const ms = Date.parse(iso);
-  return Number.isNaN(ms) ? iso : TEHRAN.format(ms);
+export function dateTime(value: Stamp): string {
+  const ms = msOf(value);
+  if (ms == null) return typeof value === 'string' && value ? value : '—';
+  return TEHRAN.format(ms);
+}
+
+/** Jalali date, time and seconds, Tehran. */
+export function dateTimeSeconds(value: Stamp): string {
+  const ms = msOf(value);
+  if (ms == null) return typeof value === 'string' && value ? value : '—';
+  return TEHRAN_SECONDS.format(ms);
 }
 
 /** Jalali date only, Tehran. */
-export function dateOnly(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const ms = Date.parse(iso);
-  return Number.isNaN(ms) ? iso : TEHRAN_DATE.format(ms);
+export function dateOnly(value: Stamp): string {
+  const ms = msOf(value);
+  if (ms == null) return typeof value === 'string' && value ? value : '—';
+  return TEHRAN_DATE.format(ms);
 }

@@ -4,7 +4,7 @@
  * MoveReferencesModal flow.
  *
  * - Shows totals + the first 50 of each.
- * - "Move references to…" button opens the MoveReferencesModal.
+ * - "انتقال ارجاع‌ها به…" button opens the MoveReferencesModal.
  *
  * No state beyond the fetched preview.
  */
@@ -77,7 +77,7 @@ export function ReferencesModal({ account, onClose, onMove }: ReferencesModalPro
       className="modal-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Account references"
+      aria-label="ارجاع‌های حساب"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -86,7 +86,7 @@ export function ReferencesModal({ account, onClose, onMove }: ReferencesModalPro
         <div className="row toolbar">
           <h3>References — {account.display_name}</h3>
           <div className="spacer" />
-          <button type="button" onClick={onClose} aria-label="Close">
+          <button type="button" onClick={onClose} aria-label="بستن">
             ×
           </button>
         </div>
@@ -97,16 +97,16 @@ export function ReferencesModal({ account, onClose, onMove }: ReferencesModalPro
         {preview && (
           <>
             <dl className="ref-counts">
-              <dt>Transactions</dt>
+              <dt>تراکنش‌ها</dt>
               <dd>{total?.transactions ?? 0}</dd>
-              <dt>Payment claims</dt>
+              <dt>ادعاهای پرداخت</dt>
               <dd>{total?.paymentClaims ?? 0}</dd>
-              <dt>Identifiers</dt>
+              <dt>شناسه‌ها</dt>
               <dd>{total?.identifiers ?? 0}</dd>
             </dl>
-            <h4>Transactions (latest 50)</h4>
+            <h4>تراکنش‌ها (۵۰ مورد آخر)</h4>
             {preview.references.transactions.length === 0 ? (
-              <p className="muted">None.</p>
+              <p className="muted">هیچ‌کدام.</p>
             ) : (
               <ul className="ref-list">
                 {preview.references.transactions.map((t) => (
@@ -123,9 +123,9 @@ export function ReferencesModal({ account, onClose, onMove }: ReferencesModalPro
                 ))}
               </ul>
             )}
-            <h4>Payment claims (latest 50)</h4>
+            <h4>ادعاهای پرداخت (۵۰ مورد آخر)</h4>
             {preview.references.paymentClaims.length === 0 ? (
-              <p className="muted">None.</p>
+              <p className="muted">هیچ‌کدام.</p>
             ) : (
               <ul className="ref-list">
                 {preview.references.paymentClaims.map((c) => (
@@ -147,7 +147,7 @@ export function ReferencesModal({ account, onClose, onMove }: ReferencesModalPro
         <div className="row toolbar modal-actions">
           <div className="spacer" />
           <button type="button" onClick={onClose}>
-            Close
+            بستن
           </button>
           {onMove && (
             <button
@@ -156,7 +156,7 @@ export function ReferencesModal({ account, onClose, onMove }: ReferencesModalPro
               onClick={() => onMove(account.id)}
               disabled={!preview || (total?.transactions === 0 && total?.paymentClaims === 0)}
             >
-              Move references to…
+              انتقال ارجاع‌ها به…
             </button>
           )}
         </div>

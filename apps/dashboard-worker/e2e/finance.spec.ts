@@ -28,7 +28,7 @@ test('the notification bell opens the tab it names, from another section', async
   await page.goto('/admin/today');
   await expect(page.locator('.hub')).toBeVisible();
 
-  await page.getByRole('button', { name: /Notifications/ }).click();
+  await page.getByRole('button', { name: /اعلان‌ها/ }).click();
   await page.locator('.count--income').click();
 
   // The section and the tab, not just the section. The URL is the assertion
@@ -36,25 +36,25 @@ test('the notification bell opens the tab it names, from another section', async
   // has no other way to be told.
   await expect(page).toHaveURL(/\/admin\/payments\?tab=income$/);
   await expect(page.locator('.sidebar-link.active')).toHaveText('پرداخت‌ها');
-  await expect(page.locator('.ops-nav__subtab--active').first()).toContainText('Income');
+  await expect(page.locator('.ops-nav__subtab--active').first()).toContainText('واریزی‌ها');
 });
 
 test('the bell changes tab even when the payments screen is already open', async ({ page }) => {
   await page.goto('/admin/payments?tab=income');
-  await expect(page.locator('.ops-nav__subtab--active').first()).toContainText('Income');
+  await expect(page.locator('.ops-nav__subtab--active').first()).toContainText('واریزی‌ها');
 
-  await page.getByRole('button', { name: /Notifications/ }).click();
+  await page.getByRole('button', { name: /اعلان‌ها/ }).click();
   await page.locator('.count--verified').click();
 
   await expect(page).toHaveURL(/\/admin\/payments\?tab=bot_auto_verified$/);
-  await expect(page.locator('.ops-nav__subtab--active').first()).toContainText('Bot Auto Verified');
+  await expect(page.locator('.ops-nav__subtab--active').first()).toContainText('تایید خودکار ربات');
 });
 
 test('a payment tab can be linked to, and clicking one writes the link', async ({ page }) => {
   await page.goto('/admin/payments?tab=waiting');
-  await expect(page.locator('.ops-nav__subtab--active').first()).toContainText('Waiting');
+  await expect(page.locator('.ops-nav__subtab--active').first()).toContainText('در انتظار');
 
-  await page.getByRole('tab', { name: /Suspected Fake/i }).click();
+  await page.getByRole('tab', { name: /مشکوک به جعل/ }).click();
   await expect(page).toHaveURL(/tab=suspected_fake$/);
 
   // `replaceState`, so Back leaves the payments screen rather than stepping

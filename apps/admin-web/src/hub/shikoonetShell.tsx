@@ -115,7 +115,7 @@ function OperatorMenu({ onRefresh }: { onRefresh: () => void }) {
       <button
         type="button"
         className="operator-menu__trigger"
-        aria-label="Operator menu"
+        aria-label="منوی اپراتور"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
@@ -138,7 +138,7 @@ function OperatorMenu({ onRefresh }: { onRefresh: () => void }) {
               setOpen(false);
             }}
           >
-            Refresh all views
+            تازه‌سازی همهٔ نماها
           </button>
           {/* The section list that used to live here is the panel's sidebar
               now. Two menus offering the same six destinations is how the two

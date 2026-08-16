@@ -2,6 +2,8 @@
  * Presentation layer for the payment review inbox.
  */
 
+import { count } from '../format.js';
+
 export type ReviewState =
   | 'AUTO_VERIFIED'
   | 'NEEDS_REVIEW'
@@ -34,20 +36,20 @@ export interface HistoryRangeState {
 }
 
 export const HISTORY_RANGE_PRESETS: { value: HistoryRangePreset; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'day', label: 'Selected day' },
-  { value: '7d', label: 'Last 7 days' },
-  { value: '30d', label: 'Last 30 days' },
+  { value: 'all', label: 'همه' },
+  { value: 'day', label: 'روز انتخاب‌شده' },
+  { value: '7d', label: '۷ روز اخیر' },
+  { value: '30d', label: '۳۰ روز اخیر' },
 ];
 
 /** @deprecated Use HISTORY_RANGE_PRESETS + HistoryDateNav */
 export const HISTORY_RANGE_OPTIONS: { value: HistoryRange; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'today', label: 'Today' },
-  { value: '2d', label: 'Last 2 days' },
-  { value: '3d', label: 'Last 3 days' },
-  { value: '7d', label: 'Last 7 days' },
-  { value: '30d', label: 'Last 30 days' },
+  { value: 'all', label: 'همه' },
+  { value: 'today', label: 'امروز' },
+  { value: '2d', label: '۲ روز اخیر' },
+  { value: '3d', label: '۳ روز اخیر' },
+  { value: '7d', label: '۷ روز اخیر' },
+  { value: '30d', label: '۳۰ روز اخیر' },
 ];
 
 export function defaultHistoryRangeState(): HistoryRangeState {
@@ -219,37 +221,37 @@ export interface PaymentsResponse {
 }
 
 const REASON_TEXT: Record<string, string> = {
-  AMBIGUOUS_TRANSACTIONS: 'Multiple bank transactions match this payment',
-  AMBIGUOUS_CLAIMS: 'Multiple payments could match this bank transfer',
-  NO_TRANSACTION: 'No matching bank transfer found',
-  NO_TRANSACTION_AFTER_10M: 'Receipt submitted, but no bank transfer was found within 10 minutes',
-  OUTSIDE_AUTO_MATCH_WINDOW: 'Matching transfer found, but outside the 5-minute auto-verify window',
-  UNMAPPED_CARD: 'Card is not linked to a bank account',
-  AMBIGUOUS_CARD_MAPPING: 'This card is linked to more than one bank account',
-  ACCOUNT_NOT_ACTIVE: 'This bank account is not active',
-  AMOUNT_MISMATCH: 'A nearby bank transfer has a different amount',
-  TRANSACTION_ALREADY_CONSUMED: 'This bank transaction was already used for another payment',
-  PARSER_FAILURE_NEARBY: 'A nearby bank SMS could not be processed',
-  DUPLICATE_ORDER: 'This order was already submitted',
-  DUPLICATE_EVENT: 'This payment event was already received',
-  RECEIPT_REUSED: 'This receipt was already used for another payment',
-  INTEGRATION_ERROR: 'The payment bot could not be processed automatically',
+  AMBIGUOUS_TRANSACTIONS: 'چند تراکنش بانکی با این پرداخت می‌خوانند',
+  AMBIGUOUS_CLAIMS: 'چند پرداخت می‌توانند با این واریزی بخوانند',
+  NO_TRANSACTION: 'واریزی منطبقی پیدا نشد',
+  NO_TRANSACTION_AFTER_10M: 'رسید ثبت شد، ولی تا ۱۰ دقیقه هیچ واریزی پیدا نشد',
+  OUTSIDE_AUTO_MATCH_WINDOW: 'واریزی منطبق پیدا شد، ولی بیرون از پنجرهٔ ۵ دقیقه‌ای تایید خودکار',
+  UNMAPPED_CARD: 'کارت به هیچ حساب بانکی وصل نیست',
+  AMBIGUOUS_CARD_MAPPING: 'این کارت به بیش از یک حساب بانکی وصل است',
+  ACCOUNT_NOT_ACTIVE: 'این حساب بانکی فعال نیست',
+  AMOUNT_MISMATCH: 'یک واریزی نزدیک، مبلغش فرق دارد',
+  TRANSACTION_ALREADY_CONSUMED: 'این تراکنش بانکی قبلاً برای پرداخت دیگری استفاده شده',
+  PARSER_FAILURE_NEARBY: 'یک پیامک بانکی نزدیک پردازش نشد',
+  DUPLICATE_ORDER: 'این سفارش قبلاً ثبت شده',
+  DUPLICATE_EVENT: 'این رویداد پرداخت قبلاً دریافت شده',
+  RECEIPT_REUSED: 'این رسید قبلاً برای پرداخت دیگری استفاده شده',
+  INTEGRATION_ERROR: 'این پرداخت به‌صورت خودکار پردازش نشد',
 };
 
 export function reasonText(code: string | null): string {
-  if (!code) return 'Waiting for bank transfer';
-  return REASON_TEXT[code] ?? 'Could not be verified automatically';
+  if (!code) return 'در انتظار واریز بانکی';
+  return REASON_TEXT[code] ?? 'به‌صورت خودکار تایید نشد';
 }
 
 const STATE_LABEL: Record<ReviewState, string> = {
-  AUTO_VERIFIED: 'Bot auto verified',
-  NEEDS_REVIEW: 'Needs review',
-  MANUALLY_VERIFIED: 'Manually verified',
-  WAITING: 'Waiting',
-  SUSPECTED_FAKE: 'Suspected fake',
-  REJECTED: 'Rejected',
-  FAKE: 'Fake',
-  EXPIRED: 'Expired',
+  AUTO_VERIFIED: 'تایید خودکار ربات',
+  NEEDS_REVIEW: 'نیاز به بررسی',
+  MANUALLY_VERIFIED: 'تایید دستی',
+  WAITING: 'در انتظار',
+  SUSPECTED_FAKE: 'مشکوک به جعل',
+  REJECTED: 'رد شده',
+  FAKE: 'جعلی',
+  EXPIRED: 'منقضی',
 };
 
 export function stateLabel(state: ReviewState): string {
@@ -276,7 +278,7 @@ export function defaultCandidateId(item: PaymentItem): string | null {
 export function userLabel(item: PaymentItem): string {
   if (item.telegramUsername) return `@${item.telegramUsername}`;
   if (item.telegramUserId) return `user ${item.telegramUserId}`;
-  return 'Unknown user';
+  return 'کاربر نامشخص';
 }
 
 /** Compact identity line for list rows (username primary). */
@@ -338,14 +340,14 @@ export function formatDurationLong(ms: number): string {
 export function formatTimeAgo(timestampMs: number, now: number = Date.now()): string {
   const totalSec = Math.max(0, Math.floor((now - timestampMs) / 1000));
   const min = Math.floor(totalSec / 60);
-  if (min <= 0) return 'just now';
-  if (min === 1) return '1 minute ago';
-  return `${min} minutes ago`;
+  if (min <= 0) return 'همین حالا';
+  if (min === 1) return '۱ دقیقه پیش';
+  return `${count(min)} دقیقه پیش`;
 }
 
 /**
  * Format a unix-millisecond timestamp as `YYYY-MM-DD HH:mm:ss` in
- * Asia/Tehran.  Used for the "Verified At" column on the Bot Auto Verified
+ * Asia/Tehran.  Used for the "زمان تایید" column on the Bot Auto Verified
  * table so operators see the exact dashboard timezone and never see
  * browser-local time.
  *
@@ -381,7 +383,7 @@ export function formatExactDateTime(ms: number | null | undefined): string {
 export function formatRelativeFuture(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
   const min = Math.max(1, Math.ceil(totalSec / 60));
-  if (min === 1) return 'About 1 minute remaining';
+  if (min === 1) return 'حدود ۱ دقیقه مانده';
   return `About ${min} minutes remaining`;
 }
 
@@ -397,10 +399,10 @@ export function reopenBlockedReason(item: PaymentItem): string | null {
   if (isReopenEligible(item)) return null;
   if (item.reopenBlockedReason?.trim()) return item.reopenBlockedReason.trim();
   if (item.matchStatus === 'AUTO_VERIFIED') {
-    return 'Bot auto-verified payments cannot be reopened here.';
+    return 'پرداخت‌های تاییدشدهٔ خودکار ربات را نمی‌شود از این‌جا دوباره باز کرد.';
   }
   if (item.reviewState !== 'MANUALLY_VERIFIED') {
-    return 'Only manually verified payments can be reopened.';
+    return 'فقط پرداخت‌های تاییدشدهٔ دستی را می‌شود دوباره باز کرد.';
   }
   return 'No revert snapshot was saved when this payment was verified. Older manual verifications may not support reopen.';
 }

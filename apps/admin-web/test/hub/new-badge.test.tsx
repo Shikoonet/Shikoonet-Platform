@@ -29,19 +29,19 @@ describe('NewBadge', () => {
 
   it('renders the NEW pill when isNew is true', () => {
     render(<NewBadge isNew={true} />);
-    expect(screen.getByLabelText('New transaction')).toBeTruthy();
-    expect(screen.getByText('NEW')).toBeTruthy();
+    expect(screen.getByLabelText('تراکنش تازه')).toBeTruthy();
+    expect(screen.getByText('تازه')).toBeTruthy();
   });
 
   it('renders with the new-badge class by default', () => {
     render(<NewBadge isNew={true} />);
-    const el = screen.getByLabelText('New transaction');
+    const el = screen.getByLabelText('تراکنش تازه');
     expect(el.className).toBe('new-badge');
   });
 
   it('appends extra className when provided', () => {
     render(<NewBadge isNew={true} className="extra" />);
-    const el = screen.getByLabelText('New transaction');
+    const el = screen.getByLabelText('تراکنش تازه');
     expect(el.className).toBe('new-badge extra');
   });
 });

@@ -23,7 +23,7 @@ describe('formatTimeAgo', () => {
   it('reads a timestamp, not a duration', () => {
     // The whole bug in one assertion: given a real epoch timestamp it must say
     // 27 minutes, not the ~29.7 million that formatting the epoch produces.
-    expect(formatTimeAgo(NOW_MS - 27 * MINUTE, NOW_MS)).toBe('27 minutes ago');
+    expect(formatTimeAgo(NOW_MS - 27 * MINUTE, NOW_MS)).toBe('۲۷ دقیقه پیش');
   });
 
   it('never reports an implausible age for a recent verification', () => {
@@ -39,18 +39,18 @@ describe('formatTimeAgo', () => {
   });
 
   it('says just now inside the first minute', () => {
-    expect(formatTimeAgo(NOW_MS, NOW_MS)).toBe('just now');
-    expect(formatTimeAgo(NOW_MS - 59_999, NOW_MS)).toBe('just now');
+    expect(formatTimeAgo(NOW_MS, NOW_MS)).toBe('همین حالا');
+    expect(formatTimeAgo(NOW_MS - 59_999, NOW_MS)).toBe('همین حالا');
   });
 
   it('gets the singular right', () => {
-    expect(formatTimeAgo(NOW_MS - MINUTE, NOW_MS)).toBe('1 minute ago');
-    expect(formatTimeAgo(NOW_MS - 2 * MINUTE, NOW_MS)).toBe('2 minutes ago');
+    expect(formatTimeAgo(NOW_MS - MINUTE, NOW_MS)).toBe('۱ دقیقه پیش');
+    expect(formatTimeAgo(NOW_MS - 2 * MINUTE, NOW_MS)).toBe('۲ دقیقه پیش');
   });
 
   it('does not count backwards for a clock that is slightly behind', () => {
     // Browser and server clocks disagree; a future timestamp must read as now
     // rather than as a negative age.
-    expect(formatTimeAgo(NOW_MS + 5 * MINUTE, NOW_MS)).toBe('just now');
+    expect(formatTimeAgo(NOW_MS + 5 * MINUTE, NOW_MS)).toBe('همین حالا');
   });
 });

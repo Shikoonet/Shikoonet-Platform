@@ -13,42 +13,54 @@ import {
   IconWaiting,
 } from './paymentsIcons.js';
 
+/*
+ * The words, in the language the shop is run in.
+ *
+ * Wherever this codebase already had a Persian name for a state, that name is
+ * reused rather than invented: `format.ts` has mapped `NEEDS_REVIEW` to «نیاز به
+ * بررسی» and `PENDING` to «در انتظار» since before the panels merged, and two
+ * names for one state is worse than an English one.
+ *
+ * «واریزی‌ها» rather than a literal «درآمد» for Income: these rows are bank
+ * credits that no order has claimed yet, which is what the operator is looking
+ * at — the shop's income is a different number on a different screen.
+ */
 const REVIEW_TABS = [
   {
     value: 'income' as const,
-    label: 'Income',
-    shortLabel: 'Income',
+    label: 'واریزی‌ها',
+    shortLabel: 'واریزی',
     countKey: 'income' as const,
     unreadKey: 'incomeUnread' as const,
     Icon: IconIncome,
   },
   {
     value: 'needs_review' as const,
-    label: 'Needs Review',
-    shortLabel: 'Needs Review',
+    label: 'نیاز به بررسی',
+    shortLabel: 'بررسی',
     countKey: 'needsReview' as const,
     unreadKey: 'needsReviewUnread' as const,
     Icon: IconReview,
   },
   {
     value: 'waiting' as const,
-    label: 'Waiting',
-    shortLabel: 'Waiting',
+    label: 'در انتظار',
+    shortLabel: 'انتظار',
     countKey: 'waiting' as const,
     Icon: IconWaiting,
   },
   {
     value: 'suspected_fake' as const,
-    label: 'Suspected Fake',
-    shortLabel: 'Suspected',
+    label: 'مشکوک به جعل',
+    shortLabel: 'مشکوک',
     countKey: 'suspectedFake' as const,
     unreadKey: 'suspectedFakeUnread' as const,
     Icon: IconSuspected,
   },
   {
     value: 'bot_auto_verified' as const,
-    label: 'Bot Auto Verified',
-    shortLabel: 'Bot Verified',
+    label: 'تایید خودکار ربات',
+    shortLabel: 'ربات',
     countKey: 'botAutoVerified' as const,
     unreadKey: 'botAutoVerifiedUnread' as const,
     Icon: IconBotVerified,
@@ -58,19 +70,19 @@ const REVIEW_TABS = [
 const PAYMENTS_TABS = [
   {
     value: 'manually_verified' as const,
-    label: 'Manually Verified',
-    shortLabel: 'Manual',
+    label: 'تایید دستی',
+    shortLabel: 'دستی',
     countKey: 'manuallyVerified' as const,
     Icon: IconManualVerified,
   },
   {
     value: 'declined_income' as const,
-    label: 'Declined',
-    shortLabel: 'Declined',
+    label: 'رد شده',
+    shortLabel: 'رد شده',
     countKey: 'declinedIncome' as const,
     Icon: IconDeclined,
   },
-  { value: 'all' as const, label: 'All', shortLabel: 'All', countKey: 'all' as const, Icon: IconAll },
+  { value: 'all' as const, label: 'همه', shortLabel: 'همه', countKey: 'all' as const, Icon: IconAll },
 ] as const;
 
 type ReviewTab = (typeof REVIEW_TABS)[number]['value'];
@@ -173,42 +185,45 @@ export function PrimaryOpsNav({
     <div
       className="ops-nav__strip ops-nav__strip--primary"
       role="tablist"
-      aria-label="Payment sections"
+      aria-label="بخش‌های پرداخت"
     >
       <button
         type="button"
         role="tab"
         aria-selected={activeGroup === 'review'}
-        aria-label="Review"
+        aria-label="بررسی"
         className={`ops-nav__tab${activeGroup === 'review' ? ' ops-nav__tab--active' : ''}`}
         onClick={() => onChange('review')}
       >
         <IconReview className="ops-nav__tab-icon" />
-        <span className="ops-nav__tab-label">Review</span>
+        <span className="ops-nav__tab-label">بررسی</span>
         {reviewTotal > 0 && <NavBadge count={reviewTotal} />}
       </button>
       <button
         type="button"
         role="tab"
         aria-selected={activeGroup === 'reseller'}
-        aria-label="Reseller"
+        aria-label="نمایندگی"
         className={`ops-nav__tab${activeGroup === 'reseller' ? ' ops-nav__tab--active' : ''}`}
         onClick={() => onChange('reseller')}
       >
         <IconReseller className="ops-nav__tab-icon" />
-        <span className="ops-nav__tab-label">Reseller</span>
+        <span className="ops-nav__tab-label">نمایندگی</span>
         <NavBadge {...navBadgeProps(counts?.reseller, counts?.resellerUnread)} />
       </button>
       <button
         type="button"
         role="tab"
         aria-selected={activeGroup === 'payments'}
-        aria-label="Payments"
+        aria-label="بایگانی"
         className={`ops-nav__tab${activeGroup === 'payments' ? ' ops-nav__tab--active' : ''}`}
         onClick={() => onChange('payments')}
       >
         <IconPayments className="ops-nav__tab-icon" />
-        <span className="ops-nav__tab-label">Payments</span>
+        {/* «بایگانی» rather than a second «پرداخت‌ها»: the sidebar already has
+            that word one level up, and this group is the record of decided
+            payments — verified, declined, and everything. */}
+        <span className="ops-nav__tab-label">بایگانی</span>
         {paymentsTotal > 0 && <NavBadge count={paymentsTotal} />}
       </button>
     </div>
@@ -237,7 +252,7 @@ export function ReviewSubNav({
     <div
       className="ops-nav__strip ops-nav__strip--secondary ops-nav__strip--review"
       role="tablist"
-      aria-label={activeGroup === 'review' ? 'Review queues' : 'Payment lists'}
+      aria-label={activeGroup === 'review' ? 'صف‌های بررسی' : 'فهرست‌های پرداخت'}
     >
       {items.map((item) => {
         const selected = tab === item.value;

@@ -19,7 +19,7 @@ import { IconBalance, IconBotSales, IconResellerSales } from './paymentsIcons.js
 
 function AccountRef({ account }: { account: AccountRefLike }) {
   const bank = bankName(account);
-  if (!bank && !account.accountHint) return <span className="muted">Unassigned</span>;
+  if (!bank && !account.accountHint) return <span className="muted">تخصیص‌نیافته</span>;
   return (
     <bdi className="account-ref">
       {bank && <span>{bank}</span>}
@@ -37,7 +37,7 @@ export function HistoryRangeSelect({
 }) {
   return (
     <label className="history-range">
-      <span>Range</span>
+      <span>بازه</span>
       <select value={value} onChange={(e) => onChange(e.target.value as HistoryRange)}>
         {HISTORY_RANGE_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>
@@ -61,7 +61,7 @@ export function FinancialSummaryBar({
     <div className="payments-summary payments-summary--financial">
       <div className="payments-summary__stats">
         <span>
-          <strong>{formatTomanFromIrr(summary.bankIncomeIrr)}</strong> Bank income
+          <strong>{formatTomanFromIrr(summary.bankIncomeIrr)}</strong> درآمد بانکی
         </span>
         <span>
           <strong>{summary.botAutoVerified.payments}</strong> Bot auto verified ·{' '}
@@ -71,17 +71,17 @@ export function FinancialSummaryBar({
           <strong>{summary.reseller.payments}</strong> Reseller · {formatTomanFromIrr(summary.reseller.amountIrr)}
         </span>
         <span>
-          <strong>{summary.unassignedIncome.count}</strong> Unassigned income ·{' '}
+          <strong>{summary.unassignedIncome.count}</strong> واریزی تخصیص‌نیافته ·{' '}
           {formatTomanFromIrr(summary.unassignedIncome.amountIrr)}
         </span>
         <span>
-          <strong>{counts?.needsReview ?? '—'}</strong> Needs review
+          <strong>{counts?.needsReview ?? '—'}</strong> نیاز به بررسی
         </span>
         <span>
-          <strong>{counts?.waiting ?? '—'}</strong> Waiting
+          <strong>{counts?.waiting ?? '—'}</strong> در انتظار
         </span>
         <span>
-          <strong>{counts?.suspectedFake ?? '—'}</strong> Suspected fake
+          <strong>{counts?.suspectedFake ?? '—'}</strong> مشکوک به جعل
         </span>
       </div>
     </div>
@@ -89,7 +89,7 @@ export function FinancialSummaryBar({
 }
 
 export function OpenQueueHint() {
-  return <p className="muted payments-queue-hint">Open queues always include all unresolved payments.</p>;
+  return <p className="muted payments-queue-hint">صف‌های باز همیشه همهٔ پرداخت‌های تعیین‌تکلیف‌نشده را دارند.</p>;
 }
 
 export function AnalyticsSummaryBar({
@@ -109,7 +109,7 @@ export function AnalyticsSummaryBar({
           <em className="muted">({formatPercentChange(analytics.sales.amountChange)})</em>
         </span>
         <span>
-          <strong>{formatTomanFromIrr(analytics.bankInflowIrr)}</strong> Bank inflow
+          <strong>{formatTomanFromIrr(analytics.bankInflowIrr)}</strong> ورودی بانکی
         </span>
         <span>
           <strong>{analytics.botAutoVerified.count}</strong> Bot auto verified ·{' '}
@@ -123,7 +123,7 @@ export function AnalyticsSummaryBar({
           <strong>{analytics.reseller.count}</strong> Reseller · {formatTomanFromIrr(analytics.reseller.amountIrr)}
         </span>
         <span>
-          <strong>{analytics.unassignedIncome.count}</strong> Unassigned income ·{' '}
+          <strong>{analytics.unassignedIncome.count}</strong> واریزی تخصیص‌نیافته ·{' '}
           {formatTomanFromIrr(analytics.unassignedIncome.amountIrr)}
         </span>
         <span>
@@ -133,7 +133,7 @@ export function AnalyticsSummaryBar({
         <span>
           <strong>{counts?.needsReview ?? '—'}</strong> Needs review ·{' '}
           <strong>{counts?.waiting ?? '—'}</strong> Waiting ·{' '}
-          <strong>{counts?.suspectedFake ?? '—'}</strong> Suspected fake
+          <strong>{counts?.suspectedFake ?? '—'}</strong> مشکوک به جعل
         </span>
       </div>
     </div>
@@ -149,9 +149,9 @@ export function SalesTrendChart({
 }) {
   if (!analytics?.trend.length) {
     return (
-      <div className={`sales-trend${className ? ` ${className}` : ''}`} aria-label="Sales trend">
-        <h3 className="sales-trend__title">Sales trend</h3>
-        <p className="muted">No verified sales in this range.</p>
+      <div className={`sales-trend${className ? ` ${className}` : ''}`} aria-label="روند فروش">
+        <h3 className="sales-trend__title">روند فروش</h3>
+        <p className="muted">در این بازه فروش تاییدشده‌ای نیست.</p>
       </div>
     );
   }
@@ -159,10 +159,10 @@ export function SalesTrendChart({
   return (
     <div
       className={`sales-trend panel-subtle${className ? ` ${className}` : ''}`}
-      aria-label="Sales trend"
+      aria-label="روند فروش"
     >
       <div className="sales-trend__header">
-        <h3 className="sales-trend__title section-heading">Sales trend</h3>
+        <h3 className="sales-trend__title section-heading">روند فروش</h3>
         <p className="sales-trend__subtitle muted tabular-nums">
           {analytics.sales.count} payments · {formatTomanFromIrr(analytics.sales.amountIrr)}
         </p>
@@ -185,13 +185,13 @@ export function SalesTrendChart({
 
 export function TopMetricsSummary({ analytics }: { analytics: AnalyticsResponse }) {
   return (
-    <div className="metrics-strip" aria-label="Primary metrics">
+    <div className="metrics-strip" aria-label="شاخص‌های اصلی">
       <article className="metrics-strip__item">
         <span className="metrics-strip__icon" aria-hidden>
           <IconBalance />
         </span>
         <div className="metrics-strip__body">
-          <span className="metrics-strip__label">Total Balance</span>
+          <span className="metrics-strip__label">موجودی کل</span>
           <span className="metrics-strip__value tabular-nums">
             {formatTomanFromIrr(analytics.balances.totalKnownIrr)}
           </span>
@@ -205,7 +205,7 @@ export function TopMetricsSummary({ analytics }: { analytics: AnalyticsResponse 
           <IconBotSales />
         </span>
         <div className="metrics-strip__body">
-          <span className="metrics-strip__label">Bot Sales</span>
+          <span className="metrics-strip__label">فروش ربات</span>
           <span className="metrics-strip__value tabular-nums">
             {formatTomanFromIrr(analytics.botAutoVerified.amountIrr)}
           </span>
@@ -217,7 +217,7 @@ export function TopMetricsSummary({ analytics }: { analytics: AnalyticsResponse 
           <IconResellerSales />
         </span>
         <div className="metrics-strip__body">
-          <span className="metrics-strip__label">Reseller Sales</span>
+          <span className="metrics-strip__label">فروش نمایندگی</span>
           <span className="metrics-strip__value tabular-nums">{formatTomanFromIrr(analytics.reseller.amountIrr)}</span>
           <span className="metrics-strip__meta muted">{analytics.reseller.count} payments</span>
         </div>
@@ -244,16 +244,16 @@ export function VerificationMixChart({ analytics }: { analytics: AnalyticsRespon
   if (total <= 0) {
     return (
       <div className="statistics-chart-card">
-        <h3>Verification mix</h3>
-        <p className="muted">No verified payments in this range.</p>
+        <h3>ترکیب تایید</h3>
+        <p className="muted">در این بازه پرداخت تاییدشده‌ای نیست.</p>
       </div>
     );
   }
   const botPct = Math.round((bot / total) * 100);
   const manualPct = 100 - botPct;
   return (
-    <div className="statistics-chart-card" aria-label="Verification mix">
-      <h3>Verification mix</h3>
+    <div className="statistics-chart-card" aria-label="ترکیب تایید">
+      <h3>ترکیب تایید</h3>
       <div className="mix-bar" role="img" aria-label={`Bot ${botPct}%, Manual ${manualPct}%`}>
         <div className="mix-bar__bot" style={{ width: `${botPct}%` }} title={`Bot ${botPct}%`} />
         <div
@@ -279,18 +279,18 @@ export function VerificationMixChart({ analytics }: { analytics: AnalyticsRespon
 export function VolumeBreakdownChart({ analytics }: { analytics: AnalyticsResponse }) {
   const rows = [
     { label: 'Sales', amount: analytics.sales.amountIrr, tone: 'sales' as const },
-    { label: 'Bank inflow', amount: analytics.bankInflowIrr, tone: 'inflow' as const },
-    { label: 'Reseller', amount: analytics.reseller.amountIrr, tone: 'reseller' as const },
+    { label: 'ورودی بانکی', amount: analytics.bankInflowIrr, tone: 'inflow' as const },
+    { label: 'نمایندگی', amount: analytics.reseller.amountIrr, tone: 'reseller' as const },
     {
-      label: 'Unassigned income',
+      label: 'واریزی تخصیص‌نیافته',
       amount: analytics.unassignedIncome.amountIrr,
       tone: 'income' as const,
     },
   ];
   const max = Math.max(...rows.map((r) => r.amount), 1);
   return (
-    <div className="statistics-chart-card" aria-label="Volume breakdown">
-      <h3>Volume breakdown</h3>
+    <div className="statistics-chart-card" aria-label="تفکیک حجم">
+      <h3>تفکیک حجم</h3>
       <ul className="volume-bars">
         {rows.map((r) => (
           <li key={r.label} className="volume-bars__row">
@@ -313,9 +313,9 @@ export function VolumeBreakdownChart({ analytics }: { analytics: AnalyticsRespon
 export function IncomeTotalsBar({ totals }: { totals: { count: number; amountIrr: number } | undefined }) {
   if (!totals) return null;
   return (
-    <div className="hub-context-metrics" aria-label="Unassigned income totals">
+    <div className="hub-context-metrics" aria-label="جمع واریزی‌های تخصیص‌نیافته">
       <span>
-        <strong>{totals.count}</strong> unassigned
+        <strong>{totals.count}</strong> تخصیص‌نیافته
       </span>
       <span className="hub-context-metrics__sep" aria-hidden>
         ·
@@ -364,7 +364,7 @@ export function IncomeRow({
           <input
             type="checkbox"
             checked={selected ?? false}
-            aria-label={`Select income ${item.id}`}
+            aria-label={`انتخاب واریزی ${item.id}`}
             onChange={(e) => onSelect(e.target.checked)}
           />
         </label>
@@ -383,13 +383,13 @@ export function IncomeRow({
       </button>
       <div className="hub-list-row__actions" onClick={(e) => e.stopPropagation()}>
         <button type="button" className="ghost hub-list-row__action" onClick={onAssign}>
-          Assign
+          تخصیص
         </button>
         <button type="button" className="ghost hub-list-row__action" onClick={onMarkReseller}>
-          Reseller
+          نمایندگی
         </button>
         <button type="button" className="ghost hub-list-row__action" onClick={onDecline}>
-          Decline
+          رد
         </button>
       </div>
     </li>
@@ -403,9 +403,9 @@ export function DeclinedTotalsBar({
 }) {
   if (!totals) return null;
   return (
-    <div className="hub-context-metrics hub-context-metrics--declined" aria-label="Declined income totals">
+    <div className="hub-context-metrics hub-context-metrics--declined" aria-label="جمع واریزی‌های ردشده">
       <span>
-        <strong>{totals.count}</strong> declined
+        <strong>{totals.count}</strong> ردشده
       </span>
       <span className="hub-context-metrics__sep" aria-hidden>
         ·
@@ -465,7 +465,7 @@ export function DeclinedIncomeRow({
       </div>
       <div className="hub-list-row__actions" onClick={(e) => e.stopPropagation()}>
         <button type="button" className="primary hub-list-row__action" onClick={onRestore}>
-          Restore
+          بازگردانی
         </button>
       </div>
     </li>
@@ -486,21 +486,21 @@ export function ResellerStatsBar({
 }) {
   if (!stats) return null;
   return (
-    <div className="hub-context-metrics hub-context-metrics--reseller" aria-label="Reseller totals">
+    <div className="hub-context-metrics hub-context-metrics--reseller" aria-label="جمع نمایندگی">
       <span className="tabular-nums">
-        <strong>{formatTomanFromIrr(stats.amountIrr)}</strong> reseller sales
+        <strong>{formatTomanFromIrr(stats.amountIrr)}</strong> فروش نمایندگی
       </span>
       <span className="hub-context-metrics__sep" aria-hidden>
         ·
       </span>
       <span>
-        <strong>{stats.payments}</strong> payments
+        <strong>{stats.payments}</strong> پرداخت
       </span>
       <span className="hub-context-metrics__sep" aria-hidden>
         ·
       </span>
       <span>
-        <strong>{stats.activeResellers}</strong> active
+        <strong>{stats.activeResellers}</strong> نمایندهٔ فعال
       </span>
       {stats.breakdown.length > 0 && (
         <ul className="hub-context-metrics__breakdown">
@@ -646,20 +646,20 @@ export function MarkResellerModal({
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal-body">
-        <h3>Mark as reseller</h3>
-        <p>Mark this incoming transaction as reseller payment?</p>
+        <h3>علامت‌زدن به‌عنوان نمایندگی</h3>
+        <p>این تراکنش ورودی به‌عنوان پرداخت نمایندگی علامت زده شود؟</p>
         <p>
           +{formatTomanFromIrr(item.amountIrr)} · <AccountRef account={item} />
         </p>
         <p className="muted">ID {item.id}</p>
         <label>
-          Search reseller
+          جست‌وجوی نماینده
           <input value={query} onChange={(e) => setQuery(e.target.value)} />
         </label>
         <label>
-          Reseller
+          نمایندگی
           <select value={resellerId} onChange={(e) => setResellerId(e.target.value)}>
-            <option value="">Select…</option>
+            <option value="">انتخاب…</option>
             {resellers.map((r) => (
               <option key={r.id} value={r.id}>
                 {r.name}
@@ -670,7 +670,7 @@ export function MarkResellerModal({
         <div className="row toolbar">
           <input
             type="text"
-            placeholder="New reseller name"
+            placeholder="نام نمایندهٔ جدید"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
           />
@@ -679,15 +679,15 @@ export function MarkResellerModal({
           </button>
         </div>
         <label>
-          Note (optional)
+          یادداشت (اختیاری)
           <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
         </label>
         <div className="payment-review__actions">
           <button type="button" className="primary" disabled={busy || !resellerId} onClick={() => void submit()}>
-            Confirm
+            تایید
           </button>
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
-            Cancel
+            انصراف
           </button>
         </div>
       </div>
@@ -785,7 +785,7 @@ export function AssignToPaymentModal({
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal-body">
-        <h3>Assign to payment</h3>
+        <h3>تخصیص به پرداخت</h3>
         <p className="muted">Transaction {transactionId}</p>
         {receivedToman != null && (
           <p className="tabular-nums">
@@ -793,7 +793,7 @@ export function AssignToPaymentModal({
           </p>
         )}
         <label>
-          Search payment
+          جست‌وجوی پرداخت
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -801,9 +801,9 @@ export function AssignToPaymentModal({
           />
         </label>
         <label>
-          Payment claim
+          ادعای پرداخت
           <select value={claimId} onChange={(e) => setClaimId(e.target.value)}>
-            <option value="">Select open payment…</option>
+            <option value="">پرداخت باز را انتخاب کن…</option>
             {filteredClaims.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.orderId} · {formatToman(c.expectedAmountToman)} · {c.reviewState}
@@ -818,13 +818,13 @@ export function AssignToPaymentModal({
               @{selected.telegramUsername ?? selected.telegramUserId} · Order {selected.orderId}
             </p>
             <dl className="payment-review__facts">
-              <dt>Expected</dt>
+              <dt>مبلغ مورد انتظار</dt>
               <dd className="tabular-nums">{formatToman(expectedToman)}</dd>
-              <dt>Received</dt>
+              <dt>دریافت‌شده</dt>
               <dd className="tabular-nums">{formatToman(receivedToman)}</dd>
               {differenceToman != null && differenceToman !== 0 && (
                 <>
-                  <dt>Difference</dt>
+                  <dt>اختلاف</dt>
                   <dd className={`tabular-nums${overpayment ? ' payment-warning' : ''}`}>
                     {differenceToman > 0 ? '+' : ''}
                     {formatToman(Math.abs(differenceToman)).replace(' Toman', '')} Toman
@@ -833,29 +833,29 @@ export function AssignToPaymentModal({
               )}
             </dl>
             {overpayment && (
-              <p className="payment-warning">Received amount is higher than expected.</p>
+              <p className="payment-warning">مبلغ دریافتی از مبلغ مورد انتظار بیشتر است.</p>
             )}
           </>
         )}
         <label>
-          Reason (required)
+          دلیل (الزامی)
           <input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
         </label>
         <label className="checkbox">
           <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} />
-          Verify after assign
+          تایید بعد از تخصیص
         </label>
         {overpayment && verify && (
           <p className="muted">
-            Exact-amount verification will fail for overpayment — assign without verify, then reconcile manually.
+            تایید با مبلغ دقیق برای اضافه‌پرداخت شکست می‌خورد — بدون تایید تخصیص بده و بعد دستی تطبیق کن.
           </p>
         )}
         <div className="payment-review__actions">
           <button type="button" className="primary" disabled={busy} onClick={() => void submit()}>
-            Assign
+            تخصیص
           </button>
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
-            Cancel
+            انصراف
           </button>
         </div>
       </div>

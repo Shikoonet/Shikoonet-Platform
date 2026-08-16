@@ -81,7 +81,7 @@ import {
  */
 function AccountRef({ account }: { account: AccountRefLike }) {
   const bank = bankName(account);
-  if (!bank && !account.accountHint) return <span className="muted">Unmapped account</span>;
+  if (!bank && !account.accountHint) return <span className="muted">حساب نگاشت‌نشده</span>;
   return (
     <bdi className="account-ref">
       {bank && <span>{bank}</span>}
@@ -95,7 +95,7 @@ function PaymentIdentity({ item }: { item: PaymentItem }) {
     <div className="payment-identity">
       {item.telegramUsername && <strong>@{item.telegramUsername}</strong>}
       {item.telegramUserId && <span className="muted">User ID: {item.telegramUserId}</span>}
-      <span className="muted">Order: {item.orderId}</span>
+      <span className="muted">سفارش: {item.orderId}</span>
     </div>
   );
 }
@@ -303,7 +303,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
 
       <section className="payments-shell">
         <div className="payments-shell__surface">
-          <nav className="ops-nav ops-nav--subnav" aria-label="Payment hub views">
+          <nav className="ops-nav ops-nav--subnav" aria-label="نماهای پرداخت">
             <ReviewSubNav
               activeGroup={level1GroupFromTab(tab)}
               tab={tab}
@@ -378,11 +378,11 @@ export function PaymentsView({ cache }: { cache: Cache }) {
         <p className="error">
           Could not load payments.{' '}
           <button type="button" className="ghost" onClick={refresh}>
-            Retry
+            تلاش دوباره
           </button>
         </p>
       )}
-      {!data && status !== 'error' && <p className="muted">Loading…</p>}
+      {!data && status !== 'error' && <p className="muted">در حال بارگذاری…</p>}
       {data &&
         ((tab === 'income' && incomeItems.length === 0) ||
           (tab === 'declined_income' && declinedItems.length === 0) ||
@@ -410,7 +410,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
             actions={
               selectedIncome.size > 0 ? (
                 <button type="button" className="ghost payment-table-header__action" onClick={() => setBulkDeclineOpen(true)}>
-                  Decline selected ({selectedIncome.size})
+                  رد انتخاب‌شده‌ها ({selectedIncome.size})
                 </button>
               ) : null
             }
@@ -452,7 +452,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   }
                 }}
               >
-                Restore selected ({selectedDeclined.size})
+                بازگردانی انتخاب‌شده‌ها ({selectedDeclined.size})
               </button>
             ) : null
           }
@@ -699,7 +699,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
           onClose={() => setReopenTarget(null)}
           onDone={() => {
             setReopenTarget(null);
-            setToast('Verification reopened');
+            setToast('تایید دوباره باز شد');
             setTimeout(() => setToast(null), 4000);
             cache.refetch(queryKey, QK.suggested, QK.today);
           }}
@@ -709,7 +709,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
       <Drawer
         open={reviewing != null}
         onClose={() => setReviewingId(null)}
-        label="Payment review"
+        label="بررسی پرداخت"
         side="right"
       >
         {reviewing && (
@@ -746,15 +746,15 @@ export function PaymentsView({ cache }: { cache: Cache }) {
 }
 
 function emptyText(tab: PaymentTab): string {
-  if (tab === 'needs_review') return 'Nothing needs review.';
-  if (tab === 'income') return 'No unassigned bank income in this range.';
-  if (tab === 'declined_income') return 'No declined income in this range.';
-  if (tab === 'waiting') return 'No payments waiting.';
-  if (tab === 'suspected_fake') return 'No suspicious receipts are waiting for review.';
-  if (tab === 'bot_auto_verified') return 'No bot auto-verified payments in this range.';
-  if (tab === 'manually_verified') return 'No manually verified payments in this range.';
-  if (tab === 'reseller') return 'No reseller payments in this range.';
-  return 'No payments found.';
+  if (tab === 'needs_review') return 'چیزی نیاز به بررسی ندارد.';
+  if (tab === 'income') return 'در این بازه واریزی تخصیص‌نیافته‌ای نیست.';
+  if (tab === 'declined_income') return 'در این بازه واریزی ردشده‌ای نیست.';
+  if (tab === 'waiting') return 'پرداختی در انتظار نیست.';
+  if (tab === 'suspected_fake') return 'رسید مشکوکی در انتظار بررسی نیست.';
+  if (tab === 'bot_auto_verified') return 'در این بازه پرداختی با تایید خودکار ربات نیست.';
+  if (tab === 'manually_verified') return 'در این بازه پرداختی با تایید دستی نیست.';
+  if (tab === 'reseller') return 'در این بازه پرداخت نمایندگی نیست.';
+  return 'پرداختی پیدا نشد.';
 }
 
 function collectReasons(items: PaymentItem[]): string[] {
@@ -769,7 +769,7 @@ function paymentIdentityLine(item: PaymentItem): string {
 }
 
 function paymentDeviceLine(item: PaymentItem): string {
-  return `Device: ${deviceInlineLabel(item.device)}`;
+  return `دستگاه: ${deviceInlineLabel(item.device)}`;
 }
 
 function NeedsReviewRow({
@@ -800,10 +800,10 @@ function NeedsReviewRow({
           <span className="hub-list-row__amount tabular-nums">{formatToman(item.expectedAmountToman)}</span>
         </div>
         <div className="hub-list-row__line2 muted">
-          Order {item.orderId} · {masked} · {paymentDeviceLine(item)}
+          سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
         </div>
         <div className="hub-list-row__line3 payment-reason">
-          <StatusBadge tone="review">Needs review</StatusBadge>
+          <StatusBadge tone="review">نیاز به بررسی</StatusBadge>
           <span className="payment-reason__text">{reasonText(item.suspectReason)}</span>
         </div>
       </button>
@@ -817,7 +817,7 @@ function WaitingRow({ item, onDetails }: { item: PaymentItem; onDetails: () => v
   const waitNote =
     item.waitingRemainingMs != null
       ? formatRelativeFuture(item.waitingRemainingMs)
-      : 'Waiting for bank transfer';
+      : 'در انتظار واریز بانکی';
 
   return (
     <li className="hub-list-row hub-list-row--waiting">
@@ -827,7 +827,7 @@ function WaitingRow({ item, onDetails }: { item: PaymentItem; onDetails: () => v
           <span className="hub-list-row__amount tabular-nums">{formatToman(item.expectedAmountToman)}</span>
         </div>
         <div className="hub-list-row__line2 muted">
-          Order {item.orderId} · {masked} · {paymentDeviceLine(item)}
+          سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
         </div>
         <div className="hub-list-row__line3">
           <StatusBadge tone="waiting">{waitNote}</StatusBadge>
@@ -883,7 +883,7 @@ function SuspectedFakeRow({
           <span className="hub-list-row__amount tabular-nums">{formatToman(item.expectedAmountToman)}</span>
         </div>
         <div className="hub-list-row__line2 muted">
-          Order {item.orderId} · {masked} · {paymentDeviceLine(item)}
+          سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
         </div>
         <div className="hub-list-row__line3 payment-reason">
           <StatusBadge tone="suspected">{reasonText(item.suspectReason)}</StatusBadge>
@@ -892,15 +892,15 @@ function SuspectedFakeRow({
       <div className="hub-list-row__inline-actions">
         {!confirmRemove ? (
           <button type="button" className="ghost hub-list-row__action" disabled={busy} onClick={() => setConfirmRemove(true)}>
-            Remove
+            حذف
           </button>
         ) : (
           <>
             <button type="button" className="danger hub-list-row__action" disabled={busy} onClick={() => void runRemove()}>
-              Confirm
+              تایید
             </button>
             <button type="button" className="ghost hub-list-row__action" disabled={busy} onClick={() => setConfirmRemove(false)}>
-              Cancel
+              انصراف
             </button>
           </>
         )}
@@ -934,7 +934,7 @@ function ManuallyVerifiedRow({
   const operator = item.matchedTransaction?.verifiedBy;
   const txLabel = item.matchedTransaction
     ? `+${formatTomanFromIrr(item.matchedTransaction.amountIrr)}`
-    : 'None';
+    : 'هیچ‌کدام';
   const canReopen = isReopenEligible(item);
   const reopenBlocked = reopenBlockedReason(item);
 
@@ -944,23 +944,23 @@ function ManuallyVerifiedRow({
         <div className="hub-list-row__line1">
           <span className="hub-list-row__identity">
             {identity && <strong>{identity}</strong>}
-            <span className="muted">Order {item.orderId}</span>
+            <span className="muted">سفارش {item.orderId}</span>
           </span>
           <span className="hub-list-row__amount tabular-nums">{formatToman(item.expectedAmountToman)}</span>
         </div>
         <div className="hub-list-row__line2 muted">
           {masked}
-          {verifiedAt != null && <> · Verified {formatTimeAgo(verifiedAt)}</>}
-          {operator && <> · by {operator}</>}
-          <> · Tx {txLabel}</>
-          <> · Fulfillment {item.fulfillmentState ?? 'Unknown'}</>
+          {verifiedAt != null && <> · تایید {formatTimeAgo(verifiedAt)}</>}
+          {operator && <> · توسط {operator}</>}
+          <> · تراکنش {txLabel}</>
+          <> · تحویل {item.fulfillmentState ?? 'نامشخص'}</>
         </div>
       </button>
       <div className="hub-list-row__menu">
         <button
           type="button"
           className="ghost hub-list-row__menu-trigger"
-          aria-label="Actions"
+          aria-label="عملیات"
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((v) => !v)}
         >
@@ -969,7 +969,7 @@ function ManuallyVerifiedRow({
         {menuOpen && (
           <div className="hub-list-row__menu-panel" role="menu">
             <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onOpen(); }}>
-              View details
+              جزئیات
             </button>
             <button
               type="button"
@@ -983,7 +983,7 @@ function ManuallyVerifiedRow({
                 onReopen();
               }}
             >
-              Reopen verification
+              بازکردن دوبارهٔ تایید
             </button>
           </div>
         )}
@@ -1030,37 +1030,37 @@ function ReopenVerificationModal({
       className="modal-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Reopen manual verification"
+      aria-label="بازکردن دوبارهٔ تایید دستی"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="modal-body">
-        <h3>Reopen manual verification?</h3>
-        <p>This will reopen the reconciliation decision for:</p>
+        <h3>تایید دستی دوباره باز شود؟</h3>
+        <p>تصمیم تطبیق برای این مورد دوباره باز می‌شود:</p>
         <dl className="payment-review__facts">
-          <dt>Customer</dt>
+          <dt>مشتری</dt>
           <dd>{identity || '—'}</dd>
-          <dt>Order</dt>
+          <dt>سفارش</dt>
           <dd>{item.orderId}</dd>
-          <dt>Expected</dt>
+          <dt>مبلغ مورد انتظار</dt>
           <dd className="tabular-nums">{formatToman(item.expectedAmountToman)}</dd>
           {operator && (
             <>
-              <dt>Verified by</dt>
+              <dt>تاییدکننده</dt>
               <dd>{operator}</dd>
             </>
           )}
           {verifiedAt != null && (
             <>
-              <dt>Verified at</dt>
+              <dt>زمان تایید</dt>
               <dd>{formatTimeAgo(verifiedAt)}</dd>
             </>
           )}
         </dl>
         <p className="muted">
-          Existing fulfillment will NOT be duplicated or automatically reversed.
+          تحویلی که انجام شده دوباره انجام نمی‌شود و خودکار هم برنمی‌گردد.
         </p>
         <label>
-          Reason (required)
+          دلیل (الزامی)
           <textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
@@ -1070,10 +1070,10 @@ function ReopenVerificationModal({
         </label>
         <div className="payment-review__actions">
           <button type="button" className="primary" disabled={busy || !reason.trim()} onClick={() => void submit()}>
-            Reopen verification
+            بازکردن دوبارهٔ تایید
           </button>
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
-            Cancel
+            انصراف
           </button>
         </div>
       </div>
@@ -1104,7 +1104,7 @@ function AllRow({
           <span className="hub-list-row__amount tabular-nums">{formatToman(item.expectedAmountToman)}</span>
         </div>
         <div className="hub-list-row__line2 muted">
-          Order {item.orderId} · {masked} · {paymentDeviceLine(item)}
+          سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
         </div>
       </button>
     </li>
@@ -1135,7 +1135,7 @@ function AllFilters({
   return (
     <div className="payments-filters">
       <label>
-        Status
+        وضعیت
         <select value={filters.status} onChange={(e) => set({ status: e.target.value })}>
           <option value="">Any</option>
           {ALL_TAB_STATES.map((s) => (
@@ -1146,7 +1146,7 @@ function AllFilters({
         </select>
       </label>
       <label>
-        Account
+        حساب
         <select value={filters.accountId} onChange={(e) => set({ accountId: e.target.value })}>
           <option value="">Any</option>
           {(data?.items ?? []).map((a) => (
@@ -1157,7 +1157,7 @@ function AllFilters({
         </select>
       </label>
       <label>
-        Reason
+        دلیل
         <select value={filters.reason} onChange={(e) => set({ reason: e.target.value })}>
           <option value="">Any</option>
           {reasons.map((r) => (
@@ -1168,7 +1168,7 @@ function AllFilters({
         </select>
       </label>
       <label>
-        From
+        از
         <input type="date" value={filters.from} onChange={(e) => set({ from: e.target.value })} />
       </label>
       <label>
@@ -1176,17 +1176,17 @@ function AllFilters({
         <input type="date" value={filters.to} onChange={(e) => set({ to: e.target.value })} />
       </label>
       <button type="button" className="ghost" onClick={() => onChange(EMPTY_FILTERS)}>
-        Clear
+        پاک کردن
       </button>
     </div>
   );
 }
 
 const REJECT_REASONS = [
-  { value: 'NO_BANK_TRANSACTION', label: 'No bank transfer arrived' },
-  { value: 'FAKE_RECEIPT', label: 'Fake receipt' },
-  { value: 'DUPLICATE', label: 'Duplicate payment' },
-  { value: 'OTHER', label: 'Other' },
+  { value: 'NO_BANK_TRANSACTION', label: 'هیچ واریزی نرسید' },
+  { value: 'FAKE_RECEIPT', label: 'رسید جعلی' },
+  { value: 'DUPLICATE', label: 'پرداخت تکراری' },
+  { value: 'OTHER', label: 'سایر' },
 ] as const;
 
 function ReviewPanel({
@@ -1260,34 +1260,34 @@ function ReviewPanel({
 
   return (
     <div className="payment-review">
-      <h2 className="drawer-title">Payment Review</h2>
+      <h2 className="drawer-title">بررسی پرداخت</h2>
 
       <section className="drawer-section">
-        <h3 className="drawer-section__heading">Identity</h3>
+        <h3 className="drawer-section__heading">هویت</h3>
         <PaymentIdentity item={item} />
       </section>
 
       <section className="drawer-section">
-        <h3 className="drawer-section__heading">Payment</h3>
+        <h3 className="drawer-section__heading">پرداخت</h3>
         <dl className="payment-review__facts">
-          <dt>Expected</dt>
+          <dt>مبلغ مورد انتظار</dt>
           <dd className="tabular-nums">
             {formatToman(item.expectedAmountToman)}
           </dd>
-          <dt>Card shown</dt>
+          <dt>کارت نمایش‌داده‌شده</dt>
           <dd>{item.cardMasked ?? '—'}</dd>
-          <dt>Status</dt>
+          <dt>وضعیت</dt>
           <dd>{stateLabel(item.reviewState)}</dd>
         </dl>
       </section>
 
       <section className="drawer-section">
-        <h3 className="drawer-section__heading">Device</h3>
+        <h3 className="drawer-section__heading">دستگاه</h3>
         <p>{deviceInlineLabel(item.device)}</p>
       </section>
 
       <section className="drawer-section">
-        <h3 className="drawer-section__heading">Account</h3>
+        <h3 className="drawer-section__heading">حساب</h3>
         <AccountRef account={item} />
         {actionable && (
           <ClaimChangeAccount
@@ -1301,7 +1301,7 @@ function ReviewPanel({
 
       {(actionable || item.matchedTransaction) && (
         <section className="drawer-section">
-          <h3 className="drawer-section__heading">Transaction</h3>
+          <h3 className="drawer-section__heading">تراکنش</h3>
           {item.matchedTransaction ? (
             <p className="tabular-nums">
               {item.matchedTransaction.bankTimestamp
@@ -1312,12 +1312,12 @@ function ReviewPanel({
                 ` · Δ ${item.matchedTransaction.timeDeltaSeconds} sec`}
             </p>
           ) : (
-            <p className="muted">None linked yet</p>
+            <p className="muted">هنوز چیزی وصل نشده</p>
           )}
           {actionable && (
             <>
               {item.candidates.length === 0 ? (
-                <p className="muted">No bank transaction in the narrow candidate list.</p>
+                <p className="muted">هیچ تراکنش بانکی در فهرست نامزدهای نزدیک نیست.</p>
               ) : (
                 <ul className="payment-candidates">
                   {item.candidates.map((c) => (
@@ -1357,13 +1357,13 @@ function ReviewPanel({
       )}
 
       <section className="drawer-section">
-        <h3 className="drawer-section__heading">Decision</h3>
+        <h3 className="drawer-section__heading">تصمیم</h3>
         <p className="payment-reason">
           {actionable && item.reviewState === 'NEEDS_REVIEW' && (
-            <span className="payment-reason__flag">Needs review</span>
+            <span className="payment-reason__flag">نیاز به بررسی</span>
           )}{' '}
           {actionable && item.reviewState === 'SUSPECTED_FAKE' && (
-            <span className="payment-reason__flag">Suspected fake</span>
+            <span className="payment-reason__flag">مشکوک به جعل</span>
           )}{' '}
           {reasonText(item.suspectReason)}
         </p>
@@ -1377,29 +1377,29 @@ function ReviewPanel({
               disabled={busy || selected == null}
               onClick={() => selected && run(() => onApprove(selected))}
             >
-              Verify selected
+              تایید انتخاب‌شده‌ها
             </button>
 
             <div className="payment-review__reassign">
-              <p className="muted">Can&apos;t find the correct transaction?</p>
+              <p className="muted">تراکنش درست را پیدا نمی‌کنی؟</p>
               <button type="button" className="ghost" disabled={busy} onClick={() => setShowReassign(true)}>
-                Find / Reassign transaction
+                یافتن یا تغییر تراکنش
               </button>
             </div>
 
             <div className="payment-review__manual-anyway">
-              <p className="muted">No bank transaction exists?</p>
+              <p className="muted">اصلاً تراکنش بانکی وجود ندارد؟</p>
               {!confirmManual ? (
                 <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmManual(true)}>
-                  Verify manually anyway
+                  با این حال دستی تایید کن
                 </button>
               ) : (
                 <>
                   <p className="muted">
-                    Externally verified with no usable bank transaction in the Hub?
+                    بیرون از سامانه تایید شده و تراکنش بانکی قابل استفاده‌ای این‌جا نیست؟
                   </p>
                   <label>
-                    Reason (optional)
+                    دلیل (اختیاری)
                     <input
                       type="text"
                       value={manualReason}
@@ -1413,10 +1413,10 @@ function ReviewPanel({
                     disabled={busy}
                     onClick={() => run(() => onVerifyManual(manualReason))}
                   >
-                    Confirm manual verification
+                    تایید دستی پرداخت
                   </button>
                   <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmManual(false)}>
-                    Cancel
+                    انصراف
                   </button>
                 </>
               )}
@@ -1426,7 +1426,7 @@ function ReviewPanel({
               <div className="payment-review__remove">
                 {!confirmRemove ? (
                   <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmRemove(true)}>
-                    Remove
+                    حذف
                   </button>
                 ) : (
                   <>
@@ -1435,10 +1435,10 @@ function ReviewPanel({
                       a fraud classification.
                     </p>
                     <button type="button" className="danger" disabled={busy} onClick={() => run(onRemove)}>
-                      Confirm remove
+                      تایید حذف
                     </button>
                     <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmRemove(false)}>
-                      Cancel
+                      انصراف
                     </button>
                   </>
                 )}
@@ -1448,18 +1448,18 @@ function ReviewPanel({
               <div className="payment-review__mark-fake">
                 {!confirmFake ? (
                   <button type="button" className="danger" disabled={busy} onClick={() => setConfirmFake(true)}>
-                    Mark as fake
+                    علامت‌زدن به‌عنوان جعلی
                   </button>
                 ) : (
                   <>
                     <p className="muted">
-                      Mark this payment as a fake receipt? This is a manual fraud classification.
+                      این پرداخت به‌عنوان رسید جعلی علامت زده شود؟ این یک تشخیص دستی تقلب است.
                     </p>
                     <button type="button" className="danger" disabled={busy} onClick={() => run(onMarkFake)}>
-                      Confirm fake receipt
+                      تایید جعلی‌بودن رسید
                     </button>
                     <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmFake(false)}>
-                      Cancel
+                      انصراف
                     </button>
                   </>
                 )}
@@ -1468,7 +1468,7 @@ function ReviewPanel({
             {item.reviewState === 'NEEDS_REVIEW' && (
               <div className="payment-review__reject">
                 <select
-                  aria-label="Rejection reason"
+                  aria-label="دلیل رد"
                   value={rejectReason}
                   onChange={(e) => setRejectReason(e.target.value)}
                 >
@@ -1484,7 +1484,7 @@ function ReviewPanel({
                   disabled={busy}
                   onClick={() => run(() => onReject(rejectReason))}
                 >
-                  Reject payment
+                  رد پرداخت
                 </button>
               </div>
             )}
@@ -1514,7 +1514,7 @@ function ReviewPanel({
               onReopen();
             }}
           >
-            Reopen verification
+            بازکردن دوبارهٔ تایید
           </button>
         </div>
       )}
@@ -1552,27 +1552,27 @@ function DeclineIncomeModal({
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <div className="modal">
-        <h2>Decline this income item?</h2>
+        <h2>این واریزی رد شود؟</h2>
         <p>
-          Amount: <strong>{formatTomanFromIrr(item.amountIrr)}</strong>
+          مبلغ: <strong>{formatTomanFromIrr(item.amountIrr)}</strong>
         </p>
         <p>
-          Account: <AccountRef account={item} />
+          حساب: <AccountRef account={item} />
         </p>
         <p className="muted">
           This will remove it from active Income. The original bank transaction will remain intact
           and can be restored later.
         </p>
         <label>
-          Reason
+          دلیل
           <input value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
         <div className="modal__actions">
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
-            Cancel
+            انصراف
           </button>
           <button type="button" className="danger" disabled={busy} onClick={() => void submit()}>
-            Decline
+            رد
           </button>
         </div>
       </div>
@@ -1613,23 +1613,23 @@ function BulkDeclineModal({
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <div className="modal">
-        <h2>Decline selected income items?</h2>
+        <h2>واریزی‌های انتخاب‌شده رد شوند؟</h2>
         <p>
-          Transactions: <strong>{items.length}</strong>
+          تراکنش‌ها: <strong>{items.length}</strong>
         </p>
         <p>
-          Total amount: <strong>{formatTomanFromIrr(total)}</strong>
+          مبلغ کل: <strong>{formatTomanFromIrr(total)}</strong>
         </p>
         <label>
-          Reason
+          دلیل
           <input value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
         <div className="modal__actions">
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
-            Cancel
+            انصراف
           </button>
           <button type="button" className="danger" disabled={busy} onClick={() => void submit()}>
-            Decline selected
+            رد انتخاب‌شده‌ها
           </button>
         </div>
       </div>

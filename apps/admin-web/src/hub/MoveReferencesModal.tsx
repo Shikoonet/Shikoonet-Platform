@@ -5,9 +5,9 @@
  *
  * Two-step:
  *   1. Pick the target account (dropdown filtered to active accounts
- *      excluding the source). Hit "Preview" → server returns counts.
+ *      excluding the source). Hit "پیش‌نمایش" → server returns counts.
  *   2. Toggle the three options (reassignTransactions / reassignClaims /
- *      moveIdentifiers / deleteSource), reason, then "Confirm".
+ *      moveIdentifiers / deleteSource), reason, then "تایید".
  *
  * Outcome:
  *   - On success: calls `onMoved` so the parent can invalidate the
@@ -116,7 +116,7 @@ export function MoveReferencesModal({
       className="modal-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Move references"
+      aria-label="انتقال ارجاع‌ها"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -125,22 +125,22 @@ export function MoveReferencesModal({
         <div className="row toolbar">
           <h3>Move references — {source.display_name}</h3>
           <div className="spacer" />
-          <button type="button" onClick={onClose} aria-label="Close">
+          <button type="button" onClick={onClose} aria-label="بستن">
             ×
           </button>
         </div>
         <p>
-          Move everything attached to <strong>{source.display_name}</strong> ({source.bank_name}) to
+          انتقال هر چیزی که به این وصل است <strong>{source.display_name}</strong> ({source.bank_name}) to
           a different account. The move is atomic — if any step fails, nothing changes.
         </p>
         {eligible.length === 0 ? (
           <div className="warn-banner">
-            No active target accounts available. Create another account first.
+            هیچ حساب مقصد فعالی نیست. اول یک حساب دیگر بساز.
           </div>
         ) : (
           <div className="form">
             <label>
-              <span>Target account</span>
+              <span>حساب مقصد</span>
               <select value={targetId} onChange={(e) => setTargetId(e.target.value)}>
                 {eligible.map((a) => (
                   <option key={a.id} value={a.id}>
@@ -151,7 +151,7 @@ export function MoveReferencesModal({
               </select>
             </label>
             <label>
-              <span>Reason (audit log)</span>
+              <span>دلیل (برای ثبت در لاگ)</span>
               <input
                 type="text"
                 value={reason}
@@ -161,7 +161,7 @@ export function MoveReferencesModal({
               />
             </label>
             <fieldset className="form-options">
-              <legend>Move options</legend>
+              <legend>گزینه‌های انتقال</legend>
               <label className="row checkbox-row">
                 <input
                   type="checkbox"
@@ -170,7 +170,7 @@ export function MoveReferencesModal({
                     setOptions((o) => ({ ...o, reassignTransactions: e.target.checked }))
                   }
                 />
-                <span>Reassign transactions</span>
+                <span>تغییر تخصیص تراکنش‌ها</span>
               </label>
               <label className="row checkbox-row">
                 <input
@@ -178,7 +178,7 @@ export function MoveReferencesModal({
                   checked={options.reassignClaims}
                   onChange={(e) => setOptions((o) => ({ ...o, reassignClaims: e.target.checked }))}
                 />
-                <span>Reassign payment claims</span>
+                <span>تغییر تخصیص ادعاهای پرداخت</span>
               </label>
               <label className="row checkbox-row">
                 <input
@@ -186,7 +186,7 @@ export function MoveReferencesModal({
                   checked={options.moveIdentifiers}
                   onChange={(e) => setOptions((o) => ({ ...o, moveIdentifiers: e.target.checked }))}
                 />
-                <span>Move identifiers</span>
+                <span>انتقال شناسه‌ها</span>
               </label>
               <label className="row checkbox-row">
                 <input
@@ -194,16 +194,16 @@ export function MoveReferencesModal({
                   checked={options.deleteSource}
                   onChange={(e) => setOptions((o) => ({ ...o, deleteSource: e.target.checked }))}
                 />
-                <span>Delete source account after move</span>
+                <span>حذف حساب مبدأ بعد از انتقال</span>
               </label>
             </fieldset>
           </div>
         )}
         {preview && (
           <div className="preview-box">
-            <h4>Preview</h4>
+            <h4>پیش‌نمایش</h4>
             <p>
-              Will move <strong>{preview.counts.transactions}</strong> transaction(s),{' '}
+              منتقل می‌شود <strong>{preview.counts.transactions}</strong> transaction(s),{' '}
               <strong>{preview.counts.paymentClaims}</strong> payment claim(s), and{' '}
               <strong>{preview.counts.identifiers}</strong> identifier(s) to the target.
             </p>
@@ -219,12 +219,12 @@ export function MoveReferencesModal({
             )}
           </div>
         )}
-        {previewBusy && <p className="muted">Loading preview…</p>}
+        {previewBusy && <p className="muted">در حال بارگذاری پیش‌نمایش…</p>}
         {err && <div className="error">{err}</div>}
         <div className="row toolbar modal-actions">
           <div className="spacer" />
           <button type="button" onClick={onClose}>
-            Cancel
+            انصراف
           </button>
           <button
             type="button"
@@ -232,7 +232,7 @@ export function MoveReferencesModal({
             disabled={busy || !targetId || noop}
             onClick={submit}
           >
-            {busy ? 'Moving…' : 'Confirm move'}
+            {busy ? 'Moving…' : 'تایید انتقال'}
           </button>
         </div>
       </div>

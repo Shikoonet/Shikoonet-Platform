@@ -106,23 +106,23 @@ export function BotVerifiedMetrics({
       : 'verified today';
 
   return (
-    <div className="bot-metrics" aria-label="Bot auto verified summary">
+    <div className="bot-metrics" aria-label="خلاصهٔ تایید خودکار ربات">
       <MetricCard
-        label="Total Verified Today"
+        label="کل تاییدشده‌های امروز"
         value={botCount}
         meta={countMeta}
         accent
         icon={<IconBotVerified />}
       />
       <MetricCard
-        label="Approval Rate"
+        label="نرخ تایید"
         value={rate}
         meta="automation rate"
         icon={<IconReview />}
       />
-      <MetricCard label="Avg. Verify Time" value={avgTime} meta="claim to bank tx" />
+      <MetricCard label="میانگین زمان تایید" value={avgTime} meta="claim to bank tx" />
       <MetricCard
-        label="Unique Customers"
+        label="مشتریان یکتا"
         value={uniqueCustomers > 0 ? uniqueCustomers : '—'}
         meta="in current range"
       />
@@ -134,7 +134,7 @@ export function BotVerifiedMetrics({
 
 function AccountRefCell({ account }: { account: AccountRefLike }) {
   const bank = bankName(account);
-  if (!bank && !account.accountHint) return <span className="muted">Unmapped</span>;
+  if (!bank && !account.accountHint) return <span className="muted">نگاشت‌نشده</span>;
   return (
     <bdi className="account-ref">
       {bank && <span>{bank}</span>}
@@ -180,7 +180,7 @@ function verifiedAtExactLabel(item: PaymentItem): string {
 
 function matchLabel(item: PaymentItem): ReactNode {
   if (item.matchedTransaction) {
-    return <StatusBadge tone="match">Unique Match</StatusBadge>;
+    return <StatusBadge tone="match">تطبیق یکتا</StatusBadge>;
   }
   return '—';
 }
@@ -191,17 +191,17 @@ export function TransactionTable({ children }: { children: ReactNode }) {
       <table className="txn-table">
         <thead>
           <tr>
-            <th scope="col">Status</th>
-            <th scope="col">Verified</th>
-            <th scope="col">Customer</th>
-            <th scope="col">Order ID</th>
-            <th scope="col">Amount</th>
-            <th scope="col">Account / Card</th>
-            <th scope="col">Reference</th>
-            <th scope="col">Match</th>
-            <th scope="col">Verified At</th>
+            <th scope="col">وضعیت</th>
+            <th scope="col">تاییدشده</th>
+            <th scope="col">مشتری</th>
+            <th scope="col">شناسهٔ سفارش</th>
+            <th scope="col">مبلغ</th>
+            <th scope="col">حساب / کارت</th>
+            <th scope="col">مرجع</th>
+            <th scope="col">تطبیق</th>
+            <th scope="col">زمان تایید</th>
             <th scope="col">
-              <span className="sr-only">Actions</span>
+              <span className="sr-only">عملیات</span>
             </th>
           </tr>
         </thead>
@@ -258,7 +258,7 @@ export function BotVerifiedTransactionRow({
             }}
           />
           <span className="txn-row__card-hint muted">{maskCardHint(item)}</span>
-          <span className="txn-row__device-hint muted">Device: {deviceInlineLabel(item.device)}</span>
+          <span className="txn-row__device-hint muted">دستگاه: {deviceInlineLabel(item.device)}</span>
         </div>
       </td>
       <td>{ref ? <IdentifierText value={ref} tone="hint" /> : <span className="muted">—</span>}</td>
@@ -284,24 +284,24 @@ export function BotVerifiedTransactionRow({
 
 /**
  * DEV-only table header for the Bot Auto Verified view.
- * Adds "Telegram ID" immediately after "Customer".
+ * Adds "شناسهٔ تلگرام" immediately after "مشتری".
  */
 export function BotVerifiedTableHeader() {
   return (
     <thead>
       <tr>
-        <th scope="col">Status</th>
-        <th scope="col">Verified</th>
-        <th scope="col">Customer</th>
-        <th scope="col">Telegram ID</th>
-        <th scope="col">Order ID</th>
-        <th scope="col">Amount</th>
-        <th scope="col">Account / Card</th>
-        <th scope="col">Reference</th>
-        <th scope="col">Match</th>
-        <th scope="col">Verified At</th>
+        <th scope="col">وضعیت</th>
+        <th scope="col">تاییدشده</th>
+        <th scope="col">مشتری</th>
+        <th scope="col">شناسهٔ تلگرام</th>
+        <th scope="col">شناسهٔ سفارش</th>
+        <th scope="col">مبلغ</th>
+        <th scope="col">حساب / کارت</th>
+        <th scope="col">مرجع</th>
+        <th scope="col">تطبیق</th>
+        <th scope="col">زمان تایید</th>
         <th scope="col">
-          <span className="sr-only">Actions</span>
+          <span className="sr-only">عملیات</span>
         </th>
       </tr>
     </thead>
@@ -336,36 +336,36 @@ export function StatsRail({
   const autoRate = totalVerified > 0 ? `${((botCount / totalVerified) * 100).toFixed(1)}%` : '—';
 
   return (
-    <aside className="stats-rail" aria-label="Bot auto verified live statistics">
+    <aside className="stats-rail" aria-label="آمار زندهٔ تایید خودکار ربات">
       <section className="stats-rail__block stats-rail__block--live">
         <div className="stats-rail__heading">
-          <h3 className="stats-rail__title">Bot Auto Verified Live Statistics</h3>
+          <h3 className="stats-rail__title">آمار زندهٔ تایید خودکار ربات</h3>
           <span className="stats-rail__live">
             <span className="stats-rail__live-dot" aria-hidden />
-            Live
+            زنده
           </span>
         </div>
         <dl className="stats-rail__grid">
           <div className="stats-rail__grid-row">
-            <dt>Bot verified</dt>
+            <dt>تایید ربات</dt>
             <dd className="tabular-nums">
               {botCount}
               <span className="muted stats-rail__sub">{formatTomanFromIrr(analytics.botAutoVerified.amountIrr)}</span>
             </dd>
           </div>
           <div className="stats-rail__grid-row">
-            <dt>Manual verified</dt>
+            <dt>تایید دستی</dt>
             <dd className="tabular-nums">
               {manualCount}
               <span className="muted stats-rail__sub">{formatTomanFromIrr(analytics.manualVerified.amountIrr)}</span>
             </dd>
           </div>
           <div className="stats-rail__grid-row">
-            <dt>Automation rate</dt>
+            <dt>نرخ خودکارسازی</dt>
             <dd className="tabular-nums">{autoRate}</dd>
           </div>
           <div className="stats-rail__grid-row">
-            <dt>Sales</dt>
+            <dt>فروش</dt>
             <dd className="tabular-nums">
               {formatTomanFromIrr(analytics.sales.amountIrr)}
               <span className="muted stats-rail__sub">
@@ -374,11 +374,11 @@ export function StatsRail({
             </dd>
           </div>
           <div className="stats-rail__grid-row">
-            <dt>Bank inflow</dt>
+            <dt>ورودی بانکی</dt>
             <dd className="tabular-nums">{formatTomanFromIrr(analytics.bankInflowIrr)}</dd>
           </div>
           <div className="stats-rail__grid-row">
-            <dt>Known balance</dt>
+            <dt>موجودی معلوم</dt>
             <dd className="tabular-nums">
               {formatTomanFromIrr(analytics.balances.totalKnownIrr)}
               <span className="muted stats-rail__sub">
@@ -403,8 +403,8 @@ export function RecentActivity({ items, onOpen }: { items: PaymentItem[]; onOpen
   if (recent.length === 0) return null;
 
   return (
-    <aside className="recent-activity" aria-label="Recent activity">
-      <h3 className="recent-activity__title">Recent Activity</h3>
+    <aside className="recent-activity" aria-label="فعالیت اخیر">
+      <h3 className="recent-activity__title">فعالیت اخیر</h3>
       <ul className="recent-activity__list">
         {recent.map((item) => (
           <li key={item.id}>
@@ -423,7 +423,7 @@ export function RecentActivity({ items, onOpen }: { items: PaymentItem[]; onOpen
       </ul>
       {items.length > recent.length && (
         <button type="button" className="ghost recent-activity__more">
-          View all activity →
+          همهٔ فعالیت‌ها ←
         </button>
       )}
     </aside>
@@ -444,11 +444,11 @@ export function PaymentTabReadAll({
     <button
       type="button"
       className="ghost payment-table-header__action payment-tab-read-all"
-      aria-label={`Mark ${unread} unread items as read`}
+      aria-label={`علامت‌زدن ${unread} مورد خوانده‌نشده به‌عنوان خوانده‌شده`}
       disabled={busy}
       onClick={onClick}
     >
-      {busy ? 'Marking…' : 'Read all'}
+      {busy ? 'Marking…' : 'خواندن همه'}
     </button>
   );
 }

@@ -30,7 +30,7 @@ export type SearchTransaction = {
 
 function AccountRef({ account }: { account: AccountRefLike }) {
   const bank = bankName(account);
-  if (!bank && !account.accountHint) return <span className="muted">Unassigned</span>;
+  if (!bank && !account.accountHint) return <span className="muted">تخصیص‌نیافته</span>;
   return (
     <bdi className="account-ref">
       {bank && <span>{bank}</span>}
@@ -142,20 +142,20 @@ export function TransactionReassignPicker({
   return (
     <div className="transaction-reassign">
       <div className="row toolbar">
-        <h3>Find / Reassign transaction</h3>
+        <h3>یافتن یا تغییر تراکنش</h3>
         <div className="spacer" />
         <button type="button" className="ghost" onClick={onClose}>
-          Back
+          بازگشت
         </button>
       </div>
 
       <div className="transaction-reassign__filters">
         <label>
-          Amount (Toman)
+          مبلغ (تومان)
           <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </label>
         <label>
-          Account
+          حساب
           <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
             <option value="">Any</option>
             {(accounts?.items ?? []).map((a) => (
@@ -166,7 +166,7 @@ export function TransactionReassignPicker({
           </select>
         </label>
         <label>
-          From (ms)
+          از (میلی‌ثانیه)
           <input type="text" value={from} onChange={(e) => setFrom(e.target.value)} />
         </label>
         <label>
@@ -174,20 +174,20 @@ export function TransactionReassignPicker({
           <input type="text" value={to} onChange={(e) => setTo(e.target.value)} />
         </label>
         <label>
-          Transaction ID
+          شناسهٔ تراکنش
           <input type="text" value={transactionId} onChange={(e) => setTransactionId(e.target.value)} />
         </label>
         <label>
-          Reference
+          مرجع
           <input type="text" value={reference} onChange={(e) => setReference(e.target.value)} />
         </label>
         <button type="button" className="ghost" onClick={() => void search()} disabled={searching}>
-          {searching ? 'Searching…' : 'Search'}
+          {searching ? 'در حال جست‌وجو…' : 'جست‌وجو'}
         </button>
       </div>
 
-      {searching && <p className="muted">Searching…</p>}
-      {!searching && results.length === 0 && <p className="muted">No transactions match these filters.</p>}
+      {searching && <p className="muted">در حال جست‌وجو…</p>}
+      {!searching && results.length === 0 && <p className="muted">هیچ تراکنشی با این فیلترها نمی‌خواند.</p>}
 
       <ul className="transaction-reassign__results">
         {results.map((tx) => (
@@ -205,10 +205,10 @@ export function TransactionReassignPicker({
               <div>
                 {tx.consumed ? (
                   <>
-                    <p className="payment-reason__flag">Already used</p>
+                    <p className="payment-reason__flag">قبلاً استفاده شده</p>
                     {tx.linkedClaim && (
                       <p>
-                        Linked: {linkedLabel(tx.linkedClaim) ?? 'Unknown user'}
+                        Linked: {linkedLabel(tx.linkedClaim) ?? 'کاربر نامشخص'}
                         <br />
                         User ID: {tx.linkedClaim.telegramUserId ?? '—'}
                         <br />
@@ -216,14 +216,14 @@ export function TransactionReassignPicker({
                       </p>
                     )}
                     <button type="button" disabled>
-                      Reassign blocked
+                      تغییر تخصیص مسدود است
                     </button>
                   </>
                 ) : tx.linkedClaim && tx.matchStatus === 'SUGGESTED' ? (
                   <>
-                    <p className="muted">Currently suggested for:</p>
+                    <p className="muted">الان پیشنهاد شده برای:</p>
                     <p>
-                      {linkedLabel(tx.linkedClaim) ?? 'Unknown user'}
+                      {linkedLabel(tx.linkedClaim) ?? 'کاربر نامشخص'}
                       <br />
                       User ID: {tx.linkedClaim.telegramUserId ?? '—'}
                       <br />
@@ -237,13 +237,13 @@ export function TransactionReassignPicker({
                         setConfirmStep(true);
                       }}
                     >
-                      Select
+                      انتخاب
                     </button>
                   </>
                 ) : (
                   <>
                     <p className="muted">
-                      {tx.linkedClaim ? `Status: ${tx.matchStatus ?? 'linked'}` : 'Unassigned'}
+                      {tx.linkedClaim ? `Status: ${tx.matchStatus ?? 'linked'}` : 'تخصیص‌نیافته'}
                     </p>
                     <button
                       type="button"
@@ -253,7 +253,7 @@ export function TransactionReassignPicker({
                         setConfirmStep(true);
                       }}
                     >
-                      Select
+                      انتخاب
                     </button>
                   </>
                 )}
@@ -265,13 +265,13 @@ export function TransactionReassignPicker({
 
       {confirmStep && picked && !picked.consumed && (
         <div className="transaction-reassign__confirm">
-          <h4>Confirm reassignment</h4>
+          <h4>تایید تغییر تخصیص</h4>
           {picked.linkedClaim && picked.matchStatus === 'SUGGESTED' && (
             <div className="transaction-reassign__sides">
               <div>
-                <strong>Current</strong>
+                <strong>فعلی</strong>
                 <p>
-                  {linkedLabel(picked.linkedClaim) ?? 'Unknown user'}
+                  {linkedLabel(picked.linkedClaim) ?? 'کاربر نامشخص'}
                   <br />
                   User ID: {picked.linkedClaim.telegramUserId ?? '—'}
                   <br />
@@ -292,7 +292,7 @@ export function TransactionReassignPicker({
           )}
           {!picked.linkedClaim && <p>Assign this bank transaction to Order {item.orderId}?</p>}
           <label>
-            Reason (required)
+            دلیل (الزامی)
             <input
               type="text"
               value={reason}
@@ -307,7 +307,7 @@ export function TransactionReassignPicker({
               checked={verifyAfter}
               onChange={(e) => setVerifyAfter(e.target.checked)}
             />
-            Verify after assign (manual verification)
+            تایید بعد از تخصیص (تایید دستی)
           </label>
           <div className="payment-review__actions">
             <button
@@ -316,10 +316,10 @@ export function TransactionReassignPicker({
               disabled={busy || !reason.trim()}
               onClick={() => void submit()}
             >
-              {verifyAfter ? 'Reassign and verify' : 'Reassign only'}
+              {verifyAfter ? 'تغییر تخصیص و تایید' : 'فقط تغییر تخصیص'}
             </button>
             <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmStep(false)}>
-              Cancel
+              انصراف
             </button>
           </div>
         </div>
@@ -330,5 +330,5 @@ export function TransactionReassignPicker({
 
 function userFallback(item: PaymentItem): string {
   if (item.telegramUserId) return `user ${item.telegramUserId}`;
-  return 'Unknown user';
+  return 'کاربر نامشخص';
 }

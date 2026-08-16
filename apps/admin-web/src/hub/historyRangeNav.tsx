@@ -33,9 +33,9 @@ export function formatTehranDateLabel(dateStr: string): string {
 
 export function tehranDayRelativeLabel(dateStr: string, nowMs = Date.now()): string | null {
   const today = tehranTodayDateString(nowMs);
-  if (dateStr === today) return 'Today';
-  if (dateStr === tehranAdjacentDay(today, -1)) return 'Yesterday';
-  if (dateStr === tehranAdjacentDay(today, 1)) return 'Tomorrow';
+  if (dateStr === today) return 'امروز';
+  if (dateStr === tehranAdjacentDay(today, -1)) return 'دیروز';
+  if (dateStr === tehranAdjacentDay(today, 1)) return 'فردا';
   return null;
 }
 
@@ -57,7 +57,7 @@ export function HistoryDateNav({
 }) {
   const day = value.day ?? tehranTodayDateString();
   const relative = value.preset === 'day' ? tehranDayRelativeLabel(day) : null;
-  const presetLabel = HISTORY_RANGE_PRESETS.find((p) => p.value === value.preset)?.label ?? 'All';
+  const presetLabel = HISTORY_RANGE_PRESETS.find((p) => p.value === value.preset)?.label ?? 'همه';
 
   function setPreset(preset: HistoryRangeState['preset']) {
     if (preset === 'day') {
@@ -69,7 +69,7 @@ export function HistoryDateNav({
 
   return (
     <details className="unified-date-control">
-      <summary className="unified-date-control__trigger" aria-label="Date range">
+      <summary className="unified-date-control__trigger" aria-label="بازهٔ تاریخ">
         {value.preset === 'day' ? (
           <>
             <span className="unified-date-control__date">{formatTehranDateLabel(day)}</span>
@@ -89,10 +89,10 @@ export function HistoryDateNav({
       </summary>
       <div className="unified-date-control__panel">
         <label className="unified-date-control__field">
-          <span className="visually-hidden">Range preset</span>
+          <span className="visually-hidden">بازهٔ آماده</span>
           <select
             value={value.preset}
-            aria-label="Range preset"
+            aria-label="بازهٔ آماده"
             onChange={(e) => setPreset(e.target.value as HistoryRangeState['preset'])}
           >
             {HISTORY_RANGE_PRESETS.map((o) => (
@@ -103,21 +103,21 @@ export function HistoryDateNav({
           </select>
         </label>
         {value.preset === 'day' && (
-          <div className="unified-date-control__day" aria-label="Day navigation">
+          <div className="unified-date-control__day" aria-label="پیمایش روز">
             <button
               type="button"
               className="ghost unified-date-control__nav"
-              aria-label="Previous day"
+              aria-label="روز قبل"
               onClick={() => onChange({ preset: 'day', day: tehranAdjacentDay(day, -1) })}
             >
               ←
             </button>
             <label className="unified-date-control__picker">
-              <span className="visually-hidden">Pick date</span>
+              <span className="visually-hidden">انتخاب تاریخ</span>
               <input
                 type="date"
                 value={day}
-                aria-label="Calendar date picker"
+                aria-label="انتخاب تاریخ از تقویم"
                 onChange={(e) => {
                   if (e.target.value) onChange({ preset: 'day', day: e.target.value });
                 }}
@@ -126,7 +126,7 @@ export function HistoryDateNav({
             <button
               type="button"
               className="ghost unified-date-control__nav"
-              aria-label="Next day"
+              aria-label="روز بعد"
               onClick={() => onChange({ preset: 'day', day: tehranAdjacentDay(day, 1) })}
             >
               →
@@ -136,7 +136,7 @@ export function HistoryDateNav({
               className="ghost unified-date-control__today"
               onClick={() => onChange({ preset: 'day', day: tehranTodayDateString() })}
             >
-              Today
+              امروز
             </button>
           </div>
         )}
@@ -172,7 +172,7 @@ export function BulkSelectionToolbar({
           ref={headerRef}
           type="checkbox"
           checked={allSelected}
-          aria-label="Select all rows"
+          aria-label="انتخاب همهٔ ردیف‌ها"
           onChange={(e) => {
             if (e.target.checked) onChangeSelected(new Set(itemIds));
             else onChangeSelected(new Set());

@@ -132,10 +132,10 @@ describe('StatisticsView', () => {
   it('shows three top metrics and sales trend', async () => {
     render(<StatisticsView cache={createCache()} />);
     expect(await screen.findByText('Statistics')).toBeTruthy();
-    expect(await screen.findByText('Total Balance')).toBeTruthy();
-    expect(await screen.findByText('Bot Sales')).toBeTruthy();
-    expect(await screen.findByText('Reseller Sales')).toBeTruthy();
-    expect(await screen.findByText('Sales trend')).toBeTruthy();
+    expect(await screen.findByText('موجودی کل')).toBeTruthy();
+    expect(await screen.findByText('فروش ربات')).toBeTruthy();
+    expect(await screen.findByText('فروش نمایندگی')).toBeTruthy();
+    expect(await screen.findByText('روند فروش')).toBeTruthy();
     expect(screen.queryByText(/Open queues/i)).toBeNull();
     expect(screen.queryByText('Verification mix')).toBeNull();
   });
@@ -146,7 +146,7 @@ describe('StatisticsView', () => {
     expect(screen.getAllByText(/7613/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Puyan/).length).toBeGreaterThan(0);
     expect(screen.getAllByText('5 purchases').length).toBeGreaterThan(0);
-    expect(screen.queryByText(/Device/i)).toBeNull();
+    expect(screen.queryByText(/دستگاه/i)).toBeNull();
   });
 
   it('shows card balancing diagnostic panel', async () => {

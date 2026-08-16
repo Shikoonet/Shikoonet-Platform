@@ -1,8 +1,8 @@
 /**
- * NewBadge — compact, accessible "NEW" indicator for unread transactions.
+ * NewBadge — compact, accessible "تازه" indicator for unread transactions.
  *
  * Renders nothing when `isNew` is false. Renders a compact pill with an
- * `aria-label="New transaction"` (the visible "NEW" is the same word) and
+ * `aria-label="تراکنش تازه"` (the visible "تازه" is the same word) and
  * no animation when `prefers-reduced-motion: reduce` is set.
  *
  * Designed for use in both desktop tables and mobile cards. Pair with
@@ -19,8 +19,8 @@ export function NewBadge({ isNew, className }: NewBadgeProps) {
   if (!isNew) return null;
   const cls = className ? `new-badge ${className}` : 'new-badge';
   return (
-    <span className={cls} aria-label="New transaction">
-      NEW
+    <span className={cls} aria-label="تراکنش تازه">
+      تازه
     </span>
   );
 }

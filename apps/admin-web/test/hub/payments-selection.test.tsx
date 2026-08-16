@@ -15,7 +15,7 @@ const INCOME_ITEMS: IncomeItem[] = [
     accountBank: 'Melli',
     accountHint: '6006',
     reference: null,
-    statusLabel: 'Unassigned income',
+    statusLabel: 'واریزی تخصیص‌نیافته',
   },
   {
     id: 'tx-2',
@@ -27,7 +27,7 @@ const INCOME_ITEMS: IncomeItem[] = [
     accountBank: 'Saderat',
     accountHint: '7007',
     reference: null,
-    statusLabel: 'Unassigned income',
+    statusLabel: 'واریزی تخصیص‌نیافته',
   },
 ];
 
@@ -103,16 +103,16 @@ afterEach(() => {
 describe('PaymentsView income selection', () => {
   it('supports header checkbox select-all without decline all', async () => {
     render(<PaymentsView cache={createCache()} />);
-    fireEvent.click(await screen.findByRole('tab', { name: /Income 2/i }));
-    expect(await screen.findByLabelText('Select all rows')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('tab', { name: /واریزی‌ها 2/i }));
+    expect(await screen.findByLabelText('انتخاب همهٔ ردیف‌ها')).toBeTruthy();
     expect(screen.queryByText(/Decline all/i)).toBeNull();
 
-    fireEvent.click(screen.getByLabelText('Select all rows'));
-    expect(await screen.findByText('Decline selected (2)')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('انتخاب همهٔ ردیف‌ها'));
+    expect(await screen.findByText('رد انتخاب‌شده‌ها (2)')).toBeTruthy();
 
-    fireEvent.click(screen.getByLabelText('Select all rows'));
+    fireEvent.click(screen.getByLabelText('انتخاب همهٔ ردیف‌ها'));
     await waitFor(() => {
-      expect(screen.queryByText(/Decline selected/i)).toBeNull();
+      expect(screen.queryByText(/رد انتخاب‌شده‌ها/i)).toBeNull();
     });
   });
 });

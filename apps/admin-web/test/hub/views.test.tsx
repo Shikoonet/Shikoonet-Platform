@@ -61,7 +61,7 @@ describe('TodayView', () => {
 
     const cache = createCache();
     render(<TodayView cache={cache} />);
-    await waitFor(() => screen.getByText(/10,000 Toman/));
+    await waitFor(() => screen.getByText(/۱۰٬۰۰۰ تومان/));
     expect(screen.getByText('poyan-01')).toBeTruthy();
     // Should be a list (cards) on mobile.
     expect(document.querySelector('ul.card-list')).toBeTruthy();
@@ -104,7 +104,7 @@ describe('TodayView', () => {
     const cache = createCache();
     render(<TodayView cache={cache} />);
     // Amount cells show Toman (converted from stored IRR).
-    await waitFor(() => screen.getByText('20,000 Toman'));
+    await waitFor(() => screen.getByText('۲۰٬۰۰۰ تومان'));
     expect(document.querySelector('table.data-table')).toBeTruthy();
   });
 

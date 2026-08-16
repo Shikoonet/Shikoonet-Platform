@@ -1,34 +1,41 @@
 /**
- * Display formatting for financial amounts.
- * Amounts are stored in IRR (Rial) internally; the dashboard shows Toman (÷10).
+ * The finance screens' names for the panel's formatters.
+ *
+ * This file used to be the second money-and-dates module in the package: Latin
+ * digits, the word «Toman» in English, `Math.floor` where the other used
+ * `Math.trunc`, and timestamps in whichever zone the laptop happened to be
+ * set to. Under a right-to-left layout the English suffix also landed on the
+ * wrong side — «Toman 12,605» — which is what finally made it visible.
+ *
+ * Everything now goes through `../format.js`, which has one division, one
+ * calendar and one timezone. What is left here is the vocabulary these screens
+ * already call things by: renaming thirty call sites would be a bigger diff
+ * than this file, and would change no output.
+ *
+ * `Math.trunc` won over `Math.floor`, which they disagreed on for negative
+ * amounts (`-15` Rial was −1 Toman one way and −2 the other). The schema stores
+ * integer Rial and the shop has no sub-Toman price, so no displayed number
+ * moves — but one of the two had to be the answer, and the panel's is the one
+ * with a test against `Intl` behind it.
  */
 
-const numberFormatter = new Intl.NumberFormat('en-US');
+import { count, dateTime, dateTimeSeconds, irrToToman, toman, tomanCompact } from '../format.js';
 
-/** Toman from IRR — explicit ÷10 (Mirzabot / customer-facing unit). */
-export function irrToToman(irr: number): number {
-  return Math.floor(irr / 10);
+export { irrToToman };
+
+/** A value already in Toman. */
+export function formatToman(value: number | null | undefined): string {
+  return value == null ? '—' : `${count(value)} تومان`;
 }
 
-/** Format a value already in Toman for display. */
-export function formatToman(toman: number | null | undefined): string {
-  if (toman == null) return '—';
-  return `${numberFormatter.format(toman)} Toman`;
-}
-
-/** Format an IRR-stored amount as Toman for display. */
+/** An IRR-stored amount, shown in Toman. */
 export function formatTomanFromIrr(irr: number | null | undefined): string {
-  if (irr == null) return '—';
-  return formatToman(irrToToman(irr));
+  return toman(irr);
 }
 
-/** Compact Toman display for metrics (from IRR). */
+/** Compact Toman for the stat cards, where the full digits do not fit. */
 export function formatCompactTomanFromIrr(value: number | null | undefined): string {
-  if (value == null) return 'Balance unavailable';
-  const toman = irrToToman(value);
-  if (toman >= 1_000_000) return `${(toman / 1_000_000).toFixed(1)}M Toman`;
-  if (toman >= 1_000) return `${Math.round(toman / 1_000)}K Toman`;
-  return `${numberFormatter.format(toman)} Toman`;
+  return value == null ? 'موجودی در دسترس نیست' : tomanCompact(value);
 }
 
 /** @deprecated Use formatTomanFromIrr — kept for any legacy references. */
@@ -42,37 +49,23 @@ export function formatIrrAndToman(value: number | null | undefined): string {
 }
 
 export function formatTime(ts: number): string {
-  return new Date(ts).toLocaleString();
+  return dateTime(ts);
 }
 
 /**
- * Like formatTime but always includes seconds, so two SMS timestamps
- * seconds apart (phone receipt vs server ingestion) can be distinguished
- * at a glance. Uses the runtime's locale + timezone.
+ * Like formatTime but always includes seconds, so two SMS timestamps seconds
+ * apart — phone receipt versus server ingestion — can be told apart. The
+ * five-minute auto-verify window is decided on that difference.
  */
 export function formatTimeSeconds(ts: number): string {
-  const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  // Match the dashboard's existing default-locale format ("5 Aug 2026, 22:48:13")
-  // by composing Intl.DateTimeFormat pieces.
-  const date = new Intl.DateTimeFormat('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  }).format(d);
-  return `${date}, ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return dateTimeSeconds(ts);
 }
 
 export function directionLabel(d: 'CREDIT' | 'DEBIT' | 'UNKNOWN'): string {
-  // Credit-only product: CREDIT is shown as "واریز / Deposit"; DEBIT and
-  // UNKNOWN are not surfaced in the default dashboard views (the route
-  // layer filters them out), but if a legacy row leaks through we render
-  // a clearly-marked label so the operator knows it's an excluded row.
-  return d === 'CREDIT'
-    ? 'واریز / Deposit'
-    : d === 'DEBIT'
-      ? 'برداشت (نمایش داده نمی‌شود)'
-      : 'نامشخص';
+  // Credit-only product: DEBIT and UNKNOWN are filtered out by the route layer
+  // and are not expected on screen, but a legacy row that leaks through is
+  // labelled plainly rather than silently shown as an ordinary deposit.
+  return d === 'CREDIT' ? 'واریز' : d === 'DEBIT' ? 'برداشت (نمایش داده نمی‌شود)' : 'نامشخص';
 }
 
 export function statusLabel(s: string): string {
@@ -82,15 +75,15 @@ export function statusLabel(s: string): string {
     case 'NEEDS_REVIEW':
       return 'نیاز به بررسی';
     case 'APPROVED':
-      return 'تأیید شد';
+      return 'تایید شد';
     case 'SUGGESTED':
       return 'پیشنهاد شد';
     case 'CONFIRMED':
-      return 'تأیید';
+      return 'تایید';
     case 'REJECTED':
       return 'رد شد';
     case 'VERIFIED':
-      return 'راستی‌آزمایی';
+      return 'تاییدشده';
     case 'PENDING':
       return 'در انتظار';
     case 'FAKE_RECEIPT':

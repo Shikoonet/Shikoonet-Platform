@@ -153,15 +153,15 @@ function renderView() {
 }
 
 function hubNav() {
-  return within(screen.getByRole('navigation', { name: 'Payment hub views' }));
+  return within(screen.getByRole('navigation', { name: 'نماهای پرداخت' }));
 }
 
 function opsNav() {
-  return within(screen.getByRole('tablist', { name: 'Payment sections' }));
+  return within(screen.getByRole('tablist', { name: 'بخش‌های پرداخت' }));
 }
 
 async function goNeedsReview() {
-  fireEvent.click(await hubNav().findByRole('tab', { name: /Needs Review/i }));
+  fireEvent.click(await hubNav().findByRole('tab', { name: /نیاز به بررسی/i }));
 }
 
 beforeEach(() => {
@@ -179,10 +179,10 @@ describe('PaymentsView tabs', () => {
     mockApi({ needs_review: [item({ id: 'p1' })], income: [] });
     renderView();
 
-    expect(await screen.findByRole('navigation', { name: 'Payment hub views' })).toBeTruthy();
-    expect(opsNav().getByRole('tab', { name: 'Review' })).toBeTruthy();
-    expect(hubNav().getByRole('tab', { name: /Income/i })).toBeTruthy();
-    expect(opsNav().getByRole('tab', { name: /Reseller/i })).toBeTruthy();
+    expect(await screen.findByRole('navigation', { name: 'نماهای پرداخت' })).toBeTruthy();
+    expect(opsNav().getByRole('tab', { name: 'بررسی' })).toBeTruthy();
+    expect(hubNav().getByRole('tab', { name: /واریزی‌ها/i })).toBeTruthy();
+    expect(opsNav().getByRole('tab', { name: /نمایندگی/i })).toBeTruthy();
   });
 
   it('lists waiting payments in the Waiting tab without approve actions', async () => {
@@ -200,11 +200,11 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Waiting 8/i }));
-    expect(await screen.findByText(/Order WAIT1/)).toBeTruthy();
+    fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار 8/i }));
+    expect(await screen.findByText(/سفارش WAIT1/)).toBeTruthy();
     expect(screen.getByText('About 6 minutes remaining')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Review$/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Mark as fake' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'علامت‌زدن به‌عنوان جعلی' })).toBeNull();
   });
 
   it('lists NO_TRANSACTION_AFTER_10M under Suspected Fake with review and Remove', async () => {
@@ -221,12 +221,12 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Suspected Fake 2/i }));
-    expect(await screen.findByText(/Order SF1/)).toBeTruthy();
-    expect(screen.getByText(/no bank transfer was found within 10 minutes/i)).toBeTruthy();
+    fireEvent.click(await hubNav().findByRole('tab', { name: /مشکوک به جعل 2/i }));
+    expect(await screen.findByText(/سفارش SF1/)).toBeTruthy();
+    expect(screen.getByText(/تا ۱۰ دقیقه هیچ واریزی پیدا نشد/)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Review suspected fake/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Remove' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Mark as fake' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'حذف' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'علامت‌زدن به‌عنوان جعلی' })).toBeNull();
   });
 
   it('Remove on Suspected Fake rejects with NO_BANK_TRANSACTION', async () => {
@@ -241,28 +241,28 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Suspected Fake 2/i }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /مشکوک به جعل 2/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'حذف' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'تایید' }));
 
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]!.url).toBe('/api/v1/suspects/sf1/reject');
     expect(posts[0]!.body).toEqual({ reason: 'NO_BANK_TRANSACTION' });
   });
 
-  it('lists engine-flagged payments under Needs Review', async () => {
+  it('lists engine-flagged payments under نیاز به بررسی', async () => {
     mockApi({ needs_review: [item({ id: 'p1', orderId: 'A12B' })] });
     renderView();
     await goNeedsReview();
 
     expect(await screen.findByText(/@ali/)).toBeTruthy();
-    expect(await screen.findByText(/Order A12B/)).toBeTruthy();
-    expect(screen.getByText('195,000 Toman')).toBeTruthy();
-    expect(screen.getByText(/Multiple bank transactions match this payment/)).toBeTruthy();
-    expect(screen.getByText('Needs review')).toBeTruthy();
+    expect(await screen.findByText(/سفارش A12B/)).toBeTruthy();
+    expect(screen.getByText('۱۹۵٬۰۰۰ تومان')).toBeTruthy();
+    expect(screen.getByText(/چند تراکنش بانکی با این پرداخت می‌خوانند/)).toBeTruthy();
+    expect(screen.getAllByText('نیاز به بررسی')[1]).toBeTruthy();
   });
 
-  it('lists automatically verified payments under Bot Auto Verified', async () => {
+  it('lists automatically verified payments under تایید خودکار ربات', async () => {
     mockApi({
       needs_review: [],
       bot_auto_verified: [
@@ -285,7 +285,7 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Bot Auto Verified 143/i }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /تایید خودکار ربات 143/i }));
     expect(await screen.findByText(/@sara/)).toBeTruthy();
     expect(screen.getByText('A12B')).toBeTruthy();
     // Verified At must be rendered as exact YYYY-MM-DD HH:mm:ss (Asia/Tehran)
@@ -301,28 +301,28 @@ describe('PaymentsView tabs', () => {
       bot_auto_verified: [item({ id: 'p2', reviewState: 'AUTO_VERIFIED', suspectReason: null })],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Bot Auto Verified 143/i }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /تایید خودکار ربات 143/i }));
     await screen.findByRole('table');
     expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /reject/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /undo/i })).toBeNull();
   });
 
-  it('marks bot auto verified tab read via Read all', async () => {
+  it('marks bot auto verified tab read via خواندن همه', async () => {
     mockApi({
       needs_review: [],
       bot_auto_verified: [item({ id: 'p2', reviewState: 'AUTO_VERIFIED', suspectReason: null, isNew: true })],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Bot Auto Verified 143/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /Mark 4 unread items as read/i }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /تایید خودکار ربات 143/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /علامت‌زدن 4 مورد خوانده‌نشده/i }));
 
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]!.url).toBe('/api/v1/payments/tabs/read-all');
     expect(posts[0]!.body).toEqual({ tab: 'bot_auto_verified' });
   });
 
-  it('shows Read all on income tab when unread', async () => {
+  it('shows خواندن همه on income tab when unread', async () => {
     mockApi({
       needs_review: [],
       income: [
@@ -336,14 +336,14 @@ describe('PaymentsView tabs', () => {
           accountBank: 'Melli',
           accountHint: '6006',
           reference: null,
-          statusLabel: 'Unassigned income',
+          statusLabel: 'واریزی تخصیص‌نیافته',
           isNew: true,
         },
       ],
     });
     renderView();
-    await waitFor(() => expect(screen.getByText('50,000 Toman')).toBeTruthy());
-    fireEvent.click(await screen.findByLabelText('Mark 3 unread items as read'));
+    await waitFor(() => expect(screen.getByText('۵۰٬۰۰۰ تومان')).toBeTruthy());
+    fireEvent.click(await screen.findByLabelText('علامت‌زدن 3 مورد خوانده‌نشده به‌عنوان خوانده‌شده'));
 
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]!.url).toBe('/api/v1/payments/tabs/read-all');
@@ -362,20 +362,20 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await opsNav().findByRole('tab', { name: 'Payments' }));
-    fireEvent.click(await hubNav().findByRole('tab', { name: /All 157/i }));
+    fireEvent.click(await opsNav().findByRole('tab', { name: 'بایگانی' }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /همه 157/i }));
     await screen.findAllByRole('listitem');
     const pills = screen.getByRole('list').querySelectorAll('.status-pill');
     expect([...pills].map((p) => p.textContent)).toEqual([
-      'Bot auto verified',
-      'Needs review',
-      'Manually verified',
-      'Waiting',
-      'Rejected',
+      'تایید خودکار ربات',
+      'نیاز به بررسی',
+      'تایید دستی',
+      'در انتظار',
+      'رد شده',
     ]);
   });
 
-  it('shows Reopen on Manually Verified tab for reopen-eligible items', async () => {
+  it('shows Reopen on تایید دستی tab for reopen-eligible items', async () => {
     mockApi({
       needs_review: [],
       manually_verified: [
@@ -383,14 +383,14 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await opsNav().findByRole('tab', { name: 'Payments' }));
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Manually Verified/i }));
+    fireEvent.click(await opsNav().findByRole('tab', { name: 'بایگانی' }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /تایید دستی/i }));
     await screen.findAllByRole('listitem');
-    fireEvent.click(screen.getByRole('button', { name: 'Actions' }));
-    expect(screen.getByRole('menuitem', { name: 'Reopen verification' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'عملیات' }));
+    expect(screen.getByRole('menuitem', { name: 'بازکردن دوبارهٔ تایید' })).toBeTruthy();
   });
 
-  it('confirms reopen on Manually Verified tab and calls reopen API', async () => {
+  it('confirms reopen on تایید دستی tab and calls reopen API', async () => {
     mockApi({
       needs_review: [],
       manually_verified: [
@@ -410,14 +410,14 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await opsNav().findByRole('tab', { name: 'Payments' }));
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Manually Verified/i }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Actions' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Reopen verification' }));
-    fireEvent.change(screen.getByLabelText(/Reason \(required\)/i), {
+    fireEvent.click(await opsNav().findByRole('tab', { name: 'بایگانی' }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /تایید دستی/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'عملیات' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'بازکردن دوبارهٔ تایید' }));
+    fireEvent.change(screen.getByLabelText(/دلیل \(الزامی\)/i), {
       target: { value: 'Wrong transaction' },
     });
-    fireEvent.click(await screen.findByRole('button', { name: 'Reopen verification' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'بازکردن دوبارهٔ تایید' }));
 
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]!.url).toBe('/api/v1/payment-claims/a-manual/reopen-manual-verification');
@@ -444,15 +444,15 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await opsNav().findByRole('tab', { name: 'Payments' }));
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Manually Verified/i }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Actions' }));
-    const reopen = screen.getByRole('menuitem', { name: 'Reopen verification' });
+    fireEvent.click(await opsNav().findByRole('tab', { name: 'بایگانی' }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /تایید دستی/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'عملیات' }));
+    const reopen = screen.getByRole('menuitem', { name: 'بازکردن دوبارهٔ تایید' });
     expect(reopen).toHaveProperty('disabled', true);
     expect(reopen.getAttribute('title')).toMatch(/revert snapshot/i);
   });
 
-  it('shows Reopen in Payment Review drawer for manually verified items', async () => {
+  it('shows Reopen in بررسی پرداخت drawer for manually verified items', async () => {
     mockApi({
       needs_review: [],
       manually_verified: [
@@ -472,14 +472,14 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await opsNav().findByRole('tab', { name: 'Payments' }));
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Manually Verified/i }));
-    fireEvent.click(await screen.findByText(/Order A12B/i));
-    const drawer = await screen.findByRole('dialog', { name: 'Payment review' });
-    const reopen = within(drawer).getByRole('button', { name: 'Reopen verification' });
+    fireEvent.click(await opsNav().findByRole('tab', { name: 'بایگانی' }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /تایید دستی/i }));
+    fireEvent.click(await screen.findByText(/سفارش A12B/i));
+    const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
+    const reopen = within(drawer).getByRole('button', { name: 'بازکردن دوبارهٔ تایید' });
     expect(reopen).toHaveProperty('disabled', false);
     fireEvent.click(reopen);
-    expect(await screen.findByRole('dialog', { name: 'Reopen manual verification' })).toBeTruthy();
+    expect(await screen.findByRole('dialog', { name: 'بازکردن دوبارهٔ تایید دستی' })).toBeTruthy();
   });
 
   it('shows disabled Reopen in drawer when not reopen-eligible', async () => {
@@ -502,11 +502,11 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await opsNav().findByRole('tab', { name: 'Payments' }));
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Manually Verified/i }));
-    fireEvent.click(await screen.findByText(/Order A12B/i));
-    const drawer = await screen.findByRole('dialog', { name: 'Payment review' });
-    const reopen = within(drawer).getByRole('button', { name: 'Reopen verification' });
+    fireEvent.click(await opsNav().findByRole('tab', { name: 'بایگانی' }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /تایید دستی/i }));
+    fireEvent.click(await screen.findByText(/سفارش A12B/i));
+    const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
+    const reopen = within(drawer).getByRole('button', { name: 'بازکردن دوبارهٔ تایید' });
     expect(reopen).toHaveProperty('disabled', true);
     expect(within(drawer).getByText(/revert snapshot/i)).toBeTruthy();
   });
@@ -521,21 +521,21 @@ describe('PaymentsView tabs', () => {
       all: [],
     });
     renderView();
-    expect(await screen.findByText('No unassigned bank income in this range.')).toBeTruthy();
+    expect(await screen.findByText('در این بازه واریزی تخصیص‌نیافته‌ای نیست.')).toBeTruthy();
 
     await goNeedsReview();
-    expect(await screen.findByText('Nothing needs review.')).toBeTruthy();
+    expect(await screen.findByText('چیزی نیاز به بررسی ندارد.')).toBeTruthy();
     expect(screen.queryByText(/Every payment was handled automatically/)).toBeNull();
 
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Waiting 8/i }));
-    expect(await screen.findByText('No payments waiting.')).toBeTruthy();
+    fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار 8/i }));
+    expect(await screen.findByText('پرداختی در انتظار نیست.')).toBeTruthy();
 
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Suspected Fake 2/i }));
-    expect(await screen.findByText('No suspicious receipts are waiting for review.')).toBeTruthy();
+    fireEvent.click(await hubNav().findByRole('tab', { name: /مشکوک به جعل 2/i }));
+    expect(await screen.findByText('رسید مشکوکی در انتظار بررسی نیست.')).toBeTruthy();
 
-    fireEvent.click(await opsNav().findByRole('tab', { name: 'Payments' }));
-    fireEvent.click(await hubNav().findByRole('tab', { name: /All 157/i }));
-    expect(await screen.findByText('No payments found.')).toBeTruthy();
+    fireEvent.click(await opsNav().findByRole('tab', { name: 'بایگانی' }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /همه 157/i }));
+    expect(await screen.findByText('پرداختی پیدا نشد.')).toBeTruthy();
   });
 
   it('says so when the inbox cannot be loaded, instead of loading forever', async () => {
@@ -544,10 +544,10 @@ describe('PaymentsView tabs', () => {
 
     expect(await screen.findByText(/Could not load payments/)).toBeTruthy();
     expect(screen.queryByText('Loading…')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'تلاش دوباره' })).toBeTruthy();
   });
 
-  it('Suspected Fake Review opens mark-fake confirmation flow', async () => {
+  it('مشکوک به جعل Review opens mark-fake confirmation flow', async () => {
     mockApi({
       needs_review: [],
       suspected_fake: [
@@ -560,18 +560,18 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Suspected Fake 2/i }));
+    fireEvent.click(await hubNav().findByRole('tab', { name: /مشکوک به جعل 2/i }));
     fireEvent.click(await screen.findByRole('button', { name: /Review suspected fake/i }));
-    const drawer = await screen.findByRole('dialog', { name: 'Payment review' });
-    expect(within(drawer).getByRole('button', { name: 'Mark as fake' })).toBeTruthy();
-    expect(within(drawer).queryByRole('button', { name: 'Reject payment' })).toBeNull();
+    const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
+    expect(within(drawer).getByRole('button', { name: 'علامت‌زدن به‌عنوان جعلی' })).toBeTruthy();
+    expect(within(drawer).queryByRole('button', { name: 'رد پرداخت' })).toBeNull();
   });
 
   it('never renders a full card number in the list', async () => {
     mockApi({ needs_review: [item({ id: 'p1' })] });
     const { container } = renderView();
     await goNeedsReview();
-    await screen.findByText(/Order A12B/);
+    await screen.findByText(/سفارش A12B/);
     expect(container.textContent).not.toContain(FULL_CARD);
     expect(container.textContent).toContain('****6006');
   });
@@ -590,11 +590,11 @@ describe('review drawer', () => {
     await goNeedsReview();
 
     fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
-    const drawer = await screen.findByRole('dialog', { name: 'Payment review' });
-    expect(within(drawer).getByText('Payment Review')).toBeTruthy();
-    expect(within(drawer).getByText('Order: A12B')).toBeTruthy();
+    const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
+    expect(within(drawer).getByText('بررسی پرداخت')).toBeTruthy();
+    expect(within(drawer).getByText('سفارش: A12B')).toBeTruthy();
     expect(within(drawer).getByText('User ID: 42')).toBeTruthy();
-    expect(within(drawer).getByText('Transaction')).toBeTruthy();
+    expect(within(drawer).getByText('تراکنش')).toBeTruthy();
     expect(within(drawer).getAllByRole('radio')).toHaveLength(2);
     expect(within(drawer).getByText(/Δ 21 sec/)).toBeTruthy();
     expect(within(drawer).getByText(/Δ 37 sec/)).toBeTruthy();
@@ -606,21 +606,21 @@ describe('review drawer', () => {
     await goNeedsReview();
 
     fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
-    const approve = await screen.findByRole('button', { name: 'Verify selected' });
+    const approve = await screen.findByRole('button', { name: 'تایید انتخاب‌شده‌ها' });
     expect((approve as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(screen.getAllByRole('radio')[1]!);
     expect((approve as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('Verify selected posts the chosen transaction to the existing endpoint', async () => {
+  it('تایید انتخاب‌شده‌ها posts the chosen transaction to the existing endpoint', async () => {
     mockApi({ needs_review: [ambiguous] });
     renderView();
     await goNeedsReview();
 
     fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
     fireEvent.click(screen.getAllByRole('radio')[1]!);
-    fireEvent.click(screen.getByRole('button', { name: 'Verify selected' }));
+    fireEvent.click(screen.getByRole('button', { name: 'تایید انتخاب‌شده‌ها' }));
 
     await waitFor(() =>
       expect(posts.some((p) => p.url === '/api/v1/suspects/p1/approve')).toBe(true),
@@ -629,13 +629,13 @@ describe('review drawer', () => {
     expect(approvePost.body).toEqual({ transactionId: 't2' });
   });
 
-  it('Reject payment posts a rejection reason to the existing endpoint', async () => {
+  it('رد پرداخت posts a rejection reason to the existing endpoint', async () => {
     mockApi({ needs_review: [ambiguous] });
     renderView();
     await goNeedsReview();
 
     fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Reject payment' }));
+    fireEvent.click(screen.getByRole('button', { name: 'رد پرداخت' }));
 
     await waitFor(() =>
       expect(posts.some((p) => p.url === '/api/v1/suspects/p1/reject')).toBe(true),
@@ -658,27 +658,27 @@ describe('review drawer', () => {
 
 describe('reason presentation', () => {
   it.each([
-    ['AMBIGUOUS_TRANSACTIONS', 'Multiple bank transactions match this payment'],
-    ['AMBIGUOUS_CLAIMS', 'Multiple payments could match this bank transfer'],
-    ['NO_TRANSACTION_AFTER_10M', 'Receipt submitted, but no bank transfer was found within 10 minutes'],
-    ['UNMAPPED_CARD', 'Card is not linked to a bank account'],
-    ['ACCOUNT_NOT_ACTIVE', 'This bank account is not active'],
-    ['AMOUNT_MISMATCH', 'A nearby bank transfer has a different amount'],
-    ['TRANSACTION_ALREADY_CONSUMED', 'This bank transaction was already used for another payment'],
-    ['PARSER_FAILURE_NEARBY', 'A nearby bank SMS could not be processed'],
+    ['AMBIGUOUS_TRANSACTIONS', 'چند تراکنش بانکی با این پرداخت می‌خوانند'],
+    ['AMBIGUOUS_CLAIMS', 'چند پرداخت می‌توانند با این واریزی بخوانند'],
+    ['NO_TRANSACTION_AFTER_10M', 'رسید ثبت شد، ولی تا ۱۰ دقیقه هیچ واریزی پیدا نشد'],
+    ['UNMAPPED_CARD', 'کارت به هیچ حساب بانکی وصل نیست'],
+    ['ACCOUNT_NOT_ACTIVE', 'این حساب بانکی فعال نیست'],
+    ['AMOUNT_MISMATCH', 'یک واریزی نزدیک، مبلغش فرق دارد'],
+    ['TRANSACTION_ALREADY_CONSUMED', 'این تراکنش بانکی قبلاً برای پرداخت دیگری استفاده شده'],
+    ['PARSER_FAILURE_NEARBY', 'یک پیامک بانکی نزدیک پردازش نشد'],
   ])('%s reads as a sentence', (code, text) => {
     expect(reasonText(code)).toBe(text);
   });
 
   it('OUTSIDE_AUTO_MATCH_WINDOW names the 5-minute window', () => {
     expect(reasonText('OUTSIDE_AUTO_MATCH_WINDOW')).toBe(
-      'Matching transfer found, but outside the 5-minute auto-verify window',
+      'واریزی منطبق پیدا شد، ولی بیرون از پنجرهٔ ۵ دقیقه‌ای تایید خودکار',
     );
   });
 
   it('falls back to a neutral sentence for unknown or absent codes', () => {
-    expect(reasonText('SOMETHING_NEW')).toBe('Could not be verified automatically');
-    expect(reasonText(null)).toBe('Waiting for bank transfer');
+    expect(reasonText('SOMETHING_NEW')).toBe('به‌صورت خودکار تایید نشد');
+    expect(reasonText(null)).toBe('در انتظار واریز بانکی');
   });
 });
 
@@ -694,17 +694,17 @@ describe('PaymentsView device display', () => {
     });
     renderView();
     await goNeedsReview();
-    expect(await screen.findByText(/Device: Puyan-iPhone/)).toBeTruthy();
+    expect(await screen.findByText(/دستگاه: Puyan-iPhone/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Review payment from/i }));
-    const drawer = await screen.findByRole('dialog', { name: 'Payment review' });
+    const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
     expect(within(drawer).getByText('Puyan-iPhone')).toBeTruthy();
   });
 
   it('shows Device: — when no SMS source device is known', async () => {
     mockApi({ waiting: [item({ id: 'w1', reviewState: 'WAITING', suspectReason: null, device: null })] });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /Waiting 8/i }));
-    expect(await screen.findByText(/Device: —/)).toBeTruthy();
+    fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار 8/i }));
+    expect(await screen.findByText(/دستگاه: —/)).toBeTruthy();
   });
 });
 
@@ -737,7 +737,7 @@ describe('PaymentsView live refresh', () => {
     const cache = createCache();
     window.history.replaceState(null, '', '/?tab=needs_review');
     render(<PaymentsView cache={cache} />);
-    expect(await screen.findByText(/Order STAY/)).toBeTruthy();
+    expect(await screen.findByText(/سفارش STAY/)).toBeTruthy();
 
     needsReviewItems = [];
     const { DASHBOARD_POLL_INTERVAL_MS } = await import('../../src/hub/query.js');
@@ -745,15 +745,15 @@ describe('PaymentsView live refresh', () => {
       vi.advanceTimersByTime(DASHBOARD_POLL_INTERVAL_MS);
     });
     await waitFor(() => {
-      expect(screen.queryByText(/Order STAY/)).toBeNull();
-      expect(screen.getByText('Nothing needs review.')).toBeTruthy();
+      expect(screen.queryByText(/سفارش STAY/)).toBeNull();
+      expect(screen.getByText('چیزی نیاز به بررسی ندارد.')).toBeTruthy();
     });
     vi.useRealTimers();
   });
 });
 
-describe('PaymentsView Bot Auto Verified read state', () => {
-  it('Read all clears unread badge but keeps total count', async () => {
+describe('PaymentsView تایید خودکار ربات read state', () => {
+  it('خواندن همه clears unread badge but keeps total count', async () => {
     mockApi({
       bot_auto_verified: [item({ id: 'b1', reviewState: 'AUTO_VERIFIED', isNew: true })],
     });
@@ -782,7 +782,7 @@ describe('PaymentsView Bot Auto Verified read state', () => {
 
     window.history.replaceState(null, '', '/?tab=bot_auto_verified');
     renderView();
-    expect(await screen.findByRole('button', { name: /Mark 4 unread items as read/i })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /علامت‌زدن 4 مورد خوانده‌نشده/i })).toBeTruthy();
 
     globalThis.fetch = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
       const url = String(input);
@@ -809,9 +809,9 @@ describe('PaymentsView Bot Auto Verified read state', () => {
       );
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /Mark 4 unread items as read/i }));
+    fireEvent.click(screen.getByRole('button', { name: /علامت‌زدن 4 مورد خوانده‌نشده/i }));
     await waitFor(() => {
-      expect(screen.getByRole('tab', { name: /Bot Auto Verified 143/i })).toBeTruthy();
+      expect(screen.getByRole('tab', { name: /تایید خودکار ربات 143/i })).toBeTruthy();
       expect(screen.queryByText('+4')).toBeNull();
     });
   });

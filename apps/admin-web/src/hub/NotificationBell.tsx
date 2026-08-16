@@ -117,7 +117,7 @@ export function NotificationBell({ cache, onNavigate }: NotificationBellProps) {
       <button
         type="button"
         className={`notification-bell__button${shaking ? ' notification-bell__button--shake' : ''}`}
-        aria-label={`Notifications${badgeValue > 0 ? `, ${badgeValue} unread` : ''}`}
+        aria-label={`اعلان‌ها${badgeValue > 0 ? `، ${badgeValue} خوانده‌نشده` : ''}`}
         aria-expanded={open}
         aria-controls="notification-bell-dropdown"
         onClick={() => {
@@ -139,9 +139,9 @@ export function NotificationBell({ cache, onNavigate }: NotificationBellProps) {
       {open && (
         <div className="notification-bell__dropdown" id="notification-bell-dropdown" role="menu">
           <div className="notification-bell__sound">
-            <span>Notification sound</span>
+            <span>صدای اعلان</span>
             <button type="button" className="notification-bell__mute" onClick={toggleMute}>
-              {muted ? 'Muted' : 'Sound on'}
+              {muted ? 'بی‌صدا' : 'صدا روشن'}
             </button>
           </div>
           <div className="notification-bell__counts notification-bell__counts--scoped">
@@ -153,7 +153,7 @@ export function NotificationBell({ cache, onNavigate }: NotificationBellProps) {
                 onNavigate?.('payments', { kind: 'income', paymentTab: 'income' });
               }}
             >
-              <span className="count-label">Income</span>
+              <span className="count-label">واریزی</span>
               <span className="count-value">{incomeUnread}</span>
             </button>
             <button
@@ -164,7 +164,7 @@ export function NotificationBell({ cache, onNavigate }: NotificationBellProps) {
                 onNavigate?.('payments', { kind: 'bot_auto_verified', paymentTab: 'bot_auto_verified' });
               }}
             >
-              <span className="count-label">Bot auto verified</span>
+              <span className="count-label">تایید خودکار ربات</span>
               <span className="count-value">{botUnread}</span>
             </button>
           </div>
@@ -177,7 +177,7 @@ export function NotificationBell({ cache, onNavigate }: NotificationBellProps) {
                 onClick={onMarkAllRead}
                 disabled={markingAll || counts.unread === 0}
               >
-                {markingAll ? 'Marking…' : 'Read all'}
+                {markingAll ? 'Marking…' : 'خواندن همه'}
               </button>
             </div>
             {counts.unread === 0 ? (

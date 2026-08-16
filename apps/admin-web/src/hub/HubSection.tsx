@@ -7,11 +7,11 @@
  * one. What survives is the part that was actually the hub — the query cache
  * and the six views.
  *
- * `dir="ltr"` on the wrapper, deliberately and temporarily. These screens are
- * still English and laid out left-to-right, inside a document that is `rtl`.
- * Without it the tables mirror and the amounts land on the wrong side. It comes
- * off in the pass that translates them, and until then it is one attribute
- * rather than a stylesheet full of overrides.
+ * The direction is per screen while the translation is in progress. A screen
+ * whose copy is still English reads worse mirrored than it does left-to-right,
+ * so it keeps `ltr` until its words are Persian and then flips with them. The
+ * set below is the whole of the bookkeeping, and it deletes itself: when all
+ * six are in it, the attribute becomes a constant and then nothing at all.
  *
  * `className="hub"` is not cosmetic: `styles.css` hangs its design tokens and
  * its element rules off it, so this div is the boundary between the two design
@@ -28,6 +28,9 @@ import { StatisticsView } from './StatisticsView.js';
 import { BanksView } from './BanksView.js';
 import { ShikoonetHeader } from './shikoonetShell.js';
 
+/** Screens whose copy is Persian, and which therefore read right-to-left. */
+const TRANSLATED: ReadonlySet<HubPageId> = new Set<HubPageId>(['payments']);
+
 export function HubSection({
   section,
   cache,
@@ -38,7 +41,7 @@ export function HubSection({
   onGo: (id: HubPageId, search?: string) => void;
 }) {
   return (
-    <div className="hub" dir="ltr">
+    <div className="hub" dir={TRANSLATED.has(section) ? 'rtl' : 'ltr'}>
       <ShikoonetHeader
         cache={cache}
         opsMode={section === 'payments'}

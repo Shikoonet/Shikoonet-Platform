@@ -62,7 +62,7 @@ export function ClaimChangeAccount({
   if (!open) {
     return (
       <button type="button" className="ghost" onClick={() => setOpen(true)}>
-        Change bank/account
+        تغییر بانک/حساب
       </button>
     );
   }
@@ -70,7 +70,7 @@ export function ClaimChangeAccount({
   return (
     <div className="claim-change-account">
       <label>
-        Effective bank/account
+        بانک/حساب مؤثر
         <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
           <option value="">— Unmapped —</option>
           {filtered.map((a) => (
@@ -81,15 +81,15 @@ export function ClaimChangeAccount({
         </select>
       </label>
       <label>
-        Reason (optional)
+        دلیل (اختیاری)
         <input type="text" value={reason} maxLength={500} onChange={(e) => setReason(e.target.value)} />
       </label>
       <div className="payment-review__actions">
         <button type="button" className="primary" disabled={busy} onClick={() => void submit()}>
-          Save account
+          ذخیرهٔ حساب
         </button>
         <button type="button" className="ghost" disabled={busy} onClick={() => setOpen(false)}>
-          Cancel
+          انصراف
         </button>
       </div>
     </div>

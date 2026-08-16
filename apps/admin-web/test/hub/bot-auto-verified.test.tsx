@@ -207,16 +207,16 @@ describe('BotAutoVerifiedFilter — render', () => {
   }
   it('renders both segmented controls', () => {
     render(<Wrapper />);
-    expect(screen.getByText('New Purchases')).toBeTruthy();
-    expect(screen.getByText('Renewals')).toBeTruthy();
-    expect(screen.getByText('Today')).toBeTruthy();
-    expect(screen.getByText('Yesterday')).toBeTruthy();
-    expect(screen.getByText('Day Before Yesterday')).toBeTruthy();
-    expect(screen.getByText('All')).toBeTruthy();
+    expect(screen.getByText('خریدهای جدید')).toBeTruthy();
+    expect(screen.getByText('تمدیدها')).toBeTruthy();
+    expect(screen.getByText('امروز')).toBeTruthy();
+    expect(screen.getByText('دیروز')).toBeTruthy();
+    expect(screen.getByText('پریروز')).toBeTruthy();
+    expect(screen.getByText('همه')).toBeTruthy();
   });
 });
 
-describe('Bot Auto Verified table — Phase 10 classification fixtures', () => {
+describe('تایید خودکار ربات table — Phase 10 classification fixtures', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   beforeEach(() => {
     fetchMock = vi.fn();
@@ -261,7 +261,7 @@ describe('Bot Auto Verified table — Phase 10 classification fixtures', () => {
     expect(cells.length).toBeGreaterThanOrEqual(4);
   });
 
-  it('renders Verified At as exact YYYY-MM-DD HH:mm:ss in Tehran TZ', async () => {
+  it('renders زمان تایید as exact YYYY-MM-DD HH:mm:ss in Tehran TZ', async () => {
     const item = makeClaimItem({
       id: 'c2',
       telegramUserId: '2028415748',
@@ -327,6 +327,6 @@ describe('Bot Auto Verified table — Phase 10 classification fixtures', () => {
       return new Response('{}', { status: 200 });
     });
     render(<PaymentsView cache={createCache()} />);
-    await waitFor(() => expect(screen.queryByText(/no bot auto-verified payments/i)).toBeTruthy());
+    await waitFor(() => expect(screen.queryByText(/پرداختی با تایید خودکار ربات نیست/)).toBeTruthy());
   });
 });
