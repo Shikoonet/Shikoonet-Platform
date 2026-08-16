@@ -2150,7 +2150,9 @@
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
   display: flex;
-  z-index: 50;
+  /* Same reason as `.modal-backdrop`, one step below it so a modal opened from
+     inside the review drawer still lands on top. */
+  z-index: 1100;
 }
 
 .drawer {
@@ -3869,7 +3871,11 @@
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  z-index: 60;
+  /* Above the panel's chrome. 60 was enough when the hub was its own document
+     with nothing fixed above it; inside the panel the header is 1001 and the
+     sidebar 1002, and a modal that opens flush to the top of the viewport puts
+     its × underneath the header — visible, and not clickable. */
+  z-index: 1110;
   padding: 1rem;
   overflow-y: auto;
 }

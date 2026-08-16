@@ -64,6 +64,32 @@ test('a payment tab can be linked to, and clicking one writes the link', async (
   await expect(page).not.toHaveURL(/\/admin\/payments/);
 });
 
+test('a hub modal opens above the panel chrome, close button and all', async ({ page }) => {
+  // Found by trying to click it, not by reading the stylesheet. The hub was its
+  // own document with nothing fixed above it, so `.modal-backdrop` at
+  // `z-index: 60` was plenty; inside the panel the header is 1001 and the
+  // sidebar 1002. The modal still drew — it drew *underneath* — and its × sat in
+  // the header's band, visible and inert. Every hub modal was affected.
+  //
+  // `elementFromPoint` rather than a screenshot: what went wrong is which
+  // element receives the click, and that is the thing a picture cannot show.
+  await page.goto('/admin/devices');
+  await page.getByTestId('open-add-device').click();
+  const close = page.getByTestId('device-modal-close');
+  await expect(close).toBeVisible();
+
+  const onTop = await close.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return el.contains(hit) || el === hit;
+  });
+  expect(onTop).toBe(true);
+
+  // And it really closes, which is the behaviour the stacking exists to serve.
+  await close.click();
+  await expect(page.locator('.modal-backdrop')).toHaveCount(0);
+});
+
 for (const section of SECTIONS) {
   test(`the ${section} screen loads with nothing refused and nothing thrown`, async ({ page }) => {
     const failed: string[] = [];
