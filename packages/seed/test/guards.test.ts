@@ -40,9 +40,30 @@ describe('where it may be pointed', () => {
     expect(() => assertLocal('postgres://u:p@127.0.0.1:5433/shikoo')).toThrow(/production/);
   });
 
+  it('refuses staging, and refuses the typo that used to slip past', () => {
+    // The old check was `=== 'production'`, which is exactly one string. So a
+    // tunnel to staging, or to a box whose ENV_NAME reads `prod`, was waved
+    // through by the only guard that survives an SSH tunnel.
+    for (const value of ['staging', 'prod', 'Production']) {
+      process.env.ENV_NAME = value;
+      expect(() => assertLocal('postgres://u:p@127.0.0.1:5433/shikoo')).toThrow(
+        new RegExp(`refusing to seed with ENV_NAME=${value}`),
+      );
+    }
+  });
+
   it('allows the simulation', () => {
+    // Unset still passes: this is run by hand a dozen times a day, and the two
+    // guards either side of it — a local hostname, and a user count under a
+    // thousand — are what carry that case.
     delete process.env.ENV_NAME;
     expect(() => assertLocal('postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo')).not.toThrow();
+    for (const value of ['local', 'test']) {
+      process.env.ENV_NAME = value;
+      expect(() =>
+        assertLocal('postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo'),
+      ).not.toThrow();
+    }
   });
 });
 

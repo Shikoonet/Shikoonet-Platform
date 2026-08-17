@@ -12,6 +12,7 @@
  * Playwright run, a human — had nothing to look at.
  */
 
+import { isRelaxedEnv } from '@shikoo/contracts';
 import { createPostgresD1 } from '@shikoo/db';
 import { seed } from './generators.js';
 import { seedCatalog } from './catalog.js';
@@ -51,8 +52,14 @@ export function assertLocal(connectionString: string): void {
   // end of an SSH tunnel looks like, and a cutover is largely conducted through
   // one — so the check above would have waved through the single worst command
   // in this repository on the single worst night to run it.
-  if (process.env.ENV_NAME === 'production') {
-    throw new Error('refusing to seed with ENV_NAME=production. This wipes every table.');
+  //
+  // Asked as an allowlist rather than `=== 'production'`, which let `prod`,
+  // `Production` and `staging` straight through. Unset still passes: this
+  // script is run by hand a dozen times a day and the two guards either side of
+  // it — a local hostname and a user count under a thousand — carry that case.
+  const envName = process.env.ENV_NAME;
+  if (envName !== undefined && envName !== '' && !isRelaxedEnv(envName)) {
+    throw new Error(`refusing to seed with ENV_NAME=${envName}. This wipes every table.`);
   }
 }
 

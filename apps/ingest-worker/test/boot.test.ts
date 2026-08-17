@@ -121,13 +121,35 @@ describe('starting in production', () => {
   });
 });
 
-describe('starting anywhere else', () => {
-  it('leaves local development alone', () => {
-    // The simulation is started by hand a dozen times a day and the defaults
-    // are documented in sim/README.md. Demanding five variables to run the
-    // tests would only teach everyone to export them blindly.
+describe('which environment this is', () => {
+  it('refuses to start with ENV_NAME unset', () => {
+    // This used to default to `local`, and `local` is the setting under which
+    // every guard in this file is skipped. So the whole of `assertProductionConfig`
+    // hung on one variable that nobody had to remember to set — and there is no
+    // way to detect "this is a deployment" that does not itself read it.
     set({});
-    expect(() => buildEnv(NO_DB)).not.toThrow();
-    expect(buildEnv(NO_DB).ENV_NAME).toBe('local');
+    expect(() => buildEnv(NO_DB)).toThrow(/ENV_NAME is required/);
+  });
+
+  it('refuses a near miss instead of reading it as local', () => {
+    // The failure this replaces: `prod` is not `production`, so a deploy with
+    // this typo demanded no decision on the two switches above, and every
+    // payment would sit unverified with nothing saying why.
+    for (const value of ['prod', 'Production', 'production-space', 'PRODUCTION']) {
+      set({ ...PRODUCTION_ON, ENV_NAME: value });
+      expect(() => buildEnv(NO_DB)).toThrow(/is not one of/);
+    }
+  });
+
+  it('accepts the four it knows', () => {
+    // `local` and `test` stay effortless on purpose: the simulation is started
+    // by hand a dozen times a day and demanding five variables there would only
+    // teach everyone to export them blindly. What is refused is a guess.
+    for (const value of ['local', 'test', 'staging']) {
+      set({ ENV_NAME: value });
+      expect(buildEnv(NO_DB).ENV_NAME).toBe(value);
+    }
+    set(PRODUCTION_ON);
+    expect(buildEnv(NO_DB).ENV_NAME).toBe('production');
   });
 });

@@ -31,6 +31,7 @@ import {
   tokenPrefix,
   buildSmsRelayConfig,
   MIRZABOT_SOURCE,
+  type EnvName,
 } from '@shikoo/contracts';
 import { mayRead } from './access.js';
 import {
@@ -87,12 +88,16 @@ export interface Env {
   DB: D1Database;
   /**
    * Skips the login and pins this identity. Local development and the test
-   * suites only — `server.ts` refuses to start with it under
-   * `ENV_NAME=production`, and `devBypassActive` refuses it there again.
+   * suites only — `server.ts` refuses to start with it anywhere but `local` and
+   * `test`, and `devBypassActive` refuses it there again.
    */
   TEST_ACCESS_USER?: string;
-  // "dev" | "production". Set in each wrangler config; drives the header badge.
-  ENV_NAME?: string;
+  /**
+   * Which environment this is. A union rather than a string, so a comparison
+   * against `'prod'` stops compiling — see `parseEnvName`. Drives the header
+   * badge, the origin check, the cookie's Secure flag and the bypass refusal.
+   */
+  ENV_NAME?: EnvName;
   // Injected at deploy time by scripts/release.sh via `wrangler deploy --var`,
   // because dev and production share one SPA bundle and one source tree.
   APP_VERSION?: string;

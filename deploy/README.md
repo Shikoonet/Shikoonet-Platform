@@ -210,12 +210,12 @@ No `PORT`. The bot does not listen.
 | --- | --- | --- |
 | `DATABASE_URL` | yes | |
 | ~~`ACCESS_AUD`, `ACCESS_ISSUER`, `ADMIN_ACCESS_AUD`~~ | **gone** | Cloudflare Access was removed 2026-08-16. The panel has its own login; see «اپراتورها» below |
-| `ENV_NAME` | yes | Set to `production` |
+| `ENV_NAME` | **yes, and the process will not start without it** | One of `local`, `test`, `staging`, `production` — nothing else, and no default. It decides the origin check on writes, the session cookie's `Secure` flag and the bypass refusal below. Until 2026-08-18 it defaulted to `local`, so `prod`, `Production` and forgetting it entirely all switched those three off with nothing said |
 | `SPA_DIST` | no | The payment hub SPA. Set absolutely in the image |
 | `ADMIN_DIST` | no | **The shop admin panel SPA**, served at `/admin`. One process serves both; this row was missing while the code read it, and an unbuilt SPA is a 500 rather than a failed deploy |
 | `PORT`, `HOST` | no | Default `8788`, `127.0.0.1` |
 | `INGEST_URL` | recommended | Printed into the SMS-relay phone configuration. There is no fallback any more: the routes that need it answer 503 `INGEST_URL_MISSING` |
-| `TEST_ACCESS_USER` | **never in production** | Skips the login and pins an identity. Refused twice: the process will not start with it set while `ENV_NAME=production`, and the identity path refuses it there again |
+| `TEST_ACCESS_USER` | **`local` and `test` only** | Skips the login and pins an identity. Refused twice: the process will not start with it set anywhere else, and the identity path refuses it there again. Asked as an allowlist rather than "not production" — a staging box on the public internet with the login skipped is open in exactly the way this exists to prevent |
 
 ### اپراتورها — the bootstrap nobody can skip
 
@@ -249,6 +249,7 @@ it. `operator unlock` clears a lockout (five wrong passwords, fifteen minutes).
 | Variable | Required | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | |
+| `ENV_NAME` | **yes, and the process will not start without it** | Same four values as the dashboard. Here it is what forces `MIRZABOT_INTEGRATION_ENABLED` and `AUTO_MATCH_ENABLED` to be decided out loud — and while it defaulted to `local`, a typo meant nobody was asked, every bank SMS was stored, and no payment was ever verified |
 | `PORT`, `HOST` | no | Default `8787`, `127.0.0.1` |
 | `SWEEP_INTERVAL_MS` | no | Default 60000 |
 | `DEVICE_RATE_LIMIT`, `IP_RATE_LIMIT`, `RATE_LIMIT_WINDOW_MS` | no | Second layer; the edge is the first |

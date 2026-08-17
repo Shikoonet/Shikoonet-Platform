@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { INGEST_PATH, MAX_BODY_BYTES } from '@shikoo/contracts';
+import { INGEST_PATH, MAX_BODY_BYTES, type EnvName } from '@shikoo/contracts';
 import { ingest } from './ingest.js';
 import { normalizeIngestTimestamp } from './ingestTimestamp.js';
 import { normalizeIngestJson } from './ingestBody.js';
@@ -14,8 +14,13 @@ export interface Env {
   // Optional so a test can leave them out; production wires both in server.ts.
   DEVICE_LIMIT?: RateLimit;
   IP_LIMIT?: RateLimit;
-  // "dev" | "production". Set in each wrangler config.
-  ENV_NAME?: string;
+  /**
+   * Which environment this is. A union rather than a string, so a comparison
+   * against `'prod'` stops compiling — see `parseEnvName`. It gates
+   * `assertProductionConfig`, which is what forces a decision on the two
+   * switches that decide whether money is ever verified.
+   */
+  ENV_NAME?: EnvName;
   // Injected at deploy time by scripts/release.sh via `wrangler deploy --var`.
   APP_VERSION?: string;
   INGEST_MAX_BODY_BYTES?: string;

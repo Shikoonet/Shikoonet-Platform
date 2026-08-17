@@ -181,6 +181,53 @@ describe('dashboard worker — access smoke', () => {
     expect(r.status).toBe(403);
   });
 
+  it('refuses a write with no Origin on staging too, and refuses the bypass there', async () => {
+    // Both halves of the old `!== 'production'` reading, in one request.
+    //
+    // `TEST_ACCESS_USER` is set here and must not grant an identity — under the
+    // old comparison staging counted as development, so this request would have
+    // been signed in as an admin AND allowed to skip the Origin check. Either
+    // one alone is a hole; a staging box on the public internet had both.
+    const email = 'admin@example.com';
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at) VALUES (?1, ?2, 'ADMIN', 1, ?3, ?3)`,
+    )
+      .bind(crypto.randomUUID(), email, now)
+      .run();
+    const envStaging = { ...baseEnv, TEST_ACCESS_USER: email, ENV_NAME: 'staging' as const };
+    const r = await app.fetch(
+      new Request('https://example.com/api/v1/comment', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          entityType: 'MATCH',
+          entityId: crypto.randomUUID(),
+          body: 'test comment',
+        }),
+      }),
+      envStaging,
+    );
+    expect(r.status).toBe(403);
+    expect(await r.json()).toMatchObject({ error: 'origin_required' });
+
+    // And with a correct Origin it is still refused — this time for want of an
+    // identity, which proves the bypass did not apply either.
+    const withOrigin = await app.fetch(
+      new Request('https://example.com/api/v1/comment', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://example.com' },
+        body: JSON.stringify({
+          entityType: 'MATCH',
+          entityId: crypto.randomUUID(),
+          body: 'test comment',
+        }),
+      }),
+      envStaging,
+    );
+    expect(withOrigin.status).toBe(401);
+  });
+
   it('still allows the write the SPA really makes, in production', async () => {
     // The other half, so "refuse no Origin" cannot be satisfied by refusing
     // everything: the request a browser actually sends must still succeed.

@@ -18,6 +18,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
+import { isRelaxedEnv, parseEnvName } from '@shikoo/contracts';
 import { createPostgresD1 } from '@shikoo/db';
 import { app, type Env } from './index.js';
 
@@ -54,7 +55,10 @@ const PASSTHROUGH = [
 export function buildEnv(db: Env['DB']): Env {
   const env: Env = {
     DB: db,
-    ENV_NAME: optional('ENV_NAME') ?? 'local',
+    // Throws rather than defaulting: `?? 'local'` meant a typo switched off the
+    // origin check, the cookie's Secure flag and the refusal below. See
+    // `parseEnvName`.
+    ENV_NAME: parseEnvName(optional('ENV_NAME')),
     APP_VERSION: optional('APP_VERSION') ?? 'dev',
   };
   for (const key of PASSTHROUGH) {
@@ -66,10 +70,17 @@ export function buildEnv(db: Env['DB']): Env {
   // purpose: here at startup, and again in `devBypassActive` at the moment an
   // identity would be granted — one refusal living in a single entry point is
   // how a bypass reaches production.
+  //
+  // Asked as an allowlist rather than `!== 'production'`: a staging box on the
+  // public internet with the login skipped is open in exactly the way this is
+  // meant to prevent, and it is not called production.
   const testUser = optional('TEST_ACCESS_USER');
   if (testUser !== undefined) {
-    if (env.ENV_NAME === 'production') {
-      throw new Error('TEST_ACCESS_USER must not be set when ENV_NAME=production');
+    if (!isRelaxedEnv(env.ENV_NAME)) {
+      throw new Error(
+        `TEST_ACCESS_USER must not be set when ENV_NAME=${env.ENV_NAME} — it skips the ` +
+          'login entirely and is only allowed in local and test.',
+      );
     }
     env.TEST_ACCESS_USER = testUser;
   }

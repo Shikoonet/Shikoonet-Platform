@@ -18,6 +18,7 @@
  */
 
 import type { MiddlewareHandler } from 'hono';
+import { isRelaxedEnv, type EnvName } from '@shikoo/contracts';
 
 /**
  * The origins that may post to this worker from somewhere else.
@@ -103,16 +104,19 @@ export const originGuard: MiddlewareHandler = async (c, next) => {
   // along on a cross-site request exactly as a session cookie would, which is
   // why an origin check is here in the first place.
   //
-  // Only in production, and that is a real limitation rather than a tidy
-  // default. Every test in this package builds its requests the way curl does,
-  // and closing the hatch everywhere turned 207 of them red for a hole nothing
-  // can actually reach — a non-browser has no victim's cookie to ride. So the
-  // protection is applied where it is worth having and the exception is named
-  // here rather than discovered later. If those requests are ever made
+  // Open only in local and test, and that is a real limitation rather than a
+  // tidy default. Every test in this package builds its requests the way curl
+  // does, and closing the hatch everywhere turned 207 of them red for a hole
+  // nothing can actually reach — a non-browser has no victim's cookie to ride.
+  // So the protection is applied where it is worth having and the exception is
+  // named here rather than discovered later. If those requests are ever made
   // browser-shaped, drop the condition.
+  //
+  // Asked as an allowlist: `!== 'production'` opened the hatch on staging, and
+  // on any deployment whose ENV_NAME was mistyped.
   if (!origin) {
-    const envName = (c.env as { ENV_NAME?: string } | undefined)?.ENV_NAME;
-    if (envName !== 'production') return next();
+    const envName = (c.env as { ENV_NAME?: EnvName } | undefined)?.ENV_NAME;
+    if (isRelaxedEnv(envName)) return next();
     return c.json({ ok: false, error: 'origin_required' }, 403);
   }
 

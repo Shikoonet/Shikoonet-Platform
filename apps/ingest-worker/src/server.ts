@@ -15,6 +15,7 @@
  */
 
 import { serve } from '@hono/node-server';
+import { parseEnvName } from '@shikoo/contracts';
 import { createPostgresD1 } from '@shikoo/db';
 import { app, runScheduledSweep, type Env } from './index.js';
 import { fixedWindowRateLimit } from './rateLimit.js';
@@ -126,7 +127,9 @@ export function buildEnv(db: Env['DB']): Env {
       limit: positiveInt('IP_RATE_LIMIT', 120),
       windowMs: positiveInt('RATE_LIMIT_WINDOW_MS', 60_000),
     }),
-    ENV_NAME: optional('ENV_NAME') ?? 'local',
+    // Throws rather than defaulting: `?? 'local'` meant a typo switched off
+    // every production guard below, silently. See `parseEnvName`.
+    ENV_NAME: parseEnvName(optional('ENV_NAME')),
     APP_VERSION: optional('APP_VERSION') ?? 'dev',
   };
   // Assigned rather than spread so an unset variable stays absent instead of

@@ -28,7 +28,7 @@
 import type { Context, Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import type { D1Database } from '@shikoo/database';
-import type { AccessRole } from '@shikoo/contracts';
+import { isRelaxedEnv, type AccessRole, type EnvName } from '@shikoo/contracts';
 import {
   LOCKOUT_MINUTES,
   MAX_FAILED_ATTEMPTS,
@@ -84,7 +84,7 @@ export interface OperatorIdentity {
 export interface AuthEnv {
   DB: D1Database;
   TEST_ACCESS_USER?: string;
-  ENV_NAME?: string;
+  ENV_NAME?: EnvName;
 }
 
 type AuthContext = Context<{ Bindings: AuthEnv }>;
@@ -94,12 +94,16 @@ type AuthContext = Context<{ Bindings: AuthEnv }>;
  *
  * It used to key off `ACCESS_ISSUER` being absent, which is meaningless now
  * that Access is gone. `ENV_NAME` is the only thing left that distinguishes a
- * deployment, and `server.ts` refuses to start when production and
- * `TEST_ACCESS_USER` are set together — two independent refusals, because one
- * of them living in a single entry point is how a bypass reaches production.
+ * deployment, and `server.ts` refuses to start when the two are set together —
+ * two independent refusals, because one of them living in a single entry point
+ * is how a bypass reaches production.
+ *
+ * Written as an allowlist. `!== 'production'` granted the bypass to staging, to
+ * an unset variable and to every typo; an environment nobody has thought about
+ * yet should not be the one that gets in.
  */
-export function devBypassActive(env: { TEST_ACCESS_USER?: string; ENV_NAME?: string }): boolean {
-  return Boolean(env.TEST_ACCESS_USER) && env.ENV_NAME !== 'production';
+export function devBypassActive(env: { TEST_ACCESS_USER?: string; ENV_NAME?: EnvName }): boolean {
+  return Boolean(env.TEST_ACCESS_USER) && isRelaxedEnv(env.ENV_NAME);
 }
 
 function normalizeEmail(value: unknown): string | null {
@@ -167,7 +171,9 @@ export async function identityFor(
 }
 
 /**
- * Secure is set on production and on any request that arrived over https.
+ * Secure on every deployed environment, and on any request that arrived over
+ * https. Only local and test are allowed to fall back to the request's own
+ * scheme, because only they are ever reached over plain http.
  *
  * The `__Host-` cookie prefix would be stronger and is deliberately not used:
  * it requires Secure, which a browser will not accept over plain http, so it
@@ -175,7 +181,7 @@ export async function identityFor(
  * already covered by setting Secure here.
  */
 function cookieIsSecure(env: AuthEnv, url: string): boolean {
-  if (env.ENV_NAME === 'production') return true;
+  if (!isRelaxedEnv(env.ENV_NAME)) return true;
   try {
     return new URL(url).protocol === 'https:';
   } catch {

@@ -56,6 +56,23 @@ function loadSimEnv(): void {
 
 loadSimEnv();
 
+/**
+ * Keep the loopback servers out of any HTTP proxy.
+ *
+ * Playwright's `webServer.url` readiness probe runs in this process and honours
+ * `HTTP_PROXY`. On a machine with a VPN client exporting
+ * `HTTP_PROXY=http://127.0.0.1:10808` — which is the normal state of the shell
+ * this suite is run from — every probe of `http://127.0.0.1:8799/api/v1/health`
+ * is answered **503 by the proxy**, including before the server is started. The
+ * failure reads as "Timed out waiting from config.webServer" while the server
+ * log right above it says `dashboard listening`, which sends you looking at the
+ * server for an hour.
+ */
+process.env.NO_PROXY = [process.env.NO_PROXY, '127.0.0.1', 'localhost']
+  .filter(Boolean)
+  .join(',');
+process.env.no_proxy = process.env.NO_PROXY;
+
 // Not 8788: the local dashboard is often already running on that port, and
 // `reuseExistingServer` would then quietly test whatever it happens to be
 // serving, with whatever environment it happens to have.
@@ -110,6 +127,10 @@ export default defineConfig({
     timeout: 60_000,
     env: {
       PORT: String(PORT),
+      // Required since 2026-08-18 — `server.ts` refuses to start without it
+      // rather than defaulting to `local`, because that default was what let a
+      // mistyped `ENV_NAME` switch off every production guard silently.
+      ENV_NAME: 'local',
       // The SPA build, absolute because `server.ts` resolves its default
       // against the working directory. `import.meta.url` is a file: URL, whose
       // pathname on Windows carries a leading slash before the drive letter.
