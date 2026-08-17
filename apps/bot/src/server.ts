@@ -7,6 +7,7 @@
 
 import { createPostgresD1 } from '@shikoo/db';
 import { run } from './poll.js';
+import { acquirePollerLock } from './singleton.js';
 import { createTelegramApi, TELEGRAM_API_BASE } from './telegram.js';
 import { disableCustomEmoji } from './settings.js';
 
@@ -28,11 +29,36 @@ function positiveInt(name: string, fallback: number): number {
   return n;
 }
 
-export function start(): { stop: () => Promise<void> } {
+export async function start(): Promise<{ stop: () => Promise<void> }> {
   const { db, pool } = createPostgresD1({ connectionString: required('DATABASE_URL') });
+  const token = required('TELEGRAM_BOT_TOKEN');
+
+  // Before a single `getUpdates`. Telegram allows one poller per token and
+  // Coolify starts the new container before stopping the old, so every deploy
+  // has a window with two — which is 409s in the log and, worse, updates split
+  // between a live process and one that is about to be killed. See
+  // `singleton.ts`. This waits rather than exits: the window closes by itself
+  // in seconds, and a process that gave up would leave the shop with no bot
+  // while the deploy reported success.
+  const lock = await acquirePollerLock(
+    pool,
+    token,
+    () => {
+      console.log('[bot] another poller holds this token — waiting for it to exit');
+    },
+    (err) => {
+      // The lock is gone the instant that connection is, so continuing would
+      // mean polling without it — and a second poller could then start beside
+      // us. Exiting is the only honest response; the container comes back and
+      // takes the lock again.
+      console.error('[bot] lost the poller lock connection — exiting', err);
+      process.exit(1);
+    },
+  );
+
   const api = createTelegramApi({
     // Never logged, never echoed back — see telegram.ts.
-    token: required('TELEGRAM_BOT_TOKEN'),
+    token,
     baseUrl: process.env.TELEGRAM_API_BASE ?? TELEGRAM_API_BASE,
     // There is no API that says whether the bot's owner has Telegram Premium,
     // so the bot learns it by being refused once and then stops asking.
@@ -72,13 +98,27 @@ export function start(): { stop: () => Promise<void> } {
     async stop() {
       controller.abort();
       await finished;
+      // Released before the pool closes, so the next container can start
+      // polling immediately rather than waiting for this connection to time
+      // out. `pool.end()` would release it anyway — this only makes the
+      // handover fast, and a crash still releases it because Postgres drops
+      // the lock with the connection.
+      await lock.release();
       await pool.end();
     },
   };
 }
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'))) {
-  const { stop } = start();
+  const started = start();
+  const stop = async (): Promise<void> => {
+    const s = await started;
+    await s.stop();
+  };
+  started.catch((err: unknown) => {
+    console.error('[bot] failed to start', err);
+    process.exit(1);
+  });
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
       // A shutdown that throws must still exit. Hanging here is how a process
