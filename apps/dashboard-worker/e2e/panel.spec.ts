@@ -115,6 +115,43 @@ test('the finance screens are painted in the panel’s colours', async ({ page }
   expect(paint.rowBg).not.toBe('rgb(59, 130, 246)');
 });
 
+test('opening a customer shows the customer', async ({ page }) => {
+  // «مدیریت» opens a card in the page flow rather than an overlay, and with a
+  // full list that card starts below the fold: measured on 2026-08-17,
+  // «تخفیف دائمی» rendered at y=1275 in a 950px viewport with the page still
+  // at scrollY 0. Nothing was broken — the button worked, the request fired,
+  // the card rendered — and pressing it looked like pressing a dead control.
+  //
+  // The same mistake the bulk confirmation card made, and neither one is
+  // visible to a test that only asserts the element exists. So this asserts
+  // where it is, not that it is.
+  await page.goto('/admin/customers');
+  const firstRow = page.locator('tbody tr').first();
+  await expect(firstRow).toBeVisible();
+  await firstRow.getByRole('button', { name: 'مدیریت' }).click();
+
+  // The head of the drawer, which is the "something happened" signal. Not the
+  // discount section: that sits below the ledger table inside the same card and
+  // is *meant* to need scrolling — asserting it were on screen would demand the
+  // drawer open past its own header, which is worse.
+  const head = page.locator('.card__head', { hasText: '@' }).last();
+  await expect(head).toBeVisible();
+  // `toBeVisible` is true for anything painted, including 300px below the
+  // window, which is exactly the state this test exists to reject.
+  await expect
+    .poll(async () =>
+      head.evaluate((el) => {
+        const top = el.getBoundingClientRect().top;
+        return top >= 0 && top < window.innerHeight;
+      }),
+    )
+    .toBe(true);
+
+  // And the two controls the bulk work added are actually in there.
+  await expect(page.getByRole('heading', { name: 'تخفیف دائمی' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'پیام به این کاربر' })).toBeVisible();
+});
+
 test('an ordinary hub button is painted like an ordinary panel button', async ({ page }) => {
   // The hub had one button style and it was the accent fill — fine while that
   // accent was gold and read as the hub's own chrome, wrong once it was the

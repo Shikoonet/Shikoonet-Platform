@@ -15,6 +15,7 @@
 import { createPostgresD1 } from '@shikoo/db';
 import { seed } from './generators.js';
 import { seedCatalog } from './catalog.js';
+import { seedShop } from './shop.js';
 
 /**
  * Tables the migrations own rather than the seed.
@@ -128,9 +129,12 @@ export async function main(): Promise<void> {
 
     const counts = await seed(db);
     const catalog = await seedCatalog(db);
+    // After the catalog: the shop fixture reads a plan out of it so its orders
+    // and subscriptions point at something that exists.
+    const shop = await seedShop(db);
     await grantLocalAdmin(db);
 
-    for (const [key, value] of Object.entries({ ...counts, ...catalog })) {
+    for (const [key, value] of Object.entries({ ...counts, ...catalog, ...shop })) {
       console.log(`  ${key.padEnd(24)} ${value}`);
     }
   } finally {

@@ -15,6 +15,7 @@
 
 import { createPostgresD1 } from '@shikoo/db';
 import { hashPassword } from '@shikoo/domain';
+import { seedShop } from '@shikoo/seed';
 
 /**
  * The operator the login walk signs in as, and the only place its password is
@@ -62,6 +63,15 @@ export default async function globalSetup(): Promise<void> {
       )
       .bind(`e2e-login`, LOGIN_EMAIL, now, await hashPassword(LOGIN_PASSWORD))
       .run();
+
+    // Customers, for the same reason as the row above: the unit suites truncate
+    // `users`, so whether a spec that opens the customer drawer passed depended
+    // on when somebody last ran `seed:sim`. An empty list is not a failure that
+    // looks like one — the page renders perfectly with nothing in it.
+    //
+    // Idempotent, keyed on `telegram_id`; running it here costs one no-op query
+    // per fixture row when the rows are already there.
+    await seedShop(db);
   } finally {
     await pool.end();
   }

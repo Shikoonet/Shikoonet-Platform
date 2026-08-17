@@ -22,7 +22,7 @@
  * request — nowhere else.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, type CustomerDetail, type CustomerListItem, type WalletEntryRow } from '../api.js';
 import { count, dateTime, irrToToman, toman } from '../format.js';
 
@@ -261,6 +261,17 @@ function CustomerDrawer({
     void load();
   }, [id]);
 
+  // Bring it into view, because it is a card in the page flow rather than an
+  // overlay. Measured against a full customer list: «تخفیف دائمی» rendered at
+  // y=1275 in a 950px viewport, so pressing «مدیریت» on a row near the top
+  // scrolled nothing and looked like a dead button. The same mistake as the
+  // bulk confirmation card, found the same way — by opening it in a browser
+  // rather than reasoning about it.
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    root.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [id]);
+
   const typed = Number(amountToman);
   const amountIrr =
     amountToman.trim() !== '' && Number.isFinite(typed) ? Math.round(typed) * 10 : 0;
@@ -345,7 +356,7 @@ function CustomerDrawer({
   }
 
   return (
-    <div className="card" style={{ marginBlockStart: 16 }}>
+    <div className="card" style={{ marginBlockStart: 16 }} ref={root}>
       <div className="card__head">
         <span className="card__title">
           {customer?.username ? `@${customer.username}` : 'کاربر'}{' '}
