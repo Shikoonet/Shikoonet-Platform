@@ -139,17 +139,61 @@ export async function checkoutFor(
   const card = await rotateCard(tx, now);
   if (!card) return null;
 
+  // `ON CONFLICT DO NOTHING` against `idx_payments_one_open_per_order` (0022).
+  //
+  // The read above is a fast path, not a guard: two calls arriving together both
+  // find nothing and both arrive here. Without the index they would each insert,
+  // and the order would carry two open checkouts with two different card
+  // numbers — the customer pays into the one on their screen and the claim is
+  // opened against the other, which auto-verification then refuses because the
+  // account does not match. Real money, correct receipt, stuck in review.
+  //
+  // The loser gets no row back and re-reads, so both callers leave with the same
+  // card. Not an error: from the customer's side this is one checkout drawn
+  // twice, which is the ordinary case of tapping back and forth.
   const row = await tx
     .prepare(
       `INSERT INTO payments
          (public_id, user_id, order_id, amount_irr, method, status,
           assigned_card_number, assigned_card_name, created_at, updated_at)
        VALUES (?1, ?2, ?3, ?4, 'CARD_TO_CARD', 'PENDING', ?5, ?6, now(), now())
+       ON CONFLICT (order_id) WHERE order_id IS NOT NULL
+                                AND status IN ('PENDING', 'AWAITING_REVIEW')
+       DO NOTHING
        RETURNING public_id, amount_irr`,
     )
     .bind(publicId, userId, orderId, totalIrr, card.card_digits, card.holder_name)
     .first<{ public_id: string; amount_irr: number }>();
-  if (!row) throw new Error('payment insert returned no row');
+
+  if (!row) {
+    // Somebody else won. Read what they wrote rather than inventing a second
+    // answer — and if it is somehow gone by now, say "no checkout" instead of
+    // guessing, because the alternative is showing a card nothing is recorded
+    // against.
+    const won = await tx
+      .prepare(
+        `SELECT public_id, amount_irr, assigned_card_number, assigned_card_name, status
+           FROM payments
+          WHERE order_id = ?1 AND status IN ('PENDING', 'AWAITING_REVIEW')
+          LIMIT 1`,
+      )
+      .bind(orderId)
+      .first<{
+        public_id: string;
+        amount_irr: number;
+        assigned_card_number: string | null;
+        assigned_card_name: string | null;
+        status: string;
+      }>();
+    if (!won?.assigned_card_number) return null;
+    return {
+      publicId: won.public_id,
+      amountIrr: won.amount_irr,
+      cardDigits: won.assigned_card_number,
+      cardHolder: won.assigned_card_name,
+      claimed: won.status === 'AWAITING_REVIEW',
+    };
+  }
 
   return {
     publicId: row.public_id,

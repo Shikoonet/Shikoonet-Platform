@@ -171,6 +171,73 @@ describe('the checkout screen', () => {
     expect(payments).toHaveLength(1);
   });
 
+  it('keeps showing the same card when two checkouts race', async () => {
+    // The tap-back-and-forth test above is a sequence, and a sequence cannot see
+    // this: `checkoutFor` reads the open payment, finds none, rotates a card and
+    // inserts. Two callers arriving together both read nothing and both insert.
+    //
+    // What that costs is not a duplicate row. It is two DIFFERENT card numbers
+    // on one order — the customer pays into whichever screen was drawn first,
+    // `recordPaidClick` opens the claim against the newest, and
+    // auto-verification refuses the pair because the account does not match
+    // (condition 5). Real money, correct receipt, stuck in manual review.
+    //
+    // Two sessions, so these are two transactions and not one; `Promise.all`, so
+    // they overlap. `idx_payments_one_open_per_order` (0022) is what decides it.
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    const plan = await planId('sim-gold-10');
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const order = await orderIdOf(user);
+    // Start from no open payment, so both racers take the insert path.
+    await db.prepare(`DELETE FROM payments WHERE order_id = ?1`).bind(order).run();
+
+    // A second ACTIVE card, and it is what makes this test deterministic rather
+    // than lucky. `rotateCard` takes its row `FOR UPDATE SKIP LOCKED`, so with
+    // the fixture's single card the second caller is handed nothing and returns
+    // before it ever reaches the insert — the race would resolve on the card
+    // lock and the index would never be asked. With two, both callers get a
+    // card, both reach the insert, and the conflict is the real one.
+    await db
+      .prepare(
+        `INSERT INTO payment_cards (id, financial_account_id, card_digits, holder_name,
+                                    status, created_at)
+         SELECT '__race-card', financial_account_id, '6219861999999999', 'Race Fixture',
+                'ACTIVE', ?1
+           FROM payment_cards LIMIT 1`,
+      )
+      .bind(Date.now())
+      .run();
+
+    try {
+      const both = await Promise.all([
+        db.withSession((tx) => checkoutFor(tx, user, order, 1_000_000, `race-a-${order}`)),
+        db.withSession((tx) => checkoutFor(tx, user, order, 1_000_000, `race-b-${order}`)),
+      ]);
+
+      const open = await db
+        .prepare(
+          `SELECT count(*)::int AS n FROM payments
+            WHERE order_id = ?1 AND status IN ('PENDING', 'AWAITING_REVIEW')`,
+        )
+        .bind(order)
+        .first<{ n: number }>();
+      expect(open?.n).toBe(1);
+
+      // And both callers were told about the SAME one. A surviving single row
+      // with one caller shown a card that no row records is the same failure
+      // wearing a different shape — they would still pay into a card nothing
+      // is expecting money on.
+      expect(both[0]).not.toBeNull();
+      expect(both[1]).not.toBeNull();
+      expect(both[0]?.publicId).toBe(both[1]?.publicId);
+      expect(both[0]?.cardDigits).toBe(both[1]?.cardDigits);
+      expect(await activeCard(both[0]!.cardDigits)).toBe(true);
+    } finally {
+      await db.prepare(`DELETE FROM payment_cards WHERE id = '__race-card'`).run();
+    }
+  });
+
   it('says so rather than drawing a checkout with nowhere to pay', async () => {
     const { updateId, telegramId } = ids();
     await makeCustomer(telegramId);

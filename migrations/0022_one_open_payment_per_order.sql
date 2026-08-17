@@ -1,0 +1,41 @@
+-- One order has one open checkout, and Postgres is what says so.
+--
+-- `0016` closed the PAID case. This closes the one before it, which is the one
+-- a customer actually notices.
+--
+-- `checkoutFor` reads the open payment for an order and, finding none, rotates a
+-- card and inserts one. Select, then insert — so two calls arriving together
+-- both read nothing and both insert, and the order ends up with two PENDING
+-- payments carrying two DIFFERENT card numbers. `recordPaidClick` then takes the
+-- newest. The customer is looking at whichever screen was drawn first, pays into
+-- that card, and the claim is opened against the other one: the amount matches,
+-- the account does not, and auto-verification refuses it (`condition 5`). The
+-- money is real, the receipt is real, and the payment sits in review for a human
+-- to untangle.
+--
+-- The comment on the function says it is "deliberately idempotent", and it is —
+-- against one caller at a time. The bot's poll loop is one caller at a time, so
+-- this has not fired. That is a property of today's runtime, not of the data,
+-- and the day a second writer appears (the panel, a webhook, a second process,
+-- a rolling deploy running two pollers) the comment stays true and the invariant
+-- does not. Same reasoning as `0016`, one status earlier.
+--
+-- Scoped to the two open statuses on purpose. An order legitimately carries more
+-- than one payment row over its life: a PENDING card checkout that expires, then
+-- a WALLET row that pays it. What must never exist twice at once is a checkout
+-- the customer could be looking at.
+--
+-- `order_id` only, not `(order_id, user_id)`: an order has one buyer, and adding
+-- the buyer to the key would let a second row in under a different user_id —
+-- which is precisely the corruption this is here to make impossible.
+--
+-- Verified before writing, against both sources rather than against this file:
+--   * the legacy dump (2026-08-11, 4,629 payments): zero orders carry more than
+--     one row in `Unpaid` or `waiting`, the two statuses that map to PENDING and
+--     AWAITING_REVIEW. Counted with COLLATE utf8mb4_bin, because MySQL's default
+--     collation would have folded `Unpaid` and `unpaid` together.
+--   * the simulation Postgres: zero.
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_one_open_per_order
+  ON payments (order_id)
+  WHERE order_id IS NOT NULL AND status IN ('PENDING', 'AWAITING_REVIEW');

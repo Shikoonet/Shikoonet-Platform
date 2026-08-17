@@ -12,6 +12,14 @@
 -- used 'dev-1', which collided with a row the adapter tests leave behind and
 -- made the whole script abort before its first assertion.
 --
+-- The `telegram_id` fixtures are **negative** for the same reason, and the
+-- claim above was false until 2026-08-18 without it. They were `900000001` and
+-- `900000002`, which is a prefix rather than a namespace: the shop seed fixture
+-- picked the same two numbers, and on a seeded database this script aborted on
+-- `users_telegram_id_key` before reaching a single assertion — while its own
+-- header promised it was safe on a populated one. A negative id cannot collide
+-- with anything, because Telegram has never issued one.
+--
 -- These assertions are the reason for Postgres. If one of them stops holding,
 -- the platform has lost a guarantee that no amount of application code
 -- reliably replaces.
@@ -44,7 +52,7 @@ END $$;
 -- fixtures
 -- --------------------------------------------------------------------------
 INSERT INTO users (telegram_id, username, registered_at)
-     VALUES (900000001, '__inv-alice', now()), (900000002, '__inv-bob', now());
+     VALUES (-900000001, '__inv-alice', now()), (-900000002, '__inv-bob', now());
 
 INSERT INTO devices (id, device_code, display_name, created_at, updated_at)
      VALUES ('__inv-dev', '__INV-D1', 'phone', 0, 0);
@@ -111,22 +119,22 @@ SELECT assert_eq((SELECT count(*) FROM reconciliation_matches
 -- 2. CARD LEASES — the guarantee MySQL had to fake with generated columns
 -- ==========================================================================
 INSERT INTO card_leases (telegram_user_id, order_public_id, card_number, assigned_at, expires_at)
-     VALUES (900000001, '__inv-o-1', '9990000000000001', now(), now() + interval '30 min');
+     VALUES (-900000001, '__inv-o-1', '9990000000000001', now(), now() + interval '30 min');
 
 SELECT assert_rejects($$
   INSERT INTO card_leases (telegram_user_id, order_public_id, card_number, assigned_at, expires_at)
-       VALUES (900000001, '__inv-o-2', '9990000000000002', now(), now() + interval '30 min')
+       VALUES (-900000001, '__inv-o-2', '9990000000000002', now(), now() + interval '30 min')
 $$, 'a user cannot hold two active card leases');
 
 SELECT assert_rejects($$
   INSERT INTO card_leases (telegram_user_id, order_public_id, card_number, assigned_at, expires_at)
-       VALUES (900000002, '__inv-o-3', '9990000000000001', now(), now() + interval '30 min')
+       VALUES (-900000002, '__inv-o-3', '9990000000000001', now(), now() + interval '30 min')
 $$, 'a card cannot be leased to two users at once');
 
 -- Once released, both the user and the card are free again.
 UPDATE card_leases SET status = 'COMPLETED', completed_at = now() WHERE order_public_id = '__inv-o-1';
 INSERT INTO card_leases (telegram_user_id, order_public_id, card_number, assigned_at, expires_at)
-     VALUES (900000002, '__inv-o-4', '9990000000000001', now(), now() + interval '30 min');
+     VALUES (-900000002, '__inv-o-4', '9990000000000001', now(), now() + interval '30 min');
 SELECT assert_eq((SELECT count(*) FROM card_leases WHERE order_public_id LIKE '__inv-%'), 2,
                  'a completed lease frees both the user and the card');
 
@@ -134,29 +142,29 @@ SELECT assert_eq((SELECT count(*) FROM card_leases WHERE order_public_id LIKE '_
 -- 3. WALLET — the balance is derived, never assigned
 -- ==========================================================================
 INSERT INTO wallet_entries (user_id, amount_irr, kind, idempotency_key)
-     VALUES ((SELECT id FROM users WHERE telegram_id = 900000001),  5000000, 'TOPUP',    '__inv-k1'),
-            ((SELECT id FROM users WHERE telegram_id = 900000001), -1500000, 'PURCHASE', '__inv-k2');
+     VALUES ((SELECT id FROM users WHERE telegram_id = -900000001),  5000000, 'TOPUP',    '__inv-k1'),
+            ((SELECT id FROM users WHERE telegram_id = -900000001), -1500000, 'PURCHASE', '__inv-k2');
 
 SELECT assert_eq((SELECT balance_irr FROM wallets w JOIN users u ON u.id = w.user_id
-                   WHERE u.telegram_id = 900000001),
+                   WHERE u.telegram_id = -900000001),
                  3500000, 'wallet balance follows its entries');
 
 SELECT assert_eq((SELECT sum(amount_irr) FROM wallet_entries we JOIN users u ON u.id = we.user_id
-                   WHERE u.telegram_id = 900000001),
+                   WHERE u.telegram_id = -900000001),
                  (SELECT balance_irr FROM wallets w JOIN users u ON u.id = w.user_id
-                   WHERE u.telegram_id = 900000001),
+                   WHERE u.telegram_id = -900000001),
                  'balance equals the sum of entries');
 
 -- A replayed webhook or a double-tapped button cannot credit twice.
 SELECT assert_rejects($$
   INSERT INTO wallet_entries (user_id, amount_irr, kind, idempotency_key)
-       VALUES ((SELECT id FROM users WHERE telegram_id = 900000001), 5000000, 'TOPUP', '__inv-k1')
+       VALUES ((SELECT id FROM users WHERE telegram_id = -900000001), 5000000, 'TOPUP', '__inv-k1')
 $$, 'a replayed wallet entry is rejected by its idempotency key');
 
 -- A zero-amount entry is a bug, not a no-op.
 SELECT assert_rejects($$
   INSERT INTO wallet_entries (user_id, amount_irr, kind)
-       VALUES ((SELECT id FROM users WHERE telegram_id = 900000001), 0, 'TOPUP')
+       VALUES ((SELECT id FROM users WHERE telegram_id = -900000001), 0, 'TOPUP')
 $$, 'a zero-amount wallet entry is rejected');
 
 -- A negative balance must be storable. Production has one (user 314985971, at
@@ -165,10 +173,10 @@ $$, 'a zero-amount wallet entry is rejected');
 -- money, which is the one thing it must never do. Correcting the balance is a
 -- later, deliberate ledger entry with a named author.
 INSERT INTO wallet_entries (user_id, amount_irr, kind, note)
-     VALUES ((SELECT id FROM users WHERE telegram_id = 900000002), -59400000, 'OPENING',
+     VALUES ((SELECT id FROM users WHERE telegram_id = -900000002), -59400000, 'OPENING',
              'legacy balance carried over as-is');
 SELECT assert_eq((SELECT balance_irr FROM wallets w JOIN users u ON u.id = w.user_id
-                   WHERE u.telegram_id = 900000002),
+                   WHERE u.telegram_id = -900000002),
                  -59400000, 'a negative legacy balance survives migration unchanged');
 
 -- ==========================================================================
@@ -194,12 +202,12 @@ SELECT assert_rejects($$UPDATE activity_log SET action = 'X'$$,
 -- ==========================================================================
 SELECT assert_rejects($$
   INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr, discount_irr, total_irr)
-       VALUES ('__inv-bad-1', (SELECT id FROM users WHERE telegram_id = 900000001),
+       VALUES ('__inv-bad-1', (SELECT id FROM users WHERE telegram_id = -900000001),
                'NEW_PURCHASE', 2, 1000000, 0, 1000000)
 $$, 'an order total that disagrees with quantity x price is rejected');
 
 INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr, discount_irr, total_irr)
-     VALUES ('__inv-ok-1', (SELECT id FROM users WHERE telegram_id = 900000001),
+     VALUES ('__inv-ok-1', (SELECT id FROM users WHERE telegram_id = -900000001),
              'NEW_PURCHASE', 2, 1000000, 200000, 1800000);
 SELECT assert_eq((SELECT total_irr FROM orders WHERE public_id = '__inv-ok-1'), 1800000,
                  'a consistent order total is accepted');
@@ -210,11 +218,11 @@ SELECT assert_eq((SELECT total_irr FROM orders WHERE public_id = '__inv-ok-1'), 
 INSERT INTO discount_codes (code, kind, amount_irr) VALUES ('__INV-GIFT10', 'GIFT_BALANCE', 100000);
 INSERT INTO discount_redemptions (code_id, user_id)
      VALUES ((SELECT id FROM discount_codes WHERE code = '__INV-GIFT10'),
-             (SELECT id FROM users WHERE telegram_id = 900000001));
+             (SELECT id FROM users WHERE telegram_id = -900000001));
 SELECT assert_rejects($$
   INSERT INTO discount_redemptions (code_id, user_id)
        VALUES ((SELECT id FROM discount_codes WHERE code = '__INV-GIFT10'),
-               (SELECT id FROM users WHERE telegram_id = 900000001))
+               (SELECT id FROM users WHERE telegram_id = -900000001))
 $$, 'the same gift code cannot be redeemed twice by one user');
 
 -- ==========================================================================
@@ -264,21 +272,21 @@ $$, 'the same panel account cannot be shelved twice');
 -- ---------------------------------------------------------------------------
 
 INSERT INTO reseller_requests (user_id, description, status, created_at)
-     VALUES ((SELECT id FROM users WHERE telegram_id = 900000001), 'first', 'PENDING', now());
+     VALUES ((SELECT id FROM users WHERE telegram_id = -900000001), 'first', 'PENDING', now());
 
 SELECT assert_rejects($$
   INSERT INTO reseller_requests (user_id, description, status, created_at)
-       VALUES ((SELECT id FROM users WHERE telegram_id = 900000001), 'again', 'PENDING', now())
+       VALUES ((SELECT id FROM users WHERE telegram_id = -900000001), 'again', 'PENDING', now())
 $$, 'one person cannot have two open reseller applications');
 
 -- And the deliberate opening: a turned-down application does not block a new one.
 UPDATE reseller_requests SET status = 'REJECTED'
- WHERE user_id = (SELECT id FROM users WHERE telegram_id = 900000001);
+ WHERE user_id = (SELECT id FROM users WHERE telegram_id = -900000001);
 INSERT INTO reseller_requests (user_id, description, status, created_at)
-     VALUES ((SELECT id FROM users WHERE telegram_id = 900000001), 'after a no', 'PENDING', now());
+     VALUES ((SELECT id FROM users WHERE telegram_id = -900000001), 'after a no', 'PENDING', now());
 SELECT assert_eq(
   (SELECT count(*) FROM reseller_requests
-    WHERE user_id = (SELECT id FROM users WHERE telegram_id = 900000001)),
+    WHERE user_id = (SELECT id FROM users WHERE telegram_id = -900000001)),
   2, 'a rejected applicant may apply again');
 
 -- ---------------------------------------------------------------------------
@@ -291,17 +299,17 @@ SELECT assert_eq(
 -- about the data.
 
 INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr, total_irr, status)
-     VALUES ('__inv-ord-1', (SELECT id FROM users WHERE telegram_id = 900000001),
+     VALUES ('__inv-ord-1', (SELECT id FROM users WHERE telegram_id = -900000001),
              'WALLET_TOPUP', 1, 500000, 500000, 'AWAITING_PAYMENT');
 
 INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
-     VALUES ('__inv-pay-1', (SELECT id FROM users WHERE telegram_id = 900000001),
+     VALUES ('__inv-pay-1', (SELECT id FROM users WHERE telegram_id = -900000001),
              (SELECT id FROM orders WHERE public_id = '__inv-ord-1'),
              500000, 'WALLET', 'PAID', now());
 
 SELECT assert_rejects($$
   INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
-       VALUES ('__inv-pay-2', (SELECT id FROM users WHERE telegram_id = 900000001),
+       VALUES ('__inv-pay-2', (SELECT id FROM users WHERE telegram_id = -900000001),
                (SELECT id FROM orders WHERE public_id = '__inv-ord-1'),
                500000, 'WALLET', 'PAID', now())
 $$, 'one order cannot be paid twice');
@@ -310,13 +318,35 @@ $$, 'one order cannot be paid twice');
 -- their balance leaves two payment rows for one order. Only one may be PAID,
 -- which is why the index is scoped to that status and not to order_id alone.
 INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
-     VALUES ('__inv-pay-3', (SELECT id FROM users WHERE telegram_id = 900000001),
+     VALUES ('__inv-pay-3', (SELECT id FROM users WHERE telegram_id = -900000001),
              (SELECT id FROM orders WHERE public_id = '__inv-ord-1'),
              500000, 'CARD_TO_CARD', 'PENDING', now());
 SELECT assert_eq(
   (SELECT count(*) FROM payments
     WHERE order_id = (SELECT id FROM orders WHERE public_id = '__inv-ord-1')),
   2, 'an unpaid card row may sit beside the paid one');
+
+-- But only one of them at a time. Two open checkouts for one order means two
+-- different card numbers, the customer paying into whichever screen they are
+-- looking at, and the claim opening against the other — an amount that matches
+-- on an account that does not, which auto-verification refuses. `checkoutFor`
+-- reads before it inserts, and a read is not a guard.
+SELECT assert_rejects($$
+  INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+       VALUES ('__inv-pay-4', (SELECT id FROM users WHERE telegram_id = -900000001),
+               (SELECT id FROM orders WHERE public_id = '__inv-ord-1'),
+               500000, 'CARD_TO_CARD', 'PENDING', now())
+$$, 'one order cannot have two open checkouts');
+
+-- And the same across the two open statuses, not just within one: the customer
+-- pressing "I have paid" moves the row to AWAITING_REVIEW, and a checkout drawn
+-- after that must not open a second one behind it.
+SELECT assert_rejects($$
+  INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+       VALUES ('__inv-pay-5', (SELECT id FROM users WHERE telegram_id = -900000001),
+               (SELECT id FROM orders WHERE public_id = '__inv-ord-1'),
+               500000, 'CARD_TO_CARD', 'AWAITING_REVIEW', now())
+$$, 'an open checkout blocks one in the other open status too');
 
 \echo ''
 \echo '  All invariants hold.'
