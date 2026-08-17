@@ -80,7 +80,7 @@ ENV NODE_ENV=production
 #
 #   ingest      GET /health              expects 200
 #   dashboard   GET /api/v1/health       expects 200
-#   bot         nothing                  exits 0
+#   bot         heartbeat file age       expects < 90s
 #
 # The dashboard used to be expected to answer 401: every path sat behind the
 # Cloudflare Access middleware and this probe runs from inside the container,
@@ -89,11 +89,19 @@ ENV NODE_ENV=production
 # this probe, and because it reveals nothing. 401 is still accepted so an older
 # image and a newer one report the same thing while a deploy is half done.
 #
-# The bot's branch proves only that PID 1 is alive, which Docker already knew.
-# Said plainly rather than dressed up: the bot opens no port, so there is
-# nothing to ask it. Its real failure mode is exiting, and an exited container
-# is already visible without a probe.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 CMD ["node","-e","const s=process.env.SERVICE;if(s!=='ingest'&&s!=='dashboard')process.exit(0);const p=process.env.PORT||(s==='ingest'?8787:8788);const u='http://127.0.0.1:'+p+(s==='ingest'?'/health':'/api/v1/health');fetch(u).then(r=>process.exit(r.status===200||(s==='dashboard'&&r.status===401)?0:1),()=>process.exit(1))"]
+# The bot's branch used to be `process.exit(0)` — its own comment admitted it
+# proved only that PID 1 is alive, which Docker already knew. That was fair
+# while exiting was the bot's only interesting failure. It is not any more: a
+# process that is alive and NOT polling is the shape of every failure it has
+# now — a cycle wedged on a request, Postgres unreachable so every cycle throws,
+# or (since singleton.ts) a poller waiting for another to release the token. In
+# all three the container is up and no customer is being answered.
+#
+# So it reads a file whose mtime the poll loop bumps once per completed cycle.
+# 90s is three 25-second polls plus slack; with retries=3 a container has to be
+# silent for about four and a half minutes before it is called unhealthy, which
+# is longer than any backoff the loop takes by itself.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 CMD ["node","-e","const s=process.env.SERVICE;if(s==='bot'){const f=process.env.BOT_HEARTBEAT_PATH||require('path').join(require('os').tmpdir(),'shikoo-bot-alive');try{process.exit(Date.now()-require('fs').statSync(f).mtimeMs<90000?0:1)}catch{process.exit(1)}}if(s!=='ingest'&&s!=='dashboard')process.exit(1);const p=process.env.PORT||(s==='ingest'?8787:8788);const u='http://127.0.0.1:'+p+(s==='ingest'?'/health':'/api/v1/health');fetch(u).then(r=>process.exit(r.status===200||(s==='dashboard'&&r.status===401)?0:1),()=>process.exit(1))"]
 
 # Not root. Nothing here writes to the filesystem; the image ships with a user
 # that could not anyway.

@@ -6,6 +6,7 @@
  */
 
 import { createPostgresD1 } from '@shikoo/db';
+import { beat } from './heartbeat.js';
 import { run } from './poll.js';
 import { acquirePollerLock } from './singleton.js';
 import { createTelegramApi, TELEGRAM_API_BASE } from './telegram.js';
@@ -45,6 +46,12 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
     token,
     () => {
       console.log('[bot] another poller holds this token — waiting for it to exit');
+      // ponytail: one beat, not a keep-alive. A wait longer than the health
+      // check's window marks this container unhealthy, and that is roughly
+      // right — if the old poller has not exited in ninety seconds it is stuck,
+      // and killing the new one changes nothing. Give the wait its own timer
+      // only if a deploy is ever seen to flap here.
+      beat();
     },
     (err) => {
       // The lock is gone the instant that connection is, so continuing would
@@ -87,9 +94,13 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
     });
 
   const controller = new AbortController();
+  // One beat before the loop, so a container that has just acquired the lock is
+  // healthy from its first second rather than during its first cycle.
+  beat();
   const finished = run(db, api, {
     timeoutSec: positiveInt('TELEGRAM_POLL_TIMEOUT_SEC', 25),
     signal: controller.signal,
+    onCycle: beat,
   });
 
   console.log('bot polling');

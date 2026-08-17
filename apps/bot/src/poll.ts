@@ -283,6 +283,12 @@ export interface RunOptions {
   /** Pause after a failed cycle. A knob because tests cannot wait five seconds. */
   backoffMs?: number;
   signal?: AbortSignal;
+  /**
+   * Called once per completed cycle, for the container health check to read.
+   * Injected rather than imported so the tests can watch it without touching
+   * the filesystem — and so a cycle that never finishes cannot fake one.
+   */
+  onCycle?: () => void;
 }
 
 export async function run(
@@ -358,6 +364,12 @@ export async function run(
       console.error('[bot] poll cycle failed', err);
       await sleep(backoffMs, options.signal);
     }
+    // After the cycle, including after a failed one that backed off — the
+    // question the probe asks is "is this loop still turning", and a loop that
+    // is retrying a database outage every five seconds IS still turning. What
+    // it must not survive is a cycle that never returns, which is exactly the
+    // case a liveness check on PID 1 cannot see.
+    options.onCycle?.();
     if (++cycles % pruneEvery === 0) {
       await pruneUpdates(db).catch((err: unknown) => {
         console.error('[bot] prune failed', err);
