@@ -113,3 +113,48 @@ test('the finance screens are painted in the panel’s colours', async ({ page }
   // the accent colour, and this is the exact regression that shipped once.
   expect(paint.rowBg).not.toBe('rgb(59, 130, 246)');
 });
+
+test('an ordinary hub button is painted like an ordinary panel button', async ({ page }) => {
+  // The hub had one button style and it was the accent fill — fine while that
+  // accent was gold and read as the hub's own chrome, wrong once it was the
+  // panel's blue: «حذف» in a row of bank prefixes became the loudest control on
+  // the page, louder than anything the panel paints. Three tones, one meaning
+  // each, and this is the browser agreeing that the plain one matches.
+  //
+  // Read off `.btn` rather than hard-coded: if the panel restyles its buttons,
+  // this should follow it, not go red.
+  await page.goto('/admin/');
+  await expect(page.locator('.btn').first()).toBeVisible();
+  const panelBtn = await page.locator('.btn').first().evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return { bg: cs.backgroundColor, color: cs.color, border: cs.borderColor };
+  });
+
+  await page.goto('/admin/banks');
+  await expect(page.locator('.hub')).toBeVisible();
+  const tones = await page.evaluate(() => {
+    const paint = (el: Element | null | undefined) => {
+      if (!el) return null;
+      const cs = getComputedStyle(el);
+      return { bg: cs.backgroundColor, color: cs.color, border: cs.borderColor };
+    };
+    const buttons = [...document.querySelectorAll('.hub button')];
+    // A button wearing no tone and no component class of its own — the base
+    // rule, undisturbed. Found rather than selected by name so it cannot
+    // quietly become null and let the assertion pass on nothing.
+    const plain = buttons.find((b) =>
+      [...b.classList].every((c) => c === 'btn-sm'),
+    );
+    return {
+      plain: paint(plain),
+      primary: paint(document.querySelector('.hub button.primary')),
+      danger: paint(document.querySelector('.hub button.danger')),
+    };
+  });
+
+  expect(tones.primary?.bg).toBe('rgb(59, 130, 246)');
+  // Tinted, not a solid red block — the panel's `.btn-danger` tone.
+  expect(tones.danger?.bg).toBe('rgba(239, 68, 68, 0.15)');
+  expect(tones.danger?.color).toBe('rgb(239, 68, 68)');
+  expect(tones.plain).toEqual(panelBtn);
+});

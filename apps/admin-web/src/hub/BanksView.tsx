@@ -178,7 +178,12 @@ function CardPrefixesPanel() {
             onChange={(e) => setCardInput(e.target.value)}
             aria-label="شمارهٔ کارت برای آزمایش"
           />
-          <button type="button" disabled={busy || !cardInput.trim()} onClick={() => void runTest()}>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy || !cardInput.trim()}
+            onClick={() => void runTest()}
+          >
             آزمایش
           </button>
         </div>
@@ -224,7 +229,7 @@ function CardPrefixesPanel() {
                 <td>
                   <button
                     type="button"
-                    className="btn-sm"
+                    className="btn-sm danger"
                     disabled={busy}
                     onClick={() => void remove(r.prefix)}
                   >
@@ -252,6 +257,7 @@ function CardPrefixesPanel() {
         />
         <button
           type="button"
+          className="primary"
           disabled={busy || prefix.length < 4 || !bankName.trim()}
           onClick={() => void save()}
         >
@@ -379,7 +385,12 @@ function SmsPatternsPanel() {
           aria-label="متن پیامک برای آزمایش"
         />
         <div className="row toolbar">
-          <button type="button" disabled={busy || !smsInput.trim()} onClick={() => void runTest()}>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy || !smsInput.trim()}
+            onClick={() => void runTest()}
+          >
             آزمایش
           </button>
         </div>
@@ -451,7 +462,7 @@ function SmsPatternsPanel() {
                   </button>
                   <button
                     type="button"
-                    className="btn-sm"
+                    className="btn-sm danger"
                     disabled={busy}
                     onClick={() => void remove(r.id)}
                   >
@@ -563,6 +574,7 @@ function SmsPatternsPanel() {
       <div className="row toolbar">
         <button
           type="button"
+          className="primary"
           disabled={busy || !draft.id.trim() || !draft.bank_name.trim() || !draft.amount_re.trim()}
           onClick={() => void save()}
         >

@@ -196,7 +196,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
       <div className="row toolbar">
         <h2>حساب‌ها ({count(items.length)})</h2>
         <div className="spacer" />
-        <button type="button" onClick={() => setCreating(true)}>
+        <button type="button" className="primary" onClick={() => setCreating(true)}>
           + حساب تازه
         </button>
       </div>
@@ -881,7 +881,12 @@ function PaymentCardsPanel({
                   ))}
                 </select>
               </label>
-              <button type="button" className="btn-sm" disabled={busy} onClick={() => removeCard(c.id)}>
+              <button
+                type="button"
+                className="btn-sm danger"
+                disabled={busy}
+                onClick={() => removeCard(c.id)}
+              >
                 حذف
               </button>
             </span>
@@ -900,7 +905,12 @@ function PaymentCardsPanel({
           onChange={(e) => setNewCard(e.target.value)}
         />
         <input placeholder="برچسب (اختیاری)" value={label} onChange={(e) => setLabel(e.target.value)} />
-        <button type="button" disabled={busy || !newCard.trim()} onClick={() => addCard(false)}>
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || !newCard.trim()}
+          onClick={() => addCard(false)}
+        >
           افزودن کارت
         </button>
       </div>
@@ -1006,7 +1016,12 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
           انصراف
         </button>
         <div className="spacer" />
-        <button type="button" disabled={busy || !bankName || !displayName} onClick={save}>
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || !bankName || !displayName}
+          onClick={save}
+        >
           {account ? 'ذخیره' : 'ساخت'}
         </button>
       </div>
@@ -1281,6 +1296,7 @@ export function RerunAssignmentModal({
             <div className="spacer" />
             <button
               type="button"
+              className="primary"
               disabled={step !== 'preview' || selectedIds.size === 0}
               onClick={onAccept}
             >
