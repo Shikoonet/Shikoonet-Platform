@@ -50,6 +50,8 @@ const PASSTHROUGH = [
   // Comma-separated. Names the SPA's own host when it is served from a second
   // domain; same-origin never needs listing. Unset means "nowhere else".
   'ALLOWED_ORIGINS',
+  // Which header the proxy sets to the real client address. See `clientIp`.
+  'TRUSTED_PROXY_IP_HEADER',
 ] as const satisfies readonly (keyof Env)[];
 
 export function buildEnv(db: Env['DB']): Env {

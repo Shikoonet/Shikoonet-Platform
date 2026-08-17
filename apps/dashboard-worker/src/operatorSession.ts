@@ -32,6 +32,8 @@ import { isRelaxedEnv, type AccessRole, type EnvName } from '@shikoo/contracts';
 import {
   LOCKOUT_MINUTES,
   MAX_FAILED_ATTEMPTS,
+  clientIp,
+  fixedWindowRateLimit,
   hashPassword,
   hashSessionToken,
   newSessionToken,
@@ -55,6 +57,65 @@ const ABSOLUTE_DAYS = 30;
  * Built once at module load rather than per request.
  */
 const DUMMY_HASH = hashPassword('a password nobody has, for constant time').catch(() => null);
+
+/**
+ * What the per-account lockout cannot see.
+ *
+ * `recordFailure` locks one address after five wrong guesses, which stops
+ * somebody guessing *a* password. It does nothing about the two attacks that do
+ * not target one address:
+ *
+ *   - **Cost.** Every attempt runs scrypt — on a miss against `DUMMY_HASH`, on
+ *     purpose, so an unknown address costs the same as a known one. That
+ *     constant time is a feature and a lever: an attacker posting invented
+ *     addresses as fast as the socket allows spends this box's CPU and never
+ *     trips a lockout, because there is no row to count against.
+ *   - **Denial.** Five wrong guesses every fifteen minutes keeps a real
+ *     operator permanently locked out, and the guesser needs no password.
+ *
+ * Two windows, and the pair matters. Per-IP is the one that actually
+ * discriminates, but it only exists when the proxy names the client (see
+ * `clientIp`); the global one holds regardless and is set far above what a
+ * dashboard with a handful of operators ever produces, so it is a ceiling on
+ * abuse rather than a limit on use.
+ *
+ * Module-level, so it is shared by every request in the process — the whole
+ * point. It is also why this is a fixed window in memory rather than a row: a
+ * limiter that writes to the database for each attempt hands the attacker a
+ * second, cheaper way to spend the box.
+ */
+const LOGIN_WINDOW_MS = 60_000;
+export const LOGIN_ATTEMPTS_PER_IP = 20;
+export const LOGIN_ATTEMPTS_GLOBAL = 120;
+
+let loginPerIp = fixedWindowRateLimit({ limit: LOGIN_ATTEMPTS_PER_IP, windowMs: LOGIN_WINDOW_MS });
+let loginGlobal = fixedWindowRateLimit({ limit: LOGIN_ATTEMPTS_GLOBAL, windowMs: LOGIN_WINDOW_MS });
+
+/**
+ * Empties both windows. **Tests only.**
+ *
+ * They are module-level because they have to be shared by every request in the
+ * process — which also means one test file's attempts count against the next
+ * one's, and a suite that fails because an earlier suite signed in too often is
+ * a flake nobody will diagnose twice. Exported rather than reached for through
+ * the module object so it is visible here what tests are allowed to do to it.
+ */
+export function resetLoginLimits(): void {
+  loginPerIp = fixedWindowRateLimit({ limit: LOGIN_ATTEMPTS_PER_IP, windowMs: LOGIN_WINDOW_MS });
+  loginGlobal = fixedWindowRateLimit({ limit: LOGIN_ATTEMPTS_GLOBAL, windowMs: LOGIN_WINDOW_MS });
+}
+
+/**
+ * Whether this login attempt may proceed at all, charged before any hashing.
+ *
+ * Deliberately ahead of the password work rather than after it: a limiter that
+ * runs last still pays for what it is refusing.
+ */
+async function loginAllowed(env: AuthEnv, header: (name: string) => string | undefined) {
+  const ip = clientIp(header, env.TRUSTED_PROXY_IP_HEADER);
+  if (ip !== null && !(await loginPerIp.limit({ key: `login:${ip}` })).success) return false;
+  return (await loginGlobal.limit({ key: 'login' })).success;
+}
 
 interface OperatorRow {
   id: string;
@@ -85,6 +146,8 @@ export interface AuthEnv {
   DB: D1Database;
   TEST_ACCESS_USER?: string;
   ENV_NAME?: EnvName;
+  /** The header the proxy sets to the real client address. See `clientIp`. */
+  TRUSTED_PROXY_IP_HEADER?: string;
 }
 
 type AuthContext = Context<{ Bindings: AuthEnv }>;
@@ -199,7 +262,13 @@ async function issueSession(c: AuthContext, operatorId: string): Promise<void> {
       crypto.randomUUID(),
       operatorId,
       hash,
-      c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for') ?? null,
+      // Same source as the rate limiter, and for the same reason. This used to
+      // read `cf-connecting-ip` then `x-forwarded-for`, both of which any client
+      // can now set to anything — so «نشست‌های من» showed an address the visitor
+      // chose, which is worse than showing none: an operator checking where
+      // their account has been signed in from would be reading the attacker's
+      // fiction as evidence.
+      clientIp((name) => c.req.header(name), c.env.TRUSTED_PROXY_IP_HEADER),
       (c.req.header('user-agent') ?? '').slice(0, 300) || null,
     )
     .run();
@@ -240,6 +309,11 @@ export function registerAuthRoutes(app: Hono<never>): void {
   const routes = app as unknown as Hono<{ Bindings: AuthEnv }>;
 
   routes.post('/api/v1/auth/login', async (c) => {
+    // Before the body is read and long before scrypt runs, because the cost is
+    // what is being refused.
+    if (!(await loginAllowed(c.env, (name) => c.req.header(name)))) {
+      return c.json({ ok: false, error: 'rate_limited' }, 429);
+    }
     const body = (await c.req.json().catch(() => ({}))) as {
       email?: unknown;
       password?: unknown;

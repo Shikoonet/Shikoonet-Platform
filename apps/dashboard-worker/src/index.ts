@@ -106,6 +106,13 @@ export interface Env {
   DEV_BLOCK_DEVICE_ADMIN?: string;
   /** Where the Android relay posts. No default — see `ingestUrl` below. */
   INGEST_URL?: string;
+  /**
+   * The header the reverse proxy sets to the real client address — `X-Real-IP`
+   * for the nginx terminator in front of this. Unset, the login's per-IP limit
+   * is skipped and a session records no address, rather than either of them
+   * trusting a value the client picked. See `clientIp`.
+   */
+  TRUSTED_PROXY_IP_HEADER?: string;
   /** Comma-separated second hosts allowed to POST here. Same-origin is implicit. */
   ALLOWED_ORIGINS?: string;
 }

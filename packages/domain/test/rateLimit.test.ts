@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fixedWindowRateLimit, noRateLimit } from '../src/rateLimit.js';
+import { clientIp, fixedWindowRateLimit, noRateLimit } from '../src/rateLimit.js';
 
 /** A clock the test drives, so nothing here depends on wall time. */
 function clock(start = 1_786_000_000_000) {
@@ -74,5 +74,47 @@ describe('noRateLimit', () => {
     for (let i = 0; i < 100; i++) {
       expect((await noRateLimit.limit({ key: 'k' })).success).toBe(true);
     }
+  });
+});
+
+describe('who the client is', () => {
+  /** A header bag that answers case-insensitively, as Hono's does. */
+  const headers = (bag: Record<string, string>) => (name: string) =>
+    bag[name.toLowerCase()];
+
+  it('ignores a header the operator has not named', () => {
+    // The whole failure this replaces. `cf-connecting-ip` was read
+    // unconditionally, and now that nothing strips it the client sets it — so
+    // an attacker chose their own bucket and rotated it per request. Trusting a
+    // header is trusting whoever can set it, and only the operator knows which
+    // one the proxy overwrites.
+    const spoofed = headers({
+      'cf-connecting-ip': '1.2.3.4',
+      'x-forwarded-for': '5.6.7.8',
+      'x-real-ip': '9.9.9.9',
+    });
+    expect(clientIp(spoofed, undefined)).toBeNull();
+    expect(clientIp(spoofed, '')).toBeNull();
+  });
+
+  it('reads exactly the header it was told to', () => {
+    const bag = headers({ 'x-real-ip': '203.0.113.7', 'cf-connecting-ip': '1.2.3.4' });
+    expect(clientIp(bag, 'X-Real-IP')).toBe('203.0.113.7');
+    expect(clientIp(bag, 'x-real-ip')).toBe('203.0.113.7');
+  });
+
+  it('answers null when the named header is missing, rather than a shared bucket', () => {
+    // `?? 'unknown'` put every caller in one bucket, so one busy device
+    // rate-limited the whole fleet. Callers skip the per-IP limit on null.
+    expect(clientIp(headers({}), 'x-real-ip')).toBeNull();
+    expect(clientIp(headers({ 'x-real-ip': '   ' }), 'x-real-ip')).toBeNull();
+  });
+
+  it('takes the client end of a forwarded-for list, not the proxy end', () => {
+    // Only relevant if somebody configures X-Forwarded-For, which the docs
+    // advise against because nginx appends rather than overwrites. If they do,
+    // the leftmost entry is the original client; the rightmost is the hop.
+    expect(clientIp(headers({ 'x-forwarded-for': '203.0.113.7, 10.0.0.2' }), 'x-forwarded-for'))
+      .toBe('203.0.113.7');
   });
 });

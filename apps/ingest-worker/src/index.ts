@@ -7,7 +7,7 @@ import { normalizeIngestJson } from './ingestBody.js';
 import { verifyIntegrationHmac } from './integrations/auth.js';
 import { handleMirzabotClaim, MirzabotClaimBody, MIRZABOT_CLAIMS_PATH, finalizeExpiredMirzabotWaits } from './integrations/mirzabot.js';
 import type { MirzabotClaimPayload } from '@shikoo/contracts';
-import type { RateLimit } from './rateLimit.js';
+import { clientIp, type RateLimit } from '@shikoo/domain';
 
 export interface Env {
   DB: D1Database;
@@ -35,6 +35,13 @@ export interface Env {
   AUTO_MATCH_ENABLED?: string;
   AUTO_FULFILLMENT_ENABLED?: string;
   MIRZABOT_WEBHOOK_URL?: string;
+  /**
+   * The header the reverse proxy sets to the real client address — `X-Real-IP`
+   * for the nginx terminator in front of this. Named rather than guessed,
+   * because trusting a header means trusting whoever can set it: unset, the
+   * per-IP limit is skipped instead of putting the whole fleet in one bucket.
+   */
+  TRUSTED_PROXY_IP_HEADER?: string;
 }
 
 type D1Database = import('@shikoo/database').D1Database;
@@ -72,10 +79,15 @@ app.post(INGEST_PATH, async (c) => {
     return c.json({ ok: false, error: 'too_large', code: 'PAYLOAD_TOO_LARGE' }, 413);
   }
 
-  const ipKey = c.req.header('cf-connecting-ip') ?? 'unknown';
-  if (c.env.IP_LIMIT) {
-    const ip = await c.env.IP_LIMIT.limit({ key: ipKey });
-    if (!ip.success) {
+  // Skipped rather than shared when the address cannot be known. The old
+  // `?? 'unknown'` put every device in one bucket, so a single busy phone
+  // rate-limited the whole fleet — and the header it read is client-controlled
+  // now that nothing strips it. See `clientIp`. The per-device limit below and
+  // the device's own credential still apply either way.
+  const ip = clientIp((name) => c.req.header(name), c.env.TRUSTED_PROXY_IP_HEADER);
+  if (c.env.IP_LIMIT && ip !== null) {
+    const allowed = await c.env.IP_LIMIT.limit({ key: `ip:${ip}` });
+    if (!allowed.success) {
       return c.json({ ok: false, error: 'rate_limited', code: 'RATE_LIMITED' }, 429);
     }
   }

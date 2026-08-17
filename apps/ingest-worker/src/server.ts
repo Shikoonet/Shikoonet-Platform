@@ -17,8 +17,8 @@
 import { serve } from '@hono/node-server';
 import { parseEnvName } from '@shikoo/contracts';
 import { createPostgresD1 } from '@shikoo/db';
+import { fixedWindowRateLimit } from '@shikoo/domain';
 import { app, runScheduledSweep, type Env } from './index.js';
-import { fixedWindowRateLimit } from './rateLimit.js';
 
 /** Fails loudly at boot rather than behaving oddly at 3am. */
 function required(name: string): string {
@@ -47,6 +47,7 @@ function positiveInt(name: string, fallback: number): number {
 /** Optional settings, read straight from the environment by name. */
 const PASSTHROUGH = [
   'INGEST_MAX_BODY_BYTES',
+  'TRUSTED_PROXY_IP_HEADER',
   'MIRZABOT_INTEGRATION_ENABLED',
   'MIRZABOT_INTEGRATION_HMAC_SECRET',
   'MIRZABOT_INTEGRATION_ID',
@@ -112,6 +113,18 @@ function assertProductionConfig(env: Env): void {
     if (env[key] !== 'true') {
       console.warn(`[ingest] ${key}=false — payments will not be verified automatically`);
     }
+  }
+
+  // A warning rather than a refusal, and the line between them is what is
+  // actually lost: without it the per-IP limit is skipped, while the device
+  // credential and the per-device limit still stand. Refusing to boot would
+  // take the only public endpoint down over a defence in depth — but it is off,
+  // and off should be visible in the log the operator reads after a deploy.
+  if (env.TRUSTED_PROXY_IP_HEADER === undefined) {
+    console.warn(
+      '[ingest] TRUSTED_PROXY_IP_HEADER is not set — the per-IP rate limit is OFF. ' +
+        'Set it to X-Real-IP once nginx sends `proxy_set_header X-Real-IP $remote_addr`.',
+    );
   }
 }
 

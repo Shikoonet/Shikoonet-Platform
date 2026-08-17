@@ -11,8 +11,8 @@
  */
 
 import { createPostgresD1 } from '@shikoo/db';
+import { noRateLimit } from '@shikoo/domain';
 import type { Env } from '../../src/index.js';
-import { noRateLimit } from '../../src/rateLimit.js';
 
 const { db, pool } = createPostgresD1();
 

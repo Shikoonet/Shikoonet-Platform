@@ -163,8 +163,24 @@ browser ──▶ :9443 ──▶ shikoo-tls ──▶ dashboard:8788
 are deliberately untouched — they belong to unrelated sites on that box — which
 is the whole reason the port appears in the URL.
 
-Two lines in that config are load-bearing and neither is obvious:
+Three lines in that config are load-bearing and none is obvious:
 
+- **`proxy_set_header X-Real-IP $remote_addr;`** — the only thing that can tell
+  one client from another once the request is inside the network. `$remote_addr`
+  is the socket peer, so nginx **overwrites** whatever the client sent; the app
+  then reads it because `TRUSTED_PROXY_IP_HEADER=X-Real-IP` says the operator
+  vouches for that header, and reads nothing at all otherwise. Do not use
+  `X-Forwarded-For` for this: nginx *appends* to it, so a value the client
+  invented stays in the string.
+
+  ```nginx
+  # inside each `location /` block, beside the Host line
+  proxy_set_header X-Real-IP $remote_addr;
+  ```
+
+  Then set `TRUSTED_PROXY_IP_HEADER=X-Real-IP` on both the dashboard and the
+  ingest application in Coolify. Until both halves are done the per-IP limits
+  are off — ingest prints a warning at boot saying exactly that.
 - **`proxy_set_header Host $http_host`** — not `$host`. `originGuard` compares
   `new URL(origin).host` on both sides and `URL.host` keeps the port. `$host`
   strips it, and every state-changing request then answers
@@ -215,6 +231,7 @@ No `PORT`. The bot does not listen.
 | `ADMIN_DIST` | no | **The shop admin panel SPA**, served at `/admin`. One process serves both; this row was missing while the code read it, and an unbuilt SPA is a 500 rather than a failed deploy |
 | `PORT`, `HOST` | no | Default `8788`, `127.0.0.1` |
 | `INGEST_URL` | recommended | Printed into the SMS-relay phone configuration. There is no fallback any more: the routes that need it answer 503 `INGEST_URL_MISSING` |
+| `TRUSTED_PROXY_IP_HEADER` | recommended | `X-Real-IP`. Names the header the terminator sets to the real client address — see «The edge» below, which must be configured to send it. Unset, the login's per-IP limit is skipped and a session stores no address, rather than either of them trusting a value the visitor typed |
 | `TEST_ACCESS_USER` | **`local` and `test` only** | Skips the login and pins an identity. Refused twice: the process will not start with it set anywhere else, and the identity path refuses it there again. Asked as an allowlist rather than "not production" — a staging box on the public internet with the login skipped is open in exactly the way this exists to prevent |
 
 ### اپراتورها — the bootstrap nobody can skip
@@ -250,6 +267,7 @@ it. `operator unlock` clears a lockout (five wrong passwords, fifteen minutes).
 | --- | --- | --- |
 | `DATABASE_URL` | yes | |
 | `ENV_NAME` | **yes, and the process will not start without it** | Same four values as the dashboard. Here it is what forces `MIRZABOT_INTEGRATION_ENABLED` and `AUTO_MATCH_ENABLED` to be decided out loud — and while it defaulted to `local`, a typo meant nobody was asked, every bank SMS was stored, and no payment was ever verified |
+| `TRUSTED_PROXY_IP_HEADER` | recommended | `X-Real-IP`. Without it the per-IP limit on `POST /api/v1/sms` is **off** — and the process says so in the log at boot. It is off rather than shared because the old shared bucket meant one busy phone rate-limited the whole fleet |
 | `PORT`, `HOST` | no | Default `8787`, `127.0.0.1` |
 | `SWEEP_INTERVAL_MS` | no | Default 60000 |
 | `DEVICE_RATE_LIMIT`, `IP_RATE_LIMIT`, `RATE_LIMIT_WINDOW_MS` | no | Second layer; the edge is the first |

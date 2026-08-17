@@ -15,6 +15,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { hashPassword, codeForStep, generateSecret, stepAt } from '@shikoo/domain';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app, type Env } from '../src/index.js';
+import { LOGIN_ATTEMPTS_PER_IP, resetLoginLimits } from '../src/operatorSession.js';
 
 const EMAIL = 'login@example.com';
 const PASSWORD = 'a perfectly ordinary password';
@@ -65,6 +66,9 @@ function sessionFrom(res: Response): string | null {
 
 beforeAll(applySchema);
 beforeEach(seedOperator);
+// The limiter is module-level, because it has to be shared by every request in
+// the process. Without this each test would be charged for the one before it.
+beforeEach(resetLoginLimits);
 
 describe('POST /api/v1/auth/login', () => {
   it('accepts the right password and hands back a session', async () => {
@@ -307,6 +311,126 @@ describe('logout and me', () => {
     const body = JSON.stringify(await res.json());
     expect(body).not.toContain('totpSecret');
     expect(body).not.toContain('totp_secret');
+  });
+});
+
+describe('the rate limit in front of the login', () => {
+  /** With the proxy header named, so the per-IP window is the one under test. */
+  const ENV_BEHIND_PROXY = { ...ENV, TRUSTED_PROXY_IP_HEADER: 'x-real-ip' } as Env;
+
+  async function attempt(ip: string, body: unknown = {}): Promise<Response> {
+    return app.fetch(
+      new Request('https://example.com/api/v1/auth/login', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'https://example.com',
+          'x-real-ip': ip,
+        },
+        body: JSON.stringify(body),
+      }),
+      ENV_BEHIND_PROXY,
+    );
+  }
+
+  it('stops one address after its window is spent', async () => {
+    // The attack the per-account lockout cannot see: invented addresses. There
+    // is no row to count against, so every attempt is free of the lockout and
+    // costs a full scrypt — the constant-time answer that hides which addresses
+    // exist is exactly what makes the flood expensive for us and cheap for them.
+    for (let i = 0; i < LOGIN_ATTEMPTS_PER_IP; i++) {
+      const r = await attempt('203.0.113.9', { email: `nobody${i}@example.com`, password: 'x' });
+      expect(r.status).toBe(401);
+    }
+    const over = await attempt('203.0.113.9', { email: 'nobody@example.com', password: 'x' });
+    expect(over.status).toBe(429);
+  });
+
+  it('does not lock everybody else out with one attacker', async () => {
+    // The other half, and the reason the key is the address rather than a
+    // constant: the old `?? 'unknown'` would have put this operator in the same
+    // bucket as the flood above and answered them 429 too.
+    for (let i = 0; i < LOGIN_ATTEMPTS_PER_IP + 5; i++) {
+      await attempt('203.0.113.9', { email: `nobody${i}@example.com`, password: 'x' });
+    }
+    const honest = await attempt('198.51.100.4', { email: EMAIL, password: PASSWORD });
+    expect(honest.status).toBe(200);
+  });
+
+  it('cannot be side-stepped by rotating a header we were not told to trust', async () => {
+    // The bypass, exactly. `x-real-ip` is what the proxy vouches for and stays
+    // fixed — this is one attacker. `cf-connecting-ip` and `x-forwarded-for`
+    // change on every request, which is all it took under the old code: it read
+    // `cf-connecting-ip` unconditionally, so each request landed in a fresh
+    // bucket and the limit was bypassed by typing a header name.
+    for (let i = 0; i < LOGIN_ATTEMPTS_PER_IP; i++) {
+      const r = await app.fetch(
+        new Request('https://example.com/api/v1/auth/login', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            origin: 'https://example.com',
+            'x-real-ip': '198.51.100.200',
+            'cf-connecting-ip': `10.1.0.${i}`,
+            'x-forwarded-for': `10.2.0.${i}`,
+          },
+          body: JSON.stringify({ email: `nobody${i}@example.com`, password: 'x' }),
+        }),
+        ENV_BEHIND_PROXY,
+      );
+      expect(r.status).toBe(401);
+    }
+    const over = await app.fetch(
+      new Request('https://example.com/api/v1/auth/login', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'https://example.com',
+          'x-real-ip': '198.51.100.200',
+          'cf-connecting-ip': '10.1.0.99',
+          'x-forwarded-for': '10.2.0.99',
+        },
+        body: JSON.stringify({ email: 'nobody@example.com', password: 'x' }),
+      }),
+      ENV_BEHIND_PROXY,
+    );
+    expect(over.status).toBe(429);
+  });
+
+  it('records no address on the session when none can be trusted', async () => {
+    // «نشست‌های من» showing an address the visitor chose is worse than showing
+    // none: an operator checking where their account has been used would be
+    // reading the attacker's fiction as evidence. Every header the old code
+    // consulted is sent here, and none of them may reach the row.
+    await login(
+      { email: EMAIL, password: PASSWORD },
+      {
+        'x-real-ip': '203.0.113.55',
+        'cf-connecting-ip': '203.0.113.56',
+        'x-forwarded-for': '203.0.113.57',
+      },
+    );
+    const row = await baseEnv.DB.prepare(
+      `SELECT s.ip FROM operator_sessions s
+         JOIN access_users u ON u.id = s.access_user_id
+        WHERE u.email = ?1 ORDER BY s.created_at DESC LIMIT 1`,
+    )
+      .bind(EMAIL)
+      .first<{ ip: string | null }>();
+    expect(row?.ip).toBeNull();
+  });
+
+  it('records the address the proxy vouched for', async () => {
+    const r = await attempt('203.0.113.77', { email: EMAIL, password: PASSWORD });
+    expect(r.status).toBe(200);
+    const row = await baseEnv.DB.prepare(
+      `SELECT s.ip FROM operator_sessions s
+         JOIN access_users u ON u.id = s.access_user_id
+        WHERE u.email = ?1 ORDER BY s.created_at DESC LIMIT 1`,
+    )
+      .bind(EMAIL)
+      .first<{ ip: string | null }>();
+    expect(row?.ip).toBe('203.0.113.77');
   });
 });
 
