@@ -1,6 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import * as t from '../src/transform.js';
 
+describe('legacy 0/1 flags', () => {
+  // The values mysql2 actually produces for `tinyint(1)`, which is where this
+  // came from: `roll_Status !== '0'` compared a number to a string, was true for
+  // every row, and let 963 customers past the rules gate.
+  it('reads a tinyint the driver returned as a number', () => {
+    expect(t.legacyBool(0, 'f')).toBe(false);
+    expect(t.legacyBool(1, 'f')).toBe(true);
+  });
+
+  it('still reads the string form, in case the driver changes', () => {
+    expect(t.legacyBool('0', 'f')).toBe(false);
+    expect(t.legacyBool('1', 'f')).toBe(true);
+    expect(t.legacyBool(' 1 ', 'f')).toBe(true);
+  });
+
+  it('treats never-set as false', () => {
+    expect(t.legacyBool(null, 'f')).toBe(false);
+    expect(t.legacyBool(undefined, 'f')).toBe(false);
+    expect(t.legacyBool('', 'f')).toBe(false);
+  });
+
+  it('throws rather than defaulting, and names the field', () => {
+    // The `isReseller` rule: a wrong `false` here is invisible, and «a customer
+    // silently skipped a gate» is not a failure anyone reports. `2` is the
+    // realistic one — a third state added to the legacy column by a panel we do
+    // not control.
+    expect(() => t.legacyBool(2, 'user.roll_Status')).toThrow(/user\.roll_Status/);
+    expect(() => t.legacyBool('yes', 'user.roll_Status')).toThrow(/unmapped legacy flag/);
+    expect(() => t.legacyBool({}, 'user.roll_Status')).toThrow();
+  });
+});
+
 describe('money', () => {
   it('converts Toman to IRR', () => {
     expect(t.tomanToIrr('100000')).toBe(1_000_000n);

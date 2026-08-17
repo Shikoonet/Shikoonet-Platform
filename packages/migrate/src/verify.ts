@@ -223,6 +223,34 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
       'SELECT COUNT(*) FROM orders',
       `SELECT COUNT(*) FROM service_other s LEFT JOIN user u ON u.id=s.id_user WHERE u.id IS NULL`,
     ],
+    // The two legacy `tinyint(1)` flags, counted on both sides.
+    //
+    // These are here because of what happened without them. `migrate.ts` read
+    // `r.roll_Status !== '0'` — a number compared against a string, true for
+    // every row — and all 963 customers who never accepted the shop's rules
+    // arrived as having accepted them. Row counts matched, every money total
+    // matched, and the only thing that changed was which side of a gate 963
+    // people stood on. Nothing in this file looked at it.
+    //
+    // A count on each side is the cheapest thing that would have failed: 963
+    // against 0 is not a rounding difference. Any future flag of this shape gets
+    // a line here rather than trust.
+    [
+      'customers who have not accepted the rules',
+      'SELECT COUNT(*) FROM `user` WHERE roll_Status = 0',
+      'SELECT COUNT(*) FROM users WHERE rules_accepted = false',
+    ],
+    [
+      'referral bonuses already claimed',
+      'SELECT COUNT(*) FROM reagent_report WHERE get_gift = 1',
+      'SELECT COUNT(*) FROM users WHERE referral_bonus_claimed = true',
+      // A claimed bonus whose referrer or referred customer is gone never
+      // reaches a row to set the flag on, exactly like the wheel spins above.
+      `SELECT COUNT(*) FROM reagent_report r
+         LEFT JOIN user c ON c.id = r.user_id
+         LEFT JOIN user p ON p.id = r.reagent
+        WHERE r.get_gift = 1 AND (c.id IS NULL OR p.id IS NULL)`,
+    ],
   ];
 
   for (const [name, srcSql, tgtSql, allowSql, allowReason] of pairs) {

@@ -212,6 +212,43 @@ export const leaseStatus = strictMap(LEASE_STATUS, 'card_assignment_leases.statu
  * customer simply never sees the product — which is exactly the kind of silent
  * fallback this migration refuses to make.
  */
+/**
+ * A legacy `tinyint(1)` flag, converted without trusting what type it arrives as.
+ *
+ * mysql2 returns `tinyint(1)` as a **number**, and `type Row` in `migrate.ts`
+ * declared every field `string | null`. So `r.roll_Status !== '0'` compared a
+ * number against a string, was `true` for every row, and would have marked all
+ * 963 customers who never accepted the shop's rules as having accepted them.
+ * The compiler could not see it: the declared type said the comparison was
+ * between two strings, and TypeScript had no reason to object.
+ *
+ * The repair is not a cast. A cast would move the same assumption somewhere
+ * quieter. This takes `unknown` and decides, so the column's real type stops
+ * being something a reader has to know.
+ *
+ * `null` and `undefined` are false — a flag that was never set has not been set.
+ * Anything else throws, for the reason `isReseller` throws: a wrong `false`
+ * here is invisible, and «a customer silently skipped a gate» is not a failure
+ * anyone reports.
+ */
+export function legacyBool(value: unknown, field: string): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (value === 0) return false;
+    if (value === 1) return true;
+  }
+  if (typeof value === 'string') {
+    const s = value.trim();
+    if (s === '' || s === '0') return false;
+    if (s === '1') return true;
+  }
+  throw new Error(
+    `unmapped legacy flag ${field} = ${JSON.stringify(value)} (${typeof value}) — ` +
+      'the domain is 0/1, "0"/"1", "" and NULL. Add it here deliberately; do not default it.',
+  );
+}
+
 export function isReseller(value: string | null | undefined): boolean {
   const agent = (value ?? '').trim();
   // Absent, not unmapped: a row that never had the column set is an ordinary

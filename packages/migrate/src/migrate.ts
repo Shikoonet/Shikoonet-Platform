@@ -17,6 +17,26 @@ import { correctCardDigits } from './corrections.js';
 import { d1Table, insertBatch, mysqlRows, report, type Column, type Config } from './db.js';
 import * as t from './transform.js';
 
+/**
+ * **This type is known to be inaccurate, and the inaccuracy has already cost us.**
+ *
+ * mysql2 does not return every column as a string. `tinyint(1)` arrives as a
+ * number, which is how `r.roll_Status !== '0'` came to compare a number against
+ * a string, be true for every row, and migrate all 963 customers who never
+ * accepted the shop's rules as having accepted them (2026-08-17). The compiler
+ * could not object, because this line told it both sides were strings.
+ *
+ * Widening it to `string | number | null` was tried and **does** work — tsc then
+ * reports 48 sites across 14 transforms (`tehranString`, `cardDigits`, `phone`,
+ * `username`, `json`, …), which is the real measure of the debt. It is not done
+ * here because each of those transforms needs its own decision rather than a
+ * cast: `phone` on a number silently loses a leading zero, and `tehranString`
+ * has to deal with mysql2 possibly handing back a `Date`. Getting that wrong in
+ * a migration that moves money is worse than the current honest comment.
+ *
+ * Until then the guards are behavioural, not structural: `legacyBool` decides
+ * from the value it is given, and `verify.ts` counts both flags on both sides.
+ */
 type Row = Record<string, string | null>;
 
 interface Ctx {
@@ -109,7 +129,13 @@ async function migrateUsers(ctx: Ctx): Promise<number> {
     // a message that never arrives. `notify_enabled` is left to its own default
     // of true: the legacy schema carries no per-customer notification
     // preference, `index.php` warns everybody.
-    r.roll_Status !== '0',
+    //
+    // This was `r.roll_Status !== '0'` until 2026-08-17, and it was wrong in the
+    // other direction: the column is `tinyint(1)`, mysql2 returns a number, and
+    // `0 !== '0'` is true — so all 963 refusals migrated as acceptances and
+    // walked past the rules gate. `legacyBool` decides from the value rather
+    // than from what `type Row` claims it is.
+    t.legacyBool(r.roll_Status, 'user.roll_Status'),
     t.epochSeconds(r.register, 'user.register'),
     JSON.stringify(t.legacyAttrs(r, claimed, dropped)),
   ]);
@@ -163,7 +189,12 @@ async function migrateReferrals(ctx: Ctx): Promise<number> {
     const res = await ctx.pg.query(
       `UPDATE users SET referred_by = $1, referral_bonus_claimed = $2
         WHERE id = $3 AND referred_by IS DISTINCT FROM $1`,
-      [referrer, r.get_gift === '1', child],
+      // Same shape as `roll_Status`, and latent rather than live: every
+      // `reagent_report` row on the 2026-08-11 dump is 0, so `=== '1'` produced
+      // the right answer by luck. The dump is retaken at cutover, and one
+      // customer claiming a bonus before then would have arrived as unclaimed —
+      // and been paid a second time.
+      [referrer, t.legacyBool(r.get_gift, 'reagent_report.get_gift'), child],
     );
     n += res.rowCount ?? 0;
   }
