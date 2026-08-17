@@ -239,6 +239,9 @@ function CustomerDrawer({
   // and the database collapses them onto one row.
   const [adjustKey, setAdjustKey] = useState(() => crypto.randomUUID());
   const [blockReason, setBlockReason] = useState('');
+  const [discount, setDiscount] = useState('');
+  const [body, setBody] = useState('');
+  const [messageId, setMessageId] = useState(() => crypto.randomUUID());
 
   async function load() {
     setErr(null);
@@ -246,6 +249,9 @@ function CustomerDrawer({
       const d = await api.customer(id);
       setCustomer(d.customer);
       setEntries(d.entries);
+      // The field starts at what the customer already has, so «ذخیره» without
+      // typing is a no-op rather than a silent reset to zero.
+      setDiscount(String(d.customer.discountPercent));
     } catch (e) {
       setErr(message(e));
     }
@@ -278,6 +284,41 @@ function CustomerDrawer({
       setAdjustKey(crypto.randomUUID());
       await load();
       onChanged();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const discountPercent =
+    /^[0-9]+$/.test(discount.trim()) && Number(discount) <= 100 ? Number(discount) : null;
+
+  async function saveDiscount() {
+    if (discountPercent === null) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.setDiscount(id, { percent: discountPercent });
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendMessage() {
+    if (body.trim() === '') return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.messageCustomer(id, { body: body.trim(), messageId });
+      setBody('');
+      // A fresh id for the next message; the one just used stays spent, so a
+      // stale tab cannot replay it.
+      setMessageId(crypto.randomUUID());
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -424,6 +465,67 @@ function CustomerDrawer({
               </button>
             </div>
           )}
+
+          {/* Both of these existed only in the bot's admin panel until
+              `bot-subset.test.ts` said so out loud. The page showed the
+              discount as a fact and offered no way to change it. */}
+          <h4>تخفیف دائمی</h4>
+          <p className="muted" style={{ marginBlockStart: 0 }}>
+            از هر سفارش این کاربر کم می‌شود. صفر یعنی بدون تخفیف.
+          </p>
+          <div className="filters">
+            <div>
+              <label className="form-label" htmlFor="cust-discount">
+                درصد
+              </label>
+              <input
+                id="cust-discount"
+                className="form-control ltr"
+                type="number"
+                min={0}
+                max={100}
+                value={discount}
+                onChange={(e) => setDiscount(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || discountPercent === null}
+              onClick={() => void saveDiscount()}
+            >
+              ذخیره
+            </button>
+          </div>
+
+          <h4>پیام به این کاربر</h4>
+          <p className="muted" style={{ marginBlockStart: 0 }}>
+            پیام در صف می‌رود و ربات آن را می‌فرستد — با سرخط فروشگاه، تا برای مشتری ناشناس نباشد.
+            کاربر مسدود پیام نمی‌گیرد.
+          </p>
+          <div className="filters">
+            <div className="grow">
+              <label className="form-label" htmlFor="cust-message">
+                متن
+              </label>
+              <textarea
+                id="cust-message"
+                className="form-control"
+                rows={3}
+                maxLength={4000}
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || body.trim() === '' || customer.status === 'BLOCKED'}
+              onClick={() => void sendMessage()}
+            >
+              فرستادن
+            </button>
+          </div>
 
           <h4>دفتر کیف پول</h4>
           <div className="table-wrap">

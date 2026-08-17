@@ -44,6 +44,7 @@ import { registerMirzabotRoutes, loadPaymentCardsForAccounts } from './mirzabotR
 import { registerAnalyticsRoutes } from './analyticsRoutes.js';
 import { registerBankRoutes } from './bankRoutes.js';
 import { registerCustomerRoutes } from './customerRoutes.js';
+import { registerBulkRoutes } from './bulkRoutes.js';
 import { registerAdminOverviewRoutes } from './adminOverviewRoutes.js';
 import { registerProductRoutes } from './productRoutes.js';
 import { registerPanelRoutes } from './panelRoutes.js';
@@ -4453,6 +4454,7 @@ registerMirzabotRoutes(app);
 registerAnalyticsRoutes(app);
 registerBankRoutes(app);
 registerCustomerRoutes(app);
+registerBulkRoutes(app);
 registerAdminOverviewRoutes(app);
 registerProductRoutes(app);
 registerPanelRoutes(app);

@@ -26,6 +26,7 @@ export type PageId =
   | HubPageId
   | 'dashboard'
   | 'customers'
+  | 'bulk'
   | 'orders'
   | 'services'
   | 'products'
@@ -58,6 +59,7 @@ export const NAV: NavGroup[] = [
     items: [
       { id: 'dashboard', label: 'داشبورد', icon: 'home' },
       { id: 'customers', label: 'کاربران', icon: 'users' },
+      { id: 'bulk', label: 'ارسال گروهی', icon: 'send' },
       { id: 'orders', label: 'سفارشات', icon: 'receipt' },
       { id: 'services', label: 'سرویس‌ها', icon: 'package' },
       { id: 'products', label: 'محصولات', icon: 'grid' },

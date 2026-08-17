@@ -34,8 +34,13 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 
-import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
-import { adjustWallet, setCustomerStatus } from '@shikoo/domain';
+import { MAX_SINGLE_PAYMENT_IRR, Texts } from '@shikoo/contracts';
+import {
+  MAX_MESSAGE_LENGTH,
+  adjustWallet,
+  queueDirectMessage,
+  setCustomerStatus,
+} from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 /**
@@ -81,6 +86,20 @@ const StatusBody = z
   .object({
     status: z.enum(['ACTIVE', 'BLOCKED']),
     reason: z.string().trim().max(500).nullable().default(null),
+  })
+  .strict();
+
+/** Whole percent, 0 to 100 — the same bound the bot's typed answer enforces. */
+const DiscountBody = z.object({ percent: z.number().int().min(0).max(100) }).strict();
+
+const MessageBody = z
+  .object({
+    body: z.string().trim().min(1).max(MAX_MESSAGE_LENGTH),
+    // The caller's, for the same reason the bulk routes take one: a retry has
+    // to land on the same row or the customer is messaged twice.
+    messageId: z
+      .string()
+      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'expected a uuid'),
   })
   .strict();
 
@@ -344,5 +363,105 @@ export function registerCustomerRoutes(
       reason,
     );
     return c.json({ ok: true, changed: true, status });
+  });
+
+  // --- permanent discount -------------------------------------------------
+
+  /**
+   * The percentage taken off every future order for one customer.
+   *
+   * The bot has had this since its admin panel shipped and the web panel had
+   * nothing — `test/bot-subset.test.ts` is what said so out loud, after the
+   * plan had recorded «✅ صفحهٔ کاربران» for it on the strength of the page
+   * showing the number.
+   */
+  app.post('/api/v1/admin/customers/:id/discount', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const parsed = DiscountBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const { percent } = parsed.data;
+
+    const before = await c.env.DB.prepare(`SELECT discount_percent FROM users WHERE id = ?1`)
+      .bind(id)
+      .first<{ discount_percent: number }>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    await c.env.DB.prepare(
+      `UPDATE users SET discount_percent = ?2, updated_at = now() WHERE id = ?1`,
+    )
+      .bind(id, percent)
+      .run();
+    await audit(
+      c.env.DB,
+      ident,
+      'customer.discount_set',
+      'CUSTOMER',
+      String(id),
+      { discount_percent: before.discount_percent },
+      { discount_percent: percent },
+      null,
+    );
+    return c.json({ ok: true, percent });
+  });
+
+  // --- one message to one customer ----------------------------------------
+
+  /**
+   * Queued, not sent.
+   *
+   * The bot sends its version inline because it is already holding a Telegram
+   * connection; this process is not, so the message goes into the same two
+   * tables a broadcast uses and the bot's poll loop delivers it. At most once,
+   * never twice — a customer who receives a support message twice has been
+   * spammed by a shop they trust with their money.
+   *
+   * The shop's name goes in front of the body, through the same editable text
+   * the bot renders. An unattributed message from a bot somebody bought a
+   * subscription from reads as a scam, and this is the screen most likely to be
+   * used while a customer is already anxious about money — so the prefix is not
+   * optional, and it is not a second copy of the wording either.
+   */
+  app.post('/api/v1/admin/customers/:id/message', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const parsed = MessageBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const { body, messageId } = parsed.data;
+
+    const { results } = await c.env.DB.prepare(`SELECT key, value FROM bot_texts`).all<{
+      key: string;
+      value: string;
+    }>();
+    const texts = new Texts(Object.fromEntries((results ?? []).map((r) => [r.key, r.value])));
+    const text = texts.render('ADMIN_USER_MESSAGE_FROM_SHOP', { body });
+    if (text.length > MAX_MESSAGE_LENGTH) {
+      return c.json({ ok: false, error: 'message_too_long' }, 400);
+    }
+
+    // `created_by` is a Telegram id on the bot's path and this operator has
+    // none. The audit row carries the email, which is who actually did it.
+    const queued = await queueDirectMessage(c.env.DB, messageId, text, id, 0);
+    if (queued === 0) return c.json({ ok: false, error: 'not_active' }, 409);
+
+    await audit(
+      c.env.DB,
+      ident,
+      'customer.messaged',
+      'CUSTOMER',
+      String(id),
+      null,
+      { length: body.length, message_id: messageId },
+      null,
+    );
+    return c.json({ ok: true, queued });
   });
 }

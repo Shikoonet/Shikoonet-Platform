@@ -66,6 +66,10 @@ describe('navigation', () => {
       'expenses',
       'dashboard',
       'customers',
+      // «ارسال گروهی» — the two actions that reach every customer at once, and
+      // the last two of the bot admin panel's twelve permissions to get a web
+      // screen. See `bot-subset.test.ts`.
+      'bulk',
       'products',
       'panels',
       'discounts',

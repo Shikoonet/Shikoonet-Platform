@@ -749,6 +749,48 @@ export const api = {
     return req<{ ok: boolean }>(`/revenue-adjustments/${id}`, { method: 'DELETE' });
   },
 
+  setDiscount(id: number, body: { percent: number }) {
+    return req<{ ok: boolean; percent: number }>(`/customers/${id}/discount`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** Queued for the bot to send, not sent from the browser. */
+  messageCustomer(id: number, body: { body: string; messageId: string }) {
+    return req<{ ok: boolean; queued: number }>(`/customers/${id}/message`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** How many customers a bulk action would reach, before committing to it. */
+  bulkReach() {
+    return req<{ ok: boolean; reach: number }>('/bulk/reach');
+  },
+
+  /**
+   * The batch id is the caller's, not the server's.
+   *
+   * A double-submit or a lost response has to land on the *same* batch or every
+   * wallet is credited twice — the per-customer idempotency key is built from
+   * it. The page generates one when the form opens and sends that same id with
+   * the confirmation, which is what the bot does with its session.
+   */
+  bulkCredit(body: { amountIrr: number; batchId: string; note?: string }) {
+    return req<{ ok: boolean; credited: number; reach: number }>('/bulk/credit', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  broadcast(body: { body: string; broadcastId: string }) {
+    return req<{ ok: boolean; queued: number; reach: number }>('/bulk/broadcast', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
   requiredChannels() {
     return req<{ ok: boolean; items: ChannelRow[] }>('/required-channels');
   },

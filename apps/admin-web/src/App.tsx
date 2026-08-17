@@ -28,6 +28,7 @@ import { HubSection } from './hub/HubSection.js';
 import { createCache } from './hub/query.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
+import { BulkPage } from './pages/BulkPage.js';
 import { ProductsPage } from './pages/ProductsPage.js';
 import { PanelsPage } from './pages/PanelsPage.js';
 import { ContentPage } from './pages/ContentPage.js';
@@ -85,6 +86,8 @@ function Body({
       return <DashboardPage onGo={go} />;
     case 'customers':
       return <CustomersPage />;
+    case 'bulk':
+      return <BulkPage />;
     case 'products':
       return <ProductsPage />;
     case 'panels':

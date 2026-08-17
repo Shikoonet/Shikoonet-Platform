@@ -35,10 +35,11 @@ test('every section in the sidebar opens under one session', async ({ page }) =>
   await expect(page.locator('.sidebar-link').first()).toBeVisible();
 
   const labels = await page.locator('.sidebar-link').allInnerTexts();
-  // Sixteen shop sections plus the six that came from the payment hub. A number
-  // rather than a range: if the sidebar quietly loses a group, the walk below
-  // would still pass on whatever was left.
-  expect(labels.length).toBe(22);
+  // Seventeen shop sections plus the six that came from the payment hub. A
+  // number rather than a range: if the sidebar quietly loses a group, the walk
+  // below would still pass on whatever was left. The seventeenth is «ارسال
+  // گروهی», which the bot could do and this panel could not.
+  expect(labels.length).toBe(23);
 
   for (const label of labels) {
     const name = label.trim();
