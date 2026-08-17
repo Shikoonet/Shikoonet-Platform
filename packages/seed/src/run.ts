@@ -25,8 +25,14 @@ import { seedShop } from './shop.js';
  * inserted by `0007` and corrected by admins in the dashboard afterwards.
  * Truncating it would leave every card unattributed until someone noticed, and
  * re-seeding it here would throw away those corrections.
+ *
+ * `schema_migrations` is a statement about the SCHEMA, and this wipes DATA. The
+ * first seed after the ledger landed truncated it and `schema status` then
+ * reported all 21 migrations pending on a database that had every one of them —
+ * a ledger that lies is worse than no ledger, because the whole point is being
+ * able to trust it without reading the tables.
  */
-const KEEP = new Set(['schema_meta', 'bank_card_prefixes']);
+const KEEP = new Set(['schema_meta', 'bank_card_prefixes', 'schema_migrations']);
 
 /**
  * This truncates every table it is pointed at, so it may only ever be pointed

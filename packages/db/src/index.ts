@@ -24,6 +24,17 @@ import type {
 } from './types.js';
 
 export { DialectError, toPostgres, parameterCount } from './dialect.js';
+export {
+  SCHEMA_LOCK_ID,
+  baseline,
+  looksAlreadyMigrated,
+  readMigrations,
+  status,
+  up,
+  type MigrationFile,
+  type SchemaStatus,
+  type UpResult,
+} from './schema.js';
 
 // ---------------------------------------------------------------------------
 // type parsing

@@ -93,6 +93,61 @@ Coolify:
 | `dashboard` | `GET /health` on 8788 |
 | `bot` | **none — disable it.** The bot opens no port; it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name |
 
+## Schema, before anything else
+
+On 2026-08-17 the dashboard was deployed carrying the operator-login code while
+`0021_operator_auth.sql` had never been run against the production database. The
+entire symptom was `POST /api/v1/auth/login` answering 500 with `column
+"password_hash" does not exist`. Nobody could sign in, and nothing said why —
+the database had no record of which migrations it had seen, so a gap between
+deployed code and deployed schema was invisible by construction.
+
+There is a ledger now. `schema_migrations` holds a row per applied file with the
+sha256 of what actually ran.
+
+```bash
+export DATABASE_URL=...
+corepack pnpm --filter @shikoo/db schema status   # exit 1 if the DB is behind
+corepack pnpm --filter @shikoo/db schema up       # apply what is pending
+```
+
+`status` is meant to be read by a script, not a person: **exit 0 means this
+database matches this checkout**, 1 means it does not. Run it before deploying
+and the class of failure above stops being possible.
+
+It reports three kinds of disagreement, and the last two are worth knowing
+about because nothing else can see them:
+
+| | |
+| --- | --- |
+| `pending` | a migration on disk with no row — the 2026-08-17 bug |
+| `DRIFT` | an applied file edited afterwards. Two databases quietly stop being the same schema; `up` refuses |
+| `UNKNOWN` | a row with no file: the database is ahead of this checkout, which is what a code rollback without a schema rollback looks like |
+
+Everything runs under one Postgres advisory lock, so two replicas deploying at
+the same moment cannot both apply the same migration. Each file gets its own
+transaction with its ledger row inside it, so a run that dies halfway keeps what
+it finished and re-running continues.
+
+### Once per existing database: baseline
+
+A database that predates the ledger has the schema and no rows to say so, and
+`up` **refuses** rather than trying to `CREATE TABLE users` on a database that
+already has 11,241 customers in it. Tell it what it already has, once:
+
+```bash
+corepack pnpm --filter @shikoo/db schema baseline 0021_operator_auth.sql
+```
+
+That records everything through that file as applied without running any of it.
+Afterwards `up` applies only what came later.
+
+**Still owed:** nothing yet stops a service from starting against a database it
+is ahead of. Making startup or readiness depend on `status` turns today's silent
+500 into a loud refusal to boot, which is the right direction for a payment
+system and a real change in deploy behaviour — so it is a decision, not a
+detail.
+
 ## The edge — how a browser reaches any of this
 
 Nothing above opens a port to the internet. Something in front has to, and since
