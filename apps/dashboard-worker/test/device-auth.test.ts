@@ -525,6 +525,128 @@ describe('POST /api/v1/devices/:id/credentials/rotate', () => {
   });
 });
 
+describe('two writers at once', () => {
+  /**
+   * All three credential routes read the ACTIVE row and then write, which is a
+   * sequence — and every test above is a sequence too, so none of them can see
+   * two callers. Two ACTIVE tokens for one phone costs three things:
+   *
+   *   - revoking "the" credential revokes one and leaves the other working, so
+   *     an operator who has just cut a lost phone off has not;
+   *   - the dashboard shows whichever `LIMIT 1` returns, with no ordering;
+   *   - `findActiveCredentialByPrefix` also takes `LIMIT 1`, so authentication
+   *     answers according to whichever plan Postgres picked.
+   *
+   * **What these tests do not prove, said plainly.** Two `app.fetch` calls in
+   * one process cannot be made to interleave at the exact statement: dropping
+   * `idx_device_credentials_one_active` leaves all of them green, because the
+   * handlers happen to run to completion one after the other and the second
+   * one's read then finds the first one's row. What they hold is the route
+   * contract — one active token afterwards, and never two 200s, because a 200
+   * hands back a plaintext token and one that no row records is a phone that
+   * can never authenticate and a support ticket days later.
+   *
+   * The guarantee itself is proven where it can be: two INSERTs in
+   * `migrations/verify_invariants.sql`, which is deterministic and fails the
+   * moment the index is not there.
+   */
+  const admin = { ...env, TEST_ACCESS_USER: 'admin@x.com' };
+
+  async function makeDevice(code: string): Promise<string> {
+    await seedAccessUser('admin@x.com', 'ADMIN');
+    const r = await dashboardApp.fetch(
+      new Request('https://example.com/api/v1/devices', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceCode: code, displayName: 'X' }),
+      }),
+      admin,
+    );
+    const j = (await r.json()) as { credential: { apiKey: string } };
+    return j.credential.apiKey;
+  }
+
+  async function activeCount(code: string): Promise<number> {
+    const row = await env.DB.prepare(
+      `SELECT count(*)::int AS n FROM device_credentials
+        WHERE status = 'ACTIVE'
+          AND device_id = (SELECT id FROM devices WHERE device_code = ?1)`,
+    )
+      .bind(code)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  it('leaves one active token when two credentials are issued at once', async () => {
+    await makeDevice('race-cred');
+    // Start from none, so both callers take the insert path rather than the
+    // 409 the fast-path read gives.
+    await env.DB.prepare(
+      `DELETE FROM device_credentials
+        WHERE device_id = (SELECT id FROM devices WHERE device_code = 'race-cred')`,
+    ).run();
+
+    const issue = () =>
+      dashboardApp.fetch(
+        new Request('https://example.com/api/v1/devices/race-cred/credentials', {
+          method: 'POST',
+        }),
+        admin,
+      );
+    const [a, b] = await Promise.all([issue(), issue()]);
+
+    expect(await activeCount('race-cred')).toBe(1);
+    // One succeeded and one was told why. Never two 200s — a 200 hands back a
+    // plaintext token, and a token handed to an operator that no row records is
+    // a phone that can never authenticate and a support ticket days later.
+    const codes = [a.status, b.status].sort();
+    expect(codes).toEqual([200, 409]);
+  });
+
+  it('leaves one active token when two rotations arrive at once', async () => {
+    const first = await makeDevice('race-rotate');
+    const rotate = () =>
+      dashboardApp.fetch(
+        new Request('https://example.com/api/v1/devices/race-rotate/credentials/rotate', {
+          method: 'POST',
+        }),
+        admin,
+      );
+    const [a, b] = await Promise.all([rotate(), rotate()]);
+
+    expect(await activeCount('race-rotate')).toBe(1);
+    // The original must be dead either way — that is what rotation is for.
+    expect((await postSms(first, 'race-rotate')).status).toBe(401);
+    // And every 200 handed back a token; exactly the surviving one may work.
+    const bodies = await Promise.all(
+      [a, b]
+        .filter((r) => r.status === 200)
+        .map((r) => r.json() as Promise<{ credential: { apiKey: string } }>),
+    );
+    let working = 0;
+    for (const body of bodies) {
+      if ((await postSms(body.credential.apiKey, 'race-rotate')).status === 200) working += 1;
+    }
+    expect(working).toBe(1);
+  });
+
+  it('revokes every active token, not just the one it happened to read', async () => {
+    // Defensive, and the reason `revoke` no longer says `WHERE id = ?`: rows
+    // that predate 0023 can still be doubled up, and revoke is the one action
+    // whose whole purpose is that nothing keeps working afterwards.
+    const key = await makeDevice('race-revoke');
+    const r = await dashboardApp.fetch(
+      new Request('https://example.com/api/v1/devices/race-revoke/credentials/revoke', {
+        method: 'POST',
+      }),
+      admin,
+    );
+    expect(r.status).toBe(200);
+    expect(await activeCount('race-revoke')).toBe(0);
+    expect((await postSms(key, 'race-revoke')).status).toBe(401);
+  });
+});
+
 describe('POST /api/v1/devices/:id/credentials/revoke', () => {
   it('18. Revoke marks credential REVOKED + ingest rejects the token', async () => {
     await seedAccessUser('admin@x.com', 'ADMIN');

@@ -37,6 +37,33 @@ export {
 } from './schema.js';
 
 // ---------------------------------------------------------------------------
+// error shapes
+// ---------------------------------------------------------------------------
+
+/**
+ * Was this a uniqueness conflict?
+ *
+ * Ported code asks this by looking for `UNIQUE` in the message, because SQLite
+ * says `UNIQUE constraint failed: t.c`. **Postgres does not.** It says
+ * `duplicate key value violates unique constraint "t_pkey"` — lower case — so
+ * `String(err).includes('UNIQUE')` has been false for every conflict since the
+ * move, and every `catch` that relied on it has been quietly returning 500
+ * where it meant to return 409. The ones that also matched an index name by
+ * hand kept working, which is why nobody noticed the others.
+ *
+ * SQLSTATE `23505` is the outside truth here: it is the standard's code for a
+ * unique violation, it is what the driver puts on the error, and it does not
+ * change with the wording of a message or the name of an index.
+ *
+ * This belongs in this package for the reason the rest of it does — a
+ * difference between SQLite and Postgres is fixed once at the seam rather than
+ * at each of the ten call sites that meet it.
+ */
+export function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
+}
+
+// ---------------------------------------------------------------------------
 // type parsing
 // ---------------------------------------------------------------------------
 

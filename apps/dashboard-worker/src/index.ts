@@ -33,6 +33,7 @@ import {
   MIRZABOT_SOURCE,
   type EnvName,
 } from '@shikoo/contracts';
+import { isUniqueViolation } from '@shikoo/db';
 import { mayRead } from './access.js';
 import {
   identityFor,
@@ -481,8 +482,7 @@ app.post('/api/v1/devices', async (c) => {
       ).bind(credentialId, deviceId, hash, prefix, now),
     ]);
   } catch (e) {
-    const msg = String(e);
-    if (msg.includes('UNIQUE') || msg.includes('device_code')) {
+    if (isUniqueViolation(e)) {
       return c.json({ ok: false, error: 'duplicate_device_code' }, 409);
     }
     return c.json({ ok: false, error: 'insert_failed' }, 500);
@@ -592,6 +592,9 @@ app.post('/api/v1/devices/:idOrCode/credentials', async (c) => {
   if (!device) return c.json({ ok: false, error: 'device_not_found' }, 404);
   if (!device.active) return c.json({ ok: false, error: 'device_inactive' }, 409);
 
+  // A fast path that gives the caller the right error, not a guard. Two calls
+  // arriving together both read nothing here and both go on to insert; what
+  // stops the second is `idx_device_credentials_one_active` (0023), below.
   const active = await c.env.DB.prepare(
     `SELECT id, token_prefix FROM device_credentials
       WHERE device_id = ?1 AND status = 'ACTIVE' LIMIT 1`,
@@ -608,14 +611,26 @@ app.post('/api/v1/devices/:idOrCode/credentials', async (c) => {
   const hash = await sha256Hex(apiKey);
   const now = Date.now();
 
-  await c.env.DB.prepare(
-    `INSERT INTO device_credentials
-       (id, device_id, token_hash, token_prefix, status,
-        created_at, activated_at, revoked_at, last_used_at)
-     VALUES (?1, ?2, ?3, ?4, 'ACTIVE', ?5, ?5, NULL, NULL)`,
-  )
-    .bind(credentialId, device.id, hash, prefix, now)
-    .run();
+  // No `ON CONFLICT DO NOTHING` here, deliberately. Swallowing the conflict
+  // would leave this handler returning a plaintext token in `credential.apiKey`
+  // that no row in the database records — the operator would paste it into a
+  // phone that could never authenticate, and the failure would surface days
+  // later as "the relay stopped working". Losing the race must fail loudly.
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO device_credentials
+         (id, device_id, token_hash, token_prefix, status,
+          created_at, activated_at, revoked_at, last_used_at)
+       VALUES (?1, ?2, ?3, ?4, 'ACTIVE', ?5, ?5, NULL, NULL)`,
+    )
+      .bind(credentialId, device.id, hash, prefix, now)
+      .run();
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return c.json({ ok: false, error: 'active_credential_exists' }, 409);
+    }
+    throw e;
+  }
 
   await c.env.DB.prepare(SQL.insertAudit)
     .bind(
@@ -690,25 +705,37 @@ app.post('/api/v1/devices/:idOrCode/credentials/rotate', async (c) => {
     .bind(device.id)
     .first<{ id: string; token_prefix: string }>();
 
-  const stmts = [];
-  if (active) {
-    stmts.push(
-      c.env.DB.prepare(
-        `UPDATE device_credentials
-            SET status = 'REVOKED', revoked_at = ?2
-          WHERE id = ?1`,
-      ).bind(active.id, now),
-    );
-  }
-  stmts.push(
+  // Revoke by device and status, not by the id that was just read: two rotations
+  // arriving together read the same active row, and revoking it twice leaves the
+  // *other* one alive if a third ever existed. This is one statement, so it
+  // takes whatever is ACTIVE at the moment it runs.
+  const stmts = [
+    c.env.DB.prepare(
+      `UPDATE device_credentials
+          SET status = 'REVOKED', revoked_at = ?2
+        WHERE device_id = ?1 AND status = 'ACTIVE'`,
+    ).bind(device.id, now),
     c.env.DB.prepare(
       `INSERT INTO device_credentials
          (id, device_id, token_hash, token_prefix, status,
           created_at, activated_at, revoked_at, last_used_at)
        VALUES (?1, ?2, ?3, ?4, 'ACTIVE', ?5, ?5, NULL, NULL)`,
     ).bind(newCredentialId, device.id, hash, prefix, now),
-  );
-  await c.env.DB.batch(stmts);
+  ];
+  // `batch` is one transaction. The second rotation blocks on
+  // `idx_device_credentials_one_active` (0023) until the first commits, then
+  // its own revoke sees the freshly-inserted row and takes it out — so the two
+  // serialise into "rotate, then rotate again" rather than into two live
+  // tokens. If it still conflicts, the whole batch rolls back and this says so
+  // rather than handing back a token nothing recorded.
+  try {
+    await c.env.DB.batch(stmts);
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return c.json({ ok: false, error: 'rotation_conflict' }, 409);
+    }
+    throw e;
+  }
 
   await c.env.DB.prepare(SQL.insertAudit)
     .bind(
@@ -776,12 +803,17 @@ app.post('/api/v1/devices/:idOrCode/credentials/revoke', async (c) => {
   if (!active) return c.json({ ok: false, error: 'no_active_credential' }, 409);
 
   const now = Date.now();
+  // By device and status, not by the id just read. Revoke exists to cut a lost
+  // phone off; "revoked one of them and left the other working" is the failure
+  // this whole slice is about, and it is exactly what `WHERE id = ?` did while
+  // the read above took `LIMIT 1` with no ordering. `0023` makes a second ACTIVE
+  // row impossible going forward; this also cleans up any that predate it.
   await c.env.DB.prepare(
     `UPDATE device_credentials
         SET status = 'REVOKED', revoked_at = ?2
-      WHERE id = ?1`,
+      WHERE device_id = ?1 AND status = 'ACTIVE'`,
   )
-    .bind(active.id, now)
+    .bind(device.id, now)
     .run();
 
   await c.env.DB.prepare(SQL.insertAudit)
@@ -1788,12 +1820,7 @@ app.post('/api/v1/accounts', async (c) => {
     ];
     await c.env.DB.batch([...stmts, ...faiStmts]);
   } catch (e) {
-    const msg = String(e);
-    if (
-      msg.includes('UNIQUE') ||
-      msg.includes('idx_fa_unique_active') ||
-      msg.includes('idx_fai_unique_active_value')
-    ) {
+    if (isUniqueViolation(e)) {
       return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
     }
     return c.json({ ok: false, error: 'insert_failed' }, 500);
@@ -1847,8 +1874,7 @@ app.patch('/api/v1/accounts/:id', async (c) => {
       .bind(...(values as unknown[]))
       .run();
   } catch (e) {
-    const msg = String(e);
-    if (msg.includes('UNIQUE') || msg.includes('idx_fa_unique_active')) {
+    if (isUniqueViolation(e)) {
       return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
     }
     return c.json({ ok: false, error: 'update_failed' }, 500);
@@ -2373,8 +2399,7 @@ app.post('/api/v1/accounts/:id/identifier', async (c) => {
           .bind(accountId, value, now)
           .run();
       } catch (e) {
-        const msg = String(e);
-        if (msg.includes('UNIQUE') || msg.includes('idx_fa_unique_active')) {
+        if (isUniqueViolation(e)) {
           return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
         }
         throw e;
@@ -2437,8 +2462,7 @@ app.post('/api/v1/accounts/:id/identifier', async (c) => {
         .bind(accountId, value, now)
         .run();
     } catch (e) {
-      const msg = String(e);
-      if (msg.includes('UNIQUE') || msg.includes('idx_fa_unique_active')) {
+      if (isUniqueViolation(e)) {
         return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
       }
       throw e;
@@ -2451,8 +2475,7 @@ app.post('/api/v1/accounts/:id/identifier', async (c) => {
         .bind(accountId, value, now)
         .run();
     } catch (e) {
-      const msg = String(e);
-      if (msg.includes('UNIQUE') || msg.includes('idx_fa_unique_active')) {
+      if (isUniqueViolation(e)) {
         return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
       }
       throw e;
@@ -2465,8 +2488,7 @@ app.post('/api/v1/accounts/:id/identifier', async (c) => {
         .bind(accountId, value, now)
         .run();
     } catch (e) {
-      const msg = String(e);
-      if (msg.includes('UNIQUE') || msg.includes('idx_fa_unique_active')) {
+      if (isUniqueViolation(e)) {
         return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
       }
       throw e;
@@ -2482,8 +2504,7 @@ app.post('/api/v1/accounts/:id/identifier', async (c) => {
         .bind(crypto.randomUUID(), accountId, kind, value, label ?? null, now)
         .run();
     } catch (e) {
-      const msg = String(e);
-      if (msg.includes('UNIQUE')) {
+      if (isUniqueViolation(e)) {
         return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
       }
       throw e;
@@ -3059,10 +3080,9 @@ app.post('/api/v1/transactions/:transactionId/assign-account', async (c) => {
       await c.env.DB.batch(stmts);
       identifierSaved = true;
     } catch (e) {
-      const msg = String(e);
       // UNIQUE on financial_account_identifiers(kind, value) — the row was
       // inserted in a parallel request. Re-probe and return the conflict.
-      if (msg.includes('UNIQUE') || msg.includes('idx_fa_unique_active')) {
+      if (isUniqueViolation(e)) {
         const owner2 = await c.env.DB.prepare(
           `SELECT fa.id AS id, fa.display_name AS display_name
                FROM financial_account_identifiers fai
@@ -3096,8 +3116,8 @@ app.post('/api/v1/transactions/:transactionId/assign-account', async (c) => {
           409,
         );
       }
-      // Non-UNIQUE error — fail loudly but never expose raw SQL/stack.
-      console.error('assign-account: identifier save failed', msg);
+      // Not a uniqueness conflict — fail loudly but never expose raw SQL/stack.
+      console.error('assign-account: identifier save failed', String(e));
       return c.json({ ok: false, error: 'identifier_save_failed' }, 500);
     }
   }
@@ -3517,8 +3537,7 @@ app.post('/api/v1/transactions/:transactionId/create-account', async (c) => {
       )
       .run();
   } catch (e) {
-    const msg = String(e);
-    if (msg.includes('UNIQUE')) {
+    if (isUniqueViolation(e)) {
       return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
     }
     throw e;
@@ -3549,8 +3568,7 @@ app.post('/api/v1/transactions/:transactionId/create-account', async (c) => {
       // The account exists but the identifier save failed — surface 409
       // so the UI can show the partial success and roll back the account.
       await c.env.DB.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(accountId).run();
-      const msg = String(e);
-      if (msg.includes('UNIQUE')) {
+      if (isUniqueViolation(e)) {
         return c.json({ ok: false, error: 'ACCOUNT_IDENTIFIER_AMBIGUOUS' }, 409);
       }
       throw e;
@@ -4108,8 +4126,7 @@ app.post('/api/v1/accounts/:id/move-references', async (c) => {
   try {
     if (stmts.length > 0) await c.env.DB.batch(stmts);
   } catch (e) {
-    const msg = String(e);
-    if (msg.includes('UNIQUE')) {
+    if (isUniqueViolation(e)) {
       return c.json(
         {
           ok: false,

@@ -348,6 +348,36 @@ SELECT assert_rejects($$
                500000, 'CARD_TO_CARD', 'AWAITING_REVIEW', now())
 $$, 'an open checkout blocks one in the other open status too');
 
+-- ==========================================================================
+-- 9. DEVICE CREDENTIALS — one working token per phone
+-- ==========================================================================
+-- Three routes maintained this by reading the ACTIVE row and then writing, and
+-- a read is not a guard. Two ACTIVE tokens for one device means revoke cuts off
+-- one and leaves the other working, and `findActiveCredentialByPrefix` — which
+-- also takes `LIMIT 1` — answers according to whichever plan Postgres picked.
+-- Authentication that is nondeterministic cannot be reasoned about.
+--
+-- Asserted here rather than only in the handler tests because this is the part
+-- that can be proven: two concurrent HTTP calls in one process cannot be made
+-- to interleave at the exact statement, but two INSERTs can.
+INSERT INTO device_credentials (id, device_id, token_hash, token_prefix, status,
+                                created_at, activated_at)
+     VALUES ('__inv-cred-1', '__inv-dev', '__inv-hash-1', 'aaaa', 'ACTIVE', 0, 0);
+
+SELECT assert_rejects($$
+  INSERT INTO device_credentials (id, device_id, token_hash, token_prefix, status,
+                                  created_at, activated_at)
+       VALUES ('__inv-cred-2', '__inv-dev', '__inv-hash-2', 'bbbb', 'ACTIVE', 0, 0)
+$$, 'a device cannot hold two active credentials');
+
+-- And the history stays: rotation is revoke-then-issue, so a device accumulates
+-- REVOKED rows and must keep being able to.
+INSERT INTO device_credentials (id, device_id, token_hash, token_prefix, status,
+                                created_at, activated_at, revoked_at)
+     VALUES ('__inv-cred-3', '__inv-dev', '__inv-hash-3', 'cccc', 'REVOKED', 0, 0, 0);
+SELECT assert_eq((SELECT count(*) FROM device_credentials WHERE id LIKE '__inv-cred-%'),
+                 2, 'a revoked credential may sit beside the active one');
+
 \echo ''
 \echo '  All invariants hold.'
 \echo ''
