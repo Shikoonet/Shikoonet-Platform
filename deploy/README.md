@@ -93,6 +93,43 @@ Coolify:
 | `dashboard` | `GET /health` on 8788 |
 | `bot` | **none — disable it.** The bot opens no port; it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name |
 
+## The edge — how a browser reaches any of this
+
+Nothing above opens a port to the internet. Something in front has to, and since
+2026-08-17 that is a small nginx container rather than a Cloudflare tunnel.
+
+```
+browser ──▶ :9443 ──▶ shikoo-tls ──▶ dashboard:8788
+                    (nginx:alpine) ──▶ ingest:8787
+```
+
+`shikoo-tls` joins the same Docker network as the services, publishes only
+`:9443`, and mounts `/etc/letsencrypt` read-only. The host's own `:80` and `:443`
+are deliberately untouched — they belong to unrelated sites on that box — which
+is the whole reason the port appears in the URL.
+
+Two lines in that config are load-bearing and neither is obvious:
+
+- **`proxy_set_header Host $http_host`** — not `$host`. `originGuard` compares
+  `new URL(origin).host` on both sides and `URL.host` keeps the port. `$host`
+  strips it, and every state-changing request then answers
+  `cross_origin_forbidden`.
+- **the upstream in a variable, with `resolver 127.0.0.11`** — `proxy_pass` with
+  a literal name resolves once at startup, and every deploy gives the app a new
+  container and a new IP.
+
+That second one is not hypothetical. The tunnel it replaced addressed the
+container by name, a deploy renamed the container, and the panel answered 502
+until somebody read `docker logs`. The services carry stable network aliases now
+(`dashboard`, `ingest`) via Coolify's `custom_network_aliases` — **not**
+`custom_docker_run_options`, which accepts `--network-alias` and silently never
+applies it.
+
+Certificates: Let's Encrypt over DNS-01, both hostnames, one lineage named
+`shikoo`. DNS-01 rather than HTTP-01 because that would need `:80`. Renewal must
+reload the container — a `renewal-hooks/deploy` script does it — and it needs a
+DNS API token that outlives the certificate.
+
 ## Environment, per service
 
 On Coolify these are the environment variables of each application, not files.
