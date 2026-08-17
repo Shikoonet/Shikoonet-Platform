@@ -267,7 +267,8 @@ it. `operator unlock` clears a lockout (five wrong passwords, fifteen minutes).
 | --- | --- | --- |
 | `DATABASE_URL` | yes | |
 | `ENV_NAME` | **yes, and the process will not start without it** | Same four values as the dashboard. Here it is what forces `MIRZABOT_INTEGRATION_ENABLED` and `AUTO_MATCH_ENABLED` to be decided out loud — and while it defaulted to `local`, a typo meant nobody was asked, every bank SMS was stored, and no payment was ever verified |
-| `TRUSTED_PROXY_IP_HEADER` | recommended | `X-Real-IP`. Without it the per-IP limit on `POST /api/v1/sms` is **off** — and the process says so in the log at boot. It is off rather than shared because the old shared bucket meant one busy phone rate-limited the whole fleet |
+| `TRUSTED_PROXY_IP_HEADER` | recommended | `X-Real-IP`. Without it the per-IP limit on `POST /api/v1/sms` and on the claims endpoint is **off** — and the process says so in the log at boot. It is off rather than shared because the old shared bucket meant one busy phone rate-limited the whole fleet |
+| `INGEST_MAX_BODY_BYTES` | no | Default 8192. Enforced on real bytes before the body is in memory, on the declared length and on a chunked stream alike. **The process refuses to start on a value that is not a positive whole number** — `8kb` used to parse as `NaN`, and every comparison against NaN is false, so that typo removed the cap rather than widening it |
 | `PORT`, `HOST` | no | Default `8787`, `127.0.0.1` |
 | `SWEEP_INTERVAL_MS` | no | Default 60000 |
 | `DEVICE_RATE_LIMIT`, `IP_RATE_LIMIT`, `RATE_LIMIT_WINDOW_MS` | no | Second layer; the edge is the first |

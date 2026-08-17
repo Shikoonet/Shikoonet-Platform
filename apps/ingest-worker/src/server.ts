@@ -152,6 +152,13 @@ export function buildEnv(db: Env['DB']): Env {
     const value = optional(key);
     if (value !== undefined) env[key] = value;
   }
+  // Validated here rather than trusted at the route. `Number.parseInt('8kb')`
+  // is `NaN` and every comparison against NaN is false, so a plausible-looking
+  // typo did not widen the cap on the only public endpoint — it removed it.
+  // Read for its exception; the value itself is passed through as the string.
+  if (env.INGEST_MAX_BODY_BYTES !== undefined) {
+    positiveInt('INGEST_MAX_BODY_BYTES', 0);
+  }
   assertProductionConfig(env);
   return env;
 }

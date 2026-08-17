@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
+import type { MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import { INGEST_PATH, MAX_BODY_BYTES, type EnvName } from '@shikoo/contracts';
 import { ingest } from './ingest.js';
@@ -58,6 +60,64 @@ const Body = z
   })
   .strict();
 
+/**
+ * The cap on a claim from the PHP bot.
+ *
+ * `MirzabotClaimBody` is a dozen short fields. Its own cap rather than the SMS
+ * one because this route reads the whole body **before** it can authenticate
+ * anything: the HMAC is over the raw bytes, so they have to exist first. A small
+ * number here is the difference between an attacker with no credential spending
+ * a few kilobytes of our memory and spending as much as they can send.
+ */
+const MIRZABOT_MAX_BODY_BYTES = 4 * 1024;
+
+/**
+ * The configured cap, or the built-in one.
+ *
+ * `Number.parseInt` on an unset or malformed value used to produce `NaN`, and
+ * `n > NaN` is false — so a typo in `INGEST_MAX_BODY_BYTES` did not widen the
+ * limit, it **removed** it. `server.ts` refuses to start on a bad value, so this
+ * fallback only covers the tests and anything that builds `Env` by hand.
+ */
+function maxBodyBytes(env: Env): number {
+  const raw = env.INGEST_MAX_BODY_BYTES;
+  if (raw === undefined || raw === '') return MAX_BODY_BYTES;
+  const n = Number.parseInt(raw, 10);
+  return Number.isInteger(n) && n > 0 ? n : MAX_BODY_BYTES;
+}
+
+/**
+ * Refuse an oversized body before it is in memory, counting real bytes.
+ *
+ * Three things were wrong with what this replaces, and they compounded:
+ *
+ *   - `Content-Length` was consulted **only when present**, so a chunked
+ *     request skipped the check entirely;
+ *   - `c.req.json()` then parsed whatever arrived, so the allocation happened
+ *     before anything measured it;
+ *   - the second check ran after the parse on `JSON.stringify(body).length`,
+ *     which counts UTF-16 code units. A Persian SMS is two bytes per character
+ *     in UTF-8 and one unit here, so the number being compared to a limit named
+ *     `_BYTES` was about half the bytes.
+ *
+ * Hono's own middleware does the right thing on both paths: a declared
+ * `Content-Length` over the cap is refused outright, and a chunked body is
+ * counted as it streams and aborted mid-flight. A *lying* `Content-Length` does
+ * not open a hole here because Node's HTTP parser hands the request exactly the
+ * declared number of bytes — the surplus is not ours to allocate.
+ *
+ * Built per request rather than registered once, because the cap comes from
+ * `c.env` and the app object is shared with tests that pass their own.
+ */
+function limitBody(max: (env: Env) => number): MiddlewareHandler<{ Bindings: Env }> {
+  return (c, next) =>
+    bodyLimit({
+      maxSize: max(c.env),
+      onError: (ctx) =>
+        ctx.json({ ok: false, error: 'too_large', code: 'PAYLOAD_TOO_LARGE' }, 413),
+    })(c, next);
+}
+
 const app = new Hono<{ Bindings: Env }>();
 
 app.get('/health', (c) => c.json({ ok: true }));
@@ -72,13 +132,7 @@ app.get('/version', (c) =>
   }),
 );
 
-app.post(INGEST_PATH, async (c) => {
-  const max = Number.parseInt(c.env.INGEST_MAX_BODY_BYTES ?? String(MAX_BODY_BYTES), 10);
-  const lenHeader = c.req.header('content-length');
-  if (lenHeader && Number.parseInt(lenHeader, 10) > max) {
-    return c.json({ ok: false, error: 'too_large', code: 'PAYLOAD_TOO_LARGE' }, 413);
-  }
-
+app.post(INGEST_PATH, limitBody(maxBodyBytes), async (c) => {
   // Skipped rather than shared when the address cannot be known. The old
   // `?? 'unknown'` put every device in one bucket, so a single busy phone
   // rate-limited the whole fleet — and the header it read is client-controlled
@@ -92,9 +146,18 @@ app.post(INGEST_PATH, async (c) => {
     }
   }
 
+  // Read, then parse, and only the parse is guarded.
+  //
+  // `c.req.json()` inside the try was doing both, and the limiter reports an
+  // oversize body by erroring the body stream — so a 64 KB payload came back
+  // `bad_json` 400 while `bodyLimit` never got to answer. The size failure has
+  // to leave this handler for the middleware to turn it into a 413, and a
+  // `catch` around the read is what stopped it. That is a whole class of bug:
+  // a broad catch converts somebody else's signal into your own error.
+  const text = await c.req.text();
   let raw: unknown;
   try {
-    raw = await c.req.json();
+    raw = JSON.parse(text);
   } catch {
     return c.json({ ok: false, error: 'bad_json', code: 'BAD_REQUEST' }, 400);
   }
@@ -117,11 +180,6 @@ app.post(INGEST_PATH, async (c) => {
     timestamp: normalizedTimestamp,
     checksum: parsed.data.checksum ?? '',
   };
-
-  // Body-size cap AFTER parse (Content-Length can be missing or lie).
-  if (JSON.stringify(ingestBody).length > max) {
-    return c.json({ ok: false, error: 'too_large', code: 'PAYLOAD_TOO_LARGE' }, 413);
-  }
 
   const deviceKey = parsed.data.deviceId;
   if (c.env.DEVICE_LIMIT) {
@@ -146,7 +204,7 @@ app.post(INGEST_PATH, async (c) => {
   return c.json(result, 200);
 });
 
-app.post(MIRZABOT_CLAIMS_PATH, async (c) => {
+app.post(MIRZABOT_CLAIMS_PATH, limitBody(() => MIRZABOT_MAX_BODY_BYTES), async (c) => {
   if (c.env.MIRZABOT_INTEGRATION_ENABLED !== 'true') {
     return c.json({ ok: false, error: 'integration_disabled' }, 404);
   }
@@ -154,6 +212,18 @@ app.post(MIRZABOT_CLAIMS_PATH, async (c) => {
   const integrationId = c.env.MIRZABOT_INTEGRATION_ID ?? 'mirzabot-test';
   if (!secret) {
     return c.json({ ok: false, error: 'integration_not_configured' }, 503);
+  }
+
+  // Charged before the body is read and long before the HMAC is computed. This
+  // route authenticates over the raw bytes, so an unauthenticated caller gets to
+  // make us read and hash whatever they send; without a limit here the only cost
+  // to them is bandwidth. The claim path had no rate limit of any kind.
+  const ip = clientIp((name) => c.req.header(name), c.env.TRUSTED_PROXY_IP_HEADER);
+  if (c.env.IP_LIMIT && ip !== null) {
+    const allowed = await c.env.IP_LIMIT.limit({ key: `claim:${ip}` });
+    if (!allowed.success) {
+      return c.json({ ok: false, error: 'rate_limited' }, 429);
+    }
   }
 
   const rawBody = await c.req.text();

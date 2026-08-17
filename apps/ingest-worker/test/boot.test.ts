@@ -28,6 +28,7 @@ const KEYS = [
   'AUTO_MATCH_ENABLED',
   'MIRZABOT_INTEGRATION_HMAC_SECRET',
   'MIRZABOT_INTEGRATION_ID',
+  'INGEST_MAX_BODY_BYTES',
 ] as const;
 
 const saved = new Map<string, string | undefined>();
@@ -118,6 +119,25 @@ describe('starting in production', () => {
     const env = buildEnv(NO_DB);
     expect(env.MIRZABOT_INTEGRATION_ENABLED).toBe('true');
     expect(env.AUTO_MATCH_ENABLED).toBe('true');
+  });
+});
+
+describe('the body cap', () => {
+  it('refuses a value that is not a positive whole number of bytes', () => {
+    // `Number.parseInt('8kb')` is `NaN`, and every comparison against NaN is
+    // false — so this typo did not widen the cap on the only public endpoint,
+    // it removed it. The plausible-looking spellings are the dangerous ones.
+    for (const value of ['8kb', '8 KB', '0', '-1', '1.5', 'unlimited']) {
+      set({ ENV_NAME: 'local', INGEST_MAX_BODY_BYTES: value });
+      expect(() => buildEnv(NO_DB)).toThrow(/INGEST_MAX_BODY_BYTES/);
+    }
+  });
+
+  it('accepts a real one, and leaves it unset alone', () => {
+    set({ ENV_NAME: 'local', INGEST_MAX_BODY_BYTES: '16384' });
+    expect(buildEnv(NO_DB).INGEST_MAX_BODY_BYTES).toBe('16384');
+    set({ ENV_NAME: 'local' });
+    expect(buildEnv(NO_DB).INGEST_MAX_BODY_BYTES).toBeUndefined();
   });
 });
 
