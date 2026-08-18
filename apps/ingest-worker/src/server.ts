@@ -134,7 +134,7 @@ function assertProductionConfig(env: Env): void {
   // the log they check after a deploy, next to the port and the version.
   for (const key of MUST_BE_DECIDED) {
     if (env[key] !== 'true') {
-      console.warn(`[ingest] ${key}=false — payments will not be verified automatically`);
+      console.warn(`[ingest] ${key}=false — ${CONSEQUENCE[key]}`);
     }
   }
 
