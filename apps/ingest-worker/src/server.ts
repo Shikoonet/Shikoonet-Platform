@@ -66,7 +66,30 @@ const PASSTHROUGH = [
  * afternoon on this machine on 2026-08-15 and it is documented in
  * `sim/README.md` precisely because it had already cost one before.
  */
-const MUST_BE_DECIDED = ['MIRZABOT_INTEGRATION_ENABLED', 'AUTO_MATCH_ENABLED'] as const;
+const MUST_BE_DECIDED = [
+  'MIRZABOT_INTEGRATION_ENABLED',
+  'AUTO_MATCH_ENABLED',
+  // Third for the same reason, found on 2026-08-18: absent reads as off, and
+  // off means every auto-verified payment is a customer who paid and was never
+  // given anything. The failure is silent on both sides — this hub records the
+  // claim as VERIFIED and considers itself finished, while the legacy bot was
+  // never told there was anything to fulfil.
+  'AUTO_FULFILLMENT_ENABLED',
+] as const;
+
+/**
+ * What silence on each switch actually costs, in the words of whoever has to
+ * read it at 3am. Kept beside the names because a message that says only
+ * "X is required" sends that person to the source to find out why.
+ */
+const CONSEQUENCE: Record<(typeof MUST_BE_DECIDED)[number], string> = {
+  MIRZABOT_INTEGRATION_ENABLED:
+    'the PHP bot posts claims and every one is refused, which from its end looks like an outage.',
+  AUTO_MATCH_ENABLED:
+    'a bank SMS is stored and a transaction is written, but no payment is ever verified.',
+  AUTO_FULFILLMENT_ENABLED:
+    'payments verify normally and the legacy bot is never told, so customers pay and receive nothing.',
+};
 
 /**
  * Refuses to start rather than to work.
@@ -84,9 +107,9 @@ function assertProductionConfig(env: Env): void {
   if (undecided.length > 0) {
     throw new Error(
       `${undecided.join(' and ')} must be set to exactly "true" or "false" when ` +
-        'ENV_NAME=production. Left unset — or set to anything else, which reads the ' +
-        'same — a bank SMS is stored and a transaction is written, but no payment is ' +
-        'ever verified, and nothing says so.',
+        'ENV_NAME=production — unset, or set to anything else, reads the same as ' +
+        'false and says nothing. ' +
+        undecided.map((key) => `${key}: ${CONSEQUENCE[key]}`).join(' '),
     );
   }
 

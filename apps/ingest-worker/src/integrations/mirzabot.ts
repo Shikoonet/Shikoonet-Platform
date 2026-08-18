@@ -16,7 +16,7 @@ import {
   type MirzabotDecision,
   type MirzabotTxCandidate,
 } from '@shikoo/domain';
-import { deliverMirzabotVerifiedWebhook } from './webhook.js';
+import { deliverMirzabotVerifiedWebhook, flushWebhookDeliveries } from './webhook.js';
 
 export const MirzabotClaimBody = z
   .object({
@@ -166,31 +166,6 @@ async function loadTxPool(
   }));
 }
 
-async function emitVerifiedWebhook(
-  env: MirzabotWebhookEnv,
-  verified: {
-    matchId: string;
-    transactionId: string;
-    claimId: string;
-    externalOrderId: string;
-    expectedAmountIrr: number;
-  },
-): Promise<void> {
-  await deliverMirzabotVerifiedWebhook(env, {
-    eventId: `verified-${verified.claimId}-${verified.transactionId}`,
-    type: 'payment.verified',
-    externalOrderId: verified.externalOrderId,
-    mirzabotOrderId: verified.externalOrderId.replace(/^mirzabot:test:/, ''),
-    claimId: verified.claimId,
-    matchId: verified.matchId,
-    transactionId: verified.transactionId,
-    expectedAmountIrr: verified.expectedAmountIrr,
-    matchedAmountIrr: verified.expectedAmountIrr,
-    verificationMode: 'AUTO_VERIFIED',
-    verifiedAt: Date.now(),
-  });
-}
-
 export interface MirzabotMatchRunResult {
   decisions: MirzabotDecision[];
   autoVerifiedClaimIds: string[];
@@ -233,10 +208,12 @@ export async function runMirzabotMatching(
         claimId: decision.claimId,
         transactionId: decision.transactionId,
         mode: 'AUTO_VERIFIED',
+        // The fulfilment notice is written by the same batch that verifies, so
+        // it cannot be lost between the two. Delivery is attempted below.
+        enqueueWebhook: opts.webhookEnv !== undefined,
       });
       if (verified.ok) {
         autoVerifiedClaimIds.push(decision.claimId);
-        if (opts.webhookEnv) await emitVerifiedWebhook(opts.webhookEnv, verified);
       } else {
         // Lost a race, or a fact changed under us — never force the write.
         const reason =
@@ -266,6 +243,14 @@ export async function runMirzabotMatching(
         metadata: decision.diagnostics,
       });
     }
+  }
+
+  // After the decisions, not between them: one sweep covers every notice this
+  // run enqueued plus anything an earlier run could not deliver. A failure here
+  // changes nothing — the notices are already durable, and the next run or the
+  // next claim retries them.
+  if (opts.webhookEnv) {
+    await flushWebhookDeliveries(db, opts.webhookEnv, { now: opts.now ?? Date.now() });
   }
 
   return { decisions, autoVerifiedClaimIds };

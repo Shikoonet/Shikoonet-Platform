@@ -29,7 +29,8 @@ async function seed(): Promise<void> {
   await db
     .prepare(
       `TRUNCATE reconciliation_matches, payment_claims, transaction_candidates,
-                raw_sms_events, financial_accounts, devices, reseller_transactions
+                raw_sms_events, financial_accounts, devices, reseller_transactions,
+                webhook_deliveries
        RESTART IDENTITY CASCADE`,
     )
     .run();
@@ -226,5 +227,144 @@ describe('verifyMirzabotClaim on Postgres', () => {
     expect(matches).toBe(0);
     expect(await claimStatus('claim-1')).toBe('PENDING');
     expect(await txStatus('tx-1')).toBe('PARSED');
+  });
+});
+
+/**
+ * The fulfilment notice.
+ *
+ * What these hold is narrow and deliberate: that the notice is written by the
+ * SAME statement batch as the verification. Nothing here tests delivery — that
+ * is the courier's job and it has its own suite. The point is that no arrangement
+ * of crashes can produce a VERIFIED claim with no notice, or a notice for a
+ * claim that was never verified.
+ */
+describe('the fulfilment notice', () => {
+  async function notices(): Promise<{ id: string; status: string; attempt_count: number }[]> {
+    const { results } = await db
+      .prepare(`SELECT id, status, attempt_count FROM webhook_deliveries ORDER BY id`)
+      .all<{ id: string; status: string; attempt_count: number }>();
+    return results;
+  }
+
+  it('is enqueued by the same batch that verifies the claim', async () => {
+    const res = await verifyMirzabotClaim(db, {
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
+      enqueueWebhook: true,
+    });
+    expect(res.ok).toBe(true);
+
+    expect(await notices()).toEqual([
+      { id: 'verified-claim-1-tx-1', status: 'PENDING', attempt_count: 0 },
+    ]);
+  });
+
+  it('carries the match id that is actually in the table', async () => {
+    // The payload is written before the batch runs, so its matchId is a guess
+    // about what the upsert will produce. If that guess is wrong the legacy bot
+    // is handed the id of a row nobody has.
+    const res = await verifyMirzabotClaim(db, {
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
+      enqueueWebhook: true,
+    });
+    expect(res.ok).toBe(true);
+
+    const payload = JSON.parse(
+      (await db
+        .prepare(`SELECT payload_json FROM webhook_deliveries WHERE id = ?1`)
+        .bind('verified-claim-1-tx-1')
+        .first<string>('payload_json')) ?? '{}',
+    ) as { matchId: string; mirzabotOrderId: string; expectedAmountIrr: number };
+
+    const real = await db
+      .prepare(`SELECT id FROM reconciliation_matches WHERE payment_claim_id = 'claim-1'`)
+      .first<string>('id');
+    expect(payload.matchId).toBe(real);
+    expect(payload.mirzabotOrderId).toBe('claim-1');
+    expect(payload.expectedAmountIrr).toBe(AMOUNT);
+  });
+
+  it('is not written when the verification refuses', async () => {
+    await db
+      .prepare(`UPDATE transaction_candidates SET amount_irr = ?2 WHERE id = ?1`)
+      .bind('tx-1', AMOUNT + 5)
+      .run();
+
+    const res = await verifyMirzabotClaim(db, {
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
+      enqueueWebhook: true,
+    });
+
+    expect(res).toEqual({ ok: false, error: 'AMOUNT_MISMATCH' });
+    expect(await notices()).toEqual([]);
+  });
+
+  it('asks the legacy bot to fulfil one order once, however often we retry', async () => {
+    // Same pair, twice. The second verification loses — but even if it had won,
+    // the notice id is derived from the pair, so there is only ever one row and
+    // the customer's order is fulfilled once.
+    await verifyMirzabotClaim(db, {
+      claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED', enqueueWebhook: true,
+    });
+    await verifyMirzabotClaim(db, {
+      claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED', enqueueWebhook: true,
+    });
+
+    expect(await notices()).toHaveLength(1);
+  });
+
+  it('refuses to verify at all if the notice cannot be written', async () => {
+    // The one assertion that separates "in the batch" from "right after the
+    // batch", and the reason this slice exists. Both shapes pass every other
+    // test in this file — the difference only shows when the notice fails.
+    //
+    // Written after the batch, a failure here leaves the claim VERIFIED, the
+    // transaction APPROVED and nothing anywhere saying the customer is owed a
+    // service. Written inside it, the whole thing rolls back and the claim is
+    // retried on the next run, which is recoverable.
+    await db
+      .prepare(
+        `ALTER TABLE webhook_deliveries
+           ADD CONSTRAINT tmp_reject_notice CHECK (id <> 'verified-claim-1-tx-1')`,
+      )
+      .run();
+    try {
+      const res = await verifyMirzabotClaim(db, {
+        claimId: 'claim-1',
+        transactionId: 'tx-1',
+        mode: 'AUTO_VERIFIED',
+        enqueueWebhook: true,
+      });
+
+      expect(res.ok).toBe(false);
+      expect(await claimStatus('claim-1')).toBe('PENDING');
+      expect(await txStatus('tx-1')).toBe('PARSED');
+      expect(
+        await db.prepare(`SELECT COUNT(*)::int AS n FROM reconciliation_matches`).first<number>('n'),
+      ).toBe(0);
+    } finally {
+      await db
+        .prepare(`ALTER TABLE webhook_deliveries DROP CONSTRAINT tmp_reject_notice`)
+        .run();
+    }
+  });
+
+  it('stays out of the way when nobody asked for it', async () => {
+    // Manual approval from the dashboard does not notify the legacy bot today.
+    // That may be worth changing; changing it by accident, here, is not.
+    const res = await verifyMirzabotClaim(db, {
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'ADMIN_APPROVED',
+      actorEmail: 'sam@example.com',
+    });
+    expect(res.ok).toBe(true);
+    expect(await notices()).toEqual([]);
   });
 });

@@ -26,6 +26,7 @@ const KEYS = [
   'ENV_NAME',
   'MIRZABOT_INTEGRATION_ENABLED',
   'AUTO_MATCH_ENABLED',
+  'AUTO_FULFILLMENT_ENABLED',
   'MIRZABOT_INTEGRATION_HMAC_SECRET',
   'MIRZABOT_INTEGRATION_ID',
   'INGEST_MAX_BODY_BYTES',
@@ -56,6 +57,7 @@ const PRODUCTION_ON = {
   ENV_NAME: 'production',
   MIRZABOT_INTEGRATION_ENABLED: 'true',
   AUTO_MATCH_ENABLED: 'true',
+  AUTO_FULFILLMENT_ENABLED: 'true',
   MIRZABOT_INTEGRATION_HMAC_SECRET: 'a-real-secret',
   MIRZABOT_INTEGRATION_ID: 'shikoo-prod',
 } as const;
@@ -68,17 +70,38 @@ describe('starting in production', () => {
     expect(() => buildEnv(NO_DB)).toThrow(/MIRZABOT_INTEGRATION_ENABLED.*AUTO_MATCH_ENABLED/s);
   });
 
+  it('refuses to start with fulfilment undecided, even when matching is set', () => {
+    // The third switch, added 2026-08-18. It is the one that decides whether a
+    // verified payment ever reaches the legacy bot, and absent read as off —
+    // so a deploy that forgot it verified payments correctly and delivered
+    // nothing, with both systems reporting success.
+    set({
+      ...PRODUCTION_ON,
+      AUTO_FULFILLMENT_ENABLED: undefined,
+    });
+    expect(() => buildEnv(NO_DB)).toThrow(/AUTO_FULFILLMENT_ENABLED/);
+  });
+
   it('names the consequence, not just the variable', () => {
     // Whoever reads this at 3am has to learn what breaks from the message
     // itself. "X is required" would send them to the source to find out.
     set({ ENV_NAME: 'production' });
+    // Each switch names its own consequence: they are three different
+    // failures, and one shared sentence made the message wrong for two of them.
     expect(() => buildEnv(NO_DB)).toThrow(/verified/);
+    expect(() => buildEnv(NO_DB)).toThrow(/looks like an outage/);
+    expect(() => buildEnv(NO_DB)).toThrow(/pay and receive nothing/);
   });
 
   it('accepts an explicit no, because that is a decision', () => {
     // A shop that wants every payment reviewed by hand is entitled to one.
     // What is refused is silence, not caution.
-    set({ ...PRODUCTION_ON, MIRZABOT_INTEGRATION_ENABLED: 'false', AUTO_MATCH_ENABLED: 'false' });
+    set({
+      ...PRODUCTION_ON,
+      MIRZABOT_INTEGRATION_ENABLED: 'false',
+      AUTO_MATCH_ENABLED: 'false',
+      AUTO_FULFILLMENT_ENABLED: 'false',
+    });
     expect(() => buildEnv(NO_DB)).not.toThrow();
   });
 
@@ -110,6 +133,7 @@ describe('starting in production', () => {
       ENV_NAME: 'production',
       MIRZABOT_INTEGRATION_ENABLED: 'false',
       AUTO_MATCH_ENABLED: 'true',
+      AUTO_FULFILLMENT_ENABLED: 'false',
     });
     expect(() => buildEnv(NO_DB)).not.toThrow();
   });

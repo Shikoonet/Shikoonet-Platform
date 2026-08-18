@@ -8,7 +8,7 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { MIRZABOT_SOURCE } from '@shikoo/contracts';
+import { MIRZABOT_SOURCE, type MirzabotVerifiedWebhook } from '@shikoo/contracts';
 import {
   encodeRevertSnapshotForMatch,
   encodeRevertSnapshotForMetadata,
@@ -58,6 +58,19 @@ const ELIGIBLE_CLAIM_STATUSES = new Set(['PENDING', 'MATCH_SUGGESTED']);
 const CONSUMING_MATCH_STATUSES = "('CONFIRMED','AUTO_VERIFIED')";
 
 /**
+ * The id a fulfilment notice gets, and the reason it is safe to write twice.
+ *
+ * `webhook_deliveries.id` is the primary key, so deriving it from the pair
+ * makes the enqueue idempotent for free: a retry of the whole verification, a
+ * replayed integration event, or a sweep racing a fresh match all collide on
+ * the same row instead of asking the legacy bot to fulfil one order twice.
+ * It is the same string the delivered payload carries as `eventId`.
+ */
+export function verifiedEventId(claimId: string, transactionId: string): string {
+  return `verified-${claimId}-${transactionId}`;
+}
+
+/**
  * Verify `claimId` against `transactionId`.
  *
  * Hard facts re-checked here (never relaxed, for auto or manual):
@@ -66,10 +79,24 @@ const CONSUMING_MATCH_STATUSES = "('CONFIRMED','AUTO_VERIFIED')";
  * part of a successful match. The ±5m window and uniqueness rules are the
  * matcher's job — a human approving from Suspects is explicitly resolving
  * those, so they are not re-imposed here.
+ *
+ * `enqueueWebhook` adds the legacy bot's fulfilment notice to the same batch.
+ * It belongs here rather than at the caller for one reason: the caller can only
+ * act after this function returns, and by then the claim is VERIFIED and
+ * committed. Anything that happens in that gap — the process dying, the network
+ * refusing, a timeout — leaves money taken and the order never fulfilled, with
+ * nothing anywhere saying so. Inside the batch, the notice and the verification
+ * are the same write: either both landed or neither did.
  */
 export async function verifyMirzabotClaim(
   db: D1Database,
-  args: { claimId: string; transactionId: string; mode: VerifyMode; actorEmail?: string | null },
+  args: {
+    claimId: string;
+    transactionId: string;
+    mode: VerifyMode;
+    actorEmail?: string | null;
+    enqueueWebhook?: boolean;
+  },
 ): Promise<VerifyResult> {
   const claim = await db
     .prepare(
@@ -115,8 +142,21 @@ export async function verifyMirzabotClaim(
     .first<{ id: string }>();
   if (consumed) return { ok: false, error: 'TRANSACTION_ALREADY_CONSUMED' };
 
+  // The upsert below keys on (transaction, claim) and does not overwrite `id`,
+  // so a row that already exists in a non-consuming state keeps the id it was
+  // born with. Reading it first is what makes `matchId` below the id that will
+  // actually be in the table — it is embedded in the revert snapshot and in the
+  // fulfilment payload, and both are worthless if they name a row nobody has.
+  const existingPair = await db
+    .prepare(
+      `SELECT id FROM reconciliation_matches
+       WHERE transaction_candidate_id = ?1 AND payment_claim_id = ?2`,
+    )
+    .bind(tx.id, claim.id)
+    .first<{ id: string }>();
+
   const now = Date.now();
-  const matchId = crypto.randomUUID();
+  const matchId = existingPair?.id ?? crypto.randomUUID();
   const matchStatus = args.mode === 'AUTO_VERIFIED' ? 'AUTO_VERIFIED' : 'CONFIRMED';
   const reasons = args.mode === 'AUTO_VERIFIED' ? '["UNIQUE_EXACT_MATCH"]' : '["ADMIN_MANUAL"]';
   const reviewer = args.actorEmail ?? null;
@@ -133,10 +173,7 @@ export async function verifyMirzabotClaim(
     mismatchReasons = encodeRevertSnapshotForMatch(snapshot);
   }
 
-  try {
-    // No INSERT OR IGNORE: the partial unique indexes on CONFIRMED /
-    // AUTO_VERIFIED rows must be able to abort a racing approval.
-    await db.batch([
+  const statements = [
       db
         .prepare(
           `INSERT INTO reconciliation_matches
@@ -168,7 +205,39 @@ export async function verifyMirzabotClaim(
            WHERE id = ?1 AND status IN ('PENDING','MATCH_SUGGESTED')`,
         )
         .bind(claim.id, now),
-    ]);
+  ];
+
+  if (args.enqueueWebhook) {
+    const eventId = verifiedEventId(claim.id, tx.id);
+    const payload: MirzabotVerifiedWebhook = {
+      eventId,
+      type: 'payment.verified',
+      externalOrderId: claim.external_order_id,
+      mirzabotOrderId: claim.external_order_id.replace(/^mirzabot:test:/, ''),
+      claimId: claim.id,
+      matchId,
+      transactionId: tx.id,
+      expectedAmountIrr: claim.expected_amount_irr,
+      matchedAmountIrr: claim.expected_amount_irr,
+      verificationMode: args.mode,
+      verifiedAt: now,
+    };
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO webhook_deliveries
+             (id, event_type, payload_json, attempt_count, status, next_attempt_at)
+           VALUES (?1, 'PAYMENT_VERIFIED', ?2, 0, 'PENDING', ?3)
+           ON CONFLICT (id) DO NOTHING`,
+        )
+        .bind(eventId, JSON.stringify(payload), now),
+    );
+  }
+
+  try {
+    // No INSERT OR IGNORE: the partial unique indexes on CONFIRMED /
+    // AUTO_VERIFIED rows must be able to abort a racing approval.
+    await db.batch(statements);
   } catch {
     return { ok: false, error: 'TRANSACTION_ALREADY_CONSUMED' };
   }

@@ -1,3 +1,18 @@
+/**
+ * Telling the legacy bot that a payment is good, and not losing that fact.
+ *
+ * The notice is enqueued into `webhook_deliveries` inside the same transaction
+ * that verifies the claim (see `verifyMirzabotClaim`), so by the time anything
+ * here runs the intent is already durable. This file is only the courier: it
+ * takes rows that are due, tries them, and writes down what happened. A crash
+ * at any point costs a retry, never an order.
+ *
+ * The table has been in the schema since migration 0004 with exactly these
+ * columns — `attempt_count`, `next_attempt_at`, PENDING/DELIVERED/FAILED/DEAD —
+ * and nothing had ever written a row to it.
+ */
+
+import type { D1Database } from '@shikoo/database';
 import type { MirzabotVerifiedWebhook } from '@shikoo/contracts';
 import { MIRZABOT_CLAIMS_PATH } from '@shikoo/contracts';
 
@@ -8,10 +23,43 @@ export interface WebhookEnv {
   AUTO_FULFILLMENT_ENABLED?: string;
 }
 
+/**
+ * How long one delivery attempt may take.
+ *
+ * `fetch` has no timeout of its own. Without this a legacy bot that accepts the
+ * connection and then stops talking holds the matcher open for as long as the
+ * OS allows — and the matcher runs inside the request that ingests a bank SMS,
+ * so the stall is paid by the next customer, not by us.
+ */
+export const WEBHOOK_TIMEOUT_MS = 10_000;
+
+/** Attempts before a notice stops being retried and starts needing a human. */
+export const WEBHOOK_MAX_ATTEMPTS = 8;
+
+/**
+ * How long a claimed row stays invisible to other sweepers.
+ *
+ * Comfortably longer than `WEBHOOK_TIMEOUT_MS` so a slow-but-alive attempt is
+ * never delivered twice, and short enough that a sweeper killed mid-attempt
+ * gives the row back within a minute rather than at the next backoff step.
+ */
+export const WEBHOOK_LEASE_MS = 60_000;
+
+/**
+ * Backoff, doubling from a minute and capped at an hour.
+ *
+ * The failures this retries through are outages of somebody else's bot, which
+ * last minutes rather than milliseconds; retrying faster would just spend the
+ * attempt budget before anyone can fix anything.
+ */
+export function nextAttemptDelayMs(attemptCount: number): number {
+  return Math.min(60_000 * 2 ** Math.max(0, attemptCount - 1), 3_600_000);
+}
+
 export async function deliverMirzabotVerifiedWebhook(
   env: WebhookEnv,
   payload: MirzabotVerifiedWebhook,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true } | { ok: false; error: string; status?: number }> {
   if (env.AUTO_FULFILLMENT_ENABLED !== 'true') return { ok: true };
   const url = env.MIRZABOT_WEBHOOK_URL;
   const secret = env.MIRZABOT_INTEGRATION_HMAC_SECRET;
@@ -24,19 +72,166 @@ export async function deliverMirzabotVerifiedWebhook(
   const signPayload = `${ts}\nPOST\n/api/v1/integrations/payment-hub/verified\n${bodyHash}`;
   const signature = `sha256=${await hmacSha256Hex(secret, signPayload)}`;
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'X-Integration-Id': integrationId,
-      'X-Event-Id': payload.eventId,
-      'X-Timestamp': ts,
-      'X-Signature': signature,
-    },
-    body,
-  });
-  if (!res.ok) return { ok: false, error: `http_${res.status}` };
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Integration-Id': integrationId,
+        'X-Event-Id': payload.eventId,
+        'X-Timestamp': ts,
+        'X-Signature': signature,
+      },
+      body,
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+    });
+  } catch (err) {
+    // A refused connection, a DNS failure and a timeout all land here, and all
+    // three are worth retrying — which is the whole reason this is caught
+    // rather than allowed to abort the verification that already committed.
+    return { ok: false, error: err instanceof Error ? err.name : 'fetch_failed' };
+  }
+  if (!res.ok) return { ok: false, error: `http_${res.status}`, status: res.status };
   return { ok: true };
+}
+
+interface DeliveryRow {
+  id: string;
+  payload_json: string;
+  attempt_count: number;
+}
+
+export interface FlushResult {
+  attempted: number;
+  delivered: number;
+  failed: number;
+  dead: number;
+}
+
+/**
+ * Try every notice that is due, and record the outcome of each.
+ *
+ * Called after the matcher runs, so the common case — the legacy bot is up —
+ * is delivered within the same request that verified the payment and the
+ * queue stays empty. The retries are what the queue is actually for.
+ *
+ * Rows are claimed by the same statement that reads them, and the claim is a
+ * write: `next_attempt_at` moves out to a lease, so a row in flight is not due
+ * and a second sweeper passes over it. **That lease is the whole guard.** A
+ * plain `SELECT` would not have been one — outside an explicit transaction each
+ * statement commits alone, so `SELECT ... FOR UPDATE` releases its lock before
+ * the caller has read anything and both sweepers would deliver.
+ *
+ * `SKIP LOCKED` is here for throughput, not for correctness: it lets a second
+ * sweeper move on to other rows rather than block on ones being claimed.
+ * Removing it was tried on 2026-08-18 and no test noticed — which is the honest
+ * measure of what it does. Removing the lease, by contrast, hangs the
+ * concurrency test. Do not let the phrase in the SQL stand in as evidence for
+ * the guarantee above it.
+ *
+ * A sweeper killed mid-attempt strands nothing: the lease expires by the clock
+ * and the row is picked up again.
+ */
+export async function flushWebhookDeliveries(
+  db: D1Database,
+  env: WebhookEnv,
+  opts: { limit?: number; now?: number } = {},
+): Promise<FlushResult> {
+  const now = opts.now ?? Date.now();
+  const limit = opts.limit ?? 20;
+  const result: FlushResult = { attempted: 0, delivered: 0, failed: 0, dead: 0 };
+
+  if (env.AUTO_FULFILLMENT_ENABLED !== 'true') return result;
+
+  const { results } = await db
+    .prepare(
+      `UPDATE webhook_deliveries
+          SET attempt_count = attempt_count + 1,
+              last_attempt_at = ?1,
+              next_attempt_at = ?1 + ?3
+        WHERE id IN (
+                SELECT id FROM webhook_deliveries
+                 WHERE status IN ('PENDING','FAILED')
+                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+                 ORDER BY next_attempt_at NULLS FIRST
+                 LIMIT ?2
+                 FOR UPDATE SKIP LOCKED)
+        RETURNING id, payload_json, attempt_count`,
+    )
+    .bind(now, limit, WEBHOOK_LEASE_MS)
+    .all<DeliveryRow>();
+
+  for (const row of results) {
+    let payload: MirzabotVerifiedWebhook;
+    try {
+      payload = JSON.parse(row.payload_json) as MirzabotVerifiedWebhook;
+    } catch {
+      // Unparseable payload cannot become deliverable by waiting. Retrying it
+      // would burn the budget and hide the rows that can still succeed.
+      await settle(db, row.id, 'DEAD', now, 'unreadable_payload', null, null);
+      result.dead += 1;
+      continue;
+    }
+
+    result.attempted += 1;
+    // Already incremented by the claiming UPDATE, so this is the attempt that
+    // is about to happen — not the one before it.
+    const attempt = row.attempt_count;
+    const outcome = await deliverMirzabotVerifiedWebhook(env, payload);
+
+    if (outcome.ok) {
+      await settle(db, row.id, 'DELIVERED', now, null, 200, null);
+      result.delivered += 1;
+      continue;
+    }
+
+    if (attempt >= WEBHOOK_MAX_ATTEMPTS) {
+      await settle(db, row.id, 'DEAD', now, outcome.error, outcome.status ?? null, null);
+      result.dead += 1;
+      continue;
+    }
+
+    await settle(
+      db,
+      row.id,
+      'FAILED',
+      now,
+      outcome.error,
+      outcome.status ?? null,
+      now + nextAttemptDelayMs(attempt),
+    );
+    result.failed += 1;
+  }
+
+  return result;
+}
+
+/**
+ * Write the outcome of one attempt, replacing the lease with a real verdict.
+ *
+ * `next_attempt_at` is set explicitly in every branch — including to NULL —
+ * because the claim above pushed it out to a lease. Leaving it alone on a
+ * terminal row would keep the lease as a phantom due date.
+ */
+async function settle(
+  db: D1Database,
+  id: string,
+  status: 'DELIVERED' | 'FAILED' | 'DEAD',
+  now: number,
+  body: string | null,
+  responseStatus: number | null,
+  nextAttemptAt: number | null,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE webhook_deliveries
+          SET status = ?2, last_attempt_at = ?3, last_response_body = ?4,
+              last_response_status = ?5, next_attempt_at = ?6
+        WHERE id = ?1`,
+    )
+    .bind(id, status, now, body, responseStatus, nextAttemptAt)
+    .run();
 }
 
 async function sha256Hex(data: string): Promise<string> {
