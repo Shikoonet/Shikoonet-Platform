@@ -101,6 +101,32 @@ describe('the SMS endpoint', () => {
     expect(res.status).not.toBe(413);
   });
 
+  it('refuses a body that declares ten bytes and then sends sixty-four kilobytes', async () => {
+    // CVE-2025-59139, and the reason the Hono pin moved. A request carrying
+    // BOTH `Content-Length` and `Transfer-Encoding: chunked` is chunked — the
+    // HTTP spec says the length is then unknown and `Content-Length` must be
+    // ignored. Hono before 4.9.7 believed the header instead, so ten bytes was
+    // under the cap and the middleware waved the whole stream through.
+    //
+    // The header pair is written by hand because that is the whole attack: no
+    // client library builds this, and `fetch` would otherwise set the length
+    // itself from the body.
+    const res = await app.fetch(
+      new Request('https://example.com/api/v1/sms', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': '10',
+          'transfer-encoding': 'chunked',
+        },
+        body: chunked(64 * 1024),
+        ...({ duplex: 'half' } as RequestInit),
+      }),
+      baseEnv,
+    );
+    expect(res.status).toBe(413);
+  });
+
   it('falls back to the built-in cap when the configured one is nonsense', async () => {
     // `Number.parseInt('8kb')` is NaN and `n > NaN` is false, so the old code
     // answered a typo by removing the limit rather than widening it. `server.ts`
