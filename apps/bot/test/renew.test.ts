@@ -732,4 +732,45 @@ describe('the renewal cashback', () => {
     expect(again).toBe(Math.floor((target.totalIrr * 7) / 100));
     expect(await cashbackRows(target.userId)).toHaveLength(2);
   });
+
+  it('will not touch the panel at all on a rate it could not read', async () => {
+    // The failure the read's placement exists for. `loadShopSettings` answers an
+    // unreachable database with the shipped defaults, where the cashback is 0 —
+    // so a read taken AFTER the panel call finished the renewal paying nothing,
+    // and nothing ever looks at a COMPLETED order again. The customer got their
+    // days and silently lost the five percent.
+    //
+    // The table is really taken away rather than stubbed: what is under test is
+    // the loader's own catch, and a stub returning the defaults would only prove
+    // this test can build them.
+    await setCashback(5);
+    const target = await paidRenewal();
+    const panel = fakePanel({
+      [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
+    });
+
+    await db.prepare(`ALTER TABLE settings RENAME TO settings_hidden`).run();
+    invalidateShopSettings();
+    try {
+      await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+      // Nothing irreversible happened — the account was never extended.
+      expect(panel.puts.filter((p) => p.username === target.username)).toEqual([]);
+      // And the order is back where the next sweep finds it.
+      expect(await orderRow(target.order.id)).toMatchObject({ status: 'PAID' });
+      expect(await cashbackRows(target.userId)).toHaveLength(0);
+    } finally {
+      await db.prepare(`ALTER TABLE settings_hidden RENAME TO settings`).run();
+      invalidateShopSettings();
+    }
+
+    // Once the database answers again the customer gets the renewal AND the five
+    // percent, which is what makes this a delay rather than a loss.
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+
+    expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
+    const rows = await cashbackRows(target.userId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.amount_irr).toBe(Math.floor((target.totalIrr * 5) / 100));
+  });
 });

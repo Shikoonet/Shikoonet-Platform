@@ -168,7 +168,13 @@ describe('reading the shop settings', () => {
   it('behaves as the last release did when nothing is set', async () => {
     // A shop with no rows must keep selling what it sold yesterday. Defaulting
     // a missing switch to OFF would close a working shop on a failed read.
-    expect(await loadShopSettings(db)).toEqual(DEFAULT_SHOP_SETTINGS);
+    //
+    // Every value matches the shipped defaults and one field does not, and that
+    // is the point of the field: an empty table and an unreachable table give
+    // the same twelve answers, and only `fromDatabase` tells a money path which
+    // of the two it is holding.
+    expect(await loadShopSettings(db)).toEqual({ ...DEFAULT_SHOP_SETTINGS, fromDatabase: true });
+    expect(DEFAULT_SHOP_SETTINGS.fromDatabase).toBe(false);
   });
 
   it('turns a feature off only on the exact word', async () => {

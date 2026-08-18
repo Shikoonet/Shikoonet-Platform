@@ -115,6 +115,10 @@ export interface ShopSettings {
    * and the difference is deliberate: the others describe behaviour the bot
    * already had, this one moves money out of the shop. A settings read that
    * fails must not start paying a percentage nobody could confirm.
+   *
+   * But a zero that means "we could not ask" is not a zero the shop chose, and
+   * spending it costs the customer their cashback. `fromDatabase` separates the
+   * two, and the renewal path refuses to run on the guess rather than pay it.
    */
   renewCashbackPercent: number;
   /** Card-to-card deposit floor and ceiling, in IRR. */
@@ -153,6 +157,21 @@ export interface ShopSettings {
    * and nothing can check that in advance; the bot finds out by being refused.
    */
   customEmoji: boolean;
+  /**
+   * Whether these values came from the database or from the fallback below.
+   *
+   * Every other field here is safe to guess at: a switch the bot cannot read
+   * keeps the shop selling exactly what it sold yesterday, which is why the
+   * defaults are what they are. The percentages are not like that. A failed
+   * read hands the caller `renewCashbackPercent: 0`, which is indistinguishable
+   * from an admin who pays no cashback — and one of those two is a customer
+   * quietly losing money they were owed.
+   *
+   * So the loader still answers, and this bit is how a money path can tell the
+   * difference and decline to compute from a guess. `provision.ts` is the one
+   * caller that checks it today, before it does anything irreversible.
+   */
+  fromDatabase: boolean;
 }
 
 /**
@@ -176,6 +195,7 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   warnVolumeGb: 1,
   requiresRules: false,
   customEmoji: false,
+  fromDatabase: false,
 };
 
 /**
@@ -305,7 +325,8 @@ function tomanLimit(value: number | null, fallback: number): number {
  * a few times a year, and thirty seconds is short enough that an admin who
  * flips a switch sees it on the next screen.
  *
- * A failed read returns the defaults and is not cached, so the setting takes
+ A failed read returns the defaults with `fromDatabase: false`, and is
+ * not cached, so the setting takes
  * effect as soon as the database answers again.
  */
 export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSettings> {
@@ -364,6 +385,10 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       // selling for years, this one describes a Premium subscription the bot
       // cannot verify it has.
       customEmoji: text(CUSTOM_EMOJI_SETTING.key) === 'true',
+      // The database answered. An empty `settings` table still counts: "the
+      // admin has configured nothing" is a fact, and it is not the same fact
+      // as "we could not ask".
+      fromDatabase: true,
     };
     // A floor above the ceiling would leave no amount a customer could deposit.
     // Two rows edited one at a time can pass through that state, so the pair is

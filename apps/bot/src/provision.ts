@@ -390,6 +390,36 @@ async function renew(
     return menu.serviceBeingPrepared(row.order_public_id);
   }
 
+  // The cashback rate is read here, before the panel call, and that placement
+  // is the whole of the fix.
+  //
+  // A renewal pays the shop's percentage back into the customer's wallet, and
+  // `loadShopSettings` answers a failed read with the shipped defaults — where
+  // that percentage is 0. Read after the panel had already extended the
+  // account, one unreadable settings row finalised the renewal with no
+  // cashback, and nothing looks at a COMPLETED order again: the customer paid,
+  // got their days, and quietly lost the five percent they were owed.
+  //
+  // Read here, the same failure costs one sweep. Nothing irreversible has
+  // happened yet, so the order goes back to PAID and the next pass does the
+  // whole thing properly. An add-on pays no cashback, so it does not wait on
+  // this.
+  let renewCashbackPercent = 0;
+  if (addon === null) {
+    const shop = await loadShopSettings(db);
+    if (!shop.fromDatabase) {
+      await db
+        .prepare(`UPDATE orders SET status = 'PAID', updated_at = now() WHERE id = ?1`)
+        .bind(row.order_id)
+        .run();
+      console.error(
+        `[bot] renewal ${row.order_public_id} will retry: the cashback rate could not be read`,
+      );
+      return null;
+    }
+    renewCashbackPercent = shop.renewCashbackPercent;
+  }
+
   const result = await adapter.renew(
     {
       username: row.target_username,
@@ -463,10 +493,6 @@ async function renew(
     return menu.addonApplied(addon.kind, addon.quantity, serviceName, expiresAt);
   }
 
-  // Read once per renewal rather than inside the transaction: it is cached
-  // shop-wide configuration, and a failed read must not roll back a renewal the
-  // panel has already applied.
-  const { renewCashbackPercent } = await loadShopSettings(db);
   let cashbackIrr: number | null = null;
 
   await db.withSession(async (tx) => {
