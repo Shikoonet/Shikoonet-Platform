@@ -300,7 +300,34 @@ export async function handleUpdate(
     const action = update.callback_query ? decode(update.callback_query.data)?.action : null;
     const isStart =
       update.message?.text !== undefined && command(update.message.text) === '/start';
-    if (from && chatId !== undefined && action !== 'chk' && action !== 'acc' && !isStart) {
+
+    // A receipt goes through the gate, because it is not a purchase — it is the
+    // recovery path of one that already happened.
+    //
+    // The customer has sent money to a card. If they left the channel in the
+    // meantime, or Telegram's membership call is having a bad minute (and
+    // `gate.ts` fails open only for OUR errors, not for a truthful "not a
+    // member"), the gate would refuse the one message that proves they paid.
+    // They cannot be helped through it either: the screen says "join the
+    // channel", and joining is not what is wrong.
+    //
+    // Nothing is granted by letting it past. `handleReceipt` looks for a
+    // payment that is actually waiting and answers RECEIPT_NOTHING_WAITING
+    // when there is none, so a non-member with no order learns nothing and
+    // gets nothing — the gate still stands in front of every way to start one.
+    const carriesReceipt =
+      update.message?.photo !== undefined ||
+      (update.message?.document !== undefined &&
+        isReceiptFile(update.message.document.mime_type));
+
+    if (
+      from &&
+      chatId !== undefined &&
+      action !== 'chk' &&
+      action !== 'acc' &&
+      !isStart &&
+      !carriesReceipt
+    ) {
       const gated = (await adminFor(tx, from.id))
         ? null
         : await gateFor(tx, api, from.id, SHOP.requiresRules);

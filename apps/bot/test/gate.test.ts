@@ -28,7 +28,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertSchema, db } from './helpers/env.js';
-import { makeCustomer } from './helpers/shop.js';
+import { ensureCatalog, ensurePaymentCard, makeCustomer, planId } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 import { invalidateShopSettings } from '../src/settings.js';
 import { MEMBERSHIP_TTL_MS, type MembershipApi } from '../src/gate.js';
@@ -156,6 +156,8 @@ let borrowed: number[] = [];
 
 beforeAll(async () => {
   await assertSchema();
+  await ensureCatalog();
+  await ensurePaymentCard();
   const { results } = await db
     .prepare(`SELECT id FROM required_channels WHERE active AND chat_ref NOT LIKE '@gate_test%'`)
     .all<{ id: number }>();
@@ -194,10 +196,35 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  // CASCADE, because this file now buys things. Until the receipt tests below
+  // it only ever created bare users, so a plain DELETE was enough; the first
+  // customer with an order turned the teardown into a foreign-key error that
+  // failed the file after every test in it had passed.
   await db
-    .prepare(`DELETE FROM users WHERE telegram_id BETWEEN ?1 AND ?2`)
+    .prepare(
+      `DELETE FROM users WHERE telegram_id BETWEEN ?1 AND ?2
+         AND id NOT IN (SELECT user_id FROM orders)`,
+    )
     .bind(BASE_TELEGRAM, BASE_TELEGRAM + 9999)
     .run();
+  // The ones with orders, in dependency order.
+  const { results } = await db
+    .prepare(`SELECT id FROM users WHERE telegram_id BETWEEN ?1 AND ?2`)
+    .bind(BASE_TELEGRAM, BASE_TELEGRAM + 9999)
+    .all<{ id: number }>();
+  const ours = (results ?? []).map((r) => Number(r.id));
+  if (ours.length > 0) {
+    await db
+      .prepare(
+        `DELETE FROM payment_claims WHERE external_order_id IN
+           (SELECT 'shikoo:' || public_id FROM payments WHERE user_id = ANY(?1))`,
+      )
+      .bind(ours)
+      .run();
+    await db.prepare(`DELETE FROM payments WHERE user_id = ANY(?1)`).bind(ours).run();
+    await db.prepare(`DELETE FROM orders WHERE user_id = ANY(?1)`).bind(ours).run();
+    await db.prepare(`DELETE FROM users WHERE id = ANY(?1)`).bind(ours).run();
+  }
   if (borrowed.length > 0) {
     await db
       .prepare(`UPDATE required_channels SET active = true WHERE id = ANY(?1)`)
@@ -518,5 +545,90 @@ describe('the rules gate', () => {
     const out = await handleUpdate(db, startUpdate(updateId, telegramId), globalThis.fetch);
 
     expect(out.replies[0]!.text).toBe(menu.WELCOME);
+  });
+});
+
+/**
+ * The one thing that must get through a closed gate.
+ *
+ * A receipt is not a purchase. It is the second half of one that already
+ * happened — the customer has sent money to a card and this is the only
+ * evidence of it. Somebody who left the channel between paying and uploading
+ * would otherwise be shown "join the channel", which is not what is wrong and
+ * cannot be acted on: joining does not deliver the receipt they are holding.
+ *
+ * The gate stays in front of everything that STARTS a purchase.
+ */
+describe('a receipt is not stopped by the gate', () => {
+  /** Buys and presses «پرداخت کردم» while the shop has no gate yet. */
+  async function buyThenClaim(): Promise<{ telegramId: number; updateId: number }> {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const order = await db
+      .prepare(`SELECT id FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`)
+      .bind(userId)
+      .first<{ id: number }>();
+    await handleUpdate(db, press(updateId + 1, telegramId, `paid:${order!.id}`));
+    return { telegramId, updateId };
+  }
+
+  function sendsPhoto(updateId: number, telegramId: number) {
+    return {
+      update_id: updateId,
+      message: {
+        message_id: updateId,
+        chat: { id: telegramId },
+        from: { id: telegramId, username: `g${telegramId}` },
+        photo: [{ file_id: 'AgACAgQAAxkBAAIBgate0001' }],
+      },
+    };
+  }
+
+  it('lets a customer who has left the channel still send their receipt', async () => {
+    // Bought and clicked «پرداخت کردم» while the shop was open to them...
+    const { telegramId, updateId } = await buyThenClaim();
+    // ...and by the time the receipt is in their hand, they are not a member.
+    await addChannel();
+    const api = membership('left');
+
+    const out = await handleUpdate(db, sendsPhoto(updateId + 2, telegramId), globalThis.fetch, api);
+
+    expect(out.replies[0]!.text).not.toBe(menu.gateChannels());
+    expect(out.replies[0]!.text).toContain('رسید');
+    // The gate did not merely pass them — it was never consulted, so a Telegram
+    // that is down or a channel row that is wrong cannot break this path either.
+    expect(api.calls).toEqual([]);
+  });
+
+  it('still refuses to let a receipt buy anything', async () => {
+    // The bypass is scoped to the receipt itself. Somebody outside the channel
+    // who sends a photo gets told nothing is waiting — no order, no card, no
+    // way in. Without this the gate would be one photo wide.
+    await addChannel();
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+
+    // +500 and +501: `ids()` steps by one, and the test above consumes three
+    // update ids from its own base. A collision here is silently a duplicate,
+    // which answers with no replies and reads as a broken assertion.
+    const out = await handleUpdate(
+      db,
+      sendsPhoto(updateId + 500, telegramId),
+      globalThis.fetch,
+      membership('left'),
+    );
+    expect(out.replies[0]!.text).toBe(menu.RECEIPT_NOTHING_WAITING);
+
+    // And the moment they try to actually start something, the gate is there.
+    const browse = await handleUpdate(
+      db,
+      startUpdate(updateId + 501, telegramId),
+      globalThis.fetch,
+      membership('left'),
+    );
+    expect(browse.replies[0]!.text).toBe(menu.gateChannels());
   });
 });
