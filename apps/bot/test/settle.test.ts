@@ -113,6 +113,56 @@ describe('settling a verified payment', () => {
     expect(mine[0]?.text).toContain(sale.paymentPublicId);
   });
 
+  it('refuses to settle at all if the message cannot be recorded', async () => {
+    // The one assertion that separates "enqueued inside the transaction" from
+    // "enqueued right after it". Every other test in this file passes either
+    // way — checked on 2026-08-18 by moving the enqueue out, and all eighteen
+    // stayed green, which is why this exists.
+    //
+    // Outside the transaction, a failure here leaves the payment PAID and the
+    // order PAID with nobody owed anything, and no later sweep looks at a
+    // settled payment again — the customer has paid and will never be told.
+    // Inside it, the whole settlement rolls back and the next sweep retries.
+    const sale = await buyAndClaim('sim-vip-1m-50');
+    await hubVerifies(sale.paymentPublicId);
+
+    await db
+      .prepare(
+        `ALTER TABLE bot_notifications
+           ADD CONSTRAINT tmp_reject_settle CHECK (dedupe_key <> ?1::text)`.replace(
+          '?1::text',
+          `'settle:${sale.paymentPublicId}'`,
+        ),
+      )
+      .run();
+    try {
+      await expect(settleVerifiedPayments(db)).rejects.toThrow();
+
+      expect(await statuses(sale.orderId, sale.paymentPublicId)).toEqual({
+        order: 'AWAITING_PAYMENT',
+        payment: 'AWAITING_REVIEW',
+      });
+      // Scoped to this sale: the suite shares a database and earlier tests have
+      // left their own settled payments behind.
+      const mine = (await pendingNotifications()).filter(
+        (n) => n.dedupeKey === `settle:${sale.paymentPublicId}`,
+      );
+      expect(mine).toEqual([]);
+    } finally {
+      await db
+        .prepare(`ALTER TABLE bot_notifications DROP CONSTRAINT tmp_reject_settle`)
+        .run();
+    }
+
+    // And once the obstacle is gone the next sweep settles it normally, which
+    // is what makes the rollback recoverable rather than merely safe.
+    expect(await settleVerifiedPayments(db)).toBeGreaterThanOrEqual(1);
+    expect(await statuses(sale.orderId, sale.paymentPublicId)).toEqual({
+      order: 'PAID',
+      payment: 'PAID',
+    });
+  });
+
   it('settles once, however many times the sweep runs', async () => {
     const sale = await buyAndClaim('sim-gold-10');
     await hubVerifies(sale.paymentPublicId);
