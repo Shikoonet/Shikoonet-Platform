@@ -1,0 +1,269 @@
+/**
+ * The outbox that stopped messages being lost.
+ *
+ * Before this, a sweep advanced its rows, returned the messages, and `poll.ts`
+ * sent them — and a `sendMessage` that threw was logged and gone, because
+ * nothing would ever produce it again. Telegram refusing for ten seconds is
+ * ordinary; a customer who paid and was never told is not.
+ *
+ * What each half owes is different, and the tests are split accordingly:
+ * `enqueue` owes durability inside the caller's transaction, and `flush` owes
+ * delivery — eventually, without duplicates, and without retrying somebody who
+ * can never be reached.
+ *
+ * Needs DATABASE_URL (`pnpm sim:up`).
+ */
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { enqueue, flush, LEASE_MS, MAX_ATTEMPTS, nextAttemptDelayMs } from '../src/notify.js';
+import { TelegramRejection, type TelegramApi } from '../src/telegram.js';
+import { db } from './helpers/env.js';
+
+const NOW = 1_786_000_000_000;
+const CHAT = 55_500_001;
+
+/** Only the one method the outbox uses. */
+function apiThat(send: (chatId: number, text: string) => Promise<unknown>): TelegramApi {
+  return { sendMessage: send } as unknown as TelegramApi;
+}
+
+const ok = (): TelegramApi => apiThat(() => Promise.resolve({}));
+
+async function rowOf(key: string): Promise<{
+  status: string;
+  attempt_count: number;
+  next_attempt_at: number | null;
+  last_error: string | null;
+  sent_at: string | null;
+}> {
+  const r = await db
+    .prepare(
+      `SELECT status, attempt_count, next_attempt_at, last_error, sent_at::text AS sent_at
+         FROM bot_notifications WHERE dedupe_key = ?1`,
+    )
+    .bind(key)
+    .first<{
+      status: string;
+      attempt_count: number;
+      next_attempt_at: number | null;
+      last_error: string | null;
+      sent_at: string | null;
+    }>();
+  if (!r) throw new Error(`no notification ${key}`);
+  return r;
+}
+
+async function put(key: string, text = 'hello'): Promise<void> {
+  await db.withSession((tx) => enqueue(tx, { dedupeKey: key, chatId: CHAT, text }));
+}
+
+beforeEach(async () => {
+  await db.prepare(`DELETE FROM bot_notifications`).run();
+  vi.restoreAllMocks();
+});
+
+describe('owing a customer a message', () => {
+  it('survives the transaction that wrote it', async () => {
+    await put('k1');
+    expect(await rowOf('k1')).toMatchObject({ status: 'PENDING', attempt_count: 0 });
+  });
+
+  it('is not written twice for one event', async () => {
+    // The dedupe key is what replaces the old "send it inline and never retry"
+    // trade: a producer may run again freely, and the customer still hears once.
+    await put('k2', 'first');
+    await put('k2', 'second');
+
+    const { results } = await db
+      .prepare(`SELECT body FROM bot_notifications WHERE dedupe_key = 'k2'`)
+      .all<{ body: string }>();
+    expect(results).toHaveLength(1);
+    // The first text wins. A later producer must not overwrite a message that
+    // may already be on its way.
+    expect(results[0]?.body).toBe('first');
+  });
+
+  it('vanishes with the transaction if that rolls back', async () => {
+    // The whole reason `enqueue` takes a `tx` rather than the database. A
+    // message owed for a settlement that did not happen is worse than none.
+    await expect(
+      db.withSession(async (tx) => {
+        await enqueue(tx, { dedupeKey: 'k3', chatId: CHAT, text: 'never' });
+        throw new Error('the caller changed its mind');
+      }),
+    ).rejects.toThrow('changed its mind');
+
+    const n = await db
+      .prepare(`SELECT COUNT(*)::int AS n FROM bot_notifications WHERE dedupe_key = 'k3'`)
+      .first<number>('n');
+    expect(n).toBe(0);
+  });
+});
+
+describe('delivering it', () => {
+  it('sends what is due and marks it sent', async () => {
+    await put('d1', 'your payment is confirmed');
+    const sent: [number, string][] = [];
+
+    const res = await flush(db, apiThat((c, t) => { sent.push([c, t]); return Promise.resolve({}); }), {
+      now: NOW,
+    });
+
+    expect(res).toMatchObject({ sent: 1, failed: 0, dead: 0 });
+    expect(sent).toEqual([[CHAT, 'your payment is confirmed']]);
+    const row = await rowOf('d1');
+    expect(row.status).toBe('SENT');
+    expect(row.sent_at).not.toBeNull();
+    // Cleared, not left at the lease the claim wrote — a SENT row with a future
+    // due date would be swept for ever.
+    expect(row.next_attempt_at).toBeNull();
+  });
+
+  it('keeps a message Telegram would not take, and schedules a retry', async () => {
+    await put('d2');
+
+    const res = await flush(
+      db,
+      apiThat(() => Promise.reject(new TelegramRejection('telegram is unwell', 500))),
+      { now: NOW },
+    );
+
+    expect(res).toMatchObject({ sent: 0, failed: 1, dead: 0 });
+    const row = await rowOf('d2');
+    expect(row.status).toBe('FAILED');
+    expect(row.attempt_count).toBe(1);
+    expect(row.next_attempt_at).toBe(NOW + nextAttemptDelayMs(1));
+    expect(row.last_error).toContain('unwell');
+  });
+
+  it('eventually delivers a message the first attempt lost', async () => {
+    // The whole point, stated as one test: a refusal now is not a lost message.
+    await put('d3');
+    await flush(db, apiThat(() => Promise.reject(new Error('network'))), { now: NOW });
+    expect((await rowOf('d3')).status).toBe('FAILED');
+
+    const later = NOW + nextAttemptDelayMs(1);
+    const res = await flush(db, ok(), { now: later });
+
+    expect(res).toMatchObject({ sent: 1 });
+    expect((await rowOf('d3')).status).toBe('SENT');
+  });
+
+  it('does not retry before the backoff has elapsed', async () => {
+    await put('d4');
+    await flush(db, apiThat(() => Promise.reject(new Error('network'))), { now: NOW });
+
+    let calls = 0;
+    const res = await flush(db, apiThat(() => { calls += 1; return Promise.resolve({}); }), {
+      now: NOW + 1_000,
+    });
+
+    expect(res.sent).toBe(0);
+    expect(calls).toBe(0);
+  });
+
+  it('gives up immediately on a customer who blocked the bot', async () => {
+    // 403 will still be 403 in an hour. Spending eight attempts on it is eight
+    // attempts not spent on somebody who can still be reached.
+    await put('d5');
+
+    const res = await flush(
+      db,
+      apiThat(() => Promise.reject(new TelegramRejection('bot was blocked by the user', 403))),
+      { now: NOW },
+    );
+
+    expect(res).toMatchObject({ dead: 1, failed: 0 });
+    const row = await rowOf('d5');
+    expect(row.status).toBe('DEAD');
+    expect(row.attempt_count).toBe(1);
+    expect(row.next_attempt_at).toBeNull();
+  });
+
+  it('retries a 429 rather than giving up on it', async () => {
+    // The mirror of the case above, and the reason the code reads the numeric
+    // code instead of matching on the description text.
+    await put('d6');
+
+    const res = await flush(
+      db,
+      apiThat(() => Promise.reject(new TelegramRejection('Too Many Requests', 429))),
+      { now: NOW },
+    );
+
+    expect(res).toMatchObject({ failed: 1, dead: 0 });
+    expect((await rowOf('d6')).status).toBe('FAILED');
+  });
+
+  it('stops after the last attempt instead of trying for ever', async () => {
+    await db
+      .prepare(
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status, attempt_count)
+         VALUES ('d7', ?1, 'x', 'FAILED', ?2)`,
+      )
+      .bind(CHAT, MAX_ATTEMPTS - 1)
+      .run();
+
+    const res = await flush(db, apiThat(() => Promise.reject(new Error('still down'))), {
+      now: NOW,
+    });
+
+    expect(res).toMatchObject({ dead: 1 });
+    const row = await rowOf('d7');
+    expect(row.status).toBe('DEAD');
+    expect(row.attempt_count).toBe(MAX_ATTEMPTS);
+  });
+
+  it('claims a message before sending it, so a second sweep skips it', async () => {
+    // The guard is the lease the claiming UPDATE writes, not the SKIP LOCKED
+    // beside it: outside an explicit transaction a plain SELECT ... FOR UPDATE
+    // releases its lock before the caller has read anything.
+    await put('d8');
+    let inner = { sent: -1 };
+
+    await flush(
+      db,
+      apiThat(async () => {
+        inner = await flush(db, ok(), { now: NOW });
+        return {};
+      }),
+      { now: NOW },
+    );
+
+    expect(inner.sent).toBe(0);
+    expect((await rowOf('d8')).status).toBe('SENT');
+  });
+
+  it('hands back a message whose sweeper died, once the lease expires', async () => {
+    await put('d9');
+    // A sweeper that claimed the row and never came back: the claim committed,
+    // the verdict never did.
+    await db
+      .prepare(
+        `UPDATE bot_notifications SET attempt_count = 1, next_attempt_at = ?1
+          WHERE dedupe_key = 'd9'`,
+      )
+      .bind(NOW + LEASE_MS)
+      .run();
+
+    expect((await flush(db, ok(), { now: NOW })).sent).toBe(0);
+    expect((await flush(db, ok(), { now: NOW + LEASE_MS })).sent).toBe(1);
+  });
+
+  it('never throws, whatever Telegram does', async () => {
+    // It is called from the poll loop. A bot that stopped answering because one
+    // message would not send would be worse than the bug this file fixes.
+    await put('d10');
+    await expect(
+      flush(db, apiThat(() => Promise.reject(new Error('boom'))), { now: NOW }),
+    ).resolves.toMatchObject({ failed: 1 });
+  });
+});
+
+describe('the backoff', () => {
+  it('doubles from a minute and stops at an hour', () => {
+    expect(nextAttemptDelayMs(1)).toBe(60_000);
+    expect(nextAttemptDelayMs(2)).toBe(120_000);
+    expect(nextAttemptDelayMs(MAX_ATTEMPTS)).toBe(3_600_000);
+  });
+});

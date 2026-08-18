@@ -14,7 +14,7 @@
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { assertSchema, db } from './helpers/env.js';
+import { assertSchema, db , pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, ensurePaymentCard, makeCustomer, providerId } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 import {
@@ -430,10 +430,12 @@ describe('when the shop warns a customer', () => {
       .run();
 
     await put('bot', 'daywarn', '2');
-    expect((await warnExpiringServices(db)).some((n) => n.chatId === telegramId)).toBe(false);
+    await warnExpiringServices(db);
+    expect((await pendingNotifications()).some((n) => n.chatId === telegramId)).toBe(false);
 
     await put('bot', 'daywarn', '7');
-    expect((await warnExpiringServices(db)).some((n) => n.chatId === telegramId)).toBe(true);
+    await warnExpiringServices(db);
+    expect((await pendingNotifications()).some((n) => n.chatId === telegramId)).toBe(true);
   });
 });
 

@@ -21,7 +21,7 @@
 import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
 import { loadShopSettings } from './settings.js';
-import type { Notification } from './settle.js';
+import { enqueue } from './notify.js';
 
 /**
  * The thresholds when the settings cannot be read, in bytes and days.
@@ -62,7 +62,7 @@ interface DueRow {
 export async function warnExpiringServices(
   db: D1Database,
   now: number = Date.now(),
-): Promise<Notification[]> {
+): Promise<number> {
   // Read once per sweep, like the commission in `settle.ts`: it is shop-wide,
   // it is cached, and a sweep of fifty services should not ask fifty times.
   const { warnDays, warnVolumeGb } = await loadShopSettings(db);
@@ -110,38 +110,49 @@ export async function warnExpiringServices(
     .bind(now, warnDays, warnVolumeGb * 1024 ** 3, 1024 ** 3, BATCH)
     .all<DueRow>();
 
-  const notifications: Notification[] = [];
+  let warned = 0;
 
   for (const row of results ?? []) {
-    // Claim the warning before producing it, guarded on the same condition the
-    // SELECT used. Two sweeps overlapping — or one restarted mid-batch — then
-    // send it once, and the failure mode is a warning lost rather than a
-    // customer messaged twice about the same gigabyte.
-    const claimed = await db
-      .prepare(
-        `UPDATE subscriptions
-            SET notify = notify || jsonb_build_object(?2::text, true),
-                updated_at = now()
-          WHERE id = ?1 AND notify->>?2 IS DISTINCT FROM 'true'`,
-      )
-      .bind(row.id, row.reason)
-      .run();
-    if (claimed.meta.changes === 0) continue;
-    if (row.telegram_id === null) continue;
+    // Claim the warning and record the message in one transaction, guarded on
+    // the same condition the SELECT used. Two sweeps overlapping — or one
+    // restarted mid-batch — then warn once.
+    //
+    // The claim used to stand alone and the message was returned to be sent
+    // afterwards, which meant a send that failed marked the subscription warned
+    // and told nobody. A warning is only useful before the thing runs out, so
+    // "lost silently" was the one outcome worth engineering against.
+    const claimed = await db.withSession(async (tx) => {
+      const marked = await tx
+        .prepare(
+          `UPDATE subscriptions
+              SET notify = notify || jsonb_build_object(?2::text, true),
+                  updated_at = now()
+            WHERE id = ?1 AND notify->>?2 IS DISTINCT FROM 'true'`,
+        )
+        .bind(row.id, row.reason)
+        .run();
+      if (marked.meta.changes === 0) return false;
+      if (row.telegram_id === null) return true;
 
-    notifications.push({
-      chatId: row.telegram_id,
-      text:
-        row.reason === 'time'
-          ? menu.timeRunningOut(row.plan_name_at_sale, daysLeft(row.expires_at, now))
-          : menu.volumeRunningOut(
-              row.plan_name_at_sale,
-              (row.volume_gb ?? 0) * 1024 ** 3 - (row.used_bytes ?? 0),
-            ),
+      await enqueue(tx, {
+        // Subscription and reason: exactly the pair the claim above is keyed
+        // on, so the message cannot be enqueued twice for one warning.
+        dedupeKey: `warn:${row.id}:${row.reason}`,
+        chatId: row.telegram_id,
+        text:
+          row.reason === 'time'
+            ? menu.timeRunningOut(row.plan_name_at_sale, daysLeft(row.expires_at, now))
+            : menu.volumeRunningOut(
+                row.plan_name_at_sale,
+                (row.volume_gb ?? 0) * 1024 ** 3 - (row.used_bytes ?? 0),
+              ),
+      });
+      return true;
     });
+    if (claimed) warned += 1;
   }
 
-  return notifications;
+  return warned;
 }
 
 /** Rounded up, so the last hours of a service read as "1 day" rather than "0". */

@@ -22,7 +22,7 @@ import * as menu from '../src/menu.js';
 import { run } from '../src/poll.js';
 import type { TelegramApi, TelegramUpdate } from '../src/telegram.js';
 import { balanceFor } from '../src/wallet.js';
-import { db } from './helpers/env.js';
+import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
 let nextId = 1;
@@ -150,7 +150,8 @@ describe('an invoice with a deadline', () => {
 
   it('is left alone until the deadline passes', async () => {
     const sale = await buy('sim-gold-10');
-    const notes = await expireUnpaidOrders(db);
+    await expireUnpaidOrders(db);
+    const notes = await pendingNotifications();
     expect(notes.filter((n) => n.chatId === sale.telegramId)).toEqual([]);
     expect((await statuses(sale.order.id)).order).toBe('AWAITING_PAYMENT');
   });
@@ -159,8 +160,9 @@ describe('an invoice with a deadline', () => {
     const sale = await buy('sim-vip-1m-20');
     await age(sale.order.id);
 
-    const notes = await expireUnpaidOrders(db);
+    await expireUnpaidOrders(db);
 
+    const notes = await pendingNotifications();
     expect(await statuses(sale.order.id)).toEqual({ order: 'EXPIRED', payment: 'EXPIRED' });
     const mine = notes.filter((n) => n.chatId === sale.telegramId);
     expect(mine).toHaveLength(1);
@@ -199,7 +201,9 @@ describe('an invoice with a deadline', () => {
     await age(a.order.id);
     await age(b.order.id);
 
-    const notes = await expireUnpaidOrders(db);
+    await expireUnpaidOrders(db);
+
+    const notes = await pendingNotifications();
     const to = (id: number) => notes.filter((n) => n.chatId === id);
 
     expect(to(a.telegramId)).toHaveLength(1);
@@ -213,8 +217,9 @@ describe('an invoice with a deadline', () => {
     await handleUpdate(db, press(sale.updateId + 1, sale.telegramId, `paid:${sale.order.id}`));
     await age(sale.order.id);
 
-    const notes = await expireUnpaidOrders(db);
+    await expireUnpaidOrders(db);
 
+    const notes = await pendingNotifications();
     expect(notes.filter((n) => n.chatId === sale.telegramId)).toEqual([]);
     expect(await statuses(sale.order.id)).toEqual({
       order: 'AWAITING_PAYMENT',
@@ -226,11 +231,15 @@ describe('an invoice with a deadline', () => {
     const sale = await buy('sim-gold-10');
     await age(sale.order.id);
 
-    const first = await expireUnpaidOrders(db);
-    const second = await expireUnpaidOrders(db);
+    await expireUnpaidOrders(db);
 
+    const first = await pendingNotifications();
+    await expireUnpaidOrders(db);
+    const second = await pendingNotifications();
+    // One message, and it is still there after the second sweep rather than
+    // gone: the outbox holds it until it is actually delivered.
     expect(first.filter((n) => n.chatId === sale.telegramId)).toHaveLength(1);
-    expect(second.filter((n) => n.chatId === sale.telegramId)).toEqual([]);
+    expect(second.filter((n) => n.chatId === sale.telegramId)).toHaveLength(1);
   });
 });
 

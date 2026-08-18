@@ -31,7 +31,7 @@
 
 import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
-import type { Notification } from './settle.js';
+import { enqueue } from './notify.js';
 
 /** `cronbot/payment_expire.php`: `time() - 86400`. */
 export const ORDER_TTL_MS = 24 * 60 * 60 * 1000;
@@ -71,7 +71,7 @@ interface ExpiredRow {
 export async function expireUnpaidOrders(
   db: D1Database,
   now: number = Date.now(),
-): Promise<Notification[]> {
+): Promise<number> {
   const rows = await db.withSession(async (tx) => {
     const { results: doomed } = await tx
       .prepare(
@@ -135,10 +135,19 @@ export async function expireUnpaidOrders(
       .bind((expired ?? []).map((r) => r.id))
       .run();
 
+    // Same transaction as the expiry itself, so an order can never be marked
+    // EXPIRED without the customer being owed the news.
+    for (const row of expired ?? []) {
+      if (row.telegram_id === null) continue;
+      await enqueue(tx, {
+        dedupeKey: `expire:${row.public_id}`,
+        chatId: row.telegram_id,
+        text: menu.orderExpired(row.public_id),
+      });
+    }
+
     return expired ?? [];
   });
 
-  return rows.flatMap((row) =>
-    row.telegram_id === null ? [] : [{ chatId: row.telegram_id, text: menu.orderExpired(row.public_id) }],
-  );
+  return rows.length;
 }

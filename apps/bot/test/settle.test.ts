@@ -9,7 +9,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { handleUpdate } from '../src/handle.js';
 import { settleVerifiedPayments } from '../src/settle.js';
 import type { TelegramUpdate } from '../src/telegram.js';
-import { db } from './helpers/env.js';
+import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
 let nextId = 1;
@@ -90,14 +90,18 @@ describe('settling a verified payment', () => {
     const sale = await buyAndClaim('sim-vip-1m-50');
 
     // Nothing to settle while the bank has not confirmed anything.
-    expect(await settleVerifiedPayments(db)).toEqual([]);
+    expect(await settleVerifiedPayments(db)).toBe(0);
+    expect(await pendingNotifications()).toEqual([]);
     expect(await statuses(sale.orderId, sale.paymentPublicId)).toEqual({
       order: 'AWAITING_PAYMENT',
       payment: 'AWAITING_REVIEW',
     });
 
     await hubVerifies(sale.paymentPublicId);
-    const notifications = await settleVerifiedPayments(db);
+    await settleVerifiedPayments(db);
+    // Read from the outbox, not from a return value: what matters is that the
+    // message committed with the settlement, not that a string was built.
+    const notifications = await pendingNotifications();
 
     expect(await statuses(sale.orderId, sale.paymentPublicId)).toEqual({
       order: 'PAID',
@@ -113,12 +117,14 @@ describe('settling a verified payment', () => {
     const sale = await buyAndClaim('sim-gold-10');
     await hubVerifies(sale.paymentPublicId);
 
-    const first = await settleVerifiedPayments(db);
-    const second = await settleVerifiedPayments(db);
-
-    expect(first.filter((n) => n.chatId === sale.telegramId)).toHaveLength(1);
+    expect(await settleVerifiedPayments(db)).toBe(1);
+    const afterFirst = await pendingNotifications();
     // A second sweep must not tell the customer again, and must not re-settle.
-    expect(second.filter((n) => n.chatId === sale.telegramId)).toHaveLength(0);
+    expect(await settleVerifiedPayments(db)).toBe(0);
+    const afterSecond = await pendingNotifications();
+
+    expect(afterFirst.filter((n) => n.chatId === sale.telegramId)).toHaveLength(1);
+    expect(afterSecond.filter((n) => n.chatId === sale.telegramId)).toHaveLength(1);
     expect(await statuses(sale.orderId, sale.paymentPublicId)).toEqual({
       order: 'PAID',
       payment: 'PAID',

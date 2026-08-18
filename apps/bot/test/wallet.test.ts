@@ -23,7 +23,7 @@ import {
   TOPUP_AMOUNTS_IRR,
   TOPUP_MIN_IRR,
 } from '../src/wallet.js';
-import { db } from './helpers/env.js';
+import { db , pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
 beforeEach(async () => {
@@ -295,7 +295,8 @@ describe('a deposit that is paid for', () => {
   it('lands in the balance and tells the customer so', async () => {
     const { userId } = await payTopup(920_100_010, 2_000_000);
 
-    const notes = await settleVerifiedPayments(db);
+    await settleVerifiedPayments(db);
+    const notes = await pendingNotifications();
 
     expect(await balanceFor(db, userId)).toBe(2_000_000);
     expect(notes.some((n) => n.text.includes('کیف پول شما شارژ شد'))).toBe(true);
@@ -410,8 +411,9 @@ describe('an order paid from the wallet that cannot be delivered', () => {
     expect(await balanceFor(db, userId)).toBe(2_000_000);
 
     // No base_url on the fixture provider, which is the real failure seen.
-    const notes = await provisionPaidOrders(db, (async () =>
+    await provisionPaidOrders(db, (async () =>
       Promise.reject(new Error('panel unreachable'))) as unknown as typeof fetch);
+    const notes = await pendingNotifications();
 
     expect(await balanceFor(db, userId)).toBe(3_000_000);
     expect(notes.some((n) => n.text.includes('به کیف پول شما برگشت'))).toBe(true);
@@ -469,7 +471,8 @@ describe('an order paid from the wallet that cannot be delivered', () => {
       .bind(newPublicId(), userId, order!.id)
       .run();
 
-    const notes = await provisionPaidOrders(db);
+    await provisionPaidOrders(db);
+    const notes = await pendingNotifications();
 
     expect(await balanceFor(db, userId)).toBe(1_000_000);
     expect(notes.some((n) => n.text.includes('محفوظ است'))).toBe(true);

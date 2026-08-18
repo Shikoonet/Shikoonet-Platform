@@ -13,7 +13,8 @@
 
 import type { D1Database } from '@shikoo/database';
 import { handleUpdate, refreshShopContent, type HandleStatus } from './handle.js';
-import { settleVerifiedPayments, type Notification } from './settle.js';
+import * as notify from './notify.js';
+import { settleVerifiedPayments } from './settle.js';
 import { provisionPaidOrders } from './provision.js';
 import { syncSubscriptions } from './sync.js';
 import { warnExpiringServices } from './warn.js';
@@ -190,35 +191,23 @@ async function answer(api: TelegramApi, update: TelegramUpdate): Promise<void> {
 }
 
 /**
- * Settles whatever the hub has verified since the last cycle and tells the
- * customers.
+ * Runs one sweep and swallows its failure.
  *
  * A sweep that throws must not take the poll loop down with it — the loop's job
  * is to keep answering Telegram, and a database hiccup here is not a reason to
  * stop doing that. It is logged and retried next cycle, because the rows still
  * qualify.
+ *
+ * It used to send the sweep's messages too, and drop any that Telegram refused.
+ * The sweeps now write what the customer is owed into `bot_notifications`, in
+ * the transaction that earns it, and `flush` delivers with retries — so this is
+ * only error containment.
  */
-async function sweep(
-  api: TelegramApi,
-  name: string,
-  produce: () => Promise<Notification[]>,
-): Promise<void> {
-  let notifications;
+async function sweep(name: string, produce: () => Promise<number>): Promise<void> {
   try {
-    notifications = await produce();
+    await produce();
   } catch (err) {
     console.error(`[bot] ${name} failed, will retry`, err);
-    return;
-  }
-  for (const note of notifications) {
-    try {
-      await api.sendMessage(note.chatId, note.text);
-    } catch (err) {
-      // The row is already advanced, so this message will not be produced again.
-      // Losing it is the cost of not sending it twice, and the payment and the
-      // order are both visible on the dashboard either way.
-      console.error(`[bot] ${name}: message to chat ${note.chatId} was not delivered`, err);
-    }
   }
 }
 
@@ -329,12 +318,12 @@ export async function run(
       // call us back. Sweeping here rather than adding a cron keeps it to one
       // running service, and a 25-second poll makes "verified" and "the customer
       // was told" at most one cycle apart.
-      await sweep(api, 'settling verified payments', () => settleVerifiedPayments(db));
+      await sweep('settling verified payments', () => settleVerifiedPayments(db));
       // Delivery is its own sweep rather than a step inside settlement. The two
       // fail for unrelated reasons — a claim that cannot be settled is a money
       // problem, a panel that will not answer is not — and a panel being down
       // must never hold up telling a customer their payment was confirmed.
-      await sweep(api, 'provisioning paid orders', () => provisionPaidOrders(db));
+      await sweep('provisioning paid orders', () => provisionPaidOrders(db));
       // Refreshing what «سرویس های من» shows. Produces no messages — it rate
       // limits itself off `last_synced_at`, so calling it every cycle costs one
       // aggregate query on the nine cycles out of ten that do nothing.
@@ -345,11 +334,19 @@ export async function run(
       }
       // After the sync, so a service is warned about the volume the panel
       // reports rather than the figure from ten minutes ago.
-      await sweep(api, 'warning about services running out', () => warnExpiringServices(db));
+      await sweep('warning about services running out', () => warnExpiringServices(db));
       // Last, because it is the only sweep that closes something rather than
       // advancing it, and an order settled or delivered earlier in this same
       // cycle must have moved out of AWAITING_PAYMENT before this looks.
-      await sweep(api, 'expiring unpaid orders', () => expireUnpaidOrders(db));
+      await sweep('expiring unpaid orders', () => expireUnpaidOrders(db));
+      // After every sweep that can enqueue, so a payment settled at the top of
+      // this cycle is told about at the bottom of the same one — the property
+      // the old inline sending had, kept.
+      //
+      // What is new is that a refusal here is not the end of the message. It
+      // stays in `bot_notifications` and is tried again next cycle, so Telegram
+      // being unreachable for a minute costs a minute rather than a customer.
+      await notify.flush(db, api);
       // Last of all, and after everything that a customer is waiting on. A
       // broadcast is the only sweep that is allowed to take seconds rather than
       // milliseconds, so nothing time-sensitive queues behind it.

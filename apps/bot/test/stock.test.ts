@@ -10,7 +10,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { provisionPaidOrders } from '../src/provision.js';
 import { deliverFromStock, STOCK_GRACE_MS } from '../src/stock.js';
-import { db } from './helpers/env.js';
+import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
 
 const PROVIDER_CODE = 'sim-stock-panel';
@@ -127,8 +127,9 @@ describe('selling from the shelf', () => {
     const order = await paidOrder();
     const stock = await shelve(order.planId, 'stock-early');
 
-    const notes = await provisionPaidOrders(db, deadPanel, Date.now());
+    await provisionPaidOrders(db, deadPanel, Date.now());
 
+    const notes = await pendingNotifications();
     expect(await orderStatus(order.orderId)).toBe('PAID');
     expect(await stockRow(stock)).toMatchObject({ status: 'AVAILABLE', order_id: null });
     // And nothing is said to the customer — a blip is not news.
@@ -139,8 +140,9 @@ describe('selling from the shelf', () => {
     const order = await paidOrder();
     const stock = await shelve(order.planId, 'stock-sold');
 
-    const notes = await provisionPaidOrders(db, deadPanel, afterGrace());
+    await provisionPaidOrders(db, deadPanel, afterGrace());
 
+    const notes = await pendingNotifications();
     expect(await orderStatus(order.orderId)).toBe('COMPLETED');
     expect(await stockRow(stock)).toMatchObject({ status: 'USED', order_id: order.orderId });
 

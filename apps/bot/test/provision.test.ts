@@ -9,7 +9,7 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { provisionPaidOrders } from '../src/provision.js';
-import { db } from './helpers/env.js';
+import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
 const PROVIDER_CODE = 'sim-provision-panel';
@@ -141,8 +141,9 @@ describe('delivering a paid order', () => {
     const order = await paidOrder();
     const panel = fakePanel();
 
-    const notes = await provisionPaidOrders(db, panel.fetchImpl);
+    await provisionPaidOrders(db, panel.fetchImpl);
 
+    const notes = await pendingNotifications();
     expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
     const subs = await subsFor(order.orderId);
     expect(subs).toHaveLength(1);
@@ -174,9 +175,11 @@ describe('delivering a paid order', () => {
     const panel = fakePanel();
 
     await provisionPaidOrders(db, panel.fetchImpl);
-    const second = await provisionPaidOrders(db, panel.fetchImpl);
-
-    expect(second.some((n) => n.chatId === order.telegramId)).toBe(false);
+    await provisionPaidOrders(db, panel.fetchImpl);
+    // Delivered once and owed once. A second sweep must not enqueue a second
+    // message, and must not remove the first.
+    const second = await pendingNotifications();
+    expect(second.filter((n) => n.chatId === order.telegramId)).toHaveLength(1);
     expect(await subsFor(order.orderId)).toHaveLength(1);
     expect(panel.created.filter((u) => u.endsWith(order.publicId))).toHaveLength(1);
   });
@@ -186,8 +189,9 @@ describe('when delivery cannot finish', () => {
   it('leaves the order payable-and-pending and says nothing when the panel is down', async () => {
     const order = await paidOrder();
 
-    const notes = await provisionPaidOrders(db, deadPanel);
+    await provisionPaidOrders(db, deadPanel);
 
+    const notes = await pendingNotifications();
     // Back to PAID so the next sweep tries again.
     expect(await orderRow(order.orderId)).toMatchObject({ status: 'PAID' });
     expect(await subsFor(order.orderId)).toHaveLength(0);
@@ -200,8 +204,8 @@ describe('when delivery cannot finish', () => {
     const order = await paidOrder();
 
     await provisionPaidOrders(db, deadPanel);
-    const notes = await provisionPaidOrders(db, fakePanel().fetchImpl);
-
+    await provisionPaidOrders(db, fakePanel().fetchImpl);
+    const notes = await pendingNotifications();
     expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
     expect(notes.some((n) => n.chatId === order.telegramId)).toBe(true);
   });
@@ -209,8 +213,9 @@ describe('when delivery cannot finish', () => {
   it('stops and asks for a human when trying again cannot help', async () => {
     const order = await paidOrder();
 
-    const notes = await provisionPaidOrders(db, brokenRequest);
+    await provisionPaidOrders(db, brokenRequest);
 
+    const notes = await pendingNotifications();
     const row = await orderRow(order.orderId);
     expect(row?.status).toBe('FAILED');
     // The reason has to be readable by whoever picks this up.
@@ -296,8 +301,9 @@ describe('a product with no automation', () => {
   it('is completed and queued for a person, not failed, and promises no link', async () => {
     const order = await paidOrder({ kind: 'spotify' });
 
-    const notes = await provisionPaidOrders(db, deadPanel);
+    await provisionPaidOrders(db, deadPanel);
 
+    const notes = await pendingNotifications();
     // Never reached the network at all — an unknown kind falls to manual.
     expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
     const sub = (await subsFor(order.orderId))[0]!;

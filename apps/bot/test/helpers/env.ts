@@ -14,7 +14,32 @@ const { db, pool } = createPostgresD1();
 
 export { db, pool };
 
-const BOT_TABLES = ['telegram_updates', 'bot_sessions', 'users'];
+const BOT_TABLES = ['telegram_updates', 'bot_sessions', 'users', 'bot_notifications'];
+
+/**
+ * What the sweeps decided a customer is owed.
+ *
+ * The sweeps used to return their messages and a test could read the return
+ * value. They now write them into `bot_notifications` inside the transaction
+ * that earns them, so this is where the assertion goes — and it is a stronger
+ * one: it proves the message survived the commit rather than that a function
+ * built the right string.
+ */
+export async function pendingNotifications(): Promise<
+  { chatId: number; text: string; dedupeKey: string }[]
+> {
+  const { results } = await db
+    .prepare(
+      `SELECT chat_id, body, dedupe_key FROM bot_notifications
+        WHERE status = 'PENDING' ORDER BY id`,
+    )
+    .all<{ chat_id: number; body: string; dedupe_key: string }>();
+  return (results ?? []).map((r) => ({
+    chatId: r.chat_id,
+    text: r.body,
+    dedupeKey: r.dedupe_key,
+  }));
+}
 
 /** Confirms the schema is present, so an empty database cannot pass by default. */
 export async function assertSchema(): Promise<void> {

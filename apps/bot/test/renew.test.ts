@@ -20,7 +20,7 @@ import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import { provisionPaidOrders } from '../src/provision.js';
 import type { TelegramUpdate } from '../src/telegram.js';
-import { db } from './helpers/env.js';
+import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
 import { invalidateShopSettings } from '../src/settings.js';
 import { creditRenewalCashback } from '../src/wallet.js';
@@ -459,8 +459,9 @@ describe('applying it', () => {
       [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
     });
 
-    const notes = await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
 
+    const notes = await pendingNotifications();
     expect(panel.resets).toContain(target.username);
     // 30 days from now, not from the five days that were left.
     expect(panel.puts[0]?.body['expire']).toBe((NOW_MS + 30 * DAY) / 1000);
@@ -546,8 +547,9 @@ describe('applying it', () => {
   it('leaves the order payable and says nothing when the panel is down', async () => {
     const target = await paidRenewal();
 
-    const notes = await provisionPaidOrders(db, deadPanel, NOW_MS);
+    await provisionPaidOrders(db, deadPanel, NOW_MS);
 
+    const notes = await pendingNotifications();
     expect(await orderRow(target.order.id)).toMatchObject({ status: 'PAID' });
     expect(notes.some((n) => n.chatId === target.telegramId)).toBe(false);
   });
@@ -556,8 +558,9 @@ describe('applying it', () => {
     const target = await paidRenewal();
     const panel = fakePanel({}); // the account is gone
 
-    const notes = await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
 
+    const notes = await pendingNotifications();
     const order = await orderRow(target.order.id);
     expect(order?.status).toBe('FAILED');
     expect(order?.failure_reason).toContain(target.username);
@@ -630,8 +633,9 @@ describe('the renewal cashback', () => {
       [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
     });
 
-    const notes = await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
 
+    const notes = await pendingNotifications();
     const rows = await cashbackRows(target.userId);
     expect(rows).toHaveLength(1);
     // Against the order's own total read back from the database, not against a
@@ -650,8 +654,9 @@ describe('the renewal cashback', () => {
       [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
     });
 
-    const notes = await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
+    await provisionPaidOrders(db, panel.fetchImpl, NOW_MS);
 
+    const notes = await pendingNotifications();
     expect(await cashbackRows(target.userId)).toHaveLength(0);
     expect(await orderRow(target.order.id)).toMatchObject({ status: 'COMPLETED' });
     // The gift line is absent rather than rendered with a zero.

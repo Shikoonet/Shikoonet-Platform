@@ -114,8 +114,45 @@ export type InlineKeyboard = InlineButton[][];
 const EnvelopeSchema = z.object({
   ok: z.boolean(),
   description: z.string().optional(),
+  error_code: z.number().optional(),
   result: z.unknown().optional(),
 });
+
+/**
+ * A refusal from Telegram, carrying the code it refused with.
+ *
+ * The code used to be dropped on the floor and only the description survived,
+ * which was enough while every caller did the same thing with a failure: log
+ * it. It is not enough for the notification outbox, which has to tell "Telegram
+ * is having a bad minute" from "this customer has blocked the bot" — the first
+ * deserves eight retries and the second deserves none. Matching on the
+ * description text would work today and break the day Telegram rewords it.
+ *
+ * `code` is absent for a transport failure, which is exactly right: no answer
+ * came back, so nothing is known and retrying is the only sane reading.
+ */
+export class TelegramRejection extends Error {
+  constructor(
+    message: string,
+    readonly code?: number,
+  ) {
+    super(message);
+    this.name = 'TelegramRejection';
+  }
+}
+
+/**
+ * Refusals that will still be refusals in an hour.
+ *
+ * 403 is the whole reason this exists: the customer blocked the bot, or deleted
+ * the chat, and no number of retries reaches them. 400 covers a chat id that
+ * does not resolve. Everything else — 429, 5xx, a socket that closed — is
+ * assumed temporary, because assuming temporary costs a retry and assuming
+ * permanent costs the message.
+ */
+export function isPermanentRejection(err: unknown): boolean {
+  return err instanceof TelegramRejection && (err.code === 403 || err.code === 400);
+}
 
 export interface TelegramApi {
   /**
@@ -298,8 +335,9 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       throw new Error(`telegram ${method} returned an unrecognised envelope`);
     }
     if (!envelope.data.ok) {
-      throw new Error(
+      throw new TelegramRejection(
         `telegram ${method} rejected: ${redact(envelope.data.description ?? 'no description', token)}`,
+        envelope.data.error_code,
       );
     }
     return envelope.data.result;

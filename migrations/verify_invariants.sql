@@ -378,6 +378,35 @@ INSERT INTO device_credentials (id, device_id, token_hash, token_prefix, status,
 SELECT assert_eq((SELECT count(*) FROM device_credentials WHERE id LIKE '__inv-cred-%'),
                  2, 'a revoked credential may sit beside the active one');
 
+-- ---------------------------------------------------------------------------
+-- 10. NOTIFICATIONS
+-- ---------------------------------------------------------------------------
+-- One event, one message.
+--
+-- The outbox exists so a message survives Telegram refusing it, and the whole
+-- reason that is safe — rather than a machine for messaging customers twice —
+-- is this key. Every producer derives it from the thing that caused the
+-- message, so a sweep that runs again, or two sweeps overlapping, collide here
+-- instead of in the customer's chat.
+--
+-- In the database rather than only in the producers, because there are four of
+-- them and each would otherwise have to be trusted separately.
+INSERT INTO bot_notifications (dedupe_key, chat_id, body)
+     VALUES ('__inv-note', 1, 'your payment is confirmed');
+
+SELECT assert_rejects($$
+  INSERT INTO bot_notifications (dedupe_key, chat_id, body)
+       VALUES ('__inv-note', 1, 'your payment is confirmed')
+$$, 'one event cannot owe a customer two messages');
+
+-- A message that has been sent does not free the key either: re-enqueuing after
+-- delivery is exactly the double-message this prevents.
+UPDATE bot_notifications SET status = 'SENT', sent_at = now() WHERE dedupe_key = '__inv-note';
+SELECT assert_rejects($$
+  INSERT INTO bot_notifications (dedupe_key, chat_id, body)
+       VALUES ('__inv-note', 1, 'your payment is confirmed')
+$$, 'a delivered message does not release its key');
+
 \echo ''
 \echo '  All invariants hold.'
 \echo ''

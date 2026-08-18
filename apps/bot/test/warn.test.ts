@@ -12,7 +12,7 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DAYS_WARN, VOLUME_WARN_BYTES, warnExpiringServices } from '../src/warn.js';
-import { db } from './helpers/env.js';
+import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 7, 13, 12, 0, 0);
@@ -99,8 +99,9 @@ describe('running out of days', () => {
     const userId = await makeCustomer(telegramId);
     await makeService(userId, { publicId: 'w-time-1', expiresInDays: 1 });
 
-    const notes = await warnExpiringServices(db, NOW_MS);
+    await warnExpiringServices(db, NOW_MS);
 
+    const notes = await pendingNotifications();
     const note = notes.find((n) => n.chatId === telegramId);
     expect(note?.text).toContain('یک‌ماهه-۵۰گیگ');
     expect(note?.text).toContain('1 روز');
@@ -111,7 +112,7 @@ describe('running out of days', () => {
     const userId = await makeCustomer(telegramId);
     await makeService(userId, { publicId: 'w-time-2', expiresInDays: 3 });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 
   it('says nothing about a service that has already expired', async () => {
@@ -121,7 +122,7 @@ describe('running out of days', () => {
     const userId = await makeCustomer(telegramId);
     await makeService(userId, { publicId: 'w-time-3', expiresInDays: -1 });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 
   it('says nothing about a service with no expiry at all', async () => {
@@ -129,7 +130,7 @@ describe('running out of days', () => {
     const userId = await makeCustomer(telegramId);
     await makeService(userId, { publicId: 'w-time-4', expiresInDays: null });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 });
 
@@ -144,8 +145,9 @@ describe('running out of gigabytes', () => {
       expiresInDays: 20,
     });
 
-    const notes = await warnExpiringServices(db, NOW_MS);
+    await warnExpiringServices(db, NOW_MS);
 
+    const notes = await pendingNotifications();
     expect(notes.find((n) => n.chatId === telegramId)?.text).toContain('0.5 گیگابایت');
   });
 
@@ -159,7 +161,7 @@ describe('running out of gigabytes', () => {
       expiresInDays: 20,
     });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 
   it('says nothing once the volume is actually gone', async () => {
@@ -172,7 +174,7 @@ describe('running out of gigabytes', () => {
       expiresInDays: 20,
     });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 
   it('says nothing about an unmetered service, however much it uses', async () => {
@@ -185,7 +187,7 @@ describe('running out of gigabytes', () => {
       expiresInDays: 20,
     });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 
   it('says nothing while the usage has never been synced', async () => {
@@ -200,7 +202,7 @@ describe('running out of gigabytes', () => {
       expiresInDays: 20,
     });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 });
 
@@ -210,8 +212,8 @@ describe('saying it once', () => {
     const userId = await makeCustomer(telegramId);
     const id = await makeService(userId, { publicId: 'w-once-1', expiresInDays: 1 });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(1);
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(1);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
     expect(await notifyOf(id)).toMatchObject({ time: true });
   });
 
@@ -226,8 +228,11 @@ describe('saying it once', () => {
       usedBytes: 50 * GIB - GIB / 4,
     });
 
-    const notes = await warnExpiringServices(db, NOW_MS);
+    await warnExpiringServices(db, NOW_MS);
 
+    // Scoped to this customer: the outbox keeps every message the file has
+    // enqueued, which is the point of it.
+    const notes = (await pendingNotifications()).filter((n) => n.chatId === telegramId);
     expect(notes).toHaveLength(2);
     expect(await notifyOf(id)).toMatchObject({ time: true, volume: true });
   });
@@ -241,11 +246,11 @@ describe('saying it once', () => {
       notify: { time: true },
     });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
     // What a renewal does to the row.
     await db.prepare(`UPDATE subscriptions SET notify = '{}'::jsonb WHERE id = ?1`).bind(id).run();
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(1);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(1);
   });
 });
 
@@ -256,7 +261,7 @@ describe('who is not told', () => {
     await db.prepare(`UPDATE users SET notify_enabled = false WHERE id = ?1`).bind(userId).run();
     await makeService(userId, { publicId: 'w-off-1', expiresInDays: 1 });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 
   it('does not message a blocked customer', async () => {
@@ -265,7 +270,7 @@ describe('who is not told', () => {
     await db.prepare(`UPDATE users SET status = 'BLOCKED' WHERE id = ?1`).bind(userId).run();
     await makeService(userId, { publicId: 'w-off-2', expiresInDays: 1 });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 
   it('does not warn about a service that is not active', async () => {
@@ -273,6 +278,6 @@ describe('who is not told', () => {
     const userId = await makeCustomer(telegramId);
     await makeService(userId, { publicId: 'w-off-3', expiresInDays: 1, status: 'DISABLED' });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toHaveLength(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 });

@@ -32,7 +32,7 @@ import {
   type ProvisionRequest,
 } from '@shikoo/domain';
 import * as menu from './menu.js';
-import type { Notification } from './settle.js';
+import { enqueue } from './notify.js';
 import { deliverFromStock } from './stock.js';
 import { creditRenewalCashback, refundOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
@@ -124,7 +124,7 @@ export async function provisionPaidOrders(
   db: D1Database,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
   now: number = Date.now(),
-): Promise<Notification[]> {
+): Promise<number> {
   await reclaimStalled(db, now);
 
   const { results } = await db
@@ -179,7 +179,7 @@ export async function provisionPaidOrders(
     )
     .all<PendingOrder>();
 
-  const notifications: Notification[] = [];
+  let delivered = 0;
 
   for (const row of results ?? []) {
     // Claim it. Guarded on PAID so a second sweep — or the same one running
@@ -195,11 +195,31 @@ export async function provisionPaidOrders(
 
     const note = await deliver(db, row, fetchImpl, now);
     if (note !== null && row.telegram_id !== null) {
-      notifications.push({ chatId: row.telegram_id, text: note });
+      // ponytail: enqueued just after `deliver` commits rather than inside its
+      // transaction. `deliver` and `renew` reach a customer-visible message
+      // from eight different exits across four transactions, and threading the
+      // enqueue through all of them means editing the refund path — so the
+      // narrow crash window between those two commits is accepted, knowingly,
+      // and it is a local insert wide rather than a network round-trip wide.
+      // What this DOES close is the failure that actually happens: a send that
+      // Telegram refuses. Close the rest by moving the enqueue into each exit,
+      // or by sweeping for COMPLETED/FAILED orders with no notification row.
+      const chatId = row.telegram_id;
+      await db.withSession((tx) =>
+        enqueue(tx, {
+          // One message per order: every path that produces one is terminal
+          // (COMPLETED or FAILED), and the retryable path deliberately says
+          // nothing at all.
+          dedupeKey: `provision:${row.order_public_id}`,
+          chatId,
+          text: note,
+        }),
+      );
+      delivered += 1;
     }
   }
 
-  return notifications;
+  return delivered;
 }
 
 async function deliver(

@@ -15,14 +15,10 @@
 
 import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
+import { enqueue } from './notify.js';
 import { payReferralCommission } from './referral.js';
 import { loadShopSettings } from './settings.js';
 import { creditTopup } from './wallet.js';
-
-export interface Notification {
-  chatId: number;
-  text: string;
-}
 
 interface SettleRow {
   payment_id: number;
@@ -42,11 +38,14 @@ interface SettleRow {
  * Idempotent by construction: each UPDATE carries the status it expects, so a
  * second sweep matches nothing. Nothing is remembered between runs.
  *
- * Messages are returned rather than sent, for the same reason handlers return
+ * Messages are enqueued rather than sent, for the same reason handlers return
  * their replies — a message that has left cannot be recalled by a ROLLBACK, so
- * sending belongs after the commit, in the caller.
+ * sending belongs after the commit. What is new since 2026-08-18 is that the
+ * enqueue happens **inside** the transaction that settles the payment: the
+ * customer being owed the news is part of the same fact as the payment being
+ * paid, and the send is a separate, retryable step (`notify.ts`).
  */
-export async function settleVerifiedPayments(db: D1Database): Promise<Notification[]> {
+export async function settleVerifiedPayments(db: D1Database): Promise<number> {
   // Read once per sweep rather than per payment: it is shop-wide configuration
   // and it is cached anyway, but a sweep of fifty payments should not ask fifty
   // times. Falls back to the shipped rate, so a failed read pays commission at
@@ -73,7 +72,7 @@ export async function settleVerifiedPayments(db: D1Database): Promise<Notificati
     )
     .all<SettleRow>();
 
-  const notifications: Notification[] = [];
+  let settledCount = 0;
 
   for (const row of results ?? []) {
     /** The deposit this sweep credited, so the customer is told the right thing. */
@@ -133,19 +132,28 @@ export async function settleVerifiedPayments(db: D1Database): Promise<Notificati
           );
         }
       }
+
+      // Inside the transaction, on purpose. If this insert fails the payment
+      // is not marked paid either, and the next sweep picks the row up again —
+      // which is recoverable. A payment marked paid with no message owed is
+      // not: nothing would ever produce it a second time.
+      if (row.telegram_id !== null) {
+        await enqueue(tx, {
+          // The payment's public id, so this sweep running twice — or two
+          // sweeps overlapping — enqueues one message.
+          dedupeKey: `settle:${row.payment_public_id}`,
+          chatId: row.telegram_id,
+          text:
+            credited === null
+              ? menu.paymentConfirmed(row.payment_public_id)
+              : menu.walletToppedUp(credited),
+        });
+      }
       return true;
     });
 
-    if (settled && row.telegram_id !== null) {
-      notifications.push({
-        chatId: row.telegram_id,
-        text:
-          credited === null
-            ? menu.paymentConfirmed(row.payment_public_id)
-            : menu.walletToppedUp(credited),
-      });
-    }
+    if (settled) settledCount += 1;
   }
 
-  return notifications;
+  return settledCount;
 }
