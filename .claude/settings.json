@@ -1,4 +1,13 @@
 {
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Asus/.claude/plans/**)",
+      "Bash(grep -n \"^#\\\\{2,4\\\\} \" shikoo-platform.md)",
+      "Bash(ssh -i .notes/deploy_key -o StrictHostKeyChecking=no root@164.132.198.184 \"docker exec shikoo-tls nginx -s reload\")",
+      "Bash(curl -s -o /dev/null -w \"panel=%{http_code}\\\\n\" https://shikoo.mahamsteel.ir:9443/admin/ --max-time 25)",
+      "Bash(curl -s -o /dev/null -w \"ingest=%{http_code}\\\\n\" https://sms.mahamsteel.ir:9443/health --max-time 25)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
