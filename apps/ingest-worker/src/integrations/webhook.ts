@@ -60,7 +60,12 @@ export async function deliverMirzabotVerifiedWebhook(
   env: WebhookEnv,
   payload: MirzabotVerifiedWebhook,
 ): Promise<{ ok: true } | { ok: false; error: string; status?: number }> {
-  if (env.AUTO_FULFILLMENT_ENABLED !== 'true') return { ok: true };
+  // Not `ok: true`, which is what this said until 2026-08-19. Nothing was sent,
+  // and the caller settles an ok outcome as DELIVERED — so with the flag off a
+  // notice would have been marked delivered and never sent to anyone. It is
+  // unreachable today because `flushWebhookDeliveries` returns before calling
+  // this, but a guard that lies when it is reached is not a guard.
+  if (env.AUTO_FULFILLMENT_ENABLED !== 'true') return { ok: false, error: 'fulfilment_paused' };
   const url = env.MIRZABOT_WEBHOOK_URL;
   const secret = env.MIRZABOT_INTEGRATION_HMAC_SECRET;
   const integrationId = env.MIRZABOT_INTEGRATION_ID ?? 'mirzabot-test';
@@ -114,7 +119,28 @@ export interface FlushResult {
  *
  * Called after the matcher runs, so the common case — the legacy bot is up —
  * is delivered within the same request that verified the payment and the
- * queue stays empty. The retries are what the queue is actually for.
+ * queue stays empty. The retries are what the queue is actually for, and they
+ * are driven by `runScheduledSweep` on its timer rather than by the matcher,
+ * because a retry that waits for the next customer to pay is not a retry.
+ *
+ * ## `AUTO_FULFILLMENT_ENABLED` is a pause, not a disable — deliberately
+ *
+ * The flag stops delivery here. It does NOT stop `verifyMirzabotClaim` from
+ * enqueueing, so notices accumulate while it is off and are sent when it comes
+ * back on. That is the intended meaning and it was checked rather than assumed:
+ * the legacy receiver keys a flag file by `eventId` and short-circuits a repeat
+ * (`payment_hub.php:227`), and `DirectPayment` reports `already_fulfilled` for
+ * an order that was settled some other way in the meantime — which the same
+ * function accepts as success. So a backlog arriving late is deduplicated at
+ * the far end rather than delivering anything twice.
+ *
+ * The alternative — not enqueueing while paused — throws away the record that a
+ * verified payment was never announced, and no amount of turning the flag back
+ * on recovers it. Between "an order is announced late" and "an order is never
+ * announced at all", late wins.
+ *
+ * The backlog also does not arrive as a burst: `limit` rows per sweep, one
+ * sweep a minute.
  *
  * Rows are claimed by the same statement that reads them, and the claim is a
  * write: `next_attempt_at` moves out to a lease, so a row in flight is not due

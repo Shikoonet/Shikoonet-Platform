@@ -8,6 +8,7 @@ import { normalizeIngestTimestamp } from './ingestTimestamp.js';
 import { normalizeIngestJson } from './ingestBody.js';
 import { verifyIntegrationHmac } from './integrations/auth.js';
 import { handleMirzabotClaim, MirzabotClaimBody, MIRZABOT_CLAIMS_PATH, finalizeExpiredMirzabotWaits } from './integrations/mirzabot.js';
+import { flushWebhookDeliveries } from './integrations/webhook.js';
 import type { MirzabotClaimPayload } from '@shikoo/contracts';
 import { clientIp, type RateLimit } from '@shikoo/domain';
 
@@ -288,7 +289,25 @@ export function mirzabotMatchOptions(env: Env) {
 /**
  * The cron body, previously a Worker `scheduled()` handler. Claims that were
  * left waiting past their window get finalised here.
+ *
+ * The outbox is flushed on its own line rather than left to the matcher.
+ * `finalizeExpiredMirzabotWaits` returns without running any matching when no
+ * group is due, and the matcher is the only thing that used to flush — so a
+ * delivery that failed at 03:00 waited for the next customer to pay before it
+ * was retried. On a quiet night that is hours, and the notice it is holding is
+ * a customer's order that the legacy bot has not been told to fulfil.
+ *
+ * It runs even when the integration is switched off. `flushWebhookDeliveries`
+ * makes that decision itself, from `AUTO_FULFILLMENT_ENABLED`, and gating it
+ * here as well would put the same rule in two places for them to disagree in.
  */
 export async function runScheduledSweep(env: Env): Promise<void> {
   await finalizeExpiredMirzabotWaits(env.DB, mirzabotMatchOptions(env));
+  const flushed = await flushWebhookDeliveries(env.DB, env);
+  if (flushed.dead > 0) {
+    // The only voice a dead notice has today. A DEAD row means a paid customer
+    // whose order the legacy bot was never successfully told about, and it will
+    // not be retried again — see the outbox note in `webhook.ts`.
+    console.error(`[sweep] ${flushed.dead} fulfilment notice(s) gave up and need a person`);
+  }
 }

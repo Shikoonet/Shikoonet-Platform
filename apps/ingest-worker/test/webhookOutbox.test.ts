@@ -12,6 +12,7 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  deliverMirzabotVerifiedWebhook,
   flushWebhookDeliveries,
   nextAttemptDelayMs,
   WEBHOOK_LEASE_MS,
@@ -19,6 +20,7 @@ import {
   WEBHOOK_TIMEOUT_MS,
   type WebhookEnv,
 } from '../src/integrations/webhook.js';
+import { runScheduledSweep } from '../src/index.js';
 import { env, pool } from './helpers/env.js';
 
 const NOW = 1_786_000_000_000;
@@ -225,6 +227,57 @@ describe('delivering a fulfilment notice', () => {
     const init = fetchMock.mock.calls[0]?.[1];
     expect(init?.signal).toBeInstanceOf(AbortSignal);
     expect(WEBHOOK_TIMEOUT_MS).toBeLessThan(WEBHOOK_LEASE_MS);
+  });
+});
+
+describe('the scheduled sweep', () => {
+  it('retries a due notice when no new claim ever arrives', async () => {
+    // The outage this closes. The matcher was the only thing that flushed, and
+    // `finalizeExpiredMirzabotWaits` returns without running it when no group is
+    // due — so on a quiet night a notice that failed at 03:00 waited for the
+    // next customer to pay before anyone tried again. What it is holding is a
+    // paid order the legacy bot has not been told to fulfil.
+    //
+    // Nothing here creates a claim, a transaction or a payment: an empty
+    // database is precisely the condition under which the bug appeared.
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+    await enqueue('sweep1', { status: 'FAILED', attempt_count: 1, next_attempt_at: NOW - 1 });
+
+    await runScheduledSweep({ ...env, ...ON });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((await row('sweep1')).status).toBe('DELIVERED');
+  });
+
+  it('leaves a paused notice alone, and says so by not sending it', async () => {
+    // The flag is a pause, not a disable: the row stays PENDING and keeps its
+    // attempt budget, so turning fulfilment back on delivers it rather than
+    // finding it burnt or gone. See the note above `flushWebhookDeliveries`.
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    await enqueue('sweep2', { next_attempt_at: NOW - 1 });
+
+    await runScheduledSweep({ ...env, ...ON, AUTO_FULFILLMENT_ENABLED: 'false' });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const after = await row('sweep2');
+    expect(after.status).toBe('PENDING');
+    expect(after.attempt_count).toBe(0);
+  });
+
+  it('never reports a notice delivered that was not sent', async () => {
+    // `deliverMirzabotVerifiedWebhook` used to answer `ok` when fulfilment was
+    // paused, and an ok outcome is settled as DELIVERED — a notice marked sent
+    // that nobody ever received. Unreachable through `flushWebhookDeliveries`,
+    // which returns first; asserted directly because the lie was in the guard.
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    const out = await deliverMirzabotVerifiedWebhook(
+      { ...ON, AUTO_FULFILLMENT_ENABLED: 'false' },
+      { eventId: 'e1' } as never,
+    );
+
+    expect(out.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
