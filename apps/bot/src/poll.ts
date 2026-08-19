@@ -26,6 +26,7 @@ import {
   SEND_GAP_MS,
 } from './broadcast.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
+import { qrPng } from './qr.js';
 
 export interface PollResult {
   /** Offset to pass to the next call. */
@@ -201,7 +202,9 @@ export async function pollOnce(
     counts[outcome.status]++;
     for (const reply of outcome.replies) {
       try {
-        if (reply.photo !== undefined) {
+        if (reply.qrOf !== undefined) {
+          await api.sendPhotoBytes(reply.chatId, await qrPng(reply.qrOf), reply.text);
+        } else if (reply.photo !== undefined) {
           await api.sendPhoto(reply.chatId, reply.photo, reply.text);
         } else if (reply.document !== undefined) {
           await api.sendDocument(reply.chatId, reply.document, reply.text);

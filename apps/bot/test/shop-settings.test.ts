@@ -265,7 +265,7 @@ describe('a switch the shop has turned off', () => {
 
   it('still draws them when the shop has them on', () => {
     const rows = menu.serviceDetailMenu({ ...SELLING_PANEL, canSwitch: true });
-    expect(datas(rows)).toEqual(['xv:42', 'xt:42', 'rvk:42', 'off:42', 'mine', 'menu']);
+    expect(datas(rows)).toEqual(['xv:42', 'xt:42', 'qr:42', 'rvk:42', 'off:42', 'mine', 'menu']);
   });
 });
 

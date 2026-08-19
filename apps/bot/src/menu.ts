@@ -1237,6 +1237,24 @@ export function serviceReady(
 }
 
 /**
+ * The same moment, on the screen the service actually deserves.
+ *
+ * `serviceReady` above is three lines: username, expiry, link. The screen a
+ * customer reaches later by tapping «سرویس‌های من» is the full card — state,
+ * location, quota with a usage bar, days left — with the buttons that renew,
+ * switch off, or replace the link. The worse screen was the one that arrived
+ * at the moment of purchase, and the competitor's bot has been sending the
+ * better one at that moment for as long as anyone has looked.
+ *
+ * So the delivery message IS the service screen, with one line of celebration
+ * above it. `serviceReady` stays as the fallback for a delivery that produced
+ * no subscription row to draw.
+ */
+export function serviceReadyCard(service: ServiceView, now: number): string {
+  return `${TEXTS_NOW.raw('SERVICE_READY_TITLE')}\n\n${serviceDetail(service, now)}`;
+}
+
+/**
  * Sold, paid, and waiting on a person — a manual product, or a kind whose
  * adapter is not written yet. Distinct from the failure message on purpose:
  * nothing is wrong, it is simply not instant.
@@ -1553,6 +1571,11 @@ export function serviceDetailMenu(actions?: ServiceActions | null): InlineKeyboa
           return actions != null && actions.volumeIrrPerGb !== null;
         case 'xt':
           return actions != null && actions.timeIrrPerDay !== null;
+        // Same condition as `rvk`: both need a panel-backed service, and both
+        // are about the subscription link. Drawn even for a service whose link
+        // is missing — the handler says so, which beats a screen that silently
+        // has one button fewer than the customer remembers.
+        case 'qr':
         case 'rvk':
           return actions != null;
         case 'off':

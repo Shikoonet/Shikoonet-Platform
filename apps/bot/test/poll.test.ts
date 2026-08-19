@@ -43,6 +43,7 @@ function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
     getUpdates: async () => [],
     sendMessage: async () => undefined,
     sendPhoto: async () => undefined,
+    sendPhotoBytes: async () => undefined,
     sendDocument: async () => undefined,
     editMessageText: async () => undefined,
     answerCallbackQuery: async () => undefined,

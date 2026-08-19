@@ -56,6 +56,9 @@ export const CALLBACK_ACTIONS = [
   //        MESSAGE, not in callback data, and is checked against the shop's
   //        own floor and ceiling before it becomes an order.
   'wpay', // <orderId> — pay that order out of the balance
+  'qr', // <subscriptionId> — send the subscription link as a QR image. Reads
+  //        nothing and changes nothing, which is why it needs no confirmation
+  //        step the way `rvk` does.
   'rvk', // <subscriptionId> — ask before replacing the subscription link
   'rvk2', // <subscriptionId> — do it. Separate action rather than a flag: the
   //        old link stops working the moment this runs, on every device the

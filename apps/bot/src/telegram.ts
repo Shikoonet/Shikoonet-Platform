@@ -181,6 +181,19 @@ export interface TelegramApi {
    */
   sendPhoto(chatId: number, fileId: string, caption?: string): Promise<void>;
   /**
+   * Sends an image we generated ourselves, as bytes.
+   *
+   * Distinct from `sendPhoto` because there is no `file_id` to send: a QR code
+   * exists only for the message it is attached to. The upload is multipart,
+   * which is the one place in this file that is not JSON.
+   */
+  sendPhotoBytes(
+    chatId: number,
+    png: Uint8Array,
+    caption?: string,
+    keyboard?: InlineKeyboard,
+  ): Promise<void>;
+  /**
    * The same, for a receipt that arrived as a file.
    *
    * A separate call rather than a smarter `sendPhoto`, because Telegram refuses
@@ -323,6 +336,31 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       // A network error's message can carry the URL, and the URL carries the token.
       throw new Error(`telegram ${method} failed: ${redact(String(err), token)}`);
     }
+    return readEnvelope(method, response);
+  }
+
+  /**
+   * The same call with a multipart body, for the one method that uploads bytes.
+   *
+   * `content-type` is deliberately not set: `fetch` derives it from the
+   * `FormData`, and it has to carry the boundary it generated. Setting it by
+   * hand is how a multipart upload becomes an unparseable one.
+   */
+  async function callForm(method: string, form: FormData, timeoutMs: number): Promise<unknown> {
+    let response: Response;
+    try {
+      response = await doFetch(`${base}/bot${token}/${method}`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      throw new Error(`telegram ${method} failed: ${redact(String(err), token)}`);
+    }
+    return readEnvelope(method, response);
+  }
+
+  async function readEnvelope(method: string, response: Response): Promise<unknown> {
     const text = await response.text();
     let parsed: unknown;
     try {
@@ -449,6 +487,21 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
         },
         15_000,
       );
+    },
+
+    async sendPhotoBytes(chatId, png, caption, keyboard) {
+      const form = new FormData();
+      form.set('chat_id', String(chatId));
+      // Copied into a fresh ArrayBuffer: `Buffer` is a view onto a shared pool,
+      // and handing that view to Blob can send whatever else is in the pool.
+      const bytes = new Uint8Array(png.byteLength);
+      bytes.set(png);
+      form.set('photo', new Blob([bytes], { type: 'image/png' }), 'qr.png');
+      if (caption !== undefined) form.set('caption', caption.slice(0, MAX_CAPTION_LENGTH));
+      if (keyboard !== undefined) {
+        form.set('reply_markup', JSON.stringify({ inline_keyboard: keyboard }));
+      }
+      await callForm('sendPhoto', form, 30_000);
     },
 
     async sendDocument(chatId, fileId, caption) {

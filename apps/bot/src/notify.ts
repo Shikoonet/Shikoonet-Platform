@@ -32,7 +32,8 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { isPermanentRejection, type TelegramApi } from './telegram.js';
+import { isPermanentRejection, type InlineKeyboard, type TelegramApi } from './telegram.js';
+import { qrPng } from './qr.js';
 
 /** What a sweep wants said, and the key that stops it being said twice. */
 export interface PendingNotification {
@@ -44,6 +45,15 @@ export interface PendingNotification {
   dedupeKey: string;
   chatId: number;
   text: string;
+  /** Buttons under the message. Absent for the plain one-line notices. */
+  keyboard?: InlineKeyboard | null;
+  /**
+   * A string to send as a QR image ahead of the text — in practice the
+   * subscription link. The customer's next step after buying is to get the
+   * config into an app on a phone, and a photo they point a camera at beats a
+   * long URL they have to select without a keyboard.
+   */
+  qrPayload?: string | null;
 }
 
 /** Attempts before a message stops being retried and starts needing a human. */
@@ -78,11 +88,19 @@ export async function enqueue(
 ): Promise<void> {
   await tx
     .prepare(
-      `INSERT INTO bot_notifications (dedupe_key, chat_id, body)
-       VALUES (?1, ?2, ?3)
+      `INSERT INTO bot_notifications (dedupe_key, chat_id, body, reply_markup, qr_payload)
+       VALUES (?1, ?2, ?3, ?4::jsonb, ?5)
        ON CONFLICT (dedupe_key) DO NOTHING`,
     )
-    .bind(note.dedupeKey, note.chatId, note.text)
+    .bind(
+      note.dedupeKey,
+      note.chatId,
+      note.text,
+      // The keyboard itself, not Telegram's `reply_markup` envelope — that is
+      // `sendMessage`'s to build, and only one file should know its shape.
+      note.keyboard ? JSON.stringify(note.keyboard) : null,
+      note.qrPayload ?? null,
+    )
     .run();
 }
 
@@ -97,6 +115,25 @@ interface DueRow {
   chat_id: number;
   body: string;
   attempt_count: number;
+  reply_markup: InlineKeyboard | string | null;
+  qr_payload: string | null;
+  qr_sent_at: string | null;
+}
+
+/**
+ * `jsonb` comes back parsed from the Postgres adapter and as text from
+ * anything that stores it as text. Accept both rather than assume, because the
+ * cost of guessing wrong is a message sent with no buttons and no error.
+ */
+function keyboardOf(row: DueRow): InlineKeyboard | undefined {
+  const raw = row.reply_markup;
+  if (raw === null) return undefined;
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw) as InlineKeyboard;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -135,7 +172,8 @@ export async function flush(
                    ORDER BY next_attempt_at NULLS FIRST, id
                    LIMIT ?2
                    FOR UPDATE SKIP LOCKED)
-          RETURNING id, chat_id, body, attempt_count`,
+          RETURNING id, chat_id, body, attempt_count,
+                    reply_markup, qr_payload, qr_sent_at`,
       )
       .bind(now, limit, LEASE_MS)
       .all<DueRow>();
@@ -147,7 +185,18 @@ export async function flush(
 
   for (const row of rows) {
     try {
-      await api.sendMessage(row.chat_id, row.body);
+      // The picture first, so the customer's eye lands on the code and the
+      // text under it explains what they are looking at.
+      //
+      // Marked sent in its own statement before the message goes, because the
+      // two are separate Telegram calls and only the second one is retried by
+      // this row failing. Without the mark, a message Telegram refuses would
+      // send the customer a second QR on every attempt — up to eight of them.
+      if (row.qr_payload !== null && row.qr_sent_at === null) {
+        await api.sendPhotoBytes(row.chat_id, await qrPng(row.qr_payload));
+        await markQrSent(db, row.id);
+      }
+      await api.sendMessage(row.chat_id, row.body, keyboardOf(row));
       await settle(db, row.id, 'SENT', null, null);
       result.sent += 1;
       continue;
@@ -173,6 +222,25 @@ export async function flush(
   }
 
   return result;
+}
+
+/**
+ * The QR has left; the text has not.
+ *
+ * Its own statement rather than part of `settle`, because the whole point is
+ * that it survives the message failing afterwards.
+ */
+async function markQrSent(db: D1Database, id: number): Promise<void> {
+  try {
+    await db
+      .prepare(`UPDATE bot_notifications SET qr_sent_at = now() WHERE id = ?1`)
+      .bind(id)
+      .run();
+  } catch (err) {
+    // Losing this mark costs a duplicate picture, not a lost message, so it
+    // must not abort a send that has already half-happened.
+    console.error('[bot] could not mark a QR as sent', err);
+  }
 }
 
 /**

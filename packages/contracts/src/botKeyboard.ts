@@ -252,6 +252,12 @@ export const MENUS = {
         conditional: true,
       },
       {
+        action: 'qr',
+        label: '📷 دریافت QR Code',
+        hint: 'همان لینک اشتراک به‌صورت عکس، برای اسکن با دوربین برنامه',
+        conditional: true,
+      },
+      {
         action: 'rvk',
         label: '🔄 تغییر لینک اشتراک',
         hint: 'لینک تازه می‌سازد؛ لینک قبلی از کار می‌افتد',
@@ -621,11 +627,12 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
   serviceDetail: [
     ['xv', 0, 0],
     ['xt', 0, 1],
-    ['rvk', 1, 0],
-    ['off', 2, 0],
-    ['on', 2, 1],
-    ['mine', 3, 0],
-    ['menu', 3, 1],
+    ['qr', 1, 0],
+    ['rvk', 2, 0],
+    ['off', 3, 0],
+    ['on', 3, 1],
+    ['mine', 4, 0],
+    ['menu', 4, 1],
   ],
   revokeConfirm: [
     ['rvk2', 0, 0],

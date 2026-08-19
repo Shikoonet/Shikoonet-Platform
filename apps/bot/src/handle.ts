@@ -23,8 +23,6 @@
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import {
-  extraPricingFor,
-  isAutomated,
   renewAllowed,
   adjustWallet,
   renewModeFor,
@@ -101,8 +99,8 @@ import {
   renewableForUserById,
   subscriptionOnPanelForUser,
   subscriptionsForUser,
-  type OwnedSubscriptionOnPanel,
 } from './owned.js';
+import { actionsFor, tierFor } from './serviceActions.js';
 import { checkoutFor, receiptRef, recordPaidClick, recordReceipt } from './payment.js';
 import {
   balanceFor,
@@ -133,6 +131,10 @@ export interface Reply {
    *  keeps the two id spaces apart and refuses each other's handles, so which
    *  one this is has to be decided here rather than discovered on send. */
   document?: string;
+  /** A string to render as a QR image and upload, with `text` as its caption.
+   *  Unlike `photo` there is no `file_id`: the picture is made for this reply
+   *  and exists nowhere else. */
+  qrOf?: string;
 }
 
 export type HandleStatus =
@@ -161,46 +163,6 @@ const IGNORED: HandleOutcome = { status: 'ignored', replies: [] };
  * must be threaded through instead.
  */
 let SHOP: ShopSettings = DEFAULT_SHOP_SETTINGS;
-
-/**
- * Whether this service gets panel buttons, and which way the on/off one points.
- *
- * Null for a manual product, for a row whose panel was deleted, and for one the
- * panel never named — there is nothing to call in any of those, and a button
- * that cannot work is worse than no button.
- */
-function actionsFor(
-  service: OwnedSubscriptionOnPanel,
-  tier: menu.CustomerTier = 'f',
-): menu.ServiceActions | null {
-  if (!service.provider_kind || !service.provider_base_url || !service.remote_username) return null;
-  if (!isAutomated(service.provider_kind)) return null;
-  // REMOVED, FAILED, PENDING_PAYMENT: nothing to revoke and nothing to switch.
-  if (service.status !== 'ACTIVE' && service.status !== 'DISABLED') return null;
-  const pricing = extraPricingFor(service.provider_config ?? {}, tier);
-  return {
-    id: service.id,
-    disabled: service.status === 'DISABLED',
-    // A panel that prices an add-on can still be a shop that does not sell it.
-    // Production has had both of these switched off for years while our bot
-    // drew the buttons anyway.
-    volumeIrrPerGb: SHOP.sellsExtraVolume ? pricing.volumeIrrPerGb : null,
-    timeIrrPerDay: SHOP.sellsExtraTime ? pricing.timeIrrPerDay : null,
-    canSwitch: SHOP.allowsServiceSwitch,
-  };
-}
-
-/**
- * Which price column this customer is charged from.
- *
- * The legacy `agent` field is three tiers and we carry one flag, so a reseller
- * reads the reseller column and everybody else the ordinary one. `n2` exists in
- * the data and is priced identically to `n` on every live panel, so nothing is
- * lost by not having a third flag yet.
- */
-function tierFor(user: Caller): menu.CustomerTier {
-  return user.is_reseller ? 'n' : 'f';
-}
 
 /** Built by hand rather than by object literal: `exactOptionalPropertyTypes`
  *  rejects an explicit `undefined`, and every caller here has optional halves. */
@@ -997,7 +959,7 @@ async function handleAddonAmount(
 
   const service = await subscriptionOnPanelForUser(tx, user.id, subscriptionId);
   if (!service) return reply(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
-  const actions = actionsFor(service, tierFor(user));
+  const actions = actionsFor(service, SHOP, tierFor(user));
   const unit =
     kind === 'ADD_VOLUME' ? (actions?.volumeIrrPerGb ?? null) : (actions?.timeIrrPerDay ?? null);
   if (unit === null) return reply(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu());
@@ -2179,8 +2141,25 @@ async function handleCallback(
       if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
       return screen(
         menu.serviceDetail(service, Date.now()),
-        menu.serviceDetailMenu(actionsFor(service, tierFor(user))),
+        menu.serviceDetailMenu(actionsFor(service, SHOP, tierFor(user))),
       );
+    }
+
+    case 'qr': {
+      if (action.id === undefined) return IGNORED;
+      const service = await subscriptionOnPanelForUser(tx, user.id, action.id);
+      if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
+      // A service with no link has nothing to encode. Sending a QR of an empty
+      // string is a picture that scans to nothing, which is worse than saying so.
+      if (!service.subscription_url) {
+        return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu(actionsFor(service, SHOP)));
+      }
+      // A new message rather than an edit: the detail screen the customer is
+      // looking at stays where it is, and the picture arrives under it.
+      return {
+        status: 'processed',
+        replies: [{ chatId, text: service.subscription_url, qrOf: service.subscription_url }],
+      };
     }
 
     case 'xv':
@@ -2188,7 +2167,7 @@ async function handleCallback(
       if (action.id === undefined) return IGNORED;
       const service = await subscriptionOnPanelForUser(tx, user.id, action.id);
       if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
-      const actions = actionsFor(service, tierFor(user));
+      const actions = actionsFor(service, SHOP, tierFor(user));
       const kind = action.action === 'xv' ? 'ADD_VOLUME' : 'ADD_TIME';
       const unit =
         kind === 'ADD_VOLUME' ? (actions?.volumeIrrPerGb ?? null) : (actions?.timeIrrPerDay ?? null);
@@ -2214,7 +2193,7 @@ async function handleCallback(
       if (action.id === undefined) return IGNORED;
       const service = await subscriptionOnPanelForUser(tx, user.id, action.id);
       if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
-      if (!actionsFor(service)) {
+      if (!actionsFor(service, SHOP)) {
         return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu());
       }
       return screen(menu.CONFIRM_REVOKE, menu.confirmRevokeMenu(action.id));
@@ -2235,7 +2214,7 @@ async function handleCallback(
       if (outcome.status === 'FAILED') {
         return screen(
           menu.actionFailed(outcome.reason),
-          menu.serviceDetailMenu(actionsFor(outcome.service)),
+          menu.serviceDetailMenu(actionsFor(outcome.service, SHOP)),
         );
       }
       // The service is redrawn under the message, so the customer sees the new
@@ -2247,7 +2226,7 @@ async function handleCallback(
             ? menu.actionFailed(menu.ACTION_FAILED_NO_LINK)
             : menu.linkReplaced(outcome.subscriptionUrl)
           : menu.serviceSwitched(kind === 'ENABLE');
-      return screen(`${said}\n\n${detail}`, menu.serviceDetailMenu(actionsFor(outcome.service)));
+      return screen(`${said}\n\n${detail}`, menu.serviceDetailMenu(actionsFor(outcome.service, SHOP)));
     }
 
     case 'renew': {

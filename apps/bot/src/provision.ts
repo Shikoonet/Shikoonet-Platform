@@ -32,7 +32,10 @@ import {
   type ProvisionRequest,
 } from '@shikoo/domain';
 import * as menu from './menu.js';
+import type { InlineKeyboard } from './telegram.js';
 import { enqueue } from './notify.js';
+import { subscriptionOnPanelForUser } from './owned.js';
+import { actionsFor, tierFor } from './serviceActions.js';
 import { deliverFromStock } from './stock.js';
 import { creditRenewalCashback, refundOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
@@ -52,6 +55,8 @@ interface PendingOrder {
   quantity: number;
   user_id: number;
   telegram_id: number | null;
+  /** Which price column the add-on buttons on the delivery screen read from. */
+  is_reseller: boolean;
   plan_id: number | null;
   target_subscription_id: number | null;
   target_username: string | null;
@@ -115,6 +120,52 @@ async function reclaimStalled(db: D1Database, now: number): Promise<void> {
 }
 
 /**
+ * What a finished order sends the customer.
+ *
+ * Was a bare string until 2026-08-19, when the delivery message stopped being
+ * a line of text and became the service screen — which has buttons, and a QR
+ * code of the subscription link ahead of it. Every other exit here still
+ * returns only text, and `say` is what keeps those unchanged.
+ */
+export interface Delivered {
+  text: string;
+  keyboard?: InlineKeyboard | null;
+  /** Sent as a photo before the text. In practice the subscription link. */
+  qrPayload?: string | null;
+}
+
+const say = (text: string): Delivered => ({ text });
+
+/**
+ * The screen a completed purchase ends on.
+ *
+ * Reads the subscription the delivery just wrote rather than being handed it,
+ * so the fresh-from-the-panel path and the from-the-shelf path produce the
+ * same screen without either knowing about the other. Returns null when the
+ * order produced no subscription row — a manual product, or a delivery that
+ * only half-happened — and the caller falls back to the plain message.
+ */
+async function purchasedScreen(
+  db: D1Database,
+  row: PendingOrder,
+  now: number,
+): Promise<Delivered | null> {
+  const sub = await db
+    .prepare(`SELECT id FROM subscriptions WHERE order_id = ?1 ORDER BY id DESC LIMIT 1`)
+    .bind(row.order_id)
+    .first<{ id: number }>();
+  if (!sub) return null;
+  const service = await subscriptionOnPanelForUser(db, row.user_id, sub.id);
+  if (!service) return null;
+  const shop = await loadShopSettings(db);
+  return {
+    text: menu.serviceReadyCard(service, now),
+    keyboard: menu.serviceDetailMenu(actionsFor(service, shop, tierFor(row))),
+    qrPayload: service.subscription_url,
+  };
+}
+
+/**
  * Delivers every paid order that has nothing yet, and returns what the customer
  * is owed. Messages are returned rather than sent, for the reason they are
  * everywhere else here: a message that has left cannot be recalled by a
@@ -139,6 +190,7 @@ export async function provisionPaidOrders(
               o.kind          AS order_kind,
               o.quantity      AS quantity,
               u.telegram_id   AS telegram_id,
+              u.is_reseller   AS is_reseller,
               o.plan_id       AS plan_id,
               o.total_irr     AS total_irr,
               o.target_subscription_id AS target_subscription_id,
@@ -212,7 +264,9 @@ export async function provisionPaidOrders(
           // nothing at all.
           dedupeKey: `provision:${row.order_public_id}`,
           chatId,
-          text: note,
+          text: note.text,
+          keyboard: note.keyboard ?? null,
+          qrPayload: note.qrPayload ?? null,
         }),
       );
       delivered += 1;
@@ -227,7 +281,7 @@ async function deliver(
   row: PendingOrder,
   fetchImpl: typeof globalThis.fetch,
   now: number,
-): Promise<string | null> {
+): Promise<Delivered | null> {
   // An add-on carries no plan on purpose — it is gigabytes or days on an
   // account that already exists — so it is routed before the plan check below.
   if (row.order_kind === 'ADD_VOLUME' || row.order_kind === 'ADD_TIME') {
@@ -241,7 +295,7 @@ async function deliver(
   // real, so this is a person's problem, not a silent drop.
   if (row.plan_id === null || row.provider_id === null || row.provider_kind === null) {
     const refunded = await fail(db, row.order_id, 'the plan or its provider no longer exists');
-    return menu.serviceNeedsHelp(row.order_public_id, refunded);
+    return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 
   if (row.order_kind === 'RENEWAL') {
@@ -277,7 +331,10 @@ async function deliver(
       // soon. Past that, the shelf finishes the order — see `stock.ts` for why
       // it waits first and why a renewal may not use it.
       const fromStock = await deliverFromStock(db, row, now);
-      if (fromStock !== null) return fromStock;
+      // The shelf writes the same subscription row a panel would, so the
+      // customer gets the same screen. Whether their config came from stock is
+      // ours to know and theirs not to be told.
+      if (fromStock !== null) return (await purchasedScreen(db, row, now)) ?? say(fromStock);
       // Back to PAID so the next pass tries again. The customer is told nothing
       // yet — a panel that is briefly down is not news, and saying "there was a
       // problem" only to succeed a minute later is worse than silence.
@@ -290,7 +347,7 @@ async function deliver(
     }
     const refunded = await fail(db, row.order_id, result.reason);
     console.error(`[bot] order ${row.order_public_id} needs a human: ${result.reason}`);
-    return menu.serviceNeedsHelp(row.order_public_id, refunded);
+    return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 
   const expiresAt = request.expiresAt;
@@ -343,9 +400,14 @@ async function deliver(
 
   // A manual provider has no link to give. Promising one that does not exist is
   // worse than saying a person is finishing it.
-  return result.subscriptionUrl === null
-    ? menu.serviceBeingPrepared(row.order_public_id)
-    : menu.serviceReady(result.subscriptionUrl, result.remoteUsername, expiresAt);
+  if (result.subscriptionUrl === null) return say(menu.serviceBeingPrepared(row.order_public_id));
+  // The full service screen, with its buttons and its QR code. The three-line
+  // `serviceReady` remains the fallback for the case the row cannot be read
+  // back — the customer must get their link either way.
+  return (
+    (await purchasedScreen(db, row, now)) ??
+    say(menu.serviceReady(result.subscriptionUrl, result.remoteUsername, expiresAt))
+  );
 }
 
 /**
@@ -368,12 +430,12 @@ async function renew(
   fetchImpl: typeof globalThis.fetch,
   now: number,
   addon: Addon | null = null,
-): Promise<string | null> {
+): Promise<Delivered | null> {
   // The subscription is joined on `user_id = o.user_id`, so a NULL here also
   // covers a renewal order pointed at somebody else's service.
   if (row.target_subscription_id === null || row.target_username === null) {
     const refunded = await fail(db, row.order_id, 'the service this renewal points at no longer exists');
-    return menu.serviceNeedsHelp(row.order_public_id, refunded);
+    return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 
   const serviceName = row.target_name ?? row.plan_name ?? row.product_name ?? 'سرویس';
@@ -387,7 +449,7 @@ async function renew(
     // A manual product, or a panel type nobody automated. The money is real and
     // the sale happened; what is outstanding is somebody's action.
     await complete(db, row.order_id);
-    return menu.serviceBeingPrepared(row.order_public_id);
+    return say(menu.serviceBeingPrepared(row.order_public_id));
   }
 
   // The cashback rate is read here, before the panel call, and that placement
@@ -456,7 +518,7 @@ async function renew(
     }
     const refunded = await fail(db, row.order_id, result.reason);
     console.error(`[bot] renewal ${row.order_public_id} needs a human: ${result.reason}`);
-    return menu.serviceNeedsHelp(row.order_public_id, refunded);
+    return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 
   const expiresAt = result.expiresAt ?? null;
@@ -490,7 +552,7 @@ async function renew(
         .bind(row.order_id)
         .run();
     });
-    return menu.addonApplied(addon.kind, addon.quantity, serviceName, expiresAt);
+    return say(menu.addonApplied(addon.kind, addon.quantity, serviceName, expiresAt));
   }
 
   let cashbackIrr: number | null = null;
@@ -541,7 +603,7 @@ async function renew(
     cashbackIrr = await creditRenewalCashback(tx, row.order_id, renewCashbackPercent);
   });
 
-  return menu.serviceRenewed(serviceName, expiresAt, cashbackIrr);
+  return say(menu.serviceRenewed(serviceName, expiresAt, cashbackIrr));
 }
 
 async function complete(db: D1Database, orderId: number): Promise<void> {

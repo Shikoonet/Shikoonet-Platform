@@ -267,3 +267,81 @@ describe('the backoff', () => {
     expect(nextAttemptDelayMs(MAX_ATTEMPTS)).toBe(3_600_000);
   });
 });
+
+/**
+ * A delivery message is no longer a line of text: it carries the buttons of the
+ * service screen and a QR code of the subscription link. Both travel in the
+ * row, because the row IS the message — a keyboard rebuilt at send time could
+ * disagree with the text it sits under.
+ */
+describe('what a message carries besides its text', () => {
+  interface Sent {
+    kind: 'text' | 'photo';
+    body: string;
+    keyboard?: unknown;
+  }
+
+  /** Records both calls in the order Telegram would see them. */
+  function recorder(opts: { textFails?: boolean } = {}): { api: TelegramApi; sent: Sent[] } {
+    const sent: Sent[] = [];
+    const api = {
+      sendMessage: async (_chat: number, text: string, keyboard?: unknown) => {
+        sent.push({ kind: 'text', body: text, keyboard });
+        if (opts.textFails) throw new Error('telegram sendMessage failed: boom');
+      },
+      sendPhotoBytes: async (_chat: number, png: Uint8Array) => {
+        sent.push({ kind: 'photo', body: `png:${png.byteLength}` });
+      },
+    } as unknown as TelegramApi;
+    return { api, sent };
+  }
+
+  const KEYBOARD = [[{ text: '📷 دریافت QR Code', callback_data: 'qr:7' }]];
+
+  it('sends the picture first, then the text with its buttons', async () => {
+    await db.withSession((tx) =>
+      enqueue(tx, {
+        dedupeKey: 'q1',
+        chatId: CHAT,
+        text: 'service',
+        keyboard: KEYBOARD,
+        qrPayload: 'https://panel.example/sub/abc',
+      }),
+    );
+    const { api, sent } = recorder();
+    expect((await flush(db, api, { now: NOW })).sent).toBe(1);
+
+    expect(sent.map((s) => s.kind)).toEqual(['photo', 'text']);
+    expect(sent[1]?.keyboard).toEqual(KEYBOARD);
+    expect(await rowOf('q1')).toMatchObject({ status: 'SENT' });
+  });
+
+  it('does not send the picture again when the text has to be retried', async () => {
+    // The two are separate Telegram calls and only the second one is retried by
+    // the row failing. Without the mark this customer gets a second QR on every
+    // attempt — up to eight of them.
+    await db.withSession((tx) =>
+      enqueue(tx, {
+        dedupeKey: 'q2',
+        chatId: CHAT,
+        text: 'service',
+        qrPayload: 'https://panel.example/sub/abc',
+      }),
+    );
+    const failing = recorder({ textFails: true });
+    await flush(db, failing.api, { now: NOW });
+    expect(failing.sent.filter((s) => s.kind === 'photo')).toHaveLength(1);
+
+    const retry = recorder();
+    await flush(db, retry.api, { now: NOW + LEASE_MS + nextAttemptDelayMs(1) });
+    expect(retry.sent.map((s) => s.kind)).toEqual(['text']);
+  });
+
+  it('leaves an ordinary message exactly as it was', async () => {
+    // Every notice that is not a delivery still goes as one plain sendMessage.
+    await put('q3');
+    const { api, sent } = recorder();
+    await flush(db, api, { now: NOW });
+    expect(sent).toEqual([{ kind: 'text', body: 'hello', keyboard: undefined }]);
+  });
+});
