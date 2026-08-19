@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test scripts --max-warnings 0",
     "test": "vitest run",
-    "panel:preflight": "tsx scripts/panel-preflight.ts"
+    "panel:preflight": "tsx scripts/panel-preflight.ts",
+    "panel:wire-test": "tsx --env-file=../../sim/.env.local scripts/wire-test-panel.ts"
   },
   "dependencies": {
     "@shikoo/contracts": "workspace:*",
