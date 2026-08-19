@@ -57,6 +57,16 @@ export interface BroadcastMessage {
  * announcement; a customer who receives it twice has been spammed by a shop
  * they trust with their money.
  *
+ * That policy is unchanged. What changed on 2026-08-19 is that the claim writes
+ * SENDING rather than SENT. With two states there was no way to tell a message
+ * somebody received from one that was claimed and never sent — and the case
+ * that made it matter is not a crash: `sweepBroadcasts` breaks its loop on
+ * `signal.aborted`, so an ordinary shutdown mid-broadcast marked every
+ * remaining claimed row delivered and told the shop a number larger than the
+ * number of people who heard. A stranded SENDING row is still never retried,
+ * because whether Telegram accepted it before the process died is precisely
+ * what nobody knows. It is simply no longer invisible.
+ *
  * The `AND r.status = 'PENDING'` on the outer statement is the one guard in
  * this file that no test turns red, and that is worth saying rather than
  * leaving to be discovered: `SKIP LOCKED` already means a row another
@@ -71,19 +81,45 @@ export async function claimBroadcastBatch(
 ): Promise<BroadcastMessage[]> {
   const { results } = await db
     .prepare(
-      `UPDATE broadcast_recipients r
-          SET status = 'SENT', sent_at = now()
-         FROM (SELECT b.id AS broadcast_id, b.body, rr.user_id
-                 FROM broadcast_recipients rr
-                 JOIN broadcasts b ON b.id = rr.broadcast_id
-                WHERE rr.status = 'PENDING'
-                ORDER BY b.created_at, rr.user_id
-                LIMIT ?1
-                FOR UPDATE OF rr SKIP LOCKED) picked
-        WHERE r.broadcast_id = picked.broadcast_id
-          AND r.user_id = picked.user_id
-          AND r.status = 'PENDING'
-       RETURNING r.broadcast_id, r.user_id, r.telegram_id, picked.body`,
+      // `AS MATERIALIZED` is the guard, and it is a fence rather than a hint.
+      //
+      // This was written as `UPDATE … FROM (SELECT … LIMIT n)`. The planner put
+      // that subquery on the INNER side of a nested loop and re-executed it
+      // once per candidate row, so the limit bounded each re-execution and
+      // every pending row matched some execution of it: asking for one
+      // recipient returned eleven, and on a real shop one sweep claims the
+      // whole broadcast — exactly what `BROADCAST_BATCH` and `SEND_GAP_MS`
+      // exist to prevent.
+      //
+      // Rewriting it as row-wise `IN (SELECT …)` was tried next and is NOT the
+      // fix: it passed on a near-empty table and returned nine for a limit of
+      // two once the suite filled the table, because the planner is free to
+      // turn that into a per-row SubPlan too. A limit that holds only for the
+      // plan the planner happened to pick is not a limit.
+      //
+      // `WITH … AS MATERIALIZED` is documented as an optimisation fence: the
+      // CTE is evaluated exactly once, whatever the plan around it. That is a
+      // guarantee, not a hope, which is the only kind worth writing down.
+      //
+      // The plain join to `broadcasts` is safe in a way the original was not:
+      // it is on a primary key, so it cannot multiply rows and carries no LIMIT.
+      `WITH picked AS MATERIALIZED (
+          SELECT rr.broadcast_id, rr.user_id
+            FROM broadcast_recipients rr
+            JOIN broadcasts bb ON bb.id = rr.broadcast_id
+           WHERE rr.status = 'PENDING'
+           ORDER BY bb.created_at, rr.user_id
+           LIMIT ?1
+           FOR UPDATE OF rr SKIP LOCKED
+        )
+        UPDATE broadcast_recipients r
+           SET status = 'SENDING', claimed_at = now()
+          FROM picked p, broadcasts b
+         WHERE r.broadcast_id = p.broadcast_id
+           AND r.user_id = p.user_id
+           AND r.status = 'PENDING'
+           AND b.id = r.broadcast_id
+       RETURNING r.broadcast_id, r.user_id, r.telegram_id, b.body`,
     )
     .bind(limit)
     .all<{ broadcast_id: string; user_id: number; telegram_id: number; body: string }>();
@@ -93,6 +129,44 @@ export async function claimBroadcastBatch(
     chatId: r.telegram_id,
     text: r.body,
   }));
+}
+
+/** Records that a claimed message reached Telegram. */
+export async function markBroadcastSent(
+  db: D1Database,
+  broadcastId: string,
+  userId: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE broadcast_recipients
+          SET status = 'SENT', sent_at = now()
+        WHERE broadcast_id = ?1 AND user_id = ?2 AND status = 'SENDING'`,
+    )
+    .bind(broadcastId, userId)
+    .run();
+}
+
+/**
+ * Rows somebody claimed and never finished, older than `olderThanMs`.
+ *
+ * The age matters: a row claimed a second ago belongs to the sweep that is
+ * running right now, and reporting it would make every healthy broadcast look
+ * stuck.
+ */
+export async function strandedSendingCount(
+  db: D1Database,
+  olderThanMs = 10 * 60 * 1000,
+  now: number = Date.now(),
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT count(*)::int AS n FROM broadcast_recipients
+        WHERE status = 'SENDING' AND claimed_at < to_timestamp(?1 / 1000.0)`,
+    )
+    .bind(now - olderThanMs)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 /** Records that a claimed message did not get through, with the reason. */
@@ -106,7 +180,7 @@ export async function markBroadcastFailed(
     .prepare(
       `UPDATE broadcast_recipients
           SET status = 'FAILED', error = ?3
-        WHERE broadcast_id = ?1 AND user_id = ?2`,
+        WHERE broadcast_id = ?1 AND user_id = ?2 AND status = 'SENDING'`,
     )
     .bind(broadcastId, userId, error.slice(0, 500))
     .run();
@@ -118,8 +192,12 @@ export async function closeFinishedBroadcasts(db: D1Database): Promise<void> {
     .prepare(
       `UPDATE broadcasts b SET finished_at = now()
         WHERE b.finished_at IS NULL
+          -- SENDING counts as outstanding. Closing a broadcast that still has
+          -- one would stamp it finished while somebody is mid-send, and a
+          -- stranded row would make the shop's own record say it completed.
           AND NOT EXISTS (SELECT 1 FROM broadcast_recipients r
-                           WHERE r.broadcast_id = b.id AND r.status = 'PENDING')`,
+                           WHERE r.broadcast_id = b.id
+                             AND r.status IN ('PENDING', 'SENDING'))`,
     )
     .run();
 }

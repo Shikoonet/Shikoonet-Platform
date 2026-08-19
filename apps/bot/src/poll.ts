@@ -23,6 +23,8 @@ import {
   claimBroadcastBatch,
   closeFinishedBroadcasts,
   markBroadcastFailed,
+  markBroadcastSent,
+  strandedSendingCount,
   SEND_GAP_MS,
 } from './broadcast.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
@@ -309,9 +311,19 @@ export async function sweepBroadcasts(
   }
   let sent = 0;
   for (const message of batch) {
+    // Everything still claimed when this breaks stays SENDING rather than
+    // being counted as delivered. That is the ordinary shutdown, not a crash,
+    // and until 2026-08-19 it silently inflated the number the shop was told.
     if (signal?.aborted) break;
     try {
       await api.sendMessage(message.chatId, message.text);
+      // After the send, not before it. A failure here leaves the row SENDING —
+      // Telegram has the message and our record does not say so, which is a
+      // discrepancy somebody can see, rather than a message nobody sent that
+      // the shop was told about.
+      await markBroadcastSent(db, message.broadcastId, message.userId).catch((e) =>
+        console.error('[bot] a broadcast was sent but could not be recorded', e),
+      );
       sent += 1;
     } catch (err) {
       await markBroadcastFailed(db, message.broadcastId, message.userId, String(err)).catch(
@@ -324,6 +336,13 @@ export async function sweepBroadcasts(
     await closeFinishedBroadcasts(db).catch((err) =>
       console.error('[bot] could not close finished broadcasts', err),
     );
+  }
+  // The only voice a stranded row has. It is deliberately not retried — whether
+  // Telegram accepted the message before the process died is exactly what
+  // nobody knows, and guessing wrong spams a paying customer.
+  const stranded = await strandedSendingCount(db).catch(() => 0);
+  if (stranded > 0) {
+    console.error(`[bot] ${stranded} broadcast message(s) were claimed and never finished`);
   }
   return sent;
 }

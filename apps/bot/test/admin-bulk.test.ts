@@ -19,12 +19,16 @@ import {
   claimBroadcastBatch,
   creditEveryone,
   markBroadcastFailed,
+  markBroadcastSent,
   newBatchId,
   queueBroadcast,
+  strandedSendingCount,
 } from '../src/broadcast.js';
+import { sweepBroadcasts } from '../src/poll.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
+import { stubApi } from './helpers/telegram.js';
 import { ensureCatalog, makeCustomer } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 7, 14, 9, 0, 0);
@@ -277,6 +281,131 @@ describe('the broadcast', () => {
     expect(first).toBe(reach);
     expect(second).toBe(0);
     expect(await recipients()).toHaveLength(reach);
+  });
+
+  it('claims at most the batch size, not the whole broadcast', async () => {
+    // `BROADCAST_BATCH` and `SEND_GAP_MS` exist to keep a broadcast under
+    // Telegram's bulk ceiling. The claim was written as
+    // `UPDATE … FROM (SELECT … LIMIT n)`, and the planner put that subquery on
+    // the inner side of a nested loop and re-ran it once per candidate row —
+    // so the limit bounded each re-execution and every pending row matched
+    // some execution of it. Asking for one recipient handed back eleven; on a
+    // shop with a thousand customers it hands back a thousand.
+    //
+    // Nothing caught it. The existing tests asked for 1000 (above the reach) or
+    // took `batch[0]` and then checked the rest were gone — which is what an
+    // over-claiming statement produces too. Found from EXPLAIN.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+
+    await handleUpdate(db, press(updateId, telegramId, 'bct'));
+    await handleUpdate(db, types(updateId + 1, telegramId, 'اعلان'));
+    await handleUpdate(db, press(updateId + 2, telegramId, 'cnf'));
+    const reach = (await recipients()).length;
+    expect(reach).toBeGreaterThan(2);
+
+    expect(await claimBroadcastBatch(db, 2)).toHaveLength(2);
+    // And the rest are still waiting, rather than having been swept up.
+    expect((await recipients()).filter((r) => r.status === 'PENDING')).toHaveLength(reach - 2);
+  });
+
+  it('does not call a message delivered until Telegram has taken it', async () => {
+    // The claim used to write SENT before anything had been asked of Telegram,
+    // and the argument for it was sound as far as it went: at most once, never
+    // twice. What it left out was the silence — with two states nothing could
+    // tell a message somebody received from one that was claimed and dropped.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+
+    await handleUpdate(db, press(updateId, telegramId, 'bct'));
+    await handleUpdate(db, types(updateId + 1, telegramId, 'اعلان'));
+    await handleUpdate(db, press(updateId + 2, telegramId, 'cnf'));
+
+    const batch = await claimBroadcastBatch(db, 1);
+    const one = batch[0]!;
+
+    // Claimed, and not yet delivered by anybody's account.
+    const claimed = (await recipients()).find((r) => r.user_id === one.userId);
+    expect(claimed?.status).toBe('SENDING');
+
+    await markBroadcastSent(db, one.broadcastId, one.userId);
+    const done = (await recipients()).find((r) => r.user_id === one.userId);
+    expect(done?.status).toBe('SENT');
+  });
+
+  it('leaves a shutdown mid-broadcast visible instead of counting it as sent', async () => {
+    // Not the crash case — the ORDINARY one. `sweepBroadcasts` breaks its loop
+    // on `signal.aborted`, so a deploy during a paced broadcast used to mark
+    // every remaining claimed row delivered and hand the shop a number larger
+    // than the number of people who heard.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+
+    await handleUpdate(db, press(updateId, telegramId, 'bct'));
+    await handleUpdate(db, types(updateId + 1, telegramId, 'اعلان'));
+    await handleUpdate(db, press(updateId + 2, telegramId, 'cnf'));
+    const reach = (await recipients()).length;
+    expect(reach).toBeGreaterThan(1);
+
+    // Aborts after the first send, exactly where a SIGTERM lands.
+    const controller = new AbortController();
+    let delivered = 0;
+    const api = stubApi({
+      sendMessage: async () => {
+        delivered += 1;
+        controller.abort();
+      },
+    });
+
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const sent = await sweepBroadcasts(db, api, controller.signal);
+    errors.mockRestore();
+
+    expect(delivered).toBe(1);
+    expect(sent).toBe(1);
+
+    const rows = await recipients();
+    // One really went. Everything else is claimed-and-unfinished, which is a
+    // thing a person can see — not SENT, which is a lie.
+    expect(rows.filter((r) => r.status === 'SENT')).toHaveLength(1);
+    expect(rows.filter((r) => r.status === 'SENDING').length).toBeGreaterThan(0);
+    // And the broadcast is not closed while any of them is outstanding.
+    const open = await db
+      .prepare(`SELECT count(*)::int AS n FROM broadcasts WHERE finished_at IS NULL`)
+      .first<{ n: number }>();
+    expect(open?.n).toBeGreaterThan(0);
+  });
+
+  it('counts a stranded row only once it is old enough to be stranded', async () => {
+    // A row claimed a second ago belongs to the sweep running right now.
+    // Reporting it would make every healthy broadcast look stuck, which is how
+    // an alert teaches people to ignore it.
+    const { updateId, telegramId } = ids();
+    await makeAdmin(telegramId);
+
+    await handleUpdate(db, press(updateId, telegramId, 'bct'));
+    await handleUpdate(db, types(updateId + 1, telegramId, 'اعلان'));
+    await handleUpdate(db, press(updateId + 2, telegramId, 'cnf'));
+    // Measured against the DATABASE's clock, not this suite's. `Date.now()` is
+    // pinned to 2026-08-14 here while Postgres stamps `claimed_at` with the
+    // real wall clock, so a cutoff built from the pinned clock sits years
+    // before every row and counts nothing — which reads as "the guard works"
+    // and proves the opposite.
+    const dbNow = await db
+      .prepare(`SELECT (extract(epoch from now()) * 1000)::bigint AS ms`)
+      .first<{ ms: number }>();
+    const now = Number(dbNow!.ms);
+
+    // A delta, not an absolute: earlier tests in this file leave SENDING rows
+    // behind on purpose, and asserting a bare 1 passed alone and failed in the
+    // full run — the same shared-state trap that has now caught two tests here.
+    const before = await strandedSendingCount(db, 10 * 60 * 1000, now + 3_600_000);
+    await claimBroadcastBatch(db, 1);
+
+    // Just claimed, so not stranded by anyone's measure.
+    expect(await strandedSendingCount(db, 10 * 60 * 1000, now)).toBe(0);
+    // The same row, an hour later.
+    expect(await strandedSendingCount(db, 10 * 60 * 1000, now + 3_600_000)).toBe(before + 1);
   });
 
   it('records a refusal against the recipient rather than retrying them', async () => {

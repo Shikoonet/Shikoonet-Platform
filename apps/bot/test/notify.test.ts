@@ -120,6 +120,33 @@ describe('delivering it', () => {
     expect(row.next_attempt_at).toBeNull();
   });
 
+  it('claims no more than the limit it was given', async () => {
+    // The third statement of this shape checked on 2026-08-19, after the first
+    // two were found broken: `claimBroadcastBatch` handed back a whole
+    // broadcast for a limit of one, and the webhook outbox handed back eight
+    // for a limit of three. The planner is free to turn an uncorrelated
+    // subquery into a per-row SubPlan, and then the limit bounds each
+    // execution rather than the batch.
+    let delivered = 0;
+    for (let i = 0; i < 8; i++) await put(`lim${i}`);
+
+    const res = await flush(
+      db,
+      apiThat(() => {
+        delivered += 1;
+        return Promise.resolve({});
+      }),
+      { now: NOW, limit: 3 },
+    );
+
+    expect(res.sent).toBe(3);
+    expect(delivered).toBe(3);
+    const left = await db
+      .prepare(`SELECT count(*)::int AS n FROM bot_notifications WHERE status = 'PENDING'`)
+      .first<{ n: number }>();
+    expect(left?.n).toBe(5);
+  });
+
   it('keeps a message Telegram would not take, and schedules a retry', async () => {
     await put('d2');
 

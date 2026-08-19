@@ -179,6 +179,29 @@ describe('delivering a fulfilment notice', () => {
     expect((await row('n6')).status).toBe('DEAD');
   });
 
+  it('claims no more than the limit it was given', async () => {
+    // Pinned after the same statement shape was found broken elsewhere on
+    // 2026-08-19: `claimBroadcastBatch` wrote its claim as
+    // `UPDATE … FROM (SELECT … LIMIT n)`, the planner re-executed that subquery
+    // once per candidate row, and the limit bounded each re-execution instead
+    // of the batch — one sweep took the whole queue.
+    //
+    // This one is written as a single-column `IN` on the primary key, which
+    // does bound. Measured rather than argued, because "the planner will hash
+    // it" is the kind of claim that is true until it is not.
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+    for (let i = 0; i < 8; i++) await enqueue(`lim${i}`);
+
+    const res = await flushWebhookDeliveries(db, ON, { now: NOW, limit: 3 });
+
+    expect(res.attempted).toBe(3);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const left = await db
+      .prepare(`SELECT count(*)::int AS n FROM webhook_deliveries WHERE status = 'PENDING'`)
+      .first<{ n: number }>();
+    expect(left?.n).toBe(5);
+  });
+
   it('claims a row before delivering it, so a second sweeper skips it', async () => {
     // The lease. Two ingest processes sweep the same queue; the guard is that
     // claiming and reading are one statement, so the second finds nothing due.

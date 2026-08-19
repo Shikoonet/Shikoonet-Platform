@@ -172,17 +172,33 @@ export async function flushWebhookDeliveries(
 
   const { results } = await db
     .prepare(
-      `UPDATE webhook_deliveries
-          SET attempt_count = attempt_count + 1,
-              last_attempt_at = ?1,
-              next_attempt_at = ?1 + ?3
-        WHERE id IN (
-                SELECT id FROM webhook_deliveries
-                 WHERE status IN ('PENDING','FAILED')
-                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
-                 ORDER BY next_attempt_at NULLS FIRST
-                 LIMIT ?2
-                 FOR UPDATE SKIP LOCKED)
+      // `AS MATERIALIZED` is the fence that makes `limit` a limit.
+      //
+      // This was `WHERE id IN (SELECT … LIMIT ?2 …)`, and on 2026-08-19 a test
+      // written for it returned EIGHT rows for a limit of three. A hand-run
+      // probe of the same statement had returned three minutes earlier — same
+      // SQL, same data, different plan — which is the whole point: the planner
+      // may turn an uncorrelated subquery into a per-row SubPlan, and then the
+      // limit bounds each execution instead of the batch. The bug was found
+      // first in `claimBroadcastBatch`, where it meant one sweep claimed an
+      // entire broadcast; here it means one sweep sends the whole outbox
+      // ignoring `limit`, inside the request that ingests a bank SMS.
+      //
+      // A CTE marked MATERIALIZED is documented as an optimisation fence and is
+      // evaluated exactly once regardless of the plan around it.
+      `WITH due AS MATERIALIZED (
+          SELECT id FROM webhook_deliveries
+           WHERE status IN ('PENDING','FAILED')
+             AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+           ORDER BY next_attempt_at NULLS FIRST
+           LIMIT ?2
+           FOR UPDATE SKIP LOCKED
+        )
+        UPDATE webhook_deliveries
+           SET attempt_count = attempt_count + 1,
+               last_attempt_at = ?1,
+               next_attempt_at = ?1 + ?3
+         WHERE id IN (SELECT id FROM due)
         RETURNING id, payload_json, attempt_count`,
     )
     .bind(now, limit, WEBHOOK_LEASE_MS)

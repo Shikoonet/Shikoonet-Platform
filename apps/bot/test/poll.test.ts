@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_UPDATE_ATTEMPTS, pollOnce, pruneUpdates, run } from '../src/poll.js';
 import type { Attempt } from '../src/poll.js';
-import type { TelegramApi, TelegramUpdate } from '../src/telegram.js';
+import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
+import { stubApi } from './helpers/telegram.js';
 
 let nextId = 1;
 function ids(): { updateId: number; telegramId: number } {
@@ -29,26 +30,6 @@ function startUpdate(updateId: number, telegramId: number, text = '/start'): Tel
       chat: { id: telegramId },
       text,
     },
-  };
-}
-
-/**
- * A TelegramApi with everything stubbed, so a test overrides only the one or
- * two calls it is actually about. Adding a method to the interface then costs
- * one line here instead of one per fake.
- */
-function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
-  return {
-    getMe: async () => ({ username: 'Test_Shikoo_bot' }),
-    getUpdates: async () => [],
-    sendMessage: async () => undefined,
-    sendPhoto: async () => undefined,
-    sendPhotoBytes: async () => undefined,
-    sendDocument: async () => undefined,
-    editMessageText: async () => undefined,
-    answerCallbackQuery: async () => undefined,
-    getChatMember: async () => 'member',
-    ...overrides,
   };
 }
 

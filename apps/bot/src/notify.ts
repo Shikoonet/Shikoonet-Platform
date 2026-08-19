@@ -163,16 +163,27 @@ export async function flush(
   try {
     const { results } = await db
       .prepare(
-        `UPDATE bot_notifications
-            SET attempt_count = attempt_count + 1,
-                next_attempt_at = ?1 + ?3
-          WHERE id IN (
-                  SELECT id FROM bot_notifications
-                   WHERE status IN ('PENDING', 'FAILED')
-                     AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
-                   ORDER BY next_attempt_at NULLS FIRST, id
-                   LIMIT ?2
-                   FOR UPDATE SKIP LOCKED)
+        // `AS MATERIALIZED`, for the reason spelled out in `webhook.ts`: an
+        // uncorrelated subquery may become a per-row SubPlan, and then the
+        // limit bounds each execution rather than the batch. Two statements of
+        // this exact shape were found broken on 2026-08-19 — a whole broadcast
+        // claimed for a limit of one, eight webhook rows for a limit of three.
+        // This one measured correct on the day, which is not the same as being
+        // guaranteed: same SQL and same data gave different answers minutes
+        // apart in the outbox. Fenced so all three hold by construction rather
+        // than two by construction and one by luck.
+        `WITH due AS MATERIALIZED (
+            SELECT id FROM bot_notifications
+             WHERE status IN ('PENDING', 'FAILED')
+               AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+             ORDER BY next_attempt_at NULLS FIRST, id
+             LIMIT ?2
+             FOR UPDATE SKIP LOCKED
+          )
+          UPDATE bot_notifications
+             SET attempt_count = attempt_count + 1,
+                 next_attempt_at = ?1 + ?3
+           WHERE id IN (SELECT id FROM due)
           RETURNING id, chat_id, body, attempt_count,
                     reply_markup, qr_payload, qr_sent_at`,
       )
