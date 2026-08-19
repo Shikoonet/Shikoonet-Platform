@@ -8,6 +8,7 @@
  */
 
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import type { D1DatabaseSession } from '@shikoo/database';
 import { provisionPaidOrders } from '../src/provision.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
@@ -53,6 +54,15 @@ const brokenRequest = (async (input: string | URL | Request) =>
     : new Response('{}', { status: 422 })) as unknown as typeof globalThis.fetch;
 
 let seq = 0;
+
+/** A promise plus the handle that settles it, for a test that has to wait. */
+function latch(): { reached: Promise<void>; open: () => void } {
+  let open!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { reached, open };
+}
 function nextIds() {
   seq += 1;
   return { telegramId: 770_000 + seq * 7, publicId: `prov${String(seq).padStart(6, '0')}` };
@@ -295,12 +305,24 @@ describe('when delivery cannot finish', () => {
       .bind(`m1${order.publicId}`, order.orderId, order.userId)
       .run();
 
-    await expect(provisionPaidOrders(db, brokenRequest)).rejects.toThrow();
+    // Used to assert that `provisionPaidOrders` rejects. It no longer does —
+    // the sweep logs this order and moves on — and rejecting was never the
+    // property anyway: what keeps the money safe is the rollback, asserted
+    // below. Swallowing is the better behaviour and this test now proves why,
+    // with a second, healthy order queued behind the broken one. Before the
+    // catch, that customer waited for a sweep that died on somebody else's
+    // order, every tick, for ever.
+    const behind = await paidOrder();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await provisionPaidOrders(db, brokenRequest);
+    errors.mockRestore();
 
     // Rolled back together: still PROVISIONING, so the next sweep retries it.
     // Before the fix this row read FAILED and stayed that way for ever.
     const row = await orderRow(order.orderId);
     expect(row?.status).not.toBe('FAILED');
+    // And the order behind it was served rather than stranded.
+    expect(await orderRow(behind.orderId)).toMatchObject({ status: 'FAILED' });
     const refunds = await db
       .prepare(
         `SELECT count(*)::int AS n FROM wallet_entries WHERE order_id = ?1 AND kind = 'REFUND'`,
@@ -308,6 +330,166 @@ describe('when delivery cannot finish', () => {
       .bind(order.orderId)
       .first<{ n: number }>();
     expect(refunds?.n).toBe(0);
+  });
+
+  it('sells one service, not two, when two sweeps interleave inside the write', async () => {
+    // H-01. The claim on the order is a real fence and not the whole fence:
+    // `reclaimStalled` hands a PROVISIONING order back to PAID once it has been
+    // held past the stall window, and a sweep that is SLOW — a panel taking its
+    // time — is not a sweep that died. Two sweeps then reach the write for the
+    // same order.
+    //
+    // The window is INSIDE the write, and that matters, because the obvious
+    // test does not find it. Holding the first sweep in its panel call and
+    // running the second to completion was written first and passed against the
+    // OLD code with no index at all: by the time the first opens its
+    // transaction, the second's row is committed and its SELECT sees it. What
+    // the old code could not survive is both transactions being open at once —
+    // each reading "no subscription yet" before either writes. That is
+    // read-committed working as designed, and it is exactly why count-then-act
+    // is not a guard.
+    //
+    // So the interleaving is done here, on two real sessions, in the order two
+    // sweeps produce it. Postgres is the judge: the second insert has to be
+    // refused by the index, not by anything this test or the code believes.
+    const order = await paidOrder();
+    const bothLooked = latch();
+    const firstWrote = latch();
+
+    const insert = (tx: D1DatabaseSession, publicId: string) =>
+      tx
+        .prepare(
+          `INSERT INTO subscriptions
+             (public_id, user_id, order_id, plan_id, price_irr, status, purchased_at,
+              provider_name_at_sale, plan_name_at_sale)
+           VALUES (?1, ?2, ?3, NULL, 1, 'ACTIVE', now(), 'panel', 'plan')`,
+        )
+        .bind(publicId, order.userId, order.orderId)
+        .run();
+
+    const seesNothing = (tx: D1DatabaseSession) =>
+      tx
+        .prepare(`SELECT id FROM subscriptions WHERE order_id = ?1 LIMIT 1`)
+        .bind(order.orderId)
+        .first<{ id: number }>();
+
+    let secondFailed: unknown = null;
+    const sweepA = db.withSession(async (tx) => {
+      expect(await seesNothing(tx)).toBeNull();
+      await bothLooked.reached;
+      await insert(tx, `raceA${order.orderId}`);
+      firstWrote.open();
+    });
+    const sweepB = db.withSession(async (tx) => {
+      // Looked before A wrote — the whole point.
+      expect(await seesNothing(tx)).toBeNull();
+      bothLooked.open();
+      await firstWrote.reached;
+      try {
+        await insert(tx, `raceB${order.orderId}`);
+      } catch (err) {
+        secondFailed = err;
+        throw err;
+      }
+    });
+
+    await sweepA;
+    await expect(sweepB).rejects.toThrow();
+
+    // Postgres refused it, and named the index doing the refusing.
+    expect(String(secondFailed)).toContain('idx_subscriptions_one_per_order');
+    // One row for the order, whichever sweep won.
+    const subs = await db
+      .prepare(`SELECT count(*)::int AS n FROM subscriptions WHERE order_id = ?1`)
+      .bind(order.orderId)
+      .first<{ n: number }>();
+    expect(subs?.n).toBe(1);
+  });
+
+  it('does not drag a finished order back out of its terminal state', async () => {
+    // The three retryable exits wrote PAID by id alone. An order this sweep no
+    // longer owns — reclaimed while it waited, then COMPLETED or FAILED by the
+    // sweep that took it — was pulled back to PAID and sold again. Here the
+    // panel is down, so the exit taken is the retryable one, and the order is
+    // moved to a terminal state underneath it while it waits.
+    const order = await paidOrder();
+    const inThePanel = latch();
+    const letItFinish = latch();
+
+    // Held on THIS order, and only after the panel has answered the login.
+    //
+    // Latching on any request made the test pass with the guard removed: the
+    // sweep paused on an earlier test's leftover order, this one was set
+    // COMPLETED before it was ever claimed, and the claim then skipped it, so
+    // `release` was never reached and the assertion measured nothing. Failing
+    // the login instead never reached a request naming this order at all.
+    const heldDeadPanel = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 't' }), { status: 200 });
+      }
+      if (`${String(input)}${String(init?.body ?? '')}`.includes(order.publicId)) {
+        inThePanel.open();
+        await letItFinish.reached;
+      }
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof globalThis.fetch;
+
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const sweep = provisionPaidOrders(db, heldDeadPanel);
+    await inThePanel.reached;
+    // Somebody else finished it while this sweep was waiting on the panel.
+    await db
+      .prepare(`UPDATE orders SET status = 'COMPLETED', completed_at = now() WHERE id = ?1`)
+      .bind(order.orderId)
+      .run();
+    letItFinish.open();
+    await sweep;
+    errors.mockRestore();
+
+    // Still COMPLETED. Before the guard this read PAID and the next sweep sold
+    // the customer a second service for one payment.
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
+  });
+
+  it('writes nothing and says nothing when it loses the order at the last step', async () => {
+    // The other half of the same race, on the SUCCESS path. The panel answered,
+    // the account exists, and while this sweep was waiting for it the order was
+    // finished by somebody else. `WHERE status = 'PROVISIONING'` was already on
+    // the COMPLETED write; what was missing was anyone reading the answer, so a
+    // transition that changed no rows returned exactly like one that changed a
+    // row — and the loser went on to write its subscription and tell the
+    // customer their service was ready. Two messages, one purchase.
+    const order = await paidOrder();
+    const inThePanel = latch();
+    const letItFinish = latch();
+    const fast = fakePanel();
+
+    const heldPanel = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (`${String(input)}${String(init?.body ?? '')}`.includes(order.publicId)) {
+        inThePanel.open();
+        await letItFinish.reached;
+      }
+      return fast.fetchImpl(input as never, init as never);
+    }) as unknown as typeof globalThis.fetch;
+
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const sweep = provisionPaidOrders(db, heldPanel);
+    await inThePanel.reached;
+    await db
+      .prepare(`UPDATE orders SET status = 'COMPLETED', completed_at = now() WHERE id = ?1`)
+      .bind(order.orderId)
+      .run();
+    letItFinish.open();
+    await sweep;
+    warns.mockRestore();
+
+    // Rolled back: the loser's subscription row is not there.
+    expect(await subsFor(order.orderId)).toHaveLength(0);
+    // And it told the customer nothing — the sweep that won does that.
+    const notes = (await pendingNotifications()).filter((n) => n.chatId === order.telegramId);
+    expect(notes).toHaveLength(0);
+    // The sweep survived it rather than dying on somebody else's order.
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
   });
 
   it('takes back an order left mid-flight by a sweep that died', async () => {

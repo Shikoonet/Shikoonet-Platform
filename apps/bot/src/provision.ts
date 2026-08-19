@@ -23,7 +23,7 @@
  * returns the account that already exists (`remoteUsernameFor`).
  */
 
-import type { D1Database } from '@shikoo/database';
+import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import {
   adapterFor,
   remoteUsernameFor,
@@ -259,7 +259,22 @@ export async function provisionPaidOrders(
       .run();
     if (claimed.meta.changes === 0) continue;
 
-    const note = await deliver(db, row, fetchImpl, now);
+    let note;
+    try {
+      note = await deliver(db, row, fetchImpl, now);
+    } catch (err) {
+      // One order must not stop the sweep. Before this, an exception here left
+      // every paid order behind it unserved until the next tick — and with a
+      // poison order, for ever. `LostTheClaim` is the ordinary case and is not
+      // worth a stack trace: it means another sweep finished this order, which
+      // is the outcome the claim exists to produce.
+      if (err instanceof LostTheClaim) {
+        console.warn(`[bot] order ${row.order_public_id} was finished by another sweep`);
+      } else {
+        console.error(`[bot] order ${row.order_public_id} failed mid-delivery`, err);
+      }
+      continue;
+    }
     if (note !== null && row.telegram_id !== null) {
       // ponytail: enqueued just after `deliver` commits rather than inside its
       // transaction. `deliver` and `renew` reach a customer-visible message
@@ -352,10 +367,7 @@ async function deliver(
       // Back to PAID so the next pass tries again. The customer is told nothing
       // yet — a panel that is briefly down is not news, and saying "there was a
       // problem" only to succeed a minute later is worse than silence.
-      await db
-        .prepare(`UPDATE orders SET status = 'PAID', updated_at = now() WHERE id = ?1`)
-        .bind(row.order_id)
-        .run();
+      await release(db, row.order_id);
       console.error(`[bot] order ${row.order_public_id} will retry: ${result.reason}`);
       return null;
     }
@@ -366,13 +378,14 @@ async function deliver(
 
   const expiresAt = request.expiresAt;
   await db.withSession(async (tx) => {
-    // `order_id` is UNIQUE-free by design, so the guard is the SELECT plus the
-    // fact that only one sweep can hold this order in PROVISIONING at a time.
-    const already = await tx
-      .prepare(`SELECT id FROM subscriptions WHERE order_id = ?1 LIMIT 1`)
-      .bind(row.order_id)
-      .first<{ id: number }>();
-    if (!already) {
+    // The guard is in the statement, not in a read before it. It used to be a
+    // SELECT and a comment arguing that only one sweep can hold an order in
+    // PROVISIONING — true of the claim, and not true across `reclaimStalled`,
+    // which hands a slow sweep's order to a second one while the first is still
+    // inside its panel call. Both then found nothing and both inserted.
+    // Migration 0027 makes that impossible; this is the statement that leans on
+    // it.
+    {
       await tx
         .prepare(
           `INSERT INTO subscriptions
@@ -381,7 +394,8 @@ async function deliver(
               remote_ref, remote_username, subscription_url, volume_gb, duration_days,
               status, purchased_at, activated_at, expires_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9::jsonb, ?10, ?11, ?12, ?13,
-                   'ACTIVE', now(), now(), ?14)`,
+                   'ACTIVE', now(), now(), ?14)
+           ON CONFLICT (order_id) WHERE order_id IS NOT NULL DO NOTHING`,
         )
         .bind(
           row.order_public_id,
@@ -403,13 +417,7 @@ async function deliver(
         )
         .run();
     }
-    await tx
-      .prepare(
-        `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
-          WHERE id = ?1 AND status = 'PROVISIONING'`,
-      )
-      .bind(row.order_id)
-      .run();
+    await complete(tx, row.order_id);
   });
 
   // A manual provider has no link to give. Promising one that does not exist is
@@ -484,10 +492,7 @@ async function renew(
   if (addon === null) {
     const shop = await loadShopSettings(db);
     if (!shop.fromDatabase) {
-      await db
-        .prepare(`UPDATE orders SET status = 'PAID', updated_at = now() WHERE id = ?1`)
-        .bind(row.order_id)
-        .run();
+      await release(db, row.order_id);
       console.error(
         `[bot] renewal ${row.order_public_id} will retry: the cashback rate could not be read`,
       );
@@ -523,10 +528,7 @@ async function renew(
 
   if (!result.ok) {
     if (result.retryable) {
-      await db
-        .prepare(`UPDATE orders SET status = 'PAID', updated_at = now() WHERE id = ?1`)
-        .bind(row.order_id)
-        .run();
+      await release(db, row.order_id);
       console.error(`[bot] renewal ${row.order_public_id} will retry: ${result.reason}`);
       return null;
     }
@@ -558,13 +560,7 @@ async function renew(
           expiresAt === null ? null : expiresAt.toISOString(),
         )
         .run();
-      await tx
-        .prepare(
-          `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
-            WHERE id = ?1 AND status = 'PROVISIONING'`,
-        )
-        .bind(row.order_id)
-        .run();
+      await complete(tx, row.order_id);
     });
     return say(menu.addonApplied(addon.kind, addon.quantity, serviceName, expiresAt));
   }
@@ -605,13 +601,7 @@ async function renew(
         mode === 'RESET',
       )
       .run();
-    await tx
-      .prepare(
-        `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
-          WHERE id = ?1 AND status = 'PROVISIONING'`,
-      )
-      .bind(row.order_id)
-      .run();
+    await complete(tx, row.order_id);
     // In the same transaction as COMPLETED, so a renewal that ends up rolled
     // back cannot leave a customer credited for a service they did not get.
     cashbackIrr = await creditRenewalCashback(tx, row.order_id, renewCashbackPercent);
@@ -620,14 +610,62 @@ async function renew(
   return say(menu.serviceRenewed(serviceName, expiresAt, cashbackIrr));
 }
 
-async function complete(db: D1Database, orderId: number): Promise<void> {
+/**
+ * Hands a claimed order back for the next pass.
+ *
+ * `AND status = 'PROVISIONING'` is the whole of it, and it was missing until
+ * 2026-08-19: the three retryable exits wrote PAID by id alone. An order this
+ * sweep no longer owns — reclaimed by `reclaimStalled` and finished by another
+ * sweep, or ended by `fail` — was dragged back out of its terminal state and
+ * sold again. Releasing is only meaningful from the state this sweep put it in,
+ * so that is the state it is guarded on.
+ *
+ * Silent when it changes nothing. Losing the claim is not an error: it means
+ * somebody else finished the work, which is the outcome we wanted anyway.
+ */
+async function release(db: D1Database, orderId: number): Promise<void> {
   await db
+    .prepare(
+      `UPDATE orders SET status = 'PAID', updated_at = now()
+        WHERE id = ?1 AND status = 'PROVISIONING'`,
+    )
+    .bind(orderId)
+    .run();
+}
+
+/**
+ * Thrown when an order moved out from under this sweep.
+ *
+ * Not an error in the sense that something is broken — it is two sweeps racing
+ * and one of them losing, which the claim is designed to allow. What it must
+ * not do is let the loser go on to write a subscription row and tell the
+ * customer their service is ready, because the winner is doing that already.
+ * Raised inside the transaction so everything the loser wrote rolls back.
+ */
+class LostTheClaim extends Error {
+  constructor(orderId: number) {
+    super(`order ${orderId} is no longer PROVISIONING — another sweep owns it`);
+    this.name = 'LostTheClaim';
+  }
+}
+
+/**
+ * Moves a claimed order to COMPLETED, or gives up the whole transaction.
+ *
+ * The `WHERE status = 'PROVISIONING'` was here before; what was missing is
+ * anyone reading the answer. A transition that changed no rows returned exactly
+ * like one that changed a row, so the sweep that lost the race still wrote its
+ * subscription and still told the customer.
+ */
+async function complete(tx: D1Database | D1DatabaseSession, orderId: number): Promise<void> {
+  const done = await tx
     .prepare(
       `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
         WHERE id = ?1 AND status = 'PROVISIONING'`,
     )
     .bind(orderId)
     .run();
+  if (done.meta.changes !== 1) throw new LostTheClaim(orderId);
 }
 
 /**
