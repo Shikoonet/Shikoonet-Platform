@@ -37,7 +37,7 @@ const CODE = 'test-panel';
 const PRODUCT_CODE = 'test-panel-vpn';
 
 /**
- * Nothing here may touch a real database.
+ * Nothing here may touch a real database by accident.
  *
  * This script writes to the catalogue — the table that decides where a
  * customer's order is delivered. On the simulation that is free; on production
@@ -45,15 +45,25 @@ const PRODUCT_CODE = 'test-panel-vpn';
  * evidence would be a customer receiving a config from the wrong server. The
  * host is checked rather than trusted because `DATABASE_URL` is one shell
  * variable away from being the wrong one.
+ *
+ * The hostname is a proxy for "is this the simulation", and on 2026-08-19 that
+ * proxy ran out: the Coolify staging box is a test environment too, and its
+ * database is reachable only as a Docker service name. So the check now has an
+ * escape hatch — one that cannot be taken by accident, because it names the
+ * host it is being taken for. Setting it to `yes` would not do; the operator
+ * has to have looked at the host they are about to write to.
  */
-function assertLocal(connectionString: string): void {
+const OVERRIDE = 'WIRE_TEST_PANEL_ON_HOST';
+
+export function assertLocal(connectionString: string): void {
   const host = new URL(connectionString).hostname;
-  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
-    throw new Error(
-      `refusing to write the catalogue on a non-local database (host ${host}). ` +
-        'This script is for the simulation only.',
-    );
-  }
+  if (host === '127.0.0.1' || host === 'localhost' || host === '::1') return;
+  if (process.env[OVERRIDE] === host) return;
+  throw new Error(
+    `refusing to write the catalogue on a non-local database (host ${host}). ` +
+      'This script is for the simulation. If this really is a test environment, ' +
+      `re-run it with ${OVERRIDE}=${host}.`,
+  );
 }
 
 function required(name: string): string {
@@ -146,9 +156,13 @@ async function main(): Promise<number> {
 const PLAN_NAME = '۱۰ گیگ / ۳۰ روز — ۱۲۳٬۰۰۰ تومان';
 const PLAN_PRICE_IRR = 1_230_000;
 
-main()
-  .then((code) => process.exit(code))
-  .catch((err) => {
-    console.error(String(err instanceof Error ? err.message : err));
-    process.exit(2);
-  });
+// Only when run directly, so a test can import `assertLocal` without the script
+// opening a pool and writing rows — the same guard `src/server.ts` uses.
+if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'))) {
+  main()
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error(String(err instanceof Error ? err.message : err));
+      process.exit(2);
+    });
+}
