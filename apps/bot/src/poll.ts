@@ -203,7 +203,7 @@ export async function pollOnce(
     for (const reply of outcome.replies) {
       try {
         if (reply.qrOf !== undefined) {
-          await api.sendPhotoBytes(reply.chatId, await qrPng(reply.qrOf), reply.text);
+          await api.sendPhotoBytes(reply.chatId, await qrPng(reply.qrOf), reply.text, reply.keyboard);
         } else if (reply.photo !== undefined) {
           await api.sendPhoto(reply.chatId, reply.photo, reply.text);
         } else if (reply.document !== undefined) {

@@ -16,7 +16,8 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { enqueue, flush, LEASE_MS, MAX_ATTEMPTS, nextAttemptDelayMs } from '../src/notify.js';
-import { TelegramRejection, type TelegramApi } from '../src/telegram.js';
+import { MAX_COPY_TEXT_LENGTH, TelegramRejection, type TelegramApi } from '../src/telegram.js';
+import * as menu from '../src/menu.js';
 import { db } from './helpers/env.js';
 
 const NOW = 1_786_000_000_000;
@@ -343,5 +344,26 @@ describe('what a message carries besides its text', () => {
     const { api, sent } = recorder();
     await flush(db, api, { now: NOW });
     expect(sent).toEqual([{ kind: 'text', body: 'hello', keyboard: undefined }]);
+  });
+});
+
+/**
+ * The link a customer has to get into another app.
+ *
+ * Telegram's monospace is tap-to-copy, and this file sets no `parse_mode`
+ * anywhere on purpose — so the same affordance has to be a `copy_text` button,
+ * the one the checkout already uses for the card number.
+ */
+describe('copying the subscription link', () => {
+  it('offers a copy button carrying the link exactly', () => {
+    const url = 'https://pasa.fallumi.ir/sub/djMsOSwxNzg3MTM1MjE1.JPOI1ANZmAbZ2xDGHPEG';
+    const rows = menu.copyLinkMenu(url);
+    expect(rows?.[0]?.[0]?.copy_text).toEqual({ text: url });
+  });
+
+  it('offers none for a link Telegram would truncate', () => {
+    // A button that silently copies half a URL is worse than no button: the
+    // customer pastes it, the import fails, and nothing said why.
+    expect(menu.copyLinkMenu(`https://x/${'a'.repeat(MAX_COPY_TEXT_LENGTH)}`)).toBeUndefined();
   });
 });

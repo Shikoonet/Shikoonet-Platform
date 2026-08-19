@@ -2156,9 +2156,18 @@ async function handleCallback(
       }
       // A new message rather than an edit: the detail screen the customer is
       // looking at stays where it is, and the picture arrives under it.
+      const copy = menu.copyLinkMenu(service.subscription_url);
       return {
         status: 'processed',
-        replies: [{ chatId, text: service.subscription_url, qrOf: service.subscription_url }],
+        replies: [
+          // Built by hand for the reason `reply` is: `exactOptionalPropertyTypes`
+          // rejects an explicit `undefined`, and the copy button is absent for a
+          // link too long for Telegram to carry on one.
+          {
+            ...reply(chatId, service.subscription_url, copy ?? undefined),
+            qrOf: service.subscription_url,
+          },
+        ],
       };
     }
 

@@ -33,6 +33,7 @@
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { isPermanentRejection, type InlineKeyboard, type TelegramApi } from './telegram.js';
+import { copyLinkMenu } from './menu.js';
 import { qrPng } from './qr.js';
 
 /** What a sweep wants said, and the key that stops it being said twice. */
@@ -193,7 +194,12 @@ export async function flush(
       // this row failing. Without the mark, a message Telegram refuses would
       // send the customer a second QR on every attempt — up to eight of them.
       if (row.qr_payload !== null && row.qr_sent_at === null) {
-        await api.sendPhotoBytes(row.chat_id, await qrPng(row.qr_payload));
+        await api.sendPhotoBytes(
+          row.chat_id,
+          await qrPng(row.qr_payload),
+          row.qr_payload,
+          copyLinkMenu(row.qr_payload),
+        );
         await markQrSent(db, row.id);
       }
       await api.sendMessage(row.chat_id, row.body, keyboardOf(row));

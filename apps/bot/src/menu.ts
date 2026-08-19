@@ -1556,6 +1556,24 @@ export function serviceDetail(service: ServiceView, now: number): string {
 }
 
 /**
+ * One tap to put the link on the clipboard.
+ *
+ * The competitor's bot renders the link in monospace, which on Telegram means
+ * tap-to-copy. We set no `parse_mode` anywhere — a Persian sentence full of `<`
+ * and `&` is safe precisely because of that — so the same affordance is a
+ * `copy_text` button instead, which is what the checkout already uses for the
+ * card number.
+ *
+ * Absent when the link is longer than Telegram allows a copy button to carry:
+ * a button that silently copies a truncated URL is worse than none, and the
+ * caption underneath is still selectable by hand.
+ */
+export function copyLinkMenu(url: string): InlineKeyboard | undefined {
+  if (url.length > MAX_COPY_TEXT_LENGTH) return undefined;
+  return [[{ text: '📋 کپی لینک اشتراک', copy_text: { text: url } }]];
+}
+
+/**
  * ponytail: back always lands on the first page. Carrying the page the customer
  * came from would need a second id in `callback_data`, and it costs four
  * customers in production one extra tap.
