@@ -480,6 +480,30 @@ app.post('/api/v1/devices', async (c) => {
             created_at, activated_at, revoked_at, last_used_at)
          VALUES (?1, ?2, ?3, ?4, 'ACTIVE', ?5, ?5, NULL, NULL)`,
       ).bind(credentialId, deviceId, hash, prefix, now),
+      // In the batch, not after it. `batch()` is a real transaction here, and
+      // the audit used to be a separate statement that ran once the device and
+      // its credential were already committed: a failure there returned 500
+      // while an ACTIVE credential existed in the database whose plaintext had
+      // just been thrown away with the response. Nobody could use that token
+      // and nothing said it was there.
+      c.env.DB.prepare(SQL.insertAudit).bind(
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        'device.created',
+        'DEVICE',
+        deviceId,
+        null,
+        JSON.stringify({
+          deviceCode: v.code,
+          displayName: parsed.data.displayName.trim(),
+          credentialId,
+          tokenPrefix: prefix,
+        }),
+        null,
+        c.req.header('cf-ray') ?? null,
+        now,
+      ),
     ]);
   } catch (e) {
     if (isUniqueViolation(e)) {
@@ -487,27 +511,6 @@ app.post('/api/v1/devices', async (c) => {
     }
     return c.json({ ok: false, error: 'insert_failed' }, 500);
   }
-
-  await c.env.DB.prepare(SQL.insertAudit)
-    .bind(
-      crypto.randomUUID(),
-      ident.email,
-      ident.role,
-      'device.created',
-      'DEVICE',
-      deviceId,
-      null,
-      JSON.stringify({
-        deviceCode: v.code,
-        displayName: parsed.data.displayName.trim(),
-        credentialId,
-        tokenPrefix: prefix,
-      }),
-      null,
-      c.req.header('cf-ray') ?? null,
-      now,
-    )
-    .run();
 
   c.header('Cache-Control', 'no-store');
   c.header('Pragma', 'no-cache');

@@ -5,7 +5,7 @@
  * on the row — and then checks the rows the customer's order actually lives on.
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { handleUpdate } from '../src/handle.js';
 import { settleVerifiedPayments } from '../src/settle.js';
 import type { TelegramUpdate } from '../src/telegram.js';
@@ -197,6 +197,56 @@ describe('settling a verified payment', () => {
       order: 'CANCELLED',
       payment: 'PAID',
     });
+
+    // And it is written down somewhere that outlives a log rotation. This used
+    // to be a `console.error` and nothing else: the one record in this system
+    // that ages out, holding a customer's money with nobody assigned to it.
+    const incident = await db
+      .prepare(
+        `SELECT actor_role, action, entity_id, after_json, reason FROM audit_logs
+          WHERE action = 'PAYMENT_NEEDS_REFUND' AND entity_id = ?1`,
+      )
+      .bind(sale.paymentPublicId)
+      .first<{ actor_role: string; action: string; entity_id: string; after_json: string; reason: string }>();
+
+    expect(incident).not.toBeNull();
+    expect(incident?.actor_role).toBe('SYSTEM');
+    // The state the order was in when it happened, so whoever picks this up
+    // does not have to guess why the money could not be applied.
+    const detail = JSON.parse(incident!.after_json) as { orderStatus: string; orderId: number };
+    expect(detail.orderStatus).toBe('CANCELLED');
+    expect(detail.orderId).toBe(sale.orderId);
+  });
+
+  it('records nothing when the settlement rolls back', async () => {
+    // The incident row is inside the settling transaction on purpose. A record
+    // of money needing a refund, for a payment that was never settled at all,
+    // sends somebody looking for a problem that does not exist — and the
+    // reverse, settling without recording, is the bug this closes.
+    const sale = await buyAndClaim('sim-shop-ai');
+    await db
+      .prepare(`UPDATE orders SET status = 'CANCELLED' WHERE id = ?1`)
+      .bind(sale.orderId)
+      .run();
+    await hubVerifies(sale.paymentPublicId);
+
+    // The message the settlement owes cannot be written, so the whole
+    // transaction rolls back — the same lever `refuses to settle at all if the
+    // message cannot be recorded` pulls.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await db.prepare(`ALTER TABLE bot_notifications RENAME TO notifications_hidden`).run();
+    try {
+      await settleVerifiedPayments(db).catch(() => undefined);
+    } finally {
+      await db.prepare(`ALTER TABLE notifications_hidden RENAME TO bot_notifications`).run();
+      errors.mockRestore();
+    }
+
+    const incident = await db
+      .prepare(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'PAYMENT_NEEDS_REFUND' AND entity_id = ?1`)
+      .bind(sale.paymentPublicId)
+      .first<{ n: number }>();
+    expect(incident?.n).toBe(0);
   });
 
   it('leaves a claim the hub has not verified completely alone', async () => {

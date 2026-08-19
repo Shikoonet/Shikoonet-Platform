@@ -13,12 +13,51 @@
  * memory.
  */
 
-import type { D1Database } from '@shikoo/database';
+import { randomUUID } from 'node:crypto';
+import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import * as menu from './menu.js';
 import { enqueue } from './notify.js';
 import { payReferralCommission } from './referral.js';
 import { loadShopSettings } from './settings.js';
 import { creditTopup } from './wallet.js';
+
+/**
+ * A payment that arrived for an order nobody can apply it to.
+ *
+ * `SYSTEM` is already in the `actor_role` CHECK — this is the case that column
+ * was reserved for. `entity_type`/`entity_id` are the payment rather than the
+ * order, because the payment is the thing holding money and the order may not
+ * exist at all.
+ *
+ * ponytail: an audit row, not an incident table with severity, an owner and a
+ * resolution state. Nothing has ever needed to mark one of these resolved, and
+ * inventing the workflow before anyone has worked one is guessing at what they
+ * would want it to do. What the row must not be is lost, and it is not.
+ */
+async function recordIncident(tx: D1DatabaseSession, row: SettleRow): Promise<void> {
+  await tx
+    .prepare(
+      `INSERT INTO audit_logs
+         (id, actor_email, actor_role, action, entity_type, entity_id,
+          before_json, after_json, reason, created_at)
+       VALUES (?1, NULL, 'SYSTEM', 'PAYMENT_NEEDS_REFUND', 'payment', ?2,
+               NULL, ?3::text, ?4, ?5)`,
+    )
+    .bind(
+      randomUUID(),
+      row.payment_public_id,
+      JSON.stringify({
+        orderId: row.order_id,
+        orderStatus: row.order_status ?? 'missing',
+        orderKind: row.order_kind,
+        amountIrr: row.order_total_irr,
+        userId: row.order_user_id,
+      }),
+      'payment verified against an order that was no longer awaiting payment',
+      Date.now(),
+    )
+    .run();
+}
 
 interface SettleRow {
   payment_id: number;
@@ -124,8 +163,20 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
         if (moved.meta.changes === 0) {
           // Somebody paid for an order that is no longer waiting to be paid —
           // cancelled, expired, or already settled by another route. The payment
-          // stays PAID because the money is real, and this is said out loud
-          // rather than swallowed: it is a refund somebody has to make.
+          // stays PAID because the money is real, and this is a refund somebody
+          // has to make.
+          //
+          // Written to `audit_logs` and not only to stdout. A log line is the
+          // one record in this system that rotates away, and what it is holding
+          // here is a customer's money with nobody assigned to it. The row is
+          // durable, append-only, carries the amount and the order's state at
+          // the moment it happened, and is reachable by the entity index the
+          // dashboard already uses.
+          //
+          // In the same transaction as the settlement it belongs to, so a
+          // rollback cannot leave the incident recorded for a payment that was
+          // never settled, or settle one without recording it.
+          await recordIncident(tx, row);
           console.error(
             `[bot] payment ${row.payment_public_id} verified against order ` +
               `${row.order_id}, which is ${row.order_status ?? 'missing'} — needs a human`,

@@ -142,6 +142,47 @@ describe('POST /api/v1/devices — create', () => {
     expect(body.configuration.method).toBe('POST');
   });
 
+  it('1b. leaves no credential behind when the audit row cannot be written', async () => {
+    // The device, its credential and the audit row used to be two operations:
+    // the batch committed, then the audit ran on its own. A failure there
+    // returned 500 while an ACTIVE credential sat in the database whose
+    // plaintext had just been discarded with the response — a live token
+    // nobody holds and nothing records.
+    //
+    // `audit_logs` is really renamed rather than stubbed: what is under test is
+    // whether the two writes share a transaction, and only the database can
+    // answer that.
+    await seedAccessUser('admin@x.com', 'ADMIN');
+    await env.DB.prepare(`ALTER TABLE audit_logs RENAME TO audit_hidden`).run();
+    let status: number;
+    try {
+      const r = await dashboardApp.fetch(
+        new Request('https://example.com/api/v1/devices', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ deviceCode: 'pixel-audit-01', displayName: 'audit probe' }),
+        }),
+        { ...env, TEST_ACCESS_USER: 'admin@x.com' },
+      );
+      status = r.status;
+    } finally {
+      await env.DB.prepare(`ALTER TABLE audit_hidden RENAME TO audit_logs`).run();
+    }
+
+    expect(status).toBe(500);
+    // Nothing survived the failure — no device, and above all no credential.
+    const left = await env.DB
+      .prepare(
+        `SELECT (SELECT count(*)::int FROM devices WHERE device_code = ?1) AS devices,
+                (SELECT count(*)::int FROM device_credentials dc
+                   JOIN devices d ON d.id = dc.device_id
+                  WHERE d.device_code = ?1) AS creds`,
+      )
+      .bind('pixel-audit-01')
+      .first<{ devices: number; creds: number }>();
+    expect(left).toMatchObject({ devices: 0, creds: 0 });
+  });
+
   it('2. READ_ONLY role is forbidden from creating a device', async () => {
     await seedAccessUser('ro@x.com', 'READ_ONLY');
     const r = await dashboardApp.fetch(
