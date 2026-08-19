@@ -67,6 +67,19 @@ FROM build AS runtime
 ENV ADMIN_DIST=/app/apps/admin-web/dist
 ENV NODE_ENV=production
 
+# Bind to every interface, because in here that is what "reachable" means.
+#
+# The default in `server.ts` is `127.0.0.1` and stays that way: on a laptop it
+# is the right answer, and a server that binds every interface by default is
+# one somebody exposes without deciding to. Inside a container it is the wrong
+# answer in the worst way — the process starts, the health check curls
+# 127.0.0.1 from inside and passes, and nothing outside can reach it. A
+# service that looks healthy and answers nobody.
+#
+# So the value is set where the fact is known, rather than left to whoever
+# writes the next environment file to remember.
+ENV HOST=0.0.0.0
+
 # The health check has to live here, not in the panel.
 #
 # Coolify's own check shells `curl` (falling back to `wget`) into the container,

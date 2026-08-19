@@ -46,6 +46,15 @@ export const SESSION_COOKIE = 'shikoo_session';
 
 /** Twelve hours of inactivity, and thirty days no matter how active. */
 const IDLE_HOURS = 12;
+
+/**
+ * How stale `last_seen_at` must be before a request bothers to slide it.
+ *
+ * Small enough that the idle window is still twelve hours to any accuracy
+ * anybody cares about, large enough that a dashboard polling every few seconds
+ * is not writing to the same row every time.
+ */
+const TOUCH_MINUTES = 5;
 const ABSOLUTE_DAYS = 30;
 
 /**
@@ -194,15 +203,36 @@ export async function identityForToken(
 ): Promise<OperatorIdentity | null> {
   const row = await db
     .prepare(
+      // Reads on every request, writes only when the timestamp is actually
+      // stale. It used to UPDATE unconditionally, and the cost was not the row
+      // churn: every request took a row lock on the operator's session, so two
+      // requests from one operator — which a polling dashboard makes constantly
+      // — queued behind each other for no reason.
+      //
+      // The idle window is unchanged in the only sense that matters. Sliding at
+      // most once per TOUCH_MINUTES means `expires_at` can be that
+      // much behind a continuously active session, so the effective idle
+      // timeout is IDLE_HOURS minus at most five minutes rather than exactly
+      // IDLE_HOURS. Against a twelve-hour window that is
+      // noise; against the lock it removes, it is the whole trade.
+      //
+      // `live` is read before `touched` writes: both CTEs see the same
+      // snapshot, so the identity returned is the one the request authenticated
+      // with regardless of whether the slide happened.
       `WITH live AS (
-         UPDATE operator_sessions
-            SET last_seen_at = now(),
-                expires_at   = now() + interval '${IDLE_HOURS} hours'
+         SELECT id, access_user_id, last_seen_at
+           FROM operator_sessions
           WHERE token_hash = ?1
             AND revoked_at IS NULL
             AND expires_at > now()
             AND created_at > now() - interval '${ABSOLUTE_DAYS} days'
-          RETURNING access_user_id
+       ), touched AS (
+         UPDATE operator_sessions s
+            SET last_seen_at = now(),
+                expires_at   = now() + interval '${IDLE_HOURS} hours'
+           FROM live
+          WHERE s.id = live.id
+            AND live.last_seen_at < now() - interval '${TOUCH_MINUTES} minutes'
        )
        SELECT u.email, u.role
          FROM live

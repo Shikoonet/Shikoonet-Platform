@@ -87,6 +87,46 @@ describe('POST /api/v1/auth/login', () => {
     expect(after.status).toBe(200);
   });
 
+  it('does not write to the session on every request, but still slides it', async () => {
+    // The session row used to be UPDATEd by every authenticated request. The
+    // cost was not the churn — it was the row lock, which made two requests
+    // from one operator queue behind each other, and a dashboard that polls
+    // makes those constantly.
+    //
+    // Both halves are asserted here, because dropping the write entirely would
+    // also pass the first one and would quietly turn a twelve-hour idle window
+    // into a fixed twelve-hour session.
+    const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
+    const hit = () =>
+      app.request('/api/v1/admin/customers', { headers: { cookie: `shikoo_session=${token}` } }, ENV);
+    const seen = async () =>
+      (
+        await baseEnv.DB.prepare(
+          `SELECT last_seen_at::text AS s, expires_at::text AS e FROM operator_sessions
+            ORDER BY created_at DESC LIMIT 1`,
+        ).first<{ s: string; e: string }>()
+      )!;
+
+    await hit();
+    const first = await seen();
+    await hit();
+    const second = await seen();
+    // Same request, seconds apart: nothing was written.
+    expect(second.s).toBe(first.s);
+    expect(second.e).toBe(first.e);
+
+    // Now age the row past the touch window. The next request must slide it,
+    // or an operator working all day is logged out mid-edit.
+    await baseEnv.DB.prepare(
+      `UPDATE operator_sessions SET last_seen_at = now() - interval '10 minutes'
+        WHERE token_hash IS NOT NULL`,
+    ).run();
+    await hit();
+    const third = await seen();
+    expect(third.s).not.toBe(first.s);
+    expect(new Date(third.e).getTime()).toBeGreaterThan(new Date(first.e).getTime());
+  });
+
   it('stores only the hash, so the table cannot give a session away', async () => {
     const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
     const row = await baseEnv.DB.prepare(
