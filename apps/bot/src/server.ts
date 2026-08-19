@@ -97,10 +97,20 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
   // One beat before the loop, so a container that has just acquired the lock is
   // healthy from its first second rather than during its first cycle.
   beat();
+  const raw = process.env['REPORT_CHAT_ID'];
+  const reportChatId = raw && Number.isSafeInteger(Number(raw)) ? Number(raw) : null;
+  if (raw && reportChatId === null) {
+    console.error(`[bot] REPORT_CHAT_ID=${raw} is not a number — no daily report will be sent`);
+  }
+
   const finished = run(db, api, {
     timeoutSec: positiveInt('TELEGRAM_POLL_TIMEOUT_SEC', 25),
     signal: controller.signal,
     onCycle: beat,
+    // A channel id is negative and can be large, so it is parsed rather than
+    // run through `positiveInt`. Unset means no nightly report — the same thing
+    // an empty `Channel_Report` means on the bot this replaces.
+    ...(reportChatId === null ? {} : { reportChatId }),
   });
 
   console.log('bot polling');

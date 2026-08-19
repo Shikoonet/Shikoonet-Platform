@@ -27,6 +27,7 @@ import {
   strandedSendingCount,
   SEND_GAP_MS,
 } from './broadcast.js';
+import { sweepDailyReport } from './report.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 import { qrPng } from './qr.js';
 
@@ -388,6 +389,12 @@ export interface RunOptions {
    * the filesystem — and so a cycle that never finishes cannot fake one.
    */
   onCycle?: () => void;
+  /**
+   * Where the nightly report goes. Absent means no report, which is how the
+   * legacy behaves when its `Channel_Report` is empty — a shop that does not
+   * want it should not be paying six aggregate queries a night to not send it.
+   */
+  reportChatId?: number;
 }
 
 export async function run(
@@ -449,6 +456,14 @@ export async function run(
       // advancing it, and an order settled or delivered earlier in this same
       // cycle must have moved out of AWAITING_PAYMENT before this looks.
       await sweep('expiring unpaid orders', () => expireUnpaidOrders(db));
+      // Yesterday's numbers, once. Cheap on the ~3,400 cycles a day that have
+      // nothing to do — it asks whether the report exists before it builds one,
+      // which is a primary-key hit against six aggregate queries.
+      await sweep('the daily report', async () => {
+        const queued = await sweepDailyReport(db, options.reportChatId ?? null);
+        if (queued) console.log('[bot] queued the daily report');
+        return queued ? 1 : 0;
+      });
       // After every sweep that can enqueue, so a payment settled at the top of
       // this cycle is told about at the bottom of the same one — the property
       // the old inline sending had, kept.

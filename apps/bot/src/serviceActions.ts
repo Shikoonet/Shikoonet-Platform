@@ -48,9 +48,18 @@ export function actionsFor(
  * Which price column this customer is charged from.
  *
  * The legacy `agent` field is three tiers and we carry one flag, so a reseller
- * reads the reseller column and everybody else the ordinary one. `n2` exists in
- * the data and is priced identically to `n` on every live panel, so nothing is
- * lost by not having a third flag yet.
+ * reads the reseller column and everybody else the ordinary one.
+ *
+ * Counted rather than assumed, 2026-08-19, in the 2026-08-11 production dump:
+ * **11,265 customers are `f` and exactly one is `n`. None is `n2`.** So the
+ * third tier is a column in `shopSetting` that no customer has ever been in,
+ * and one flag loses nothing.
+ *
+ * It said "n2 is priced identically to n on every live panel" before, which was
+ * about add-on pricing and did not survive contact with the neighbouring
+ * setting: `chashbackextend_agent` is `{"n":"5","n2":0}`, so the two tiers were
+ * never identical — the renewal cashback differs. The reason one flag is enough
+ * is that nobody is in the tier, not that the tiers agree.
  */
 export function tierFor(user: { is_reseller: boolean }): menu.CustomerTier {
   return user.is_reseller ? 'n' : 'f';

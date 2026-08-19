@@ -372,6 +372,7 @@ it. `operator unlock` clears a lockout (five wrong passwords, fifteen minutes).
 | `SWEEP_INTERVAL_MS` | no | Default 60000 |
 | `DEVICE_RATE_LIMIT`, `IP_RATE_LIMIT`, `RATE_LIMIT_WINDOW_MS` | no | Second layer; the edge is the first |
 | `MIRZABOT_INTEGRATION_*`, `AUTO_MATCH_ENABLED`, `AUTO_FULFILLMENT_ENABLED` | while the PHP bot lives | HMAC integration with the legacy bot |
+| `REPORT_CHAT_ID` | optional | Where the nightly report goes. Unset means no report — the same thing an empty `Channel_Report` means on the bot this replaces. A channel id is negative. |
 
 A raw bank SMS body is never written to a log, under any setting. There used to
 be a `LOG_SMS_BODY` row here; the variable was read by nothing, so the
