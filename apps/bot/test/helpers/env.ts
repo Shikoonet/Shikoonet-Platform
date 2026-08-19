@@ -14,7 +14,18 @@ const { db, pool } = createPostgresD1();
 
 export { db, pool };
 
-const BOT_TABLES = ['telegram_updates', 'bot_sessions', 'users', 'bot_notifications'];
+const BOT_TABLES = [
+  'telegram_updates',
+  'bot_sessions',
+  'users',
+  'bot_notifications',
+  // Added 2026-08-18 after it cost an hour. `ids()` in `poll.test.ts` counts
+  // from a fixed base, so it hands out the SAME update ids on every run — and a
+  // dead-letter row left behind by the previous run made a test asserting "the
+  // row is there" pass with the write removed. The list is also what the guard
+  // below counts, so a missing table now says so instead of failing obscurely.
+  'telegram_dead_updates',
+];
 
 /**
  * What the sweeps decided a customer is owed.

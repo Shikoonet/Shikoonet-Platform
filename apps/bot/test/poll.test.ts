@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_UPDATE_ATTEMPTS, pollOnce, pruneUpdates, run } from '../src/poll.js';
+import type { Attempt } from '../src/poll.js';
 import type { TelegramApi, TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 
@@ -7,6 +8,16 @@ let nextId = 1;
 function ids(): { updateId: number; telegramId: number } {
   const n = nextId++ * 10;
   return { updateId: 700_000 + n, telegramId: 300_000 + n };
+}
+
+/** The dead-letter row for an update, or null when there is none. */
+async function deadRow(updateId: number) {
+  return db
+    .prepare(
+      `SELECT payload, attempts, last_error FROM telegram_dead_updates WHERE update_id = ?1`,
+    )
+    .bind(updateId)
+    .first<{ payload: TelegramUpdate; attempts: number; last_error: string | null }>();
 }
 
 function startUpdate(updateId: number, telegramId: number, text = '/start'): TelegramUpdate {
@@ -137,6 +148,75 @@ describe('pollOnce', () => {
     expect(result.offset).toBe(a.updateId);
   });
 
+  it('keeps what it gives up on, because acknowledging it is final', async () => {
+    // Telegram deletes an acknowledged update and never sends it again, so the
+    // drop that unblocks the queue is also the moment the message stops
+    // existing. If that update was «پرداخت کردم» or a receipt, the customer's
+    // action was gone and a rotated log line was the only evidence it happened.
+    const bad = ids();
+    const broken = startUpdate(bad.updateId, bad.telegramId);
+    broken.message!.from!.id = 9_300_000_000_000_000_009;
+
+    // Absent first, and this line is not ceremony. `ids()` counts from a fixed
+    // base, so the same update id comes round on every run — and with the write
+    // removed this test still passed on a row the PREVIOUS run had left behind.
+    // The table is truncated between runs now; this says so out loud.
+    expect(await deadRow(bad.updateId)).toBeNull();
+
+    const attempts = new Map<number, Attempt>();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let last;
+    for (let cycle = 0; cycle < MAX_UPDATE_ATTEMPTS + 1; cycle++) {
+      const { api } = fakeApi([broken]);
+      last = await pollOnce(db, api, bad.updateId, 25, undefined, attempts);
+    }
+    errors.mockRestore();
+
+    expect(last?.abandoned).toBe(1);
+    const dead = await deadRow(bad.updateId);
+
+    expect(dead).not.toBeNull();
+    expect(dead?.attempts).toBe(MAX_UPDATE_ATTEMPTS);
+    // The whole update, not a summary of it: the point is that a person can see
+    // what was lost and act on it by hand.
+    expect(dead?.payload.message?.from?.id).toBe(9_300_000_000_000_000_009);
+    expect(dead?.payload.update_id).toBe(bad.updateId);
+    // And why it died, which is the half that only exists at the moment of the
+    // failure — a cycle before the drop.
+    expect(dead?.last_error ?? '').not.toBe('');
+  });
+
+  it('drops the update even when it cannot be kept, rather than freezing', async () => {
+    // The deliberate half of the choice. Refusing to drop what could not be
+    // recorded would put the queue back behind the poison update — the freeze
+    // this counter exists to prevent — and would do it for a reason as ordinary
+    // as the migration not having run on that box yet. The table is really
+    // taken away, so this exercises the real failure and not a stub.
+    const bad = ids();
+    const good = ids();
+    const broken = startUpdate(bad.updateId, bad.telegramId);
+    broken.message!.from!.id = 9_300_000_000_000_000_010;
+
+    const attempts = new Map<number, Attempt>();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let last;
+    await db.prepare(`ALTER TABLE telegram_dead_updates RENAME TO dead_hidden`).run();
+    try {
+      for (let cycle = 0; cycle < MAX_UPDATE_ATTEMPTS + 1; cycle++) {
+        const { api } = fakeApi([broken, startUpdate(good.updateId, good.telegramId)]);
+        last = await pollOnce(db, api, bad.updateId, 25, undefined, attempts);
+      }
+    } finally {
+      await db.prepare(`ALTER TABLE dead_hidden RENAME TO telegram_dead_updates`).run();
+      errors.mockRestore();
+    }
+
+    // Given up on and past it: the queue moves, which is the property that
+    // must survive a broken dead-letter table.
+    expect(last?.abandoned).toBe(1);
+    expect(last?.offset).toBe(good.updateId + 1);
+  });
+
   it('gives up on a poison update and unblocks everything behind it', async () => {
     // The outage this closes: the offset never advances past an update that
     // always throws, so no later update is ever acknowledged and the same batch
@@ -146,7 +226,7 @@ describe('pollOnce', () => {
     const broken = startUpdate(bad.updateId, bad.telegramId);
     broken.message!.from!.id = 9_300_000_000_000_000_002;
 
-    const attempts = new Map<number, number>();
+    const attempts = new Map<number, Attempt>();
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     // A healthy batch each cycle: the poison update fails, the other succeeds.
@@ -174,7 +254,7 @@ describe('pollOnce', () => {
     brokenA.message!.from!.id = 9_300_000_000_000_000_003;
     brokenB.message!.from!.id = 9_300_000_000_000_000_004;
 
-    const attempts = new Map<number, number>();
+    const attempts = new Map<number, Attempt>();
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     for (let cycle = 0; cycle < MAX_UPDATE_ATTEMPTS + 2; cycle++) {
       const { api } = fakeApi([brokenA, brokenB]);
@@ -198,7 +278,7 @@ describe('pollOnce', () => {
     const broken = startUpdate(bad.updateId, bad.telegramId);
     broken.message!.from!.id = 9_300_000_000_000_000_005;
 
-    const attempts = new Map<number, number>();
+    const attempts = new Map<number, Attempt>();
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     let last;
     for (let cycle = 0; cycle < MAX_UPDATE_ATTEMPTS + 1; cycle++) {
@@ -215,7 +295,7 @@ describe('pollOnce', () => {
     // A transient fault must not leave a mark that a later, unrelated failure
     // can add to and tip over the edge.
     const { updateId, telegramId } = ids();
-    const attempts = new Map<number, number>([[updateId, MAX_UPDATE_ATTEMPTS - 1]]);
+    const attempts = new Map<number, Attempt>([[updateId, { count: MAX_UPDATE_ATTEMPTS - 1, lastError: 'a transient fault' }]]);
     const { api } = fakeApi([startUpdate(updateId, telegramId)]);
 
     const result = await pollOnce(db, api, updateId, 25, undefined, attempts);

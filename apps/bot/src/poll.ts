@@ -46,6 +46,45 @@ export interface PollResult {
  */
 export const MAX_UPDATE_ATTEMPTS = 3;
 
+/** What is known about an update that has failed at least once. */
+export interface Attempt {
+  count: number;
+  lastError: string;
+}
+
+/**
+ * Keeps an update the bot is about to give up on.
+ *
+ * One row per update id with a running total, not one per drop: Telegram can
+ * redeliver an update that was never acknowledged, and a restart loses the
+ * in-memory count, so the same id can arrive here twice. Two rows would read
+ * like two customers.
+ *
+ * ponytail: a record, not a retry queue. Nothing reads this back — replaying a
+ * dropped update is a decision a person makes with the payload in front of
+ * them, and building the button before anyone has needed it once would be
+ * guessing at what they would want it to do.
+ */
+async function recordDeadUpdate(
+  db: D1Database,
+  update: TelegramUpdate,
+  record: Attempt,
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO telegram_dead_updates (update_id, payload, attempts, last_error)
+       VALUES (?1, ?2::jsonb, ?3, ?4)
+       ON CONFLICT (update_id) DO UPDATE
+          SET attempts   = telegram_dead_updates.attempts + excluded.attempts,
+              last_error = excluded.last_error,
+              dropped_at = now()`,
+    )
+    // Truncated because it is a driver's message, not a document: Postgres
+    // errors carry the failing statement, and the statement can be long.
+    .bind(update.update_id, JSON.stringify(update), record.count, record.lastError.slice(0, 2_000))
+    .run();
+}
+
 export const EMPTY_COUNTS: Record<HandleStatus, number> = {
   processed: 0,
   duplicate: 0,
@@ -84,8 +123,15 @@ export async function pollOnce(
   offset: number,
   timeoutSec = 25,
   signal?: AbortSignal,
-  /** Failures per update id, carried across cycles by `run`. */
-  attempts: Map<number, number> = new Map(),
+  /**
+   * Failures per update id, carried across cycles by `run`.
+   *
+   * The reason is carried with the count because the two are separated in
+   * time: the third failure happens in one cycle and the update is dropped
+   * when it comes round in the next, and by then the error that killed it is
+   * only in a log line nobody kept.
+   */
+  attempts: Map<number, Attempt> = new Map(),
 ): Promise<PollResult> {
   const updates = await api.getUpdates(offset, timeoutSec, signal);
   const counts = { ...EMPTY_COUNTS };
@@ -95,16 +141,36 @@ export async function pollOnce(
   let sawFailure = false;
 
   for (const update of updates) {
-    if ((attempts.get(update.update_id) ?? 0) >= MAX_UPDATE_ATTEMPTS) {
+    const record = attempts.get(update.update_id);
+    if (record !== undefined && record.count >= MAX_UPDATE_ATTEMPTS) {
       // Given up on. Acknowledging it is the whole point — it is what lets the
       // offset move past and unblocks every update behind it. The row in
       // `telegram_updates` was rolled back with each failure, so nothing here
       // claims it; if Telegram ever redelivers it the count is gone and it gets
       // a fresh set of attempts, which is the right answer after a restart.
+      //
+      // Kept before it is acknowledged, because acknowledging is final: Telegram
+      // deletes the update and will not send it again. Everything this bot does
+      // is somebody's money or somebody's service, so "gone, and a log line"
+      // was not an answer.
+      let kept = true;
+      try {
+        await recordDeadUpdate(db, update, record);
+      } catch (err) {
+        // Dropped anyway, and this is a deliberate choice rather than an
+        // oversight. Refusing to drop would put the queue back behind the
+        // poison update — the freeze this counter exists to prevent — and
+        // would do it for a reason as ordinary as this migration not having
+        // run yet. Losing one payload is worse than today only in the sense
+        // that it is exactly today; freezing the bot is worse than both.
+        kept = false;
+        console.error(`[bot] update ${update.update_id} could not be recorded before dropping`, err);
+      }
       abandoned++;
       attempts.delete(update.update_id);
       console.error(
-        `[bot] update ${update.update_id} failed ${MAX_UPDATE_ATTEMPTS} times and was dropped`,
+        `[bot] update ${update.update_id} failed ${MAX_UPDATE_ATTEMPTS} times and was dropped` +
+          (kept ? ' — kept in telegram_dead_updates' : ' — AND NOT KEPT, the payload is gone'),
       );
       if (!sawFailure) confirmedThrough = update.update_id;
       await answer(api, update);
@@ -119,7 +185,10 @@ export async function pollOnce(
     } catch (err) {
       failed++;
       sawFailure = true;
-      attempts.set(update.update_id, (attempts.get(update.update_id) ?? 0) + 1);
+      attempts.set(update.update_id, {
+        count: (attempts.get(update.update_id)?.count ?? 0) + 1,
+        lastError: String(err),
+      });
       console.error(`[bot] update ${update.update_id} failed, will be retried`, err);
       // Still stop the client's spinner. A button that keeps spinning through a
       // database outage reads as a bot that died, and answering says nothing
@@ -256,11 +325,30 @@ export async function sweepBroadcasts(
   return sent;
 }
 
-/** Drops claims old enough that Telegram can no longer redeliver them. */
-export async function pruneUpdates(db: D1Database, olderThanDays = 7): Promise<number> {
+/**
+ * Drops claims old enough that Telegram can no longer redeliver them, and dead
+ * letters old enough that nobody is going to read them.
+ *
+ * The two windows are different because they answer different questions. Seven
+ * days is how long a claim has to outlive Telegram's redelivery. Thirty is how
+ * long a person plausibly has to notice a dropped update and look at it — and
+ * it is a ceiling as much as a floor, because a dead letter holds a customer's
+ * message verbatim and that is not ours to keep for ever.
+ */
+export async function pruneUpdates(
+  db: D1Database,
+  olderThanDays = 7,
+  deadLettersOlderThanDays = 30,
+): Promise<number> {
   const result = await db
     .prepare(`DELETE FROM telegram_updates WHERE processed_at < now() - make_interval(days => ?1)`)
     .bind(olderThanDays)
+    .run();
+  await db
+    .prepare(
+      `DELETE FROM telegram_dead_updates WHERE dropped_at < now() - make_interval(days => ?1)`,
+    )
+    .bind(deadLettersOlderThanDays)
     .run();
   return result.meta.changes;
 }
@@ -293,7 +381,7 @@ export async function run(
   // Deliberately in memory and deliberately not persisted, like the offset
   // above: a restart is a legitimate second chance, and an update that only
   // fails because of the state a crashed process left behind deserves one.
-  const attempts = new Map<number, number>();
+  const attempts = new Map<number, Attempt>();
 
   while (!options.signal?.aborted) {
     try {
