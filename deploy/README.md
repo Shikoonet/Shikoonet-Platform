@@ -180,6 +180,73 @@ is ahead of. Making startup or readiness depend on `status` turns today's silent
 system and a real change in deploy behaviour — so it is a decision, not a
 detail.
 
+## Backups, and the drill that proves they are backups
+
+What runs today, measured on 2026-08-19 rather than assumed:
+
+| | |
+| --- | --- |
+| schedule | Coolify scheduled backup, `0 3 * * *` (03:00 UTC / 06:30 Tehran) |
+| what | `pg_dump` custom format of the whole `shikoo` database |
+| where | `/data/coolify/backups/databases/root-team-0/shikoo-postgres-<uuid>/` |
+| retention | 14 dumps locally, no day or size cap |
+| offsite | **none — `save_s3=false`** |
+| encryption at rest | none beyond the host's own disk |
+| history | 4 runs, all `success`, 188K → 200K |
+
+### RPO and RTO, stated so they can be argued with
+
+- **RPO — 24 hours.** One dump a day. A failure at 02:59 UTC loses everything since
+  03:00 the previous day. That is a deliberate choice for a shop whose database is
+  under a megabyte, and it is the wrong choice the day real customer money is moving
+  through it hourly. Revisit at cutover, not before.
+- **RTO — minutes, and only for the database.** The restore itself takes seconds at this
+  size. What actually costs time is the step below that the drill discovered.
+- **The real exposure is neither.** Every copy sits on the same disk as the database it
+  came from. A lost host is a lost shop. Turning on an S3 target closes it and needs a
+  bucket and credentials nobody has picked yet — that decision is open, and until it is
+  made this row is the honest answer to "are we backed up?".
+
+### The drill
+
+```bash
+scp -i .notes/deploy_key migrations/verify_invariants.sql root@<server>:/tmp/
+ssh -i .notes/deploy_key root@<server> 'sh -s' < deploy/restore-drill.sh
+```
+
+Restores the newest dump into a throwaway database beside the real one, and tears it
+down afterwards. It never writes to the live database and never stops a service, which
+is what makes it safe to run whenever — the property that decides whether it gets run
+at all.
+
+Restoring is not the check. Three things are: `pg_restore` finishes, the ledger in the
+restored copy is readable, and `verify_invariants.sql` passes against it. The last one is
+the point — a structurally perfect restore with a broken money invariant is worse than a
+failed one, because it looks fine.
+
+First run, 2026-08-19, against `pg-dump-shikoo-1787108404.dmp` (9h old, 200K): **passed**.
+2 users, 1 order, 2 wallet entries, 10 audit rows, and every invariant green.
+
+### What the first drill found
+
+The restored copy's ledger read **24 applied**, because the dump was taken at 03:00 and
+`0025`–`0027` were applied later that day. So a real restore lands a database three
+migrations behind the deployed code — and the boot gate then refuses to start every
+service, correctly.
+
+**A restore is therefore two steps, never one:**
+
+```bash
+# 1. restore (into the real database this time, services stopped)
+docker exec -i <pg> pg_restore -U postgres -d shikoo --clean --if-exists --no-owner --no-acl < <dump>
+# 2. bring the schema up to the image that is deployed
+docker run --rm -e SERVICE=migrate -e DATABASE_URL=... <image>
+```
+
+Skip the second and the containers stay down with `BLOCK … never applied here`, which is
+the gate doing its job and reads like a broken restore. That is exactly the kind of thing
+a drill exists to find on a quiet afternoon rather than during an outage.
+
 ## The edge — how a browser reaches any of this
 
 Nothing above opens a port to the internet. Something in front has to, and since
