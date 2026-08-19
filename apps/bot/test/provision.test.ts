@@ -7,7 +7,7 @@
  * one thing or told about a service that does not exist.
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { provisionPaidOrders } from '../src/provision.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
@@ -157,6 +157,49 @@ describe('delivering a paid order', () => {
     const note = notes.find((n) => n.chatId === order.telegramId);
     expect(note?.text).toContain(`https://panel.test/sub/${order.telegramId}_${order.publicId}`);
     expect(panel.created).toContain(`${order.telegramId}_${order.publicId}`);
+  });
+
+  it('still tells the customer when the pretty screen cannot be built', async () => {
+    // The delivery screen is read back from the database AFTER the transaction
+    // that marked the order COMPLETED, and the caller has no try/catch. So a
+    // failure there used to throw past the enqueue: the customer had paid, the
+    // panel had delivered, and the only message about it was lost while
+    // building a nicer version of it.
+    //
+    // The fault is injected at the database boundary rather than by stubbing
+    // `purchasedScreen`: everything else — the panel call, the transaction, the
+    // COMPLETED write, the enqueue — is the real code against the real
+    // database, and only the one read the screen needs is made to fail.
+    // Renaming the table instead was tried and is not the same test: the sweep's
+    // own query joins `provisioning_providers`, so it breaks before an order is
+    // ever delivered, which proves nothing about a delivery that already
+    // happened.
+    const order = await paidOrder();
+    const panel = fakePanel();
+
+    const breakScreenRead = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop !== 'prepare') return Reflect.get(target, prop, receiver);
+        return (sql: string) => {
+          if (sql.includes('SELECT id FROM subscriptions WHERE order_id')) {
+            throw new Error('connection reset while reading the delivered subscription');
+          }
+          return target.prepare(sql);
+        };
+      },
+    });
+
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await provisionPaidOrders(breakScreenRead, panel.fetchImpl);
+    } finally {
+      errors.mockRestore();
+    }
+
+    // Delivered, and said so — with the plain message rather than the screen.
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain(`https://panel.test/sub/${order.telegramId}_${order.publicId}`);
   });
 
   it('keeps what was sold readable even after the catalogue moves on', async () => {

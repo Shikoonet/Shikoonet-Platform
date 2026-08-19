@@ -150,19 +150,33 @@ async function purchasedScreen(
   row: PendingOrder,
   now: number,
 ): Promise<Delivered | null> {
-  const sub = await db
-    .prepare(`SELECT id FROM subscriptions WHERE order_id = ?1 ORDER BY id DESC LIMIT 1`)
-    .bind(row.order_id)
-    .first<{ id: number }>();
-  if (!sub) return null;
-  const service = await subscriptionOnPanelForUser(db, row.user_id, sub.id);
-  if (!service) return null;
-  const shop = await loadShopSettings(db);
-  return {
-    text: menu.serviceReadyCard(service, now),
-    keyboard: menu.serviceDetailMenu(actionsFor(service, shop, tierFor(row))),
-    qrPayload: service.subscription_url,
-  };
+  // Every failure in here is the same answer: fall back to the plain message.
+  //
+  // This runs AFTER the transaction that marked the order COMPLETED, and the
+  // caller has no try/catch — so before this catch existed, a database hiccup
+  // in one of these three reads threw past the enqueue and the customer was
+  // told nothing at all. They had paid, the panel had delivered, and the only
+  // message about it was lost to build a nicer version of it. A screen with
+  // fewer buttons is a cosmetic loss; a silent delivery is the failure this
+  // whole outbox exists to prevent.
+  try {
+    const sub = await db
+      .prepare(`SELECT id FROM subscriptions WHERE order_id = ?1 ORDER BY id DESC LIMIT 1`)
+      .bind(row.order_id)
+      .first<{ id: number }>();
+    if (!sub) return null;
+    const service = await subscriptionOnPanelForUser(db, row.user_id, sub.id);
+    if (!service) return null;
+    const shop = await loadShopSettings(db);
+    return {
+      text: menu.serviceReadyCard(service, now),
+      keyboard: menu.serviceDetailMenu(actionsFor(service, shop, tierFor(row))),
+      qrPayload: service.subscription_url,
+    };
+  } catch (err) {
+    console.error(`[bot] order ${row.order_public_id} delivered, but its screen could not be built`, err);
+    return null;
+  }
 }
 
 /**

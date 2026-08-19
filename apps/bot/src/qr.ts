@@ -28,8 +28,14 @@ const SIZE_PX = 720;
  * Four is the standard minimum. Dropping it to look tidier is the single most
  * common reason a code that renders correctly still will not scan, because the
  * decoder cannot find the edge against a dark chat background.
+ *
+ * It said four and was set to two until 2026-08-19, and no test could tell:
+ * `jsQR` is handed the exact rendered pixels, where two modules is plenty. The
+ * margin only matters to a camera pointed at a screen, which no test here has.
+ * So the comment was the only evidence either way, and it argued against the
+ * constant sitting under it.
  */
-const MARGIN_MODULES = 2;
+const MARGIN_MODULES = 4;
 
 /**
  * PNG bytes for `text`.
