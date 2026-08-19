@@ -17,7 +17,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import pg from 'pg';
-import { baseline, looksAlreadyMigrated, readMigrations, status, up } from '../src/schema.js';
+import {
+  baseline,
+  gateReasons,
+  looksAlreadyMigrated,
+  readMigrations,
+  status,
+  up,
+} from '../src/schema.js';
 
 const url =
   process.env['DATABASE_URL'] ?? 'postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo';
@@ -109,6 +116,51 @@ describe('the schema ledger', () => {
     const older = dirWith({ '0001_a.sql': TWO['0001_a.sql'] });
     const s = await status(client, older);
     expect(s.unknown).toEqual(['0002_b.sql']);
+  });
+
+  it('refuses to let a container start on a migration nobody ran', async () => {
+    // 2026-08-17, exactly: the code wanted a column the database did not have,
+    // the container started anyway, and every login answered 500.
+    const dir = dirWith(TWO);
+    const { blocking } = gateReasons(await status(client, dir));
+    expect(blocking).toHaveLength(1);
+    expect(blocking[0]).toContain('0001_a.sql');
+    expect(blocking[0]).toContain('0002_b.sql');
+  });
+
+  it('refuses to start on a migration that was edited after it was applied', async () => {
+    const dir = dirWith(TWO);
+    await up(client, dir, 'test');
+    const edited = dirWith({ ...TWO, '0001_a.sql': 'CREATE TABLE a (id bigint);' });
+    const { blocking } = gateReasons(await status(client, edited));
+    expect(blocking).toHaveLength(1);
+    expect(blocking[0]).toContain('0001_a.sql');
+  });
+
+  it('lets a rollback start, and says the database is ahead', async () => {
+    // The case that separates `gate` from `status`. Yesterday's image against
+    // today's schema is what a rollback IS, and it is made under pressure with
+    // something already broken — a gate that blocks it is a gate that fires
+    // exactly when it must not. Migrations here are additive, so the older code
+    // runs; it is told, and allowed through.
+    const dir = dirWith(TWO);
+    await up(client, dir, 'test');
+    const older = dirWith({ '0001_a.sql': TWO['0001_a.sql'] });
+
+    const s = await status(client, older);
+    const { blocking, warnings } = gateReasons(s);
+
+    // `status` still calls this a mismatch — that question has not changed.
+    expect(s.unknown).toEqual(['0002_b.sql']);
+    expect(blocking).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('0002_b.sql');
+  });
+
+  it('says nothing at all when the database matches', async () => {
+    const dir = dirWith(TWO);
+    await up(client, dir, 'test');
+    expect(gateReasons(await status(client, dir))).toEqual({ blocking: [], warnings: [] });
   });
 
   it('rolls a failing migration back and does not record it', async () => {

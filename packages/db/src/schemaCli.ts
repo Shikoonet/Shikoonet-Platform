@@ -13,11 +13,16 @@
  * Exit codes are the point of `status`: 0 when the database matches the
  * checkout, 1 when it does not. That makes it usable as a pre-deploy gate
  * rather than something a person has to read.
+ *
+ * `gate` asks the narrower question a starting container asks — see
+ * `gateReasons`. It is what `deploy/entrypoint.sh` runs, and it differs from
+ * `status` in exactly one case: a database ahead of the checkout is a warning
+ * rather than a refusal, because that case is a rollback.
  */
 
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { baseline, status, up } from './schema.js';
+import { baseline, gateReasons, status, up } from './schema.js';
 
 const DEFAULT_DIR = fileURLToPath(new URL('../../../migrations', import.meta.url));
 
@@ -51,6 +56,17 @@ async function main(): Promise<number> {
         console.log(clean ? 'schema is current' : 'schema does NOT match this checkout');
         return clean ? 0 : 1;
       }
+      case 'gate': {
+        const { blocking, warnings } = gateReasons(await status(client, dir));
+        for (const w of warnings) console.warn(`WARN  ${w}`);
+        if (blocking.length === 0) {
+          console.log('schema is safe to start on');
+          return 0;
+        }
+        for (const b of blocking) console.error(`BLOCK ${b}`);
+        console.error('refusing to start: apply the migrations first (SERVICE=migrate, or the schema CLI)');
+        return 1;
+      }
       case 'up': {
         const r = await up(client, dir, actor());
         if (r.alreadyCurrent) console.log('nothing to apply');
@@ -67,7 +83,7 @@ async function main(): Promise<number> {
         return 0;
       }
       default:
-        console.error('usage: schema <status|up|baseline <name>>');
+        console.error('usage: schema <status|gate|up|baseline <name>>');
         return 2;
     }
   } finally {

@@ -50,7 +50,39 @@ docker build -t shikoo .
 docker run -e SERVICE=bot       -e DATABASE_URL=... -e TELEGRAM_BOT_TOKEN=... shikoo
 docker run -e SERVICE=ingest    -e DATABASE_URL=... -p 8787:8787 shikoo
 docker run -e SERVICE=dashboard -e DATABASE_URL=... -p 8788:8788 shikoo
+docker run -e SERVICE=migrate   -e DATABASE_URL=... shikoo   # applies, then exits
 ```
+
+### The schema gate — why a container may refuse to start
+
+Before any of the three services starts, the entrypoint asks whether this
+database carries the migrations this image was built from. If it does not, the
+container **refuses to start** and names the files.
+
+That refusal is the whole point. On 2026-08-17 the dashboard was deployed with
+the operator-login code while `0021_operator_auth.sql` had never been run: the
+image built, the container started, the health check passed, and every login
+answered 500 with `column "password_hash" does not exist`. A container that
+cannot serve should say so at boot, not one request at a time.
+
+Two cases are treated differently on purpose:
+
+| what the ledger sees | what happens |
+| --- | --- |
+| a migration on disk with no ledger row, or an applied file edited since | **refuses to start** |
+| a ledger row with no file — the database is AHEAD of the image | starts, with a warning |
+
+The second is what a **rollback** looks like. Putting yesterday's image back is
+a deploy you make while something is already broken, and a gate that blocks it
+fires exactly when it must not. Migrations here are additive, so older code on a
+newer schema runs.
+
+To fix what the gate finds, run the same image with `SERVICE=migrate`. It
+applies and exits — safe to run twice and safe to run while another copy is
+doing it, because `up` holds an advisory lock. It is a one-off container rather
+than a step inside the services, because a service that migrates on boot
+migrates once per replica and once per restart loop, at whatever moment the
+scheduler chose.
 
 Measured on 2026-08-15: **18 s to build, 587 MB image, and 49–54 MB of memory
 per running service.**

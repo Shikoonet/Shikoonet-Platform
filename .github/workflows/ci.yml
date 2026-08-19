@@ -40,12 +40,20 @@ jobs:
       # Gating the migrations themselves also matters on its own — without it a
       # migration that fails to apply, or one that quietly drops a partial
       # unique index, reaches main with every other check green.
+      #
+      # Through the ledger, not a shell loop over the files. The loop applied
+      # the same SQL and proved a different thing: production runs `schema up`,
+      # and a runner CI never exercises is a runner CI cannot vouch for. It also
+      # left the ledger empty, so `schema status` here disagreed with a
+      # correctly migrated database — which is how the simulation was found on
+      # 2026-08-18 reporting a migration pending that had in fact been applied.
       - name: Apply migrations
-        run: |
-          for f in migrations/0*.sql; do
-            echo "== $f"
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"
-          done
+        run: pnpm --filter @shikoo/db schema up
+
+      # The gate a container will run at boot, run here where it is cheap to
+      # fix. Green means the ledger, the files and the database agree.
+      - name: The schema matches this checkout
+        run: pnpm --filter @shikoo/db schema status
       - name: Prove the money invariants
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f migrations/verify_invariants.sql
 
@@ -74,3 +82,18 @@ jobs:
           out=$(docker run --rm shikoo-ci 2>&1 || true)
           echo "$out"
           echo "$out" | grep -q 'SERVICE is required'
+
+      # The gate, measured on the artifact rather than on the source.
+      #
+      # A database with nothing in it is every migration pending, which is the
+      # 2026-08-17 failure in its purest form. The container must refuse to
+      # start on it — and it must be the SCHEMA that stops it, not a missing
+      # token or an unreachable host, so the refusal is matched by its own
+      # words rather than by a non-zero exit.
+      - name: A container refuses to start on a schema it does not match
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c 'CREATE DATABASE behind_by_everything'
+          behind="${DATABASE_URL%/*}/behind_by_everything"
+          out=$(docker run --rm --network host -e SERVICE=bot -e DATABASE_URL="$behind" shikoo-ci 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q 'refusing to start'

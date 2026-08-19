@@ -73,6 +73,38 @@ export interface SchemaStatus {
   unknown: string[];
 }
 
+/**
+ * May a service carrying this checkout start against this database?
+ *
+ * Deliberately a different question from `status`, and the difference is one
+ * word in the answer: `unknown`.
+ *
+ * A **pending** migration is the bug this ledger was built after — code that
+ * needs a column the database does not have, whose only symptom was a 500 on
+ * every login. A **drifted** one is worse, because the two databases stopped
+ * being the same schema and nothing says which is right. Neither is safe to
+ * serve customers on, so both refuse.
+ *
+ * **unknown** is the database being AHEAD of the code, and that is what a
+ * rollback looks like. Refusing it would mean the one deploy you make while
+ * something is already broken — putting yesterday's image back — is the one
+ * deploy the gate blocks. Migrations here are additive, so older code on a
+ * newer schema runs; it is told loudly and allowed through.
+ */
+export function gateReasons(s: SchemaStatus): { blocking: string[]; warnings: string[] } {
+  const blocking: string[] = [];
+  if (s.pending.length > 0) {
+    blocking.push(`${s.pending.length} migration(s) never applied here: ${s.pending.join(', ')}`);
+  }
+  for (const d of s.drifted) {
+    blocking.push(`${d.name} was edited after it was applied (ran ${d.expected.slice(0, 12)}, on disk ${d.found.slice(0, 12)})`);
+  }
+  const warnings = s.unknown.map(
+    (u) => `${u} is applied here but absent from this checkout — the database is ahead of the code`,
+  );
+  return { blocking, warnings };
+}
+
 function sha256(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex');
 }
