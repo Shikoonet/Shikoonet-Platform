@@ -15,7 +15,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertLocal } from '../scripts/wire-test-panel.js';
+import { CARD_DIGITS, assertLocal } from '../scripts/wire-test-panel.js';
 
 const OVERRIDE = 'WIRE_TEST_PANEL_ON_HOST';
 const url = (host: string): string => `postgres://u:p@${host}:5432/shikoo`;
@@ -58,5 +58,32 @@ describe('assertLocal', () => {
       process.env[OVERRIDE] = value;
       expect(() => assertLocal(url('zpuyfk3p3nqfpebybbxz6opy'))).toThrow(/refusing/);
     }
+  });
+});
+
+/**
+ * The card the script hands out, checked against the algorithm every bank and
+ * every validator uses — not against a comment in the file that claims it is
+ * valid. A test card that fails Luhn is rejected somewhere downstream and the
+ * failure surfaces as "the purchase does not work", days later.
+ */
+describe('CARD_DIGITS', () => {
+  const luhnTotal = (digits: string): number =>
+    [...digits]
+      .reverse()
+      .map((c, i) => {
+        const n = Number(c) * (i % 2 === 1 ? 2 : 1);
+        return n > 9 ? n - 9 : n;
+      })
+      .reduce((a, b) => a + b, 0);
+
+  it('is sixteen digits and passes Luhn', () => {
+    expect(CARD_DIGITS).toMatch(/^\d{16}$/);
+    expect(luhnTotal(CARD_DIGITS) % 10).toBe(0);
+  });
+
+  it('proves the check is a check — one digit changed and it fails', () => {
+    const broken = `${CARD_DIGITS.slice(0, 15)}5`;
+    expect(luhnTotal(broken) % 10).not.toBe(0);
   });
 });

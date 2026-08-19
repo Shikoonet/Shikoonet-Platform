@@ -25,10 +25,55 @@
  * It refuses to run against anything but a local database — see `assertLocal`.
  */
 
+import { createHash } from 'node:crypto';
 import { createPostgresD1 } from '@shikoo/db';
 
 /** The code all three rows are keyed by, and the secret_ref `credentialsFor` resolves. */
 const CODE = 'test-panel';
+
+/**
+ * A catalogue is not enough to buy anything.
+ *
+ * Wiring the panel got the shop as far as an order summary and no further: the
+ * checkout hands the customer a bank card to pay into, and a fresh test
+ * database has none, so the purchase stops one tap before the interesting part.
+ * The same is true of the SMS that proves the money arrived — `POST
+ * /api/v1/sms` authenticates a device, and there were no devices either.
+ *
+ * So this script sets up everything a purchase needs to run end to end, not
+ * just the panel. Each row is keyed by a fixed id and written with
+ * ON CONFLICT, so running it twice changes nothing.
+ */
+const ACCOUNT_ID = 'fa-test-panel';
+const CARD_ID = 'pc-test-panel';
+const DEVICE_ID = 'dev-test-panel';
+const DEVICE_CODE = 'test-panel-phone';
+const CREDENTIAL_ID = 'dc-test-panel';
+
+/**
+ * The card the test shop hands out.
+ *
+ * `603799` is Bank Melli's real issuer range, so `bank_card_prefixes` attributes
+ * it the way a customer's card would be — the attribution is part of what is
+ * being tested. The remaining ten digits are zeros and a Luhn check digit: the
+ * number passes every validator and belongs to no account that exists.
+ */
+export const CARD_DIGITS = '6037991000000004';
+
+/**
+ * What the bank SMS calls the same account.
+ *
+ * A card number is what the customer is shown; it is not what arrives in the
+ * shop's SMS. Melli writes `حساب:<account number>`, and ingest resolves that
+ * against `account_hint` only — `card_last_four` answers a different question
+ * and is deliberately not consulted for an account-number identifier. An
+ * account row carrying only the card therefore looks unknown to ingest: the
+ * first SMS auto-creates a PENDING account, the transaction is attributed to
+ * that instead of to the shop, and the claim can never auto-verify.
+ *
+ * Verified against the running box on 2026-08-19, which did exactly that.
+ */
+const ACCOUNT_HINT = '0350000004';
 
 /**
  * The product carries its own code because a product is not a panel: one panel
@@ -143,8 +188,69 @@ async function main(): Promise<number> {
           .first<{ id: number }>()
       )?.id;
 
+    const now = Date.now();
+
+    // The account the card resolves back to. Without it a claim decides
+    // UNMAPPED_CARD and nothing can ever auto-verify — the seed hit exactly
+    // this and says so in `packages/seed/src/generators.ts`.
+    await db
+      .prepare(
+        `INSERT INTO financial_accounts
+           (id, bank_name, display_name, owner_label, account_type,
+            account_hint, card_last_four, active, status, parser_configuration,
+            created_at, updated_at)
+         VALUES (?1, 'MELLI', 'حساب تست', 'تست شیکو', 'CARD', ?2, ?3, 1, 'ACTIVE', '{}', ?4, ?4)
+         ON CONFLICT (id) DO UPDATE
+            SET account_hint = ?2, card_last_four = ?3,
+                status = 'ACTIVE', active = 1, updated_at = ?4`,
+      )
+      .bind(ACCOUNT_ID, ACCOUNT_HINT, CARD_DIGITS.slice(-4), now)
+      .run();
+
+    await db
+      .prepare(
+        `INSERT INTO payment_cards
+           (id, financial_account_id, card_digits, label, created_at,
+            holder_name, status, display_weight, rotation_cursor)
+         VALUES (?1, ?2, ?3, 'کارت تست', ?4, 'تست شیکو', 'ACTIVE', 1, 0)
+         ON CONFLICT (id) DO UPDATE SET status = 'ACTIVE', financial_account_id = ?2`,
+      )
+      .bind(CARD_ID, ACCOUNT_ID, CARD_DIGITS, now)
+      .run();
+
+    // The sms-relay phone. Its key is never stored — only the hash the ingest
+    // endpoint compares against, which is why the plaintext has to come from
+    // the environment and is not printed back out.
+    const deviceKey = required('SMS_TEST_DEVICE_KEY');
+    await db
+      .prepare(
+        `INSERT INTO devices (id, device_code, display_name, description, active, created_at, updated_at)
+         VALUES (?1, ?2, 'گوشی تست', 'sms-relay شبیه‌سازی', 1, ?3, ?3)
+         ON CONFLICT (id) DO UPDATE SET active = 1, updated_at = ?3`,
+      )
+      .bind(DEVICE_ID, DEVICE_CODE, now)
+      .run();
+    await db
+      .prepare(
+        `INSERT INTO device_credentials
+           (id, device_id, token_hash, token_prefix, status, created_at, activated_at)
+         VALUES (?1, ?2, ?3, ?4, 'ACTIVE', ?5, ?5)
+         ON CONFLICT (id) DO UPDATE
+            SET token_hash = ?3, token_prefix = ?4, status = 'ACTIVE', activated_at = ?5`,
+      )
+      .bind(
+        CREDENTIAL_ID,
+        DEVICE_ID,
+        createHash('sha256').update(deviceKey).digest('hex'),
+        deviceKey.slice(0, 4),
+        now,
+      )
+      .run();
+
     console.log(`provider ${provider.id} (${CODE}) -> ${panelUrl}, groups ${groupIds.join(',')}`);
     console.log(`product  ${product.id}, plan ${planId}`);
+    console.log(`card     ${CARD_DIGITS} -> account ${ACCOUNT_ID} (SMS hint ${ACCOUNT_HINT})`);
+    console.log(`device   ${DEVICE_CODE}, key read from SMS_TEST_DEVICE_KEY (hash stored)`);
     console.log('credentials are read at run time from PANEL_TEST_PANEL — nothing was stored.');
     return 0;
   } finally {
