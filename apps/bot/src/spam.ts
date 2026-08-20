@@ -67,15 +67,41 @@ function makeLimiter(): RateLimit {
   });
 }
 
+/**
+ * A second window whose only job is to answer "have I charged for this update
+ * already?".
+ *
+ * The counter lives in memory and the update's claim lives in a transaction,
+ * and the two do not roll back together. `handleUpdate` claims the update id
+ * first and spends a token a few lines later, so a handler that threw below
+ * rolled the claim back, Telegram redelivered the same update, the claim
+ * succeeded again — and the customer paid a second token for one message. Up
+ * to `MAX_UPDATE_ATTEMPTS`, so one update could cost three of thirty-five. A
+ * short database outage was enough to auto-block somebody for traffic they
+ * never sent.
+ *
+ * A limit of one per update id, in the same kind of map for the same window, so
+ * it inherits the sweep instead of needing a second thing to prune. An update
+ * older than the window cannot still be inside a flood.
+ */
+function makeSeen(): RateLimit {
+  return fixedWindowRateLimit({ limit: 1, windowMs: SPAM_WINDOW_MS, now: () => Date.now() });
+}
+
 let limiter: RateLimit = makeLimiter();
+let seen: RateLimit = makeSeen();
 
 /**
  * Whether this customer has just gone over the limit.
  *
- * One call per update, and it counts. A caller that asks twice about the same
- * message spends two of the customer's 35.
+ * One call per update, and it counts — but only once per update, however many
+ * times that update is delivered. A redelivered update was under the limit the
+ * first time (being over it ends in a block and a return, not an exception), so
+ * answering `false` for a repeat is the same answer it got before.
  */
-export async function overSpamLimit(telegramId: number): Promise<boolean> {
+export async function overSpamLimit(telegramId: number, updateId: number): Promise<boolean> {
+  const first = await seen.limit({ key: `${telegramId}:${updateId}` });
+  if (!first.success) return false;
   const { success } = await limiter.limit({ key: String(telegramId) });
   return !success;
 }
@@ -88,6 +114,7 @@ export async function overSpamLimit(telegramId: number): Promise<boolean> {
  */
 export function resetSpamWindows(): void {
   limiter = makeLimiter();
+  seen = makeSeen();
 }
 
 /**

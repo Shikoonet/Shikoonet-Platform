@@ -268,7 +268,7 @@ export async function handleUpdate(
     //
     // Admins are exempt from the counter, not just from the block: an admin
     // walking the panel fast is the ordinary way this bot is operated.
-    if (from && !(await isAdmin()) && (await overSpamLimit(from.id))) {
+    if (from && !(await isAdmin()) && (await overSpamLimit(from.id, update.update_id))) {
       const user = await upsertUser(tx, from);
       const blocked = await blockForSpam(tx, {
         userId: user.id,

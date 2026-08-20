@@ -77,6 +77,16 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   resetSpamWindows();
+  // `admins` is not in the list `resetBot()` truncates, so a row `makeAdmin`
+  // writes outlives the whole suite — and `ids()` is deterministic, so a later
+  // run hands a plain customer a telegram id that is STILL an admin from a
+  // previous one. An admin is exempt from the counter, so that customer simply
+  // never gets blocked and the test fails for a reason nothing on screen names.
+  // It cost an hour on 2026-08-21 and it was read as flakiness first.
+  //
+  // The id space of this file, cleared before every test, so the file no longer
+  // depends on what any earlier run left behind.
+  await db.prepare(`DELETE FROM admins WHERE telegram_id BETWEEN 866000 AND 867000`).run();
   vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
   await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();
   // The loader caches for thirty seconds, so a row written by a test is
@@ -150,6 +160,43 @@ describe('flooding the bot', () => {
     await flood(telegramId, SPAM_LIMIT, 1_000);
 
     expect((await statusOf(telegramId)).status).toBe('ACTIVE');
+  });
+
+  it('charges one token for an update, however many times it is delivered', async () => {
+    // The counter is in memory; the update's claim is in a transaction. A
+    // handler that throws rolls the claim back, Telegram redelivers the same
+    // update, and the claim succeeds again — but the token spent on the first
+    // attempt is not given back. Up to MAX_UPDATE_ATTEMPTS, so one message
+    // could cost three of thirty-five and a short database outage was enough to
+    // block a customer for traffic they never sent.
+    //
+    // Deleting the claim row is exactly what that ROLLBACK leaves behind, which
+    // is why the redelivery is simulated that way rather than by calling an
+    // internal twice.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await flood(telegramId, SPAM_LIMIT - 1);
+
+    const retried = 991_900_000 + telegramId;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await handleUpdate(db, text(retried, telegramId));
+      await db.prepare(`DELETE FROM telegram_updates WHERE update_id = ?1`).bind(retried).run();
+    }
+
+    // Thirty-four plus one message is thirty-five, which is the limit, not past
+    // it. Three deliveries of that one message must not be thirty-seven.
+    expect((await statusOf(telegramId)).status).toBe('ACTIVE');
+
+    // And the counter is still counting: a genuinely new message is the
+    // thirty-sixth and does end in a block.
+    //
+    // Numbered off `retried` rather than through `flood`, whose ids are
+    // `telegramId * 100 + from` — customers here are seven apart, so only seven
+    // hundred ids belong to each one and a large `from` lands inside another
+    // customer's range. An id another test has already claimed returns
+    // `duplicate` above the counter and charges nothing.
+    await handleUpdate(db, text(retried + 1, telegramId));
+    expect((await statusOf(telegramId)).status).toBe('BLOCKED');
   });
 
   it('does not count an admin walking the panel fast', async () => {
