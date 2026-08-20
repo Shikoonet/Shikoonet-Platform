@@ -66,13 +66,18 @@ const CreditBody = z
  * A bulk price change.
  *
  * `amount` means IRR when the mode is FIXED and whole percent when it is
- * PERCENT, which is why it is bounded twice rather than once — a 200% rise is
- * a typo and a 200 IRR rise is twenty Toman. The narrower bound is applied
- * after parsing, where the mode is known.
+ * PERCENT, which is why it is bounded twice rather than once — a 500% rise is
+ * a typo and a 500 IRR rise is fifty Toman. The narrower bound is applied after
+ * parsing, where the mode is known. (The ceiling is 500, not the 200 an earlier
+ * version of this sentence named: five times is a repricing an operator might
+ * really mean, and past that it is a slipped keyboard.)
  *
- * A percentage decrease is capped at 99 rather than 100: -100% is "make
- * everything free", which no operator means and which the floor check would
- * let through because zero is not negative.
+ * A percentage decrease is capped at 99 rather than 100, and that cap is now
+ * belt to the floor's braces rather than the only guard. It was written when
+ * `bulkPrice` refused only prices BELOW zero, so -100% — "make everything free"
+ * — walked through. The floor refuses zero itself now, which also closes the
+ * doors this cap never reached: a FIXED decrease equal to the price, or within
+ * five Rial of it.
  */
 const PriceBody = z
   .object({

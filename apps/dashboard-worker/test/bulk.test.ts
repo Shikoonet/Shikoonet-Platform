@@ -505,7 +505,7 @@ describe('bulk repricing', () => {
       ADMIN,
     );
     expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toBe('below_zero');
+    expect(((await res.json()) as { error: string }).error).toBe('unsellable');
     // Not even the plan that could have absorbed it.
     expect(await pricesNow()).toEqual([100_000, 500_000]);
   });

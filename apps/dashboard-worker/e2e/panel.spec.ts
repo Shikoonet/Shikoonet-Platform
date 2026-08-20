@@ -223,3 +223,26 @@ test('the bulk price preview lands on screen and shows real prices', async ({ pa
   // can check against the shop, «+۱۰٪» is what they already typed.
   await expect(confirm).toContainText('تومان');
 });
+
+test('a decrease that would zero a plan is refused on the screen, not after the press', async ({
+  page,
+}) => {
+  // Zero is not free. `order.ts` refuses any order whose total is not positive,
+  // so a plan repriced to zero keeps its button and refuses every press, for
+  // ever and silently. The floor used to test `< 0` and let it through; this is
+  // the operator's side of that fix, and it has to be readable before anything
+  // is committed rather than as a 409 afterwards.
+  await page.goto('/admin/bulk');
+  await expect(page.getByRole('heading', { name: 'تنظیم گروهی قیمت' })).toBeVisible();
+
+  await page.locator('#bp-dir').selectOption('DOWN');
+  await page.locator('#bp-mode').selectOption('FIXED');
+  // Toman, converted to IRR by the page. More than any plan in the catalogue.
+  await page.locator('#bp-amount').fill('900000');
+  await page.getByRole('button', { name: 'پیش‌نمایش' }).click();
+
+  const confirm = page.locator('.card', { hasText: 'تغییر قیمت اعمال شود؟' }).last();
+  await expect(confirm).toContainText('به صفر یا زیر صفر');
+  // And the way out is closed: the operator cannot press through the warning.
+  await expect(confirm.getByRole('button', { name: 'تایید' })).toBeDisabled();
+});

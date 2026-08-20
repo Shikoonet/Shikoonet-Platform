@@ -188,7 +188,7 @@ describe('the floor the legacy did not have', () => {
   it('refuses the whole change rather than pricing anything below zero', async () => {
     const out = await applyBulkPrice(db, change({ amount: 600_000, direction: 'DOWN' }));
 
-    expect(out).toEqual({ ok: false, reason: 'below_zero', plans: 2 });
+    expect(out).toEqual({ ok: false, reason: 'unsellable', plans: 2 });
     // Nothing moved — not even the one plan that could have absorbed it. A
     // half-applied price list is worse than a refused one.
     expect(await pricesOn(panelA)).toEqual([100_000, 500_000, 1_950_000]);
@@ -196,8 +196,51 @@ describe('the floor the legacy did not have', () => {
 
   it('says so in the preview, before anything is pressed', async () => {
     const preview = await previewBulkPrice(db, change({ amount: 600_000, direction: 'DOWN' }));
-    expect(preview.belowZero).toBe(2);
+    expect(preview.unsellable).toBe(2);
     expect(preview.plans).toBe(3);
+  });
+
+  it('refuses a price of exactly zero, which is not free but unsellable', async () => {
+    // The floor tested `< 0` until 2026-08-21, so a decrease equal to the price
+    // landed on zero and was written. `CHECK (price_irr >= 0)` is happy with it
+    // and nothing else looked — and a zero-priced plan is not a giveaway, it is
+    // a button that can never be pressed: `order.ts:221` refuses any order whose
+    // total is not positive, so the plan stays listed and answers
+    // ORDER_NOT_PAYABLE for ever. Silent, permanent, and invisible from here.
+    await seed([50_000]);
+    const out = await applyBulkPrice(db, change({ amount: 50_000, direction: 'DOWN' }));
+
+    expect(out).toEqual({ ok: false, reason: 'unsellable', plans: 1 });
+    expect(await pricesOn(panelA)).toEqual([50_000]);
+  });
+
+  it('does not refuse a rise because some plan was already free', async () => {
+    // The catalogue really carries one: «اکانت تست - ۱ روزه - ۱ گیگ», priced 0
+    // and ACTIVE, today. A floor written as a bare `next <= 0` counts it on
+    // every single pass, so a ten per cent RISE is refused — a permanent lock
+    // on the whole panel with no way out from the operator's screen, put there
+    // by a fix for the opposite problem.
+    //
+    // The rule is what the CHANGE makes unsellable, so the guard is
+    // `price_irr > 0 AND next <= 0`. The free plan is somebody's decision to
+    // look at; it is not this function's to veto.
+    await seed([0, 100_000]);
+    const out = await applyBulkPrice(db, change({ mode: 'PERCENT', amount: 10, direction: 'UP' }));
+
+    expect(out).toEqual({ ok: true, changed: 1 });
+    // Zero times anything is still zero, so it did not move and was not counted.
+    expect(await pricesOn(panelA)).toEqual([0, 110_000]);
+  });
+
+  it('refuses a decrease that only rounding takes to zero', async () => {
+    // 50,004 - 50,000 = 4 IRR, which `round(x / 10) * 10` pulls to 0. Reaching
+    // zero does not need an operator who typed the price exactly; anything
+    // within five Rial of it does.
+    await seed([50_004]);
+    const out = await applyBulkPrice(db, change({ amount: 50_000, direction: 'DOWN' }));
+
+    expect(out).toEqual({ ok: false, reason: 'unsellable', plans: 1 });
+    expect(await pricesOn(panelA)).toEqual([50_004]);
   });
 });
 
@@ -223,6 +266,31 @@ describe('the preview and the change agree', () => {
       fromIrr: 100_000,
       toIrr: 150_000,
     });
+  });
+
+  it('shows both ends of the price list, not five copies of the cheap end', async () => {
+    // The query was a single `ORDER BY price LIMIT 5` while the comment above it
+    // promised the cheapest AND the dearest. Every example was the cheapest
+    // five — which are also the rows a percentage is most likely to round to
+    // nothing, so the sample was systematically the least representative one
+    // available and was described as the most.
+    await seed([10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 9_000_000]);
+    const preview = await previewBulkPrice(db, change({ amount: 10_000 }));
+
+    const shown = preview.examples.map((x) => x.fromIrr);
+    expect(shown).toContain(10_000);
+    // The dearest plan is where a mistyped change does the most damage in Rial,
+    // and it was the one row an operator could never see.
+    expect(shown).toContain(9_000_000);
+    expect(preview.examples).toHaveLength(5);
+  });
+
+  it('does not show one plan twice when the panel is smaller than the sample', async () => {
+    await seed([10_000, 20_000]);
+    const preview = await previewBulkPrice(db, change({ amount: 1_000 }));
+
+    expect(preview.examples).toHaveLength(2);
+    expect(new Set(preview.examples.map((x) => x.name)).size).toBe(2);
   });
 
   it('counts what will not move, rather than claiming it did', async () => {

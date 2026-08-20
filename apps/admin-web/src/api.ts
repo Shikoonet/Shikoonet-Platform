@@ -336,7 +336,8 @@ export interface BulkPricePreview {
   plans: number;
   currentTotalIrr: number;
   newTotalIrr: number;
-  belowZero: number;
+  /** Plans the change would leave at zero or below, which refuses it whole. */
+  unsellable: number;
   unchanged: number;
   examples: { name: string; fromIrr: number; toIrr: number }[];
 }

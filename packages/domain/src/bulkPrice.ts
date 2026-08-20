@@ -20,7 +20,25 @@
  * column has `CHECK (price_irr >= 0)`, so the statement would abort — which
  * turns a silent mispricing into a failed batch, better but still not an
  * answer. So the change is refused BEFORE it runs, naming how many plans it
- * would take under zero.
+ * would take to nothing.
+ *
+ * The floor is `<= 0`, not `< 0`. Zero passes the column's CHECK and is written
+ * happily, and a plan priced at zero is not free — it is a button that can
+ * never be pressed: `order.ts:221` refuses any order whose total is not
+ * positive, so the plan stays listed, stays visible, and answers
+ * ORDER_NOT_PAYABLE for ever. Reaching it does not take a clumsy operator: a
+ * FIXED decrease equal to the price does it, and so does anything within five
+ * Rial of it, because the rounding pulls it the rest of the way.
+ *
+ * And it is `price_irr > 0 AND next <= 0` — what the CHANGE would make
+ * unsellable, not what already is. The catalogue really does carry a plan
+ * priced at zero today («اکانت تست - ۱ روزه - ۱ گیگ», ACTIVE), and a bare
+ * `next <= 0` counts it on every pass: a ten per cent RISE would be refused
+ * because one plan that is already zero stays zero. The first version of this
+ * fix did exactly that, and Playwright caught it on the increase scenario —
+ * which is the whole argument for walking the screen instead of reasoning
+ * about it. That plan is worth an operator's attention on its own; it is not
+ * this function's to refuse.
  *
  * **A decrease could not be a percentage.** The legacy offers percent/fixed on
  * the way up and fixed only on the way down, for no reason anybody wrote down.
@@ -71,8 +89,11 @@ export interface BulkPricePreview {
   plans: number;
   currentTotalIrr: number;
   newTotalIrr: number;
-  /** Plans the change would take below zero. Any at all refuses the apply. */
-  belowZero: number;
+  /**
+   * Plans the change would leave unsellable — zero or below. Any at all
+   * refuses the whole apply.
+   */
+  unsellable: number;
   /** Plans whose price would not move — a percentage too small to round up. */
   unchanged: number;
   /** A handful of real rows, so the operator reads prices rather than a delta. */
@@ -80,13 +101,18 @@ export interface BulkPricePreview {
 }
 
 /**
- * How many examples the preview carries.
+ * How many examples the preview carries, and from which end.
  *
  * Enough to see the shape of the change across a panel, few enough that the
  * confirmation screen stays one glance. The cheapest and the dearest are what
- * an operator checks, so the ordering below puts both in reach.
+ * an operator checks — and until 2026-08-21 this was a single `ORDER BY price
+ * LIMIT 5` while the comment above it claimed both ends. Every example was the
+ * cheapest five, which are also exactly the rows a percentage change is most
+ * likely to round to nothing: systematically the least representative sample
+ * the query could have returned, described as the most.
  */
-const EXAMPLES = 5;
+const EXAMPLES_CHEAPEST = 3;
+const EXAMPLES_DEAREST = 2;
 
 /**
  * The one place the new price is defined.
@@ -112,6 +138,20 @@ function newPriceSql(change: BulkPriceChange): string {
 }
 
 /**
+ * What the CHANGE would make unsellable — not what already is.
+ *
+ * A plan the shop already prices at zero is not this function's business: it
+ * was that way before the operator pressed anything, and refusing every future
+ * repricing because of it would be a permanent lock with no way out from this
+ * screen. `price_irr > 0` is what makes the difference, and leaving it out cost
+ * a Playwright run on the INCREASE scenario — a ten per cent rise refused
+ * because one already-free plan stayed free.
+ */
+function unsellableSql(next: string): string {
+  return `(pl.price_irr > 0 AND ${next} <= 0)`;
+}
+
+/**
  * The plans a change applies to.
  *
  * Only what the shop can actually sell: a DISABLED plan or a HIDDEN product is
@@ -134,12 +174,13 @@ export async function previewBulkPrice(
   change: BulkPriceChange,
 ): Promise<BulkPricePreview> {
   const next = newPriceSql(change);
+  const unsellable = unsellableSql(next);
   const row = await db
     .prepare(
       `SELECT count(*)::int                                        AS plans,
               COALESCE(sum(pl.price_irr), 0)                       AS current_total,
               COALESCE(sum(GREATEST(${next}, 0)), 0)               AS new_total,
-              count(*) FILTER (WHERE ${next} < 0)::int             AS below_zero,
+              count(*) FILTER (WHERE ${unsellable})::int          AS unsellable,
               count(*) FILTER (WHERE ${next} = pl.price_irr)::int  AS unchanged
        ${SCOPE}`,
     )
@@ -148,25 +189,48 @@ export async function previewBulkPrice(
       plans: number;
       current_total: number;
       new_total: number;
-      below_zero: number;
+      unsellable: number;
       unchanged: number;
     }>();
 
-  const { results } = await db
-    .prepare(
-      `SELECT pl.name, pl.price_irr AS from_irr, ${next} AS to_irr
-       ${SCOPE}
-       ORDER BY pl.price_irr
-       LIMIT ?3`,
-    )
-    .bind(change.providerId, change.amount, EXAMPLES)
-    .all<{ name: string; from_irr: number; to_irr: number }>();
+  // Both ends, in two statements rather than one clever one. A UNION would have
+  // to carry the whole scope and the price expression twice, for a query that
+  // runs once per button press on an admin screen.
+  const end = async (
+    direction: 'ASC' | 'DESC',
+    take: number,
+  ): Promise<{ id: number; name: string; from_irr: number; to_irr: number }[]> => {
+    const page = await db
+      .prepare(
+        `SELECT pl.id, pl.name, pl.price_irr AS from_irr, ${next} AS to_irr
+         ${SCOPE}
+         ORDER BY pl.price_irr ${direction}, pl.id ${direction}
+         LIMIT ?3`,
+      )
+      .bind(change.providerId, change.amount, take)
+      .all<{ id: number; name: string; from_irr: number; to_irr: number }>();
+    return page.results ?? [];
+  };
+  const [cheapest, dearest] = await Promise.all([
+    end('ASC', EXAMPLES_CHEAPEST),
+    end('DESC', EXAMPLES_DEAREST),
+  ]);
+  // A panel with four plans would otherwise show one of them twice. Deduped on
+  // the id, because nothing makes a plan name unique.
+  const seen = new Set<number>();
+  const results = [...cheapest, ...dearest]
+    .filter((r) => {
+      if (seen.has(r.id)) return false;
+      seen.add(r.id);
+      return true;
+    })
+    .sort((a, b) => Number(a.from_irr) - Number(b.from_irr));
 
   return {
     plans: row?.plans ?? 0,
     currentTotalIrr: Number(row?.current_total ?? 0),
     newTotalIrr: Number(row?.new_total ?? 0),
-    belowZero: row?.below_zero ?? 0,
+    unsellable: row?.unsellable ?? 0,
     unchanged: row?.unchanged ?? 0,
     examples: (results ?? []).map((r) => ({
       name: r.name,
@@ -178,7 +242,7 @@ export async function previewBulkPrice(
 
 export type BulkPriceOutcome =
   | { ok: true; changed: number }
-  | { ok: false; reason: 'below_zero'; plans: number }
+  | { ok: false; reason: 'unsellable'; plans: number }
   | { ok: false; reason: 'nothing_to_change' };
 
 /**
@@ -197,6 +261,7 @@ export type BulkPriceOutcome =
  */
 export async function applyBulkPrice(db: Db, change: BulkPriceChange): Promise<BulkPriceOutcome> {
   const next = newPriceSql(change);
+  const unsellable = unsellableSql(next);
   const result = await db
     .prepare(
       `UPDATE product_plans t
@@ -205,7 +270,7 @@ export async function applyBulkPrice(db: Db, change: BulkPriceChange): Promise<B
          FROM (SELECT pl.id, ${next} AS next_price ${SCOPE}) sub
         WHERE t.id = sub.id
           AND sub.next_price <> t.price_irr
-          AND NOT EXISTS (SELECT 1 FROM (SELECT ${next} AS n ${SCOPE}) chk WHERE chk.n < 0)`,
+          AND NOT EXISTS (SELECT 1 FROM (SELECT 1 AS one ${SCOPE} AND ${unsellable}) chk)`,
     )
     .bind(change.providerId, change.amount)
     .run();
@@ -217,10 +282,10 @@ export async function applyBulkPrice(db: Db, change: BulkPriceChange): Promise<B
   // was too small to matter". Asked only on the empty path, so the ordinary
   // case pays for one statement.
   const blocked = await db
-    .prepare(`SELECT count(*)::int AS n ${SCOPE} AND ${next} < 0`)
+    .prepare(`SELECT count(*)::int AS n ${SCOPE} AND ${unsellable}`)
     .bind(change.providerId, change.amount)
     .first<{ n: number }>();
   return (blocked?.n ?? 0) > 0
-    ? { ok: false, reason: 'below_zero', plans: blocked!.n }
+    ? { ok: false, reason: 'unsellable', plans: blocked!.n }
     : { ok: false, reason: 'nothing_to_change' };
 }

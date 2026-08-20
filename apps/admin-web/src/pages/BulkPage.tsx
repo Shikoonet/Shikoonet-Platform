@@ -42,8 +42,8 @@ function message(e: unknown): string {
     if (e.code === 'forbidden') return 'برای این کار دسترسی ادمین لازم است.';
     if (e.code === 'no_active_customers') return 'هیچ مشتری فعالی نیست.';
     if (e.code === 'invalid_body') return 'ورودی پذیرفته نشد.';
-    if (e.code === 'below_zero')
-      return 'این کاهش، قیمت دست‌کم یک پلن را منفی می‌کند. هیچ قیمتی عوض نشد.';
+    if (e.code === 'unsellable')
+      return 'این کاهش، قیمت دست‌کم یک پلن را به صفر یا زیر صفر می‌برد. هیچ قیمتی عوض نشد.';
     if (e.code === 'nothing_to_change')
       return 'این تغییر آن‌قدر کوچک است که هیچ قیمتی جابه‌جا نمی‌شود.';
     return e.detail ?? e.code;
@@ -376,14 +376,16 @@ export function BulkPage() {
           title="تغییر قیمت اعمال شود؟"
           onCancel={() => setPricePreview(null)}
           onConfirm={() => void submitPrice()}
-          busy={busy || pricePreview.belowZero > 0 || pricePreview.plans === 0}
+          busy={busy}
+          refused={pricePreview.unsellable > 0 || pricePreview.plans === 0}
         >
           {pricePreview.plans === 0 ? (
             <p>هیچ پلن فعالی در این لوکیشن نیست.</p>
-          ) : pricePreview.belowZero > 0 ? (
+          ) : pricePreview.unsellable > 0 ? (
             <p>
-              این کاهش قیمت <strong>{count(pricePreview.belowZero)}</strong> پلن را منفی می‌کند.
-              هیچ قیمتی عوض نمی‌شود.
+              این کاهش، قیمت <strong>{count(pricePreview.unsellable)}</strong> پلن را به صفر یا
+              زیر صفر می‌برد. پلنی که قیمتش صفر است رایگان نمی‌شود — دکمه‌اش می‌ماند و هر بار
+              رد می‌کند. هیچ قیمتی عوض نمی‌شود.
             </p>
           ) : (
             <>
@@ -450,18 +452,28 @@ export function BulkPage() {
  * screen — which is the ordinary case for the first card — does not move the
  * page under the operator's eyes.
  */
+/**
+ * `busy` and `refused` are two different things and used to be one.
+ *
+ * `busy` is "the request is in flight"; `refused` is "there is nothing to
+ * send". Passing the second as the first made the button read «در حال ارسال…»
+ * for a change the panel had already decided it would never make — an operator
+ * watching a message that says sending, for ever, about nothing.
+ */
 function Confirm({
   title,
   children,
   onCancel,
   onConfirm,
   busy,
+  refused = false,
 }: {
   title: string;
   children: React.ReactNode;
   onCancel: () => void;
   onConfirm: () => void;
   busy: boolean;
+  refused?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -483,7 +495,12 @@ function Confirm({
         </button>
       </div>
       {children}
-      <button type="button" className="btn btn-primary" disabled={busy} onClick={onConfirm}>
+      <button
+        type="button"
+        className="btn btn-primary"
+        disabled={busy || refused}
+        onClick={onConfirm}
+      >
         {busy ? 'در حال ارسال…' : 'تایید'}
       </button>
     </div>
