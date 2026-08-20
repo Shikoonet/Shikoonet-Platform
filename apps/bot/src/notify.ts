@@ -82,12 +82,18 @@ export function nextAttemptDelayMs(attempt: number): number {
  * `ON CONFLICT DO NOTHING` rather than an upsert: the first version of a
  * message is the true one. A producer that runs again after a partial failure
  * must not overwrite a message that may already have been delivered.
+ *
+ * Returns whether a row was actually written. It used to return nothing, and a
+ * caller that had already decided it was sending a message had no way to learn
+ * the key had collided — `warn.ts` counted, logged and marked warnings it never
+ * queued. Silence about a no-op is only safe while every key is guaranteed
+ * fresh, and that guarantee is the caller's, not this function's.
  */
 export async function enqueue(
   tx: D1DatabaseSession,
   note: PendingNotification,
-): Promise<void> {
-  await tx
+): Promise<boolean> {
+  const written = await tx
     .prepare(
       `INSERT INTO bot_notifications (dedupe_key, chat_id, body, reply_markup, qr_payload)
        VALUES (?1, ?2, ?3, ?4::jsonb, ?5)
@@ -103,6 +109,7 @@ export async function enqueue(
       note.qrPayload ?? null,
     )
     .run();
+  return written.meta.changes > 0;
 }
 
 export interface FlushResult {

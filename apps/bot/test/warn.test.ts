@@ -252,20 +252,42 @@ describe('saying it once', () => {
     expect(await notifyOf(id)).toMatchObject({ time: true, volume: true });
   });
 
-  it('warns again after the service is renewed', async () => {
+  it('warns again after the service is renewed, with a message and not just a flag', async () => {
+    // This test started the service at `notify: { time: true }` until
+    // 2026-08-21 — already warned — so the first sweep enqueued nothing and the
+    // second one was the only message there had ever been. It proved the flag
+    // is re-claimed. It could not see that the MESSAGE was being swallowed by a
+    // dedupe key with no cycle in it, which is what was actually happening: the
+    // subscription was marked warned, the counter said 1, and the customer was
+    // told nothing.
+    //
+    // So the first warning is real now, and both are counted at the end.
     const telegramId = nextTelegramId();
     const userId = await makeCustomer(telegramId);
-    const id = await makeService(userId, {
-      publicId: 'w-once-3',
-      expiresInDays: 1,
-      notify: { time: true },
-    });
-
-    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
-    // What a renewal does to the row.
-    await db.prepare(`UPDATE subscriptions SET notify = '{}'::jsonb WHERE id = ?1`).bind(id).run();
+    const id = await makeService(userId, { publicId: 'w-once-3', expiresInDays: 1 });
 
     expect(await warnExpiringServices(db, NOW_MS)).toBe(1);
+    const first = (await pendingNotifications()).filter((n) => n.chatId === telegramId);
+    expect(first).toHaveLength(1);
+
+    // What a renewal really does to the row: it moves the date as well as
+    // clearing the flag. `provision.ts` writes both.
+    await db
+      .prepare(
+        `UPDATE subscriptions SET notify = '{}'::jsonb, expires_at = ?2 WHERE id = ?1`,
+      )
+      .bind(id, new Date(NOW_MS + 31 * DAY).toISOString())
+      .run();
+    // Back inside the window, one cycle later.
+    const later = NOW_MS + 30 * DAY;
+
+    expect(await warnExpiringServices(db, later)).toBe(1);
+
+    const both = (await pendingNotifications()).filter((n) => n.chatId === telegramId);
+    expect(both).toHaveLength(2);
+    // Two different keys, or the second insert was a silent no-op and the
+    // count above was a lie.
+    expect(new Set(both.map((n) => n.dedupeKey)).size).toBe(2);
   });
 });
 

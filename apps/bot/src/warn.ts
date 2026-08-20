@@ -191,14 +191,40 @@ export async function warnExpiringServices(
       if (marked.meta.changes === 0) return false;
       if (row.telegram_id === null) return true;
 
-      await enqueue(tx, {
-        // Subscription and reason: exactly the pair the claim above is keyed
-        // on, so the message cannot be enqueued twice for one warning.
-        dedupeKey: `warn:${row.id}:${row.reason}`,
+      // Subscription, reason, and the cycle the warning is ABOUT.
+      //
+      // It was subscription and reason alone, and that made a warning a
+      // once-in-a-lifetime event: a customer renews, provision.ts:586 clears
+      // the notify flag, the next sweep re-claims the row -- and this insert
+      // hit the SENT row from the previous cycle, did nothing, and returned
+      // true anyway. The subscription was marked warned, the counter went up,
+      // nothing was logged, and nothing was sent. Nothing prunes
+      // bot_notifications, so it stayed that way for ever.
+      //
+      // The cycle is the pair of things a renewal or an add-on moves, taken
+      // off the row this warning was built from: extending the date changes
+      // one, buying gigabytes changes the other, and either is a genuinely new
+      // thing to warn about. A clock reading would also be unique, but it
+      // would make the key say when the sweep ran rather than what it is
+      // about, and two warnings about the same expiry would stop being the
+      // same warning.
+      //
+      // Once-per-cycle is still the claim's job, not the key's: the UPDATE
+      // above and this INSERT are in one transaction, so two overlapping
+      // sweeps cannot both reach this line for one row.
+      const cycle = `${row.expires_at ?? 'never'}|${row.volume_gb ?? 'unlimited'}`;
+      const queued = await enqueue(tx, {
+        dedupeKey: `warn:${row.id}:${row.reason}:${cycle}`,
         chatId: row.telegram_id,
         text: messageFor(row, now, supportHandle),
       });
-      return true;
+      // Claimed and not queued is the bug above. If it ever comes back, it
+      // says so on the first sweep instead of years later in an audit -- and
+      // the count it returns is the number of warnings that really exist.
+      if (!queued) {
+        console.error(`[bot] ${row.reason} warning for subscription ${row.id} was claimed but not queued`);
+      }
+      return queued;
     });
     if (claimed) warned += 1;
   }
