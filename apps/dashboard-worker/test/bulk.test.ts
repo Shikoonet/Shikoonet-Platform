@@ -458,7 +458,7 @@ describe('bulk repricing', () => {
   it('previews without writing, for a read-only operator too', async () => {
     const res = await post(
       '/api/v1/admin/bulk/price/preview',
-      { providerId: panel, mode: 'FIXED', direction: 'UP', amount: 50_000 },
+      { providerId: panel, mode: 'FIXED', direction: 'UP', amount: 50_000, operationId: uuid() },
       REVIEWER,
     );
     expect(res.status).toBe(200);
@@ -472,7 +472,7 @@ describe('bulk repricing', () => {
   it('refuses to apply for anyone who is not an admin', async () => {
     const res = await post(
       '/api/v1/admin/bulk/price',
-      { providerId: panel, mode: 'FIXED', direction: 'UP', amount: 50_000 },
+      { providerId: panel, mode: 'FIXED', direction: 'UP', amount: 50_000, operationId: uuid() },
       REVIEWER,
     );
     expect(res.status).toBe(403);
@@ -482,26 +482,87 @@ describe('bulk repricing', () => {
   it('applies, and writes down what the prices were', async () => {
     const res = await post(
       '/api/v1/admin/bulk/price',
-      { providerId: panel, mode: 'PERCENT', direction: 'UP', amount: 10 },
+      { providerId: panel, mode: 'PERCENT', direction: 'UP', amount: 10, operationId: uuid() },
       ADMIN,
     );
     expect(res.status).toBe(200);
     expect(await pricesNow()).toEqual([110_000, 550_000]);
 
-    // The audit row is the only record of the old price list. Read from
-    // `audit_logs` rather than from the response, which is the thing under test.
+    // The audit row is the only record of the old price list, and it has to
+    // carry enough to put it back. A total and a count cannot be undone, which
+    // is what it stored until 2026-08-21; every plan with both of its prices
+    // can. Read from `audit_logs` rather than from the response, which is the
+    // thing under test.
     const row = await baseEnv.DB.prepare(
       `SELECT before_json::text AS b, after_json::text AS a FROM audit_logs
-        WHERE action = 'catalog.bulk_repriced' ORDER BY id DESC LIMIT 1`,
+        WHERE action = 'catalog.bulk_repriced' ORDER BY created_at DESC, id DESC LIMIT 1`,
     ).first<{ b: string | null; a: string | null }>();
-    expect(row?.b).toContain('600000');
-    expect(row?.a).toContain('660000');
+    expect(row?.b).toContain('100000');
+    expect(row?.b).toContain('500000');
+    expect(row?.a).toContain('110000');
+    expect(row?.a).toContain('550000');
+  });
+
+  it('applies a repeated press once, not twice', async () => {
+    // A price change compounds: two deliveries of "up 10%" are 21%, not 10%
+    // twice — and a lost response between the server and the browser is enough
+    // to produce them. There is no undo either, because the rounding is lossy.
+    // This was the only irreversible action on the screen and the only one
+    // without a key.
+    const operationId = uuid();
+    const body = { providerId: panel, mode: 'PERCENT', direction: 'UP', amount: 10, operationId };
+
+    const first = await post('/api/v1/admin/bulk/price', body, ADMIN);
+    const second = await post('/api/v1/admin/bulk/price', body, ADMIN);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect((await first.json()) as unknown).toMatchObject({ changed: 2, replayed: false });
+    // The honest answer to the second press: your change is applied, and this
+    // press did nothing.
+    expect((await second.json()) as unknown).toMatchObject({ changed: 2, replayed: true });
+    // 121,000 and 605,000 are what the second press used to produce.
+    expect(await pricesNow()).toEqual([110_000, 550_000]);
+
+    // And exactly one record of it.
+    const n = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM audit_logs WHERE id = ?1`,
+    )
+      .bind(operationId)
+      .first<{ n: number }>();
+    expect(n?.n).toBe(1);
+  });
+
+  it('lets a genuinely new change through on the same panel', async () => {
+    // The key is per press, not per panel. An operator who really does want a
+    // second rise must get one.
+    const mk = () => ({
+      providerId: panel,
+      mode: 'FIXED' as const,
+      direction: 'UP' as const,
+      amount: 10_000,
+      operationId: uuid(),
+    });
+    await post('/api/v1/admin/bulk/price', mk(), ADMIN);
+    await post('/api/v1/admin/bulk/price', mk(), ADMIN);
+
+    expect(await pricesNow()).toEqual([120_000, 520_000]);
+  });
+
+  it('refuses a body with no key at all', async () => {
+    const res = await post(
+      '/api/v1/admin/bulk/price',
+      { providerId: panel, mode: 'PERCENT', direction: 'UP', amount: 10 },
+      ADMIN,
+    );
+    expect(res.status).toBe(400);
+    expect(await pricesNow()).toEqual([100_000, 500_000]);
   });
 
   it('turns an impossible change into a 409 and no write at all', async () => {
     const res = await post(
       '/api/v1/admin/bulk/price',
-      { providerId: panel, mode: 'FIXED', direction: 'DOWN', amount: 200_000 },
+      { providerId: panel, mode: 'FIXED', direction: 'DOWN', amount: 200_000, operationId: uuid() },
       ADMIN,
     );
     expect(res.status).toBe(409);
@@ -513,7 +574,7 @@ describe('bulk repricing', () => {
   it('refuses a percentage that would make everything free', async () => {
     const res = await post(
       '/api/v1/admin/bulk/price',
-      { providerId: panel, mode: 'PERCENT', direction: 'DOWN', amount: 100 },
+      { providerId: panel, mode: 'PERCENT', direction: 'DOWN', amount: 100, operationId: uuid() },
       ADMIN,
     );
     expect(res.status).toBe(400);

@@ -330,6 +330,12 @@ export interface BulkPriceChange {
   direction: 'UP' | 'DOWN';
   /** IRR when the mode is FIXED, whole percent when it is PERCENT. */
   amount: number;
+  /**
+   * Chosen when the preview is asked for and held until the change is applied
+   * or the form is edited. A price change compounds, so a lost response must
+   * not be able to make it twice.
+   */
+  operationId: string;
 }
 
 export interface BulkPricePreview {

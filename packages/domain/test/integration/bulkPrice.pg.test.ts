@@ -16,7 +16,13 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createPostgresD1 } from '@shikoo/db';
-import { applyBulkPrice, previewBulkPrice, type BulkPriceChange } from '../../src/bulkPrice.js';
+import {
+  applyBulkPrice,
+  previewBulkPrice,
+  type BulkPriceChange,
+  type BulkPriceMove,
+  type BulkPriceOutcome,
+} from '../../src/bulkPrice.js';
 
 const { db, pool } = createPostgresD1();
 
@@ -98,6 +104,53 @@ async function pricesOn(providerId: number): Promise<number[]> {
   return (results ?? []).map((r) => Number(r.price_irr));
 }
 
+/**
+ * Applies a change the way the route does: with an operation id, and an audit
+ * row written under that id inside the same transaction.
+ *
+ * The row is not decoration here. It IS the record that the operation ran, so a
+ * test that skipped it would be testing a function whose idempotency can never
+ * fire. `moved` is stored the way the route stores it, because the whole point
+ * of carrying per-plan prices is that somebody could put them back.
+ */
+// Unique across runs as well as within one. `audit_logs` is append-only in
+// Postgres — no trigger lets a test tidy up after itself — so a fixed id would
+// be answered on the second run by the row the first run left, and every test
+// below would report a replay of somebody else's numbers.
+const RUN = Date.now();
+let ops = 0;
+function newOperationId(): string {
+  ops += 1;
+  return `bp-op-${RUN}-${ops}`;
+}
+
+async function applyAs(
+  operationId: string,
+  c: BulkPriceChange,
+  onRecord?: (moved: BulkPriceMove[]) => void,
+): Promise<BulkPriceOutcome> {
+  return applyBulkPrice(db, c, {
+    id: operationId,
+    record: async (tx, moved) => {
+      onRecord?.(moved);
+      await tx
+        .prepare(
+          `INSERT INTO audit_logs
+             (id, actor_email, actor_role, action, entity_type, entity_id,
+              before_json, after_json, reason, request_id, created_at)
+           VALUES (?1, 'test@shikoo', 'ADMIN', 'catalog.bulk_repriced', 'PRODUCT', 'test',
+                   ?2, ?3, NULL, NULL, 0)`,
+        )
+        .bind(operationId, JSON.stringify({ moved }), JSON.stringify({ changed: moved.length }))
+        .run();
+    },
+  });
+}
+
+/** One-shot: a fresh operation id, for the tests that are not about replay. */
+const apply = (c: BulkPriceChange, onRecord?: (moved: BulkPriceMove[]) => void) =>
+  applyAs(newOperationId(), c, onRecord);
+
 const change = (over: Partial<BulkPriceChange>): BulkPriceChange => ({
   providerId: panelA,
   mode: 'FIXED',
@@ -113,9 +166,9 @@ beforeEach(async () => {
 
 describe('a fixed change', () => {
   it('moves every plan on the panel by the same amount, and no other panel', async () => {
-    const out = await applyBulkPrice(db, change({ amount: 50_000, direction: 'UP' }));
+    const out = await apply(change({ amount: 50_000, direction: 'UP' }));
 
-    expect(out).toEqual({ ok: true, changed: 3 });
+    expect(out).toEqual({ ok: true, changed: 3, replayed: false });
     expect(await pricesOn(panelA)).toEqual([150_000, 550_000, 2_000_000]);
     // The other panel is untouched, which is the whole point of the scope.
     expect(await pricesOn(panelB)).toEqual([700_000]);
@@ -136,7 +189,7 @@ describe('a fixed change', () => {
       .all<{ id: number; price_irr: number }>();
 
     try {
-      await applyBulkPrice(db, change({ providerId: null, amount: 10_000 }));
+      await apply(change({ providerId: null, amount: 10_000 }));
       expect(await pricesOn(panelA)).toEqual([110_000, 510_000, 1_960_000]);
       expect(await pricesOn(panelB)).toEqual([710_000]);
     } finally {
@@ -152,7 +205,7 @@ describe('a fixed change', () => {
   });
 
   it('subtracts on the way down', async () => {
-    await applyBulkPrice(db, change({ amount: 50_000, direction: 'DOWN' }));
+    await apply(change({ amount: 50_000, direction: 'DOWN' }));
     expect(await pricesOn(panelA)).toEqual([50_000, 450_000, 1_900_000]);
   });
 });
@@ -161,12 +214,12 @@ describe('a percentage', () => {
   it('is proportional, not flat', async () => {
     // 10% of three different prices is three different amounts. An integer
     // division would floor the cheapest one to nothing.
-    await applyBulkPrice(db, change({ mode: 'PERCENT', amount: 10, direction: 'UP' }));
+    await apply(change({ mode: 'PERCENT', amount: 10, direction: 'UP' }));
     expect(await pricesOn(panelA)).toEqual([110_000, 550_000, 2_145_000]);
   });
 
   it('works downward too, which the legacy never offered', async () => {
-    await applyBulkPrice(db, change({ mode: 'PERCENT', amount: 10, direction: 'DOWN' }));
+    await apply(change({ mode: 'PERCENT', amount: 10, direction: 'DOWN' }));
     expect(await pricesOn(panelA)).toEqual([90_000, 450_000, 1_755_000]);
   });
 
@@ -175,7 +228,7 @@ describe('a percentage', () => {
     // price like 12,345 IRR is 370.35, which is not a number a customer can be
     // quoted or a bank SMS can match.
     await seed([12_345]);
-    await applyBulkPrice(db, change({ mode: 'PERCENT', amount: 3, direction: 'UP' }));
+    await apply(change({ mode: 'PERCENT', amount: 3, direction: 'UP' }));
 
     const [price] = await pricesOn(panelA);
     expect(price! % 10).toBe(0);
@@ -186,7 +239,7 @@ describe('a percentage', () => {
 
 describe('the floor the legacy did not have', () => {
   it('refuses the whole change rather than pricing anything below zero', async () => {
-    const out = await applyBulkPrice(db, change({ amount: 600_000, direction: 'DOWN' }));
+    const out = await apply(change({ amount: 600_000, direction: 'DOWN' }));
 
     expect(out).toEqual({ ok: false, reason: 'unsellable', plans: 2 });
     // Nothing moved — not even the one plan that could have absorbed it. A
@@ -208,7 +261,7 @@ describe('the floor the legacy did not have', () => {
     // total is not positive, so the plan stays listed and answers
     // ORDER_NOT_PAYABLE for ever. Silent, permanent, and invisible from here.
     await seed([50_000]);
-    const out = await applyBulkPrice(db, change({ amount: 50_000, direction: 'DOWN' }));
+    const out = await apply(change({ amount: 50_000, direction: 'DOWN' }));
 
     expect(out).toEqual({ ok: false, reason: 'unsellable', plans: 1 });
     expect(await pricesOn(panelA)).toEqual([50_000]);
@@ -225,9 +278,9 @@ describe('the floor the legacy did not have', () => {
     // `price_irr > 0 AND next <= 0`. The free plan is somebody's decision to
     // look at; it is not this function's to veto.
     await seed([0, 100_000]);
-    const out = await applyBulkPrice(db, change({ mode: 'PERCENT', amount: 10, direction: 'UP' }));
+    const out = await apply(change({ mode: 'PERCENT', amount: 10, direction: 'UP' }));
 
-    expect(out).toEqual({ ok: true, changed: 1 });
+    expect(out).toEqual({ ok: true, changed: 1, replayed: false });
     // Zero times anything is still zero, so it did not move and was not counted.
     expect(await pricesOn(panelA)).toEqual([0, 110_000]);
   });
@@ -237,7 +290,7 @@ describe('the floor the legacy did not have', () => {
     // zero does not need an operator who typed the price exactly; anything
     // within five Rial of it does.
     await seed([50_004]);
-    const out = await applyBulkPrice(db, change({ amount: 50_000, direction: 'DOWN' }));
+    const out = await apply(change({ amount: 50_000, direction: 'DOWN' }));
 
     expect(out).toEqual({ ok: false, reason: 'unsellable', plans: 1 });
     expect(await pricesOn(panelA)).toEqual([50_004]);
@@ -252,7 +305,7 @@ describe('the preview and the change agree', () => {
     const c = change({ mode: 'PERCENT', amount: 7, direction: 'UP' });
     const preview = await previewBulkPrice(db, c);
 
-    await applyBulkPrice(db, c);
+    await apply(c);
     const after = (await pricesOn(panelA)).reduce((a, b) => a + b, 0);
 
     expect(preview.currentTotalIrr).toBe(2_550_000);
@@ -303,13 +356,13 @@ describe('the preview and the change agree', () => {
     const preview = await previewBulkPrice(db, c);
     expect(preview.unchanged).toBe(1);
 
-    const out = await applyBulkPrice(db, c);
-    expect(out).toEqual({ ok: true, changed: 1 });
+    const out = await apply(c);
+    expect(out).toEqual({ ok: true, changed: 1, replayed: false });
   });
 
   it('tells "impossible" apart from "too small to matter"', async () => {
     await seed([300]);
-    const out = await applyBulkPrice(db, change({ mode: 'PERCENT', amount: 1 }));
+    const out = await apply(change({ mode: 'PERCENT', amount: 1 }));
     expect(out).toEqual({ ok: false, reason: 'nothing_to_change' });
   });
 });
@@ -319,10 +372,80 @@ describe('what is not for sale is not repriced', () => {
     await db
       .prepare(`UPDATE product_plans SET status = 'DISABLED' WHERE name = 'bp-a-0'`)
       .run();
-    await applyBulkPrice(db, change({ amount: 50_000 }));
+    await apply(change({ amount: 50_000 }));
 
     // A price moved on something switched off is a surprise waiting for
     // whoever switches it back on.
     expect(await pricesOn(panelA)).toEqual([100_000, 550_000, 2_000_000]);
+  });
+});
+
+/**
+ * The retry that used to cost 21% instead of 10%.
+ *
+ * A price change compounds, so a lost response is not a harmless repeat: the
+ * operator presses confirm, the reply dies on a flaky link, they press again,
+ * and nothing about the result says it happened twice. There is no undo either
+ * — `round(x / 10) * 10` is lossy, so no percentage puts back what a percentage
+ * took. This was the one irreversible action on the screen and the only one
+ * without a key, while the credit and broadcast routes beside it both had one.
+ */
+describe('the same operation, pressed twice', () => {
+  it('moves the prices once and says the second time was a replay', async () => {
+    const op = newOperationId();
+    const c = change({ mode: 'PERCENT', amount: 10, direction: 'UP' });
+
+    const first = await applyAs(op, c);
+    const second = await applyAs(op, c);
+
+    expect(first).toEqual({ ok: true, changed: 3, replayed: false });
+    // Answered out of what the first attempt wrote, not by repricing again.
+    expect(second).toEqual({ ok: true, changed: 3, replayed: true });
+    // 21% is what the second press used to produce.
+    expect(await pricesOn(panelA)).toEqual([110_000, 550_000, 2_145_000]);
+  });
+
+  it('still applies a genuinely new operation on the same panel', async () => {
+    // The key is per press, not per panel: an operator who really does want a
+    // second rise must get one.
+    await applyAs(newOperationId(), change({ amount: 10_000 }));
+    await applyAs(newOperationId(), change({ amount: 10_000 }));
+
+    expect(await pricesOn(panelA)).toEqual([120_000, 520_000, 1_970_000]);
+  });
+});
+
+describe('the record and the change are one transaction', () => {
+  it('moves nothing when the audit row cannot be written', async () => {
+    // It used to be a third statement in the route, outside any transaction,
+    // after the write it describes — so a crash between them left the prices
+    // moved and no record of what they had been. That record is the only thing
+    // that could ever put them back.
+    await expect(
+      applyBulkPrice(db, change({ amount: 50_000 }), {
+        id: newOperationId(),
+        record: async () => {
+          throw new Error('audit is down');
+        },
+      }),
+    ).rejects.toThrow('audit is down');
+
+    expect(await pricesOn(panelA)).toEqual([100_000, 500_000, 1_950_000]);
+  });
+
+  it('hands the recorder both prices for every plan that moved', async () => {
+    // A total and a count cannot be undone. Per-plan rows can.
+    let seen: BulkPriceMove[] = [];
+    await apply(change({ amount: 50_000 }), (moved) => {
+      seen = moved;
+    });
+
+    expect(seen).toHaveLength(3);
+    expect(seen.map((m) => [m.fromIrr, m.toIrr]).sort((a, b) => a[0]! - b[0]!)).toEqual([
+      [100_000, 150_000],
+      [500_000, 550_000],
+      [1_950_000, 2_000_000],
+    ]);
+    expect(seen.every((m) => m.name.startsWith('bp-a-'))).toBe(true);
   });
 });

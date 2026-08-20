@@ -240,52 +240,133 @@ export async function previewBulkPrice(
   };
 }
 
+/** One plan that moved, with both prices, so the change can be read back. */
+export interface BulkPriceMove {
+  planId: number;
+  name: string;
+  fromIrr: number;
+  toIrr: number;
+}
+
 export type BulkPriceOutcome =
-  | { ok: true; changed: number }
+  | { ok: true; changed: number; replayed: boolean }
   | { ok: false; reason: 'unsellable'; plans: number }
   | { ok: false; reason: 'nothing_to_change' };
 
 /**
- * Applies the change, or refuses it whole.
+ * What has to happen in the same transaction as the write, and once.
  *
- * The refusal is checked inside the same statement that would write, not by
- * asking first: two operators repricing one panel at the same moment would
- * otherwise both read "none would go negative" and the second would write a
- * price the first has already made small. `NOT EXISTS` here is evaluated
- * against the same snapshot the UPDATE runs in.
- *
- * Returns the number of rows actually written, which is not the number of
- * plans in scope: a percentage too small to move a cheap plan by a whole Toman
- * leaves it alone, and saying "12 changed" when 3 did would be a lie the
- * operator has no way to check.
+ * `id` is the operation, chosen by whoever drew the confirmation screen and
+ * held constant across every retry of it. `record` writes the audit row under
+ * that id, so the primary key IS the evidence that the operation already ran —
+ * no second table, and nothing to keep in step with the first.
  */
-export async function applyBulkPrice(db: Db, change: BulkPriceChange): Promise<BulkPriceOutcome> {
+export interface BulkPriceOperation {
+  id: string;
+  record: (tx: D1DatabaseSession, moved: BulkPriceMove[]) => Promise<void>;
+}
+
+/**
+ * Applies the change once, or refuses it whole.
+ *
+ * ## Why this is an operation and not a statement
+ *
+ * A price change compounds. Two deliveries of "up 10%" are not 10% twice, they
+ * are 21% — and a lost response is enough to produce them: the operator presses
+ * confirm, the reply dies on a flaky link, they press again. Nothing about the
+ * result tells them it happened twice, and there is no undo:
+ * `round(x / 10) * 10` is lossy, so "down 16.67%" does not put back what "up
+ * 20%" took. It was the one irreversible action on this screen and the only one
+ * with no key, while the credit and broadcast routes beside it both had one.
+ *
+ * So: the transaction takes an advisory lock on the operation id, looks for the
+ * audit row that id would have written, and if it is there returns what
+ * happened the first time. The lock is what makes two SIMULTANEOUS retries
+ * safe; without it both would look, both would see nothing, and both would
+ * write. It is held for the transaction and released by COMMIT.
+ *
+ * ## Why the audit row is written here rather than after
+ *
+ * It used to be a third statement in the route, outside any transaction, after
+ * the write it describes. So a crash between them left prices moved with no
+ * record of what they had been — and that record is the only thing that could
+ * ever put them back. Now the rows that moved are returned by the UPDATE itself
+ * (`sub` still holds the old price, which `RETURNING` can read) and written
+ * with them, or neither happens.
+ *
+ * The refusal is still checked inside the writing statement rather than by
+ * asking first: two operators repricing one panel at the same moment would
+ * otherwise both read "none would go under" and the second would write a price
+ * the first has already made small.
+ *
+ * Returns the number of rows actually written, which is not the number of plans
+ * in scope: a percentage too small to move a cheap plan by a whole Toman leaves
+ * it alone, and saying "12 changed" when 3 did would be a lie the operator has
+ * no way to check.
+ */
+export async function applyBulkPrice(
+  db: D1Database,
+  change: BulkPriceChange,
+  operation: BulkPriceOperation,
+): Promise<BulkPriceOutcome> {
   const next = newPriceSql(change);
   const unsellable = unsellableSql(next);
-  const result = await db
-    .prepare(
-      `UPDATE product_plans t
-          SET price_irr = sub.next_price::bigint,
-              updated_at = now()
-         FROM (SELECT pl.id, ${next} AS next_price ${SCOPE}) sub
-        WHERE t.id = sub.id
-          AND sub.next_price <> t.price_irr
-          AND NOT EXISTS (SELECT 1 FROM (SELECT 1 AS one ${SCOPE} AND ${unsellable}) chk)`,
-    )
-    .bind(change.providerId, change.amount)
-    .run();
 
-  if (result.meta.changes > 0) return { ok: true, changed: result.meta.changes };
+  return db.withSession(async (tx) => {
+    // Held until COMMIT. Two retries of one operation arriving together would
+    // otherwise both find no audit row and both write.
+    await tx.prepare(`SELECT pg_advisory_xact_lock(hashtext(?1))`).bind(operation.id).run();
 
-  // Nothing was written, and the two reasons are not the same thing to an
-  // operator: one is "your change is impossible", the other is "your change
-  // was too small to matter". Asked only on the empty path, so the ordinary
-  // case pays for one statement.
-  const blocked = await db
-    .prepare(`SELECT count(*)::int AS n ${SCOPE} AND ${unsellable}`)
-    .bind(change.providerId, change.amount)
-    .first<{ n: number }>();
-  return (blocked?.n ?? 0) > 0
-    ? { ok: false, reason: 'unsellable', plans: blocked!.n }
-    : { ok: false, reason: 'nothing_to_change' };
+    const already = await tx
+      .prepare(`SELECT after_json FROM audit_logs WHERE id = ?1`)
+      .bind(operation.id)
+      .first<{ after_json: string | null }>();
+    if (already) {
+      // Answered from what the first attempt wrote, not by doing it again.
+      const changed = Number(
+        (JSON.parse(already.after_json ?? '{}') as { changed?: number }).changed ?? 0,
+      );
+      return { ok: true, changed, replayed: true };
+    }
+
+    const written = await tx
+      .prepare(
+        `UPDATE product_plans t
+            SET price_irr = sub.next_price::bigint,
+                updated_at = now()
+           FROM (SELECT pl.id, pl.name, pl.price_irr AS was, ${next} AS next_price ${SCOPE}) sub
+          WHERE t.id = sub.id
+            AND sub.next_price <> t.price_irr
+            AND NOT EXISTS (SELECT 1 FROM (SELECT 1 AS one ${SCOPE} AND ${unsellable}) chk)
+      RETURNING sub.id AS plan_id, sub.name, sub.was, sub.next_price`,
+      )
+      .bind(change.providerId, change.amount)
+      .all<{ plan_id: number; name: string; was: number; next_price: number }>();
+
+    const moved: BulkPriceMove[] = (written.results ?? []).map((r) => ({
+      planId: Number(r.plan_id),
+      name: r.name,
+      fromIrr: Number(r.was),
+      toIrr: Number(r.next_price),
+    }));
+
+    if (moved.length > 0) {
+      await operation.record(tx, moved);
+
+      return { ok: true, changed: moved.length, replayed: false };
+    }
+
+    // Nothing was written, and the two reasons are not the same thing to an
+    // operator: one is "your change is impossible", the other is "your change
+    // was too small to matter". Asked only on the empty path, so the ordinary
+    // case pays for one statement. Neither writes an audit row — a refusal is
+    // not an operation that happened, so pressing again must be allowed to.
+    const blocked = await tx
+      .prepare(`SELECT count(*)::int AS n ${SCOPE} AND ${unsellable}`)
+      .bind(change.providerId, change.amount)
+      .first<{ n: number }>();
+    return (blocked?.n ?? 0) > 0
+      ? { ok: false, reason: 'unsellable' as const, plans: blocked!.n }
+      : { ok: false, reason: 'nothing_to_change' as const };
+  });
 }

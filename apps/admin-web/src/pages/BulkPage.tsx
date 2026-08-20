@@ -74,6 +74,17 @@ export function BulkPage() {
   const [priceDir, setPriceDir] = useState<'UP' | 'DOWN'>('UP');
   const [priceAmount, setPriceAmount] = useState('');
   const [pricePreview, setPricePreview] = useState<BulkPricePreview | null>(null);
+  /**
+   * The key this change will commit under.
+   *
+   * Minted here rather than at the moment of pressing confirm, and deliberately
+   * so: a lost response is exactly the case this exists for, and if the id were
+   * chosen at press time the retry would carry a different one. It is replaced
+   * when the form is edited — a new amount is a new operation — and after a
+   * successful apply, so the next change is not answered with this one's
+   * result.
+   */
+  const [priceOpId, setPriceOpId] = useState(newId);
 
   const [busy, setBusy] = useState(false);
 
@@ -114,12 +125,16 @@ export function BulkPage() {
           mode: priceMode,
           direction: priceDir,
           amount: priceMode === 'FIXED' ? priceDigits * 10 : priceDigits,
+          operationId: priceOpId,
         };
 
   // Any edit invalidates a preview computed from the old form. A stale preview
-  // beside a new amount is the worst thing this screen could show.
+  // beside a new amount is the worst thing this screen could show — and the key
+  // goes with it, because a different amount is a different operation and must
+  // not be answered with the previous one's result.
   useEffect(() => {
     setPricePreview(null);
+    setPriceOpId(newId());
   }, [priceScope, priceMode, priceDir, priceAmount]);
 
   async function previewPrice() {
@@ -146,6 +161,10 @@ export function BulkPage() {
       setDone(`قیمت ${count(r.changed)} پلن به‌روز شد.`);
       setPriceAmount('');
       setPricePreview(null);
+      // A fresh key for whatever comes next. Clearing the amount already does
+      // this through the effect above; naming it here as well is what keeps it
+      // true if that ever stops clearing.
+      setPriceOpId(newId());
     } catch (e) {
       setErr(message(e));
     } finally {

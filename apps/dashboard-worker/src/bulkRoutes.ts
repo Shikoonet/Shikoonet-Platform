@@ -85,6 +85,14 @@ const PriceBody = z
     mode: z.enum(['PERCENT', 'FIXED']),
     direction: z.enum(['UP', 'DOWN']),
     amount: z.number().int().min(1),
+    /**
+     * The same key the credit and broadcast routes take, for the same reason
+     * and more urgently: a price change COMPOUNDS. Two deliveries of "up 10%"
+     * are 21%, and there is no undo — the rounding is lossy, so no percentage
+     * puts back what a percentage took. This was the only irreversible action
+     * on the screen and the only one without a key.
+     */
+    operationId: UUID,
   })
   .strict()
   .refine((v) => v.mode === 'FIXED' || v.amount <= (v.direction === 'DOWN' ? 99 : 500), {
@@ -174,6 +182,10 @@ export function registerBulkRoutes(
    * absent `providerId` have to mean the same thing.
    */
   app.post('/api/v1/admin/bulk/price/preview', async (c) => {
+    // The preview takes the same body so the panel can hold ONE object across
+    // both calls — the key it will commit under is chosen when the operator
+    // asks what would happen, not when they confirm it, so an edit to the form
+    // and a fresh preview are what mint a new one.
     const parsed = PriceBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     return c.json({ ok: true, preview: await previewBulkPrice(c.env.DB, parsed.data) });
@@ -186,23 +198,41 @@ export function registerBulkRoutes(
     const parsed = PriceBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
 
-    // Read before the write so the audit row carries what the shop's price
-    // list actually was. Afterwards it is unrecoverable — this is the one
-    // action here that overwrites data rather than adding to it.
-    const before = await previewBulkPrice(c.env.DB, parsed.data);
-    const outcome = await applyBulkPrice(c.env.DB, parsed.data);
-    if (!outcome.ok) return c.json({ ok: false, error: outcome.reason, preview: before }, 409);
-
-    await audit(
-      c.env.DB,
-      ident,
-      'catalog.bulk_repriced',
-      'PRODUCT',
-      String(parsed.data.providerId ?? 'all'),
-      { total_irr: before.currentTotalIrr, plans: before.plans },
-      { total_irr: before.newTotalIrr, changed: outcome.changed, ...parsed.data },
-      null,
-    );
-    return c.json({ ok: true, changed: outcome.changed, preview: before });
+    // The audit row is written by `applyBulkPrice`, inside the transaction that
+    // moves the prices, under the operation's own id — so the primary key is
+    // what stops a second delivery, and a crash cannot leave prices moved with
+    // no record of what they were. It used to be three statements out here with
+    // nothing holding them together.
+    //
+    // What it carries is every plan that moved with both of its prices, not a
+    // total and a count. A total cannot be undone; these can.
+    const outcome = await applyBulkPrice(c.env.DB, parsed.data, {
+      id: parsed.data.operationId,
+      record: (tx, moved) =>
+        audit(
+          tx,
+          ident,
+          'catalog.bulk_repriced',
+          'PRODUCT',
+          String(parsed.data.providerId ?? 'all'),
+          { plans: moved.map((m) => ({ id: m.planId, name: m.name, price_irr: m.fromIrr })) },
+          {
+            changed: moved.length,
+            plans: moved.map((m) => ({ id: m.planId, price_irr: m.toIrr })),
+            ...parsed.data,
+          },
+          null,
+          parsed.data.operationId,
+        ),
+    });
+    if (!outcome.ok) {
+      // Refused, and nothing was written — including no audit row, so pressing
+      // again after fixing the amount is allowed to work.
+      const preview = await previewBulkPrice(c.env.DB, parsed.data);
+      return c.json({ ok: false, error: outcome.reason, preview }, 409);
+    }
+    // `replayed` says the operator's second press did nothing, which is the
+    // honest answer and not a failure — the change they asked for is applied.
+    return c.json({ ok: true, changed: outcome.changed, replayed: outcome.replayed });
   });
 }
