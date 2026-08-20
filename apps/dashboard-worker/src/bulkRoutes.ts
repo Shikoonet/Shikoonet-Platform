@@ -37,7 +37,9 @@ import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 import {
   MAX_MESSAGE_LENGTH,
   activeCustomerCount,
+  applyBulkPrice,
   creditEveryone,
+  previewBulkPrice,
   queueBroadcast,
 } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
@@ -59,6 +61,35 @@ const CreditBody = z
     note: z.string().trim().min(1).max(500).default('web admin panel — bulk credit'),
   })
   .strict();
+
+/**
+ * A bulk price change.
+ *
+ * `amount` means IRR when the mode is FIXED and whole percent when it is
+ * PERCENT, which is why it is bounded twice rather than once — a 200% rise is
+ * a typo and a 200 IRR rise is twenty Toman. The narrower bound is applied
+ * after parsing, where the mode is known.
+ *
+ * A percentage decrease is capped at 99 rather than 100: -100% is "make
+ * everything free", which no operator means and which the floor check would
+ * let through because zero is not negative.
+ */
+const PriceBody = z
+  .object({
+    providerId: z.number().int().positive().nullable().default(null),
+    mode: z.enum(['PERCENT', 'FIXED']),
+    direction: z.enum(['UP', 'DOWN']),
+    amount: z.number().int().min(1),
+  })
+  .strict()
+  .refine((v) => v.mode === 'FIXED' || v.amount <= (v.direction === 'DOWN' ? 99 : 500), {
+    message: 'percentage out of range',
+    path: ['amount'],
+  })
+  .refine((v) => v.mode === 'PERCENT' || v.amount <= MAX_SINGLE_PAYMENT_IRR, {
+    message: 'amount out of range',
+    path: ['amount'],
+  });
 
 const BroadcastBody = z
   .object({
@@ -128,5 +159,45 @@ export function registerBulkRoutes(
       null,
     );
     return c.json({ ok: true, queued, reach });
+  });
+
+  /**
+   * What a price change would do. Readable by any operator, writes nothing.
+   *
+   * A POST rather than a GET because it carries four fields and one of them is
+   * nullable; the alternative is a query string where `providerId=` and an
+   * absent `providerId` have to mean the same thing.
+   */
+  app.post('/api/v1/admin/bulk/price/preview', async (c) => {
+    const parsed = PriceBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    return c.json({ ok: true, preview: await previewBulkPrice(c.env.DB, parsed.data) });
+  });
+
+  app.post('/api/v1/admin/bulk/price', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const parsed = PriceBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+
+    // Read before the write so the audit row carries what the shop's price
+    // list actually was. Afterwards it is unrecoverable — this is the one
+    // action here that overwrites data rather than adding to it.
+    const before = await previewBulkPrice(c.env.DB, parsed.data);
+    const outcome = await applyBulkPrice(c.env.DB, parsed.data);
+    if (!outcome.ok) return c.json({ ok: false, error: outcome.reason, preview: before }, 409);
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.bulk_repriced',
+      'PRODUCT',
+      String(parsed.data.providerId ?? 'all'),
+      { total_irr: before.currentTotalIrr, plans: before.plans },
+      { total_irr: before.newTotalIrr, changed: outcome.changed, ...parsed.data },
+      null,
+    );
+    return c.json({ ok: true, changed: outcome.changed, preview: before });
   });
 }

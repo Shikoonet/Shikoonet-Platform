@@ -396,3 +396,127 @@ describe('reach', () => {
     expect(body.reach).toBe(active?.n);
   });
 });
+
+/**
+ * Repricing a whole panel from the web panel.
+ *
+ * The arithmetic itself is proved against a real Postgres in
+ * `packages/domain/test/integration/bulkPrice.pg.test.ts` — rounding, the
+ * floor, the scope. What is left for this file is the part only a route has:
+ * who may press it, that a refusal is a refusal rather than a half-applied
+ * price list, and that the audit row records what the prices WERE, since after
+ * the write nothing else can say.
+ */
+describe('bulk repricing', () => {
+  let panel = 0;
+
+  async function seedPanel(prices: number[]): Promise<void> {
+    await baseEnv.DB.prepare(`DELETE FROM product_plans WHERE name LIKE 'wbp-%'`).run();
+    await baseEnv.DB.prepare(`DELETE FROM products WHERE code LIKE 'wbp-%'`).run();
+    await baseEnv.DB.prepare(
+      `DELETE FROM provisioning_providers WHERE code = 'wbp-panel'`,
+    ).run();
+    const pr = await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind, status)
+       VALUES ('wbp-panel', 'wbp-panel', 'manual', 'ACTIVE') RETURNING id`,
+    ).first<{ id: number }>();
+    panel = pr!.id;
+    const prod = await baseEnv.DB.prepare(
+      `INSERT INTO products (code, name, kind, provider_id, status)
+       VALUES ('wbp-p', 'wbp-p', 'vpn', ?1, 'ACTIVE') RETURNING id`,
+    )
+      .bind(panel)
+      .first<{ id: number }>();
+    for (const [i, price] of prices.entries()) {
+      await baseEnv.DB.prepare(
+        `INSERT INTO product_plans (product_id, name, price_irr, duration_days, status)
+         VALUES (?1, ?2, ?3, 30, 'ACTIVE')`,
+      )
+        .bind(prod!.id, `wbp-${i}`, price)
+        .run();
+    }
+  }
+
+  async function pricesNow(): Promise<number[]> {
+    const { results } = await baseEnv.DB.prepare(
+      `SELECT price_irr FROM product_plans WHERE name LIKE 'wbp-%' ORDER BY name`,
+    ).all<{ price_irr: number }>();
+    return (results ?? []).map((r) => Number(r.price_irr));
+  }
+
+  const post = (path: string, body: unknown, who: string) =>
+    app.request(
+      path,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+      envAs(who),
+    );
+
+  beforeEach(async () => {
+    await seedPanel([100_000, 500_000]);
+  });
+
+  it('previews without writing, for a read-only operator too', async () => {
+    const res = await post(
+      '/api/v1/admin/bulk/price/preview',
+      { providerId: panel, mode: 'FIXED', direction: 'UP', amount: 50_000 },
+      REVIEWER,
+    );
+    expect(res.status).toBe(200);
+    const { preview } = (await res.json()) as { preview: { plans: number; newTotalIrr: number } };
+    expect(preview.plans).toBe(2);
+    expect(preview.newTotalIrr).toBe(700_000);
+    // Looking is not touching.
+    expect(await pricesNow()).toEqual([100_000, 500_000]);
+  });
+
+  it('refuses to apply for anyone who is not an admin', async () => {
+    const res = await post(
+      '/api/v1/admin/bulk/price',
+      { providerId: panel, mode: 'FIXED', direction: 'UP', amount: 50_000 },
+      REVIEWER,
+    );
+    expect(res.status).toBe(403);
+    expect(await pricesNow()).toEqual([100_000, 500_000]);
+  });
+
+  it('applies, and writes down what the prices were', async () => {
+    const res = await post(
+      '/api/v1/admin/bulk/price',
+      { providerId: panel, mode: 'PERCENT', direction: 'UP', amount: 10 },
+      ADMIN,
+    );
+    expect(res.status).toBe(200);
+    expect(await pricesNow()).toEqual([110_000, 550_000]);
+
+    // The audit row is the only record of the old price list. Read from
+    // `audit_logs` rather than from the response, which is the thing under test.
+    const row = await baseEnv.DB.prepare(
+      `SELECT before_json::text AS b, after_json::text AS a FROM audit_logs
+        WHERE action = 'catalog.bulk_repriced' ORDER BY id DESC LIMIT 1`,
+    ).first<{ b: string | null; a: string | null }>();
+    expect(row?.b).toContain('600000');
+    expect(row?.a).toContain('660000');
+  });
+
+  it('turns an impossible change into a 409 and no write at all', async () => {
+    const res = await post(
+      '/api/v1/admin/bulk/price',
+      { providerId: panel, mode: 'FIXED', direction: 'DOWN', amount: 200_000 },
+      ADMIN,
+    );
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe('below_zero');
+    // Not even the plan that could have absorbed it.
+    expect(await pricesNow()).toEqual([100_000, 500_000]);
+  });
+
+  it('refuses a percentage that would make everything free', async () => {
+    const res = await post(
+      '/api/v1/admin/bulk/price',
+      { providerId: panel, mode: 'PERCENT', direction: 'DOWN', amount: 100 },
+      ADMIN,
+    );
+    expect(res.status).toBe(400);
+    expect(await pricesNow()).toEqual([100_000, 500_000]);
+  });
+});

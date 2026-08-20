@@ -196,3 +196,30 @@ test('an ordinary hub button is painted like an ordinary panel button', async ({
   expect(tones.danger?.color).toBe('rgb(239, 68, 68)');
   expect(tones.plain).toEqual(panelBtn);
 });
+
+test('the bulk price preview lands on screen and shows real prices', async ({ page }) => {
+  // Third card down on «ارسال گروهی», so its confirmation starts further from
+  // the top than either of the two that already made this mistake once: the
+  // operator presses «پیش‌نمایش», the request fires, the card renders below
+  // the fold, and the button looks dead. Asserting it EXISTS would pass then.
+  await page.goto('/admin/bulk');
+  await expect(page.getByRole('heading', { name: 'تنظیم گروهی قیمت' })).toBeVisible();
+
+  await page.locator('#bp-amount').fill('10');
+  await page.getByRole('button', { name: 'پیش‌نمایش' }).click();
+
+  const confirm = page.locator('.card', { hasText: 'تغییر قیمت اعمال شود؟' }).last();
+  await expect(confirm).toBeVisible();
+  await expect
+    .poll(async () =>
+      confirm.evaluate((el) => {
+        const top = el.getBoundingClientRect().top;
+        return top >= 0 && top < window.innerHeight;
+      }),
+    )
+    .toBe(true);
+
+  // And it says prices, not a percentage: «۱۹۵٬۰۰۰ تومان» is what an operator
+  // can check against the shop, «+۱۰٪» is what they already typed.
+  await expect(confirm).toContainText('تومان');
+});

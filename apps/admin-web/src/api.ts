@@ -324,6 +324,23 @@ export interface InUseCounts {
  * shared secret provisioning has to send. `hasSecretRef` is the whole of what
  * this screen is allowed to know about it.
  */
+export interface BulkPriceChange {
+  providerId: number | null;
+  mode: 'PERCENT' | 'FIXED';
+  direction: 'UP' | 'DOWN';
+  /** IRR when the mode is FIXED, whole percent when it is PERCENT. */
+  amount: number;
+}
+
+export interface BulkPricePreview {
+  plans: number;
+  currentTotalIrr: number;
+  newTotalIrr: number;
+  belowZero: number;
+  unchanged: number;
+  examples: { name: string; fromIrr: number; toIrr: number }[];
+}
+
 export interface PanelItem {
   id: number;
   code: string;
@@ -786,6 +803,28 @@ export const api = {
 
   broadcast(body: { body: string; broadcastId: string }) {
     return req<{ ok: boolean; queued: number; reach: number }>('/bulk/broadcast', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /**
+   * What a bulk price change would do. Writes nothing, so any operator may ask.
+   *
+   * There is no client-minted id here and there does not need to be: unlike a
+   * credit, repricing twice by the same amount is visibly wrong on the price
+   * list rather than silently doubled in eleven thousand wallets, and the
+   * confirmation shows the resulting prices.
+   */
+  bulkPricePreview(body: BulkPriceChange) {
+    return req<{ ok: boolean; preview: BulkPricePreview }>('/bulk/price/preview', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  bulkPrice(body: BulkPriceChange) {
+    return req<{ ok: boolean; changed: number; preview: BulkPricePreview }>('/bulk/price', {
       method: 'POST',
       body: JSON.stringify(body),
     });
