@@ -123,6 +123,25 @@ export interface ShopSettings {
    * the thing they paste into their app from this screen.
    */
   showsConfigButton: boolean;
+  /**
+   * Where the shop's own reports go — `setting.Channel_Report`.
+   *
+   * One field, because for a while there were two answers to this question:
+   * the nightly report read `REPORT_CHAT_ID` from the environment and the
+   * flood guard read this column, and nothing made them agree. Two readers of
+   * "the report channel" that can disagree is a bug waiting for the day
+   * somebody changes one of them.
+   *
+   * The shop's row wins when it has one. `REPORT_CHAT_ID` is the fallback for
+   * a database whose settings have never been migrated — which is exactly the
+   * practice box — and it is applied by the caller, not here, because this
+   * file describes what the SHOP says and knows nothing about the process it
+   * is running in.
+   *
+   * Null means the shop has not configured one, which is not an error: the
+   * legacy skips the send the same way on `strlen(...) > 0`.
+   */
+  reportChatId: number | null;
   /** Referral commission on a referred customer's first purchase, in percent. */
   commissionPercent: number;
   /**
@@ -223,6 +242,9 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   showsCopyButtons: true,
   showsAppLink: true,
   showsConfigButton: true,
+  // No guess. A chat id is not a thing that has a sensible default — sending
+  // the shop's daily takings to a channel nobody chose is worse than silence.
+  reportChatId: null,
   commissionPercent: 10,
   renewCashbackPercent: 0,
   topupMinIrr: 800_000,
@@ -246,6 +268,18 @@ function wholeCount(value: number | null, fallback: number): number {
   return value !== null && Number.isSafeInteger(value) && value > 0 && value <= 365
     ? value
     : fallback;
+}
+
+/**
+ * A Telegram chat id, or null.
+ *
+ * Refused rather than coerced, like every other number here. Zero is not a
+ * chat and a fractional value is a broken row; either would make the sweep
+ * post into nowhere every night while looking configured. Channel ids are
+ * large and negative, which is well inside the safe-integer range.
+ */
+function chatId(value: number | null): number | null {
+  return value !== null && Number.isSafeInteger(value) && value !== 0 ? value : null;
 }
 
 /** Where the custom emoji switch lives, named once so nothing mistypes it. */
@@ -275,6 +309,7 @@ export const SHOP_SETTING_KEYS = [
   ['bot', 'statuscopycart'],
   ['bot', 'linkappstatus'],
   ['shop', 'configshow'],
+  ['bot', 'Channel_Report'],
   ['bot', 'affiliatespercentage'],
   // Misspelled in the legacy schema and matched as it is actually written,
   // like `offtimeextraa` above.
@@ -417,6 +452,7 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       showsCopyButtons: !isOff(text('statuscopycart'), '0'),
       showsAppLink: !isOff(text('linkappstatus'), '0'),
       showsConfigButton: !isOff(text('configshow'), 'offconfig'),
+      reportChatId: chatId(num('Channel_Report')),
       commissionPercent: percent(
         num('affiliatespercentage'),
         DEFAULT_SHOP_SETTINGS.commissionPercent,

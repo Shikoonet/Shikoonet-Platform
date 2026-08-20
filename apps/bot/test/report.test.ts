@@ -15,6 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tehranDayBoundsFromDate } from '@shikoo/domain';
 import { buildDailyReport, sweepDailyReport } from '../src/report.js';
 import { db, pendingNotifications } from './helpers/env.js';
+import { invalidateShopSettings, loadShopSettings } from '../src/settings.js';
+import { blockForSpam } from '../src/spam.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
 /** Mid-afternoon Tehran on the day being reported, so no boundary is grazed. */
@@ -62,6 +64,9 @@ beforeEach(async () => {
   await ensureCatalog();
   await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'report:%'`).run();
   await db.prepare(`DELETE FROM orders WHERE public_id LIKE 'rep%'`).run();
+  await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();
+  await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'spam:%'`).run();
+  invalidateShopSettings();
   vi.spyOn(Date, 'now').mockReturnValue(NEXT_MORNING);
 });
 
@@ -125,5 +130,78 @@ describe('the daily report', () => {
   it('does nothing at all without a channel', async () => {
     expect(await sweepDailyReport(db, null)).toBe(false);
     expect((await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'))).toHaveLength(0);
+  });
+});
+
+/**
+ * Which channel, asked once.
+ *
+ * Until 2026-08-20 there were two answers: this sweep read `REPORT_CHAT_ID`
+ * from the environment and the flood guard read `setting.Channel_Report`, and
+ * nothing made them agree. Nobody had noticed because the practice box has no
+ * settings row and production has no environment variable — so each reader was
+ * exercised in a different place and both looked right.
+ */
+describe('the report channel', () => {
+  const SHOP_CHANNEL = -1001555444333;
+  const ENV_FALLBACK = -1001222111000;
+
+  async function setChannel(id: number): Promise<void> {
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value) VALUES ('bot', 'Channel_Report', ?1::jsonb)
+         ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind(JSON.stringify(String(id)))
+      .run();
+    invalidateShopSettings();
+  }
+
+  it('prefers the shop’s own row over the environment', async () => {
+    const { start } = tehranDayBoundsFromDate(DAY);
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
+    await setChannel(SHOP_CHANNEL);
+
+    expect(await sweepDailyReport(db, ENV_FALLBACK)).toBe(true);
+
+    const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
+    expect(queued[0]?.chatId).toBe(SHOP_CHANNEL);
+  });
+
+  it('uses the environment only when the shop has no row', async () => {
+    // The practice box: its settings table has never been migrated.
+    const { start } = tehranDayBoundsFromDate(DAY);
+    await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
+
+    expect(await sweepDailyReport(db, ENV_FALLBACK)).toBe(true);
+
+    const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
+    expect(queued[0]?.chatId).toBe(ENV_FALLBACK);
+  });
+
+  it('sends the nightly report and a spam block to the SAME channel', async () => {
+    // The invariant the split violated. Both readers are handed a different
+    // environment fallback here, so anything still reading the environment
+    // lands somewhere the other one did not.
+    const { start } = tehranDayBoundsFromDate(DAY);
+    const { userId, telegramId } = await completedOrder({
+      kind: 'NEW_PURCHASE',
+      irr: 1_000_000,
+      atMs: start + 60_000,
+    });
+    await setChannel(SHOP_CHANNEL);
+
+    await sweepDailyReport(db, ENV_FALLBACK);
+    const { reportChatId } = await loadShopSettings(db);
+    await db.withSession((tx) =>
+      blockForSpam(tx, { userId, telegramId, updateId: 987_654_321, reportChatId }),
+    );
+
+    const notes = await pendingNotifications();
+    const report = notes.find((n) => n.dedupeKey.startsWith('report:'));
+    const spam = notes.find((n) => n.dedupeKey.startsWith('spam:'));
+    expect(report?.chatId).toBe(SHOP_CHANNEL);
+    expect(spam?.chatId).toBe(SHOP_CHANNEL);
+    expect(report?.chatId).toBe(spam?.chatId);
   });
 });

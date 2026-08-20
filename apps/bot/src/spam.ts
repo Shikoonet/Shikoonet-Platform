@@ -31,7 +31,6 @@
 
 import type { D1DatabaseSession } from '@shikoo/db';
 import { fixedWindowRateLimit, setCustomerStatus, type RateLimit } from '@shikoo/domain';
-import { settingText } from './settings.js';
 import { enqueue } from './notify.js';
 import * as menu from './menu.js';
 import { encode } from './callback.js';
@@ -104,19 +103,18 @@ export function resetSpamWindows(): void {
  * only trace an operator has that a customer was cut off — losing it would
  * leave somebody blocked with nobody told.
  *
- * Where it goes is `setting.Channel_Report`, which is the legacy's own column
- * for this and needs no plumbing through the poll loop. (The nightly report
- * reads `REPORT_CHAT_ID` from the environment instead; that was a choice for a
- * thing the poll loop already owned, and these two should be reconciled when
- * one of them is next touched.) An empty column means no report — the same
- * thing `index.php:326` does with `strlen(...) > 0`.
+ * Where it goes is `ShopSettings.reportChatId` — one field, read by the nightly
+ * report too. For a day there were two answers to "which channel?", this one
+ * and an environment variable, and nothing made them agree. Null means the shop
+ * has not configured one, which is the same thing `index.php:326` does with
+ * `strlen(...) > 0`: no report, and the block still happens.
  *
  * Returns whether the customer was newly blocked, which is what the caller
  * needs to decide whether to say anything at all.
  */
 export async function blockForSpam(
   tx: D1DatabaseSession,
-  opts: { userId: number; telegramId: number; updateId: number },
+  opts: { userId: number; telegramId: number; updateId: number; reportChatId: number | null },
 ): Promise<boolean> {
   const outcome = await setCustomerStatus(tx, {
     userId: opts.userId,
@@ -128,22 +126,18 @@ export async function blockForSpam(
   // next message that they were blocked.
   if (!outcome || !outcome.changed) return false;
 
-  const channel = await settingText(tx, 'bot', 'Channel_Report');
-  if (channel !== null) {
-    const chatId = Number(channel);
-    if (Number.isSafeInteger(chatId)) {
-      await enqueue(tx, {
-        // The update that tripped it. Unique per block event, so an operator
-        // who unblocks and is flooded again does get told the second time.
-        dedupeKey: `spam:${opts.userId}:${opts.updateId}`,
-        chatId,
-        text: menu.spamBlockedReport(opts.telegramId),
-        // The same button the legacy attaches, pointing at our own admin user
-        // screen. `usr` takes the internal id and re-checks the presser's
-        // permission, so a channel member who is not an admin gets nothing.
-        keyboard: [[{ text: menu.ADMIN_OPEN_USER, callback_data: encode('usr', opts.userId) }]],
-      });
-    }
+  if (opts.reportChatId !== null) {
+    await enqueue(tx, {
+      // The update that tripped it. Unique per block event, so an operator
+      // who unblocks and is flooded again does get told the second time.
+      dedupeKey: `spam:${opts.userId}:${opts.updateId}`,
+      chatId: opts.reportChatId,
+      text: menu.spamBlockedReport(opts.telegramId),
+      // The same button the legacy attaches, pointing at our own admin user
+      // screen. `usr` takes the internal id and re-checks the presser's
+      // permission, so a channel member who is not an admin gets nothing.
+      keyboard: [[{ text: menu.ADMIN_OPEN_USER, callback_data: encode('usr', opts.userId) }]],
+    });
   }
   return true;
 }

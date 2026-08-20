@@ -108,8 +108,10 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
     signal: controller.signal,
     onCycle: beat,
     // A channel id is negative and can be large, so it is parsed rather than
-    // run through `positiveInt`. Unset means no nightly report — the same thing
-    // an empty `Channel_Report` means on the bot this replaces.
+    // run through `positiveInt`. This is only a FALLBACK: the shop's own
+    // `setting.Channel_Report` wins wherever it is set, and this covers a
+    // database whose settings have never been migrated. Unset and unmigrated
+    // means no nightly report.
     ...(reportChatId === null ? {} : { reportChatId }),
   });
 

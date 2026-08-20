@@ -13,6 +13,11 @@
  * has been under-reporting its late evening for years. Here the window is a
  * whole Tehran day and the report is built once that day is over.
  *
+ * **Where it goes** is `ShopSettings.reportChatId`, from the shop's own
+ * `setting.Channel_Report`, with `REPORT_CHAT_ID` as the fallback for a
+ * database whose settings have never been migrated. The flood guard reads the
+ * same field.
+ *
  * **It goes through `bot_notifications`.** The legacy calls `sendmessage`
  * straight from cron, so a Telegram hiccup at 23:45 loses that night's report
  * for good. Queued, it is retried, and `report:<date>` as the dedupe key is
@@ -25,6 +30,7 @@
 import type { D1Database } from '@shikoo/database';
 import { tehranDateStringFromMs, tehranDayBoundsFromDate } from '@shikoo/domain';
 import { enqueue } from './notify.js';
+import { loadShopSettings } from './settings.js';
 
 /** How many resellers the ranking names, matching the legacy's `LIMIT 3`. */
 const TOP_RESELLERS = 3;
@@ -213,9 +219,19 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
  */
 export async function sweepDailyReport(
   db: D1Database,
-  chatId: number | null,
+  envFallback: number | null,
   now: number = Date.now(),
 ): Promise<boolean> {
+  // One question, one answer. The shop's own `Channel_Report` decides, and
+  // `REPORT_CHAT_ID` is only what a database with no settings row falls back
+  // to — which is the practice box, where the migration has never run.
+  //
+  // Until 2026-08-20 this read the environment and the flood guard read the
+  // column, and nothing made them agree: two readers of "the report channel"
+  // that could point at different channels, which is a bug waiting for the day
+  // somebody changed one of them.
+  const { reportChatId } = await loadShopSettings(db);
+  const chatId = reportChatId ?? envFallback;
   // No channel configured is not an error — the legacy skips the send the same
   // way, and a shop that does not want the report should not be paying for six
   // aggregate queries a night to not send it.

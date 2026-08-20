@@ -20,6 +20,7 @@ import { handleUpdate } from '../src/handle.js';
 import { SPAM_LIMIT, SPAM_WINDOW_MS, resetSpamWindows } from '../src/spam.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer } from './helpers/shop.js';
+import { invalidateShopSettings } from '../src/settings.js';
 
 const NOW_MS = Date.UTC(2026, 7, 20, 9, 0, 0);
 
@@ -78,6 +79,9 @@ beforeEach(async () => {
   resetSpamWindows();
   vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
   await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();
+  // The loader caches for thirty seconds, so a row written by a test is
+  // invisible to the very update that test is about.
+  invalidateShopSettings();
   // Another file's outbox rows are none of this file's business, but its own
   // from a previous test are: every count below is scoped to `spam:`.
   await db.prepare(`DELETE FROM bot_notifications WHERE dedupe_key LIKE 'spam:%'`).run();
@@ -169,6 +173,7 @@ describe('telling the shop', () => {
       )
       .bind(JSON.stringify(String(CHANNEL)))
       .run();
+    invalidateShopSettings();
   });
 
   it('queues one report, naming the customer and carrying a way to reach them', async () => {
@@ -203,6 +208,7 @@ describe('telling the shop', () => {
 
   it('blocks with no report channel configured, rather than not blocking', async () => {
     await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();
+    invalidateShopSettings();
     const { telegramId } = ids();
     await makeCustomer(telegramId);
 
