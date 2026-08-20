@@ -1091,6 +1091,12 @@ export function checkoutMenu(
   totalIrr: number,
   cardDigits: string,
   wallet?: { balanceIrr: number; totalIrr: number },
+  /**
+   * `setting.statuscopycart`. Optional and defaulting to on, so a caller that
+   * has not been given the shop's settings keeps drawing the buttons rather
+   * than silently taking them off an invoice.
+   */
+  showCopy = true,
 ): InlineKeyboard {
   const covers = wallet !== undefined && wallet.balanceIrr >= wallet.totalIrr;
   const someBalance = wallet !== undefined && wallet.balanceIrr > 0;
@@ -1101,7 +1107,7 @@ export function checkoutMenu(
       action === 'menu' ? encode('menu') : encode(action as 'paid', orderId),
     values: { balance: wallet ? formatToman(wallet.balanceIrr) : '' },
   });
-  const copy = copyRow(cardDigits, totalIrr);
+  const copy = showCopy ? copyRow(cardDigits, totalIrr) : [];
   // Above the chrome, like every other data row on every other screen. The
   // layout an admin saves describes the buttons below this one.
   return copy.length > 0 ? [copy, ...chrome] : chrome;
@@ -1593,7 +1599,11 @@ export function serviceDetailMenu(actions?: ServiceActions | null): InlineKeyboa
         // are about the subscription link. Drawn even for a service whose link
         // is missing — the handler says so, which beats a screen that silently
         // has one button fewer than the customer remembers.
+        // `rvk` is panel-backed and nothing else. `qr` is the same button the
+        // legacy calls «کانفیگ» and the shop can switch off, so it carries one
+        // more condition than its neighbour despite sharing everything else.
         case 'qr':
+          return actions != null && actions.showsConfig !== false;
         case 'rvk':
           return actions != null;
         case 'off':
@@ -1633,6 +1643,13 @@ export interface ServiceActions {
    * removing a working button.
    */
   canSwitch?: boolean;
+  /**
+   * Whether the shop hands the config over from this screen —
+   * `shopSetting.configshow`. Optional for the same reason as `canSwitch`: a
+   * caller without the settings keeps the button rather than removing one the
+   * customer remembers.
+   */
+  showsConfig?: boolean;
 }
 
 /** What the customer is buying, as one phrase both the invoice and the receipt

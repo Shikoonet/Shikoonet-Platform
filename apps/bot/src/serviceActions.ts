@@ -41,6 +41,7 @@ export function actionsFor(
     volumeIrrPerGb: shop.sellsExtraVolume ? pricing.volumeIrrPerGb : null,
     timeIrrPerDay: shop.sellsExtraTime ? pricing.timeIrrPerDay : null,
     canSwitch: shop.allowsServiceSwitch,
+    showsConfig: shop.showsConfigButton,
   };
 }
 

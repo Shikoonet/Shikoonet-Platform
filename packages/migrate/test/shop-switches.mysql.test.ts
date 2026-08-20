@@ -52,7 +52,7 @@ async function load(): Promise<Loaded> {
         `SELECT Namevalue AS k, value AS v FROM shopSetting
           WHERE Namevalue COLLATE utf8mb4_bin
              IN ('statusextra', 'statustimeextra', 'statuschangeservice',
-                 'chashbackextend')`,
+                 'chashbackextend', 'configshow')`,
       );
       const [payRows] = await conn.query(
         `SELECT NamePay AS k, ValuePay AS v FROM PaySetting
@@ -64,7 +64,8 @@ async function load(): Promise<Loaded> {
       // the first two were only asserted against a comment in the bot's own
       // test, which is the shape rule 6 exists to catch.
       const [botRows] = await conn.query(
-        `SELECT affiliatespercentage, daywarn, volumewarn, on_hold_day FROM setting`,
+        `SELECT affiliatespercentage, daywarn, volumewarn, on_hold_day,
+                statuscopycart, linkappstatus FROM setting`,
       );
       const pairs = (rows: unknown): Pairs =>
         Object.fromEntries(
@@ -179,5 +180,20 @@ describe.skipIf(unreachable !== null)('the numbers the bot reads', () => {
     expect(Number(bot['daywarn']), 'daywarn').toBe(2);
     expect(Number(bot['volumewarn']), 'volumewarn').toBe(1);
     expect(Number(bot['on_hold_day']), 'on_hold_day').toBe(1);
+  });
+
+  it('has all three button switches ON, which is why the bot draws them', () => {
+    // The bot reads these as "off only on the exact off-word", so a shop that
+    // has one of them off is the only way to tell whether the wiring works at
+    // all. Today none of them is, and that is worth recording rather than
+    // assuming: it is the reason nothing a customer sees changed when the
+    // switches were wired up.
+    //
+    // `statuscopycart` and `linkappstatus` are `varchar(45)` holding `1`, not
+    // integers. Reading either as a number and comparing it to a string is how
+    // `roll_Status` read 963 customers wrong.
+    expect(bot['statuscopycart'], 'statuscopycart').toBe('1');
+    expect(bot['linkappstatus'], 'linkappstatus').toBe('1');
+    expect(shop['configshow'], 'configshow').toBe('onconfig');
   });
 });

@@ -15,7 +15,13 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { assertSchema, db , pendingNotifications } from './helpers/env.js';
-import { ensureCatalog, ensurePaymentCard, makeCustomer, providerId } from './helpers/shop.js';
+import {
+  ensureCatalog,
+  ensurePaymentCard,
+  makeCustomer,
+  planId,
+  providerId,
+} from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 import {
   DEFAULT_SHOP_SETTINGS,
@@ -552,5 +558,102 @@ describe('a deposit the customer types', () => {
 
     expect(nonsense.replies[0]?.text ?? '').toContain('مبلغ دلخواه');
     expect(await openOrder(telegramId)).toBeNull();
+  });
+});
+
+/**
+ * The three switches that gate behaviour the bot already had.
+ *
+ * Each one is a button the shop can take away, and each is ON in production —
+ * so nothing about today's bot changes. What changes is that an admin who
+ * turns one off is obeyed instead of ignored, which is the whole of the gap.
+ *
+ * Every assertion goes through `handleUpdate`. Calling the menu builder with
+ * the flag set proves the builder; it says nothing about whether `handle.ts`
+ * ever passes it, and that wiring is what this slice added.
+ */
+describe('the three switches over buttons the bot already draws', () => {
+  /** A fresh customer. `ids()` is monotonic, so no two tests collide. */
+  const makeTelegramId = (): number => ids().telegramId;
+
+  /** What the keyboard puts on the clipboard, in drawing order. */
+  const copied = (keyboard: { copy_text?: { text: string } }[][] | undefined): string[] =>
+    (keyboard ?? []).flat().flatMap((b) => (b.copy_text === undefined ? [] : [b.copy_text.text]));
+
+  async function checkoutKeyboard(telegramId: number) {
+    const { updateId } = ids();
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+    const vip = await providerId('sim-vip');
+    await handleUpdate(db, press(updateId + 1, telegramId, `panel:${vip}`));
+    const plan = await planId('sim-vip-1m-50');
+    await handleUpdate(db, press(updateId + 2, telegramId, `plan:${plan}`));
+    const placed = await handleUpdate(db, press(updateId + 3, telegramId, `order:${plan}`));
+    return placed.replies[0]?.keyboard;
+  }
+
+  it('takes the clipboard buttons off the invoice — and nothing else', async () => {
+    await ensurePaymentCard();
+    const before = await checkoutKeyboard(makeTelegramId());
+    // Two: the card and the amount. Both are numbers a customer would
+    // otherwise retype into a banking app, and the verifier compares the
+    // amount EXACTLY.
+    expect(copied(before)).toHaveLength(2);
+
+    await put('bot', 'statuscopycart', '0');
+
+    const after = await checkoutKeyboard(makeTelegramId());
+    expect(copied(after)).toEqual([]);
+    // The invoice still works. An off switch removes an affordance, never the
+    // way to finish paying.
+    expect(datas(after).some((d) => d.startsWith('paid:'))).toBe(true);
+  });
+
+  it('takes the QR button off a real service', async () => {
+    const telegramId = makeTelegramId();
+    await makeService(telegramId);
+    expect((await serviceButtons(telegramId)).some((d) => d.startsWith('qr:'))).toBe(true);
+
+    await put('shop', 'configshow', 'offconfig');
+
+    const after = await serviceButtons(telegramId);
+    expect(after.some((d) => d.startsWith('qr:'))).toBe(false);
+    // Its neighbour shares every other condition and is not the same switch.
+    expect(after.some((d) => d.startsWith('rvk:'))).toBe(true);
+    expect(after).toContain('mine');
+  });
+
+  it('takes the app-download button out of the tutorials', async () => {
+    await db
+      .prepare(
+        `INSERT INTO client_apps (name, platform, link, active, sort_order)
+         VALUES ('v2rayNG', 'android', 'https://example.test/app', true, 1)
+         ON CONFLICT DO NOTHING`,
+      )
+      .run();
+    const telegramId = makeTelegramId();
+    const { updateId } = ids();
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+
+    const before = await handleUpdate(db, press(updateId + 1, telegramId, 'hlp'));
+    expect(datas(before.replies[0]?.keyboard)).toContain('app');
+
+    await put('bot', 'linkappstatus', '0');
+
+    const after = await handleUpdate(db, press(updateId + 2, telegramId, 'hlp'));
+    expect(datas(after.replies[0]?.keyboard)).not.toContain('app');
+    expect(datas(after.replies[0]?.keyboard)).toContain('menu');
+  });
+
+  it('leaves all three on for anything the loader could not read', async () => {
+    // The deliberate difference from the PHP, which draws the copy buttons
+    // only when the column reads exactly "1". A value we failed to understand
+    // must not be what takes a working button away mid-payment.
+    await put('bot', 'statuscopycart', 'yes');
+    await put('bot', 'linkappstatus', '');
+    await put('shop', 'configshow', 'something-else');
+    const shop = await loadShopSettings(db);
+    expect(shop.showsCopyButtons).toBe(true);
+    expect(shop.showsAppLink).toBe(true);
+    expect(shop.showsConfigButton).toBe(true);
   });
 });

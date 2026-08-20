@@ -105,6 +105,24 @@ export interface ShopSettings {
   sellsExtraTime: boolean;
   /** The customer may turn their own service off and on — `statuschangeservice`. */
   allowsServiceSwitch: boolean;
+  /**
+   * The two clipboard buttons under the invoice — `setting.statuscopycart`.
+   *
+   * The bot has drawn them unconditionally since they were built; production
+   * has the switch on, so nothing changes today. What changes is that an admin
+   * who turns it off is now obeyed.
+   */
+  showsCopyButtons: boolean;
+  /** The app-download button under the tutorials — `setting.linkappstatus`. */
+  showsAppLink: boolean;
+  /**
+   * The QR button on a service — `shopSetting.configshow`.
+   *
+   * The legacy's button hands over the raw configs and ours hands over a QR of
+   * the subscription link. Same question either way: may the customer be given
+   * the thing they paste into their app from this screen.
+   */
+  showsConfigButton: boolean;
   /** Referral commission on a referred customer's first purchase, in percent. */
   commissionPercent: number;
   /**
@@ -202,6 +220,9 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   sellsExtraVolume: true,
   sellsExtraTime: true,
   allowsServiceSwitch: true,
+  showsCopyButtons: true,
+  showsAppLink: true,
+  showsConfigButton: true,
   commissionPercent: 10,
   renewCashbackPercent: 0,
   topupMinIrr: 800_000,
@@ -247,6 +268,13 @@ export const SHOP_SETTING_KEYS = [
   ['shop', 'statusextra'],
   ['shop', 'statustimeextra'],
   ['shop', 'statuschangeservice'],
+  // `setting` is one row of 51 columns and every column lands in scope `bot`;
+  // every `shopSetting` row lands in scope `shop`. That is `migrateSettings`,
+  // not a convention — reading either from the wrong scope finds nothing and
+  // silently keeps the default for ever.
+  ['bot', 'statuscopycart'],
+  ['bot', 'linkappstatus'],
+  ['shop', 'configshow'],
   ['bot', 'affiliatespercentage'],
   // Misspelled in the legacy schema and matched as it is actually written,
   // like `offtimeextraa` above.
@@ -375,6 +403,20 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       sellsExtraVolume: !isOff(text('statusextra'), 'offextra'),
       sellsExtraTime: !isOff(text('statustimeextra'), 'offtimeextraa'),
       allowsServiceSwitch: !isOff(text('statuschangeservice'), 'offstatus'),
+      // Off only on the exact `'0'`, which is a DELIBERATE difference from the
+      // PHP: `index.php:4790` draws the buttons only when the column reads
+      // exactly `"1"`, so anything unexpected there hides them. Here anything
+      // unexpected leaves them, for the same reason as the three switches
+      // above — a value we failed to understand must not be what takes a
+      // working affordance away from a customer mid-payment.
+      //
+      // Both columns are `varchar(45)` holding `1`, so `settingText` hands
+      // over the string `'1'` whether the driver gives us a string or a
+      // number. Comparing a number against `'0'` is exactly how `roll_Status`
+      // read 963 customers wrong.
+      showsCopyButtons: !isOff(text('statuscopycart'), '0'),
+      showsAppLink: !isOff(text('linkappstatus'), '0'),
+      showsConfigButton: !isOff(text('configshow'), 'offconfig'),
       commissionPercent: percent(
         num('affiliatespercentage'),
         DEFAULT_SHOP_SETTINGS.commissionPercent,

@@ -995,10 +995,13 @@ async function handleAddonAmount(
       checkout.cardDigits,
       checkout.cardHolder,
     ),
-    menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
-      balanceIrr: await balanceFor(tx, user.id),
-      totalIrr: placed.totalIrr,
-    }),
+    menu.checkoutMenu(
+      placed.id,
+      placed.totalIrr,
+      checkout.cardDigits,
+      { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
+      SHOP.showsCopyButtons,
+    ),
   );
 }
 
@@ -2017,7 +2020,7 @@ async function handleCallback(
         if (!article) return screen(menu.HELP_EMPTY, menu.mainMenu(user));
         return screen(
           menu.helpArticleScreen(article.title, article.body),
-          menu.helpMenu([], (await clientApps(tx)).length > 0),
+          menu.helpMenu([], (await clientApps(tx)).length > 0 && SHOP.showsAppLink),
         );
       }
       const articles = await helpArticles(tx);
@@ -2025,7 +2028,7 @@ async function handleCallback(
       if (articles.length === 0 && apps.length === 0) {
         return screen(menu.HELP_EMPTY, menu.mainMenu(user));
       }
-      return screen(menu.CHOOSE_HELP, menu.helpMenu(articles, apps.length > 0));
+      return screen(menu.CHOOSE_HELP, menu.helpMenu(articles, apps.length > 0 && SHOP.showsAppLink));
     }
 
     case 'app': {
@@ -2103,10 +2106,13 @@ async function handleCallback(
           checkout.cardDigits,
           checkout.cardHolder,
         ),
-        menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits, {
-          balanceIrr: await balanceFor(tx, user.id),
-          totalIrr: placed.totalIrr,
-        }),
+        menu.checkoutMenu(
+          placed.id,
+          placed.totalIrr,
+          checkout.cardDigits,
+          { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
+          SHOP.showsCopyButtons,
+        ),
       );
     }
 
