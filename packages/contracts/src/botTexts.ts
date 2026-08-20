@@ -1568,6 +1568,27 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'فقط وقتی آیدی پشتیبانی در تنظیمات پر باشد',
   },
+  // --- ضد-اسپم ---------------------------------------------------------------
+  // `index.php:307` — ۳۵ پیام در یک دقیقه و کاربر مسدود می‌شود. متن مشتری از
+  // `users.spam.spamedMessage` لگاسی می‌آید و متن کانال از `spamedReport`.
+  SPAM_BLOCKED: {
+    default: '📌 کاربر گرامی، حساب شما به‌دلیل ارسال پیام بیش از حد در ربات مسدود شد.',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'به خودِ کاربر، همان لحظه‌ای که بلاک می‌شود',
+  },
+  SPAM_BLOCKED_REPORT: {
+    default: '🚫 کاربر با شناسهٔ عددی <code>{telegramId}</code> به‌دلیل اسپم در ربات بلاک شد.',
+    placeholders: ['telegramId'],
+    screen: 'warnings',
+    hint: 'به کانال گزارش، با دکمهٔ باز کردن همان کاربر',
+  },
+  ADMIN_OPEN_USER: {
+    default: '👤 مدیریت کاربر',
+    placeholders: [],
+    screen: 'adminUser',
+    hint: 'دکمهٔ زیر گزارش اسپم در کانال',
+  },
 
   // --- صفحه‌بندی -------------------------------------------------------------
   // Buttons, but here rather than in the keyboard registry: «قبلی» and «بعدی»

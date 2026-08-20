@@ -75,6 +75,7 @@ import {
   placeTopupOrder,
 } from './order.js';
 import { clientApps, helpArticle, helpArticles } from './content.js';
+import { blockForSpam, overSpamLimit } from './spam.js';
 import {
   claimReferrer,
   payReferralCommission,
@@ -243,8 +244,42 @@ export async function handleUpdate(
     // produce the same closed sign for ever.
     const from = update.callback_query?.from ?? update.message?.from;
     const chatId = update.callback_query?.message?.chat.id ?? update.message?.chat.id;
-    if (!SHOP.open && from && chatId !== undefined && !(await adminFor(tx, from.id))) {
+
+    // Asked at most once per update. Three guards below exempt admins and each
+    // used to ask the database again; the answer cannot change inside one
+    // update, and this is the hottest path in the bot.
+    let adminAnswer: boolean | undefined;
+    const isAdmin = async (): Promise<boolean> => {
+      adminAnswer ??= from ? (await adminFor(tx, from.id)) !== null : false;
+      return adminAnswer;
+    };
+
+    if (!SHOP.open && from && chatId !== undefined && !(await isAdmin())) {
       return { status: 'processed', replies: [reply(chatId, menu.SHOP_CLOSED)] };
+    }
+
+    // The flood guard, above everything a customer can reach — the same place
+    // `index.php:307` puts it, and for the same reason the closed sign is here:
+    // a limit that only guards one command is walked past by any button press.
+    //
+    // Counted even for an update we are about to ignore. Thirty-five forged
+    // `callback_data` posts a minute are the flood this exists to stop, and
+    // deciding first whether we would have answered would exempt exactly them.
+    //
+    // Admins are exempt from the counter, not just from the block: an admin
+    // walking the panel fast is the ordinary way this bot is operated.
+    if (from && !(await isAdmin()) && (await overSpamLimit(from.id))) {
+      const user = await upsertUser(tx, from);
+      const blocked = await blockForSpam(tx, {
+        userId: user.id,
+        telegramId: from.id,
+        updateId: update.update_id,
+      });
+      // Told once, at the moment it happens. Every message after this one is
+      // ignored in silence, which is what the per-handler checks already do.
+      return blocked && chatId !== undefined
+        ? { status: 'processed', replies: [reply(chatId, menu.SPAM_BLOCKED)] }
+        : IGNORED;
     }
 
     // Channel membership and the shop's rules, at the same single point and for
@@ -290,7 +325,7 @@ export async function handleUpdate(
       !isStart &&
       !carriesReceipt
     ) {
-      const gated = (await adminFor(tx, from.id))
+      const gated = (await isAdmin())
         ? null
         : await gateFor(tx, api, from.id, SHOP.requiresRules);
       if (gated) return gateScreen(chatId, gated);

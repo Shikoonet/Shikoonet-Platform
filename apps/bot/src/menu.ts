@@ -167,6 +167,8 @@ export let ADMIN_USER_ASK_CREDIT = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_CREDIT');
 export let ADMIN_USER_ASK_DEBIT = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_DEBIT');
 export let ADMIN_USER_AMOUNT_BAD = DEFAULT_TEXTS.raw('ADMIN_USER_AMOUNT_BAD');
 export let ADMIN_USER_BLOCKED = DEFAULT_TEXTS.raw('ADMIN_USER_BLOCKED');
+export let ADMIN_OPEN_USER = DEFAULT_TEXTS.raw('ADMIN_OPEN_USER');
+export let SPAM_BLOCKED = DEFAULT_TEXTS.raw('SPAM_BLOCKED');
 export let ADMIN_USER_UNBLOCKED = DEFAULT_TEXTS.raw('ADMIN_USER_UNBLOCKED');
 export let ADMIN_USER_ASK_DISCOUNT = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_DISCOUNT');
 export let ADMIN_USER_DISCOUNT_BAD = DEFAULT_TEXTS.raw('ADMIN_USER_DISCOUNT_BAD');
@@ -311,6 +313,8 @@ export function applyContent(content: BotContent): void {
   ADMIN_USER_ASK_DEBIT = t.raw('ADMIN_USER_ASK_DEBIT');
   ADMIN_USER_AMOUNT_BAD = t.raw('ADMIN_USER_AMOUNT_BAD');
   ADMIN_USER_BLOCKED = t.raw('ADMIN_USER_BLOCKED');
+  ADMIN_OPEN_USER = t.raw('ADMIN_OPEN_USER');
+  SPAM_BLOCKED = t.raw('SPAM_BLOCKED');
   ADMIN_USER_UNBLOCKED = t.raw('ADMIN_USER_UNBLOCKED');
   ADMIN_USER_ASK_DISCOUNT = t.raw('ADMIN_USER_ASK_DISCOUNT');
   ADMIN_USER_DISCOUNT_BAD = t.raw('ADMIN_USER_DISCOUNT_BAD');
@@ -2016,6 +2020,17 @@ export function serviceNeverUsed(
     lines.push('', t.render('WARN_UNUSED_SUPPORT', { handle: supportHandle }));
   }
   return lines.join('\n');
+}
+
+/**
+ * What the shop's channel is told when the flood guard fires.
+ *
+ * The numeric id rather than the @handle: a customer who was blocked for
+ * flooding is exactly the sort who has no username, and the id is what the
+ * button underneath resolves anyway.
+ */
+export function spamBlockedReport(telegramId: number): string {
+  return TEXTS_NOW.render('SPAM_BLOCKED_REPORT', { telegramId: String(telegramId) });
 }
 
 /**
