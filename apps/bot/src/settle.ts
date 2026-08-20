@@ -87,9 +87,25 @@ interface SettleRow {
 export async function settleVerifiedPayments(db: D1Database): Promise<number> {
   // Read once per sweep rather than per payment: it is shop-wide configuration
   // and it is cached anyway, but a sweep of fifty payments should not ask fifty
-  // times. Falls back to the shipped rate, so a failed read pays commission at
-  // last release's percentage instead of paying none.
-  const { commissionPercent } = await loadShopSettings(db);
+  // times.
+  //
+  // `fromDatabase` is false only when this process has never once read the
+  // settings — `loadShopSettings` serves the last good read otherwise — so it
+  // means "the shop's rules are unknown", not "they are stale". Commission is
+  // money out of the shop's wallet and cannot be taken back, so an unknown rate
+  // waits for the next sweep rather than guessing at the shipped ten per cent.
+  // The comment here used to argue the opposite, on the grounds that paying
+  // something beats paying nothing; the third option — paying in a minute — was
+  // not considered, and it is strictly better than both.
+  //
+  // Same shape as `provision.ts:494`, which reached this conclusion first for
+  // renewal cashback. One situation, one answer, in both places now.
+  const shop = await loadShopSettings(db);
+  if (!shop.fromDatabase) {
+    console.warn('[bot] settlement is waiting: the commission rate has never been read');
+    return 0;
+  }
+  const { commissionPercent } = shop;
   const { results } = await db
     .prepare(
       `SELECT p.id            AS payment_id,

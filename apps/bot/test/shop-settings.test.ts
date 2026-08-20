@@ -657,3 +657,66 @@ describe('the three switches over buttons the bot already draws', () => {
     expect(shop.showsConfigButton).toBe(true);
   });
 });
+
+/**
+ * What the bot believes when the database will not answer.
+ *
+ * The failure is produced by taking the table away, not by stubbing the loader:
+ * a fake would prove the fallback branch runs, which was never in doubt. What
+ * was in doubt is WHICH answer it falls back to, and that only the real error
+ * path can show.
+ */
+describe('a settings read that fails', () => {
+  async function withSettingsUnreachable<T>(fn: () => Promise<T>): Promise<T> {
+    await db.prepare(`ALTER TABLE settings RENAME TO settings_hidden`).run();
+    try {
+      return await fn();
+    } finally {
+      await db.prepare(`ALTER TABLE settings_hidden RENAME TO settings`).run();
+      invalidateShopSettings();
+    }
+  }
+
+  /**
+   * The thirty-second window, walked past on the clock rather than cleared.
+   *
+   * `invalidateShopSettings()` would also get past the cache, and it would take
+   * the last good read with it — which is the thing under test. In production
+   * nothing invalidates during an outage; time simply passes.
+   */
+  const staleRead = () => loadShopSettings(db, Date.now() + 60_000);
+
+  it('serves the last good read rather than the shipped defaults', async () => {
+    // The shipped default is 10. The admin's number here is 5, and it is the
+    // one that must survive: a single connection reset used to pay every
+    // referrer double, commit it, and leave one line in the log.
+    await put('bot', 'affiliatespercentage', '5');
+    expect((await loadShopSettings(db)).commissionPercent).toBe(5);
+
+    // Past the thirty-second window, so this is genuinely the failure path and
+    // not the cache being in date.
+    const during = await withSettingsUnreachable(staleRead);
+
+    expect(during.commissionPercent).toBe(5);
+    expect(DEFAULT_SHOP_SETTINGS.commissionPercent).toBe(10);
+    // Still marked as not from the database, because it is not fresh — the flag
+    // means "could not ask", and a money path is entitled to know that.
+    expect(during.fromDatabase).toBe(false);
+  });
+
+  it('keeps a closed shop closed', async () => {
+    // The shipped default is open. An admin who closed the shop and a database
+    // that hiccups must not add up to a shop that sells.
+    // The shop's own sentinel, not the word "off" — `isOff` matches
+    // `botstatusoff` exactly, which is what the MySQL column holds.
+    await put('bot', 'Bot_Status', 'botstatusoff');
+    expect((await loadShopSettings(db)).open).toBe(false);
+
+    const during = await withSettingsUnreachable(staleRead);
+
+    expect(during.open).toBe(false);
+    expect(DEFAULT_SHOP_SETTINGS.open).toBe(true);
+    await put('bot', 'Bot_Status', 'on');
+    invalidateShopSettings();
+  });
+});

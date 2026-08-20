@@ -405,9 +405,25 @@ function tomanLimit(value: number | null, fallback: number): number {
  * a few times a year, and thirty seconds is short enough that an admin who
  * flips a switch sees it on the next screen.
  *
- A failed read returns the defaults with `fromDatabase: false`, and is
- * not cached, so the setting takes
- * effect as soon as the database answers again.
+ * A failed read falls back to the LAST GOOD READ, however old, and only to the
+ * shipped defaults when there has never been one. That distinction is the whole
+ * point of this paragraph.
+ *
+ * It used to fall straight to `DEFAULT_SHOP_SETTINGS`, and exactly one caller
+ * in the repository checked `fromDatabase` before acting on the result
+ * (`provision.ts`). So a single failed SELECT — one connection reset, on a
+ * bot that has been reading these rows all day — made the shop OPEN if the
+ * admin had closed it, paid referral commission at the shipped ten per cent
+ * instead of the five the admin set, and moved the deposit floor and ceiling.
+ * All of it committed, with one warning in the log.
+ *
+ * The shipped constants are what the shop looked like the day this code was
+ * written. The last good read is what the shop looks like. When the database
+ * cannot be asked, the second is the better answer to every question, and it
+ * needs no caller to remember anything.
+ *
+ * Nothing is cached on failure, so the real settings take effect as soon as the
+ * database answers again.
  */
 export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSettings> {
   if (cached && now - cached.at < CACHE_MS) return cached.value;
@@ -499,8 +515,20 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
   } catch (err) {
     if (!warned) {
       warned = true;
-      console.warn('[bot] could not load the shop settings, using defaults', err);
+      console.warn(
+        cached
+          ? '[bot] could not load the shop settings, using the last good read'
+          : '[bot] could not load the shop settings and have never read them, using defaults',
+        err,
+      );
     }
-    return DEFAULT_SHOP_SETTINGS;
+    // Stale on purpose. `cached.at` is not consulted here: an hour-old copy of
+    // what the admin actually configured beats a fresh copy of what somebody
+    // configured at release time.
+    //
+    // `fromDatabase: false` regardless, because the flag means "read from the
+    // database just now" and a money path is entitled to know it is looking at
+    // a copy. The VALUES are the admin's; only the freshness is in doubt.
+    return cached ? { ...cached.value, fromDatabase: false } : DEFAULT_SHOP_SETTINGS;
   }
 }
