@@ -10,7 +10,7 @@ import { beat } from './heartbeat.js';
 import { run } from './poll.js';
 import { acquirePollerLock } from './singleton.js';
 import { createTelegramApi, TELEGRAM_API_BASE } from './telegram.js';
-import { disableCustomEmoji } from './settings.js';
+import { disableCustomEmoji, setReportChatIdFallback } from './settings.js';
 
 function required(name: string): string {
   const value = process.env[name];
@@ -97,22 +97,26 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
   // One beat before the loop, so a container that has just acquired the lock is
   // healthy from its first second rather than during its first cycle.
   beat();
+  // A channel id is negative and can be large, so it is parsed rather than run
+  // through `positiveInt`. This is only a FALLBACK: the shop's own
+  // `setting.Channel_Report` wins wherever it is set, and this covers a
+  // database whose settings have never been migrated. Unset and unmigrated
+  // means no report of any kind.
+  //
+  // Handed to `settings.ts` rather than to the poll loop, so the nightly report
+  // and the flood-block report resolve the same value. As a poll option it
+  // reached only the first of the two.
   const raw = process.env['REPORT_CHAT_ID'];
   const reportChatId = raw && Number.isSafeInteger(Number(raw)) ? Number(raw) : null;
   if (raw && reportChatId === null) {
-    console.error(`[bot] REPORT_CHAT_ID=${raw} is not a number — no daily report will be sent`);
+    console.error(`[bot] REPORT_CHAT_ID=${raw} is not a number — no report will be sent`);
   }
+  setReportChatIdFallback(reportChatId);
 
   const finished = run(db, api, {
     timeoutSec: positiveInt('TELEGRAM_POLL_TIMEOUT_SEC', 25),
     signal: controller.signal,
     onCycle: beat,
-    // A channel id is negative and can be large, so it is parsed rather than
-    // run through `positiveInt`. This is only a FALLBACK: the shop's own
-    // `setting.Channel_Report` wins wherever it is set, and this covers a
-    // database whose settings have never been migrated. Unset and unmigrated
-    // means no nightly report.
-    ...(reportChatId === null ? {} : { reportChatId }),
   });
 
   console.log('bot polling');

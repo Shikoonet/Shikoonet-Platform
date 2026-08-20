@@ -425,6 +425,30 @@ function tomanLimit(value: number | null, fallback: number): number {
  * Nothing is cached on failure, so the real settings take effect as soon as the
  * database answers again.
  */
+/**
+ * What `Channel_Report` falls back to when the shop has not set one.
+ *
+ * Set once at boot from `REPORT_CHAT_ID`, and resolved HERE rather than by each
+ * reader, which is the whole point. It used to be a parameter of
+ * `sweepDailyReport` and nothing else, so the nightly report fell back to the
+ * environment and the flood-block report did not — two readers of "the shop's
+ * report channel" that answered differently on any box where the settings row
+ * is missing and the variable is set, which is exactly the practice box. The
+ * comment claiming there was "one answer" was written about the column and was
+ * true only about the column.
+ *
+ * What is still ambiguous, said out loud rather than papered over: a row that
+ * exists but is empty reads the same as no row at all, so an admin who CLEARS
+ * the channel gets the environment's, not silence. Distinguishing them needs
+ * `read()` to report presence, and nothing needs it yet.
+ */
+let reportFallback: number | null = null;
+
+export function setReportChatIdFallback(chatId: number | null): void {
+  reportFallback = chatId;
+  invalidateShopSettings();
+}
+
 export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSettings> {
   if (cached && now - cached.at < CACHE_MS) return cached.value;
   try {
@@ -468,7 +492,11 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       showsCopyButtons: !isOff(text('statuscopycart'), '0'),
       showsAppLink: !isOff(text('linkappstatus'), '0'),
       showsConfigButton: !isOff(text('configshow'), 'offconfig'),
-      reportChatId: chatId(num('Channel_Report')),
+      // The shop's own column first, then the boot fallback. Applied here so
+      // that every reader — the nightly report and the flood-block report —
+      // gets the same answer without either of them knowing there is a
+      // fallback at all.
+      reportChatId: chatId(num('Channel_Report')) ?? reportFallback,
       commissionPercent: percent(
         num('affiliatespercentage'),
         DEFAULT_SHOP_SETTINGS.commissionPercent,

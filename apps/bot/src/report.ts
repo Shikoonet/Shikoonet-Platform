@@ -175,26 +175,37 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
     topResellers(db, start, end),
   ]);
 
+  // No markup, because nothing downstream renders it.
+  //
+  // This built `<b>…</b>` until 2026-08-21 and every one of those tags was
+  // shown to the admin literally. `telegram.ts` only sends `parse_mode` for a
+  // message containing a custom emoji — `hasCustomEmoji` matches `<tg-emoji>`
+  // and nothing else — and the house rule is stated outright at `menu.ts:938`:
+  // "No parse_mode anywhere in this bot, so emphasis is quotation marks."
+  //
+  // The tests could not see it because they all asserted the string this
+  // function builds. Nothing drove a report through `sendMessage`, which is
+  // where the decision is made; one does now.
   const lines = [
-    `📊 <b>گزارش روز ${dateStr}</b>`,
+    `📊 گزارش روز ${dateStr}`,
     '',
-    `🛒 فروش نو: <b>${day.sales}</b> — ${toman(day.salesIrr)} تومان`,
-    `🔄 تمدید: <b>${day.renewals}</b> — ${toman(day.renewalsIrr)} تومان`,
-    `👛 شارژ کیف پول: <b>${day.topups}</b> — ${toman(day.topupsIrr)} تومان`,
-    `👤 مشتری جدید: <b>${day.newCustomers}</b>`,
+    `🛒 فروش نو: ${day.sales} — ${toman(day.salesIrr)} تومان`,
+    `🔄 تمدید: ${day.renewals} — ${toman(day.renewalsIrr)} تومان`,
+    `👛 شارژ کیف پول: ${day.topups} — ${toman(day.topupsIrr)} تومان`,
+    `👤 مشتری جدید: ${day.newCustomers}`,
     '',
-    `💰 مجموع فروش و تمدید: <b>${toman(day.salesIrr + day.renewalsIrr)} تومان</b>`,
+    `💰 مجموع فروش و تمدید: ${toman(day.salesIrr + day.renewalsIrr)} تومان`,
   ];
 
   if (panels.length > 0) {
-    lines.push('', '🖥 <b>به تفکیک لوکیشن</b>');
+    lines.push('', '🖥 به تفکیک لوکیشن');
     for (const p of panels) {
       lines.push(`• ${p.name}: ${p.count} سرویس — ${toman(p.irr)} تومان — ${p.gb} گیگ`);
     }
   }
 
   if (resellers.length > 0) {
-    lines.push('', '🏅 <b>نمایندگان برتر امروز</b>');
+    lines.push('', '🏅 نمایندگان برتر امروز');
     for (const r of resellers) {
       lines.push(`• ${r.username ? '@' + r.username : r.telegramId}: ${toman(r.irr)} تومان`);
     }
@@ -217,21 +228,18 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
  *
  * Returns whether a report was queued, which is what the caller logs.
  */
-export async function sweepDailyReport(
-  db: D1Database,
-  envFallback: number | null,
-  now: number = Date.now(),
-): Promise<boolean> {
-  // One question, one answer. The shop's own `Channel_Report` decides, and
-  // `REPORT_CHAT_ID` is only what a database with no settings row falls back
-  // to — which is the practice box, where the migration has never run.
+export async function sweepDailyReport(db: D1Database, now: number = Date.now()): Promise<boolean> {
+  // One question, one answer — and this time the environment is inside the
+  // answer rather than beside it.
   //
-  // Until 2026-08-20 this read the environment and the flood guard read the
-  // column, and nothing made them agree: two readers of "the report channel"
-  // that could point at different channels, which is a bug waiting for the day
-  // somebody changed one of them.
-  const { reportChatId } = await loadShopSettings(db);
-  const chatId = reportChatId ?? envFallback;
+  // On 2026-08-20 the destination was unified on `ShopSettings.reportChatId`,
+  // and that was only half of it: this function still took an env fallback the
+  // flood guard could not see, so on any box where the settings row is missing
+  // and `REPORT_CHAT_ID` is set — the practice box, exactly — the nightly
+  // report went to the environment's channel and a block report went nowhere.
+  // The fallback is applied in `loadShopSettings` now, so there is one value
+  // and every reader gets it.
+  const { reportChatId: chatId } = await loadShopSettings(db);
   // No channel configured is not an error — the legacy skips the send the same
   // way, and a shop that does not want the report should not be paying for six
   // aggregate queries a night to not send it.

@@ -425,7 +425,6 @@ export interface RunOptions {
    * legacy behaves when its `Channel_Report` is empty — a shop that does not
    * want it should not be paying six aggregate queries a night to not send it.
    */
-  reportChatId?: number;
 }
 
 export async function run(
@@ -491,7 +490,7 @@ export async function run(
       // nothing to do — it asks whether the report exists before it builds one,
       // which is a primary-key hit against six aggregate queries.
       await sweep('the daily report', async () => {
-        const queued = await sweepDailyReport(db, options.reportChatId ?? null);
+        const queued = await sweepDailyReport(db);
         if (queued) console.log('[bot] queued the daily report');
         return queued ? 1 : 0;
       });

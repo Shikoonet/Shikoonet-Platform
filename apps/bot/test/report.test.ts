@@ -15,8 +15,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tehranDayBoundsFromDate } from '@shikoo/domain';
 import { buildDailyReport, sweepDailyReport } from '../src/report.js';
 import { db, pendingNotifications } from './helpers/env.js';
-import { invalidateShopSettings, loadShopSettings } from '../src/settings.js';
+import {
+  invalidateShopSettings,
+  loadShopSettings,
+  setReportChatIdFallback,
+} from '../src/settings.js';
 import { blockForSpam } from '../src/spam.js';
+import { createTelegramApi } from '../src/telegram.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
 /** Mid-afternoon Tehran on the day being reported, so no boundary is grazed. */
@@ -87,7 +92,7 @@ describe('the daily report', () => {
     const text = await buildDailyReport(db, DAY);
 
     // One sale, and the money is the one inside the window converted to toman.
-    expect(text).toContain('فروش نو: <b>1</b>');
+    expect(text).toContain('فروش نو: 1');
     expect(text).toContain('۱۰۰٬۰۰۰');
     // The neighbours' amounts must not appear anywhere in it.
     expect(text).not.toContain('۷۰۰٬۰۰۰');
@@ -103,21 +108,22 @@ describe('the daily report', () => {
 
     const text = await buildDailyReport(db, DAY);
 
-    expect(text).toContain('فروش نو: <b>1</b>');
-    expect(text).toContain('تمدید: <b>1</b>');
-    expect(text).toContain('شارژ کیف پول: <b>1</b>');
+    expect(text).toContain('فروش نو: 1');
+    expect(text).toContain('تمدید: 1');
+    expect(text).toContain('شارژ کیف پول: 1');
     // 200,000 + 100,000 toman. A top-up is money moving into a wallet, not a
     // sale, and adding it here would flatter every day it happened on.
-    expect(text).toContain('مجموع فروش و تمدید: <b>۳۰۰٬۰۰۰ تومان</b>');
+    expect(text).toContain('مجموع فروش و تمدید: ۳۰۰٬۰۰۰ تومان');
   });
 
   it('is queued once, however many times the loop asks', async () => {
     const { start } = tehranDayBoundsFromDate(DAY);
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
 
-    expect(await sweepDailyReport(db, CHANNEL)).toBe(true);
-    expect(await sweepDailyReport(db, CHANNEL)).toBe(false);
-    expect(await sweepDailyReport(db, CHANNEL)).toBe(false);
+    setReportChatIdFallback(CHANNEL);
+    expect(await sweepDailyReport(db)).toBe(true);
+    expect(await sweepDailyReport(db)).toBe(false);
+    expect(await sweepDailyReport(db)).toBe(false);
 
     const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
     expect(queued).toHaveLength(1);
@@ -128,7 +134,8 @@ describe('the daily report', () => {
   });
 
   it('does nothing at all without a channel', async () => {
-    expect(await sweepDailyReport(db, null)).toBe(false);
+    setReportChatIdFallback(null);
+    expect(await sweepDailyReport(db)).toBe(false);
     expect((await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'))).toHaveLength(0);
   });
 });
@@ -141,6 +148,14 @@ describe('the daily report', () => {
  * nothing made them agree. Nobody had noticed because the practice box has no
  * settings row and production has no environment variable — so each reader was
  * exercised in a different place and both looked right.
+ *
+ * That day fixed half of it: both readers were pointed at
+ * `ShopSettings.reportChatId`, and this sweep kept an env fallback the flood
+ * guard could not see. So on a box with no settings row and the variable set —
+ * the practice box, exactly — the nightly report still went somewhere a block
+ * report did not. The test below asserted "the same channel" while setting the
+ * shop row first, which is the one arrangement where the split cannot show.
+ * The fallback lives in `loadShopSettings` now, and the test sets no row.
  */
 describe('the report channel', () => {
   const SHOP_CHANNEL = -1001555444333;
@@ -162,7 +177,8 @@ describe('the report channel', () => {
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
     await setChannel(SHOP_CHANNEL);
 
-    expect(await sweepDailyReport(db, ENV_FALLBACK)).toBe(true);
+    setReportChatIdFallback(ENV_FALLBACK);
+    expect(await sweepDailyReport(db)).toBe(true);
 
     const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
     expect(queued[0]?.chatId).toBe(SHOP_CHANNEL);
@@ -173,25 +189,27 @@ describe('the report channel', () => {
     const { start } = tehranDayBoundsFromDate(DAY);
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
 
-    expect(await sweepDailyReport(db, ENV_FALLBACK)).toBe(true);
+    setReportChatIdFallback(ENV_FALLBACK);
+    expect(await sweepDailyReport(db)).toBe(true);
 
     const queued = (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'));
     expect(queued[0]?.chatId).toBe(ENV_FALLBACK);
   });
 
   it('sends the nightly report and a spam block to the SAME channel', async () => {
-    // The invariant the split violated. Both readers are handed a different
-    // environment fallback here, so anything still reading the environment
-    // lands somewhere the other one did not.
+    // NO shop row, and a fallback set — the practice box, and the one
+    // arrangement where the two readers used to disagree. Setting the row first
+    // (which this test did until 2026-08-21) makes both readers agree by
+    // accident and proves nothing.
     const { start } = tehranDayBoundsFromDate(DAY);
     const { userId, telegramId } = await completedOrder({
       kind: 'NEW_PURCHASE',
       irr: 1_000_000,
       atMs: start + 60_000,
     });
-    await setChannel(SHOP_CHANNEL);
+    setReportChatIdFallback(ENV_FALLBACK);
 
-    await sweepDailyReport(db, ENV_FALLBACK);
+    await sweepDailyReport(db);
     const { reportChatId } = await loadShopSettings(db);
     await db.withSession((tx) =>
       blockForSpam(tx, { userId, telegramId, updateId: 987_654_321, reportChatId }),
@@ -200,8 +218,39 @@ describe('the report channel', () => {
     const notes = await pendingNotifications();
     const report = notes.find((n) => n.dedupeKey.startsWith('report:'));
     const spam = notes.find((n) => n.dedupeKey.startsWith('spam:'));
-    expect(report?.chatId).toBe(SHOP_CHANNEL);
-    expect(spam?.chatId).toBe(SHOP_CHANNEL);
+    expect(report?.chatId).toBe(ENV_FALLBACK);
+    expect(spam?.chatId).toBe(ENV_FALLBACK);
     expect(report?.chatId).toBe(spam?.chatId);
+  });
+});
+
+/**
+ * The report as the admin actually receives it.
+ *
+ * Every assertion in this file until 2026-08-21 read the string
+ * `buildDailyReport` returns, which is one step short of the thing that
+ * matters. The report was built with `<b>…</b>` in it and `telegram.ts` sends
+ * `parse_mode` only for a message containing a custom emoji — so the admin was
+ * shown the tags. A whole file of green tests, none of which could see it,
+ * because none of them followed the message to the boundary.
+ */
+describe('what leaves for Telegram', () => {
+  it('carries no markup and asks for no parse_mode', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const api = createTelegramApi({ token: 't', baseUrl: 'https://x.test', fetch: fetchImpl });
+    await api.sendMessage(CHANNEL, await buildDailyReport(db, DAY));
+
+    expect(bodies).toHaveLength(1);
+    // No `parse_mode`, which is the house rule (`menu.ts:938`) — so any tag in
+    // the text would be shown to the reader exactly as written.
+    expect(bodies[0]!['parse_mode']).toBeUndefined();
+    expect(String(bodies[0]!['text'])).not.toContain('<');
+    // And it is still the report, not an empty string that trivially passes.
+    expect(String(bodies[0]!['text'])).toContain('گزارش روز');
   });
 });
