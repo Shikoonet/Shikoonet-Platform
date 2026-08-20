@@ -1,5 +1,6 @@
 /**
- * Which card gets shown, and how often.
+ * Which card gets shown, and how often — and, since 2026-08-21, which card
+ * actually RECEIVES the money.
  *
  * The head admin's request on 2026-08-13 was a ratio, and it had two halves:
  * a newly added card must be shown MORE than the others until it catches up,
@@ -7,17 +8,26 @@
  * because the second one is what the code did wrong before this change —
  * `ORDER BY last_assigned_at NULLS FIRST` gave a fresh card 100% of checkouts.
  *
+ * Sam's request on 2026-08-21 was a queue: a card goes to the back when money
+ * lands on it, not when it is merely shown. A shown-and-abandoned checkout is
+ * the common case — the customer opens the payment screen and walks away — and
+ * under the old rule it cost that card its turn, so the money piled onto a
+ * fraction of the cards. The second half of this file counts DEPOSITS rather
+ * than assignments and is where that is asserted.
+ *
  * These count real assignments through `rotateCard` rather than reasoning about
  * the SQL. Every other card in the shared database is parked as DISABLED for
  * the duration so the counts are over a known pool.
  */
 
+import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 import { rotateCard } from '../src/payment.js';
 import { db } from './helpers/env.js';
 
 const ACCOUNT_ID = 'rotation-test-account';
 const PREFIX = 'rot-card-';
+const CLAIM_PREFIX = 'rot-claim-';
 
 /** Luhn-valid 16-digit numbers, distinct per index. */
 function digitsFor(index: number): string {
@@ -91,7 +101,53 @@ async function draw(times: number): Promise<Map<string, number>> {
   return counts;
 }
 
+let claimSeq = 0;
+
+/** One PENDING claim against `digits`, not yet verified. Returns its id. */
+async function openClaim(digits: string): Promise<string> {
+  const id = `${CLAIM_PREFIX}${claimSeq++}`;
+  await db
+    .prepare(
+      `INSERT INTO payment_claims
+         (id, external_order_id, expected_amount_irr, target_financial_account_id,
+          card_digits, submitted_at, source_system, status, created_at, updated_at)
+       VALUES (?1, ?2, 1000000, ?3, ?4, 0, ?5, 'PENDING', 0, 0)`,
+    )
+    .bind(id, id, ACCOUNT_ID, digits, MIRZABOT_SOURCE)
+    .run();
+  return id;
+}
+
+/**
+ * Money confirmed on `digits`.
+ *
+ * Deliberately a bare UPDATE. Nothing from `mirzabotVerify.ts` or the dashboard
+ * routes is imported here, because a claim reaches VERIFIED down three separate
+ * paths and the point of holding this in the database is that it does not
+ * matter which one ran. A test that called one of those functions would prove
+ * the queue moves for that function and say nothing about the other two.
+ */
+async function deposit(digits: string): Promise<void> {
+  const id = await openClaim(digits);
+  await db.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = ?1`).bind(id).run();
+}
+
+/** Draw one card through the real rotation and return its number. */
+async function drawOne(): Promise<string> {
+  const [card] = [...(await draw(1)).keys()];
+  if (!card) throw new Error('rotation returned no card');
+  return card;
+}
+
+/** Draw a card, then pay it. One customer who goes all the way through. */
+async function drawAndPay(): Promise<string> {
+  const card = await drawOne();
+  await deposit(card);
+  return card;
+}
+
 afterEach(async () => {
+  await db.prepare(`DELETE FROM payment_claims WHERE id LIKE ?1`).bind(`${CLAIM_PREFIX}%`).run();
   await db.prepare(`DELETE FROM payment_cards WHERE id LIKE ?1`).bind(`${PREFIX}%`).run();
   await db.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(ACCOUNT_ID).run();
   await db.prepare(`UPDATE payment_cards SET status = 'ACTIVE'`).run();
@@ -192,5 +248,112 @@ describe('card rotation', { timeout: 30_000 }, () => {
     expect(counts.get(cards[1]!)).toBeUndefined();
     expect(counts.get(cards[0]!)).toBe(30);
     expect(counts.get(cards[2]!)).toBe(30);
+  });
+});
+
+/**
+ * The queue, as Sam described it on 2026-08-21: thirty cards in a line, and the
+ * one that just took money goes to the end of it.
+ *
+ * The distinction these cases turn on is the one the old code did not make.
+ * Being SHOWN a card advances it by 1,000,000; taking money on it advances it
+ * by 1,000,000,000 — a thousand times as far. So a checkout the customer
+ * abandons barely moves the card, and a checkout they pay sends it a full lap
+ * back. Neither number is asserted anywhere; what is asserted is the behaviour
+ * the ratio buys, which is what would actually be wrong if somebody changed it.
+ */
+describe('card queue advances on money, not on being shown', { timeout: 60_000 }, () => {
+  it('sends a card that took money to the back, and leaves a shown one where it was', async () => {
+    const cards = await pool(3);
+
+    // One customer pays. The other two cards are untouched.
+    expect(await drawAndPay()).toBe(cards[0]!);
+
+    const counts = await draw(100);
+
+    // A hundred more checkouts and card 0 is still waiting its turn, because
+    // one lap is 1000 assignments and only 100 have happened. Under the old
+    // rule it would take its ordinary third of these, about 33.
+    expect(counts.get(cards[0]!) ?? 0).toBe(0);
+    expect(counts.get(cards[1]!)).toBe(50);
+    expect(counts.get(cards[2]!)).toBe(50);
+  });
+
+  it('spreads thirty payments over thirty cards even when most checkouts are abandoned', async () => {
+    // This is the whole request in one case. Every round has two customers who
+    // are shown a card and never pay, and one who does.
+    //
+    // Under the old rule the abandoned checkouts advanced their cards just as
+    // far as a paid one, so the paying customer was always handed the third
+    // card of the round: the money landed on cards 2, 5, 8 … 29 — ten of the
+    // thirty — three times each, and the other twenty never saw a rial. That is
+    // the imbalance Sam is describing, and it is what this case fails on if the
+    // queue ever goes back to moving when a card is merely shown.
+    const cards = await pool(30);
+
+    const paid = new Map<string, number>();
+    for (let round = 0; round < 30; round++) {
+      await draw(2);
+      const card = await drawAndPay();
+      paid.set(card, (paid.get(card) ?? 0) + 1);
+    }
+
+    expect(paid.size).toBe(30);
+    for (const card of cards) expect(paid.get(card)).toBe(1);
+  });
+
+  it('gives a weighted card its share of the money, not just of the screens', async () => {
+    // `display_weight` was the head admin's 2026-08-13 knob and it still has to
+    // mean something. It divides the payment step too, so a weight of 2 comes
+    // back around twice as fast and collects twice the deposits.
+    const cards = await pool(3, { 0: 2 });
+
+    const paid = new Map<string, number>();
+    for (let i = 0; i < 40; i++) {
+      const card = await drawAndPay();
+      paid.set(card, (paid.get(card) ?? 0) + 1);
+    }
+
+    expect(paid.get(cards[0]!)).toBe(20);
+    expect(paid.get(cards[1]!)).toBe(10);
+    expect(paid.get(cards[2]!)).toBe(10);
+  });
+
+  it('does not move the queue for a claim imported already VERIFIED', async () => {
+    // `packages/migrate` writes historical claims straight in as VERIFIED. If
+    // those moved the queue, cutover would reorder every card by whatever order
+    // the import happened to run in — thousands of laps, all meaningless. The
+    // trigger is ON UPDATE for exactly this reason.
+    const cards = await pool(2);
+    const id = `${CLAIM_PREFIX}${claimSeq++}`;
+    await db
+      .prepare(
+        `INSERT INTO payment_claims
+           (id, external_order_id, expected_amount_irr, target_financial_account_id,
+            card_digits, submitted_at, source_system, status, created_at, updated_at)
+         VALUES (?1, ?2, 1000000, ?3, ?4, 0, ?5, 'VERIFIED', 0, 0)`,
+      )
+      .bind(id, id, ACCOUNT_ID, cards[0]!, MIRZABOT_SOURCE)
+      .run();
+
+    const counts = await draw(20);
+
+    expect(counts.get(cards[0]!)).toBe(10);
+    expect(counts.get(cards[1]!)).toBe(10);
+  });
+
+  it('leaves the queue alone when a verification is reverted', async () => {
+    // Reverting an approval does not un-receive the money, and rewinding the
+    // cursor would need the whole history of what it was before. The card keeps
+    // its lap. Written down because it is a choice, not an oversight.
+    const cards = await pool(2);
+    const id = await openClaim(cards[0]!);
+    await db.prepare(`UPDATE payment_claims SET status = 'VERIFIED' WHERE id = ?1`).bind(id).run();
+    await db.prepare(`UPDATE payment_claims SET status = 'REJECTED' WHERE id = ?1`).bind(id).run();
+
+    const counts = await draw(20);
+
+    expect(counts.get(cards[0]!) ?? 0).toBe(0);
+    expect(counts.get(cards[1]!)).toBe(20);
   });
 });

@@ -35,6 +35,11 @@ export interface CheckoutPayment {
  * it. Large enough that integer division still has resolution at the maximum
  * weight of 20 (the smallest step is 50,000), small enough that a bigint never
  * comes close to running out.
+ *
+ * It is the SMALL of the two steps. A deposit advances the same cursor a
+ * thousand times as far, from the trigger in `0029_card_queue_moves_on_money`.
+ * The ratio between them is the whole design and neither number means anything
+ * alone — change one and change the other.
  */
 const ROTATION_STEP = 1_000_000;
 
@@ -59,6 +64,15 @@ const ROTATION_STEP = 1_000_000;
  * simultaneous checkouts take two different cards instead of queueing behind
  * one row, and it is why this needs no lease table — the legacy bot keeps
  * leases in the PHP repo, and none of that complexity buys anything here.
+ *
+ * This is only HALF of what moves a card through the queue, and the smaller
+ * half. Most checkouts are abandoned, so if being shown were the only thing
+ * that advanced a card, the cards that actually RECEIVED money would be a fixed
+ * subset rather than a rotation — measured on a pool of 30, ten of them took
+ * everything. A verified deposit advances the same cursor by a thousand
+ * assignments, and it does so from a trigger on `payment_claims` rather than
+ * from here, because a claim reaches VERIFIED down three code paths plus the
+ * live PHP bot. See `migrations/0029_card_queue_moves_on_money.sql`.
  */
 export async function rotateCard(
   tx: D1DatabaseSession,
