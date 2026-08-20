@@ -204,14 +204,31 @@ export async function flush(
       // two are separate Telegram calls and only the second one is retried by
       // this row failing. Without the mark, a message Telegram refuses would
       // send the customer a second QR on every attempt — up to eight of them.
+      //
+      // And inside its own try, because the picture is a decoration and the
+      // text is the product. It was awaited ahead of `sendMessage` with nothing
+      // between them, so anything that made the photo call fail — Telegram
+      // refusing a photo with 400, a flood wait, a payload past the QR
+      // encoder's capacity — took the message with it, through all eight
+      // attempts, until the row was DEAD. A customer who paid then never
+      // received the config text because the code beside it could not be drawn.
+      //
+      // Not marked on failure, deliberately: nothing was sent, so a retry of
+      // the text should carry the picture again. What is given up is the
+      // picture on the attempt that succeeds afterwards, and the text under it
+      // carries the same link in full.
       if (row.qr_payload !== null && row.qr_sent_at === null) {
-        await api.sendPhotoBytes(
-          row.chat_id,
-          await qrPng(row.qr_payload),
-          row.qr_payload,
-          copyLinkMenu(row.qr_payload),
-        );
-        await markQrSent(db, row.id);
+        try {
+          await api.sendPhotoBytes(
+            row.chat_id,
+            await qrPng(row.qr_payload),
+            row.qr_payload,
+            copyLinkMenu(row.qr_payload),
+          );
+          await markQrSent(db, row.id);
+        } catch (err) {
+          console.error(`[bot] QR for chat ${row.chat_id} could not be sent; sending the text alone`, err);
+        }
       }
       await api.sendMessage(row.chat_id, row.body, keyboardOf(row));
       await settle(db, row.id, 'SENT', null, null);

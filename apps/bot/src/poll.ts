@@ -206,7 +206,20 @@ export async function pollOnce(
     for (const reply of outcome.replies) {
       try {
         if (reply.qrOf !== undefined) {
-          await api.sendPhotoBytes(reply.chatId, await qrPng(reply.qrOf), reply.text, reply.keyboard);
+          // The only reply here with a fallback, because it is the only one
+          // whose text stands on its own: `reply.text` for the QR button IS the
+          // subscription link. Nothing on this path is retried — the
+          // transaction has committed and re-fetching the update would be a
+          // no-op against the claim — so a picture Telegram refuses used to
+          // take the link with it and the customer was left with a button that
+          // did nothing. The picture is worth trying for and not worth losing
+          // the address over.
+          try {
+            await api.sendPhotoBytes(reply.chatId, await qrPng(reply.qrOf), reply.text, reply.keyboard);
+          } catch (err) {
+            console.error(`[bot] QR reply for update ${update.update_id} failed; sending the link alone`, err);
+            await api.sendMessage(reply.chatId, reply.text, reply.keyboard);
+          }
         } else if (reply.photo !== undefined) {
           await api.sendPhoto(reply.chatId, reply.photo, reply.text);
         } else if (reply.document !== undefined) {

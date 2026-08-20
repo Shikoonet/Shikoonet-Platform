@@ -310,7 +310,9 @@ describe('what a message carries besides its text', () => {
   }
 
   /** Records both calls in the order Telegram would see them. */
-  function recorder(opts: { textFails?: boolean } = {}): { api: TelegramApi; sent: Sent[] } {
+  function recorder(
+    opts: { textFails?: boolean; photoFails?: boolean } = {},
+  ): { api: TelegramApi; sent: Sent[] } {
     const sent: Sent[] = [];
     const api = {
       sendMessage: async (_chat: number, text: string, keyboard?: unknown) => {
@@ -318,6 +320,7 @@ describe('what a message carries besides its text', () => {
         if (opts.textFails) throw new Error('telegram sendMessage failed: boom');
       },
       sendPhotoBytes: async (_chat: number, png: Uint8Array) => {
+        if (opts.photoFails) throw new Error('telegram sendPhoto failed: 400 PHOTO_INVALID_DIMENSIONS');
         sent.push({ kind: 'photo', body: `png:${png.byteLength}` });
       },
     } as unknown as TelegramApi;
@@ -342,6 +345,47 @@ describe('what a message carries besides its text', () => {
     expect(sent.map((s) => s.kind)).toEqual(['photo', 'text']);
     expect(sent[1]?.keyboard).toEqual(KEYBOARD);
     expect(await rowOf('q1')).toMatchObject({ status: 'SENT' });
+  });
+
+  it('sends the text even when the picture cannot be sent', async () => {
+    // The picture is a decoration; the text is the product, and it carries the
+    // same link in full. Awaited ahead of `sendMessage` with nothing between
+    // them, anything that made the photo call fail — Telegram refusing a photo
+    // with 400, a flood wait, a payload past the encoder's capacity — took the
+    // message with it through all eight attempts until the row was DEAD, and a
+    // customer who had paid never received their config.
+    await db.withSession((tx) =>
+      enqueue(tx, {
+        dedupeKey: 'q-photo-fails',
+        chatId: CHAT,
+        text: 'https://panel.example/sub/abc',
+        keyboard: KEYBOARD,
+        qrPayload: 'https://panel.example/sub/abc',
+      }),
+    );
+    const { api, sent } = recorder({ photoFails: true });
+
+    expect((await flush(db, api, { now: NOW })).sent).toBe(1);
+    expect(sent.map((s) => s.kind)).toEqual(['text']);
+    expect(await rowOf('q-photo-fails')).toMatchObject({ status: 'SENT' });
+  });
+
+  it('tries the picture again on a retry, because nothing was sent', async () => {
+    // The mark is written on success only. A QR that failed was not delivered,
+    // so the attempt that carries the text should carry the picture too.
+    await db.withSession((tx) =>
+      enqueue(tx, {
+        dedupeKey: 'q-photo-retry',
+        chatId: CHAT,
+        text: 'service',
+        qrPayload: 'https://panel.example/sub/abc',
+      }),
+    );
+    await flush(db, recorder({ photoFails: true, textFails: true }).api, { now: NOW });
+
+    const retry = recorder();
+    await flush(db, retry.api, { now: NOW + LEASE_MS + nextAttemptDelayMs(1) });
+    expect(retry.sent.map((s) => s.kind)).toEqual(['photo', 'text']);
   });
 
   it('does not send the picture again when the text has to be retried', async () => {

@@ -4,6 +4,7 @@ import type { Attempt } from '../src/poll.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 import { stubApi } from './helpers/telegram.js';
+import { makeCustomer } from './helpers/shop.js';
 
 let nextId = 1;
 function ids(): { updateId: number; telegramId: number } {
@@ -563,5 +564,63 @@ describe('pruneUpdates', () => {
       .bind(old.updateId, recent.updateId)
       .all<{ update_id: number }>();
     expect(survivors.results.map((r) => r.update_id)).toEqual([recent.updateId]);
+  });
+});
+
+
+/**
+ * The QR button, and the link underneath it.
+ *
+ * Nothing on the reply path is retried: the transaction has committed and
+ * re-fetching the update would be a no-op against the claim, so a reply that
+ * throws is lost and said to be lost. That is tolerable for navigation. It was
+ * not tolerable for this one, because the reply IS the customer's subscription
+ * address — a picture Telegram refused took the address with it and left a
+ * button that did nothing.
+ */
+describe('a reply that carries a picture', () => {
+  async function serviceFor(telegramId: number, url: string): Promise<number> {
+    const userId = await makeCustomer(telegramId);
+    const row = await db
+      .prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, plan_name_at_sale, price_irr, remote_username,
+            subscription_url, status, purchased_at)
+         VALUES (?1, ?2, 'یک‌ماهه', 1950000, 'u_qr', ?3, 'ACTIVE', now())
+         RETURNING id`,
+      )
+      .bind(`qr${telegramId}`, userId, url)
+      .first<{ id: number }>();
+    return row!.id;
+  }
+
+  it('sends the link as text when the picture cannot be sent', async () => {
+    const { updateId, telegramId } = ids();
+    const url = 'https://panel.example/sub/qr-fallback-token';
+    const subscriptionId = await serviceFor(telegramId, url);
+
+    const press: TelegramUpdate = {
+      update_id: updateId,
+      callback_query: {
+        id: `cq-${updateId}`,
+        from: { id: telegramId, username: `poll${telegramId}` },
+        message: { message_id: 5, chat: { id: telegramId } },
+        data: `qr:${subscriptionId}`,
+      },
+    };
+    const sent: { chatId: number; text: string }[] = [];
+    const api = stubApi({
+      getUpdates: async () => [press],
+      sendPhotoBytes: async () => {
+        throw new Error('telegram sendPhoto failed: 400 PHOTO_INVALID_DIMENSIONS');
+      },
+      sendMessage: async (chatId, text) => {
+        sent.push({ chatId, text });
+      },
+    });
+
+    await pollOnce(db, api, updateId);
+
+    expect(sent).toEqual([{ chatId: telegramId, text: url }]);
   });
 });
