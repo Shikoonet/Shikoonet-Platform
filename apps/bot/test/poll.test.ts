@@ -169,12 +169,21 @@ describe('pollOnce', () => {
     expect(dead?.last_error ?? '').not.toBe('');
   });
 
-  it('drops the update even when it cannot be kept, rather than freezing', async () => {
-    // The deliberate half of the choice. Refusing to drop what could not be
-    // recorded would put the queue back behind the poison update — the freeze
-    // this counter exists to prevent — and would do it for a reason as ordinary
-    // as the migration not having run on that box yet. The table is really
-    // taken away, so this exercises the real failure and not a stub.
+  it('holds the update when it cannot be kept, and lets it go once it can', async () => {
+    // This asserted the opposite until 2026-08-21: dropped anyway, on the
+    // argument that refusing would put the queue back behind a poison update.
+    //
+    // The argument does not survive asking WHEN this branch is reachable. Three
+    // failures accumulate on a single-update batch, which on a quiet bot is a
+    // database outage — and a database outage is also what makes this insert
+    // fail. The two conditions are usually the same event, and what was thrown
+    // away is whatever a customer sent during it, which in this bot is
+    // «پرداخت کردم» or a receipt.
+    //
+    // The freeze that replaces it is bounded by the outage: nothing could have
+    // been processed during it anyway, and the moment the table is reachable
+    // the update drops and the queue moves. Both halves are asserted here,
+    // against the table really being taken away rather than a stub.
     const bad = ids();
     const good = ids();
     const broken = startUpdate(bad.updateId, bad.telegramId);
@@ -189,15 +198,26 @@ describe('pollOnce', () => {
         const { api } = fakeApi([broken, startUpdate(good.updateId, good.telegramId)]);
         last = await pollOnce(db, api, bad.updateId, 25, undefined, attempts);
       }
+
+      // Held. The offset has not moved past it, so Telegram still has the
+      // payload and will hand it back.
+      expect(last?.abandoned).toBe(0);
+      expect(last?.offset).toBe(bad.updateId);
     } finally {
       await db.prepare(`ALTER TABLE dead_hidden RENAME TO telegram_dead_updates`).run();
-      errors.mockRestore();
     }
 
-    // Given up on and past it: the queue moves, which is the property that
-    // must survive a broken dead-letter table.
+    // The outage ends. One more cycle and the update is recorded, dropped, and
+    // everything behind it moves — no restart, no human, no lost payload.
+    const { api } = fakeApi([broken, startUpdate(good.updateId, good.telegramId)]);
+    last = await pollOnce(db, api, bad.updateId, 25, undefined, attempts);
+    errors.mockRestore();
+
     expect(last?.abandoned).toBe(1);
     expect(last?.offset).toBe(good.updateId + 1);
+    expect((await deadRow(bad.updateId))?.payload.message?.from?.id).toBe(
+      9_300_000_000_000_000_010,
+    );
   });
 
   it('gives up on a poison update and unblocks everything behind it', async () => {

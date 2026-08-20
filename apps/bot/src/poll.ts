@@ -157,24 +157,42 @@ export async function pollOnce(
       // deletes the update and will not send it again. Everything this bot does
       // is somebody's money or somebody's service, so "gone, and a log line"
       // was not an answer.
-      let kept = true;
       try {
         await recordDeadUpdate(db, update, record);
       } catch (err) {
-        // Dropped anyway, and this is a deliberate choice rather than an
-        // oversight. Refusing to drop would put the queue back behind the
-        // poison update — the freeze this counter exists to prevent — and
-        // would do it for a reason as ordinary as this migration not having
-        // run yet. Losing one payload is worse than today only in the sense
-        // that it is exactly today; freezing the bot is worse than both.
-        kept = false;
-        console.error(`[bot] update ${update.update_id} could not be recorded before dropping`, err);
+        // Not dropped. This used to drop anyway, and the argument for it was
+        // that refusing would put the queue back behind a poison update — the
+        // freeze this counter exists to prevent.
+        //
+        // The argument does not survive looking at WHEN this branch is
+        // reachable. Three failures accumulate on a single-update batch, which
+        // on a quiet bot is a database outage; and a database outage is also
+        // the thing that makes this insert fail. So the two conditions do not
+        // just co-occur, they are usually the same event — and what is being
+        // thrown away is whatever a customer sent during it, which in this bot
+        // is «پرداخت کردم» or a receipt.
+        //
+        // The freeze that replaces it is not the unbounded one the old comment
+        // feared. It lasts exactly as long as the database is unreachable,
+        // during which nothing could have been processed anyway; the moment the
+        // insert succeeds the update is dropped and everything behind it moves.
+        // A genuinely poison update still drains, one cycle later.
+        console.error(
+          `[bot] update ${update.update_id} failed ${MAX_UPDATE_ATTEMPTS} times but could not be ` +
+            'recorded; holding it rather than losing the payload',
+          err,
+        );
+        // The same shape as an ordinary failure: the offset does not move past
+        // it, the count is left where it is, and the spinner still stops.
+        sawFailure = true;
+        await answer(api, update);
+        continue;
       }
       abandoned++;
       attempts.delete(update.update_id);
       console.error(
         `[bot] update ${update.update_id} failed ${MAX_UPDATE_ATTEMPTS} times and was dropped` +
-          (kept ? ' — kept in telegram_dead_updates' : ' — AND NOT KEPT, the payload is gone'),
+          ' — kept in telegram_dead_updates',
       );
       if (!sawFailure) confirmedThrough = update.update_id;
       await answer(api, update);
