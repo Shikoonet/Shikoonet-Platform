@@ -1968,6 +1968,40 @@ export function volumeRunningOut(serviceName: string, remainingBytes: number): s
 }
 
 /**
+ * The customer bought a service and has never connected to it.
+ *
+ * Not a warning about running out — the opposite. Mirzabot's version
+ * (`cronbot/on_hold.php`) points at support and nothing else, and that is
+ * right: somebody still not connected after four days is stuck, and the useful
+ * thing to hand them is a person, not a button.
+ *
+ * The service is named the way the other two name it — by plan, not by remote
+ * username. The legacy uses the config username because that is the key its
+ * cron happens to hold; the customer recognises what they bought.
+ *
+ * `supportHandle` is nullable because `setting.id_support` can be empty, and
+ * the message is still worth sending without it: "you have not connected" is
+ * the news. The legacy renders a bare `@` in that case.
+ */
+export function serviceNeverUsed(
+  serviceName: string,
+  daysSincePurchase: number,
+  supportHandle: string | null,
+): string {
+  const t = TEXTS_NOW;
+  const lines = [
+    t.raw('WARN_UNUSED_TITLE'),
+    '',
+    t.render('WARN_SERVICE', { service: serviceName }),
+    t.render('WARN_UNUSED_DAYS', { days: daysSincePurchase.toLocaleString('en-US') }),
+  ];
+  if (supportHandle !== null) {
+    lines.push('', t.render('WARN_UNUSED_SUPPORT', { handle: supportHandle }));
+  }
+  return lines.join('\n');
+}
+
+/**
  * Tehran calendar date, from `Intl` rather than by adding 3.5 hours.
  *
  * Doing this arithmetically is what put the "today" window seven hours out and

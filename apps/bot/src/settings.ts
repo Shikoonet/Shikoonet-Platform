@@ -136,6 +136,21 @@ export interface ShopSettings {
   warnDays: number;
   warnVolumeGb: number;
   /**
+   * How many days a service may sit unused before the customer is nudged —
+   * `setting.on_hold_day`.
+   *
+   * Its default here is **1**, not the 4 that `table.php` creates the column
+   * with. The shop's own row says 1, and the rule every other fallback in this
+   * object follows is "a failed read behaves as the last release did" — not
+   * "a failed read behaves as an unconfigured install would". The schema
+   * default is what a new shop gets; this is what THIS shop does.
+   *
+   * Same shape as the two above otherwise: a whole count of days, refused
+   * rather than clamped, so a broken row keeps the shop nudging on the last
+   * good number instead of either never nudging or nudging on day zero.
+   */
+  onHoldDays: number;
+  /**
    * Whether a customer must accept the shop's rules before anything else —
    * `setting.roll_Status`, which is `rolleon` in production.
    *
@@ -193,6 +208,7 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   topupMaxIrr: 100_000_000,
   warnDays: 2,
   warnVolumeGb: 1,
+  onHoldDays: 1,
   requiresRules: false,
   customEmoji: false,
   fromDatabase: false,
@@ -240,6 +256,7 @@ export const SHOP_SETTING_KEYS = [
   [CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key],
   ['bot', 'daywarn'],
   ['bot', 'volumewarn'],
+  ['bot', 'on_hold_day'],
   ['bot', 'roll_Status'],
 ] as const satisfies readonly (readonly [SettingScope, string])[];
 
@@ -374,6 +391,7 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       topupMaxIrr: tomanLimit(num('maxbalancecart'), DEFAULT_SHOP_SETTINGS.topupMaxIrr),
       warnDays: wholeCount(num('daywarn'), DEFAULT_SHOP_SETTINGS.warnDays),
       warnVolumeGb: wholeCount(num('volumewarn'), DEFAULT_SHOP_SETTINGS.warnVolumeGb),
+      onHoldDays: wholeCount(num('on_hold_day'), DEFAULT_SHOP_SETTINGS.onHoldDays),
       // On only for the exact word, like `customEmoji` and unlike the three
       // legacy switches above. Those describe selling the shop has been doing
       // for years, so an unreadable value leaves it alone; this one puts a wall

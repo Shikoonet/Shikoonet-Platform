@@ -58,17 +58,29 @@ async function load(): Promise<Loaded> {
         `SELECT NamePay AS k, ValuePay AS v FROM PaySetting
           WHERE NamePay COLLATE utf8mb4_bin IN ('minbalancecart', 'maxbalancecart')`,
       );
+      // One row, four columns, so they arrive as four pairs rather than four
+      // queries. `daywarn`, `volumewarn` and `on_hold_day` are the three
+      // numbers `warn.ts` schedules unprompted messages on; until 2026-08-19
+      // the first two were only asserted against a comment in the bot's own
+      // test, which is the shape rule 6 exists to catch.
       const [botRows] = await conn.query(
-        `SELECT 'affiliatespercentage' AS k, affiliatespercentage AS v FROM setting`,
+        `SELECT affiliatespercentage, daywarn, volumewarn, on_hold_day FROM setting`,
       );
       const pairs = (rows: unknown): Pairs =>
         Object.fromEntries(
           (rows as { k: string; v: string | null }[]).map((r) => [r.k, r.v]),
         );
+      /** The `setting` row itself: one record whose columns ARE the keys. */
+      const columns = (rows: unknown): Pairs => {
+        const row = (rows as Record<string, unknown>[])[0] ?? {};
+        return Object.fromEntries(
+          Object.entries(row).map(([k, v]) => [k, v === null ? null : String(v)]),
+        );
+      };
       return {
         shop: pairs(shopRows),
         pay: pairs(payRows),
-        bot: pairs(botRows),
+        bot: columns(botRows),
         unreachable: null,
       };
     } finally {
@@ -151,5 +163,21 @@ describe.skipIf(unreachable !== null)('the numbers the bot reads', () => {
     // this multiplies real money into a wallet.
     expect(percent).toBeGreaterThanOrEqual(0);
     expect(percent).toBeLessThanOrEqual(100);
+  });
+
+  it('carries the three schedules the unprompted messages fire on', () => {
+    // The exact numbers, because `DEFAULT_SHOP_SETTINGS` carries each one as
+    // its fallback and the rule there is "a failed read behaves as the last
+    // release did". A literal here is what makes that claim checkable: move a
+    // slider in the admin panel and this goes red, so somebody decides whether
+    // the fallback follows rather than finding out during an outage.
+    //
+    // `on_hold_day` is the one worth reading twice. `table.php` CREATES the
+    // column with 4 and the shop runs 1 — so a fallback copied from the schema
+    // would be four times slower than the shop it is standing in for, and
+    // every test that used 4 would have agreed with it.
+    expect(Number(bot['daywarn']), 'daywarn').toBe(2);
+    expect(Number(bot['volumewarn']), 'volumewarn').toBe(1);
+    expect(Number(bot['on_hold_day']), 'on_hold_day').toBe(1);
   });
 });

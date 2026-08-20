@@ -171,7 +171,7 @@ describe('reading the shop settings', () => {
     //
     // Every value matches the shipped defaults and one field does not, and that
     // is the point of the field: an empty table and an unreachable table give
-    // the same twelve answers, and only `fromDatabase` tells a money path which
+    // the same answers all the way down, and only `fromDatabase` tells a money path which
     // of the two it is holding.
     expect(await loadShopSettings(db)).toEqual({ ...DEFAULT_SHOP_SETTINGS, fromDatabase: true });
     expect(DEFAULT_SHOP_SETTINGS.fromDatabase).toBe(false);

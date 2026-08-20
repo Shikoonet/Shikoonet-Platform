@@ -1547,6 +1547,27 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'حجم باقی‌مانده',
   },
+  // The third unprompted message, and the only one that is not about running
+  // out: the customer bought something and never plugged it in. Mirzabot sends
+  // it too (`cronbot/on_hold.php`), from the panel's own `on_hold` status.
+  WARN_UNUSED_TITLE: {
+    default: '🔌 هنوز به سرویس‌تان وصل نشده‌اید.',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'یادآوری برای سرویسی که خریده شده و هیچ مصرفی ندارد',
+  },
+  WARN_UNUSED_DAYS: {
+    default: '📅 {days} روز از خریدش گذشته و هیچ مصرفی روی آن ثبت نشده است.',
+    placeholders: ['days'],
+    screen: 'warnings',
+    hint: 'چند روز از خرید گذشته',
+  },
+  WARN_UNUSED_SUPPORT: {
+    default: 'اگر در راه‌اندازی مشکلی دارید به @{handle} پیام بدهید — کمک‌تان می‌کنیم.',
+    placeholders: ['handle'],
+    screen: 'warnings',
+    hint: 'فقط وقتی آیدی پشتیبانی در تنظیمات پر باشد',
+  },
 
   // --- صفحه‌بندی -------------------------------------------------------------
   // Buttons, but here rather than in the keyboard registry: «قبلی» and «بعدی»

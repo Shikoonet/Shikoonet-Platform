@@ -16,11 +16,19 @@
  * Each warning is sent once. `subscriptions.notify` is the record — the same
  * column and the same two keys the PHP uses — and a renewal clears it, so the
  * next cycle of the service warns again.
+ *
+ * ## The third message, added 2026-08-19
+ *
+ * `unused` is not a warning about running out; it is the opposite. A customer
+ * bought a service and never connected to it. Mirzabot sends this from
+ * `cronbot/on_hold.php`, and it lives here rather than in a file of its own
+ * because the hard part is not the query — it is the claim-and-enqueue below,
+ * which was already wrong once and must not exist twice.
  */
 
 import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
-import { loadShopSettings } from './settings.js';
+import { loadShopSettings, settingText } from './settings.js';
 import { enqueue } from './notify.js';
 
 /**
@@ -48,7 +56,8 @@ interface DueRow {
   expires_at: string | null;
   volume_gb: number | null;
   used_bytes: number | null;
-  reason: 'time' | 'volume';
+  purchased_at: string;
+  reason: 'time' | 'volume' | 'unused';
 }
 
 /**
@@ -65,7 +74,7 @@ export async function warnExpiringServices(
 ): Promise<number> {
   // Read once per sweep, like the commission in `settle.ts`: it is shop-wide,
   // it is cached, and a sweep of fifty services should not ask fifty times.
-  const { warnDays, warnVolumeGb } = await loadShopSettings(db);
+  const { warnDays, warnVolumeGb, onHoldDays } = await loadShopSettings(db);
   const { results } = await db
     .prepare(
       // Only what is genuinely still running: expired and exhausted services are
@@ -73,7 +82,7 @@ export async function warnExpiringServices(
       // `notify->>'x' IS DISTINCT FROM 'true'` rather than `= 'false'`, because
       // the key is absent on every row that has never been warned.
       `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
-              s.volume_gb, s.used_bytes, 'time' AS reason
+              s.volume_gb, s.used_bytes, s.purchased_at, 'time' AS reason
          FROM subscriptions s
          JOIN users u ON u.id = s.user_id
         WHERE s.status = 'ACTIVE'
@@ -87,7 +96,7 @@ export async function warnExpiringServices(
         UNION ALL
 
         SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
-               s.volume_gb, s.used_bytes, 'volume' AS reason
+               s.volume_gb, s.used_bytes, s.purchased_at, 'volume' AS reason
           FROM subscriptions s
           JOIN users u ON u.id = s.user_id
          WHERE s.status = 'ACTIVE'
@@ -105,10 +114,53 @@ export async function warnExpiringServices(
            -- warning about a service that expired last week.
            AND (s.expires_at IS NULL OR s.expires_at > to_timestamp(?1 / 1000.0))
 
+        UNION ALL
+
+        -- Bought and never connected.
+        --
+        -- The legacy asks the panel for accounts in its on_hold status. We do
+        -- not carry that status: sync.ts refuses to write the panel's status
+        -- onto the row because no honest mapping exists between its five words
+        -- and our six. Zero bytes is the same customer seen from our own data,
+        -- and it is strictly wider -- a plan sold as active rather than
+        -- on_hold is burning days without connecting, which is the case that
+        -- needs the nudge most and the one the legacy cannot see.
+        --
+        -- last_synced_at IS NOT NULL is what makes zero mean zero. A row we
+        -- have never synced carries the used_bytes it was sold with, and
+        -- nudging on that would tell a customer who connected an hour ago that
+        -- they never did.
+        --
+        -- Mirzabot also skips anyone with a pending change_location request,
+        -- so a person already talking to support is not nagged. We have no
+        -- location-change flow, so there is nothing to skip -- if one lands,
+        -- its exclusion belongs here.
+        SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
+               s.volume_gb, s.used_bytes, s.purchased_at, 'unused' AS reason
+          FROM subscriptions s
+          JOIN users u ON u.id = s.user_id
+         WHERE s.status = 'ACTIVE'
+           AND u.notify_enabled
+           AND u.status <> 'BLOCKED'
+           AND s.notify->>'unused' IS DISTINCT FROM 'true'
+           AND s.last_synced_at IS NOT NULL
+           AND s.used_bytes = 0
+           AND s.purchased_at <= to_timestamp(?1 / 1000.0) - make_interval(days => ?6)
+           -- A service that has already run out is past nudging: telling
+           -- somebody to go connect a thing that stopped working is worse than
+           -- silence.
+           AND (s.expires_at IS NULL OR s.expires_at > to_timestamp(?1 / 1000.0))
+
          LIMIT ?5`,
     )
-    .bind(now, warnDays, warnVolumeGb * 1024 ** 3, 1024 ** 3, BATCH)
+    .bind(now, warnDays, warnVolumeGb * 1024 ** 3, 1024 ** 3, BATCH, onHoldDays)
     .all<DueRow>();
+
+  // Asked once, and only when somebody is actually going to be pointed at
+  // support. Every other pass pays nothing for it.
+  const supportHandle = (results ?? []).some((r) => r.reason === 'unused')
+    ? await settingText(db, 'bot', 'id_support')
+    : null;
 
   let warned = 0;
 
@@ -139,13 +191,7 @@ export async function warnExpiringServices(
         // on, so the message cannot be enqueued twice for one warning.
         dedupeKey: `warn:${row.id}:${row.reason}`,
         chatId: row.telegram_id,
-        text:
-          row.reason === 'time'
-            ? menu.timeRunningOut(row.plan_name_at_sale, daysLeft(row.expires_at, now))
-            : menu.volumeRunningOut(
-                row.plan_name_at_sale,
-                (row.volume_gb ?? 0) * 1024 ** 3 - (row.used_bytes ?? 0),
-              ),
+        text: messageFor(row, now, supportHandle),
       });
       return true;
     });
@@ -153,6 +199,39 @@ export async function warnExpiringServices(
   }
 
   return warned;
+}
+
+/** Which of the three, worded for the reason the row was picked. */
+function messageFor(row: DueRow, now: number, supportHandle: string | null): string {
+  switch (row.reason) {
+    case 'time':
+      return menu.timeRunningOut(row.plan_name_at_sale, daysLeft(row.expires_at, now));
+    case 'volume':
+      return menu.volumeRunningOut(
+        row.plan_name_at_sale,
+        (row.volume_gb ?? 0) * 1024 ** 3 - (row.used_bytes ?? 0),
+      );
+    case 'unused':
+      return menu.serviceNeverUsed(
+        row.plan_name_at_sale,
+        daysSince(row.purchased_at, now),
+        supportHandle,
+      );
+  }
+}
+
+/**
+ * Whole days since the purchase, rounded DOWN.
+ *
+ * The opposite of `daysLeft` and for the same reason: this number appears in a
+ * sentence that also had to be true for the row to be selected at all. The
+ * query says at least `onHoldDays` have passed; rounding up could print a
+ * larger number than has actually elapsed, and a customer who bought four days
+ * ago being told it was five is the kind of small wrongness that costs a
+ * support message.
+ */
+function daysSince(purchasedAt: string, now: number): number {
+  return Math.floor((now - Date.parse(purchasedAt)) / 86_400_000);
 }
 
 /** Rounded up, so the last hours of a service read as "1 day" rather than "0". */

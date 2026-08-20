@@ -13,6 +13,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DAYS_WARN, VOLUME_WARN_BYTES, warnExpiringServices } from '../src/warn.js';
 import { db, pendingNotifications } from './helpers/env.js';
+import { DEFAULT_SHOP_SETTINGS, invalidateShopSettings } from '../src/settings.js';
 import { ensureCatalog, makeCustomer } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 7, 13, 12, 0, 0);
@@ -32,6 +33,10 @@ interface Fixture {
   usedBytes?: number | null;
   status?: string;
   notify?: Record<string, boolean>;
+  /** How long ago it was bought. Default 0 — bought at `NOW_MS`. */
+  purchasedDaysAgo?: number;
+  /** Whether the panel has ever answered about it. `used_bytes` means nothing without this. */
+  synced?: boolean;
 }
 
 async function makeService(userId: number, fixture: Fixture): Promise<number> {
@@ -39,8 +44,9 @@ async function makeService(userId: number, fixture: Fixture): Promise<number> {
     .prepare(
       `INSERT INTO subscriptions
          (public_id, user_id, plan_name_at_sale, price_irr, remote_username,
-          volume_gb, used_bytes, status, purchased_at, expires_at, notify)
-       VALUES (?1, ?2, 'یک‌ماهه-۵۰گیگ', 1950000, 'u_warn', ?3, ?4, ?5, now(), ?6, ?7::jsonb)
+          volume_gb, used_bytes, status, purchased_at, expires_at, notify,
+          last_synced_at)
+       VALUES (?1, ?2, 'یک‌ماهه-۵۰گیگ', 1950000, 'u_warn', ?3, ?4, ?5, ?8, ?6, ?7::jsonb, ?9)
        RETURNING id`,
     )
     .bind(
@@ -53,6 +59,8 @@ async function makeService(userId: number, fixture: Fixture): Promise<number> {
         ? null
         : new Date(NOW_MS + fixture.expiresInDays * DAY).toISOString(),
       JSON.stringify(fixture.notify ?? {}),
+      new Date(NOW_MS - (fixture.purchasedDaysAgo ?? 0) * DAY).toISOString(),
+      fixture.synced === true ? new Date(NOW_MS).toISOString() : null,
     )
     .first<{ id: number }>();
   if (!row) throw new Error('warn fixture failed');
@@ -86,10 +94,17 @@ afterEach(() => {
 });
 
 describe('the thresholds the admin actually set', () => {
-  it('matches the live setting row: 1 GB and 2 days', () => {
-    // `SELECT volumewarn, daywarn FROM setting` on the 2026-08-13 dump.
+  it('matches the live setting row: 1 GB, 2 days, and 1 day unused', () => {
+    // `SELECT volumewarn, daywarn, on_hold_day FROM setting`. These three
+    // literals are pinned to the shop's own database by
+    // `packages/migrate/test/shop-switches.mysql.test.ts` — this file only
+    // proves the bot falls back to them.
     expect(VOLUME_WARN_BYTES).toBe(1024 ** 3);
     expect(DAYS_WARN).toBe(2);
+    // Not 4. `table.php` creates the column with 4; the shop runs 1, and a
+    // fallback taken from the schema would nudge four times slower than the
+    // release it is standing in for.
+    expect(DEFAULT_SHOP_SETTINGS.onHoldDays).toBe(1);
   });
 });
 
@@ -279,5 +294,159 @@ describe('who is not told', () => {
     await makeService(userId, { publicId: 'w-off-3', expiresInDays: 1, status: 'DISABLED' });
 
     expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+  });
+});
+
+/**
+ * "You bought this and never plugged it in."
+ *
+ * The window is the admin's, not ours. Every test below writes
+ * `setting.on_hold_day` and then measures against THAT number — a fixture
+ * placed one day inside it and one day outside — so a sweep that quietly went
+ * back to the constant in `settings.ts` fails here instead of passing because
+ * the constant and the fixture happen to agree. What the shop's own row
+ * actually holds is asserted where the shop's database is:
+ * `packages/migrate/test/shop-switches.mysql.test.ts`.
+ */
+describe('bought and never connected', () => {
+  /** Deliberately not 4, so nothing can pass on the default. */
+  const WINDOW_DAYS = 7;
+  const SUPPORT = 'shikoo_support';
+
+  async function setSetting(scope: string, key: string, value: unknown): Promise<void> {
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value) VALUES (?1, ?2, ?3::jsonb)
+         ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind(scope, key, JSON.stringify(value))
+      .run();
+    invalidateShopSettings();
+  }
+
+  beforeEach(async () => {
+    await setSetting('bot', 'on_hold_day', String(WINDOW_DAYS));
+    await setSetting('bot', 'id_support', SUPPORT);
+  });
+
+  afterEach(async () => {
+    await db
+      .prepare(`DELETE FROM settings WHERE scope = 'bot' AND key IN ('on_hold_day', 'id_support')`)
+      .run();
+    invalidateShopSettings();
+  });
+
+  it('nudges past the window and stays silent inside it, on the number the admin set', async () => {
+    // Both in one sweep, so the pass cannot be explained by anything other
+    // than the boundary: same shape, same usage, one day either side of it.
+    const quiet = nextTelegramId();
+    const nudged = nextTelegramId();
+    await makeService(await makeCustomer(quiet), {
+      publicId: 'w-hold-inside',
+      usedBytes: 0,
+      synced: true,
+      purchasedDaysAgo: WINDOW_DAYS - 1,
+      expiresInDays: 20,
+    });
+    await makeService(await makeCustomer(nudged), {
+      publicId: 'w-hold-outside',
+      usedBytes: 0,
+      synced: true,
+      purchasedDaysAgo: WINDOW_DAYS + 1,
+      expiresInDays: 20,
+    });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(1);
+
+    const notes = await pendingNotifications();
+    expect(notes.find((n) => n.chatId === quiet)).toBeUndefined();
+    const note = notes.find((n) => n.chatId === nudged);
+    expect(note?.text).toContain('یک‌ماهه-۵۰گیگ');
+    // Whole days since the purchase, rounded down — the same 8 the row was
+    // selected on, never a larger number than has actually elapsed.
+    expect(note?.text).toContain(`${WINDOW_DAYS + 1} روز`);
+    expect(note?.text).toContain(`@${SUPPORT}`);
+  });
+
+  it('says nothing while the panel has never answered about it', async () => {
+    // `used_bytes` is 0 from the moment the row is written. Without
+    // `last_synced_at` that zero is "we never asked", and nudging on it tells
+    // a customer who connected an hour ago that they never did.
+    const telegramId = nextTelegramId();
+    await makeService(await makeCustomer(telegramId), {
+      publicId: 'w-hold-unsynced',
+      usedBytes: 0,
+      synced: false,
+      purchasedDaysAgo: WINDOW_DAYS + 5,
+      expiresInDays: 20,
+    });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+  });
+
+  it('says nothing about a service that has been used', async () => {
+    const telegramId = nextTelegramId();
+    await makeService(await makeCustomer(telegramId), {
+      publicId: 'w-hold-used',
+      volumeGb: 50,
+      usedBytes: 1,
+      synced: true,
+      purchasedDaysAgo: WINDOW_DAYS + 5,
+      expiresInDays: 20,
+    });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+  });
+
+  it('says nothing about a service that has already run out', async () => {
+    // Telling somebody to go and connect a thing that stopped working is
+    // worse than silence.
+    const telegramId = nextTelegramId();
+    await makeService(await makeCustomer(telegramId), {
+      publicId: 'w-hold-expired',
+      usedBytes: 0,
+      synced: true,
+      purchasedDaysAgo: WINDOW_DAYS + 5,
+      expiresInDays: -1,
+    });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+  });
+
+  it('says it once, and records it beside the other two', async () => {
+    const telegramId = nextTelegramId();
+    const id = await makeService(await makeCustomer(telegramId), {
+      publicId: 'w-hold-once',
+      usedBytes: 0,
+      synced: true,
+      purchasedDaysAgo: WINDOW_DAYS + 1,
+      expiresInDays: 20,
+    });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(1);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+    expect(await notifyOf(id)).toMatchObject({ unused: true });
+    expect((await pendingNotifications()).filter((n) => n.chatId === telegramId)).toHaveLength(1);
+  });
+
+  it('still sends the nudge when the shop has no support handle', async () => {
+    // The news is "you have not connected". The legacy renders a bare `@` here;
+    // dropping the line is the same message without the dangling symbol.
+    await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'id_support'`).run();
+    invalidateShopSettings();
+
+    const telegramId = nextTelegramId();
+    await makeService(await makeCustomer(telegramId), {
+      publicId: 'w-hold-nosupport',
+      usedBytes: 0,
+      synced: true,
+      purchasedDaysAgo: WINDOW_DAYS + 1,
+      expiresInDays: 20,
+    });
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(1);
+    const note = (await pendingNotifications()).find((n) => n.chatId === telegramId);
+    expect(note?.text).toContain('یک‌ماهه-۵۰گیگ');
+    expect(note?.text).not.toContain('@');
   });
 });
