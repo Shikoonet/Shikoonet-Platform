@@ -50,6 +50,8 @@ const STALLED_MS = 5 * 60 * 1000;
 interface PendingOrder {
   order_id: number;
   order_public_id: string;
+  /** PAID for an order to deliver; COMPLETED or FAILED for one still owed its message. */
+  order_status: string;
   order_kind: string;
   /** Gigabytes or days on an add-on; 1 on everything else. */
   quantity: number;
@@ -164,8 +166,12 @@ async function purchasedScreen(
       .prepare(`SELECT id FROM subscriptions WHERE order_id = ?1 ORDER BY id DESC LIMIT 1`)
       .bind(row.order_id)
       .first<{ id: number }>();
-    if (!sub) return null;
-    const service = await subscriptionOnPanelForUser(db, row.user_id, sub.id);
+    // A renewal or an add-on writes no new subscription; it changes the one the
+    // order points at, and that is the service worth showing. Null on a fresh
+    // purchase, so this changes nothing for the caller it was written for.
+    const subscriptionId = sub?.id ?? row.target_subscription_id;
+    if (subscriptionId === null) return null;
+    const service = await subscriptionOnPanelForUser(db, row.user_id, subscriptionId);
     if (!service) return null;
     const shop = await loadShopSettings(db);
     return {
@@ -177,6 +183,68 @@ async function purchasedScreen(
     console.error(`[bot] order ${row.order_public_id} delivered, but its screen could not be built`, err);
     return null;
   }
+}
+
+/**
+ * How far back the sweep will look for an order nobody was told about.
+ *
+ * Long enough to cover a bot that was down overnight, short enough that it can
+ * never reach an order served before `bot_notifications` existed — or one the
+ * data migration carries in from MySQL with its original timestamps. Both of
+ * those would be greeted with a delivery message years late.
+ */
+const UNTOLD_WINDOW_HOURS = 24;
+
+/**
+ * Queues the one message an order gets.
+ *
+ * `provision:<public_id>` is the key, so the delivery path and the sweep that
+ * catches what it dropped cannot both send: whichever gets there first wins and
+ * the other is a no-op. A customer with no chat is written nowhere rather than
+ * queued to nobody.
+ */
+async function tell(db: D1Database, row: PendingOrder, note: Delivered): Promise<void> {
+  const chatId = row.telegram_id;
+  if (chatId === null) return;
+  await db.withSession((tx) =>
+    enqueue(tx, {
+      dedupeKey: `provision:${row.order_public_id}`,
+      chatId,
+      text: note.text,
+      keyboard: note.keyboard ?? null,
+      qrPayload: note.qrPayload ?? null,
+    }),
+  );
+}
+
+/**
+ * What to say about an order that ended while nobody was listening.
+ *
+ * Rebuilt from the database rather than remembered, because the process that
+ * knew is the one that died. Every branch below reads; none of them calls a
+ * panel, refunds anything or writes a subscription — the work is done, and this
+ * is only the sentence about it.
+ */
+async function untoldNote(
+  db: D1Database,
+  row: PendingOrder,
+  now: number,
+): Promise<Delivered | null> {
+  if (row.order_status === 'FAILED') {
+    // The refund is a ledger row with a key made of the order id, so the exact
+    // amount the customer got back is still on record — which is the one number
+    // `serviceNeedsHelp` needs and the one a guess must not get wrong.
+    const back = await db
+      .prepare(`SELECT amount_irr FROM wallet_entries WHERE idempotency_key = ?1`)
+      .bind(`order:${row.order_id}:refund`)
+      .first<{ amount_irr: number }>();
+    return say(menu.serviceNeedsHelp(row.order_public_id, back ? Number(back.amount_irr) : null));
+  }
+
+  // COMPLETED. The screen if there is a service to show — a fresh purchase, a
+  // renewal, an add-on all land here — and otherwise the honest answer for a
+  // manual product, which is that a person is finishing it.
+  return (await purchasedScreen(db, row, now)) ?? say(menu.serviceBeingPrepared(row.order_public_id));
 }
 
 /**
@@ -200,6 +268,7 @@ export async function provisionPaidOrders(
       // is the account's panel that decides where the call goes.
       `SELECT o.id            AS order_id,
               o.public_id     AS order_public_id,
+              o.status        AS order_status,
               o.user_id       AS user_id,
               o.kind          AS order_kind,
               o.quantity      AS quantity,
@@ -232,22 +301,66 @@ export async function provisionPaidOrders(
          LEFT JOIN subscriptions s  ON s.id = o.target_subscription_id
                                    AND s.user_id = o.user_id
          LEFT JOIN provisioning_providers spv ON spv.id = s.provider_id
-        WHERE o.status = 'PAID'
+        WHERE
           -- A deposit is money in, not a thing out: it has no plan, so the
           -- plan_id IS NULL guard below would fail it and tell the customer
           -- their service needs help. settleVerifiedPayments completes those
           -- itself and they never reach PAID — this is the second lock on the
           -- same door, because relying on the order two sweeps run in is not a
-          -- guarantee.
-          AND o.kind <> 'WALLET_TOPUP'
+          -- guarantee. It also has no message of its own, so it must stay out
+          -- of the second branch below or every deposit gets one.
+              o.kind <> 'WALLET_TOPUP'
+          AND (
+            o.status = 'PAID'
+
+            -- Or: it ended, and the customer was never told.
+            --
+            -- The order is made terminal in one transaction and the message is
+            -- queued in the next, so a process that dies between them — or an
+            -- enqueue that throws — leaves somebody who paid with a delivered
+            -- service and no word about it. Nothing else would ever find them:
+            -- reclaimStalled only picks up PROVISIONING, and this sweep only
+            -- read PAID.
+            --
+            -- Absence of the row IS the evidence, which holds because nothing
+            -- prunes bot_notifications. If that ever changes, its retention has
+            -- to stay longer than the window below.
+            OR (
+              o.status IN ('COMPLETED', 'FAILED')
+              AND u.telegram_id IS NOT NULL
+              -- Bounded, and the bound is what makes this safe to switch on at
+              -- all: without it the first sweep would greet every customer
+              -- served before the outbox existed, and every order the data
+              -- migration carries over from MySQL.
+              AND o.updated_at >= to_timestamp(?1 / 1000.0) - make_interval(hours => ?2)
+              AND NOT EXISTS (
+                SELECT 1 FROM bot_notifications n
+                 WHERE n.dedupe_key = 'provision:' || o.public_id
+              )
+            )
+          )
         ORDER BY o.id
         LIMIT 20`,
     )
+    .bind(now, UNTOLD_WINDOW_HOURS)
     .all<PendingOrder>();
 
   let delivered = 0;
 
   for (const row of results ?? []) {
+    // Already finished, and only ever owed its message. Nothing here calls a
+    // panel, refunds anything, or writes a subscription: the work happened, and
+    // the only thing missing is that somebody was told about it.
+    if (row.order_status !== 'PAID') {
+      const owed = await untoldNote(db, row, now);
+      if (owed !== null) {
+        await tell(db, row, owed);
+        console.warn(`[bot] order ${row.order_public_id} ended without a message; sent it now`);
+        delivered += 1;
+      }
+      continue;
+    }
+
     // Claim it. Guarded on PAID so a second sweep — or the same one running
     // twice — takes nothing.
     const claimed = await db
@@ -276,28 +389,17 @@ export async function provisionPaidOrders(
       continue;
     }
     if (note !== null && row.telegram_id !== null) {
-      // ponytail: enqueued just after `deliver` commits rather than inside its
-      // transaction. `deliver` and `renew` reach a customer-visible message
-      // from eight different exits across four transactions, and threading the
-      // enqueue through all of them means editing the refund path — so the
-      // narrow crash window between those two commits is accepted, knowingly,
-      // and it is a local insert wide rather than a network round-trip wide.
-      // What this DOES close is the failure that actually happens: a send that
-      // Telegram refuses. Close the rest by moving the enqueue into each exit,
-      // or by sweeping for COMPLETED/FAILED orders with no notification row.
-      const chatId = row.telegram_id;
-      await db.withSession((tx) =>
-        enqueue(tx, {
-          // One message per order: every path that produces one is terminal
-          // (COMPLETED or FAILED), and the retryable path deliberately says
-          // nothing at all.
-          dedupeKey: `provision:${row.order_public_id}`,
-          chatId,
-          text: note.text,
-          keyboard: note.keyboard ?? null,
-          qrPayload: note.qrPayload ?? null,
-        }),
-      );
+      // Still enqueued just after `deliver` commits rather than inside its
+      // transaction — `deliver` and `renew` reach a customer-visible message
+      // from eight exits across four transactions, and the richest of those
+      // messages is read back out of the row the same transaction just wrote,
+      // so moving the insert inside would put three reads that are allowed to
+      // fail inside a transaction that must not.
+      //
+      // The window is closed from the other end instead, by the branch at the
+      // top of this loop: whatever is terminal and has no message gets one on
+      // the next pass. Two cheap mechanisms rather than one careful one.
+      await tell(db, row, note);
       delivered += 1;
     }
   }

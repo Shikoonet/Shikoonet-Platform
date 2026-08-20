@@ -538,3 +538,122 @@ describe('a product with no automation', () => {
     expect(note.text).not.toContain('http');
   });
 });
+
+/**
+ * The order that ended while nobody was listening.
+ *
+ * The order is made terminal in one transaction and the customer's message is
+ * queued in the next. A process that dies between them — or an enqueue that
+ * throws — used to leave somebody who paid with a working service and no word
+ * about it, for ever: `reclaimStalled` only picks up PROVISIONING, and this
+ * sweep only ever read PAID.
+ *
+ * Deleting the queued row after a normal delivery is exactly that state, and it
+ * is the honest way to reach it: everything else about the order is real
+ * because it was really delivered.
+ *
+ * Every sweep below is handed `deadPanel`. Nothing here may touch a network —
+ * the work is done, and what is missing is a sentence about it.
+ */
+describe('an order that ended without telling anyone', () => {
+  async function forgetTheMessage(publicId: string): Promise<void> {
+    const gone = await db
+      .prepare(`DELETE FROM bot_notifications WHERE dedupe_key = ?1`)
+      .bind(`provision:${publicId}`)
+      .run();
+    // The fixture has to actually remove something, or the test proves nothing
+    // about a message that was never there.
+    expect(gone.meta.changes).toBe(1);
+  }
+
+  it('is told on the next sweep, without being delivered twice', async () => {
+    // The kind is pinned rather than inherited: an earlier test in this file
+    // switches this same provider to 'spotify' and never switches it back, so
+    // a bare paidOrder() here would silently take the manual path.
+    const order = await paidOrder({ kind: 'pasarguard' });
+    await provisionPaidOrders(db, fakePanel().fetchImpl);
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
+    await forgetTheMessage(order.publicId);
+
+    await provisionPaidOrders(db, deadPanel);
+
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.dedupeKey).toBe(`provision:${order.publicId}`);
+    // The service is the one that was already made. A second delivery would be
+    // a second account on the panel and a second row here.
+    expect(await subsFor(order.orderId)).toHaveLength(1);
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'COMPLETED' });
+  });
+
+  it('says what a failed order actually refunded, not what it guesses', async () => {
+    // The kind is pinned rather than inherited: an earlier test in this file
+    // switches this same provider to 'spotify' and never switches it back, so
+    // a bare paidOrder() here would silently take the manual path.
+    const order = await paidOrder({ kind: 'pasarguard' });
+    // Paid from the wallet, which is what makes a refund possible at all.
+    await db
+      .prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, method, amount_irr, status, created_at)
+         VALUES (?1, ?2, ?3, 'WALLET', 1950000, 'PAID', now())`,
+      )
+      .bind(`pay-${order.publicId}`, order.userId, order.orderId)
+      .run();
+
+    await provisionPaidOrders(db, brokenRequest);
+    expect(await orderRow(order.orderId)).toMatchObject({ status: 'FAILED' });
+
+    // The message the customer would have got, kept before it is thrown away.
+    // Asserting against THIS rather than against a string written here is the
+    // whole point: the refunded amount is read back out of the ledger row, and
+    // a literal in this file would agree with whatever the rebuild produced.
+    const original = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    // The refund really happened and the sentence really names it, or the
+    // comparison below would be two identical silences agreeing with each other.
+    expect(original?.text).toContain('195,000 تومان');
+    await forgetTheMessage(order.publicId);
+
+    await provisionPaidOrders(db, deadPanel);
+
+    const rebuilt = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(rebuilt?.text).toBe(original?.text);
+  });
+
+  it('leaves an order older than the window alone', async () => {
+    // Without this bound the first sweep after a deploy would greet every
+    // customer served before the outbox existed, and every order the data
+    // migration carries in from MySQL with its original dates.
+    // The kind is pinned rather than inherited: an earlier test in this file
+    // switches this same provider to 'spotify' and never switches it back, so
+    // a bare paidOrder() here would silently take the manual path.
+    const order = await paidOrder({ kind: 'pasarguard' });
+    await provisionPaidOrders(db, fakePanel().fetchImpl);
+    await forgetTheMessage(order.publicId);
+    await db
+      .prepare(`UPDATE orders SET updated_at = now() - interval '48 hours' WHERE id = ?1`)
+      .bind(order.orderId)
+      .run();
+
+    await provisionPaidOrders(db, deadPanel);
+
+    expect((await pendingNotifications()).find((n) => n.chatId === order.telegramId)).toBeUndefined();
+  });
+
+  it('never greets a wallet deposit', async () => {
+    // A deposit is money in, not a thing out. It is completed by the settlement
+    // sweep and has no delivery message of its own, so every one of them would
+    // look untold for ever.
+    const { telegramId, publicId } = nextIds();
+    const userId = await makeCustomer(telegramId);
+    await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr, total_irr, status)
+         VALUES (?1, ?2, 'WALLET_TOPUP', 1, 800000, 800000, 'COMPLETED')`,
+      )
+      .bind(publicId, userId)
+      .run();
+
+    await provisionPaidOrders(db, deadPanel);
+
+    expect((await pendingNotifications()).find((n) => n.chatId === telegramId)).toBeUndefined();
+  });
+});
