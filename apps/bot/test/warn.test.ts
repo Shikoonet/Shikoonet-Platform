@@ -279,13 +279,25 @@ describe('who is not told', () => {
     expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
   });
 
-  it('does not message a blocked customer', async () => {
+  it('still warns a blocked customer, because the service was paid for', async () => {
+    // This test asserted the opposite until 2026-08-21, and the opposite was
+    // our own invention. `legacy/mirzabot-php/cronbot/NoticationsService.php:72`
+    // selects from `invoice` alone and never joins `user`; the only per-person
+    // gate in the whole cron is `$status_cron_user` at `:239-241`, which is
+    // `notify_enabled` here.
+    //
+    // What our extra filter bought was silence for somebody the flood guard may
+    // have blocked by mistake — their service runs out with no word, and they
+    // paid for it. The block still stops them buying; it does not un-buy what
+    // they already own.
     const telegramId = nextTelegramId();
     const userId = await makeCustomer(telegramId);
     await db.prepare(`UPDATE users SET status = 'BLOCKED' WHERE id = ?1`).bind(userId).run();
     await makeService(userId, { publicId: 'w-off-2', expiresInDays: 1 });
 
-    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(1);
+    const notes = await pendingNotifications();
+    expect(notes.find((n) => n.chatId === telegramId)).toBeDefined();
   });
 
   it('does not warn about a service that is not active', async () => {

@@ -344,3 +344,92 @@ describe('a receipt sent as a file', () => {
     expect(admin.document).toBeUndefined();
   });
 });
+
+/**
+ * The customer the shop has cut off, who has already sent money.
+ *
+ * The flood guard blocks at 35 updates in a minute, and the things that reach
+ * it are not all abuse: repeated taps while the bot is slow, an album, a
+ * callback Telegram redelivers. Whoever it catches, the money is already in the
+ * bank — and before this, every door back was shut in silence. The receipt was
+ * ignored, «پرداخت کردم» was ignored, `expireUnpaidOrders` killed the invoice,
+ * and there was no way to ask what happened from inside the bot.
+ *
+ * The assertions below are about the DATABASE, not about the reply text: what
+ * matters is that the evidence is attached to the claim an operator will read.
+ */
+describe('a blocked customer who has already paid', () => {
+  async function block(telegramId: number): Promise<void> {
+    await db
+      .prepare(
+        `UPDATE users SET status = 'BLOCKED', blocked_reason = 'auto-blocked for flooding the bot'
+          WHERE telegram_id = ?1`,
+      )
+      .bind(telegramId)
+      .run();
+  }
+
+  it('still has their receipt attached to the claim', async () => {
+    const sale = await buyAndClaim('sim-vip-1m-50');
+    await block(sale.telegramId);
+
+    const out = await handleUpdate(
+      db,
+      sendsPhoto(sale.updateId + 2, sale.telegramId, ['blocked-receipt-000001']),
+    );
+
+    expect(out.status).toBe('processed');
+    const row = await claimRow(sale.claimId);
+    expect(row?.receipt_url_or_r2_key).toBe('blocked-receipt-000001');
+    expect(row?.receipt_submitted_at).not.toBeNull();
+  });
+
+  it('can still press «پرداخت کردم» on an order they already own', async () => {
+    // Ordered but not yet claimed, which is the window the block used to close
+    // for good: the money is sent and the bot has never been told.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const plan = await planId('sim-gold-10');
+    await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+    const order = await db
+      .prepare(`SELECT id FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`)
+      .bind(userId)
+      .first<{ id: number }>();
+
+    await block(telegramId);
+    const out = await handleUpdate(db, press(updateId + 1, telegramId, `paid:${order!.id}`));
+
+    expect(out.status).toBe('processed');
+    const claim = await db
+      .prepare(
+        `SELECT count(*)::int AS n
+           FROM payments p
+           JOIN payment_claims c ON c.external_order_id = 'shikoo:' || p.public_id
+          WHERE p.user_id = ?1`,
+      )
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(claim?.n).toBe(1);
+  });
+
+  it('is still refused everything else, and answered nothing', async () => {
+    // The block has to keep costing a flooder what it always cost, or it stops
+    // being a block. Only the two payment-recovery doors are open.
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await block(telegramId);
+
+    const menuPress = await handleUpdate(db, press(updateId, telegramId, 'menu'));
+    expect(menuPress.status).toBe('ignored');
+    expect(menuPress.replies).toEqual([]);
+
+    // A picture from somebody with no payment waiting: recorded nowhere, and
+    // not worth a reply either.
+    const stray = await handleUpdate(
+      db,
+      sendsPhoto(updateId + 1, telegramId, ['stray-picture-000002']),
+    );
+    expect(stray.status).toBe('ignored');
+    expect(stray.replies).toEqual([]);
+  });
+});

@@ -512,9 +512,25 @@ async function handleReceipt(
   const from = message.from;
   if (!from) return IGNORED;
   const user = await upsertUser(tx, from);
-  if (user.status === 'BLOCKED') return IGNORED;
 
+  // Recorded before the block is consulted, on purpose.
+  //
+  // A customer who has already sent money to a card and is then blocked -- by
+  // the flood guard above, or by an admin -- would otherwise have the one
+  // message that proves they paid dropped in silence. The money is in the bank,
+  // `expireUnpaidOrders` kills the invoice, and every way of asking what
+  // happened is ignored too. That is the worst outcome this bot can produce.
+  //
+  // Nothing is granted by recording it, which is the same reason the membership
+  // gate lets a receipt past: `recordReceipt` attaches evidence to a payment
+  // that is ALREADY waiting and answers `none` when there is none. An operator
+  // still decides. A blocked customer cannot start a payment to attach one to.
   const result = await recordReceipt(tx, user.id, fileId, Date.now(), isDocument);
+
+  // The silence is kept for the case it was written for. A blocked customer
+  // with nothing waiting gets no answer at all, so the block still costs a
+  // flooder every reply it used to -- they can send pictures into the void.
+  if (user.status === 'BLOCKED' && result.outcome === 'none') return IGNORED;
   const say = (text: string): HandleOutcome => ({
     status: 'processed',
     replies: [reply(message.chat.id, text)],
@@ -1921,7 +1937,12 @@ async function handleCallback(
   if (!user) {
     return { status: 'ignored', replies: [reply(chatId, menu.NOT_REGISTERED)] };
   }
-  if (user.status === 'BLOCKED') return IGNORED;
+  // «پرداخت کردم» is the other half of the receipt path above, and it is let
+  // through for the same reason: it records a claim against an order the
+  // customer already owns. `orderForUser` re-checks the owner, so a forged id
+  // belongs to nobody, and the button that comes back leads to the main menu,
+  // which a blocked customer is still refused. Nothing else is opened.
+  if (user.status === 'BLOCKED' && action.action !== 'paid') return IGNORED;
 
   switch (action.action) {
     // The two buttons the gate draws, and the only ones it lets past. Both end

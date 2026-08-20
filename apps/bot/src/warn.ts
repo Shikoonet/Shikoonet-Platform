@@ -85,9 +85,16 @@ export async function warnExpiringServices(
               s.volume_gb, s.used_bytes, s.purchased_at, 'time' AS reason
          FROM subscriptions s
          JOIN users u ON u.id = s.user_id
+        -- u.status is deliberately not consulted. Blocked or not, this
+        -- customer paid for a service that is about to run out, and the legacy
+        -- agrees: cronbot/NoticationsService.php:72 selects from invoice alone
+        -- and never joins user, gating only on the per-customer toggle that is
+        -- notify_enabled here (:239-241). Our filter was an addition, and what
+        -- it added was silence for somebody the flood guard may have blocked by
+        -- mistake. (No backticks in this comment: the SQL is a template
+        -- literal, and one would end it.)
         WHERE s.status = 'ACTIVE'
           AND u.notify_enabled
-          AND u.status <> 'BLOCKED'
           AND s.notify->>'time' IS DISTINCT FROM 'true'
           AND s.expires_at IS NOT NULL
           AND s.expires_at > to_timestamp(?1 / 1000.0)
@@ -101,7 +108,6 @@ export async function warnExpiringServices(
           JOIN users u ON u.id = s.user_id
          WHERE s.status = 'ACTIVE'
            AND u.notify_enabled
-           AND u.status <> 'BLOCKED'
            AND s.notify->>'volume' IS DISTINCT FROM 'true'
            AND s.volume_gb IS NOT NULL
            AND s.used_bytes IS NOT NULL
@@ -141,7 +147,6 @@ export async function warnExpiringServices(
           JOIN users u ON u.id = s.user_id
          WHERE s.status = 'ACTIVE'
            AND u.notify_enabled
-           AND u.status <> 'BLOCKED'
            AND s.notify->>'unused' IS DISTINCT FROM 'true'
            AND s.last_synced_at IS NOT NULL
            AND s.used_bytes = 0
