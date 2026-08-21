@@ -25,6 +25,14 @@ const BOT_TABLES = [
   // row is there" pass with the write removed. The list is also what the guard
   // below counts, so a missing table now says so instead of failing obscurely.
   'telegram_dead_updates',
+  // Added 2026-08-22, after it cost an hour and had been read as flakiness.
+  // `admins` has no foreign key to `users`, so the CASCADE above never reached
+  // it and a row `makeAdmin()` wrote outlived the whole suite. `ids()` counts
+  // from a fixed base, so the NEXT run hands a plain customer a telegram id
+  // that is still an admin from the previous one — and an admin is exempt from
+  // the flood counter, so that customer never blocks and the test fails for a
+  // reason nothing on screen names.
+  'admins',
 ];
 
 /**

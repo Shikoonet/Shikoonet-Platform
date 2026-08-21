@@ -282,6 +282,42 @@ function cookieIsSecure(env: AuthEnv, url: string): boolean {
   }
 }
 
+/**
+ * How long a dead session row is kept after it stops being usable.
+ *
+ * Long enough to answer "where was my account signed in from last week?" on
+ * «نشست‌های من», which is the only reason to keep one at all past its expiry.
+ */
+const SESSION_RETENTION_DAYS = 30;
+
+/**
+ * Clears out sessions that expired or were revoked a month ago.
+ *
+ * There was no cleanup of any kind: expiry is enforced at read time, so rows
+ * accumulated for the life of the database along with their index and their
+ * addresses. Not urgent — an operator logs in a few times a day — but a table
+ * that only grows is one nobody chose.
+ *
+ * Done at login rather than by a scheduler, because the dashboard has none and
+ * inventing one for a monthly DELETE would be the larger thing to maintain.
+ * Logins are rare, the statement is a single indexed range, and it runs after
+ * the session is issued so it cannot delay or fail a sign-in — a failure here
+ * is logged and nothing else.
+ */
+async function pruneDeadSessions(c: AuthContext): Promise<void> {
+  try {
+    await c.env.DB.prepare(
+      `DELETE FROM operator_sessions
+        WHERE expires_at < now() - make_interval(days => ?1)
+           OR (revoked_at IS NOT NULL AND revoked_at < now() - make_interval(days => ?1))`,
+    )
+      .bind(SESSION_RETENTION_DAYS)
+      .run();
+  } catch (err) {
+    console.error('[dashboard] could not prune expired operator sessions', err);
+  }
+}
+
 async function issueSession(c: AuthContext, operatorId: string): Promise<void> {
   const { token, hash } = newSessionToken();
   await c.env.DB.prepare(
@@ -310,6 +346,9 @@ async function issueSession(c: AuthContext, operatorId: string): Promise<void> {
     path: '/',
     maxAge: IDLE_HOURS * 3600,
   });
+
+  // After the cookie, so nothing about signing in depends on it.
+  await pruneDeadSessions(c);
 }
 
 /**

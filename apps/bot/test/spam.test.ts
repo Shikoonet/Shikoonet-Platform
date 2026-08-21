@@ -77,15 +77,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   resetSpamWindows();
-  // `admins` is not in the list `resetBot()` truncates, so a row `makeAdmin`
-  // writes outlives the whole suite — and `ids()` is deterministic, so a later
-  // run hands a plain customer a telegram id that is STILL an admin from a
-  // previous one. An admin is exempt from the counter, so that customer simply
-  // never gets blocked and the test fails for a reason nothing on screen names.
-  // It cost an hour on 2026-08-21 and it was read as flakiness first.
-  //
-  // The id space of this file, cleared before every test, so the file no longer
-  // depends on what any earlier run left behind.
+  // Between tests, not between runs: `resetBot()` truncates `admins` once per
+  // file now (see `helpers/env.ts`), which is what stops a row from a PREVIOUS
+  // run making a plain customer an admin here. This line is the same guard for
+  // the file's own earlier tests.
   await db.prepare(`DELETE FROM admins WHERE telegram_id BETWEEN 866000 AND 867000`).run();
   vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
   await db.prepare(`DELETE FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`).run();

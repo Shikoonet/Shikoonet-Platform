@@ -492,3 +492,57 @@ describe('the audit trail', () => {
     expect(dump).not.toContain('wrong');
   });
 });
+
+/**
+ * The table that only ever grew.
+ *
+ * `operator_sessions` had no cleanup of any kind: expiry is enforced when a
+ * session is read, so an expired or revoked row sat there for the life of the
+ * database, with its index and the address it recorded. Not urgent — an
+ * operator logs in a few times a day — but a table nobody chose to keep is one
+ * nobody is watching either.
+ *
+ * The rows below are aged in the database rather than by mocking a clock,
+ * because the statement under test compares against `now()` inside Postgres. A
+ * pinned `Date.now()` would not reach it.
+ */
+describe('what a login clears up after itself', () => {
+  /** Labelled by `token_hash`, because `id` is a uuid column. */
+  async function sessionsNamed(prefix: string): Promise<string[]> {
+    const { results } = await baseEnv.DB.prepare(
+      `SELECT token_hash FROM operator_sessions WHERE token_hash LIKE ?1 ORDER BY token_hash`,
+    )
+      .bind(`${prefix}%`)
+      .all<{ token_hash: string }>();
+    return (results ?? []).map((r) => r.token_hash);
+  }
+
+  it('deletes sessions that died a month ago and keeps the rest', async () => {
+    const operator = await baseEnv.DB.prepare(
+      `SELECT id FROM access_users WHERE email = ?1`,
+    )
+      .bind(EMAIL)
+      .first<{ id: string }>();
+
+    const put = async (label: string, sql: string): Promise<void> => {
+      await baseEnv.DB.prepare(
+        `INSERT INTO operator_sessions (id, access_user_id, token_hash, expires_at, revoked_at)
+         VALUES (?1, ?2, ?3, ${sql})`,
+      )
+        .bind(crypto.randomUUID(), operator!.id, label)
+        .run();
+    };
+    await put('prune-old-expired', `now() - interval '40 days', NULL`);
+    await put('prune-old-revoked', `now() + interval '1 hour', now() - interval '40 days'`);
+    await put('prune-recent-expired', `now() - interval '2 days', NULL`);
+    await put('prune-live', `now() + interval '1 hour', NULL`);
+
+    expect(await sessionsNamed('prune-')).toHaveLength(4);
+    expect((await login({ email: EMAIL, password: PASSWORD })).status).toBe(200);
+
+    // Only what has been dead longer than the retention window. A session that
+    // expired two days ago is still what «نشست‌های من» answers "where was I
+    // signed in from?" with, which is the only reason to keep one at all.
+    expect(await sessionsNamed('prune-')).toEqual(['prune-live', 'prune-recent-expired']);
+  });
+});
