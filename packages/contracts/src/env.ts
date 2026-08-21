@@ -78,3 +78,33 @@ export function parseEnvName(raw: string | undefined): EnvName {
   }
   return value;
 }
+
+/**
+ * Which build is this, as the two `/version` endpoints answer it.
+ *
+ * `APP_VERSION` is set by nobody. It was fed by `scripts/release.sh` in the
+ * Cloudflare deployment, which is retired; nothing in the Coolify path ever
+ * replaced it, so both endpoints answered the literal string `dev` on a
+ * production box for months. An endpoint whose entire purpose is "confirm which
+ * build answers on this hostname" and which answers the same thing on every
+ * build is worse than absent — it looks like an answer.
+ *
+ * `SOURCE_COMMIT` is the replacement and costs nothing, because Coolify already
+ * puts it in every container: the exact 40-character sha it built, checked on
+ * the server 2026-08-22 against the image tag it produced. So the fallback is
+ * not a guess about what might be there — it is the value that already was.
+ *
+ * The full sha, not a short one. It is compared against `docker ps` output and
+ * against `git log`, and both speak in full shas; a display that wants seven
+ * characters can take them, while a caller that needs forty cannot invent them.
+ *
+ * `APP_VERSION` still wins when set, so naming a release `v2.3.0` by hand keeps
+ * working. Blank or whitespace counts as unset in both — a variable defined as
+ * the empty string is a variable somebody meant to fill in.
+ */
+export function resolveAppVersion(
+  appVersion: string | undefined,
+  sourceCommit: string | undefined,
+): string {
+  return appVersion?.trim() || sourceCommit?.trim() || 'dev';
+}

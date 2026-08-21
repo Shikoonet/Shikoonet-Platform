@@ -19,7 +19,7 @@ import {
   type SubscriptionRow,
   type CustomerRef,
 } from '../api.js';
-import { count, dateTime, toman } from '../format.js';
+import { count, dateTime, gigabytes, toman } from '../format.js';
 
 const PAGE_SIZE = 25;
 
@@ -327,6 +327,7 @@ export function ServicesPage() {
           <th>پنل</th>
           <th>نام روی پنل</th>
           <th>حجم</th>
+          <th>مصرف</th>
           <th>خرید</th>
           <th>انقضا</th>
           <th>وضعیت</th>
@@ -341,6 +342,18 @@ export function ServicesPage() {
           <td>{s.providerName ?? '—'}</td>
           <td className="ltr">{s.remoteUsername ?? '—'}</td>
           <td>{s.volumeGb === null ? 'نامحدود' : `${count(s.volumeGb)} گیگ`}</td>
+          {/* The one column on this screen that comes from outside: the
+              bot's sweep reads it off the panel every ten minutes and
+              writes it here. It carries when, because a figure from a
+              panel that has been unreachable since yesterday looks exactly
+              like a customer who stopped using their service. */}
+          <td title={s.lastSyncedAt === null ? undefined : `از پنل، ${dateTime(s.lastSyncedAt)}`}>
+            {s.lastSyncedAt === null ? (
+              <span className="muted">هنوز خوانده نشده</span>
+            ) : (
+              gigabytes(s.usedBytes)
+            )}
+          </td>
           <td>{dateTime(s.purchasedAt)}</td>
           <td>{s.expiresAt === null ? 'بدون انقضا' : dateTime(s.expiresAt)}</td>
           <td>

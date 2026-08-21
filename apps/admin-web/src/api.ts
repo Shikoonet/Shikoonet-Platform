@@ -433,6 +433,8 @@ export interface SubscriptionRow {
   purchasedAt: string;
   expiresAt: string | null;
   lastSyncedAt: string | null;
+  /** Bytes consumed, as the panel reported them at `lastSyncedAt`. */
+  usedBytes: number | null;
   customer: CustomerRef;
 }
 

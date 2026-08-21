@@ -124,7 +124,21 @@ const app = new Hono<{ Bindings: Env }>();
 app.get('/health', (c) => c.json({ ok: true }));
 
 // Post-deploy smoke test target: confirms which build answers on this hostname.
-// Exposes nothing an attacker can act on — no bindings, no config, no counts.
+//
+// It could not do that until 2026-08-22. `APP_VERSION` was fed by the retired
+// Cloudflare release script and by nothing since, so this answered the literal
+// string `dev` on every build including production — an endpoint whose whole
+// purpose is telling two builds apart, giving the same answer for all of them.
+// It answers the deployed commit sha now; see `resolveAppVersion`.
+//
+// Still unauthenticated, and that is a smaller claim than the sentence here
+// used to make. No bindings, no config, no counts — but now a commit sha and
+// an environment name, on the one hostname that has to be public. The sha names
+// a commit in a private repository, so it is a fingerprint rather than a key,
+// and this is the only hostname whose build cannot be confirmed from the panel's
+// own gated `/api/v1/version`. Reviewed and kept, not overlooked. If it is ever
+// closed, note that the device credential lives in the POST body rather than a
+// header, so a gate here costs a new mechanism rather than a reused one.
 app.get('/version', (c) =>
   c.json({
     ok: true,

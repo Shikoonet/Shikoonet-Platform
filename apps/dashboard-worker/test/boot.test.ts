@@ -19,7 +19,13 @@ import type { Env } from '../src/index.js';
 /** `buildEnv` only stores the handle; nothing here reaches the database. */
 const NO_DB = {} as Env['DB'];
 
-const KEYS = ['ENV_NAME', 'TEST_ACCESS_USER', 'TRUSTED_PROXY_IP_HEADER'] as const;
+const KEYS = [
+  'ENV_NAME',
+  'TEST_ACCESS_USER',
+  'TRUSTED_PROXY_IP_HEADER',
+  'APP_VERSION',
+  'SOURCE_COMMIT',
+] as const;
 
 const saved = new Map<string, string | undefined>();
 function set(values: { [K in (typeof KEYS)[number]]?: string | undefined }): void {
@@ -125,5 +131,35 @@ describe('what the log says about a guard that is off', () => {
     const said = warn.mock.calls.map((c) => String(c[0])).join('\n');
     warn.mockRestore();
     expect(said).not.toContain('TRUSTED_PROXY_IP_HEADER');
+  });
+});
+
+describe('which build this is', () => {
+  // Deliberately not the sha the ingest test uses, so a copied expectation
+  // cannot pass in the wrong package.
+  const SHA = '33a29b0f1c5e4a7d9b2e6c8a0d4f3b17e59c2a86';
+
+  it('reports the commit Coolify deployed', () => {
+    // `/api/v1/version` answered the literal string `dev` on the production box
+    // for months: `APP_VERSION` was fed by the retired Cloudflare release
+    // script and by nothing after it. `SOURCE_COMMIT` is read out of every
+    // Coolify container — checked on the server 2026-08-22 against the image
+    // tag it had built — so this is the value that was already there.
+    set({ ENV_NAME: 'production', SOURCE_COMMIT: SHA });
+    expect(buildEnv(NO_DB).APP_VERSION).toBe(SHA);
+  });
+
+  it('lets an explicit release name win, and ignores an empty one', () => {
+    set({ ENV_NAME: 'production', APP_VERSION: 'v2.3.0', SOURCE_COMMIT: SHA });
+    expect(buildEnv(NO_DB).APP_VERSION).toBe('v2.3.0');
+    // A variable defined as whitespace is one somebody meant to fill in, not a
+    // release named "  ". `??` would have answered with it.
+    set({ ENV_NAME: 'production', APP_VERSION: '  ', SOURCE_COMMIT: SHA });
+    expect(buildEnv(NO_DB).APP_VERSION).toBe(SHA);
+  });
+
+  it('says dev when neither is set, rather than inventing one', () => {
+    set({ ENV_NAME: 'local' });
+    expect(buildEnv(NO_DB).APP_VERSION).toBe('dev');
   });
 });

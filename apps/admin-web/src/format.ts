@@ -114,3 +114,22 @@ export function dateOnly(value: Stamp): string {
   if (ms == null) return typeof value === 'string' && value ? value : '—';
   return TEHRAN_DATE.format(ms);
 }
+
+/** What one gigabyte is here, and everywhere else in this repo. */
+const BYTES_PER_GB = 1024 ** 3;
+
+/**
+ * Traffic consumed, in the same words the bot uses.
+ *
+ * `apps/bot/src/menu.ts` renders this figure for the customer with one decimal,
+ * and two below a tenth of a gigabyte — because "0.0" reads as "nothing" to
+ * somebody who has just started using a service. An operator reading a support
+ * message quoting the bot's number needs to see the same one, so the rule is
+ * copied deliberately rather than rounded to taste here.
+ */
+export function gigabytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined) return '—';
+  const gb = bytes / BYTES_PER_GB;
+  const shown = gb > 0 && gb < 0.1 ? gb.toFixed(2) : gb.toFixed(1);
+  return `${Number(shown).toLocaleString('en-US')} گیگ`;
+}

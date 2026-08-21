@@ -93,3 +93,68 @@ test('the session cookie is not readable by script', async ({ page, context }) =
   expect(cookie?.sameSite).toBe('Lax');
   expect(cookie?.path).toBe('/');
 });
+
+/**
+ * Changing your own password, in the browser.
+ *
+ * Kept last in this file on purpose: it is the only test here that changes the
+ * fixture operator's password, so anything relying on `LOGIN_PASSWORD` must
+ * already have run. It puts the original back at the end, and the assertion
+ * that it worked is the sign-in that follows.
+ */
+test('an operator can change their own password, and the new one is the one that works', async ({
+  page,
+}) => {
+  const NEXT = 'a browser-chosen replacement password';
+
+  await page.goto(`${BASE}/admin/`);
+  await page.getByLabel('ایمیل').fill(LOGIN_EMAIL);
+  await page.getByLabel('رمز عبور').fill(LOGIN_PASSWORD);
+  await page.getByRole('button', { name: 'ورود' }).click();
+  await expect(page.locator('.sidebar-link.active')).toBeVisible();
+
+  // There was nowhere to press until 2026-08-22: the panel had login, logout
+  // and nothing else, and only somebody with a shell on the server could write
+  // a password hash.
+  await page.getByRole('button', { name: 'رمز عبور', exact: true }).click();
+  const card = page.getByRole('group', { name: 'تغییر رمز عبور' });
+  await expect(card).toBeVisible();
+
+  // A typo in the confirmation is caught here rather than by the server, which
+  // cannot tell a typo from a choice — and this panel has no reset-by-email.
+  await card.getByLabel('رمز فعلی').fill(LOGIN_PASSWORD);
+  await card.getByLabel('رمز تازه', { exact: true }).fill(NEXT);
+  await card.getByLabel('تکرار رمز تازه').fill('not the same thing at all');
+  await card.getByRole('button', { name: 'ثبت' }).click();
+  await expect(card.getByRole('alert')).toHaveText('رمز تازه با تکرارش یکی نیست.');
+
+  await card.getByLabel('تکرار رمز تازه').fill(NEXT);
+  await card.getByRole('button', { name: 'ثبت' }).click();
+  await expect(card).toContainText('رمز عوض شد');
+
+  // The session doing the changing survives — signing the operator out of the
+  // screen they are standing on is how a button gets avoided.
+  await page.reload();
+  await expect(page.locator('.sidebar-link.active')).toBeVisible();
+
+  // And the change is real, judged by the door rather than by the message.
+  await page.getByRole('button', { name: 'خروج' }).click();
+  await expect(page.getByText('ورود به پنل مدیریت')).toBeVisible();
+  await page.getByLabel('ایمیل').fill(LOGIN_EMAIL);
+  await page.getByLabel('رمز عبور').fill(LOGIN_PASSWORD);
+  await page.getByRole('button', { name: 'ورود' }).click();
+  await expect(page.getByRole('alert')).toHaveText('ایمیل یا رمز درست نیست.');
+
+  await page.getByLabel('رمز عبور').fill(NEXT);
+  await page.getByRole('button', { name: 'ورود' }).click();
+  await expect(page.locator('.sidebar-link.active')).toBeVisible();
+
+  // Put it back, so this file can be run twice.
+  await page.getByRole('button', { name: 'رمز عبور', exact: true }).click();
+  const again = page.getByRole('group', { name: 'تغییر رمز عبور' });
+  await again.getByLabel('رمز فعلی').fill(NEXT);
+  await again.getByLabel('رمز تازه', { exact: true }).fill(LOGIN_PASSWORD);
+  await again.getByLabel('تکرار رمز تازه').fill(LOGIN_PASSWORD);
+  await again.getByRole('button', { name: 'ثبت' }).click();
+  await expect(again).toContainText('رمز عوض شد');
+});

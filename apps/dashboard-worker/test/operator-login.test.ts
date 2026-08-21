@@ -16,6 +16,7 @@ import { hashPassword, codeForStep, generateSecret, stepAt } from '@shikoo/domai
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app, type Env } from '../src/index.js';
 import { LOGIN_ATTEMPTS_PER_IP, resetLoginLimits } from '../src/operatorSession.js';
+import { MAX_FAILED_ATTEMPTS } from '@shikoo/domain';
 
 const EMAIL = 'login@example.com';
 const PASSWORD = 'a perfectly ordinary password';
@@ -544,5 +545,105 @@ describe('what a login clears up after itself', () => {
     // expired two days ago is still what «نشست‌های من» answers "where was I
     // signed in from?" with, which is the only reason to keep one at all.
     expect(await sessionsNamed('prune-')).toEqual(['prune-live', 'prune-recent-expired']);
+  });
+});
+
+describe('POST /api/v1/auth/password', () => {
+  const NEXT = 'a different and equally ordinary password';
+
+  async function change(
+    token: string | null,
+    body: unknown,
+  ): Promise<Response> {
+    return app.fetch(
+      new Request('https://example.com/api/v1/auth/password', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'https://example.com',
+          ...(token === null ? {} : { cookie: `shikoo_session=${token}` }),
+        },
+        body: JSON.stringify(body),
+      }),
+      ENV,
+    );
+  }
+
+  /** A door, so a session is judged by what it opens rather than by its row. */
+  const opens = async (token: string | null): Promise<number> =>
+    (
+      await app.request(
+        '/api/v1/admin/customers',
+        { headers: { cookie: `shikoo_session=${token ?? ''}` } },
+        ENV,
+      )
+    ).status;
+
+  it('changes the password, judged by the login and not by the row', async () => {
+    // There was no route at all until 2026-08-22: the auth surface was login,
+    // logout and me, and only `scripts/operator.ts` could write a hash — which
+    // means only somebody with a shell on the server could. Asserted through
+    // two logins rather than by reading `password_hash`, because a hash this
+    // file wrote and then recognised proves only that hashing is deterministic.
+    const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
+    expect((await change(token, { current: PASSWORD, next: NEXT })).status).toBe(200);
+
+    expect((await login({ email: EMAIL, password: PASSWORD })).status).toBe(401);
+    expect((await login({ email: EMAIL, password: NEXT })).status).toBe(200);
+  });
+
+  it('revokes every OTHER session and leaves this one standing', async () => {
+    // The whole point of changing a password you still know is the session you
+    // cannot see — a borrowed laptop, a machine at the shop. Revoking all of
+    // them instead would sign the operator out of the screen they are standing
+    // on, which teaches people not to press the button.
+    const mine = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
+    const elsewhere = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
+    expect(await opens(elsewhere)).toBe(200);
+
+    expect((await change(mine, { current: PASSWORD, next: NEXT })).status).toBe(200);
+
+    expect(await opens(elsewhere)).toBe(401);
+    expect(await opens(mine)).toBe(200);
+  });
+
+  it('refuses without a session, before it reads the body', async () => {
+    // Registered above the `app.use('*')` gate in index.ts, like /auth/me — so
+    // it does this check itself. A route added there that forgets is public and
+    // looks identical.
+    expect((await change(null, { current: PASSWORD, next: NEXT })).status).toBe(401);
+    expect((await login({ email: EMAIL, password: PASSWORD })).status).toBe(200);
+  });
+
+  it('refuses the wrong current password, and charges it to the lockout', async () => {
+    // Otherwise a stolen cookie is an unlimited guessing oracle for the one
+    // credential it does not already carry.
+    const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
+    for (let n = 0; n < MAX_FAILED_ATTEMPTS; n += 1) {
+      expect((await change(token, { current: 'not it', next: NEXT })).status).toBe(401);
+    }
+    const locked = await baseEnv.DB.prepare(
+      `SELECT locked_until FROM access_users WHERE email = ?1`,
+    )
+      .bind(EMAIL)
+      .first<{ locked_until: string | null }>();
+    expect(locked?.locked_until).not.toBeNull();
+    // And the real password is refused too now, which is what a lockout means.
+    expect((await change(token, { current: PASSWORD, next: NEXT })).status).toBe(423);
+  });
+
+  it('applies the same policy the CLI applies, and changes nothing when it fails', async () => {
+    const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
+    const res = await change(token, { current: PASSWORD, next: 'short' });
+    expect(res.status).toBe(400);
+    // The message comes from `passwordProblem`, so the panel and the terminal
+    // cannot drift into two different rules.
+    expect(((await res.json()) as { detail: string }).detail).toContain('12');
+    expect((await login({ email: EMAIL, password: PASSWORD })).status).toBe(200);
+  });
+
+  it('refuses a change that changes nothing', async () => {
+    const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
+    expect((await change(token, { current: PASSWORD, next: PASSWORD })).status).toBe(400);
   });
 });

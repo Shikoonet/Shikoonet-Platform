@@ -225,7 +225,7 @@ export function registerSalesRoutes(
     const rows = await c.env.DB.prepare(
       `SELECT s.id, s.public_id, s.status, s.plan_name_at_sale, s.provider_name_at_sale,
               s.price_irr, s.volume_gb, s.duration_days, s.remote_username,
-              s.purchased_at, s.expires_at, s.last_synced_at,
+              s.purchased_at, s.expires_at, s.last_synced_at, s.used_bytes,
               u.id AS user_id, u.telegram_id, u.username
          ${from}
          ${whereSql}
@@ -246,6 +246,7 @@ export function registerSalesRoutes(
         purchased_at: string;
         expires_at: string | null;
         last_synced_at: string | null;
+        used_bytes: number | null;
         user_id: number;
         telegram_id: number;
         username: string | null;
@@ -271,6 +272,11 @@ export function registerSalesRoutes(
         purchasedAt: r.purchased_at,
         expiresAt: r.expires_at,
         lastSyncedAt: r.last_synced_at,
+        // What the panel says has been consumed, as of `lastSyncedAt`. The
+        // bot's sweep writes both (`apps/bot/src/sync.ts`); this route
+        // shipped the timestamp and not the number it timestamps, so the
+        // screen could say how fresh a figure was but never show it.
+        usedBytes: r.used_bytes === null ? null : Number(r.used_bytes),
         customer: { id: r.user_id, telegramId: r.telegram_id, username: r.username },
       })),
     });

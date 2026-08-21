@@ -16,6 +16,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { app } from '../src/index.js';
 import { buildEnv } from '../src/server.js';
 import type { Env } from '../src/index.js';
 
@@ -30,6 +31,8 @@ const KEYS = [
   'MIRZABOT_INTEGRATION_HMAC_SECRET',
   'MIRZABOT_INTEGRATION_ID',
   'INGEST_MAX_BODY_BYTES',
+  'APP_VERSION',
+  'SOURCE_COMMIT',
 ] as const;
 
 const saved = new Map<string, string | undefined>();
@@ -195,5 +198,52 @@ describe('which environment this is', () => {
     }
     set(PRODUCTION_ON);
     expect(buildEnv(NO_DB).ENV_NAME).toBe('production');
+  });
+});
+
+describe('which build this is', () => {
+  // A commit that is not the one in the release name, so a test that reads the
+  // wrong variable cannot pass by accident.
+  const SHA = '5a81153a36c4c629dd134b53a5c786fcea7a31f2';
+
+  async function versionSays(): Promise<{ version: string; env: string }> {
+    const res = await app.fetch(new Request('http://ingest.test/version'), buildEnv(NO_DB));
+    expect(res.status).toBe(200);
+    return (await res.json()) as { version: string; env: string };
+  }
+
+  it('answers the commit Coolify deployed', async () => {
+    // The bug this closes. `APP_VERSION` was set by `scripts/release.sh` in the
+    // Cloudflare deployment and by nothing after it, so `/version` answered the
+    // literal string `dev` on production for months — and no test anywhere read
+    // this route, which is why nobody found out.
+    //
+    // `SOURCE_COMMIT` is not a hopeful guess about what a container might have:
+    // it was read out of the running ingest container on 2026-08-22 and matched
+    // the image tag Coolify had built, character for character.
+    set({ ...PRODUCTION_ON, SOURCE_COMMIT: SHA });
+    expect((await versionSays()).version).toBe(SHA);
+  });
+
+  it('lets an explicit release name win', async () => {
+    // Naming a release by hand still works, and still beats the sha — the sha
+    // is the fallback for when nobody named one, not a replacement.
+    set({ ...PRODUCTION_ON, APP_VERSION: 'v2.3.0', SOURCE_COMMIT: SHA });
+    expect((await versionSays()).version).toBe('v2.3.0');
+  });
+
+  it('treats a variable defined as empty as one nobody filled in', async () => {
+    // `?? ` would take the empty string and answer with nothing at all, which
+    // reads as a broken endpoint rather than an unset variable.
+    set({ ...PRODUCTION_ON, APP_VERSION: '   ', SOURCE_COMMIT: SHA });
+    expect((await versionSays()).version).toBe(SHA);
+  });
+
+  it('still says dev when neither is set, rather than inventing one', async () => {
+    set(PRODUCTION_ON);
+    const body = await versionSays();
+    expect(body.version).toBe('dev');
+    // And it does say which environment, which is the half that always worked.
+    expect(body.env).toBe('production');
   });
 });

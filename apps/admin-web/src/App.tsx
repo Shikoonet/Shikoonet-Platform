@@ -22,6 +22,7 @@ import { NAV, pageLabel, READABLE_BY_READER, type HubPageId, type PageId } from 
 import { api, type PanelRole } from './api.js';
 import { useRoute } from './route.js';
 import { LoginPage } from './LoginPage.js';
+import { PasswordCard } from './PasswordCard.js';
 import { AccessPage } from './pages/AccessPage.js';
 import { Icon } from './icons.js';
 import { HubSection } from './hub/HubSection.js';
@@ -122,6 +123,7 @@ function Body({
 export function App() {
   const [page, setPage] = useRoute();
   const [navOpen, setNavOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   // One cache for the whole session, not one per visit to a finance screen: it
   // is what holds the polling intervals and the seen-markers, and `query.ts`
   // warns in dev if a second instance appears. Building it costs nothing until
@@ -184,20 +186,34 @@ export function App() {
             <div className="app-header__crumb">شیکو / {pageLabel(page)}</div>
           </div>
         </div>
-        {/* There was nowhere to sign out from before, because there was nowhere
-            to sign in. A session lasts twelve hours of use, so on a shared or
-            borrowed machine this is the only way to end it. */}
-        <button
-          type="button"
-          className="app-header__signout"
-          onClick={() => {
-            void fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).finally(
-              () => setReload((n) => n + 1),
-            );
-          }}
-        >
-          خروج
-        </button>
+        {/* The two things you do to your own account rather than to the shop.
+            Here rather than in the sidebar because every role needs both, and
+            the sidebar is filtered by role — READ_ONLY sees nine of twenty-three
+            entries and would have seen neither of these. */}
+        <div className="app-header__actions">
+          <button
+            type="button"
+            className="app-header__signout"
+            aria-expanded={passwordOpen}
+            onClick={() => setPasswordOpen((v) => !v)}
+          >
+            رمز عبور
+          </button>
+          {/* There was nowhere to sign out from before, because there was
+              nowhere to sign in. A session lasts twelve hours of use, so on a
+              shared or borrowed machine this is the only way to end it. */}
+          <button
+            type="button"
+            className="app-header__signout"
+            onClick={() => {
+              void fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).finally(
+                () => setReload((n) => n + 1),
+              );
+            }}
+          >
+            خروج
+          </button>
+        </div>
       </header>
 
       <aside className={navOpen ? 'app-sidebar open' : 'app-sidebar'}>
@@ -247,6 +263,10 @@ export function App() {
 
       <section id="main-content">
         <div className="wrapper">
+          {/* Above the page rather than over it: the panel has no modal, and
+              inventing one for a three-field form would be the larger thing to
+              keep working. */}
+          {passwordOpen && <PasswordCard onClose={() => setPasswordOpen(false)} />}
           <Body page={page} go={go} role={role} cache={cache} />
         </div>
       </section>

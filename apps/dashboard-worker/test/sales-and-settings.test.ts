@@ -304,6 +304,59 @@ describe('the read-only ledgers', () => {
     expect(body.items[0]!.providerName).toBe('پنل قدیمی');
   });
 
+  it('carries what the panel says was used, and when it said it', async () => {
+    // The screen showed the volume SOLD and nothing else, while the bot's sweep
+    // had been writing `used_bytes` off the panel every ten minutes since it was
+    // written. This route already shipped `lastSyncedAt` — the timestamp of a
+    // number it did not ship — so the panel could say how fresh a figure was and
+    // never show the figure. An operator answering "my traffic ran out" had to
+    // open PasarGuard.
+    const { id: userId, telegramId } = await makeUser();
+    const used = 3 * 1024 ** 3;
+    await baseEnv.DB.prepare(
+      `INSERT INTO subscriptions
+         (public_id, user_id, plan_name_at_sale, price_irr, status, purchased_at,
+          volume_gb, used_bytes, last_synced_at)
+       VALUES (?1, ?2, 'پلن', 1000, 'ACTIVE', now(), 10, ?3, now())`,
+    )
+      .bind(crypto.randomUUID(), userId, used)
+      .run();
+
+    const res = await app.request(`/api/v1/admin/subscriptions?q=${telegramId}`, {}, envAs(ADMIN));
+    const body = (await res.json()) as {
+      items: Array<{ usedBytes: number | null; lastSyncedAt: string | null; volumeGb: number | null }>;
+    };
+    const row = body.items[0]!;
+    // A number, not a string: `used_bytes` is int8 and comes back as text from
+    // some drivers, which would render as "3221225472 bytes" of nonsense.
+    expect(row.usedBytes).toBe(used);
+    expect(typeof row.usedBytes).toBe('number');
+    expect(row.volumeGb).toBe(10);
+    expect(row.lastSyncedAt).not.toBeNull();
+  });
+
+  it('says nothing rather than zero when no panel has answered yet', async () => {
+    // The distinction the screen has to draw. A service the sweep has never
+    // reached has `used_bytes` NULL and `last_synced_at` NULL, and rendering
+    // that as "0 گیگ" tells an operator the customer has used nothing — which
+    // is exactly what an unreachable panel looks like too.
+    const { id: userId, telegramId } = await makeUser();
+    await baseEnv.DB.prepare(
+      `INSERT INTO subscriptions
+         (public_id, user_id, plan_name_at_sale, price_irr, status, purchased_at, volume_gb)
+       VALUES (?1, ?2, 'پلن', 1000, 'ACTIVE', now(), 10)`,
+    )
+      .bind(crypto.randomUUID(), userId)
+      .run();
+
+    const res = await app.request(`/api/v1/admin/subscriptions?q=${telegramId}`, {}, envAs(ADMIN));
+    const body = (await res.json()) as {
+      items: Array<{ usedBytes: number | null; lastSyncedAt: string | null }>;
+    };
+    expect(body.items[0]!.usedBytes).toBeNull();
+    expect(body.items[0]!.lastSyncedAt).toBeNull();
+  });
+
   it('totals the wallet over everything the filter matches, not over the page', async () => {
     const { id: userId, telegramId } = await makeUser();
     const amounts = [500_000, 300_000, -200_000, -50_000];

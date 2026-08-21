@@ -15,7 +15,7 @@
  */
 
 import { serve } from '@hono/node-server';
-import { parseEnvName } from '@shikoo/contracts';
+import { parseEnvName, resolveAppVersion } from '@shikoo/contracts';
 import { createPostgresD1 } from '@shikoo/db';
 import { fixedWindowRateLimit } from '@shikoo/domain';
 import { app, runScheduledSweep, type Env } from './index.js';
@@ -166,7 +166,8 @@ export function buildEnv(db: Env['DB']): Env {
     // Throws rather than defaulting: `?? 'local'` meant a typo switched off
     // every production guard below, silently. See `parseEnvName`.
     ENV_NAME: parseEnvName(optional('ENV_NAME')),
-    APP_VERSION: optional('APP_VERSION') ?? 'dev',
+    // Falls back to the sha Coolify already injects — see `resolveAppVersion`.
+    APP_VERSION: resolveAppVersion(optional('APP_VERSION'), optional('SOURCE_COMMIT')),
   };
   // Assigned rather than spread so an unset variable stays absent instead of
   // present-and-undefined — the difference `exactOptionalPropertyTypes` cares

@@ -37,6 +37,7 @@ import {
   hashPassword,
   hashSessionToken,
   newSessionToken,
+  passwordProblem,
   verifyPassword,
   verifyTotp,
 } from '@shikoo/domain';
@@ -520,6 +521,117 @@ export function registerAuthRoutes(app: Hono<never>): void {
       path: '/',
       maxAge: 0,
     });
+    return c.json({ ok: true });
+  });
+
+
+  /**
+   * An operator changing their own password.
+   *
+   * There was no way to do this until 2026-08-22. The auth surface was three
+   * routes — login, logout, me — and `scripts/operator.ts` was the only thing
+   * that could write a password hash, which means it needed a shell on the
+   * server. So an operator who suspected their password was known could not act
+   * on it, and the one who lost it had to ask somebody with SSH. Neither is a
+   * decision anybody made; the CLI exists to create the *first* account, and
+   * that job was quietly doing this one too.
+   *
+   * Registered here, which puts it above the `app.use('*')` gate in
+   * `index.ts` — so it checks the session itself rather than inheriting the
+   * check, exactly as `/api/v1/auth/me` does two routes down. Written out
+   * rather than relied upon: a route added here later and NOT doing this is
+   * public, and it would look identical.
+   *
+   * The current password is what re-authenticates, not the session. A session
+   * is a bearer token on a laptop somebody may have walked away from; without
+   * this check, everything a stolen cookie could do would end with the account
+   * itself. And a wrong one counts towards the same lockout a wrong login does,
+   * because otherwise this route is an unlimited guessing oracle for the one
+   * credential the session does not already grant.
+   */
+  routes.post('/api/v1/auth/password', async (c) => {
+    const ident = await identityFor(c.env, getCookie(c, SESSION_COOKIE));
+    if (!ident) return c.json({ ok: false, error: 'unauthorized' }, 401);
+
+    const body = (await c.req.json().catch(() => ({}))) as {
+      current?: unknown;
+      next?: unknown;
+    };
+    const current = typeof body.current === 'string' ? body.current : '';
+    const next = typeof body.next === 'string' ? body.next : '';
+
+    const row = await c.env.DB.prepare(
+      `SELECT id, role, password_hash, locked_until
+         FROM access_users WHERE email = ?1 AND active = 1`,
+    )
+      .bind(ident.email)
+      .first<{
+        id: string;
+        role: AccessRole;
+        password_hash: string | null;
+        locked_until: string | null;
+      }>();
+    // The row can be gone or disabled between the session being issued and now.
+    if (!row) return c.json({ ok: false, error: 'unauthorized' }, 401);
+
+    if (row.locked_until !== null && new Date(row.locked_until).getTime() > Date.now()) {
+      return c.json({ ok: false, error: 'account_locked', until: row.locked_until }, 423);
+    }
+
+    if (!(await verifyPassword(current, row.password_hash))) {
+      await recordFailure(c.env.DB, ident.email);
+      await audit(
+        c.env.DB,
+        ident,
+        'auth.password.refused',
+        'access_user',
+        row.id,
+        null,
+        null,
+        null,
+      );
+      return c.json({ ok: false, error: 'invalid_credentials' }, 401);
+    }
+
+    // The same rule the CLI applies, from the same function — twelve characters
+    // and four distinct ones. A second copy of the policy here is a second
+    // policy the day one of them changes.
+    const problem = passwordProblem(next);
+    if (problem) return c.json({ ok: false, error: 'weak_password', detail: problem }, 400);
+
+    // Not a security property — the check above already passed — but a person
+    // who types the same thing twice meant to change something and did not.
+    if (next === current) {
+      return c.json(
+        { ok: false, error: 'unchanged', detail: 'رمز تازه با رمز فعلی یکی است.' },
+        400,
+      );
+    }
+
+    const hash = await hashPassword(next);
+    const token = getCookie(c, SESSION_COOKIE);
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE access_users
+            SET password_hash = ?2, password_updated_at = now(),
+                failed_attempts = 0, locked_until = NULL
+          WHERE id = ?1`,
+      ).bind(row.id, hash),
+      // Every other session, and only the others. The CLI revokes all of them
+      // because it is used when nobody can get in; here the person changing the
+      // password is holding one, and signing them out of the screen they are
+      // standing on teaches them to avoid the button. What must not survive is
+      // a session somewhere else — which is the entire reason to change a
+      // password you still know.
+      c.env.DB.prepare(
+        `UPDATE operator_sessions
+            SET revoked_at = now()
+          WHERE access_user_id = ?1 AND revoked_at IS NULL
+            AND token_hash <> ?2`,
+      ).bind(row.id, hashSessionToken(token ?? '')),
+    ]);
+
+    await audit(c.env.DB, ident, 'auth.password.changed', 'access_user', row.id, null, null, null);
     return c.json({ ok: true });
   });
 

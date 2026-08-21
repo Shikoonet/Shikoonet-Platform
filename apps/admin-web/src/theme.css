@@ -743,6 +743,12 @@ body {
   cursor: pointer;
 }
 
+.app-header__actions {
+  margin-inline-start: auto;
+  display: flex;
+  gap: 8px;
+}
+
 .app-header__signout {
   margin-inline-start: auto;
   padding: 6px 12px;

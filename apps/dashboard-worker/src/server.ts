@@ -18,7 +18,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { isRelaxedEnv, parseEnvName } from '@shikoo/contracts';
+import { isRelaxedEnv, parseEnvName, resolveAppVersion } from '@shikoo/contracts';
 import { createPostgresD1 } from '@shikoo/db';
 import { app, type Env } from './index.js';
 
@@ -61,7 +61,8 @@ export function buildEnv(db: Env['DB']): Env {
     // origin check, the cookie's Secure flag and the refusal below. See
     // `parseEnvName`.
     ENV_NAME: parseEnvName(optional('ENV_NAME')),
-    APP_VERSION: optional('APP_VERSION') ?? 'dev',
+    // Falls back to the sha Coolify already injects — see `resolveAppVersion`.
+    APP_VERSION: resolveAppVersion(optional('APP_VERSION'), optional('SOURCE_COMMIT')),
   };
   for (const key of PASSTHROUGH) {
     const value = optional(key);

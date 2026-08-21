@@ -203,9 +203,15 @@ if (typeof process === 'undefined' || process.env.NODE_ENV !== 'test') {
 
 app.get('/api/v1/health', (c) => c.json({ ok: true }));
 
-// Which build is this? Dev and production sit behind the same Access policy and
-// serve the same SPA bundle, so the header badge is the only way an operator can
-// tell them apart. Kept behind auth like /health — no new public surface.
+// Which build is this? Two boxes serve the same SPA bundle from the same
+// hostname shape, so the header badge is the only way an operator can tell them
+// apart. Since 2026-08-22 it answers the deployed commit sha rather than the
+// literal `dev` — see `resolveAppVersion`.
+//
+// Behind the session gate, unlike `/api/v1/health`, which this comment used to
+// claim it matched. `/health` is deliberately public: the container's own probe
+// calls it and it reveals nothing. This reveals which commit is running, and an
+// operator is the only one with a reason to ask.
 app.get('/api/v1/version', (c) =>
   c.json({
     ok: true,
