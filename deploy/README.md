@@ -115,15 +115,22 @@ list it is in.
 
 ### Health checks
 
-Deliberately not in the Dockerfile, because they differ per service and a
-Dockerfile `HEALTHCHECK` takes precedence over the panel's. Configure them in
-Coolify:
+**In the Dockerfile** (`Dockerfile:117`), one `HEALTHCHECK` that branches on
+`SERVICE`. Every sentence in this section said the opposite until 2026-08-22 —
+that they were deliberately left out, that the dashboard answers `/health`, and
+that the bot's should be disabled — and all three were wrong in the direction
+that costs something: an operator following them would point a probe at a route
+that does not exist and watch a healthy container restart-loop, or switch off
+the bot probe and lose the only thing that can see a wedged poller.
 
-| Service | Check |
+A Dockerfile `HEALTHCHECK` does take precedence over the panel's, which is why
+there is nothing to configure in Coolify. Leave those fields empty.
+
+| Service | What the image actually checks |
 | --- | --- |
-| `ingest` | `GET /health` on 8787 |
-| `dashboard` | `GET /health` on 8788 |
-| `bot` | **none — disable it.** The bot opens no port; it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name |
+| `ingest` | `GET /health` on `$PORT` (8787) — 200 |
+| `dashboard` | `GET /api/v1/health` on `$PORT` (8788) — 200, **or 401**, because the route sits behind the session gate and a refusal still proves the process is answering. There is no `/health` on the dashboard |
+| `bot` | the heartbeat file's mtime, fresher than 90s. The bot opens no port — it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name — so a file the poll loop touches every cycle is what "alive" means for it |
 
 ## Schema, before anything else
 
@@ -328,9 +335,9 @@ No `PORT`. The bot does not listen.
 | `ENV_NAME` | **yes, and the process will not start without it** | One of `local`, `test`, `staging`, `production` — nothing else, and no default. It decides the origin check on writes, the session cookie's `Secure` flag and the bypass refusal below. Until 2026-08-18 it defaulted to `local`, so `prod`, `Production` and forgetting it entirely all switched those three off with nothing said |
 | `SPA_DIST` | no | The payment hub SPA. Set absolutely in the image |
 | `ADMIN_DIST` | no | **The shop admin panel SPA**, served at `/admin`. One process serves both; this row was missing while the code read it, and an unbuilt SPA is a 500 rather than a failed deploy |
-| `PORT`, `HOST` | no | Default `8788`, `127.0.0.1` |
+| `PORT`, `HOST` | no | Default `8788`, and `HOST` is **`0.0.0.0` in the image** (`Dockerfile:81`), not the `127.0.0.1` this row claimed until 2026-08-22. It has to be: a container that binds loopback is unreachable from the proxy. Do not "correct" it in the panel |
 | `INGEST_URL` | recommended | Printed into the SMS-relay phone configuration. There is no fallback any more: the routes that need it answer 503 `INGEST_URL_MISSING` |
-| `TRUSTED_PROXY_IP_HEADER` | recommended | `X-Real-IP`. Names the header the terminator sets to the real client address — see «The edge» below, which must be configured to send it. Unset, the login's per-IP limit is skipped and a session stores no address, rather than either of them trusting a value the visitor typed |
+| `TRUSTED_PROXY_IP_HEADER` | recommended | `X-Real-IP`. Names the header the terminator sets to the real client address — see «The edge» below, which must be configured to send it. Unset, the login's per-IP limit is skipped and a session stores no address, rather than either of them trusting a value the visitor typed — **and the process says so in the log at boot**, which it did not until 2026-08-22 |
 | `TEST_ACCESS_USER` | **`local` and `test` only** | Skips the login and pins an identity. Refused twice: the process will not start with it set anywhere else, and the identity path refuses it there again. Asked as an allowlist rather than "not production" — a staging box on the public internet with the login skipped is open in exactly the way this exists to prevent |
 
 ### اپراتورها — the bootstrap nobody can skip
@@ -368,7 +375,7 @@ it. `operator unlock` clears a lockout (five wrong passwords, fifteen minutes).
 | `ENV_NAME` | **yes, and the process will not start without it** | Same four values as the dashboard. Here it is what forces `MIRZABOT_INTEGRATION_ENABLED` and `AUTO_MATCH_ENABLED` to be decided out loud — and while it defaulted to `local`, a typo meant nobody was asked, every bank SMS was stored, and no payment was ever verified |
 | `TRUSTED_PROXY_IP_HEADER` | recommended | `X-Real-IP`. Without it the per-IP limit on `POST /api/v1/sms` and on the claims endpoint is **off** — and the process says so in the log at boot. It is off rather than shared because the old shared bucket meant one busy phone rate-limited the whole fleet |
 | `INGEST_MAX_BODY_BYTES` | no | Default 8192. Enforced on real bytes before the body is in memory, on the declared length and on a chunked stream alike. **The process refuses to start on a value that is not a positive whole number** — `8kb` used to parse as `NaN`, and every comparison against NaN is false, so that typo removed the cap rather than widening it |
-| `PORT`, `HOST` | no | Default `8787`, `127.0.0.1` |
+| `PORT`, `HOST` | no | Default `8787`, and `HOST` is **`0.0.0.0` in the image** (`Dockerfile:81`) — see the dashboard's row above |
 | `SWEEP_INTERVAL_MS` | no | Default 60000 |
 | `DEVICE_RATE_LIMIT`, `IP_RATE_LIMIT`, `RATE_LIMIT_WINDOW_MS` | no | Second layer; the edge is the first |
 | `MIRZABOT_INTEGRATION_*`, `AUTO_MATCH_ENABLED`, `AUTO_FULFILLMENT_ENABLED` | while the PHP bot lives | HMAC integration with the legacy bot |

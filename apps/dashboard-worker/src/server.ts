@@ -86,7 +86,38 @@ export function buildEnv(db: Env['DB']): Env {
     }
     env.TEST_ACCESS_USER = testUser;
   }
+  warnAboutMissingGuards(env);
   return env;
+}
+
+/**
+ * Says out loud which defences this configuration has switched off.
+ *
+ * `deploy/README.md:369` promises "the process says so in the log at boot",
+ * and that was true of ingest and of nothing else. The dashboard read
+ * `TRUSTED_PROXY_IP_HEADER` — it is in PASSTHROUGH above — and said nothing
+ * when it was absent, so the one signal an operator has after a deploy did not
+ * exist for the login wall.
+ *
+ * What is lost without it is not a nicety. `clientIp` returns null when the
+ * header name is unset, and `operatorSession.ts` skips the whole per-IP branch
+ * on a null — so `POST /api/v1/auth/login` keeps only the shop-wide limit, on a
+ * panel that has been directly on the internet since Cloudflare Access left the
+ * path on 2026-08-17. Every session row also records a null address, so the
+ * audit cannot say where a login came from.
+ *
+ * A warning and not a refusal, for the same reason ingest chose one: refusing
+ * to boot would take the whole panel down over a defence in depth. Off is
+ * acceptable; off and silent is not.
+ */
+function warnAboutMissingGuards(env: Env): void {
+  if (env.TRUSTED_PROXY_IP_HEADER === undefined) {
+    console.warn(
+      '[dashboard] TRUSTED_PROXY_IP_HEADER is not set — the per-IP rate limit on ' +
+        '/api/v1/auth/login is OFF and session rows will record no address. ' +
+        'Set it to X-Real-IP once nginx sends `proxy_set_header X-Real-IP $remote_addr`.',
+    );
+  }
 }
 
 export function start(): { stop: () => Promise<void> } {
