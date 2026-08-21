@@ -38,6 +38,30 @@
  * up would leave the shop with no bot while the deploy reported success. It
  * says so in the log first, because a process waiting silently on a lock is
  * indistinguishable from a hung one.
+ *
+ * ## The heartbeat, and what "the connection died" actually looks like
+ *
+ * Postgres releases the lock the moment the connection goes, and the `error`
+ * event below is how this process finds out. That is enough for the loud
+ * failures — a killed backend, a restarted database, a reset socket — because
+ * the driver hears something.
+ *
+ * It is not enough for the quiet one. A NAT or firewall that idles a connection
+ * out drops packets in silence: no RST, no FIN, no error event. The socket
+ * stays open as far as Node is concerned, nothing is ever sent on it because
+ * this connection exists only to hold a lock, and the process polls Telegram
+ * happily for hours while Postgres has long since handed the lock to somebody
+ * else. Two pollers, and the guard that exists to prevent exactly that is the
+ * thing that cannot see it.
+ *
+ * So the connection is not idle any more. A `SELECT 1` every thirty seconds
+ * keeps the middlebox from calling it dead, and — the half that matters — is
+ * the thing that FAILS when it already has. Its rejection goes to the same
+ * `onLost`, which stops the process.
+ *
+ * `pg_advisory_lock` is session-scoped and re-entrant, and `pool.connect()`
+ * does not reconnect underneath us, so a `SELECT 1` that answers is proof the
+ * session is the same one that took the lock. There is nothing further to ask.
  */
 
 import { createHash } from 'node:crypto';
@@ -63,6 +87,16 @@ export interface LockPool {
  */
 const BOT_LOCK_NAMESPACE = 0x5368_0000 | 0; // 'Sh'
 
+/**
+ * How often the lock connection proves it is still there.
+ *
+ * Well inside the shortest idle timeout worth worrying about — cloud NATs
+ * commonly reap at sixty seconds — and cheap enough to be uninteresting: one
+ * `SELECT 1` every thirty seconds on a connection that is otherwise doing
+ * nothing at all.
+ */
+export const LOCK_HEARTBEAT_MS = 30_000;
+
 /** Derives the second key from the token, without the token reaching the log. */
 export function lockKeyForToken(token: string): number {
   const digest = createHash('sha256').update(token, 'utf8').digest();
@@ -86,6 +120,7 @@ export async function acquirePollerLock(
   token: string,
   onWait: () => void = () => undefined,
   onLost: (err: unknown) => void = () => undefined,
+  heartbeatMs: number = LOCK_HEARTBEAT_MS,
 ): Promise<PollerLock> {
   const key = lockKeyForToken(token);
   const client = await pool.connect();
@@ -116,8 +151,25 @@ export async function acquirePollerLock(
     client.release();
     throw err;
   }
+  // Only once the lock is actually held: a heartbeat started before it would
+  // fire while `pg_advisory_lock` is still blocking on the same connection, and
+  // the two would queue behind each other.
+  let lost = false;
+  const heartbeat = setInterval(() => {
+    void client.query('SELECT 1', []).catch((err: unknown) => {
+      if (lost) return;
+      lost = true;
+      clearInterval(heartbeat);
+      onLost(err);
+    });
+  }, heartbeatMs);
+  // Does not hold the process open on its own. What keeps this process alive is
+  // the poll loop; a timer that outlived it would turn a clean exit into a hang.
+  heartbeat.unref?.();
+
   return {
     async release() {
+      clearInterval(heartbeat);
       // Unlock first so a pooled connection does not carry the lock back into
       // the pool, then hand it back.
       await client

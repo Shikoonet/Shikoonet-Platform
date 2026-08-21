@@ -310,6 +310,16 @@ export function createPostgresD1(options: CreateOptions = {}): {
     new pg.Pool({
       connectionString: options.connectionString ?? process.env.DATABASE_URL,
       max: options.max ?? 10,
+      // TCP keepalive, because a connection that sits idle behind a NAT is
+      // dropped in silence — no RST, no error event, and a socket that looks
+      // open to Node for as long as nothing is sent on it. The bot's poller
+      // lock is held on exactly such a connection, and losing it without
+      // noticing means two pollers on one token.
+      //
+      // This is the cheap half and it is not the whole answer: the OS default
+      // idle before the first probe is measured in hours on Linux, so anything
+      // that needs to KNOW promptly asks as well (`singleton.ts`).
+      keepAlive: true,
     });
   return { db: new PgDatabase(pool), pool };
 }

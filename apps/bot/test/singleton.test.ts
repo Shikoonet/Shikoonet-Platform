@@ -137,3 +137,133 @@ describe('the poller lock', () => {
     expect(lockKeyForToken(token)).toBeLessThan(2 ** 31);
   });
 });
+
+/**
+ * Losing the lock, loudly and quietly — and they need different tests.
+ *
+ * The first version of this block had one test, killed the backend with
+ * `pg_terminate_backend`, and called it proof of the heartbeat. It was green
+ * with the heartbeat disabled. `pg_terminate_backend` is a LOUD death: the
+ * server sends a FATAL, the driver emits `error`, and the handler that has
+ * existed all along fires. Real Postgres cannot produce the failure the
+ * heartbeat is for.
+ *
+ * That failure is a NAT or firewall idling the connection out: no RST, no FIN,
+ * no event, and a socket Node still believes in. This connection exists only to
+ * hold a lock, so nothing is ever sent on it and nothing ever finds out — the
+ * bot polls on without the lock and a second poller can start beside it.
+ *
+ * So: one test against the real database for the loud path, and one against a
+ * client that CANNOT raise an event for the quiet one. The stub is not standing
+ * in for Postgres there; it is standing in for a network that says nothing,
+ * which is the only thing being tested.
+ */
+describe('when the lock connection dies underneath us', () => {
+  it('notices a backend Postgres killed, and the lock really is gone', async () => {
+    const dyingToken = `${token}-heartbeat`;
+    let lost: unknown;
+    const lock = await acquirePollerLock(
+      pool,
+      dyingToken,
+      () => undefined,
+      (err) => {
+        lost ??= err;
+      },
+      // Fast enough that the test does not wait on the real thirty seconds.
+      20,
+    );
+    expect(await heldFor(dyingToken)).toBe(true);
+
+    // Which backend is holding it — asked of `pg_locks`, so the test cannot
+    // kill the wrong session and call it a pass.
+    const { rows } = await pool.query<{ pid: number }>(
+      `SELECT pid FROM pg_locks
+        WHERE locktype = 'advisory' AND classid = $1::bigint::int AND objid = $2::bigint::int`,
+      [0x5368_0000 | 0, lockKeyForToken(dyingToken)],
+    );
+    expect(rows).toHaveLength(1);
+    await pool.query('SELECT pg_terminate_backend($1)', [rows[0]!.pid]);
+
+    // The lock really is gone as far as Postgres is concerned, and the process
+    // was told. Both halves are the pre-existing `error` handler's work — this
+    // test says that path still works, and says nothing about the heartbeat.
+    await expect.poll(() => heldFor(dyingToken), { timeout: 5_000 }).toBe(false);
+    await expect.poll(() => lost !== undefined, { timeout: 5_000 }).toBe(true);
+
+    await lock.release();
+  });
+
+  it('notices a connection that dies without saying anything', async () => {
+    // The quiet death, which no real database will perform on request. `on` is
+    // absent, so there is no error event to fire even in principle: if anything
+    // reports this loss it is because something ASKED, which is the whole
+    // property. `query` answers the lock acquisition and then stops answering,
+    // the way a black-holed socket does once its timeout is reached.
+    let alive = true;
+    let asked = 0;
+    let released = 0;
+    const client = {
+      query: async <R,>(sql: string): Promise<{ rows: R[] }> => {
+        if (sql === 'SELECT 1') {
+          asked += 1;
+          if (!alive) throw new Error('connection terminated unexpectedly');
+          return { rows: [] as R[] };
+        }
+        return { rows: [{ got: true } as unknown as R] };
+      },
+      release: () => {
+        released += 1;
+      },
+      // No `on`, deliberately.
+    };
+
+    let lost: unknown;
+    const lock = await acquirePollerLock(
+      { connect: async () => client },
+      `${token}-silent`,
+      () => undefined,
+      (err) => {
+        lost ??= err;
+      },
+      5,
+    );
+
+    // Beating while the connection is fine, and saying nothing about it.
+    await expect.poll(() => asked > 0, { timeout: 2_000 }).toBe(true);
+    expect(lost).toBeUndefined();
+
+    alive = false;
+    await expect.poll(() => lost !== undefined, { timeout: 2_000 }).toBe(true);
+    expect(String(lost)).toContain('connection terminated');
+
+    // And once it has reported, it stops: a dead connection asked every five
+    // milliseconds for the rest of the process is a log nobody can read.
+    const settled = asked;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(asked).toBe(settled);
+
+    await lock.release();
+    expect(released).toBe(1);
+  });
+
+  it('stops beating once the lock is released', async () => {
+    // A timer left running would keep querying a connection that has gone back
+    // to the pool, and would report a loss for a lock nobody holds any more.
+    const spentToken = `${token}-released`;
+    let lost = 0;
+    const lock = await acquirePollerLock(
+      pool,
+      spentToken,
+      () => undefined,
+      () => {
+        lost += 1;
+      },
+      10,
+    );
+    await lock.release();
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(lost).toBe(0);
+    expect(await heldFor(spentToken)).toBe(false);
+  });
+});
