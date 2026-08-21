@@ -32,6 +32,25 @@ graphify-out/
 !.env.example
 sim/.env.local
 
+# The operator's own keys. `.notes/deploy_key` is the server's root SSH key and
+# `.notes/deploy.env` holds the Coolify and Cloudflare tokens.
+#
+# Neither was excluded until 2026-08-21, and the patterns above look like they
+# covered it: `.env.*` does not match `deploy.env`, and Docker patterns are not
+# recursive, so `**/` is what makes the second line mean anything. `**/*.md`
+# DID catch the notes beside them, which is what made the gap read as covered.
+#
+# Every `docker build .` from a working tree baked all three into the image
+# layers, where `docker history` and `docker save` return them even if a later
+# stage deletes the files.
+.notes/
+**/.notes/
+
+# Screenshots. `coolify-pg.png` is a panel screenshot with a connection string
+# in it; it is excluded from git by name, and nothing excluded it from here.
+*.png
+**/*.png
+
 # Nothing in the image reads these.
 docs/
 **/*.md
