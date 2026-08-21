@@ -24,6 +24,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { randomUUID } from 'node:crypto';
 import {
   adapterFor,
   remoteUsernameFor,
@@ -535,6 +536,52 @@ async function deliver(
 }
 
 /**
+ * A renewal that moved the panel and then could not finish.
+ *
+ * The customer is refunded and told it failed, which is right — but their
+ * account is not where it was, and no panel API accepts a used-traffic figure,
+ * so nothing here can put it back. What this can do is stop it being invisible:
+ * the order's `failure_reason` says why it stopped, never what it had already
+ * done.
+ *
+ * Best effort on purpose. A record that could abort the refund would be worse
+ * than no record.
+ */
+async function recordPartialRenewal(
+  db: D1Database,
+  row: PendingOrder,
+  applied: string[],
+  reason: string,
+): Promise<void> {
+  try {
+    await db
+      .prepare(
+        `INSERT INTO audit_logs
+           (id, actor_email, actor_role, action, entity_type, entity_id,
+            before_json, after_json, reason, created_at)
+         VALUES (?1, NULL, 'SYSTEM', 'RENEWAL_HALF_APPLIED', 'order', ?2,
+                 NULL, ?3::text, ?4, ?5)`,
+      )
+      .bind(
+        randomUUID(),
+        row.order_public_id,
+        JSON.stringify({
+          applied,
+          username: row.target_username,
+          panel: row.provider_code,
+          subscriptionId: row.target_subscription_id,
+          userId: row.user_id,
+        }),
+        reason,
+        Date.now(),
+      )
+      .run();
+  } catch (err) {
+    console.error(`[bot] renewal ${row.order_public_id} was half-applied and could not be recorded`, err);
+  }
+}
+
+/**
  * Extending a service the customer already has.
  *
  * Separate from `deliver` rather than a branch inside it, because almost
@@ -633,6 +680,14 @@ async function renew(
       await release(db, row.order_id);
       console.error(`[bot] renewal ${row.order_public_id} will retry: ${result.reason}`);
       return null;
+    }
+    // Half-done on the panel: the account was changed and the order was not.
+    // Written down before the order is failed, because after that the only
+    // trace is `failure_reason`, which says why it stopped and not what it had
+    // already done. Same shape as `settle.ts`'s PAYMENT_NEEDS_REFUND — an audit
+    // row rather than an incident table, for the same reason.
+    if (result.applied !== undefined && result.applied.length > 0) {
+      await recordPartialRenewal(db, row, result.applied, result.reason);
     }
     const refunded = await fail(db, row.order_id, result.reason);
     console.error(`[bot] renewal ${row.order_public_id} needs a human: ${result.reason}`);

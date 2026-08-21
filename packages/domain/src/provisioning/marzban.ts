@@ -461,11 +461,18 @@ export const marzbanAdapter: ProvisioningAdapter = {
       // evidence with a preference.
       const expire = expiresAtMs === null ? 0 : Math.floor(expiresAtMs / 1000);
 
+      // What has already happened to this account by the time something fails.
+      //
+      // A renewal is two calls and only the pair means anything. The order
+      // below is deliberate and stays: resetting after the new quota is set
+      // would leave the customer with a new quota and last month's usage
+      // counted against it, which is the wrong way to be wrong. Being wrong
+      // this way gives them a free refill instead — bounded, and in the
+      // customer's favour — but it is still a thing that happened, and the only
+      // record of it used to be that the order said FAILED.
+      const applied: string[] = [];
+
       if (request.mode === 'RESET') {
-        // Legacy resets before it modifies, and the order matters: zeroing after
-        // the new quota is set would still be correct, but a failure between the
-        // two would leave the customer with a new quota and last month's usage
-        // already counted against it.
         const reset = await withTimeout((signal) =>
           provider.fetch(`${base}/api/user/${encodeURIComponent(request.username)}/reset`, {
             method: 'POST',
@@ -480,6 +487,8 @@ export const marzbanAdapter: ProvisioningAdapter = {
             retryable: isPanelFault(reset.status),
           };
         }
+        // Past this line the account has changed, whatever happens next.
+        applied.push('usage counter reset to zero');
       }
 
       const res = await withTimeout((signal) =>
@@ -499,6 +508,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
           ok: false,
           reason: `panel refused to extend the account (HTTP ${res.status})`,
           retryable: res.status >= 500,
+          applied,
         };
       }
 

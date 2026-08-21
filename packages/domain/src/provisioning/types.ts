@@ -124,6 +124,20 @@ export interface ProvisionFailed {
    * order for the next pass and stopping to wait for a person.
    */
   retryable: boolean;
+  /**
+   * What the panel was already made to do before this failed.
+   *
+   * A renewal is two calls to the panel and only the pair is meaningful. If the
+   * first one lands and the second is refused, the account has moved and the
+   * order has not — the customer is refunded and told it failed, while their
+   * usage counter really is back at zero. Nothing can put that back: no panel
+   * API accepts a used-traffic figure.
+   *
+   * So the adapter says what it did, and the sweep writes it down where a
+   * person can find it. An empty array is the ordinary case and the default;
+   * a failure before any call has nothing to report.
+   */
+  applied?: string[];
 }
 
 export type ProvisionResult = ProvisionOk | ProvisionFailed;

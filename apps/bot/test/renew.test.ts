@@ -479,6 +479,68 @@ describe('applying it', () => {
     expect(notes.some((n) => n.chatId === target.telegramId)).toBe(true);
   });
 
+  it('writes down a reset it could not finish, so somebody can see it', async () => {
+    // A renewal is two calls to the panel and only the pair means anything. The
+    // reset lands, the extend is refused with a 4xx, and the order is failed and
+    // refunded — correctly. But the account is not where it was: the usage
+    // counter really is at zero, no panel API accepts a used-traffic figure to
+    // put it back, and `failure_reason` says why it stopped rather than what it
+    // had already done. That made a free quota refill invisible.
+    const target = await paidRenewal();
+    const panel = fakePanel({
+      [target.username]: { expire: new Date(NOW_MS + 5 * DAY).toISOString(), data_limit: 50 * GIB },
+    });
+    const refusing = (async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await panel.fetchImpl(input, init);
+      // 422 rather than 500: non-retryable, so the sweep gives up rather than
+      // coming back. A retry would eventually finish the pair.
+      return (init?.method ?? 'GET') === 'PUT' ? new Response('{}', { status: 422 }) : res;
+    }) as unknown as typeof globalThis.fetch;
+
+    await provisionPaidOrders(db, refusing, NOW_MS);
+
+    // The reset really happened, which is what makes this worth recording.
+    expect(panel.resets).toContain(target.username);
+    expect(await orderRow(target.order.id)).toMatchObject({ status: 'FAILED' });
+
+    const incident = await db
+      .prepare(
+        `SELECT after_json::text AS a, reason FROM audit_logs
+          WHERE action = 'RENEWAL_HALF_APPLIED' AND entity_id = ?1`,
+      )
+      .bind(target.order.publicId)
+      .first<{ a: string | null; reason: string | null }>();
+    expect(incident).not.toBeNull();
+    // What was done to the account, and to which account — the two things a
+    // person needs before they can put it right by hand.
+    expect(incident?.a).toContain('usage counter reset');
+    expect(incident?.a).toContain(target.username);
+    expect(incident?.reason).toContain('422');
+  });
+
+  it('records nothing when the panel was never touched', async () => {
+    // The ordinary failure: nothing landed, so there is nothing to warn about.
+    // Without this, "an incident exists" would be true of every failed renewal
+    // and would stop meaning anything.
+    const target = await paidRenewal();
+    const refusingEverything = (async (input: string | URL | Request) =>
+      String(input).endsWith('/api/admin/token')
+        ? new Response(JSON.stringify({ access_token: 't' }), { status: 200 })
+        : new Response('{}', { status: 422 })) as unknown as typeof globalThis.fetch;
+
+    await provisionPaidOrders(db, refusingEverything, NOW_MS);
+
+    expect(await orderRow(target.order.id)).toMatchObject({ status: 'FAILED' });
+    const n = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM audit_logs
+          WHERE action = 'RENEWAL_HALF_APPLIED' AND entity_id = ?1`,
+      )
+      .bind(target.order.publicId)
+      .first<{ n: number }>();
+    expect(n?.n).toBe(0);
+  });
+
   it('ADD keeps the days already paid for and grows the quota', async () => {
     await setPanelConfig(panelId, {
       Methodextend: 'اضافه شدن زمان و حجم به ماه بعد',
