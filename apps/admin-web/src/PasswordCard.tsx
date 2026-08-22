@@ -10,9 +10,9 @@
  * no panel to create it from, and it had quietly been doing this job too.
  *
  * Reached from the header rather than from a page in the sidebar, because every
- * role needs it and the sidebar is filtered by role — `READ_ONLY` sees nine of
- * the twenty-three entries. Next to «خروج», which is the other thing you do to
- * your own session rather than to the shop.
+ * role needs it and the sidebar is filtered by role — `READ_ONLY` sees fifteen
+ * of the twenty-three entries. Next to «خروج», which is the other thing you do
+ * to your own session rather than to the shop.
  *
  * The confirmation field is here and not on the server on purpose. A typo in a
  * password you cannot see locks you out of a panel with no reset-by-email, and

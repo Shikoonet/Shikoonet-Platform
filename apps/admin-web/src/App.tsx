@@ -12,7 +12,7 @@
  * on mount, and drawing them before the identity is known means a signed-out
  * visitor watches a dozen requests fail behind a login form.
  *
- * Navigation is a real URL now (`route.ts`), not `useState`. Twenty-two
+ * Navigation is a real URL now (`route.ts`), not `useState`. Twenty-three
  * sections that cannot be linked to is a panel where «look at this payment» has
  * to be described rather than sent.
  */
@@ -188,8 +188,11 @@ export function App() {
         </div>
         {/* The two things you do to your own account rather than to the shop.
             Here rather than in the sidebar because every role needs both, and
-            the sidebar is filtered by role — READ_ONLY sees nine of twenty-three
-            entries and would have seen neither of these. */}
+            the sidebar is filtered by role — READ_ONLY sees fifteen of
+            twenty-three entries and would have seen neither of these.
+            The number said "nine" until 2026-08-22, when it was counted for the
+            first time; `e2e/roles.spec.ts` now reads it off the rendered
+            sidebar, so it cannot drift again. */}
         <div className="app-header__actions">
           <button
             type="button"

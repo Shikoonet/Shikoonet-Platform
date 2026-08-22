@@ -25,6 +25,17 @@ import { seedShop } from '@shikoo/seed';
 export const LOGIN_EMAIL = 'e2e-login@shikoo.local';
 export const LOGIN_PASSWORD = 'e2e login password 2026';
 
+/**
+ * A second identity, with the narrowest role the panel has.
+ *
+ * `roles.spec.ts` needs a browser signed in as READ_ONLY, and the bypass server
+ * cannot give it one — `TEST_ACCESS_USER` names a single address, and that
+ * address is ADMIN. So this operator has a password and walks the same front
+ * door as the login specs.
+ */
+export const READER_EMAIL = 'e2e-reader@shikoo.local';
+export const READER_PASSWORD = 'e2e reader password 2026';
+
 export default async function globalSetup(): Promise<void> {
   const email = process.env.TEST_ACCESS_USER;
   const url = process.env.DATABASE_URL;
@@ -62,6 +73,24 @@ export default async function globalSetup(): Promise<void> {
                totp_enabled = false, totp_secret = NULL`,
       )
       .bind(`e2e-login`, LOGIN_EMAIL, now, await hashPassword(LOGIN_PASSWORD))
+      .run();
+
+    // The same row again with the narrowest role, for `roles.spec.ts`. Written
+    // here rather than by flipping the row above, because a spec that changes
+    // an operator's role and then puts it back leaves the suite dependent on
+    // its own ordering — and the failure of that is a role test passing while
+    // asserting nothing.
+    await db
+      .prepare(
+        `INSERT INTO access_users
+           (id, email, role, active, created_at, updated_at, password_hash)
+         VALUES (?1, ?2, 'READ_ONLY', 1, ?3, ?3, ?4)
+         ON CONFLICT (email) DO UPDATE
+           SET role = 'READ_ONLY', active = 1, updated_at = ?3, password_hash = ?4,
+               failed_attempts = 0, locked_until = NULL,
+               totp_enabled = false, totp_secret = NULL`,
+      )
+      .bind(`e2e-reader`, READER_EMAIL, now, await hashPassword(READER_PASSWORD))
       .run();
 
     // Customers, for the same reason as the row above: the unit suites truncate
