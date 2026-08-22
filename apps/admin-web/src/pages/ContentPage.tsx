@@ -168,6 +168,28 @@ export function ContentPage() {
           </button>
         </div>
 
+        {tab === 'channels' && (
+          /**
+           * The one thing this screen cannot check for the admin, said out
+           * loud instead.
+           *
+           * `gate.ts` asks Telegram `getChatMember` for each active channel,
+           * and a channel the bot is not an admin of throws. That is handled
+           * carefully — three-valued, logged, open for that one request and
+           * never latched — but the only trace is a line in the server log. So
+           * a channel added with the bot not promoted lets every customer
+           * through the membership gate for ever and looks «فعال» here.
+           *
+           * The panel holds no bot token and `required_channels` has no column
+           * for a failed check, so this screen genuinely cannot know. What it
+           * can do is stop the mistake being made in silence.
+           */
+          <p className="muted">
+            ربات باید در هر کانالی که این‌جا اضافه می‌کنید <b>ادمین</b> باشد. اگر نباشد، نمی‌تواند
+            عضویت را بررسی کند و گیت برای همه باز می‌ماند — بدون اینکه چیزی در این صفحه عوض شود.
+          </p>
+        )}
+
         <div className="table-wrap">
           {tab === 'channels' ? (
             <table className="app-table">
