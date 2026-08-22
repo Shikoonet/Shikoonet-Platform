@@ -507,6 +507,15 @@ export function planDetailMenu(plan: CatalogPlan, applied?: AppliedCode | null):
  * The ticket tables exist and hold seven messages from before that switch; they
  * stay unread until an admin asks for them back.
  *
+ * **And that is the end of it — Sam's decision, 2026-08-22: the ticket screens
+ * are not built.** The dump settled it: one department, seven tickets, all of
+ * them between 12 and 19 June 2026, and every one still `Unseen`. The shop
+ * turned the feature on for a week, answered nothing, and switched to a handle.
+ * So an absent ticket flow here is a decision, not a gap — see `docs/STATUS.md`
+ * › «۶. پاریتی نساخته». The tables and `migrate.ts` stay as they are: importing
+ * seven rows costs nothing and throwing them away would be the one choice that
+ * cannot be undone.
+ *
  * The handle is written as plain text on purpose. Messages carry no
  * `parse_mode`, and Telegram turns `@name` into a link by itself — so this
  * needs no markup and cannot be broken by a handle with an underscore in it.
