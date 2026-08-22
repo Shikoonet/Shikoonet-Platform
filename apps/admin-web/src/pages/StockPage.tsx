@@ -44,6 +44,23 @@ export function StockPage() {
   const [total, setTotal] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  /**
+   * Which shelf rows have had their link revealed, by id.
+   *
+   * The API has served `subscriptionUrl` to an ADMIN for AVAILABLE rows since
+   * this screen was written — `stockRoutes.ts` decides it and `stock.test.ts`
+   * asserts an admin gets it and a reviewer does not. Nothing ever rendered it,
+   * so the credential arrived in the browser on every page load and was used by
+   * nobody, and an admin who wanted to check a config before selling it had to
+   * open the database.
+   *
+   * Behind a press rather than on the page, because the row is a working
+   * account: a screen an operator leaves open should not have every unsold
+   * config sitting on it in plain text, and a shoulder or a screen-share is the
+   * ordinary way that goes wrong. Per-row and not a global toggle for the same
+   * reason.
+   */
+  const [revealed, setRevealed] = useState<ReadonlySet<number>>(() => new Set());
   const [adding, setAdding] = useState(false);
 
   async function load() {
@@ -213,13 +230,14 @@ export function StockPage() {
                 <th>پنل</th>
                 <th>وضعیت</th>
                 <th>سفارش</th>
+                <th>لینک اشتراک</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 && (
                 <tr>
-                  <td className="empty" colSpan={6}>
+                  <td className="empty" colSpan={7}>
                     چیزی با این فیلترها نیست.
                   </td>
                 </tr>
@@ -237,6 +255,24 @@ export function StockPage() {
                     </span>
                   </td>
                   <td className="ltr">{r.orderPublicId ?? '—'}</td>
+                  <td className="ltr">
+                    {r.subscriptionUrl === null ? (
+                      // Null for a sold or retired row and for anyone who is
+                      // not an ADMIN. Nothing to press, and nothing to explain:
+                      // the paragraph under the table says why.
+                      '—'
+                    ) : revealed.has(r.id) ? (
+                      <code className="stock-link">{r.subscriptionUrl}</code>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => setRevealed((was) => new Set(was).add(r.id))}
+                      >
+                        نمایش لینک
+                      </button>
+                    )}
+                  </td>
                   <td>
                     <button
                       type="button"
@@ -288,7 +324,7 @@ export function StockPage() {
 
         <p className="muted">
           لینک اشتراک اعتبارنامه است: هرکس داشته باشدش سرویس را دارد. فقط برای کانفیگ‌های روی قفسه و
-          فقط به ادمین نشان داده می‌شود، و در این جدول اصلاً نمی‌آید.
+          فقط به ادمین فرستاده می‌شود، و تا وقتی «نمایش لینک» را نزنی روی صفحه نمی‌آید.
         </p>
       </div>
 
