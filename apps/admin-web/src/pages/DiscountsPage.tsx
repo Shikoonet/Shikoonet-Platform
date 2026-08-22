@@ -17,6 +17,7 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, type DiscountItem, type RedemptionRow } from '../api.js';
 import { count, dateTime, endOfTehranDay, toman } from '../format.js';
+import { useAdminWriteProps } from '../role.js';
 
 const PAGE_SIZE = 25;
 
@@ -61,6 +62,7 @@ function value(d: DiscountItem): string {
 }
 
 export function DiscountsPage() {
+  const w = useAdminWriteProps();
   const [rows, setRows] = useState<DiscountItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -116,7 +118,7 @@ export function DiscountsPage() {
           <div className="page-head__title">کدهای تخفیف</div>
           <div className="page-head__sub">{count(total)} کد</div>
         </div>
-        <button type="button" className="btn btn-primary" onClick={() => setCreating((v) => !v)}>
+        <button type="button" className="btn btn-primary" onClick={() => setCreating((v) => !v)} {...w}>
           {creating ? 'بستن فرم' : 'کد جدید'}
         </button>
       </div>
@@ -237,7 +239,7 @@ export function DiscountsPage() {
                       مصرف‌کننده‌ها
                     </button>{' '}
                     {d.state !== 'EXPIRED' && (
-                      <button type="button" className="btn btn-sm" onClick={() => void expire(d)}>
+                      <button type="button" className="btn btn-sm" onClick={() => void expire(d)} {...w}>
                         باطل کن
                       </button>
                     )}
@@ -277,6 +279,7 @@ export function DiscountsPage() {
 }
 
 function CreateForm({ onDone }: { onDone: () => void }) {
+  const w = useAdminWriteProps();
   const [code, setCode] = useState('');
   const [kind, setKind] = useState('PERCENT_OFF');
   const [amountToman, setAmountToman] = useState('');
@@ -433,7 +436,13 @@ function CreateForm({ onDone }: { onDone: () => void }) {
             </select>
           </div>
         )}
-        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void submit()}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy}
+          onClick={() => void submit()}
+          {...w}
+        >
           ساخت
         </button>
       </div>

@@ -3,6 +3,7 @@ import type { Cache } from './query.js';
 import { useMediaQuery } from './useMediaQuery.js';
 import { forMutation, QK } from './queries.js';
 import { count } from '../format.js';
+import { useWriteProps } from '../role.js';
 import { formatTomanFromIrr, formatTime } from './format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { SortableHeader } from './SortableHeader.js';
@@ -43,6 +44,7 @@ function formatPaymentCardCell(a: AccountListItem): string {
 }
 
 export function AccountsView({ cache }: AccountsViewProps) {
+  const w = useWriteProps();
   const { data: accountsPayload } = cache.useQuery<{
     ok: boolean;
     items: AccountListItem[];
@@ -215,7 +217,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
       <div className="row toolbar">
         <h2>حساب‌ها ({count(items.length)})</h2>
         <div className="spacer" />
-        <button type="button" className="primary" onClick={() => setCreating(true)}>
+        <button type="button" className="primary" onClick={() => setCreating(true)} {...w}>
           + حساب تازه
         </button>
       </div>
@@ -273,6 +275,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         type="button"
                         disabled={busy === a.id}
                         onClick={() => runStatusTransition(a.id, 'accept')}
+                        {...w}
                       >
                         پذیرش
                       </button>
@@ -281,6 +284,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         className="danger"
                         disabled={busy === a.id}
                         onClick={() => runStatusTransition(a.id, 'decline')}
+                        {...w}
                       >
                         رد
                       </button>
@@ -389,6 +393,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                       type="button"
                       disabled={a.status !== 'ACTIVE'}
                       onClick={() => setRerunAssignmentFor(a.id)}
+                      {...w}
                     >
                       اجرای دوبارهٔ تخصیص
                     </button>
@@ -398,6 +403,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                           type="button"
                           disabled={busy === a.id}
                           onClick={() => runStatusTransition(a.id, 'accept')}
+                          {...w}
                         >
                           پذیرش
                         </button>
@@ -406,6 +412,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                           className="danger"
                           disabled={busy === a.id}
                           onClick={() => runStatusTransition(a.id, 'decline')}
+                          {...w}
                         >
                           رد
                         </button>
@@ -444,6 +451,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         className="danger"
                         disabled={busy === a.id}
                         onClick={() => deactivate(a.id)}
+                        {...w}
                       >
                         غیرفعال‌کردن
                       </button>
@@ -453,6 +461,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                         className="danger"
                         disabled={busy === a.id}
                         onClick={() => setDeletingId(a.id)}
+                        {...w}
                       >
                         حذف همیشگی
                       </button>
@@ -649,6 +658,7 @@ function AccountCard({
   onUnmute: () => void;
   onRestore: () => void;
 }) {
+  const w = useWriteProps();
   return (
     <li className={`card account-card${a.active ? '' : ' dim'}`}>
       <div className="card-row card-row--top">
@@ -685,21 +695,21 @@ function AccountCard({
         <button type="button" onClick={onEdit}>
           ویرایش
         </button>
-        <button type="button" disabled={a.status !== 'ACTIVE'} onClick={onRerunAssignment}>
+        <button type="button" disabled={a.status !== 'ACTIVE'} onClick={onRerunAssignment} {...w}>
           اجرای دوبارهٔ تخصیص
         </button>
         {a.status === 'PENDING' && (
           <>
-            <button type="button" disabled={busy} onClick={onAccept}>
+            <button type="button" disabled={busy} onClick={onAccept} {...w}>
               پذیرش
             </button>
-            <button type="button" className="danger" disabled={busy} onClick={onDecline}>
+            <button type="button" className="danger" disabled={busy} onClick={onDecline} {...w}>
               رد
             </button>
           </>
         )}
         {a.status === 'ACTIVE' && (
-          <button type="button" disabled={busy} onClick={onMute}>
+          <button type="button" disabled={busy} onClick={onMute} {...w}>
             بی‌صدا
           </button>
         )}
@@ -709,16 +719,16 @@ function AccountCard({
           </button>
         )}
         {a.status === 'DECLINED' && (
-          <button type="button" disabled={busy} onClick={onRestore}>
+          <button type="button" disabled={busy} onClick={onRestore} {...w}>
             بازگرداندن
           </button>
         )}
         {a.active ? (
-          <button type="button" className="danger" disabled={busy} onClick={onDeactivate}>
+          <button type="button" className="danger" disabled={busy} onClick={onDeactivate} {...w}>
             غیرفعال‌کردن
           </button>
         ) : (
-          <button type="button" className="danger" disabled={busy} onClick={onDelete}>
+          <button type="button" className="danger" disabled={busy} onClick={onDelete} {...w}>
             حذف همیشگی
           </button>
         )}
@@ -771,6 +781,7 @@ function PaymentCardsPanel({
   accountId: string;
   onChanged?: () => void;
 }) {
+  const w = useWriteProps();
   const [cards, setCards] = useState<PaymentCardRow[]>([]);
   const [newCard, setNewCard] = useState('');
   const [label, setLabel] = useState('');
@@ -905,6 +916,7 @@ function PaymentCardsPanel({
                 className="btn-sm danger"
                 disabled={busy}
                 onClick={() => removeCard(c.id)}
+                {...w}
               >
                 حذف
               </button>
@@ -929,6 +941,7 @@ function PaymentCardsPanel({
           className="primary"
           disabled={busy || !newCard.trim()}
           onClick={() => addCard(false)}
+          {...w}
         >
           افزودن کارت
         </button>
@@ -938,6 +951,7 @@ function PaymentCardsPanel({
 }
 
 function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProps) {
+  const w = useWriteProps();
   const [bankName, setBankName] = useState(account?.bank_name ?? '');
   const [displayName, setDisplayName] = useState(account?.display_name ?? '');
   const [accountType, setAccountType] = useState<'CARD' | 'ACCOUNT' | 'IBAN' | 'OTHER'>(
@@ -1040,6 +1054,7 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
           className="primary"
           disabled={busy || !bankName || !displayName}
           onClick={save}
+          {...w}
         >
           {account ? 'ذخیره' : 'ساخت'}
         </button>

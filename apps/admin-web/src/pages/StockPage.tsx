@@ -16,6 +16,7 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, type PlanRow, type ShelfCount, type StockRow } from '../api.js';
 import { count } from '../format.js';
+import { useAdminWriteProps } from '../role.js';
 
 const STATUS_FA: Record<string, string> = {
   AVAILABLE: 'روی قفسه',
@@ -35,6 +36,7 @@ function message(e: unknown): string {
 const PAGE_SIZE = 50;
 
 export function StockPage() {
+  const w = useAdminWriteProps();
   const [rows, setRows] = useState<StockRow[]>([]);
   const [shelves, setShelves] = useState<ShelfCount[]>([]);
   const [plans, setPlans] = useState<PlanRow[]>([]);
@@ -125,7 +127,7 @@ export function StockPage() {
             {count(shelves.length)} پلن
           </div>
         </div>
-        <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
+        <button type="button" className="btn btn-primary" onClick={() => setAdding(true)} {...w}>
           افزودن کانفیگ
         </button>
       </div>
@@ -279,6 +281,7 @@ export function StockPage() {
                       className="btn btn-sm"
                       disabled={r.status !== 'AVAILABLE'}
                       onClick={() => void act('retire', r)}
+                      {...w}
                     >
                       بازنشسته
                     </button>{' '}
@@ -288,6 +291,7 @@ export function StockPage() {
                       disabled={r.status === 'USED'}
                       title={r.status === 'USED' ? 'فروخته شده — تاریخچهٔ سفارش است' : ''}
                       onClick={() => void act('delete', r)}
+                      {...w}
                     >
                       حذف
                     </button>
@@ -352,6 +356,7 @@ function StockForm({
   onClose: () => void;
   onAdded: () => void;
 }) {
+  const w = useAdminWriteProps();
   const [planId, setPlanId] = useState('');
   const [username, setUsername] = useState('');
   const [url, setUrl] = useState('');
@@ -458,6 +463,7 @@ function StockForm({
           className="btn btn-primary"
           disabled={busy || planId === '' || username.trim() === '' || url.trim() === ''}
           onClick={() => void save()}
+          {...w}
         >
           افزودن
         </button>

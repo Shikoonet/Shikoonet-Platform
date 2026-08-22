@@ -27,6 +27,7 @@ import {
   type PageId,
 } from './nav.js';
 import { api, type PanelRole } from './api.js';
+import { ADMIN_ONLY_HINT, READ_ONLY_HINT, RoleProvider } from './role.js';
 import { useRoute } from './route.js';
 import { LoginPage } from './LoginPage.js';
 import { PasswordCard } from './PasswordCard.js';
@@ -174,6 +175,37 @@ export function App() {
     return role !== 'READ_ONLY' || READABLE_BY_READER.has(id);
   };
 
+  // The sidebar is a URL, so hiding a link is not hiding a section: `/admin/
+  // customers` typed by hand — or opened from a bookmark made while signed in
+  // as somebody else — still reached `Body`, which drew the whole screen and
+  // let it fill with the 403s its own requests came back with. The filter above
+  // was the only thing standing there and it stands beside the door, not in it.
+  //
+  // The server is unmoved either way; what changes is that a reader is now told
+  // which of the two it is, instead of reading an empty table and a red bar.
+  const withheld = !visible(page);
+
+  /**
+   * The sentence at the top of the page, or none.
+   *
+   * Two roles, two different truths, and saying either one everywhere would be
+   * a lie half the time. READ_ONLY writes nothing anywhere. A REVIEWER writes
+   * on the six finance screens — approving a claim IS the job — and writes
+   * nothing under `/api/v1/admin/`, which is every other section. So the second
+   * line is drawn only where it is true.
+   *
+   * «داشبورد» is excluded because it has no control to disable: an explanation
+   * of why nothing can be changed, on a screen where nothing could be changed
+   * anyway, is noise on the one page every operator opens first.
+   */
+  const adminSurface = !isHubPage(page) && page !== 'dashboard';
+  const banner =
+    role === 'READ_ONLY'
+      ? `${READ_ONLY_HINT}.`
+      : role === 'REVIEWER' && adminSurface
+        ? `${ADMIN_ONLY_HINT}.`
+        : null;
+
   // `search` is forwarded, not dropped. The notification bell asks for a
   // section *and* a sub-tab, and the sub-tab lives in the query — swallowing
   // the second argument here sent every bell entry to the default tab while
@@ -184,7 +216,7 @@ export function App() {
   }
 
   return (
-    <>
+    <RoleProvider role={role}>
       <header className="app-header">
         <div className="app-header__left">
           <button
@@ -285,9 +317,31 @@ export function App() {
               inventing one for a three-field form would be the larger thing to
               keep working. */}
           {passwordOpen && <PasswordCard onClose={() => setPasswordOpen(false)} />}
-          <Body page={page} go={go} role={role} cache={cache} />
+          {/* Said once, at the top, rather than only on each disabled control.
+              A reader who opens «محصولات» sees a full catalogue with every
+              action greyed out, and without this line the honest reading of
+              that screen is «the panel is broken», not «this account reads».
+              The `title` on each control says the same thing to whoever
+              reaches for one anyway. */}
+          {!withheld && banner !== null && (
+            <div className="alert-info" role="status">
+              {banner} آنچه می‌بینید کامل است؛ فقط ذخیره و حذف غیرفعال‌اند.
+            </div>
+          )}
+          {withheld ? (
+            <div className="page-head">
+              <div>
+                <div className="page-head__title">{pageLabel(page)}</div>
+                <div className="page-head__sub">
+                  این بخش برای نقش شما باز نیست. از منوی کنار، بخشی را انتخاب کنید.
+                </div>
+              </div>
+            </div>
+          ) : (
+            <Body page={page} go={go} role={role} cache={cache} />
+          )}
         </div>
       </section>
-    </>
+    </RoleProvider>
   );
 }

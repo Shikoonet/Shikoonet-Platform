@@ -23,6 +23,7 @@ import {
   type MenuActionInfo,
 } from '../api.js';
 import { count, dateTime } from '../format.js';
+import { useAdminWriteProps } from '../role.js';
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -37,6 +38,7 @@ function message(e: unknown): string {
 }
 
 export function BotTextsPage() {
+  const w = useAdminWriteProps();
   const [rows, setRows] = useState<BotTextRow[]>([]);
   const [screens, setScreens] = useState<BotScreen[]>([]);
   const [maxLength, setMaxLength] = useState(4096);
@@ -254,6 +256,7 @@ export function BotTextsPage() {
                           className="btn btn-sm btn-primary"
                           disabled={busy}
                           onClick={() => void save(r, draft)}
+                          {...w}
                         >
                           ذخیره
                         </button>{' '}
@@ -274,6 +277,7 @@ export function BotTextsPage() {
                             setEditing(r.key);
                             setDraft(r.value);
                           }}
+                          {...w}
                         >
                           ویرایش
                         </button>{' '}
@@ -285,6 +289,7 @@ export function BotTextsPage() {
                             // Saving the default back is what the server reads
                             // as "reset", and it deletes the row.
                             onClick={() => void save(r, r.default)}
+                            {...w}
                           >
                             پیش‌فرض
                           </button>
@@ -303,6 +308,7 @@ export function BotTextsPage() {
 }
 
 export function KeyboardPage() {
+  const w = useAdminWriteProps();
   const [menu, setMenu] = useState('main');
   const [menus, setMenus] = useState<BotMenu[]>([]);
   const [buttons, setButtons] = useState<KeyboardButton[]>([]);
@@ -400,7 +406,13 @@ export function KeyboardPage() {
             {customised ? 'تغییر داده شده' : 'پیش‌فرض'}
           </div>
         </div>
-        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void save()}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy}
+          onClick={() => void save()}
+          {...w}
+        >
           ذخیره
         </button>
       </div>
@@ -523,6 +535,7 @@ export function KeyboardPage() {
                         type="checkbox"
                         checked={b.visible}
                         onChange={(e) => update(b.action, { visible: e.target.checked })}
+                        {...w}
                       />
                     </td>
                     <td>
@@ -534,6 +547,7 @@ export function KeyboardPage() {
                           type="button"
                           className="btn btn-sm"
                           onClick={() => remove(b.action)}
+                          {...w}
                         >
                           حذف
                         </button>
@@ -570,7 +584,13 @@ export function KeyboardPage() {
           دکمه‌های جدید نسخه‌های بعدی هم به منو اضافه می‌شوند.
         </p>
         <div className="filters">
-          <button type="button" className="btn btn-danger" disabled={busy || !customised} onClick={() => void reset()}>
+          <button
+            type="button"
+            className="btn btn-danger"
+            disabled={busy || !customised}
+            onClick={() => void reset()}
+            {...w}
+          >
             بازگشت به پیش‌فرض
           </button>
         </div>

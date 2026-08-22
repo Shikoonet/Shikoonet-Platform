@@ -15,6 +15,7 @@ import type { Cache } from './query.js';
 import { useMediaQuery } from './useMediaQuery.js';
 import { forMutation, QK } from './queries.js';
 import { count } from '../format.js';
+import { useWriteProps } from '../role.js';
 import { formatTime } from './format.js';
 import { api, type DeviceListItem } from './api.js';
 import { SortableHeader } from './SortableHeader.js';
@@ -97,6 +98,7 @@ function connectionStateLabel(d: DeviceListItem): {
 }
 
 export function DevicesView({ cache }: DevicesViewProps) {
+  const w = useWriteProps();
   const { data, status, error } = cache.useQuery<{ ok: boolean; items: DeviceListItem[] }>(
     QK.devices,
     {
@@ -205,6 +207,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
           className="primary"
           onClick={() => setCreateOpen(true)}
           data-testid="open-add-device"
+          {...w}
         >
           + افزودن دستگاه
         </button>
@@ -409,6 +412,7 @@ function DeviceCard({
   onGenerate: () => void;
   onDelete: () => void;
 }) {
+  const w = useWriteProps();
   const cs = connectionStateLabel(d);
   return (
     <li className={`card device-card${d.active ? '' : ' dim'}`}>
@@ -448,26 +452,26 @@ function DeviceCard({
       </div>
       <div className="card-actions">
         {d.active && d.credential && (
-          <button type="button" disabled={busy} onClick={onRotate}>
+          <button type="button" disabled={busy} onClick={onRotate} {...w}>
             چرخش توکن
           </button>
         )}
         {d.active && d.credential && (
-          <button type="button" className="danger" disabled={busy} onClick={onRevoke}>
+          <button type="button" className="danger" disabled={busy} onClick={onRevoke} {...w}>
             ابطال توکن
           </button>
         )}
         {d.active && !d.credential && (
-          <button type="button" className="primary" disabled={busy} onClick={onGenerate}>
+          <button type="button" className="primary" disabled={busy} onClick={onGenerate} {...w}>
             ساخت توکن
           </button>
         )}
         {d.active ? (
-          <button type="button" className="danger" disabled={busy} onClick={onDeactivate}>
+          <button type="button" className="danger" disabled={busy} onClick={onDeactivate} {...w}>
             غیرفعال‌کردن
           </button>
         ) : (
-          <button type="button" disabled={busy} onClick={onReactivate}>
+          <button type="button" disabled={busy} onClick={onReactivate} {...w}>
             فعال‌کردن دوباره
           </button>
         )}
@@ -478,6 +482,7 @@ function DeviceCard({
             disabled={busy}
             onClick={onDelete}
             data-testid="device-delete"
+            {...w}
           >
             حذف همیشگی
           </button>
@@ -506,10 +511,11 @@ function DeviceActions({
   onGenerate: () => void;
   onDelete: () => void;
 }) {
+  const w = useWriteProps();
   if (!d.active) {
     return (
       <>
-        <button type="button" disabled={busy} onClick={onReactivate}>
+        <button type="button" disabled={busy} onClick={onReactivate} {...w}>
           فعال‌کردن دوباره
         </button>
         <button
@@ -518,6 +524,7 @@ function DeviceActions({
           disabled={busy}
           onClick={onDelete}
           data-testid="device-delete"
+          {...w}
         >
           حذف همیشگی
         </button>
@@ -527,21 +534,21 @@ function DeviceActions({
   return (
     <>
       {d.credential && (
-        <button type="button" disabled={busy} onClick={onRotate}>
+        <button type="button" disabled={busy} onClick={onRotate} {...w}>
           چرخش توکن
         </button>
       )}
       {d.credential && (
-        <button type="button" className="danger" disabled={busy} onClick={onRevoke}>
+        <button type="button" className="danger" disabled={busy} onClick={onRevoke} {...w}>
           ابطال توکن
         </button>
       )}
       {!d.credential && (
-        <button type="button" className="primary" disabled={busy} onClick={onGenerate}>
+        <button type="button" className="primary" disabled={busy} onClick={onGenerate} {...w}>
           ساخت توکن
         </button>
       )}{' '}
-      <button type="button" className="danger" disabled={busy} onClick={onDeactivate}>
+      <button type="button" className="danger" disabled={busy} onClick={onDeactivate} {...w}>
         غیرفعال‌کردن
       </button>
     </>

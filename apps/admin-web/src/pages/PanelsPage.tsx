@@ -16,6 +16,7 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
+import { useAdminWriteProps } from '../role.js';
 
 const STATUS_FA: Record<string, string> = { ACTIVE: 'فعال', DISABLED: 'غیرفعال' };
 
@@ -231,6 +232,7 @@ function PanelEditor({
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const w = useAdminWriteProps();
   const [name, setName] = useState(panel.name);
   const [capacity, setCapacity] = useState(panel.capacity === null ? '' : String(panel.capacity));
   const [sortOrder, setSortOrder] = useState(String(panel.sortOrder));
@@ -334,7 +336,13 @@ function PanelEditor({
             onChange={(e) => setSortOrder(e.target.value)}
           />
         </div>
-        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void save()}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy}
+          onClick={() => void save()}
+          {...w}
+        >
           ذخیره
         </button>
       </div>
@@ -353,6 +361,7 @@ function PanelEditor({
           className={panel.status === 'ACTIVE' ? 'btn btn-danger' : 'btn btn-primary'}
           disabled={busy}
           onClick={() => void toggleStatus()}
+          {...w}
         >
           {panel.status === 'ACTIVE' ? 'غیرفعال کن' : 'فعال کن'}
         </button>

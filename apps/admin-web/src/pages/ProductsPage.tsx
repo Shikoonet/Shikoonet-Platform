@@ -27,6 +27,7 @@ import {
   type ProviderOption,
 } from '../api.js';
 import { count, irrToToman, toman } from '../format.js';
+import { useAdminWriteProps } from '../role.js';
 
 const PAGE_SIZE = 25;
 
@@ -86,6 +87,7 @@ export function ProductsPage() {
   const [loading, setLoading] = useState(false);
   const [openId, setOpenId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
+  const w = useAdminWriteProps();
 
   async function load(toPage = page) {
     setLoading(true);
@@ -143,6 +145,7 @@ export function ProductsPage() {
             setCreating(!creating);
             setOpenId(null);
           }}
+          {...w}
         >
           {creating ? 'بستن' : 'محصول تازه'}
         </button>
@@ -397,6 +400,7 @@ function NewProductCard({
   onCategoryAdded: () => void;
   onCreated: () => void;
 }) {
+  const w = useAdminWriteProps();
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [kind, setKind] = useState('vpn');
@@ -584,6 +588,7 @@ function NewProductCard({
           className="btn btn-primary"
           disabled={busy || code.trim() === '' || name.trim() === ''}
           onClick={() => void create()}
+          {...w}
         >
           ساختن
         </button>
@@ -754,6 +759,7 @@ function PlanDrawer({
   onChanged: () => void;
   onGone: () => void;
 }) {
+  const w = useAdminWriteProps();
   const [name, setName] = useState(plan.name);
   const [priceToman, setPriceToman] = useState(String(irrToToman(plan.priceIrr)));
   const [days, setDays] = useState(plan.durationDays === null ? '' : String(plan.durationDays));
@@ -957,10 +963,22 @@ function PlanDrawer({
             ))}
           </select>
         </div>
-        <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={busy}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => void save()}
+          disabled={busy}
+          {...w}
+        >
           ذخیره
         </button>
-        <button type="button" className="btn btn-sm" onClick={() => void removePlan()} disabled={busy}>
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => void removePlan()}
+          disabled={busy}
+          {...w}
+        >
           حذف پلن
         </button>
       </div>
@@ -997,6 +1015,7 @@ function ProductSection({
   onChanged: () => void;
   onGone: () => void;
 }) {
+  const w = useAdminWriteProps();
   const p = plan.product;
   const [code, setCode] = useState(p.code);
   const [name, setName] = useState(p.name);
@@ -1173,7 +1192,13 @@ function ProductSection({
           onResellers={setResellersOnly}
           onOnce={setOncePerUser}
         />
-        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void save()}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy}
+          onClick={() => void save()}
+          {...w}
+        >
           ذخیرهٔ محصول
         </button>
       </div>
@@ -1186,11 +1211,18 @@ function ProductSection({
             className={s === p.status ? 'btn btn-primary' : 'btn'}
             disabled={busy || s === p.status}
             onClick={() => void setStatus(s)}
+            {...w}
           >
             {STATUS_FA[s]}
           </button>
         ))}
-        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void remove()}>
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={busy}
+          onClick={() => void remove()}
+          {...w}
+        >
           حذف محصول
         </button>
       </div>
@@ -1257,6 +1289,7 @@ function ProductSection({
           className="btn btn-primary"
           disabled={busy || newPlanName.trim() === '' || newPlanPrice.trim() === ''}
           onClick={() => void addPlan()}
+          {...w}
         >
           افزودن پلن
         </button>

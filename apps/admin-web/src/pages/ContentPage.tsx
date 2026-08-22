@@ -31,6 +31,7 @@ import {
   type HelpArticleRow,
 } from '../api.js';
 import { count } from '../format.js';
+import { useAdminWriteProps } from '../role.js';
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -57,6 +58,7 @@ type Tab = 'articles' | 'apps' | 'channels';
  */
 
 export function ContentPage() {
+  const w = useAdminWriteProps();
   const [tab, setTab] = useState<Tab>('articles');
   const [articles, setArticles] = useState<HelpArticleRow[]>([]);
   const [apps, setApps] = useState<ClientAppRow[]>([]);
@@ -135,6 +137,7 @@ export function ContentPage() {
           type="button"
           className="btn btn-primary"
           onClick={() => setEditing({ kind: tab, id: null })}
+          {...w}
         >
           {tab === 'articles' ? 'مطلب تازه' : tab === 'apps' ? 'برنامهٔ تازه' : 'کانال تازه'}
         </button>
@@ -225,6 +228,7 @@ export function ContentPage() {
                         type="button"
                         className="btn btn-sm"
                         onClick={() => void toggleChannel(ch)}
+                        {...w}
                       >
                         {ch.active ? 'خاموش کن' : 'روشن کن'}
                       </button>{' '}
@@ -234,6 +238,7 @@ export function ContentPage() {
                         disabled={ch.active}
                         title={ch.active ? 'اول خاموشش کنید' : ''}
                         onClick={() => void remove('channels', ch.id, ch.title)}
+                        {...w}
                       >
                         حذف
                       </button>
@@ -289,6 +294,7 @@ export function ContentPage() {
                         disabled={a.active}
                         title={a.active ? 'اول پنهانش کنید' : ''}
                         onClick={() => void remove('articles', a.id, a.title)}
+                        {...w}
                       >
                         حذف
                       </button>
@@ -342,6 +348,7 @@ export function ContentPage() {
                         disabled={a.active}
                         title={a.active ? 'اول پنهانش کنید' : ''}
                         onClick={() => void remove('apps', a.id, a.name)}
+                        {...w}
                       >
                         حذف
                       </button>
@@ -412,6 +419,7 @@ function ArticleEditor({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const w = useAdminWriteProps();
   const [title, setTitle] = useState(article?.title ?? '');
   const [category, setCategory] = useState(article?.category ?? '');
   const [body, setBody] = useState(article?.body ?? '');
@@ -516,6 +524,7 @@ function ArticleEditor({
           className="btn btn-primary"
           disabled={busy || title.trim() === ''}
           onClick={() => void save()}
+          {...w}
         >
           ذخیره
         </button>
@@ -533,6 +542,7 @@ function AppEditor({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const w = useAdminWriteProps();
   const [name, setName] = useState(app?.name ?? '');
   const [platform, setPlatform] = useState(app?.platform ?? '');
   const [link, setLink] = useState(app?.link ?? '');
@@ -637,6 +647,7 @@ function AppEditor({
           className="btn btn-primary"
           disabled={busy || name.trim() === '' || link.trim() === ''}
           onClick={() => void save()}
+          {...w}
         >
           ذخیره
         </button>
@@ -659,6 +670,7 @@ function AppEditor({
  * and doing it in place would silently move every customer's gate.
  */
 function ChannelEditor({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const w = useAdminWriteProps();
   const [title, setTitle] = useState('');
   const [chatRef, setChatRef] = useState('');
   const [joinLink, setJoinLink] = useState('');
@@ -746,6 +758,7 @@ function ChannelEditor({ onClose, onSaved }: { onClose: () => void; onSaved: () 
           className="btn btn-primary"
           disabled={busy || title.trim() === '' || !refOk || !linkOk}
           onClick={() => void save()}
+          {...w}
         >
           افزودن
         </button>

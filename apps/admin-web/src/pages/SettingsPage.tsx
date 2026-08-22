@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, type ResellerRequestRow, type SettingRow } from '../api.js';
 import { count, dateTime } from '../format.js';
+import { useAdminWriteProps } from '../role.js';
 
 const SCOPE_FA: Record<string, string> = {
   bot: 'ربات',
@@ -36,6 +37,7 @@ function message(e: unknown): string {
 }
 
 export function SettingsPage() {
+  const w = useAdminWriteProps();
   const [rows, setRows] = useState<SettingRow[]>([]);
   const [hidden, setHidden] = useState(0);
   const [scope, setScope] = useState('');
@@ -200,6 +202,7 @@ export function SettingsPage() {
                             className="btn btn-sm btn-primary"
                             disabled={busy}
                             onClick={() => void save(r)}
+                            {...w}
                           >
                             ذخیره
                           </button>{' '}

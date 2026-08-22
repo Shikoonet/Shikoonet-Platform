@@ -25,6 +25,7 @@ import {
   level1GroupFromTab,
 } from './paymentsNav.js';
 import { HeaderSlot } from './shikoonetShell.js';
+import { useWriteProps } from '../role.js';
 import {
   AssignToPaymentModal,
   DeclinedIncomeRow,
@@ -144,6 +145,7 @@ function isPaymentItem(
 }
 
 export function PaymentsView({ cache }: { cache: Cache }) {
+  const w = useWriteProps();
   const [tab, setTab] = useState<PaymentTab>(() => parsePaymentTabFromLocation());
   const isWide = useMediaQuery('(min-width: 1200px)');
   const [rangeState, setRangeState] = useState<HistoryRangeState>(defaultHistoryRangeState());
@@ -442,6 +444,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
               <button
                 type="button"
                 className="primary"
+                {...w}
                 onClick={async () => {
                   try {
                     await api.restoreIncomeBulk([...selectedDeclined]);
@@ -1218,6 +1221,7 @@ function ReviewPanel({
   onReopen: () => void;
   onError: (message: string) => void;
 }) {
+  const w = useWriteProps();
   const [selected, setSelected] = useState<string | null>(() => defaultCandidateId(item));
   const [rejectReason, setRejectReason] = useState<string>('NO_BANK_TRANSACTION');
   const [confirmFake, setConfirmFake] = useState(false);
@@ -1376,6 +1380,7 @@ function ReviewPanel({
               className="primary"
               disabled={busy || selected == null}
               onClick={() => selected && run(() => onApprove(selected))}
+              {...w}
             >
               تایید انتخاب‌شده‌ها
             </button>
@@ -1412,6 +1417,7 @@ function ReviewPanel({
                     className="primary"
                     disabled={busy}
                     onClick={() => run(() => onVerifyManual(manualReason))}
+                    {...w}
                   >
                     تایید دستی پرداخت
                   </button>
@@ -1425,7 +1431,7 @@ function ReviewPanel({
             {canMarkFake && (
               <div className="payment-review__remove">
                 {!confirmRemove ? (
-                  <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmRemove(true)}>
+                  <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmRemove(true)} {...w}>
                     حذف
                   </button>
                 ) : (
@@ -1434,7 +1440,7 @@ function ReviewPanel({
                       Remove this payment from the queue? No bank transfer was found — this is not
                       a fraud classification.
                     </p>
-                    <button type="button" className="danger" disabled={busy} onClick={() => run(onRemove)}>
+                    <button type="button" className="danger" disabled={busy} onClick={() => run(onRemove)} {...w}>
                       تایید حذف
                     </button>
                     <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmRemove(false)}>
@@ -1447,7 +1453,7 @@ function ReviewPanel({
             {canMarkFake && (
               <div className="payment-review__mark-fake">
                 {!confirmFake ? (
-                  <button type="button" className="danger" disabled={busy} onClick={() => setConfirmFake(true)}>
+                  <button type="button" className="danger" disabled={busy} onClick={() => setConfirmFake(true)} {...w}>
                     علامت‌زدن به‌عنوان جعلی
                   </button>
                 ) : (
@@ -1455,7 +1461,7 @@ function ReviewPanel({
                     <p className="muted">
                       این پرداخت به‌عنوان رسید جعلی علامت زده شود؟ این یک تشخیص دستی تقلب است.
                     </p>
-                    <button type="button" className="danger" disabled={busy} onClick={() => run(onMarkFake)}>
+                    <button type="button" className="danger" disabled={busy} onClick={() => run(onMarkFake)} {...w}>
                       تایید جعلی‌بودن رسید
                     </button>
                     <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmFake(false)}>
@@ -1483,6 +1489,7 @@ function ReviewPanel({
                   className="danger"
                   disabled={busy}
                   onClick={() => run(() => onReject(rejectReason))}
+                  {...w}
                 >
                   رد پرداخت
                 </button>

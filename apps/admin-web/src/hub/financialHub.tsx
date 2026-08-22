@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Cache } from './query.js';
 import { count } from '../format.js';
+import { useWriteProps } from '../role.js';
 import { formatTomanFromIrr, formatTime } from './format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { NewBadge } from './NewBadge.js';
@@ -405,6 +406,7 @@ export function MarkResellerModal({
   onDone: () => void;
   onError: (msg: string) => void;
 }) {
+  const w = useWriteProps();
   const [resellers, setResellers] = useState<Array<{ id: string; name: string }>>([]);
   const [query, setQuery] = useState('');
   const [resellerId, setResellerId] = useState('');
@@ -502,7 +504,7 @@ export function MarkResellerModal({
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
           />
-          <button type="button" disabled={busy} onClick={() => void addReseller()}>
+          <button type="button" disabled={busy} onClick={() => void addReseller()} {...w}>
             + افزودن نماینده
           </button>
         </div>
@@ -511,7 +513,13 @@ export function MarkResellerModal({
           <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
         </label>
         <div className="payment-review__actions">
-          <button type="button" className="primary" disabled={busy || !resellerId} onClick={() => void submit()}>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy || !resellerId}
+            onClick={() => void submit()}
+            {...w}
+          >
             تایید
           </button>
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
@@ -534,6 +542,7 @@ export function AssignToPaymentModal({
   onClose: () => void;
   onError: (msg: string) => void;
 }) {
+  const w = useWriteProps();
   const [claims, setClaims] = useState<PaymentItem[]>([]);
   const [claimId, setClaimId] = useState('');
   const [search, setSearch] = useState('');
@@ -677,7 +686,13 @@ export function AssignToPaymentModal({
           </p>
         )}
         <div className="payment-review__actions">
-          <button type="button" className="primary" disabled={busy} onClick={() => void submit()}>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() => void submit()}
+            {...w}
+          >
             تخصیص
           </button>
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>

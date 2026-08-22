@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from 'react';
 import { count } from '../format.js';
+import { useWriteProps } from '../role.js';
 import { directionLabel } from './format.js';
 
 interface PrefixRow {
@@ -91,6 +92,7 @@ export function BanksView() {
 }
 
 function CardPrefixesPanel() {
+  const w = useWriteProps();
   const [rows, setRows] = useState<PrefixRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -246,6 +248,7 @@ function CardPrefixesPanel() {
                     className="btn-sm danger"
                     disabled={busy}
                     onClick={() => void remove(r.prefix)}
+                    {...w}
                   >
                     حذف
                   </button>
@@ -274,6 +277,7 @@ function CardPrefixesPanel() {
           className="primary"
           disabled={busy || prefix.length < 4 || !bankName.trim()}
           onClick={() => void save()}
+          {...w}
         >
           افزودن یا به‌روزرسانی
         </button>
@@ -283,6 +287,7 @@ function CardPrefixesPanel() {
 }
 
 function SmsPatternsPanel() {
+  const w = useWriteProps();
   const [rows, setRows] = useState<PatternRow[]>([]);
   const [draft, setDraft] = useState<PatternRow>(EMPTY_PATTERN);
   const [err, setErr] = useState<string | null>(null);
@@ -492,6 +497,7 @@ function SmsPatternsPanel() {
                     className="btn-sm danger"
                     disabled={busy}
                     onClick={() => void remove(r.id)}
+                    {...w}
                   >
                     حذف
                   </button>
@@ -604,6 +610,7 @@ function SmsPatternsPanel() {
           className="primary"
           disabled={busy || !draft.id.trim() || !draft.bank_name.trim() || !draft.amount_re.trim()}
           onClick={() => void save()}
+          {...w}
         >
           ذخیرهٔ الگو
         </button>
