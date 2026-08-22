@@ -18,12 +18,20 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { NAV, pageLabel, READABLE_BY_READER, type HubPageId, type PageId } from './nav.js';
+import {
+  ADMIN_ONLY,
+  NAV,
+  pageLabel,
+  READABLE_BY_READER,
+  type HubPageId,
+  type PageId,
+} from './nav.js';
 import { api, type PanelRole } from './api.js';
 import { useRoute } from './route.js';
 import { LoginPage } from './LoginPage.js';
 import { PasswordCard } from './PasswordCard.js';
 import { AccessPage } from './pages/AccessPage.js';
+import { EventsPage } from './pages/EventsPage.js';
 import { Icon } from './icons.js';
 import { HubSection } from './hub/HubSection.js';
 import { createCache } from './hub/query.js';
@@ -117,6 +125,8 @@ function Body({
       return <ContentPage />;
     case 'access':
       return <AccessPage role={role} />;
+    case 'events':
+      return <EventsPage />;
   }
 }
 
@@ -157,7 +167,12 @@ export function App() {
   if (signedIn === null) return <div className="boot" />;
   if (!signedIn) return <LoginPage onSignedIn={() => setReload((n) => n + 1)} />;
 
-  const visible = (id: PageId) => role !== 'READ_ONLY' || READABLE_BY_READER.has(id);
+  const visible = (id: PageId) => {
+    // Two rules, not one. `ADMIN_ONLY` is the narrower: a REVIEWER may read
+    // customers and must not be offered the shop's own stack traces.
+    if (ADMIN_ONLY.has(id)) return role === 'ADMIN';
+    return role !== 'READ_ONLY' || READABLE_BY_READER.has(id);
+  };
 
   // `search` is forwarded, not dropped. The notification bell asks for a
   // section *and* a sub-tab, and the sub-tab lives in the query — swallowing
@@ -189,7 +204,7 @@ export function App() {
         {/* The two things you do to your own account rather than to the shop.
             Here rather than in the sidebar because every role needs both, and
             the sidebar is filtered by role — READ_ONLY sees fifteen of
-            twenty-three entries and would have seen neither of these.
+            twenty-four entries and would have seen neither of these.
             The number said "nine" until 2026-08-22, when it was counted for the
             first time; `e2e/roles.spec.ts` now reads it off the rendered
             sidebar, so it cannot drift again. */}

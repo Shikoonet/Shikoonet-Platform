@@ -11,7 +11,7 @@
  *
  * Reached from the header rather than from a page in the sidebar, because every
  * role needs it and the sidebar is filtered by role — `READ_ONLY` sees fifteen
- * of the twenty-three entries. Next to «خروج», which is the other thing you do
+ * of the twenty-four entries. Next to «خروج», which is the other thing you do
  * to your own session rather than to the shop.
  *
  * The confirmation field is here and not on the server on purpose. A typo in a

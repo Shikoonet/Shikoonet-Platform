@@ -40,6 +40,7 @@ export type PageId =
   | 'keyboard'
   | 'content'
   | 'access'
+  | 'events'
   | 'settings';
 
 export interface NavItem {
@@ -75,6 +76,7 @@ export const NAV: NavGroup[] = [
       { id: 'stock', label: 'قفسهٔ انبار', icon: 'package' },
       { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket' },
       { id: 'access', label: 'دسترسی‌ها', icon: 'users' },
+      { id: 'events', label: 'رویدادها', icon: 'list' },
     ],
   },
   {
@@ -115,6 +117,17 @@ export const NAV: NavGroup[] = [
  * Kept here rather than derived from a route, because a section is not a path —
  * «سرویس‌ها» reads `/subscriptions` and the sidebar has no idea.
  */
+/**
+ * Sections only the shop's owner is offered.
+ *
+ * `READABLE_BY_READER` below draws the line for READ_ONLY; this one is the
+ * narrower case, and «رویدادها» is so far the only member. A REVIEWER reviews
+ * payments — stack traces and the shop's own failures are not that job, and the
+ * route refuses them anyway (`eventRoutes.ts`), so offering the section would
+ * be offering a door that answers 403.
+ */
+export const ADMIN_ONLY: ReadonlySet<PageId> = new Set<PageId>(['events']);
+
 export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'dashboard',
   // All six finance screens. Not an oversight and not generosity: reviewing

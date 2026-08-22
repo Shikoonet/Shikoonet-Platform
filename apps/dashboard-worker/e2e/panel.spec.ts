@@ -39,7 +39,7 @@ test('every section in the sidebar opens under one session', async ({ page }) =>
   // number rather than a range: if the sidebar quietly loses a group, the walk
   // below would still pass on whatever was left. The seventeenth is «ارسال
   // گروهی», which the bot could do and this panel could not.
-  expect(labels.length).toBe(23);
+  expect(labels.length).toBe(24);
 
   for (const label of labels) {
     const name = label.trim();

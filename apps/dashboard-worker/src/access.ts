@@ -59,6 +59,13 @@ const PERSONAL_DATA_PREFIXES = [
   // تعدیل‌ها» for a READ_ONLY operator, and a section hidden in the sidebar
   // while the API still answers is decoration rather than a boundary.
   '/api/v1/admin/revenue-adjustments',
+  // What the software noticed. Not personal data either, and on the list for
+  // the third reason: an event carries a stack trace and a `ref` that names an
+  // order, and reading the shop's faults is the owner's job rather than a
+  // payment reviewer's. `eventRoutes.ts` checks ADMIN again per route — this
+  // entry is what keeps «رویدادها» out of a reader's sidebar in the first
+  // place.
+  '/api/v1/admin/events',
 ];
 
 /**

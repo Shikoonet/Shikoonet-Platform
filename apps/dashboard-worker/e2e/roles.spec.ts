@@ -41,9 +41,14 @@ const WITHHELD = [
   'هزینه‌ها و تعدیل‌ها',
   'لیست درخواست‌ها',
   'دسترسی‌ها',
+  // Admin-only rather than merely not-for-a-reader: `ADMIN_ONLY` in `nav.ts`
+  // withholds «رویدادها» from a REVIEWER too, because a stack trace is not
+  // part of reviewing payments and `eventRoutes.ts` answers 403 to anyone but
+  // an ADMIN.
+  'رویدادها',
 ];
 
-/** What is left of twenty-three once those eight are gone. */
+/** What is left of twenty-four once those nine are gone. */
 const OFFERED_TO_A_READER = 15;
 
 async function signInAsReader(page: Page): Promise<void> {
@@ -54,14 +59,14 @@ async function signInAsReader(page: Page): Promise<void> {
   await expect(page.locator('.sidebar-link.active')).toBeVisible();
 }
 
-test('a reader is offered fifteen sections of twenty-three, and the count is read off the screen', async ({
+test('a reader is offered fifteen sections of twenty-four, and the count is read off the screen', async ({
   page,
 }) => {
   await signInAsReader(page);
   await expect(page.locator('.sidebar-link')).toHaveCount(OFFERED_TO_A_READER);
 });
 
-test('none of the eight withheld sections is drawn', async ({ page }) => {
+test('none of the nine withheld sections is drawn', async ({ page }) => {
   await signInAsReader(page);
   const sidebar = page.locator('.sidebar-link');
   for (const label of WITHHELD) {

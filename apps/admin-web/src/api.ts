@@ -10,6 +10,43 @@
 
 const BASE = '/api/v1/admin';
 
+/**
+ * One line the platform wrote about itself.
+ *
+ * `err` stays the raw string the process stored rather than a parsed object:
+ * the copy button's whole promise is that what an admin sends is what was
+ * written, and a shape this file invented on the way through would break that
+ * the first time a driver error carried a field nobody predicted.
+ */
+export interface AppEventRow {
+  id: number;
+  at: string;
+  level: 'info' | 'warn' | 'error';
+  svc: string;
+  evt: string;
+  trace: string | null;
+  ref: string | null;
+  fields: Record<string, unknown>;
+  err: string | null;
+}
+
+export interface AppEventPage {
+  ok: boolean;
+  total: number;
+  errors: number;
+  warns: number;
+  page: number;
+  pageSize: number;
+  items: AppEventRow[];
+}
+
+export interface EventFacets {
+  ok: boolean;
+  services: string[];
+  events: Array<{ evt: string; svc: string; count: number }>;
+}
+
+
 export interface CustomerListItem {
   id: number;
   telegramId: number;
@@ -912,6 +949,30 @@ export const api = {
 
   deleteClientApp(id: number) {
     return req<{ ok: boolean }>(`/client-apps/${id}`, { method: 'DELETE' });
+  },
+
+  events(params: {
+    q?: string;
+    level?: string;
+    svc?: string;
+    trace?: string;
+    window?: string;
+    page: number;
+    pageSize: number;
+  }) {
+    const qs = new URLSearchParams({
+      page: String(params.page),
+      pageSize: String(params.pageSize),
+    });
+    for (const key of ['q', 'level', 'svc', 'trace', 'window'] as const) {
+      const value = params[key];
+      if (value) qs.set(key, value);
+    }
+    return req<AppEventPage>(`/events?${qs.toString()}`);
+  },
+
+  eventFacets(window: string) {
+    return req<EventFacets>(`/events/facets?window=${encodeURIComponent(window)}`);
   },
 
   panels() {

@@ -580,6 +580,44 @@ body {
 .muted {
   color: var(--text-muted);
 }
+
+/* ---------------------------------------------------------------------------
+   رویدادها.
+
+   Two buttons in one cell and a stack trace under the row. The trace is the
+   only place in this panel where a long, unwrapped, latin-script block is the
+   point rather than an accident — it is what gets copied into a chat — so it
+   scrolls inside itself instead of stretching the table.
+   --------------------------------------------------------------------------- */
+.row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.toolbar {
+  display: flex;
+  justify-content: flex-start;
+  margin-block-end: 12px;
+}
+.event-pre {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken, rgba(127, 127, 127, 0.06));
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 22rem;
+  overflow: auto;
+  white-space: pre;
+  direction: ltr;
+  text-align: left;
+}
+.event-detail {
+  display: grid;
+  gap: 12px;
+  padding: 4px 0 10px;
+}
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));

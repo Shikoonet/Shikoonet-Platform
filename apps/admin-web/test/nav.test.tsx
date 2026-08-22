@@ -81,6 +81,9 @@ describe('navigation', () => {
       'texts',
       'keyboard',
       'access',
+      // «رویدادها» — `app_events`, which migration 0030 filled from
+      // 2026-08-22 and only `psql` could read.
+      'events',
     ];
     expect([...ALL].sort()).toEqual([...implemented].sort());
   });

@@ -1,7 +1,7 @@
 /**
  * Every section of the panel, opened one at a time and watched while it loads.
  *
- * `panel.spec.ts` already walks all twenty-three and asserts that each becomes
+ * `panel.spec.ts` already walks all twenty-four and asserts that each becomes
  * active and that nothing answers 401 or 403. That catches a section that is
  * shut. It does not catch a section that opens and is broken, and those are the
  * ones an operator actually meets: a 500 from one of the four requests a screen
@@ -64,7 +64,7 @@ test('every section opens without a failed request, a thrown render or an error 
   await expect(page.locator('.sidebar-link').first()).toBeVisible();
 
   const labels = (await page.locator('.sidebar-link').allInnerTexts()).map((l) => l.trim());
-  expect(labels.length).toBe(23);
+  expect(labels.length).toBe(24);
 
   for (const label of labels) {
     section = label;

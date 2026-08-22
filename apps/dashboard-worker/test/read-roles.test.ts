@@ -65,6 +65,8 @@ const PERSONAL = [
   '/api/v1/admin/discounts/7/redemptions',
   '/api/v1/admin/access-users',
   '/api/v1/admin/bot-admins',
+  // Diagnostics: a stack trace and a `ref` that names an order.
+  '/api/v1/admin/events',
 ];
 
 const OPERATIONAL = [

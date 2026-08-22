@@ -59,6 +59,7 @@ import { registerContentRoutes } from './contentRoutes.js';
 import { registerStockRoutes } from './stockRoutes.js';
 import { registerRevenueRoutes } from './revenueRoutes.js';
 import { registerChannelRoutes } from './channelRoutes.js';
+import { registerEventRoutes } from './eventRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
 /**
@@ -4531,6 +4532,7 @@ registerContentRoutes(app);
 registerStockRoutes(app);
 registerRevenueRoutes(app);
 registerChannelRoutes(app);
+registerEventRoutes(app);
 
 // No default export: it was `export default { fetch }`'s descendant, from when
 // this ran as a Worker. Nothing has imported it since — `server.ts` and every
