@@ -74,7 +74,23 @@ export function ExpensesPage() {
     // The amount is in the question on purpose. Every row on this screen looks
     // like every other one, and the note is the only thing that distinguishes
     // them — a bare «حذف شود؟» is a confirmation that confirms nothing.
-    if (!window.confirm(`«${row.note}» به مبلغ ${toman(Math.abs(row.amountIrr))} حذف شود؟`)) return;
+    //
+    // So is the direction, since 2026-08-22. The sign is stripped from the
+    // figure for readability, and without a word for it the dialog reads the
+    // same for both kinds of row — while the two do opposite things to the
+    // shop's revenue. Removing an expense raises the net; removing a credit
+    // lowers it. The last sentence an operator reads before an irreversible
+    // press should say which way the ledger is about to move.
+    const isExpense = row.amountIrr < 0;
+    const kind = isExpense ? 'هزینهٔ' : 'بستانکاریِ';
+    const effect = isExpense ? 'خالص بالا می‌رود' : 'خالص پایین می‌آید';
+    if (
+      !window.confirm(
+        `${kind} «${row.note}» به مبلغ ${toman(Math.abs(row.amountIrr))} حذف شود؟ ${effect}.`,
+      )
+    ) {
+      return;
+    }
     setErr(null);
     setDone(null);
     try {
