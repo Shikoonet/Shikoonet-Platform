@@ -656,4 +656,46 @@ describe('an order that ended without telling anyone', () => {
 
     expect((await pendingNotifications()).find((n) => n.chatId === telegramId)).toBeUndefined();
   });
+  /**
+   * The state the panels screen flags, proved from the customer's side.
+   *
+   * `PanelsPage.tsx` now shows «بدون آدرس و اعتبارنامه — سفارشی از این پنل
+   * تحویل نمی‌شود» for an ACTIVE panel of a remote kind with no `base_url` or
+   * `secret_ref`. That sentence was written from reading `marzban.ts:147`, and
+   * reading is not proof — this is what actually happens to somebody who pays.
+   *
+   * The answer has to be `retryable: false`. A retryable one would leave the
+   * order back at PAID and sweeping for ever against a panel that cannot be
+   * fixed by waiting, which is the difference between a customer who is told
+   * something and a customer who is never told anything.
+   */
+  it('a panel with no address ends the order rather than retrying for ever', async () => {
+    const order = await paidOrder({ kind: 'pasarguard' });
+    await db
+      .prepare(
+        `UPDATE provisioning_providers SET base_url = NULL, secret_ref = NULL
+          WHERE id = (SELECT pr.provider_id FROM product_plans pl
+                        JOIN products pr ON pr.id = pl.product_id
+                       WHERE pl.id = (SELECT plan_id FROM orders WHERE id = ?1))`,
+      )
+      .bind(order.orderId)
+      .run();
+
+    // The fetch would answer if it were reached; it is not, because the
+    // adapter refuses before making a call. Passing a working panel is what
+    // makes that claim mean something.
+    await provisionPaidOrders(db, fakePanel().fetchImpl);
+
+    const row = await orderRow(order.orderId);
+    expect(row?.status).toBe('FAILED');
+    expect(row?.failure_reason).toContain('base_url');
+
+    // And the customer hears about it, rather than waiting on a sweep that
+    // will never succeed.
+    const said = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(said?.text).toContain(order.publicId);
+
+    // No half-made service left behind on a panel that was never called.
+    expect(await subsFor(order.orderId)).toHaveLength(0);
+  });
 });

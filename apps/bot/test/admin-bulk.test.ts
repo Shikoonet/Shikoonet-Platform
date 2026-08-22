@@ -15,6 +15,8 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleUpdate } from '../src/handle.js';
+import { randomUUID } from 'node:crypto';
+import { queueDirectMessage } from '@shikoo/domain';
 import {
   claimBroadcastBatch,
   creditEveryone,
@@ -481,5 +483,48 @@ describe('who may reach everybody', () => {
 
     expect(out.replies[0]?.text).toBe(menu.ADMIN_NOT_ALLOWED);
     expect(await bulkEntries(telegramId)).toHaveLength(0);
+  });
+});
+
+/**
+ * The other half of the panel's «پیام به این کاربر».
+ *
+ * `customerRoutes.ts` does not send anything — it calls `queueDirectMessage`,
+ * which writes a one-recipient broadcast, and says in its own comment that the
+ * bot's poll loop delivers it. That claim had no test on either side: the
+ * dashboard e2e proves the row is written, and nothing proved the bot picks it
+ * up. It is queued here exactly the way that route queues it, including
+ * `createdBy: 0` — the panel operator has no Telegram id, and a delivery sweep
+ * that filtered on one would drop every message the panel ever sent.
+ */
+describe('a message queued from the web panel', () => {
+  it('is delivered by the same sweep a bot broadcast uses', async () => {
+    const { telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const body = 'سرویس شما تمدید شد.';
+
+    // A real uuid: `broadcasts.id` is typed `uuid`, which is why the panel
+    // mints `crypto.randomUUID()` for every message rather than a readable id.
+    const queued = await queueDirectMessage(db, randomUUID(), body, userId, 0);
+    expect(queued, 'the panel route counts recipients from this return value').toBe(1);
+
+    const batch = await claimBroadcastBatch(db, 1000);
+    const mine = batch.find((b) => b.chatId === telegramId);
+    // The text the customer will receive, not merely a row that exists.
+    expect(mine?.text).toBe(body);
+  });
+
+  it('is not queued for a blocked customer, which is what the screen promises', async () => {
+    const { telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await db
+      .prepare(`UPDATE users SET status = 'BLOCKED' WHERE id = ?1`)
+      .bind(userId)
+      .run();
+
+    // `queueDirectMessage` selects `WHERE u.status = 'ACTIVE'`, so it writes no
+    // recipient at all — which is the 409 the route returns and the sentence
+    // «کاربر مسدود پیام نمی‌گیرد» under the form.
+    expect(await queueDirectMessage(db, randomUUID(), 'hello', userId, 0)).toBe(0);
   });
 });
