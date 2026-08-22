@@ -78,20 +78,42 @@ const EntryQuery = z.object({
 });
 
 /**
- * Matches a customer by numeric Telegram id or by username fragment.
+ * Matches a customer by numeric Telegram id or by username fragment, and the
+ * row by whichever identifier its own screen prints.
+ *
+ * `alsoLike` is that second half, and it exists because of what walking these
+ * screens on 2026-08-22 turned up: سفارشات prints `FX-0012` in its first column
+ * and refused to find it, and سرویس‌ها prints the panel account name and
+ * refused that too. Both are the identifier support actually starts from — a
+ * customer quotes an order number, and a panel shows an account name and
+ * nothing else about who owns it. A screen that displays an identifier it will
+ * not accept sends the admin to the database.
+ *
+ * Every column here shares one `?n`: the same fragment is tried against each,
+ * which is what makes one box answer «who is this» from any of the names the
+ * row carries.
  *
  * Pushed into `params` so the caller keeps a contiguous parameter sequence —
  * the Postgres adapter closes gaps but cannot invent a value for a hole.
  */
-function customerFilter(q: string, params: unknown[], alias = 'u'): string {
+function customerFilter(
+  q: string,
+  params: unknown[],
+  alsoLike: readonly string[] = [],
+  alias = 'u',
+): string {
   const handle = q.replace(/^@/, '');
   params.push(`%${handle}%`);
   const nameParam = params.length;
+  const clauses = [
+    `${alias}.username ILIKE ?${nameParam}`,
+    ...alsoLike.map((col) => `${col} ILIKE ?${nameParam}`),
+  ];
   if (/^[0-9]{1,19}$/.test(handle)) {
     params.push(handle);
-    return `(${alias}.username ILIKE ?${nameParam} OR ${alias}.telegram_id = ?${params.length})`;
+    clauses.push(`${alias}.telegram_id = ?${params.length}`);
   }
-  return `${alias}.username ILIKE ?${nameParam}`;
+  return `(${clauses.join(' OR ')})`;
 }
 
 export function registerSalesRoutes(
@@ -120,7 +142,9 @@ export function registerSalesRoutes(
       params.push(kind);
       where.push(`o.kind = ?${params.length}`);
     }
-    if (q) where.push(customerFilter(q, params));
+    // The order number is on the screen and in the customer's own invoice, so
+    // it is the first thing typed into this box when somebody asks about one.
+    if (q) where.push(customerFilter(q, params, ['o.public_id']));
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const from = `FROM orders o JOIN users u ON u.id = o.user_id`;
@@ -211,7 +235,10 @@ export function registerSalesRoutes(
       params.push(providerId);
       where.push(`s.provider_id = ?${params.length}`);
     }
-    if (q) where.push(customerFilter(q, params));
+    // The panel account name, because the panel is where this lookup starts:
+    // an admin sees an account misbehaving or expiring on PasarGuard and holds
+    // no other identifier for it. Without this, the column is a dead end.
+    if (q) where.push(customerFilter(q, params, ['s.remote_username']));
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const from = `FROM subscriptions s JOIN users u ON u.id = s.user_id`;
