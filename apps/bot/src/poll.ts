@@ -30,6 +30,21 @@ import {
 import { sweepDailyReport } from './report.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 import { qrPng } from './qr.js';
+import { createLogger, pruneAppEvents } from '@shikoo/domain';
+
+const log = createLogger('bot');
+
+/**
+ * The correlation id for everything one Telegram update causes.
+ *
+ * The update id, not a generated one: Telegram already guarantees it is unique
+ * per bot, it costs nothing, and — the part that matters — it stays the same
+ * when an update is redelivered, so the second attempt and the first are
+ * findable together instead of looking like two customers.
+ */
+function traceOf(update: TelegramUpdate): string {
+  return `u${update.update_id}`;
+}
 
 export interface PollResult {
   /** Offset to pass to the next call. */
@@ -177,9 +192,9 @@ export async function pollOnce(
         // during which nothing could have been processed anyway; the moment the
         // insert succeeds the update is dropped and everything behind it moves.
         // A genuinely poison update still drains, one cycle later.
-        console.error(
-          `[bot] update ${update.update_id} failed ${MAX_UPDATE_ATTEMPTS} times but could not be ` +
-            'recorded; holding it rather than losing the payload',
+        log.error(
+          'update.dead_unrecorded',
+          { trace: traceOf(update), attempts: MAX_UPDATE_ATTEMPTS },
           err,
         );
         // The same shape as an ordinary failure: the offset does not move past
@@ -190,10 +205,11 @@ export async function pollOnce(
       }
       abandoned++;
       attempts.delete(update.update_id);
-      console.error(
-        `[bot] update ${update.update_id} failed ${MAX_UPDATE_ATTEMPTS} times and was dropped` +
-          ' — kept in telegram_dead_updates',
-      );
+      log.warn('update.dropped', {
+        trace: traceOf(update),
+        attempts: MAX_UPDATE_ATTEMPTS,
+        kept_in: 'telegram_dead_updates',
+      });
       if (!sawFailure) confirmedThrough = update.update_id;
       await answer(api, update);
       continue;
@@ -211,7 +227,7 @@ export async function pollOnce(
         count: (attempts.get(update.update_id)?.count ?? 0) + 1,
         lastError: String(err),
       });
-      console.error(`[bot] update ${update.update_id} failed, will be retried`, err);
+      log.error('update.failed', { trace: traceOf(update), will_retry: true }, err);
       // Still stop the client's spinner. A button that keeps spinning through a
       // database outage reads as a bot that died, and answering says nothing
       // about whether the work succeeded.
@@ -235,7 +251,7 @@ export async function pollOnce(
           try {
             await api.sendPhotoBytes(reply.chatId, await qrPng(reply.qrOf), reply.text, reply.keyboard);
           } catch (err) {
-            console.error(`[bot] QR reply for update ${update.update_id} failed; sending the link alone`, err);
+            log.warn('reply.qr_failed', { trace: traceOf(update), fallback: 'link only' }, err);
             await api.sendMessage(reply.chatId, reply.text, reply.keyboard);
           }
         } else if (reply.photo !== undefined) {
@@ -251,7 +267,7 @@ export async function pollOnce(
         // The transaction has already committed. Retrying the whole update would
         // now be a no-op against the claim, so the reply is simply lost and said
         // to be lost.
-        console.error(`[bot] reply for update ${update.update_id} was not delivered`, err);
+        log.error('reply.undelivered', { trace: traceOf(update) }, err);
       }
     }
     await answer(api, update);
@@ -292,7 +308,7 @@ async function answer(api: TelegramApi, update: TelegramUpdate): Promise<void> {
   } catch (err) {
     // Expired callback ids are normal and not worth a failure; the customer has
     // already seen their reply.
-    console.error(`[bot] callback ${update.callback_query.id} was not acknowledged`, err);
+    log.warn('callback.unanswered', { trace: traceOf(update) }, err);
   }
 }
 
@@ -313,7 +329,7 @@ async function sweep(name: string, produce: () => Promise<number>): Promise<void
   try {
     await produce();
   } catch (err) {
-    console.error(`[bot] ${name} failed, will retry`, err);
+    log.error('sweep.failed', { sweep: name, will_retry: true }, err);
   }
 }
 
@@ -338,7 +354,7 @@ export async function sweepBroadcasts(
   try {
     batch = await claimBroadcastBatch(db);
   } catch (err) {
-    console.error('[bot] broadcast batch could not be claimed, will retry', err);
+    log.error('broadcast.claim_failed', { will_retry: true }, err);
     return 0;
   }
   let sent = 0;
@@ -353,20 +369,20 @@ export async function sweepBroadcasts(
       // Telegram has the message and our record does not say so, which is a
       // discrepancy somebody can see, rather than a message nobody sent that
       // the shop was told about.
-      await markBroadcastSent(db, message.broadcastId, message.userId).catch((e) =>
-        console.error('[bot] a broadcast was sent but could not be recorded', e),
+      await markBroadcastSent(db, message.broadcastId, message.userId).catch((e: unknown) =>
+        log.error('broadcast.sent_unrecorded', { ref: message.broadcastId }, e),
       );
       sent += 1;
     } catch (err) {
       await markBroadcastFailed(db, message.broadcastId, message.userId, String(err)).catch(
-        (e) => console.error('[bot] could not record a failed broadcast recipient', e),
+        (e: unknown) => log.error('broadcast.failure_unrecorded', { ref: message.broadcastId }, e),
       );
     }
     await sleep(SEND_GAP_MS, signal);
   }
   if (batch.length > 0) {
-    await closeFinishedBroadcasts(db).catch((err) =>
-      console.error('[bot] could not close finished broadcasts', err),
+    await closeFinishedBroadcasts(db).catch((err: unknown) =>
+      log.error('broadcast.close_failed', {}, err),
     );
   }
   // The only voice a stranded row has. It is deliberately not retried — whether
@@ -374,7 +390,7 @@ export async function sweepBroadcasts(
   // nobody knows, and guessing wrong spams a paying customer.
   const stranded = await strandedSendingCount(db).catch(() => 0);
   if (stranded > 0) {
-    console.error(`[bot] ${stranded} broadcast message(s) were claimed and never finished`);
+    log.warn('broadcast.stranded', { messages: stranded });
   }
   return sent;
 }
@@ -477,7 +493,7 @@ export async function run(
       try {
         await syncSubscriptions(db);
       } catch (err) {
-        console.error('[bot] subscription sync failed, will retry', err);
+        log.error('sync.failed', { will_retry: true }, err);
       }
       // After the sync, so a service is warned about the volume the panel
       // reports rather than the figure from ten minutes ago.
@@ -491,7 +507,7 @@ export async function run(
       // which is a primary-key hit against six aggregate queries.
       await sweep('the daily report', async () => {
         const queued = await sweepDailyReport(db);
-        if (queued) console.log('[bot] queued the daily report');
+        if (queued) log.info('report.queued');
         return queued ? 1 : 0;
       });
       // After every sweep that can enqueue, so a payment settled at the top of
@@ -513,7 +529,7 @@ export async function run(
       // Telegram down, network down, database down: back off and keep the
       // process alive. A crash-loop here is indistinguishable from an outage
       // and much harder to read in the logs.
-      console.error('[bot] poll cycle failed', err);
+      log.error('poll.cycle_failed', {}, err);
       await sleep(backoffMs, options.signal);
     }
     // After the cycle, including after a failed one that backed off — the
@@ -524,7 +540,12 @@ export async function run(
     options.onCycle?.();
     if (++cycles % pruneEvery === 0) {
       await pruneUpdates(db).catch((err: unknown) => {
-        console.error('[bot] prune failed', err);
+        log.error('prune.failed', { what: 'telegram_dead_updates' }, err);
+      });
+      // Same cycle, same reason: one housekeeping pass rather than a second
+      // scheduler that can stop without anyone noticing.
+      await pruneAppEvents(db).catch((err: unknown) => {
+        log.error('prune.failed', { what: 'app_events' }, err);
       });
     }
   }

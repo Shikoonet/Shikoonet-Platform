@@ -17,6 +17,14 @@
 import { serve } from '@hono/node-server';
 import { parseEnvName, resolveAppVersion } from '@shikoo/contracts';
 import { createPostgresD1 } from '@shikoo/db';
+import {
+  createLogger,
+  createPostgresEventSink,
+  parseAlertChatId,
+  setEventSink,
+} from '@shikoo/domain';
+
+const log = createLogger('ingest');
 import { fixedWindowRateLimit } from '@shikoo/domain';
 import { app, runScheduledSweep, type Env } from './index.js';
 
@@ -134,7 +142,7 @@ function assertProductionConfig(env: Env): void {
   // the log they check after a deploy, next to the port and the version.
   for (const key of MUST_BE_DECIDED) {
     if (env[key] !== 'true') {
-      console.warn(`[ingest] ${key}=false — ${CONSEQUENCE[key]}`);
+      log.warn('boot.switch_off', { switch: key, consequence: CONSEQUENCE[key] });
     }
   }
 
@@ -144,10 +152,9 @@ function assertProductionConfig(env: Env): void {
   // take the only public endpoint down over a defence in depth — but it is off,
   // and off should be visible in the log the operator reads after a deploy.
   if (env.TRUSTED_PROXY_IP_HEADER === undefined) {
-    console.warn(
-      '[ingest] TRUSTED_PROXY_IP_HEADER is not set — the per-IP rate limit is OFF. ' +
-        'Set it to X-Real-IP once nginx sends `proxy_set_header X-Real-IP $remote_addr`.',
-    );
+    log.warn('boot.trusted_proxy_unset', {
+      consequence: 'the per-IP rate limit is OFF; set TRUSTED_PROXY_IP_HEADER=X-Real-IP',
+    });
   }
 }
 
@@ -189,6 +196,11 @@ export function buildEnv(db: Env['DB']): Env {
 
 export function start(): { stop: () => Promise<void> } {
   const { db, pool } = createPostgresD1({ connectionString: required('DATABASE_URL') });
+  // Registered before `buildEnv`, which is where the boot-time warnings are
+  // raised — those are exactly the lines that must survive the container.
+  setEventSink(
+    createPostgresEventSink(db, { alertChatId: parseAlertChatId(process.env['ALERT_CHAT_ID']) }),
+  );
   const env = buildEnv(db);
 
   const port = positiveInt('PORT', 8787);
@@ -203,12 +215,12 @@ export function start(): { stop: () => Promise<void> } {
   const everyMs = positiveInt('SWEEP_INTERVAL_MS', 60_000);
   const timer = setInterval(() => {
     void runScheduledSweep(env).catch((err: unknown) => {
-      console.error('[sweep] failed', err);
+      log.error('sweep.failed', {}, err);
     });
   }, everyMs);
   timer.unref();
 
-  console.log(`ingest listening on ${process.env.HOST ?? '127.0.0.1'}:${port}`);
+  log.info('boot.listening', { host: process.env.HOST ?? '127.0.0.1', port });
 
   return {
     async stop() {

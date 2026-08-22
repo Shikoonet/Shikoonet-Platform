@@ -129,7 +129,13 @@ function domainDb(db: DB): DomainD1Database {
 
 interface AppBindings {
   Bindings: Env;
-  Variables: { identity: { email: string; role: import('@shikoo/contracts').AccessRole } };
+  Variables: {
+    identity: {
+      email: string;
+      role: import('@shikoo/contracts').AccessRole;
+      requestId?: string;
+    };
+  };
 }
 
 /** Context of this app's routes — use instead of `any` on extracted handlers. */
@@ -183,7 +189,24 @@ app.use('*', async (c, next) => {
   if (isAdminSurface(c.req.path) && !mayRead(c.req.path, ident.role)) {
     return c.json({ ok: false, error: 'forbidden', detail: 'این بخش از دسترس نقش شما بیرون است.' }, 403);
   }
-  c.set('identity', ident);
+  // One id per request, echoed back and carried into everything this request
+  // writes. `audit_logs.request_id` has existed since migration 0001 and has
+  // been NULL in every row — the column was designed for exactly this and
+  // nothing ever produced the value, so «I pressed it once and it happened
+  // twice» could only be answered from memory.
+  //
+  // It rides on the identity rather than on a second `audit()` parameter or a
+  // second context variable: every audit call site already holds the identity,
+  // so the column fills at all of them rather than at the ones somebody
+  // remembers. An id the caller already set is kept, because a proxy's id and
+  // ours disagreeing is worse than having none.
+  //
+  // Here rather than in its own middleware above: everything that writes passes
+  // through this line, and adding a context variable would change the `Hono`
+  // type that seventeen route registrars are declared against.
+  const requestId = c.req.header('x-request-id') ?? crypto.randomUUID();
+  c.header('X-Request-Id', requestId);
+  c.set('identity', { ...ident, requestId });
   await next();
 });
 
@@ -3126,7 +3149,7 @@ app.post('/api/v1/transactions/:transactionId/assign-account', async (c) => {
         );
       }
       // Not a uniqueness conflict — fail loudly but never expose raw SQL/stack.
-      console.error('assign-account: identifier save failed', String(e));
+      log.error('assign_account.identifier_save_failed', {}, e);
       return c.json({ ok: false, error: 'identifier_save_failed' }, 500);
     }
   }
@@ -3198,7 +3221,7 @@ app.post('/api/v1/transactions/:transactionId/assign-account', async (c) => {
         await suggestMatchesForTransaction(domainDb(c.env.DB), { tx: ttx });
       }
     } catch (e) {
-      console.error('assign-account: rematch failed', id, String(e));
+      log.error('assign_account.rematch_failed', { ref: id }, e);
       // continue — partial rematch is better than a 500
     }
   }
@@ -4453,6 +4476,9 @@ import {
   dryRunCleanupOutgoing,
   type CleanupDryRunReport,
 } from './admin/cleanup-debits.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('dashboard');
 
 app.post('/api/v1/admin/cleanup-debits/dry-run', async (c) => {
   const ident = c.get('identity');

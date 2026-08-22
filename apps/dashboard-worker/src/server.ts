@@ -20,6 +20,14 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { isRelaxedEnv, parseEnvName, resolveAppVersion } from '@shikoo/contracts';
 import { createPostgresD1 } from '@shikoo/db';
+import {
+  createLogger,
+  createPostgresEventSink,
+  parseAlertChatId,
+  setEventSink,
+} from '@shikoo/domain';
+
+const log = createLogger('dashboard');
 import { app, type Env } from './index.js';
 
 function required(name: string): string {
@@ -113,16 +121,19 @@ export function buildEnv(db: Env['DB']): Env {
  */
 function warnAboutMissingGuards(env: Env): void {
   if (env.TRUSTED_PROXY_IP_HEADER === undefined) {
-    console.warn(
-      '[dashboard] TRUSTED_PROXY_IP_HEADER is not set — the per-IP rate limit on ' +
-        '/api/v1/auth/login is OFF and session rows will record no address. ' +
-        'Set it to X-Real-IP once nginx sends `proxy_set_header X-Real-IP $remote_addr`.',
-    );
+    log.warn('boot.trusted_proxy_unset', {
+      consequence:
+        'the per-IP rate limit on /api/v1/auth/login is OFF and session rows record no address; ' +
+        'set TRUSTED_PROXY_IP_HEADER=X-Real-IP',
+    });
   }
 }
 
 export function start(): { stop: () => Promise<void> } {
   const { db, pool } = createPostgresD1({ connectionString: required('DATABASE_URL') });
+  setEventSink(
+    createPostgresEventSink(db, { alertChatId: parseAlertChatId(process.env['ALERT_CHAT_ID']) }),
+  );
   const env = buildEnv(db);
 
   // One build now. There used to be two mounts here — the payment hub at `/`
@@ -176,7 +187,7 @@ export function start(): { stop: () => Promise<void> } {
     hostname: process.env.HOST ?? '127.0.0.1',
   });
 
-  console.log(`dashboard listening on ${process.env.HOST ?? '127.0.0.1'}:${port}`);
+  log.info('boot.listening', { host: process.env.HOST ?? '127.0.0.1', port });
 
   return {
     async stop() {

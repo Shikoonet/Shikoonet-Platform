@@ -11,7 +11,16 @@
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import type { AccessRole } from '@shikoo/contracts';
 
-export type Ident = { email: string; role: AccessRole };
+export type Ident = {
+  email: string;
+  role: AccessRole;
+  /**
+   * The id of the HTTP request this action came from, set once by the
+   * middleware in `index.ts`. Optional because the bot and the scripts write
+   * audit rows too, and neither has a request.
+   */
+  requestId?: string;
+};
 
 /**
  * A session as well as a database, so an audit row can be written inside the
@@ -49,7 +58,7 @@ export async function audit(
       `INSERT INTO audit_logs
          (id, actor_email, actor_role, action, entity_type, entity_id,
           before_json, after_json, reason, request_id, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)`,
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?11, ?10)`,
     )
     .bind(
       id,
@@ -62,6 +71,7 @@ export async function audit(
       after === null ? null : JSON.stringify(after),
       reason,
       Date.now(),
+      ident.requestId ?? null,
     )
     .run();
 }

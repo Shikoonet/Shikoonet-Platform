@@ -6,11 +6,20 @@
  */
 
 import { createPostgresD1 } from '@shikoo/db';
+import {
+  createLogger,
+  createPostgresEventSink,
+  parseAlertChatId,
+  setEventSink,
+} from '@shikoo/domain';
 import { beat } from './heartbeat.js';
 import { run } from './poll.js';
 import { acquirePollerLock } from './singleton.js';
 import { createTelegramApi, TELEGRAM_API_BASE } from './telegram.js';
 import { disableCustomEmoji, setReportChatIdFallback } from './settings.js';
+
+/** Module level, so the two handlers below the entry point log the same way. */
+const log = createLogger('bot');
 
 function required(name: string): string {
   const value = process.env[name];
@@ -32,6 +41,20 @@ function positiveInt(name: string, fallback: number): number {
 
 export async function start(): Promise<{ stop: () => Promise<void> }> {
   const { db, pool } = createPostgresD1({ connectionString: required('DATABASE_URL') });
+
+  // Before anything that could fail, so the first thing this process can do is
+  // say why it did not start. `ALERT_CHAT_ID` falls back to the report channel:
+  // a shop that has told us where the nightly report goes has already named an
+  // admin channel, and asking for a second id would leave alerting off on every
+  // box that was configured before this existed.
+  setEventSink(
+    createPostgresEventSink(db, {
+      alertChatId:
+        parseAlertChatId(process.env['ALERT_CHAT_ID']) ??
+        parseAlertChatId(process.env['REPORT_CHAT_ID']),
+    }),
+  );
+
   const token = required('TELEGRAM_BOT_TOKEN');
 
   // Before a single `getUpdates`. Telegram allows one poller per token and
@@ -45,7 +68,7 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
     pool,
     token,
     () => {
-      console.log('[bot] another poller holds this token — waiting for it to exit');
+      log.info('boot.poller_lock_wait');
       // ponytail: one beat, not a keep-alive. A wait longer than the health
       // check's window marks this container unhealthy, and that is roughly
       // right — if the old poller has not exited in ninety seconds it is stuck,
@@ -58,7 +81,7 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
       // mean polling without it — and a second poller could then start beside
       // us. Exiting is the only honest response; the container comes back and
       // takes the lock again.
-      console.error('[bot] lost the poller lock connection — exiting', err);
+      log.error('boot.poller_lock_lost', {}, err);
       process.exit(1);
     },
   );
@@ -90,7 +113,7 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
         .run();
     })
     .catch((err: unknown) => {
-      console.error('[bot] could not read our own username', err);
+      log.warn('boot.getme_failed', {}, err);
     });
 
   const controller = new AbortController();
@@ -109,7 +132,7 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
   const raw = process.env['REPORT_CHAT_ID'];
   const reportChatId = raw && Number.isSafeInteger(Number(raw)) ? Number(raw) : null;
   if (raw && reportChatId === null) {
-    console.error(`[bot] REPORT_CHAT_ID=${raw} is not a number — no report will be sent`);
+    log.error('boot.bad_report_chat_id', { value: raw });
   }
   setReportChatIdFallback(reportChatId);
 
@@ -119,7 +142,7 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
     onCycle: beat,
   });
 
-  console.log('bot polling');
+  log.info('boot.polling');
 
   return {
     async stop() {
@@ -143,7 +166,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '
     await s.stop();
   };
   started.catch((err: unknown) => {
-    console.error('[bot] failed to start', err);
+    log.error('boot.failed', {}, err);
     process.exit(1);
   });
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -153,7 +176,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '
       // one, which Telegram answers with 409 to both.
       void stop()
         .catch((err: unknown) => {
-          console.error('[bot] shutdown failed', err);
+          log.error('shutdown.failed', {}, err);
         })
         .finally(() => process.exit(0));
     });

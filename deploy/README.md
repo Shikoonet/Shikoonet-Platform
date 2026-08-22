@@ -379,6 +379,7 @@ it. `operator unlock` clears a lockout (five wrong passwords, fifteen minutes).
 | `SWEEP_INTERVAL_MS` | no | Default 60000 |
 | `DEVICE_RATE_LIMIT`, `IP_RATE_LIMIT`, `RATE_LIMIT_WINDOW_MS` | no | Second layer; the edge is the first |
 | `MIRZABOT_INTEGRATION_*`, `AUTO_MATCH_ENABLED`, `AUTO_FULFILLMENT_ENABLED` | while the PHP bot lives | HMAC integration with the legacy bot |
+| `ALERT_CHAT_ID` | recommended | Where a fault is announced — `ingest.sms.failed`, `match.failed`, `settle.failed`, `provision.failed`, `notify.dead`, `webhook.dead`, `boot.schema_behind`, and nothing else. At most **one message an hour per event**, enforced by the `UNIQUE` on `bot_notifications.dedupe_key` rather than by a counter. Set it on all three services: an alert is a row in the queue, and the bot is what flushes it. On the bot it falls back to `REPORT_CHAT_ID`; on ingest and the dashboard it does not, because those have no report channel of their own. Unset means the events are still recorded in `app_events` and nobody is told. |
 | `REPORT_CHAT_ID` | optional, **fallback only** | Where the shop's reports go — the nightly report and the anti-spam block notice, which read one field. The shop's own `setting.Channel_Report` wins wherever it is set; this covers a database whose settings have never been migrated, which is the practice box. Unset AND unmigrated means no report. A channel id is negative. |
 
 A raw bank SMS body is never written to a log, under any setting. There used to

@@ -106,16 +106,29 @@ describe('the login bypass', () => {
  * did not exist for the one door that matters most.
  */
 describe('what the log says about a guard that is off', () => {
-  it('warns when the trusted proxy header is not configured', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    set({ ENV_NAME: 'production' });
-
+  /**
+   * Read off stdout rather than off `console.warn` since 2026-08-22: the boot
+   * warnings are structured events now, which is what lets one survive the
+   * container it was printed in.
+   */
+  function boot(env: Parameters<typeof set>[0]): string {
+    const lines: string[] = [];
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    set(env);
     buildEnv(NO_DB);
+    out.mockRestore();
+    return lines.join('');
+  }
 
-    const said = warn.mock.calls.map((c) => String(c[0])).join('\n');
-    warn.mockRestore();
+  it('warns when the trusted proxy header is not configured', () => {
+    const said = boot({ ENV_NAME: 'production' });
+
     // Named, so an operator can search for it — and it says what is off rather
     // than that something is.
+    expect(said).toContain('boot.trusted_proxy_unset');
     expect(said).toContain('TRUSTED_PROXY_IP_HEADER');
     expect(said).toContain('/api/v1/auth/login');
     expect(said).toContain('OFF');
@@ -123,14 +136,9 @@ describe('what the log says about a guard that is off', () => {
 
   it('says nothing when it is configured', () => {
     // Or the warning becomes noise on every boot and stops being read.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    set({ ENV_NAME: 'production', TRUSTED_PROXY_IP_HEADER: 'X-Real-IP' });
-
-    buildEnv(NO_DB);
-
-    const said = warn.mock.calls.map((c) => String(c[0])).join('\n');
-    warn.mockRestore();
-    expect(said).not.toContain('TRUSTED_PROXY_IP_HEADER');
+    expect(boot({ ENV_NAME: 'production', TRUSTED_PROXY_IP_HEADER: 'X-Real-IP' })).not.toContain(
+      'boot.trusted_proxy_unset',
+    );
   });
 });
 
