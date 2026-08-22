@@ -134,7 +134,21 @@ function CardPrefixesPanel() {
   }
 
   async function remove(p: string) {
+    const bank = rows.find((r) => r.prefix === p)?.bank_name ?? '';
+    // The longest matching prefix wins, so removing one does not leave the
+    // range unmapped — it hands those cards to whatever shorter prefix still
+    // matches, or to none. Either way a card that resolved to one bank
+    // yesterday resolves differently today, and the press said nothing.
+    if (
+      !window.confirm(
+        `پیش‌شمارهٔ ${p}${bank ? ` (${bank})` : ''} حذف شود؟ ` +
+          `کارت‌هایی که با آن شروع می‌شوند از این به بعد به بانک دیگری نسبت داده می‌شوند یا به هیچ بانکی.`,
+      )
+    ) {
+      return;
+    }
     setBusy(true);
+    setErr(null);
     const r = await fetch(`/api/v1/banks/prefixes/${p}`, { method: 'DELETE' });
     if (!r.ok) setErr(`حذف ناموفق بود (${r.status})`);
     await load();
@@ -327,7 +341,20 @@ function SmsPatternsPanel() {
   }
 
   async function remove(id: string) {
+    // Additive, and the sentence has to say only that. `registry.ts` is
+    // explicit that these fallbacks never run where a built-in already named
+    // the bank, so deleting one does not stop a bank's SMS being parsed in
+    // general — it stops the messages that ONLY this pattern could read, which
+    // is exactly why somebody added it.
+    if (
+      !window.confirm(
+        'این الگوی پیامک حذف شود؟ پیامک‌هایی که فقط با همین الگو خوانده می‌شدند از این به بعد تشخیص داده نمی‌شوند و واریزی‌شان تطبیق نمی‌خورد.',
+      )
+    ) {
+      return;
+    }
     setBusy(true);
+    setErr(null);
     const r = await fetch(`/api/v1/banks/sms-patterns/${id}`, { method: 'DELETE' });
     if (!r.ok) setErr(`حذف ناموفق بود (${r.status})`);
     await load();

@@ -114,12 +114,31 @@ export function AccountsView({ cache }: AccountsViewProps) {
   }
 
   async function deactivate(id: string) {
-    if (!window.confirm('این حساب غیرفعال شود؟')) return;
+    const acc = items.find((x) => x.id === id);
+    const name = acc?.display_name ?? id;
+    // The strongest press on this screen had the vaguest question. `active` is
+    // a soft-delete flag and `status` is the day-to-day lifecycle
+    // (`packages/domain/src/accountStatus.ts` says so) — so «بی‌صدا» and «رد»
+    // are reversible operational states with a route back, and this one takes
+    // the row out of the panel entirely. The other five transitions in this
+    // file each name what they cost; walking it on 2026-08-22 this one asked
+    // «این حساب غیرفعال شود؟» about no account in particular and then said
+    // nothing at all.
+    if (
+      !window.confirm(
+        `«${name}» غیرفعال شود؟ از فهرست حساب‌ها بیرون می‌رود. ` +
+          `اگر فقط می‌خواهید موقتاً از «امروز» و تطبیق بیرون بماند، «بی‌صدا» همان کار را می‌کند و برگشتش یک کلیک است.`,
+      )
+    ) {
+      return;
+    }
     setBusy(id);
     setError(null);
     try {
       await api.deactivateAccount(id);
+      setSuccess(`«${name}» غیرفعال شد.`);
       cache.invalidate(QK.accounts, QK.accountTotals('all_time'));
+      setTimeout(() => setSuccess(null), 4000);
     } catch (e) {
       setError(String(e));
     } finally {
