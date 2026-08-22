@@ -348,6 +348,22 @@ export interface BulkPricePreview {
   examples: { name: string; fromIrr: number; toIrr: number }[];
 }
 
+/**
+ * One send from «ارسال گروهی», as the audit log recorded it.
+ *
+ * `count` is how many rows the send actually wrote — 0 when a submission was
+ * retried and the idempotency key caught it, which is worth showing rather than
+ * hiding: it is the difference between "nobody was charged again" and "nothing
+ * happened".
+ */
+export interface BulkSend {
+  by: string;
+  at: number;
+  count: number;
+  /** Rial per wallet. Null for a broadcast, which has no amount. */
+  amountIrr: number | null;
+}
+
 export interface PanelItem {
   id: number;
   code: string;
@@ -793,6 +809,13 @@ export const api = {
   /** How many customers a bulk action would reach, before committing to it. */
   bulkReach() {
     return req<{ ok: boolean; reach: number }>('/bulk/reach');
+  },
+
+  /** The last credit and the last broadcast, so neither is sent twice by hand. */
+  bulkRecent() {
+    return req<{ ok: boolean; credit: BulkSend | null; broadcast: BulkSend | null }>(
+      '/bulk/recent',
+    );
   },
 
   /**

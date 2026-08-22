@@ -23,40 +23,60 @@
 import { expect, test } from '@playwright/test';
 import { createPostgresD1 } from '@shikoo/db';
 
-/** The seeded plan the simulation shop is built around. */
-const PLAN = 2560;
-const ORIGINAL_IRR = 1_000_000;
+/**
+ * The seeded plan this file works on, found by NAME.
+ *
+ * Not by id. `product_plans.id` is `GENERATED ALWAYS AS IDENTITY`, so every
+ * `seed:sim` hands the same plan a higher number — the first draft pinned 2560
+ * and started timing out the moment the shop was re-seeded, which is the same
+ * shape as pinning a date in a clock-dependent test. The name is written by the
+ * seed and does not move.
+ *
+ * It is a plan with orders and sold services against it, which is what the
+ * refusal test needs.
+ */
+const PLAN_NAME = '۱ماهه - ۲۰ گیگ - چند کاربر';
 
-async function planPriceIrr(): Promise<number> {
+async function withDb<T>(fn: (d: ReturnType<typeof createPostgresD1>['db']) => Promise<T>) {
   const { db, pool } = createPostgresD1({ connectionString: process.env['DATABASE_URL']! });
   try {
-    const row = await db
-      .prepare(`SELECT price_irr::bigint AS p FROM product_plans WHERE id = ?1`)
-      .bind(PLAN)
-      .first<{ p: number }>();
-    return Number(row?.p ?? -1);
+    return await fn(db);
   } finally {
     await pool.end();
   }
 }
 
+async function plan(): Promise<{ id: number; priceIrr: number }> {
+  return withDb(async (d) => {
+    const row = await d
+      .prepare(`SELECT id, price_irr::bigint AS p FROM product_plans WHERE name = ?1`)
+      .bind(PLAN_NAME)
+      .first<{ id: number; p: number }>();
+    if (!row) throw new Error(`the seeded plan «${PLAN_NAME}» is missing — run seed:sim`);
+    return { id: Number(row.id), priceIrr: Number(row.p) };
+  });
+}
+
+/** Read once, before anything is typed, so the restore below is not a guess. */
+let originalIrr = 0;
+
+test.beforeAll(async () => {
+  originalIrr = (await plan()).priceIrr;
+});
+
 async function openFirstPlan(page: import('@playwright/test').Page) {
+  const { id } = await plan();
   await page.goto('/admin/products');
   await expect(page.locator('.sidebar-link.active')).toHaveText('محصولات');
-  await page.locator(`tbody tr:has(td:text-is("${PLAN}")) button`).click();
+  await page.locator(`tbody tr:has(td:text-is("${id}")) button`).click();
   await expect(page.getByRole('heading', { name: 'مشخصات پلن' })).toBeVisible();
 }
 
 test.afterAll(async () => {
-  const { db, pool } = createPostgresD1({ connectionString: process.env['DATABASE_URL']! });
-  try {
-    await db
-      .prepare(`UPDATE product_plans SET price_irr = ?2 WHERE id = ?1`)
-      .bind(PLAN, ORIGINAL_IRR)
-      .run();
-  } finally {
-    await pool.end();
-  }
+  const { id } = await plan();
+  await withDb((d) =>
+    d.prepare(`UPDATE product_plans SET price_irr = ?2 WHERE id = ?1`).bind(id, originalIrr).run(),
+  );
 });
 
 test('a price typed in Toman is stored in Rial, and the ledger says who changed it', async ({
@@ -71,8 +91,9 @@ test('a price typed in Toman is stored in Rial, and the ledger says who changed 
   await page.getByRole('button', { name: 'ذخیره', exact: true }).click();
 
   // The list is the panel agreeing with itself; the database is the claim.
-  await expect(page.locator(`tbody tr:has(td:text-is("${PLAN}"))`)).toContainText('۱۲۳٬۴۵۶ تومان');
-  expect(await planPriceIrr()).toBe(1_234_560);
+  const { id } = await plan();
+  await expect(page.locator(`tbody tr:has(td:text-is("${id}"))`)).toContainText('۱۲۳٬۴۵۶ تومان');
+  expect((await plan()).priceIrr).toBe(1_234_560);
 });
 
 test('a delete the server refuses says so in the digits the rest of the panel uses', async ({

@@ -30,9 +30,37 @@ import {
   ApiError,
   type BulkPriceChange,
   type BulkPricePreview,
+  type BulkSend,
   type PanelItem,
 } from '../api.js';
-import { count, toman } from '../format.js';
+import { count, dateTime, toman } from '../format.js';
+
+/**
+ * What went out from here last, said next to the button that would do it again.
+ *
+ * The idempotency key stops one submission being applied twice. It cannot stop
+ * a second decision, and it should not: a fresh batch is a legitimate new
+ * charge. The mistake this screen actually invites is the one nothing guarded —
+ * an operator who cannot see that everyone was credited twenty minutes ago, and
+ * credits them again. The line below is the guard, and it is a sentence rather
+ * than a control because the answer is usually "fine, go ahead".
+ *
+ * Read from `audit_logs`, which is append-only, so it cannot disagree with what
+ * happened.
+ */
+function LastSend({ send, verb }: { send: BulkSend | null; verb: string }) {
+  if (send === null) return null;
+  return (
+    <p className="muted">
+      آخرین بار: {verb} {count(send.count)} مشتری
+      {send.amountIrr === null ? '' : `، هر کدام ${toman(send.amountIrr)}`} — {dateTime(send.at)}،
+      توسط {send.by}
+      {/* Zero is not nothing-happened; it is a retry the key caught. Saying so
+          stops it reading as a failure worth repeating. */}
+      {send.count === 0 ? ' (ارسال تکراری بود و چیزی دوباره نرفت)' : ''}
+    </p>
+  );
+}
 
 /** Telegram refuses a longer message outright rather than truncating it. */
 const MAX_MESSAGE_LENGTH = 4096;
@@ -57,6 +85,10 @@ function newId(): string {
 
 export function BulkPage() {
   const [reach, setReach] = useState<number | null>(null);
+  const [recent, setRecent] = useState<{
+    credit: BulkSend | null;
+    broadcast: BulkSend | null;
+  } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
@@ -96,8 +128,21 @@ export function BulkPage() {
     }
   }
 
+  /** Re-read after every send, so the line is never one send behind. */
+  async function loadRecent() {
+    try {
+      const r = await api.bulkRecent();
+      setRecent({ credit: r.credit, broadcast: r.broadcast });
+    } catch {
+      // Deliberately silent. This is a warning, not the work: an operator who
+      // cannot see it should still be able to credit and broadcast, and an
+      // error box over a failed advisory read would look like the send failed.
+    }
+  }
+
   useEffect(() => {
     void loadReach();
+    void loadRecent();
     void (async () => {
       try {
         setPanels((await api.panels()).items);
@@ -189,6 +234,9 @@ export function BulkPage() {
     } finally {
       setBusy(false);
       setConfirmingCredit(false);
+      // After, not before: the warning that matters is the one that names the
+      // send the next operator is about to repeat.
+      void loadRecent();
     }
   }
 
@@ -207,6 +255,7 @@ export function BulkPage() {
     } finally {
       setBusy(false);
       setConfirmingMessage(false);
+      void loadRecent();
     }
   }
 
@@ -253,6 +302,7 @@ export function BulkPage() {
             ادامه
           </button>
         </div>
+        <LastSend send={recent?.credit ?? null} verb="شارژ" />
       </div>
 
       {/* Directly under the card it confirms. Collected at the bottom of the
@@ -308,6 +358,7 @@ export function BulkPage() {
         >
           ادامه
         </button>
+        <LastSend send={recent?.broadcast ?? null} verb="پیام به" />
       </div>
 
       <div className="card" style={{ marginBlockStart: 16 }}>

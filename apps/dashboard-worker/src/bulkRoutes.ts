@@ -119,6 +119,57 @@ export function registerBulkRoutes(
     return c.json({ ok: true, reach: await activeCustomerCount(c.env.DB) });
   });
 
+  /**
+   * What went out from this screen most recently, and who sent it.
+   *
+   * The idempotency key `bulk:<batch>:<user>` stops one submission being
+   * applied twice. It cannot stop a second *decision* — a fresh batch id is a
+   * new, legitimate charge, and the route is right to apply it. What was
+   * missing is the only thing that prevents the mistake this screen actually
+   * invites: an operator who cannot see that somebody credited everyone twenty
+   * minutes ago, and does it again.
+   *
+   * Read out of `audit_logs` rather than kept in a table of its own. The rows
+   * are already written on every send — including a retry that credited
+   * nothing, which is deliberately in the log — and they are append-only, so
+   * this cannot disagree with what happened.
+   *
+   * Any operator may read it. Seeing that a charge went out is not the same
+   * power as making one, and a REVIEWER who cannot see it is the person most
+   * likely to ask an ADMIN to send it again.
+   */
+  app.get('/api/v1/admin/bulk/recent', async (c) => {
+    const { results } = await c.env.DB.prepare(
+      `SELECT DISTINCT ON (action)
+              action, actor_email, after_json, created_at
+         FROM audit_logs
+        WHERE action IN ('customers.bulk_credited', 'customers.broadcast_queued')
+        ORDER BY action, created_at DESC`,
+    ).all<{ action: string; actor_email: string; after_json: unknown; created_at: number }>();
+
+    const of = (action: string) => {
+      const row = (results ?? []).find((r) => r.action === action);
+      if (!row) return null;
+      const after = (typeof row.after_json === 'string'
+        ? (JSON.parse(row.after_json) as Record<string, unknown>)
+        : ((row.after_json ?? {}) as Record<string, unknown>));
+      return {
+        by: row.actor_email,
+        at: Number(row.created_at),
+        // `wallets` for a credit, `recipients` for a broadcast — how many rows
+        // the send actually wrote, which is 0 on a retry.
+        count: Number(after['wallets'] ?? after['recipients'] ?? 0),
+        amountIrr: after['amount_irr'] === undefined ? null : Number(after['amount_irr']),
+      };
+    };
+
+    return c.json({
+      ok: true,
+      credit: of('customers.bulk_credited'),
+      broadcast: of('customers.broadcast_queued'),
+    });
+  });
+
   app.post('/api/v1/admin/bulk/credit', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
