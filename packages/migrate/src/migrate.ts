@@ -678,7 +678,8 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
     // it would widen it to every product on every panel.
     let productId: string | null = null;
     if (r.code_product && r.code_product !== 'all') {
-      productId = productByCode.get(t.legacyText(r.code_product, 'DiscountSell.code_product') ?? '') ?? null;
+      productId =
+        productByCode.get(t.legacyText(r.code_product, 'DiscountSell.code_product') ?? '') ?? null;
       if (productId === null) {
         skip(ctx, 'discount codes: scoped to a product that is gone');
         continue;
@@ -686,7 +687,8 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
     }
     let providerId: string | null = null;
     if (r.code_panel && r.code_panel !== '/all') {
-      providerId = providerByCode.get(t.legacyText(r.code_panel, 'DiscountSell.code_panel') ?? '') ?? null;
+      providerId =
+        providerByCode.get(t.legacyText(r.code_panel, 'DiscountSell.code_panel') ?? '') ?? null;
       if (providerId === null) {
         skip(ctx, 'discount codes: scoped to a panel that is gone');
         continue;

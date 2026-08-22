@@ -36,9 +36,7 @@ describe('assertLocal', () => {
   });
 
   it('names the host in the refusal, so the operator can act on it', () => {
-    expect(() => assertLocal(url('db.example.com'))).toThrow(
-      `${OVERRIDE}=db.example.com`,
-    );
+    expect(() => assertLocal(url('db.example.com'))).toThrow(`${OVERRIDE}=db.example.com`);
   });
 
   it('allows the exact host the operator named', () => {

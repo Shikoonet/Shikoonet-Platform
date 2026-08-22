@@ -324,7 +324,11 @@ describe('the read-only ledgers', () => {
 
     const res = await app.request(`/api/v1/admin/subscriptions?q=${telegramId}`, {}, envAs(ADMIN));
     const body = (await res.json()) as {
-      items: Array<{ usedBytes: number | null; lastSyncedAt: string | null; volumeGb: number | null }>;
+      items: Array<{
+        usedBytes: number | null;
+        lastSyncedAt: string | null;
+        volumeGb: number | null;
+      }>;
     };
     const row = body.items[0]!;
     // A number, not a string: `used_bytes` is int8 and comes back as text from
@@ -411,8 +415,12 @@ describe('the read-only ledgers', () => {
 
   it('is readable by a reviewer', async () => {
     expect((await app.request('/api/v1/admin/orders', {}, envAs(REVIEWER))).status).toBe(200);
-    expect((await app.request('/api/v1/admin/subscriptions', {}, envAs(REVIEWER))).status).toBe(200);
-    expect((await app.request('/api/v1/admin/wallet-entries', {}, envAs(REVIEWER))).status).toBe(200);
+    expect((await app.request('/api/v1/admin/subscriptions', {}, envAs(REVIEWER))).status).toBe(
+      200,
+    );
+    expect((await app.request('/api/v1/admin/wallet-entries', {}, envAs(REVIEWER))).status).toBe(
+      200,
+    );
   });
 });
 

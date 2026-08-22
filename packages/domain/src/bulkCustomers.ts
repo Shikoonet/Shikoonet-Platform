@@ -103,8 +103,10 @@ export async function queueDirectMessage(
   createdBy: number,
 ): Promise<number> {
   await db
-    .prepare(`INSERT INTO broadcasts (id, body, created_by) VALUES (?1, ?2, ?3)
-              ON CONFLICT (id) DO NOTHING`)
+    .prepare(
+      `INSERT INTO broadcasts (id, body, created_by) VALUES (?1, ?2, ?3)
+              ON CONFLICT (id) DO NOTHING`,
+    )
     .bind(messageId, body, createdBy)
     .run();
   const done = await db
@@ -130,8 +132,10 @@ export async function queueBroadcast(
   createdBy: number,
 ): Promise<number> {
   await db
-    .prepare(`INSERT INTO broadcasts (id, body, created_by) VALUES (?1, ?2, ?3)
-              ON CONFLICT (id) DO NOTHING`)
+    .prepare(
+      `INSERT INTO broadcasts (id, body, created_by) VALUES (?1, ?2, ?3)
+              ON CONFLICT (id) DO NOTHING`,
+    )
     .bind(broadcastId, body, createdBy)
     .run();
   const done = await db

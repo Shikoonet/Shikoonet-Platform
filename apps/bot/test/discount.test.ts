@@ -386,10 +386,7 @@ describe('using one twice', () => {
     await useCode(updateId, telegramId, VIP_PLAN, 'once1');
     await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
     // That order is paid for and gone; the code should not come back.
-    await db
-      .prepare(`UPDATE orders SET status = 'PAID' WHERE user_id = ?1`)
-      .bind(userId)
-      .run();
+    await db.prepare(`UPDATE orders SET status = 'PAID' WHERE user_id = ?1`).bind(userId).run();
 
     expect(await useCode(updateId + 3, telegramId, VIP_PLAN, 'once1')).toBe(
       menu.DISCOUNT_REFUSED['ALREADY_USED'],
@@ -468,8 +465,10 @@ describe('renewing with a code', () => {
     const userId = await makeCustomer(telegramId);
     const service = await makeRenewable(userId, `rp${telegramId}`);
     const otherProduct = await db
-      .prepare(`SELECT p.id FROM products p JOIN product_plans pl ON pl.product_id = p.id
-                 WHERE pl.id <> ?1 AND p.provider_id = ?2 LIMIT 1`)
+      .prepare(
+        `SELECT p.id FROM products p JOIN product_plans pl ON pl.product_id = p.id
+                 WHERE pl.id <> ?1 AND p.provider_id = ?2 LIMIT 1`,
+      )
       .bind(VIP_PLAN, VIP_PROVIDER)
       .first<{ id: number }>();
     await makeCode('otherp', { appliesTo: 'RENEW', productId: otherProduct!.id });

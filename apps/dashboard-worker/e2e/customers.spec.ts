@@ -91,9 +91,7 @@ test.afterAll(wipe);
 async function person() {
   return withDb((d) =>
     d
-      .prepare(
-        `SELECT status, blocked_reason, discount_percent FROM users WHERE telegram_id = ?1`,
-      )
+      .prepare(`SELECT status, blocked_reason, discount_percent FROM users WHERE telegram_id = ?1`)
       .bind(TELEGRAM_ID)
       .first<{ status: string; blocked_reason: string | null; discount_percent: number }>(),
   );
@@ -108,13 +106,19 @@ async function open(page: Page) {
     page.waitForResponse((r) => r.url().includes(`q=${TELEGRAM_ID}`)),
     page.getByRole('button', { name: 'جست‌وجو' }).click(),
   ]);
-  await page.locator(`tbody tr:has-text("${HANDLE}")`).getByRole('button', { name: 'مدیریت' }).click();
+  await page
+    .locator(`tbody tr:has-text("${HANDLE}")`)
+    .getByRole('button', { name: 'مدیریت' })
+    .click();
   await expect(page.locator('#cust-discount')).toBeVisible();
 }
 
 test('the drawer writes its numbers in the digits the rest of the panel uses', async ({ page }) => {
   await withDb((d) =>
-    d.prepare(`UPDATE users SET discount_percent = 25 WHERE telegram_id = ?1`).bind(TELEGRAM_ID).run(),
+    d
+      .prepare(`UPDATE users SET discount_percent = 25 WHERE telegram_id = ?1`)
+      .bind(TELEGRAM_ID)
+      .run(),
   );
   await open(page);
 

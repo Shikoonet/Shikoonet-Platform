@@ -84,12 +84,14 @@ const REACHES_A_PANEL: ReadonlySet<string> = new Set([
  * fixed in different places: the address on this screen, the credential only
  * in the server's secret store.
  */
-function cannotDeliver(p: { kind: string; status: string; baseUrl: string | null; hasSecretRef: boolean }): string | null {
+function cannotDeliver(p: {
+  kind: string;
+  status: string;
+  baseUrl: string | null;
+  hasSecretRef: boolean;
+}): string | null {
   if (p.status !== 'ACTIVE' || !REACHES_A_PANEL.has(p.kind)) return null;
-  const missing = [
-    ...(p.baseUrl ? [] : ['آدرس']),
-    ...(p.hasSecretRef ? [] : ['اعتبارنامه']),
-  ];
+  const missing = [...(p.baseUrl ? [] : ['آدرس']), ...(p.hasSecretRef ? [] : ['اعتبارنامه'])];
   return missing.length === 0 ? null : `بدون ${missing.join(' و ')}`;
 }
 
@@ -218,7 +220,9 @@ export function PanelsPage() {
         </p>
       </div>
 
-      {open && <PanelEditor panel={open} onClose={() => setOpenId(null)} onChanged={() => void load()} />}
+      {open && (
+        <PanelEditor panel={open} onClose={() => setOpenId(null)} onChanged={() => void load()} />
+      )}
     </>
   );
 }

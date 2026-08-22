@@ -23,13 +23,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import {
-  api,
-  ApiError,
-  type ChannelRow,
-  type ClientAppRow,
-  type HelpArticleRow,
-} from '../api.js';
+import { api, ApiError, type ChannelRow, type ClientAppRow, type HelpArticleRow } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -362,9 +356,9 @@ export function ContentPage() {
 
         {tab === 'channels' && (
           <p className="muted">
-            برای اینکه گیت واقعاً کار کند، ربات باید <b>ادمین آن کانال</b> باشد — بدون آن تلگرام
-            به پرسش عضویت خطا می‌دهد، ربات عمداً همه را رد می‌کند، و گیت بی‌صدا هرگز شلیک نمی‌شود.
-            هیچ اعتبارسنجی‌ای این را نمی‌تواند بررسی کند؛ فقط یک بار امتحان کردن با یک حساب غیرعضو.
+            برای اینکه گیت واقعاً کار کند، ربات باید <b>ادمین آن کانال</b> باشد — بدون آن تلگرام به
+            پرسش عضویت خطا می‌دهد، ربات عمداً همه را رد می‌کند، و گیت بی‌صدا هرگز شلیک نمی‌شود. هیچ
+            اعتبارسنجی‌ای این را نمی‌تواند بررسی کند؛ فقط یک بار امتحان کردن با یک حساب غیرعضو.
           </p>
         )}
 

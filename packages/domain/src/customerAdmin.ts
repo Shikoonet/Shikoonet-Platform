@@ -150,7 +150,8 @@ export async function setCustomerStatus(
   if (!before) return null;
 
   const blockedReason = status === 'BLOCKED' ? reason : null;
-  if (before.status === status) return { changed: false, before, blockedReason: before.blocked_reason };
+  if (before.status === status)
+    return { changed: false, before, blockedReason: before.blocked_reason };
 
   await db
     .prepare(`UPDATE users SET status = ?1, blocked_reason = ?2, updated_at = now() WHERE id = ?3`)

@@ -249,7 +249,12 @@ export async function pollOnce(
           // did nothing. The picture is worth trying for and not worth losing
           // the address over.
           try {
-            await api.sendPhotoBytes(reply.chatId, await qrPng(reply.qrOf), reply.text, reply.keyboard);
+            await api.sendPhotoBytes(
+              reply.chatId,
+              await qrPng(reply.qrOf),
+              reply.text,
+              reply.keyboard,
+            );
           } catch (err) {
             log.warn('reply.qr_failed', { trace: traceOf(update), fallback: 'link only' }, err);
             await api.sendMessage(reply.chatId, reply.text, reply.keyboard);

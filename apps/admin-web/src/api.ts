@@ -46,7 +46,6 @@ export interface EventFacets {
   events: Array<{ evt: string; svc: string; count: number }>;
 }
 
-
 export interface CustomerListItem {
   id: number;
   telegramId: number;
@@ -666,7 +665,10 @@ export const api = {
     id: number,
     body: { role?: BotAdminRoleName; active?: boolean; permissions?: Record<string, boolean> },
   ) {
-    return req<{ ok: boolean }>(`/bot-admins/${id}`, { method: 'POST', body: JSON.stringify(body) });
+    return req<{ ok: boolean }>(`/bot-admins/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
   },
 
   deleteBotAdmin(id: number) {
@@ -1078,9 +1080,7 @@ export const api = {
   resellerRequests(status?: string) {
     const qs = new URLSearchParams();
     if (status) qs.set('status', status);
-    return req<{ ok: boolean; items: ResellerRequestRow[] }>(
-      `/reseller-requests?${qs.toString()}`,
-    );
+    return req<{ ok: boolean; items: ResellerRequestRow[] }>(`/reseller-requests?${qs.toString()}`);
   },
 
   decideResellerRequest(id: number, status: 'APPROVED' | 'REJECTED') {

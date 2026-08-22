@@ -369,9 +369,7 @@ describe('the preview and the change agree', () => {
 
 describe('what is not for sale is not repriced', () => {
   it('leaves a disabled plan and a hidden product alone', async () => {
-    await db
-      .prepare(`UPDATE product_plans SET status = 'DISABLED' WHERE name = 'bp-a-0'`)
-      .run();
+    await db.prepare(`UPDATE product_plans SET status = 'DISABLED' WHERE name = 'bp-a-0'`).run();
     await apply(change({ amount: 50_000 }));
 
     // A price moved on something switched off is a surprise waiting for

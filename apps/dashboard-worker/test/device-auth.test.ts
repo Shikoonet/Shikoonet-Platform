@@ -171,13 +171,12 @@ describe('POST /api/v1/devices — create', () => {
 
     expect(status).toBe(500);
     // Nothing survived the failure — no device, and above all no credential.
-    const left = await env.DB
-      .prepare(
-        `SELECT (SELECT count(*)::int FROM devices WHERE device_code = ?1) AS devices,
+    const left = await env.DB.prepare(
+      `SELECT (SELECT count(*)::int FROM devices WHERE device_code = ?1) AS devices,
                 (SELECT count(*)::int FROM device_credentials dc
                    JOIN devices d ON d.id = dc.device_id
                   WHERE d.device_code = ?1) AS creds`,
-      )
+    )
       .bind('pixel-audit-01')
       .first<{ devices: number; creds: number }>();
     expect(left).toMatchObject({ devices: 0, creds: 0 });

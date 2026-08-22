@@ -72,10 +72,9 @@ function panel(account: Record<string, unknown>) {
     }
     if (method === 'PUT') {
       puts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      return new Response(
-        JSON.stringify({ username: 'u_add', subscription_url: '/sub/u_add' }),
-        { status: 200 },
-      );
+      return new Response(JSON.stringify({ username: 'u_add', subscription_url: '/sub/u_add' }), {
+        status: 200,
+      });
     }
     return new Response(JSON.stringify(account), { status: 200 });
   }) as unknown as typeof globalThis.fetch;
@@ -213,9 +212,11 @@ describe('buying extra volume', () => {
     // The dangerous one: `expire` must not become "now".
     expect(p.puts[0]?.['expire']).toBe(0);
     const row = await db
-      .prepare(`SELECT o.status, s.expires_at, s.plan_name_at_sale FROM orders o
+      .prepare(
+        `SELECT o.status, s.expires_at, s.plan_name_at_sale FROM orders o
                   JOIN subscriptions s ON s.id = o.target_subscription_id
-                 WHERE o.id = ?1`)
+                 WHERE o.id = ?1`,
+      )
       .bind(order!.id)
       .first<{ status: string; expires_at: string | null; plan_name_at_sale: string }>();
     expect(row).toMatchObject({

@@ -96,7 +96,12 @@ describe('the hub stylesheet is scoped to .hub', () => {
         .split(',')
         .map((s) => s.trim())
         .filter((s) => !s.startsWith('.hub'))
-        .filter((s) => shared.some((c) => s.startsWith(`.${c}`) && /^[.:\s[]?$|^$/.test(s.slice(c.length + 1, c.length + 2)))),
+        .filter((s) =>
+          shared.some(
+            (c) =>
+              s.startsWith(`.${c}`) && /^[.:\s[]?$|^$/.test(s.slice(c.length + 1, c.length + 2)),
+          ),
+        ),
     );
     expect(loose).toEqual([]);
   });

@@ -79,8 +79,7 @@ describe('noRateLimit', () => {
 
 describe('who the client is', () => {
   /** A header bag that answers case-insensitively, as Hono's does. */
-  const headers = (bag: Record<string, string>) => (name: string) =>
-    bag[name.toLowerCase()];
+  const headers = (bag: Record<string, string>) => (name: string) => bag[name.toLowerCase()];
 
   it('ignores a header the operator has not named', () => {
     // The whole failure this replaces. `cf-connecting-ip` was read
@@ -114,7 +113,8 @@ describe('who the client is', () => {
     // Only relevant if somebody configures X-Forwarded-For, which the docs
     // advise against because nginx appends rather than overwrites. If they do,
     // the leftmost entry is the original client; the rightmost is the hop.
-    expect(clientIp(headers({ 'x-forwarded-for': '203.0.113.7, 10.0.0.2' }), 'x-forwarded-for'))
-      .toBe('203.0.113.7');
+    expect(
+      clientIp(headers({ 'x-forwarded-for': '203.0.113.7, 10.0.0.2' }), 'x-forwarded-for'),
+    ).toBe('203.0.113.7');
   });
 });

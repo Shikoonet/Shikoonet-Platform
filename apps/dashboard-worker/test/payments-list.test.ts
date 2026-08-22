@@ -115,14 +115,7 @@ async function seedMatch(claimId: string, txId: string, status: 'AUTO_VERIFIED' 
         mismatch_reasons_json, status, reviewed_by, reviewed_at, created_at, updated_at)
      VALUES (?1, ?2, ?3, 1.0, '[]', '[]', ?4, ?5, ?6, ?6, ?6)`,
   )
-    .bind(
-      `m-${claimId}`,
-      txId,
-      claimId,
-      status,
-      status === 'CONFIRMED' ? EMAIL : null,
-      now,
-    )
+    .bind(`m-${claimId}`, txId, claimId, status, status === 'CONFIRMED' ? EMAIL : null, now)
     .run();
 }
 
@@ -270,7 +263,9 @@ describe('GET /api/v1/payments', () => {
       envAs(),
     );
     expect(r.status).toBe(200);
-    const row = await baseEnv.DB.prepare(`SELECT status FROM payment_claims WHERE id = 'c-fake'`).first<{ status: string }>();
+    const row = await baseEnv.DB.prepare(
+      `SELECT status FROM payment_claims WHERE id = 'c-fake'`,
+    ).first<{ status: string }>();
     expect(row?.status).toBe('FAKE_RECEIPT');
     const audit = await baseEnv.DB.prepare(
       `SELECT action FROM audit_logs WHERE entity_id = 'c-fake' ORDER BY created_at DESC LIMIT 1`,

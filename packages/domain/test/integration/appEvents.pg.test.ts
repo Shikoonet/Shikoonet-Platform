@@ -44,7 +44,14 @@ afterAll(async () => {
 });
 
 async function rows(): Promise<
-  { level: string; evt: string; trace: string | null; ref: string | null; fields: unknown; err: string | null }[]
+  {
+    level: string;
+    evt: string;
+    trace: string | null;
+    ref: string | null;
+    fields: unknown;
+    err: string | null;
+  }[]
 > {
   const res = await db
     .prepare(
@@ -90,7 +97,9 @@ describe('app_events', () => {
     expect(row?.err).toContain('panel refused');
     // Postgres, not the logger, is the witness that the secret never landed.
     const raw = await db
-      .prepare(`SELECT count(*)::int AS n FROM app_events WHERE svc = ?1 AND fields::text LIKE '%must-not-appear%'`)
+      .prepare(
+        `SELECT count(*)::int AS n FROM app_events WHERE svc = ?1 AND fields::text LIKE '%must-not-appear%'`,
+      )
       .bind(SVC)
       .first<{ n: number }>();
     expect(raw?.n).toBe(0);

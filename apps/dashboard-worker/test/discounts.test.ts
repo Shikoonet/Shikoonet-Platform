@@ -167,11 +167,17 @@ describe('creating a code', () => {
   });
 
   it('holds the percent-or-amount rule the table also holds', async () => {
-    expect((await create({ code: `${PREFIX}p1`, kind: 'PERCENT_OFF', percent: 15 })).status).toBe(201);
+    expect((await create({ code: `${PREFIX}p1`, kind: 'PERCENT_OFF', percent: 15 })).status).toBe(
+      201,
+    );
     // PERCENT_OFF with no percent
-    expect((await create({ code: `${PREFIX}p2`, kind: 'PERCENT_OFF', amountIrr: 1000 })).status).toBe(400);
+    expect(
+      (await create({ code: `${PREFIX}p2`, kind: 'PERCENT_OFF', amountIrr: 1000 })).status,
+    ).toBe(400);
     // AMOUNT_OFF with no amount
-    expect((await create({ code: `${PREFIX}p3`, kind: 'AMOUNT_OFF', percent: 10 })).status).toBe(400);
+    expect((await create({ code: `${PREFIX}p3`, kind: 'AMOUNT_OFF', percent: 10 })).status).toBe(
+      400,
+    );
     // Both at once
     expect(
       (await create({ code: `${PREFIX}p4`, kind: 'PERCENT_OFF', percent: 10, amountIrr: 1000 }))
@@ -180,13 +186,21 @@ describe('creating a code', () => {
   });
 
   it('refuses a percent outside 0 to 100', async () => {
-    expect((await create({ code: `${PREFIX}p5`, kind: 'PERCENT_OFF', percent: 0 })).status).toBe(400);
-    expect((await create({ code: `${PREFIX}p6`, kind: 'PERCENT_OFF', percent: 101 })).status).toBe(400);
+    expect((await create({ code: `${PREFIX}p5`, kind: 'PERCENT_OFF', percent: 0 })).status).toBe(
+      400,
+    );
+    expect((await create({ code: `${PREFIX}p6`, kind: 'PERCENT_OFF', percent: 101 })).status).toBe(
+      400,
+    );
   });
 
   it('refuses an amount above the ceiling', async () => {
-    expect((await create(gift(`${PREFIX}max`, { amountIrr: MAX_SINGLE_PAYMENT_IRR }))).status).toBe(201);
-    expect((await create(gift(`${PREFIX}over`, { amountIrr: MAX_SINGLE_PAYMENT_IRR + 1 }))).status).toBe(400);
+    expect((await create(gift(`${PREFIX}max`, { amountIrr: MAX_SINGLE_PAYMENT_IRR }))).status).toBe(
+      201,
+    );
+    expect(
+      (await create(gift(`${PREFIX}over`, { amountIrr: MAX_SINGLE_PAYMENT_IRR + 1 }))).status,
+    ).toBe(400);
   });
 
   it('refuses to narrow a gift code to a product, panel or action', async () => {
@@ -199,16 +213,24 @@ describe('creating a code', () => {
 
   it('refuses a product or panel that does not exist', async () => {
     expect(
-      (await create({ code: `${PREFIX}np`, kind: 'PERCENT_OFF', percent: 10, productId: 2_000_000_003 }))
-        .status,
+      (
+        await create({
+          code: `${PREFIX}np`,
+          kind: 'PERCENT_OFF',
+          percent: 10,
+          productId: 2_000_000_003,
+        })
+      ).status,
     ).toBe(400);
     expect(
-      (await create({
-        code: `${PREFIX}nl`,
-        kind: 'PERCENT_OFF',
-        percent: 10,
-        providerId: 2_000_000_003,
-      })).status,
+      (
+        await create({
+          code: `${PREFIX}nl`,
+          kind: 'PERCENT_OFF',
+          percent: 10,
+          providerId: 2_000_000_003,
+        })
+      ).status,
     ).toBe(400);
   });
 
@@ -265,7 +287,11 @@ describe('the state of a code', () => {
         .bind(id, await makeUser())
         .run();
     }
-    const list = await app.request(`/api/v1/admin/discounts?q=${PREFIX}unlimited`, {}, envAs(ADMIN));
+    const list = await app.request(
+      `/api/v1/admin/discounts?q=${PREFIX}unlimited`,
+      {},
+      envAs(ADMIN),
+    );
     const body = (await list.json()) as { items: Array<{ used: number; state: string }> };
     expect(body.items[0]!.used).toBe(3);
     expect(body.items[0]!.state).toBe('USABLE');

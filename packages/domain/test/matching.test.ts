@@ -5,7 +5,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { D1Database, D1PreparedStatement, D1Result } from '@shikoo/database';
-import type { TransactionCandidateRow, PaymentClaimRow, FinancialAccountRow } from '@shikoo/database';
+import type {
+  TransactionCandidateRow,
+  PaymentClaimRow,
+  FinancialAccountRow,
+} from '@shikoo/database';
 import { suggestMatchesForTransaction } from '../src/matching.js';
 
 // ---------------------------------------------------------------------------
@@ -160,7 +164,10 @@ describe('suggestMatchesForTransaction', () => {
       external_order_id: 'order-A',
       customer_reference: null,
     };
-    const account: Pick<FinancialAccountRow, 'id' | 'card_last_four' | 'account_last_four' | 'status'> = {
+    const account: Pick<
+      FinancialAccountRow,
+      'id' | 'card_last_four' | 'account_last_four' | 'status'
+    > = {
       id: 'account-1',
       card_last_four: null,
       account_last_four: null,
@@ -220,7 +227,10 @@ describe('suggestMatchesForTransaction', () => {
       external_order_id: 'order-B',
       customer_reference: null,
     };
-    const account: Pick<FinancialAccountRow, 'id' | 'card_last_four' | 'account_last_four' | 'status'> = {
+    const account: Pick<
+      FinancialAccountRow,
+      'id' | 'card_last_four' | 'account_last_four' | 'status'
+    > = {
       id: 'account-1',
       card_last_four: null,
       account_last_four: null,
@@ -255,7 +265,10 @@ describe('suggestMatchesForTransaction', () => {
       external_order_id: 'order-X',
       customer_reference: null,
     };
-    const account: Pick<FinancialAccountRow, 'id' | 'card_last_four' | 'account_last_four' | 'status'> = {
+    const account: Pick<
+      FinancialAccountRow,
+      'id' | 'card_last_four' | 'account_last_four' | 'status'
+    > = {
       id: 'account-1',
       card_last_four: null,
       account_last_four: null,

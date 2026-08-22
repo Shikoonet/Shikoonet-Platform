@@ -271,7 +271,9 @@ export function ProductsPage() {
                     <td>{toman(p.priceIrr)}</td>
                     {/* NULL volume is unmetered, which is not zero. */}
                     <td>{p.volumeGb === null ? 'نامحدود' : `${count(p.volumeGb)} گیگ`}</td>
-                    <td>{p.durationDays === null ? 'بدون انقضا' : `${count(p.durationDays)} روز`}</td>
+                    <td>
+                      {p.durationDays === null ? 'بدون انقضا' : `${count(p.durationDays)} روز`}
+                    </td>
                     <td>{p.provider?.name ?? '—'}</td>
                     <td>
                       <span className={aud.cls}>{aud.label}</span>
@@ -282,7 +284,9 @@ export function ProductsPage() {
                         {STATUS_FA[p.status] ?? p.status}
                       </span>
                       {p.product.status !== 'ACTIVE' && (
-                        <span className="badge badge-block">محصول {STATUS_FA[p.product.status]}</span>
+                        <span className="badge badge-block">
+                          محصول {STATUS_FA[p.product.status]}
+                        </span>
                       )}
                     </td>
                     <td>
@@ -499,7 +503,12 @@ function NewProductCard({
             ))}
           </select>
         </div>
-        <PanelPicker id="np-panel" value={providerId} onChange={setProviderId} providers={providers} />
+        <PanelPicker
+          id="np-panel"
+          value={providerId}
+          onChange={setProviderId}
+          providers={providers}
+        />
         <CategoryPicker
           id="np-cat"
           value={categoryId}
@@ -852,9 +861,7 @@ function PlanDrawer({
           {plan.name}{' '}
           {/* A plan named after its product is the common case in this
               catalogue; printing both would just say it twice. */}
-          {plan.product.name !== plan.name && (
-            <span className="muted">{plan.product.name} · </span>
-          )}
+          {plan.product.name !== plan.name && <span className="muted">{plan.product.name} · </span>}
           <span className="muted">{plan.provider?.name ?? 'بدون پنل'}</span>
         </span>
         <button type="button" className="btn btn-sm" onClick={onClose}>
@@ -983,9 +990,8 @@ function PlanDrawer({
         </button>
       </div>
       <p className="muted">
-        {count(plan.ordersCount)} سفارش روی این پلن ثبت شده است. اگر چیزی به پلن وصل باشد حذف
-        انجام نمی‌شود و همان‌جا گفته می‌شود چه چیزی وصل است. تغییر قیمت با ایمیل شما در دفتر ثبت
-        می‌شود.
+        {count(plan.ordersCount)} سفارش روی این پلن ثبت شده است. اگر چیزی به پلن وصل باشد حذف انجام
+        نمی‌شود و همان‌جا گفته می‌شود چه چیزی وصل است. تغییر قیمت با ایمیل شما در دفتر ثبت می‌شود.
       </p>
 
       <ProductSection
@@ -1162,7 +1168,12 @@ function ProductSection({
             ))}
           </select>
         </div>
-        <PanelPicker id="pr-panel" value={providerId} onChange={setProviderId} providers={providers} />
+        <PanelPicker
+          id="pr-panel"
+          value={providerId}
+          onChange={setProviderId}
+          providers={providers}
+        />
         <CategoryPicker
           id="pr-cat"
           value={categoryId}
@@ -1228,8 +1239,7 @@ function ProductSection({
       </div>
       <p className="muted">
         حذف محصول پلن‌هایش را هم می‌برد. اگر روی هر کدام از پلن‌ها سفارش، سرویس، کانفیگ انبار یا کد
-        تخفیفی باشد حذف انجام نمی‌شود — «غیرفعال» همان کار را بدون از دست رفتن تاریخچه انجام
-        می‌دهد.
+        تخفیفی باشد حذف انجام نمی‌شود — «غیرفعال» همان کار را بدون از دست رفتن تاریخچه انجام می‌دهد.
       </p>
 
       <h4>پلن تازه برای این محصول</h4>

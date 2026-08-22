@@ -34,10 +34,12 @@ export type ReopenManualVerificationFailure =
   | 'TRANSACTION_NOT_RELEASEABLE';
 
 /** @deprecated Use ReopenManualVerificationFailure */
-export type RevertManualVerificationFailure = Exclude<
-  ReopenManualVerificationFailure,
-  'REASON_REQUIRED' | 'TRANSACTION_NOT_RELEASEABLE' | 'ALREADY_REOPENED'
-> | 'ALREADY_REVERTED';
+export type RevertManualVerificationFailure =
+  | Exclude<
+      ReopenManualVerificationFailure,
+      'REASON_REQUIRED' | 'TRANSACTION_NOT_RELEASEABLE' | 'ALREADY_REOPENED'
+    >
+  | 'ALREADY_REVERTED';
 
 export type ReopenReviewQueue = 'WAITING' | 'NEEDS_REVIEW' | 'SUSPECTED_FAKE';
 
@@ -86,7 +88,9 @@ export function extractRevertSnapshot(
 ): ManualVerificationRevertSnapshot | null {
   if (mismatchReasonsJson) {
     try {
-      const parsed = JSON.parse(mismatchReasonsJson) as { revertSnapshot?: ManualVerificationRevertSnapshot };
+      const parsed = JSON.parse(mismatchReasonsJson) as {
+        revertSnapshot?: ManualVerificationRevertSnapshot;
+      };
       if (parsed.revertSnapshot?.claimStatus) return parsed.revertSnapshot;
     } catch {
       /* ignore */
@@ -94,7 +98,9 @@ export function extractRevertSnapshot(
   }
   if (metadataJson) {
     try {
-      const meta = JSON.parse(metadataJson) as { _revertSnapshot?: ManualVerificationRevertSnapshot };
+      const meta = JSON.parse(metadataJson) as {
+        _revertSnapshot?: ManualVerificationRevertSnapshot;
+      };
       if (meta._revertSnapshot?.claimStatus) return meta._revertSnapshot;
     } catch {
       /* ignore */
@@ -111,9 +117,7 @@ export function isManualVerificationReopenEligible(args: {
 }): boolean {
   if (args.claimStatus !== 'VERIFIED') return false;
   if (args.matchStatus === 'AUTO_VERIFIED') return false;
-  return (
-    extractRevertSnapshot(args.mismatchReasonsJson ?? null, args.metadataJson ?? null) != null
-  );
+  return extractRevertSnapshot(args.mismatchReasonsJson ?? null, args.metadataJson ?? null) != null;
 }
 
 /** @deprecated Use isManualVerificationReopenEligible */
@@ -158,7 +162,10 @@ function reviewQueueFromDecision(decision: MirzabotDecision): ReopenReviewQueue 
   return 'NEEDS_REVIEW';
 }
 
-async function loadClaimCandidate(db: D1Database, claimId: string): Promise<MirzabotClaimCandidate | null> {
+async function loadClaimCandidate(
+  db: D1Database,
+  claimId: string,
+): Promise<MirzabotClaimCandidate | null> {
   const row = await db
     .prepare(
       `SELECT c.id, c.status, c.external_order_id, c.expected_amount_irr,

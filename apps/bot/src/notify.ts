@@ -92,10 +92,7 @@ export function nextAttemptDelayMs(attempt: number): number {
  * queued. Silence about a no-op is only safe while every key is guaranteed
  * fresh, and that guarantee is the caller's, not this function's.
  */
-export async function enqueue(
-  tx: D1DatabaseSession,
-  note: PendingNotification,
-): Promise<boolean> {
+export async function enqueue(tx: D1DatabaseSession, note: PendingNotification): Promise<boolean> {
   const written = await tx
     .prepare(
       `INSERT INTO bot_notifications (dedupe_key, chat_id, body, reply_markup, qr_payload)

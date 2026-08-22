@@ -446,9 +446,7 @@ describe('bulk repricing', () => {
   async function seedPanel(prices: number[]): Promise<void> {
     await baseEnv.DB.prepare(`DELETE FROM product_plans WHERE name LIKE 'wbp-%'`).run();
     await baseEnv.DB.prepare(`DELETE FROM products WHERE code LIKE 'wbp-%'`).run();
-    await baseEnv.DB.prepare(
-      `DELETE FROM provisioning_providers WHERE code = 'wbp-panel'`,
-    ).run();
+    await baseEnv.DB.prepare(`DELETE FROM provisioning_providers WHERE code = 'wbp-panel'`).run();
     const pr = await baseEnv.DB.prepare(
       `INSERT INTO provisioning_providers (code, name, kind, status)
        VALUES ('wbp-panel', 'wbp-panel', 'manual', 'ACTIVE') RETURNING id`,
@@ -480,7 +478,11 @@ describe('bulk repricing', () => {
   const post = (path: string, body: unknown, who: string) =>
     app.request(
       path,
-      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
       envAs(who),
     );
 
@@ -558,9 +560,7 @@ describe('bulk repricing', () => {
     expect(await pricesNow()).toEqual([110_000, 550_000]);
 
     // And exactly one record of it.
-    const n = await baseEnv.DB.prepare(
-      `SELECT count(*)::int AS n FROM audit_logs WHERE id = ?1`,
-    )
+    const n = await baseEnv.DB.prepare(`SELECT count(*)::int AS n FROM audit_logs WHERE id = ?1`)
       .bind(operationId)
       .first<{ n: number }>();
     expect(n?.n).toBe(1);

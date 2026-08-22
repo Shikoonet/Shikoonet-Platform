@@ -169,10 +169,7 @@ const SCOPE = `
      AND (?1::bigint IS NULL OR p.provider_id = ?1)`;
 
 /** What the change would do, without doing it. */
-export async function previewBulkPrice(
-  db: Db,
-  change: BulkPriceChange,
-): Promise<BulkPricePreview> {
+export async function previewBulkPrice(db: Db, change: BulkPriceChange): Promise<BulkPricePreview> {
   const next = newPriceSql(change);
   const unsellable = unsellableSql(next);
   const row = await db

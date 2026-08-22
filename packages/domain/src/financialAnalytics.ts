@@ -46,7 +46,11 @@ export function previousHistoryRangeBounds(
   return { start: current.start! - span, end: current.start };
 }
 
-export function computePercentChange(current: number, previous: number, range: HistoryRange): PercentChange {
+export function computePercentChange(
+  current: number,
+  previous: number,
+  range: HistoryRange,
+): PercentChange {
   if (range === 'all') return { kind: 'all_time' };
   if (previous === 0) return current > 0 ? { kind: 'new' } : { kind: 'no_baseline' };
   return { kind: 'change', percent: ((current - previous) / previous) * 100 };
@@ -132,7 +136,10 @@ export function salesDistribution(counts: number[]): {
 
 export const BALANCE_STALE_MS = 3 * 60 * 60 * 1000;
 
-export function balanceFreshness(asOfMs: number | null, nowMs = Date.now()): 'unavailable' | 'fresh' | 'stale' {
+export function balanceFreshness(
+  asOfMs: number | null,
+  nowMs = Date.now(),
+): 'unavailable' | 'fresh' | 'stale' {
   if (asOfMs == null) return 'unavailable';
   return nowMs - asOfMs <= BALANCE_STALE_MS ? 'fresh' : 'stale';
 }

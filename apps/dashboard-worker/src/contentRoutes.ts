@@ -121,7 +121,10 @@ export function registerContentRoutes(
 
     const body = ArticleBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     const row = await c.env.DB.prepare(
@@ -138,9 +141,18 @@ export function registerContentRoutes(
       .first<{ id: number }>();
     if (!row) return c.json({ ok: false, error: 'insert_failed' }, 500);
 
-    await audit(c.env.DB, ident, 'content.article_created', 'HELP_ARTICLE', String(row.id), null, {
-      title: body.data.title,
-    }, null);
+    await audit(
+      c.env.DB,
+      ident,
+      'content.article_created',
+      'HELP_ARTICLE',
+      String(row.id),
+      null,
+      {
+        title: body.data.title,
+      },
+      null,
+    );
     const created = await c.env.DB.prepare(`${SELECT_ARTICLE} WHERE id = ?1`)
       .bind(row.id)
       .first<ArticleRow>();
@@ -156,7 +168,10 @@ export function registerContentRoutes(
 
     const body = ArticleBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     const before = await c.env.DB.prepare(`${SELECT_ARTICLE} WHERE id = ?1`)
@@ -223,7 +238,16 @@ export function registerContentRoutes(
       );
     }
 
-    await audit(c.env.DB, ident, 'content.article_deleted', 'HELP_ARTICLE', String(id), null, null, null);
+    await audit(
+      c.env.DB,
+      ident,
+      'content.article_deleted',
+      'HELP_ARTICLE',
+      String(id),
+      null,
+      null,
+      null,
+    );
     return c.json({ ok: true });
   });
 
@@ -240,7 +264,10 @@ export function registerContentRoutes(
 
     const body = AppBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     const row = await c.env.DB.prepare(
@@ -257,11 +284,22 @@ export function registerContentRoutes(
       .first<{ id: number }>();
     if (!row) return c.json({ ok: false, error: 'insert_failed' }, 500);
 
-    await audit(c.env.DB, ident, 'content.app_created', 'CLIENT_APP', String(row.id), null, {
-      name: body.data.name,
-      link: body.data.link,
-    }, null);
-    const created = await c.env.DB.prepare(`${SELECT_APP} WHERE id = ?1`).bind(row.id).first<AppRow>();
+    await audit(
+      c.env.DB,
+      ident,
+      'content.app_created',
+      'CLIENT_APP',
+      String(row.id),
+      null,
+      {
+        name: body.data.name,
+        link: body.data.link,
+      },
+      null,
+    );
+    const created = await c.env.DB.prepare(`${SELECT_APP} WHERE id = ?1`)
+      .bind(row.id)
+      .first<AppRow>();
     return c.json({ ok: true, app: shapeApp(created!) });
   });
 
@@ -274,7 +312,10 @@ export function registerContentRoutes(
 
     const body = AppBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     const before = await c.env.DB.prepare(`${SELECT_APP} WHERE id = ?1`).bind(id).first<AppRow>();

@@ -132,7 +132,11 @@ export function registerRevenueRoutes(
               COALESCE(SUM(amount_irr) FILTER (WHERE amount_irr > 0), 0) AS credits_irr,
               COALESCE(SUM(amount_irr), 0) AS net_irr
          FROM revenue_adjustments`,
-    ).first<{ expenses_irr: string | number; credits_irr: string | number; net_irr: string | number }>();
+    ).first<{
+      expenses_irr: string | number;
+      credits_irr: string | number;
+      net_irr: string | number;
+    }>();
 
     return c.json({
       ok: true,
@@ -154,7 +158,10 @@ export function registerRevenueRoutes(
 
     const body = AdjustmentBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     // The one place the sign is applied. `amountToman` is validated positive, so

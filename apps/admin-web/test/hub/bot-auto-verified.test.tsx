@@ -18,10 +18,7 @@ import {
   BotAutoVerifiedFilter,
   useBotAutoVerifiedFilter,
 } from '../../src/hub/BotAutoVerifiedFilter.js';
-import {
-  tehranTodayDateString,
-  tehranAdjacentDay,
-} from '../../src/hub/historyRangeNav.js';
+import { tehranTodayDateString, tehranAdjacentDay } from '../../src/hub/historyRangeNav.js';
 
 // Anchor "now" to a Tehran-friendly instant.
 const NOW_MS = Date.parse('2026-08-10T07:00:00Z'); // 10:30 Tehran
@@ -131,15 +128,25 @@ describe('useBotAutoVerifiedFilter — URL state', () => {
       <div>
         <div data-testid="segment">{value.segment}</div>
         <div data-testid="date">{value.date}</div>
-        <button data-testid="set-new" onClick={() => setSegment('NEW_PURCHASE')}>N</button>
-        <button data-testid="set-renewal" onClick={() => setSegment('RENEWAL')}>R</button>
-        <button data-testid="set-yesterday" onClick={() => setDate('YESTERDAY')}>Y</button>
-        <button data-testid="set-today" onClick={() => setDate('TODAY')}>T</button>
-        <button data-testid="set-dby" onClick={() => setDate('DAY_BEFORE_YESTERDAY')}>D</button>
-        <button data-testid="set-all" onClick={() => setDate('ALL')}>A</button>
-        <div data-testid="params">
-          {JSON.stringify(toQueryParams())}
-        </div>
+        <button data-testid="set-new" onClick={() => setSegment('NEW_PURCHASE')}>
+          N
+        </button>
+        <button data-testid="set-renewal" onClick={() => setSegment('RENEWAL')}>
+          R
+        </button>
+        <button data-testid="set-yesterday" onClick={() => setDate('YESTERDAY')}>
+          Y
+        </button>
+        <button data-testid="set-today" onClick={() => setDate('TODAY')}>
+          T
+        </button>
+        <button data-testid="set-dby" onClick={() => setDate('DAY_BEFORE_YESTERDAY')}>
+          D
+        </button>
+        <button data-testid="set-all" onClick={() => setDate('ALL')}>
+          A
+        </button>
+        <div data-testid="params">{JSON.stringify(toQueryParams())}</div>
       </div>
     );
   }
@@ -242,13 +249,16 @@ describe('تایید خودکار ربات table — Phase 10 classification fix
         return fetchResponseForTab('bot_auto_verified', [item]);
       }
       if (url.includes('/api/v1/analytics')) {
-        return new Response(JSON.stringify({
-          botAutoVerified: { count: 1, amountIrr: 1_950_000 },
-          manualVerified: { count: 0, amountIrr: 0 },
-          sales: { count: 1, amountIrr: 1_950_000, amountChange: 0 },
-          bankInflowIrr: 1_950_000,
-          balances: { totalKnownIrr: 1_950_000, knownAccounts: 1, totalActiveAccounts: 1 },
-        }), { status: 200 });
+        return new Response(
+          JSON.stringify({
+            botAutoVerified: { count: 1, amountIrr: 1_950_000 },
+            manualVerified: { count: 0, amountIrr: 0 },
+            sales: { count: 1, amountIrr: 1_950_000, amountChange: 0 },
+            bankInflowIrr: 1_950_000,
+            balances: { totalKnownIrr: 1_950_000, knownAccounts: 1, totalActiveAccounts: 1 },
+          }),
+          { status: 200 },
+        );
       }
       return new Response('{}', { status: 200 });
     });
@@ -304,7 +314,11 @@ describe('تایید خودکار ربات table — Phase 10 classification fix
       }
       return new Response('{}', { status: 200 });
     });
-    window.history.replaceState(null, '', '/?tab=bot_auto_verified&purchaseType=renewal&dateFilter=today');
+    window.history.replaceState(
+      null,
+      '',
+      '/?tab=bot_auto_verified&purchaseType=renewal&dateFilter=today',
+    );
     render(<PaymentsView cache={createCache()} />);
     await waitFor(() => expect(capturedUrls.length).toBeGreaterThan(0));
     const paymentsCall = capturedUrls.find((u) => u.includes('/api/v1/payments'));
@@ -327,6 +341,8 @@ describe('تایید خودکار ربات table — Phase 10 classification fix
       return new Response('{}', { status: 200 });
     });
     render(<PaymentsView cache={createCache()} />);
-    await waitFor(() => expect(screen.queryByText(/پرداختی با تایید خودکار ربات نیست/)).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.queryByText(/پرداختی با تایید خودکار ربات نیست/)).toBeTruthy(),
+    );
   });
 });

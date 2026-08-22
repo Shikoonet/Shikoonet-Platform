@@ -138,9 +138,9 @@ describe('the plan list', () => {
   });
 
   it('is just a way back when there is nothing to list', () => {
-    expect(
-      callbacks(menu.planMenu([])).every((b) => /^(buy|menu)$/.test(b.callback_data)),
-    ).toBe(true);
+    expect(callbacks(menu.planMenu([])).every((b) => /^(buy|menu)$/.test(b.callback_data))).toBe(
+      true,
+    );
   });
 });
 

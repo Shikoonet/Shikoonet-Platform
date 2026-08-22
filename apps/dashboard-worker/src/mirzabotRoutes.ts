@@ -130,7 +130,10 @@ const SETTLED_MATCH_ID = `
    ORDER BY CASE m2.status WHEN 'AUTO_VERIFIED' THEN 0 ELSE 1 END, m2.created_at DESC
    LIMIT 1`;
 
-function waitingEndsAt(receiptSubmittedAt: number | null, paidClickedAt: number | null): number | null {
+function waitingEndsAt(
+  receiptSubmittedAt: number | null,
+  paidClickedAt: number | null,
+): number | null {
   const anchor = receiptSubmittedAt ?? paidClickedAt;
   return anchor != null ? anchor + WAITING_TIMEOUT_MS : null;
 }
@@ -226,7 +229,9 @@ function deviceDisplayName(
   return code || null;
 }
 
-function deviceFromRow(row: Pick<ClaimRow, 'device_id' | 'device_display_name' | 'device_code'>): DeviceRef | null {
+function deviceFromRow(
+  row: Pick<ClaimRow, 'device_id' | 'device_display_name' | 'device_code'>,
+): DeviceRef | null {
   if (!row.device_id) return null;
   const name = deviceDisplayName(row.device_display_name, row.device_code);
   return name ? { id: row.device_id, name } : null;
@@ -283,8 +288,14 @@ async function loadPrimaryDevicesForAccounts(db: D1Database, accountIds: string[
       device_code: string | null;
     }>();
 
-  const observationsByAccount = new Map<string, Array<{ deviceId: string; bankTimestamp: number }>>();
-  const devicesLookup = new Map<string, { displayName: string | null; deviceCode: string | null }>();
+  const observationsByAccount = new Map<
+    string,
+    Array<{ deviceId: string; bankTimestamp: number }>
+  >();
+  const devicesLookup = new Map<
+    string,
+    { displayName: string | null; deviceCode: string | null }
+  >();
   for (const r of rows.results ?? []) {
     const list = observationsByAccount.get(r.financial_account_id) ?? [];
     if (list.length < 20) {
@@ -301,15 +312,9 @@ async function loadPrimaryDevicesForAccounts(db: D1Database, accountIds: string[
 
   const map = new Map<string, DeviceRef>();
   for (const accountId of accountIds) {
-    const inferred = inferPrimaryDevice(
-      observationsByAccount.get(accountId) ?? [],
-      devicesLookup,
-    );
+    const inferred = inferPrimaryDevice(observationsByAccount.get(accountId) ?? [], devicesLookup);
     if (!inferred.primaryDeviceId) continue;
-    const name = deviceDisplayName(
-      inferred.primaryDeviceDisplayName,
-      inferred.primaryDeviceCode,
-    );
+    const name = deviceDisplayName(inferred.primaryDeviceDisplayName, inferred.primaryDeviceCode);
     if (name) map.set(accountId, { id: inferred.primaryDeviceId, name });
   }
   return map;
@@ -564,7 +569,8 @@ export function registerMirzabotRoutes(
         {
           ok: false,
           error: 'invalid_card',
-          message: 'Enter exactly 16 digits (spaces/dashes OK). Do not paste the account name with the number.',
+          message:
+            'Enter exactly 16 digits (spaces/dashes OK). Do not paste the account name with the number.',
         },
         400,
       );
@@ -626,7 +632,10 @@ export function registerMirzabotRoutes(
         .bind(id, accountId, digits, parsed.data.label ?? null, now)
         .run();
     } catch {
-      return c.json({ ok: false, error: 'card_already_mapped', message: 'Could not map card.' }, 409);
+      return c.json(
+        { ok: false, error: 'card_already_mapped', message: 'Could not map card.' },
+        409,
+      );
     }
     // Reported, never enforced. A card that fails Luhn cannot exist, and one
     // such row is live in production today (BUGS-FOR-ADMIN.md item 4) — but the
@@ -789,7 +798,9 @@ export function registerMirzabotRoutes(
     const featureEnabled = c.env?.ENABLE_PURCHASE_TYPE === 'true';
     const allowedPurchaseTypes = new Set(['NEW_PURCHASE', 'RENEWAL', 'UNKNOWN']);
     const purchaseTypeForQuery =
-      featureEnabled && tab === 'bot_auto_verified' && purchaseTypeFilter &&
+      featureEnabled &&
+      tab === 'bot_auto_verified' &&
+      purchaseTypeFilter &&
       allowedPurchaseTypes.has(purchaseTypeFilter)
         ? purchaseTypeFilter
         : null;
@@ -872,9 +883,7 @@ export function registerMirzabotRoutes(
     //   prepared `insertPaymentClaimWithPurchaseType` helper) is approved
     //   and deployed.  Until then, any new claim renders with
     //   purchase_type='UNKNOWN'.
-    const projectionExtras = featureEnabled
-      ? 'c.purchase_type, c.operation_type,'
-      : '';
+    const projectionExtras = featureEnabled ? 'c.purchase_type, c.operation_type,' : '';
 
     const rows = await c.env.DB.prepare(
       `SELECT c.id, c.external_order_id, c.customer_reference, c.expected_amount_irr,
@@ -950,7 +959,7 @@ export function registerMirzabotRoutes(
         const ends = waitingEndsAt(row.receipt_submitted_at, row.paid_clicked_at);
         const waitingRemainingMs = ends != null ? Math.max(0, ends - now) : null;
         const waitingElapsedMs =
-          row.receipt_submitted_at ?? row.paid_clicked_at
+          (row.receipt_submitted_at ?? row.paid_clicked_at)
             ? now - (row.receipt_submitted_at ?? row.paid_clicked_at)!
             : null;
         const candidates =
@@ -1021,8 +1030,7 @@ export function registerMirzabotRoutes(
             mismatchReasonsJson: row.match_mismatch_reasons_json,
             metadataJson: row.metadata_json,
           }),
-          fulfillmentState:
-            state === 'MANUALLY_VERIFIED' ? ('UNKNOWN' as const) : undefined,
+          fulfillmentState: state === 'MANUALLY_VERIFIED' ? ('UNKNOWN' as const) : undefined,
           isNew: await isPaymentEventUnread(domainDb, ident.email, claimEventKey(row.id)),
         };
       }),
@@ -1133,7 +1141,10 @@ export function registerMirzabotRoutes(
   });
 
   const SuspectRejectBody = z
-    .object({ reason: z.enum(['FAKE_RECEIPT', 'NO_BANK_TRANSACTION', 'DUPLICATE', 'OTHER']), comment: z.string().max(2000).optional() })
+    .object({
+      reason: z.enum(['FAKE_RECEIPT', 'NO_BANK_TRANSACTION', 'DUPLICATE', 'OTHER']),
+      comment: z.string().max(2000).optional(),
+    })
     .strict();
   app.post('/api/v1/suspects/:claimId/reject', async (c) => {
     const ident = c.get('identity');
@@ -1171,7 +1182,12 @@ export function registerMirzabotRoutes(
       `SELECT id, status, external_order_id, suspect_reason FROM payment_claims WHERE id = ?1 AND source_system = ?2`,
     )
       .bind(claimId, MIRZABOT_SOURCE)
-      .first<{ id: string; status: import('@shikoo/contracts').ClaimStatus; external_order_id: string; suspect_reason: string | null }>();
+      .first<{
+        id: string;
+        status: import('@shikoo/contracts').ClaimStatus;
+        external_order_id: string;
+        suspect_reason: string | null;
+      }>();
     if (!claim) return c.json({ ok: false, error: 'not_found' }, 404);
     try {
       assertTransitionClaim(claim.status, 'FAKE_RECEIPT');
@@ -1250,8 +1266,13 @@ export function registerMirzabotRoutes(
           `SELECT external_order_id, metadata_json, customer_reference FROM payment_claims WHERE id = ?1`,
         )
           .bind(oldId)
-          .first<{ external_order_id: string; metadata_json: string; customer_reference: string | null }>();
-        if (!row) return { claimId: oldId, orderId: null, telegramUserId: null, telegramUsername: null };
+          .first<{
+            external_order_id: string;
+            metadata_json: string;
+            customer_reference: string | null;
+          }>();
+        if (!row)
+          return { claimId: oldId, orderId: null, telegramUserId: null, telegramUsername: null };
         const meta = JSON.parse(row.metadata_json || '{}') as {
           telegramUserId?: string;
           telegramUsername?: string | null;
@@ -1269,7 +1290,11 @@ export function registerMirzabotRoutes(
       `SELECT external_order_id, metadata_json, customer_reference FROM payment_claims WHERE id = ?1`,
     )
       .bind(claimId)
-      .first<{ external_order_id: string; metadata_json: string; customer_reference: string | null }>();
+      .first<{
+        external_order_id: string;
+        metadata_json: string;
+        customer_reference: string | null;
+      }>();
 
     const targetMeta = JSON.parse(target?.metadata_json || '{}') as {
       telegramUserId?: string;
@@ -1368,22 +1393,20 @@ export function registerMirzabotRoutes(
     const ident = c.get('identity');
     if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
     const claimId = c.req.param('claimId');
-    const parsed = z.object({ reason: z.string().min(1).max(2000) }).strict().safeParse(
-      await c.req.json().catch(() => null),
-    );
+    const parsed = z
+      .object({ reason: z.string().min(1).max(2000) })
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'reason_required' }, 400);
 
-    const result = await reopenMirzabotManualVerification(
-      c.env.DB as unknown as DomainD1Database,
-      { claimId, actorEmail: ident.email, reason: parsed.data.reason },
-    );
+    const result = await reopenMirzabotManualVerification(c.env.DB as unknown as DomainD1Database, {
+      claimId,
+      actorEmail: ident.email,
+      reason: parsed.data.reason,
+    });
     if (!result.ok) {
       const status =
-        result.error === 'CLAIM_NOT_FOUND'
-          ? 404
-          : result.error === 'REASON_REQUIRED'
-            ? 400
-            : 409;
+        result.error === 'CLAIM_NOT_FOUND' ? 404 : result.error === 'REASON_REQUIRED' ? 400 : 409;
       return c.json({ ok: false, error: result.error.toLowerCase() }, status);
     }
 
@@ -1429,10 +1452,10 @@ export function registerMirzabotRoutes(
     if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
     const claimId = c.req.param('claimId');
 
-    const result = await revertMirzabotManualVerification(
-      c.env.DB as unknown as DomainD1Database,
-      { claimId, actorEmail: ident.email },
-    );
+    const result = await revertMirzabotManualVerification(c.env.DB as unknown as DomainD1Database, {
+      claimId,
+      actorEmail: ident.email,
+    });
     if (!result.ok) {
       const status =
         result.error === 'CLAIM_NOT_FOUND'

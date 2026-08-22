@@ -35,9 +35,7 @@ const MOBILE_SORT_OPTIONS = [
 function formatPaymentCardCell(a: AccountListItem): string {
   const mapped = a.payment_cards ?? [];
   if (mapped.length > 0) {
-    return mapped
-      .map((c) => (c.label ? `${c.display} (${c.label})` : c.display))
-      .join(', ');
+    return mapped.map((c) => (c.label ? `${c.display} (${c.label})` : c.display)).join(', ');
   }
   if (a.card_last_four) return `*${a.card_last_four}`;
   return '—';
@@ -259,7 +257,9 @@ export function AccountsView({ cache }: AccountsViewProps) {
                       ) : a.card_last_four ? (
                         <IdentifierText value={`*${a.card_last_four}`} />
                       ) : null}
-                      {a.account_last_four ? <IdentifierText value={`*${a.account_last_four}`} /> : null}
+                      {a.account_last_four ? (
+                        <IdentifierText value={`*${a.account_last_four}`} />
+                      ) : null}
                       <IdentifierText value={a.iban} />
                     </span>
                   </div>
@@ -374,104 +374,104 @@ export function AccountsView({ cache }: AccountsViewProps) {
               {sortedAccounts.map((a) => {
                 const idDisplay = accountCellAccessor('account_hint')(a);
                 return (
-                <tr key={a.id} className={a.active ? '' : 'dim'}>
-                  <td>{a.display_name}</td>
-                  <td>{a.bank_name}</td>
-                  <td>
-                    <IdentifierText value={String(idDisplay || '')} />
-                  </td>
-                  <td>
-                    <span className={`status-pill status-pill--${a.status.toLowerCase()}`}>
-                      {statusLabel(a.status)}
-                    </span>
-                  </td>
-                  <td className="actions-cell">
-                    <button type="button" onClick={() => setEditing(a.id)}>
-                      ویرایش
-                    </button>{' '}
-                    <button
-                      type="button"
-                      disabled={a.status !== 'ACTIVE'}
-                      onClick={() => setRerunAssignmentFor(a.id)}
-                      {...w}
-                    >
-                      اجرای دوبارهٔ تخصیص
-                    </button>
-                    {a.status === 'PENDING' && (
-                      <>
+                  <tr key={a.id} className={a.active ? '' : 'dim'}>
+                    <td>{a.display_name}</td>
+                    <td>{a.bank_name}</td>
+                    <td>
+                      <IdentifierText value={String(idDisplay || '')} />
+                    </td>
+                    <td>
+                      <span className={`status-pill status-pill--${a.status.toLowerCase()}`}>
+                        {statusLabel(a.status)}
+                      </span>
+                    </td>
+                    <td className="actions-cell">
+                      <button type="button" onClick={() => setEditing(a.id)}>
+                        ویرایش
+                      </button>{' '}
+                      <button
+                        type="button"
+                        disabled={a.status !== 'ACTIVE'}
+                        onClick={() => setRerunAssignmentFor(a.id)}
+                        {...w}
+                      >
+                        اجرای دوبارهٔ تخصیص
+                      </button>
+                      {a.status === 'PENDING' && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={busy === a.id}
+                            onClick={() => runStatusTransition(a.id, 'accept')}
+                            {...w}
+                          >
+                            پذیرش
+                          </button>
+                          <button
+                            type="button"
+                            className="danger"
+                            disabled={busy === a.id}
+                            onClick={() => runStatusTransition(a.id, 'decline')}
+                            {...w}
+                          >
+                            رد
+                          </button>
+                        </>
+                      )}
+                      {a.status === 'ACTIVE' && (
                         <button
                           type="button"
                           disabled={busy === a.id}
-                          onClick={() => runStatusTransition(a.id, 'accept')}
-                          {...w}
+                          onClick={() => runStatusTransition(a.id, 'mute')}
                         >
-                          پذیرش
+                          بی‌صدا
                         </button>
+                      )}
+                      {a.status === 'MUTED' && (
+                        <button
+                          type="button"
+                          disabled={busy === a.id}
+                          onClick={() => runStatusTransition(a.id, 'unmute')}
+                        >
+                          باصدا
+                        </button>
+                      )}
+                      {a.status === 'DECLINED' && (
+                        <button
+                          type="button"
+                          disabled={busy === a.id}
+                          onClick={() => runStatusTransition(a.id, 'restore')}
+                        >
+                          بازگرداندن
+                        </button>
+                      )}
+                      {a.active ? (
                         <button
                           type="button"
                           className="danger"
                           disabled={busy === a.id}
-                          onClick={() => runStatusTransition(a.id, 'decline')}
+                          onClick={() => deactivate(a.id)}
                           {...w}
                         >
-                          رد
+                          غیرفعال‌کردن
                         </button>
-                      </>
-                    )}
-                    {a.status === 'ACTIVE' && (
-                      <button
-                        type="button"
-                        disabled={busy === a.id}
-                        onClick={() => runStatusTransition(a.id, 'mute')}
-                      >
-                        بی‌صدا
-                      </button>
-                    )}
-                    {a.status === 'MUTED' && (
-                      <button
-                        type="button"
-                        disabled={busy === a.id}
-                        onClick={() => runStatusTransition(a.id, 'unmute')}
-                      >
-                        باصدا
-                      </button>
-                    )}
-                    {a.status === 'DECLINED' && (
-                      <button
-                        type="button"
-                        disabled={busy === a.id}
-                        onClick={() => runStatusTransition(a.id, 'restore')}
-                      >
-                        بازگرداندن
-                      </button>
-                    )}
-                    {a.active ? (
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={busy === a.id}
-                        onClick={() => deactivate(a.id)}
-                        {...w}
-                      >
-                        غیرفعال‌کردن
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={busy === a.id}
-                        onClick={() => setDeletingId(a.id)}
-                        {...w}
-                      >
-                        حذف همیشگی
-                      </button>
-                    )}
-                  </td>
-                </tr>
+                      ) : (
+                        <button
+                          type="button"
+                          className="danger"
+                          disabled={busy === a.id}
+                          onClick={() => setDeletingId(a.id)}
+                          {...w}
+                        >
+                          حذف همیشگی
+                        </button>
+                      )}
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
-            </table>
+          </table>
         </div>
       )}
 
@@ -529,13 +529,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
           onClose={() => setMoveFor(null)}
           onMoved={(deleted) => {
             setMoveFor(null);
-            cache.invalidate(
-              QK.accounts,
-              QK.unmatched,
-              QK.today,
-              QK.suggested,
-              QK.reviewedMatches,
-            );
+            cache.invalidate(QK.accounts, QK.unmatched, QK.today, QK.suggested, QK.reviewedMatches);
             setSuccess(deleted ? 'حساب مبدأ ادغام و حذف شد.' : 'ارجاع‌ها منتقل شدند.');
           }}
         />
@@ -563,7 +557,6 @@ export function AccountsView({ cache }: AccountsViewProps) {
           </button>
         </div>
       )}
-
     </div>
   );
 }
@@ -870,8 +863,8 @@ function PaymentCardsPanel({
     <div className="payment-cards-panel">
       <h4>کارت‌های پرداخت ربات</h4>
       <p className="muted">
-        شماره‌کارت‌هایی که به مشتری نشان داده می‌شود را به این حساب مالی نگاشت کن. فقط خودِ کارت
-        ۱۶ رقمی را بنویس، نه نام حساب.
+        شماره‌کارت‌هایی که به مشتری نشان داده می‌شود را به این حساب مالی نگاشت کن. فقط خودِ کارت ۱۶
+        رقمی را بنویس، نه نام حساب.
       </p>
       {err && <div className="error">{err}</div>}
       {moveOffer && (
@@ -935,7 +928,11 @@ function PaymentCardsPanel({
           value={newCard}
           onChange={(e) => setNewCard(e.target.value)}
         />
-        <input placeholder="برچسب (اختیاری)" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <input
+          placeholder="برچسب (اختیاری)"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+        />
         <button
           type="button"
           className="primary"
@@ -1262,9 +1259,7 @@ export function RerunAssignmentModal({
     >
       {err && <div className="error">{err}</div>}
       {step === 'analyzing' && (
-        <p className="muted">
-          در حال بررسی تراکنش‌های گذشته در برابر شناسه‌های این حساب…
-        </p>
+        <p className="muted">در حال بررسی تراکنش‌های گذشته در برابر شناسه‌های این حساب…</p>
       )}
       {step === 'preview' && counts && (
         <>

@@ -1,12 +1,7 @@
 import { useState } from 'react';
 import type { Cache } from './query.js';
-import {
-  HistoryDateNav,
-} from './historyRangeNav.js';
-import {
-  SalesTrendChart,
-  TopMetricsSummary,
-} from './financialHub.js';
+import { HistoryDateNav } from './historyRangeNav.js';
+import { SalesTrendChart, TopMetricsSummary } from './financialHub.js';
 import { AccountUsagePanel } from './accountAnalytics.js';
 import { CardBalancingPanel } from './cardAnalytics.js';
 import type { AnalyticsResponse } from './analytics.js';

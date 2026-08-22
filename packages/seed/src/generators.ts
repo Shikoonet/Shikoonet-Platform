@@ -572,8 +572,8 @@ export async function seed(db: D1Database, opts: { verbose?: boolean } = {}): Pr
       .run();
   }
 
-/** Match statuses that consume their transaction and claim for good. */
-const SETTLING_STATUSES = new Set(['CONFIRMED', 'AUTO_VERIFIED']);
+  /** Match statuses that consume their transaction and claim for good. */
+  const SETTLING_STATUSES = new Set(['CONFIRMED', 'AUTO_VERIFIED']);
 
   // 6) 250 reconciliation_matches. We pick the first 250 transactions by
   //    bank_timestamp and try to score them against open claims for the

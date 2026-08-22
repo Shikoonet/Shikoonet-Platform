@@ -1,14 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "types": [
-      "node"
-    ]
+    "types": ["node"]
   },
   "//": "`e2e` is checked by its own config — it is the only browser code here, and giving this one the DOM lib would let the server reference `document` without a type error.",
-  "include": [
-    "src",
-    "test",
-    "scripts"
-  ]
+  "include": ["src", "test", "scripts"]
 }

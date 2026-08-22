@@ -48,11 +48,7 @@
  * those sentences silently.
  */
 
-import {
-  checkCustomEmoji,
-  stripCustomEmoji,
-  type CustomEmojiProblem,
-} from './customEmoji.js';
+import { checkCustomEmoji, stripCustomEmoji, type CustomEmojiProblem } from './customEmoji.js';
 
 /** A slot in a text, as an admin writes it. */
 const PLACEHOLDER = /\{([a-zA-Z][a-zA-Z0-9_]*)\}/g;
@@ -409,8 +405,7 @@ export const TEXTS = {
     hint: 'نام صاحب کارت، وقتی ثبت شده باشد',
   },
   CHECKOUT_EXACT_WARNING: {
-    default:
-      'لطفاً دقیقاً همین مبلغ را واریز کنید — مبلغ متفاوت بررسی دستی می‌خواهد و طول می‌کشد.',
+    default: 'لطفاً دقیقاً همین مبلغ را واریز کنید — مبلغ متفاوت بررسی دستی می‌خواهد و طول می‌کشد.',
     placeholders: [],
     screen: 'checkout',
     hint: 'هشدار مبلغ دقیق — تایید خودکار هیچ تلورانسی ندارد',
@@ -571,8 +566,7 @@ export const TEXTS = {
     hint: 'وقتی عکسی می‌رسد و هیچ پرداختی در صف بررسی نیست',
   },
   RECEIPT_WRONG_FILE: {
-    default:
-      'این فایل رسید نیست. لطفاً تصویر رسید را بفرستید — عکس، یا فایل عکس، یا PDF بانک.',
+    default: 'این فایل رسید نیست. لطفاً تصویر رسید را بفرستید — عکس، یا فایل عکس، یا PDF بانک.',
     placeholders: [],
     screen: 'paid',
     hint: 'وقتی مشتری فایلی می‌فرستد که عکس یا PDF نیست — بدون این، فایل بی‌صدا دور انداخته می‌شد',
@@ -684,8 +678,7 @@ export const TEXTS = {
     hint: 'فقط وقتی بیش از یک صفحه هست',
   },
   MY_SERVICES_EMPTY: {
-    default:
-      'هنوز سرویسی ندارید.\n\nاز دکمهٔ «خرید اشتراک» می‌توانید اولین سرویس‌تان را بگیرید.',
+    default: 'هنوز سرویسی ندارید.\n\nاز دکمهٔ «خرید اشتراک» می‌توانید اولین سرویس‌تان را بگیرید.',
     placeholders: [],
     screen: 'myServices',
     hint: 'کاربری که هیچ سرویسی ندارد',
@@ -1464,7 +1457,8 @@ export const TEXTS = {
     hint: 'خط اول صفحهٔ زیرمجموعه‌گیری',
   },
   REFERRAL_TERMS: {
-    default: 'هر کسی با لینک شما وارد شود، از «اولین خرید» او {percent}٪ به کیف پول شما اضافه می‌شود.',
+    default:
+      'هر کسی با لینک شما وارد شود، از «اولین خرید» او {percent}٪ به کیف پول شما اضافه می‌شود.',
     placeholders: ['percent'],
     screen: 'referral',
     hint: 'شرح پورسانت — «اولین خرید» عمداً گفته می‌شود',
@@ -1503,8 +1497,7 @@ export const TEXTS = {
     hint: 'بعد از ثبت درخواست',
   },
   RESELLER_REQUEST_OPEN: {
-    default:
-      '🕓 درخواست شما ثبت شده و در حال بررسی است. تا اعلام نتیجه، درخواست تازه لازم نیست.',
+    default: '🕓 درخواست شما ثبت شده و در حال بررسی است. تا اعلام نتیجه، درخواست تازه لازم نیست.',
     placeholders: [],
     screen: 'reseller',
     hint: 'وقتی درخواست باز دارد',
@@ -2020,8 +2013,7 @@ export const TEXTS = {
     hint: '',
   },
   ADMIN_USER_ASK_DISCOUNT: {
-    default:
-      '🏷 چند درصد تخفیف همیشگی؟ عددی بین ۰ تا ۱۰۰ بفرستید. صفر یعنی برداشتن تخفیف.',
+    default: '🏷 چند درصد تخفیف همیشگی؟ عددی بین ۰ تا ۱۰۰ بفرستید. صفر یعنی برداشتن تخفیف.',
     placeholders: [],
     screen: 'adminUser',
     hint: 'پرسش درصد تخفیف شخصی',

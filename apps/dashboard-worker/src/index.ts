@@ -188,7 +188,10 @@ app.use('*', async (c, next) => {
   // `isAdminSurface` no longer chooses between two Cloudflare audiences — there
   // is one door now — but it still marks which paths that rule covers.
   if (isAdminSurface(c.req.path) && !mayRead(c.req.path, ident.role)) {
-    return c.json({ ok: false, error: 'forbidden', detail: 'این بخش از دسترس نقش شما بیرون است.' }, 403);
+    return c.json(
+      { ok: false, error: 'forbidden', detail: 'این بخش از دسترس نقش شما بیرون است.' },
+      403,
+    );
   }
   // One id per request, echoed back and carried into everything this request
   // writes. `audit_logs.request_id` has existed since migration 0001 and has
@@ -2013,7 +2016,12 @@ async function applyStatusTransition(
   const check = assertTransitionStatus(from, to);
   if (!check.ok) {
     return c.json(
-      { ok: false, error: check.reason, from: check.reason === 'illegal_transition' ? check.from : undefined, to: check.reason === 'illegal_transition' ? check.to : undefined },
+      {
+        ok: false,
+        error: check.reason,
+        from: check.reason === 'illegal_transition' ? check.from : undefined,
+        to: check.reason === 'illegal_transition' ? check.to : undefined,
+      },
       409,
     );
   }
@@ -2032,8 +2040,7 @@ async function applyStatusTransition(
   // Audit row. before/after store only the status, the id, and the
   // display_name — never the full account_hint or any identifiers.
   const auditAction = auditActionForTransition(from, to);
-  await c.env.DB
-    .prepare(SQL.insertAudit)
+  await c.env.DB.prepare(SQL.insertAudit)
     .bind(
       crypto.randomUUID(),
       ident.email,
@@ -2064,10 +2071,7 @@ function makeStatusRoute(
     const account = await loadAccountForTransition(c.env.DB, id);
     if (!account) return c.json({ ok: false, error: 'account_not_found' }, 404);
     if (!validFrom.includes(account.status)) {
-      return c.json(
-        { ok: false, error: 'illegal_transition', from: account.status, to },
-        409,
-      );
+      return c.json({ ok: false, error: 'illegal_transition', from: account.status, to }, 409);
     }
     return applyStatusTransition(c, id, action, account.status, to, Date.now());
   };
@@ -2114,11 +2118,10 @@ app.get('/api/v1/accounts/pending', async (c) => {
   }>();
   const items = await Promise.all(
     rows.results.map(async (row) => {
-      const idents = await c.env.DB
-        .prepare(
-          `SELECT id, kind, value, label FROM financial_account_identifiers
+      const idents = await c.env.DB.prepare(
+        `SELECT id, kind, value, label FROM financial_account_identifiers
              WHERE financial_account_id = ?1 ORDER BY kind, value`,
-        )
+      )
         .bind(row.id)
         .all<{
           id: string;

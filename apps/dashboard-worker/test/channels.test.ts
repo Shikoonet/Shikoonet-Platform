@@ -152,9 +152,9 @@ describe('switching a channel off', () => {
     // `active` is the only column `gate.ts` reads, so this is the whole feature.
     const { id } = (await (await add(`${PREFIX}_toggle`)).json()) as { id: number };
 
-    expect((await post(`/api/v1/admin/required-channels/${id}/active`, { active: false })).status).toBe(
-      200,
-    );
+    expect(
+      (await post(`/api/v1/admin/required-channels/${id}/active`, { active: false })).status,
+    ).toBe(200);
     expect((await rowById(id))?.active).toBe(false);
 
     await post(`/api/v1/admin/required-channels/${id}/active`, { active: true });

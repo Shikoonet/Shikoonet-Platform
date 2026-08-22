@@ -476,7 +476,9 @@ describe('who may reach everybody', () => {
     await handleUpdate(db, press(updateId, telegramId, 'bcr'));
     await handleUpdate(db, types(updateId + 1, telegramId, '1000'));
     await db
-      .prepare(`UPDATE admins SET permissions = '{"bulk.credit": false}'::jsonb WHERE telegram_id = ?1`)
+      .prepare(
+        `UPDATE admins SET permissions = '{"bulk.credit": false}'::jsonb WHERE telegram_id = ?1`,
+      )
       .bind(telegramId)
       .run();
     const out = await handleUpdate(db, press(updateId + 2, telegramId, 'cnf'));
@@ -517,10 +519,7 @@ describe('a message queued from the web panel', () => {
   it('is not queued for a blocked customer, which is what the screen promises', async () => {
     const { telegramId } = ids();
     const userId = await makeCustomer(telegramId);
-    await db
-      .prepare(`UPDATE users SET status = 'BLOCKED' WHERE id = ?1`)
-      .bind(userId)
-      .run();
+    await db.prepare(`UPDATE users SET status = 'BLOCKED' WHERE id = ?1`).bind(userId).run();
 
     // `queueDirectMessage` selects `WHERE u.status = 'ACTIVE'`, so it writes no
     // recipient at all — which is the 409 the route returns and the sentence

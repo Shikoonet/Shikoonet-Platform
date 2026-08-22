@@ -150,9 +150,7 @@ describe('the checkout screen', () => {
 
     expect(checkout).toBeNull();
     const claims = await db
-      .prepare(
-        `SELECT count(*)::int AS n FROM payments WHERE order_id = ?1 AND amount_irr = 0`,
-      )
+      .prepare(`SELECT count(*)::int AS n FROM payments WHERE order_id = ?1 AND amount_irr = 0`)
       .bind(order!.id)
       .first<{ n: number }>();
     expect(claims?.n).toBe(0);

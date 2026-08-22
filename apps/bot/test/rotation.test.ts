@@ -58,7 +58,10 @@ function luhnOk(digits: string): boolean {
  * is 1. Returns the card numbers in index order.
  */
 async function pool(count: number, weights: Record<number, number> = {}): Promise<string[]> {
-  await db.prepare(`UPDATE payment_cards SET status = 'DISABLED' WHERE id NOT LIKE ?1`).bind(`${PREFIX}%`).run();
+  await db
+    .prepare(`UPDATE payment_cards SET status = 'DISABLED' WHERE id NOT LIKE ?1`)
+    .bind(`${PREFIX}%`)
+    .run();
   await db
     .prepare(
       `INSERT INTO financial_accounts
@@ -239,7 +242,8 @@ describe('card rotation', { timeout: 30_000 }, () => {
 
   it('skips a card that has been disabled', async () => {
     const cards = await pool(3);
-    await db.prepare(`UPDATE payment_cards SET status = 'DISABLED' WHERE card_digits = ?1`)
+    await db
+      .prepare(`UPDATE payment_cards SET status = 'DISABLED' WHERE card_digits = ?1`)
       .bind(cards[1]!)
       .run();
 

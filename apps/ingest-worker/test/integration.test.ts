@@ -493,8 +493,18 @@ describe('ingest worker — iPhone compatibility', () => {
       sender: 'BANK',
       timestamp: iso,
     };
-    await postSms({ ...shared, apiKey: s1.apiKey, deviceId: s1.deviceCode, deviceName: s1.deviceName });
-    await postSms({ ...shared, apiKey: s2.apiKey, deviceId: s2.deviceCode, deviceName: s2.deviceName });
+    await postSms({
+      ...shared,
+      apiKey: s1.apiKey,
+      deviceId: s1.deviceCode,
+      deviceName: s1.deviceName,
+    });
+    await postSms({
+      ...shared,
+      apiKey: s2.apiKey,
+      deviceId: s2.deviceCode,
+      deviceName: s2.deviceName,
+    });
 
     const n1 = await env.DB.prepare(`SELECT COUNT(*) AS n FROM raw_sms_events WHERE device_id = ?1`)
       .bind(s1.deviceId)

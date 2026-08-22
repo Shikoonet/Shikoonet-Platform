@@ -219,7 +219,12 @@ function shape(r: PlanRow) {
       oncePerUser: r.once_per_user,
     },
     provider: r.provider_id
-      ? { id: r.provider_id, name: r.provider_name, code: r.provider_code, status: r.provider_status }
+      ? {
+          id: r.provider_id,
+          name: r.provider_name,
+          code: r.provider_code,
+          status: r.provider_status,
+        }
       : null,
     categoryName: r.category_name,
     ordersCount: Number(r.orders_count),
@@ -432,10 +437,15 @@ export function registerProductRoutes(
 
     const body = PlanPatch.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
-    const before = await c.env.DB.prepare(`${SELECT_PLAN} WHERE pl.id = ?1`).bind(id).first<PlanRow>();
+    const before = await c.env.DB.prepare(`${SELECT_PLAN} WHERE pl.id = ?1`)
+      .bind(id)
+      .first<PlanRow>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     const sets: string[] = [];
@@ -462,7 +472,9 @@ export function registerProductRoutes(
 
     // Read back rather than trusting the patch: a CHECK constraint that
     // rejected a value would otherwise be reported to the admin as applied.
-    const after = await c.env.DB.prepare(`${SELECT_PLAN} WHERE pl.id = ?1`).bind(id).first<PlanRow>();
+    const after = await c.env.DB.prepare(`${SELECT_PLAN} WHERE pl.id = ?1`)
+      .bind(id)
+      .first<PlanRow>();
     if (!after) return c.json({ ok: false, error: 'not_found' }, 404);
 
     await audit(
@@ -551,7 +563,10 @@ export function registerProductRoutes(
 
     const body = CategoryBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     // `product_categories.name` is UNIQUE. Letting the constraint answer rather
@@ -564,7 +579,10 @@ export function registerProductRoutes(
       .bind(body.data.name, body.data.sortOrder)
       .first<{ id: number }>();
     if (!row) {
-      return c.json({ ok: false, error: 'duplicate_name', detail: 'این دسته‌بندی از قبل هست.' }, 409);
+      return c.json(
+        { ok: false, error: 'duplicate_name', detail: 'این دسته‌بندی از قبل هست.' },
+        409,
+      );
     }
 
     await audit(
@@ -578,7 +596,15 @@ export function registerProductRoutes(
       null,
     );
     return c.json(
-      { ok: true, category: { id: Number(row.id), name: body.data.name, sortOrder: body.data.sortOrder, productsCount: 0 } },
+      {
+        ok: true,
+        category: {
+          id: Number(row.id),
+          name: body.data.name,
+          sortOrder: body.data.sortOrder,
+          productsCount: 0,
+        },
+      },
       201,
     );
   });
@@ -591,7 +617,10 @@ export function registerProductRoutes(
 
     const body = ProductCreate.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
     const p = body.data;
 
@@ -620,7 +649,11 @@ export function registerProductRoutes(
       .catch(() => null);
     if (!row) {
       return c.json(
-        { ok: false, error: 'rejected', detail: 'کد تکراری است، یا پنل/دسته‌بندی انتخاب‌شده وجود ندارد.' },
+        {
+          ok: false,
+          error: 'rejected',
+          detail: 'کد تکراری است، یا پنل/دسته‌بندی انتخاب‌شده وجود ندارد.',
+        },
         409,
       );
     }
@@ -649,7 +682,10 @@ export function registerProductRoutes(
 
     const body = ProductPatch.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     const SELECT_PRODUCT = `SELECT id, code, name, kind, provider_id, category_id, description,
@@ -687,13 +723,26 @@ export function registerProductRoutes(
       .catch(() => false);
     if (!written) {
       return c.json(
-        { ok: false, error: 'rejected', detail: 'کد تکراری است، یا پنل/دسته‌بندی انتخاب‌شده وجود ندارد.' },
+        {
+          ok: false,
+          error: 'rejected',
+          detail: 'کد تکراری است، یا پنل/دسته‌بندی انتخاب‌شده وجود ندارد.',
+        },
         409,
       );
     }
 
     const after = await c.env.DB.prepare(SELECT_PRODUCT).bind(id).first<Record<string, unknown>>();
-    await audit(c.env.DB, ident, 'catalog.product_updated', 'PRODUCT', String(id), before, after, null);
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.product_updated',
+      'PRODUCT',
+      String(id),
+      before,
+      after,
+      null,
+    );
     return c.json({ ok: true });
   });
 
@@ -706,7 +755,9 @@ export function registerProductRoutes(
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
-    const before = await c.env.DB.prepare(`SELECT id, code, name, status FROM products WHERE id = ?1`)
+    const before = await c.env.DB.prepare(
+      `SELECT id, code, name, status FROM products WHERE id = ?1`,
+    )
       .bind(id)
       .first<{ id: number; code: string; name: string; status: string }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
@@ -743,7 +794,10 @@ export function registerProductRoutes(
 
     const body = PlanCreate.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
     const p = body.data;
 

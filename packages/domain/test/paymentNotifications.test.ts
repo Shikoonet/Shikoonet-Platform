@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  getBellUnreadCounts,
-  incomeEventKey,
-  claimEventKey,
-} from '../src/paymentNotifications.js';
+import { getBellUnreadCounts, incomeEventKey, claimEventKey } from '../src/paymentNotifications.js';
 
 describe('paymentNotifications bell scope', () => {
   it('exports income and claim event keys', () => {

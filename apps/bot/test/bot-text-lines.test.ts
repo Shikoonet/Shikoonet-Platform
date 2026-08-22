@@ -193,13 +193,7 @@ describe('the renew button is quoted from the live keyboard', () => {
           `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
            VALUES ('main', ?1, ?2, ?3, ?4, ?5)`,
         )
-        .bind(
-          b.action,
-          b.action === 'renew' ? label : b.label,
-          b.rowIndex,
-          b.colIndex,
-          b.visible,
-        )
+        .bind(b.action, b.action === 'renew' ? label : b.label, b.rowIndex, b.colIndex, b.visible)
         .run();
     }
     await applySaved();

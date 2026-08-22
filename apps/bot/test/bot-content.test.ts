@@ -32,10 +32,11 @@ let seq = 0;
 
 async function makeCustomer(): Promise<number> {
   const telegramId = TG + ++seq;
-  await db.prepare(
-    `INSERT INTO users (telegram_id, username, registered_at) VALUES (?1, ?2, now())
+  await db
+    .prepare(
+      `INSERT INTO users (telegram_id, username, registered_at) VALUES (?1, ?2, now())
      ON CONFLICT (telegram_id) DO NOTHING`,
-  )
+    )
     .bind(telegramId, `content_${seq}`)
     .run();
   return telegramId;
@@ -128,7 +129,8 @@ describe('the texts a customer receives', () => {
 
   it('says the admin’s wording once it is saved', async () => {
     const custom = 'سلام! به فروشگاه ما خوش آمدید 🌟';
-    await db.prepare(`INSERT INTO bot_texts (key, value) VALUES ('WELCOME', ?1)`)
+    await db
+      .prepare(`INSERT INTO bot_texts (key, value) VALUES ('WELCOME', ?1)`)
       .bind(custom)
       .run();
     invalidateBotContent();
@@ -153,9 +155,9 @@ describe('the texts a customer receives', () => {
   it('ignores a row that was written by hand and breaks the contract', async () => {
     // The API refuses this, but the table can be reached with psql. The
     // customer must not be the one who finds out.
-    await db.prepare(
-      `INSERT INTO bot_texts (key, value) VALUES ('SUPPORT_SCREEN', 'به ما پیام بدهید')`,
-    ).run();
+    await db
+      .prepare(`INSERT INTO bot_texts (key, value) VALUES ('SUPPORT_SCREEN', 'به ما پیام بدهید')`)
+      .run();
     invalidateBotContent();
     const content = await loadBotContent(db);
     expect(content.texts.raw('SUPPORT_SCREEN')).toBe(TEXTS.SUPPORT_SCREEN.default);
@@ -197,10 +199,11 @@ describe('the keyboard', () => {
       ['sup', '☎️ پشتیبانی', 1, 1, true],
       ['mine', 'سرویس‌ها', 2, 0, false],
     ] as const) {
-      await db.prepare(
-        `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
+      await db
+        .prepare(
+          `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
          VALUES ('main', ?1, ?2, ?3, ?4, ?5)`,
-      )
+        )
         .bind(action, label, row, col, visible)
         .run();
     }

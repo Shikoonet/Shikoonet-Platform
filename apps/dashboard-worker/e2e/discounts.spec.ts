@@ -55,9 +55,7 @@ async function codeRow(code: string) {
 const wipe = () =>
   withDb((d) =>
     d
-      .prepare(
-        `DELETE FROM discount_codes WHERE lower(code) IN (lower(?1), lower(?2), lower(?3))`,
-      )
+      .prepare(`DELETE FROM discount_codes WHERE lower(code) IN (lower(?1), lower(?2), lower(?3))`)
       .bind(PCT, FIX, DATED)
       .run(),
   );

@@ -334,26 +334,33 @@ export function registerBotContentRoutes(
     const statements = [
       c.env.DB.prepare(`DELETE FROM bot_keyboard_buttons WHERE menu = ?1`).bind(menu),
       ...buttons.map((b) =>
-        c.env.DB
-          .prepare(
-            `INSERT INTO bot_keyboard_buttons
+        c.env.DB.prepare(
+          `INSERT INTO bot_keyboard_buttons
                (menu, action, label, row_index, col_index, visible, updated_by)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
-          )
-          .bind(menu, b.action, b.label, b.rowIndex, b.colIndex, b.visible, ident.email),
+        ).bind(menu, b.action, b.label, b.rowIndex, b.colIndex, b.visible, ident.email),
       ),
     ];
     await c.env.DB.batch(statements);
 
-    await audit(c.env.DB, ident, 'bot_keyboard.updated', 'BOT_KEYBOARD', menu, null, {
-      buttons: buttons.map((b) => ({
-        action: b.action,
-        label: b.label,
-        row: b.rowIndex,
-        col: b.colIndex,
-        visible: b.visible,
-      })),
-    }, null);
+    await audit(
+      c.env.DB,
+      ident,
+      'bot_keyboard.updated',
+      'BOT_KEYBOARD',
+      menu,
+      null,
+      {
+        buttons: buttons.map((b) => ({
+          action: b.action,
+          label: b.label,
+          row: b.rowIndex,
+          col: b.colIndex,
+          visible: b.visible,
+        })),
+      },
+      null,
+    );
 
     return c.json({ ok: true });
   });

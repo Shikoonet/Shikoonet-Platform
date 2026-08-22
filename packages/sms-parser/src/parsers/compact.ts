@@ -169,7 +169,10 @@ export const compactSignedParser = {
       dateTimeLine = lines[3]!;
       balanceLine = lines[2]!;
     } else {
-      return unsupportedWarn('date/time line missing or balance missing', 'compact_layout_unrecognized');
+      return unsupportedWarn(
+        'date/time line missing or balance missing',
+        'compact_layout_unrecognized',
+      );
     }
 
     const amountMatch = amountLine.match(AMOUNT_RE);

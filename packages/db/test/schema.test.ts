@@ -26,8 +26,7 @@ import {
   up,
 } from '../src/schema.js';
 
-const url =
-  process.env['DATABASE_URL'] ?? 'postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo';
+const url = process.env['DATABASE_URL'] ?? 'postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo';
 
 const client = new pg.Client({ connectionString: url });
 await client.connect();

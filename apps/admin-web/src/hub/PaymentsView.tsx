@@ -13,10 +13,7 @@ import { formatTomanFromIrr, formatTimeSeconds } from './format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { ClaimChangeAccount } from './ClaimChangeAccount.js';
 import { TransactionReassignPicker } from './TransactionReassignPicker.js';
-import {
-  BotAutoVerifiedFilter,
-  useBotAutoVerifiedFilter,
-} from './BotAutoVerifiedFilter.js';
+import { BotAutoVerifiedFilter, useBotAutoVerifiedFilter } from './BotAutoVerifiedFilter.js';
 import {
   HeaderPrimaryOpsNav,
   ReviewSubNav,
@@ -315,432 +312,446 @@ export function PaymentsView({ cache }: { cache: Cache }) {
           </nav>
 
           <div className="payments-shell__content">
-      {tab === 'income' && <IncomeTotalsBar totals={data?.incomeTotals} />}
-      {tab === 'declined_income' && <DeclinedTotalsBar totals={data?.declinedTotals} />}
-      {tab === 'reseller' && <ResellerStatsBar stats={data?.resellerStats} />}
+            {tab === 'income' && <IncomeTotalsBar totals={data?.incomeTotals} />}
+            {tab === 'declined_income' && <DeclinedTotalsBar totals={data?.declinedTotals} />}
+            {tab === 'reseller' && <ResellerStatsBar stats={data?.resellerStats} />}
 
-      {tab === 'income' && (counts?.incomeUnread ?? 0) > 0 && incomeItems.length === 0 && (
-        <div className="payment-table-header payment-table-header--end">
-          <PaymentTabReadAll
-            unread={counts?.incomeUnread ?? 0}
-            busy={markingReadAll}
-            onClick={() => void readAllTab('income')}
-          />
-        </div>
-      )}
-      {tab === 'needs_review' && (counts?.needsReviewUnread ?? 0) > 0 && (
-        <div className="payment-table-header payment-table-header--end">
-          <PaymentTabReadAll
-            unread={counts?.needsReviewUnread ?? 0}
-            busy={markingReadAll}
-            onClick={() => void readAllTab('needs_review')}
-          />
-        </div>
-      )}
-      {tab === 'suspected_fake' && (counts?.suspectedFakeUnread ?? 0) > 0 && (
-        <div className="payment-table-header payment-table-header--end">
-          <PaymentTabReadAll
-            unread={counts?.suspectedFakeUnread ?? 0}
-            busy={markingReadAll}
-            onClick={() => void readAllTab('suspected_fake')}
-          />
-        </div>
-      )}
-      {tab === 'bot_auto_verified' && (counts?.botAutoVerifiedUnread ?? 0) > 0 && (
-        <div className="payment-table-header payment-table-header--end">
-          <PaymentTabReadAll
-            unread={counts?.botAutoVerifiedUnread ?? 0}
-            busy={markingReadAll}
-            onClick={() => void readAllTab('bot_auto_verified')}
-          />
-        </div>
-      )}
-      {tab === 'reseller' && (counts?.resellerUnread ?? 0) > 0 && (
-        <div className="payment-table-header payment-table-header--end">
-          <PaymentTabReadAll
-            unread={counts?.resellerUnread ?? 0}
-            busy={markingReadAll}
-            onClick={() => void readAllTab('reseller')}
-          />
-        </div>
-      )}
-
-      {tab === 'all' && (
-        <AllFilters
-          cache={cache}
-          filters={filters}
-          onChange={setFilters}
-          reasons={collectReasons(claimItems)}
-        />
-      )}
-
-      {error && <p className="error">{error}</p>}
-      {toast && <p className="toast toast--success">{toast}</p>}
-      {!data && status === 'error' && (
-        <p className="error">
-          Could not load payments.{' '}
-          <button type="button" className="ghost" onClick={refresh}>
-            تلاش دوباره
-          </button>
-        </p>
-      )}
-      {!data && status !== 'error' && <p className="muted">در حال بارگذاری…</p>}
-      {data &&
-        ((tab === 'income' && incomeItems.length === 0) ||
-          (tab === 'declined_income' && declinedItems.length === 0) ||
-          (tab === 'reseller' && resellerItems.length === 0) ||
-          (tab === 'manually_verified' && claimItems.length === 0) ||
-          (tab !== 'income' &&
-            tab !== 'declined_income' &&
-            tab !== 'reseller' &&
-            tab !== 'bot_auto_verified' &&
-            tab !== 'manually_verified' &&
-            claimItems.length === 0)) && (
-          <CompactEmptyState>{emptyText(tab)}</CompactEmptyState>
-        )}
-
-      {tab === 'income' && incomeItems.length > 0 && (
-        <div
-          className={`payment-table-header${
-            (counts?.incomeUnread ?? 0) > 0 ? ' payment-table-header--split' : ''
-          }`}
-        >
-          <BulkSelectionToolbar
-            itemIds={incomeItems.map((i) => i.id)}
-            selectedIds={selectedIncome}
-            onChangeSelected={setSelectedIncome}
-            actions={
-              selectedIncome.size > 0 ? (
-                <button type="button" className="ghost payment-table-header__action" onClick={() => setBulkDeclineOpen(true)}>
-                  رد انتخاب‌شده‌ها ({selectedIncome.size})
-                </button>
-              ) : null
-            }
-          />
-          <PaymentTabReadAll
-            unread={counts?.incomeUnread ?? 0}
-            busy={markingReadAll}
-            onClick={() => void readAllTab('income')}
-          />
-        </div>
-      )}
-      {tab === 'income' && incomeItems.length === 0 && (counts?.incomeUnread ?? 0) > 0 && (
-        <div className="payment-table-header payment-table-header--end">
-          <PaymentTabReadAll
-            unread={counts?.incomeUnread ?? 0}
-            busy={markingReadAll}
-            onClick={() => void readAllTab('income')}
-          />
-        </div>
-      )}
-
-      {tab === 'declined_income' && declinedItems.length > 0 && (
-        <BulkSelectionToolbar
-          itemIds={declinedItems.map((i) => i.id)}
-          selectedIds={selectedDeclined}
-          onChangeSelected={setSelectedDeclined}
-          actions={
-            selectedDeclined.size > 0 ? (
-              <button
-                type="button"
-                className="primary"
-                {...w}
-                onClick={async () => {
-                  try {
-                    await api.restoreIncomeBulk([...selectedDeclined]);
-                    setSelectedDeclined(new Set());
-                    cache.refetch(queryKey);
-                  } catch (e) {
-                    setError(e instanceof Error ? e.message : 'restore_failed');
-                  }
-                }}
-              >
-                بازگردانی انتخاب‌شده‌ها ({selectedDeclined.size})
-              </button>
-            ) : null
-          }
-        />
-      )}
-
-      {tab === 'income' && (
-        <ul className="hub-list hub-list--table">
-          {incomeItems.map((item) => (
-            <IncomeRow
-              key={item.id}
-              item={item}
-              isNew={isIncomeNew(item)}
-              selected={selectedIncome.has(item.id)}
-              onSelect={(checked) => {
-                setSelectedIncome((prev) => {
-                  const next = new Set(prev);
-                  if (checked) next.add(item.id);
-                  else next.delete(item.id);
-                  return next;
-                });
-              }}
-              onOpen={() => {
-                if (isIncomeNew(item)) {
-                  setLocallyReadIncome((prev) => new Set(prev).add(item.id));
-                  void markIncomeSeen(item);
-                }
-              }}
-              onAssign={() => {
-                if (isIncomeNew(item)) {
-                  setLocallyReadIncome((prev) => new Set(prev).add(item.id));
-                  void markIncomeSeen(item);
-                }
-                setAssignIncome(item);
-              }}
-              onMarkReseller={() => {
-                if (isIncomeNew(item)) {
-                  setLocallyReadIncome((prev) => new Set(prev).add(item.id));
-                  void markIncomeSeen(item);
-                }
-                setIncomeAction(item);
-              }}
-              onDecline={() => setDeclineTarget(item)}
-            />
-          ))}
-        </ul>
-      )}
-
-      {tab === 'declined_income' && (
-        <ul className="hub-list">
-          {declinedItems.map((item) => (
-            <DeclinedIncomeRow
-              key={item.id}
-              item={item}
-              selected={selectedDeclined.has(item.id)}
-              onSelect={(checked) => {
-                setSelectedDeclined((prev) => {
-                  const next = new Set(prev);
-                  if (checked) next.add(item.id);
-                  else next.delete(item.id);
-                  return next;
-                });
-              }}
-              onRestore={async () => {
-                try {
-                  await api.restoreIncome(item.id);
-                  cache.refetch(queryKey);
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : 'restore_failed');
-                }
-              }}
-            />
-          ))}
-        </ul>
-      )}
-
-      {tab === 'reseller' && (
-        <ul className="hub-list">
-          {resellerItems.map((item) => (
-            <ResellerRow
-              key={item.id}
-              item={item}
-              {...(item.isNew ? { isNew: true as const } : {})}
-              onOpen={() => {
-                void markResellerSeen(item);
-              }}
-            />
-          ))}
-        </ul>
-      )}
-
-      {tab !== 'income' &&
-        tab !== 'declined_income' &&
-        tab !== 'reseller' &&
-        tab !== 'bot_auto_verified' &&
-        tab !== 'manually_verified' && (
-        <ul className="hub-list hub-list--table">
-          {claimItems.map((item) => {
-            if (tab === 'needs_review') {
-              return (
-                <NeedsReviewRow
-                  key={item.id}
-                  item={item}
-                  isNew={isClaimNew(item)}
-                  onReview={() => openClaim(item)}
+            {tab === 'income' && (counts?.incomeUnread ?? 0) > 0 && incomeItems.length === 0 && (
+              <div className="payment-table-header payment-table-header--end">
+                <PaymentTabReadAll
+                  unread={counts?.incomeUnread ?? 0}
+                  busy={markingReadAll}
+                  onClick={() => void readAllTab('income')}
                 />
-              );
-            }
-            if (tab === 'waiting') {
-              return (
-                <WaitingRow key={item.id} item={item} onDetails={() => setReviewingId(item.id)} />
-              );
-            }
-            if (tab === 'suspected_fake') {
-              return (
-                <SuspectedFakeRow
-                  key={item.id}
-                  item={item}
-                  isNew={isClaimNew(item)}
-                  onReview={() => openClaim(item)}
-                  onRemove={() =>
-                    post(`/api/v1/suspects/${item.id}/reject`, { reason: 'NO_BANK_TRANSACTION' })
+              </div>
+            )}
+            {tab === 'needs_review' && (counts?.needsReviewUnread ?? 0) > 0 && (
+              <div className="payment-table-header payment-table-header--end">
+                <PaymentTabReadAll
+                  unread={counts?.needsReviewUnread ?? 0}
+                  busy={markingReadAll}
+                  onClick={() => void readAllTab('needs_review')}
+                />
+              </div>
+            )}
+            {tab === 'suspected_fake' && (counts?.suspectedFakeUnread ?? 0) > 0 && (
+              <div className="payment-table-header payment-table-header--end">
+                <PaymentTabReadAll
+                  unread={counts?.suspectedFakeUnread ?? 0}
+                  busy={markingReadAll}
+                  onClick={() => void readAllTab('suspected_fake')}
+                />
+              </div>
+            )}
+            {tab === 'bot_auto_verified' && (counts?.botAutoVerifiedUnread ?? 0) > 0 && (
+              <div className="payment-table-header payment-table-header--end">
+                <PaymentTabReadAll
+                  unread={counts?.botAutoVerifiedUnread ?? 0}
+                  busy={markingReadAll}
+                  onClick={() => void readAllTab('bot_auto_verified')}
+                />
+              </div>
+            )}
+            {tab === 'reseller' && (counts?.resellerUnread ?? 0) > 0 && (
+              <div className="payment-table-header payment-table-header--end">
+                <PaymentTabReadAll
+                  unread={counts?.resellerUnread ?? 0}
+                  busy={markingReadAll}
+                  onClick={() => void readAllTab('reseller')}
+                />
+              </div>
+            )}
+
+            {tab === 'all' && (
+              <AllFilters
+                cache={cache}
+                filters={filters}
+                onChange={setFilters}
+                reasons={collectReasons(claimItems)}
+              />
+            )}
+
+            {error && <p className="error">{error}</p>}
+            {toast && <p className="toast toast--success">{toast}</p>}
+            {!data && status === 'error' && (
+              <p className="error">
+                Could not load payments.{' '}
+                <button type="button" className="ghost" onClick={refresh}>
+                  تلاش دوباره
+                </button>
+              </p>
+            )}
+            {!data && status !== 'error' && <p className="muted">در حال بارگذاری…</p>}
+            {data &&
+              ((tab === 'income' && incomeItems.length === 0) ||
+                (tab === 'declined_income' && declinedItems.length === 0) ||
+                (tab === 'reseller' && resellerItems.length === 0) ||
+                (tab === 'manually_verified' && claimItems.length === 0) ||
+                (tab !== 'income' &&
+                  tab !== 'declined_income' &&
+                  tab !== 'reseller' &&
+                  tab !== 'bot_auto_verified' &&
+                  tab !== 'manually_verified' &&
+                  claimItems.length === 0)) && (
+                <CompactEmptyState>{emptyText(tab)}</CompactEmptyState>
+              )}
+
+            {tab === 'income' && incomeItems.length > 0 && (
+              <div
+                className={`payment-table-header${
+                  (counts?.incomeUnread ?? 0) > 0 ? ' payment-table-header--split' : ''
+                }`}
+              >
+                <BulkSelectionToolbar
+                  itemIds={incomeItems.map((i) => i.id)}
+                  selectedIds={selectedIncome}
+                  onChangeSelected={setSelectedIncome}
+                  actions={
+                    selectedIncome.size > 0 ? (
+                      <button
+                        type="button"
+                        className="ghost payment-table-header__action"
+                        onClick={() => setBulkDeclineOpen(true)}
+                      >
+                        رد انتخاب‌شده‌ها ({selectedIncome.size})
+                      </button>
+                    ) : null
                   }
+                />
+                <PaymentTabReadAll
+                  unread={counts?.incomeUnread ?? 0}
+                  busy={markingReadAll}
+                  onClick={() => void readAllTab('income')}
+                />
+              </div>
+            )}
+            {tab === 'income' && incomeItems.length === 0 && (counts?.incomeUnread ?? 0) > 0 && (
+              <div className="payment-table-header payment-table-header--end">
+                <PaymentTabReadAll
+                  unread={counts?.incomeUnread ?? 0}
+                  busy={markingReadAll}
+                  onClick={() => void readAllTab('income')}
+                />
+              </div>
+            )}
+
+            {tab === 'declined_income' && declinedItems.length > 0 && (
+              <BulkSelectionToolbar
+                itemIds={declinedItems.map((i) => i.id)}
+                selectedIds={selectedDeclined}
+                onChangeSelected={setSelectedDeclined}
+                actions={
+                  selectedDeclined.size > 0 ? (
+                    <button
+                      type="button"
+                      className="primary"
+                      {...w}
+                      onClick={async () => {
+                        try {
+                          await api.restoreIncomeBulk([...selectedDeclined]);
+                          setSelectedDeclined(new Set());
+                          cache.refetch(queryKey);
+                        } catch (e) {
+                          setError(e instanceof Error ? e.message : 'restore_failed');
+                        }
+                      }}
+                    >
+                      بازگردانی انتخاب‌شده‌ها ({selectedDeclined.size})
+                    </button>
+                  ) : null
+                }
+              />
+            )}
+
+            {tab === 'income' && (
+              <ul className="hub-list hub-list--table">
+                {incomeItems.map((item) => (
+                  <IncomeRow
+                    key={item.id}
+                    item={item}
+                    isNew={isIncomeNew(item)}
+                    selected={selectedIncome.has(item.id)}
+                    onSelect={(checked) => {
+                      setSelectedIncome((prev) => {
+                        const next = new Set(prev);
+                        if (checked) next.add(item.id);
+                        else next.delete(item.id);
+                        return next;
+                      });
+                    }}
+                    onOpen={() => {
+                      if (isIncomeNew(item)) {
+                        setLocallyReadIncome((prev) => new Set(prev).add(item.id));
+                        void markIncomeSeen(item);
+                      }
+                    }}
+                    onAssign={() => {
+                      if (isIncomeNew(item)) {
+                        setLocallyReadIncome((prev) => new Set(prev).add(item.id));
+                        void markIncomeSeen(item);
+                      }
+                      setAssignIncome(item);
+                    }}
+                    onMarkReseller={() => {
+                      if (isIncomeNew(item)) {
+                        setLocallyReadIncome((prev) => new Set(prev).add(item.id));
+                        void markIncomeSeen(item);
+                      }
+                      setIncomeAction(item);
+                    }}
+                    onDecline={() => setDeclineTarget(item)}
+                  />
+                ))}
+              </ul>
+            )}
+
+            {tab === 'declined_income' && (
+              <ul className="hub-list">
+                {declinedItems.map((item) => (
+                  <DeclinedIncomeRow
+                    key={item.id}
+                    item={item}
+                    selected={selectedDeclined.has(item.id)}
+                    onSelect={(checked) => {
+                      setSelectedDeclined((prev) => {
+                        const next = new Set(prev);
+                        if (checked) next.add(item.id);
+                        else next.delete(item.id);
+                        return next;
+                      });
+                    }}
+                    onRestore={async () => {
+                      try {
+                        await api.restoreIncome(item.id);
+                        cache.refetch(queryKey);
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : 'restore_failed');
+                      }
+                    }}
+                  />
+                ))}
+              </ul>
+            )}
+
+            {tab === 'reseller' && (
+              <ul className="hub-list">
+                {resellerItems.map((item) => (
+                  <ResellerRow
+                    key={item.id}
+                    item={item}
+                    {...(item.isNew ? { isNew: true as const } : {})}
+                    onOpen={() => {
+                      void markResellerSeen(item);
+                    }}
+                  />
+                ))}
+              </ul>
+            )}
+
+            {tab !== 'income' &&
+              tab !== 'declined_income' &&
+              tab !== 'reseller' &&
+              tab !== 'bot_auto_verified' &&
+              tab !== 'manually_verified' && (
+                <ul className="hub-list hub-list--table">
+                  {claimItems.map((item) => {
+                    if (tab === 'needs_review') {
+                      return (
+                        <NeedsReviewRow
+                          key={item.id}
+                          item={item}
+                          isNew={isClaimNew(item)}
+                          onReview={() => openClaim(item)}
+                        />
+                      );
+                    }
+                    if (tab === 'waiting') {
+                      return (
+                        <WaitingRow
+                          key={item.id}
+                          item={item}
+                          onDetails={() => setReviewingId(item.id)}
+                        />
+                      );
+                    }
+                    if (tab === 'suspected_fake') {
+                      return (
+                        <SuspectedFakeRow
+                          key={item.id}
+                          item={item}
+                          isNew={isClaimNew(item)}
+                          onReview={() => openClaim(item)}
+                          onRemove={() =>
+                            post(`/api/v1/suspects/${item.id}/reject`, {
+                              reason: 'NO_BANK_TRANSACTION',
+                            })
+                          }
+                          onError={setError}
+                        />
+                      );
+                    }
+                    return (
+                      <AllRow key={item.id} item={item} onOpen={() => setReviewingId(item.id)} />
+                    );
+                  })}
+                </ul>
+              )}
+
+            {tab === 'manually_verified' && (
+              <ul className="hub-list hub-list--table">
+                {claimItems.map((item) => (
+                  <ManuallyVerifiedRow
+                    key={item.id}
+                    item={item}
+                    onOpen={() => setReviewingId(item.id)}
+                    onReopen={() => setReopenTarget(item)}
+                  />
+                ))}
+              </ul>
+            )}
+
+            {tab === 'bot_auto_verified' && claimItems.length > 0 && (
+              <div className={`bot-verified-layout${isWide ? ' bot-verified-layout--wide' : ''}`}>
+                <div className="bot-verified-layout__main">
+                  <BotAutoVerifiedFilter
+                    value={botAutoFilter.value}
+                    onSegmentChange={botAutoFilter.setSegment}
+                    onDateChange={botAutoFilter.setDate}
+                  />
+                  <BotVerifiedMetrics analytics={analytics} items={claimItems} />
+                  <BotVerifiedTable>
+                    {claimItems.map((item) => (
+                      <BotVerifiedTransactionRow
+                        key={item.id}
+                        item={item}
+                        isNew={isClaimNew(item)}
+                        onOpen={() => openClaim(item)}
+                      />
+                    ))}
+                  </BotVerifiedTable>
+                </div>
+                {isWide && (
+                  <div className="bot-verified-layout__rail">
+                    <StatsRail analytics={analytics} cache={cache} rangeState={rangeState} />
+                    <RecentActivity
+                      items={claimItems}
+                      onOpen={(id) => {
+                        const item = claimItems.find((i) => i.id === id);
+                        if (item) openClaim(item);
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {tab === 'bot_auto_verified' && claimItems.length === 0 && data && (
+              <div className="bot-verified-empty">
+                <BotAutoVerifiedFilter
+                  value={botAutoFilter.value}
+                  onSegmentChange={botAutoFilter.setSegment}
+                  onDateChange={botAutoFilter.setDate}
+                />
+                <CompactEmptyState>{emptyText(tab)}</CompactEmptyState>
+              </div>
+            )}
+
+            {declineTarget && (
+              <DeclineIncomeModal
+                item={declineTarget}
+                onClose={() => setDeclineTarget(null)}
+                onDone={() => {
+                  setDeclineTarget(null);
+                  setSelectedIncome(new Set());
+                  cache.refetch(queryKey);
+                }}
+                onError={setError}
+              />
+            )}
+            {bulkDeclineOpen && selectedIncome.size > 0 && (
+              <BulkDeclineModal
+                items={incomeItems.filter((i) => selectedIncome.has(i.id))}
+                onClose={() => setBulkDeclineOpen(false)}
+                onDone={() => {
+                  setBulkDeclineOpen(false);
+                  setSelectedIncome(new Set());
+                  cache.refetch(queryKey);
+                }}
+                onError={setError}
+              />
+            )}
+            {incomeAction && (
+              <MarkResellerModal
+                item={incomeAction}
+                cache={cache}
+                onClose={() => setIncomeAction(null)}
+                onDone={() => {
+                  setIncomeAction(null);
+                  cache.refetch(queryKey);
+                }}
+                onError={setError}
+              />
+            )}
+            {assignIncome && (
+              <AssignToPaymentModal
+                transactionId={assignIncome.id}
+                transactionAmountIrr={assignIncome.amountIrr}
+                onClose={() => {
+                  setAssignIncome(null);
+                  cache.refetch(queryKey);
+                }}
+                onError={setError}
+              />
+            )}
+            {reopenTarget && (
+              <ReopenVerificationModal
+                item={reopenTarget}
+                onClose={() => setReopenTarget(null)}
+                onDone={() => {
+                  setReopenTarget(null);
+                  setToast('تایید دوباره باز شد');
+                  setTimeout(() => setToast(null), 4000);
+                  cache.refetch(queryKey, QK.suggested, QK.today);
+                }}
+                onError={setError}
+              />
+            )}
+            <Drawer
+              open={reviewing != null}
+              onClose={() => setReviewingId(null)}
+              label="بررسی پرداخت"
+              side="right"
+            >
+              {reviewing && (
+                <ReviewPanel
+                  key={reviewing.id}
+                  item={reviewing}
+                  cache={cache}
+                  onRefresh={() => cache.refetch(queryKey, QK.suggested, QK.today)}
+                  onApprove={(transactionId) =>
+                    post(`/api/v1/suspects/${reviewing.id}/approve`, { transactionId })
+                  }
+                  onVerifyManual={(reason) =>
+                    post(`/api/v1/suspects/${reviewing.id}/verify-manual`, { reason })
+                  }
+                  onReassign={(body) =>
+                    post(`/api/v1/payment-claims/${reviewing.id}/reassign-transaction`, body)
+                  }
+                  onReject={(reason) => post(`/api/v1/suspects/${reviewing.id}/reject`, { reason })}
+                  onRemove={() =>
+                    post(`/api/v1/suspects/${reviewing.id}/reject`, {
+                      reason: 'NO_BANK_TRANSACTION',
+                    })
+                  }
+                  onMarkFake={() =>
+                    post(`/api/v1/suspects/${reviewing.id}/mark-fake`, { confirmed: true })
+                  }
+                  onReopen={() => setReopenTarget(reviewing)}
                   onError={setError}
                 />
-              );
-            }
-            return (
-              <AllRow key={item.id} item={item} onOpen={() => setReviewingId(item.id)} />
-            );
-          })}
-        </ul>
-      )}
-
-      {tab === 'manually_verified' && (
-        <ul className="hub-list hub-list--table">
-          {claimItems.map((item) => (
-            <ManuallyVerifiedRow
-              key={item.id}
-              item={item}
-              onOpen={() => setReviewingId(item.id)}
-              onReopen={() => setReopenTarget(item)}
-            />
-          ))}
-        </ul>
-      )}
-
-      {tab === 'bot_auto_verified' && claimItems.length > 0 && (
-        <div className={`bot-verified-layout${isWide ? ' bot-verified-layout--wide' : ''}`}>
-          <div className="bot-verified-layout__main">
-            <BotAutoVerifiedFilter
-              value={botAutoFilter.value}
-              onSegmentChange={botAutoFilter.setSegment}
-              onDateChange={botAutoFilter.setDate}
-            />
-            <BotVerifiedMetrics analytics={analytics} items={claimItems} />
-            <BotVerifiedTable>
-              {claimItems.map((item) => (
-                <BotVerifiedTransactionRow
-                  key={item.id}
-                  item={item}
-                  isNew={isClaimNew(item)}
-                  onOpen={() => openClaim(item)}
-                />
-              ))}
-            </BotVerifiedTable>
+              )}
+            </Drawer>
           </div>
-          {isWide && (
-            <div className="bot-verified-layout__rail">
-              <StatsRail analytics={analytics} cache={cache} rangeState={rangeState} />
-              <RecentActivity
-                items={claimItems}
-                onOpen={(id) => {
-                  const item = claimItems.find((i) => i.id === id);
-                  if (item) openClaim(item);
-                }}
-              />
-            </div>
-          )}
-        </div>
-      )}
-
-      {tab === 'bot_auto_verified' && claimItems.length === 0 && data && (
-        <div className="bot-verified-empty">
-          <BotAutoVerifiedFilter
-            value={botAutoFilter.value}
-            onSegmentChange={botAutoFilter.setSegment}
-            onDateChange={botAutoFilter.setDate}
-          />
-          <CompactEmptyState>{emptyText(tab)}</CompactEmptyState>
-        </div>
-      )}
-
-      {declineTarget && (
-        <DeclineIncomeModal
-          item={declineTarget}
-          onClose={() => setDeclineTarget(null)}
-          onDone={() => {
-            setDeclineTarget(null);
-            setSelectedIncome(new Set());
-            cache.refetch(queryKey);
-          }}
-          onError={setError}
-        />
-      )}
-      {bulkDeclineOpen && selectedIncome.size > 0 && (
-        <BulkDeclineModal
-          items={incomeItems.filter((i) => selectedIncome.has(i.id))}
-          onClose={() => setBulkDeclineOpen(false)}
-          onDone={() => {
-            setBulkDeclineOpen(false);
-            setSelectedIncome(new Set());
-            cache.refetch(queryKey);
-          }}
-          onError={setError}
-        />
-      )}
-      {incomeAction && (
-        <MarkResellerModal
-          item={incomeAction}
-          cache={cache}
-          onClose={() => setIncomeAction(null)}
-          onDone={() => {
-            setIncomeAction(null);
-            cache.refetch(queryKey);
-          }}
-          onError={setError}
-        />
-      )}
-      {assignIncome && (
-        <AssignToPaymentModal
-          transactionId={assignIncome.id}
-          transactionAmountIrr={assignIncome.amountIrr}
-          onClose={() => {
-            setAssignIncome(null);
-            cache.refetch(queryKey);
-          }}
-          onError={setError}
-        />
-      )}
-      {reopenTarget && (
-        <ReopenVerificationModal
-          item={reopenTarget}
-          onClose={() => setReopenTarget(null)}
-          onDone={() => {
-            setReopenTarget(null);
-            setToast('تایید دوباره باز شد');
-            setTimeout(() => setToast(null), 4000);
-            cache.refetch(queryKey, QK.suggested, QK.today);
-          }}
-          onError={setError}
-        />
-      )}
-      <Drawer
-        open={reviewing != null}
-        onClose={() => setReviewingId(null)}
-        label="بررسی پرداخت"
-        side="right"
-      >
-        {reviewing && (
-          <ReviewPanel
-            key={reviewing.id}
-            item={reviewing}
-            cache={cache}
-            onRefresh={() => cache.refetch(queryKey, QK.suggested, QK.today)}
-            onApprove={(transactionId) =>
-              post(`/api/v1/suspects/${reviewing.id}/approve`, { transactionId })
-            }
-            onVerifyManual={(reason) =>
-              post(`/api/v1/suspects/${reviewing.id}/verify-manual`, { reason })
-            }
-            onReassign={(body) =>
-              post(`/api/v1/payment-claims/${reviewing.id}/reassign-transaction`, body)
-            }
-            onReject={(reason) => post(`/api/v1/suspects/${reviewing.id}/reject`, { reason })}
-            onRemove={() =>
-              post(`/api/v1/suspects/${reviewing.id}/reject`, { reason: 'NO_BANK_TRANSACTION' })
-            }
-            onMarkFake={() => post(`/api/v1/suspects/${reviewing.id}/mark-fake`, { confirmed: true })}
-            onReopen={() => setReopenTarget(reviewing)}
-            onError={setError}
-          />
-        )}
-      </Drawer>
-        </div>
         </div>
         <div className="payments-shell__decor" aria-hidden="true" />
       </section>
@@ -800,7 +811,9 @@ function NeedsReviewRow({
             <NewBadge isNew={isNew} />
             {identity && <strong>{identity}</strong>}
           </span>
-          <span className="hub-list-row__amount tabular-nums">{formatToman(item.expectedAmountToman)}</span>
+          <span className="hub-list-row__amount tabular-nums">
+            {formatToman(item.expectedAmountToman)}
+          </span>
         </div>
         <div className="hub-list-row__line2 muted">
           سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
@@ -827,7 +840,9 @@ function WaitingRow({ item, onDetails }: { item: PaymentItem; onDetails: () => v
       <button type="button" className="hub-list-row__button" onClick={onDetails}>
         <div className="hub-list-row__line1">
           <span className="hub-list-row__identity">{identity && <strong>{identity}</strong>}</span>
-          <span className="hub-list-row__amount tabular-nums">{formatToman(item.expectedAmountToman)}</span>
+          <span className="hub-list-row__amount tabular-nums">
+            {formatToman(item.expectedAmountToman)}
+          </span>
         </div>
         <div className="hub-list-row__line2 muted">
           سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
@@ -883,7 +898,9 @@ function SuspectedFakeRow({
             <NewBadge isNew={isNew} />
             {identity && <strong>{identity}</strong>}
           </span>
-          <span className="hub-list-row__amount tabular-nums">{formatToman(item.expectedAmountToman)}</span>
+          <span className="hub-list-row__amount tabular-nums">
+            {formatToman(item.expectedAmountToman)}
+          </span>
         </div>
         <div className="hub-list-row__line2 muted">
           سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
@@ -894,15 +911,30 @@ function SuspectedFakeRow({
       </button>
       <div className="hub-list-row__inline-actions">
         {!confirmRemove ? (
-          <button type="button" className="ghost hub-list-row__action" disabled={busy} onClick={() => setConfirmRemove(true)}>
+          <button
+            type="button"
+            className="ghost hub-list-row__action"
+            disabled={busy}
+            onClick={() => setConfirmRemove(true)}
+          >
             حذف
           </button>
         ) : (
           <>
-            <button type="button" className="danger hub-list-row__action" disabled={busy} onClick={() => void runRemove()}>
+            <button
+              type="button"
+              className="danger hub-list-row__action"
+              disabled={busy}
+              onClick={() => void runRemove()}
+            >
               تایید
             </button>
-            <button type="button" className="ghost hub-list-row__action" disabled={busy} onClick={() => setConfirmRemove(false)}>
+            <button
+              type="button"
+              className="ghost hub-list-row__action"
+              disabled={busy}
+              onClick={() => setConfirmRemove(false)}
+            >
               انصراف
             </button>
           </>
@@ -949,7 +981,9 @@ function ManuallyVerifiedRow({
             {identity && <strong>{identity}</strong>}
             <span className="muted">سفارش {item.orderId}</span>
           </span>
-          <span className="hub-list-row__amount tabular-nums">{formatToman(item.expectedAmountToman)}</span>
+          <span className="hub-list-row__amount tabular-nums">
+            {formatToman(item.expectedAmountToman)}
+          </span>
         </div>
         <div className="hub-list-row__line2 muted">
           {masked}
@@ -971,7 +1005,14 @@ function ManuallyVerifiedRow({
         </button>
         {menuOpen && (
           <div className="hub-list-row__menu-panel" role="menu">
-            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onOpen(); }}>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setMenuOpen(false);
+                onOpen();
+              }}
+            >
               جزئیات
             </button>
             <button
@@ -1059,9 +1100,7 @@ function ReopenVerificationModal({
             </>
           )}
         </dl>
-        <p className="muted">
-          تحویلی که انجام شده دوباره انجام نمی‌شود و خودکار هم برنمی‌گردد.
-        </p>
+        <p className="muted">تحویلی که انجام شده دوباره انجام نمی‌شود و خودکار هم برنمی‌گردد.</p>
         <label>
           دلیل (الزامی)
           <textarea
@@ -1072,7 +1111,12 @@ function ReopenVerificationModal({
           />
         </label>
         <div className="payment-review__actions">
-          <button type="button" className="primary" disabled={busy || !reason.trim()} onClick={() => void submit()}>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy || !reason.trim()}
+            onClick={() => void submit()}
+          >
             بازکردن دوبارهٔ تایید
           </button>
           <button type="button" className="ghost" disabled={busy} onClick={onClose}>
@@ -1084,13 +1128,7 @@ function ReopenVerificationModal({
   );
 }
 
-function AllRow({
-  item,
-  onOpen,
-}: {
-  item: PaymentItem;
-  onOpen: () => void;
-}) {
+function AllRow({ item, onOpen }: { item: PaymentItem; onOpen: () => void }) {
   const identity = paymentIdentityLine(item);
   const masked = maskAccountHint(item.accountHint, item.cardMasked);
 
@@ -1104,7 +1142,9 @@ function AllRow({
               {stateLabel(item.reviewState)}
             </span>
           </span>
-          <span className="hub-list-row__amount tabular-nums">{formatToman(item.expectedAmountToman)}</span>
+          <span className="hub-list-row__amount tabular-nums">
+            {formatToman(item.expectedAmountToman)}
+          </span>
         </div>
         <div className="hub-list-row__line2 muted">
           سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
@@ -1275,9 +1315,7 @@ function ReviewPanel({
         <h3 className="drawer-section__heading">پرداخت</h3>
         <dl className="payment-review__facts">
           <dt>مبلغ مورد انتظار</dt>
-          <dd className="tabular-nums">
-            {formatToman(item.expectedAmountToman)}
-          </dd>
+          <dd className="tabular-nums">{formatToman(item.expectedAmountToman)}</dd>
           <dt>کارت نمایش‌داده‌شده</dt>
           <dd>{item.cardMasked ?? '—'}</dd>
           <dt>وضعیت</dt>
@@ -1294,12 +1332,7 @@ function ReviewPanel({
         <h3 className="drawer-section__heading">حساب</h3>
         <AccountRef account={item} />
         {actionable && (
-          <ClaimChangeAccount
-            item={item}
-            cache={cache}
-            onSaved={onRefresh}
-            onError={onError}
-          />
+          <ClaimChangeAccount item={item} cache={cache} onSaved={onRefresh} onError={onError} />
         )}
       </section>
 
@@ -1372,159 +1405,208 @@ function ReviewPanel({
           {reasonText(item.suspectReason)}
         </p>
 
-      {actionable && (
-        <>
-          <div className="payment-review__actions">
-            <button
-              type="button"
-              className="primary"
-              disabled={busy || selected == null}
-              onClick={() => selected && run(() => onApprove(selected))}
-              {...w}
-            >
-              تایید انتخاب‌شده‌ها
-            </button>
-
-            <div className="payment-review__reassign">
-              <p className="muted">تراکنش درست را پیدا نمی‌کنی؟</p>
-              <button type="button" className="ghost" disabled={busy} onClick={() => setShowReassign(true)}>
-                یافتن یا تغییر تراکنش
+        {actionable && (
+          <>
+            <div className="payment-review__actions">
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || selected == null}
+                onClick={() => selected && run(() => onApprove(selected))}
+                {...w}
+              >
+                تایید انتخاب‌شده‌ها
               </button>
-            </div>
 
-            <div className="payment-review__manual-anyway">
-              <p className="muted">اصلاً تراکنش بانکی وجود ندارد؟</p>
-              {!confirmManual ? (
-                <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmManual(true)}>
-                  با این حال دستی تایید کن
-                </button>
-              ) : (
-                <>
-                  <p className="muted">
-                    بیرون از سامانه تایید شده و تراکنش بانکی قابل استفاده‌ای این‌جا نیست؟
-                  </p>
-                  <label>
-                    دلیل (اختیاری)
-                    <input
-                      type="text"
-                      value={manualReason}
-                      maxLength={2000}
-                      onChange={(e) => setManualReason(e.target.value)}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="primary"
-                    disabled={busy}
-                    onClick={() => run(() => onVerifyManual(manualReason))}
-                    {...w}
-                  >
-                    تایید دستی پرداخت
-                  </button>
-                  <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmManual(false)}>
-                    انصراف
-                  </button>
-                </>
-              )}
-            </div>
-
-            {canMarkFake && (
-              <div className="payment-review__remove">
-                {!confirmRemove ? (
-                  <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmRemove(true)} {...w}>
-                    حذف
-                  </button>
-                ) : (
-                  <>
-                    <p className="muted">
-                      Remove this payment from the queue? No bank transfer was found — this is not
-                      a fraud classification.
-                    </p>
-                    <button type="button" className="danger" disabled={busy} onClick={() => run(onRemove)} {...w}>
-                      تایید حذف
-                    </button>
-                    <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmRemove(false)}>
-                      انصراف
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-            {canMarkFake && (
-              <div className="payment-review__mark-fake">
-                {!confirmFake ? (
-                  <button type="button" className="danger" disabled={busy} onClick={() => setConfirmFake(true)} {...w}>
-                    علامت‌زدن به‌عنوان جعلی
-                  </button>
-                ) : (
-                  <>
-                    <p className="muted">
-                      این پرداخت به‌عنوان رسید جعلی علامت زده شود؟ این یک تشخیص دستی تقلب است.
-                    </p>
-                    <button type="button" className="danger" disabled={busy} onClick={() => run(onMarkFake)} {...w}>
-                      تایید جعلی‌بودن رسید
-                    </button>
-                    <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmFake(false)}>
-                      انصراف
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-            {item.reviewState === 'NEEDS_REVIEW' && (
-              <div className="payment-review__reject">
-                <select
-                  aria-label="دلیل رد"
-                  value={rejectReason}
-                  onChange={(e) => setRejectReason(e.target.value)}
-                >
-                  {REJECT_REASONS.map((r) => (
-                    <option key={r.value} value={r.value}>
-                      {r.label}
-                    </option>
-                  ))}
-                </select>
+              <div className="payment-review__reassign">
+                <p className="muted">تراکنش درست را پیدا نمی‌کنی؟</p>
                 <button
                   type="button"
-                  className="danger"
+                  className="ghost"
                   disabled={busy}
-                  onClick={() => run(() => onReject(rejectReason))}
-                  {...w}
+                  onClick={() => setShowReassign(true)}
                 >
-                  رد پرداخت
+                  یافتن یا تغییر تراکنش
                 </button>
               </div>
-            )}
+
+              <div className="payment-review__manual-anyway">
+                <p className="muted">اصلاً تراکنش بانکی وجود ندارد؟</p>
+                {!confirmManual ? (
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={busy}
+                    onClick={() => setConfirmManual(true)}
+                  >
+                    با این حال دستی تایید کن
+                  </button>
+                ) : (
+                  <>
+                    <p className="muted">
+                      بیرون از سامانه تایید شده و تراکنش بانکی قابل استفاده‌ای این‌جا نیست؟
+                    </p>
+                    <label>
+                      دلیل (اختیاری)
+                      <input
+                        type="text"
+                        value={manualReason}
+                        maxLength={2000}
+                        onChange={(e) => setManualReason(e.target.value)}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={busy}
+                      onClick={() => run(() => onVerifyManual(manualReason))}
+                      {...w}
+                    >
+                      تایید دستی پرداخت
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={busy}
+                      onClick={() => setConfirmManual(false)}
+                    >
+                      انصراف
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {canMarkFake && (
+                <div className="payment-review__remove">
+                  {!confirmRemove ? (
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={busy}
+                      onClick={() => setConfirmRemove(true)}
+                      {...w}
+                    >
+                      حذف
+                    </button>
+                  ) : (
+                    <>
+                      <p className="muted">
+                        Remove this payment from the queue? No bank transfer was found — this is not
+                        a fraud classification.
+                      </p>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() => run(onRemove)}
+                        {...w}
+                      >
+                        تایید حذف
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={busy}
+                        onClick={() => setConfirmRemove(false)}
+                      >
+                        انصراف
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+              {canMarkFake && (
+                <div className="payment-review__mark-fake">
+                  {!confirmFake ? (
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={busy}
+                      onClick={() => setConfirmFake(true)}
+                      {...w}
+                    >
+                      علامت‌زدن به‌عنوان جعلی
+                    </button>
+                  ) : (
+                    <>
+                      <p className="muted">
+                        این پرداخت به‌عنوان رسید جعلی علامت زده شود؟ این یک تشخیص دستی تقلب است.
+                      </p>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() => run(onMarkFake)}
+                        {...w}
+                      >
+                        تایید جعلی‌بودن رسید
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={busy}
+                        onClick={() => setConfirmFake(false)}
+                      >
+                        انصراف
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+              {item.reviewState === 'NEEDS_REVIEW' && (
+                <div className="payment-review__reject">
+                  <select
+                    aria-label="دلیل رد"
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                  >
+                    {REJECT_REASONS.map((r) => (
+                      <option key={r.value} value={r.value}>
+                        {r.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="danger"
+                    disabled={busy}
+                    onClick={() => run(() => onReject(rejectReason))}
+                    {...w}
+                  >
+                    رد پرداخت
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {!actionable && item.matchedTransaction && !isManuallyVerified && (
+          <p className="muted">{stateLabel(item.reviewState)}</p>
+        )}
+
+        {isManuallyVerified && (
+          <div className="payment-review__reopen">
+            <p className="muted">
+              {canReopen
+                ? 'Send this payment back to the review queue. Existing fulfillment will not be reversed automatically.'
+                : reopenBlocked}
+            </p>
+            <button
+              type="button"
+              className="ghost"
+              disabled={busy || !canReopen}
+              title={reopenBlocked ?? undefined}
+              aria-disabled={!canReopen}
+              onClick={() => {
+                if (!canReopen) return;
+                onReopen();
+              }}
+            >
+              بازکردن دوبارهٔ تایید
+            </button>
           </div>
-        </>
-      )}
-
-      {!actionable && item.matchedTransaction && !isManuallyVerified && (
-        <p className="muted">{stateLabel(item.reviewState)}</p>
-      )}
-
-      {isManuallyVerified && (
-        <div className="payment-review__reopen">
-          <p className="muted">
-            {canReopen
-              ? 'Send this payment back to the review queue. Existing fulfillment will not be reversed automatically.'
-              : reopenBlocked}
-          </p>
-          <button
-            type="button"
-            className="ghost"
-            disabled={busy || !canReopen}
-            title={reopenBlocked ?? undefined}
-            aria-disabled={!canReopen}
-            onClick={() => {
-              if (!canReopen) return;
-              onReopen();
-            }}
-          >
-            بازکردن دوبارهٔ تایید
-          </button>
-        </div>
-      )}
+        )}
       </section>
     </div>
   );

@@ -228,10 +228,7 @@ describe('reopen manual verification API', () => {
     await seedTx('t-race');
     expect((await approve('c-race', 't-race')).status).toBe(200);
 
-    const [a, b] = await Promise.all([
-      reopen('c-race', 'first'),
-      reopen('c-race', 'second'),
-    ]);
+    const [a, b] = await Promise.all([reopen('c-race', 'first'), reopen('c-race', 'second')]);
     expect([a.status, b.status].filter((s) => s === 200)).toHaveLength(1);
 
     const claim = await baseEnv.DB.prepare(

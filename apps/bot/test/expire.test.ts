@@ -353,9 +353,7 @@ describe('a press that arrives while the sweep is running', () => {
     // The assertion that matters: their money is still theirs.
     expect(await balanceFor(db, sale.userId)).toBe(before);
     const paid = await db
-      .prepare(
-        `SELECT count(*)::int AS n FROM payments WHERE order_id = ?1 AND status = 'PAID'`,
-      )
+      .prepare(`SELECT count(*)::int AS n FROM payments WHERE order_id = ?1 AND status = 'PAID'`)
       .bind(sale.order.id)
       .first<{ n: number }>();
     expect(paid?.n).toBe(0);

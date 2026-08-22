@@ -27,7 +27,10 @@ interface NotificationCounts {
 
 interface NotificationBellProps {
   cache: Cache;
-  onNavigate?: (tab: 'payments' | 'statistics' | 'today', filter?: { kind: string; paymentTab?: string }) => void;
+  onNavigate?: (
+    tab: 'payments' | 'statistics' | 'today',
+    filter?: { kind: string; paymentTab?: string },
+  ) => void;
 }
 
 interface CountsPayload {
@@ -161,7 +164,10 @@ export function NotificationBell({ cache, onNavigate }: NotificationBellProps) {
               className="count count--verified"
               onClick={() => {
                 setOpen(false);
-                onNavigate?.('payments', { kind: 'bot_auto_verified', paymentTab: 'bot_auto_verified' });
+                onNavigate?.('payments', {
+                  kind: 'bot_auto_verified',
+                  paymentTab: 'bot_auto_verified',
+                });
               }}
             >
               <span className="count-label">تایید خودکار ربات</span>
@@ -181,7 +187,9 @@ export function NotificationBell({ cache, onNavigate }: NotificationBellProps) {
               </button>
             </div>
             {counts.unread === 0 ? (
-              <p className="notification-bell__empty">No unread income or bot auto verified items.</p>
+              <p className="notification-bell__empty">
+                No unread income or bot auto verified items.
+              </p>
             ) : (
               <p className="muted notification-bell__hint">
                 {incomeUnread > 0 && `${incomeUnread} income`}

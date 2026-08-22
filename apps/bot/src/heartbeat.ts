@@ -43,7 +43,8 @@ import { join } from 'node:path';
  * so nothing survives a container restart — a stale file from a previous life
  * answering for a process that never started would be worse than no file.
  */
-export const HEARTBEAT_PATH = process.env['BOT_HEARTBEAT_PATH'] ?? join(tmpdir(), 'shikoo-bot-alive');
+export const HEARTBEAT_PATH =
+  process.env['BOT_HEARTBEAT_PATH'] ?? join(tmpdir(), 'shikoo-bot-alive');
 
 export function beat(path: string = HEARTBEAT_PATH): void {
   try {

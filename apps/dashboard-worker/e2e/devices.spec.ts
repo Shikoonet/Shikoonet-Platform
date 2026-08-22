@@ -79,9 +79,7 @@ test('an accepted revoke takes the token and says what stopped', async ({ page }
   // Said out loud. This view had a channel for failure and none for success,
   // so a press that worked and a press that did nothing looked identical.
   await expect(page.locator('#main-content [role="status"]')).toContainText('باطل شد');
-  await expect(page.locator('#main-content [role="status"]')).toContainText(
-    target!.display_name,
-  );
+  await expect(page.locator('#main-content [role="status"]')).toContainText(target!.display_name);
 
   const after = await devices(page);
   expect(after.items.find((d) => d.id === target!.id)?.credential).toBeNull();

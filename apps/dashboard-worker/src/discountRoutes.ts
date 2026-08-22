@@ -170,7 +170,9 @@ export function registerDiscountRoutes(
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-    const totalRow = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM discount_codes dc ${whereSql}`)
+    const totalRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM discount_codes dc ${whereSql}`,
+    )
       .bind(...params)
       .first<{ n: number }>();
 
@@ -302,15 +304,24 @@ export function registerDiscountRoutes(
       .first<{ id: number }>();
     const id = Number(created!.id);
 
-    await audit(c.env.DB, ident, 'discount.created', 'DISCOUNT_CODE', String(id), null, {
-      code: b.code,
-      kind: b.kind,
-      amount_irr: b.amountIrr,
-      percent: b.percent,
-      max_uses: b.maxUses,
-      applies_to: b.appliesTo,
-      expires_at: b.expiresAt,
-    }, null);
+    await audit(
+      c.env.DB,
+      ident,
+      'discount.created',
+      'DISCOUNT_CODE',
+      String(id),
+      null,
+      {
+        code: b.code,
+        kind: b.kind,
+        amount_irr: b.amountIrr,
+        percent: b.percent,
+        max_uses: b.maxUses,
+        applies_to: b.appliesTo,
+        expires_at: b.expiresAt,
+      },
+      null,
+    );
 
     const row = await c.env.DB.prepare(`${SELECT_CODE} WHERE dc.id = ?1`).bind(id).first<CodeRow>();
     return c.json({ ok: true, discount: shape(row!, Date.now()) }, 201);
@@ -325,7 +336,9 @@ export function registerDiscountRoutes(
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
-    const before = await c.env.DB.prepare(`${SELECT_CODE} WHERE dc.id = ?1`).bind(id).first<CodeRow>();
+    const before = await c.env.DB.prepare(`${SELECT_CODE} WHERE dc.id = ?1`)
+      .bind(id)
+      .first<CodeRow>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     // Already in the past — the code is spent and nothing needs to move. Not
@@ -338,7 +351,9 @@ export function registerDiscountRoutes(
       .bind(id)
       .run();
 
-    const after = await c.env.DB.prepare(`${SELECT_CODE} WHERE dc.id = ?1`).bind(id).first<CodeRow>();
+    const after = await c.env.DB.prepare(`${SELECT_CODE} WHERE dc.id = ?1`)
+      .bind(id)
+      .first<CodeRow>();
 
     await audit(
       c.env.DB,

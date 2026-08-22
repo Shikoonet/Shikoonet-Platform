@@ -56,7 +56,11 @@ export function TransactionReassignPicker({
   item: PaymentItem;
   cache: Cache;
   onClose: () => void;
-  onReassign: (args: { transactionId: string; reason: string; verifyAfterAssign: boolean }) => Promise<void>;
+  onReassign: (args: {
+    transactionId: string;
+    reason: string;
+    verifyAfterAssign: boolean;
+  }) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const anchor = item.paidClickedAt ?? item.receiptSubmittedAt ?? item.createdAt;
@@ -175,7 +179,11 @@ export function TransactionReassignPicker({
         </label>
         <label>
           شناسهٔ تراکنش
-          <input type="text" value={transactionId} onChange={(e) => setTransactionId(e.target.value)} />
+          <input
+            type="text"
+            value={transactionId}
+            onChange={(e) => setTransactionId(e.target.value)}
+          />
         </label>
         <label>
           مرجع
@@ -187,7 +195,9 @@ export function TransactionReassignPicker({
       </div>
 
       {searching && <p className="muted">در حال جست‌وجو…</p>}
-      {!searching && results.length === 0 && <p className="muted">هیچ تراکنشی با این فیلترها نمی‌خواند.</p>}
+      {!searching && results.length === 0 && (
+        <p className="muted">هیچ تراکنشی با این فیلترها نمی‌خواند.</p>
+      )}
 
       <ul className="transaction-reassign__results">
         {results.map((tx) => (
@@ -195,8 +205,7 @@ export function TransactionReassignPicker({
             <div className="transaction-reassign__row">
               <div>
                 <strong>{tx.bankTimestamp ? formatTimeSeconds(tx.bankTimestamp) : '—'}</strong>
-                <br />
-                +{tx.amountIrr != null ? formatTomanFromIrr(tx.amountIrr) : '—'}
+                <br />+{tx.amountIrr != null ? formatTomanFromIrr(tx.amountIrr) : '—'}
                 <br />
                 <AccountRef account={tx} />
                 <br />
@@ -318,7 +327,12 @@ export function TransactionReassignPicker({
             >
               {verifyAfter ? 'تغییر تخصیص و تایید' : 'فقط تغییر تخصیص'}
             </button>
-            <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmStep(false)}>
+            <button
+              type="button"
+              className="ghost"
+              disabled={busy}
+              onClick={() => setConfirmStep(false)}
+            >
               انصراف
             </button>
           </div>

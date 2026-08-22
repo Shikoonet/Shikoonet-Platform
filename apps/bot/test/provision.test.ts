@@ -635,7 +635,9 @@ describe('an order that ended without telling anyone', () => {
 
     await provisionPaidOrders(db, deadPanel);
 
-    expect((await pendingNotifications()).find((n) => n.chatId === order.telegramId)).toBeUndefined();
+    expect(
+      (await pendingNotifications()).find((n) => n.chatId === order.telegramId),
+    ).toBeUndefined();
   });
 
   it('never greets a wallet deposit', async () => {

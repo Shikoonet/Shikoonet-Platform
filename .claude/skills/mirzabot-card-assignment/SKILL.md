@@ -20,15 +20,15 @@ When a customer starts card-to-card payment, the bot must:
 
 ## Code locations
 
-| Area | Path |
-|---|---|
-| Module | `mirzabot/integration/card-assignment/` |
-| Config | `config.php` — `CARD_LEASE_TTL_SECONDS = 600` (single source) |
-| Gate | `cardAssignmentEnabled()` — requires `CARD_ASSIGNMENT_ENABLED=true` and integration id `mirzabot-test` or `mirzabot-prod` |
-| Selection | `getOrAssignCard()`, `completeCardLeaseForOrder()` |
-| Hook (payment) | `function.php` → `DirectPayment()` calls `completeCardLeaseForOrder($order_id)` |
-| Hook (start pay) | `index.php` → `cart_to_offline` |
-| Hub card state | `payment_hub.php` + existing `getPaymentCardTempPath()` in `index.php` — **never redeclare** that function |
+| Area             | Path                                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Module           | `mirzabot/integration/card-assignment/`                                                                                   |
+| Config           | `config.php` — `CARD_LEASE_TTL_SECONDS = 600` (single source)                                                             |
+| Gate             | `cardAssignmentEnabled()` — requires `CARD_ASSIGNMENT_ENABLED=true` and integration id `mirzabot-test` or `mirzabot-prod` |
+| Selection        | `getOrAssignCard()`, `completeCardLeaseForOrder()`                                                                        |
+| Hook (payment)   | `function.php` → `DirectPayment()` calls `completeCardLeaseForOrder($order_id)`                                           |
+| Hook (start pay) | `index.php` → `cart_to_offline`                                                                                           |
+| Hub card state   | `payment_hub.php` + existing `getPaymentCardTempPath()` in `index.php` — **never redeclare** that function                |
 
 ## Database (additive)
 
@@ -49,10 +49,10 @@ node scripts/sync-hub-eligible-cards.mjs   # needs wrangler D1 auth
 
 ## Deploy / rollback scripts (smsverfication repo)
 
-| Env | Deploy | Rollback |
-|---|---|---|
-| DEV (`it2`, `@bottestshikoonetbot`) | `scripts/deploy-card-assignment-dev.sh` | `scripts/rollback-card-assignment-dev.sh` |
-| PROD (`mirza`, `@shikoonet_bot`) | `scripts/deploy-card-assignment-prod.sh` | `scripts/rollback-card-assignment-prod.sh` |
+| Env                                 | Deploy                                   | Rollback                                   |
+| ----------------------------------- | ---------------------------------------- | ------------------------------------------ |
+| DEV (`it2`, `@bottestshikoonetbot`) | `scripts/deploy-card-assignment-dev.sh`  | `scripts/rollback-card-assignment-dev.sh`  |
+| PROD (`mirza`, `@shikoonet_bot`)    | `scripts/deploy-card-assignment-prod.sh` | `scripts/rollback-card-assignment-prod.sh` |
 
 **Level 0 rollback** (instant): set `CARD_ASSIGNMENT_ENABLED=false` → falls back to `pickNextCardForPayment()`.
 
@@ -76,9 +76,9 @@ Pick order: `successful_today ASC`, `successful_7d ASC`, `successful_lifetime AS
 
 ## Environments
 
-| Env | SSH | Bot | Integration id |
-|---|---|---|---|
-| TEST | `it2` | `@bottestshikoonetbot` | `mirzabot-test` |
-| PROD | `mirza` | `@shikoonet_bot` | `mirzabot-prod` |
+| Env  | SSH     | Bot                    | Integration id  |
+| ---- | ------- | ---------------------- | --------------- |
+| TEST | `it2`   | `@bottestshikoonetbot` | `mirzabot-test` |
+| PROD | `mirza` | `@shikoonet_bot`       | `mirzabot-prod` |
 
 Active runtime is always root `index.php`, not `vpnbot/update/` or `vpnbot/Default/`.

@@ -58,7 +58,10 @@ async function withDb<T>(fn: (d: ReturnType<typeof createPostgresD1>['db']) => P
 const wipe = () =>
   withDb(async (d) => {
     await d.prepare(`DELETE FROM orders WHERE public_id = ?1`).bind(ORDER_ID).run();
-    await d.prepare(`DELETE FROM subscriptions WHERE remote_username = ?1`).bind(PANEL_ACCOUNT).run();
+    await d
+      .prepare(`DELETE FROM subscriptions WHERE remote_username = ?1`)
+      .bind(PANEL_ACCOUNT)
+      .run();
   });
 
 test.beforeAll(async () => {
@@ -124,10 +127,7 @@ test('an order is found by the number printed in its own first column', async ({
 
   // The box accepts it, and says so before it is typed into: a placeholder
   // that offers only «@نام‌کاربری» is what made an admin stop trying.
-  await expect(page.locator('#ledger-q')).toHaveAttribute(
-    'placeholder',
-    /شمارهٔ سفارش/,
-  );
+  await expect(page.locator('#ledger-q')).toHaveAttribute('placeholder', /شمارهٔ سفارش/);
   const row = page.locator(`tbody tr:has-text("${ORDER_ID}")`);
   await expect(row).toHaveCount(1);
   await expect(page.locator('#main-content')).toContainText(`${fa.format(1)} سفارش`);

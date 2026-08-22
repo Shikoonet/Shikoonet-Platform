@@ -115,9 +115,7 @@ async function seedSuggestedMatch(matchId: string, txId: string, claimId: string
   )
     .bind(matchId, txId, claimId, now)
     .run();
-  await baseEnv.DB.prepare(
-    `UPDATE payment_claims SET status = 'MATCH_SUGGESTED' WHERE id = ?1`,
-  )
+  await baseEnv.DB.prepare(`UPDATE payment_claims SET status = 'MATCH_SUGGESTED' WHERE id = ?1`)
     .bind(claimId)
     .run();
 }
@@ -160,7 +158,10 @@ describe('transaction reassignment', () => {
   });
 
   it('reassigns a suggested transaction from one claim to another', async () => {
-    await seedClaim('c-old', { order: 'mirzabot:test:order-a', meta: '{"telegramUserId":"1","telegramUsername":"reza"}' });
+    await seedClaim('c-old', {
+      order: 'mirzabot:test:order-a',
+      meta: '{"telegramUserId":"1","telegramUsername":"reza"}',
+    });
     await seedClaim('c-new', { order: 'mirzabot:test:order-b' });
     await seedTx('t-shared');
     await seedSuggestedMatch('m-old', 't-shared', 'c-old');

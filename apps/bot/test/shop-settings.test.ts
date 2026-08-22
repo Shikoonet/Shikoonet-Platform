@@ -14,7 +14,7 @@
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { assertSchema, db , pendingNotifications } from './helpers/env.js';
+import { assertSchema, db, pendingNotifications } from './helpers/env.js';
 import {
   ensureCatalog,
   ensurePaymentCard,

@@ -133,8 +133,12 @@ describe('batch()', () => {
     await expect(
       db.batch([
         db.prepare(`UPDATE devices SET display_name = ?2 WHERE id = ?1`).bind('dev-1', 'z'),
-        db.prepare(`INSERT INTO devices (id, device_code, display_name, created_at, updated_at)
-                    VALUES (?1, ?2, ?3, ?4, ?4)`).bind('dev-1', 'DUP', 'x', NOW),
+        db
+          .prepare(
+            `INSERT INTO devices (id, device_code, display_name, created_at, updated_at)
+                    VALUES (?1, ?2, ?3, ?4, ?4)`,
+          )
+          .bind('dev-1', 'DUP', 'x', NOW),
       ]),
     ).rejects.toThrow();
 
@@ -153,30 +157,38 @@ describe('batch()', () => {
 describe('the money invariant survives the adapter', () => {
   beforeEach(async () => {
     await db
-      .prepare(`INSERT INTO financial_accounts (id, bank_name, display_name, account_type, created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?5)`)
+      .prepare(
+        `INSERT INTO financial_accounts (id, bank_name, display_name, account_type, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?5)`,
+      )
       .bind('acct-1', 'melli', 'Melli', 'CARD', NOW)
       .run();
     await db
-      .prepare(`INSERT INTO raw_sms_events (id, device_id, sender, body_sha256, app_checksum,
+      .prepare(
+        `INSERT INTO raw_sms_events (id, device_id, sender, body_sha256, app_checksum,
                                             sms_timestamp, received_at, classification,
                                             parser_status, created_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8, ?6)`)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8, ?6)`,
+      )
       .bind('sms-1', 'dev-1', '710', 'h1', 'c1', NOW, 'BANK_CREDIT', 'OK')
       .run();
     await db
-      .prepare(`INSERT INTO transaction_candidates (id, raw_sms_event_id, direction, amount_irr,
+      .prepare(
+        `INSERT INTO transaction_candidates (id, raw_sms_event_id, direction, amount_irr,
                                                     bank_timestamp, confidence, parser_id,
                                                     parser_version, status, created_at, updated_at)
-                VALUES (?1, ?2, 'CREDIT', ?3, ?4, 1.0, 'p', 'v1', 'PARSED', ?4, ?4)`)
+                VALUES (?1, ?2, 'CREDIT', ?3, ?4, 1.0, 'p', 'v1', 'PARSED', ?4, ?4)`,
+      )
       .bind('tx-1', 'sms-1', 1_000_000, NOW)
       .run();
     for (const id of ['claim-1', 'claim-2']) {
       await db
-        .prepare(`INSERT INTO payment_claims (id, external_order_id, expected_amount_irr,
+        .prepare(
+          `INSERT INTO payment_claims (id, external_order_id, expected_amount_irr,
                                               submitted_at, source_system, status,
                                               created_at, updated_at)
-                  VALUES (?1, ?2, ?3, ?4, 'bot', 'PENDING', ?4, ?4)`)
+                  VALUES (?1, ?2, ?3, ?4, 'bot', 'PENDING', ?4, ?4)`,
+        )
         .bind(id, `order-${id}`, 1_000_000, NOW)
         .run();
     }
@@ -184,9 +196,11 @@ describe('the money invariant survives the adapter', () => {
 
   const insertMatch = (id: string, claim: string, status: string) =>
     db
-      .prepare(`INSERT INTO reconciliation_matches (id, transaction_candidate_id, payment_claim_id,
+      .prepare(
+        `INSERT INTO reconciliation_matches (id, transaction_candidate_id, payment_claim_id,
                                                     score, status, created_at, updated_at)
-                VALUES (?1, ?2, ?3, 1.0, ?4, ?5, ?5)`)
+                VALUES (?1, ?2, ?3, 1.0, ?4, ?5, ?5)`,
+      )
       .bind(id, 'tx-1', claim, status, NOW)
       .run();
 
@@ -203,10 +217,12 @@ describe('the money invariant survives the adapter', () => {
     try {
       await db.batch([
         db
-          .prepare(`INSERT INTO reconciliation_matches (id, transaction_candidate_id,
+          .prepare(
+            `INSERT INTO reconciliation_matches (id, transaction_candidate_id,
                                                         payment_claim_id, score, status,
                                                         created_at, updated_at)
-                    VALUES (?1, ?2, ?3, 1.0, 'CONFIRMED', ?4, ?4)`)
+                    VALUES (?1, ?2, ?3, 1.0, 'CONFIRMED', ?4, ?4)`,
+          )
           .bind('m-3', 'tx-1', 'claim-2', NOW),
       ]);
     } catch {
@@ -226,8 +242,10 @@ describe('INSERT OR IGNORE translation end to end', () => {
   it('swallows a duplicate instead of throwing', async () => {
     const stmt = () =>
       db
-        .prepare(`INSERT OR IGNORE INTO devices (id, device_code, display_name, created_at, updated_at)
-                  VALUES (?1, ?2, ?3, ?4, ?4)`)
+        .prepare(
+          `INSERT OR IGNORE INTO devices (id, device_code, display_name, created_at, updated_at)
+                  VALUES (?1, ?2, ?3, ?4, ?4)`,
+        )
         .bind('dev-2', 'D2', 'second', NOW)
         .run();
     expect((await stmt()).meta.changes).toBe(1);
@@ -239,9 +257,11 @@ describe('INSERT OR IGNORE translation end to end', () => {
     // uniqueness means a genuinely invalid row is now loud.
     await expect(
       db
-        .prepare(`INSERT OR IGNORE INTO devices (id, device_code, display_name, active,
+        .prepare(
+          `INSERT OR IGNORE INTO devices (id, device_code, display_name, active,
                                                  created_at, updated_at)
-                  VALUES (?1, ?2, ?3, ?4, ?5, ?5)`)
+                  VALUES (?1, ?2, ?3, ?4, ?5, ?5)`,
+        )
         .bind('dev-3', 'D3', 'third', 7, NOW)
         .run(),
     ).rejects.toThrow();
@@ -251,24 +271,32 @@ describe('INSERT OR IGNORE translation end to end', () => {
 describe('withSession()', () => {
   it('commits on success', async () => {
     await db.withSession(async (tx) => {
-      await tx.prepare(`UPDATE devices SET display_name = ?2 WHERE id = ?1`)
-        .bind('dev-1', 'session-ok').run();
+      await tx
+        .prepare(`UPDATE devices SET display_name = ?2 WHERE id = ?1`)
+        .bind('dev-1', 'session-ok')
+        .run();
     });
-    const row = await db.prepare(`SELECT display_name FROM devices WHERE id = ?1`)
-      .bind('dev-1').first<{ display_name: string }>();
+    const row = await db
+      .prepare(`SELECT display_name FROM devices WHERE id = ?1`)
+      .bind('dev-1')
+      .first<{ display_name: string }>();
     expect(row?.display_name).toBe('session-ok');
   });
 
   it('rolls back when the callback throws', async () => {
     await expect(
       db.withSession(async (tx) => {
-        await tx.prepare(`UPDATE devices SET display_name = ?2 WHERE id = ?1`)
-          .bind('dev-1', 'session-bad').run();
+        await tx
+          .prepare(`UPDATE devices SET display_name = ?2 WHERE id = ?1`)
+          .bind('dev-1', 'session-bad')
+          .run();
         throw new Error('boom');
       }),
     ).rejects.toThrow('boom');
-    const row = await db.prepare(`SELECT display_name FROM devices WHERE id = ?1`)
-      .bind('dev-1').first<{ display_name: string }>();
+    const row = await db
+      .prepare(`SELECT display_name FROM devices WHERE id = ?1`)
+      .bind('dev-1')
+      .first<{ display_name: string }>();
     expect(row?.display_name).toBe('phone');
   });
 });

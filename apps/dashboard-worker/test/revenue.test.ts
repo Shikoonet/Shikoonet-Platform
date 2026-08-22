@@ -38,8 +38,7 @@ const post = (path: string, body: unknown, email = ADMIN) =>
     envAs(email),
   );
 
-const del = (path: string, email = ADMIN) =>
-  app.request(path, { method: 'DELETE' }, envAs(email));
+const del = (path: string, email = ADMIN) => app.request(path, { method: 'DELETE' }, envAs(email));
 
 const get = (path: string, email = ADMIN) => app.request(path, {}, envAs(email));
 
@@ -175,9 +174,9 @@ describe('writing a line', () => {
       REVIEWER,
     );
     expect(res.status).toBe(403);
-    const n = await baseEnv.DB.prepare(
-      `SELECT COUNT(*)::int AS n FROM revenue_adjustments`,
-    ).first<{ n: number }>();
+    const n = await baseEnv.DB.prepare(`SELECT COUNT(*)::int AS n FROM revenue_adjustments`).first<{
+      n: number;
+    }>();
     expect(n?.n).toBe(0);
   });
 

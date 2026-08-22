@@ -203,7 +203,10 @@ export function registerAdminAccessRoutes(
 
     const body = AccessUserCreate.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
     const { email, displayName, role } = body.data;
     const now = Date.now();
@@ -223,7 +226,16 @@ export function registerAdminAccessRoutes(
       );
     }
 
-    await audit(c.env.DB, ident, 'access.user_created', 'ACCESS_USER', id, null, { email, role }, null);
+    await audit(
+      c.env.DB,
+      ident,
+      'access.user_created',
+      'ACCESS_USER',
+      id,
+      null,
+      { email, role },
+      null,
+    );
     return c.json({ ok: true, id }, 201);
   });
 
@@ -234,14 +246,23 @@ export function registerAdminAccessRoutes(
     const id = c.req.param('id');
     const body = AccessUserPatch.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     const before = await c.env.DB.prepare(
       `SELECT id, email, display_name, role, active FROM access_users WHERE id = ?1`,
     )
       .bind(id)
-      .first<{ id: string; email: string; display_name: string | null; role: string; active: number }>();
+      .first<{
+        id: string;
+        email: string;
+        display_name: string | null;
+        role: string;
+        active: number;
+      }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     const role = body.data.role ?? (before.role as (typeof ACCESS_ROLES)[number]);
@@ -297,9 +318,7 @@ export function registerAdminAccessRoutes(
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
 
     const id = c.req.param('id');
-    const before = await c.env.DB.prepare(
-      `SELECT id, email, role FROM access_users WHERE id = ?1`,
-    )
+    const before = await c.env.DB.prepare(`SELECT id, email, role FROM access_users WHERE id = ?1`)
       .bind(id)
       .first<{ id: string; email: string; role: string }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
@@ -372,7 +391,9 @@ export function registerAdminAccessRoutes(
       permissions: ADMIN_PERMISSIONS.map((p) => ({ key: p, label: ADMIN_PERMISSION_FA[p] })),
       items: (rows.results ?? []).map((r) => {
         const raw =
-          r.permissions !== null && typeof r.permissions === 'object' && !Array.isArray(r.permissions)
+          r.permissions !== null &&
+          typeof r.permissions === 'object' &&
+          !Array.isArray(r.permissions)
             ? (r.permissions as Record<string, unknown>)
             : {};
         return {
@@ -398,7 +419,10 @@ export function registerAdminAccessRoutes(
 
     const body = BotAdminCreate.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
     const permissions = cleanPermissions(body.data.permissions);
     if (permissions === null) {
@@ -410,16 +434,15 @@ export function registerAdminAccessRoutes(
        VALUES (?1, ?2, ?3, ?4::jsonb, true)
        ON CONFLICT (telegram_id) DO NOTHING RETURNING id`,
     )
-      .bind(
-        body.data.telegramId,
-        body.data.username,
-        body.data.role,
-        JSON.stringify(permissions),
-      )
+      .bind(body.data.telegramId, body.data.username, body.data.role, JSON.stringify(permissions))
       .first<{ id: number }>();
     if (!row) {
       return c.json(
-        { ok: false, error: 'duplicate_telegram_id', detail: 'این شناسهٔ تلگرام از قبل ادمین است.' },
+        {
+          ok: false,
+          error: 'duplicate_telegram_id',
+          detail: 'این شناسهٔ تلگرام از قبل ادمین است.',
+        },
         409,
       );
     }
@@ -446,7 +469,10 @@ export function registerAdminAccessRoutes(
 
     const body = BotAdminPatch.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     const before = await c.env.DB.prepare(
@@ -524,9 +550,7 @@ export function registerAdminAccessRoutes(
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
-    const before = await c.env.DB.prepare(
-      `SELECT id, telegram_id, role FROM admins WHERE id = ?1`,
-    )
+    const before = await c.env.DB.prepare(`SELECT id, telegram_id, role FROM admins WHERE id = ?1`)
       .bind(id)
       .first<{ id: number; telegram_id: number; role: string }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);

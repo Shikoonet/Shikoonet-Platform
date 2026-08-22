@@ -420,9 +420,13 @@ describe('Saman parser — Format 3 (deposit with separate date+time lines)', ()
   });
 
   it('rejects non-Saman bank header', () => {
-    const raw = ['بانك ملي', 'انتقال:1,950,000+', 'حساب:06006', 'مانده:9,379,136', '0515-20:46'].join(
-      '\n',
-    );
+    const raw = [
+      'بانك ملي',
+      'انتقال:1,950,000+',
+      'حساب:06006',
+      'مانده:9,379,136',
+      '0515-20:46',
+    ].join('\n');
     const r = parseSms(n(raw));
     expect(r.parserId).not.toBe('saman-credit-v1');
   });
@@ -447,9 +451,7 @@ describe('Compact parser — Format 4 (1,000,000+ CREDIT)', () => {
   });
 
   it('parses the Persian-digit equivalent', () => {
-    const raw = ['۳۰۰۴۲۲۲۸۶۲۲۶', '۱٬۰۰۰٬۰۰۰+', '۱۴۰۵/۵/۱۵-۱۲:۰۶', 'مانده:۷۲۰٬۹۱۹٬۱۰۰'].join(
-      '\n',
-    );
+    const raw = ['۳۰۰۴۲۲۲۸۶۲۲۶', '۱٬۰۰۰٬۰۰۰+', '۱۴۰۵/۵/۱۵-۱۲:۰۶', 'مانده:۷۲۰٬۹۱۹٬۱۰۰'].join('\n');
     expectBankTx(parseSms(n(raw)), {
       parserId: 'compact-signed-v1',
       bank: 'UNKNOWN',

@@ -279,20 +279,22 @@ export function App() {
         {NAV.map((group) => (
           <div key={group.label}>
             <div className="sidebar-section-label">{group.label}</div>
-            {group.items.filter((item) => visible(item.id)).map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                aria-current={page === item.id ? 'page' : undefined}
-                className={page === item.id ? 'sidebar-link active' : 'sidebar-link'}
-                onClick={() => go(item.id)}
-              >
-                <span className="sidebar-link__icon">
-                  <Icon name={item.icon} />
-                </span>
-                <span>{item.label}</span>
-              </button>
-            ))}
+            {group.items
+              .filter((item) => visible(item.id))
+              .map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-current={page === item.id ? 'page' : undefined}
+                  className={page === item.id ? 'sidebar-link active' : 'sidebar-link'}
+                  onClick={() => go(item.id)}
+                >
+                  <span className="sidebar-link__icon">
+                    <Icon name={item.icon} />
+                  </span>
+                  <span>{item.label}</span>
+                </button>
+              ))}
           </div>
         ))}
 

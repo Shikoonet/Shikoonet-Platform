@@ -150,9 +150,10 @@ export function registerBulkRoutes(
     const of = (action: string) => {
       const row = (results ?? []).find((r) => r.action === action);
       if (!row) return null;
-      const after = (typeof row.after_json === 'string'
-        ? (JSON.parse(row.after_json) as Record<string, unknown>)
-        : ((row.after_json ?? {}) as Record<string, unknown>));
+      const after =
+        typeof row.after_json === 'string'
+          ? (JSON.parse(row.after_json) as Record<string, unknown>)
+          : ((row.after_json ?? {}) as Record<string, unknown>);
       return {
         by: row.actor_email,
         at: Number(row.created_at),

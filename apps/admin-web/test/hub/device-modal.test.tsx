@@ -331,7 +331,9 @@ describe('DevicesView Add-Device modal — close flow', () => {
     expect(screen.queryByTestId('close-confirmation')).toBeNull();
 
     fireEvent.click(screen.getByTestId('setup-done'));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull(),
+    );
 
     for (let i = 0; i < 1; i++) {
       await act(async () => {

@@ -78,7 +78,10 @@ test('every section opens without a failed request, a thrown render or an error 
 
     const errorBox = page.locator('#main-content .alert-error');
     if (await errorBox.count()) {
-      trouble.push({ section: label, what: `error box: ${(await errorBox.first().innerText()).slice(0, 200)}` });
+      trouble.push({
+        section: label,
+        what: `error box: ${(await errorBox.first().innerText()).slice(0, 200)}`,
+      });
     }
 
     const drawn = (await page.locator('#main-content').innerText()).trim();

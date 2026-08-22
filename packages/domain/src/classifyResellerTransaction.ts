@@ -110,13 +110,21 @@ export async function classifyResellerTransaction(
     return { ok: false, error: 'TRANSACTION_NOT_ACTIONABLE' };
   }
 
-  return { ok: true, resellerTransactionId: id, transactionId: args.transactionId, resellerId: args.resellerId };
+  return {
+    ok: true,
+    resellerTransactionId: id,
+    transactionId: args.transactionId,
+    resellerId: args.resellerId,
+  };
 }
 
 export async function createReseller(
   db: D1Database,
   args: { name: string },
-): Promise<{ ok: true; id: string; name: string } | { ok: false; error: 'RESELLER_NAME_REQUIRED' | 'DUPLICATE' }> {
+): Promise<
+  | { ok: true; id: string; name: string }
+  | { ok: false; error: 'RESELLER_NAME_REQUIRED' | 'DUPLICATE' }
+> {
   const name = args.name.trim();
   if (!name) return { ok: false, error: 'RESELLER_NAME_REQUIRED' };
   const now = Date.now();

@@ -82,7 +82,12 @@ export function ClaimChangeAccount({
       </label>
       <label>
         دلیل (اختیاری)
-        <input type="text" value={reason} maxLength={500} onChange={(e) => setReason(e.target.value)} />
+        <input
+          type="text"
+          value={reason}
+          maxLength={500}
+          onChange={(e) => setReason(e.target.value)}
+        />
       </label>
       <div className="payment-review__actions">
         <button type="button" className="primary" disabled={busy} onClick={() => void submit()}>

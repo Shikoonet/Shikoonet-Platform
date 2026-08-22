@@ -55,7 +55,12 @@ export function IconIncome({ className }: IconProps) {
   return (
     <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
       <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.75" />
-      <path d="M12 8v8M9 11l3-3 3 3" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+      <path
+        d="M12 8v8M9 11l3-3 3 3"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -97,7 +102,12 @@ export function IconManualVerified({ className }: IconProps) {
 export function IconAll({ className }: IconProps) {
   return (
     <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path d="M8 6h13M8 12h13M8 18h13" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+      <path
+        d="M8 6h13M8 12h13M8 18h13"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      />
       <circle cx="4" cy="6" r="1" fill="currentColor" />
       <circle cx="4" cy="12" r="1" fill="currentColor" />
       <circle cx="4" cy="18" r="1" fill="currentColor" />
@@ -174,7 +184,12 @@ export function IconBell({ className }: IconProps) {
         strokeWidth="1.75"
         strokeLinejoin="round"
       />
-      <path d="M10 17a2 2 0 0 0 4 0" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+      <path
+        d="M10 17a2 2 0 0 0 4 0"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }

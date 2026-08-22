@@ -258,7 +258,9 @@ export async function identityFor(
     // Still goes through `access_users`, so a test that grants READ_ONLY gets
     // READ_ONLY. Pinning ADMIN here made the bypass stronger than any real
     // login, which is the wrong direction for a thing that only exists in dev.
-    const row = await env.DB.prepare(`SELECT role FROM access_users WHERE email = ?1 AND active = 1`)
+    const row = await env.DB.prepare(
+      `SELECT role FROM access_users WHERE email = ?1 AND active = 1`,
+    )
       .bind(email)
       .first<{ role: AccessRole }>();
     return row ? { email, role: row.role } : null;
@@ -527,7 +529,6 @@ export function registerAuthRoutes(app: Hono<never>): void {
     return c.json({ ok: true });
   });
 
-
   /**
    * An operator changing their own password.
    *
@@ -671,7 +672,9 @@ export function isPublicAuthPath(path: string): boolean {
  * session.
  */
 /** Read the session cookie off a Hono context of any binding shape. */
-export function sessionCookie(c: { req: { header: (name: string) => string | undefined } }): string | undefined {
+export function sessionCookie(c: {
+  req: { header: (name: string) => string | undefined };
+}): string | undefined {
   const raw = c.req.header('cookie');
   if (!raw) return undefined;
   for (const part of raw.split(';')) {

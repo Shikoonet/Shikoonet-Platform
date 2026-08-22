@@ -94,8 +94,9 @@ describe('decline income', () => {
     });
     expect(result.ok).toBe(true);
 
-    const tx = await baseEnv.DB.prepare(`SELECT id FROM transaction_candidates WHERE id = 't-decline'`)
-      .first<{ id: string }>();
+    const tx = await baseEnv.DB.prepare(
+      `SELECT id FROM transaction_candidates WHERE id = 't-decline'`,
+    ).first<{ id: string }>();
     const sms = await baseEnv.DB.prepare(
       `SELECT id FROM raw_sms_events WHERE id = 'sms-t-decline'`,
     ).first<{ id: string }>();

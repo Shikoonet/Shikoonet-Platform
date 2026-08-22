@@ -48,9 +48,7 @@ function press(updateId: number, telegramId: number, data: string): TelegramUpda
 
 async function lastOrder(userId: number) {
   return db
-    .prepare(
-      `SELECT id, total_irr, status FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`,
-    )
+    .prepare(`SELECT id, total_irr, status FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`)
     .bind(userId)
     .first<{ id: number; total_irr: number; status: string }>();
 }

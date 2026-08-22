@@ -36,48 +36,61 @@ async function seed(): Promise<void> {
     .run();
 
   await db
-    .prepare(`INSERT INTO devices (id, device_code, display_name, created_at, updated_at)
-              VALUES ('dev-1', 'D1', 'phone', ?1, ?1)`)
+    .prepare(
+      `INSERT INTO devices (id, device_code, display_name, created_at, updated_at)
+              VALUES ('dev-1', 'D1', 'phone', ?1, ?1)`,
+    )
     .bind(NOW)
     .run();
 
   for (const acct of ['acct-a', 'acct-b']) {
     await db
-      .prepare(`INSERT INTO financial_accounts (id, bank_name, display_name, account_type,
+      .prepare(
+        `INSERT INTO financial_accounts (id, bank_name, display_name, account_type,
                                                 created_at, updated_at)
-                VALUES (?1, 'melli', 'Melli', 'CARD', ?2, ?2)`)
+                VALUES (?1, 'melli', 'Melli', 'CARD', ?2, ?2)`,
+      )
       .bind(acct, NOW)
       .run();
   }
 
   // Two independent transactions, both actionable credits on acct-a.
-  for (const [tx, sms] of [['tx-1', 'sms-1'], ['tx-2', 'sms-2']]) {
+  for (const [tx, sms] of [
+    ['tx-1', 'sms-1'],
+    ['tx-2', 'sms-2'],
+  ]) {
     await db
-      .prepare(`INSERT INTO raw_sms_events (id, device_id, sender, body_sha256, app_checksum,
+      .prepare(
+        `INSERT INTO raw_sms_events (id, device_id, sender, body_sha256, app_checksum,
                                             sms_timestamp, received_at, classification,
                                             parser_status, created_at)
-                VALUES (?1, 'dev-1', '710', ?2, 'c1', ?3, ?3, 'BANK_CREDIT', 'OK', ?3)`)
+                VALUES (?1, 'dev-1', '710', ?2, 'c1', ?3, ?3, 'BANK_CREDIT', 'OK', ?3)`,
+      )
       .bind(sms, `hash-${sms}`, NOW)
       .run();
     await db
-      .prepare(`INSERT INTO transaction_candidates (id, raw_sms_event_id, financial_account_id,
+      .prepare(
+        `INSERT INTO transaction_candidates (id, raw_sms_event_id, financial_account_id,
                                                     direction, amount_irr, bank_timestamp,
                                                     confidence, parser_id, parser_version,
                                                     status, processing_disposition,
                                                     created_at, updated_at)
                 VALUES (?1, ?2, 'acct-a', 'CREDIT', ?3, ?4, 1.0, 'p', 'v1',
-                        'PARSED', 'ACTIONABLE', ?4, ?4)`)
+                        'PARSED', 'ACTIONABLE', ?4, ?4)`,
+      )
       .bind(tx, sms, AMOUNT, NOW)
       .run();
   }
 
   for (const claim of ['claim-1', 'claim-2']) {
     await db
-      .prepare(`INSERT INTO payment_claims (id, external_order_id, expected_amount_irr,
+      .prepare(
+        `INSERT INTO payment_claims (id, external_order_id, expected_amount_irr,
                                             target_financial_account_id, submitted_at,
                                             source_system, status, metadata_json,
                                             suspect_metadata_json, created_at, updated_at)
-                VALUES (?1, ?2, ?3, 'acct-a', ?4, ?5, 'PENDING', '{}', '{}', ?4, ?4)`)
+                VALUES (?1, ?2, ?3, 'acct-a', ?4, ?5, 'PENDING', '{}', '{}', ?4, ?4)`,
+      )
       .bind(claim, `mirzabot:test:${claim}`, AMOUNT, NOW, MIRZABOT_SOURCE)
       .run();
   }
@@ -86,7 +99,10 @@ async function seed(): Promise<void> {
 beforeEach(seed);
 
 async function claimStatus(id: string): Promise<string | null> {
-  return db.prepare(`SELECT status FROM payment_claims WHERE id = ?1`).bind(id).first<string>('status');
+  return db
+    .prepare(`SELECT status FROM payment_claims WHERE id = ?1`)
+    .bind(id)
+    .first<string>('status');
 }
 
 async function txStatus(id: string): Promise<string | null> {
@@ -109,8 +125,10 @@ describe('verifyMirzabotClaim on Postgres', () => {
     expect(await txStatus('tx-1')).toBe('APPROVED');
 
     const match = await db
-      .prepare(`SELECT status, score FROM reconciliation_matches
-                WHERE transaction_candidate_id = ?1 AND payment_claim_id = ?2`)
+      .prepare(
+        `SELECT status, score FROM reconciliation_matches
+                WHERE transaction_candidate_id = ?1 AND payment_claim_id = ?2`,
+      )
       .bind('tx-1', 'claim-1')
       .first<{ status: string; score: number }>();
     expect(match).toEqual({ status: 'AUTO_VERIFIED', score: 1 });
@@ -131,10 +149,14 @@ describe('verifyMirzabotClaim on Postgres', () => {
 
   it('refuses to settle one transaction against a second claim', async () => {
     await verifyMirzabotClaim(db, {
-      claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED',
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
     });
     const second = await verifyMirzabotClaim(db, {
-      claimId: 'claim-2', transactionId: 'tx-1', mode: 'AUTO_VERIFIED',
+      claimId: 'claim-2',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
     });
     expect(second).toEqual({ ok: false, error: 'TRANSACTION_ALREADY_CONSUMED' });
     expect(await claimStatus('claim-2')).toBe('PENDING');
@@ -142,10 +164,14 @@ describe('verifyMirzabotClaim on Postgres', () => {
 
   it('refuses to settle one claim against a second transaction', async () => {
     await verifyMirzabotClaim(db, {
-      claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED',
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
     });
     const second = await verifyMirzabotClaim(db, {
-      claimId: 'claim-1', transactionId: 'tx-2', mode: 'AUTO_VERIFIED',
+      claimId: 'claim-1',
+      transactionId: 'tx-2',
+      mode: 'AUTO_VERIFIED',
     });
     expect(second).toEqual({ ok: false, error: 'CLAIM_ALREADY_VERIFIED' });
     expect(await txStatus('tx-2')).toBe('PARSED');
@@ -156,10 +182,14 @@ describe('verifyMirzabotClaim on Postgres', () => {
     // the pre-checks above it: both callers pass every check, then collide.
     const [a, b] = await Promise.all([
       verifyMirzabotClaim(db, {
-        claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED',
+        claimId: 'claim-1',
+        transactionId: 'tx-1',
+        mode: 'AUTO_VERIFIED',
       }),
       verifyMirzabotClaim(db, {
-        claimId: 'claim-2', transactionId: 'tx-1', mode: 'ADMIN_APPROVED',
+        claimId: 'claim-2',
+        transactionId: 'tx-1',
+        mode: 'ADMIN_APPROVED',
         actorEmail: 'sam@example.com',
       }),
     ]);
@@ -168,9 +198,11 @@ describe('verifyMirzabotClaim on Postgres', () => {
     expect(winners).toHaveLength(1);
 
     const settled = await db
-      .prepare(`SELECT COUNT(*)::int AS n FROM reconciliation_matches
+      .prepare(
+        `SELECT COUNT(*)::int AS n FROM reconciliation_matches
                 WHERE transaction_candidate_id = 'tx-1'
-                  AND status IN ('CONFIRMED','AUTO_VERIFIED')`)
+                  AND status IN ('CONFIRMED','AUTO_VERIFIED')`,
+      )
       .first<number>('n');
     expect(settled).toBe(1);
   });
@@ -182,7 +214,9 @@ describe('verifyMirzabotClaim on Postgres', () => {
       .run();
     expect(
       await verifyMirzabotClaim(db, {
-        claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED',
+        claimId: 'claim-1',
+        transactionId: 'tx-1',
+        mode: 'AUTO_VERIFIED',
       }),
     ).toEqual({ ok: false, error: 'ACCOUNT_MISMATCH' });
   });
@@ -194,20 +228,26 @@ describe('verifyMirzabotClaim on Postgres', () => {
       .run();
     expect(
       await verifyMirzabotClaim(db, {
-        claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED',
+        claimId: 'claim-1',
+        transactionId: 'tx-1',
+        mode: 'AUTO_VERIFIED',
       }),
     ).toEqual({ ok: false, error: 'AMOUNT_MISMATCH' });
   });
 
   it('rejects a transaction excluded from processing', async () => {
     await db
-      .prepare(`UPDATE transaction_candidates SET processing_disposition = 'ADMIN_EXCLUDED'
-                WHERE id = ?1`)
+      .prepare(
+        `UPDATE transaction_candidates SET processing_disposition = 'ADMIN_EXCLUDED'
+                WHERE id = ?1`,
+      )
       .bind('tx-1')
       .run();
     expect(
       await verifyMirzabotClaim(db, {
-        claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED',
+        claimId: 'claim-1',
+        transactionId: 'tx-1',
+        mode: 'AUTO_VERIFIED',
       }),
     ).toEqual({ ok: false, error: 'TRANSACTION_NOT_ACTIONABLE' });
   });
@@ -218,7 +258,9 @@ describe('verifyMirzabotClaim on Postgres', () => {
       .bind('tx-1', AMOUNT + 5)
       .run();
     await verifyMirzabotClaim(db, {
-      claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED',
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
     });
 
     const matches = await db
@@ -310,10 +352,16 @@ describe('the fulfilment notice', () => {
     // the notice id is derived from the pair, so there is only ever one row and
     // the customer's order is fulfilled once.
     await verifyMirzabotClaim(db, {
-      claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED', enqueueWebhook: true,
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
+      enqueueWebhook: true,
     });
     await verifyMirzabotClaim(db, {
-      claimId: 'claim-1', transactionId: 'tx-1', mode: 'AUTO_VERIFIED', enqueueWebhook: true,
+      claimId: 'claim-1',
+      transactionId: 'tx-1',
+      mode: 'AUTO_VERIFIED',
+      enqueueWebhook: true,
     });
 
     expect(await notices()).toHaveLength(1);
@@ -346,12 +394,12 @@ describe('the fulfilment notice', () => {
       expect(await claimStatus('claim-1')).toBe('PENDING');
       expect(await txStatus('tx-1')).toBe('PARSED');
       expect(
-        await db.prepare(`SELECT COUNT(*)::int AS n FROM reconciliation_matches`).first<number>('n'),
+        await db
+          .prepare(`SELECT COUNT(*)::int AS n FROM reconciliation_matches`)
+          .first<number>('n'),
       ).toBe(0);
     } finally {
-      await db
-        .prepare(`ALTER TABLE webhook_deliveries DROP CONSTRAINT tmp_reject_notice`)
-        .run();
+      await db.prepare(`ALTER TABLE webhook_deliveries DROP CONSTRAINT tmp_reject_notice`).run();
     }
   });
 

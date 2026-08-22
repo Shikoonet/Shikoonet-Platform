@@ -20,19 +20,19 @@ The PHP bot is still live; both systems read the same Postgres.
 
 ## Routing
 
-| Area | Agent |
-| --- | --- |
-| `apps/bot/**` — Telegram runtime, conversation state, keyboards | `bot-engineer` |
-| `packages/products/**`, provisioning adapters | `provisioning-engineer` |
-| `apps/ingest-worker/**` — the only public surface | `ingest-engineer` |
-| `packages/sms-parser/**` | `parser-engineer` |
-| `packages/domain/**` claim and match paths | `reconciliation-engineer` |
-| `apps/dashboard-web/**`, `apps/dashboard-worker/**` routes | `frontend-engineer` |
-| `migrations/**`, Postgres schema, service topology | `platform-architect` |
-| `packages/migrate/**` — MySQL and D1 to Postgres | `migration-engineer` |
-| `sim/**`, any test, any Playwright evidence | `qa-engineer` |
-| Auth boundaries, HMAC, CSRF, logging, redaction | `security-reviewer` |
-| The gate on every slice | `verifier` |
+| Area                                                            | Agent                     |
+| --------------------------------------------------------------- | ------------------------- |
+| `apps/bot/**` — Telegram runtime, conversation state, keyboards | `bot-engineer`            |
+| `packages/products/**`, provisioning adapters                   | `provisioning-engineer`   |
+| `apps/ingest-worker/**` — the only public surface               | `ingest-engineer`         |
+| `packages/sms-parser/**`                                        | `parser-engineer`         |
+| `packages/domain/**` claim and match paths                      | `reconciliation-engineer` |
+| `apps/dashboard-web/**`, `apps/dashboard-worker/**` routes      | `frontend-engineer`       |
+| `migrations/**`, Postgres schema, service topology              | `platform-architect`      |
+| `packages/migrate/**` — MySQL and D1 to Postgres                | `migration-engineer`      |
+| `sim/**`, any test, any Playwright evidence                     | `qa-engineer`             |
+| Auth boundaries, HMAC, CSRF, logging, redaction                 | `security-reviewer`       |
+| The gate on every slice                                         | `verifier`                |
 
 When work spans two areas, the owner of the riskier half leads and briefs the
 other; do not split one behavior across two agents working blind.

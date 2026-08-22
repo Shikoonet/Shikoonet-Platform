@@ -150,9 +150,7 @@ describe('settling a verified payment', () => {
       );
       expect(mine).toEqual([]);
     } finally {
-      await db
-        .prepare(`ALTER TABLE bot_notifications DROP CONSTRAINT tmp_reject_settle`)
-        .run();
+      await db.prepare(`ALTER TABLE bot_notifications DROP CONSTRAINT tmp_reject_settle`).run();
     }
 
     // And once the obstacle is gone the next sweep settles it normally, which
@@ -208,7 +206,13 @@ describe('settling a verified payment', () => {
           WHERE action = 'PAYMENT_NEEDS_REFUND' AND entity_id = ?1`,
       )
       .bind(sale.paymentPublicId)
-      .first<{ actor_role: string; action: string; entity_id: string; after_json: string; reason: string }>();
+      .first<{
+        actor_role: string;
+        action: string;
+        entity_id: string;
+        after_json: string;
+        reason: string;
+      }>();
 
     expect(incident).not.toBeNull();
     expect(incident?.actor_role).toBe('SYSTEM');
@@ -244,7 +248,9 @@ describe('settling a verified payment', () => {
     }
 
     const incident = await db
-      .prepare(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'PAYMENT_NEEDS_REFUND' AND entity_id = ?1`)
+      .prepare(
+        `SELECT count(*)::int AS n FROM audit_logs WHERE action = 'PAYMENT_NEEDS_REFUND' AND entity_id = ?1`,
+      )
       .bind(sale.paymentPublicId)
       .first<{ n: number }>();
     expect(incident?.n).toBe(0);

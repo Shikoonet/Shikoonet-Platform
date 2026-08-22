@@ -125,9 +125,7 @@ export async function gateFor(
   now = Date.now(),
 ): Promise<GateVerdict> {
   const user = await tx
-    .prepare(
-      `SELECT id, rules_accepted, channels_checked_at FROM users WHERE telegram_id = ?1`,
-    )
+    .prepare(`SELECT id, rules_accepted, channels_checked_at FROM users WHERE telegram_id = ?1`)
     .bind(telegramId)
     .first<GateUser>();
   if (!user) return null;

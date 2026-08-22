@@ -99,7 +99,9 @@ export function registerPanelRoutes(
   app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
 ) {
   app.get('/api/v1/admin/panels', async (c) => {
-    const rows = await c.env.DB.prepare(`${SELECT_PANEL} ORDER BY pr.sort_order, pr.id`).all<PanelRow>();
+    const rows = await c.env.DB.prepare(
+      `${SELECT_PANEL} ORDER BY pr.sort_order, pr.id`,
+    ).all<PanelRow>();
     // Five rows on this dataset and a hard ceiling of a few dozen — there is
     // nothing to page.
     return c.json({ ok: true, items: (rows.results ?? []).map(shape) });
@@ -114,10 +116,15 @@ export function registerPanelRoutes(
 
     const body = PanelPatch.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
-    const before = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`).bind(id).first<PanelRow>();
+    const before = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
+      .bind(id)
+      .first<PanelRow>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     const sets: string[] = [];
@@ -140,7 +147,9 @@ export function registerPanelRoutes(
       .bind(...params)
       .run();
 
-    const after = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`).bind(id).first<PanelRow>();
+    const after = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
+      .bind(id)
+      .first<PanelRow>();
     if (!after) return c.json({ ok: false, error: 'not_found' }, 404);
 
     await audit(
@@ -149,8 +158,18 @@ export function registerPanelRoutes(
       'panel.updated',
       'PROVIDER',
       String(id),
-      { name: before.name, status: before.status, capacity: before.capacity, sort_order: before.sort_order },
-      { name: after.name, status: after.status, capacity: after.capacity, sort_order: after.sort_order },
+      {
+        name: before.name,
+        status: before.status,
+        capacity: before.capacity,
+        sort_order: before.sort_order,
+      },
+      {
+        name: after.name,
+        status: after.status,
+        capacity: after.capacity,
+        sort_order: after.sort_order,
+      },
       null,
     );
 

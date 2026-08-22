@@ -45,9 +45,13 @@ async function main(): Promise<number> {
       case 'status': {
         const s = await status(client, dir);
         console.log(`applied  ${s.applied.length}`);
-        console.log(`pending  ${s.pending.length}${s.pending.length ? '  ' + s.pending.join(', ') : ''}`);
+        console.log(
+          `pending  ${s.pending.length}${s.pending.length ? '  ' + s.pending.join(', ') : ''}`,
+        );
         for (const d of s.drifted) {
-          console.error(`DRIFT    ${d.name} — applied ${d.expected.slice(0, 12)}, on disk ${d.found.slice(0, 12)}`);
+          console.error(
+            `DRIFT    ${d.name} — applied ${d.expected.slice(0, 12)}, on disk ${d.found.slice(0, 12)}`,
+          );
         }
         for (const u of s.unknown) {
           console.error(`UNKNOWN  ${u} — applied here but not in this checkout`);
@@ -64,7 +68,9 @@ async function main(): Promise<number> {
           return 0;
         }
         for (const b of blocking) console.error(`BLOCK ${b}`);
-        console.error('refusing to start: apply the migrations first (SERVICE=migrate, or the schema CLI)');
+        console.error(
+          'refusing to start: apply the migrations first (SERVICE=migrate, or the schema CLI)',
+        );
         return 1;
       }
       case 'up': {

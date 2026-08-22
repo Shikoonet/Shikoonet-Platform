@@ -19,9 +19,7 @@ describe('placeholders', () => {
 
   it('leaves ?1 inside a string literal alone', () => {
     // Rewriting this would corrupt the stored value, not just the query.
-    expect(toPostgres("SELECT ?1, 'literal ?1 stays'")).toBe(
-      "SELECT $1, 'literal ?1 stays'",
-    );
+    expect(toPostgres("SELECT ?1, 'literal ?1 stays'")).toBe("SELECT $1, 'literal ?1 stays'");
   });
 
   it('survives an escaped quote inside a literal', () => {
@@ -32,9 +30,7 @@ describe('placeholders', () => {
 
   it('leaves ?N inside comments alone', () => {
     expect(toPostgres('SELECT ?1 -- not ?2\nFROM t')).toBe('SELECT $1 -- not ?2\nFROM t');
-    expect(toPostgres('SELECT ?1 /* not ?2 */ FROM t')).toBe(
-      'SELECT $1 /* not ?2 */ FROM t',
-    );
+    expect(toPostgres('SELECT ?1 /* not ?2 */ FROM t')).toBe('SELECT $1 /* not ?2 */ FROM t');
   });
 
   it('numbers bare ? placeholders left to right', () => {
@@ -64,9 +60,9 @@ describe('placeholders', () => {
 
 describe('INSERT OR IGNORE', () => {
   it('becomes ON CONFLICT DO NOTHING', () => {
-    expect(
-      toPostgres('INSERT OR IGNORE INTO t (a, b) VALUES (?1, ?2)'),
-    ).toBe('INSERT INTO t (a, b) VALUES ($1, $2) ON CONFLICT DO NOTHING');
+    expect(toPostgres('INSERT OR IGNORE INTO t (a, b) VALUES (?1, ?2)')).toBe(
+      'INSERT INTO t (a, b) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    );
   });
 
   it('tolerates odd whitespace and a trailing semicolon', () => {

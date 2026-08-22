@@ -82,7 +82,13 @@ const PAYMENTS_TABS = [
     countKey: 'declinedIncome' as const,
     Icon: IconDeclined,
   },
-  { value: 'all' as const, label: 'همه', shortLabel: 'همه', countKey: 'all' as const, Icon: IconAll },
+  {
+    value: 'all' as const,
+    label: 'همه',
+    shortLabel: 'همه',
+    countKey: 'all' as const,
+    Icon: IconAll,
+  },
 ] as const;
 
 type ReviewTab = (typeof REVIEW_TABS)[number]['value'];

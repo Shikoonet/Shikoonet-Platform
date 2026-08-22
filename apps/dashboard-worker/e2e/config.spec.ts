@@ -181,7 +181,10 @@ test('a panel that fulfils by hand is not flagged for having no address', async 
   // `!== 'manual'`: a `manual` panel has no address because it does not need
   // one, and flagging it would train an operator to ignore the flag.
   await withDb((d) =>
-    d.prepare(`UPDATE provisioning_providers SET kind = 'manual' WHERE code = ?1`).bind(PANEL_CODE).run(),
+    d
+      .prepare(`UPDATE provisioning_providers SET kind = 'manual' WHERE code = ?1`)
+      .bind(PANEL_CODE)
+      .run(),
   );
   await page.goto('/admin/panels');
   const row = page.locator(`tbody tr:has-text("${PANEL_CODE}")`);

@@ -152,9 +152,7 @@ async function audit(
 
 const PrefixBody = z
   .object({
-    prefix: z
-      .string()
-      .regex(/^[0-9]{4,8}$/, 'prefix must be 4 to 8 digits'),
+    prefix: z.string().regex(/^[0-9]{4,8}$/, 'prefix must be 4 to 8 digits'),
     bankName: z.string().trim().min(1).max(64),
   })
   .strict();

@@ -92,9 +92,7 @@ describe.skipIf(unreachable !== null)('roll_Status is a gate, not a preference',
     // warns everybody. So `users.notify_enabled` has nothing to be imported
     // from and must keep its own default — importing ANY legacy boolean into it
     // switches warnings off for whichever customers happen to hold a zero.
-    const notification = columns.filter((c) =>
-      /notif|silent|mute|unsubscrib/i.test(c),
-    );
+    const notification = columns.filter((c) => /notif|silent|mute|unsubscrib/i.test(c));
     expect(notification).toEqual([]);
   });
 

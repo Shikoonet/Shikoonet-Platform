@@ -495,9 +495,7 @@ export const MENUS = {
   adminClaims: {
     label: 'پنل ادمین — فهرست پرداخت‌ها',
     hint: 'زیر پرداخت‌های در انتظار بررسی',
-    buttons: [
-      { action: 'pnl', label: '🛠 پنل ادمین', hint: 'برگشت به خانهٔ پنل', required: true },
-    ],
+    buttons: [{ action: 'pnl', label: '🛠 پنل ادمین', hint: 'برگشت به خانهٔ پنل', required: true }],
   },
   adminClaimDetail: {
     label: 'پنل ادمین — یک پرداخت',

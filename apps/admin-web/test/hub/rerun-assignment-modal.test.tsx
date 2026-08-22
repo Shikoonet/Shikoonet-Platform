@@ -22,7 +22,8 @@ import type { AccountListItem } from '../../src/hub/api.js';
 
 // Mock the api module so the modal doesn't hit the network.
 vi.mock('../../src/hub/api.js', async () => {
-  const actual = await vi.importActual<typeof import('../../src/hub/api.js')>('../../src/hub/api.js');
+  const actual =
+    await vi.importActual<typeof import('../../src/hub/api.js')>('../../src/hub/api.js');
   return {
     ...actual,
     api: {

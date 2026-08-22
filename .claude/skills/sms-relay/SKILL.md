@@ -32,11 +32,11 @@ Headers: `Content-Type: application/json; charset=utf-8`, `Accept: application/j
 
 Each Remote is independently configured. The user picks one of:
 
-| `method` | `useFormData` | Body / Content-Type |
-|----------|---------------|---------------------|
-| `POST`   | `false`       | JSON — template from `postJsonBody` (`application/json; charset=utf-8`) |
+| `method` | `useFormData` | Body / Content-Type                                                                          |
+| -------- | ------------- | -------------------------------------------------------------------------------------------- |
+| `POST`   | `false`       | JSON — template from `postJsonBody` (`application/json; charset=utf-8`)                      |
 | `POST`   | `true`        | URL-encoded — `formDataParameters` list (`application/x-www-form-urlencoded; charset=utf-8`) |
-| `GET`    | n/a           | Query string from `formDataParameters` |
+| `GET`    | n/a           | Query string from `formDataParameters`                                                       |
 
 Defaults (`RemoteConfig.kt`): `POST`, `useFormData = true`, keys `message` / `sender` / `timestamp`.
 

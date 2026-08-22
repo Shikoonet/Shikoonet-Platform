@@ -140,8 +140,10 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
       // order is in. Guarded on the old status so a concurrent sweep — or this
       // one running twice — settles it exactly once.
       const paid = await tx
-        .prepare(`UPDATE payments SET status = 'PAID', updated_at = now()
-                   WHERE id = ?1 AND status <> 'PAID'`)
+        .prepare(
+          `UPDATE payments SET status = 'PAID', updated_at = now()
+                   WHERE id = ?1 AND status <> 'PAID'`,
+        )
         .bind(row.payment_id)
         .run();
       if (paid.meta.changes === 0) return false;

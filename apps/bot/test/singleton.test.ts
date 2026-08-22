@@ -16,8 +16,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createPostgresD1 } from '@shikoo/db';
 import { acquirePollerLock, lockKeyForToken } from '../src/singleton.js';
 
-const url =
-  process.env['DATABASE_URL'] ?? 'postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo';
+const url = process.env['DATABASE_URL'] ?? 'postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo';
 
 // Through the adapter rather than `pg` directly: this app does not depend on
 // the driver, and adding it as a devDependency for one `new Pool` would make
@@ -203,7 +202,7 @@ describe('when the lock connection dies underneath us', () => {
     let asked = 0;
     let released = 0;
     const client = {
-      query: async <R,>(sql: string): Promise<{ rows: R[] }> => {
+      query: async <R>(sql: string): Promise<{ rows: R[] }> => {
         if (sql === 'SELECT 1') {
           asked += 1;
           if (!alive) throw new Error('connection terminated unexpectedly');

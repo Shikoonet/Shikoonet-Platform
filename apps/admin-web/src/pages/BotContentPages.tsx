@@ -187,9 +187,9 @@ export function BotTextsPage() {
         {err && <div className="alert alert-error">{err}</div>}
         {done && <div className="alert alert-info">{done}</div>}
         <p className="muted">
-          هر متنی که دست نخورده باشد، همان چیزی است که ربات امروز می‌گوید. «بازگشت به پیش‌فرض»
-          تغییر شما را حذف می‌کند، نه اینکه متن فعلی را رونویسی کند — پس نسخه‌های بعدی ربات هم به
-          شما می‌رسند.
+          هر متنی که دست نخورده باشد، همان چیزی است که ربات امروز می‌گوید. «بازگشت به پیش‌فرض» تغییر
+          شما را حذف می‌کند، نه اینکه متن فعلی را رونویسی کند — پس نسخه‌های بعدی ربات هم به شما
+          می‌رسند.
         </p>
 
         <div className="table-wrap">
@@ -237,9 +237,7 @@ export function BotTextsPage() {
                     {r.customised ? (
                       <>
                         <span className="badge badge-info">تغییر داده شده</span>
-                        {r.updatedBy && (
-                          <div className="page-head__sub ltr">{r.updatedBy}</div>
-                        )}
+                        {r.updatedBy && <div className="page-head__sub ltr">{r.updatedBy}</div>}
                         {r.updatedAt && (
                           <div className="page-head__sub">{dateTime(r.updatedAt)}</div>
                         )}

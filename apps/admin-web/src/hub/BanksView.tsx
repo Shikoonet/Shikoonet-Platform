@@ -411,7 +411,9 @@ function SmsPatternsPanel() {
         </p>
         <textarea
           rows={6}
-          placeholder={'بانک نمونه\nواریز مبلغ 1,000,000 ریال\nحساب: 0201234567001\nمانده: 5,000,000'}
+          placeholder={
+            'بانک نمونه\nواریز مبلغ 1,000,000 ریال\nحساب: 0201234567001\nمانده: 5,000,000'
+          }
           value={smsInput}
           onChange={(e) => setSmsInput(e.target.value)}
           aria-label="متن پیامک برای آزمایش"
@@ -489,7 +491,12 @@ function SmsPatternsPanel() {
                   <code>{r.detect_re}</code>
                 </td>
                 <td>
-                  <button type="button" className="btn-sm" disabled={busy} onClick={() => setDraft(r)}>
+                  <button
+                    type="button"
+                    className="btn-sm"
+                    disabled={busy}
+                    onClick={() => setDraft(r)}
+                  >
                     ویرایش
                   </button>
                   <button

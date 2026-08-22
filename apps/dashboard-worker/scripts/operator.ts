@@ -160,7 +160,9 @@ async function main(): Promise<number> {
     }
 
     if (!command || !email) {
-      console.error('usage: operator <list|create|set-password|enroll-totp|disable-totp|unlock> [email] [role]');
+      console.error(
+        'usage: operator <list|create|set-password|enroll-totp|disable-totp|unlock> [email] [role]',
+      );
       return 2;
     }
 

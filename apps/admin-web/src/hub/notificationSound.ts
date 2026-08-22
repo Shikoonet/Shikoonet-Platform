@@ -6,7 +6,9 @@ let unlocked = false;
 function getAudioContext(): AudioContext | null {
   if (typeof window === 'undefined') return null;
   if (!audioCtx) {
-    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    const Ctx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!Ctx) return null;
     audioCtx = new Ctx();
   }
@@ -17,11 +19,14 @@ function getAudioContext(): AudioContext | null {
 export function unlockNotificationAudio(): void {
   const ctx = getAudioContext();
   if (!ctx || unlocked) return;
-  void ctx.resume().then(() => {
-    unlocked = true;
-  }).catch(() => {
-    /* blocked — visual alerts still work */
-  });
+  void ctx
+    .resume()
+    .then(() => {
+      unlocked = true;
+    })
+    .catch(() => {
+      /* blocked — visual alerts still work */
+    });
 }
 
 export function isNotificationSoundMuted(): boolean {
@@ -65,7 +70,10 @@ export function playNotificationDing(): void {
   };
 
   if (ctx.state === 'suspended') {
-    void ctx.resume().then(run).catch(() => {});
+    void ctx
+      .resume()
+      .then(run)
+      .catch(() => {});
   } else {
     run();
   }

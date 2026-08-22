@@ -77,7 +77,11 @@ const ROTATION_STEP = 1_000_000;
 export async function rotateCard(
   tx: D1DatabaseSession,
   now: number,
-): Promise<{ card_digits: string; holder_name: string | null; financial_account_id: string } | null> {
+): Promise<{
+  card_digits: string;
+  holder_name: string | null;
+  financial_account_id: string;
+} | null> {
   return tx
     .prepare(
       `UPDATE payment_cards
@@ -442,10 +446,7 @@ export async function recordReceipt(
 }
 
 /** The receipt an admin is about to look at, if the customer sent one. */
-export async function receiptFor(
-  tx: D1DatabaseSession,
-  claimId: string,
-): Promise<string | null> {
+export async function receiptFor(tx: D1DatabaseSession, claimId: string): Promise<string | null> {
   const row = await tx
     .prepare(`SELECT receipt_url_or_r2_key FROM payment_claims WHERE id = ?1`)
     .bind(claimId)

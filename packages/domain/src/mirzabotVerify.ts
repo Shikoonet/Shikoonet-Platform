@@ -30,7 +30,14 @@ export type VerifyFailure =
 export type ManualVerifyWithoutTxFailure = 'CLAIM_NOT_FOUND' | 'CLAIM_NOT_ELIGIBLE';
 
 export type VerifyResult =
-  | { ok: true; matchId: string; transactionId: string; claimId: string; expectedAmountIrr: number; externalOrderId: string }
+  | {
+      ok: true;
+      matchId: string;
+      transactionId: string;
+      claimId: string;
+      expectedAmountIrr: number;
+      externalOrderId: string;
+    }
   | { ok: false; error: VerifyFailure };
 
 interface ClaimRow {
@@ -106,7 +113,8 @@ export async function verifyMirzabotClaim(
     )
     .bind(args.claimId)
     .first<ClaimRow>();
-  if (!claim || claim.source_system !== MIRZABOT_SOURCE) return { ok: false, error: 'CLAIM_NOT_FOUND' };
+  if (!claim || claim.source_system !== MIRZABOT_SOURCE)
+    return { ok: false, error: 'CLAIM_NOT_FOUND' };
   if (claim.status === 'VERIFIED') return { ok: false, error: 'CLAIM_ALREADY_VERIFIED' };
   if (!ELIGIBLE_CLAIM_STATUSES.has(claim.status)) return { ok: false, error: 'CLAIM_NOT_ELIGIBLE' };
 
@@ -174,9 +182,9 @@ export async function verifyMirzabotClaim(
   }
 
   const statements = [
-      db
-        .prepare(
-          `INSERT INTO reconciliation_matches
+    db
+      .prepare(
+        `INSERT INTO reconciliation_matches
              (id, transaction_candidate_id, payment_claim_id, score,
               matching_reasons_json, mismatch_reasons_json, status,
               reviewed_by, reviewed_at, created_at, updated_at)
@@ -190,21 +198,21 @@ export async function verifyMirzabotClaim(
              reviewed_at = excluded.reviewed_at,
              updated_at = excluded.updated_at
            WHERE reconciliation_matches.status NOT IN ${CONSUMING_MATCH_STATUSES}`,
-        )
-        .bind(matchId, tx.id, claim.id, reasons, mismatchReasons, matchStatus, reviewer, now),
-      db
-        .prepare(
-          `UPDATE transaction_candidates SET status = 'APPROVED', updated_at = ?2
+      )
+      .bind(matchId, tx.id, claim.id, reasons, mismatchReasons, matchStatus, reviewer, now),
+    db
+      .prepare(
+        `UPDATE transaction_candidates SET status = 'APPROVED', updated_at = ?2
            WHERE id = ?1 AND status NOT IN ('APPROVED','REJECTED','IGNORED')`,
-        )
-        .bind(tx.id, now),
-      db
-        .prepare(
-          `UPDATE payment_claims
+      )
+      .bind(tx.id, now),
+    db
+      .prepare(
+        `UPDATE payment_claims
              SET status = 'VERIFIED', suspect_reason = NULL, updated_at = ?2
            WHERE id = ?1 AND status IN ('PENDING','MATCH_SUGGESTED')`,
-        )
-        .bind(claim.id, now),
+      )
+      .bind(claim.id, now),
   ];
 
   if (args.enqueueWebhook) {
@@ -302,7 +310,8 @@ export async function verifyMirzabotClaimWithoutTransaction(
       suspect_metadata_json: string;
       metadata_json: string;
     }>();
-  if (!claim || claim.source_system !== MIRZABOT_SOURCE) return { ok: false, error: 'CLAIM_NOT_FOUND' };
+  if (!claim || claim.source_system !== MIRZABOT_SOURCE)
+    return { ok: false, error: 'CLAIM_NOT_FOUND' };
   if (!ELIGIBLE_CLAIM_STATUSES.has(claim.status)) return { ok: false, error: 'CLAIM_NOT_ELIGIBLE' };
 
   const snapshot: ManualVerificationRevertSnapshot = {

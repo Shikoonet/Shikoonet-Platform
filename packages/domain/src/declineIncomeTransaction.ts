@@ -130,7 +130,10 @@ export async function restoreIncomeBulk(
   const returnedToIncome: string[] = [];
   const skipped: string[] = [];
   for (const id of args.transactionIds) {
-    const result = await restoreIncomeTransaction(db, { transactionId: id, actorEmail: args.actorEmail });
+    const result = await restoreIncomeTransaction(db, {
+      transactionId: id,
+      actorEmail: args.actorEmail,
+    });
     if (result.ok) {
       restored.push(id);
       if (result.returnedToIncome) returnedToIncome.push(id);

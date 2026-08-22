@@ -149,5 +149,7 @@ test('a required channel must be switched off before it can be deleted', async (
   await row.getByRole('button', { name: 'خاموش کن' }).click();
   await expect(row.getByRole('button', { name: 'حذف' })).toBeEnabled();
 
-  await withDb((d) => d.prepare(`DELETE FROM required_channels WHERE title = ?1`).bind(title).run());
+  await withDb((d) =>
+    d.prepare(`DELETE FROM required_channels WHERE title = ?1`).bind(title).run(),
+  );
 });

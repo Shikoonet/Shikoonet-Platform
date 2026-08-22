@@ -4,10 +4,10 @@
 (اختلاف صفر ریال)، و کل Payment Hub روی همین اسکیما اجرا می‌شود — ۸۶۸ تست سبز.
 برای وضعیت لحظه‌ای و عیب‌یابی: [`STATUS.md`](STATUS.md).
 
-| | |
-|---|---|
-| فایل‌ها | `migrations/0001_core.sql` … `0005_ops.sql` |
-| نتیجهٔ اجرا | ۵۳ جدول، ۱ ویو، ۱۹۲ ایندکس، **۱۱ ایندکس partial unique** |
+|              |                                                                                    |
+| ------------ | ---------------------------------------------------------------------------------- |
+| فایل‌ها      | `migrations/0001_core.sql` … `0005_ops.sql`                                        |
+| نتیجهٔ اجرا  | ۵۳ جدول، ۱ ویو، ۱۹۲ ایندکس، **۱۱ ایندکس partial unique**                           |
 | تست تضمین‌ها | `migrations/verify_invariants.sql` — **۱۹/۱۹ سبز**، ۲۰۲۶-۰۸-۱۲، روی Postgres 16.14 |
 
 ---
@@ -17,10 +17,12 @@
 همهٔ تصمیم‌های زیر روی دامپ پروداکشن ۲۰۲۶-۰۸-۱۱ و اکسپورت D1 ۲۰۲۶-۰۸-۱۰ آزموده شده‌اند.
 
 **۱. `Payment_report` و `invoice` هیچ ارتباطی با هم ندارند.**
+
 ```sql
 SELECT COUNT(*) FROM Payment_report p
   JOIN invoice i ON i.id_invoice = SUBSTRING_INDEX(p.id_invoice,'|',-1);   -- 0
 ```
+
 آن `id_invoice` در جدول پرداخت در واقع `getconfigafterpay|6714538686_28ed` است — یک توکنِ مرحله،
 نه کلید فاکتور. یعنی **امروز برای هیچ‌کدام از ۴٬۶۲۹ پرداخت نمی‌شود گفت کدام سرویس را خریده**.
 در اسکیمای جدید این پیوند از طریق `orders` برقرار است. برای دیتای قدیمی پیوند **جعل نمی‌شود**:
@@ -50,10 +52,12 @@ SELECT COUNT(*) FROM Payment_report p
 ## تصمیم‌های اصلی
 
 ### ۱. پول: همه‌جا `bigint` به ریال
+
 میرزابات تومان ذخیره می‌کند. مهاجرت ×۱۰ می‌کند. Hub از قبل ریال است.
 معیار پذیرش مهاجرت: `SUM(Balance)*10` و `SUM(price)*10` **دقیقاً** برابر مقصد.
 
 ### ۲. کیف پول: دفتر کل، نه عدد قابل نوشتن
+
 `wallets.balance_irr` را هیچ کد اپلیکیشنی نمی‌نویسد. فقط یک ردیف در `wallet_entries` درج می‌شود و
 تریگر مانده را جابه‌جا می‌کند. «مانده برابر جمع ردیف‌هاست» **از روی ساختار** درست است نه از روی نظم کد.
 `wallet_entries` فقط-افزودنی است (تریگر جلوی UPDATE/DELETE را می‌گیرد) و `idempotency_key` دارد،
@@ -63,6 +67,7 @@ SELECT COUNT(*) FROM Payment_report p
 را بازتولید کند نه پاکسازی. سیاست اضافه‌برداشت سر خرج کردن اعمال می‌شود.
 
 ### ۳. مدل محصول عمومی
+
 ```
 provisioning_providers.kind ∈ marzban | marzneshin | hiddify | xui | wireguard
                               | ai_account | spotify | manual
@@ -70,6 +75,7 @@ products         ← چه می‌فروشیم
 product_plans    ← SKU خریدنی: قیمت، مدت، حجم
 subscriptions    ← چیزی که مشتری واقعاً دارد
 ```
+
 `marzban_panel` امروز ۴۳ ستون تماماً مخصوص پنل VPN دارد؛ فروش Spotify یعنی ستون ۴۴ و ۴۵.
 اینجا تنظیمات هر آداپتور در `config jsonb` است و هر آداپتور فقط بخش خودش را با zod اعتبارسنجی می‌کند.
 **افزودن Spotify = یک آداپتور + چند ردیف.** سفارش، کیف پول، فاکتور و تایید پرداخت دست نمی‌خورند.
@@ -77,10 +83,12 @@ subscriptions    ← چیزی که مشتری واقعاً دارد
 میرزابات محصول و پلن را یکی کرده — به همین خاطر «همان محصول، دو ماهه» امروز یک ردیف محصول جداست.
 
 ### ۴. رمز پنل‌ها در دیتابیس نیست
+
 `provisioning_providers.secret_ref` فقط **نام** یک راز در secret store است. ردیف پنل امن است برای
 دامپ گرفتن، لاگ کردن، و نشان دادن به پشتیبانی. امروز `password_panel` متن ساده داخل جدول است.
 
 ### ۵. Hub عیناً پورت می‌شود، نه بازطراحی
+
 `0004_payment_hub.sql` یک پورت **مکانیکی** است: `TEXT→text`، اپاک میلی‌ثانیه→`bigint`،
 پرچم ۰/۱→`smallint` (نه boolean)، `REAL→double precision`.
 
@@ -98,57 +106,64 @@ subscriptions    ← چیزی که مشتری واقعاً دارد
 `payment_claims.card_digits` روی سرور هستند ولی در مهاجرت‌ها نبودند).
 
 ### ۶. تضمین پول در سطح دیتابیس — دلیل اصلی Postgres
+
 ```sql
 CREATE UNIQUE INDEX ... ON reconciliation_matches(transaction_candidate_id)
   WHERE status IN ('CONFIRMED','AUTO_VERIFIED');
 ```
+
 یک تراکنش بانکی حداکثر یک claim را تسویه می‌کند؛ یک claim حداکثر یک بار. MySQL این را ندارد —
 به همین دلیل `card_assignment_leases` مجبور شده بود با دو ستون `GENERATED ... STORED` تقلبش کند.
 همان قفل کارت اینجا مستقیم نوشته می‌شود:
+
 ```sql
 CREATE UNIQUE INDEX ON card_leases(telegram_user_id) WHERE status='ACTIVE';
 CREATE UNIQUE INDEX ON card_leases(card_number)      WHERE status='ACTIVE';
 ```
+
 همان تضمین، دو ستون کمتر، و خواناتر. **۱۱ ایندکس partial unique** در کل اسکیما.
 
 ### ۷. حالت گفتگو از رکورد مشتری جدا شد
+
 `step` و `Processing_value{,_one,_tow,_four}` تقریباً روی **هر آپدیت تلگرام** نوشته می‌شوند.
 ماندنشان در `users` یعنی بازنویسی ردیف مشتری و همهٔ ایندکس‌هایش با هر کلیک.
 رفتند به `bot_sessions` — جدولی که هر وقت لازم شد می‌شود خالی‌اش کرد بدون لمس دیتای مشتری.
 
 ### ۸. کلید legacy روی هر جدول مهاجرت‌شده
+
 هر جدول ستون `legacy_id`/`legacy_ref` با قید UNIQUE دارد. این چیزی است که مهاجرت را
 **واقعاً idempotent** می‌کند: `ON CONFLICT DO NOTHING` آن‌وقت اثبات‌پذیر درست است، نه امیدوارانه.
 اجرای دوباره‌ی اسکریپت هیچ ردیف تکراری نمی‌سازد.
 
 ### ۹. text + CHECK به‌جای enum
+
 گشاد کردنش یک خط مهاجرت است و با درایور هیچ اصطکاک کست/آرایه ندارد. همان سبکی که Hub دارد.
 
 ---
 
 ## نگاشت جدول‌ها
 
-| MySQL (میرزابات) | ردیف | Postgres |
-|---|---|---|
-| `user` (۳۷ ستون) | ۱۱٬۲۴۱ | `users` + `bot_sessions` + `wallets` + `wallet_entries` |
-| `invoice` | ۵٬۱۳۱ | `subscriptions` |
-| `Payment_report` | ۴٬۶۲۹ | `payments` |
-| `service_other` | ۲۳۶ | `orders` (kind = RENEWAL / ADD_VOLUME / ADD_TIME / TRANSFER) |
-| `product` | ۲۱ | `products` + `product_plans` |
-| `marzban_panel` (۴۳ ستون) | ۵ | `provisioning_providers` (+ `config jsonb`) |
-| `card_number` | ۲۵ | `payment_cards` (ادغام با سمت Hub) |
-| `card_assignment_leases` | ۴۵۵ | `card_leases` |
-| `Discount` + `DiscountSell` | ۳۷ | `discount_codes` |
-| `Giftcodeconsumed` | ۹۳ | `discount_redemptions` |
-| `reagent_report` | ۱۷۹ | `users.referred_by` + `users.referral_bonus_claimed` |
-| `Requestagent` | ۱۱۶ | `reseller_requests` |
-| `revenue_adjustment_log` | ۱۳۶ | `revenue_adjustments` |
-| `wheel_list` | ۱٬۶۷۷ | `wheel_spins` |
-| `support_message` + `departman` | ۸ | `support_tickets` + `support_messages` + `support_departments` |
-| `setting` + `shopSetting` + `PaySetting` + `affiliates` + `topicid` | ۱۴۳ کلید | `settings(scope, key, value jsonb)` |
-| `admin` | ۴ | `admins` (بدون رمز — پایین را ببین) |
-| `help` / `app` / `channels` | ۱۳ | `help_articles` / `client_apps` / `required_channels` |
-| **D1 (Hub) — ۲۶ جدول** | | عیناً با همان نام‌ها |
+| MySQL (میرزابات)                                                    | ردیف     | Postgres                                                       |
+| ------------------------------------------------------------------- | -------- | -------------------------------------------------------------- |
+| `user` (۳۷ ستون)                                                    | ۱۱٬۲۴۱   | `users` + `bot_sessions` + `wallets` + `wallet_entries`        |
+| `invoice`                                                           | ۵٬۱۳۱    | `subscriptions`                                                |
+| `Payment_report`                                                    | ۴٬۶۲۹    | `payments`                                                     |
+| `service_other`                                                     | ۲۳۶      | `orders` (kind = RENEWAL / ADD_VOLUME / ADD_TIME / TRANSFER)   |
+| `product`                                                           | ۲۱       | `products` + `product_plans`                                   |
+| `marzban_panel` (۴۳ ستون)                                           | ۵        | `provisioning_providers` (+ `config jsonb`)                    |
+| `card_number`                                                       | ۲۵       | `payment_cards` (ادغام با سمت Hub)                             |
+| `card_assignment_leases`                                            | ۴۵۵      | `card_leases`                                                  |
+| `Discount` + `DiscountSell`                                         | ۳۷       | `discount_codes`                                               |
+| `Giftcodeconsumed`                                                  | ۹۳       | `discount_redemptions`                                         |
+| `reagent_report`                                                    | ۱۷۹      | `users.referred_by` + `users.referral_bonus_claimed`           |
+| `Requestagent`                                                      | ۱۱۶      | `reseller_requests`                                            |
+| `revenue_adjustment_log`                                            | ۱۳۶      | `revenue_adjustments`                                          |
+| `wheel_list`                                                        | ۱٬۶۷۷    | `wheel_spins`                                                  |
+| `support_message` + `departman`                                     | ۸        | `support_tickets` + `support_messages` + `support_departments` |
+| `setting` + `shopSetting` + `PaySetting` + `affiliates` + `topicid` | ۱۴۳ کلید | `settings(scope, key, value jsonb)`                            |
+| `admin`                                                             | ۴        | `admins` (بدون رمز — پایین را ببین)                            |
+| `help` / `app` / `channels`                                         | ۱۳       | `help_articles` / `client_apps` / `required_channels`          |
+| **D1 (Hub) — ۲۶ جدول**                                              |          | عیناً با همان نام‌ها                                           |
 
 ### چه چیزی منتقل نمی‌شود، و چرا
 
@@ -220,7 +235,7 @@ pnpm --filter @shikoo/migrate verify      # دوباره دو طرف را مقا
 **سه گاردی که رویش گذاشته شد:**
 
 ۱. **پیش‌پرواز چیزی نمی‌نویسد.** فهرست منابع، بررسی مجموعه‌های بسته، یکپارچگی ارجاعی، یکتایی،
-   کارت‌ها، وضعیت مقصد و جمع پول‌های مبدأ. اگر «بلاکر» ببیند، `migrate` اجرا نمی‌شود.
+کارت‌ها، وضعیت مقصد و جمع پول‌های مبدأ. اگر «بلاکر» ببیند، `migrate` اجرا نمی‌شود.
 ۲. **همه‌چیز در یک تراکنش.** هر خطایی وسط کار = `ROLLBACK` کامل. هیچ حالت نیمه‌کاره‌ای ممکن نیست.
 ۳. **تایید برابری پولی با اختلاف صفر.** هر جدول پولی جداگانه، و «تقریباً برابر» قبول نیست.
 
@@ -246,14 +261,14 @@ add-on orders (IRR)              516,210,000 ->       516,210,000   ✓
 
 مهاجرت هرگز والدِ ازدست‌رفته را جعل نمی‌کند. ردیف‌های زیر رد و **شمرده** می‌شوند:
 
-| | تعداد | چرا |
-|---|---|---|
-| گردونهٔ شانس | ۸۷ | کاربرش حذف شده |
-| ارجاع دعوت | ۱۹ | کاربرش حذف شده |
-| کد تخفیف تکراری | ۱۸ | در یک کد ادغام شد (پایین را ببین) |
-| درخواست نمایندگی | ۲ | کاربرش حذف شده |
-| سفارش افزودنی | ۱ | کاربرش حذف شده |
-| کارت بانکی | ۱ | فقط ربات می‌شناسدش، حساب بانکی ندارد |
+|                  | تعداد | چرا                                  |
+| ---------------- | ----- | ------------------------------------ |
+| گردونهٔ شانس     | ۸۷    | کاربرش حذف شده                       |
+| ارجاع دعوت       | ۱۹    | کاربرش حذف شده                       |
+| کد تخفیف تکراری  | ۱۸    | در یک کد ادغام شد (پایین را ببین)    |
+| درخواست نمایندگی | ۲     | کاربرش حذف شده                       |
+| سفارش افزودنی    | ۱     | کاربرش حذف شده                       |
+| کارت بانکی       | ۱     | فقط ربات می‌شناسدش، حساب بانکی ندارد |
 
 ### سه ایراد دیگر که حین نوشتن اسکریپت پیدا شد
 

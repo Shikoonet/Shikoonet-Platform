@@ -76,7 +76,12 @@ async function seedAccountAndCard() {
   return accountId;
 }
 
-async function seedTransaction(accountId: string, amountIrr: number, bankTs: number, txId = 'tx-1') {
+async function seedTransaction(
+  accountId: string,
+  amountIrr: number,
+  bankTs: number,
+  txId = 'tx-1',
+) {
   const now = Date.now();
   const deviceId = 'dev-mirza-test';
   await env.DB.prepare(
@@ -181,7 +186,6 @@ describe('mirzabot integration claims', () => {
     expect(json.autoVerified).toBe(false);
     expect(json.suspectReason).toBe('UNMAPPED_CARD');
   });
-
 });
 
 async function seedAccountWithCard(accountId: string, cardDigits: string, status = 'ACTIVE') {
@@ -207,7 +211,12 @@ async function claimByOrder(orderId: string) {
      FROM payment_claims WHERE external_order_id = ?1`,
   )
     .bind(`mirzabot:test:${orderId}`)
-    .first<{ id: string; status: string; suspect_reason: string | null; target_financial_account_id: string | null }>();
+    .first<{
+      id: string;
+      status: string;
+      suspect_reason: string | null;
+      target_financial_account_id: string | null;
+    }>();
 }
 
 /** Ambient Cloudflare D1Database is a structural subset of the domain's. */
@@ -243,7 +252,10 @@ describe('PHASE 8 — integration: AUTO path', () => {
       receiptSubmittedAt: BASE_MS + 2000,
     });
     const claimRes = await signedPost(body, body.eventId);
-    const claimJson = (await claimRes.json()) as { autoVerified: boolean; suspectReason: string | null };
+    const claimJson = (await claimRes.json()) as {
+      autoVerified: boolean;
+      suspectReason: string | null;
+    };
     expect(claimJson.autoVerified).toBe(false);
 
     await seedTransaction(accountId, 1_000_000, BASE_MS + 25_000, 'tx-int-auto');
@@ -367,10 +379,16 @@ describe('PHASE 8 — integration: SUGGESTED path', () => {
 
     const { finalizeExpiredMirzabotWaits } = await import('../src/integrations/mirzabot.js');
 
-    await finalizeExpiredMirzabotWaits(domainDb(), { autoMatchEnabled: true, now: receiptAt + 30_000 });
+    await finalizeExpiredMirzabotWaits(domainDb(), {
+      autoMatchEnabled: true,
+      now: receiptAt + 30_000,
+    });
     expect((await claimByOrder('ord-wait'))?.suspect_reason).toBeNull();
 
-    await finalizeExpiredMirzabotWaits(domainDb(), { autoMatchEnabled: true, now: receiptAt + 120_000 });
+    await finalizeExpiredMirzabotWaits(domainDb(), {
+      autoMatchEnabled: true,
+      now: receiptAt + 120_000,
+    });
     expect((await claimByOrder('ord-wait'))?.suspect_reason).toBeNull();
 
     await finalizeExpiredMirzabotWaits(domainDb(), {
@@ -423,15 +441,17 @@ describe('PHASE 5 — concurrency and double-use', () => {
     const c1 = await claimByOrder('ord-race-1');
     const c2 = await claimByOrder('ord-race-2');
     // Point the second claim at the same account so both can target one tx.
-    await env.DB.prepare(
-      `UPDATE payment_claims SET target_financial_account_id = ?2 WHERE id = ?1`,
-    )
+    await env.DB.prepare(`UPDATE payment_claims SET target_financial_account_id = ?2 WHERE id = ?1`)
       .bind(c2!.id, accountId)
       .run();
 
     const { verifyMirzabotClaim } = await import('@shikoo/domain');
     const results = await Promise.all([
-      verifyMirzabotClaim(domainDb(), { claimId: c1!.id, transactionId: 'tx-race', mode: 'AUTO_VERIFIED' }),
+      verifyMirzabotClaim(domainDb(), {
+        claimId: c1!.id,
+        transactionId: 'tx-race',
+        mode: 'AUTO_VERIFIED',
+      }),
       verifyMirzabotClaim(domainDb(), {
         claimId: c2!.id,
         transactionId: 'tx-race',
@@ -466,11 +486,15 @@ describe('PHASE 5 — concurrency and double-use', () => {
     });
     await signedPost(body, body.eventId);
     await seedTransaction(accountId, 1_000_000, BASE_MS + 10_000, 'tx-once-a');
-    expect((await rematch(accountId, 1_000_000, 'tx-once-a', BASE_MS + 10_000)).autoVerifiedCount).toBe(1);
+    expect(
+      (await rematch(accountId, 1_000_000, 'tx-once-a', BASE_MS + 10_000)).autoVerifiedCount,
+    ).toBe(1);
 
     // A second qualifying transaction must not verify the same order again.
     await seedTransaction(accountId, 1_000_000, BASE_MS + 20_000, 'tx-once-b');
-    expect((await rematch(accountId, 1_000_000, 'tx-once-b', BASE_MS + 20_000)).autoVerifiedCount).toBe(0);
+    expect(
+      (await rematch(accountId, 1_000_000, 'tx-once-b', BASE_MS + 20_000)).autoVerifiedCount,
+    ).toBe(0);
 
     const matches = await env.DB.prepare(
       `SELECT COUNT(*) AS n FROM reconciliation_matches m
@@ -492,7 +516,9 @@ describe('PHASE 5 — concurrency and double-use', () => {
     });
     await signedPost(body, body.eventId);
     await seedTransaction(accountId, 1_000_000, BASE_MS + 10_000, 'tx-replay');
-    expect((await rematch(accountId, 1_000_000, 'tx-replay', BASE_MS + 10_000)).autoVerifiedCount).toBe(1);
+    expect(
+      (await rematch(accountId, 1_000_000, 'tx-replay', BASE_MS + 10_000)).autoVerifiedCount,
+    ).toBe(1);
     expect((await claimByOrder('ord-replay'))?.status).toBe('VERIFIED');
 
     // Same order, brand-new eventId: the customer re-submitted the receipt.

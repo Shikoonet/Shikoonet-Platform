@@ -218,10 +218,7 @@ describe('referrals', () => {
     const { updateId, telegramId } = ids();
     const userId = await makeCustomer(telegramId);
     const invited = await makeCustomer(ids().telegramId);
-    await db
-      .prepare(`UPDATE users SET referred_by = ?1 WHERE id = ?2`)
-      .bind(userId, invited)
-      .run();
+    await db.prepare(`UPDATE users SET referred_by = ?1 WHERE id = ?2`).bind(userId, invited).run();
 
     const out = await handleUpdate(db, press(updateId, telegramId, 'ref'));
 
@@ -233,10 +230,7 @@ describe('referrals', () => {
     const referrer = await makeCustomer(ids().telegramId);
     const buyerTelegram = ids().telegramId;
     const buyer = await makeCustomer(buyerTelegram);
-    await db
-      .prepare(`UPDATE users SET referred_by = ?1 WHERE id = ?2`)
-      .bind(referrer, buyer)
-      .run();
+    await db.prepare(`UPDATE users SET referred_by = ?1 WHERE id = ?2`).bind(referrer, buyer).run();
     const order = await db
       .prepare(
         `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
@@ -260,17 +254,17 @@ describe('referrals', () => {
       )
       .bind(referrer)
       .first<{ n: number; total: number }>();
-    expect(wallet).toMatchObject({ n: 1, total: Math.floor((VIP_PRICE * COMMISSION_PERCENT) / 100) });
+    expect(wallet).toMatchObject({
+      n: 1,
+      total: Math.floor((VIP_PRICE * COMMISSION_PERCENT) / 100),
+    });
   });
 
   it('pays nothing on a second purchase', async () => {
     const referrer = await makeCustomer(ids().telegramId);
     const buyerTelegram = ids().telegramId;
     const buyer = await makeCustomer(buyerTelegram);
-    await db
-      .prepare(`UPDATE users SET referred_by = ?1 WHERE id = ?2`)
-      .bind(referrer, buyer)
-      .run();
+    await db.prepare(`UPDATE users SET referred_by = ?1 WHERE id = ?2`).bind(referrer, buyer).run();
     for (const n of [1, 2]) {
       await db
         .prepare(
@@ -295,10 +289,7 @@ describe('referrals', () => {
     const referrer = await makeCustomer(ids().telegramId);
     const buyerTelegram = ids().telegramId;
     const buyer = await makeCustomer(buyerTelegram);
-    await db
-      .prepare(`UPDATE users SET referred_by = ?1 WHERE id = ?2`)
-      .bind(referrer, buyer)
-      .run();
+    await db.prepare(`UPDATE users SET referred_by = ?1 WHERE id = ?2`).bind(referrer, buyer).run();
     const order = await db
       .prepare(
         `INSERT INTO orders (public_id, user_id, kind, quantity,

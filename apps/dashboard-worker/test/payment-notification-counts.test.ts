@@ -23,10 +23,10 @@ beforeAll(async () => {
 
 describe('notification counts with payment events', () => {
   it('includes bell-scoped unread fields in counts response', async () => {
-    const resp = await app.fetch(
-      new Request('https://example.com/api/v1/notifications/counts'),
-      { ...baseEnv, TEST_ACCESS_USER: EMAIL },
-    );
+    const resp = await app.fetch(new Request('https://example.com/api/v1/notifications/counts'), {
+      ...baseEnv,
+      TEST_ACCESS_USER: EMAIL,
+    });
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as {
       counts: {
@@ -39,8 +39,6 @@ describe('notification counts with payment events', () => {
     expect(body.counts.paymentEvents).toBeDefined();
     expect(typeof body.counts.incomeUnread).toBe('number');
     expect(typeof body.counts.botAutoVerifiedUnread).toBe('number');
-    expect(body.counts.unread).toBe(
-      body.counts.incomeUnread + body.counts.botAutoVerifiedUnread,
-    );
+    expect(body.counts.unread).toBe(body.counts.incomeUnread + body.counts.botAutoVerifiedUnread);
   });
 });

@@ -60,7 +60,9 @@ export async function adminFor(db: Db, telegramId: number): Promise<BotAdmin | n
     // string. Anything that is not a plain object reads as "nothing set", which
     // falls back to what the role has always meant rather than to deny-all.
     permissions:
-      row.permissions !== null && typeof row.permissions === 'object' && !Array.isArray(row.permissions)
+      row.permissions !== null &&
+      typeof row.permissions === 'object' &&
+      !Array.isArray(row.permissions)
         ? (row.permissions as Record<string, unknown>)
         : {},
   };
@@ -140,7 +142,11 @@ const CLAIM_JOIN = `
  * `MATCH_SUGGESTED` is included: the engine found something and declined to act
  * on it alone, which is precisely the queue an admin exists for.
  */
-export async function claimsAwaitingReview(db: Db, limit: number, offset = 0): Promise<PendingClaim[]> {
+export async function claimsAwaitingReview(
+  db: Db,
+  limit: number,
+  offset = 0,
+): Promise<PendingClaim[]> {
   const { results } = await db
     .prepare(
       `SELECT c.id, c.external_order_id, c.expected_amount_irr, c.card_digits,
@@ -239,10 +245,7 @@ export async function candidateTransactions(
  * offering it, and the payment goes back to needing a human decision rather
  * than being marked paid.
  */
-export async function rejectClaim(
-  tx: D1DatabaseSession,
-  claimId: string,
-): Promise<boolean> {
+export async function rejectClaim(tx: D1DatabaseSession, claimId: string): Promise<boolean> {
   const done = await tx
     .prepare(
       `UPDATE payment_claims

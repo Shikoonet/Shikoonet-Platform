@@ -97,7 +97,9 @@ export function gateReasons(s: SchemaStatus): { blocking: string[]; warnings: st
     blocking.push(`${s.pending.length} migration(s) never applied here: ${s.pending.join(', ')}`);
   }
   for (const d of s.drifted) {
-    blocking.push(`${d.name} was edited after it was applied (ran ${d.expected.slice(0, 12)}, on disk ${d.found.slice(0, 12)})`);
+    blocking.push(
+      `${d.name} was edited after it was applied (ran ${d.expected.slice(0, 12)}, on disk ${d.found.slice(0, 12)})`,
+    );
   }
   const warnings = s.unknown.map(
     (u) => `${u} is applied here but absent from this checkout — the database is ahead of the code`,

@@ -259,7 +259,12 @@ describe('the channel gate', () => {
 
     // `buy` is a perfectly ordinary button, and this customer has a row — so
     // nothing but the gate stands between them and the catalogue.
-    const out = await handleUpdate(db, press(BASE_UPDATE + 500, telegramId, 'buy'), globalThis.fetch, api);
+    const out = await handleUpdate(
+      db,
+      press(BASE_UPDATE + 500, telegramId, 'buy'),
+      globalThis.fetch,
+      api,
+    );
 
     expect(out.replies[0]!.text).toBe(menu.gateChannels());
   });

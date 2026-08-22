@@ -391,7 +391,11 @@ describe('DELETE /api/v1/admin/products/plans/:id', () => {
 
     const res = await del(planId);
     expect(res.status).toBe(409);
-    const body = (await res.json()) as { error: string; detail: string; counts: { orders: number } };
+    const body = (await res.json()) as {
+      error: string;
+      detail: string;
+      counts: { orders: number };
+    };
     expect(body.error).toBe('in_use');
     expect(body.counts.orders).toBe(1);
     // Measured against `Intl`, not against a literal — the literal here used to
@@ -405,9 +409,7 @@ describe('DELETE /api/v1/admin/products/plans/:id', () => {
     // And the order still knows what it bought — the failure this guard exists
     // to prevent is not an error, it is a silent NULL in `orders.plan_id`.
     expect(await planRow(planId)).not.toBeNull();
-    const order = await baseEnv.DB.prepare(
-      `SELECT plan_id FROM orders WHERE plan_id = ?1`,
-    )
+    const order = await baseEnv.DB.prepare(`SELECT plan_id FROM orders WHERE plan_id = ?1`)
       .bind(planId)
       .first<{ plan_id: number }>();
     expect(Number(order!.plan_id)).toBe(planId);
@@ -419,7 +421,9 @@ describe('DELETE /api/v1/admin/products/plans/:id', () => {
 
     const res = await del(planId);
     expect(res.status).toBe(409);
-    expect(((await res.json()) as { counts: { subscriptions: number } }).counts.subscriptions).toBe(1);
+    expect(((await res.json()) as { counts: { subscriptions: number } }).counts.subscriptions).toBe(
+      1,
+    );
     expect(await planRow(planId)).not.toBeNull();
   });
 
@@ -626,9 +630,9 @@ describe('creating a product and its plans', () => {
   });
 
   it('404s when the product a plan is added to does not exist', async () => {
-    expect(
-      (await post('products/2000000004/plans', { name: 'x', priceIrr: 1000 })).status,
-    ).toBe(404);
+    expect((await post('products/2000000004/plans', { name: 'x', priceIrr: 1000 })).status).toBe(
+      404,
+    );
   });
 
   it('is refused for a reviewer, and nothing is written', async () => {

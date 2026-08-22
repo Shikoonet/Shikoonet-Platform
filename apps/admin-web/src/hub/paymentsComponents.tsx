@@ -14,7 +14,14 @@ import { IconBotVerified, IconReview } from './paymentsIcons.js';
 
 /* ── Status badges ── */
 
-export type StatusBadgeTone = 'review' | 'waiting' | 'suspected' | 'verified' | 'neutral' | 'bot' | 'match';
+export type StatusBadgeTone =
+  | 'review'
+  | 'waiting'
+  | 'suspected'
+  | 'verified'
+  | 'neutral'
+  | 'bot'
+  | 'match';
 
 export function StatusBadge({ tone, children }: { tone: StatusBadgeTone; children: ReactNode }) {
   return <span className={`status-badge status-badge--${tone}`}>{children}</span>;
@@ -86,8 +93,7 @@ export function BotVerifiedMetrics({
   const botCount = analytics?.botAutoVerified?.count ?? items.length;
   const manualCount = analytics?.manualVerified?.count ?? 0;
   const totalVerified = botCount + manualCount;
-  const rate =
-    totalVerified > 0 ? `${((botCount / totalVerified) * 100).toFixed(1)}%` : '—';
+  const rate = totalVerified > 0 ? `${((botCount / totalVerified) * 100).toFixed(1)}%` : '—';
 
   const deltas = items
     .map((i) => i.matchedTransaction?.timeDeltaSeconds)
@@ -114,12 +120,7 @@ export function BotVerifiedMetrics({
         accent
         icon={<IconBotVerified />}
       />
-      <MetricCard
-        label="نرخ تایید"
-        value={rate}
-        meta="automation rate"
-        icon={<IconReview />}
-      />
+      <MetricCard label="نرخ تایید" value={rate} meta="automation rate" icon={<IconReview />} />
       <MetricCard label="میانگین زمان تایید" value={avgTime} meta="claim to bank tx" />
       <MetricCard
         label="مشتریان یکتا"
@@ -156,9 +157,7 @@ function customerCell(item: PaymentItem) {
   return (
     <div className="txn-row__customer">
       {item.telegramUsername && <strong>@{item.telegramUsername}</strong>}
-      {item.telegramUserId && !item.telegramUsername && (
-        <span>{item.telegramUserId}</span>
-      )}
+      {item.telegramUserId && !item.telegramUsername && <span>{item.telegramUserId}</span>}
       {!item.telegramUsername && !item.telegramUserId && <span className="muted">—</span>}
     </div>
   );
@@ -166,7 +165,9 @@ function customerCell(item: PaymentItem) {
 
 function verifiedAtLabel(item: PaymentItem): string {
   const ts =
-    item.matchedTransaction?.verifiedAt ?? item.matchedTransaction?.bankTimestamp ?? item.effectiveTs;
+    item.matchedTransaction?.verifiedAt ??
+    item.matchedTransaction?.bankTimestamp ??
+    item.effectiveTs;
   if (ts == null) return '—';
   return formatTimeAgo(ts);
 }
@@ -174,7 +175,9 @@ function verifiedAtLabel(item: PaymentItem): string {
 /** Exact YYYY-MM-DD HH:mm:ss in the user's local timezone (no relative time). */
 function verifiedAtExactLabel(item: PaymentItem): string {
   const ts =
-    item.matchedTransaction?.verifiedAt ?? item.matchedTransaction?.bankTimestamp ?? item.effectiveTs;
+    item.matchedTransaction?.verifiedAt ??
+    item.matchedTransaction?.bankTimestamp ??
+    item.effectiveTs;
   return formatExactDateTime(ts);
 }
 
@@ -258,7 +261,9 @@ export function BotVerifiedTransactionRow({
             }}
           />
           <span className="txn-row__card-hint muted">{maskCardHint(item)}</span>
-          <span className="txn-row__device-hint muted">دستگاه: {deviceInlineLabel(item.device)}</span>
+          <span className="txn-row__device-hint muted">
+            دستگاه: {deviceInlineLabel(item.device)}
+          </span>
         </div>
       </td>
       <td>{ref ? <IdentifierText value={ref} tone="hint" /> : <span className="muted">—</span>}</td>
@@ -350,14 +355,18 @@ export function StatsRail({
             <dt>تایید ربات</dt>
             <dd className="tabular-nums">
               {botCount}
-              <span className="muted stats-rail__sub">{formatTomanFromIrr(analytics.botAutoVerified.amountIrr)}</span>
+              <span className="muted stats-rail__sub">
+                {formatTomanFromIrr(analytics.botAutoVerified.amountIrr)}
+              </span>
             </dd>
           </div>
           <div className="stats-rail__grid-row">
             <dt>تایید دستی</dt>
             <dd className="tabular-nums">
               {manualCount}
-              <span className="muted stats-rail__sub">{formatTomanFromIrr(analytics.manualVerified.amountIrr)}</span>
+              <span className="muted stats-rail__sub">
+                {formatTomanFromIrr(analytics.manualVerified.amountIrr)}
+              </span>
             </dd>
           </div>
           <div className="stats-rail__grid-row">
@@ -398,7 +407,13 @@ function customerLabel(item: PaymentItem): string {
   return '—';
 }
 
-export function RecentActivity({ items, onOpen }: { items: PaymentItem[]; onOpen: (id: string) => void }) {
+export function RecentActivity({
+  items,
+  onOpen,
+}: {
+  items: PaymentItem[];
+  onOpen: (id: string) => void;
+}) {
   const recent = items.slice(0, 8);
   if (recent.length === 0) return null;
 

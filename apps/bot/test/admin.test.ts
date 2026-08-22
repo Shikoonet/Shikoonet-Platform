@@ -120,7 +120,14 @@ async function makeClaim(
           source_system, status, created_at, updated_at)
        VALUES (?1, ?2, ?3, ?4, ?5, '6037000000000095', ?6, ?6, 'MIRZABOT', 'PENDING', ?6, ?6)`,
     )
-    .bind(claimId, `shikoo:${claimId.slice(0, 10)}`, String(customerTelegramId), amount, accountId, NOW_MS)
+    .bind(
+      claimId,
+      `shikoo:${claimId.slice(0, 10)}`,
+      String(customerTelegramId),
+      amount,
+      accountId,
+      NOW_MS,
+    )
     .run();
 
   if (!options.withTransaction) {
@@ -213,9 +220,7 @@ async function purgeClaims(): Promise<void> {
     .prepare(`DELETE FROM transaction_candidates WHERE financial_account_id IN ${mine}`)
     .run();
   await db.prepare(`DELETE FROM raw_sms_events WHERE device_id = 'adm-dev'`).run();
-  await db
-    .prepare(`DELETE FROM payment_claims WHERE target_financial_account_id IN ${mine}`)
-    .run();
+  await db.prepare(`DELETE FROM payment_claims WHERE target_financial_account_id IN ${mine}`).run();
 }
 
 beforeEach(() => {
@@ -257,7 +262,10 @@ describe('who may see the panel', () => {
   it('ignores an admin whose row has been switched off', async () => {
     const { updateId, telegramId } = ids();
     await makeAdmin(telegramId);
-    await db.prepare(`UPDATE admins SET active = false WHERE telegram_id = ?1`).bind(telegramId).run();
+    await db
+      .prepare(`UPDATE admins SET active = false WHERE telegram_id = ?1`)
+      .bind(telegramId)
+      .run();
 
     const out = await handleUpdate(db, types(updateId, telegramId, '/panel'));
 
@@ -332,7 +340,10 @@ describe('the way in from the main menu', () => {
     // which the forgery tests above cover.
     const { updateId, telegramId } = ids();
     await makeAdmin(telegramId);
-    await db.prepare(`UPDATE admins SET active = false WHERE telegram_id = ?1`).bind(telegramId).run();
+    await db
+      .prepare(`UPDATE admins SET active = false WHERE telegram_id = ?1`)
+      .bind(telegramId)
+      .run();
 
     const out = await handleUpdate(db, press(updateId, telegramId, 'menu'));
 
@@ -672,9 +683,7 @@ describe('approving a payment', () => {
       .first<{ status: string }>();
     expect(claim?.status).toBe('VERIFIED');
     const match = await db
-      .prepare(
-        `SELECT status FROM reconciliation_matches WHERE payment_claim_id = ?1`,
-      )
+      .prepare(`SELECT status FROM reconciliation_matches WHERE payment_claim_id = ?1`)
       .bind(claimId)
       .first<{ status: string }>();
     expect(match?.status).toBe('CONFIRMED');
@@ -695,7 +704,10 @@ describe('approving a payment', () => {
     ]);
     // And the row cannot be rewritten. 0005 puts a trigger on it.
     await expect(
-      db.prepare(`UPDATE audit_logs SET action = 'tampered' WHERE entity_id = ?1`).bind(claimId).run(),
+      db
+        .prepare(`UPDATE audit_logs SET action = 'tampered' WHERE entity_id = ?1`)
+        .bind(claimId)
+        .run(),
     ).rejects.toThrow();
   });
 
@@ -741,7 +753,14 @@ describe('approving a payment', () => {
             source_system, status, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 'MIRZABOT', 'PENDING', ?6, ?6)`,
       )
-      .bind(second, `shikoo:${second.slice(0, 10)}`, String(first), one.amountIrr, one.accountId, NOW_MS)
+      .bind(
+        second,
+        `shikoo:${second.slice(0, 10)}`,
+        String(first),
+        one.amountIrr,
+        one.accountId,
+        NOW_MS,
+      )
       .run();
 
     await handleUpdate(db, press(updateId, telegramId, `clv:${one.claimId}`));

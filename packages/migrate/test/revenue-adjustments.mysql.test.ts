@@ -63,9 +63,7 @@ async function load(): Promise<Loaded> {
       const [rows] = await conn.query(
         `SELECT type COLLATE utf8mb4_bin AS type, amount FROM revenue_adjustment_log`,
       );
-      const [settingRows] = await conn.query(
-        `SELECT revenue_adjustment AS v FROM setting LIMIT 1`,
-      );
+      const [settingRows] = await conn.query(`SELECT revenue_adjustment AS v FROM setting LIMIT 1`);
       return {
         rows: rows as Row[],
         settingTotal: BigInt((settingRows as { v: string | number }[])[0]?.v ?? 0),
@@ -95,8 +93,14 @@ describe.skipIf(unreachable !== null)('the sign of a revenue adjustment', () => 
     expect(adds.length, 'add rows').toBeGreaterThan(0);
     expect(deducts.length + adds.length, 'no third type').toBe(rows.length);
 
-    expect(deducts.every((r) => BigInt(r.amount) < 0n), 'every deduct is negative').toBe(true);
-    expect(adds.every((r) => BigInt(r.amount) > 0n), 'every add is positive').toBe(true);
+    expect(
+      deducts.every((r) => BigInt(r.amount) < 0n),
+      'every deduct is negative',
+    ).toBe(true);
+    expect(
+      adds.every((r) => BigInt(r.amount) > 0n),
+      'every add is positive',
+    ).toBe(true);
   });
 
   it('is never spelled the word the importer used to test for', () => {
@@ -113,7 +117,7 @@ describe.skipIf(unreachable !== null)('the sign of a revenue adjustment', () => 
     const source = readFileSync(new URL('../src/migrate.ts', import.meta.url), 'utf8');
     const block = source.slice(
       source.indexOf("'revenue_adjustments',"),
-      source.indexOf("// payment hub (D1 export)"),
+      source.indexOf('// payment hub (D1 export)'),
     );
     expect(block).not.toBe('');
     expect(block).toContain('t.tomanToIrr(r.amount).toString()');

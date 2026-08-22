@@ -177,7 +177,10 @@ export function registerStockRoutes(
 
     const body = StockBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     // The panel comes from the plan, never from the request. A config filed
@@ -220,10 +223,19 @@ export function registerStockRoutes(
 
     // The username identifies the account; the link is the credential and is
     // not written to a table anyone can read afterwards.
-    await audit(c.env.DB, ident, 'stock.added', 'PROVISIONING_STOCK', String(row.id), null, {
-      plan_id: body.data.planId,
-      remote_username: body.data.remoteUsername,
-    }, null);
+    await audit(
+      c.env.DB,
+      ident,
+      'stock.added',
+      'PROVISIONING_STOCK',
+      String(row.id),
+      null,
+      {
+        plan_id: body.data.planId,
+        remote_username: body.data.remoteUsername,
+      },
+      null,
+    );
     return c.json({ ok: true, id: Number(row.id) });
   });
 
@@ -266,7 +278,16 @@ export function registerStockRoutes(
       );
     }
 
-    await audit(c.env.DB, ident, 'stock.retired', 'PROVISIONING_STOCK', String(id), null, null, null);
+    await audit(
+      c.env.DB,
+      ident,
+      'stock.retired',
+      'PROVISIONING_STOCK',
+      String(id),
+      null,
+      null,
+      null,
+    );
     return c.json({ ok: true });
   });
 
@@ -296,7 +317,16 @@ export function registerStockRoutes(
       );
     }
 
-    await audit(c.env.DB, ident, 'stock.deleted', 'PROVISIONING_STOCK', String(id), null, null, null);
+    await audit(
+      c.env.DB,
+      ident,
+      'stock.deleted',
+      'PROVISIONING_STOCK',
+      String(id),
+      null,
+      null,
+      null,
+    );
     return c.json({ ok: true });
   });
 }

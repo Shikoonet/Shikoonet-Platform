@@ -13,7 +13,10 @@
 
 /** Raised when a statement cannot be translated safely. */
 export class DialectError extends Error {
-  constructor(reason: string, readonly sql: string) {
+  constructor(
+    reason: string,
+    readonly sql: string,
+  ) {
     super(`${reason}\n  in: ${sql.slice(0, 200)}`);
     this.name = 'DialectError';
   }
@@ -45,7 +48,10 @@ function scan(sql: string): { text: string; code: boolean }[] {
       while (i < sql.length) {
         if (sql[i] === "'") {
           if (sql[i + 1] === "'") i += 2;
-          else { i++; break; }
+          else {
+            i++;
+            break;
+          }
         } else i++;
       }
       push(i, false);
@@ -150,7 +156,10 @@ function rewriteInsertOrIgnore(sql: string): string {
  */
 function rewritePlaceholders(sql: string): string {
   const spans = scan(sql);
-  const code = spans.filter((s) => s.code).map((s) => s.text).join('');
+  const code = spans
+    .filter((s) => s.code)
+    .map((s) => s.text)
+    .join('');
   const hasNumbered = /\?[0-9]/.test(code);
   const hasAnonymous = /\?(?![0-9])/.test(code.replace(/\?[0-9]+/g, ''));
 

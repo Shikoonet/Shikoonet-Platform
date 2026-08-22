@@ -56,9 +56,7 @@ export async function getPaymentEventUnreadCounts(
     .first<{ c: number }>();
 
   const suspectedFake = await db
-    .prepare(
-      unreadClaimSql(`${PENDING_CLAIM} AND c.suspect_reason IN ${SUSPECTED_FAKE_REASONS}`),
-    )
+    .prepare(unreadClaimSql(`${PENDING_CLAIM} AND c.suspect_reason IN ${SUSPECTED_FAKE_REASONS}`))
     .bind(actorEmail)
     .first<{ c: number }>();
 
@@ -90,10 +88,7 @@ export async function getPaymentEventUnreadCounts(
   };
 }
 
-export async function getIncomeUnreadCount(
-  db: D1Database,
-  actorEmail: string,
-): Promise<number> {
+export async function getIncomeUnreadCount(db: D1Database, actorEmail: string): Promise<number> {
   const row = await db
     .prepare(
       `SELECT COUNT(*) AS c FROM transaction_candidates t

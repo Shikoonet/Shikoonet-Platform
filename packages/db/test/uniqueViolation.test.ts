@@ -19,8 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
 import { isUniqueViolation } from '../src/index.js';
 
-const url =
-  process.env['DATABASE_URL'] ?? 'postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo';
+const url = process.env['DATABASE_URL'] ?? 'postgres://shikoo:shikoo_local@127.0.0.1:5433/shikoo';
 
 const client = new pg.Client({ connectionString: url });
 
@@ -72,7 +71,7 @@ describe('isUniqueViolation', () => {
     expect(isUniqueViolation('23505')).toBe(false);
   });
 
-  it("the substring test this replaces does NOT see it — that is the whole bug", () => {
+  it('the substring test this replaces does NOT see it — that is the whole bug', () => {
     // Kept as an assertion rather than a comment, because the comment was what
     // let it live: someone reading `includes('UNIQUE')` sees an intention and
     // moves on. This fails the day anybody reintroduces it.

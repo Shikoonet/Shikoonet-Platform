@@ -167,7 +167,9 @@ export function StockPage() {
                     <div className="page-head__sub">{s.productName}</div>
                   </td>
                   <td>
-                    <span className={s.available === 0 ? 'badge badge-block' : 'badge badge-active'}>
+                    <span
+                      className={s.available === 0 ? 'badge badge-block' : 'badge badge-active'}
+                    >
                       {count(s.available)}
                     </span>
                   </td>
@@ -251,7 +253,9 @@ export function StockPage() {
                   <td>{r.providerName}</td>
                   <td>
                     <span
-                      className={r.status === 'AVAILABLE' ? 'badge badge-active' : 'badge badge-block'}
+                      className={
+                        r.status === 'AVAILABLE' ? 'badge badge-active' : 'badge badge-block'
+                      }
                     >
                       {STATUS_FA[r.status] ?? r.status}
                     </span>

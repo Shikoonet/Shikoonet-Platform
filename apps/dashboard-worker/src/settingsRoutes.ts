@@ -280,7 +280,9 @@ export function registerSettingsRoutes(
     // Approving is what actually makes someone a reseller — the flag the
     // catalogue's `resellers_only` reads. Rejecting changes nothing about them.
     if (status === 'APPROVED') {
-      await c.env.DB.prepare(`UPDATE users SET is_reseller = true, updated_at = now() WHERE id = ?1`)
+      await c.env.DB.prepare(
+        `UPDATE users SET is_reseller = true, updated_at = now() WHERE id = ?1`,
+      )
         .bind(before.user_id)
         .run();
     }

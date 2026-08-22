@@ -248,7 +248,9 @@ async function untoldNote(
   // COMPLETED. The screen if there is a service to show — a fresh purchase, a
   // renewal, an add-on all land here — and otherwise the honest answer for a
   // manual product, which is that a person is finishing it.
-  return (await purchasedScreen(db, row, now)) ?? say(menu.serviceBeingPrepared(row.order_public_id));
+  return (
+    (await purchasedScreen(db, row, now)) ?? say(menu.serviceBeingPrepared(row.order_public_id))
+  );
 }
 
 /**
@@ -608,7 +610,11 @@ async function renew(
   // The subscription is joined on `user_id = o.user_id`, so a NULL here also
   // covers a renewal order pointed at somebody else's service.
   if (row.target_subscription_id === null || row.target_username === null) {
-    const refunded = await fail(db, row.order_id, 'the service this renewal points at no longer exists');
+    const refunded = await fail(
+      db,
+      row.order_id,
+      'the service this renewal points at no longer exists',
+    );
     return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 
@@ -660,8 +666,10 @@ async function renew(
       // Zero on the dimension not being bought. In ADD mode zero means "add
       // nothing here" while null means "no limit" — the difference is what
       // stops an extra-volume purchase from removing an account's expiry.
-      volumeGb: addon === null ? toNumber(row.volume_gb) : addon.kind === 'ADD_VOLUME' ? addon.quantity : 0,
-      durationDays: addon === null ? row.duration_days : addon.kind === 'ADD_TIME' ? addon.quantity : 0,
+      volumeGb:
+        addon === null ? toNumber(row.volume_gb) : addon.kind === 'ADD_VOLUME' ? addon.quantity : 0,
+      durationDays:
+        addon === null ? row.duration_days : addon.kind === 'ADD_TIME' ? addon.quantity : 0,
       note: `shikoo ${row.order_public_id}`,
       providerConfig: row.provider_config ?? {},
       planAttrs: row.plan_attrs ?? {},

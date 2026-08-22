@@ -97,7 +97,9 @@ export function DiscountsPage() {
   }, [page, state]);
 
   async function expire(d: DiscountItem) {
-    if (!window.confirm(`کد «${d.code}» باطل شود؟ کسانی که استفاده کرده‌اند دست‌نخورده می‌مانند.`)) {
+    if (
+      !window.confirm(`کد «${d.code}» باطل شود؟ کسانی که استفاده کرده‌اند دست‌نخورده می‌مانند.`)
+    ) {
       return;
     }
     try {
@@ -118,7 +120,12 @@ export function DiscountsPage() {
           <div className="page-head__title">کدهای تخفیف</div>
           <div className="page-head__sub">{count(total)} کد</div>
         </div>
-        <button type="button" className="btn btn-primary" onClick={() => setCreating((v) => !v)} {...w}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => setCreating((v) => !v)}
+          {...w}
+        >
           {creating ? 'بستن فرم' : 'کد جدید'}
         </button>
       </div>
@@ -239,7 +246,12 @@ export function DiscountsPage() {
                       مصرف‌کننده‌ها
                     </button>{' '}
                     {d.state !== 'EXPIRED' && (
-                      <button type="button" className="btn btn-sm" onClick={() => void expire(d)} {...w}>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => void expire(d)}
+                        {...w}
+                      >
                         باطل کن
                       </button>
                     )}

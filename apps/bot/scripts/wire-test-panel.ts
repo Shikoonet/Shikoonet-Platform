@@ -133,7 +133,8 @@ async function main(): Promise<number> {
     .split(',')
     .map((s) => Number(s.trim()))
     .filter((n) => Number.isInteger(n));
-  if (groupIds.length === 0) throw new Error('PANEL_TEST_PANEL_GROUP_IDS parsed to no group at all');
+  if (groupIds.length === 0)
+    throw new Error('PANEL_TEST_PANEL_GROUP_IDS parsed to no group at all');
 
   const { db, pool } = createPostgresD1({ connectionString });
   try {

@@ -199,7 +199,11 @@ describe('turning the account off and on', () => {
     // And the switch now offers the other direction.
     expect(JSON.stringify(off.replies[0]?.keyboard)).toContain(`on:${service}`);
 
-    const on = await handleUpdate(db, press(updateId + 1, telegramId, `on:${service}`), p.fetchImpl);
+    const on = await handleUpdate(
+      db,
+      press(updateId + 1, telegramId, `on:${service}`),
+      p.fetchImpl,
+    );
     expect(p.calls[1]).toMatchObject({ method: 'PUT', body: { status: 'active' } });
     expect(await serviceRow(service)).toMatchObject({ status: 'ACTIVE' });
     expect(JSON.stringify(on.replies[0]?.keyboard)).toContain(`off:${service}`);
@@ -273,7 +277,11 @@ describe('who may press these buttons', () => {
     const service = await makeService(userId, { status: 'REMOVED' });
     const p = panel();
 
-    const detail = await handleUpdate(db, press(updateId, telegramId, `sub:${service}`), p.fetchImpl);
+    const detail = await handleUpdate(
+      db,
+      press(updateId, telegramId, `sub:${service}`),
+      p.fetchImpl,
+    );
 
     expect(JSON.stringify(detail.replies[0]?.keyboard)).not.toContain('rvk');
   });

@@ -99,14 +99,16 @@ describe('POST /api/v1/auth/login', () => {
     // into a fixed twelve-hour session.
     const token = sessionFrom(await login({ email: EMAIL, password: PASSWORD }));
     const hit = () =>
-      app.request('/api/v1/admin/customers', { headers: { cookie: `shikoo_session=${token}` } }, ENV);
+      app.request(
+        '/api/v1/admin/customers',
+        { headers: { cookie: `shikoo_session=${token}` } },
+        ENV,
+      );
     const seen = async () =>
-      (
-        await baseEnv.DB.prepare(
-          `SELECT last_seen_at::text AS s, expires_at::text AS e FROM operator_sessions
+      (await baseEnv.DB.prepare(
+        `SELECT last_seen_at::text AS s, expires_at::text AS e FROM operator_sessions
             ORDER BY created_at DESC LIMIT 1`,
-        ).first<{ s: string; e: string }>()
-      )!;
+      ).first<{ s: string; e: string }>())!;
 
     await hit();
     const first = await seen();
@@ -519,9 +521,7 @@ describe('what a login clears up after itself', () => {
   }
 
   it('deletes sessions that died a month ago and keeps the rest', async () => {
-    const operator = await baseEnv.DB.prepare(
-      `SELECT id FROM access_users WHERE email = ?1`,
-    )
+    const operator = await baseEnv.DB.prepare(`SELECT id FROM access_users WHERE email = ?1`)
       .bind(EMAIL)
       .first<{ id: string }>();
 
@@ -551,10 +551,7 @@ describe('what a login clears up after itself', () => {
 describe('POST /api/v1/auth/password', () => {
   const NEXT = 'a different and equally ordinary password';
 
-  async function change(
-    token: string | null,
-    body: unknown,
-  ): Promise<Response> {
+  async function change(token: string | null, body: unknown): Promise<Response> {
     return app.fetch(
       new Request('https://example.com/api/v1/auth/password', {
         method: 'POST',

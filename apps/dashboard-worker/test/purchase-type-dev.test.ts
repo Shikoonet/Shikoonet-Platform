@@ -23,16 +23,12 @@
 
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
-import {
-  app,
-  type Env,
-} from '../src/index.js';
+import { app, type Env } from '../src/index.js';
 
 // The prod/dev schema split this file used to build is gone: the platform's
 // own migrations always include operation_type and purchase_type, so there is
 // no column gap left for the flag to paper over. The flag itself still gates
 // whether the columns are *read*, which is what the scenarios below cover.
-
 
 /**
  * Returns a request env with ENABLE_PURCHASE_TYPE=true and a TEST_ACCESS_USER
@@ -222,9 +218,7 @@ describe('DEV — purchase_type feature flag', () => {
         purchaseType: 'NEW_PURCHASE',
         operationType: 'getconfigafterpay',
       });
-      const r = await callPayments(
-        'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
-      );
+      const r = await callPayments('tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today');
       expect(r.status).toBe(200);
       // The response items must project purchase_type / operation_type when flag is ON.
       const item = (r.body.items ?? []).find((x: any) => x.id === 'qs-1');
@@ -247,9 +241,7 @@ describe('DEV — purchase_type feature flag', () => {
       const newP = await callPayments(
         'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
       );
-      const ren = await callPayments(
-        'tab=bot_auto_verified&purchaseType=RENEWAL&range=today',
-      );
+      const ren = await callPayments('tab=bot_auto_verified&purchaseType=RENEWAL&range=today');
       expect(hasClaim(newP.body.items, 'np-1')).toBe(true);
       expect(hasClaim(ren.body.items, 'np-1')).toBe(false);
     });
@@ -264,9 +256,7 @@ describe('DEV — purchase_type feature flag', () => {
         purchaseType: 'RENEWAL',
         operationType: 'getextenduser',
       });
-      const ren = await callPayments(
-        'tab=bot_auto_verified&purchaseType=RENEWAL&range=today',
-      );
+      const ren = await callPayments('tab=bot_auto_verified&purchaseType=RENEWAL&range=today');
       const newP = await callPayments(
         'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
       );
@@ -284,9 +274,7 @@ describe('DEV — purchase_type feature flag', () => {
         purchaseType: 'RENEWAL',
         operationType: 'getextratimeuser',
       });
-      const ren = await callPayments(
-        'tab=bot_auto_verified&purchaseType=RENEWAL&range=today',
-      );
+      const ren = await callPayments('tab=bot_auto_verified&purchaseType=RENEWAL&range=today');
       expect(hasClaim(ren.body.items, 're-3')).toBe(true);
     });
   });
@@ -300,9 +288,7 @@ describe('DEV — purchase_type feature flag', () => {
         purchaseType: 'RENEWAL',
         operationType: 'getextravolumeuser',
       });
-      const ren = await callPayments(
-        'tab=bot_auto_verified&purchaseType=RENEWAL&range=today',
-      );
+      const ren = await callPayments('tab=bot_auto_verified&purchaseType=RENEWAL&range=today');
       expect(hasClaim(ren.body.items, 're-4')).toBe(true);
     });
   });
@@ -320,17 +306,13 @@ describe('DEV — purchase_type feature flag', () => {
       const newP = await callPayments(
         'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
       );
-      const ren = await callPayments(
-        'tab=bot_auto_verified&purchaseType=RENEWAL&range=today',
-      );
+      const ren = await callPayments('tab=bot_auto_verified&purchaseType=RENEWAL&range=today');
       // Without a purchaseType filter, the row IS returned (it is in
       // bot_auto_verified status AUTO_VERIFIED).  The chosen UI/API behavior
       // is therefore: NULL rows are visible in the unfiltered list and
       // explicitly absent from any purchase-type filtered list.  The UI
       // surfaces "—" for these rows and never buckets them silently.
-      const unfiltered = await callPayments(
-        'tab=bot_auto_verified&range=today',
-      );
+      const unfiltered = await callPayments('tab=bot_auto_verified&range=today');
       expect(hasClaim(newP.body.items, 'un-1')).toBe(false);
       expect(hasClaim(ren.body.items, 'un-1')).toBe(false);
       expect(hasClaim(unfiltered.body.items, 'un-1')).toBe(true);
@@ -358,9 +340,7 @@ describe('DEV — purchase_type feature flag', () => {
         purchaseType: 'NEW_PURCHASE',
         operationType: 'getconfigafterpay',
       });
-      const tab = await callPayments(
-        'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
-      );
+      const tab = await callPayments('tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today');
       expect(tab.status).toBe(200);
       expect(hasClaim(tab.body.items, 'pe-1')).toBe(false);
       expect(hasClaim(tab.body.items, 'pe-2')).toBe(false);
@@ -418,9 +398,7 @@ describe('DEV — purchase_type feature flag', () => {
         'NEW_PURCHASE',
         'getconfigafterpay',
       );
-      const r = await callPayments(
-        'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
-      );
+      const r = await callPayments('tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today');
       expect(r.status).toBe(200);
       // Diagnostic: directly query with the same predicate the worker uses.
       const e = baseEnv as unknown as Env;
@@ -431,8 +409,9 @@ describe('DEV — purchase_type feature flag', () => {
          FROM payment_claims WHERE id IN ('td-1','td-2')`,
       ).all<any>();
       const nowObj = new Date(now);
-      const startUtc = new Date(now); startUtc.setUTCHours(0,0,0,0);
-      const start = startUtc.getTime() + 3.5*3600*1000;
+      const startUtc = new Date(now);
+      startUtc.setUTCHours(0, 0, 0, 0);
+      const start = startUtc.getTime() + 3.5 * 3600 * 1000;
       const end = start + 86400000;
       const itemsIds = (r.body.items ?? []).map((it: any) => it.id);
       expect(
@@ -449,9 +428,7 @@ describe('DEV — purchase_type feature flag', () => {
         'NEW_PURCHASE',
         'getconfigafterpay',
       );
-      const r = await callPayments(
-        'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
-      );
+      const r = await callPayments('tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today');
       // Diagnostic: capture the response so we can see what came back.
       expect(r.status, `status=${r.status} body=${JSON.stringify(r.body).slice(0, 800)}`).toBe(200);
       expect(hasClaim(r.body.items, 'td-3')).toBe(false);
@@ -460,12 +437,7 @@ describe('DEV — purchase_type feature flag', () => {
     it('Yesterday: returns rows inside yesterday Tehran window', async () => {
       // Tehran yesterday relative to NOW_MS is 2026-08-09, which runs
       // 2026-08-08T20:30Z .. 2026-08-09T20:30Z.
-      await seedWithVerifiedAt(
-        'yd-1',
-        TEHRAN_YESTERDAY_START + 60_000,
-        'RENEWAL',
-        'getextenduser',
-      );
+      await seedWithVerifiedAt('yd-1', TEHRAN_YESTERDAY_START + 60_000, 'RENEWAL', 'getextenduser');
       const r = await callPayments(
         `tab=bot_auto_verified&purchaseType=RENEWAL&range=day&day=2026-08-09`,
       );
@@ -494,9 +466,7 @@ describe('DEV — purchase_type feature flag', () => {
         'NEW_PURCHASE',
         'getconfigafterpay',
       );
-      const r = await callPayments(
-        'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=all',
-      );
+      const r = await callPayments('tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=all');
       expect(hasClaim(r.body.items, 'all-1')).toBe(true);
     });
 
@@ -509,9 +479,7 @@ describe('DEV — purchase_type feature flag', () => {
         'NEW_PURCHASE',
         'getconfigafterpay',
       );
-      const r = await callPayments(
-        'tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today',
-      );
+      const r = await callPayments('tab=bot_auto_verified&purchaseType=NEW_PURCHASE&range=today');
       expect(hasClaim(r.body.items, 'bnd-1')).toBe(true);
     });
   });
@@ -534,7 +502,11 @@ describe('DEV — purchase_type feature flag', () => {
         'access_users',
       ];
       for (const t of tables) {
-        try { await e.DB.prepare(`DELETE FROM ${t}`).run(); } catch { /* table may not exist */ }
+        try {
+          await e.DB.prepare(`DELETE FROM ${t}`).run();
+        } catch {
+          /* table may not exist */
+        }
       }
       // Apply production-only schema.
       await applySchema();
@@ -607,10 +579,9 @@ describe('DEV — purchase_type feature flag', () => {
       // Production schema has no purchase_type column. The OFF path must
       // not SELECT it, so the response is a 200 with NO purchaseType field.
       const res = await app.fetch(
-        new Request(
-          'https://example.com/api/v1/payments?tab=bot_auto_verified&range=today',
-          { method: 'GET' },
-        ),
+        new Request('https://example.com/api/v1/payments?tab=bot_auto_verified&range=today', {
+          method: 'GET',
+        }),
         prodEnv(),
       );
       expect(res.status).toBe(200);

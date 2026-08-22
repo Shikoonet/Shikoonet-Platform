@@ -169,7 +169,10 @@ async function login(provider: ProviderContext): Promise<{ token: string } | Log
     // The status is safe to report; the body may echo the credentials back.
     // A rejected login is wrong credentials, which is configuration; only the
     // panel being ill is worth trying again for.
-    return { error: `panel login failed (HTTP ${res.status})`, retryable: isPanelFault(res.status) };
+    return {
+      error: `panel login failed (HTTP ${res.status})`,
+      retryable: isPanelFault(res.status),
+    };
   }
   const json = (await res.json()) as { access_token?: unknown };
   const token = asString(json.access_token);

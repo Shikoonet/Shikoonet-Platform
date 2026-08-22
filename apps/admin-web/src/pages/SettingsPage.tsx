@@ -51,7 +51,10 @@ export function SettingsPage() {
   async function load() {
     setErr(null);
     try {
-      const d = await api.settings({ ...(scope ? { scope } : {}), ...(q.trim() ? { q: q.trim() } : {}) });
+      const d = await api.settings({
+        ...(scope ? { scope } : {}),
+        ...(q.trim() ? { q: q.trim() } : {}),
+      });
       setRows(d.items);
       setHidden(d.hiddenCount);
     } catch (e) {
@@ -136,8 +139,8 @@ export function SettingsPage() {
         {done && <div className="alert alert-info">{done}</div>}
         {hidden > 0 && (
           <div className="alert alert-info">
-            مقدار {count(hidden)} کلید نمایش داده نمی‌شود چون اعتبارنامهٔ درگاه پرداخت است. فقط
-            «ثبت شده / ندارد» را می‌بینید و از این‌جا هم تغییر نمی‌کنند.
+            مقدار {count(hidden)} کلید نمایش داده نمی‌شود چون اعتبارنامهٔ درگاه پرداخت است. فقط «ثبت
+            شده / ندارد» را می‌بینید و از این‌جا هم تغییر نمی‌کنند.
           </div>
         )}
 

@@ -167,7 +167,11 @@ export async function placeAddonOrder(
     tx,
     userId,
     null,
-    { unitPriceIrr, discountIrr: unitPriceIrr * quantity - gross.totalIrr, totalIrr: gross.totalIrr },
+    {
+      unitPriceIrr,
+      discountIrr: unitPriceIrr * quantity - gross.totalIrr,
+      totalIrr: gross.totalIrr,
+    },
     kind,
     subscriptionId,
     quantity,

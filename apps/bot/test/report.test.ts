@@ -85,7 +85,11 @@ describe('the daily report', () => {
     // cannot agree with each other about a day that is wrong for both.
     const { start, end } = tehranDayBoundsFromDate(DAY);
 
-    const inside = await completedOrder({ kind: 'NEW_PURCHASE', irr: 1_000_000, atMs: start + 60_000 });
+    const inside = await completedOrder({
+      kind: 'NEW_PURCHASE',
+      irr: 1_000_000,
+      atMs: start + 60_000,
+    });
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 7_000_000, atMs: start - 60_000 });
     await completedOrder({ kind: 'NEW_PURCHASE', irr: 9_000_000, atMs: end + 60_000 });
 
@@ -136,7 +140,9 @@ describe('the daily report', () => {
   it('does nothing at all without a channel', async () => {
     setReportChatIdFallback(null);
     expect(await sweepDailyReport(db)).toBe(false);
-    expect((await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:'))).toHaveLength(0);
+    expect(
+      (await pendingNotifications()).filter((n) => n.dedupeKey.startsWith('report:')),
+    ).toHaveLength(0);
   });
 });
 

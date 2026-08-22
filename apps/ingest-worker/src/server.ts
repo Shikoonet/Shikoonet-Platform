@@ -109,9 +109,7 @@ const CONSEQUENCE: Record<(typeof MUST_BE_DECIDED)[number], string> = {
 function assertProductionConfig(env: Env): void {
   if (env.ENV_NAME !== 'production') return;
 
-  const undecided = MUST_BE_DECIDED.filter(
-    (key) => env[key] !== 'true' && env[key] !== 'false',
-  );
+  const undecided = MUST_BE_DECIDED.filter((key) => env[key] !== 'true' && env[key] !== 'false');
   if (undecided.length > 0) {
     throw new Error(
       `${undecided.join(' and ')} must be set to exactly "true" or "false" when ` +

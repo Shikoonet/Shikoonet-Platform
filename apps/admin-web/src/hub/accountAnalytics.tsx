@@ -67,7 +67,9 @@ export function AccountUsagePanel({
               <div className="account-usage-row__body">
                 <div className="account-usage-row__head">
                   <strong className="account-usage-row__label">{accountUsageLabel(a)}</strong>
-                  <span className="account-usage-row__purchases">{count(a.purchaseCount)} خرید</span>
+                  <span className="account-usage-row__purchases">
+                    {count(a.purchaseCount)} خرید
+                  </span>
                   <span className="account-usage-row__balance tabular-nums">
                     {a.currentBalanceIrr != null ? (
                       formatCompactIrr(a.currentBalanceIrr)
@@ -79,7 +81,9 @@ export function AccountUsagePanel({
                 <div className="account-usage-row__bar-track" aria-hidden>
                   <div
                     className="account-usage-row__bar-fill"
-                    style={{ width: `${Math.max(a.purchaseCount > 0 ? 4 : 0, a.purchaseBarPercent)}%` }}
+                    style={{
+                      width: `${Math.max(a.purchaseCount > 0 ? 4 : 0, a.purchaseBarPercent)}%`,
+                    }}
                   />
                 </div>
               </div>

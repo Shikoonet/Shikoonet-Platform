@@ -87,7 +87,8 @@ async function applySaved(): Promise<void> {
   menu.applyContent(await loadBotContent(db));
 }
 
-const labels = (rows: { text: string }[][] | undefined) => (rows ?? []).map((r) => r.map((b) => b.text));
+const labels = (rows: { text: string }[][] | undefined) =>
+  (rows ?? []).map((r) => r.map((b) => b.text));
 // A copy button carries no `callback_data` and never reaches the bot, so it is
 // not one of the targets these assertions are about.
 const datas = (rows: { callback_data?: string }[][] | undefined) =>
@@ -163,7 +164,10 @@ describe('a button whose precondition is not met', () => {
     // The wallet row on an invoice: with no balance there is nothing to offer,
     // and «پرداخت از کیف پول» pointing at an empty wallet is worse than no
     // button. Its whole row goes rather than leaving a gap.
-    const withBalance = menu.checkoutMenu(7, 1_950_000, CARD, { balanceIrr: 2_000_000, totalIrr: 1_950_000 });
+    const withBalance = menu.checkoutMenu(7, 1_950_000, CARD, {
+      balanceIrr: 2_000_000,
+      totalIrr: 1_950_000,
+    });
     const without = menu.checkoutMenu(7, 1_950_000, CARD);
 
     expect(datas(withBalance)).toContain('wpay:7');
@@ -175,13 +179,19 @@ describe('a button whose precondition is not met', () => {
   });
 
   it('offers a top-up instead when the balance is there but not enough', () => {
-    const short = menu.checkoutMenu(9, 1_950_000, CARD, { balanceIrr: 500_000, totalIrr: 1_950_000 });
+    const short = menu.checkoutMenu(9, 1_950_000, CARD, {
+      balanceIrr: 500_000,
+      totalIrr: 1_950_000,
+    });
     expect(datas(short)).toContain('tpo:9');
     expect(datas(short)).not.toContain('wpay:9');
   });
 
   it('fills the slot in its label from the live values', () => {
-    const rows = menu.checkoutMenu(11, 1_950_000, CARD, { balanceIrr: 2_000_000, totalIrr: 1_950_000 });
+    const rows = menu.checkoutMenu(11, 1_950_000, CARD, {
+      balanceIrr: 2_000_000,
+      totalIrr: 1_950_000,
+    });
     expect(labels(rows).flat()).toContain('💰 پرداخت از کیف پول (200,000 تومان)');
   });
 
@@ -275,7 +285,9 @@ describe('the buttons a shop may not remove', () => {
     // no shop switch that could make this work. It is refused even with custom
     // emoji fully on, because on a button it can only ever be characters.
     const marked = DEFAULT_LAYOUTS.main.map((b) =>
-      b.action === 'buy' ? { ...b, label: '<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji> خرید' } : b,
+      b.action === 'buy'
+        ? { ...b, label: '<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji> خرید' }
+        : b,
     );
     expect(checkLayout('main', marked)).toEqual({ kind: 'LABEL_MARKUP', actions: ['buy'] });
 

@@ -20,12 +20,20 @@ import {
 
 const log = createLogger('ingest');
 import { SQL, type D1Database } from '@shikoo/database';
-import type { Classification, IncomingSmsBody, NormalizedSms, ParseResult } from '@shikoo/contracts';
+import type {
+  Classification,
+  IncomingSmsBody,
+  NormalizedSms,
+  ParseResult,
+} from '@shikoo/contracts';
 import { authenticateDevice } from './auth.js';
 import { markIngested } from './devices.js';
 import { bodyFingerprint, bodyOnlyHash } from './dedupe.js';
 import { recordAudit } from './audit.js';
-import { rematchMirzabotClaimsForCreditTx, type MirzabotMatchOpts } from './integrations/mirzabot.js';
+import {
+  rematchMirzabotClaimsForCreditTx,
+  type MirzabotMatchOpts,
+} from './integrations/mirzabot.js';
 import {
   INSERT_TRANSACTION_SQL,
   UPDATE_TRANSACTION_STATUS_SQL,
@@ -340,10 +348,11 @@ async function persistTransaction(
       // new PENDING row, so when the admin later Accepts the row the
       // existing transaction history is preserved and the admin only
       // needs to review the account, not the transactions.
-      const hint = detected.find((d) => d.type === 'ACCOUNT_HINT')?.normalizedValue
-        ?? detected.find((d) => d.type === 'ACCOUNT_NUMBER')?.normalizedValue
-        ?? r.accountHint
-        ?? null;
+      const hint =
+        detected.find((d) => d.type === 'ACCOUNT_HINT')?.normalizedValue ??
+        detected.find((d) => d.type === 'ACCOUNT_NUMBER')?.normalizedValue ??
+        r.accountHint ??
+        null;
       if (hint) {
         const created = await autoCreatePendingAccount(db, {
           hint,
@@ -417,8 +426,7 @@ async function persistTransaction(
   // active, so re-ingest is safe.
   if (accountId) {
     const driving = detected.find(
-      (d) =>
-        d.normalizedValue === (r.accountHint ?? detected[0]?.normalizedValue ?? ''),
+      (d) => d.normalizedValue === (r.accountHint ?? detected[0]?.normalizedValue ?? ''),
     );
     await assignAccountForTx(
       db,

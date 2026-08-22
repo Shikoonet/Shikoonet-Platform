@@ -273,9 +273,7 @@ describe('saying it once', () => {
     // What a renewal really does to the row: it moves the date as well as
     // clearing the flag. `provision.ts` writes both.
     await db
-      .prepare(
-        `UPDATE subscriptions SET notify = '{}'::jsonb, expires_at = ?2 WHERE id = ?1`,
-      )
+      .prepare(`UPDATE subscriptions SET notify = '{}'::jsonb, expires_at = ?2 WHERE id = ?1`)
       .bind(id, new Date(NOW_MS + 31 * DAY).toISOString())
       .run();
     // Back inside the window, one cycle later.

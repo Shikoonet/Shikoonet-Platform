@@ -1,4 +1,8 @@
-import type { PaymentClaimRow, TransactionCandidateRow, FinancialAccountRow } from '@shikoo/database';
+import type {
+  PaymentClaimRow,
+  TransactionCandidateRow,
+  FinancialAccountRow,
+} from '@shikoo/database';
 
 /**
  * Deterministic, explainable scorer for matching a transaction candidate

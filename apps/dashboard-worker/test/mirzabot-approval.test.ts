@@ -61,7 +61,10 @@ beforeEach(async () => {
   await baseEnv.DB.prepare(`DELETE FROM raw_sms_events`).run();
 });
 
-async function seedClaim(id: string, over: { amount?: number; account?: string; status?: string } = {}) {
+async function seedClaim(
+  id: string,
+  over: { amount?: number; account?: string; status?: string } = {},
+) {
   const now = Date.now();
   await baseEnv.DB.prepare(
     `INSERT INTO payment_claims
@@ -190,7 +193,10 @@ describe('manual approval of Mirzabot suspects', () => {
     await seedClaim('c-race-b');
     await seedTx('t-race');
 
-    const [a, b] = await Promise.all([approve('c-race-a', 't-race'), approve('c-race-b', 't-race')]);
+    const [a, b] = await Promise.all([
+      approve('c-race-a', 't-race'),
+      approve('c-race-b', 't-race'),
+    ]);
     expect([a.status, b.status].filter((s) => s === 200)).toHaveLength(1);
 
     const consuming = await baseEnv.DB.prepare(

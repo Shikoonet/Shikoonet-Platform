@@ -68,9 +68,7 @@ async function load(): Promise<Loaded> {
                 statuscopycart, linkappstatus FROM setting`,
       );
       const pairs = (rows: unknown): Pairs =>
-        Object.fromEntries(
-          (rows as { k: string; v: string | null }[]).map((r) => [r.k, r.v]),
-        );
+        Object.fromEntries((rows as { k: string; v: string | null }[]).map((r) => [r.k, r.v]));
       /** The `setting` row itself: one record whose columns ARE the keys. */
       const columns = (rows: unknown): Pairs => {
         const row = (rows as Record<string, unknown>[])[0] ?? {};

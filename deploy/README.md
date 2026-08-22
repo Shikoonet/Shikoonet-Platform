@@ -67,10 +67,10 @@ cannot serve should say so at boot, not one request at a time.
 
 Two cases are treated differently on purpose:
 
-| what the ledger sees | what happens |
-| --- | --- |
-| a migration on disk with no ledger row, or an applied file edited since | **refuses to start** |
-| a ledger row with no file — the database is AHEAD of the image | starts, with a warning |
+| what the ledger sees                                                    | what happens           |
+| ----------------------------------------------------------------------- | ---------------------- |
+| a migration on disk with no ledger row, or an applied file edited since | **refuses to start**   |
+| a ledger row with no file — the database is AHEAD of the image          | starts, with a warning |
 
 The second is what a **rollback** looks like. Putting yesterday's image back is
 a deploy you make while something is already broken, and a gate that blocks it
@@ -126,11 +126,11 @@ the bot probe and lose the only thing that can see a wedged poller.
 A Dockerfile `HEALTHCHECK` does take precedence over the panel's, which is why
 there is nothing to configure in Coolify. Leave those fields empty.
 
-| Service | What the image actually checks |
-| --- | --- |
-| `ingest` | `GET /health` on `$PORT` (8787) — 200 |
-| `dashboard` | `GET /api/v1/health` on `$PORT` (8788) — 200, **or 401**, because the route sits behind the session gate and a refusal still proves the process is answering. There is no `/health` on the dashboard |
-| `bot` | the heartbeat file's mtime, fresher than 90s. The bot opens no port — it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name — so a file the poll loop touches every cycle is what "alive" means for it |
+| Service     | What the image actually checks                                                                                                                                                                                                                |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ingest`    | `GET /health` on `$PORT` (8787) — 200                                                                                                                                                                                                         |
+| `dashboard` | `GET /api/v1/health` on `$PORT` (8788) — 200, **or 401**, because the route sits behind the session gate and a refusal still proves the process is answering. There is no `/health` on the dashboard                                          |
+| `bot`       | the heartbeat file's mtime, fresher than 90s. The bot opens no port — it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name — so a file the poll loop touches every cycle is what "alive" means for it |
 
 ## Schema, before anything else
 
@@ -157,10 +157,10 @@ and the class of failure above stops being possible.
 It reports three kinds of disagreement, and the last two are worth knowing
 about because nothing else can see them:
 
-| | |
-| --- | --- |
-| `pending` | a migration on disk with no row — the 2026-08-17 bug |
-| `DRIFT` | an applied file edited afterwards. Two databases quietly stop being the same schema; `up` refuses |
+|           |                                                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `pending` | a migration on disk with no row — the 2026-08-17 bug                                                                           |
+| `DRIFT`   | an applied file edited afterwards. Two databases quietly stop being the same schema; `up` refuses                              |
 | `UNKNOWN` | a row with no file: the database is ahead of this checkout, which is what a code rollback without a schema rollback looks like |
 
 Everything runs under one Postgres advisory lock, so two replicas deploying at
@@ -191,15 +191,15 @@ detail.
 
 What runs today, measured on 2026-08-19 rather than assumed:
 
-| | |
-| --- | --- |
-| schedule | Coolify scheduled backup, `0 3 * * *` (03:00 UTC / 06:30 Tehran) |
-| what | `pg_dump` custom format of the whole `shikoo` database |
-| where | `/data/coolify/backups/databases/root-team-0/shikoo-postgres-<uuid>/` |
-| retention | 14 dumps locally, no day or size cap |
-| offsite | **none — `save_s3=false`** |
-| encryption at rest | none beyond the host's own disk |
-| history | 4 runs, all `success`, 188K → 200K |
+|                    |                                                                       |
+| ------------------ | --------------------------------------------------------------------- |
+| schedule           | Coolify scheduled backup, `0 3 * * *` (03:00 UTC / 06:30 Tehran)      |
+| what               | `pg_dump` custom format of the whole `shikoo` database                |
+| where              | `/data/coolify/backups/databases/root-team-0/shikoo-postgres-<uuid>/` |
+| retention          | 14 dumps locally, no day or size cap                                  |
+| offsite            | **none — `save_s3=false`**                                            |
+| encryption at rest | none beyond the host's own disk                                       |
+| history            | 4 runs, all `success`, 188K → 200K                                    |
 
 ### RPO and RTO, stated so they can be argued with
 
@@ -276,7 +276,7 @@ Three lines in that config are load-bearing and none is obvious:
   is the socket peer, so nginx **overwrites** whatever the client sent; the app
   then reads it because `TRUSTED_PROXY_IP_HEADER=X-Real-IP` says the operator
   vouches for that header, and reads nothing at all otherwise. Do not use
-  `X-Forwarded-For` for this: nginx *appends* to it, so a value the client
+  `X-Forwarded-For` for this: nginx _appends_ to it, so a value the client
   invented stays in the string.
 
   ```nginx
@@ -287,6 +287,7 @@ Three lines in that config are load-bearing and none is obvious:
   Then set `TRUSTED_PROXY_IP_HEADER=X-Real-IP` on both the dashboard and the
   ingest application in Coolify. Until both halves are done the per-IP limits
   are off — ingest prints a warning at boot saying exactly that.
+
 - **`proxy_set_header Host $http_host`** — not `$host`. `originGuard` compares
   `new URL(origin).host` on both sides and `URL.host` keeps the port. `$host`
   strips it, and every state-changing request then answers
@@ -317,28 +318,28 @@ password, so they are secrets there too.
 
 ### `/etc/shikoo/bot.env`
 
-| Variable | Required | Notes |
-| --- | --- | --- |
-| `DATABASE_URL` | yes | Add `?sslmode=require` when Postgres is on another host |
-| `TELEGRAM_BOT_TOKEN` | yes | Never logged. Never point this at the real bot from a test host |
-| `TELEGRAM_API_BASE` | no | Defaults to `https://api.telegram.org` |
-| `TELEGRAM_POLL_TIMEOUT_SEC` | no | Default 25 |
+| Variable                    | Required | Notes                                                           |
+| --------------------------- | -------- | --------------------------------------------------------------- |
+| `DATABASE_URL`              | yes      | Add `?sslmode=require` when Postgres is on another host         |
+| `TELEGRAM_BOT_TOKEN`        | yes      | Never logged. Never point this at the real bot from a test host |
+| `TELEGRAM_API_BASE`         | no       | Defaults to `https://api.telegram.org`                          |
+| `TELEGRAM_POLL_TIMEOUT_SEC` | no       | Default 25                                                      |
 
 No `PORT`. The bot does not listen.
 
 ### `/etc/shikoo/dashboard.env`
 
-| Variable | Required | Notes |
-| --- | --- | --- |
-| `DATABASE_URL` | yes | |
-| ~~`ACCESS_AUD`, `ACCESS_ISSUER`, `ADMIN_ACCESS_AUD`~~ | **gone** | Cloudflare Access was removed 2026-08-16. The panel has its own login; see «اپراتورها» below |
-| `ENV_NAME` | **yes, and the process will not start without it** | One of `local`, `test`, `staging`, `production` — nothing else, and no default. It decides the origin check on writes, the session cookie's `Secure` flag and the bypass refusal below. Until 2026-08-18 it defaulted to `local`, so `prod`, `Production` and forgetting it entirely all switched those three off with nothing said |
-| `SPA_DIST` | no | The payment hub SPA. Set absolutely in the image |
-| `ADMIN_DIST` | no | **The shop admin panel SPA**, served at `/admin`. One process serves both; this row was missing while the code read it, and an unbuilt SPA is a 500 rather than a failed deploy |
-| `PORT`, `HOST` | no | Default `8788`, and `HOST` is **`0.0.0.0` in the image** (`Dockerfile:81`), not the `127.0.0.1` this row claimed until 2026-08-22. It has to be: a container that binds loopback is unreachable from the proxy. Do not "correct" it in the panel |
-| `INGEST_URL` | recommended | Printed into the SMS-relay phone configuration. There is no fallback any more: the routes that need it answer 503 `INGEST_URL_MISSING` |
-| `TRUSTED_PROXY_IP_HEADER` | recommended | `X-Real-IP`. Names the header the terminator sets to the real client address — see «The edge» below, which must be configured to send it. Unset, the login's per-IP limit is skipped and a session stores no address, rather than either of them trusting a value the visitor typed — **and the process says so in the log at boot**, which it did not until 2026-08-22 |
-| `TEST_ACCESS_USER` | **`local` and `test` only** | Skips the login and pins an identity. Refused twice: the process will not start with it set anywhere else, and the identity path refuses it there again. Asked as an allowlist rather than "not production" — a staging box on the public internet with the login skipped is open in exactly the way this exists to prevent |
+| Variable                                              | Required                                           | Notes                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                        | yes                                                |                                                                                                                                                                                                                                                                                                                                                                         |
+| ~~`ACCESS_AUD`, `ACCESS_ISSUER`, `ADMIN_ACCESS_AUD`~~ | **gone**                                           | Cloudflare Access was removed 2026-08-16. The panel has its own login; see «اپراتورها» below                                                                                                                                                                                                                                                                            |
+| `ENV_NAME`                                            | **yes, and the process will not start without it** | One of `local`, `test`, `staging`, `production` — nothing else, and no default. It decides the origin check on writes, the session cookie's `Secure` flag and the bypass refusal below. Until 2026-08-18 it defaulted to `local`, so `prod`, `Production` and forgetting it entirely all switched those three off with nothing said                                     |
+| `SPA_DIST`                                            | no                                                 | The payment hub SPA. Set absolutely in the image                                                                                                                                                                                                                                                                                                                        |
+| `ADMIN_DIST`                                          | no                                                 | **The shop admin panel SPA**, served at `/admin`. One process serves both; this row was missing while the code read it, and an unbuilt SPA is a 500 rather than a failed deploy                                                                                                                                                                                         |
+| `PORT`, `HOST`                                        | no                                                 | Default `8788`, and `HOST` is **`0.0.0.0` in the image** (`Dockerfile:81`), not the `127.0.0.1` this row claimed until 2026-08-22. It has to be: a container that binds loopback is unreachable from the proxy. Do not "correct" it in the panel                                                                                                                        |
+| `INGEST_URL`                                          | recommended                                        | Printed into the SMS-relay phone configuration. There is no fallback any more: the routes that need it answer 503 `INGEST_URL_MISSING`                                                                                                                                                                                                                                  |
+| `TRUSTED_PROXY_IP_HEADER`                             | recommended                                        | `X-Real-IP`. Names the header the terminator sets to the real client address — see «The edge» below, which must be configured to send it. Unset, the login's per-IP limit is skipped and a session stores no address, rather than either of them trusting a value the visitor typed — **and the process says so in the log at boot**, which it did not until 2026-08-22 |
+| `TEST_ACCESS_USER`                                    | **`local` and `test` only**                        | Skips the login and pins an identity. Refused twice: the process will not start with it set anywhere else, and the identity path refuses it there again. Asked as an allowlist rather than "not production" — a staging box on the public internet with the login skipped is open in exactly the way this exists to prevent                                             |
 
 ### اپراتورها — the bootstrap nobody can skip
 
@@ -369,18 +370,18 @@ it. `operator unlock` clears a lockout (five wrong passwords, fifteen minutes).
 
 ### `/etc/shikoo/ingest.env`
 
-| Variable | Required | Notes |
-| --- | --- | --- |
-| `DATABASE_URL` | yes | |
-| `ENV_NAME` | **yes, and the process will not start without it** | Same four values as the dashboard. Here it is what forces `MIRZABOT_INTEGRATION_ENABLED` and `AUTO_MATCH_ENABLED` to be decided out loud — and while it defaulted to `local`, a typo meant nobody was asked, every bank SMS was stored, and no payment was ever verified |
-| `TRUSTED_PROXY_IP_HEADER` | recommended | `X-Real-IP`. Without it the per-IP limit on `POST /api/v1/sms` and on the claims endpoint is **off** — and the process says so in the log at boot. It is off rather than shared because the old shared bucket meant one busy phone rate-limited the whole fleet |
-| `INGEST_MAX_BODY_BYTES` | no | Default 8192. Enforced on real bytes before the body is in memory, on the declared length and on a chunked stream alike. **The process refuses to start on a value that is not a positive whole number** — `8kb` used to parse as `NaN`, and every comparison against NaN is false, so that typo removed the cap rather than widening it |
-| `PORT`, `HOST` | no | Default `8787`, and `HOST` is **`0.0.0.0` in the image** (`Dockerfile:81`) — see the dashboard's row above |
-| `SWEEP_INTERVAL_MS` | no | Default 60000 |
-| `DEVICE_RATE_LIMIT`, `IP_RATE_LIMIT`, `RATE_LIMIT_WINDOW_MS` | no | Second layer; the edge is the first |
-| `MIRZABOT_INTEGRATION_*`, `AUTO_MATCH_ENABLED`, `AUTO_FULFILLMENT_ENABLED` | while the PHP bot lives | HMAC integration with the legacy bot |
-| `ALERT_CHAT_ID` | recommended | Where a fault is announced — `ingest.sms.failed`, `match.failed`, `settle.failed`, `provision.failed`, `notify.dead`, `webhook.dead`, `boot.schema_behind`, and nothing else. At most **one message an hour per event**, enforced by the `UNIQUE` on `bot_notifications.dedupe_key` rather than by a counter. Set it on all three services: an alert is a row in the queue, and the bot is what flushes it. On the bot it falls back to `REPORT_CHAT_ID`; on ingest and the dashboard it does not, because those have no report channel of their own. Unset means the events are still recorded in `app_events` and nobody is told. |
-| `REPORT_CHAT_ID` | optional, **fallback only** | Where the shop's reports go — the nightly report and the anti-spam block notice, which read one field. The shop's own `setting.Channel_Report` wins wherever it is set; this covers a database whose settings have never been migrated, which is the practice box. Unset AND unmigrated means no report. A channel id is negative. |
+| Variable                                                                   | Required                                           | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                                             | yes                                                |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `ENV_NAME`                                                                 | **yes, and the process will not start without it** | Same four values as the dashboard. Here it is what forces `MIRZABOT_INTEGRATION_ENABLED` and `AUTO_MATCH_ENABLED` to be decided out loud — and while it defaulted to `local`, a typo meant nobody was asked, every bank SMS was stored, and no payment was ever verified                                                                                                                                                                                                                                                                                                                                                            |
+| `TRUSTED_PROXY_IP_HEADER`                                                  | recommended                                        | `X-Real-IP`. Without it the per-IP limit on `POST /api/v1/sms` and on the claims endpoint is **off** — and the process says so in the log at boot. It is off rather than shared because the old shared bucket meant one busy phone rate-limited the whole fleet                                                                                                                                                                                                                                                                                                                                                                     |
+| `INGEST_MAX_BODY_BYTES`                                                    | no                                                 | Default 8192. Enforced on real bytes before the body is in memory, on the declared length and on a chunked stream alike. **The process refuses to start on a value that is not a positive whole number** — `8kb` used to parse as `NaN`, and every comparison against NaN is false, so that typo removed the cap rather than widening it                                                                                                                                                                                                                                                                                            |
+| `PORT`, `HOST`                                                             | no                                                 | Default `8787`, and `HOST` is **`0.0.0.0` in the image** (`Dockerfile:81`) — see the dashboard's row above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `SWEEP_INTERVAL_MS`                                                        | no                                                 | Default 60000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `DEVICE_RATE_LIMIT`, `IP_RATE_LIMIT`, `RATE_LIMIT_WINDOW_MS`               | no                                                 | Second layer; the edge is the first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `MIRZABOT_INTEGRATION_*`, `AUTO_MATCH_ENABLED`, `AUTO_FULFILLMENT_ENABLED` | while the PHP bot lives                            | HMAC integration with the legacy bot                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `ALERT_CHAT_ID`                                                            | recommended                                        | Where a fault is announced — `ingest.sms.failed`, `match.failed`, `settle.failed`, `provision.failed`, `notify.dead`, `webhook.dead`, `boot.schema_behind`, and nothing else. At most **one message an hour per event**, enforced by the `UNIQUE` on `bot_notifications.dedupe_key` rather than by a counter. Set it on all three services: an alert is a row in the queue, and the bot is what flushes it. On the bot it falls back to `REPORT_CHAT_ID`; on ingest and the dashboard it does not, because those have no report channel of their own. Unset means the events are still recorded in `app_events` and nobody is told. |
+| `REPORT_CHAT_ID`                                                           | optional, **fallback only**                        | Where the shop's reports go — the nightly report and the anti-spam block notice, which read one field. The shop's own `setting.Channel_Report` wins wherever it is set; this covers a database whose settings have never been migrated, which is the practice box. Unset AND unmigrated means no report. A channel id is negative.                                                                                                                                                                                                                                                                                                  |
 
 A raw bank SMS body is never written to a log, under any setting. There used to
 be a `LOG_SMS_BODY` row here; the variable was read by nothing, so the

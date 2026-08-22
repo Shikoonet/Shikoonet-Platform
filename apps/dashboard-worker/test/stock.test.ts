@@ -241,11 +241,7 @@ describe('taking a config off the shelf', () => {
       .run();
 
     expect((await post(`/api/v1/admin/stock/${id}/retire`, {})).status).toBe(409);
-    const del = await app.request(
-      `/api/v1/admin/stock/${id}`,
-      { method: 'DELETE' },
-      envAs(ADMIN),
-    );
+    const del = await app.request(`/api/v1/admin/stock/${id}`, { method: 'DELETE' }, envAs(ADMIN));
 
     expect(del.status).toBe(409);
     expect((await stockRow(id))!.status).toBe('USED');
@@ -281,11 +277,19 @@ describe('who sees the accounts', () => {
     expect(res.status).toBe(200);
     const { id } = (await res.json()) as { id: number };
 
-    expect((await post('/api/v1/admin/stock', {
-      planId: fx.planA,
-      remoteUsername: `${PREFIX}byreviewer`,
-      subscriptionUrl: 'https://panel.invalid/sub/x',
-    }, REVIEWER)).status).toBe(403);
+    expect(
+      (
+        await post(
+          '/api/v1/admin/stock',
+          {
+            planId: fx.planA,
+            remoteUsername: `${PREFIX}byreviewer`,
+            subscriptionUrl: 'https://panel.invalid/sub/x',
+          },
+          REVIEWER,
+        )
+      ).status,
+    ).toBe(403);
     expect((await post(`/api/v1/admin/stock/${id}/retire`, {}, REVIEWER)).status).toBe(403);
     expect((await stockRow(id))!.status).toBe('AVAILABLE');
   });

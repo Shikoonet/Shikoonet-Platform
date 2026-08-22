@@ -163,10 +163,13 @@ test('an ordinary hub button is painted like an ordinary panel button', async ({
   // this should follow it, not go red.
   await page.goto('/admin/');
   await expect(page.locator('.btn').first()).toBeVisible();
-  const panelBtn = await page.locator('.btn').first().evaluate((el) => {
-    const cs = getComputedStyle(el);
-    return { bg: cs.backgroundColor, color: cs.color, border: cs.borderColor };
-  });
+  const panelBtn = await page
+    .locator('.btn')
+    .first()
+    .evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { bg: cs.backgroundColor, color: cs.color, border: cs.borderColor };
+    });
 
   await page.goto('/admin/banks');
   await expect(page.locator('.hub')).toBeVisible();
@@ -180,9 +183,7 @@ test('an ordinary hub button is painted like an ordinary panel button', async ({
     // A button wearing no tone and no component class of its own — the base
     // rule, undisturbed. Found rather than selected by name so it cannot
     // quietly become null and let the assertion pass on nothing.
-    const plain = buttons.find((b) =>
-      [...b.classList].every((c) => c === 'btn-sm'),
-    );
+    const plain = buttons.find((b) => [...b.classList].every((c) => c === 'btn-sm'));
     return {
       plain: paint(plain),
       primary: paint(document.querySelector('.hub button.primary')),

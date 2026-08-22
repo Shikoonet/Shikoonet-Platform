@@ -483,7 +483,9 @@ describe('who may do what', () => {
 
     await handleUpdate(db, press(updateId, telegramId, `uwp:${targetId}`));
     await db
-      .prepare(`UPDATE admins SET permissions = '{"users.wallet": false}'::jsonb WHERE telegram_id = ?1`)
+      .prepare(
+        `UPDATE admins SET permissions = '{"users.wallet": false}'::jsonb WHERE telegram_id = ?1`,
+      )
       .bind(telegramId)
       .run();
     const out = await handleUpdate(db, types(updateId + 1, telegramId, '10000'));
@@ -499,7 +501,10 @@ describe('who may do what', () => {
     const targetId = await makeCustomer(ids().telegramId);
 
     await handleUpdate(db, press(updateId, telegramId, `uwp:${targetId}`));
-    await db.prepare(`UPDATE admins SET active = false WHERE telegram_id = ?1`).bind(telegramId).run();
+    await db
+      .prepare(`UPDATE admins SET active = false WHERE telegram_id = ?1`)
+      .bind(telegramId)
+      .run();
     const out = await handleUpdate(db, types(updateId + 1, telegramId, '10000'));
 
     expect(out.status).toBe('ignored');

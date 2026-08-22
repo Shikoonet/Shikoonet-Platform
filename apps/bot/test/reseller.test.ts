@@ -54,9 +54,7 @@ function types(updateId: number, telegramId: number, text: string): TelegramUpda
 
 async function requestsFor(userId: number) {
   const { results } = await db
-    .prepare(
-      `SELECT description, status FROM reseller_requests WHERE user_id = ?1 ORDER BY id`,
-    )
+    .prepare(`SELECT description, status FROM reseller_requests WHERE user_id = ?1 ORDER BY id`)
     .bind(userId)
     .all<{ description: string; status: string }>();
   return results ?? [];
@@ -81,10 +79,7 @@ describe('applying', () => {
 
     const asked = await handleUpdate(db, press(updateId, telegramId, 'agr'));
     expect(asked.replies[0]?.text).toBe(menu.ASK_RESELLER_REQUEST);
-    const filed = await handleUpdate(
-      db,
-      types(updateId + 1, telegramId, 'ماهی ۳۰ سرویس می‌فروشم'),
-    );
+    const filed = await handleUpdate(db, types(updateId + 1, telegramId, 'ماهی ۳۰ سرویس می‌فروشم'));
 
     expect(filed.replies[0]?.text).toBe(menu.RESELLER_REQUEST_FILED);
     expect(await requestsFor(userId)).toEqual([
@@ -150,10 +145,16 @@ describe('applying', () => {
   });
 
   it('does not offer the button to a reseller at all', async () => {
-    const texts = menu.mainMenu(RESELLER).flat().map((b) => b.text);
+    const texts = menu
+      .mainMenu(RESELLER)
+      .flat()
+      .map((b) => b.text);
     expect(texts).not.toContain('👨‍💻 درخواست نمایندگی');
     // And it is a real button for everyone else, not the "coming soon" stub.
-    const targets = menu.mainMenu(CUSTOMER).flat().map((b) => b.callback_data);
+    const targets = menu
+      .mainMenu(CUSTOMER)
+      .flat()
+      .map((b) => b.callback_data);
     expect(targets).toContain('agr');
   });
 

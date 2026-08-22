@@ -154,14 +154,20 @@ export function start(): { stop: () => Promise<void> } {
   // and are answered with index.html: `/shikoonet-logo.png` used to return 853
   // bytes of HTML, so the header logo was a broken image on every screen. A
   // miss calls next(), so unknown paths still reach the fallback.
-  app.use('/admin/*', serveStatic({ root: adminRoot, rewriteRequestPath: (p) => p.slice('/admin'.length) }));
+  app.use(
+    '/admin/*',
+    serveStatic({ root: adminRoot, rewriteRequestPath: (p) => p.slice('/admin'.length) }),
+  );
   app.get('/admin', (c) => c.redirect('/admin/', 302));
   app.get('/admin/*', async (c, next) => {
     if (c.req.path.startsWith('/admin/assets/')) return next();
     try {
       return c.html(await readFile(join(adminRoot, 'index.html'), 'utf8'));
     } catch {
-      return c.text('Admin panel build not found — run `pnpm --filter @shikoo/admin-web build`', 500);
+      return c.text(
+        'Admin panel build not found — run `pnpm --filter @shikoo/admin-web build`',
+        500,
+      );
     }
   });
 

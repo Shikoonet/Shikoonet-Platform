@@ -120,10 +120,7 @@ export interface ExtraPricing {
 
 export type CustomerTier = 'f' | 'n' | 'n2';
 
-export function extraPricingFor(
-  config: Record<string, unknown>,
-  tier: CustomerTier,
-): ExtraPricing {
+export function extraPricingFor(config: Record<string, unknown>, tier: CustomerTier): ExtraPricing {
   if (!renewAllowed(config)) return { volumeIrrPerGb: null, timeIrrPerDay: null };
   return {
     volumeIrrPerGb: tomanRate(config['priceextravolume'], tier),

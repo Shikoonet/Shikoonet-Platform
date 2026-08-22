@@ -79,10 +79,10 @@ const NOT_A_SIMULATION = 1_000;
  * This is the guard that would actually have stopped the accident: the address
  * can be forged by a tunnel, but eleven thousand customers cannot.
  */
-export async function assertNotRealData(db: ReturnType<typeof createPostgresD1>['db']): Promise<void> {
-  const row = await db
-    .prepare(`SELECT count(*)::int AS n FROM users`)
-    .first<{ n: number }>();
+export async function assertNotRealData(
+  db: ReturnType<typeof createPostgresD1>['db'],
+): Promise<void> {
+  const row = await db.prepare(`SELECT count(*)::int AS n FROM users`).first<{ n: number }>();
   const users = row?.n ?? 0;
   if (users >= NOT_A_SIMULATION) {
     throw new Error(
@@ -94,9 +94,7 @@ export async function assertNotRealData(db: ReturnType<typeof createPostgresD1>[
 
 async function wipe(db: ReturnType<typeof createPostgresD1>['db']): Promise<string[]> {
   const { results } = await db
-    .prepare(
-      `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`,
-    )
+    .prepare(`SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`)
     .all<{ tablename: string }>();
   const tables = (results ?? []).map((r) => r.tablename).filter((t) => !KEEP.has(t));
   if (tables.length === 0) return [];

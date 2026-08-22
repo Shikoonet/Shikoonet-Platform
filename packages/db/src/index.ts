@@ -17,10 +17,18 @@ import pg from 'pg';
 import { compactParameters, toPostgres } from './dialect.js';
 
 export type {
-  D1Database, D1PreparedStatement, D1Result, D1ExecResult, D1DatabaseSession,
+  D1Database,
+  D1PreparedStatement,
+  D1Result,
+  D1ExecResult,
+  D1DatabaseSession,
 } from './types.js';
 import type {
-  D1Database, D1PreparedStatement, D1Result, D1ExecResult, D1DatabaseSession,
+  D1Database,
+  D1PreparedStatement,
+  D1Result,
+  D1ExecResult,
+  D1DatabaseSession,
 } from './types.js';
 
 export { DialectError, toPostgres, parameterCount } from './dialect.js';

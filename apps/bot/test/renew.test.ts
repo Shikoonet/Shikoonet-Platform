@@ -681,7 +681,14 @@ describe('the renewal cashback', () => {
       .prepare(`SELECT total_irr FROM orders WHERE id = ?1`)
       .bind(order.id)
       .first<{ total_irr: number }>();
-    return { userId, subId, order, telegramId, username: `c_${telegramId}`, totalIrr: total!.total_irr };
+    return {
+      userId,
+      subId,
+      order,
+      telegramId,
+      username: `c_${telegramId}`,
+      totalIrr: total!.total_irr,
+    };
   }
 
   afterEach(async () => {

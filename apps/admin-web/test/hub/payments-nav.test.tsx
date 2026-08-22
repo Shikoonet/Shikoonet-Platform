@@ -149,9 +149,11 @@ describe('Payments grouped navigation', () => {
     render(<PaymentsView cache={createCache()} />);
     const hub = await screen.findByRole('navigation', { name: 'نماهای پرداخت' });
     expect(opsNav().getByRole('tab', { name: 'بررسی' }).getAttribute('aria-selected')).toBe('true');
-    expect(within(hub).getByRole('tab', { name: /تایید خودکار ربات 10/i }).getAttribute('aria-selected')).toBe(
-      'true',
-    );
+    expect(
+      within(hub)
+        .getByRole('tab', { name: /تایید خودکار ربات 10/i })
+        .getAttribute('aria-selected'),
+    ).toBe('true');
   });
 
   it('does not show Income under Payments sub-nav', async () => {

@@ -236,9 +236,9 @@ export function EventsPage() {
       <div className="card">
         <p className="muted">
           هرچه ربات، ingest و داشبورد در سطح <b>خطا</b> و <b>هشدار</b> دیده‌اند، به‌علاوهٔ چند
-          رویداد پول. سطح <b>اطلاع</b> عمداً این‌جا نیست — فقط روی خروجی کانتینر می‌رود، وگرنه
-          حلقهٔ ربات روزی هزاران ردیف می‌نویسد. ردیف‌ها بعد از <b>۳۰ روز</b> پاک می‌شوند و
-          پاک‌کردن دستی‌شان از این صفحه ممکن نیست.
+          رویداد پول. سطح <b>اطلاع</b> عمداً این‌جا نیست — فقط روی خروجی کانتینر می‌رود، وگرنه حلقهٔ
+          ربات روزی هزاران ردیف می‌نویسد. ردیف‌ها بعد از <b>۳۰ روز</b> پاک می‌شوند و پاک‌کردن
+          دستی‌شان از این صفحه ممکن نیست.
         </p>
 
         <form
@@ -386,64 +386,64 @@ export function EventsPage() {
               */}
               {rows.map((e) => (
                 <Fragment key={e.id}>
-                <tr>
-                  <td className="ltr">{dateTimeSeconds(e.at)}</td>
-                  <td>
-                    <span className={levelTone(e.level)}>{LEVEL_FA[e.level] ?? e.level}</span>
-                  </td>
-                  <td className="ltr">{e.svc}</td>
-                  <td className="ltr">{e.evt}</td>
-                  <td className="ltr">{e.ref ?? '—'}</td>
-                  <td className="ltr">
-                    {e.trace ? (
+                  <tr>
+                    <td className="ltr">{dateTimeSeconds(e.at)}</td>
+                    <td>
+                      <span className={levelTone(e.level)}>{LEVEL_FA[e.level] ?? e.level}</span>
+                    </td>
+                    <td className="ltr">{e.svc}</td>
+                    <td className="ltr">{e.evt}</td>
+                    <td className="ltr">{e.ref ?? '—'}</td>
+                    <td className="ltr">
+                      {e.trace ? (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          title="همهٔ رویدادهای همین درخواست"
+                          onClick={() => {
+                            setTrace(e.trace!);
+                            setPage(1);
+                          }}
+                        >
+                          {e.trace}
+                        </button>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td className="row-actions">
                       <button
                         type="button"
                         className="btn btn-sm"
-                        title="همهٔ رویدادهای همین درخواست"
-                        onClick={() => {
-                          setTrace(e.trace!);
-                          setPage(1);
-                        }}
+                        onClick={() => setOpen(open === e.id ? null : e.id)}
                       >
-                        {e.trace}
+                        {open === e.id ? 'بستن' : 'جزئیات'}
                       </button>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                  <td className="row-actions">
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => setOpen(open === e.id ? null : e.id)}
-                    >
-                      {open === e.id ? 'بستن' : 'جزئیات'}
-                    </button>
-                    <CopyButton
-                      rows={[e]}
-                      label="کپی"
-                      title="این رویداد را با همهٔ جزئیاتش به‌صورت JSON کپی می‌کند"
-                    />
-                  </td>
-                </tr>
-                {open === e.id && (
-                  <tr>
-                    <td colSpan={7}>
-                      <div className="event-detail">
-                        <div>
-                          <div className="form-label">fields</div>
-                          <pre className="ltr event-pre">{JSON.stringify(e.fields, null, 2)}</pre>
-                        </div>
-                        {e.err && (
-                          <div>
-                            <div className="form-label">err</div>
-                            <ErrorBlock raw={e.err} />
-                          </div>
-                        )}
-                      </div>
+                      <CopyButton
+                        rows={[e]}
+                        label="کپی"
+                        title="این رویداد را با همهٔ جزئیاتش به‌صورت JSON کپی می‌کند"
+                      />
                     </td>
                   </tr>
-                )}
+                  {open === e.id && (
+                    <tr>
+                      <td colSpan={7}>
+                        <div className="event-detail">
+                          <div>
+                            <div className="form-label">fields</div>
+                            <pre className="ltr event-pre">{JSON.stringify(e.fields, null, 2)}</pre>
+                          </div>
+                          {e.err && (
+                            <div>
+                              <div className="form-label">err</div>
+                              <ErrorBlock raw={e.err} />
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                 </Fragment>
               ))}
             </tbody>

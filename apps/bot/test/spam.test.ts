@@ -93,9 +93,7 @@ beforeEach(async () => {
 });
 
 /** The queued reports, with the keyboard `pendingNotifications` does not carry. */
-async function spamReports(): Promise<
-  { chatId: number; text: string; markup: string | null }[]
-> {
+async function spamReports(): Promise<{ chatId: number; text: string; markup: string | null }[]> {
   const { results } = await db
     .prepare(
       `SELECT chat_id, body, reply_markup::text AS markup FROM bot_notifications

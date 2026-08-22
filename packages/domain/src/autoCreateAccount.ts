@@ -100,9 +100,7 @@ export async function autoCreatePendingAccount(
   } catch (e) {
     // Race loser — re-fetch the winner.
     const winner = await db
-      .prepare(
-        `SELECT id FROM financial_accounts WHERE account_hint = ?1 AND active = 1 LIMIT 1`,
-      )
+      .prepare(`SELECT id FROM financial_accounts WHERE account_hint = ?1 AND active = 1 LIMIT 1`)
       .bind(input.hint)
       .first<{ id: string }>();
     if (winner) {

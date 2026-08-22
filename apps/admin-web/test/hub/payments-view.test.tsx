@@ -311,7 +311,9 @@ describe('PaymentsView tabs', () => {
   it('marks bot auto verified tab read via خواندن همه', async () => {
     mockApi({
       needs_review: [],
-      bot_auto_verified: [item({ id: 'p2', reviewState: 'AUTO_VERIFIED', suspectReason: null, isNew: true })],
+      bot_auto_verified: [
+        item({ id: 'p2', reviewState: 'AUTO_VERIFIED', suspectReason: null, isNew: true }),
+      ],
     });
     renderView();
     fireEvent.click(await hubNav().findByRole('tab', { name: /تایید خودکار ربات 143/i }));
@@ -343,7 +345,9 @@ describe('PaymentsView tabs', () => {
     });
     renderView();
     await waitFor(() => expect(screen.getByText('۵۰٬۰۰۰ تومان')).toBeTruthy());
-    fireEvent.click(await screen.findByLabelText('علامت‌زدن 3 مورد خوانده‌نشده به‌عنوان خوانده‌شده'));
+    fireEvent.click(
+      await screen.findByLabelText('علامت‌زدن 3 مورد خوانده‌نشده به‌عنوان خوانده‌شده'),
+    );
 
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]!.url).toBe('/api/v1/payments/tabs/read-all');
@@ -701,7 +705,9 @@ describe('PaymentsView device display', () => {
   });
 
   it('shows Device: — when no SMS source device is known', async () => {
-    mockApi({ waiting: [item({ id: 'w1', reviewState: 'WAITING', suspectReason: null, device: null })] });
+    mockApi({
+      waiting: [item({ id: 'w1', reviewState: 'WAITING', suspectReason: null, device: null })],
+    });
     renderView();
     fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار 8/i }));
     expect(await screen.findByText(/دستگاه: —/)).toBeTruthy();
@@ -772,7 +778,10 @@ describe('PaymentsView تایید خودکار ربات read state', () => {
           ok: true,
           tab,
           range: 'all',
-          items: tab === 'bot_auto_verified' ? [item({ id: 'b1', reviewState: 'AUTO_VERIFIED', isNew: unread > 0 })] : [],
+          items:
+            tab === 'bot_auto_verified'
+              ? [item({ id: 'b1', reviewState: 'AUTO_VERIFIED', isNew: unread > 0 })]
+              : [],
           counts: { ...COUNTS, botAutoVerified: 143, botAutoVerifiedUnread: unread },
           summary: SUMMARY,
         }),
@@ -782,7 +791,9 @@ describe('PaymentsView تایید خودکار ربات read state', () => {
 
     window.history.replaceState(null, '', '/?tab=bot_auto_verified');
     renderView();
-    expect(await screen.findByRole('button', { name: /علامت‌زدن 4 مورد خوانده‌نشده/i })).toBeTruthy();
+    expect(
+      await screen.findByRole('button', { name: /علامت‌زدن 4 مورد خوانده‌نشده/i }),
+    ).toBeTruthy();
 
     globalThis.fetch = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
       const url = String(input);

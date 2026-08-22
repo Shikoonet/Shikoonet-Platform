@@ -531,8 +531,7 @@ export const api = {
   // endpoints return the new status on success and 409 on illegal
   // transitions. The dashboard's invalidation keys are managed by the
   // FOR_MUTATION.accountStatusTransition entry.
-  accountsPending: () =>
-    req<{ ok: boolean; items: AccountListItem[] }>('/api/v1/accounts/pending'),
+  accountsPending: () => req<{ ok: boolean; items: AccountListItem[] }>('/api/v1/accounts/pending'),
   acceptAccount: (id: string) =>
     req<AccountStatus>(`/api/v1/accounts/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
   muteAccount: (id: string) =>
@@ -846,16 +845,21 @@ export const api = {
     req<{ ok: boolean }>(`/api/v1/payments/events/${encodeURIComponent(eventKey)}/seen`, {
       method: 'POST',
     }),
-  markPaymentTabReadAll: (tab: 'needs_review' | 'suspected_fake' | 'bot_auto_verified' | 'reseller' | 'income') =>
+  markPaymentTabReadAll: (
+    tab: 'needs_review' | 'suspected_fake' | 'bot_auto_verified' | 'reseller' | 'income',
+  ) =>
     req<{ ok: boolean; marked: number }>('/api/v1/payments/tabs/read-all', {
       method: 'POST',
       body: JSON.stringify({ tab }),
     }),
   declineIncome: (transactionId: string, reason?: string) =>
-    req<{ ok: boolean }>(`/api/v1/transactions/${encodeURIComponent(transactionId)}/decline-income`, {
-      method: 'POST',
-      body: JSON.stringify({ reason }),
-    }),
+    req<{ ok: boolean }>(
+      `/api/v1/transactions/${encodeURIComponent(transactionId)}/decline-income`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      },
+    ),
   declineIncomeBulk: (transactionIds: string[], reason?: string) =>
     req<{ ok: boolean; declined: string[] }>('/api/v1/transactions/decline-income/bulk', {
       method: 'POST',

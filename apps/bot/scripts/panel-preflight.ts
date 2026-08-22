@@ -205,7 +205,7 @@ async function main(): Promise<number> {
       console.log(
         ref
           ? `  ✗ PANEL_${ref.toUpperCase().replace(/[^A-Z0-9]/g, '_')} is not set in this environment`
-          : '  ✗ no secret_ref — nothing names this panel\'s credentials',
+          : "  ✗ no secret_ref — nothing names this panel's credentials",
       );
       problems += plans.length;
       continue;

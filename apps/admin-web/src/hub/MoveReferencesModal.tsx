@@ -135,9 +135,7 @@ export function MoveReferencesModal({
           دیگری منتقل می‌شود. انتقال اتمیک است — اگر هر مرحله شکست بخورد، هیچ‌چیز عوض نمی‌شود.
         </p>
         {eligible.length === 0 ? (
-          <div className="warn-banner">
-            هیچ حساب مقصد فعالی نیست. اول یک حساب دیگر بساز.
-          </div>
+          <div className="warn-banner">هیچ حساب مقصد فعالی نیست. اول یک حساب دیگر بساز.</div>
         ) : (
           <div className="form">
             <label>

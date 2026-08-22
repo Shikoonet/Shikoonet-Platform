@@ -49,7 +49,10 @@ function loadSimEnv(): void {
     // An explicit environment variable wins, so a one-off run can point
     // somewhere else without editing the file.
     if (process.env[key] === undefined) {
-      process.env[key] = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+      process.env[key] = trimmed
+        .slice(eq + 1)
+        .trim()
+        .replace(/^["']|["']$/g, '');
     }
   }
 }
@@ -68,9 +71,7 @@ loadSimEnv();
  * log right above it says `dashboard listening`, which sends you looking at the
  * server for an hour.
  */
-process.env.NO_PROXY = [process.env.NO_PROXY, '127.0.0.1', 'localhost']
-  .filter(Boolean)
-  .join(',');
+process.env.NO_PROXY = [process.env.NO_PROXY, '127.0.0.1', 'localhost'].filter(Boolean).join(',');
 process.env.no_proxy = process.env.NO_PROXY;
 
 // Not 8788: the local dashboard is often already running on that port, and
@@ -89,8 +90,7 @@ const PORT = 8799;
  */
 export const LOGIN_PORT = 8800;
 
-const spaPath = (relative: string): string =>
-  fileURLToPath(new URL(relative, import.meta.url));
+const spaPath = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url));
 
 export default defineConfig({
   testDir: './e2e',
@@ -111,32 +111,32 @@ export default defineConfig({
   },
   webServer: [
     {
-    // The same entry point production runs, not a test double: `server.ts` is
-    // where the SPA mounts, where `/admin` is split from `/`, and where a
-    // mistake in any of that would not show up in a route-level test.
-    // `--env-file` rather than an env block of our own, and the reason is a
-    // bug this config had for one run: it invented `dev@shikoo.local` as the
-    // test identity, and every request came back 403. `TEST_ACCESS_USER` only
-    // skips the Access JWT — the role still has to exist in `access_users`, and
-    // the only address the seed runner grants ADMIN is the one written in
-    // `sim/.env.local`. Reading that file means the identity, the database and
-    // the panel credentials are the same ones every other local command uses.
-    command: 'tsx --env-file=../../sim/.env.local src/server.ts',
-    url: `http://127.0.0.1:${PORT}/api/v1/health`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
-    env: {
-      PORT: String(PORT),
-      // Required since 2026-08-18 — `server.ts` refuses to start without it
-      // rather than defaulting to `local`, because that default was what let a
-      // mistyped `ENV_NAME` switch off every production guard silently.
-      ENV_NAME: 'local',
-      // The SPA build, absolute because `server.ts` resolves its default
-      // against the working directory. `import.meta.url` is a file: URL, whose
-      // pathname on Windows carries a leading slash before the drive letter.
-      ADMIN_DIST: spaPath('../admin-web/dist'),
+      // The same entry point production runs, not a test double: `server.ts` is
+      // where the SPA mounts, where `/admin` is split from `/`, and where a
+      // mistake in any of that would not show up in a route-level test.
+      // `--env-file` rather than an env block of our own, and the reason is a
+      // bug this config had for one run: it invented `dev@shikoo.local` as the
+      // test identity, and every request came back 403. `TEST_ACCESS_USER` only
+      // skips the Access JWT — the role still has to exist in `access_users`, and
+      // the only address the seed runner grants ADMIN is the one written in
+      // `sim/.env.local`. Reading that file means the identity, the database and
+      // the panel credentials are the same ones every other local command uses.
+      command: 'tsx --env-file=../../sim/.env.local src/server.ts',
+      url: `http://127.0.0.1:${PORT}/api/v1/health`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+      env: {
+        PORT: String(PORT),
+        // Required since 2026-08-18 — `server.ts` refuses to start without it
+        // rather than defaulting to `local`, because that default was what let a
+        // mistyped `ENV_NAME` switch off every production guard silently.
+        ENV_NAME: 'local',
+        // The SPA build, absolute because `server.ts` resolves its default
+        // against the working directory. `import.meta.url` is a file: URL, whose
+        // pathname on Windows carries a leading slash before the drive letter.
+        ADMIN_DIST: spaPath('../admin-web/dist'),
+      },
     },
-  },
     {
       // No `--env-file`: that is where `TEST_ACCESS_USER` comes from, and the
       // whole point of this one is not having it. `loadSimEnv` above already

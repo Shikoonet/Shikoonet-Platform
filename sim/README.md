@@ -112,7 +112,7 @@ Two more things the walk gets wrong if you improvise:
   `MIRZABOT_INTEGRATION_ENABLED=true AUTO_MATCH_ENABLED=true`, otherwise the SMS
   is stored, no claim is decided, and it looks like a bug.
 - **Pin `timestamp` to `paid_clicked_at + 20s`**, read from `payment_claims`.
-  Wall-clock drifts out of the ±5m window while you are typing. And a *second*
+  Wall-clock drifts out of the ±5m window while you are typing. And a _second_
   deposit of the same amount to the same card inside that window makes the pair
   ambiguous: the claim then sits at `AMBIGUOUS_TRANSACTIONS`, which is the
   matcher being right, not broken.
@@ -156,7 +156,7 @@ the same chat.
 - **The bulk buttons reach every `ACTIVE` row in the simulation.** With a
   handful of fixtures that is the point; after loading a large dump it is
   thousands of Telegram calls. Check `SELECT count(*) FROM users WHERE status =
-  'ACTIVE'` first — the confirmation screen tells you too, which is what it is
+'ACTIVE'` first — the confirmation screen tells you too, which is what it is
   for.
 - **A broadcast to a made-up Telegram id fails, and that is the interesting
   case.** The recipient lands as `FAILED` with Telegram's own words in `error`

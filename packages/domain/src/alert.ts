@@ -88,7 +88,13 @@ export function alertText(record: LogRecord, atMs: number): string {
   // written to stdout, not a second serialisation with its own rules.
   const fields = Object.entries(record.fields);
   if (fields.length > 0) {
-    lines.push('', fields.map(([k, v]) => `${k}=${String(v)}`).join(' · ').slice(0, 300));
+    lines.push(
+      '',
+      fields
+        .map(([k, v]) => `${k}=${String(v)}`)
+        .join(' · ')
+        .slice(0, 300),
+    );
   }
   return lines.join('\n');
 }

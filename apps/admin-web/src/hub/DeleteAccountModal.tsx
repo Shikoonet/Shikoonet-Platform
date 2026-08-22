@@ -132,9 +132,7 @@ export function DeleteAccountModal({
                   <div key={r}>{reasonText[r] ?? r}</div>
                 ))}
                 {refs && (refs.transactions > 0 || refs.paymentClaims > 0) && (
-                  <p>
-                    قبل از حذف، تراکنش‌ها و ادعاهای پرداختش را به حساب دیگری بده یا ادغام کن.
-                  </p>
+                  <p>قبل از حذف، تراکنش‌ها و ادعاهای پرداختش را به حساب دیگری بده یا ادغام کن.</p>
                 )}
                 {onMoveReferences && refs && (refs.transactions > 0 || refs.paymentClaims > 0) && (
                   <button

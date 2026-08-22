@@ -126,7 +126,10 @@ describe('GET /api/v1/analytics', () => {
     await seedTx('tx-old', { balance: 1_000_000, ts: BASE });
     await seedTx('tx-new', { balance: 4_200_000, ts: BASE + 3600_000 });
 
-    const r = await app.fetch(new Request('https://x/api/v1/accounts/analytics?range=all'), envAs());
+    const r = await app.fetch(
+      new Request('https://x/api/v1/accounts/analytics?range=all'),
+      envAs(),
+    );
     const body = (await r.json()) as {
       items: Array<{
         currentBalanceIrr: number | null;

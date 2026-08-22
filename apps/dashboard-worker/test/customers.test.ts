@@ -233,8 +233,8 @@ describe('POST /api/v1/admin/customers/:id/wallet', () => {
         envAs(ADMIN),
       );
 
-    const first = await ((await send()).json()) as { applied: boolean; balanceIrr: number };
-    const second = await ((await send()).json()) as { applied: boolean; balanceIrr: number };
+    const first = (await (await send()).json()) as { applied: boolean; balanceIrr: number };
+    const second = (await (await send()).json()) as { applied: boolean; balanceIrr: number };
 
     expect(first.applied).toBe(true);
     expect(second.applied).toBe(false);
@@ -494,9 +494,7 @@ describe('POST /api/v1/admin/customers/:id/status', () => {
     );
     expect(res.status).toBe(200);
 
-    const row = await baseEnv.DB.prepare(
-      `SELECT status, blocked_reason FROM users WHERE id = ?1`,
-    )
+    const row = await baseEnv.DB.prepare(`SELECT status, blocked_reason FROM users WHERE id = ?1`)
       .bind(id)
       .first<{ status: string; blocked_reason: string }>();
     expect(row).toMatchObject({ status: 'BLOCKED', blocked_reason: 'chargeback fraud' });

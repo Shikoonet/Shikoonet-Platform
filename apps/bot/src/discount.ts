@@ -312,9 +312,7 @@ export async function redemptionOnOpenOrder(
   return row !== null;
 }
 
-export type GiftResult =
-  | { ok: true; amountIrr: number }
-  | { ok: false; reason: DiscountRefusal };
+export type GiftResult = { ok: true; amountIrr: number } | { ok: false; reason: DiscountRefusal };
 
 /**
  * Redeems a gift code into the wallet.

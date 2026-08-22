@@ -43,7 +43,12 @@ function failing(kind: 'db' | 'session'): D1Database | D1DatabaseSession {
   // `packages/db/src/types.ts`: both interfaces carry `prepare` and `batch`,
   // only `D1Database` carries `withSession`.
   return kind === 'db'
-    ? ({ ...base, exec: async () => ({}), dump: async () => new ArrayBuffer(0), withSession: async () => undefined } as unknown as D1Database)
+    ? ({
+        ...base,
+        exec: async () => ({}),
+        dump: async () => new ArrayBuffer(0),
+        withSession: async () => undefined,
+      } as unknown as D1Database)
     : (base as unknown as D1DatabaseSession);
 }
 
@@ -73,7 +78,16 @@ describe('a failed audit row', () => {
 
   it('says so, with enough to find the change that was made', async () => {
     const out = captureStdout();
-    await audit(failing('db'), IDENT, 'catalog.plan_updated', 'PRODUCT_PLAN', '42', null, null, null);
+    await audit(
+      failing('db'),
+      IDENT,
+      'catalog.plan_updated',
+      'PRODUCT_PLAN',
+      '42',
+      null,
+      null,
+      null,
+    );
     out.restore();
 
     const line = out.lines.map((l) => l.trim()).find((l) => l.includes('audit.unrecorded'));

@@ -23,17 +23,10 @@
  */
 
 import { useEffect, useState } from 'react';
-import {
-  tehranAdjacentDay,
-  tehranTodayDateString,
-} from './historyRangeNav.js';
+import { tehranAdjacentDay, tehranTodayDateString } from './historyRangeNav.js';
 
 export type BotAutoVerifiedSegment = 'NEW_PURCHASE' | 'RENEWAL';
-export type BotAutoVerifiedDateFilter =
-  | 'ALL'
-  | 'TODAY'
-  | 'YESTERDAY'
-  | 'DAY_BEFORE_YESTERDAY';
+export type BotAutoVerifiedDateFilter = 'ALL' | 'TODAY' | 'YESTERDAY' | 'DAY_BEFORE_YESTERDAY';
 
 const SEGMENT_TO_QUERY: Record<BotAutoVerifiedSegment, string> = {
   NEW_PURCHASE: 'new',
@@ -65,11 +58,8 @@ function readSearch(search: string): {
   const segmentRaw = params.get('purchaseType');
   const dateRaw = params.get('dateFilter');
   const segment =
-    segmentRaw && segmentRaw in QUERY_TO_SEGMENT
-      ? QUERY_TO_SEGMENT[segmentRaw]!
-      : 'NEW_PURCHASE';
-  const date =
-    dateRaw && dateRaw in QUERY_TO_DATE ? QUERY_TO_DATE[dateRaw]! : 'TODAY';
+    segmentRaw && segmentRaw in QUERY_TO_SEGMENT ? QUERY_TO_SEGMENT[segmentRaw]! : 'NEW_PURCHASE';
+  const date = dateRaw && dateRaw in QUERY_TO_DATE ? QUERY_TO_DATE[dateRaw]! : 'TODAY';
   return { segment, date };
 }
 

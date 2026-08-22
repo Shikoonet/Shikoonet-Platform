@@ -60,9 +60,7 @@ export function AccessPage({ role }: { role: PanelRole | null }) {
       <div className="page-head">
         <div>
           <div className="page-head__title">دسترسی‌ها</div>
-          <div className="page-head__sub">
-            نقش شما: {role === null ? '…' : PANEL_ROLE_FA[role]}
-          </div>
+          <div className="page-head__sub">نقش شما: {role === null ? '…' : PANEL_ROLE_FA[role]}</div>
         </div>
       </div>
 
@@ -161,7 +159,9 @@ function PanelOperators({ canWrite }: { canWrite: boolean }) {
                         disabled={busy}
                         aria-label={`نقش ${r.email}`}
                         onChange={(e) =>
-                          void act(() => api.updateAccessUser(r.id, { role: e.target.value as PanelRole }))
+                          void act(() =>
+                            api.updateAccessUser(r.id, { role: e.target.value as PanelRole }),
+                          )
                         }
                       >
                         {PANEL_ROLES.map((x) => (
@@ -394,7 +394,9 @@ function BotOperators({ canWrite }: { canWrite: boolean }) {
                       type="button"
                       className="btn btn-sm"
                       disabled={busy}
-                      onClick={() => void act(() => api.updateBotAdmin(r.id, { active: !r.active }))}
+                      onClick={() =>
+                        void act(() => api.updateBotAdmin(r.id, { active: !r.active }))
+                      }
                     >
                       {r.active ? 'غیرفعال' : 'فعال'}
                     </button>

@@ -27,7 +27,13 @@ interface Page {
   total: number;
   errors: number;
   warns: number;
-  items: Array<{ evt: string; level: string; svc: string; trace: string | null; ref: string | null }>;
+  items: Array<{
+    evt: string;
+    level: string;
+    svc: string;
+    trace: string | null;
+    ref: string | null;
+  }>;
 }
 
 async function get(path: string, email = ADMIN): Promise<Response> {
@@ -114,7 +120,9 @@ describe('the filters', () => {
   });
 
   it('filters by level, and the counts follow the same query', async () => {
-    const body = (await (await get(`/api/v1/admin/events?window=7d&level=error&svc=${SVC}`)).json()) as Page;
+    const body = (await (
+      await get(`/api/v1/admin/events?window=7d&level=error&svc=${SVC}`)
+    ).json()) as Page;
     expect(mine(body).map((i) => i.evt)).toEqual(['provision.failed']);
     expect(body.total).toBe(1);
     expect(body.errors).toBe(1);
@@ -122,7 +130,9 @@ describe('the filters', () => {
   });
 
   it('filters by service', async () => {
-    const body = (await (await get(`/api/v1/admin/events?window=7d&svc=${SVC}-other`)).json()) as Page;
+    const body = (await (
+      await get(`/api/v1/admin/events?window=7d&svc=${SVC}-other`)
+    ).json()) as Page;
     expect(mine(body).map((i) => i.evt)).toEqual(['sync.panel_skipped']);
   });
 

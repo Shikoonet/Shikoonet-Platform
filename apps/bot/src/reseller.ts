@@ -54,14 +54,9 @@ export async function applyForReseller(
 }
 
 /** Whether this customer is waiting on an answer. */
-export async function hasOpenRequest(
-  tx: D1DatabaseSession,
-  userId: number,
-): Promise<boolean> {
+export async function hasOpenRequest(tx: D1DatabaseSession, userId: number): Promise<boolean> {
   const row = await tx
-    .prepare(
-      `SELECT 1 FROM reseller_requests WHERE user_id = ?1 AND status = 'PENDING' LIMIT 1`,
-    )
+    .prepare(`SELECT 1 FROM reseller_requests WHERE user_id = ?1 AND status = 'PENDING' LIMIT 1`)
     .bind(userId)
     .first<{ '?column?': number }>();
   return row !== null;

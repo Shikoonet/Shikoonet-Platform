@@ -106,7 +106,8 @@ export function buildMenu(
     if (!isMenuAction(menuId, button.action)) continue;
     // `back` has no fixed destination, so a context that did not supply one is
     // a bug in the caller, not a button to draw pointing at nothing.
-    const data = ctx.target?.(button.action) ?? (button.action === 'back' ? undefined : button.action);
+    const data =
+      ctx.target?.(button.action) ?? (button.action === 'back' ? undefined : button.action);
     if (data === undefined) continue;
     if (button.rowIndex !== currentRow) {
       rows.push([]);

@@ -35,7 +35,8 @@ async function withDb<T>(fn: (d: ReturnType<typeof createPostgresD1>['db']) => P
   }
 }
 
-const wipe = () => withDb((d) => d.prepare(`DELETE FROM app_events WHERE svc = ?1`).bind(SVC).run());
+const wipe = () =>
+  withDb((d) => d.prepare(`DELETE FROM app_events WHERE svc = ?1`).bind(SVC).run());
 
 test.beforeEach(async ({ context }) => {
   await wipe();
@@ -135,7 +136,10 @@ test('the stack is on the screen, not only in the clipboard', async ({ page }) =
 
 test('copying one event puts the event on the clipboard, as JSON', async ({ page }) => {
   await open(page);
-  await page.locator('tbody tr', { hasText: 'provision.failed' }).getByRole('button', { name: 'کپی' }).click();
+  await page
+    .locator('tbody tr', { hasText: 'provision.failed' })
+    .getByRole('button', { name: 'کپی' })
+    .click();
   await expect(page.getByRole('button', { name: 'کپی شد ✓' })).toBeVisible();
 
   const text = await page.evaluate(() => navigator.clipboard.readText());

@@ -23,7 +23,13 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { api, ApiError, type CustomerDetail, type CustomerListItem, type WalletEntryRow } from '../api.js';
+import {
+  api,
+  ApiError,
+  type CustomerDetail,
+  type CustomerListItem,
+  type WalletEntryRow,
+} from '../api.js';
 import { count, dateTime, irrToToman, toman } from '../format.js';
 
 const PAGE_SIZE = 25;
@@ -170,9 +176,15 @@ export function CustomersPage() {
                   <td className="ltr">{u.telegramId}</td>
                   <td className="ltr">{u.username ? `@${u.username}` : '—'}</td>
                   <td className="ltr">{u.phone ?? '—'}</td>
-                  <td className={u.balanceIrr < 0 ? 'negative' : undefined}>{toman(u.balanceIrr)}</td>
+                  <td className={u.balanceIrr < 0 ? 'negative' : undefined}>
+                    {toman(u.balanceIrr)}
+                  </td>
                   <td>
-                    <span className={u.status === 'BLOCKED' ? 'badge badge-block' : 'badge badge-active'}>
+                    <span
+                      className={
+                        u.status === 'BLOCKED' ? 'badge badge-block' : 'badge badge-active'
+                      }
+                    >
                       {u.status === 'BLOCKED' ? 'مسدود' : 'فعال'}
                     </span>
                     {u.isReseller && <span className="badge badge-info">نماینده</span>}
@@ -452,7 +464,11 @@ function CustomerDrawer({
       {customer && (
         <>
           <div className="stats-grid">
-            <Fact label="موجودی کیف پول" value={toman(customer.balanceIrr)} negative={customer.balanceIrr < 0} />
+            <Fact
+              label="موجودی کیف پول"
+              value={toman(customer.balanceIrr)}
+              negative={customer.balanceIrr < 0}
+            />
             <Fact label="شماره موبایل" value={customer.phone ?? 'ثبت نشده'} ltr />
             <Fact
               label="سفارش‌ها"

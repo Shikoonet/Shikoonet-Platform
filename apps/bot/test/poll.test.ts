@@ -15,9 +15,7 @@ function ids(): { updateId: number; telegramId: number } {
 /** The dead-letter row for an update, or null when there is none. */
 async function deadRow(updateId: number) {
   return db
-    .prepare(
-      `SELECT payload, attempts, last_error FROM telegram_dead_updates WHERE update_id = ?1`,
-    )
+    .prepare(`SELECT payload, attempts, last_error FROM telegram_dead_updates WHERE update_id = ?1`)
     .bind(updateId)
     .first<{ payload: TelegramUpdate; attempts: number; last_error: string | null }>();
 }
@@ -298,7 +296,9 @@ describe('pollOnce', () => {
     // A transient fault must not leave a mark that a later, unrelated failure
     // can add to and tip over the edge.
     const { updateId, telegramId } = ids();
-    const attempts = new Map<number, Attempt>([[updateId, { count: MAX_UPDATE_ATTEMPTS - 1, lastError: 'a transient fault' }]]);
+    const attempts = new Map<number, Attempt>([
+      [updateId, { count: MAX_UPDATE_ATTEMPTS - 1, lastError: 'a transient fault' }],
+    ]);
     const { api } = fakeApi([startUpdate(updateId, telegramId)]);
 
     const result = await pollOnce(db, api, updateId, 25, undefined, attempts);
@@ -586,7 +586,6 @@ describe('pruneUpdates', () => {
     expect(survivors.results.map((r) => r.update_id)).toEqual([recent.updateId]);
   });
 });
-
 
 /**
  * The QR button, and the link underneath it.

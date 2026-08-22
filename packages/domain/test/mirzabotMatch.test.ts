@@ -139,7 +139,9 @@ describe('PHASE 6 — decision test matrix', () => {
     const forward = evaluateMirzabotGroup([c1, c2], [tx()], { now: LATER });
     const reverse = evaluateMirzabotGroup([c2, c1], [tx()], { now: LATER });
     const norm = (ds: MirzabotDecision[]) =>
-      [...ds].sort((a, b) => a.claimId.localeCompare(b.claimId)).map((d) => [d.claimId, d.decision, d.reason]);
+      [...ds]
+        .sort((a, b) => a.claimId.localeCompare(b.claimId))
+        .map((d) => [d.claimId, d.decision, d.reason]);
     expect(norm(forward)).toEqual(norm(reverse));
   });
 
@@ -201,13 +203,17 @@ describe('PHASE 6 — decision test matrix', () => {
   });
 
   it('TEST 18 bank SMS 25s before click → eligible', () => {
-    const d = decide(claim({ paidClickedAt: BASE_MS + 30_000 }), [tx({ bankTimestamp: BASE_MS + 5_000 })]);
+    const d = decide(claim({ paidClickedAt: BASE_MS + 30_000 }), [
+      tx({ bankTimestamp: BASE_MS + 5_000 }),
+    ]);
     expect(d.decision).toBe('AUTO_VERIFY');
     expect(d.diagnostics.timeDeltaMs).toBe(25_000);
   });
 
   it('TEST 19 bank SMS 5m01s before click → SUGGEST', () => {
-    const d = decide(claim({ paidClickedAt: BASE_MS + 5 * 60_000 + 1_000 }), [tx({ bankTimestamp: BASE_MS })]);
+    const d = decide(claim({ paidClickedAt: BASE_MS + 5 * 60_000 + 1_000 }), [
+      tx({ bankTimestamp: BASE_MS }),
+    ]);
     expect(d.decision).toBe('SUGGEST');
     expect(d.reason).toBe('OUTSIDE_AUTO_MATCH_WINDOW');
   });
@@ -233,7 +239,10 @@ describe('PHASE 6 — decision test matrix', () => {
     const c2 = claim({ id: 'c2', externalOrderId: 'ord-2', targetFinancialAccountId: 'acc-b' });
     const all = evaluateMirzabotGroup(
       [c1, c2],
-      [tx({ id: 't1', financialAccountId: 'acc-a' }), tx({ id: 't2', financialAccountId: 'acc-b' })],
+      [
+        tx({ id: 't1', financialAccountId: 'acc-a' }),
+        tx({ id: 't2', financialAccountId: 'acc-b' }),
+      ],
       { now: LATER },
     );
     expect(all.filter((d) => d.decision === 'AUTO_VERIFY')).toHaveLength(2);
@@ -271,18 +280,30 @@ describe('WAIT vs Suspected Fake', () => {
   });
 
   it('never waits when the blocking reason cannot change with time', () => {
-    const d = decide(claim({ cardMappingCount: 0, targetFinancialAccountId: null }), [], [], BASE_MS);
+    const d = decide(
+      claim({ cardMappingCount: 0, targetFinancialAccountId: null }),
+      [],
+      [],
+      BASE_MS,
+    );
     expect(d.decision).toBe('SUGGEST');
     expect(d.reason).toBe('UNMAPPED_CARD');
   });
 });
 
 describe('PHASE 7 — invariants', () => {
-  const autoScenarios: { name: string; claims: MirzabotClaimCandidate[]; txs: MirzabotTxCandidate[] }[] = [
+  const autoScenarios: {
+    name: string;
+    claims: MirzabotClaimCandidate[];
+    txs: MirzabotTxCandidate[];
+  }[] = [
     { name: 'single pair', claims: [claim()], txs: [tx()] },
     {
       name: 'two isolated pairs',
-      claims: [claim({ id: 'c1' }), claim({ id: 'c2', externalOrderId: 'o2', targetFinancialAccountId: 'acc-b' })],
+      claims: [
+        claim({ id: 'c1' }),
+        claim({ id: 'c2', externalOrderId: 'o2', targetFinancialAccountId: 'acc-b' }),
+      ],
       txs: [tx({ id: 't1' }), tx({ id: 't2', financialAccountId: 'acc-b' })],
     },
   ];
@@ -345,15 +366,20 @@ describe('PHASE 7 — invariants', () => {
   it('INVARIANT F: adding a competing claim downgrades AUTO_VERIFY to SUGGEST', () => {
     const base = decide(claim(), [tx()]);
     expect(base.decision).toBe('AUTO_VERIFY');
-    const withPeer = decide(claim(), [tx()], [
-      claim({ id: 'c2', externalOrderId: 'ord-2', paidClickedAt: BASE_MS + 5_000 }),
-    ]);
+    const withPeer = decide(
+      claim(),
+      [tx()],
+      [claim({ id: 'c2', externalOrderId: 'ord-2', paidClickedAt: BASE_MS + 5_000 })],
+    );
     expect(withPeer.decision).toBe('SUGGEST');
     expect(withPeer.reason).toBe('AMBIGUOUS_CLAIMS');
   });
 
   it('INVARIANT F: adding a competing transaction downgrades AUTO_VERIFY to SUGGEST', () => {
-    const withExtraTx = decide(claim(), [tx({ id: 't1' }), tx({ id: 't2', bankTimestamp: BASE_MS + 40_000 })]);
+    const withExtraTx = decide(claim(), [
+      tx({ id: 't1' }),
+      tx({ id: 't2', bankTimestamp: BASE_MS + 40_000 }),
+    ]);
     expect(withExtraTx.decision).toBe('SUGGEST');
     expect(withExtraTx.reason).toBe('AMBIGUOUS_TRANSACTIONS');
   });

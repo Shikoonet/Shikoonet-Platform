@@ -118,7 +118,11 @@ describe('the one door', () => {
 
   it('lets a signed-in ADMIN through', async () => {
     const cookie = await signIn('door-admin@example.com', 'ADMIN');
-    const res = await app.request('/api/v1/admin/customers', { headers: { cookie } }, deployedEnv());
+    const res = await app.request(
+      '/api/v1/admin/customers',
+      { headers: { cookie } },
+      deployedEnv(),
+    );
     expect(res.status).toBe(200);
   });
 
@@ -127,7 +131,11 @@ describe('the one door', () => {
     // the assertion that has to survive the merge: one door means the role is
     // the only thing left between an operator and a customer's name.
     const cookie = await signIn('door-reader@example.com', 'READ_ONLY');
-    const res = await app.request('/api/v1/admin/customers', { headers: { cookie } }, deployedEnv());
+    const res = await app.request(
+      '/api/v1/admin/customers',
+      { headers: { cookie } },
+      deployedEnv(),
+    );
     expect(res.status).toBe(403);
   });
 
@@ -170,7 +178,11 @@ describe('the one door', () => {
     await baseEnv.DB.prepare(`UPDATE access_users SET active = 0 WHERE email = ?1`)
       .bind('door-disabled@example.com')
       .run();
-    const res = await app.request('/api/v1/admin/customers', { headers: { cookie } }, deployedEnv());
+    const res = await app.request(
+      '/api/v1/admin/customers',
+      { headers: { cookie } },
+      deployedEnv(),
+    );
     expect(res.status).toBe(401);
   });
 

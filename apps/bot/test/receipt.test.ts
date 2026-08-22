@@ -284,9 +284,7 @@ describe('a receipt sent as a file', () => {
       db,
       sendsFile(sale.updateId + 2, sale.telegramId, 'AgACdocreceipt0000002', 'application/pdf'),
     );
-    expect((await claimRow(sale.claimId))?.receipt_url_or_r2_key).toBe(
-      'doc:AgACdocreceipt0000002',
-    );
+    expect((await claimRow(sale.claimId))?.receipt_url_or_r2_key).toBe('doc:AgACdocreceipt0000002');
   });
 
   it('refuses anything that is not a receipt, and says so', async () => {

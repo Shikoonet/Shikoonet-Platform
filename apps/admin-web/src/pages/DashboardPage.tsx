@@ -195,7 +195,11 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId) => void }) {
                       {toman(u.balanceIrr)}
                     </td>
                     <td>
-                      <span className={u.status === 'BLOCKED' ? 'badge badge-block' : 'badge badge-active'}>
+                      <span
+                        className={
+                          u.status === 'BLOCKED' ? 'badge badge-block' : 'badge badge-active'
+                        }
+                      >
                         {u.status === 'BLOCKED' ? 'مسدود' : 'فعال'}
                       </span>
                     </td>

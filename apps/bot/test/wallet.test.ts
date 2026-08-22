@@ -23,7 +23,7 @@ import {
   TOPUP_AMOUNTS_IRR,
   TOPUP_MIN_IRR,
 } from '../src/wallet.js';
-import { db , pendingNotifications } from './helpers/env.js';
+import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
 beforeEach(async () => {
@@ -357,7 +357,9 @@ describe('the balance and its history', () => {
     await db.withSession(async (tx) => spendOnOrder(tx, userId, order.id, 2_000_000));
 
     const summed = await db
-      .prepare(`SELECT COALESCE(SUM(amount_irr), 0) AS total FROM wallet_entries WHERE user_id = ?1`)
+      .prepare(
+        `SELECT COALESCE(SUM(amount_irr), 0) AS total FROM wallet_entries WHERE user_id = ?1`,
+      )
       .bind(userId)
       .first<{ total: number }>();
 
@@ -373,7 +375,10 @@ describe('the balance and its history', () => {
     await credit(userId, 1_000_000, `t:${userId}:a`);
 
     await expect(
-      db.prepare(`UPDATE wallet_entries SET amount_irr = 999 WHERE user_id = ?1`).bind(userId).run(),
+      db
+        .prepare(`UPDATE wallet_entries SET amount_irr = 999 WHERE user_id = ?1`)
+        .bind(userId)
+        .run(),
     ).rejects.toThrow(/append-only/);
     await expect(
       db.prepare(`DELETE FROM wallet_entries WHERE user_id = ?1`).bind(userId).run(),
@@ -443,7 +448,10 @@ describe('an order paid from the wallet that cannot be delivered', () => {
 
     await provisionPaidOrders(db);
     const after = await balanceFor(db, userId);
-    await db.prepare(`UPDATE orders SET status = 'PROVISIONING' WHERE id = ?1`).bind(order!.id).run();
+    await db
+      .prepare(`UPDATE orders SET status = 'PROVISIONING' WHERE id = ?1`)
+      .bind(order!.id)
+      .run();
     await provisionPaidOrders(db);
 
     expect(await balanceFor(db, userId)).toBe(after);

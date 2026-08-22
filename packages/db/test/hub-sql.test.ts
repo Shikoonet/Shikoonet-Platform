@@ -21,7 +21,6 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createPostgresD1 } from '../src/index.js';
 import { toPostgres } from '../src/dialect.js';
 
-
 const HUB = new URL('../../../legacy/hub-cloudflare', import.meta.url).pathname.replace(
   /^\/([A-Za-z]:)/,
   '$1',
@@ -75,10 +74,16 @@ function collect(): { standalone: Statement[]; interpolated: number; fragments: 
     for (const m of src.matchAll(/`([^`\\]*(?:\\.[^`\\]*)*)`/gs)) {
       const sql = m[1] ?? '';
       if (!SQL_START.test(sql)) continue;
-      if (sql.includes('${')) { interpolated++; continue; }
+      if (sql.includes('${')) {
+        interpolated++;
+        continue;
+      }
       // Compare on collapsed whitespace: these literals are multi-line.
       const flat = sql.replace(/\s+/g, ' ');
-      if (KNOWN_FRAGMENTS.some((f) => flat.includes(f))) { fragments++; continue; }
+      if (KNOWN_FRAGMENTS.some((f) => flat.includes(f))) {
+        fragments++;
+        continue;
+      }
       standalone.push({ file: file.replace(HUB, '').replace(/\\/g, '/'), sql });
     }
   }
@@ -142,9 +147,7 @@ describe.skipIf(!hubPresent)('every hub SQL statement is portable', () => {
     }
 
     if (failures.length > 0) {
-      const report = failures
-        .map((f) => `\n  ${f.file}\n    ${f.error}\n    ${f.sql}`)
-        .join('\n');
+      const report = failures.map((f) => `\n  ${f.file}\n    ${f.error}\n    ${f.sql}`).join('\n');
       throw new Error(`${failures.length} hub statement(s) are not portable:${report}`);
     }
     expect(failures).toHaveLength(0);

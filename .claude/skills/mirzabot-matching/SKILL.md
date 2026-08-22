@@ -8,7 +8,7 @@ description: Rules and architecture for Mirzabot payment claim ↔ bank transact
 Card-to-card Iranian payments. A Telegram bot (Mirzabot) shows a customer a
 destination card, the customer pays from their own bank, taps "I paid", and
 uploads a receipt. The Hub must decide whether an incoming bank CREDIT SMS is
-*that* payment.
+_that_ payment.
 
 ## The product rule that overrides everything
 
@@ -21,10 +21,10 @@ auto-approved payment is not.
 
 ## Where decisions live
 
-| Concern | Owner |
-|---|---|
-| Should this claim auto-verify? | `packages/domain/src/mirzabotMatch.ts` |
-| Writing a verification | `packages/domain/src/mirzabotVerify.ts` |
+| Concern                                 | Owner                                             |
+| --------------------------------------- | ------------------------------------------------- |
+| Should this claim auto-verify?          | `packages/domain/src/mirzabotMatch.ts`            |
+| Writing a verification                  | `packages/domain/src/mirzabotVerify.ts`           |
 | Loading candidates, persisting outcomes | `apps/ingest-worker/src/integrations/mirzabot.ts` |
 
 `mirzabotMatch.ts` is pure — it takes no database handle. Keep it that way.
@@ -145,7 +145,7 @@ on the wrong timestamp and wrong account.
 ## Testing
 
 - `packages/domain/test/mirzabotMatch.test.ts` — decision matrix and invariants.
-  The critical invariant: adding one more valid competing claim *or* transaction
+  The critical invariant: adding one more valid competing claim _or_ transaction
   to an AUTO_VERIFY scenario must downgrade it to SUGGEST.
 - `apps/ingest-worker/test/mirzabot-integration.test.ts` — end to end, including
   the auto-vs-manual race.

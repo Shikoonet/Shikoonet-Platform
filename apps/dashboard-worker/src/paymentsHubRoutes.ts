@@ -138,9 +138,7 @@ export async function loadDeclinedIncomeTotals(
 
 export async function loadDeclinedIncomeCount(db: D1Database) {
   const row = await db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM income_declined_transactions WHERE restored_at IS NULL`,
-    )
+    .prepare(`SELECT COUNT(*) AS n FROM income_declined_transactions WHERE restored_at IS NULL`)
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
@@ -415,7 +413,9 @@ export async function loadIncomeCount(db: D1Database) {
 }
 
 export async function loadResellerCount(db: D1Database) {
-  const row = await db.prepare(`SELECT COUNT(*) AS n FROM reseller_transactions`).first<{ n: number }>();
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS n FROM reseller_transactions`)
+    .first<{ n: number }>();
   return row?.n ?? 0;
 }
 
@@ -512,7 +512,10 @@ export function registerPaymentsHubRoutes(
         'transaction.classified_reseller',
         'TRANSACTION',
         transactionId,
-        JSON.stringify({ amountIrr: tx?.amount_irr ?? null, accountId: tx?.financial_account_id ?? null }),
+        JSON.stringify({
+          amountIrr: tx?.amount_irr ?? null,
+          accountId: tx?.financial_account_id ?? null,
+        }),
         JSON.stringify({
           resellerId: result.resellerId,
           resellerName: reseller?.name ?? null,
@@ -571,7 +574,10 @@ export function registerPaymentsHubRoutes(
         'transaction.declined_income',
         'TRANSACTION',
         transactionId,
-        JSON.stringify({ amountIrr: tx?.amount_irr ?? null, accountId: tx?.financial_account_id ?? null }),
+        JSON.stringify({
+          amountIrr: tx?.amount_irr ?? null,
+          accountId: tx?.financial_account_id ?? null,
+        }),
         JSON.stringify({ reason: parsed.data.reason ?? null }),
         parsed.data.reason ?? null,
         c.req.header('cf-ray') ?? null,
@@ -644,7 +650,10 @@ export function registerPaymentsHubRoutes(
         'TRANSACTION',
         'bulk',
         JSON.stringify({ count: result.declined }),
-        JSON.stringify({ reason: parsed.data.reason ?? null, transactionIds: result.transactionIds }),
+        JSON.stringify({
+          reason: parsed.data.reason ?? null,
+          transactionIds: result.transactionIds,
+        }),
         parsed.data.reason ?? null,
         c.req.header('cf-ray') ?? null,
         now,
@@ -689,7 +698,9 @@ export function registerPaymentsHubRoutes(
     return c.json(result);
   });
 
-  const RestoreBulkBody = z.object({ transactionIds: z.array(z.string()).min(1).max(500) }).strict();
+  const RestoreBulkBody = z
+    .object({ transactionIds: z.array(z.string()).min(1).max(500) })
+    .strict();
 
   app.post('/api/v1/transactions/restore-income/bulk', async (c) => {
     const ident = c.get('identity');

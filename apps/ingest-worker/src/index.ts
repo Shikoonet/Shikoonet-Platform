@@ -7,7 +7,12 @@ import { ingest } from './ingest.js';
 import { normalizeIngestTimestamp } from './ingestTimestamp.js';
 import { normalizeIngestJson } from './ingestBody.js';
 import { verifyIntegrationHmac } from './integrations/auth.js';
-import { handleMirzabotClaim, MirzabotClaimBody, MIRZABOT_CLAIMS_PATH, finalizeExpiredMirzabotWaits } from './integrations/mirzabot.js';
+import {
+  handleMirzabotClaim,
+  MirzabotClaimBody,
+  MIRZABOT_CLAIMS_PATH,
+  finalizeExpiredMirzabotWaits,
+} from './integrations/mirzabot.js';
 import { flushWebhookDeliveries } from './integrations/webhook.js';
 import type { MirzabotClaimPayload } from '@shikoo/contracts';
 import { clientIp, createLogger, type RateLimit } from '@shikoo/domain';
@@ -114,8 +119,7 @@ function limitBody(max: (env: Env) => number): MiddlewareHandler<{ Bindings: Env
   return (c, next) =>
     bodyLimit({
       maxSize: max(c.env),
-      onError: (ctx) =>
-        ctx.json({ ok: false, error: 'too_large', code: 'PAYLOAD_TOO_LARGE' }, 413),
+      onError: (ctx) => ctx.json({ ok: false, error: 'too_large', code: 'PAYLOAD_TOO_LARGE' }, 413),
     })(c, next);
 }
 
@@ -234,72 +238,76 @@ app.post(INGEST_PATH, limitBody(maxBodyBytes), async (c) => {
   return c.json(result, 200);
 });
 
-app.post(MIRZABOT_CLAIMS_PATH, limitBody(() => MIRZABOT_MAX_BODY_BYTES), async (c) => {
-  if (c.env.MIRZABOT_INTEGRATION_ENABLED !== 'true') {
-    return c.json({ ok: false, error: 'integration_disabled' }, 404);
-  }
-  const secret = c.env.MIRZABOT_INTEGRATION_HMAC_SECRET;
-  const integrationId = c.env.MIRZABOT_INTEGRATION_ID ?? 'mirzabot-test';
-  if (!secret) {
-    return c.json({ ok: false, error: 'integration_not_configured' }, 503);
-  }
-
-  // Charged before the body is read and long before the HMAC is computed. This
-  // route authenticates over the raw bytes, so an unauthenticated caller gets to
-  // make us read and hash whatever they send; without a limit here the only cost
-  // to them is bandwidth. The claim path had no rate limit of any kind.
-  const ip = clientIp((name) => c.req.header(name), c.env.TRUSTED_PROXY_IP_HEADER);
-  if (c.env.IP_LIMIT && ip !== null) {
-    const allowed = await c.env.IP_LIMIT.limit({ key: `claim:${ip}` });
-    if (!allowed.success) {
-      return c.json({ ok: false, error: 'rate_limited' }, 429);
+app.post(
+  MIRZABOT_CLAIMS_PATH,
+  limitBody(() => MIRZABOT_MAX_BODY_BYTES),
+  async (c) => {
+    if (c.env.MIRZABOT_INTEGRATION_ENABLED !== 'true') {
+      return c.json({ ok: false, error: 'integration_disabled' }, 404);
     }
-  }
-
-  const rawBody = await c.req.text();
-  const auth = await verifyIntegrationHmac(
-    secret,
-    c.req.header('X-Integration-Id') ?? '',
-    c.req.header('X-Event-Id') ?? '',
-    c.req.header('X-Timestamp') ?? '',
-    'POST',
-    MIRZABOT_CLAIMS_PATH,
-    rawBody,
-    c.req.header('X-Signature'),
-    integrationId,
-  );
-  if (!auth.ok) {
-    return c.json({ ok: false, error: auth.code }, 401);
-  }
-
-  let json: unknown;
-  try {
-    json = JSON.parse(rawBody);
-  } catch {
-    return c.json({ ok: false, error: 'bad_json' }, 400);
-  }
-  const parsed = MirzabotClaimBody.safeParse(json);
-  if (!parsed.success) {
-    return c.json({ ok: false, error: 'invalid_body' }, 400);
-  }
-  if (parsed.data.eventId !== c.req.header('X-Event-Id')) {
-    return c.json({ ok: false, error: 'event_id_mismatch' }, 400);
-  }
-
-  try {
-    const result = await handleMirzabotClaim(c.env.DB, parsed.data as MirzabotClaimPayload, {
-      autoMatchEnabled: c.env.AUTO_MATCH_ENABLED === 'true',
-      webhookEnv: c.env,
-    });
-    return c.json(result, 200);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : 'internal';
-    if (msg === 'IRR_AMOUNT_MISMATCH') {
-      return c.json({ ok: false, error: msg }, 400);
+    const secret = c.env.MIRZABOT_INTEGRATION_HMAC_SECRET;
+    const integrationId = c.env.MIRZABOT_INTEGRATION_ID ?? 'mirzabot-test';
+    if (!secret) {
+      return c.json({ ok: false, error: 'integration_not_configured' }, 503);
     }
-    return c.json({ ok: false, error: 'internal' }, 500);
-  }
-});
+
+    // Charged before the body is read and long before the HMAC is computed. This
+    // route authenticates over the raw bytes, so an unauthenticated caller gets to
+    // make us read and hash whatever they send; without a limit here the only cost
+    // to them is bandwidth. The claim path had no rate limit of any kind.
+    const ip = clientIp((name) => c.req.header(name), c.env.TRUSTED_PROXY_IP_HEADER);
+    if (c.env.IP_LIMIT && ip !== null) {
+      const allowed = await c.env.IP_LIMIT.limit({ key: `claim:${ip}` });
+      if (!allowed.success) {
+        return c.json({ ok: false, error: 'rate_limited' }, 429);
+      }
+    }
+
+    const rawBody = await c.req.text();
+    const auth = await verifyIntegrationHmac(
+      secret,
+      c.req.header('X-Integration-Id') ?? '',
+      c.req.header('X-Event-Id') ?? '',
+      c.req.header('X-Timestamp') ?? '',
+      'POST',
+      MIRZABOT_CLAIMS_PATH,
+      rawBody,
+      c.req.header('X-Signature'),
+      integrationId,
+    );
+    if (!auth.ok) {
+      return c.json({ ok: false, error: auth.code }, 401);
+    }
+
+    let json: unknown;
+    try {
+      json = JSON.parse(rawBody);
+    } catch {
+      return c.json({ ok: false, error: 'bad_json' }, 400);
+    }
+    const parsed = MirzabotClaimBody.safeParse(json);
+    if (!parsed.success) {
+      return c.json({ ok: false, error: 'invalid_body' }, 400);
+    }
+    if (parsed.data.eventId !== c.req.header('X-Event-Id')) {
+      return c.json({ ok: false, error: 'event_id_mismatch' }, 400);
+    }
+
+    try {
+      const result = await handleMirzabotClaim(c.env.DB, parsed.data as MirzabotClaimPayload, {
+        autoMatchEnabled: c.env.AUTO_MATCH_ENABLED === 'true',
+        webhookEnv: c.env,
+      });
+      return c.json(result, 200);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'internal';
+      if (msg === 'IRR_AMOUNT_MISMATCH') {
+        return c.json({ ok: false, error: msg }, 400);
+      }
+      return c.json({ ok: false, error: 'internal' }, 500);
+    }
+  },
+);
 
 export { app };
 

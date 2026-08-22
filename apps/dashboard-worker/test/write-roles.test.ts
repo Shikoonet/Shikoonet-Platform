@@ -51,7 +51,10 @@ const READ_ONLY_MAY = new Map<string, string>([
   // operator whose unread badge never clears would simply stop using it.
   ['POST /api/v1/notifications/mark-all-read', 'marks what this viewer has seen'],
   ['POST /api/v1/notifications/mark-read', 'marks what this viewer has seen'],
-  ['POST /api/v1/notifications/transactions/:transactionId/seen', 'marks what this viewer has seen'],
+  [
+    'POST /api/v1/notifications/transactions/:transactionId/seen',
+    'marks what this viewer has seen',
+  ],
   ['POST /api/v1/payments/events/:eventKey/seen', 'marks what this viewer has seen'],
   ['POST /api/v1/payments/tabs/read-all', 'marks what this viewer has seen'],
 

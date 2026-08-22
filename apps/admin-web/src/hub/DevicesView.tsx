@@ -213,7 +213,11 @@ export function DevicesView({ cache }: DevicesViewProps) {
         </button>
       </div>
       {rowError && <div className="error">{rowError}</div>}
-      {rowDone && <div className="muted" role="status">{rowDone}</div>}
+      {rowDone && (
+        <div className="muted" role="status">
+          {rowDone}
+        </div>
+      )}
       {notice && (
         <div className="success-banner" role="status" aria-live="polite">
           {notice}

@@ -176,13 +176,9 @@ const FIXTURES: Fixture[] = [
   },
   {
     name: 'sample 8 — melli-transfer-v1 (Format 2, MMDD-HH:mm, leading-zero hint)',
-    message: [
-      'بانك ملي',
-      'انتقال:1,950,000+',
-      'حساب:06006',
-      'مانده:9,379,136',
-      '0515-20:46',
-    ].join('\n'),
+    message: ['بانك ملي', 'انتقال:1,950,000+', 'حساب:06006', 'مانده:9,379,136', '0515-20:46'].join(
+      '\n',
+    ),
     expectedParser: 'melli-transfer-v1',
     bank: 'MELLI',
     accountHint: '06006',

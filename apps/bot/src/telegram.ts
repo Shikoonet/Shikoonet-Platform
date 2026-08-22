@@ -429,9 +429,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
   return {
     async getMe() {
       const result = await call('getMe', {}, 15_000);
-      const parsed = z
-        .object({ username: z.string().optional() })
-        .safeParse(result);
+      const parsed = z.object({ username: z.string().optional() }).safeParse(result);
       return { username: parsed.success ? (parsed.data.username ?? null) : null };
     },
 

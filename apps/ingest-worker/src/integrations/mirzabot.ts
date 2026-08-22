@@ -316,7 +316,10 @@ export async function rematchMirzabotClaimsForCreditTx(
     { accountId: tx.financial_account_id, amountIrr: tx.amount_irr },
     opts,
   );
-  return { evaluatedClaims: run.decisions.length, autoVerifiedCount: run.autoVerifiedClaimIds.length };
+  return {
+    evaluatedClaims: run.decisions.length,
+    autoVerifiedCount: run.autoVerifiedClaimIds.length,
+  };
 }
 
 export async function handleMirzabotClaim(
@@ -404,7 +407,15 @@ export async function handleMirzabotClaim(
              updated_at = ?7
            WHERE id = ?1`,
         )
-        .bind(claimId, body.paidClickedAt, body.receiptSubmittedAt, cardDigits, targetAccountId, metadata, now)
+        .bind(
+          claimId,
+          body.paidClickedAt,
+          body.receiptSubmittedAt,
+          cardDigits,
+          targetAccountId,
+          metadata,
+          now,
+        )
         .run();
     }
   } else {
@@ -491,7 +502,11 @@ export async function handleMirzabotClaim(
        WHERE c.id = ?1`,
     )
     .bind(claimId)
-    .first<{ suspect_reason: string | null; match_id: string | null; transaction_candidate_id: string | null }>();
+    .first<{
+      suspect_reason: string | null;
+      match_id: string | null;
+      transaction_candidate_id: string | null;
+    }>();
 
   return {
     ok: true,

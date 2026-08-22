@@ -131,15 +131,23 @@ export function TopMetricsSummary({ analytics }: { analytics: AnalyticsResponse 
         </span>
         <div className="metrics-strip__body">
           <span className="metrics-strip__label">فروش نمایندگی</span>
-          <span className="metrics-strip__value tabular-nums">{formatTomanFromIrr(analytics.reseller.amountIrr)}</span>
-          <span className="metrics-strip__meta muted">{count(analytics.reseller.count)} پرداخت</span>
+          <span className="metrics-strip__value tabular-nums">
+            {formatTomanFromIrr(analytics.reseller.amountIrr)}
+          </span>
+          <span className="metrics-strip__meta muted">
+            {count(analytics.reseller.count)} پرداخت
+          </span>
         </div>
       </article>
     </div>
   );
 }
 
-export function IncomeTotalsBar({ totals }: { totals: { count: number; amountIrr: number } | undefined }) {
+export function IncomeTotalsBar({
+  totals,
+}: {
+  totals: { count: number; amountIrr: number } | undefined;
+}) {
   if (!totals) return null;
   return (
     <div className="hub-context-metrics" aria-label="جمع واریزی‌های تخصیص‌نیافته">
@@ -232,7 +240,10 @@ export function DeclinedTotalsBar({
 }) {
   if (!totals) return null;
   return (
-    <div className="hub-context-metrics hub-context-metrics--declined" aria-label="جمع واریزی‌های ردشده">
+    <div
+      className="hub-context-metrics hub-context-metrics--declined"
+      aria-label="جمع واریزی‌های ردشده"
+    >
       <span>
         <strong>{totals.count}</strong> ردشده
       </span>
@@ -276,7 +287,9 @@ export function DeclinedIncomeRow({
           <span className="hub-list-row__identity">
             <AccountRef account={item} />
           </span>
-          <span className="hub-list-row__amount tabular-nums">{formatTomanFromIrr(item.amountIrr)}</span>
+          <span className="hub-list-row__amount tabular-nums">
+            {formatTomanFromIrr(item.amountIrr)}
+          </span>
         </div>
         <div className="hub-list-row__line2 muted">
           {item.bankTimestamp ? formatTime(item.bankTimestamp) : '—'}
@@ -371,7 +384,9 @@ export function ResellerRow({
             <NewBadge isNew={isNew} />
             <strong>{item.resellerName}</strong>
           </span>
-          <span className="hub-list-row__amount tabular-nums">{formatTomanFromIrr(item.amountIrr)}</span>
+          <span className="hub-list-row__amount tabular-nums">
+            {formatTomanFromIrr(item.amountIrr)}
+          </span>
         </div>
         <div className="hub-list-row__line2 muted">
           <AccountRef account={item} />
@@ -474,7 +489,12 @@ export function MarkResellerModal({
   }
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div
+      className="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
       <div className="modal-body">
         <h3>علامت‌زدن به‌عنوان نمایندگی</h3>
         <p>این تراکنش ورودی به‌عنوان پرداخت نمایندگی علامت زده شود؟</p>
@@ -612,15 +632,19 @@ export function AssignToPaymentModal({
   }
 
   const selected = useMemo(() => claims.find((c) => c.id === claimId), [claims, claimId]);
-  const receivedToman =
-    transactionAmountIrr != null ? Math.floor(transactionAmountIrr / 10) : null;
+  const receivedToman = transactionAmountIrr != null ? Math.floor(transactionAmountIrr / 10) : null;
   const expectedToman = selected?.expectedAmountToman ?? null;
   const differenceToman =
     receivedToman != null && expectedToman != null ? receivedToman - expectedToman : null;
   const overpayment = differenceToman != null && differenceToman > 0;
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div
+      className="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
       <div className="modal-body">
         <h3>تخصیص به پرداخت</h3>
         <p className="muted">تراکنش {transactionId}</p>
@@ -682,7 +706,8 @@ export function AssignToPaymentModal({
         </label>
         {overpayment && verify && (
           <p className="muted">
-            تایید با مبلغ دقیق برای اضافه‌پرداخت شکست می‌خورد — بدون تایید تخصیص بده و بعد دستی تطبیق کن.
+            تایید با مبلغ دقیق برای اضافه‌پرداخت شکست می‌خورد — بدون تایید تخصیص بده و بعد دستی
+            تطبیق کن.
           </p>
         )}
         <div className="payment-review__actions">

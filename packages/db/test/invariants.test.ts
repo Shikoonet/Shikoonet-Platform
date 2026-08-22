@@ -55,7 +55,9 @@ function run(command: string, args: readonly string[], sql: string): Promise<str
   });
 }
 
-const SQL_PATH = fileURLToPath(new URL('../../../migrations/verify_invariants.sql', import.meta.url));
+const SQL_PATH = fileURLToPath(
+  new URL('../../../migrations/verify_invariants.sql', import.meta.url),
+);
 
 /**
  * The sim's container name, which is stable in `sim/docker-compose.yml` — this
@@ -105,7 +107,19 @@ describe('the schema still keeps its promises', () => {
     // assertion that raises exits non-zero rather than printing and carrying on.
     const stdout = await run(
       'docker',
-      ['exec', '-i', CONTAINER, 'psql', '-U', 'shikoo', '-d', 'shikoo', '-v', 'ON_ERROR_STOP=1', '-q'],
+      [
+        'exec',
+        '-i',
+        CONTAINER,
+        'psql',
+        '-U',
+        'shikoo',
+        '-d',
+        'shikoo',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-q',
+      ],
       sql,
     );
 
@@ -116,7 +130,9 @@ describe('the schema still keeps its promises', () => {
     // and would have been "fixed" by loosening the number rather than by
     // saying which invariants matter.
     for (const claim of MUST_HOLD) {
-      expect(stdout, `verify_invariants.sql no longer proves: ${claim}`).toContain(`PASS  ${claim}`);
+      expect(stdout, `verify_invariants.sql no longer proves: ${claim}`).toContain(
+        `PASS  ${claim}`,
+      );
     }
     expect(stdout).toContain('All invariants hold.');
   }, 60_000);

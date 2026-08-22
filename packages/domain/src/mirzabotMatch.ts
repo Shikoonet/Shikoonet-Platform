@@ -11,7 +11,11 @@
  * (manual review). Uncertainty is never auto-rejected and never marked fake.
  */
 
-import { AUTO_MATCH_MAX_TIME_DELTA_MS, MIRZABOT_SOURCE, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
+import {
+  AUTO_MATCH_MAX_TIME_DELTA_MS,
+  MIRZABOT_SOURCE,
+  WAITING_TIMEOUT_MS,
+} from '@shikoo/contracts';
 import type { SuspectReason } from '@shikoo/contracts';
 
 export type MirzabotDecisionKind = 'AUTO_VERIFY' | 'SUGGEST' | 'WAIT';
@@ -125,14 +129,16 @@ function evaluateEdge(
   tx: MirzabotTxCandidate,
   maxDeltaMs: number,
 ): EdgeResult {
-  if (tx.direction !== 'CREDIT') return { eligible: false, rejection: 'NOT_A_CANDIDATE', timeDeltaMs: null };
+  if (tx.direction !== 'CREDIT')
+    return { eligible: false, rejection: 'NOT_A_CANDIDATE', timeDeltaMs: null };
   if (tx.processingDisposition && tx.processingDisposition !== 'ACTIONABLE') {
     return { eligible: false, rejection: 'NOT_A_CANDIDATE', timeDeltaMs: null };
   }
   if (tx.financialAccountId == null || tx.financialAccountId !== claim.targetFinancialAccountId) {
     return { eligible: false, rejection: 'NOT_A_CANDIDATE', timeDeltaMs: null };
   }
-  if (tx.bankTimestamp == null) return { eligible: false, rejection: 'NOT_A_CANDIDATE', timeDeltaMs: null };
+  if (tx.bankTimestamp == null)
+    return { eligible: false, rejection: 'NOT_A_CANDIDATE', timeDeltaMs: null };
 
   const timeDeltaMs = Math.abs(tx.bankTimestamp - (claim.paidClickedAt as number));
 
@@ -152,7 +158,11 @@ interface ClaimEdges {
   claim: MirzabotClaimCandidate;
   precondition: SuspectReason | null;
   eligible: { tx: MirzabotTxCandidate; timeDeltaMs: number }[];
-  rejections: { tx: MirzabotTxCandidate; rejection: EdgeSuspectRejection; timeDeltaMs: number | null }[];
+  rejections: {
+    tx: MirzabotTxCandidate;
+    rejection: EdgeSuspectRejection;
+    timeDeltaMs: number | null;
+  }[];
 }
 
 function buildClaimEdges(
@@ -178,9 +188,11 @@ function buildClaimEdges(
  * Explanation when a claim has zero eligible transactions. Ordered by how
  * specific / actionable the reason is for a human reviewer.
  */
-function explainNoEligibleTransaction(
-  edges: ClaimEdges,
-): { reason: SuspectReason; txId: string | null; timeDeltaMs: number | null } {
+function explainNoEligibleTransaction(edges: ClaimEdges): {
+  reason: SuspectReason;
+  txId: string | null;
+  timeDeltaMs: number | null;
+} {
   const priority: EdgeSuspectRejection[] = [
     'TRANSACTION_ALREADY_CONSUMED',
     'OUTSIDE_AUTO_MATCH_WINDOW',
@@ -190,7 +202,9 @@ function explainNoEligibleTransaction(
     const hits = edges.rejections.filter((r) => r.rejection === rejection);
     if (hits.length === 0) continue;
     const best = hits.reduce((a, b) =>
-      (a.timeDeltaMs ?? Number.MAX_SAFE_INTEGER) <= (b.timeDeltaMs ?? Number.MAX_SAFE_INTEGER) ? a : b,
+      (a.timeDeltaMs ?? Number.MAX_SAFE_INTEGER) <= (b.timeDeltaMs ?? Number.MAX_SAFE_INTEGER)
+        ? a
+        : b,
     );
     return { reason: rejection, txId: best.tx.id, timeDeltaMs: best.timeDeltaMs };
   }

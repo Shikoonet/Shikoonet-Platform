@@ -46,12 +46,7 @@ import {
   type MenuViewer,
 } from './keyboard.js';
 import type { Layouts } from './botContent.js';
-import {
-  DEFAULT_TEXTS,
-  type AdminPermission,
-  type TextKey,
-  type Texts,
-} from '@shikoo/contracts';
+import { DEFAULT_TEXTS, type AdminPermission, type TextKey, type Texts } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
 import type { ShopStats } from '@shikoo/domain';
 import type { CustomerDetail, CustomerHit } from './customers.js';
@@ -489,7 +484,8 @@ export function planDetailMenu(plan: CatalogPlan, applied?: AppliedCode | null):
     // Exactly one of the two code buttons applies, and which one depends on
     // whether a code is already on the plan. Both are in the layout so the shop
     // can word each one; the bot picks.
-    applies: (action) => (action === 'dsx' ? applied != null : action === 'dsc' ? applied == null : true),
+    applies: (action) =>
+      action === 'dsx' ? applied != null : action === 'dsc' ? applied == null : true,
     target: (action) =>
       action === 'panel'
         ? encode('panel', plan.providerId)
@@ -734,7 +730,9 @@ export function userScreen(user: CustomerDetail): string {
   const t = TEXTS_NOW;
   const n = (value: number) => value.toLocaleString('en-US');
   const lines = [
-    t.render('ADMIN_USER_TITLE', { name: user.username ? `@${user.username}` : String(user.telegram_id) }),
+    t.render('ADMIN_USER_TITLE', {
+      name: user.username ? `@${user.username}` : String(user.telegram_id),
+    }),
     t.render('ADMIN_USER_TELEGRAM', { id: String(user.telegram_id) }),
   ];
   if (user.phone) lines.push(t.render('ADMIN_USER_PHONE', { phone: user.phone }));
@@ -788,8 +786,7 @@ export function userMenu(
     // Every action on this screen except the two back buttons needs to say
     // WHICH customer. `usf` and `pnl` name no row, so they fall through to the
     // bare action.
-    target: (action) =>
-      isUserAction(action) ? encode(action, user.id) : undefined,
+    target: (action) => (isUserAction(action) ? encode(action, user.id) : undefined),
   });
 }
 
@@ -808,11 +805,7 @@ export interface ClaimRow {
   suspect_reason: string | null;
 }
 
-export function claimListMenu(
-  claims: ClaimRow[],
-  page: number,
-  pages: number,
-): InlineKeyboard {
+export function claimListMenu(claims: ClaimRow[], page: number, pages: number): InlineKeyboard {
   return withChrome(
     [
       ...claims.map((c) => [
@@ -979,7 +972,9 @@ export function promptMenu(back: string): InlineKeyboard {
  * Telegram does have would need the whole keyboard type widened for eight rows
  * of text that read perfectly well as text.
  */
-export function appsScreen(apps: { name: string; platform: string | null; link: string }[]): string {
+export function appsScreen(
+  apps: { name: string; platform: string | null; link: string }[],
+): string {
   const t = TEXTS_NOW;
   const lines = [t.raw('APPS_TITLE'), ''];
   for (const app of apps) {
@@ -1116,8 +1111,7 @@ export function checkoutMenu(
   const chrome = buildMenu('checkout', layout('checkout'), {
     applies: (action) =>
       action === 'wpay' ? covers : action === 'tpo' ? someBalance && !covers : true,
-    target: (action) =>
-      action === 'menu' ? encode('menu') : encode(action as 'paid', orderId),
+    target: (action) => (action === 'menu' ? encode('menu') : encode(action as 'paid', orderId)),
     values: { balance: wallet ? formatToman(wallet.balanceIrr) : '' },
   });
   const copy = showCopy ? copyRow(cardDigits, totalIrr) : [];
@@ -1241,7 +1235,11 @@ export function serviceReady(
   expiresAt: Date | null,
 ): string {
   const t = TEXTS_NOW;
-  const lines = [t.raw('SERVICE_READY_TITLE'), '', t.render('SERVICE_READY_USERNAME', { username })];
+  const lines = [
+    t.raw('SERVICE_READY_TITLE'),
+    '',
+    t.render('SERVICE_READY_USERNAME', { username }),
+  ];
   if (expiresAt !== null) {
     lines.push(t.render('SERVICE_READY_EXPIRES', { date: formatTehranDate(expiresAt) }));
   }
@@ -1518,9 +1516,7 @@ export function serviceDetail(service: ServiceView, now: number): string {
     t.render('SERVICE_DETAIL_STATE', { state: t.raw(STATE_TEXT_KEY[state]) }),
   ];
   if (service.provider_name_at_sale) {
-    lines.push(
-      t.render('SERVICE_DETAIL_LOCATION', { provider: service.provider_name_at_sale }),
-    );
+    lines.push(t.render('SERVICE_DETAIL_LOCATION', { provider: service.provider_name_at_sale }));
   }
   lines.push(t.render('SERVICE_DETAIL_ID', { id: service.public_id }));
   if (service.remote_username) {
@@ -1542,9 +1538,7 @@ export function serviceDetail(service: ServiceView, now: number): string {
       // A zero quota would divide by zero, and a migrated row can carry one.
       if (service.volume_gb > 0) lines.push(usageBar(service.used_bytes, service.volume_gb));
       lines.push(t.render('SERVICE_DETAIL_USED', { used: formatGigabytes(service.used_bytes) }));
-      lines.push(
-        t.render('SERVICE_DETAIL_REMAINING', { remaining: formatGigabytes(remaining) }),
-      );
+      lines.push(t.render('SERVICE_DETAIL_REMAINING', { remaining: formatGigabytes(remaining) }));
     }
   }
 
@@ -1783,9 +1777,7 @@ export function linkReplaced(subscriptionUrl: string): string {
 }
 
 export function serviceSwitched(enabled: boolean): string {
-  return enabled
-    ? TEXTS_NOW.raw('SERVICE_SWITCHED_ON')
-    : TEXTS_NOW.raw('SERVICE_SWITCHED_OFF');
+  return enabled ? TEXTS_NOW.raw('SERVICE_SWITCHED_ON') : TEXTS_NOW.raw('SERVICE_SWITCHED_OFF');
 }
 
 /** The panel said no. The reason is the adapter's, and it is written for a person. */

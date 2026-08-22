@@ -106,9 +106,16 @@ describe('delivering it', () => {
     await put('d1', 'your payment is confirmed');
     const sent: [number, string][] = [];
 
-    const res = await flush(db, apiThat((c, t) => { sent.push([c, t]); return Promise.resolve({}); }), {
-      now: NOW,
-    });
+    const res = await flush(
+      db,
+      apiThat((c, t) => {
+        sent.push([c, t]);
+        return Promise.resolve({});
+      }),
+      {
+        now: NOW,
+      },
+    );
 
     expect(res).toMatchObject({ sent: 1, failed: 0, dead: 0 });
     expect(sent).toEqual([[CHAT, 'your payment is confirmed']]);
@@ -167,7 +174,11 @@ describe('delivering it', () => {
   it('eventually delivers a message the first attempt lost', async () => {
     // The whole point, stated as one test: a refusal now is not a lost message.
     await put('d3');
-    await flush(db, apiThat(() => Promise.reject(new Error('network'))), { now: NOW });
+    await flush(
+      db,
+      apiThat(() => Promise.reject(new Error('network'))),
+      { now: NOW },
+    );
     expect((await rowOf('d3')).status).toBe('FAILED');
 
     const later = NOW + nextAttemptDelayMs(1);
@@ -179,12 +190,23 @@ describe('delivering it', () => {
 
   it('does not retry before the backoff has elapsed', async () => {
     await put('d4');
-    await flush(db, apiThat(() => Promise.reject(new Error('network'))), { now: NOW });
+    await flush(
+      db,
+      apiThat(() => Promise.reject(new Error('network'))),
+      { now: NOW },
+    );
 
     let calls = 0;
-    const res = await flush(db, apiThat(() => { calls += 1; return Promise.resolve({}); }), {
-      now: NOW + 1_000,
-    });
+    const res = await flush(
+      db,
+      apiThat(() => {
+        calls += 1;
+        return Promise.resolve({});
+      }),
+      {
+        now: NOW + 1_000,
+      },
+    );
 
     expect(res.sent).toBe(0);
     expect(calls).toBe(0);
@@ -232,9 +254,13 @@ describe('delivering it', () => {
       .bind(CHAT, MAX_ATTEMPTS - 1)
       .run();
 
-    const res = await flush(db, apiThat(() => Promise.reject(new Error('still down'))), {
-      now: NOW,
-    });
+    const res = await flush(
+      db,
+      apiThat(() => Promise.reject(new Error('still down'))),
+      {
+        now: NOW,
+      },
+    );
 
     expect(res).toMatchObject({ dead: 1 });
     const row = await rowOf('d7');
@@ -283,7 +309,11 @@ describe('delivering it', () => {
     // message would not send would be worse than the bug this file fixes.
     await put('d10');
     await expect(
-      flush(db, apiThat(() => Promise.reject(new Error('boom'))), { now: NOW }),
+      flush(
+        db,
+        apiThat(() => Promise.reject(new Error('boom'))),
+        { now: NOW },
+      ),
     ).resolves.toMatchObject({ failed: 1 });
   });
 });
@@ -310,9 +340,10 @@ describe('what a message carries besides its text', () => {
   }
 
   /** Records both calls in the order Telegram would see them. */
-  function recorder(
-    opts: { textFails?: boolean; photoFails?: boolean } = {},
-  ): { api: TelegramApi; sent: Sent[] } {
+  function recorder(opts: { textFails?: boolean; photoFails?: boolean } = {}): {
+    api: TelegramApi;
+    sent: Sent[];
+  } {
     const sent: Sent[] = [];
     const api = {
       sendMessage: async (_chat: number, text: string, keyboard?: unknown) => {
@@ -320,7 +351,8 @@ describe('what a message carries besides its text', () => {
         if (opts.textFails) throw new Error('telegram sendMessage failed: boom');
       },
       sendPhotoBytes: async (_chat: number, png: Uint8Array) => {
-        if (opts.photoFails) throw new Error('telegram sendPhoto failed: 400 PHOTO_INVALID_DIMENSIONS');
+        if (opts.photoFails)
+          throw new Error('telegram sendPhoto failed: 400 PHOTO_INVALID_DIMENSIONS');
         sent.push({ kind: 'photo', body: `png:${png.byteLength}` });
       },
     } as unknown as TelegramApi;

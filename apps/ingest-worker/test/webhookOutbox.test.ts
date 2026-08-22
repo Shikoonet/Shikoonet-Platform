@@ -102,7 +102,9 @@ afterAll(async () => {
 
 describe('delivering a fulfilment notice', () => {
   it('marks a notice delivered and stops asking', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('ok', { status: 200 }));
     await enqueue('n1');
 
     const res = await flushWebhookDeliveries(db, ON, { now: NOW });
@@ -144,7 +146,9 @@ describe('delivering a fulfilment notice', () => {
   });
 
   it('does not retry before the backoff has elapsed', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('', { status: 200 }));
     await enqueue('n4', { status: 'FAILED', attempt_count: 2, next_attempt_at: NOW + 10_000 });
 
     const res = await flushWebhookDeliveries(db, ON, { now: NOW });
@@ -169,7 +173,9 @@ describe('delivering a fulfilment notice', () => {
   });
 
   it('does not wait for a payload it can never parse', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('', { status: 200 }));
     await enqueue('n6', { payload_json: 'not json' });
 
     const res = await flushWebhookDeliveries(db, ON, { now: NOW });
@@ -189,7 +195,9 @@ describe('delivering a fulfilment notice', () => {
     // This one is written as a single-column `IN` on the primary key, which
     // does bound. Measured rather than argued, because "the planner will hash
     // it" is the kind of claim that is true until it is not.
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('', { status: 200 }));
     for (let i = 0; i < 8; i++) await enqueue(`lim${i}`);
 
     const res = await flushWebhookDeliveries(db, ON, { now: NOW, limit: 3 });
@@ -221,10 +229,14 @@ describe('delivering a fulfilment notice', () => {
     // A sweeper killed mid-attempt leaves a claimed row behind. It has to
     // become due again on its own, or one crash strands an order permanently.
     await enqueue('n8', { attempt_count: 1, next_attempt_at: NOW + WEBHOOK_LEASE_MS });
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('', { status: 200 }));
 
     expect((await flushWebhookDeliveries(db, ON, { now: NOW })).attempted).toBe(0);
-    expect((await flushWebhookDeliveries(db, ON, { now: NOW + WEBHOOK_LEASE_MS })).attempted).toBe(1);
+    expect((await flushWebhookDeliveries(db, ON, { now: NOW + WEBHOOK_LEASE_MS })).attempted).toBe(
+      1,
+    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -232,7 +244,11 @@ describe('delivering a fulfilment notice', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     await enqueue('n9');
 
-    const res = await flushWebhookDeliveries(db, { ...ON, AUTO_FULFILLMENT_ENABLED: 'false' }, { now: NOW });
+    const res = await flushWebhookDeliveries(
+      db,
+      { ...ON, AUTO_FULFILLMENT_ENABLED: 'false' },
+      { now: NOW },
+    );
 
     expect(res).toEqual({ attempted: 0, delivered: 0, failed: 0, dead: 0 });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -242,7 +258,9 @@ describe('delivering a fulfilment notice', () => {
   it('gives one attempt a deadline', async () => {
     // `fetch` has no timeout of its own, and this sweep runs inside the request
     // that ingests a bank SMS.
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('', { status: 200 }));
     await enqueue('n10');
 
     await flushWebhookDeliveries(db, ON, { now: NOW });
@@ -263,7 +281,9 @@ describe('the scheduled sweep', () => {
     //
     // Nothing here creates a claim, a transaction or a payment: an empty
     // database is precisely the condition under which the bug appeared.
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('', { status: 200 }));
     await enqueue('sweep1', { status: 'FAILED', attempt_count: 1, next_attempt_at: NOW - 1 });
 
     await runScheduledSweep({ ...env, ...ON });
@@ -294,10 +314,9 @@ describe('the scheduled sweep', () => {
     // which returns first; asserted directly because the lie was in the guard.
     const fetchMock = vi.spyOn(globalThis, 'fetch');
 
-    const out = await deliverMirzabotVerifiedWebhook(
-      { ...ON, AUTO_FULFILLMENT_ENABLED: 'false' },
-      { eventId: 'e1' } as never,
-    );
+    const out = await deliverMirzabotVerifiedWebhook({ ...ON, AUTO_FULFILLMENT_ENABLED: 'false' }, {
+      eventId: 'e1',
+    } as never);
 
     expect(out.ok).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();

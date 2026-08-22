@@ -110,9 +110,7 @@ async function purge(): Promise<void> {
   // with it — the identity `customers.test.ts` and `products.test.ts` create in
   // their `beforeAll` and never create again, so those suites would start
   // answering 403 depending on which file ran first.
-  await baseEnv.DB.prepare(`DELETE FROM access_users WHERE email = ANY($1)`)
-    .bind(OURS)
-    .run();
+  await baseEnv.DB.prepare(`DELETE FROM access_users WHERE email = ANY($1)`).bind(OURS).run();
 }
 
 beforeAll(async () => {
@@ -182,10 +180,14 @@ describe('the panel’s operators', () => {
     // which is allowed, and then the second attempt has nobody left to fall
     // back on. Both routes are checked because both can empty the table.
     const otherId = await makeAccessUser(OTHER_ADMIN, 'ADMIN');
-    expect((await call(`access-users/${otherId}`, {
-      method: 'POST',
-      body: JSON.stringify({ role: 'READ_ONLY' }),
-    })).status).toBe(200);
+    expect(
+      (
+        await call(`access-users/${otherId}`, {
+          method: 'POST',
+          body: JSON.stringify({ role: 'READ_ONLY' }),
+        })
+      ).status,
+    ).toBe(200);
 
     // Now `ADMIN` is the only one, and only somebody else could demote them —
     // so the self guard covers this case. Prove the last-admin condition on a
@@ -202,10 +204,14 @@ describe('the panel’s operators', () => {
     await baseEnv.DB.prepare(`UPDATE access_users SET role = 'ADMIN' WHERE email = ?1`)
       .bind(ADMIN)
       .run();
-    expect((await call(`access-users/${otherId}`, {
-      method: 'POST',
-      body: JSON.stringify({ active: false }),
-    })).status).toBe(200);
+    expect(
+      (
+        await call(`access-users/${otherId}`, {
+          method: 'POST',
+          body: JSON.stringify({ active: false }),
+        })
+      ).status,
+    ).toBe(200);
 
     // …and now, with the writer the only active admin left, deleting the
     // inactive one is still fine, but demoting the writer is not.
@@ -227,10 +233,14 @@ describe('the panel’s operators', () => {
     // Two active admins: ADMIN (the writer) and OTHER_ADMIN. Deactivate the
     // writer's own row through the other one first is not possible, so instead
     // deactivate OTHER_ADMIN, leaving one, then try to deactivate that one.
-    expect((await call(`access-users/${soloId}`, {
-      method: 'POST',
-      body: JSON.stringify({ active: false }),
-    })).status).toBe(200);
+    expect(
+      (
+        await call(`access-users/${soloId}`, {
+          method: 'POST',
+          body: JSON.stringify({ active: false }),
+        })
+      ).status,
+    ).toBe(200);
 
     const lastId = (await accessRow(ADMIN))!.id;
     const res = await call(`access-users/${lastId}`, { method: 'DELETE' });
@@ -374,7 +384,10 @@ describe('the bot’s operators', () => {
     await makeBotAdmin(TG_BASE + 17, 'ADMIN');
 
     for (const body of [{ role: 'ADMIN' }, { active: false }]) {
-      const res = await call(`bot-admins/${ownerId}`, { method: 'POST', body: JSON.stringify(body) });
+      const res = await call(`bot-admins/${ownerId}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
       expect(res.status, JSON.stringify(body)).toBe(409);
     }
     expect((await call(`bot-admins/${ownerId}`, { method: 'DELETE' })).status).toBe(409);
@@ -426,7 +439,11 @@ describe('the bot’s operators', () => {
 
     const res = await call(`bot-admins/${adminId}`, { method: 'DELETE' });
     expect(res.status).toBe(409);
-    const body = (await res.json()) as { error: string; detail: string; counts: { decisions: number } };
+    const body = (await res.json()) as {
+      error: string;
+      detail: string;
+      counts: { decisions: number };
+    };
     expect(body.error).toBe('in_use');
     expect(body.counts.decisions).toBe(1);
     expect(body.detail).toContain('غیرفعال');
@@ -440,10 +457,14 @@ describe('the bot’s operators', () => {
     expect(Number(req!.decided_by)).toBe(adminId);
 
     // And the offered alternative works.
-    expect((await call(`bot-admins/${adminId}`, {
-      method: 'POST',
-      body: JSON.stringify({ active: false }),
-    })).status).toBe(200);
+    expect(
+      (
+        await call(`bot-admins/${adminId}`, {
+          method: 'POST',
+          body: JSON.stringify({ active: false }),
+        })
+      ).status,
+    ).toBe(200);
     expect((await botAdminRow(TG_BASE + 20))!.active).toBe(false);
   });
 

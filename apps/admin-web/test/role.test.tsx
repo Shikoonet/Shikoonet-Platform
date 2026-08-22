@@ -29,7 +29,14 @@ vi.mock('../src/api.js', async () => {
   return {
     ...actual,
     api: {
-      products: vi.fn(async () => ({ ok: true, total: 0, page: 1, pageSize: 25, items: [], providers: [] })),
+      products: vi.fn(async () => ({
+        ok: true,
+        total: 0,
+        page: 1,
+        pageSize: 25,
+        items: [],
+        providers: [],
+      })),
       productCategories: vi.fn(async () => ({ ok: true, items: [] })),
     },
   };

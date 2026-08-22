@@ -96,7 +96,10 @@ export function registerChannelRoutes(
 
     const body = ChannelBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
-      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
     }
 
     // The unique index answers, rather than a read first. Two admins pasting the
@@ -116,10 +119,19 @@ export function registerChannelRoutes(
       );
     }
 
-    await audit(c.env.DB, ident, 'required_channel.added', 'REQUIRED_CHANNEL', String(row.id), null, {
-      chat_ref: body.data.chatRef,
-      active: body.data.active ?? true,
-    }, null);
+    await audit(
+      c.env.DB,
+      ident,
+      'required_channel.added',
+      'REQUIRED_CHANNEL',
+      String(row.id),
+      null,
+      {
+        chat_ref: body.data.chatRef,
+        active: body.data.active ?? true,
+      },
+      null,
+    );
     return c.json({ ok: true, id: Number(row.id) });
   });
 

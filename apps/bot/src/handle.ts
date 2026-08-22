@@ -296,8 +296,7 @@ export async function handleUpdate(
     // would throw away the referrer of everyone who arrives on a link and is not
     // yet in the channel.
     const action = update.callback_query ? decode(update.callback_query.data)?.action : null;
-    const isStart =
-      update.message?.text !== undefined && command(update.message.text) === '/start';
+    const isStart = update.message?.text !== undefined && command(update.message.text) === '/start';
 
     // A receipt goes through the gate, because it is not a purchase — it is the
     // recovery path of one that already happened.
@@ -315,8 +314,7 @@ export async function handleUpdate(
     // gets nothing — the gate still stands in front of every way to start one.
     const carriesReceipt =
       update.message?.photo !== undefined ||
-      (update.message?.document !== undefined &&
-        isReceiptFile(update.message.document.mime_type));
+      (update.message?.document !== undefined && isReceiptFile(update.message.document.mime_type));
 
     if (
       from &&
@@ -326,9 +324,7 @@ export async function handleUpdate(
       !isStart &&
       !carriesReceipt
     ) {
-      const gated = (await isAdmin())
-        ? null
-        : await gateFor(tx, api, from.id, SHOP.requiresRules);
+      const gated = (await isAdmin()) ? null : await gateFor(tx, api, from.id, SHOP.requiresRules);
       if (gated) return gateScreen(chatId, gated);
     }
 
@@ -410,7 +406,11 @@ export async function handleUpdate(
  * نشد» — pressing the button and getting the identical sentence back reads as a
  * bot that ignored the press.
  */
-function gateScreen(chatId: number, gated: NonNullable<GateVerdict>, retried = false): HandleOutcome {
+function gateScreen(
+  chatId: number,
+  gated: NonNullable<GateVerdict>,
+  retried = false,
+): HandleOutcome {
   return {
     status: 'processed',
     replies: [
@@ -589,8 +589,7 @@ async function handleStart(
   // unless it names a real, different customer, and refuses it outright if this
   // customer already has a referrer — the first link wins, always.
   const referrer = referrerFromPayload(message.text!.trim().split(/\s+/)[1]);
-  const claimed =
-    referrer === null ? false : await claimReferrer(tx, user.id, referrer);
+  const claimed = referrer === null ? false : await claimReferrer(tx, user.id, referrer);
 
   // The gate runs here rather than above the dispatch, and only for /start.
   // Everything before this line is what the customer's arrival MEANS — the
@@ -768,7 +767,8 @@ async function handleAdminMessage(
   const customerId = await sessionCustomer(tx, user.id);
   if (customerId === null) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
   const body = message.text!.trim();
-  if (body === '') return said(menu.ADMIN_USER_ASK_MESSAGE, menu.promptMenu(encode('usr', customerId)));
+  if (body === '')
+    return said(menu.ADMIN_USER_ASK_MESSAGE, menu.promptMenu(encode('usr', customerId)));
 
   const found = await customerDetail(tx, customerId);
   if (!found) return said(menu.ADMIN_USER_GONE, menu.adminMenu(0, allowed));
@@ -962,8 +962,10 @@ async function handleAdminWalletAmount(
 /** Clears the question, once it has been answered in a way that ends the flow. */
 async function clearSession(tx: D1DatabaseSession, userId: number): Promise<void> {
   await tx
-    .prepare(`UPDATE bot_sessions SET step = NULL, data = '{}'::jsonb, updated_at = now()
-               WHERE user_id = ?1`)
+    .prepare(
+      `UPDATE bot_sessions SET step = NULL, data = '{}'::jsonb, updated_at = now()
+               WHERE user_id = ?1`,
+    )
     .bind(userId)
     .run();
 }
@@ -1369,7 +1371,13 @@ async function heldCode(
 /** How many payments one review screen lists. */
 const CLAIMS_PER_PAGE = 6;
 
-type PendingDecision = 'APPROVE_NO_TX' | 'REJECT' | 'BLOCK' | 'UNBLOCK' | 'BULK_CREDIT' | 'BROADCAST';
+type PendingDecision =
+  | 'APPROVE_NO_TX'
+  | 'REJECT'
+  | 'BLOCK'
+  | 'UNBLOCK'
+  | 'BULK_CREDIT'
+  | 'BROADCAST';
 
 /**
  * What `cnf` is really doing, once the pending decision is known.
@@ -1422,7 +1430,6 @@ const ACTION_PERMISSIONS: Record<string, readonly AdminPermission[]> = {
   bcr: ['bulk.credit'],
   bct: ['bulk.message'],
 };
-
 
 /**
  * The admin panel's callbacks, after `admins` has already said yes.
@@ -1501,7 +1508,10 @@ async function handleAdmin(
     }
     const candidates = await candidateTransactions(tx, claim.id);
     await rememberClaim(tx, telegramId, claim.id);
-    const out = screen(menu.claimDetail(claim, candidates), menu.claimDetailMenu(candidates, allowed));
+    const out = screen(
+      menu.claimDetail(claim, candidates),
+      menu.claimDetailMenu(candidates, allowed),
+    );
     if (!claim.receipt_url_or_r2_key) return out;
     // The receipt goes first, as its own message. The detail screen replaces
     // itself in place on every press and a photo cannot be edited into a text
@@ -1810,10 +1820,10 @@ async function handleAdmin(
           menu.adminMenu(await countClaimsAwaitingReview(tx), allowed),
         );
       }
-      const result = await verifyMirzabotClaimWithoutTransaction(
-        tx as unknown as D1Database,
-        { claimId: claim.id, actorEmail: null },
-      );
+      const result = await verifyMirzabotClaimWithoutTransaction(tx as unknown as D1Database, {
+        claimId: claim.id,
+        actorEmail: null,
+      });
       if (!result.ok) {
         await audit(tx, admin, 'claim.approve.failed', 'payment_claim', claim.id, {
           reason: result.error,
@@ -1887,10 +1897,7 @@ async function pendingDecision(
  * is why the list is here rather than repeated at the call sites.
  */
 const STEPS_ABOUT_A_CUSTOMER = ['admin:user', 'admin:wallet', 'admin:discount', 'admin:message'];
-async function sessionCustomer(
-  tx: D1DatabaseSession,
-  adminUserId: number,
-): Promise<number | null> {
+async function sessionCustomer(tx: D1DatabaseSession, adminUserId: number): Promise<number | null> {
   const row = await tx
     .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
     .bind(adminUserId)
@@ -2085,7 +2092,10 @@ async function handleCallback(
       if (articles.length === 0 && apps.length === 0) {
         return screen(menu.HELP_EMPTY, menu.mainMenu(user));
       }
-      return screen(menu.CHOOSE_HELP, menu.helpMenu(articles, apps.length > 0 && SHOP.showsAppLink));
+      return screen(
+        menu.CHOOSE_HELP,
+        menu.helpMenu(articles, apps.length > 0 && SHOP.showsAppLink),
+      );
     }
 
     case 'app': {
@@ -2242,7 +2252,9 @@ async function handleCallback(
       const actions = actionsFor(service, SHOP, tierFor(user));
       const kind = action.action === 'xv' ? 'ADD_VOLUME' : 'ADD_TIME';
       const unit =
-        kind === 'ADD_VOLUME' ? (actions?.volumeIrrPerGb ?? null) : (actions?.timeIrrPerDay ?? null);
+        kind === 'ADD_VOLUME'
+          ? (actions?.volumeIrrPerGb ?? null)
+          : (actions?.timeIrrPerDay ?? null);
       // The button is only drawn when there is a price, but the button is not
       // what decides — a forged callback lands here too.
       if (unit === null) return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu());
@@ -2275,7 +2287,8 @@ async function handleCallback(
     case 'off':
     case 'on': {
       if (action.id === undefined) return IGNORED;
-      const kind = action.action === 'rvk2' ? 'REVOKE' : action.action === 'on' ? 'ENABLE' : 'DISABLE';
+      const kind =
+        action.action === 'rvk2' ? 'REVOKE' : action.action === 'on' ? 'ENABLE' : 'DISABLE';
       const outcome = await actOnService(tx, user.id, action.id, kind, fetchImpl);
       if (outcome.status === 'GONE') {
         return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
@@ -2298,7 +2311,10 @@ async function handleCallback(
             ? menu.actionFailed(menu.ACTION_FAILED_NO_LINK)
             : menu.linkReplaced(outcome.subscriptionUrl)
           : menu.serviceSwitched(kind === 'ENABLE');
-      return screen(`${said}\n\n${detail}`, menu.serviceDetailMenu(actionsFor(outcome.service, SHOP)));
+      return screen(
+        `${said}\n\n${detail}`,
+        menu.serviceDetailMenu(actionsFor(outcome.service, SHOP)),
+      );
     }
 
     case 'renew': {
@@ -2579,4 +2595,3 @@ async function topup(
     menu.checkoutMenu(placed.id, placed.totalIrr, checkout.cardDigits),
   );
 }
-

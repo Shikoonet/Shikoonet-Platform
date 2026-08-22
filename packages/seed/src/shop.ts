@@ -154,11 +154,38 @@ interface OrderSpec {
 
 const ORDERS: readonly OrderSpec[] = [
   { customer: 1, kind: 'NEW_PURCHASE', status: 'COMPLETED', unitPriceIrr: 4_500_000, ageDays: 30 },
-  { customer: 2, kind: 'NEW_PURCHASE', status: 'COMPLETED', unitPriceIrr: 8_500_000, discountIrr: 1_275_000, ageDays: 21 },
-  { customer: 3, kind: 'NEW_PURCHASE', status: 'COMPLETED', unitPriceIrr: 12_000_000, discountIrr: 3_000_000, ageDays: 14 },
-  { customer: 4, kind: 'NEW_PURCHASE', status: 'AWAITING_PAYMENT', unitPriceIrr: 4_500_000, ageDays: 0 },
+  {
+    customer: 2,
+    kind: 'NEW_PURCHASE',
+    status: 'COMPLETED',
+    unitPriceIrr: 8_500_000,
+    discountIrr: 1_275_000,
+    ageDays: 21,
+  },
+  {
+    customer: 3,
+    kind: 'NEW_PURCHASE',
+    status: 'COMPLETED',
+    unitPriceIrr: 12_000_000,
+    discountIrr: 3_000_000,
+    ageDays: 14,
+  },
+  {
+    customer: 4,
+    kind: 'NEW_PURCHASE',
+    status: 'AWAITING_PAYMENT',
+    unitPriceIrr: 4_500_000,
+    ageDays: 0,
+  },
   { customer: 6, kind: 'NEW_PURCHASE', status: 'COMPLETED', unitPriceIrr: 2_500_000, ageDays: 9 },
-  { customer: 7, kind: 'RENEWAL', status: 'COMPLETED', unitPriceIrr: 4_500_000, discountIrr: 225_000, ageDays: 5 },
+  {
+    customer: 7,
+    kind: 'RENEWAL',
+    status: 'COMPLETED',
+    unitPriceIrr: 4_500_000,
+    discountIrr: 225_000,
+    ageDays: 5,
+  },
   { customer: 8, kind: 'NEW_PURCHASE', status: 'COMPLETED', unitPriceIrr: 3_000_000, ageDays: 3 },
   { customer: 9, kind: 'NEW_PURCHASE', status: 'FAILED', unitPriceIrr: 4_500_000, ageDays: 2 },
   { customer: 10, kind: 'NEW_PURCHASE', status: 'CANCELLED', unitPriceIrr: 8_500_000, ageDays: 2 },
@@ -178,15 +205,64 @@ interface SubSpec {
 }
 
 const SUBS: readonly SubSpec[] = [
-  { customer: 1, status: 'ACTIVE', volumeGb: 50, durationDays: 30, expiresInDays: 18, priceIrr: 4_500_000 },
-  { customer: 2, status: 'ACTIVE', volumeGb: 100, durationDays: 60, expiresInDays: 41, priceIrr: 8_500_000 },
-  { customer: 3, status: 'ACTIVE', volumeGb: 200, durationDays: 90, expiresInDays: 76, priceIrr: 12_000_000 },
+  {
+    customer: 1,
+    status: 'ACTIVE',
+    volumeGb: 50,
+    durationDays: 30,
+    expiresInDays: 18,
+    priceIrr: 4_500_000,
+  },
+  {
+    customer: 2,
+    status: 'ACTIVE',
+    volumeGb: 100,
+    durationDays: 60,
+    expiresInDays: 41,
+    priceIrr: 8_500_000,
+  },
+  {
+    customer: 3,
+    status: 'ACTIVE',
+    volumeGb: 200,
+    durationDays: 90,
+    expiresInDays: 76,
+    priceIrr: 12_000_000,
+  },
   // Inside the expiry warning window, which is the only reason the warning path
   // has anything to act on in a seeded database.
-  { customer: 6, status: 'ACTIVE', volumeGb: 30, durationDays: 30, expiresInDays: 2, priceIrr: 2_500_000 },
-  { customer: 7, status: 'ACTIVE', volumeGb: 50, durationDays: 30, expiresInDays: 25, priceIrr: 4_500_000 },
-  { customer: 8, status: 'DISABLED', volumeGb: 30, durationDays: 30, expiresInDays: -4, priceIrr: 3_000_000 },
-  { customer: 5, status: 'DISABLED', volumeGb: 50, durationDays: 30, expiresInDays: -20, priceIrr: 4_500_000 },
+  {
+    customer: 6,
+    status: 'ACTIVE',
+    volumeGb: 30,
+    durationDays: 30,
+    expiresInDays: 2,
+    priceIrr: 2_500_000,
+  },
+  {
+    customer: 7,
+    status: 'ACTIVE',
+    volumeGb: 50,
+    durationDays: 30,
+    expiresInDays: 25,
+    priceIrr: 4_500_000,
+  },
+  {
+    customer: 8,
+    status: 'DISABLED',
+    volumeGb: 30,
+    durationDays: 30,
+    expiresInDays: -4,
+    priceIrr: 3_000_000,
+  },
+  {
+    customer: 5,
+    status: 'DISABLED',
+    volumeGb: 50,
+    durationDays: 30,
+    expiresInDays: -20,
+    priceIrr: 4_500_000,
+  },
 ];
 
 const DAY_MS = 86_400_000;
@@ -273,7 +349,14 @@ export async function seedShop(db: D1Database): Promise<ShopSeedResult> {
            VALUES (?1, ?2, ?3, 'SYSTEM', ?4, ?5, ?6)
            ON CONFLICT (idempotency_key) DO NOTHING`,
         )
-        .bind(uid, w.amountIrr, w.kind, w.note, `fixture:wallet:${c.n}:${i}`, iso(-(30 - i) * DAY_MS))
+        .bind(
+          uid,
+          w.amountIrr,
+          w.kind,
+          w.note,
+          `fixture:wallet:${c.n}:${i}`,
+          iso(-(30 - i) * DAY_MS),
+        )
         .run();
       walletEntries += 1;
     }

@@ -4,7 +4,11 @@
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
-import { classifyResellerTransaction, createReseller, type D1Database as DomainD1Database } from '@shikoo/domain';
+import {
+  classifyResellerTransaction,
+  createReseller,
+  type D1Database as DomainD1Database,
+} from '@shikoo/domain';
 import { app } from '../src/index.js';
 
 // Schema now comes from migrations/000*.sql, applied to the test database.

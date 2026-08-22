@@ -35,11 +35,7 @@ async function makeArticle(
     `INSERT INTO help_articles (title, category, body, media_id, sort_order, active)
      VALUES (?1, 'راهنما', 'متن', ?2, 0, ?3) RETURNING id`,
   )
-    .bind(
-      `${PREFIX}${label}`,
-      opts.media === false ? null : OLD_BOT_FILE_ID,
-      opts.active ?? true,
-    )
+    .bind(`${PREFIX}${label}`, opts.media === false ? null : OLD_BOT_FILE_ID, opts.active ?? true)
     .first<{ id: number }>();
   return Number(row!.id);
 }
@@ -65,7 +61,9 @@ const appRow = (id: number) =>
     .first<{ name: string; link: string; active: boolean }>();
 
 async function purge(): Promise<void> {
-  await baseEnv.DB.prepare(`DELETE FROM help_articles WHERE title LIKE ?1`).bind(`${PREFIX}%`).run();
+  await baseEnv.DB.prepare(`DELETE FROM help_articles WHERE title LIKE ?1`)
+    .bind(`${PREFIX}%`)
+    .run();
   await baseEnv.DB.prepare(`DELETE FROM client_apps WHERE name LIKE ?1`).bind(`${PREFIX}%`).run();
 }
 
@@ -173,7 +171,9 @@ describe('the education screen', () => {
   it('lets a reviewer read and not write', async () => {
     const id = await makeArticle('readonly');
 
-    expect((await app.request('/api/v1/admin/help-articles', {}, envAs(REVIEWER))).status).toBe(200);
+    expect((await app.request('/api/v1/admin/help-articles', {}, envAs(REVIEWER))).status).toBe(
+      200,
+    );
     const write = await app.request(
       `/api/v1/admin/help-articles/${id}`,
       {
