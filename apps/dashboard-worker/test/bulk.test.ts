@@ -51,6 +51,27 @@ async function ledgerSum(userId: number): Promise<number> {
   return Number(row?.n ?? 0);
 }
 
+/**
+ * How many customers the shop-wide routes are supposed to reach, right now.
+ *
+ * These tests used to assert the literal number they had just created — two
+ * customers, so `credited` must be 2. That is only true while `users` holds
+ * nothing else, and `beforeEach` here deletes only the rows this file made. It
+ * passed for months and went red the first time `pnpm e2e` ran before the unit
+ * suite, because `e2e/global-setup.ts` seeds a shop.
+ *
+ * The number was never the claim. The claim is "every ACTIVE customer, once",
+ * so that is what is asserted, against the population the database actually
+ * holds. Rule 8 in CLAUDE.md is the same shape from the other side: a test that
+ * is green because of what else happened to run.
+ */
+async function activeCustomers(): Promise<number> {
+  const row = await baseEnv.DB.prepare(
+    `SELECT count(*)::int AS n FROM users WHERE status = 'ACTIVE'`,
+  ).first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
 async function recipientCount(broadcastId: string): Promise<number> {
   const row = await baseEnv.DB.prepare(
     `SELECT count(*)::int AS n FROM broadcast_recipients WHERE broadcast_id = ?1`,
@@ -89,6 +110,7 @@ describe('bulk credit', () => {
     const a = await makeCustomer();
     const b = await makeCustomer();
     const blocked = await makeCustomer('BLOCKED');
+    const active = await activeCustomers();
 
     const res = await app.request(
       '/api/v1/admin/bulk/credit',
@@ -100,11 +122,19 @@ describe('bulk credit', () => {
       envAs(ADMIN),
     );
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { credited: number }).credited).toBe(2);
+    expect(((await res.json()) as { credited: number }).credited).toBe(active);
 
     expect(await ledgerSum(a)).toBe(50_000);
     expect(await ledgerSum(b)).toBe(50_000);
     expect(await ledgerSum(blocked)).toBe(0);
+    // Once each, which the sums above cannot show on their own: two entries of
+    // 25,000 would add up the same way.
+    const entries = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM wallet_entries WHERE user_id = ?1`,
+    )
+      .bind(a)
+      .first<{ n: number }>();
+    expect(entries?.n).toBe(1);
   });
 
   it('is a no-op the second time the same batch arrives', async () => {
@@ -121,7 +151,8 @@ describe('bulk credit', () => {
         envAs(ADMIN),
       );
 
-    expect(((await (await send()).json()) as { credited: number }).credited).toBe(1);
+    const active = await activeCustomers();
+    expect(((await (await send()).json()) as { credited: number }).credited).toBe(active);
     // 0 is the honest answer: nothing moved this time.
     expect(((await (await send()).json()) as { credited: number }).credited).toBe(0);
     expect(await ledgerSum(a)).toBe(50_000);
@@ -199,6 +230,7 @@ describe('broadcast', () => {
     await makeCustomer();
     await makeCustomer();
     await makeCustomer('BLOCKED');
+    const active = await activeCustomers();
     const broadcastId = uuid();
 
     const res = await app.request(
@@ -211,8 +243,8 @@ describe('broadcast', () => {
       envAs(ADMIN),
     );
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { queued: number }).queued).toBe(2);
-    expect(await recipientCount(broadcastId)).toBe(2);
+    expect(((await res.json()) as { queued: number }).queued).toBe(active);
+    expect(await recipientCount(broadcastId)).toBe(active);
 
     // Still PENDING: this route writes the list down, the bot's poll loop is
     // what sends. A route that sent inline would leave nothing to resume from.
@@ -222,7 +254,7 @@ describe('broadcast', () => {
     )
       .bind(broadcastId)
       .first<{ n: number }>();
-    expect(pending?.n).toBe(2);
+    expect(pending?.n).toBe(active);
   });
 
   it('does not double-queue the same broadcast', async () => {
@@ -238,9 +270,10 @@ describe('broadcast', () => {
         },
         envAs(ADMIN),
       );
+    const active = await activeCustomers();
     await send();
     await send();
-    expect(await recipientCount(broadcastId)).toBe(1);
+    expect(await recipientCount(broadcastId)).toBe(active);
   });
 
   it('refuses an empty body and a reviewer', async () => {

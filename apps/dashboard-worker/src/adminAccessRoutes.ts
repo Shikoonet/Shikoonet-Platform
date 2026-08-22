@@ -55,6 +55,7 @@ import {
   type BotAdminRole,
 } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
+import { faNum } from './fa.js';
 
 const ACCESS_ROLES = ['ADMIN', 'REVIEWER', 'READ_ONLY'] as const;
 const BOT_ROLES = ['OWNER', 'ADMIN', 'SUPPORT'] as const;
@@ -556,8 +557,8 @@ export function registerAdminAccessRoutes(
       const decisions = Number(refs?.decisions ?? 0);
       const tickets = Number(refs?.tickets ?? 0);
       const parts: string[] = [];
-      if (decisions > 0) parts.push(`${decisions} تصمیم نمایندگی`);
-      if (tickets > 0) parts.push(`${tickets} تیکت`);
+      if (decisions > 0) parts.push(`${faNum(decisions)} تصمیم نمایندگی`);
+      if (tickets > 0) parts.push(`${faNum(tickets)} تیکت`);
       return c.json(
         {
           ok: false,

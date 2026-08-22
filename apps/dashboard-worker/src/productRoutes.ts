@@ -34,6 +34,7 @@ import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
+import { faNum } from './fa.js';
 
 const PAGE_SIZE_MAX = 100;
 
@@ -330,10 +331,10 @@ interface Refs {
  */
 function refusal(refs: Refs): string {
   const parts: string[] = [];
-  if (refs.orders > 0) parts.push(`${refs.orders} سفارش`);
-  if (refs.subscriptions > 0) parts.push(`${refs.subscriptions} سرویس فروخته‌شده`);
-  if (refs.stock > 0) parts.push(`${refs.stock} کانفیگ در انبار`);
-  if (refs.discounts && refs.discounts > 0) parts.push(`${refs.discounts} کد تخفیف`);
+  if (refs.orders > 0) parts.push(`${faNum(refs.orders)} سفارش`);
+  if (refs.subscriptions > 0) parts.push(`${faNum(refs.subscriptions)} سرویس فروخته‌شده`);
+  if (refs.stock > 0) parts.push(`${faNum(refs.stock)} کانفیگ در انبار`);
+  if (refs.discounts && refs.discounts > 0) parts.push(`${faNum(refs.discounts)} کد تخفیف`);
   if (parts.length === 0) return 'چیزی به این ردیف وصل است و حذف انجام نشد.';
   return `${parts.join(' و ')} به این ردیف وصل است؛ حذف تاریخچهٔ فروش را خالی می‌کند. «غیرفعال» همین کار را بدون از دست رفتن تاریخچه انجام می‌دهد.`;
 }

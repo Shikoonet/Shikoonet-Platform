@@ -394,7 +394,13 @@ describe('DELETE /api/v1/admin/products/plans/:id', () => {
     const body = (await res.json()) as { error: string; detail: string; counts: { orders: number } };
     expect(body.error).toBe('in_use');
     expect(body.counts.orders).toBe(1);
-    expect(body.detail).toContain('1 سفارش');
+    // Measured against `Intl`, not against a literal — the literal here used to
+    // be `'1 سفارش'` in Latin digits, which is exactly what the route sent, so
+    // the test agreed with the bug for as long as both existed. Found in a
+    // browser on 2026-08-22: the refusal said «1 سفارش» under a paragraph on
+    // the same screen saying «۱۲ سفارش».
+    expect(body.detail).toContain(`${new Intl.NumberFormat('fa-IR').format(1)} سفارش`);
+    expect(body.detail).not.toMatch(/[0-9]/);
 
     // And the order still knows what it bought — the failure this guard exists
     // to prevent is not an error, it is a silent NULL in `orders.plan_id`.

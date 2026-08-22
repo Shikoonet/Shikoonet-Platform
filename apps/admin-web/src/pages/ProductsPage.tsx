@@ -23,7 +23,6 @@ import {
   ApiError,
   type CatalogStatus,
   type CategoryRow,
-  type InUseCounts,
   type PlanRow,
   type ProviderOption,
 } from '../api.js';
@@ -380,8 +379,8 @@ function isInUse(e: unknown): e is ApiError {
   return e instanceof ApiError && e.code === 'in_use';
 }
 
-/** The counts the server sent back, when it sent any. */
-type Refused = { detail: string; counts?: InUseCounts } | null;
+/** The server's refusal sentence, which already names what is attached. */
+type Refused = { detail: string } | null;
 
 // ---------------------------------------------------------------------------
 // Creating a product
