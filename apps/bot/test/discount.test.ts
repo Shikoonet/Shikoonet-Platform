@@ -73,7 +73,19 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
          (code, kind, percent, amount_irr, expires_at, max_uses, first_purchase_only,
           resellers_only, product_id, provider_id, applies_to)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-       ON CONFLICT (code) DO UPDATE SET code = EXCLUDED.code
+       -- Every column, not just the one it conflicted on. This used to set the
+       -- code to itself, which is a no-op upsert: a code left in the table by
+       -- an earlier run kept its OLD kind, so a test asking for a gift code
+       -- could be handed a percentage one and fail somewhere else entirely.
+       -- Which test broke depended on the order they ran in.
+       ON CONFLICT (code) DO UPDATE SET
+         kind = EXCLUDED.kind, percent = EXCLUDED.percent,
+         amount_irr = EXCLUDED.amount_irr, expires_at = EXCLUDED.expires_at,
+         max_uses = EXCLUDED.max_uses,
+         first_purchase_only = EXCLUDED.first_purchase_only,
+         resellers_only = EXCLUDED.resellers_only,
+         product_id = EXCLUDED.product_id, provider_id = EXCLUDED.provider_id,
+         applies_to = EXCLUDED.applies_to
        RETURNING id`,
     )
     .bind(
@@ -541,6 +553,62 @@ describe('a gift code', () => {
     await handleUpdate(db, press(updateId, telegramId, 'gft'));
     const out = await handleUpdate(db, types(updateId + 1, telegramId, 'empty1'));
     expect(out.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['UNKNOWN_CODE']);
+  });
+
+  /**
+   * The ceiling, under the only condition that can break it.
+   *
+   * `max_uses` is checked by counting `discount_redemptions` and then acting on
+   * the count. The unique index `(code_id, user_id)` makes that safe for ONE
+   * customer pressing twice — the insert decides, not the count. It does
+   * nothing for two DIFFERENT customers on a code with `max_uses = 1`: both
+   * count zero, both insert without conflicting, and a shop that authorised one
+   * gift gives two.
+   *
+   * Sequential calls cannot show this; the second one sees the first's row.
+   * Both redemptions have to be in flight at once, which is why this is
+   * `Promise.all` over two sessions rather than two awaits.
+   */
+  it('honours the use ceiling when two customers arrive together', async () => {
+    const a = ids();
+    const b = ids();
+    await makeCustomer(a.telegramId);
+    await makeCustomer(b.telegramId);
+    // A name of its own. `makeCode` upserts `ON CONFLICT (code)` without
+    // touching `kind`, so reusing a code another test already made as
+    // PERCENT_OFF would silently hand this one the wrong kind — and which test
+    // won would depend on the order they ran in.
+    await makeCode('ceil1', { kind: 'GIFT_BALANCE', amountIrr: 500_000, maxUses: 1 });
+
+    await handleUpdate(db, press(a.updateId, a.telegramId, 'gft'));
+    await handleUpdate(db, press(b.updateId, b.telegramId, 'gft'));
+
+    // Together, not one after the other.
+    const [first, second] = await Promise.all([
+      handleUpdate(db, types(a.updateId + 1, a.telegramId, 'ceil1')),
+      handleUpdate(db, types(b.updateId + 1, b.telegramId, 'ceil1')),
+    ]);
+
+    const credited = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM wallet_entries
+          WHERE kind = 'GIFT_CODE' AND note = 'gift code ceil1'`,
+      )
+      .first<{ n: number }>();
+    const redeemed = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM discount_redemptions r
+           JOIN discount_codes c ON c.id = r.code_id WHERE c.code = 'ceil1'`,
+      )
+      .first<{ n: number }>();
+
+    // One gift, one redemption row, and the loser told why — read from the
+    // database rather than from the two replies, because the replies are
+    // written by the same code that did the crediting.
+    expect(redeemed?.n).toBe(1);
+    expect(credited?.n).toBe(1);
+    const texts = [first.replies[0]?.text, second.replies[0]?.text];
+    expect(texts.filter((t) => t === menu.DISCOUNT_REFUSED['USED_UP'])).toHaveLength(1);
   });
 
   it('will not credit a purchase code into the wallet', async () => {

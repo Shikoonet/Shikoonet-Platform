@@ -14,6 +14,7 @@ import {
   count,
   dateOnly,
   dateTime,
+  endOfTehranDay,
   gigabytes,
   irrToToman,
   toman,
@@ -126,5 +127,42 @@ describe('traffic consumed', () => {
     // a customer who has used nothing look identical otherwise.
     expect(gigabytes(null)).toBe('—');
     expect(gigabytes(undefined)).toBe('—');
+  });
+});
+
+describe('when a dated code stops working', () => {
+  it('lands on the first instant of the next Tehran day', () => {
+    // Measured against `Intl` on Asia/Tehran, not against a copied offset: the
+    // point of the helper is that there is no second definition of where
+    // Tehran's midnight is.
+    const at = (iso: string) =>
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Tehran',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+      }).format(new Date(iso));
+
+    // A code «until 2026-09-01» is refused when `expires_at <= now`, so the
+    // instant it carries has to be the next day's midnight — otherwise the code
+    // dies a day early and nobody but the customer finds out.
+    expect(at(endOfTehranDay('2026-09-01'))).toBe('2026-09-02, 00:00:00');
+    // Across a month end and a year end, where a naive +1 on the day breaks.
+    expect(at(endOfTehranDay('2026-09-30'))).toBe('2026-10-01, 00:00:00');
+    expect(at(endOfTehranDay('2026-12-31'))).toBe('2027-01-01, 00:00:00');
+  });
+
+  it('is a real instant, not the date it was handed', () => {
+    // The failure mode if the helper ever gives up and returns its input: the
+    // column is a timestamptz and a bare date would be read as UTC midnight,
+    // which is 03:30 Tehran — three and a half hours of a day the admin meant
+    // to include.
+    const out = endOfTehranDay('2026-09-01');
+    expect(out).not.toBe('2026-09-01');
+    expect(out.endsWith('Z')).toBe(true);
   });
 });

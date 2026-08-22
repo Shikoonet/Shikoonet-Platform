@@ -216,13 +216,37 @@ export async function checkCode(
   return { ok: true, code: row, discountIrr: discountFor(row, context.priceIrr) };
 }
 
+/** Why a redemption did not happen, or that it did. */
+export type Redemption = 'OK' | 'ALREADY_USED' | 'USED_UP';
+
 /**
  * Spends the code.
  *
+ * ## One customer, twice
+ *
  * The INSERT is the check. `idx_redemption_once_per_user` is UNIQUE on
- * (code_id, user_id), so a second attempt writes no row and this returns false
- * — including when two taps arrive together and both passed `checkCode`.
- * Nothing here re-reads and decides; the database decides.
+ * (code_id, user_id), so a second attempt writes no row and this returns
+ * `ALREADY_USED` — including when two taps arrive together and both passed
+ * `checkCode`. Nothing re-reads and decides; the database decides.
+ *
+ * ## Two customers, together — and why there is a lock here
+ *
+ * That index says nothing about `max_uses`, which is a ceiling across
+ * *different* people. `checkCode` counted the rows and compared, and a count
+ * followed by an act is a race the moment two customers are in flight: both
+ * counted zero on a `max_uses = 1` code, both inserted without conflicting
+ * because their `user_id` differed, and a shop that authorised one gift gave
+ * two. Proved on 2026-08-22 by running two redemptions through `Promise.all`
+ * — sequential calls cannot show it, because the second sees the first's row.
+ *
+ * The fix is the smallest one that actually holds: take the code's row before
+ * counting. `FOR UPDATE` makes the second transaction wait for the first to
+ * commit, so by the time it counts, the row it needs to see is there. No new
+ * index, no migration, and the count that was already written becomes true.
+ *
+ * It lives here rather than in `checkCode` because all three callers route
+ * through this function — the gift path and both purchase paths — and a guard
+ * in the caller is a guard somebody adds a fourth caller without.
  */
 export async function redeem(
   tx: D1DatabaseSession,
@@ -230,7 +254,25 @@ export async function redeem(
   userId: number,
   orderId: number | null,
   amountIrr: number,
-): Promise<boolean> {
+): Promise<Redemption> {
+  // The lock, and the ceiling it protects, in that order. A code with no
+  // ceiling still takes the row: the cost is one uncontended lock on a table
+  // nobody writes during a purchase, and the alternative is two paths through
+  // here that behave differently under load.
+  const code = await tx
+    .prepare(`SELECT max_uses FROM discount_codes WHERE id = ?1 FOR UPDATE`)
+    .bind(codeId)
+    .first<{ max_uses: number | null }>();
+  if (code === null) return 'ALREADY_USED';
+
+  if (code.max_uses !== null) {
+    const used = await tx
+      .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1`)
+      .bind(codeId)
+      .first<{ n: number }>();
+    if ((used?.n ?? 0) >= code.max_uses) return 'USED_UP';
+  }
+
   const done = await tx
     .prepare(
       `INSERT INTO discount_redemptions (code_id, user_id, order_id, amount_irr)
@@ -239,7 +281,7 @@ export async function redeem(
     )
     .bind(codeId, userId, orderId, amountIrr)
     .run();
-  return done.meta.changes > 0;
+  return done.meta.changes > 0 ? 'OK' : 'ALREADY_USED';
 }
 
 /**
@@ -303,17 +345,12 @@ export async function redeemGift(
   // be refused here instead of crediting a customer zero and calling it a gift.
   if (amountIrr <= 0) return { ok: false, reason: 'UNKNOWN_CODE' };
 
-  if (row.max_uses !== null) {
-    const used = await tx
-      .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1`)
-      .bind(row.id)
-      .first<{ n: number }>();
-    if ((used?.n ?? 0) >= row.max_uses) return { ok: false, reason: 'USED_UP' };
-  }
-
-  if (!(await redeem(tx, row.id, userId, null, amountIrr))) {
-    return { ok: false, reason: 'ALREADY_USED' };
-  }
+  // No pre-count here any more. `redeem` takes the code's row and checks the
+  // ceiling under it, so counting first would only be a second opinion that can
+  // disagree with the one that matters — and the reason it can disagree is a
+  // race that cost a shop a duplicate gift.
+  const spent = await redeem(tx, row.id, userId, null, amountIrr);
+  if (spent !== 'OK') return { ok: false, reason: spent };
   await tx
     .prepare(
       `INSERT INTO wallet_entries (user_id, amount_irr, kind, note, idempotency_key)

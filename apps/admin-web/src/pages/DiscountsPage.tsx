@@ -16,7 +16,7 @@
 
 import { useEffect, useState } from 'react';
 import { api, ApiError, type DiscountItem, type RedemptionRow } from '../api.js';
-import { count, dateTime, toman } from '../format.js';
+import { count, dateTime, endOfTehranDay, toman } from '../format.js';
 
 const PAGE_SIZE = 25;
 
@@ -282,6 +282,19 @@ function CreateForm({ onDone }: { onDone: () => void }) {
   const [amountToman, setAmountToman] = useState('');
   const [percent, setPercent] = useState('');
   const [maxUses, setMaxUses] = useState('');
+  /**
+   * When the code stops working, as a plain date.
+   *
+   * There was no field here until 2026-08-22, and the route has accepted
+   * `expiresAt` the whole time — so every code made from this panel lived for
+   * ever while all 33 in the production dump carry an expiry. An admin could
+   * not reproduce what they already do.
+   *
+   * A date and not a datetime: nobody has ever wanted a code to stop at 14:37.
+   * It is sent as the end of that day in Tehran, so a code «until 1 Shahrivar»
+   * works all of 1 Shahrivar — the alternative reads as a day short.
+   */
+  const [expiresOn, setExpiresOn] = useState('');
   const [appliesTo, setAppliesTo] = useState('ALL');
   const [firstPurchaseOnly, setFirst] = useState(false);
   const [resellersOnly, setResellers] = useState(false);
@@ -302,6 +315,7 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         // Toman in the form, Rial on the wire — the one conversion, in one line.
         ...(isPercent ? { percent: Number(percent) } : { amountIrr: Math.round(typedAmount) * 10 }),
         ...(maxUses.trim() ? { maxUses: Number(maxUses) } : {}),
+        ...(expiresOn ? { expiresAt: endOfTehranDay(expiresOn) } : {}),
         // A gift credits a wallet and is never applied to a purchase, so the
         // server refuses these on one; the form does not offer them either.
         ...(isGift ? {} : { appliesTo, firstPurchaseOnly, resellersOnly }),
@@ -388,6 +402,18 @@ function CreateForm({ onDone }: { onDone: () => void }) {
             value={maxUses}
             onChange={(e) => setMaxUses(e.target.value)}
             placeholder="نامحدود"
+          />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="new-expires">
+            انقضا
+          </label>
+          <input
+            id="new-expires"
+            className="form-control ltr"
+            type="date"
+            value={expiresOn}
+            onChange={(e) => setExpiresOn(e.target.value)}
           />
         </div>
         {!isGift && (

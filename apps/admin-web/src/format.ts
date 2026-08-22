@@ -115,6 +115,42 @@ export function dateOnly(value: Stamp): string {
   return TEHRAN_DATE.format(ms);
 }
 
+/**
+ * The instant a code dated `YYYY-MM-DD` stops working.
+ *
+ * `<input type="date">` hands back a bare calendar date, and the column it ends
+ * up in is a `timestamptz`. The bot refuses a code when `expires_at <= now`, so
+ * the right instant is the START of the following Tehran day: a code «until 1
+ * Shahrivar» then works for all of that day and stops at midnight. Taking the
+ * date at face value would cut it short by a day, which is the kind of
+ * off-by-one a customer notices and an admin cannot see.
+ *
+ * Built by asking `Intl` where Tehran's clock stands at that moment rather than
+ * by adding a fixed offset. `packages/domain/src/historyRange.ts` keeps its own
+ * `TEHRAN_OFFSET_MS`, and duplicating that number here would be a second
+ * definition of the same fact — the failure this repository has already had
+ * with two Toman formatters. It is not imported instead, because `@shikoo/domain`
+ * is a server package and pulling it into the browser bundle to reach one
+ * constant costs more than this function does.
+ */
+export function endOfTehranDay(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!y || !m || !d) return dateStr;
+  // Midday UTC on the day AFTER, which is inside that Tehran day whatever the
+  // offset is, then walked back to that day's midnight in Tehran.
+  const noonNext = Date.UTC(y, m - 1, d + 1, 12, 0, 0, 0);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Tehran',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(noonNext));
+  const at = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  const sinceMidnight = (at('hour') * 3600 + at('minute') * 60 + at('second')) * 1000;
+  return new Date(noonNext - sinceMidnight).toISOString();
+}
+
 /** What one gigabyte is here, and everywhere else in this repo. */
 const BYTES_PER_GB = 1024 ** 3;
 
