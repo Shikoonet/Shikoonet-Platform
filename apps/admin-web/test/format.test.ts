@@ -10,7 +10,15 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { count, dateOnly, dateTime, irrToToman, toman, tomanCompact } from '../src/format.js';
+import {
+  count,
+  dateOnly,
+  dateTime,
+  gigabytes,
+  irrToToman,
+  toman,
+  tomanCompact,
+} from '../src/format.js';
 
 describe('IRR to Toman', () => {
   it('is the platform rule, in the one direction this panel needs', () => {
@@ -79,5 +87,44 @@ describe('Tehran time', () => {
   it('hands back an unparseable value instead of showing "Invalid Date"', () => {
     expect(dateTime('not a date')).toBe('not a date');
     expect(dateTime(null)).toBe('—');
+  });
+});
+
+describe('traffic consumed', () => {
+  const GB = 1024 ** 3;
+
+  it('is written in the same digits as every other number on this panel', () => {
+    // The bug this closes was invisible to every test and obvious on the screen:
+    // «مصرف» rendered `0 گیگ` in Latin digits in the cell beside «حجم» rendering
+    // `۱۰ گیگ` in Persian, because the rounding rule was copied from the bot
+    // together with the bot's `toLocaleString('en-US')`.
+    //
+    // Measured against `Intl` directly rather than against `count()`, so this
+    // cannot pass by two of our own functions agreeing with each other.
+    const fa = new Intl.NumberFormat('fa-IR');
+    expect(gigabytes(3 * GB)).toBe(`${fa.format(3)} گیگ`);
+    expect(gigabytes(0)).toBe(`${fa.format(0)} گیگ`);
+    // And the digits really are Persian, not merely equal to another call.
+    expect(gigabytes(3 * GB)).toContain('۳');
+    expect(gigabytes(3 * GB)).not.toMatch(/[0-9]/);
+  });
+
+  it("keeps the bot's rounding, so a quoted figure matches", () => {
+    const fa = new Intl.NumberFormat('fa-IR');
+    // One decimal normally, and the trailing zero dropped — `menu.ts` runs its
+    // `toFixed(1)` back through `Number()`, which does the same.
+    expect(gigabytes(3.5 * GB)).toBe(`${fa.format(3.5)} گیگ`);
+    expect(gigabytes(3.04 * GB)).toBe(`${fa.format(3)} گیگ`);
+    // Two decimals below a tenth of a gigabyte: a customer who has just started
+    // is not shown "nothing".
+    expect(gigabytes(0.05 * GB)).toBe(`${fa.format(0.05)} گیگ`);
+    expect(gigabytes(0.05 * GB)).not.toBe(gigabytes(0));
+  });
+
+  it('says nothing at all when no panel has answered', () => {
+    // Distinct from zero on purpose: a service the sweep has never reached and
+    // a customer who has used nothing look identical otherwise.
+    expect(gigabytes(null)).toBe('—');
+    expect(gigabytes(undefined)).toBe('—');
   });
 });

@@ -119,17 +119,29 @@ export function dateOnly(value: Stamp): string {
 const BYTES_PER_GB = 1024 ** 3;
 
 /**
- * Traffic consumed, in the same words the bot uses.
+ * Traffic consumed.
  *
- * `apps/bot/src/menu.ts` renders this figure for the customer with one decimal,
- * and two below a tenth of a gigabyte — because "0.0" reads as "nothing" to
- * somebody who has just started using a service. An operator reading a support
- * message quoting the bot's number needs to see the same one, so the rule is
- * copied deliberately rather than rounded to taste here.
+ * Two different things are borrowed from two different places, and the first
+ * version of this got that wrong in a way only the screen could show.
+ *
+ * **The rounding is the bot's.** `apps/bot/src/menu.ts` gives the customer one
+ * decimal, and two below a tenth of a gigabyte — because "۰٫۰" reads as
+ * "nothing" to somebody who has just started using a service. An operator
+ * reading a support message that quotes the bot has to see the same figure.
+ *
+ * **The digits are the panel's.** The first version copied the bot's
+ * `toLocaleString('en-US')` along with the rounding, so «مصرف» rendered
+ * `0 گیگ` in Latin digits directly beside «حجم» rendering `۱۰ گیگ` in Persian —
+ * two adjacent cells in one row disagreeing about what a number looks like.
+ * Nothing in a test saw it; walking the deployed screen did. `FA` is what every
+ * other number on this panel goes through.
+ *
+ * `FA.format` of a rounded number drops a trailing zero exactly as the bot's
+ * `Number(shown)` does, so 3.0 GB is «۳ گیگ» in both and 3.5 is «۳٫۵».
  */
 export function gigabytes(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined) return '—';
   const gb = bytes / BYTES_PER_GB;
-  const shown = gb > 0 && gb < 0.1 ? gb.toFixed(2) : gb.toFixed(1);
-  return `${Number(shown).toLocaleString('en-US')} گیگ`;
+  const places = gb > 0 && gb < 0.1 ? 2 : 1;
+  return `${FA.format(Number(gb.toFixed(places)))} گیگ`;
 }
