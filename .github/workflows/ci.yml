@@ -83,6 +83,25 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 'SERVICE is required'
 
+      # What is in the artifact, not what the manifests say is in it.
+      #
+      # `runtime` was `FROM build` until 2026-08-22, so the image three
+      # public-facing services run from carried vitest, playwright, eslint and
+      # typescript — 29 of its 290 packages — along with every test file in the
+      # repository. Nothing ran them, which is why it went unnoticed for months:
+      # `pnpm audit --prod` reads manifests and reported zero the whole time,
+      # while a scanner reads layers.
+      #
+      # Asserted here rather than by reading the Dockerfile, because the failure
+      # is one word — a base stage changed back — and the Dockerfile would still
+      # look deliberate.
+      - name: The production image carries no test runner and no tests
+        run: |
+          dev=$(docker run --rm --entrypoint sh shikoo-ci -c 'ls node_modules/.pnpm | grep -ciE "^(vitest|@vitest|playwright|@playwright|eslint|typescript|@typescript-eslint)@" || true')
+          ours=$(docker run --rm --entrypoint sh shikoo-ci -c 'find /app/apps /app/packages \( -name "*.test.ts" -o -name "*.spec.ts" \) | wc -l')
+          echo "dev-tooling packages: $dev   our test files: $ours"
+          [ "$dev" = "0" ] && [ "$ours" = "0" ]
+
       # The gate, measured on the artifact rather than on the source.
       #
       # A database with nothing in it is every migration pending, which is the

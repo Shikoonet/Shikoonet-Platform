@@ -59,8 +59,77 @@ FROM deps AS build
 COPY . .
 RUN pnpm --filter @shikoo/admin-web build
 
+# ------------------------------------------------------- production modules
+# The same install, without anything only a developer needs.
+#
+# `pnpm deploy --prod` is the tool for this and cannot run here — the note at the
+# top of this file gives the reason — but a second plain install with `--prod`
+# does the same pruning, and it reuses the lockfile so nothing can resolve
+# differently from the build above.
+#
+# It is a separate stage rather than a `prune` step inside `deps`, because the
+# build genuinely needs the dev half: `pnpm --filter @shikoo/admin-web build`
+# runs `tsc` and `vite`, both devDependencies.
+FROM base AS prod-deps
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY apps/bot/package.json                 apps/bot/
+COPY apps/ingest-worker/package.json       apps/ingest-worker/
+COPY apps/dashboard-worker/package.json    apps/dashboard-worker/
+COPY apps/admin-web/package.json           apps/admin-web/
+COPY packages/contracts/package.json       packages/contracts/
+COPY packages/database/package.json        packages/database/
+COPY packages/db/package.json              packages/db/
+COPY packages/domain/package.json          packages/domain/
+COPY packages/migrate/package.json         packages/migrate/
+COPY packages/seed/package.json            packages/seed/
+COPY packages/sms-parser/package.json      packages/sms-parser/
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --prod --frozen-lockfile
+
 # -------------------------------------------------------------------- runtime
-FROM build AS runtime
+# A stage of its own, which it was not until 2026-08-22.
+#
+# `FROM build` shipped the build stage verbatim: vitest, playwright, eslint and
+# typescript — 29 of the 290 installed packages — plus every test file and every
+# e2e spec, in the image three public-facing services run from. Nothing executed
+# them, which is exactly why nobody noticed: `pnpm audit --prod` reads the
+# manifests and reports zero, while an image scanner reads what is actually in
+# the layers and reports what a test runner drags in.
+#
+# What is copied is written out one line per workspace instead of `COPY . .`,
+# and that is the point. The runtime needs `src` and nothing else beside it, so
+# a package added later and forgotten here fails at boot with a module it cannot
+# resolve — loudly, on the first deploy — rather than quietly shipping its tests
+# along with everything else.
+#
+# `src` and not `dist`, still: every workspace resolves through
+# `"main": "./src/index.ts"` and `tsx` does the resolving at runtime. The
+# TypeScript IS the artifact here; see the note at the top of this file. The one
+# exception is the SPA, which really is built, and is taken from `build` rather
+# than from the context so a Windows-built `dist` can never ship.
+FROM node:22-slim AS runtime
+WORKDIR /app
+
+# Manifests and the pruned module tree, together, because pnpm's per-package
+# `node_modules` are symlinks into the root store and only mean anything beside
+# the package.json files they were installed from.
+COPY --from=prod-deps /app ./
+
+COPY packages/contracts/src   packages/contracts/src
+COPY packages/database/src    packages/database/src
+COPY packages/db/src          packages/db/src
+COPY packages/domain/src      packages/domain/src
+COPY packages/migrate/src     packages/migrate/src
+COPY packages/seed/src        packages/seed/src
+COPY packages/sms-parser/src  packages/sms-parser/src
+COPY apps/bot/src             apps/bot/src
+COPY apps/ingest-worker/src   apps/ingest-worker/src
+COPY apps/dashboard-worker/src apps/dashboard-worker/src
+COPY apps/dashboard-worker/scripts apps/dashboard-worker/scripts
+
+# The schema ledger reads these at boot and `SERVICE=migrate` applies them.
+COPY migrations migrations
+
+COPY --from=build /app/apps/admin-web/dist apps/admin-web/dist
 
 # Absolute, because the default in `server.ts` is relative to the working
 # directory and would resolve outside /app.

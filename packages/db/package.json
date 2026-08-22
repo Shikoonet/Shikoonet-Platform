@@ -14,11 +14,11 @@
     "schema": "tsx src/schemaCli.ts"
   },
   "dependencies": {
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "tsx": "4.23.12"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
-    "@types/pg": "^8.11.10",
-    "tsx": "4.23.12"
+    "@types/pg": "^8.11.10"
   }
 }

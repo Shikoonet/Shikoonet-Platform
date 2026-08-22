@@ -19,8 +19,20 @@ import type { D1Database } from '@shikoo/database';
 /**
  * What a READ_ONLY operator may not read on the admin surface.
  *
- * Every write route on this surface is behind `role !== 'ADMIN'`, and every
- * *read* route was behind nothing at all: a READ_ONLY row could open a named
+ * Every write route on this surface is behind `role !== 'ADMIN'` — and that is
+ * now checked rather than asserted. `write-roles.test.ts` enumerates
+ * `app.routes` and asks each of the 114 write routes what it tells a
+ * READ_ONLY and a REVIEWER, so a route added tomorrow without a guard fails
+ * there instead of shipping. This sentence stood here for months meaning
+ * nothing, in a repository that has already been bitten twice by a comment
+ * explaining why something was safe.
+ *
+ * Two exceptions live in that test with their reasons: previewing a bulk
+ * price change is open to any operator while applying one is ADMIN, and five
+ * POSTs on the payments hub are reads that happen to take a body — a parser
+ * sample, a card test, an assignment preview. None of them writes.
+ *
+ * Every *read* route was behind nothing at all: a READ_ONLY row could open a named
  * customer, their phone number, their wallet ledger and every order they have
  * ever placed. The only thing separating the roles was the audit trail, and a
  * record is not a guard — the same sentence the bot's admin panel earned.

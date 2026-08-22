@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      tsx:
+        specifier: ^4.23.7
+        version: 4.23.12
     devDependencies:
       eslint:
         specifier: ^9.13.0
@@ -17,9 +21,6 @@ importers:
       prettier:
         specifier: 3.3.3
         version: 3.3.3
-      tsx:
-        specifier: ^4.23.7
-        version: 4.23.12
       typescript:
         specifier: 5.6.3
         version: 5.6.3
@@ -241,6 +242,9 @@ importers:
       pg:
         specifier: ^8.13.1
         version: 8.23.0
+      tsx:
+        specifier: 4.23.12
+        version: 4.23.12
     devDependencies:
       '@types/node':
         specifier: ^22.9.0
@@ -248,9 +252,6 @@ importers:
       '@types/pg':
         specifier: ^8.11.10
         version: 8.21.0
-      tsx:
-        specifier: 4.23.12
-        version: 4.23.12
 
   packages/domain:
     dependencies:

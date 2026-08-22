@@ -2,7 +2,9 @@
  * What a READ_ONLY operator may read.
  *
  * Every write route on the admin surface has been behind `role !== 'ADMIN'`
- * since it was written. Every read route was behind nothing: a READ_ONLY row
+ * since it was written — which nothing verified until `write-roles.test.ts`,
+ * where it is now asked of the router itself. Every read route was behind
+ * nothing: a READ_ONLY row
  * could open a named customer, their phone number, their wallet ledger and
  * every order they had ever placed. The role existed, was recorded in
  * `audit_logs`, and stopped nothing — the same "a record is not a guard" the
