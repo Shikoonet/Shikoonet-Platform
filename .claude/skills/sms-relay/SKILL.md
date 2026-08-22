@@ -40,9 +40,39 @@ Each Remote is independently configured. The user picks one of:
 
 Defaults (`RemoteConfig.kt`): `POST`, `useFormData = true`, keys `message` / `sender` / `timestamp`.
 
+## Many Remotes, and every SMS goes to all of them
+
+`PreferencesManager` stores a **list** — `getRemoteConfigs(): List<RemoteConfig>`,
+with `addRemote` / `updateRemote` / `deleteRemote`. `SmsReceiver.onReceive` then does
+`for (remote in matchingRemotes)`, and each iteration enqueues its **own**
+`OneTimeWorkRequest` with its own id and its own `SmsLog` row.
+
+So one SMS fans out to every configured Remote, each with an independent retry
+budget, and **one endpoint failing does not affect the others**. That is what makes
+a shadow run possible without touching the live path: add a second Remote and leave
+the first byte-identical.
+
+Read off `SmsReceiver.kt` and `PreferencesManager.kt` on 2026-08-23. The README says
+only «Configure a Remote», which reads like one — and a note in this repository
+said the app «holds one URL», which was wrong.
+
 ## Filtering
 
-Each Remote has a `regexFilter` matched against `sender` only. Non-matching → no request sent (no error, just skipped).
+Each Remote has a `regexFilter`, and it is matched against the **message body**
+(`regex.containsMatchIn(fullMessageBody)` in `SmsReceiver.kt`), not the sender.
+This file said «sender only» until 2026-08-23; a filter written against a bank's
+number would have matched nothing and dropped every message in silence.
+Non-matching → no request sent, no error, just skipped. Blank → everything passes.
+
+## A JSON template is re-serialised, so the body cannot break it
+
+`buildJsonBody` parses `postJsonBody` into a real `JSONObject`/`JSONArray`,
+replaces the placeholders **inside the parsed object**, and calls `toString()`.
+The body therefore goes through org.json's own escaping — a bank SMS containing a
+quote, a backslash or a newline produces valid JSON rather than a malformed
+request that would fail three times and be dropped.
+
+Form-data mode escapes through `URLEncoder` for the same reason.
 
 ## Delivery semantics
 
