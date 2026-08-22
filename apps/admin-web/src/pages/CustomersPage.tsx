@@ -231,6 +231,17 @@ function CustomerDrawer({
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [entries, setEntries] = useState<WalletEntryRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  /**
+   * What the last action did, in a sentence.
+   *
+   * Three of the four writes in this card said nothing at all when they
+   * succeeded — walking it on 2026-08-22, blocking a customer produced a 200,
+   * a flipped badge and not one word. The wallet adjust is the exception and
+   * the reason: it clears its own form, so the operator sees the result. The
+   * others leave the screen looking exactly as it did a moment before, on the
+   * one page where the thing being changed is a person.
+   */
+  const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [amountToman, setAmountToman] = useState('');
@@ -258,6 +269,10 @@ function CustomerDrawer({
   }
 
   useEffect(() => {
+    // Cleared with the customer, not left standing. «@sara_m مسدود شد» still
+    // on screen while the drawer now shows @reza_kh is a sentence about the
+    // wrong person, which is worse than no sentence at all.
+    setDone(null);
     void load();
   }, [id]);
 
@@ -288,8 +303,21 @@ function CustomerDrawer({
     }
     setBusy(true);
     setErr(null);
+    setDone(null);
     try {
-      await api.adjustWallet(id, { amountIrr, note: note.trim(), idempotencyKey: adjustKey });
+      const res = await api.adjustWallet(id, {
+        amountIrr,
+        note: note.trim(),
+        idempotencyKey: adjustKey,
+      });
+      // `applied: false` means the key was already spent, which the route is
+      // explicit is not an error. Reporting it as a success would tell an
+      // operator money moved on a press where none did.
+      setDone(
+        res.applied
+          ? `کیف پول اصلاح شد — موجودی حالا ${toman(res.balanceIrr)} است.`
+          : 'این اصلاح قبلاً اعمال شده بود؛ چیزی دوباره جابه‌جا نشد.',
+      );
       setAmountToman('');
       setNote('');
       setAdjustKey(crypto.randomUUID());
@@ -306,11 +334,28 @@ function CustomerDrawer({
     /^[0-9]+$/.test(discount.trim()) && Number(discount) <= 100 ? Number(discount) : null;
 
   async function saveDiscount() {
-    if (discountPercent === null) return;
+    if (discountPercent === null || customer === null) return;
+    const was = customer.discountPercent;
+    if (was === discountPercent) return;
+    // The old value beside the new one, because this number is not applied
+    // once — `priceForUser` takes it off **every future order** this customer
+    // places, and a 5 typed as 50 sells at half price until somebody notices.
+    // The wallet adjust in this same card previews «from → to» for one
+    // movement of money; a standing discount deserves it more, not less.
+    if (
+      !window.confirm(
+        `تخفیف دائمی این کاربر از ${count(was)}٪ به ${count(discountPercent)}٪ برسد؟ ` +
+          `از هر سفارش بعدی او کم می‌شود، نه فقط از سفارش بعدی.`,
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     setErr(null);
+    setDone(null);
     try {
       await api.setDiscount(id, { percent: discountPercent });
+      setDone(`تخفیف دائمی روی ${count(discountPercent)}٪ ذخیره شد.`);
       await load();
       onChanged();
     } catch (e) {
@@ -324,8 +369,14 @@ function CustomerDrawer({
     if (body.trim() === '') return;
     setBusy(true);
     setErr(null);
+    setDone(null);
     try {
       await api.messageCustomer(id, { body: body.trim(), messageId });
+      // No confirmation on the way in: the operator has just written the
+      // message, and typing it is the deliberation. What was missing was the
+      // other end — «queued, not sent» is the whole contract of this route and
+      // the screen never said it had queued anything.
+      setDone('پیام در صف رفت — ربات در چرخهٔ بعدی می‌فرستد.');
       setBody('');
       // A fresh id for the next message; the one just used stays spent, so a
       // stale tab cannot replay it.
@@ -338,14 +389,41 @@ function CustomerDrawer({
   }
 
   async function setStatus(next: 'ACTIVE' | 'BLOCKED') {
+    const who = customer?.username ? `@${customer.username}` : `کاربر ${id}`;
+    // Asked on the way in, not reported on the way out, and only for the
+    // direction that costs something. Every other press on this panel that
+    // takes something away asks first — retiring a config names the account,
+    // deleting an expense names the amount and which way the ledger moves —
+    // and cutting a paying customer off was the one that did not.
+    //
+    // The sentence says what the block actually does, including the part an
+    // operator would otherwise get wrong: a customer blocked mid-purchase can
+    // still send the receipt for a payment already waiting (`handle.ts` runs
+    // `recordReceipt` before the gate), so blocking somebody who has just paid
+    // does not strand their money.
+    if (
+      next === 'BLOCKED' &&
+      !window.confirm(
+        `${who} مسدود شود؟ دیگر نه منویی می‌بیند نه پیامی می‌گیرد. ` +
+          `رسید پرداختی که همین حالا باز است هنوز می‌رسد، و رفع مسدودی همین‌جاست.`,
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     setErr(null);
+    setDone(null);
     try {
       await api.setStatus(id, {
         status: next,
         reason: next === 'BLOCKED' ? blockReason.trim() || null : null,
       });
       setBlockReason('');
+      setDone(
+        next === 'BLOCKED'
+          ? `${who} مسدود شد — و در تاریخچهٔ تغییرات ثبت ماند.`
+          : `مسدودی ${who} برداشته شد.`,
+      );
       await load();
       onChanged();
     } catch (e) {
@@ -368,6 +446,7 @@ function CustomerDrawer({
       </div>
 
       {err && <div className="alert alert-error">{err}</div>}
+      {done && <div className="alert alert-info">{done}</div>}
       {!customer && !err && <p className="muted">در حال بارگذاری…</p>}
 
       {customer && (
@@ -379,7 +458,12 @@ function CustomerDrawer({
               label="سفارش‌ها"
               value={`${count(customer.orderCount)} · ${toman(customer.paidTotalIrr)}`}
             />
-            <Fact label="تخفیف دائمی" value={`${customer.discountPercent}٪`} />
+            {/* Through `count`, like every other number on this panel. A raw
+                interpolation put «25٪» in Latin digits directly beside «۱ ·
+                ۹۰۰٬۰۰۰ تومان» — two stats in one grid disagreeing about what a
+                number looks like, which no test saw and opening the drawer
+                did. */}
+            <Fact label="تخفیف دائمی" value={`${count(customer.discountPercent)}٪`} />
             <Fact label="عضویت" value={dateTime(customer.registeredAt)} />
             <Fact label="آخرین بازدید" value={dateTime(customer.lastSeenAt)} />
           </div>
@@ -429,8 +513,7 @@ function CustomerDrawer({
           {amountIrr !== 0 && (
             <div className={goesNegative ? 'alert alert-error' : 'alert alert-info'}>
               <span className="ltr">
-                {irrToToman(customer.balanceIrr).toLocaleString('fa-IR')} →{' '}
-                {irrToToman(projected).toLocaleString('fa-IR')}
+                {count(irrToToman(customer.balanceIrr))} → {count(irrToToman(projected))}
               </span>{' '}
               تومان{goesNegative && ' — موجودی منفی می‌شود'}
             </div>
