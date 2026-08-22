@@ -61,21 +61,101 @@ export function telegramId(value: string | number | null | undefined): bigint {
 }
 
 /**
+ * A legacy cell that is supposed to be text, decided rather than cast.
+ *
+ * `type Row` in `migrate.ts` said every column was `string | null` for months.
+ * It is not: `information_schema` on the 2026-08-11 dump has 30 `int` columns,
+ * 2 `tinyint` and 4 `json` beside its 235 `varchar` and 35 `text`, and mysql2
+ * hands the first two back as JavaScript **numbers** whatever `dateStrings` and
+ * `bigNumberStrings` are set to. One of those two `tinyint`s — `user.roll_Status`
+ * — was compared against `'0'`, was therefore `true` for all 963 rows, and would
+ * have migrated every customer who never accepted the shop's rules as having
+ * accepted them. The compiler could not object; the declared type said both
+ * sides were strings.
+ *
+ * Widening `Row` makes the compiler point at all 48 places a legacy cell reaches
+ * a transform. This is where they land, so the question «what does a number mean
+ * here» is answered once, in the open:
+ *
+ *   - **A string** is what almost every one of them is. Measured, not assumed:
+ *     of the 36 non-text columns in the dump, exactly one (`user.Balance`) is
+ *     read into a transform at all, and it goes to `tomanToIrr`, which has taken
+ *     numbers since it was written.
+ *   - **A `Date`** can only appear if `connectMysql` loses `dateStrings: true`.
+ *     Formatted rather than refused, because the shape it produces is the one
+ *     `tehranString` already parses, and a silent config drift that stopped the
+ *     migration dead would be found immediately anyway.
+ *   - **A safe integer** becomes its digits. `String(1000043001)` is the same
+ *     ten characters MySQL had, so an id column that changes from `varchar` to
+ *     `int` on the real cutover dump keeps working instead of throwing on a
+ *     value nothing was wrong with.
+ *   - **Anything else throws** — a float, a non-finite, an integer past 2^53,
+ *     an object. Each of those loses something on the way to a string, and this
+ *     migration moves money: a value we cannot carry exactly is a stop, not a
+ *     best effort.
+ *
+ * `phone` and `cardDigits` do not use this. Their rule is stricter and it is
+ * written where they are.
+ */
+export function legacyText(value: unknown, field: string): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value;
+  if (value instanceof Date) {
+    const p = (n: number, w = 2) => String(n).padStart(w, '0');
+    return (
+      `${p(value.getFullYear(), 4)}-${p(value.getMonth() + 1)}-${p(value.getDate())} ` +
+      `${p(value.getHours())}:${p(value.getMinutes())}:${p(value.getSeconds())}`
+    );
+  }
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
+  throw new TransformError(
+    field,
+    value,
+    `expected text, got ${typeof value} — a value that cannot become its own digits ` +
+      'exactly is not converted here; decide what it means at the column',
+  );
+}
+
+/**
+ * The same, for the two columns where a number is never acceptable.
+ *
+ * A phone number as a `number` has already lost its leading zero before this
+ * function sees it, and «۹۱۲…» instead of «۰۹۱۲…» is invisible in a table of
+ * 11,241 rows. A 16-digit card is past `Number.MAX_SAFE_INTEGER`, so it arrives
+ * already rounded — and the whole point of `isLuhnValid` is that one wrong digit
+ * is exactly what this migration had to settle once before.
+ *
+ * Neither can be repaired downstream, so neither is accepted.
+ */
+function legacyDigitsText(value: unknown, field: string): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value;
+  throw new TransformError(
+    field,
+    value,
+    `expected text, got ${typeof value} — a leading zero and a 16th digit do not ` +
+      'survive being a number, and neither loss is visible afterwards',
+  );
+}
+
+/**
  * 2,924 rows literally store the string 'NOT_USERNAME' where a Telegram
  * username would go. Carrying that forward would put a fake username on a
  * quarter of the customer base.
  */
-export function username(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const trimmed = value.trim();
+export function username(value: unknown): string | null {
+  const text = legacyText(value, 'user.username');
+  if (!text) return null;
+  const trimmed = text.trim();
   if (trimmed === '' || trimmed === 'NOT_USERNAME') return null;
   return trimmed;
 }
 
 /** Every user row stores the literal 'none' in `number`; none has a real phone. */
-export function phone(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const trimmed = value.trim();
+export function phone(value: unknown): string | null {
+  const text = legacyDigitsText(value, 'user.number');
+  if (!text) return null;
+  const trimmed = text.trim();
   if (trimmed === '' || trimmed === 'none' || trimmed === '0') return null;
   return trimmed;
 }
@@ -95,9 +175,11 @@ export function phone(value: string | null | undefined): string | null {
 function strictMap<T extends string>(
   table: Readonly<Record<string, T>>,
   field: string,
-): (value: string | null | undefined) => T {
+): (value: unknown) => T {
   return (value) => {
-    const key = (value ?? '').trim();
+    // Through `legacyText` like everything else, so a column that turns numeric
+    // is reported as an unmapped value with its digits rather than as `[object]`.
+    const key = (legacyText(value, field) ?? '').trim();
     const mapped = table[key];
     if (mapped === undefined) {
       throw new TransformError(
@@ -216,7 +298,7 @@ export const leaseStatus = strictMap(LEASE_STATUS, 'card_assignment_leases.statu
  * A legacy `tinyint(1)` flag, converted without trusting what type it arrives as.
  *
  * mysql2 returns `tinyint(1)` as a **number**, and `type Row` in `migrate.ts`
- * declared every field `string | null`. So `r.roll_Status !== '0'` compared a
+ * declared every field `string | null` until 2026-08-23. So `r.roll_Status !== '0'` compared a
  * number against a string, was `true` for every row, and would have marked all
  * 963 customers who never accepted the shop's rules as having accepted them.
  * The compiler could not see it: the declared type said the comparison was
@@ -249,8 +331,8 @@ export function legacyBool(value: unknown, field: string): boolean {
   );
 }
 
-export function isReseller(value: string | null | undefined): boolean {
-  const agent = (value ?? '').trim();
+export function isReseller(value: unknown): boolean {
+  const agent = (legacyText(value, 'user.agent') ?? '').trim();
   // Absent, not unmapped: a row that never had the column set is an ordinary
   // customer, which is what the legacy default has always meant.
   if (agent === '' || agent === 'f') return false;
@@ -270,8 +352,8 @@ export function isReseller(value: string | null | undefined): boolean {
  * value and every query already agrees. Folding case here reproduces the
  * behaviour that has been live for years, rather than inventing a distinction.
  */
-export function userStatus(value: string | null | undefined): 'ACTIVE' | 'BLOCKED' {
-  const raw = (value ?? '').trim().toLowerCase();
+export function userStatus(value: unknown): 'ACTIVE' | 'BLOCKED' {
+  const raw = (legacyText(value, 'User_Status') ?? '').trim().toLowerCase();
   if (raw === 'active') return 'ACTIVE';
   if (raw === 'block') return 'BLOCKED';
   throw new TransformError('User_Status', value, 'unmapped legacy value');
@@ -290,12 +372,13 @@ export function userStatus(value: string | null | undefined): 'ACTIVE' | 'BLOCKE
  * The prefix is the only part with meaning, so that is all we promote to a
  * column. The whole string is preserved separately.
  */
-export function stepToken(value: string | null | undefined): {
+export function stepToken(value: unknown): {
   operationType: string | null;
   raw: string | null;
 } {
-  if (!value) return { operationType: null, raw: null };
-  const raw = value.trim();
+  const text = legacyText(value, 'Payment_report.id_invoice');
+  if (!text) return { operationType: null, raw: null };
+  const raw = text.trim();
   if (raw === '') return { operationType: null, raw: null };
   const pipe = raw.indexOf('|');
   if (pipe <= 0) {
@@ -332,9 +415,10 @@ export function isLuhnValid(digits: string): boolean {
   return sum % 10 === 0;
 }
 
-export function cardDigits(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const digits = value.replace(/\D/g, '');
+export function cardDigits(value: unknown): string | null {
+  const text = legacyDigitsText(value, 'card_number');
+  if (!text) return null;
+  const digits = text.replace(/\D/g, '');
   return digits === '' ? null : digits;
 }
 
@@ -449,9 +533,10 @@ export function epochSeconds(
  */
 const TEHRAN_STRING = /^(\d{4})[/-](\d{2})[/-](\d{2})[ T](\d{2}:\d{2}:\d{2})/;
 
-export function tehranString(value: string | null | undefined, field: string): string | null {
-  if (!value) return null;
-  const raw = String(value).trim();
+export function tehranString(value: unknown, field: string): string | null {
+  const text = legacyText(value, field);
+  if (!text) return null;
+  const raw = text.trim();
   if (raw === '' || raw === '0000-00-00 00:00:00') return null;
   const m = TEHRAN_STRING.exec(raw);
   if (!m) {
@@ -465,10 +550,14 @@ export function tehranString(value: string | null | undefined, field: string): s
 // ---------------------------------------------------------------------------
 
 /** Parses a JSON column, returning a fallback rather than throwing on garbage. */
-export function json(value: string | null | undefined, fallback: unknown = {}): unknown {
-  if (!value) return fallback;
+export function json(value: unknown, fallback: unknown = {}): unknown {
+  // A `json` column comes back from mysql2 already parsed — an object, not text
+  // — so it is returned as it is rather than pushed through `JSON.parse` twice.
+  if (typeof value === 'object' && value !== null) return value;
+  const text = legacyText(value, 'json');
+  if (!text) return fallback;
   try {
-    const parsed: unknown = JSON.parse(value);
+    const parsed: unknown = JSON.parse(text);
     return parsed === null ? fallback : parsed;
   } catch {
     return fallback;

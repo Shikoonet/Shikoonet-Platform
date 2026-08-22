@@ -18,26 +18,35 @@ import { d1Table, insertBatch, mysqlRows, report, type Column, type Config } fro
 import * as t from './transform.js';
 
 /**
- * **This type is known to be inaccurate, and the inaccuracy has already cost us.**
+ * One legacy row, in the types mysql2 actually hands back.
  *
- * mysql2 does not return every column as a string. `tinyint(1)` arrives as a
- * number, which is how `r.roll_Status !== '0'` came to compare a number against
- * a string, be true for every row, and migrate all 963 customers who never
- * accepted the shop's rules as having accepted them (2026-08-17). The compiler
- * could not object, because this line told it both sides were strings.
+ * This said `Record<string, string | null>` until 2026-08-23, and the lie had
+ * already cost us once: `tinyint(1)` arrives as a **number**, so
+ * `r.roll_Status !== '0'` compared a number against a string, was true for
+ * every row, and would have migrated all 963 customers who never accepted the
+ * shop's rules as having accepted them. The compiler could not object, because
+ * this line told it both sides were strings.
  *
- * Widening it to `string | number | null` was tried and **does** work — tsc then
- * reports 48 sites across 14 transforms (`tehranString`, `cardDigits`, `phone`,
- * `username`, `json`, …), which is the real measure of the debt. It is not done
- * here because each of those transforms needs its own decision rather than a
- * cast: `phone` on a number silently loses a leading zero, and `tehranString`
- * has to deal with mysql2 possibly handing back a `Date`. Getting that wrong in
- * a migration that moves money is worse than the current honest comment.
+ * What the dump actually holds, from `information_schema` rather than from
+ * memory: 235 `varchar`, 35 `text`, 30 `int`, 5 `bigint`, 4 `json`, 3 `enum`,
+ * 2 `tinyint`, 1 `datetime`. With `connectMysql`'s settings — `dateStrings`,
+ * `bigNumberStrings` — everything comes back a string except `int` and
+ * `tinyint`, which are numbers, and `json`, which is an object. Measured
+ * against the simulation MySQL, not assumed.
  *
- * Until then the guards are behavioural, not structural: `legacyBool` decides
- * from the value it is given, and `verify.ts` counts both flags on both sides.
+ * `json` is left out of this union deliberately. Of the four such columns
+ * (`botsaz.hide_panel`, `setting.text_edit`, `logs_api.data`, `logs_api.header`)
+ * the migration reads none, so admitting `object` here would widen 274 columns'
+ * worth of call sites to buy nothing. `t.json` handles an already-parsed value
+ * anyway, for the day one of them is read.
+ *
+ * Widening this made tsc name all 48 places a legacy cell reaches a transform.
+ * They now go through `t.legacyText`, which is where «what does a number mean
+ * here» is answered once — and `t.phone` and `t.cardDigits` refuse a number
+ * outright, because a leading zero and a 16th digit do not survive the trip and
+ * neither loss is visible afterwards.
  */
-type Row = Record<string, string | null>;
+type Row = Record<string, string | number | null>;
 
 interface Ctx {
   cfg: Config;
@@ -63,15 +72,19 @@ function skip(ctx: Ctx, what: string, n = 1): void {
 }
 
 /** A legacy percentage field; anything outside 0-100 is treated as unset. */
-function percentOrZero(value: string | null | undefined): number {
-  const n = Number((value ?? '0').trim());
+function percentOrZero(value: unknown): number {
+  const n = Number((t.legacyText(value, 'user.pricediscount') ?? '0').trim());
   return Number.isFinite(n) && n > 0 && n <= 100 ? n : 0;
 }
 
 /** Resolves a legacy telegram id to a users.id, or null when the user is gone. */
-function user(ctx: Ctx, legacyId: string | null | undefined): string | null {
-  if (!legacyId) return null;
-  return ctx.userId.get(String(legacyId).trim()) ?? null;
+function user(ctx: Ctx, legacyId: unknown): string | null {
+  // Every caller passes a legacy telegram id out of a different table, so the
+  // field name is the generic one: what a failure here means is «this column
+  // stopped being text», and the value in the error says which.
+  const id = t.legacyText(legacyId, 'legacy telegram id');
+  if (!id) return null;
+  return ctx.userId.get(id.trim()) ?? null;
 }
 
 // ===========================================================================
@@ -378,7 +391,7 @@ const PROVIDER_SECRETS = ['password_panel', 'datelogin', 'secret_code'];
  */
 export function providerKind(r: Row): string {
   if (r.version_panel === '1') return 'pasarguard';
-  return (r.type ?? 'marzban').toLowerCase();
+  return (t.legacyText(r.type, 'marzban_panel.type') ?? 'marzban').toLowerCase();
 }
 
 /**
@@ -390,6 +403,7 @@ export function providerKind(r: Row): string {
  * dump in the simulation MySQL.
  */
 export function providerRow(r: Row): unknown[] {
+  const limitPanel = t.legacyText(r.limit_panel, 'marzban_panel.limit_panel');
   return [
     Number(r.id),
     r.code_panel ?? `panel-${r.id}`,
@@ -398,7 +412,7 @@ export function providerRow(r: Row): unknown[] {
     r.status === 'active' ? 'ACTIVE' : 'DISABLED',
     r.url_panel,
     // 'unlimited' is the legacy sentinel; NULL means unlimited here.
-    r.limit_panel && /^\d+$/.test(r.limit_panel) ? Number(r.limit_panel) : null,
+    limitPanel !== null && /^\d+$/.test(limitPanel) ? Number(limitPanel) : null,
     // Panel credentials stay out of the row; secret_ref is wired up at deploy.
     JSON.stringify(t.parseJsonStrings(t.legacyAttrs(r, PROVIDER_CLAIMED, PROVIDER_SECRETS))),
   ];
@@ -452,8 +466,8 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
   const byName = new Map(providers.map((p) => [p.name.trim(), p.id]));
 
   /** Location is what the customer picks first, so a wrong one is not skippable. */
-  function providerFor(location: string | null | undefined): string | null {
-    const name = (location ?? '').trim();
+  function providerFor(location: unknown): string | null {
+    const name = (t.legacyText(location, 'product.Location') ?? '').trim();
     // Six legacy rows carry no Location. They appear under no panel in the bot's
     // own menu either, so they are genuinely unlinked rather than mismapped.
     if (name === '') return null;
@@ -568,8 +582,8 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
  * codes are already past their date, and a mapping that quietly returned NULL
  * would turn all 31 back on the day the bot starts reading this table.
  */
-export function expiryFromLegacy(time: string | null | undefined): string | null {
-  const seconds = Number(time ?? 0);
+export function expiryFromLegacy(time: unknown): string | null {
+  const seconds = Number(t.legacyText(time, 'DiscountSell.time') ?? 0);
   if (!Number.isFinite(seconds) || seconds <= 0) return null;
   return new Date(seconds * 1000).toISOString();
 }
@@ -583,10 +597,11 @@ export function expiryFromLegacy(time: string | null | undefined): string | null
  * code applies to nothing in the live bot and must not start applying to
  * everything in this one. The dump has only the three.
  */
-export function appliesTo(type: string | null | undefined): 'ALL' | 'BUY' | 'RENEW' | null {
-  if (type === 'all') return 'ALL';
-  if (type === 'buy') return 'BUY';
-  if (type === 'extend') return 'RENEW';
+export function appliesTo(type: unknown): 'ALL' | 'BUY' | 'RENEW' | null {
+  const raw = t.legacyText(type, 'DiscountSell.type');
+  if (raw === 'all') return 'ALL';
+  if (raw === 'buy') return 'BUY';
+  if (raw === 'extend') return 'RENEW';
   return null;
 }
 
@@ -621,7 +636,7 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
     }
     const limit = Number(r.limituse ?? 0);
     candidates.push({
-      code: r.code,
+      code: t.legacyText(r.code, 'Discount.code') ?? '',
       uses: Number(r.limitused ?? 0),
       giftFirst: 0,
       legacyId: Number(r.id),
@@ -663,7 +678,7 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
     // it would widen it to every product on every panel.
     let productId: string | null = null;
     if (r.code_product && r.code_product !== 'all') {
-      productId = productByCode.get(r.code_product) ?? null;
+      productId = productByCode.get(t.legacyText(r.code_product, 'DiscountSell.code_product') ?? '') ?? null;
       if (productId === null) {
         skip(ctx, 'discount codes: scoped to a product that is gone');
         continue;
@@ -671,7 +686,7 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
     }
     let providerId: string | null = null;
     if (r.code_panel && r.code_panel !== '/all') {
-      providerId = providerByCode.get(r.code_panel) ?? null;
+      providerId = providerByCode.get(t.legacyText(r.code_panel, 'DiscountSell.code_panel') ?? '') ?? null;
       if (providerId === null) {
         skip(ctx, 'discount codes: scoped to a panel that is gone');
         continue;
@@ -683,7 +698,7 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
       continue;
     }
     candidates.push({
-      code: r.codeDiscount,
+      code: t.legacyText(r.codeDiscount, 'DiscountSell.codeDiscount') ?? '',
       uses: Number(r.usedDiscount ?? 0),
       giftFirst: 1,
       legacyId: Number(r.id),
@@ -755,7 +770,7 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
     'discount_redemptions',
     cols(['legacy_id', 'code_id', 'user_id']),
     consumed.flatMap((r) => {
-      const codeId = byCode.get(r.code ?? '');
+      const codeId = byCode.get(t.legacyText(r.code, 'Giftcodeconsumed.code') ?? '');
       const u = user(ctx, r.id_user);
       if (!codeId) {
         skip(ctx, 'redemptions: code deleted');
@@ -830,7 +845,7 @@ async function migrateSubscriptions(ctx: Ctx): Promise<number> {
         [
           r.id_invoice,
           u,
-          byName.get(r.Service_location ?? '') ?? null,
+          byName.get(t.legacyText(r.Service_location, 'invoice.Service_location') ?? '') ?? null,
           r.Service_location,
           r.name_product ?? '(unknown product)',
           t.tomanToIrr(r.price_product).toString(),
@@ -997,11 +1012,14 @@ async function migrateOps(ctx: Ctx): Promise<number> {
     ctx.pg,
     'support_departments',
     cols(['legacy_id', 'name', 'telegram_id']),
-    (await mysqlRows<Row>(ctx.my, 'SELECT * FROM departman')).map((r) => [
-      Number(r.id),
-      r.name_departman ?? `dept-${r.id}`,
-      r.idsupport && /^\d+$/.test(r.idsupport) ? r.idsupport : null,
-    ]),
+    (await mysqlRows<Row>(ctx.my, 'SELECT * FROM departman')).map((r) => {
+      const idSupport = t.legacyText(r.idsupport, 'departman.idsupport');
+      return [
+        Number(r.id),
+        r.name_departman ?? `dept-${r.id}`,
+        idSupport !== null && /^\d+$/.test(idSupport) ? idSupport : null,
+      ];
+    }),
     { conflict: '(legacy_id)' },
   );
 
