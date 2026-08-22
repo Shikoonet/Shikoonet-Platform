@@ -27,6 +27,9 @@
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { DEFAULT_LAYOUTS, isMenuId, type ButtonPlacement, type MenuId } from './keyboard.js';
 import { Texts } from '@shikoo/contracts';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -127,7 +130,7 @@ async function half<T>(what: string, read: () => Promise<T>, fallback: T): Promi
   try {
     return await read();
   } catch (err) {
-    if (!warned) console.warn(`[bot] could not load ${what}, using defaults`, err);
+    if (!warned) log.warn('content.read_failed', { what, using: 'the shipped defaults' }, err);
     failed = true;
     return fallback;
   }

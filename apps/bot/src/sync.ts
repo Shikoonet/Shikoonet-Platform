@@ -29,6 +29,9 @@
 import type { D1Database } from '@shikoo/database';
 import { adapterFor, type ProviderContext, type RemoteAccount } from '@shikoo/domain';
 import { credentialsFor } from './provision.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 /**
  * How stale the numbers are allowed to get.
@@ -132,7 +135,8 @@ export async function syncSubscriptions(
     if (!listed.ok) {
       summary.failed++;
       // The reason names the panel and an HTTP status, never a credential.
-      console.error(`[bot] sync skipped panel ${row.code}: ${listed.reason}`);
+      // The reason names the panel and an HTTP status, never a credential.
+      log.warn('sync.panel_skipped', { ref: row.code, reason: listed.reason });
       continue;
     }
 

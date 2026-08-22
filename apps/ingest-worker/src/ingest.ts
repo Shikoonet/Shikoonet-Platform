@@ -14,8 +14,11 @@ import {
   assignAccountForTx,
   autoCreatePendingAccount,
   loadBankSmsPatterns,
+  createLogger,
   type DetectedIdentifierInput,
 } from '@shikoo/domain';
+
+const log = createLogger('ingest');
 import { SQL, type D1Database } from '@shikoo/database';
 import type { Classification, IncomingSmsBody, NormalizedSms, ParseResult } from '@shikoo/contracts';
 import { authenticateDevice } from './auth.js';
@@ -157,7 +160,7 @@ export async function ingest(
   // with it; the id is safe to log, the body is not.
   const { parsers, skipped } = compilePatterns(await loadBankSmsPatterns(db));
   for (const s of skipped) {
-    console.warn(`bank_sms_patterns row ${s.id} skipped: ${s.problems.join('; ')}`);
+    log.warn('sms.pattern_skipped', { ref: s.id, problems: s.problems.join('; ') });
   }
   const result = parseSms(sms, parsers);
 

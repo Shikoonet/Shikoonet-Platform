@@ -20,6 +20,9 @@ import { enqueue } from './notify.js';
 import { payReferralCommission } from './referral.js';
 import { loadShopSettings } from './settings.js';
 import { creditTopup } from './wallet.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 /**
  * A payment that arrived for an order nobody can apply it to.
@@ -102,7 +105,7 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
   // renewal cashback. One situation, one answer, in both places now.
   const shop = await loadShopSettings(db);
   if (!shop.fromDatabase) {
-    console.warn('[bot] settlement is waiting: the commission rate has never been read');
+    log.warn('settle.waiting', { reason: 'the commission rate has never been read' });
     return 0;
   }
   const { commissionPercent } = shop;
@@ -193,10 +196,10 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
           // rollback cannot leave the incident recorded for a payment that was
           // never settled, or settle one without recording it.
           await recordIncident(tx, row);
-          console.error(
-            `[bot] payment ${row.payment_public_id} verified against order ` +
-              `${row.order_id}, which is ${row.order_status ?? 'missing'} — needs a human`,
-          );
+          log.error('settle.failed', {
+            ref: row.payment_public_id,
+            order_status: row.order_status ?? 'missing',
+          });
         }
       }
 

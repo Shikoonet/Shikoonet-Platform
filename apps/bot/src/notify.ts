@@ -35,6 +35,9 @@ import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { isPermanentRejection, type InlineKeyboard, type TelegramApi } from './telegram.js';
 import { copyLinkMenu } from './menu.js';
 import { qrPng } from './qr.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 /** What a sweep wants said, and the key that stops it being said twice. */
 export interface PendingNotification {
@@ -198,7 +201,7 @@ export async function flush(
       .all<DueRow>();
     rows = results ?? [];
   } catch (err) {
-    console.error('[bot] could not claim notifications, will retry', err);
+    log.error('notify.claim_failed', { will_retry: true }, err);
     return result;
   }
 
@@ -234,7 +237,7 @@ export async function flush(
           );
           await markQrSent(db, row.id);
         } catch (err) {
-          console.error(`[bot] QR for chat ${row.chat_id} could not be sent; sending the text alone`, err);
+          log.warn('notify.qr_failed', { ref: String(row.id), fallback: 'text only' }, err);
         }
       }
       await api.sendMessage(row.chat_id, row.body, keyboardOf(row));
@@ -250,9 +253,9 @@ export async function flush(
       if (permanent || exhausted) {
         await settle(db, row.id, 'DEAD', String(err), null);
         result.dead += 1;
-        console.error(
-          `[bot] giving up on message to chat ${row.chat_id} after ` +
-            `${row.attempt_count} attempt(s)${permanent ? ' — refused permanently' : ''}`,
+        log.error(
+          'notify.dead',
+          { ref: String(row.id), attempts: row.attempt_count, permanent },
           err,
         );
         continue;
@@ -280,7 +283,7 @@ async function markQrSent(db: D1Database, id: number): Promise<void> {
   } catch (err) {
     // Losing this mark costs a duplicate picture, not a lost message, so it
     // must not abort a send that has already half-happened.
-    console.error('[bot] could not mark a QR as sent', err);
+    log.error('notify.qr_unrecorded', {}, err);
   }
 }
 
@@ -315,6 +318,6 @@ async function settle(
     // The lease expires on its own, so the worst case is one duplicate rather
     // than a stuck row — and saying so is better than throwing out of a loop
     // that still has messages to send.
-    console.error(`[bot] could not record the outcome of notification ${id}`, err);
+    log.error('notify.outcome_unrecorded', { ref: String(id) }, err);
   }
 }

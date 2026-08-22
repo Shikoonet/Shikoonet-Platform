@@ -71,15 +71,26 @@ describe('getUpdates', () => {
     expect(updates[0]?.message).toBeUndefined();
   });
 
-  it('drops an element with no usable update_id', async () => {
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  it('drops an element with no usable update_id, and says so', async () => {
+    // The witness is the structured line, not `console.error`. Dropping an
+    // update is the one thing here that loses a customer's action, so it has
+    // to leave something a person can find later — which since 2026-08-22
+    // means a row in `app_events`, not a string in a container that gets
+    // replaced on the next deploy.
+    const lines: string[] = [];
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    });
     const { api } = apiWith(() => ok([{ nonsense: true }, { update_id: 13 }]));
 
     const updates = await api.getUpdates(0, 1);
+    out.mockRestore();
 
     expect(updates.map((u) => u.update_id)).toEqual([13]);
-    expect(errors).toHaveBeenCalledOnce();
-    errors.mockRestore();
+    const said = lines.map((l) => JSON.parse(l) as { evt: string; level: string });
+    expect(said.filter((l) => l.evt === 'telegram.update_without_id')).toHaveLength(1);
+    expect(said[0]?.level).toBe('error');
   });
 
   it('ignores update kinds it does not handle', async () => {

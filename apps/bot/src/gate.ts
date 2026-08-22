@@ -45,6 +45,9 @@
  */
 
 import type { D1DatabaseSession } from '@shikoo/database';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 /** Just the piece of `TelegramApi` this needs, so a test can pass a stub. */
 export interface MembershipApi {
@@ -184,7 +187,7 @@ async function missingChannels(
         // A channel the bot is not an admin of, a `chat_ref` with a typo in it,
         // and a Telegram that timed out all land here, and none of them is
         // evidence about this customer.
-        console.error(`[bot] could not check membership of ${channel.chat_ref}`, err);
+        log.warn('gate.membership_unknown', { ref: channel.chat_ref }, err);
         return 'unanswered';
       }
     }),

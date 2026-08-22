@@ -42,6 +42,9 @@ import {
   verifyTotp,
 } from '@shikoo/domain';
 import { audit } from './adminAudit.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('dashboard');
 
 export const SESSION_COOKIE = 'shikoo_session';
 
@@ -315,7 +318,7 @@ async function pruneDeadSessions(c: AuthContext): Promise<void> {
       .bind(SESSION_RETENTION_DAYS)
       .run();
   } catch (err) {
-    console.error('[dashboard] could not prune expired operator sessions', err);
+    log.error('prune.failed', { what: 'operator_sessions' }, err);
   }
 }
 

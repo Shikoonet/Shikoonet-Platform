@@ -18,6 +18,9 @@
 
 import { z } from 'zod';
 import { hasCustomEmoji, stripCustomEmoji, toTelegramHtml } from '@shikoo/contracts';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 const TelegramUserSchema = z.object({
   id: z.number().int(),
@@ -283,7 +286,7 @@ export const TRUNCATION_MARK = '\n…';
  */
 function clamp(text: string): string {
   if (text.length <= MAX_MESSAGE_LENGTH) return text;
-  console.error(`[telegram] message of ${text.length} characters truncated to fit`);
+  log.warn('telegram.message_truncated', { chars: text.length, limit: MAX_MESSAGE_LENGTH });
   return text.slice(0, MAX_MESSAGE_LENGTH - TRUNCATION_MARK.length) + TRUNCATION_MARK;
 }
 
@@ -417,7 +420,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       // entirely — the caller knows what to do with that one, so it goes back
       // up untouched rather than being read here as a verdict on Premium.
       if (!isRejection(err) || isNotModified(err)) throw err;
-      console.error('[telegram] custom emoji refused, falling back to plain text');
+      log.warn('telegram.custom_emoji_refused');
     }
     await send({ text: stripCustomEmoji(clamped) });
     await options.onCustomEmojiRefused?.();
@@ -451,7 +454,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
         } else {
           // No update_id means nothing can be claimed or acknowledged for it.
           // Dropping it is the only option that does not stall the offset.
-          console.error('[telegram] dropped an update with no usable update_id');
+          log.error('telegram.update_without_id');
         }
       }
       return updates;

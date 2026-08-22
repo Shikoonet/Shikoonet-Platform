@@ -24,6 +24,9 @@
 
 import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 /**
  * How long an order must have been failing before it may take from the shelf.
@@ -169,6 +172,6 @@ export async function deliverFromStock(
 
   if (taken === null) return null;
   const sold: StockRow = taken;
-  console.warn(`[bot] order ${row.order_public_id} filled from stock #${sold.id}`);
+  log.info('stock.filled', { ref: row.order_public_id, stock_id: sold.id });
   return menu.serviceReady(sold.subscription_url, sold.remote_username, expiresAt);
 }

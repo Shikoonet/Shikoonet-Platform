@@ -30,6 +30,9 @@ import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
 import { loadShopSettings, settingText } from './settings.js';
 import { enqueue } from './notify.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 /**
  * The thresholds when the settings cannot be read, in bytes and days.
@@ -222,7 +225,7 @@ export async function warnExpiringServices(
       // says so on the first sweep instead of years later in an audit -- and
       // the count it returns is the number of warnings that really exist.
       if (!queued) {
-        console.error(`[bot] ${row.reason} warning for subscription ${row.id} was claimed but not queued`);
+        log.error('warn.claimed_not_queued', { ref: String(row.id), reason: row.reason });
       }
       return queued;
     });

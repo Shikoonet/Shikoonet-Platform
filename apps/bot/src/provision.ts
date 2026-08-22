@@ -40,6 +40,9 @@ import { actionsFor, tierFor } from './serviceActions.js';
 import { deliverFromStock } from './stock.js';
 import { creditRenewalCashback, refundOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 /**
  * How long an order may sit in PROVISIONING before a later sweep takes it back.
@@ -181,7 +184,7 @@ async function purchasedScreen(
       qrPayload: service.subscription_url,
     };
   } catch (err) {
-    console.error(`[bot] order ${row.order_public_id} delivered, but its screen could not be built`, err);
+    log.error('provision.screen_failed', { ref: row.order_public_id }, err);
     return null;
   }
 }
@@ -356,7 +359,7 @@ export async function provisionPaidOrders(
       const owed = await untoldNote(db, row, now);
       if (owed !== null) {
         await tell(db, row, owed);
-        console.warn(`[bot] order ${row.order_public_id} ended without a message; sent it now`);
+        log.warn('provision.late_message', { ref: row.order_public_id });
         delivered += 1;
       }
       continue;
@@ -383,9 +386,9 @@ export async function provisionPaidOrders(
       // worth a stack trace: it means another sweep finished this order, which
       // is the outcome the claim exists to produce.
       if (err instanceof LostTheClaim) {
-        console.warn(`[bot] order ${row.order_public_id} was finished by another sweep`);
+        log.warn('provision.raced', { ref: row.order_public_id });
       } else {
-        console.error(`[bot] order ${row.order_public_id} failed mid-delivery`, err);
+        log.error('provision.failed', { ref: row.order_public_id, stage: 'mid-delivery' }, err);
       }
       continue;
     }
@@ -471,11 +474,11 @@ async function deliver(
       // yet — a panel that is briefly down is not news, and saying "there was a
       // problem" only to succeed a minute later is worse than silence.
       await release(db, row.order_id);
-      console.error(`[bot] order ${row.order_public_id} will retry: ${result.reason}`);
+      log.warn('provision.will_retry', { ref: row.order_public_id, reason: result.reason });
       return null;
     }
     const refunded = await fail(db, row.order_id, result.reason);
-    console.error(`[bot] order ${row.order_public_id} needs a human: ${result.reason}`);
+    log.error('provision.failed', { ref: row.order_public_id, reason: result.reason, refunded });
     return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 
@@ -577,7 +580,7 @@ async function recordPartialRenewal(
       )
       .run();
   } catch (err) {
-    console.error(`[bot] renewal ${row.order_public_id} was half-applied and could not be recorded`, err);
+    log.error('provision.half_applied', { ref: row.order_public_id }, err);
   }
 }
 
@@ -642,9 +645,10 @@ async function renew(
     const shop = await loadShopSettings(db);
     if (!shop.fromDatabase) {
       await release(db, row.order_id);
-      console.error(
-        `[bot] renewal ${row.order_public_id} will retry: the cashback rate could not be read`,
-      );
+      log.warn('provision.will_retry', {
+        ref: row.order_public_id,
+        reason: 'the cashback rate could not be read',
+      });
       return null;
     }
     renewCashbackPercent = shop.renewCashbackPercent;
@@ -678,7 +682,7 @@ async function renew(
   if (!result.ok) {
     if (result.retryable) {
       await release(db, row.order_id);
-      console.error(`[bot] renewal ${row.order_public_id} will retry: ${result.reason}`);
+      log.warn('provision.will_retry', { ref: row.order_public_id, reason: result.reason });
       return null;
     }
     // Half-done on the panel: the account was changed and the order was not.
@@ -690,7 +694,12 @@ async function renew(
       await recordPartialRenewal(db, row, result.applied, result.reason);
     }
     const refunded = await fail(db, row.order_id, result.reason);
-    console.error(`[bot] renewal ${row.order_public_id} needs a human: ${result.reason}`);
+    log.error('provision.failed', {
+      ref: row.order_public_id,
+      reason: result.reason,
+      refunded,
+      renewal: true,
+    });
     return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 

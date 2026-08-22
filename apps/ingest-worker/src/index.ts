@@ -10,7 +10,7 @@ import { verifyIntegrationHmac } from './integrations/auth.js';
 import { handleMirzabotClaim, MirzabotClaimBody, MIRZABOT_CLAIMS_PATH, finalizeExpiredMirzabotWaits } from './integrations/mirzabot.js';
 import { flushWebhookDeliveries } from './integrations/webhook.js';
 import type { MirzabotClaimPayload } from '@shikoo/contracts';
-import { clientIp, type RateLimit } from '@shikoo/domain';
+import { clientIp, createLogger, type RateLimit } from '@shikoo/domain';
 
 export interface Env {
   DB: D1Database;
@@ -119,7 +119,22 @@ function limitBody(max: (env: Env) => number): MiddlewareHandler<{ Bindings: Env
     })(c, next);
 }
 
+const log = createLogger('ingest');
+
 const app = new Hono<{ Bindings: Env }>();
+
+/**
+ * One id per request, echoed back in `X-Request-Id`.
+ *
+ * The phone that posts bank SMS retries, and a retry that was actually
+ * delivered twice is indistinguishable from two messages without this. Trusted
+ * from the caller when already present, so a proxy's id and ours do not
+ * disagree.
+ */
+app.use('*', async (c, next) => {
+  c.header('X-Request-Id', c.req.header('x-request-id') ?? crypto.randomUUID());
+  await next();
+});
 
 app.get('/health', (c) => c.json({ ok: true }));
 
@@ -322,6 +337,6 @@ export async function runScheduledSweep(env: Env): Promise<void> {
     // The only voice a dead notice has today. A DEAD row means a paid customer
     // whose order the legacy bot was never successfully told about, and it will
     // not be retried again — see the outbox note in `webhook.ts`.
-    console.error(`[sweep] ${flushed.dead} fulfilment notice(s) gave up and need a person`);
+    log.error('webhook.dead', { notices: flushed.dead });
   }
 }

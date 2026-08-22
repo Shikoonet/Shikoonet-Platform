@@ -13,6 +13,9 @@
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { invalidateBotContent } from './botContent.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -352,9 +355,9 @@ export async function disableCustomEmoji(db: Db): Promise<void> {
       )
       .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key)
       .run();
-    console.error('[bot] telegram refused a custom emoji — the setting is now off');
+    log.warn('settings.custom_emoji_disabled');
   } catch (err) {
-    console.error('[bot] could not switch custom emoji off', err);
+    log.error('settings.custom_emoji_write_failed', {}, err);
   }
   invalidateShopSettings();
   // The wording is cached with the stripping decision baked in, so both caches
@@ -543,10 +546,9 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
   } catch (err) {
     if (!warned) {
       warned = true;
-      console.warn(
-        cached
-          ? '[bot] could not load the shop settings, using the last good read'
-          : '[bot] could not load the shop settings and have never read them, using defaults',
+      log.warn(
+        'settings.read_failed',
+        { using: cached ? 'the last good read' : 'the shipped defaults' },
         err,
       );
     }
