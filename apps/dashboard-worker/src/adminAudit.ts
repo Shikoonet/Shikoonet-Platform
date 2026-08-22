@@ -10,6 +10,9 @@
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import type { AccessRole } from '@shikoo/contracts';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('dashboard');
 
 export type Ident = {
   email: string;
@@ -53,25 +56,82 @@ export async function audit(
    */
   id: string = crypto.randomUUID(),
 ): Promise<void> {
-  await db
-    .prepare(
-      `INSERT INTO audit_logs
-         (id, actor_email, actor_role, action, entity_type, entity_id,
-          before_json, after_json, reason, request_id, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?11, ?10)`,
-    )
-    .bind(
-      id,
-      ident.email,
-      ident.role,
-      action,
-      entityType,
-      entityId,
-      before === null ? null : JSON.stringify(before),
-      after === null ? null : JSON.stringify(after),
-      reason,
-      Date.now(),
-      ident.requestId ?? null,
-    )
-    .run();
+  const insert = () =>
+    db
+      .prepare(
+        `INSERT INTO audit_logs
+           (id, actor_email, actor_role, action, entity_type, entity_id,
+            before_json, after_json, reason, request_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?11, ?10)`,
+      )
+      .bind(
+        id,
+        ident.email,
+        ident.role,
+        action,
+        entityType,
+        entityId,
+        before === null ? null : JSON.stringify(before),
+        after === null ? null : JSON.stringify(after),
+        reason,
+        Date.now(),
+        ident.requestId ?? null,
+      )
+      .run();
+
+  // Inside a caller's transaction, the audit row and the change it describes
+  // stand or fall together — which is the whole reason `Db` widened to accept a
+  // session — so the error has to reach the caller and roll the pair back.
+  if (isSession(db)) {
+    await insert();
+    return;
+  }
+
+  // On a bare connection it cannot: every one of these calls is the LAST
+  // statement of a handler whose write has already committed. Throwing here
+  // answered 500 for a change that had been made, and an operator who is told
+  // «نشد» presses the button again — so a failed audit row bought a duplicate
+  // create on the routes where a repeat is not idempotent.
+  //
+  // The row is lost either way. What this chooses is which of the two costs to
+  // pay: the operator is told the truth, and the gap becomes an `error` in
+  // «رویدادها» carrying who did what to which entity, with the request id that
+  // ties it to the rest of that request. Silent it is not; atomic it is not
+  // either, and the fix for that is the caller passing a session.
+  try {
+    await insert();
+  } catch (err) {
+    log.error(
+      'audit.unrecorded',
+      {
+        action,
+        entityType,
+        entityId,
+        actor: ident.email,
+        // `trace` and `ref` are lifted out of the fields by `emit` into their
+        // own columns, so «رویدادها» can gather this beside everything else
+        // that request did and search it by the entity an admin has in hand.
+        trace: ident.requestId,
+        ref: entityId,
+        consequence: 'the change was made and audit_logs has no row for it',
+      },
+      err,
+    );
+  }
+}
+
+/**
+ * A session, told apart from a plain database.
+ *
+ * By the method rather than by a flag, so a caller inside a transaction gets
+ * the strict behaviour without having to say so.
+ *
+ * The method is `withSession`, and the first version of this said `batch` —
+ * which `D1DatabaseSession` also has (`packages/db/src/types.ts:24`). That
+ * would have read every session as a bare connection and swallowed exactly the
+ * errors that are supposed to roll a transaction back. Read off the interface
+ * rather than assumed, after assuming it wrong once.
+ */
+function isSession(db: Db): db is D1DatabaseSession {
+  return typeof (db as D1Database).withSession !== 'function';
 }
