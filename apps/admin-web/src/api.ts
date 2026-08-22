@@ -1087,6 +1087,8 @@ export const api = {
       revenueAdjustmentIrr: number;
       ordersToday: number;
       walletHeldIrr: number;
+      walletOwedToShopIrr: number;
+      walletDebtors: number;
       recentCustomers: CustomerListItem[];
       recentOrders: Array<{
         publicId: string;

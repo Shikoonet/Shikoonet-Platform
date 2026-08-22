@@ -107,6 +107,8 @@ export function registerAdminOverviewRoutes(
       revenueAdjustmentIrr: Number(adjustment?.net ?? 0),
       ordersToday: stats.ordersToday,
       walletHeldIrr: stats.walletHeldIrr,
+      walletOwedToShopIrr: stats.walletOwedToShopIrr,
+      walletDebtors: stats.walletDebtors,
       recentCustomers: (recentCustomers.results ?? []).map((r) => ({
         id: r.id,
         telegramId: r.telegram_id,

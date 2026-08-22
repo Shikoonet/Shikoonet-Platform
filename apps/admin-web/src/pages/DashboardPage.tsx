@@ -104,7 +104,18 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId) => void }) {
           icon="wallet"
           value={tomanCompact(data.walletHeldIrr)}
           label="کیف پول مشتریان"
-          foot="بدهی فروشگاه، نه موجودی آن"
+          /* Credit balances only, and the debt named separately rather than
+             netted in. `users.reseller_max_debt` is a ceiling a reseller is
+             allowed to trade under, so a negative wallet is a designed state —
+             and subtracting it from what the shop owes reported neither
+             figure. On the sim's own fixture the plain sum showed ۱۵۳ هزار
+             against a real liability of ۱٬۲۵۰ هزار, because one reseller was
+             ۱٬۰۹۷ هزار under. */
+          foot={
+            data.walletDebtors === 0
+              ? 'بدهی فروشگاه، نه موجودی آن'
+              : `بدهی فروشگاه · ${tomanCompact(data.walletOwedToShopIrr)} طلب از ${count(data.walletDebtors)} نفر`
+          }
         />
       </div>
 
