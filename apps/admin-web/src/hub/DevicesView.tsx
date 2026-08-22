@@ -116,6 +116,8 @@ export function DevicesView({ cache }: DevicesViewProps) {
   const [deleteFor, setDeleteFor] = useState<DeviceListItem | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
+  /** What the last press did. There was a channel for failure and none for success. */
+  const [rowDone, setRowDone] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const items = data?.items ?? [];
   const [sort, setSort] = useTableSortState('devices', {
@@ -142,17 +144,43 @@ export function DevicesView({ cache }: DevicesViewProps) {
     idOrCode: string,
     fn: () => Promise<unknown>,
     mutation: keyof typeof import('./queries.js').FOR_MUTATION,
+    /** Said afterwards, because a row that quietly changes says nothing. */
+    said?: string,
   ) {
     setBusyId(idOrCode);
     setRowError(null);
+    setRowDone(null);
     try {
       await fn();
       cache.invalidate(...forMutation(mutation));
+      if (said) setRowDone(said);
     } catch (e) {
       setRowError(String(e));
     } finally {
       setBusyId(null);
     }
+  }
+
+  /**
+   * The question asked before a press that stops a phone posting bank SMS.
+   *
+   * `POST /api/v1/sms` is the only public surface this platform has and the
+   * whole payment chain runs through it: revoke a device's token and that
+   * phone's messages stop arriving, claims stop matching, and customers who
+   * paid sit unverified. Walking this screen on 2026-08-22, «ابطال توکن» did
+   * exactly that on one click, with no question and no word afterwards — while
+   * retiring a stock config, deleting an expense and blocking a customer all
+   * ask first.
+   *
+   * Recovery is not a second press here either: the token is typed into the
+   * Android app by hand, so whoever revokes it needs the phone.
+   */
+  function askAboutTheToken(name: string, what: 'rotate' | 'revoke'): boolean {
+    return window.confirm(
+      what === 'revoke'
+        ? `توکن «${name}» باطل شود؟ این گوشی دیگر نمی‌تواند پیامک بانکی بفرستد و پرداخت‌هایی که از آن می‌آمدند تایید نمی‌شوند. برگرداندنش یعنی ساختن توکن تازه و واردکردن دستی‌اش روی همان گوشی.`
+        : `توکن «${name}» عوض شود؟ تا وقتی توکن تازه را روی خود گوشی وارد نکنید، پیامک‌های آن نمی‌رسند.`,
+    );
   }
 
   if (status === 'loading' && !data) return <p className="muted">در حال بارگذاری…</p>;
@@ -182,6 +210,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
         </button>
       </div>
       {rowError && <div className="error">{rowError}</div>}
+      {rowDone && <div className="muted" role="status">{rowDone}</div>}
       {notice && (
         <div className="success-banner" role="status" aria-live="polite">
           {notice}
@@ -232,10 +261,22 @@ export function DevicesView({ cache }: DevicesViewProps) {
                 d={d}
                 busy={busyId === d.id}
                 onRotate={() =>
-                  doAction(d.id, () => api.rotateDeviceCredential(d.id), 'deviceCredentialRotated')
+                  askAboutTheToken(d.display_name, 'rotate') &&
+                  doAction(
+                    d.id,
+                    () => api.rotateDeviceCredential(d.id),
+                    'deviceCredentialRotated',
+                    `توکن «${d.display_name}» عوض شد — تا واردکردنش روی گوشی، پیامکی از آن نمی‌رسد.`,
+                  )
                 }
                 onRevoke={() =>
-                  doAction(d.id, () => api.revokeDeviceCredential(d.id), 'deviceCredentialRevoked')
+                  askAboutTheToken(d.display_name, 'revoke') &&
+                  doAction(
+                    d.id,
+                    () => api.revokeDeviceCredential(d.id),
+                    'deviceCredentialRevoked',
+                    `توکن «${d.display_name}» باطل شد — این گوشی دیگر پیامک نمی‌فرستد.`,
+                  )
                 }
                 onDeactivate={() =>
                   doAction(d.id, () => api.deactivateDevice(d.id), 'deviceDeactivated')
@@ -305,17 +346,21 @@ export function DevicesView({ cache }: DevicesViewProps) {
                         d={d}
                         busy={busyId === d.id}
                         onRotate={() =>
+                          askAboutTheToken(d.display_name, 'rotate') &&
                           doAction(
                             d.id,
                             () => api.rotateDeviceCredential(d.id),
                             'deviceCredentialRotated',
+                            `توکن «${d.display_name}» عوض شد — تا واردکردنش روی گوشی، پیامکی از آن نمی‌رسد.`,
                           )
                         }
                         onRevoke={() =>
+                          askAboutTheToken(d.display_name, 'revoke') &&
                           doAction(
                             d.id,
                             () => api.revokeDeviceCredential(d.id),
                             'deviceCredentialRevoked',
+                            `توکن «${d.display_name}» باطل شد — این گوشی دیگر پیامک نمی‌فرستد.`,
                           )
                         }
                         onDeactivate={() =>
