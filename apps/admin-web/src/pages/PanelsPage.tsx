@@ -49,6 +49,49 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/**
+ * Kinds that reach a panel over the network, and so cannot work without an
+ * address and a credential.
+ *
+ * `manual` fulfils by hand and `ai_account`/`spotify` are handed over from the
+ * shelf, so a missing `base_url` on those is not a fault — it is the normal
+ * state. Listing the remote ones explicitly, rather than testing for `!==
+ * 'manual'`, is what keeps a newly added local kind from being flagged as
+ * broken the day it ships.
+ */
+const REACHES_A_PANEL: ReadonlySet<string> = new Set([
+  'pasarguard',
+  'marzban',
+  'marzneshin',
+  'hiddify',
+  'xui',
+  'wireguard',
+]);
+
+/**
+ * Why an ACTIVE panel still cannot fulfil an order, or null when it can.
+ *
+ * The status column reported the admin's *intent* and nothing else: walking
+ * this screen on 2026-08-22 showed `sim-vip` — PasarGuard, five products, five
+ * live services — as «فعال» in green with no address and no credential. It
+ * cannot provision anything. `marzban.ts:147` answers that state with
+ * `retryable: false`, which is right and means the customer pays, waits, and
+ * is refunded with a «تماس بگیرید» — a lost sale and a support conversation
+ * that the row itself already had enough information to prevent.
+ *
+ * Both halves are named rather than one «تنظیم نشده», because the two are
+ * fixed in different places: the address on this screen, the credential only
+ * in the server's secret store.
+ */
+function cannotDeliver(p: { kind: string; status: string; baseUrl: string | null; hasSecretRef: boolean }): string | null {
+  if (p.status !== 'ACTIVE' || !REACHES_A_PANEL.has(p.kind)) return null;
+  const missing = [
+    ...(p.baseUrl ? [] : ['آدرس']),
+    ...(p.hasSecretRef ? [] : ['اعتبارنامه']),
+  ];
+  return missing.length === 0 ? null : `بدون ${missing.join(' و ')}`;
+}
+
 /** The address without its scheme — the list is about identity, not linking. */
 function host(url: string | null): string {
   if (!url) return '—';
@@ -140,11 +183,22 @@ export function PanelsPage() {
                     )}
                   </td>
                   <td>
+                    {/* «فعال» is what the admin asked for; whether it can act
+                        on that is a second question this cell now answers. */}
                     <span
-                      className={p.status === 'ACTIVE' ? 'badge badge-active' : 'badge badge-block'}
+                      className={
+                        p.status === 'ACTIVE' && cannotDeliver(p) === null
+                          ? 'badge badge-active'
+                          : 'badge badge-block'
+                      }
                     >
                       {STATUS_FA[p.status] ?? p.status}
                     </span>
+                    {cannotDeliver(p) !== null && (
+                      <div className="page-head__sub">
+                        {cannotDeliver(p)} — سفارشی از این پنل تحویل نمی‌شود
+                      </div>
+                    )}
                   </td>
                   <td>
                     <button type="button" className="btn btn-sm" onClick={() => setOpenId(p.id)}>
