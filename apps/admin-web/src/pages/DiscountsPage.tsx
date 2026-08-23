@@ -47,7 +47,7 @@ function message(e: unknown): string {
     if (e.code === 'code_exists') {
       return `کدی با همین حروف از قبل هست${e.detail ? `: ${e.detail}` : ''} — ربات کدها را بدون حساسیت به بزرگی حروف می‌خواند.`;
     }
-    if (e.code === 'unknown_product') return 'محصول انتخاب‌شده وجود ندارد.';
+    if (e.code === 'unknown_product') return 'سرویس انتخاب‌شده وجود ندارد.';
     if (e.code === 'unknown_panel') return 'پنل انتخاب‌شده وجود ندارد.';
     if (e.code === 'admin_access_not_configured') return 'درِ دسترسی ادمین تنظیم نشده است.';
     return e.detail ?? e.code;
@@ -482,7 +482,7 @@ function CreateForm({ onDone }: { onDone: () => void }) {
 
       <p className="muted">
         {isGift
-          ? 'کد هدیه کیف پول را شارژ می‌کند و روی خرید اعمال نمی‌شود، پس محدود کردنش به محصول یا پنل معنا ندارد.'
+          ? 'کد هدیه کیف پول را شارژ می‌کند و روی خرید اعمال نمی‌شود، پس محدود کردنش به سرویس یا پنل معنا ندارد.'
           : 'کد بدون حساسیت به بزرگی حروف خوانده می‌شود؛ دو کد که فقط در حروف فرق دارند پذیرفته نمی‌شوند.'}
       </p>
     </div>

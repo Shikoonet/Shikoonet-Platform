@@ -71,7 +71,7 @@ function message(e: unknown): string {
     if (e.code === 'no_active_customers') return 'هیچ مشتری فعالی نیست.';
     if (e.code === 'invalid_body') return 'ورودی پذیرفته نشد.';
     if (e.code === 'unsellable')
-      return 'این کاهش، قیمت دست‌کم یک پلن را به صفر یا زیر صفر می‌برد. هیچ قیمتی عوض نشد.';
+      return 'این کاهش، قیمت دست‌کم یک کانفیگ را به صفر یا زیر صفر می‌برد. هیچ قیمتی عوض نشد.';
     if (e.code === 'nothing_to_change')
       return 'این تغییر آن‌قدر کوچک است که هیچ قیمتی جابه‌جا نمی‌شود.';
     return e.detail ?? e.code;
@@ -203,7 +203,7 @@ export function BulkPage() {
     setDone(null);
     try {
       const r = await api.bulkPrice(priceChange);
-      setDone(`قیمت ${count(r.changed)} پلن به‌روز شد.`);
+      setDone(`قیمت ${count(r.changed)} کانفیگ به‌روز شد.`);
       setPriceAmount('');
       setPricePreview(null);
       // A fresh key for whatever comes next. Clearing the amount already does
@@ -364,13 +364,13 @@ export function BulkPage() {
       <div className="card" style={{ marginBlockStart: 16 }}>
         <h3>تنظیم گروهی قیمت</h3>
         <p className="muted">
-          قیمت همهٔ پلن‌های فعالِ یک لوکیشن را با هم جابه‌جا می‌کند. اول پیش‌نمایش بگیر — بعد از
+          قیمت همهٔ کانفیگ‌های فعالِ یک پنل را با هم جابه‌جا می‌کند. اول پیش‌نمایش بگیر — بعد از
           تایید، قیمت قبلی فقط در گزارش تغییرات می‌ماند.
         </p>
         <div className="filters">
           <div>
             <label className="form-label" htmlFor="bp-scope">
-              لوکیشن
+              پنل
             </label>
             <select
               id="bp-scope"
@@ -379,10 +379,10 @@ export function BulkPage() {
               disabled={busy}
               onChange={(e) => setPriceScope(e.target.value)}
             >
-              <option value="">همهٔ لوکیشن‌ها</option>
+              <option value="">همهٔ پنل‌ها</option>
               {(panels ?? []).map((x) => (
                 <option key={x.id} value={String(x.id)}>
-                  {x.name} ({count(x.planCount)} پلن)
+                  {x.name} ({count(x.planCount)} کانفیگ)
                 </option>
               ))}
             </select>
@@ -450,23 +450,23 @@ export function BulkPage() {
           refused={pricePreview.unsellable > 0 || pricePreview.plans === 0}
         >
           {pricePreview.plans === 0 ? (
-            <p>هیچ پلن فعالی در این لوکیشن نیست.</p>
+            <p>هیچ کانفیگ فعالی روی این پنل نیست.</p>
           ) : pricePreview.unsellable > 0 ? (
             <p>
-              این کاهش، قیمت <strong>{count(pricePreview.unsellable)}</strong> پلن را به صفر یا زیر
-              صفر می‌برد. پلنی که قیمتش صفر است رایگان نمی‌شود — دکمه‌اش می‌ماند و هر بار رد می‌کند.
+              این کاهش، قیمت <strong>{count(pricePreview.unsellable)}</strong> کانفیگ را به صفر یا زیر
+              صفر می‌برد. کانفیگی که قیمتش صفر است رایگان نمی‌شود — دکمه‌اش می‌ماند و هر بار رد می‌کند.
               هیچ قیمتی عوض نمی‌شود.
             </p>
           ) : (
             <>
               <p>
-                <strong>{count(pricePreview.plans)}</strong> پلن — جمع قیمت‌ها از{' '}
+                <strong>{count(pricePreview.plans)}</strong> کانفیگ — جمع قیمت‌ها از{' '}
                 <strong>{toman(pricePreview.currentTotalIrr)}</strong> به{' '}
                 <strong>{toman(pricePreview.newTotalIrr)}</strong> می‌رود.
               </p>
               {pricePreview.unchanged > 0 && (
                 <p className="muted">
-                  {count(pricePreview.unchanged)} پلن جابه‌جا نمی‌شود — تغییرش از یک تومان کمتر است.
+                  {count(pricePreview.unchanged)} کانفیگ جابه‌جا نمی‌شود — تغییرش از یک تومان کمتر است.
                 </p>
               )}
               {/* Real prices, not a delta. An operator checks the cheapest and

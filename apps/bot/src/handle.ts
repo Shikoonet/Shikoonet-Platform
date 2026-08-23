@@ -22,18 +22,9 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import {
-  renewAllowed,
-  adjustWallet,
-  renewModeFor,
-  setCustomerStatus,
-  shopStats,
-  verifyMirzabotClaim,
-  verifyMirzabotClaimWithoutTransaction,
-} from '@shikoo/domain';
-import { MAX_SINGLE_PAYMENT_IRR, permissionsOf, type AdminPermission } from '@shikoo/contracts';
+import { renewAllowed, renewModeFor } from '@shikoo/domain';
 import { actOnService } from './actions.js';
-import { type Callback, decode, encode } from './callback.js';
+import { decode, encode } from './callback.js';
 import type { CatalogPlan } from './catalog.js';
 import { plansInProduct, plansOnPanel, productsForUser, purchasablePlan } from './catalog.js';
 import {
@@ -48,7 +39,6 @@ import { loadBotContent } from './botContent.js';
 import { acceptRules, gateFor, type GateVerdict, type MembershipApi } from './gate.js';
 import * as menu from './menu.js';
 import { IRR_PER_TOMAN, priceForUser } from './money.js';
-import { MAX_MESSAGE_LENGTH } from './broadcast.js';
 import {
   newPublicId,
   placeAddonOrder,
@@ -84,7 +74,7 @@ import {
   subscriptionsForUser,
 } from './owned.js';
 import { actionsFor, tierFor } from './serviceActions.js';
-import { checkoutFor, receiptRef, recordPaidClick, recordReceipt } from './payment.js';
+import { checkoutFor, recordPaidClick, recordReceipt } from './payment.js';
 import {
   balanceFor,
   entriesFor,
@@ -1057,84 +1047,6 @@ async function heldCode(
   return null;
 }
 
-/** How many payments one review screen lists. */
-const CLAIMS_PER_PAGE = 6;
-
-type PendingDecision =
-  | 'APPROVE_NO_TX'
-  | 'REJECT'
-  | 'BLOCK'
-  | 'UNBLOCK'
-  | 'BULK_CREDIT'
-  | 'BROADCAST';
-
-/**
- * What `cnf` is really doing, once the pending decision is known.
- *
- * This is the authority. `cnf` carries no verb of its own — what it confirms is
- * whatever the session says was asked for — so a single permission on the
- * button would be either too weak (a rejecter confirming an
- * approve-without-transaction) or too strong.
- */
-const DECISION_PERMISSION: Record<PendingDecision, AdminPermission> = {
-  APPROVE_NO_TX: 'claims.approve_without_tx',
-  REJECT: 'claims.reject',
-  BLOCK: 'users.block',
-  UNBLOCK: 'users.block',
-  BULK_CREDIT: 'bulk.credit',
-  BROADCAST: 'bulk.message',
-};
-
-/**
- * Which permission each admin action needs.
- *
- * `apx` and `rej` are here even though they only write a pending decision to
- * `bot_sessions`: an operator who cannot confirm has no business being asked to,
- * and refusing at the button is a clearer answer than refusing at the end.
- *
- * `cnf` needs *any* decision permission — an operator who can decide nothing has
- * nothing to confirm — and the list is derived from `DECISION_PERMISSION` rather
- * than repeated. It was written out by hand until 2026-08-15, naming the two
- * claim permissions, and the day a confirmable action existed that was not about
- * a claim it refused the operator who was allowed through. Not a hole — the map
- * below still decided — but the refusal said «این پرداخت دیگر در انتظار بررسی
- * نیست» to somebody whose real problem was their role.
- */
-const ACTION_PERMISSIONS: Record<string, readonly AdminPermission[]> = {
-  cnf: [...new Set(Object.values(DECISION_PERMISSION))],
-  clm: ['claims.view'],
-  clv: ['claims.view'],
-  apv: ['claims.approve'],
-  apx: ['claims.approve_without_tx'],
-  rej: ['claims.reject'],
-  sts: ['stats.view'],
-  usf: ['users.view'],
-  usr: ['users.view'],
-  uwp: ['users.wallet'],
-  uwm: ['users.wallet'],
-  ubl: ['users.block'],
-  uub: ['users.block'],
-  udp: ['users.discount'],
-  umg: ['users.message'],
-  bcr: ['bulk.credit'],
-  bct: ['bulk.message'],
-};
-
-/**
- * Which customer an admin's own session is about.
- *
- * Read from the session and never from the button, for the same reason the
- * claim is: the id and the decision were written together, so a forged `cnf`
- * cannot arrive carrying somebody else's id. That property is what actually
- * stops the forgery — `cnf` has no id on it at all.
- *
- * The step list is the second half. It began as belt and braces — with two
- * steps it turned no test red — and stopped being so the moment «تخفیف» and
- * «پیام» were added: a step missing from it reads as "no customer selected"
- * and the screen says the customer is gone. Which is the right failure, and it
- * is why the list is here rather than repeated at the call sites.
- */
-const STEPS_ABOUT_A_CUSTOMER = ['admin:user', 'admin:wallet', 'admin:discount', 'admin:message'];
 /**
  * One plan's page, with whatever discount code is being held against it.
  *

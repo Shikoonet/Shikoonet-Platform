@@ -321,7 +321,7 @@ export function OrdersPage() {
           <th>شناسه</th>
           <th>کاربر</th>
           <th>نوع</th>
-          {/* Not «پلن»: an add-on row carries a quantity here, not a plan. */}
+          {/* Not «کانفیگ»: an add-on row carries a quantity here, not one. */}
           <th>چه چیزی</th>
           <th>مبلغ</th>
           <th>تخفیف</th>
@@ -373,7 +373,7 @@ export function SubscriptionsPage() {
       head={
         <tr>
           <th>کاربر</th>
-          <th>پلن</th>
+          <th>کانفیگ</th>
           <th>پنل</th>
           <th>نام روی پنل</th>
           <th>حجم</th>
@@ -386,7 +386,7 @@ export function SubscriptionsPage() {
       row={(s) => (
         <tr key={s.id}>
           <td className="ltr">{who(s.customer)}</td>
-          {/* The names as they were at sale — renaming a plan today must not
+          {/* The names as they were at sale — renaming a config today must not
               rewrite what this customer bought. */}
           <td>{s.planName}</td>
           <td>{s.providerName ?? '—'}</td>

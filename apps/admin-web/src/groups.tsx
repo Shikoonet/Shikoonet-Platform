@@ -102,3 +102,104 @@ export function anyHosted(
   if (inbounds === null) return true; // Unknown is not the same as "no".
   return chosen.some((tag) => inbounds.find((i) => i.tag === tag)?.hosted !== false);
 }
+
+/**
+ * Name + inbounds — the whole of what a group is, wherever it is made.
+ *
+ * `id` prefixes the field ids because this form now appears on a screen that
+ * can hold two of them at once; a bare `group-name` was fine when only one
+ * existed and would silently point two labels at one input here.
+ */
+export function GroupForm({
+  id,
+  title,
+  name,
+  setName,
+  tags,
+  toggleTag,
+  inbounds,
+  inboundsReason,
+  busy,
+  submitLabel,
+  onSubmit,
+  onCancel,
+  w,
+}: {
+  id: string;
+  title: string;
+  name: string;
+  setName: (v: string) => void;
+  tags: string[];
+  toggleTag: (tag: string) => void;
+  inbounds: Array<{ tag: string; hosted?: boolean }> | null;
+  inboundsReason: string | null;
+  busy: boolean;
+  submitLabel: string;
+  onSubmit: () => void;
+  onCancel: () => void;
+  w: Record<string, unknown>;
+}) {
+  // Empty selection is not "delivers nothing" — it is "nothing chosen yet".
+  const undeliverable = tags.length > 0 && !anyHosted(inbounds, tags);
+
+  return (
+    <div className="card" style={{ marginBlock: 12 }}>
+      <div className="card__head">
+        <span className="card__title">{title}</span>
+        <button type="button" className="btn btn-sm" onClick={onCancel}>
+          انصراف
+        </button>
+      </div>
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor={`${id}-name`}>
+            نام گروه
+          </label>
+          <input
+            id={`${id}-name`}
+            className="form-control"
+            type="text"
+            maxLength={120}
+            placeholder="پلاتینیوم"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            {...w}
+          />
+        </div>
+      </div>
+
+      <label className="form-label" style={{ marginBlockStart: 8 }}>
+        اینباندها
+      </label>
+      <InboundPicker
+        inbounds={inbounds}
+        reason={inboundsReason}
+        chosen={tags}
+        onToggle={toggleTag}
+        disabledProps={w}
+      />
+
+      {/* Said before the save, not after: a tier with no delivering inbound
+          costs more than the cheap one and hands the customer the same thing,
+          and nothing downstream ever complains about it. */}
+      {undeliverable && (
+        <div className="alert alert-warning">
+          هیچ‌کدام از اینباندهای انتخاب‌شده هاست ندارد — مشتریِ این گروه هیچ کانفیگی نمی‌گیرد.
+        </div>
+      )}
+
+      <div style={{ marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || name.trim() === ''}
+          onClick={onSubmit}
+          {...w}
+        >
+          {busy ? 'در حال ذخیره…' : submitLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+

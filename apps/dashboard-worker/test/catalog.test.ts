@@ -122,9 +122,25 @@ beforeAll(async () => {
 beforeEach(purge);
 afterAll(purge);
 
+/** Only what these tests read. Written out so a shape change here goes red. */
+interface CatalogItem {
+  id: number;
+  name: string;
+  groupIds: number[] | null;
+  panel: { id: number; name: string } | null;
+  configs: Array<{ id: number; name: string; priceIrr: number; status: string }>;
+}
+
+interface CatalogBody {
+  ok: boolean;
+  total: number;
+  items: CatalogItem[];
+  panels: Array<{ id: number; name: string }>;
+}
+
 async function get(query: string, email = ADMIN) {
   const res = await app.request(`/api/v1/admin/catalog?${query}`, {}, envAs(email));
-  return { status: res.status, body: (await res.json()) as Record<string, never> };
+  return { status: res.status, body: (await res.json()) as CatalogBody };
 }
 
 describe('GET /api/v1/admin/catalog', () => {
@@ -147,16 +163,16 @@ describe('GET /api/v1/admin/catalog', () => {
     expect(body.total).toBe(1);
     expect(body.items).toHaveLength(1);
 
-    const service = body.items[0];
+    const service = body.items[0]!;
     expect(service.name).toBe('سرویس طلایی');
     expect(service.groupIds).toEqual([7]);
-    expect(service.panel.name).toBe('پنل one');
-    expect(service.configs.map((cf: { name: string }) => cf.name)).toEqual([
+    expect(service.panel?.name).toBe('پنل one');
+    expect(service.configs.map((cf) => cf.name)).toEqual([
       '۱ ماهه - ۱۰ گیگ',
       '۱ ماهه - ۲۰ گیگ',
       '۱ ماهه - ۳۰ گیگ',
     ]);
-    expect(service.configs.map((cf: { priceIrr: number }) => cf.priceIrr)).toEqual([
+    expect(service.configs.map((cf) => cf.priceIrr)).toEqual([
       1_000_000, 2_000_000, 3_000_000,
     ]);
   });
@@ -176,13 +192,13 @@ describe('GET /api/v1/admin/catalog', () => {
     const first = await get(`q=${encodeURIComponent(PREFIX)}&page=1&pageSize=2`);
     expect(first.body.total).toBe(3);
     expect(first.body.items).toHaveLength(2);
-    for (const service of first.body.items as Array<{ configs: unknown[] }>) {
+    for (const service of first.body.items) {
       expect(service.configs).toHaveLength(3);
     }
 
     const second = await get(`q=${encodeURIComponent(PREFIX)}&page=2&pageSize=2`);
     expect(second.body.items).toHaveLength(1);
-    expect((second.body.items[0] as { configs: unknown[] }).configs).toHaveLength(3);
+    expect(second.body.items[0]!.configs).toHaveLength(3);
   });
 
   it('carries a disabled config too, because that is usually why the service was opened', async () => {
@@ -196,7 +212,7 @@ describe('GET /api/v1/admin/catalog', () => {
     });
 
     const { body } = await get(`q=${encodeURIComponent('mixed')}`);
-    expect(body.items[0].configs.map((cf: { name: string; status: string }) => cf.status)).toEqual([
+    expect(body.items[0]!.configs.map((cf) => cf.status)).toEqual([
       'ACTIVE',
       'DISABLED',
     ]);
@@ -220,10 +236,10 @@ describe('GET /api/v1/admin/catalog', () => {
     });
 
     const active = await get(`q=${encodeURIComponent(PREFIX)}&status=ACTIVE`);
-    expect(active.body.items.map((s: { name: string }) => s.name)).toEqual(['سرویس live']);
+    expect(active.body.items.map((s) => s.name)).toEqual(['سرویس live']);
 
     const hidden = await get(`q=${encodeURIComponent(PREFIX)}&status=HIDDEN`);
-    expect(hidden.body.items.map((s: { name: string }) => s.name)).toEqual(['سرویس hidden']);
+    expect(hidden.body.items.map((s) => s.name)).toEqual(['سرویس hidden']);
   });
 
   it('lists a service with no panel, and says it has none', async () => {
@@ -234,7 +250,7 @@ describe('GET /api/v1/admin/catalog', () => {
 
     const { body } = await get(`q=${encodeURIComponent('orphan')}`);
     expect(body.items).toHaveLength(1);
-    expect(body.items[0].panel).toBeNull();
+    expect(body.items[0]!.panel).toBeNull();
   });
 
   it('finds a service by the name of a config inside it', async () => {
@@ -245,7 +261,7 @@ describe('GET /api/v1/admin/catalog', () => {
     });
 
     const { body } = await get(`q=${encodeURIComponent('۱۵۰ گیگ')}`);
-    expect(body.items.map((s: { name: string }) => s.name)).toEqual(['سرویس پلاتینیوم']);
+    expect(body.items.map((s) => s.name)).toEqual(['سرویس پلاتینیوم']);
   });
 
   it('is readable by a REVIEWER, like the rest of the catalogue', async () => {

@@ -53,7 +53,7 @@ import {
   type ServiceRow,
 } from '../api.js';
 import { count, irrToToman, toman } from '../format.js';
-import { anyHosted, InboundCount, InboundPicker } from '../groups.js';
+import { anyHosted, GroupForm, InboundCount, InboundPicker } from '../groups.js';
 import { useAdminWriteProps } from '../role.js';
 
 const PAGE_SIZE = 25;
@@ -375,7 +375,6 @@ export function CatalogPage() {
           service={editing}
           panels={panels}
           categories={categories}
-          groups={editing.panel ? (groups[editing.panel.id] ?? null) : null}
           onCategoryAdded={() => void loadCategories()}
           onClose={() => setEditing(null)}
           onChanged={refresh}
@@ -1160,6 +1159,226 @@ function GroupChooser({
   );
 }
 
+/**
+ * The groups on this panel: which one this service sells, and the ability to
+ * make or change one without leaving.
+ *
+ * The list is asked of the PANEL, not typed and not remembered. That is the
+ * whole point of it: group 42 was in the legacy configuration and had been
+ * deleted from the live panel, and PasarGuard answers a create with
+ * `404 Group not found` — non-retryable — so every VIP order would have gone
+ * FAILED and refunded on the first day of cutover. A number frozen in our
+ * config cannot notice that; a list the panel supplies can.
+ *
+ * Editing lives here rather than on the panel screen because this is where an
+ * operator is when they find out the group is wrong: looking at the service
+ * that sells it.
+ */
+function GroupManager({
+  panelId,
+  selected,
+  onToggle,
+  onChanged,
+}: {
+  panelId: number;
+  selected: number[] | null;
+  onToggle: (id: number) => void;
+  onChanged: () => void;
+}) {
+  const w = useAdminWriteProps();
+  const [available, setAvailable] = useState<PanelGroupItem[] | null>(null);
+  const [inbounds, setInbounds] = useState<Array<{ tag: string; hosted?: boolean }> | null>(null);
+  const [reason, setReason] = useState<string | null>(null);
+  const [editing, setEditing] = useState<number | null>(null);
+  const [formName, setFormName] = useState('');
+  const [formTags, setFormTags] = useState<string[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    setAvailable(null);
+    setReason(null);
+    try {
+      const d = await api.panelGroups(panelId);
+      setAvailable(d.available);
+      if (d.available === null) setReason(d.reason ?? null);
+    } catch (e) {
+      setReason(message(e));
+    }
+    try {
+      const d = await api.panelInbounds(panelId);
+      setInbounds(d.inbounds);
+    } catch {
+      setInbounds(null);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [panelId]);
+
+  function toggleTag(tag: string) {
+    setFormTags(formTags.includes(tag) ? formTags.filter((t) => t !== tag) : [...formTags, tag]);
+  }
+
+  async function submit() {
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      if (editing === 0) {
+        const { group } = await api.createPanelGroup(panelId, {
+          name: formName.trim(),
+          inboundTags: formTags,
+        });
+        setDone(`گروه «${group.name}» روی پنل ساخته شد.`);
+      } else if (editing !== null) {
+        await api.updatePanelGroup(panelId, editing, {
+          name: formName.trim(),
+          inboundTags: formTags,
+        });
+        setDone('گروه روی پنل ذخیره شد.');
+      }
+      setEditing(null);
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(g: PanelGroupItem) {
+    // The server refuses a group anything sells, with a sentence naming what.
+    // This confirm is for the other case: a group nothing sells yet, whose
+    // members are real accounts on the panel.
+    const members = g.memberCount ?? 0;
+    const question =
+      members > 0
+        ? `گروه «${g.name}» روی پنل ${members} عضو دارد. حذفش کنم؟`
+        : `گروه «${g.name}» از خودِ پنل حذف شود؟`;
+    if (!window.confirm(question)) return;
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await api.deletePanelGroup(panelId, g.id);
+      setDone(`گروه «${g.name}» از پنل حذف شد.`);
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {err && <div className="alert alert-error">{err}</div>}
+      {done && <div className="alert alert-ok">{done}</div>}
+
+      {available === null ? (
+        <p className="muted">
+          فهرست گروه‌ها از پنل خوانده نشد{reason ? ` — ${reason}` : ''}. آن‌چه ذخیره است:{' '}
+          <span className="ltr">{selected === null ? 'پیش‌فرض پنل' : selected.join('، ')}</span>
+        </p>
+      ) : (
+        <>
+          <div className="pick-list">
+            {available.map((g) => {
+              const on = (selected ?? []).includes(g.id);
+              return (
+                <label key={g.id} className={on ? 'pick pick--on' : 'pick'}>
+                  <input type="checkbox" checked={on} onChange={() => onToggle(g.id)} {...w} />
+                  <span>
+                    {g.name} <span className="muted ltr">#{g.id}</span>
+                    <div className="page-head__sub">
+                      <InboundCount group={g} />
+                    </div>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+
+          {editing === null && (
+            <div className="filters" style={{ marginBlockStart: 8 }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={busy}
+                onClick={() => {
+                  setEditing(0);
+                  setFormName('');
+                  setFormTags([]);
+                  setDone(null);
+                }}
+                {...w}
+              >
+                + گروه تازه روی پنل
+              </button>
+              {available.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={busy}
+                  onClick={() => {
+                    setEditing(g.id);
+                    setFormName(g.name);
+                    setFormTags([...(g.inboundTags ?? [])]);
+                    setDone(null);
+                  }}
+                  {...w}
+                >
+                  ویرایش «{g.name}»
+                </button>
+              ))}
+            </div>
+          )}
+
+          {editing !== null && (
+            <>
+              <GroupForm
+                id={`gm-${editing}`}
+                title={editing === 0 ? 'گروه تازه روی پنل' : 'ویرایش گروه'}
+                name={formName}
+                setName={setFormName}
+                tags={formTags}
+                toggleTag={toggleTag}
+                inbounds={inbounds}
+                inboundsReason={reason}
+                busy={busy}
+                submitLabel={editing === 0 ? 'بساز' : 'ذخیره روی پنل'}
+                onSubmit={() => void submit()}
+                onCancel={() => setEditing(null)}
+                w={w}
+              />
+              {editing !== 0 && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-danger"
+                  disabled={busy}
+                  onClick={() => {
+                    const g = available.find((x) => x.id === editing);
+                    if (g) void remove(g);
+                  }}
+                  {...w}
+                >
+                  حذف این گروه از پنل
+                </button>
+              )}
+            </>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
 function NewServiceCard({
   panels,
   categories,
@@ -1413,7 +1632,6 @@ function ServiceDrawer({
   service,
   panels,
   categories,
-  groups,
   onCategoryAdded,
   onClose,
   onChanged,
@@ -1422,7 +1640,6 @@ function ServiceDrawer({
   service: ServiceRow;
   panels: ProviderOption[];
   categories: CategoryRow[];
-  groups: PanelGroups | null;
   onCategoryAdded: () => void;
   onClose: () => void;
   onChanged: () => void;
@@ -1506,8 +1723,6 @@ function ServiceDrawer({
       setBusy(false);
     }
   }
-
-  const available = groups?.available ?? null;
 
   return (
     <div className="card" style={{ marginBlockStart: 16 }}>
@@ -1603,28 +1818,15 @@ function ServiceDrawer({
       <label className="form-label" style={{ marginBlockStart: 8 }}>
         گروهِ این سرویس روی پنل
       </label>
-      {available === null ? (
-        <p className="muted">
-          فهرست گروه‌ها از پنل خوانده نشد. آن‌چه الان ذخیره است:{' '}
-          <span className="ltr">{groupIds === null ? 'پیش‌فرض پنل' : groupIds.join('، ')}</span>
-        </p>
+      {panelId === '' ? (
+        <p className="muted">این سرویس پنلی ندارد، پس چیزی تحویل نمی‌دهد.</p>
       ) : (
-        <div className="pick-list">
-          {available.map((g) => {
-            const on = (groupIds ?? []).includes(g.id);
-            return (
-              <label key={g.id} className={on ? 'pick pick--on' : 'pick'}>
-                <input type="checkbox" checked={on} onChange={() => toggleGroup(g.id)} {...w} />
-                <span>
-                  {g.name} <span className="muted ltr">#{g.id}</span>
-                  <div className="page-head__sub">
-                    <InboundCount group={g} />
-                  </div>
-                </span>
-              </label>
-            );
-          })}
-        </div>
+        <GroupManager
+          panelId={Number(panelId)}
+          selected={groupIds}
+          onToggle={toggleGroup}
+          onChanged={onChanged}
+        />
       )}
       {groupIds === null && (
         <p className="muted">

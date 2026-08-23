@@ -129,7 +129,7 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId) => void }) {
               <thead>
                 <tr>
                   <th>کاربر</th>
-                  <th>محصول</th>
+                  <th>کانفیگ</th>
                   <th>مبلغ</th>
                   <th>وضعیت</th>
                   <th>تاریخ</th>

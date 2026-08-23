@@ -46,10 +46,8 @@ import {
   type MenuViewer,
 } from './keyboard.js';
 import type { Layouts } from './botContent.js';
-import { DEFAULT_TEXTS, type AdminPermission, type TextKey, type Texts } from '@shikoo/contracts';
+import { DEFAULT_TEXTS, type TextKey, type Texts } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
-import type { ShopStats } from '@shikoo/domain';
-import { MAX_MESSAGE_LENGTH } from './broadcast.js';
 import { MAX_COPY_TEXT_LENGTH, type InlineButton, type InlineKeyboard } from './telegram.js';
 
 /**
@@ -1684,21 +1682,6 @@ function formatTehranDate(when: Date): string {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
-  }).format(when);
-}
-
-/**
- * The clock time in Tehran.
- *
- * Only the admin screens use it, and they need it: two bank transactions for
- * the same amount on the same day are told apart by the minute they arrived,
- * and a button that said only the date would name both.
- */
-function formatTehranTime(when: Date): string {
-  return new Intl.DateTimeFormat('fa-IR', {
-    timeZone: 'Asia/Tehran',
-    hour: '2-digit',
-    minute: '2-digit',
   }).format(when);
 }
 

@@ -33,7 +33,6 @@ import type { D1DatabaseSession } from '@shikoo/db';
 import { fixedWindowRateLimit, setCustomerStatus, type RateLimit } from '@shikoo/domain';
 import { enqueue } from './notify.js';
 import * as menu from './menu.js';
-import { encode } from './callback.js';
 
 /** `index.php:317` — `if ($user['message_count'] >= "35")`. */
 export const SPAM_LIMIT = 35;

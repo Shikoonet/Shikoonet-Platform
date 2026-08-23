@@ -23,6 +23,22 @@ describe('navigation', () => {
     expect(new Set(ALL).size).toBe(ALL.length);
   });
 
+  it('gives no word two meanings', () => {
+    // The sidebar had «سرویس‌ها» meaning customer subscriptions while two
+    // other screens used the same word for a product and for a panel tier, and
+    // «محصولات» listing rows that were plans. An operator could not tell
+    // from any label which of the three a screen was about, and reported the
+    // whole area as incomprehensible — correctly.
+    //
+    // پنل · سرویس · کانفیگ · اشتراک, one meaning each.
+    const labels = NAV.flatMap((g) => g.items.map((i) => i.label));
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(pageLabel('catalog')).toBe('سرویس‌ها');
+    expect(pageLabel('subscriptions')).toBe('اشتراک‌های مشتری');
+    // Exactly one section is called «سرویس‌ها», and it is the catalogue.
+    expect(labels.filter((l) => l === 'سرویس‌ها')).toHaveLength(1);
+  });
+
   it('keeps the groups and their order from the panel this replaces', () => {
     // «پول» is the payment hub, which was its own build at `/` until
     // 2026-08-16. Sam placed it third after seeing the merged sidebar; the

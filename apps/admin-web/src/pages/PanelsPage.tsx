@@ -45,8 +45,8 @@ import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
-import { anyHosted, InboundCount, InboundPicker } from '../groups.js';
-import type { PanelGroupItem, PanelGroups, PanelHostItem, PanelTestResult } from '../api.js';
+import { InboundCount } from '../groups.js';
+import type { PanelGroups, PanelHostItem, PanelTestResult } from '../api.js';
 
 /**
  * `kind` is the adapter that fulfils an order.
@@ -234,7 +234,7 @@ export function PanelsPage() {
                 <th>پنل</th>
                 <th>نوع</th>
                 <th>وضعیت</th>
-                <th>سرویس زنده</th>
+                <th>اشتراک زنده</th>
                 <th>می‌فروشد</th>
                 <th />
               </tr>
@@ -271,7 +271,7 @@ export function PanelsPage() {
                       </span>
                     </td>
                     <td>
-                      {count(p.productCount)} محصول · {count(p.planCount)} پلن
+                      {count(p.productCount)} سرویس · {count(p.planCount)} کانفیگ
                     </td>
                     <td>
                       <button
@@ -606,260 +606,57 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
   );
 }
 
-/** Name + inbounds, shared by «گروه تازه» and the per-row editor. */
-function GroupForm({
-  title,
-  name,
-  setName,
-  tags,
-  toggleTag,
-  inbounds,
-  inboundsReason,
-  busy,
-  submitLabel,
-  onSubmit,
-  onCancel,
-  w,
-}: {
-  title: string;
-  name: string;
-  setName: (v: string) => void;
-  tags: string[];
-  toggleTag: (tag: string) => void;
-  inbounds: Array<{ tag: string; hosted?: boolean }> | null;
-  inboundsReason: string | null;
-  busy: boolean;
-  submitLabel: string;
-  onSubmit: () => void;
-  onCancel: () => void;
-  w: Record<string, unknown>;
-}) {
-  // Empty selection is not "delivers nothing" — it is "nothing chosen yet".
-  const undeliverable = tags.length > 0 && !anyHosted(inbounds, tags);
-
-  return (
-    <div className="card" style={{ marginBlock: 12 }}>
-      <div className="card__head">
-        <span className="card__title">{title}</span>
-        <button type="button" className="btn btn-sm" onClick={onCancel}>
-          انصراف
-        </button>
-      </div>
-      <div className="filters">
-        <div className="grow">
-          <label className="form-label" htmlFor="group-name">
-            نام گروه
-          </label>
-          <input
-            id="group-name"
-            className="form-control"
-            type="text"
-            maxLength={120}
-            placeholder="پلاتینیوم"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            {...w}
-          />
-        </div>
-      </div>
-
-      <label className="form-label" style={{ marginBlockStart: 8 }}>
-        اینباندها
-      </label>
-      <InboundPicker
-        inbounds={inbounds}
-        reason={inboundsReason}
-        chosen={tags}
-        onToggle={toggleTag}
-        disabledProps={w}
-      />
-
-      {/* Said before the save, not after: a tier with no delivering inbound
-          costs more than the cheap one and hands the customer the same thing,
-          and nothing downstream ever complains about it. */}
-      {undeliverable && (
-        <div className="alert alert-warning">
-          هیچ‌کدام از اینباندهای انتخاب‌شده هاست ندارد — مشتریِ این گروه هیچ کانفیگی نمی‌گیرد.
-        </div>
-      )}
-
-      <div style={{ marginBlockStart: 12 }}>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={busy || name.trim() === ''}
-          onClick={onSubmit}
-          {...w}
-        >
-          {busy ? 'در حال ذخیره…' : submitLabel}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /**
- * گروه‌های پنل — the thing that decides what a paying customer receives.
+ * گروه‌های پنل — what this panel HAS, and who sells it.
  *
- * The legacy shop had five "panels" all pointing at one PasarGuard, differing
- * only in which groups they sent: `[42,2]` for VIP, `[83]` for the unlimited
- * line, `[2]` for the rest. Buying VIP got you groups 42 and 2 because a row in
- * `marzban_panel` said so. That is carried into
- * `provisioning_providers.config`, and until 2026-08-23 no screen showed it —
- * the number deciding what a customer receives lived only in a jsonb column.
+ * A report, not an editor. Until 2026-08-24 this tab also carried a tick column
+ * («پیش‌فرض پنل»), a save button, and create/edit/delete for the groups
+ * themselves — which made it the second half of a job whose first half was on
+ * another screen, with nothing on either saying so. An operator ticked a group
+ * here three times, saved, and watched the bot not change: the ticks are a
+ * FALLBACK that only reaches a customer through a service which has chosen no
+ * level of its own, and every service on that panel had chosen one.
  *
- * The list is asked of the PANEL, not typed. That is the whole point: group 42
- * was in our configuration and had been deleted from the live panel, and
- * PasarGuard answers a create with `404 Group not found`, which the adapter
- * classifies as non-retryable — so every VIP order would have gone FAILED and
- * refunded on the first day of cutover. A number frozen in our config cannot
- * notice that; a list the panel supplies can.
+ * All of that moved to «سرویس‌ها», next to the service that sells the group.
+ * What stays is the half only this screen can answer, because it is about the
+ * panel rather than about our rows:
  *
- * A selected id the panel does not have is drawn anyway, and marked. Hiding it
- * would remove the only warning that this exact failure is armed.
- *
- * Since 2026-08-23 the groups can also be MADE here. A group is the product
- * tier — «پلاتینیوم» is a group with more inbounds in it — so a shop that could
- * tick groups but not create one still needed somebody in the panel's own web
- * UI before it could add a tier, and «کدام اینباند» was answered there from
- * memory.
+ *   - what the panel actually has, asked of the panel
+ *   - how much of each group reaches a customer (an inbound with no host is in
+ *     every listing and delivers nothing)
+ *   - **a group we send that the panel does not have** — the group-42 case.
+ *     PasarGuard answers a create with `404 Group not found` and the adapter
+ *     calls that non-retryable, so every order on that level would go FAILED
+ *     and refund. A number frozen in our config cannot notice; this can.
  */
 export function PanelGroupsSection({
   panel,
-  onChanged,
   onProblem,
 }: {
   panel: PanelItem;
-  onChanged: () => void;
   onProblem: (has: boolean) => void;
 }) {
-  const w = useAdminWriteProps();
   const [data, setData] = useState<PanelGroups | null>(null);
-  const [inbounds, setInbounds] = useState<Array<{ tag: string; hosted?: boolean }> | null>(null);
-  const [inboundsReason, setInboundsReason] = useState<string | null>(null);
-  const [chosen, setChosen] = useState<number[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const noticeRef = useRef<HTMLDivElement | null>(null);
-
-  // The inline group form: null = closed, 0 = creating, >0 = editing that id.
-  const [editing, setEditing] = useState<number | null>(null);
-  const [formName, setFormName] = useState('');
-  const [formTags, setFormTags] = useState<string[]>([]);
-
-  async function load() {
-    setBusy(true);
-    setErr(null);
-    try {
-      const next = await api.panelGroups(panel.id);
-      setData(next);
-      setChosen(next.selected);
-    } catch (e) {
-      setErr(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function loadInbounds() {
-    try {
-      const r = await api.panelInbounds(panel.id);
-      setInbounds(r.inbounds);
-      setInboundsReason(r.reason ?? null);
-    } catch (e) {
-      setInbounds(null);
-      setInboundsReason(message(e));
-    }
-  }
 
   useEffect(() => {
-    // Reloads when a different panel is opened. `load` is stable enough for
-    // this — the page unmounts the editor between panels — and the repo has no
-    // react-hooks plugin configured, so an exhaustive-deps pragma here would
-    // reference a rule that does not exist.
-    void load();
-    void loadInbounds();
+    let live = true;
+    api
+      .panelGroups(panel.id)
+      .then((next) => {
+        if (live) setData(next);
+      })
+      .catch((e) => {
+        if (live) setErr(message(e));
+      });
+    return () => {
+      live = false;
+    };
   }, [panel.id]);
 
-  async function save() {
-    if (chosen === null) return;
-    setBusy(true);
-    setErr(null);
-    setDone(null);
-    try {
-      await api.setPanelGroups(panel.id, chosen);
-      setDone('گروه‌های این پنل ذخیره شد.');
-      onChanged();
-      await load();
-    } catch (e) {
-      setErr(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function toggle(id: number) {
-    setChosen((prev) => {
-      const now = prev ?? [];
-      return now.includes(id) ? now.filter((x) => x !== id) : [...now, id].sort((a, b) => a - b);
-    });
-  }
-
-  function toggleTag(tag: string) {
-    setFormTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
-  }
-
-  async function submitForm() {
-    setBusy(true);
-    setErr(null);
-    setDone(null);
-    try {
-      const spec = { name: formName.trim(), inboundTags: formTags };
-      if (editing === 0) {
-        const r = await api.createPanelGroup(panel.id, spec);
-        setDone(
-          `گروه «${r.group.name}» روی پنل ساخته شد. تا وقتی سرویسی در «محصولات» آن را به‌عنوان سطح خودش نگیرد — یا این‌جا پیش‌فرض پنل نشود — هیچ مشتری‌ای آن را نمی‌گیرد.`,
-        );
-      } else if (editing !== null) {
-        await api.updatePanelGroup(panel.id, editing, spec);
-        setDone('گروه روی پنل ذخیره شد.');
-      }
-      setEditing(null);
-      await load();
-      await loadInbounds();
-    } catch (e) {
-      setErr(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function remove(g: PanelGroupItem) {
-    const members = g.memberCount ?? 0;
-    const warning =
-      members > 0
-        ? `${members.toLocaleString('fa-IR')} اکانت در گروه «${g.name}» است. با حذف گروه، اکانت‌ها می‌مانند ولی اینباندهای این گروه را از دست می‌دهند. حذف شود؟`
-        : `گروه «${g.name}» از روی خودِ پنل حذف شود؟ این کار برگشت‌پذیر نیست.`;
-    if (!window.confirm(warning)) return;
-    setBusy(true);
-    setErr(null);
-    setDone(null);
-    try {
-      await api.deletePanelGroup(panel.id, g.id);
-      setDone(`گروه «${g.name}» از پنل حذف شد.`);
-      await load();
-    } catch (e) {
-      setErr(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const selected = chosen ?? [];
   const available = data?.available ?? null;
   // Ids we send that the panel does not have. This is the group-42 case, and it
-  // is the reason this screen exists.
+  // is the reason this tab still exists.
   const missing =
     available === null || data === null
       ? []
@@ -869,54 +666,19 @@ export function PanelGroupsSection({
     onProblem(missing.length > 0);
   }, [missing.length]);
 
-  // Bring the answer to where the operator is looking.
-  //
-  // Found by walking it: «حذف» sits at the END of the group table and its reply
-  // renders at the TOP of the section, so refusing a delete — the single most
-  // important thing this screen says — landed off the top of the window and the
-  // row simply stayed put. Indistinguishable from a button that did nothing.
-  // The same shape as the bug this whole rebuild was about, one level down.
-  useEffect(() => {
-    if (err !== null || done !== null) {
-      noticeRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    }
-  }, [err, done]);
+  if (err !== null) return <div className="alert alert-error">{err}</div>;
+  if (data === null) return <p className="muted">…</p>;
 
-  if (data === null) {
-    return err ? <div className="alert alert-error">{err}</div> : <p className="muted">…</p>;
-  }
-
-  const dirty =
-    JSON.stringify([...selected].sort((a, b) => a - b)) !==
-    JSON.stringify([...data.selected].sort((a, b) => a - b));
-
-  /** Nothing on this panel reads the default, so no tick here can change a sale. */
-  const inert = data.inherit.length === 0;
-
-  /**
-   * Which of our plans send this group, so «چطور مشتری پلاتینیوم می‌خرد» has an
-   * answer on the row itself.
-   *
-   * A group can be sold two ways and they are not interchangeable: on the
-   * PANEL, where it goes to every product on it, or on a PLAN, where it goes
-   * only to that one. The legacy shop did the second — five `marzban_panel`
-   * rows on one PasarGuard, differing only in `inbounds` — and an operator who
-   * ticks it here expecting the second silently changes what every existing
-   * customer of this panel receives on their next renewal.
-   */
+  /** Which of our services sell this group, so the row answers «چه کسی؟». */
   function soldBy(id: number): string[] {
     const via: string[] = [];
-    // The panel's tick only reaches a customer through a service that has no
-    // level of its own. Saying «پیش‌فرض پنل» when no such service exists is how
-    // this column came to disagree with the tick beside it — one of them
-    // describing what is configured, the other what actually happens.
     const riders = data?.inherit ?? [];
     if (data !== null && data.selected.includes(id) && riders.length > 0) {
       via.push(`پیش‌فرض پنل (${riders.map((p) => p.name).join('، ')})`);
     }
     for (const pl of data?.plans ?? []) {
       if (!Array.isArray(pl.groups) || !(pl.groups as unknown[]).includes(id)) continue;
-      via.push(pl.level === 'PRODUCT' ? `سرویس ${pl.name}` : `پلن ${pl.name}`);
+      via.push(pl.level === 'PRODUCT' ? `سرویس ${pl.name}` : `کانفیگ ${pl.name}`);
     }
     return via;
   }
@@ -924,44 +686,14 @@ export function PanelGroupsSection({
   return (
     <>
       <p className="muted" style={{ marginBlockStart: 0 }}>
-        گروه، همان «سطح» محصول است، و <b>هر سرویس سطح خودش را دارد</b> — در «محصولات» انتخابش
-        می‌کنید. تیک‌های این‌جا فقط <b>پیش‌فرض</b>اند: تنها سرویس‌هایی را می‌سازند که خودشان سطحی
-        نگرفته‌اند. ستون «فروخته می‌شود در» می‌گوید واقعاً چه کسی در هر گروه می‌افتد. فهرست از خودِ
-        پنل خوانده می‌شود، نه از تنظیمات ما.
+        این‌ها گروه‌هایی هستند که <b>خودِ پنل</b> دارد — فهرست از پنل خوانده می‌شود، نه از
+        تنظیمات ما. ساختن، ویرایش و الصاق اینباند در صفحهٔ <b>«سرویس‌ها»</b> انجام می‌شود، کنار
+        همان سرویسی که گروه را می‌فروشد.
       </p>
-
-      <div ref={noticeRef}>
-        {err && <div className="alert alert-error">{err}</div>}
-        {done && <div className="alert alert-ok">{done}</div>}
-      </div>
-
-      {/*
-        A tick that cannot reach anybody, said at the moment of ticking.
-
-        The paragraph above already explains that these are only a default, and
-        it was not enough: an operator ticked a group, pressed save, watched the
-        bot not change, and reported it as a bug. It was not one — the save
-        worked and every service on this panel names its own level, so the
-        default reaches nobody. But a control whose effect is zero and whose
-        appearance is a switch is a bug in the screen even when the write is
-        correct, and the answer belongs beside the control rather than in a
-        paragraph read once.
-
-        Not disabled. A panel being set up has no products yet, so `inherit` is
-        empty exactly when the default is most worth choosing.
-      */}
-      {inert && (
-        <div className="alert alert-warning">
-          هیچ سرویس فعالی روی این پنل از پیش‌فرض استفاده نمی‌کند — هرکدام سطح خودش را دارد. پس
-          تیک‌های این ستون الان هیچ خریدی را عوض نمی‌کنند: ذخیره می‌شوند و در ربات چیزی تغییر
-          نمی‌کند. سطحِ هر سرویس در «محصولات» انتخاب می‌شود.
-        </div>
-      )}
 
       {available === null ? (
         <div className="alert alert-error">
-          فهرست گروه‌ها از پنل خوانده نشد{data.reason ? ` — ${data.reason}` : ''}. آن‌چه الان
-          فرستاده می‌شود: {selected.length > 0 ? selected.join('، ') : '(هیچ)'}
+          فهرست گروه‌ها از پنل خوانده نشد{data.reason ? ` — ${data.reason}` : ''}.
         </div>
       ) : (
         <>
@@ -972,57 +704,22 @@ export function PanelGroupsSection({
             </div>
           )}
 
-          {editing === null && (
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => {
-                setEditing(0);
-                setFormName('');
-                setFormTags([]);
-                setDone(null);
-              }}
-              {...w}
-            >
-              + گروه تازه روی پنل
-            </button>
-          )}
-
-          {editing !== null && (
-            <GroupForm
-              title={editing === 0 ? 'گروه تازه روی پنل' : `ویرایش گروه ${editing}`}
-              name={formName}
-              setName={setFormName}
-              tags={formTags}
-              toggleTag={toggleTag}
-              inbounds={inbounds}
-              inboundsReason={inboundsReason}
-              busy={busy}
-              submitLabel={editing === 0 ? 'بساز' : 'ذخیره روی پنل'}
-              onSubmit={() => void submitForm()}
-              onCancel={() => setEditing(null)}
-              w={w}
-            />
-          )}
-
           <div className="table-wrap" style={{ marginBlockStart: 12 }}>
             <table className="app-table">
               <thead>
                 <tr>
-                  <th>پیش‌فرض پنل</th>
                   <th>گروه</th>
                   <th>شناسه</th>
                   <th>اینباند</th>
                   <th>اعضا</th>
                   <th>فروخته می‌شود در</th>
-                  <th />
                 </tr>
               </thead>
               <tbody>
                 {available.length === 0 && (
                   <tr>
-                    <td className="empty" colSpan={7}>
-                      این پنل هیچ گروهی ندارد. با «+ گروه تازه روی پنل» اولی را بسازید.
+                    <td className="empty" colSpan={5}>
+                      این پنل هیچ گروهی ندارد. اولی را از «سرویس‌ها» بسازید.
                     </td>
                   </tr>
                 )}
@@ -1030,15 +727,6 @@ export function PanelGroupsSection({
                   const via = soldBy(g.id);
                   return (
                     <tr key={g.id}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          aria-label={g.name}
-                          checked={selected.includes(g.id)}
-                          onChange={() => toggle(g.id)}
-                          {...w}
-                        />
-                      </td>
                       <td>
                         <div>{g.name}</div>
                         {g.inboundTags && g.inboundTags.length > 0 && (
@@ -1060,45 +748,11 @@ export function PanelGroupsSection({
                           via.join('، ')
                         )}
                       </td>
-                      <td>
-                        <div className="row-actions">
-                          <button
-                            type="button"
-                            className="btn btn-sm"
-                            onClick={() => {
-                              setEditing(g.id);
-                              setFormName(g.name);
-                              setFormTags([...(g.inboundTags ?? [])]);
-                              setDone(null);
-                            }}
-                            {...w}
-                          >
-                            ویرایش
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-danger"
-                            onClick={() => void remove(g)}
-                            {...w}
-                          >
-                            حذف
-                          </button>
-                        </div>
-                      </td>
                     </tr>
                   );
                 })}
                 {missing.map((id) => (
                   <tr key={`missing-${id}`}>
-                    <td>
-                      <input
-                        type="checkbox"
-                        aria-label={`گروه ${id}`}
-                        checked={selected.includes(id)}
-                        onChange={() => toggle(id)}
-                        {...w}
-                      />
-                    </td>
                     <td>
                       <span className="badge badge-block">روی پنل نیست</span>
                     </td>
@@ -1106,45 +760,11 @@ export function PanelGroupsSection({
                     <td>—</td>
                     <td>—</td>
                     <td>{soldBy(id).join('، ') || <span className="muted">فروخته نمی‌شود</span>}</td>
-                    <td />
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-
-          <div style={{ marginBlockStart: 12 }}>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={busy || !dirty}
-              onClick={() => void save()}
-              {...w}
-            >
-              ذخیرهٔ تیک‌ها
-            </button>
-            {dirty && (
-              <div className="page-head__sub" style={{ marginBlockStart: 6 }}>
-                تیک‌ها عوض شده‌اند و هنوز ذخیره نشده‌اند.
-              </div>
-            )}
-          </div>
-        </>
-      )}
-
-      {data.plans.length > 0 && (
-        <>
-          <p className="muted" style={{ marginBlockStart: 16 }}>
-            این‌ها گروه خودشان را دارند و تیک‌های بالا رویشان اثر ندارد:
-          </p>
-          <ul className="muted">
-            {data.plans.map((pl) => (
-              <li key={`${pl.level}-${pl.id}`}>
-                {pl.level === 'PRODUCT' ? 'سرویس' : 'پلن'} {pl.name} —{' '}
-                <span className="ltr">{JSON.stringify(pl.groups)}</span>
-              </li>
-            ))}
-          </ul>
         </>
       )}
     </>
@@ -1514,7 +1134,7 @@ function PanelEditor({
       next === 'DISABLED' &&
       panel.liveSubscriptions > 0 &&
       !window.confirm(
-        `${panel.liveSubscriptions.toLocaleString('fa-IR')} سرویس زنده روی این پنل است و تمدیدشان از کار می‌افتد. غیرفعال شود؟`,
+        `${panel.liveSubscriptions.toLocaleString('fa-IR')} اشتراک زنده روی این پنل است و تمدیدشان از کار می‌افتد. غیرفعال شود؟`,
       )
     ) {
       return;
@@ -1611,8 +1231,8 @@ function PanelEditor({
             </button>
           </div>
           <p className="muted">
-            ظرفیت خالی یعنی نامحدود. الان {count(panel.liveSubscriptions)} سرویس زنده،{' '}
-            {count(panel.productCount)} محصول و {count(panel.planCount)} پلن روی این پنل است. آدرس و
+            ظرفیت خالی یعنی نامحدود. الان {count(panel.liveSubscriptions)} اشتراک زنده،{' '}
+            {count(panel.productCount)} سرویس و {count(panel.planCount)} کانفیگ روی این پنل است. آدرس و
             نوع پنل از این‌جا عوض نمی‌شوند.
           </p>
         </>
@@ -1703,13 +1323,13 @@ function PanelEditor({
           own and the tab flag above is truthful from the moment the card opens
           — a missing group must not wait for somebody to click «گروه‌ها». */}
       <div style={{ display: tab === 'groups' ? undefined : 'none' }}>
-        <PanelGroupsSection panel={panel} onChanged={onChanged} onProblem={setGroupProblem} />
+        <PanelGroupsSection panel={panel} onProblem={setGroupProblem} />
       </div>
 
       {tab === 'status' && (
         <>
           <p className="muted" style={{ marginBlockStart: 0 }}>
-            {count(panel.liveSubscriptions)} سرویس زنده و {count(panel.planCount)} پلن روی این پنل
+            {count(panel.liveSubscriptions)} اشتراک زنده و {count(panel.planCount)} کانفیگ روی این پنل
             است. غیرفعال‌کردن، پنل را از خرید و تمدید برمی‌دارد؛ سرویس‌های فروخته‌شده پاک نمی‌شوند.
           </p>
           <div className="filters">

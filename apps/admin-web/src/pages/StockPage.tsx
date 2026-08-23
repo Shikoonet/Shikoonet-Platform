@@ -124,7 +124,7 @@ export function StockPage() {
           <div className="page-head__title">قفسهٔ انبار</div>
           <div className="page-head__sub">
             {count(shelves.reduce((n, s) => n + s.available, 0))} کانفیگ آماده روی{' '}
-            {count(shelves.length)} پلن
+            {count(shelves.length)} کانفیگ
           </div>
         </div>
         <button type="button" className="btn btn-primary" onClick={() => setAdding(true)} {...w}>
@@ -134,7 +134,7 @@ export function StockPage() {
 
       {empty.length > 0 && (
         <div className="alert alert-error">
-          قفسهٔ این پلن‌ها خالی است: {empty.map((s) => s.planName).join('، ')} — اگر پنل از دسترس
+          قفسهٔ این کانفیگ‌ها خالی است: {empty.map((s) => s.planName).join('، ')} — اگر پنل از دسترس
           خارج شود، فروششان می‌خوابد.
         </div>
       )}
@@ -147,7 +147,7 @@ export function StockPage() {
           <table className="app-table">
             <thead>
               <tr>
-                <th>پلن</th>
+                <th>کانفیگ</th>
                 <th>آماده</th>
                 <th>فروخته‌شده</th>
               </tr>
@@ -185,7 +185,7 @@ export function StockPage() {
         <div className="filters">
           <div>
             <label className="form-label" htmlFor="stock-plan">
-              پلن
+              کانفیگ
             </label>
             <select
               id="stock-plan"
@@ -230,7 +230,7 @@ export function StockPage() {
             <thead>
               <tr>
                 <th>نام کاربری روی پنل</th>
-                <th>پلن</th>
+                <th>کانفیگ</th>
                 <th>پنل</th>
                 <th>وضعیت</th>
                 <th>سفارش</th>
@@ -402,7 +402,7 @@ function StockForm({
       <div className="filters">
         <div className="grow">
           <label className="form-label" htmlFor="add-plan">
-            پلن
+            کانفیگ
           </label>
           <select
             id="add-plan"
@@ -419,7 +419,7 @@ function StockForm({
           </select>
           {/* Shown, not chosen: the plan's product already names the panel. */}
           <div className="page-head__sub">
-            {plan ? `پنل: ${plan.provider?.name ?? '—'}` : 'پنل از روی پلن تعیین می‌شود'}
+            {plan ? `پنل: ${plan.provider?.name ?? '—'}` : 'پنل از روی کانفیگ تعیین می‌شود'}
           </div>
         </div>
         <div className="grow">

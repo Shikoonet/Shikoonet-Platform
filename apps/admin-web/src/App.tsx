@@ -320,7 +320,7 @@ export function App() {
               keep working. */}
           {passwordOpen && <PasswordCard onClose={() => setPasswordOpen(false)} />}
           {/* Said once, at the top, rather than only on each disabled control.
-              A reader who opens «محصولات» sees a full catalogue with every
+              A reader who opens «سرویس‌ها» sees a full catalogue with every
               action greyed out, and without this line the honest reading of
               that screen is «the panel is broken», not «this account reads».
               The `title` on each control says the same thing to whoever

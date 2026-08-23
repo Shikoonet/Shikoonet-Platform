@@ -60,7 +60,7 @@ export function useCanWrite(): boolean {
  *
  * A narrower rule, and the first version of this file had only the wider one.
  * That was wrong in the case that matters most: every write under
- * `/api/v1/admin/` is ADMIN-only, so a REVIEWER opening «محصولات» would have
+ * `/api/v1/admin/` is ADMIN-only, so a REVIEWER opening «سرویس‌ها» would have
  * been shown a live «ذخیره» that answers 403 — exactly the bug this file is
  * here to remove, moved one role along rather than fixed.
  *
