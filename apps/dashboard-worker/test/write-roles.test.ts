@@ -175,6 +175,14 @@ describe('every write route, asked directly', () => {
     // The count is the tripwire. A route added without a thought about roles
     // still has to pass the three tests above, but seeing this number move is
     // what makes somebody look.
-    expect(writeRoutes().length).toBe(114);
+    //
+    // 114 → 117 on 2026-08-23, and the tripwire did its job: «مدیریت پنل‌ها»
+    // gained `POST /panels`, `POST /panels/:id/credentials` and
+    // `POST /panels/:id/test`, because a panel could not be added from the
+    // dashboard at all before then. Two of the three write a CREDENTIAL, which
+    // is the first time anything in this app has, so they were looked at hard:
+    // all three are ADMIN-only, and the three tests above already proved they
+    // refuse a READ_ONLY and a REVIEWER before this number was touched.
+    expect(writeRoutes().length).toBe(117);
   });
 });
