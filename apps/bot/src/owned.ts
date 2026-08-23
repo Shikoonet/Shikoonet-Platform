@@ -285,6 +285,7 @@ export interface OwnedSubscriptionOnPanel extends OwnedSubscription {
   provider_kind: string | null;
   provider_base_url: string | null;
   provider_secret_ref: string | null;
+  provider_sealed: string | null;
   provider_config: Record<string, unknown> | null;
 }
 
@@ -316,9 +317,16 @@ export async function subscriptionOnPanelForUser(
               pv.kind       AS provider_kind,
               pv.base_url   AS provider_base_url,
               pv.secret_ref AS provider_secret_ref,
+              -- Carried by the join that was already here rather than
+              -- fetched separately, so credentialsFor stays synchronous and
+              -- no call site grows a second round trip. (No backticks in a
+              -- SQL comment that lives inside a template literal: they end
+              -- the string, which is exactly what happened writing this.)
+              ps.sealed     AS provider_sealed,
               pv.config     AS provider_config
          FROM subscriptions s
          LEFT JOIN provisioning_providers pv ON pv.id = s.provider_id
+         LEFT JOIN provider_secrets ps ON ps.provider_id = pv.id
         WHERE s.id = ?1 AND s.user_id = ?2 AND s.status <> 'PENDING_PAYMENT'`,
     )
     .bind(subscriptionId, userId)

@@ -54,6 +54,7 @@ interface ProviderRow {
   kind: string;
   base_url: string | null;
   secret_ref: string | null;
+  sealed: string | null;
   config: Record<string, unknown> | null;
 }
 
@@ -105,8 +106,10 @@ export async function syncSubscriptions(
   // subscription is a panel we have no business calling.
   const { results } = await db
     .prepare(
-      `SELECT DISTINCT pv.id, pv.code, pv.name, pv.kind, pv.base_url, pv.secret_ref, pv.config
+      `SELECT DISTINCT pv.id, pv.code, pv.name, pv.kind, pv.base_url, pv.secret_ref,
+              ps.sealed, pv.config
          FROM provisioning_providers pv
+         LEFT JOIN provider_secrets ps ON ps.provider_id = pv.id
          JOIN subscriptions s ON s.provider_id = pv.id
         WHERE s.status = 'ACTIVE' AND s.remote_username IS NOT NULL
         ORDER BY pv.id`,
@@ -126,7 +129,7 @@ export async function syncSubscriptions(
       code: row.code,
       name: row.name,
       baseUrl: row.base_url,
-      credentials: credentialsFor(row.secret_ref),
+      credentials: credentialsFor(row.secret_ref, row.sealed),
       config: row.config ?? {},
       fetch: fetchImpl,
     };

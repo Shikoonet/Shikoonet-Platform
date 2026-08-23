@@ -27,8 +27,11 @@ import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { randomUUID } from 'node:crypto';
 import {
   adapterFor,
+  open,
+  panelSecretKey,
   remoteUsernameFor,
   renewModeFor,
+  splitCredential,
   type ProviderContext,
   type ProvisionRequest,
 } from '@shikoo/domain';
@@ -81,26 +84,51 @@ interface PendingOrder {
   provider_kind: string | null;
   provider_base_url: string | null;
   provider_secret_ref: string | null;
+  provider_sealed: string | null;
   provider_config: Record<string, unknown> | null;
 }
 
 /**
- * Panel credentials, from the environment.
+ * Panel credentials — from the sealed row if there is one, otherwise the
+ * environment.
  *
- * `provisioning_providers.secret_ref` names a secret; it never holds one. So
- * the table stays safe to dump, log, and hand to a support agent, which is what
- * its schema comment promises. `PANEL_<REF>` is `username:password`, and only
- * the first colon splits so a password may contain one.
+ * `provisioning_providers` still holds no secret, which is what its schema
+ * comment promises and why it stays safe to dump. What changed on 2026-08-23 is
+ * that a credential may now also live sealed in `provider_secrets`, so a panel
+ * can be added from «مدیریت پنل‌ها» instead of by editing the bot's environment
+ * and redeploying it.
+ *
+ * THE SEALED ROW WINS. Not the environment, and the order is the whole point: an
+ * operator who changes a panel's password in the dashboard has to see that
+ * change take effect. If a stale `PANEL_<REF>` left over from before could
+ * shadow it, the panel would keep failing to log in and the screen would keep
+ * saying the password was saved.
+ *
+ * THE ENVIRONMENT STAYS. Every panel wired before this migration resolves that
+ * way and must keep working across the deploy that introduces the table —
+ * `PANEL_TEST_PANEL` on the practice box is exactly that case. It is the
+ * fallback, not the default.
+ *
+ * `username:password` in both paths, split on the FIRST colon only so a
+ * password may contain one.
  */
 export function credentialsFor(
   secretRef: string | null,
+  sealed?: string | null,
 ): { username: string; password: string } | null {
+  if (sealed) {
+    // A row that will not open is NOT the same as no credential, and they must
+    // not take the same path: returning null here would send the order down the
+    // «panel has no credentials» branch and refund a customer over what is
+    // actually a wrong PANEL_SECRET_KEY. Let it throw — the caller logs it and
+    // the order stays retryable.
+    const raw = open(sealed, panelSecretKey());
+    return splitCredential(raw);
+  }
   if (!secretRef) return null;
   const raw = process.env[`PANEL_${secretRef.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`];
   if (!raw) return null;
-  const at = raw.indexOf(':');
-  if (at <= 0) return null;
-  return { username: raw.slice(0, at), password: raw.slice(at + 1) };
+  return splitCredential(raw);
 }
 
 function toNumber(value: string | number | null): number | null {
@@ -298,15 +326,20 @@ export async function provisionPaidOrders(
               COALESCE(spv.kind, pv.kind)             AS provider_kind,
               COALESCE(spv.base_url, pv.base_url)     AS provider_base_url,
               COALESCE(spv.secret_ref, pv.secret_ref) AS provider_secret_ref,
+              -- Same COALESCE as the ref beside it: a renewal resolves against
+              -- the ACCOUNT's panel, a new purchase against the plan's.
+              COALESCE(sps.sealed, ps.sealed) AS provider_sealed,
               COALESCE(spv.config, pv.config)         AS provider_config
          FROM orders o
          JOIN users u              ON u.id = o.user_id
          LEFT JOIN product_plans pl ON pl.id = o.plan_id
          LEFT JOIN products pr      ON pr.id = pl.product_id
          LEFT JOIN provisioning_providers pv ON pv.id = pr.provider_id
+         LEFT JOIN provider_secrets ps ON ps.provider_id = pv.id
          LEFT JOIN subscriptions s  ON s.id = o.target_subscription_id
                                    AND s.user_id = o.user_id
          LEFT JOIN provisioning_providers spv ON spv.id = s.provider_id
+         LEFT JOIN provider_secrets sps ON sps.provider_id = spv.id
         WHERE
           -- A deposit is money in, not a thing out: it has no plan, so the
           -- plan_id IS NULL guard below would fail it and tell the customer
@@ -455,7 +488,7 @@ async function deliver(
     code: row.provider_code ?? String(row.provider_id),
     name: row.provider_name ?? 'panel',
     baseUrl: row.provider_base_url,
-    credentials: credentialsFor(row.provider_secret_ref),
+    credentials: credentialsFor(row.provider_secret_ref, row.provider_sealed),
     config: row.provider_config ?? {},
     fetch: fetchImpl,
   };
@@ -681,7 +714,7 @@ async function renew(
       code: row.provider_code ?? String(row.provider_id),
       name: row.provider_name ?? 'panel',
       baseUrl: row.provider_base_url,
-      credentials: credentialsFor(row.provider_secret_ref),
+      credentials: credentialsFor(row.provider_secret_ref, row.provider_sealed),
       config: row.provider_config ?? {},
       fetch: fetchImpl,
     },

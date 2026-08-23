@@ -57,7 +57,7 @@ export async function actOnService(
     code: service.provider_code ?? String(service.provider_id ?? ''),
     name: service.provider_name ?? 'panel',
     baseUrl: service.provider_base_url,
-    credentials: credentialsFor(service.provider_secret_ref),
+    credentials: credentialsFor(service.provider_secret_ref, service.provider_sealed),
     config: service.provider_config ?? {},
     fetch: fetchImpl,
   });
