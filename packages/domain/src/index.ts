@@ -35,3 +35,4 @@ export * from './operatorAuth.js';
 export * from './log.js';
 export * from './alert.js';
 export * from './eventSink.js';
+export * from './secretBox.js';
