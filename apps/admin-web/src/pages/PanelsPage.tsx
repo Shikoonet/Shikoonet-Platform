@@ -2,10 +2,17 @@
  * مدیریت پنل‌ها — the servers that actually deliver what the shop sells.
  *
  * `panel/panels.php` puts the panel's username, password and API token on the
- * same form as its name. This screen has no credential field, because the API
- * has no credential route: `secret_ref` names a secret in the runtime store and
- * `config` carries a shared secret provisioning has to send, so neither ever
- * reaches the browser. All this page knows is whether a credential exists.
+ * same form as its name. This screen takes a password too, since 2026-08-23 —
+ * it had to, because the alternative was that panels could only be added by
+ * editing the bot's environment in Coolify and redeploying. What it does NOT do
+ * is give one back: the password is sealed on the way in and no route here
+ * reads one out, so the only thing this page ever knows about a stored
+ * credential is that it exists.
+ *
+ * `config` still never reaches the browser either — it carries a hysteria
+ * shared secret provisioning has to send. The one part of it this screen does
+ * show is `group_ids`, because that is not a secret; it is the number that
+ * decides what a paying customer receives.
  *
  * What it adds instead is the number the PHP screen does not have: how many
  * live subscriptions sit on each panel. Disabling a panel is routine or
@@ -17,7 +24,7 @@ import { useEffect, useState } from 'react';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
-import type { PanelTestResult } from '../api.js';
+import type { PanelGroups, PanelTestResult } from '../api.js';
 
 const STATUS_FA: Record<string, string> = { ACTIVE: 'فعال', DISABLED: 'غیرفعال' };
 
@@ -489,7 +496,19 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
       )}
 
       {needsLogin && (
-        <p className="muted">رمز رمزنگاری‌شده ذخیره می‌شود و هیچ صفحه‌ای دوباره نشانش نمی‌دهد.</p>
+        <>
+          {/* The legacy wizard printed these rules and trusted the operator to
+              apply them by hand. The server applies them now — this paragraph
+              is the courtesy of saying so, not the guard. */}
+          <p className="muted">
+            آدرس را بدون <span className="ltr">/dashboard</span> و بدون{' '}
+            <span className="ltr">/</span> آخر بنویسید، و اگر پورت ۴۴۳ است لازم نیست وارد شود.
+            هرکدام را فراموش کنید خودمان برمی‌داریم — ولی <span className="ltr">http</span> یا{' '}
+            <span className="ltr">https</span> باید باشد، چون حدس‌زدنش یا رمز را لخت می‌فرستد یا روی
+            گواهی می‌شکند.
+          </p>
+          <p className="muted">رمز رمزنگاری‌شده ذخیره می‌شود و هیچ صفحه‌ای دوباره نشانش نمی‌دهد.</p>
+        </>
       )}
 
       {/* Before saving, deliberately: a panel saved and only then found broken
@@ -525,6 +544,212 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * گروه‌های پنل — the thing that decides what a paying customer receives.
+ *
+ * The legacy shop had five "panels" all pointing at one PasarGuard, differing
+ * only in which groups they sent: `[42,2]` for VIP, `[83]` for the unlimited
+ * line, `[2]` for the rest. Buying VIP got you groups 42 and 2 because a row in
+ * `marzban_panel` said so. That is carried into
+ * `provisioning_providers.config`, and until now no screen showed it — the
+ * number deciding what a customer receives lived only in a jsonb column.
+ *
+ * The list is asked of the PANEL, not typed. That is the whole point: group 42
+ * was in our configuration and had been deleted from the live panel, and
+ * PasarGuard answers a create with `404 Group not found`, which the adapter
+ * classifies as non-retryable — so every VIP order would have gone FAILED and
+ * refunded on the first day of cutover. A number frozen in our config cannot
+ * notice that; a list the panel supplies can.
+ *
+ * A selected id the panel does not have is drawn anyway, and marked. Hiding it
+ * would remove the only warning that this exact failure is armed.
+ */
+function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged: () => void }) {
+  const w = useAdminWriteProps();
+  const [data, setData] = useState<PanelGroups | null>(null);
+  const [chosen, setChosen] = useState<number[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const next = await api.panelGroups(panel.id);
+      setData(next);
+      setChosen(next.selected);
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    // Reloads when a different panel is opened. `load` is stable enough for
+    // this — the page unmounts the editor between panels — and the repo has no
+    // react-hooks plugin configured, so an exhaustive-deps pragma here would
+    // reference a rule that does not exist.
+    void load();
+  }, [panel.id]);
+
+  async function save() {
+    if (chosen === null) return;
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await api.setPanelGroups(panel.id, chosen);
+      setDone('گروه‌های این پنل ذخیره شد.');
+      onChanged();
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggle(id: number) {
+    setChosen((prev) => {
+      const now = prev ?? [];
+      return now.includes(id) ? now.filter((x) => x !== id) : [...now, id].sort((a, b) => a - b);
+    });
+  }
+
+  if (data === null) {
+    return (
+      <>
+        <h4>گروه‌های پنل</h4>
+        {err ? <div className="alert alert-error">{err}</div> : <p className="muted">…</p>}
+      </>
+    );
+  }
+
+  const selected = chosen ?? [];
+  const available = data.available;
+  // Ids we send that the panel does not have. This is the group-42 case, and it
+  // is the reason this screen exists.
+  const missing =
+    available === null ? [] : selected.filter((id) => !available.some((g) => g.id === id));
+  const dirty =
+    JSON.stringify([...selected].sort((a, b) => a - b)) ===
+    JSON.stringify([...data.selected].sort((a, b) => a - b))
+      ? false
+      : true;
+
+  return (
+    <>
+      <h4>گروه‌های پنل</h4>
+      <p className="muted">
+        وقتی مشتری از این پنل خرید می‌کند، اکانتش در همین گروه‌ها ساخته می‌شود. فهرست از خودِ پنل
+        خوانده می‌شود، نه از تنظیمات ما.
+      </p>
+
+      {err && <div className="alert alert-error">{err}</div>}
+      {done && <div className="alert alert-info">{done}</div>}
+
+      {available === null ? (
+        <div className="alert alert-error">
+          فهرست گروه‌ها از پنل خوانده نشد{data.reason ? ` — ${data.reason}` : ''}. آن‌چه الان
+          فرستاده می‌شود: {selected.length > 0 ? selected.join('، ') : '(هیچ)'}
+        </div>
+      ) : (
+        <>
+          {missing.length > 0 && (
+            <div className="alert alert-error">
+              گروه {missing.join('، ')} در تنظیمات این پنل هست ولی <b>روی خودِ پنل وجود ندارد</b>.
+              هر خریدی که این گروه را بفرستد شکست می‌خورد و پول مشتری برمی‌گردد.
+            </div>
+          )}
+          <div className="table-wrap">
+            <table className="app-table">
+              <thead>
+                <tr>
+                  <th />
+                  <th>گروه</th>
+                  <th>شناسه</th>
+                  <th>اعضا</th>
+                </tr>
+              </thead>
+              <tbody>
+                {available.length === 0 && (
+                  <tr>
+                    <td className="empty" colSpan={4}>
+                      این پنل هیچ گروهی ندارد.
+                    </td>
+                  </tr>
+                )}
+                {available.map((g) => (
+                  <tr key={g.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={g.name}
+                        checked={selected.includes(g.id)}
+                        onChange={() => toggle(g.id)}
+                        {...w}
+                      />
+                    </td>
+                    <td>{g.name}</td>
+                    <td className="ltr">{g.id}</td>
+                    <td>{g.memberCount === undefined ? '—' : count(g.memberCount)}</td>
+                  </tr>
+                ))}
+                {missing.map((id) => (
+                  <tr key={`missing-${id}`}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`گروه ${id}`}
+                        checked
+                        onChange={() => toggle(id)}
+                        {...w}
+                      />
+                    </td>
+                    <td>
+                      <span className="badge badge-block">روی پنل نیست</span>
+                    </td>
+                    <td className="ltr">{id}</td>
+                    <td>—</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ marginBlockStart: 12 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || !dirty}
+              onClick={() => void save()}
+              {...w}
+            >
+              ذخیرهٔ گروه‌ها
+            </button>
+          </div>
+        </>
+      )}
+
+      {data.plans.length > 0 && (
+        <>
+          <p className="muted" style={{ marginBlockStart: 12 }}>
+            این پلن‌ها گروه خودشان را دارند و انتخاب بالا رویشان اثر ندارد:
+          </p>
+          <ul className="muted">
+            {data.plans.map((pl) => (
+              <li key={pl.id}>
+                {pl.name} — <span className="ltr">{JSON.stringify(pl.groups)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </>
   );
 }
 
@@ -730,6 +955,8 @@ function PanelEditor({
           })
         }
       />
+
+      <PanelGroupsSection panel={panel} onChanged={onChanged} />
 
       <h4>وضعیت</h4>
       <p className="muted" style={{ marginBlockStart: 0 }}>

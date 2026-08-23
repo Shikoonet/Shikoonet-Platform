@@ -412,6 +412,25 @@ export interface PanelTestResult {
   reason?: string;
 }
 
+/**
+ * What a panel sends, what it has, and who ignores it.
+ *
+ * `available: null` means the panel could not be asked — NOT that it has no
+ * groups. Rendering an empty list for an unreachable panel would invite an
+ * operator to "fix" a selection that was correct.
+ */
+export interface PanelGroups {
+  ok: boolean;
+  /** The group ids this panel sends today. */
+  selected: number[];
+  available: Array<{ id: number; name: string; memberCount?: number }> | null;
+  /** True for a kind that has no groups at all, so the UI says so rather than erroring. */
+  untestable?: boolean;
+  reason?: string;
+  /** Plans whose own `group_ids` override the panel — changing it here misses them. */
+  plans: Array<{ id: number; name: string; groups: unknown }>;
+}
+
 export interface PanelItem {
   id: number;
   code: string;
@@ -1031,6 +1050,17 @@ export const api = {
     return req<PanelTestResult>(`/panels/${id}/test`, {
       method: 'POST',
       body: JSON.stringify(body),
+    });
+  },
+
+  panelGroups(id: number) {
+    return req<PanelGroups>(`/panels/${id}/groups`);
+  },
+
+  setPanelGroups(id: number, groupIds: number[]) {
+    return req<{ ok: boolean; panel: PanelItem | null }>(`/panels/${id}/groups`, {
+      method: 'POST',
+      body: JSON.stringify({ groupIds }),
     });
   },
 
