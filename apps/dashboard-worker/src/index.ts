@@ -30,6 +30,7 @@ import {
   sha256Hex,
   tokenPrefix,
   buildSmsRelayConfig,
+  INGEST_PATH,
   MIRZABOT_SOURCE,
   type EnvName,
 } from '@shikoo/contracts';
@@ -74,10 +75,33 @@ import { tehranDayFromUtc } from './tehranDay.js';
  *
  * Returns null when unset, and the routes answer 503 rather than handing out a
  * configuration nobody can use.
+ *
+ * ## The path is added here, not left to whoever set the variable
+ *
+ * This returned `INGEST_URL` verbatim until 2026-08-23, and on the server that
+ * variable was `https://sms.mahamsteel.ir:9443` — the origin, with no path. So
+ * the panel printed that into the phone configuration, and an admin pasting
+ * exactly what they were given would have pointed the relay at `/`.
+ *
+ * Measured before the fix, against the running ingest: `POST /` answers **404**
+ * and `POST /api/v1/sms` answers 400. Three failed attempts per message and the
+ * relay drops it — and **nothing on this side would ever know**, because the
+ * request never arrives. That is the shape of failure this repository keeps
+ * paying for: silence that looks like health.
+ *
+ * The comment above already knew the contract is frozen at `POST /api/v1/sms`.
+ * Now the code uses it, from `INGEST_PATH` in `@shikoo/contracts` — the same
+ * constant the ingest worker registers its route with, so the two cannot drift.
+ * A value that already carries the path is left alone, which is why fixing the
+ * variable on the server is safe either way.
  */
 export function ingestUrl(env: { INGEST_URL?: string }): string | null {
-  const url = env.INGEST_URL?.trim();
-  return url === undefined || url === '' ? null : url;
+  const raw = env.INGEST_URL?.trim();
+  if (raw === undefined || raw === '') return null;
+  // Trailing slashes off first, so `…:9443/` and `…/api/v1/sms/` both land on
+  // the same answer as their unslashed twins rather than on `…//api/v1/sms`.
+  const base = raw.replace(/\/+$/, '');
+  return base.endsWith(INGEST_PATH) ? base : `${base}${INGEST_PATH}`;
 }
 
 const INGEST_URL_MISSING = {
