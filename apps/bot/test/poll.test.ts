@@ -4,6 +4,7 @@ import type { Attempt } from '../src/poll.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 import { stubApi } from './helpers/telegram.js';
+import * as provisionModule from '../src/provision.js';
 import { makeCustomer } from './helpers/shop.js';
 
 let nextId = 1;
@@ -544,6 +545,53 @@ describe('run', () => {
     errors.mockRestore();
 
     expect(calls).toBe(2);
+  });
+
+  it('still delivers a paid order when Telegram will not answer', async () => {
+    // The sweeps used to sit inside the same `try` as `getUpdates`, after it, so
+    // a rejected read threw straight past every one of them. None of them needs
+    // Telegram: settling a verified payment is a database transaction,
+    // provisioning a paid order is a call to a panel, expiring an invoice is a
+    // clock.
+    //
+    // Found by walking it rather than by reading it. Two bot processes on one
+    // token made Telegram answer `Conflict: terminated by other getUpdates
+    // request` on every cycle, and two orders sat in PAID for eight minutes
+    // against a panel that was up with credentials that worked. In a country
+    // where Telegram is unreachable most weeks, that is a customer who paid and
+    // received nothing because the shop could not read its messages.
+    //
+    // The assertion is that the delivery sweep is REACHED. What it then does is
+    // covered by that function's own tests.
+    const controller = new AbortController();
+    let reads = 0;
+    let swept = 0;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const provision = vi
+      .spyOn(provisionModule, 'provisionPaidOrders')
+      .mockImplementation(async () => {
+        swept++;
+        controller.abort();
+        return 0;
+      });
+
+    const api = stubApi({
+      getUpdates: async () => {
+        reads++;
+        // Verbatim what Telegram says when a second process holds the token.
+        throw new Error(
+          'telegram getUpdates rejected: Conflict: terminated by other getUpdates request',
+        );
+      },
+      sendMessage: async () => undefined,
+    });
+
+    await run(db, api, { signal: controller.signal, backoffMs: 1 });
+    provision.mockRestore();
+    errors.mockRestore();
+
+    expect(reads, 'the read was attempted').toBeGreaterThan(0);
+    expect(swept, 'the delivery sweep must run even though the read failed').toBeGreaterThan(0);
   });
 
   it('returns promptly when the signal is already aborted', async () => {

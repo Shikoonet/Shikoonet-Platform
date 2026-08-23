@@ -465,9 +465,42 @@ export async function run(
 
   while (!options.signal?.aborted) {
     try {
-      const result = await pollOnce(db, api, offset, timeoutSec, options.signal, attempts);
-      const stalled = result.failed > 0 && result.offset === offset;
-      offset = result.offset;
+      // Reading Telegram is its OWN try, and that is the whole point of this
+      // shape. Every sweep below is downstream of this call, and none of them
+      // needs Telegram to do its work: settling a verified payment is a
+      // database transaction, provisioning a paid order is a call to a panel,
+      // expiring an invoice is a clock. Until 2026-08-23 a rejected
+      // `getUpdates` threw straight past all of them.
+      //
+      // Measured, not argued: two processes polling one token made Telegram
+      // answer `Conflict: terminated by other getUpdates request` on every
+      // cycle, and two orders sat in PAID for eight minutes with a panel that
+      // was up, credentials that worked and nothing wrong with them. A customer
+      // who has paid does not get their service because the shop cannot read
+      // its messages — and in this country Telegram being unreachable is a
+      // Tuesday, not an incident.
+      //
+      // `notify.flush` further down already carried the comment "Telegram being
+      // unreachable for a minute costs a minute rather than a customer". That
+      // was true of the flush and false of everything above it, because control
+      // never arrived.
+      let stalled = false;
+      try {
+        const result = await pollOnce(db, api, offset, timeoutSec, options.signal, attempts);
+        stalled = result.failed > 0 && result.offset === offset;
+        offset = result.offset;
+      } catch (err) {
+        if (options.signal?.aborted) break;
+        log.error(
+          'poll.read_failed',
+          { consequence: 'no updates this cycle; sweeps still run' },
+          err,
+        );
+        // The same backoff a failed cycle used to take, kept: without it the
+        // loop spins at the speed of the network against a Telegram that is
+        // refusing, which is how a five-minute outage became 6,000 log lines.
+        await sleep(backoffMs, options.signal);
+      }
       // Nothing in the batch could be acknowledged, so getUpdates will hand the
       // same failure straight back — and because there ARE updates waiting, it
       // returns instantly instead of long-polling. Without this pause the loop
