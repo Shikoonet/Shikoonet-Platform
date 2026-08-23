@@ -106,9 +106,10 @@ afterEach(clear);
 
 describe('a screen other than the main menu', () => {
   it('is drawn from the saved layout, not from the code', async () => {
-    // The panel list's back button, renamed and hidden nowhere else. Before this
-    // slice the only editable keyboard in the whole bot was the main menu.
-    await save('panels', [
+    // The shop's first screen and its back button, renamed and hidden nowhere
+    // else. Before this slice the only editable keyboard in the whole bot was
+    // the main menu.
+    await save('products', [
       { action: 'menu', label: '🏠 برگرد خانه', rowIndex: 0, colIndex: 0, visible: true },
     ]);
 
@@ -123,7 +124,7 @@ describe('a screen other than the main menu', () => {
   it('leaves every other screen on the shipped layout', async () => {
     // Per menu, not all or nothing: a shop that renames one button still
     // receives later releases' improvements everywhere else.
-    await save('panels', [
+    await save('products', [
       { action: 'menu', label: '🏠 برگرد خانه', rowIndex: 0, colIndex: 0, visible: true },
     ]);
     await applySaved();
@@ -136,7 +137,7 @@ describe('a screen other than the main menu', () => {
   });
 
   it('keeps the callback working after a rename', async () => {
-    await save('panels', [
+    await save('products', [
       { action: 'menu', label: 'هرچیزی', rowIndex: 0, colIndex: 0, visible: true },
     ]);
     const { updateId, telegramId } = ids();
@@ -147,15 +148,14 @@ describe('a screen other than the main menu', () => {
 
   it('draws the data rows above the chrome, whatever the layout says', async () => {
     const { updateId, telegramId } = ids();
-    const vip = await providerId('sim-vip');
     await handleUpdate(db, startUpdate(updateId, telegramId));
     const shop = await handleUpdate(db, press(updateId + 1, telegramId, 'buy'));
 
     const rows = shop.replies[0]?.keyboard ?? [];
     const chromeAt = rows.findIndex((r) => r.some((b) => b.callback_data === 'menu'));
-    const panelAt = rows.findIndex((r) => r.some((b) => b.callback_data === `panel:${vip}`));
-    expect(panelAt).toBeGreaterThanOrEqual(0);
-    expect(panelAt).toBeLessThan(chromeAt);
+    const dataAt = rows.findIndex((r) => r.some((b) => b.callback_data?.startsWith('prd:')));
+    expect(dataAt).toBeGreaterThanOrEqual(0);
+    expect(dataAt).toBeLessThan(chromeAt);
   });
 });
 

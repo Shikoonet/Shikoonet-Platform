@@ -159,27 +159,17 @@ export const MENUS = {
       },
     ],
   },
-  panels: {
-    label: 'انتخاب لوکیشن',
-    hint: 'زیر فهرست لوکیشن‌ها',
-    buttons: [BACK_TO_MENU],
-  },
   products: {
     label: 'فهرست سرویس‌ها',
-    hint: 'زیر سرویس‌های یک لوکیشن — پلاتینیوم، طلایی، معمولی',
-    buttons: [
-      { action: 'buy', label: 'بازگشت به لوکیشن‌ها ⬅️', hint: 'برگشت به فهرست لوکیشن‌ها' },
-      BACK_TO_MENU,
-    ],
+    hint: 'اولین صفحهٔ خرید — پلاتینیوم، طلایی، معمولی',
+    buttons: [BACK_TO_MENU],
   },
   plans: {
     label: 'فهرست پلن‌ها',
     hint: 'زیر پلن‌های یک سرویس — ۳۰ گیگ یک‌ماهه، ۵۰ گیگ یک‌ماهه',
     buttons: [
-      // `panel`, not `buy`: a plan list is now reached THROUGH a service, so one
-      // step back is that location's service list rather than the location list
-      // two steps up. The location list is still one more tap from there.
-      { action: 'panel', label: 'بازگشت به سرویس‌ها ⬅️', hint: 'برگشت به سرویس‌های همین لوکیشن' },
+      // `buy` IS the service list now, so one step back is one action.
+      { action: 'buy', label: 'بازگشت به سرویس‌ها ⬅️', hint: 'برگشت به فهرست سرویس‌ها' },
       BACK_TO_MENU,
     ],
   },
@@ -210,7 +200,7 @@ export const MENUS = {
       // drew one, so it goes back to the service list instead. Same button,
       // because "back" is one idea and giving it two rows is how a screen ends
       // up with two buttons that both say بازگشت.
-      { action: 'panel', label: 'بازگشت ⬅️', hint: 'برگشت به پلن‌ها یا سرویس‌های همین لوکیشن' },
+      { action: 'buy', label: 'بازگشت ⬅️', hint: 'برگشت به پلن‌ها یا فهرست سرویس‌ها' },
       BACK_TO_MENU,
     ],
   },
@@ -618,20 +608,16 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
   ],
   gateChannels: [['chk', 0, 0]],
   gateRules: [['acc', 0, 0]],
-  panels: [['menu', 0, 0]],
-  products: [
-    ['buy', 0, 0],
-    ['menu', 0, 1],
-  ],
+  products: [['menu', 0, 0]],
   plans: [
-    ['panel', 0, 0],
+    ['buy', 0, 0],
     ['menu', 0, 1],
   ],
   planDetail: [
     ['order', 0, 0],
     ['dsc', 1, 0],
     ['dsx', 1, 1],
-    ['panel', 2, 0],
+    ['buy', 2, 0],
     ['menu', 2, 1],
   ],
   checkout: [

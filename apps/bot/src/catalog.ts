@@ -62,37 +62,6 @@ const PURCHASABLE = `
       )
 `;
 
-export interface Panel {
-  id: number;
-  name: string;
-  /** How many plans this customer can buy here. Never zero: empty panels are
-   *  not returned at all. */
-  plans: number;
-}
-
-/** The panels worth showing this customer, in the order the admin set. */
-export async function panelsForUser(db: Db, userId: number): Promise<Panel[]> {
-  const rows = await db
-    .prepare(
-      `SELECT pr.id, pr.name, COUNT(pl.id)::int AS plans
-         FROM provisioning_providers pr
-         JOIN products p        ON p.provider_id = pr.id
-         JOIN product_plans pl  ON pl.product_id = p.id
-         JOIN users u           ON u.id = ?1
-        WHERE ${PURCHASABLE}
-        GROUP BY pr.id, pr.name, pr.sort_order
-        -- id, not name. Every migrated panel carries sort_order 0, so a
-        -- tiebreak on name reorders the shop alphabetically and customers lose
-        -- the arrangement they know. Compared against the live bot on
-        -- 2026-08-12: it lists مولتی لوکیشن, طلایی, خرید اولی‌ها — which is
-        -- marzban_panel.id order, and our ids follow legacy_id.
-        ORDER BY pr.sort_order, pr.id`,
-    )
-    .bind(userId)
-    .all<Panel>();
-  return rows.results;
-}
-
 /**
  * One sellable service on a panel — «پلاتینیوم», «طلایی», «معمولی».
  *
@@ -109,35 +78,68 @@ export interface CatalogProduct {
   plans: number;
   /** The cheapest of them, before this customer's own discount. */
   fromPriceIrr: number;
+  /**
+   * The panel it is delivered from.
+   *
+   * Not drawn on the button unless it has to be. The shop no longer asks the
+   * customer to pick a location first — they pick a SERVICE — so the panel is
+   * only ever needed to tell two services of the same name apart, which is what
+   * a second panel selling its own «پلاتینیوم» would produce.
+   */
+  providerName: string;
 }
 
-/** The services worth showing this customer on one panel, in the admin's order. */
-export async function productsOnPanel(
+/**
+ * The services this customer can buy, cheapest plan quoted.
+ *
+ * Across every panel, because the shop's first question is «which level», not
+ * «which location». The panel is still what delivers, and the plan page still
+ * names it, but it is no longer a step the customer walks through: the legacy
+ * shop asked location-first because a legacy panel WAS a tier — five
+ * `marzban_panel` rows on one PasarGuard differing only in `inbounds` — and
+ * once a service carries its own groups that reason is gone.
+ *
+ * `providerId` narrows it to one panel. Nothing in the shop passes it any more;
+ * the `panel:` callback does, so a button in a message sent before this change
+ * still opens something sensible instead of silently doing nothing.
+ */
+export async function productsForUser(
   db: Db,
   userId: number,
-  providerId: number,
+  providerId?: number,
 ): Promise<CatalogProduct[]> {
   const rows = await db
     .prepare(
       `SELECT p.id                AS product_id,
               p.name              AS name,
               COUNT(pl.id)::int   AS plans,
-              MIN(pl.price_irr)   AS from_price_irr
+              MIN(pl.price_irr)   AS from_price_irr,
+              pr.name             AS provider_name
          FROM products p
          JOIN product_plans pl          ON pl.product_id = p.id
          JOIN provisioning_providers pr ON pr.id = p.provider_id
          JOIN users u                   ON u.id = ?1
-        WHERE pr.id = ?2 AND ${PURCHASABLE}
-        GROUP BY p.id, p.name, p.sort_order
-        ORDER BY p.sort_order, p.id`,
+        WHERE (?2::bigint IS NULL OR pr.id = ?2) AND ${PURCHASABLE}
+        GROUP BY p.id, p.name, p.sort_order, pr.name, pr.sort_order, pr.id
+        -- The panel's order first, then the product's. Same reason the panel
+        -- list used it: every migrated row carries sort_order 0, so a tiebreak
+        -- on name would rearrange a shop customers already know.
+        ORDER BY pr.sort_order, pr.id, p.sort_order, p.id`,
     )
-    .bind(userId, providerId)
-    .all<{ product_id: number; name: string; plans: number; from_price_irr: number }>();
+    .bind(userId, providerId ?? null)
+    .all<{
+      product_id: number;
+      name: string;
+      plans: number;
+      from_price_irr: number;
+      provider_name: string;
+    }>();
   return rows.results.map((r) => ({
     productId: r.product_id,
     name: r.name,
     plans: r.plans,
     fromPriceIrr: Number(r.from_price_irr),
+    providerName: r.provider_name,
   }));
 }
 

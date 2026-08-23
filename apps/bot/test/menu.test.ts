@@ -67,9 +67,15 @@ describe('every button we draw', () => {
   const keyboards: InlineKeyboard[] = [
     menu.mainMenu(CUSTOMER),
     menu.mainMenu(RESELLER),
-    menu.panelMenu([
-      { id: 1, name: 'یک', plans: 2 },
-      { id: 999_999_999, name: 'دو', plans: 1 },
+    menu.productMenu([
+      { productId: 1, name: 'یک', plans: 2, fromPriceIrr: 1_000_000, providerName: 'پ' },
+      {
+        productId: 999_999_999,
+        name: 'دو',
+        plans: 1,
+        fromPriceIrr: 2_000_000,
+        providerName: 'پ',
+      },
     ]),
     menu.planMenu([PLAN]),
     menu.planMenu([]),
@@ -110,7 +116,7 @@ describe('every button we draw', () => {
   it('always leaves a way back', () => {
     for (const keyboard of keyboards.slice(2)) {
       const targets = callbacks(keyboard).map((b) => b.callback_data);
-      expect(targets.some((t) => t === 'menu' || t === 'buy' || t.startsWith('panel:'))).toBe(true);
+      expect(targets.some((t) => t === 'menu' || t === 'buy' || t.startsWith('prd:'))).toBe(true);
     }
   });
 });
@@ -120,6 +126,7 @@ const SERVICE: CatalogProduct = {
   name: '۱ماهه - ۵۰ گیگ',
   plans: 1,
   fromPriceIrr: 1_950_000,
+  providerName: '🥇 سرویس VIP',
 };
 
 describe('the service list', () => {
@@ -152,6 +159,22 @@ describe('the service list', () => {
     expect(many?.[0]?.text).toContain('از 195,000 تومان');
   });
 
+  it('names the panel only on a service whose name is not unique', () => {
+    // One panel is the shop today, and «(پنل تست)» on every row is noise on
+    // every row. A SECOND panel selling its own «پلاتینیوم» is the case that
+    // needs it — otherwise the screen built to stop one word appearing twice
+    // draws one word twice.
+    const rows = menu.productMenu([
+      { ...SERVICE, productId: 1, name: 'پلاتینیوم', providerName: 'آلمان' },
+      { ...SERVICE, productId: 2, name: 'پلاتینیوم', providerName: 'فرانسه' },
+      { ...SERVICE, productId: 3, name: 'طلایی', providerName: 'آلمان' },
+    ]);
+    const labels = rows.flat().map((b) => b.text);
+    expect(labels[0]).toContain('پلاتینیوم (آلمان)');
+    expect(labels[1]).toContain('پلاتینیوم (فرانسه)');
+    expect(labels[2]).not.toContain('آلمان');
+  });
+
   it('is just a way back when there is nothing to list', () => {
     expect(callbacks(menu.productMenu([])).every((b) => /^(buy|menu)$/.test(b.callback_data))).toBe(
       true,
@@ -173,9 +196,9 @@ describe('the plan list', () => {
     expect(rows[0]?.[0]?.callback_data).toBe('plan:1');
   });
 
-  it('goes back to the services of the panel it came from', () => {
-    const targets = callbacks(menu.planMenu([PLAN], 0, 9)).map((b) => b.callback_data);
-    expect(targets).toContain('panel:9');
+  it('goes back to the service list, which is the shop first screen', () => {
+    const targets = callbacks(menu.planMenu([PLAN])).map((b) => b.callback_data);
+    expect(targets).toContain('buy');
   });
 
   it('is just a way back when there is nothing to list', () => {
@@ -189,7 +212,7 @@ describe('the plan list', () => {
     // callback that answers for actions it does not care about rewrites them
     // too. Mine did: it sent `menu` to the panel list, and the emptiness test
     // above could not see it because both answers matched the same pattern.
-    const targets = callbacks(menu.planMenu([PLAN], 0, 9)).map((b) => b.callback_data);
+    const targets = callbacks(menu.planMenu([PLAN])).map((b) => b.callback_data);
     expect(targets).toContain('menu');
   });
 });
@@ -210,7 +233,7 @@ describe('«بازگشت» on a plan page', () => {
     const targets = callbacks(menu.planDetailMenu({ ...PLAN, siblings: 1 })).map(
       (b) => b.callback_data,
     );
-    expect(targets).toContain('panel:7');
+    expect(targets).toContain('buy');
     expect(targets).not.toContain('prd:7');
   });
 });
@@ -294,10 +317,10 @@ describe('the plan detail', () => {
     expect(text).toContain('165,750 تومان'); // payable
   });
 
-  it('offers the order button and a way back to the panel it came from', () => {
+  it('offers the order button and a way back to where it came from', () => {
     const targets = buttons(menu.planDetailMenu(PLAN)).map((b) => b.callback_data);
     expect(targets).toContain('order:42');
-    expect(targets).toContain('panel:7');
+    expect(targets).toContain('buy');
   });
 });
 

@@ -84,18 +84,21 @@ describe('walking from /start to an order', () => {
     // A greeting is a new message, not an edit of one.
     expect(start.replies[0]?.editMessageId).toBeUndefined();
 
+    const product = await productId('sim-vip-1m-50');
     const shop = await handleUpdate(db, press(updateId + 1, telegramId, 'buy'));
-    expect(shop.replies[0]?.text).toBe(menu.CHOOSE_PANEL);
+    // Services, not locations. «خرید اشتراک» opens the levels directly — a
+    // customer's first question is which one they want, and the panel that
+    // delivers it is named on the plan's own page.
+    expect(shop.replies[0]?.text).toBe(menu.CHOOSE_PRODUCT);
     // The menu is replaced in place, so the chat does not fill with dead screens.
     expect(shop.replies[0]?.editMessageId).toBe(4242);
-    expect(shop.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(`panel:${vip}`);
+    const offered = shop.replies[0]?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    expect(offered).toContain(`prd:${product}`);
+    expect(offered.some((d) => d?.startsWith('panel:'))).toBe(false);
 
-    const product = await productId('sim-vip-1m-50');
+    // Still reachable by a button in a message sent before the change.
     const panel = await handleUpdate(db, press(updateId + 2, telegramId, `panel:${vip}`));
     expect(panel.replies[0]?.text).toBe(menu.CHOOSE_PRODUCT);
-    // Services now, not plans. The row for this one carries its own name and
-    // the price it sells at, which for a legacy-shaped product — one plan, the
-    // price typed into the name — is the same button the shop drew before.
     expect(panel.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(
       `prd:${product}`,
     );
@@ -218,10 +221,9 @@ describe('screens with nothing on them', () => {
     const outcome = await handleUpdate(db, press(updateId, telegramId, `panel:${empty}`));
 
     expect(outcome.replies[0]?.text).toBe(menu.PANEL_EMPTY);
-    expect(outcome.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toEqual([
-      'buy',
-      'menu',
-    ]);
+    // «بازگشت به منو» alone: this screen is only reachable from a button in an
+    // old message now, and the shop's first screen is one tap from the menu.
+    expect(outcome.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toEqual(['menu']);
   });
 
   it('sends a stranger to /start rather than a menu', async () => {
@@ -312,14 +314,13 @@ describe('a panel that sells more than one level', () => {
    */
   it('lists services, then the sizes inside the one that was picked', async () => {
     const { updateId, telegramId } = ids();
-    const vip = await providerId('sim-vip');
     const platinum = await productId('sim-vip-platinum');
     const fifty = await planIdIn('sim-vip-platinum', '۵۰ گیگ - یک‌ماهه');
 
     await handleUpdate(db, startUpdate(updateId, telegramId));
 
-    const panel = await handleUpdate(db, press(updateId + 1, telegramId, `panel:${vip}`));
-    const services = panel.replies[0]?.keyboard?.flat() ?? [];
+    const shop = await handleUpdate(db, press(updateId + 1, telegramId, 'buy'));
+    const services = shop.replies[0]?.keyboard?.flat() ?? [];
     const row = services.find((b) => b.callback_data === `prd:${platinum}`);
     expect(row, 'the service is on the panel screen').toBeDefined();
     // «از», because three sizes have no single price. A bare number here is one
@@ -347,6 +348,6 @@ describe('a panel that sells more than one level', () => {
     expect(back).toContain(`order:${fifty}`);
     // Back goes to the plan list it came from, not two levels up to the panel.
     expect(back).toContain(`prd:${platinum}`);
-    expect(back).not.toContain(`panel:${vip}`);
+    expect(back.some((d) => d?.startsWith('panel:'))).toBe(false);
   });
 });

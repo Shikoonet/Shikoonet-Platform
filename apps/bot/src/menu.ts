@@ -33,7 +33,7 @@
  */
 
 import { encode, encodeRef } from './callback.js';
-import type { CatalogPlan, CatalogProduct, Panel } from './catalog.js';
+import type { CatalogPlan, CatalogProduct } from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
 import {
@@ -94,7 +94,6 @@ export let MENU_TITLE = DEFAULT_TEXTS.raw('MENU_TITLE');
 export let GATE_RULES = DEFAULT_TEXTS.raw('GATE_RULES');
 export let GATE_RULES_ACCEPTED = DEFAULT_TEXTS.raw('GATE_RULES_ACCEPTED');
 export let SOON = DEFAULT_TEXTS.raw('SOON');
-export let CHOOSE_PANEL = DEFAULT_TEXTS.raw('CHOOSE_PANEL');
 export let CHOOSE_PRODUCT = DEFAULT_TEXTS.raw('CHOOSE_PRODUCT');
 /** Shown when a panel that was listed a moment ago now has nothing on it. */
 export let PANEL_EMPTY = DEFAULT_TEXTS.raw('PANEL_EMPTY');
@@ -259,7 +258,6 @@ export function applyContent(content: BotContent): void {
   GATE_RULES = t.raw('GATE_RULES');
   GATE_RULES_ACCEPTED = t.raw('GATE_RULES_ACCEPTED');
   SOON = t.raw('SOON');
-  CHOOSE_PANEL = t.raw('CHOOSE_PANEL');
   CHOOSE_PRODUCT = t.raw('CHOOSE_PRODUCT');
   PANEL_EMPTY = t.raw('PANEL_EMPTY');
   PRODUCT_EMPTY = t.raw('PRODUCT_EMPTY');
@@ -414,13 +412,6 @@ export function choosePlan(productName: string): string {
   return TEXTS_NOW.render('CHOOSE_PLAN', { product: productName });
 }
 
-export function panelMenu(panels: Panel[]): InlineKeyboard {
-  return withChrome(
-    panels.map((panel) => [{ text: panel.name, callback_data: encode('panel', panel.id) }]),
-    'panels',
-  );
-}
-
 /**
  * How a shop button quotes a price.
  *
@@ -441,21 +432,33 @@ function priced(name: string, listedIrr: number, price: Price, prefix = ''): str
 }
 
 /**
- * One row per service — پلاتینیوم, طلایی, معمولی.
+ * One row per service — پلاتینیوم, طلایی, معمولی. The shop's first screen.
  *
  * The cheapest plan is quoted with «از», because a service holding several
  * plans has no single price and a bare number on the button would be one the
  * customer cannot then find on the next screen. A service holding exactly one
  * plan has a price, so it is quoted flat — and that is the whole of the legacy
  * shop's button, unchanged, for the catalogue that has one plan per product.
+ *
+ * The panel's name is appended ONLY to a service whose name is not unique in
+ * this list. One panel is the shop today and putting «(پنل تست)» on every row
+ * would be noise on every row; a second panel selling its own «پلاتینیوم» would
+ * otherwise draw the same button twice, which is the defect this whole screen
+ * was built to remove.
  */
 export function productMenu(products: CatalogProduct[], discountPercent = 0): InlineKeyboard {
+  const seen = new Map<string, number>();
+  for (const p of products) seen.set(p.name, (seen.get(p.name) ?? 0) + 1);
   return withChrome(
     products.map((product) => {
       const price = priceForUser(product.fromPriceIrr, discountPercent);
+      const name =
+        (seen.get(product.name) ?? 0) > 1
+          ? `${product.name} (${product.providerName})`
+          : product.name;
       return [
         {
-          text: priced(product.name, product.fromPriceIrr, price, product.plans > 1 ? 'از ' : ''),
+          text: priced(name, product.fromPriceIrr, price, product.plans > 1 ? 'از ' : ''),
           callback_data: encode('prd', product.productId),
         },
       ];
@@ -473,15 +476,10 @@ export function productMenu(products: CatalogProduct[], discountPercent = 0): In
  * — which a migrated name already quotes, so two plans of one product could
  * come out as literally the same button twice.
  *
- * `providerId` is what «بازگشت به سرویس‌ها» goes to. Optional only so an empty
- * list — the screen for a service that emptied out between two taps — can be
- * drawn without inventing a panel to return to.
+ * «بازگشت به سرویس‌ها» needs no argument: the service list is the shop's first
+ * screen now, so it is plain `buy`.
  */
-export function planMenu(
-  plans: CatalogPlan[],
-  discountPercent = 0,
-  providerId?: number,
-): InlineKeyboard {
+export function planMenu(plans: CatalogPlan[], discountPercent = 0): InlineKeyboard {
   return withChrome(
     plans.map((plan) => {
       const price = priceForUser(plan.priceIrr, discountPercent);
@@ -493,18 +491,6 @@ export function planMenu(
       ];
     }),
     'plans',
-    {
-      // ONLY `panel`. `buildMenu` consults this for every button it draws, so
-      // answering for an action this cares nothing about — `menu`, say — sends
-      // «بازگشت به منو» to the panel list instead of the menu. Returning
-      // undefined is what lets the default stand.
-      target: (action) =>
-        action === 'panel'
-          ? providerId === undefined
-            ? encode('buy')
-            : encode('panel', providerId)
-          : undefined,
-    },
   );
 }
 
@@ -574,7 +560,7 @@ export function planDetailMenu(plan: CatalogPlan, applied?: AppliedCode | null):
     applies: (action) =>
       action === 'dsx' ? applied != null : action === 'dsc' ? applied == null : true,
     target: (action) =>
-      action === 'panel'
+      action === 'buy'
         ? // One step back is the plan list when this service drew one, and the
           // service list when it did not. A service with a single plan skips
           // straight from the service list to here, so sending «بازگشت» to a
@@ -582,7 +568,7 @@ export function planDetailMenu(plan: CatalogPlan, applied?: AppliedCode | null):
           // that leads back to the screen they just left.
           plan.siblings > 1
           ? encode('prd', plan.productId)
-          : encode('panel', plan.providerId)
+          : encode('buy')
         : action === 'menu'
           ? encode('menu')
           : encode(action as 'order', plan.planId),

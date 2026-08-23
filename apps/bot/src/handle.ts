@@ -46,13 +46,7 @@ import {
 import { actOnService } from './actions.js';
 import { type Callback, decode, encode } from './callback.js';
 import type { CatalogPlan } from './catalog.js';
-import {
-  panelsForUser,
-  plansInProduct,
-  plansOnPanel,
-  productsOnPanel,
-  purchasablePlan,
-} from './catalog.js';
+import { plansInProduct, plansOnPanel, productsForUser, purchasablePlan } from './catalog.js';
 import {
   checkCode,
   type DiscountCode,
@@ -2010,19 +2004,30 @@ async function handleCallback(
       return screen(menu.SOON, menu.mainMenu(user));
 
     case 'buy': {
-      const panels = await panelsForUser(tx, user.id);
-      if (panels.length === 0) {
+      // The services, not the panels. A customer's first question is which
+      // level they want, and the panel that delivers it is named on the plan's
+      // own page. The legacy shop asked location-first because a legacy panel
+      // WAS a level — five `marzban_panel` rows on one PasarGuard differing
+      // only in `inbounds` — and a service carrying its own groups retires that
+      // reason along with the extra tap.
+      const products = await productsForUser(tx, user.id);
+      if (products.length === 0) {
         return screen(menu.SHOP_EMPTY, menu.mainMenu(user));
       }
-      return screen(menu.CHOOSE_PANEL, menu.panelMenu(panels));
+      return screen(menu.CHOOSE_PRODUCT, menu.productMenu(products, user.discount_percent));
     }
 
     case 'panel': {
+      // Nothing draws this any more. It stays because messages already in
+      // customers' chats still carry `panel:<id>` buttons, and Telegram keeps
+      // them pressable forever — dropping the case would make an old button
+      // answer nothing at all, which reads as a broken bot rather than an old
+      // screen.
       if (action.id === undefined) return IGNORED;
-      const products = await productsOnPanel(tx, user.id, action.id);
+      const products = await productsForUser(tx, user.id, action.id);
       if (products.length === 0) {
-        // Either the panel emptied out between two taps, or it was never
-        // theirs to open. One answer for both.
+        // Either the panel emptied out, or it was never theirs to open. One
+        // answer for both.
         return screen(menu.PANEL_EMPTY, menu.productMenu([]));
       }
       return screen(menu.CHOOSE_PRODUCT, menu.productMenu(products, user.discount_percent));
@@ -2040,10 +2045,7 @@ async function handleCallback(
       // the discount check and the held code, and having two ways to reach it
       // is how the two drift apart.
       if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
-      return screen(
-        menu.choosePlan(plans[0]!.productName),
-        menu.planMenu(plans, user.discount_percent, plans[0]!.providerId),
-      );
+      return screen(menu.choosePlan(plans[0]!.productName), menu.planMenu(plans, user.discount_percent));
     }
 
     case 'plan': {

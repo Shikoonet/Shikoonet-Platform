@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { seedCatalog } from '@shikoo/seed';
-import { panelsForUser, plansOnPanel, purchasablePlan } from '../src/catalog.js';
+import { plansOnPanel, productsForUser, purchasablePlan } from '../src/catalog.js';
 import { db } from './helpers/env.js';
 import {
   ensureCatalog,
@@ -127,19 +127,40 @@ describe('what the shop shows a customer', () => {
     expect(codes).toContain('sim-shop');
   });
 
-  it('keeps the panels in the order the shop arranged them', async () => {
-    // Not alphabetical. Every migrated panel carries sort_order 0, so ordering
-    // by name reshuffles a menu customers already know: the live bot on
-    // 2026-08-12 listed مولتی لوکیشن, then طلایی, then خرید اولی‌ها.
-    const panels = await panelsForUser(db, customer);
+  it('keeps the services in the order the shop arranged them', async () => {
+    // Not alphabetical. Every migrated row carries sort_order 0, so ordering by
+    // name reshuffles a menu customers already know: the live bot on 2026-08-12
+    // listed مولتی لوکیشن, then طلایی, then خرید اولی‌ها. The shop no longer
+    // draws the panels, but their order still decides which services come
+    // first, so the same rule is asserted one level down.
+    const products = await productsForUser(db, customer);
     const rows = await db
-      .prepare(`SELECT id, sort_order FROM provisioning_providers WHERE id = ANY($1)`)
-      .bind(panels.map((p) => p.id))
-      .all<{ id: number; sort_order: number }>();
-    const meta = new Map(rows.results.map((r) => [r.id, r.sort_order]));
-    const keys = panels.map((p) => [meta.get(p.id) ?? 0, p.id] as const);
-    const sorted = [...keys].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      .prepare(
+        `SELECT p.id, p.sort_order AS product_order,
+                pr.sort_order AS panel_order, pr.id AS panel_id
+           FROM products p
+           JOIN provisioning_providers pr ON pr.id = p.provider_id
+          WHERE p.id = ANY($1)`,
+      )
+      .bind(products.map((p) => p.productId))
+      .all<{ id: number; product_order: number; panel_order: number; panel_id: number }>();
+    const meta = new Map(rows.results.map((r) => [r.id, r]));
+    const keys = products.map((p) => {
+      const m = meta.get(p.productId)!;
+      return [m.panel_order, m.panel_id, m.product_order, p.productId] as const;
+    });
+    const sorted = [...keys].sort(
+      (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3],
+    );
     expect(keys).toEqual(sorted);
+  });
+
+  it('carries the panel that delivers each service, for telling two apart', async () => {
+    // Nothing asks the customer to pick a location any more, so the panel is
+    // only ever used to disambiguate two services of one name. It still has to
+    // be there, or that disambiguation has nothing to draw.
+    const products = await productsForUser(db, customer);
+    expect(products.every((p) => p.providerName.trim() !== '')).toBe(true);
   });
 
   it('does not offer a disabled panel', async () => {
@@ -227,12 +248,22 @@ describe('purchasablePlan answers the same question as the list', () => {
   });
 });
 
+/**
+ * Which panels a customer's shop reaches, read back off the services it offers.
+ *
+ * The shop stopped listing panels, but every rule about them still holds — a
+ * disabled panel's products must not be reachable, and a panel with nothing
+ * sellable must not contribute a row. Asking the question through the products
+ * is what keeps those assertions pointed at the screen that actually exists.
+ */
 async function panelCodes(userId: number): Promise<string[]> {
-  const panels = await panelsForUser(db, userId);
-  if (panels.length === 0) return [];
+  const products = await productsForUser(db, userId);
+  if (products.length === 0) return [];
   const rows = await db
-    .prepare(`SELECT code FROM provisioning_providers WHERE id = ANY($1)`)
-    .bind(panels.map((p) => p.id))
+    .prepare(`SELECT DISTINCT pr.code FROM provisioning_providers pr
+                JOIN products p ON p.provider_id = pr.id
+               WHERE p.id = ANY($1)`)
+    .bind(products.map((p) => p.productId))
     .all<{ code: string }>();
   return rows.results.map((r) => r.code);
 }
