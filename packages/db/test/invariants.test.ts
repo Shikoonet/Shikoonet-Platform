@@ -24,7 +24,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -60,11 +60,60 @@ const SQL_PATH = fileURLToPath(
 );
 
 /**
- * The sim's container name, which is stable in `sim/docker-compose.yml` — this
- * is a local-and-CI check against the simulation database, not something that
- * runs on the server.
+ * How to reach a psql, in the two places this test actually runs.
+ *
+ * This used to be one line — `docker exec -i shikoo-sim-postgres-1 psql` — with
+ * a comment calling it "a local-and-CI check". The comment was wrong, and it
+ * was wrong in the way rule 6 warns about: nothing outside it ever checked. CI
+ * has no such container. Postgres there is a service on `DATABASE_URL`, so the
+ * command failed with `No such container: shikoo-sim-postgres-1` on **every**
+ * run from 2026-08-20 onward, and because `@shikoo/db` is first in the
+ * topological order, `pnpm -r` stopped there and the other ten packages' tests
+ * never ran at all. Thirty red runs, all of them reading as "the tests failed".
+ *
+ * So the address is `DATABASE_URL` now, the same one every other test in this
+ * package uses. `psql` is preferred because it is what the file's own header
+ * tells you to run it with; the container is the fallback for a developer box
+ * that has the simulation up but no psql on PATH, which is the normal state on
+ * Windows. Both paths reach the database named by DATABASE_URL, so they cannot
+ * drift into testing different things.
+ *
+ * `\echo` in the SQL is why this cannot go through `pg` and skip the shelling
+ * out entirely: those are psql meta-commands, and reimplementing them here
+ * would be the second copy the file's header warns against.
  */
-const CONTAINER = 'shikoo-sim-postgres-1';
+const DATABASE_URL = process.env['DATABASE_URL'] ?? '';
+
+/** The sim's container name, stable in `sim/docker-compose.yml`. */
+const CONTAINER = process.env['SIM_PG_CONTAINER'] ?? 'shikoo-sim-postgres-1';
+
+/** Whether a bare `psql` exists on this machine. */
+function hasPsql(): boolean {
+  const probe = spawnSync('psql', ['--version'], { stdio: 'ignore' });
+  return probe.error === undefined && probe.status === 0;
+}
+
+/**
+ * The command and arguments that put us at a psql prompt on DATABASE_URL.
+ *
+ * The container path passes the URL through too rather than the old hardcoded
+ * `-U shikoo -d shikoo`: those were the simulation's credentials, so the
+ * fallback would have quietly checked a different database than the one the
+ * rest of the suite uses the moment DATABASE_URL pointed anywhere else.
+ */
+function psqlCommand(): { command: string; args: string[]; how: string } {
+  const flags = ['-v', 'ON_ERROR_STOP=1', '-q'];
+  if (hasPsql()) {
+    return { command: 'psql', args: [DATABASE_URL, ...flags], how: 'psql on PATH' };
+  }
+  // Inside the container, the host in DATABASE_URL is the container itself.
+  const inside = DATABASE_URL.replace(/@[^/]+\//, '@127.0.0.1:5432/');
+  return {
+    command: 'docker',
+    args: ['exec', '-i', CONTAINER, 'psql', inside, ...flags],
+    how: `docker exec ${CONTAINER}`,
+  };
+}
 
 /**
  * The guarantees named one by one, so that deleting one from the SQL is a red
@@ -103,25 +152,15 @@ describe('the schema still keeps its promises', () => {
   it('passes every assertion in verify_invariants.sql', async () => {
     const sql = readFileSync(SQL_PATH, 'utf8');
 
+    // A missing address is a failure, not a skip: this package's other tests
+    // all need the same variable, so an empty one means the run is misconfigured
+    // rather than that these invariants do not apply here.
+    expect(DATABASE_URL, 'DATABASE_URL is not set — see packages/db/vitest.config.ts').not.toBe('');
+
     // The header's own instruction, verbatim: psql with ON_ERROR_STOP, so an
     // assertion that raises exits non-zero rather than printing and carrying on.
-    const stdout = await run(
-      'docker',
-      [
-        'exec',
-        '-i',
-        CONTAINER,
-        'psql',
-        '-U',
-        'shikoo',
-        '-d',
-        'shikoo',
-        '-v',
-        'ON_ERROR_STOP=1',
-        '-q',
-      ],
-      sql,
-    );
+    const { command, args, how } = psqlCommand();
+    const stdout = await run(command, args, sql);
 
     // Not merely a zero exit: a file that asserted nothing would also exit
     // zero. Each guarantee is checked by name rather than by counting, because
@@ -134,7 +173,7 @@ describe('the schema still keeps its promises', () => {
         `PASS  ${claim}`,
       );
     }
-    expect(stdout).toContain('All invariants hold.');
+    expect(stdout, `via ${how}`).toContain('All invariants hold.');
   }, 60_000);
 
   it('is still wired to the drill it was written for', () => {
