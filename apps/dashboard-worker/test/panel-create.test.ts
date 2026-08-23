@@ -282,3 +282,63 @@ describe('تست ارتباط', () => {
     expect(denied.status).toBe(403);
   });
 });
+
+describe('the address, normalised the way the legacy wizard asked for by hand', () => {
+  /**
+   * `panel/panels.php` printed four rules and trusted the operator to apply
+   * them. Each one applied wrongly saves a panel that answers 404 and looks
+   * configured, and the operator finds out when a paying customer's order
+   * fails. They are enforced here instead of printed.
+   */
+  const CASES: ReadonlyArray<[string, string]> = [
+    // /dashboard is the panel's web UI; the API is at the root.
+    ['https://pasa.example.com/dashboard', 'https://pasa.example.com'],
+    ['https://pasa.example.com/DASHBOARD/', 'https://pasa.example.com'],
+    // A trailing slash doubles into `//api/...` on some builds.
+    ['https://pasa.example.com/', 'https://pasa.example.com'],
+    ['https://pasa.example.com///', 'https://pasa.example.com'],
+    // :443 on https is the default, and keeping it makes the stored address
+    // differ from the one everything else compares against.
+    ['https://pasa.example.com:443', 'https://pasa.example.com'],
+    ['http://pasa.example.com:80/dashboard/', 'http://pasa.example.com'],
+    // A non-default port is NOT dropped — that one is load-bearing.
+    ['https://pasa.example.com:8443/', 'https://pasa.example.com:8443'],
+    // A sub-path that is not /dashboard survives.
+    ['https://pasa.example.com/panel/', 'https://pasa.example.com/panel'],
+  ];
+
+  for (const [typed, stored] of CASES) {
+    it(`stores ${typed} as ${stored}`, async () => {
+      const code = `${PREFIX}url-${CASES.findIndex(([t]) => t === typed)}`;
+      const res = await post('/api/v1/admin/panels', { ...BODY, code, baseUrl: typed });
+      expect(res.status).toBe(201);
+      const json = (await res.json()) as { panel: { baseUrl: string } };
+      expect(json.panel.baseUrl).toBe(stored);
+    });
+  }
+
+  it('refuses an address with no scheme instead of guessing one', async () => {
+    // Guessing https for an http-only panel fails at TLS with a message about
+    // certificates; guessing http sends the password in clear.
+    const res = await post('/api/v1/admin/panels', {
+      ...BODY,
+      code: `${PREFIX}noscheme`,
+      baseUrl: 'pasa.example.com',
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { detail?: string }).toMatchObject({
+      detail: expect.stringContaining('http'),
+    });
+  });
+
+  it('does not strip a host that merely happens to be called dashboard', async () => {
+    // The rule is about a trailing PATH segment, not the hostname.
+    const res = await post('/api/v1/admin/panels', {
+      ...BODY,
+      code: `${PREFIX}dashhost`,
+      baseUrl: 'https://dashboard.example.com',
+    });
+    const json = (await res.json()) as { panel: { baseUrl: string } };
+    expect(json.panel.baseUrl).toBe('https://dashboard.example.com');
+  });
+});

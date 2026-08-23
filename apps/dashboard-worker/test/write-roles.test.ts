@@ -183,6 +183,11 @@ describe('every write route, asked directly', () => {
     // is the first time anything in this app has, so they were looked at hard:
     // all three are ADMIN-only, and the three tests above already proved they
     // refuse a READ_ONLY and a REVIEWER before this number was touched.
-    expect(writeRoutes().length).toBe(117);
+    //
+    // 118 the same day: `POST /panels/:id/groups`. It decides which groups a
+    // purchase puts the customer's account in — the `[42, 2]` the legacy shop
+    // kept on its VIP panel row — so it is ADMIN-only for the same reason the
+    // catalogue is.
+    expect(writeRoutes().length).toBe(118);
   });
 });

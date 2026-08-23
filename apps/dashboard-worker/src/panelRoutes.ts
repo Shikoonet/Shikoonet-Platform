@@ -109,6 +109,83 @@ async function reachable(baseUrl: string): Promise<boolean> {
   }
 }
 
+/**
+ * A panel's credential, resolved exactly the way the bot resolves it.
+ *
+ * The precedence is the load-bearing part, and it is `credentialsFor` in
+ * `apps/bot/src/provision.ts`: the sealed row first, `PANEL_<REF>` second. Two
+ * places deciding this independently is how a connection test comes back green
+ * against one credential while orders go out on another — so both routes here
+ * call this, and it says out loud which rule it is copying.
+ *
+ * A sealed value that will not open THROWS rather than returning null. The two
+ * are different facts: null is "this panel has no credential", and a caller is
+ * entitled to say so; a row that will not open usually means PANEL_SECRET_KEY is
+ * wrong, and telling an operator their panel has no password would send them to
+ * retype one that was already right.
+ */
+function credentialFor(row: {
+  secret_ref: string | null;
+  sealed: string | null;
+}): { username: string; password: string } | null {
+  if (row.sealed) return splitCredential(open(row.sealed, panelSecretKey()));
+  if (!row.secret_ref) return null;
+  const raw = process.env[`PANEL_${row.secret_ref.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`];
+  return raw ? splitCredential(raw) : null;
+}
+
+/**
+ * The panel address, normalised the way the legacy wizard asked an operator to
+ * type it.
+ *
+ * `panel/panels.php` printed four rules and then trusted the human to follow
+ * them: send it without /dashboard, leave the port off when it is 443, no
+ * trailing slash, and it must carry http or https. Four rules a person applies
+ * by hand is four ways to save a panel that answers 404 and looks configured —
+ * and an operator only finds out when a paying customer's order fails.
+ *
+ * So they are applied here instead of printed. Each is a fact about the address,
+ * not a preference:
+ *
+ *   - /dashboard is the panel's WEB UI. The API is at the root, so an address
+ *     ending there makes every call 404. Stripped, because there is no reading
+ *     of "the panel is at /dashboard" that the API honours.
+ *   - a trailing slash doubles into `//api/...` on some builds. Stripped.
+ *   - :443 on https and :80 on http are the defaults; keeping them makes the
+ *     stored address differ from the one `originGuard` and the subscription
+ *     links compare against. Dropped.
+ *   - no scheme is refused rather than guessed. Assuming https for a panel
+ *     reachable only over http would fail at TLS with a message about
+ *     certificates, and assuming http would send the password in clear.
+ */
+function normalisePanelUrl(raw: string): { url: string } | { error: string } {
+  const trimmed = raw.trim();
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return { error: 'آدرس باید با http:// یا https:// شروع شود' };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { error: 'این آدرس معتبر نیست' };
+  }
+  if (
+    (parsed.protocol === 'https:' && parsed.port === '443') ||
+    (parsed.protocol === 'http:' && parsed.port === '80')
+  ) {
+    parsed.port = '';
+  }
+  let path = parsed.pathname.replace(/\/+$/, '');
+  // Case-insensitively, and only at the END: a panel really mounted under
+  // /x/dashboard/api is not a thing, but a host named `dashboard.example.com`
+  // is — and stripping that would break it.
+  path = path.replace(/\/dashboard$/i, '');
+  parsed.pathname = path;
+  parsed.search = '';
+  parsed.hash = '';
+  return { url: parsed.toString().replace(/\/+$/, '') };
+}
+
 const Credential = z
   .object({
     username: z
@@ -146,7 +223,7 @@ const PanelCreate = z
       'spotify',
       'manual',
     ]),
-    baseUrl: z.string().trim().url().max(300).nullable().optional(),
+    baseUrl: z.string().trim().max(300).nullable().optional(),
     capacity: z.number().int().min(0).max(1_000_000).nullable().optional(),
     sortOrder: z.number().int().min(0).max(9999).optional(),
     credential: Credential.optional(),
@@ -162,9 +239,26 @@ const PanelCreate = z
  * find out afterwards. Omitted, the stored credential is used, which is what
  * the button on an existing panel does.
  */
+/**
+ * A set of group ids.
+ *
+ * Deduplicated and sorted before it is stored, so two saves that mean the same
+ * thing produce the same row and an audit diff shows a real change rather than
+ * a reordering. Empty is allowed and means "send no groups", which is what a
+ * panel whose plans all override it should say.
+ */
+const GroupSelection = z
+  .object({
+    groupIds: z
+      .array(z.number().int().min(0).max(1_000_000))
+      .max(200)
+      .transform((ids) => [...new Set(ids)].sort((a, b) => a - b)),
+  })
+  .strict();
+
 const PanelTest = z
   .object({
-    baseUrl: z.string().trim().url().max(300).optional(),
+    baseUrl: z.string().trim().max(300).optional(),
     kind: z.string().trim().min(1).max(40).optional(),
     credential: Credential.optional(),
   })
@@ -270,6 +364,17 @@ export function registerPanelRoutes(
     }
     const p = body.data;
 
+    // Applied before the duplicate check, so two panels that differ only by a
+    // trailing slash collide on `code` rather than both being created.
+    let baseUrl: string | null = null;
+    if (p.baseUrl) {
+      const normalised = normalisePanelUrl(p.baseUrl);
+      if ('error' in normalised) {
+        return c.json({ ok: false, error: 'invalid_body', detail: normalised.error }, 400);
+      }
+      baseUrl = normalised.url;
+    }
+
     const taken = await c.env.DB.prepare(`SELECT 1 FROM provisioning_providers WHERE code = ?1`)
       .bind(p.code)
       .first();
@@ -323,7 +428,7 @@ export function registerPanelRoutes(
         p.name,
         p.kind,
         status,
-        p.baseUrl ?? null,
+        baseUrl,
         p.capacity ?? null,
         p.sortOrder ?? 0,
         sealed,
@@ -443,6 +548,210 @@ export function registerPanelRoutes(
    * found that some panels echo the submitted credentials back inside a
    * rejected login, and this response is rendered in a browser.
    */
+  /**
+   * گروه‌های پنل — what the panel offers, and what we are actually sending.
+   *
+   * The legacy shop modelled a "panel" as a physical PasarGuard plus a choice of
+   * groups: `marzban_panel` has five rows, all on `https://pasargad.4g3.uk`, and
+   * they differ only in `inbounds` — `[42,2]` for VIP, `[83]` for the unlimited
+   * single-location line, `[2]` for the rest. Buying VIP got you groups 42 and 2
+   * because the panel row said so. The migration carried that into
+   * `provisioning_providers.config.inbounds`, and `pick()` in marzban.ts lets a
+   * plan override it via `attrs.group_ids` — plan first, panel as the default,
+   * the same precedence the PHP had.
+   *
+   * Until now nothing in the dashboard showed any of it. `group_ids` appeared
+   * zero times in `apps/admin-web` and zero times in this app, so the number that
+   * decides what a paying customer receives was visible only in a jsonb column.
+   *
+   * Three things come back together, because separately they mislead:
+   *
+   *   selected  — what this panel sends today
+   *   available — what the panel says it HAS, asked live
+   *   plans     — the plans that override the panel, so changing this here does
+   *               not silently do nothing for the ones that do not use it
+   *
+   * `available` is null, never empty, when the panel could not be asked. A panel
+   * that is down is not a panel with no groups, and rendering the second for the
+   * first invites an operator to "fix" configuration that was correct — which is
+   * the exact shape of the group-42 miss this screen exists to prevent.
+   */
+  app.get('/api/v1/admin/panels/:id/groups', async (c) => {
+    const ident = c.get('identity');
+    // A read, so REVIEWER and READ_ONLY are fine — but the reply names the
+    // panel's live state, so it stays behind the same door as the rest of
+    // /admin/*, which `write-roles` does not cover for GETs.
+    if (ident.role === null) return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const row = await c.env.DB.prepare(
+      `SELECT pr.id, pr.code, pr.name, pr.kind, pr.base_url, pr.secret_ref,
+              pr.config, ps.sealed
+         FROM provisioning_providers pr
+         LEFT JOIN provider_secrets ps ON ps.provider_id = pr.id
+        WHERE pr.id = ?1`,
+    )
+      .bind(id)
+      .first<{
+        id: number;
+        code: string;
+        name: string;
+        kind: string;
+        base_url: string | null;
+        secret_ref: string | null;
+        config: Record<string, unknown> | null;
+        sealed: string | null;
+      }>();
+    if (!row) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const config = row.config ?? {};
+    // Both spellings, because the importer wrote the legacy one and anything
+    // saved through this screen writes the current one. Reading only `group_ids`
+    // would show every migrated panel as sending nothing.
+    const rawSelected = config['group_ids'] ?? config['inbounds'];
+    const selected = Array.isArray(rawSelected)
+      ? rawSelected.filter((v): v is number => typeof v === 'number')
+      : [];
+
+    // Which plans ignore this panel's choice. `attrs` wins in `pick()`, so a
+    // plan listed here is unaffected by anything saved on this screen.
+    const overrides = await c.env.DB.prepare(
+      `SELECT pl.id, pl.name,
+              COALESCE(pl.attrs->'group_ids', pl.attrs->'inbounds') AS groups
+         FROM product_plans pl
+         JOIN products p ON p.id = pl.product_id
+        WHERE p.provider_id = ?1
+          -- jsonb_exists, not the operator that means the same thing.
+          -- Postgres spells jsonb key-existence with a question mark, and
+          -- packages/db reads a bare one as a placeholder: it refused this
+          -- statement outright with "mixes ?N and bare ? placeholders", which
+          -- is the adapter doing its job rather than guessing. The function
+          -- form has no such collision.
+          AND (jsonb_exists(pl.attrs, 'group_ids') OR jsonb_exists(pl.attrs, 'inbounds'))
+        ORDER BY pl.id`,
+    )
+      .bind(id)
+      .all<{ id: number; name: string; groups: unknown }>();
+
+    const adapter = adapterFor(row.kind);
+    if (!adapter?.listGroups) {
+      return c.json({
+        ok: true,
+        selected,
+        available: null,
+        untestable: true,
+        reason: `یک پنل «${row.kind}» گروه ندارد.`,
+        plans: overrides.results ?? [],
+      });
+    }
+
+    let credentials: { username: string; password: string } | null;
+    try {
+      credentials = credentialFor(row);
+    } catch (err) {
+      return c.json({
+        ok: true,
+        selected,
+        available: null,
+        reason: `اعتبارنامهٔ ذخیره‌شده باز نشد: ${(err as Error).message}`,
+        plans: overrides.results ?? [],
+      });
+    }
+    if (!row.base_url || !credentials) {
+      return c.json({
+        ok: true,
+        selected,
+        available: null,
+        reason: row.base_url ? 'این پنل هنوز رمزی ندارد.' : 'آدرس پنل وارد نشده است.',
+        plans: overrides.results ?? [],
+      });
+    }
+
+    const result = await adapter.listGroups({
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      baseUrl: row.base_url,
+      credentials,
+      config,
+      fetch: fetch,
+    });
+
+    return c.json({
+      ok: true,
+      selected,
+      available: result.ok ? result.groups : null,
+      ...(result.ok ? {} : { reason: result.reason }),
+      plans: overrides.results ?? [],
+    });
+  });
+
+  /**
+   * Save which groups this panel sends.
+   *
+   * Written as `group_ids` and the legacy `inbounds` key is REMOVED in the same
+   * write. Leaving it would put two spellings of the same fact in one row, and
+   * `pick()` reads `group_ids` first — so the stale one would sit there looking
+   * authoritative and doing nothing, until somebody read it during an incident.
+   *
+   * Everything else in `config` is preserved: it carries `proxies`, including a
+   * hysteria shared secret provisioning has to send, and a screen that owns one
+   * key must not rewrite the object around it.
+   */
+  app.post('/api/v1/admin/panels/:id/groups', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const body = GroupSelection.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    const before = await c.env.DB.prepare(
+      `SELECT code, config FROM provisioning_providers WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ code: string; config: Record<string, unknown> | null }>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const previous = before.config ?? {};
+    const wasSending = previous['group_ids'] ?? previous['inbounds'] ?? null;
+
+    await c.env.DB.prepare(
+      `UPDATE provisioning_providers
+          SET config = (COALESCE(config, '{}'::jsonb) - 'inbounds')
+                       || jsonb_build_object('group_ids', ?2::jsonb),
+              updated_at = now()
+        WHERE id = ?1`,
+    )
+      .bind(id, JSON.stringify(body.data.groupIds))
+      .run();
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.panel_groups_set',
+      'PROVISIONING_PROVIDER',
+      String(id),
+      { code: before.code, groups: wasSending },
+      { code: before.code, groups: body.data.groupIds },
+      null,
+    );
+
+    const after = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
+      .bind(id)
+      .first<PanelRow>();
+    return c.json({ ok: true, panel: after ? shape(after) : null });
+  });
+
   app.post('/api/v1/admin/panels/:id/test', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
@@ -464,6 +773,16 @@ export function registerPanelRoutes(
 
     let kind = body.data.kind ?? null;
     let baseUrl = body.data.baseUrl ?? null;
+    if (baseUrl) {
+      // Normalised here too, so «تست ارتباط» exercises the address that would
+      // actually be saved. Testing the raw one and storing a different one is
+      // how a green test turns into a 404 an hour later.
+      const normalised = normalisePanelUrl(baseUrl);
+      if ('error' in normalised) {
+        return c.json({ ok: false, error: 'invalid_body', detail: normalised.error }, 400);
+      }
+      baseUrl = normalised.url;
+    }
     let name = 'panel';
     let credentials: { username: string; password: string } | null = null;
 
@@ -491,24 +810,15 @@ export function registerPanelRoutes(
       kind = kind ?? row.kind;
       baseUrl = baseUrl ?? row.base_url;
       if (!credentials) {
-        // Same precedence as `credentialsFor` in the bot — sealed row first,
-        // environment second. If the two disagreed here the test would pass
-        // against one credential while orders went out on the other.
-        if (row.sealed) {
-          try {
-            credentials = splitCredential(open(row.sealed, panelSecretKey()));
-          } catch (err) {
-            return c.json({
-              ok: true,
-              reachable: false,
-              authenticated: false,
-              reason: `stored credential could not be opened: ${(err as Error).message}`,
-            });
-          }
-        } else if (row.secret_ref) {
-          const raw =
-            process.env[`PANEL_${row.secret_ref.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`];
-          credentials = raw ? splitCredential(raw) : null;
+        try {
+          credentials = credentialFor(row);
+        } catch (err) {
+          return c.json({
+            ok: true,
+            reachable: false,
+            authenticated: false,
+            reason: `stored credential could not be opened: ${(err as Error).message}`,
+          });
         }
       }
     }
