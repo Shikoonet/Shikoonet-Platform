@@ -423,7 +423,14 @@ export interface PanelGroups {
   ok: boolean;
   /** The group ids this panel sends today. */
   selected: number[];
-  available: Array<{ id: number; name: string; memberCount?: number }> | null;
+  available: Array<{
+    id: number;
+    name: string;
+    memberCount?: number;
+    inboundTags?: string[];
+    /** How many of those inbounds have a host — the number the customer feels. */
+    deliverableInbounds?: number;
+  }> | null;
   /** True for a kind that has no groups at all, so the UI says so rather than erroring. */
   untestable?: boolean;
   reason?: string;

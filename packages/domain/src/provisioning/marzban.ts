@@ -578,16 +578,55 @@ export const marzbanAdapter: ProvisioningAdapter = {
         return { ok: false, reason: 'the group listing was neither a list nor {groups: [...]}' };
       }
 
+      // Which inbound tags actually carry a host. A second call, and worth it:
+      // without it this returns the inbound count, which is the number an
+      // operator would reasonably read as "how much the customer gets" and is
+      // not. A failure here is not fatal — the groups are still the answer, and
+      // `deliverableInbounds` is simply absent rather than wrong.
+      let hosted: Set<string> | null = null;
+      try {
+        const hostRes = await withTimeout((signal) =>
+          (provider.fetch ?? fetch)(`${base}/api/hosts`, {
+            headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+            signal,
+          }),
+        );
+        if (hostRes.ok) {
+          const hostBody: unknown = await hostRes.json();
+          const hostList = Array.isArray(hostBody) ? hostBody : [];
+          hosted = new Set(
+            hostList
+              .filter((h) => (h as { is_disabled?: unknown }).is_disabled !== true)
+              .map((h) => (h as { inbound_tag?: unknown }).inbound_tag)
+              .filter((t): t is string => typeof t === 'string'),
+          );
+        }
+      } catch {
+        hosted = null;
+      }
+
       const groups: PanelGroup[] = [];
       for (const item of list) {
-        const row = item as { id?: unknown; name?: unknown; total_users?: unknown };
+        const row = item as {
+          id?: unknown;
+          name?: unknown;
+          total_users?: unknown;
+          inbound_tags?: unknown;
+        };
         if (typeof row.id !== 'number') continue;
+        const tags = Array.isArray(row.inbound_tags)
+          ? row.inbound_tags.filter((t): t is string => typeof t === 'string')
+          : [];
         groups.push({
           id: row.id,
           // A group with no name still has to be pickable, and its id is the
           // only thing that identifies it either way.
           name: typeof row.name === 'string' && row.name !== '' ? row.name : `#${row.id}`,
           ...(typeof row.total_users === 'number' ? { memberCount: row.total_users } : {}),
+          ...(tags.length > 0 ? { inboundTags: tags } : {}),
+          ...(hosted === null
+            ? {}
+            : { deliverableInbounds: tags.filter((t) => hosted.has(t)).length }),
         });
       }
       return { ok: true, groups };

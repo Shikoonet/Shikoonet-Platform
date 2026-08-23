@@ -567,6 +567,43 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
  * A selected id the panel does not have is drawn anyway, and marked. Hiding it
  * would remove the only warning that this exact failure is armed.
  */
+/**
+ * How many inbounds a group has, and how many of them the customer feels.
+ *
+ * These are different numbers and the difference cost a whole afternoon to see.
+ * PasarGuard builds a subscription from HOSTS, and a host belongs to one inbound
+ * tag — so an inbound with no host contributes nothing. Measured on the live
+ * test panel: a `vip` group with two inbounds and a `normal` group with one
+ * delivered the SAME single config, because only one of vip's two had a host.
+ * Adding a host on the other one took the same subscription link to two configs
+ * with nothing re-delivered.
+ *
+ * So the raw count is shown quietly and the deliverable one loudly. An operator
+ * building a VIP tier off "this group has more inbounds" is reading the number
+ * that does not decide anything.
+ */
+function InboundCount({
+  group,
+}: {
+  group: { inboundTags?: string[]; deliverableInbounds?: number };
+}) {
+  const total = group.inboundTags?.length;
+  if (total === undefined) return <>—</>;
+  const live = group.deliverableInbounds;
+  if (live === undefined) return <>{count(total)}</>;
+  return (
+    <>
+      <div>{live === total ? count(total) : `${count(live)} از ${count(total)}`}</div>
+      {live < total && (
+        <div className="page-head__sub">
+          {count(total - live)} اینباند بدون هاست — به مشتری کانفیگ نمی‌دهد
+        </div>
+      )}
+      {live === 0 && total > 0 && <span className="badge badge-block">هیچ کانفیگی نمی‌دهد</span>}
+    </>
+  );
+}
+
 function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged: () => void }) {
   const w = useAdminWriteProps();
   const [data, setData] = useState<PanelGroups | null>(null);
@@ -647,7 +684,8 @@ function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged:
       <h4>گروه‌های پنل</h4>
       <p className="muted">
         وقتی مشتری از این پنل خرید می‌کند، اکانتش در همین گروه‌ها ساخته می‌شود. فهرست از خودِ پنل
-        خوانده می‌شود، نه از تنظیمات ما.
+        خوانده می‌شود، نه از تنظیمات ما. ستون «اینباند» تعدادی را می‌گوید که واقعاً به مشتری کانفیگ
+        می‌دهد — اینباندی که هاست ندارد در اشتراک ظاهر نمی‌شود.
       </p>
 
       {err && <div className="alert alert-error">{err}</div>}
@@ -673,13 +711,14 @@ function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged:
                   <th />
                   <th>گروه</th>
                   <th>شناسه</th>
+                  <th>اینباند</th>
                   <th>اعضا</th>
                 </tr>
               </thead>
               <tbody>
                 {available.length === 0 && (
                   <tr>
-                    <td className="empty" colSpan={4}>
+                    <td className="empty" colSpan={5}>
                       این پنل هیچ گروهی ندارد.
                     </td>
                   </tr>
@@ -695,8 +734,16 @@ function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged:
                         {...w}
                       />
                     </td>
-                    <td>{g.name}</td>
+                    <td>
+                      <div>{g.name}</div>
+                      {g.inboundTags && g.inboundTags.length > 0 && (
+                        <div className="page-head__sub ltr">{g.inboundTags.join(' · ')}</div>
+                      )}
+                    </td>
                     <td className="ltr">{g.id}</td>
+                    <td>
+                      <InboundCount group={g} />
+                    </td>
                     <td>{g.memberCount === undefined ? '—' : count(g.memberCount)}</td>
                   </tr>
                 ))}
@@ -715,6 +762,7 @@ function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged:
                       <span className="badge badge-block">روی پنل نیست</span>
                     </td>
                     <td className="ltr">{id}</td>
+                    <td>—</td>
                     <td>—</td>
                   </tr>
                 ))}

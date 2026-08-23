@@ -164,6 +164,25 @@ export interface PanelGroup {
   name: string;
   /** How many accounts the panel says are in it, when it says. */
   memberCount?: number;
+  /** The inbounds this group carries, by tag. */
+  inboundTags?: string[];
+  /**
+   * How many of those inbounds can actually hand the customer a config.
+   *
+   * Measured on the live test panel 2026-08-23, and it is not the same number
+   * as `inboundTags.length`. PasarGuard builds a subscription from HOSTS, and a
+   * host belongs to one inbound tag. A group whose second inbound has no host
+   * delivers exactly as much as a group without it:
+   *
+   *   vip    — 2 inbounds, 1 with a host  → 1 config
+   *   normal — 1 inbound,  1 with a host  → 1 config
+   *
+   * A host was then added on the vip-only inbound and the SAME subscription
+   * link went to two configs, with nothing re-delivered. So an operator reading
+   * "this VIP group has more inbounds" is reading the wrong number; this is the
+   * one that decides what the customer receives.
+   */
+  deliverableInbounds?: number;
 }
 
 export type GroupsResult = { ok: true; groups: PanelGroup[] } | { ok: false; reason: string };
