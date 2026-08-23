@@ -48,6 +48,8 @@ import type {
   ProvisioningAdapter,
   RemoteAccount,
   RenewRequest,
+  GroupsResult,
+  PanelGroup,
 } from './types.js';
 
 const GB = 1024 * 1024 * 1024;
@@ -533,6 +535,65 @@ export const marzbanAdapter: ProvisioningAdapter = {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return { ok: false, reason: `could not reach the panel: ${reason}`, retryable: true };
+    }
+  },
+
+  /**
+   * `GET /api/groups`, which is the only place the truth about a group id lives.
+   *
+   * Moved here from `apps/bot/scripts/panel-preflight.ts`, which had its own
+   * copy: two implementations of "what groups does this panel have" is exactly
+   * the drift `groupIdsFor` was extracted to avoid on the other side of the same
+   * question.
+   *
+   * Both response shapes are accepted because both are real — PasarGuard answers
+   * `{groups: [...]}` and older builds answer a bare array. A body that is
+   * neither is an error rather than an empty list: reporting "no groups" for
+   * "could not read the answer" would send an operator to delete configuration
+   * that was correct.
+   */
+  async listGroups(provider: ProviderContext): Promise<GroupsResult> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        (provider.fetch ?? fetch)(`${base}/api/groups`, {
+          headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+          signal,
+        }),
+      );
+      // The status only, never the body: a rejected request echoes the
+      // submitted credentials back in some deployments, and this reaches a
+      // browser.
+      if (!res.ok) return { ok: false, reason: `could not list groups (HTTP ${res.status})` };
+
+      const body: unknown = await res.json();
+      const list = Array.isArray(body)
+        ? body
+        : Array.isArray((body as { groups?: unknown }).groups)
+          ? (body as { groups: unknown[] }).groups
+          : null;
+      if (list === null) {
+        return { ok: false, reason: 'the group listing was neither a list nor {groups: [...]}' };
+      }
+
+      const groups: PanelGroup[] = [];
+      for (const item of list) {
+        const row = item as { id?: unknown; name?: unknown; total_users?: unknown };
+        if (typeof row.id !== 'number') continue;
+        groups.push({
+          id: row.id,
+          // A group with no name still has to be pickable, and its id is the
+          // only thing that identifies it either way.
+          name: typeof row.name === 'string' && row.name !== '' ? row.name : `#${row.id}`,
+          ...(typeof row.total_users === 'number' ? { memberCount: row.total_users } : {}),
+        });
+      }
+      return { ok: true, groups };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}` };
     }
   },
 

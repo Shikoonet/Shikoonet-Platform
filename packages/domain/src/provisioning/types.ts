@@ -158,6 +158,16 @@ export interface RemoteAccount {
   subscriptionUrl: string | null;
 }
 
+/** One group as the panel reports it. `name` is for a person to recognise. */
+export interface PanelGroup {
+  id: number;
+  name: string;
+  /** How many accounts the panel says are in it, when it says. */
+  memberCount?: number;
+}
+
+export type GroupsResult = { ok: true; groups: PanelGroup[] } | { ok: false; reason: string };
+
 export type AccountsResult =
   | { ok: true; accounts: RemoteAccount[] }
   | { ok: false; reason: string };
@@ -215,6 +225,25 @@ export interface ProvisioningAdapter {
    * and the sweep skips it rather than being told an empty list.
    */
   listAccounts?(provider: ProviderContext): Promise<AccountsResult>;
+
+  /**
+   * The groups this panel offers, as the panel itself reports them.
+   *
+   * The reason this belongs on the adapter rather than in a script: a group id
+   * is not ours. `provisioning_providers.config.inbounds` carries `[42, 2]`
+   * because the 2026-08-11 dump said so, and group 42 was deleted from the live
+   * panel some time after — which PasarGuard answers with `404 Group not found`
+   * and the adapter classifies as non-retryable, so every VIP order would have
+   * gone FAILED and refunded on the first day of cutover.
+   *
+   * A number frozen in our configuration cannot notice that. A list the panel
+   * supplies can, which is why «مدیریت پنل‌ها» picks from this rather than
+   * taking a typed id.
+   *
+   * Optional: a `manual` panel has no groups, and neither does an `ai_account`.
+   * A caller must treat absence as "cannot be asked", never as "has none".
+   */
+  listGroups?(provider: ProviderContext): Promise<GroupsResult>;
   /**
    * Act on an existing account at the customer's request: replace its
    * subscription link, or turn it off and on.

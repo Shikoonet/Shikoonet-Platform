@@ -33,10 +33,8 @@
  */
 
 import { createPostgresD1 } from '@shikoo/db';
-import { groupIdsFor, type ProvisionRequest } from '@shikoo/domain';
+import { adapterFor, groupIdsFor, type ProvisionRequest } from '@shikoo/domain';
 import { credentialsFor } from '../src/provision.js';
-
-const TIMEOUT_MS = 20_000;
 
 interface PlanRow {
   plan_id: number;
@@ -80,64 +78,37 @@ const PLANS_SQL = `
      AND pv.kind = 'pasarguard'
    ORDER BY pv.code, pr.name, pl.sort_order, pl.id`;
 
-async function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    return await run(controller.signal);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /**
  * The group ids this panel actually has.
  *
- * `null` means the question could not be asked — a panel that is down is not a
- * panel with no groups, and reporting the second for the first would send
- * somebody editing configuration that was correct.
+ * A thin wrapper now: the request itself moved onto the adapter as
+ * `listGroups`, so this script and «مدیریت پنل‌ها» ask the panel the same
+ * question with the same code. It had its own copy until 2026-08-23, which is
+ * the drift `groupIdsFor` was extracted to prevent on the other side of exactly
+ * this comparison — one half of a check reading the panel differently from the
+ * other half is a check that agrees with itself.
+ *
+ * `error` rather than an empty set when the question cannot be asked. A panel
+ * that is down is not a panel with no groups, and reporting the second for the
+ * first sends somebody to edit configuration that was correct.
  */
 async function panelGroupIds(
   baseUrl: string,
   credentials: { username: string; password: string },
 ): Promise<{ ids: Set<number> } | { error: string }> {
-  const base = baseUrl.replace(/\/+$/, '');
-  const login = await withTimeout((signal) =>
-    fetch(`${base}/api/admin/token`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-      body: new URLSearchParams(credentials).toString(),
-      signal,
-    }),
-  );
-  // The status only. A rejected login echoes the credentials back in some
-  // deployments, and this output is meant to be pasteable into a report.
-  if (!login.ok) return { error: `login failed (HTTP ${login.status})` };
-  const token = ((await login.json()) as { access_token?: unknown }).access_token;
-  if (typeof token !== 'string' || token === '') return { error: 'login returned no access_token' };
-
-  const res = await withTimeout((signal) =>
-    fetch(`${base}/api/groups`, {
-      headers: { accept: 'application/json', authorization: `Bearer ${token}` },
-      signal,
-    }),
-  );
-  if (!res.ok) return { error: `could not list groups (HTTP ${res.status})` };
-  const body: unknown = await res.json();
-  // PasarGuard answers `{groups: [...]}`; older builds answer a bare array.
-  const list = Array.isArray(body)
-    ? body
-    : Array.isArray((body as { groups?: unknown }).groups)
-      ? (body as { groups: unknown[] }).groups
-      : null;
-  if (list === null) return { error: 'group listing was neither a list nor {groups: [...]}' };
-
-  const ids = new Set<number>();
-  for (const item of list) {
-    const id = (item as { id?: unknown }).id;
-    if (typeof id === 'number') ids.add(id);
-  }
-  return { ids };
+  const adapter = adapterFor('pasarguard');
+  if (!adapter?.listGroups) return { error: 'the pasarguard adapter cannot list groups' };
+  const result = await adapter.listGroups({
+    id: 0,
+    code: 'preflight',
+    name: 'preflight',
+    baseUrl,
+    credentials,
+    config: {},
+    fetch,
+  });
+  if (!result.ok) return { error: result.reason };
+  return { ids: new Set(result.groups.map((g) => g.id)) };
 }
 
 /**
