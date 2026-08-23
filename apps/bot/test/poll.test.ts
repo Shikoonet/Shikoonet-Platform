@@ -5,6 +5,7 @@ import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 import { stubApi } from './helpers/telegram.js';
 import * as provisionModule from '../src/provision.js';
+import * as syncModule from '../src/sync.js';
 import { makeCustomer } from './helpers/shop.js';
 
 let nextId = 1;
@@ -545,6 +546,53 @@ describe('run', () => {
     errors.mockRestore();
 
     expect(calls).toBe(2);
+  });
+
+  it('does not re-run the panel sync every cycle when the panel is down', async () => {
+    /**
+     * The sync gates itself on `MAX(last_synced_at)`, which only moves when a
+     * panel ANSWERS. So a panel that cannot be reached is never satisfied and
+     * the sweep runs again on every cycle — each run paying a full adapter
+     * timeout, in the middle of the loop that reads Telegram.
+     *
+     * Measured on the practice server 2026-08-23:
+     * `sync.panel_skipped — could not reach the panel: terminated` every 98
+     * seconds, which is the 60-second long poll plus ~38 seconds of timing out.
+     * All of that sits between a customer pressing a button and the bot reading
+     * it, so Telegram's callback window closed first and every tap in the shop
+     * came back `query is too old`. A slow panel made paths that never touch
+     * that panel unusable.
+     *
+     * Three cycles, one sync. Not "the sync is skipped" — the first cycle after
+     * a start must still run, because a deploy is a reason to look again.
+     */
+    const controller = new AbortController();
+    let cycles = 0;
+    let syncs = 0;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const sync = vi.spyOn(syncModule, 'syncSubscriptions').mockImplementation(async () => {
+      syncs++;
+      // What the real one does against an unreachable panel: it takes a long
+      // time and then fails. The failure is the part that matters — a throw
+      // must not exempt it from the next cycle's rate limit either.
+      throw new Error('could not reach the panel: terminated');
+    });
+
+    const api = stubApi({
+      getUpdates: async () => {
+        cycles++;
+        if (cycles >= 3) controller.abort();
+        return [];
+      },
+      sendMessage: async () => undefined,
+    });
+
+    await run(db, api, { signal: controller.signal, backoffMs: 1 });
+    sync.mockRestore();
+    errors.mockRestore();
+
+    expect(cycles, 'the loop really did go round three times').toBeGreaterThanOrEqual(3);
+    expect(syncs, 'once, on the first cycle — not once per cycle').toBe(1);
   });
 
   it('still delivers a paid order when Telegram will not answer', async () => {

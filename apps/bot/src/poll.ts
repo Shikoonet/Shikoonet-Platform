@@ -16,7 +16,7 @@ import { handleUpdate, refreshShopContent, type HandleStatus } from './handle.js
 import * as notify from './notify.js';
 import { settleVerifiedPayments } from './settle.js';
 import { provisionPaidOrders } from './provision.js';
-import { syncSubscriptions } from './sync.js';
+import { syncSubscriptions, SYNC_INTERVAL_MS } from './sync.js';
 import { warnExpiringServices } from './warn.js';
 import { expireUnpaidOrders } from './expire.js';
 import {
@@ -462,6 +462,26 @@ export async function run(
   // above: a restart is a legitimate second chance, and an update that only
   // fails because of the state a crashed process left behind deserves one.
   const attempts = new Map<number, Attempt>();
+  /**
+   * When the panel sync was last ATTEMPTED, not when it last succeeded.
+   *
+   * `isDue` inside the sync asks `MAX(last_synced_at)`, which only moves when a
+   * panel answers. So a panel that cannot be reached is never due-satisfied and
+   * the sync runs again on every single cycle — each run paying a full adapter
+   * timeout before giving up.
+   *
+   * Measured on the practice server 2026-08-23, and it is not a small effect:
+   * `sync.panel_skipped — could not reach the panel: terminated` every 98
+   * seconds, which is the 60-second long poll plus ~38 seconds of timing out.
+   * Every one of those seconds sits between a customer pressing a button and
+   * the bot reading it, so Telegram's callback window closed first and the shop
+   * answered `query is too old` to every tap. A panel being slow made the whole
+   * SHOP unusable, on paths that never touch that panel.
+   *
+   * Zero rather than `Date.now()`, so the first cycle after a restart still
+   * syncs: a deploy is a legitimate reason to look again immediately.
+   */
+  let lastSyncAttemptMs = 0;
 
   while (!options.signal?.aborted) {
     try {
@@ -525,13 +545,21 @@ export async function run(
       // problem, a panel that will not answer is not — and a panel being down
       // must never hold up telling a customer their payment was confirmed.
       await sweep('provisioning paid orders', () => provisionPaidOrders(db));
-      // Refreshing what «سرویس های من» shows. Produces no messages — it rate
-      // limits itself off `last_synced_at`, so calling it every cycle costs one
-      // aggregate query on the nine cycles out of ten that do nothing.
-      try {
-        await syncSubscriptions(db);
-      } catch (err) {
-        log.error('sync.failed', { will_retry: true }, err);
+      // Refreshing what «سرویس های من» shows. Produces no messages.
+      //
+      // The cadence is owned HERE and not left to the sweep's own gate. That
+      // gate is keyed on success — `MAX(last_synced_at)` only moves when a
+      // panel answers — so an unreachable panel turned a ten-minute job into a
+      // per-cycle one, and each attempt cost a full adapter timeout in the
+      // middle of the read loop. The sweep's gate stays as the second line, for
+      // the case where more than one process is running.
+      if (Date.now() - lastSyncAttemptMs >= SYNC_INTERVAL_MS) {
+        lastSyncAttemptMs = Date.now();
+        try {
+          await syncSubscriptions(db);
+        } catch (err) {
+          log.error('sync.failed', { will_retry: true }, err);
+        }
       }
       // After the sync, so a service is warned about the volume the panel
       // reports rather than the figure from ten minutes ago.
