@@ -47,6 +47,18 @@ BACKUP_DIR="${BACKUP_DIR:-/data/coolify/backups/databases/root-team-0/shikoo-pos
 SCRATCH="${SCRATCH:-restore_drill_scratch}"
 PGUSER="${PGUSER:-postgres}"
 
+# The SQL this drill checks against travels WITH the drill.
+#
+# It used to read `/tmp/verify_invariants.sql`, an unversioned path with no
+# checksum: whatever somebody last copied there is what the money invariants
+# were checked against, and a stale copy passes just as quietly as a current
+# one. Now both the invariants and the migration list are resolved relative to
+# this file, so the thing being checked and the thing checking it ship as one
+# unit. Override only if you have deliberately split them.
+REPO_ROOT="${REPO_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-$REPO_ROOT/migrations}"
+INVARIANTS="${INVARIANTS:-$MIGRATIONS_DIR/verify_invariants.sql}"
+
 say() { printf '%s\n' "$*"; }
 psql_() { docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -v ON_ERROR_STOP=1 -q "$@"; }
 
@@ -87,12 +99,55 @@ LATEST=$(psql_ -tAd "$SCRATCH" -c "SELECT name FROM schema_migrations ORDER BY n
 say "  $LEDGER applied, latest $LATEST"
 [ "$LEDGER" -gt 0 ] || { say "FAIL: the restored copy carries no ledger"; exit 1; }
 
+# The header of this file promises this check says the ledger is CURRENT. For a
+# long time the line above was the whole check, and `count > 0` is not
+# currency — a dump three migrations behind passes it exactly as a fresh one
+# does, which is the gap the boot gate exists to catch. Rule 7 of CLAUDE.md:
+# the check has to be at least as strict as the thing it claims to check.
+#
+# Current is measured against something OUTSIDE the ledger — the migration
+# files that shipped beside this script — rather than against the ledger's own
+# count, which can only ever agree with itself.
+[ -d "$MIGRATIONS_DIR" ] || {
+  say "FAIL: $MIGRATIONS_DIR not found — copy migrations/ next to deploy/ on this host"
+  psql_ -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH"
+  exit 1
+}
+# The ledger stores the file name WITH its extension, and beside it the sha256
+# of the file's bytes — verified against `sha256sum` on 2026-08-23, so this
+# compares like with like rather than trusting the column's name. The checksum
+# is the half that matters: a name-only check passes a migration whose content
+# was edited after it was applied, which is the shape of drift that hurts.
+MISSING=""
+DRIFTED=""
+for f in "$MIGRATIONS_DIR"/*.sql; do
+  n=$(basename "$f")
+  [ "$n" = "verify_invariants.sql" ] && continue
+  want=$(sha256sum "$f" | cut -d' ' -f1)
+  got=$(psql_ -tAd "$SCRATCH" -c "SELECT checksum FROM schema_migrations WHERE name = '$n'")
+  if [ -z "$got" ]; then
+    MISSING="$MISSING $n"
+  elif [ "$got" != "$want" ]; then
+    DRIFTED="$DRIFTED $n"
+  fi
+done
+if [ -n "$MISSING" ] || [ -n "$DRIFTED" ]; then
+  say "FAIL: the restored copy does not match the migrations shipped with this drill."
+  [ -n "$MISSING" ] && say "      absent from its ledger:$MISSING"
+  [ -n "$DRIFTED" ] && say "      present but a DIFFERENT file was applied:$DRIFTED"
+  say "      a dump that restores into an older or divergent schema than the"
+  say "      running code cannot be deployed onto — that is this check's point."
+  psql_ -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH"
+  exit 1
+fi
+say "  ledger is current against $MIGRATIONS_DIR (name + sha256, every file)"
+
 say "money invariants against the restored copy:"
-if [ -f /tmp/verify_invariants.sql ]; then
-  docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -v ON_ERROR_STOP=1 -q -d "$SCRATCH" < /tmp/verify_invariants.sql
-  say "  invariants PASS"
+if [ -f "$INVARIANTS" ]; then
+  docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -v ON_ERROR_STOP=1 -q -d "$SCRATCH" < "$INVARIANTS"
+  say "  invariants PASS ($INVARIANTS)"
 else
-  say "FAIL: /tmp/verify_invariants.sql not on this host — copy migrations/verify_invariants.sql there first"
+  say "FAIL: $INVARIANTS not found — migrations/ must ship beside deploy/ on this host"
   psql_ -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH"
   exit 1
 fi
