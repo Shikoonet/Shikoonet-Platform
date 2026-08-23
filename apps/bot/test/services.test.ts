@@ -57,7 +57,24 @@ interface ServiceFixture {
   usedBytes?: number | null;
   /** Days from NOW_MS. Negative is in the past. Undefined means no expiry. */
   expiresInDays?: number;
+  /**
+   * An absolute expiry, for the one test that has to date itself off the REAL
+   * clock rather than off `NOW_MS` — see «سورت با ساعت ربات» below. Wins over
+   * `expiresInDays` when both are given.
+   */
+  expiresAtMs?: number;
   purchasedAtMs?: number;
+}
+
+/**
+ * The wall clock, reachable after `Date.now` has been mocked.
+ *
+ * `performance.timeOrigin` is not mocked and does not move with the spy, so it
+ * is the one clock in this file that still tells the truth once `beforeEach`
+ * has run.
+ */
+function realNow(): number {
+  return Math.round(performance.timeOrigin + performance.now());
 }
 
 async function makeService(userId: number, fixture: ServiceFixture): Promise<number> {
@@ -81,9 +98,11 @@ async function makeService(userId: number, fixture: ServiceFixture): Promise<num
       fixture.usedBytes === undefined ? null : fixture.usedBytes,
       fixture.status ?? 'ACTIVE',
       fixture.purchasedAtMs ?? NOW_MS - 5 * DAY,
-      fixture.expiresInDays === undefined
-        ? null
-        : new Date(NOW_MS + fixture.expiresInDays * DAY).toISOString(),
+      fixture.expiresAtMs !== undefined
+        ? new Date(fixture.expiresAtMs).toISOString()
+        : fixture.expiresInDays === undefined
+          ? null
+          : new Date(NOW_MS + fixture.expiresInDays * DAY).toISOString(),
     )
     .first<{ id: number }>();
   if (!row) throw new Error('service fixture failed');
@@ -153,6 +172,50 @@ describe('the list', () => {
     const out = await handleUpdate(db, press(updateId, telegramId, 'mine'));
 
     expect(out.replies[0]?.keyboard?.[0]?.[0]?.text).toContain('سرویس-جاری');
+  });
+
+  it('sorts by the bot\u2019s clock, not the database server\u2019s', async () => {
+    /**
+     * The sort used to say `expires_at > now()` — Postgres's clock — while the
+     * glyph beside the row came from `Date.now()` in the bot. Two machines, two
+     * clocks, and `owned.ts` says in its own comment that the two halves have
+     * to agree or "the list reads as sorted by nothing".
+     *
+     * The test above cannot show that, and did not: it caught the split by
+     * accident at noon UTC on 2026-08-23, when its fixture happened to cross
+     * the real clock, and would have been green again the next day with the bug
+     * still in.
+     *
+     * So this one MANUFACTURES the disagreement, and dates itself off the real
+     * clock so it stays manufactured. `stale` is thirty days in the real
+     * future — live by any wall clock the database could have — and the bot is
+     * told it is sixty days later, so to the bot it expired a month ago.
+     *
+     * With `now()`, both rows are usable, the tiebreak falls to
+     * `purchased_at DESC`, and `stale` (bought yesterday) wins. With the bot's
+     * clock bound as a parameter, `stale` is not usable and drops below.
+     */
+    const trueNow = realNow();
+    vi.spyOn(Date, 'now').mockReturnValue(trueNow + 60 * DAY);
+
+    const { updateId, telegramId } = ids();
+    const userId = await customer(telegramId);
+    await makeService(userId, {
+      publicId: `svc-${telegramId}-stale`,
+      planName: 'سرویس-کهنه',
+      expiresAtMs: trueNow + 30 * DAY,
+      purchasedAtMs: trueNow - DAY,
+    });
+    await makeService(userId, {
+      publicId: `svc-${telegramId}-fresh`,
+      planName: 'سرویس-تازه',
+      expiresAtMs: trueNow + 90 * DAY,
+      purchasedAtMs: trueNow - 30 * DAY,
+    });
+
+    const out = await handleUpdate(db, press(updateId, telegramId, 'mine'));
+
+    expect(out.replies[0]?.keyboard?.[0]?.[0]?.text).toContain('سرویس-تازه');
   });
 
   it('puts a service with no volume left below a live one', async () => {

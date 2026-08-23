@@ -99,10 +99,26 @@ export interface OwnedSubscription {
  * other is TypeScript. If one changes the other must: the glyph beside a row
  * and the position of that row have to agree, or the list reads as sorted by
  * nothing.
+ *
+ * Which is exactly why the clock is a PARAMETER and not `now()`.
+ *
+ * It was `now()` until 2026-08-23, and that quietly gave the two halves two
+ * different clocks — Postgres's for the position, the bot process's for the
+ * glyph. `services.test.ts` pins `Date.now()` and its fixture expired at
+ * 2026-08-23T12:00:00Z, so at noon UTC that day the suite went red on a run
+ * that had been green twenty-seven minutes earlier, with no commit in between:
+ * SQL had moved past the date and TypeScript had not. A test tied to a fixed
+ * date over code reading the real clock is the house's own rule 5, and this is
+ * what it looks like when it goes off.
+ *
+ * The customer-visible half is smaller and real: the two clocks are on two
+ * machines. While they disagree, a service can carry ⌛ and still sit at the
+ * top of the list, or carry no glyph and sit at the bottom. Binding one clock
+ * makes that impossible rather than unlikely.
  */
 const USABLE = `(
   status = 'ACTIVE'
-  AND (expires_at IS NULL OR expires_at > now())
+  AND (expires_at IS NULL OR expires_at > to_timestamp(?4 / 1000.0))
   AND (volume_gb IS NULL OR volume_gb <= 0 OR used_bytes IS NULL
        OR used_bytes < volume_gb * 1073741824)
 )`;
@@ -140,7 +156,7 @@ export async function subscriptionsForUser(
         ORDER BY ${USABLE} DESC, purchased_at DESC, id DESC
         LIMIT ?2 OFFSET ?3`,
     )
-    .bind(userId, limit, offset)
+    .bind(userId, limit, offset, Date.now())
     .all<OwnedSubscription>();
   return rows.results;
 }
