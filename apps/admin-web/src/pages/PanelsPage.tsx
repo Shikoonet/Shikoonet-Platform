@@ -818,7 +818,7 @@ function GroupForm({
  * UI before it could add a tier, and «کدام اینباند» was answered there from
  * memory.
  */
-function PanelGroupsSection({
+export function PanelGroupsSection({
   panel,
   onChanged,
   onProblem,
@@ -984,6 +984,9 @@ function PanelGroupsSection({
     JSON.stringify([...selected].sort((a, b) => a - b)) !==
     JSON.stringify([...data.selected].sort((a, b) => a - b));
 
+  /** Nothing on this panel reads the default, so no tick here can change a sale. */
+  const inert = data.inherit.length === 0;
+
   /**
    * Which of our plans send this group, so «چطور مشتری پلاتینیوم می‌خرد» has an
    * answer on the row itself.
@@ -1025,6 +1028,29 @@ function PanelGroupsSection({
         {err && <div className="alert alert-error">{err}</div>}
         {done && <div className="alert alert-ok">{done}</div>}
       </div>
+
+      {/*
+        A tick that cannot reach anybody, said at the moment of ticking.
+
+        The paragraph above already explains that these are only a default, and
+        it was not enough: an operator ticked a group, pressed save, watched the
+        bot not change, and reported it as a bug. It was not one — the save
+        worked and every service on this panel names its own level, so the
+        default reaches nobody. But a control whose effect is zero and whose
+        appearance is a switch is a bug in the screen even when the write is
+        correct, and the answer belongs beside the control rather than in a
+        paragraph read once.
+
+        Not disabled. A panel being set up has no products yet, so `inherit` is
+        empty exactly when the default is most worth choosing.
+      */}
+      {inert && (
+        <div className="alert alert-warning">
+          هیچ سرویس فعالی روی این پنل از پیش‌فرض استفاده نمی‌کند — هرکدام سطح خودش را دارد. پس
+          تیک‌های این ستون الان هیچ خریدی را عوض نمی‌کنند: ذخیره می‌شوند و در ربات چیزی تغییر
+          نمی‌کند. سطحِ هر سرویس در «محصولات» انتخاب می‌شود.
+        </div>
+      )}
 
       {available === null ? (
         <div className="alert alert-error">
