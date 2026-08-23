@@ -304,9 +304,47 @@ until somebody read `docker logs`. The services carry stable network aliases now
 applies it.
 
 Certificates: Let's Encrypt over DNS-01, both hostnames, one lineage named
-`shikoo`. DNS-01 rather than HTTP-01 because that would need `:80`. Renewal must
+`shikoo`. DNS-01 rather than HTTP-01 because that would need `:80`.
+
+**Both halves of what this paragraph used to claim were false, and both were
+measured false on 2026-08-23 rather than argued about.** It said renewal "must
 reload the container — a `renewal-hooks/deploy` script does it — and it needs a
-DNS API token that outlives the certificate.
+DNS API token that outlives the certificate", in the present tense, as though
+describing the box. What was actually there:
+
+- `renewal-hooks/deploy/` held `reload-nginx.sh` and `reload-nginx-cdn.sh`, and
+  **both reload the host nginx**, which serves neither of our hostnames. No hook
+  touched `shikoo-tls`. A successful renewal would have reported success and
+  left the expired certificate on the wire. `deploy/reload-shikoo-tls.sh` in
+  this repo is the missing hook; install it with the `install -m 0755` line in
+  its header.
+- the DNS token did **not** outlive the certificate. It expired
+  `2026-08-22T23:59:59Z`; the certificate runs to `2026-11-15`. `certbot renew
+  --cert-name shikoo --dry-run` answers
+  `Error determining zone_id: 9109 Invalid access token`.
+
+Two things follow for whoever sets this up next:
+
+**The token must have no expiry.** A `Zone:DNS:Edit` token on `mahamsteel.ir`,
+written to `/root/.secrets/cloudflare.ini` as `dns_cloudflare_api_token = …`.
+Cloudflare's default when you create one is a short window, and the wrong end of
+that window is silent: certbot's timer runs twice a day and writes its failure
+to `/var/log/letsencrypt/`, which nothing reads.
+
+**Check the token by its status, not by `success`.** `GET
+/client/v4/user/tokens/verify` answers `"success": true` for an EXPIRED token —
+the call succeeded, the token did not. The field that matters is
+`result.status`, which must be `active`:
+
+```sh
+curl -s -H "Authorization: Bearer $CF_TOKEN"   https://api.cloudflare.com/client/v4/user/tokens/verify |
+  grep -o '"status":"[a-z]*"'
+```
+
+After replacing the token, prove the whole chain rather than the token alone:
+`certbot renew --cert-name shikoo --dry-run` must reach `Congratulations`, and
+after a real renewal `openssl s_client -connect shikoo.mahamsteel.ir:9443` must
+show the NEW `notAfter` — that second half is the part the missing hook broke.
 
 ## Environment, per service
 
