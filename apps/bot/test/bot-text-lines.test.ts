@@ -80,13 +80,29 @@ beforeEach(clearOverrides);
 afterEach(clearOverrides);
 
 describe('the registry and the code agree', () => {
-  /** Every `.ts` file the bot ships, concatenated. Tests are not included: a
-   *  key only a test mentions is still a key no customer ever sees. */
+  /**
+   * Every `.ts` file that RENDERS one of these texts, concatenated. Tests are
+   * not included: a key only a test mentions is still a key no customer ever
+   * sees.
+   *
+   * Two services, not one. The registry is the shop's whole customer-facing
+   * vocabulary, and since the bot's admin panel became the dashboard's, some of
+   * those sentences are rendered by the dashboard — «پیامی از پشتیبانی» is
+   * written by an operator in `customerRoutes.ts` and read by a customer in
+   * Telegram. Scanning only the bot would call that key unread, and the fix for
+   * an unread key is to delete it.
+   */
   const source = (() => {
-    const dir = join(import.meta.dirname, '..', 'src');
-    return readdirSync(dir)
-      .filter((f) => f.endsWith('.ts'))
-      .map((f) => readFileSync(join(dir, f), 'utf8'))
+    const dirs = [
+      join(import.meta.dirname, '..', 'src'),
+      join(import.meta.dirname, '..', '..', 'dashboard-worker', 'src'),
+    ];
+    return dirs
+      .flatMap((dir) =>
+        readdirSync(dir)
+          .filter((f) => f.endsWith('.ts'))
+          .map((f) => readFileSync(join(dir, f), 'utf8')),
+      )
       .join('\n');
   })();
 

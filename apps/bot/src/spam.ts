@@ -159,11 +159,12 @@ export async function blockForSpam(
       // who unblocks and is flooded again does get told the second time.
       dedupeKey: `spam:${opts.userId}:${opts.updateId}`,
       chatId: opts.reportChatId,
+      // The report itself, with no button under it. It used to carry «open
+      // this user», which opened the bot's own admin panel — and that panel is
+      // the dashboard now. A button pointing at a screen that no longer exists
+      // is worse than no button: it looks like the bot is broken rather than
+      // like the screen moved.
       text: menu.spamBlockedReport(opts.telegramId),
-      // The same button the legacy attaches, pointing at our own admin user
-      // screen. `usr` takes the internal id and re-checks the presser's
-      // permission, so a channel member who is not an admin gets nothing.
-      keyboard: [[{ text: menu.ADMIN_OPEN_USER, callback_data: encode('usr', opts.userId) }]],
     });
   }
   return true;

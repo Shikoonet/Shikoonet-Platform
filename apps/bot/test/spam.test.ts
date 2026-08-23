@@ -241,19 +241,22 @@ describe('telling the shop', () => {
     invalidateShopSettings();
   });
 
-  it('queues one report, naming the customer and carrying a way to reach them', async () => {
+  it('queues one report, naming the customer, with nothing to press', async () => {
     const { telegramId } = ids();
-    const userId = await makeCustomer(telegramId);
+    await makeCustomer(telegramId);
 
     await flood(telegramId, SPAM_LIMIT + 1);
 
     const notes = await spamReports();
     expect(notes).toHaveLength(1);
     expect(notes[0]?.chatId).toBe(CHANNEL);
+    // The id, because that is what an operator types into «کاربران» to find
+    // them. The report used to carry an «open this user» button into the bot's
+    // own admin panel; that panel is the dashboard now, and a button pointing
+    // at a screen that no longer exists reads as a broken bot rather than as a
+    // screen that moved.
     expect(notes[0]?.text).toContain(String(telegramId));
-    // The button opens OUR admin user screen, by internal id — the same action
-    // an operator would reach by searching, so it re-checks their permission.
-    expect(notes[0]?.markup).toContain(`usr:${userId}`);
+    expect(notes[0]?.markup ?? null).toBeNull();
   });
 
   it('says nothing more about a customer who is already blocked', async () => {

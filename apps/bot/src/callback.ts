@@ -78,26 +78,6 @@ export const CALLBACK_ACTIONS = [
   'agr', // ask for a reseller application
   'sup', // how to reach support
   'ref', // the customer's referral link and what it has earned
-  // --- admin only. Every one of these re-checks `admins` before it acts; the
-  // button is not the permission, the row is.
-  'pnl', // the admin home
-  'clm', // [page] — payments waiting for a decision
-  'clv', // <claimId> — one of them, with the bank transactions that could be it
-  'apv', // <transactionId> — settle the claim in the session with that transaction
-  'apx', // settle it with no transaction at all — the admin's word alone
-  'rej', // refuse it
-  'cnf', // confirm whichever of the two was asked for
-  'sts', // the shop's headline numbers
-  'usf', // ask for a customer to look up
-  'usr', // <userId> — that customer's page
-  'uwp', // <userId> — ask how much to add to their wallet
-  'uwm', // <userId> — ask how much to take off it
-  'ubl', // <userId> — block them, after a confirmation
-  'uub', // <userId> — let them back in
-  'udp', // <userId> — ask for their standing discount percentage
-  'umg', // <userId> — ask for a message to send them
-  'bcr', // ask how much to add to every active customer's wallet
-  'bct', // ask for a message to send to every customer
   'hlp', // [articleId] — the education list, or one article
   'app', // the client apps and their links
   'soon', // a menu entry that has no implementation yet
@@ -137,35 +117,11 @@ const ActionSchema = z.enum(CALLBACK_ACTIONS);
 const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord']);
 
 /**
- * The actions whose id is a text reference rather than a number.
- *
- * The payment hub's own tables carry UUID primary keys — `payment_claims.id`,
- * `transaction_candidates.id` — and an admin screen has to name one. Also a
- * closed set, and the shape is still narrow: the characters a UUID is made of,
- * and short enough that two of them could never fit in one button, which is why
- * the claim being worked on lives in the session instead.
- */
-const REF_ACTIONS = new Set<CallbackAction>(['clv', 'apv']);
-
-const REF_PATTERN = /^[A-Za-z0-9_-]{1,40}$/;
-
-/**
  * Telegram's limit is 64 bytes. Our longest is `order:<bigint>` — well inside
  * it — but the cap is enforced on the way out so a future action cannot quietly
  * produce a button Telegram refuses to send.
  */
 export const CALLBACK_MAX_BYTES = 64;
-
-/** `clv:<uuid>` — the text-referenced half of the same grammar. */
-export function encodeRef(action: CallbackAction, ref: string): string {
-  if (!REF_ACTIONS.has(action)) {
-    throw new Error(`${action} does not carry a reference`);
-  }
-  if (!REF_PATTERN.test(ref)) {
-    throw new Error('a callback reference must be short and alphanumeric');
-  }
-  return capped(`${action}:${ref}`);
-}
 
 export function encode(action: CallbackAction, id?: number, id2?: number): string {
   if (id === undefined && id2 !== undefined) {
@@ -199,12 +155,6 @@ export function decode(data: string | undefined): Callback | null {
 
   const action = ActionSchema.safeParse(rawAction);
   if (!action.success) return null;
-
-  if (REF_ACTIONS.has(action.data)) {
-    // A ref action always carries exactly one ref and never an id.
-    if (rawId === undefined || rawId2 !== undefined) return null;
-    return REF_PATTERN.test(rawId) ? { action: action.data, ref: rawId } : null;
-  }
 
   if (rawId === undefined) return { action: action.data };
 

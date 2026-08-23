@@ -284,15 +284,18 @@ describe('layout validation', () => {
     ).toEqual({ kind: 'NOTHING_VISIBLE' });
   });
 
-  it('refuses one that leaves an ordinary customer with nothing', () => {
-    // Neither of these is visible to somebody who is not a reseller and not an
-    // admin — and they are the audience the shop actually sells to. Each button
-    // alone was already refused; the pair is the case a check written against
-    // one list at a time lets through.
+  it('refuses one that leaves a whole audience with nothing', () => {
+    // «درخواست نمایندگی» is hidden from a reseller — they already are one — so
+    // a main menu made only of it is an empty screen for every reseller in the
+    // shop. The check has to be against each audience, not against the button
+    // list as a whole.
+    //
+    // This used to pair it with «پنل مدیریت», the other audience-limited
+    // button. That one was the bot's own admin panel and the panel is the
+    // dashboard's now, so `agr` is the only limited button left.
     expect(
       checkLayout('main', [
         { action: 'agr', label: 'نمایندگی', rowIndex: 0, colIndex: 0, visible: true },
-        { action: 'pnl', label: 'پنل', rowIndex: 1, colIndex: 0, visible: true },
       ]),
     ).toEqual({ kind: 'NOTHING_VISIBLE' });
   });

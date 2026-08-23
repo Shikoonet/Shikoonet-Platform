@@ -32,7 +32,7 @@
  * 11,240 'fa' to one 'en'; wire up a second language when it has a customer.
  */
 
-import { encode, encodeRef } from './callback.js';
+import { encode } from './callback.js';
 import type { CatalogPlan, CatalogProduct } from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
@@ -49,7 +49,6 @@ import type { Layouts } from './botContent.js';
 import { DEFAULT_TEXTS, type AdminPermission, type TextKey, type Texts } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
 import type { ShopStats } from '@shikoo/domain';
-import type { CustomerDetail, CustomerHit } from './customers.js';
 import { MAX_MESSAGE_LENGTH } from './broadcast.js';
 import { MAX_COPY_TEXT_LENGTH, type InlineButton, type InlineKeyboard } from './telegram.js';
 
@@ -87,21 +86,15 @@ const REASON_TEXT_KEY: Record<string, TextKey> = {
  * instead.
  */
 export let WELCOME = DEFAULT_TEXTS.raw('WELCOME');
-/** The only thing a customer is told while `Bot_Status` is off. */
 export let SHOP_CLOSED = DEFAULT_TEXTS.raw('SHOP_CLOSED');
 export let MENU_TITLE = DEFAULT_TEXTS.raw('MENU_TITLE');
-/** The rules, and the only thing a customer sees until they accept them. */
 export let GATE_RULES = DEFAULT_TEXTS.raw('GATE_RULES');
 export let GATE_RULES_ACCEPTED = DEFAULT_TEXTS.raw('GATE_RULES_ACCEPTED');
 export let SOON = DEFAULT_TEXTS.raw('SOON');
 export let CHOOSE_PRODUCT = DEFAULT_TEXTS.raw('CHOOSE_PRODUCT');
-/** Shown when a panel that was listed a moment ago now has nothing on it. */
 export let PANEL_EMPTY = DEFAULT_TEXTS.raw('PANEL_EMPTY');
-/** The same, one level down: a service whose plans went away between two taps. */
 export let PRODUCT_EMPTY = DEFAULT_TEXTS.raw('PRODUCT_EMPTY');
-/** No panel has anything this customer can buy. */
 export let SHOP_EMPTY = DEFAULT_TEXTS.raw('SHOP_EMPTY');
-/** The one answer to a plan that is gone, hidden, or was never theirs to see. */
 export let PLAN_GONE = DEFAULT_TEXTS.raw('PLAN_GONE');
 export let NOT_REGISTERED = DEFAULT_TEXTS.raw('NOT_REGISTERED');
 /** For the few screens handle.ts builds a one-button keyboard for itself. */
@@ -138,15 +131,10 @@ export let RECEIPT_REPLACED = DEFAULT_TEXTS.raw('RECEIPT_REPLACED');
 export let RECEIPT_SETTLED = DEFAULT_TEXTS.raw('RECEIPT_SETTLED');
 export let RECEIPT_NOTHING_WAITING = DEFAULT_TEXTS.raw('RECEIPT_NOTHING_WAITING');
 export let RECEIPT_WRONG_FILE = DEFAULT_TEXTS.raw('RECEIPT_WRONG_FILE');
-export let ADMIN_RECEIPT_CAPTION = DEFAULT_TEXTS.raw('ADMIN_RECEIPT_CAPTION');
-/** The one reason `handle.ts` passes to `actionFailed` itself. */
 export let ACTION_FAILED_NO_LINK = DEFAULT_TEXTS.raw('ACTION_FAILED_NO_LINK');
 
 // The admin screens. Editable like the rest now — an operator's wording is as
 // much the shop's as a customer's.
-export let ADMIN_HOME = DEFAULT_TEXTS.raw('ADMIN_HOME_TITLE');
-export let NO_CLAIMS = DEFAULT_TEXTS.raw('ADMIN_NO_CLAIMS');
-export let CLAIM_GONE = DEFAULT_TEXTS.raw('ADMIN_CLAIM_GONE');
 
 /**
  * Says which role is missing rather than just "no".
@@ -155,27 +143,8 @@ export let CLAIM_GONE = DEFAULT_TEXTS.raw('ADMIN_CLAIM_GONE');
  * broken button and presses it again; naming the reason sends them to whoever
  * can change it instead.
  */
-export let ADMIN_NOT_ALLOWED = DEFAULT_TEXTS.raw('ADMIN_NOT_ALLOWED');
-export let ADMIN_USER_ASK = DEFAULT_TEXTS.raw('ADMIN_USER_ASK');
-export let ADMIN_USER_NONE = DEFAULT_TEXTS.raw('ADMIN_USER_NONE');
-export let ADMIN_USER_GONE = DEFAULT_TEXTS.raw('ADMIN_USER_GONE');
-export let ADMIN_USER_ASK_CREDIT = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_CREDIT');
-export let ADMIN_USER_ASK_DEBIT = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_DEBIT');
-export let ADMIN_USER_AMOUNT_BAD = DEFAULT_TEXTS.raw('ADMIN_USER_AMOUNT_BAD');
-export let ADMIN_USER_BLOCKED = DEFAULT_TEXTS.raw('ADMIN_USER_BLOCKED');
-export let ADMIN_OPEN_USER = DEFAULT_TEXTS.raw('ADMIN_OPEN_USER');
 export let SPAM_BLOCKED = DEFAULT_TEXTS.raw('SPAM_BLOCKED');
-export let ADMIN_USER_UNBLOCKED = DEFAULT_TEXTS.raw('ADMIN_USER_UNBLOCKED');
-export let ADMIN_USER_ASK_DISCOUNT = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_DISCOUNT');
-export let ADMIN_USER_DISCOUNT_BAD = DEFAULT_TEXTS.raw('ADMIN_USER_DISCOUNT_BAD');
-export let ADMIN_USER_ASK_MESSAGE = DEFAULT_TEXTS.raw('ADMIN_USER_ASK_MESSAGE');
-export let ADMIN_USER_MESSAGE_SENT = DEFAULT_TEXTS.raw('ADMIN_USER_MESSAGE_SENT');
-export let ADMIN_BULK_ASK_CREDIT = DEFAULT_TEXTS.raw('ADMIN_BULK_ASK_CREDIT');
-export let ADMIN_BULK_ASK_MESSAGE = DEFAULT_TEXTS.raw('ADMIN_BULK_ASK_MESSAGE');
-export let ADMIN_BULK_NOBODY = DEFAULT_TEXTS.raw('ADMIN_BULK_NOBODY');
 
-export let CONFIRM_APPROVE_WITHOUT_TX = buildConfirmApprove(DEFAULT_TEXTS);
-export let CONFIRM_REJECT = buildConfirmReject(DEFAULT_TEXTS);
 
 /**
  * Why a code was refused, in the customer's words.
@@ -202,23 +171,7 @@ function buildDiscountRefused(t: Texts): Record<string, string> {
   );
 }
 
-function buildConfirmApprove(t: Texts): string {
-  return [
-    t.raw('ADMIN_CONFIRM_APX_TITLE'),
-    '',
-    t.raw('ADMIN_CONFIRM_APX_BODY'),
-    t.raw('ADMIN_CONFIRM_AUDIT_NOTE'),
-  ].join('\n');
-}
 
-function buildConfirmReject(t: Texts): string {
-  return [
-    t.raw('ADMIN_CONFIRM_REJ_TITLE'),
-    '',
-    t.raw('ADMIN_CONFIRM_REJ_BODY'),
-    t.raw('ADMIN_CONFIRM_AUDIT_NOTE'),
-  ].join('\n');
-}
 
 /**
  * A button's label, as the customer currently sees it.
@@ -296,31 +249,8 @@ export function applyContent(content: BotContent): void {
   RECEIPT_SETTLED = t.raw('RECEIPT_SETTLED');
   RECEIPT_NOTHING_WAITING = t.raw('RECEIPT_NOTHING_WAITING');
   RECEIPT_WRONG_FILE = t.raw('RECEIPT_WRONG_FILE');
-  ADMIN_RECEIPT_CAPTION = t.raw('ADMIN_RECEIPT_CAPTION');
   ACTION_FAILED_NO_LINK = t.raw('ACTION_FAILED_NO_LINK');
-  ADMIN_HOME = t.raw('ADMIN_HOME_TITLE');
-  NO_CLAIMS = t.raw('ADMIN_NO_CLAIMS');
-  CLAIM_GONE = t.raw('ADMIN_CLAIM_GONE');
-  ADMIN_NOT_ALLOWED = t.raw('ADMIN_NOT_ALLOWED');
-  ADMIN_USER_ASK = t.raw('ADMIN_USER_ASK');
-  ADMIN_USER_NONE = t.raw('ADMIN_USER_NONE');
-  ADMIN_USER_GONE = t.raw('ADMIN_USER_GONE');
-  ADMIN_USER_ASK_CREDIT = t.raw('ADMIN_USER_ASK_CREDIT');
-  ADMIN_USER_ASK_DEBIT = t.raw('ADMIN_USER_ASK_DEBIT');
-  ADMIN_USER_AMOUNT_BAD = t.raw('ADMIN_USER_AMOUNT_BAD');
-  ADMIN_USER_BLOCKED = t.raw('ADMIN_USER_BLOCKED');
-  ADMIN_OPEN_USER = t.raw('ADMIN_OPEN_USER');
   SPAM_BLOCKED = t.raw('SPAM_BLOCKED');
-  ADMIN_USER_UNBLOCKED = t.raw('ADMIN_USER_UNBLOCKED');
-  ADMIN_USER_ASK_DISCOUNT = t.raw('ADMIN_USER_ASK_DISCOUNT');
-  ADMIN_USER_DISCOUNT_BAD = t.raw('ADMIN_USER_DISCOUNT_BAD');
-  ADMIN_USER_ASK_MESSAGE = t.raw('ADMIN_USER_ASK_MESSAGE');
-  ADMIN_USER_MESSAGE_SENT = t.raw('ADMIN_USER_MESSAGE_SENT');
-  ADMIN_BULK_ASK_CREDIT = t.raw('ADMIN_BULK_ASK_CREDIT');
-  ADMIN_BULK_ASK_MESSAGE = t.raw('ADMIN_BULK_ASK_MESSAGE');
-  ADMIN_BULK_NOBODY = t.raw('ADMIN_BULK_NOBODY');
-  CONFIRM_APPROVE_WITHOUT_TX = buildConfirmApprove(t);
-  CONFIRM_REJECT = buildConfirmReject(t);
   DISCOUNT_REFUSED = buildDiscountRefused(t);
 }
 
@@ -356,7 +286,7 @@ function withChrome(
  * callback with a different page number and the layout table is keyed by
  * action. Only their wording is editable, and that lives with the texts.
  */
-function paging(action: 'mine' | 'renew' | 'clm', page: number, pages: number): InlineKeyboard {
+function paging(action: 'mine' | 'renew', page: number, pages: number): InlineKeyboard {
   if (pages <= 1) return [];
   const row: InlineKeyboard[number] = [];
   if (page > 1) {
@@ -620,384 +550,6 @@ export function helpArticleScreen(title: string, body: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// The admin panel. Every screen below is drawn only after `admins` said yes.
-// ---------------------------------------------------------------------------
-
-export function adminHome(waiting: number): string {
-  const t = TEXTS_NOW;
-  return [
-    t.raw('ADMIN_HOME_TITLE'),
-    '',
-    waiting === 0
-      ? t.raw('ADMIN_NO_WAITING')
-      : t.render('ADMIN_WAITING', { count: waiting.toLocaleString('en-US') }),
-  ].join('\n');
-}
-
-/**
- * The admin panel's home.
- *
- * `allowed` is what this operator may do, so a button they would be refused is
- * not drawn at all. The refusal still exists behind it — `handleAdmin` checks
- * the same permission before acting, because `callback_data` is a field anyone
- * can post and a keyboard is not an authorisation.
- */
-export function adminMenu(waiting: number, allowed: readonly AdminPermission[]): InlineKeyboard {
-  return buildMenu('adminHome', layout('adminHome'), {
-    applies: (action) => {
-      if (action === 'clm') return waiting > 0 && allowed.includes('claims.view');
-      if (action === 'sts') return allowed.includes('stats.view');
-      if (action === 'usf') return allowed.includes('users.view');
-      if (action === 'bcr') return allowed.includes('bulk.credit');
-      if (action === 'bct') return allowed.includes('bulk.message');
-      return true;
-    },
-  });
-}
-
-/**
- * The shop's numbers, as one message.
- *
- * Amounts in Toman, like every other amount the bot shows — the admin reading
- * this on a phone is the same person who priced the plans in Toman, and IRR is
- * the database's unit, not theirs.
- *
- * The wallet total is labelled as what it is. It is the shop's debt to its
- * customers, sitting one line under two revenue figures, and an admin adding
- * the column up is the failure this label exists to prevent.
- */
-export function statsScreen(stats: ShopStats): string {
-  const t = TEXTS_NOW;
-  const n = (value: number) => value.toLocaleString('en-US');
-  return [
-    t.raw('ADMIN_STATS_TITLE'),
-    '',
-    t.raw('ADMIN_STATS_TODAY'),
-    t.render('ADMIN_STATS_ORDERS_TODAY', { count: n(stats.ordersToday) }),
-    t.render('ADMIN_STATS_REVENUE_TODAY', { amount: formatToman(stats.revenueTodayIrr) }),
-    t.render('ADMIN_STATS_CUSTOMERS_TODAY', { count: n(stats.customersToday) }),
-    '',
-    t.raw('ADMIN_STATS_ALL_TIME'),
-    t.render('ADMIN_STATS_CUSTOMERS', { count: n(stats.customers) }),
-    t.render('ADMIN_STATS_SUBSCRIPTIONS', { count: n(stats.activeSubscriptions) }),
-    t.render('ADMIN_STATS_REVENUE', { amount: formatToman(stats.revenueIrr) }),
-    t.render('ADMIN_STATS_WALLET', { amount: formatToman(stats.walletHeldIrr) }),
-    '',
-    t.render('ADMIN_STATS_WAITING', { count: n(stats.claimsWaiting) }),
-  ].join('\n');
-}
-
-export function statsMenu(): InlineKeyboard {
-  return buildMenu('adminStats', layout('adminStats'));
-}
-
-export function confirmBlock(user: CustomerDetail, block: boolean): string {
-  const name = user.username ? `@${user.username}` : String(user.telegram_id);
-  return TEXTS_NOW.render(block ? 'ADMIN_USER_CONFIRM_BLOCK' : 'ADMIN_USER_CONFIRM_UNBLOCK', {
-    name,
-  });
-}
-
-/** The confirmation, with a way back to the customer rather than to the queue. */
-export function userConfirmMenu(customerId: number): InlineKeyboard {
-  return buildMenu('adminUserConfirm', layout('adminUserConfirm'), {
-    target: (action) => (action === 'usr' ? encode('usr', customerId) : undefined),
-  });
-}
-
-export function discountSet(percent: number): string {
-  return TEXTS_NOW.render('ADMIN_USER_DISCOUNT_DONE', {
-    percent: percent.toLocaleString('en-US'),
-  });
-}
-
-export function messageFromShop(body: string): string {
-  return TEXTS_NOW.render('ADMIN_USER_MESSAGE_FROM_SHOP', { body });
-}
-
-/**
- * The confirmation for a group credit.
- *
- * The total is on it deliberately. An extra zero is invisible in «۵۰٬۰۰۰ تومان»
- * and unmissable in the sum across every customer, and the sum is the only
- * number on this screen that changes by a factor of ten when the mistake is
- * made.
- */
-export function confirmBulkCredit(amountIrr: number, count: number): string {
-  return TEXTS_NOW.render('ADMIN_BULK_CREDIT_CONFIRM', {
-    amount: formatToman(amountIrr),
-    count: count.toLocaleString('en-US'),
-    total: formatToman(amountIrr * count),
-  });
-}
-
-export function bulkCreditDone(count: number): string {
-  return TEXTS_NOW.render('ADMIN_BULK_CREDIT_DONE', { count: count.toLocaleString('en-US') });
-}
-
-/** The message exactly as every customer will read it, before it is sent. */
-export function confirmBroadcast(body: string, count: number): string {
-  return TEXTS_NOW.render('ADMIN_BULK_MESSAGE_CONFIRM', {
-    count: count.toLocaleString('en-US'),
-    body,
-  });
-}
-
-export function broadcastQueued(count: number): string {
-  return TEXTS_NOW.render('ADMIN_BULK_MESSAGE_QUEUED', { count: count.toLocaleString('en-US') });
-}
-
-export function bulkTextTooLong(): string {
-  return TEXTS_NOW.render('ADMIN_BULK_TEXT_TOO_LONG', {
-    max: MAX_MESSAGE_LENGTH.toLocaleString('en-US'),
-  });
-}
-
-export function bulkConfirmMenu(): InlineKeyboard {
-  return buildMenu('adminBulkConfirm', layout('adminBulkConfirm'));
-}
-
-export function adminAmountTooBig(maxIrr: number): string {
-  return TEXTS_NOW.render('ADMIN_USER_AMOUNT_TOO_BIG', { max: formatToman(maxIrr) });
-}
-
-/**
- * What the correction did.
- *
- * A negative result is reported, not refused: an admin correcting a credit the
- * customer has already spent has to be able to leave the balance below zero,
- * and `spendOnOrder` refuses to spend from a negative wallet anyway — so it
- * cannot become a free service. The same reasoning, and the same sentence, as
- * the panel's route.
- */
-export function walletAdjusted(beforeIrr: number, afterIrr: number): string {
-  const t = TEXTS_NOW;
-  const line = t.render('ADMIN_USER_WALLET_DONE', {
-    before: formatToman(beforeIrr),
-    after: formatToman(afterIrr),
-  });
-  return afterIrr < 0 ? `${line}\n${t.raw('ADMIN_USER_WALLET_NEGATIVE')}` : line;
-}
-
-/** The buttons on a customer's page that carry that customer's id. */
-const USER_ACTIONS = ['uwp', 'uwm', 'ubl', 'uub', 'udp', 'umg'] as const;
-function isUserAction(action: string): action is (typeof USER_ACTIONS)[number] {
-  return (USER_ACTIONS as readonly string[]).includes(action);
-}
-
-/** One line per person the search found: who they are and what they hold. */
-export function userList(hits: readonly CustomerHit[]): string {
-  return TEXTS_NOW.render('ADMIN_USER_LIST_TITLE', {
-    count: hits.length.toLocaleString('en-US'),
-  });
-}
-
-export function userListMenu(hits: readonly CustomerHit[]): InlineKeyboard {
-  return withChrome(
-    hits.map((h) => [
-      {
-        text: `${h.username ? `@${h.username}` : h.telegram_id} — ${formatToman(h.balance_irr ?? 0)}`,
-        callback_data: encode('usr', h.id),
-      },
-    ]),
-    'adminUsers',
-  );
-}
-
-/** What an admin needs to know about a customer before doing anything to them. */
-export function userScreen(user: CustomerDetail): string {
-  const t = TEXTS_NOW;
-  const n = (value: number) => value.toLocaleString('en-US');
-  const lines = [
-    t.render('ADMIN_USER_TITLE', {
-      name: user.username ? `@${user.username}` : String(user.telegram_id),
-    }),
-    t.render('ADMIN_USER_TELEGRAM', { id: String(user.telegram_id) }),
-  ];
-  if (user.phone) lines.push(t.render('ADMIN_USER_PHONE', { phone: user.phone }));
-  lines.push(t.render('ADMIN_USER_BALANCE', { amount: formatToman(user.balance_irr ?? 0) }));
-  if (user.status === 'BLOCKED') {
-    // The reason is shown as written, or the line still appears without one —
-    // "blocked" with no explanation is itself the thing an operator needs to
-    // see, and hiding the line because the reason is empty hides the block.
-    lines.push(t.render('ADMIN_USER_STATUS_BLOCKED', { reason: user.blocked_reason ?? '—' }));
-  }
-  if (user.is_reseller) lines.push(t.raw('ADMIN_USER_RESELLER'));
-  if (user.discount_percent > 0) {
-    lines.push(t.render('ADMIN_USER_DISCOUNT', { percent: n(user.discount_percent) }));
-  }
-  lines.push(
-    t.render('ADMIN_USER_ORDERS', {
-      count: n(user.order_count),
-      amount: formatToman(user.completed_irr),
-    }),
-    t.render('ADMIN_USER_SERVICES', { count: n(user.active_services) }),
-  );
-  if (user.last_seen_at) {
-    lines.push(
-      t.render('ADMIN_USER_SEEN', { when: formatTehranDate(new Date(user.last_seen_at)) }),
-    );
-  }
-  return lines.join('\n');
-}
-
-/**
- * The customer's page.
- *
- * Block and unblock are one place on the screen, never both at once — the pair
- * that is not applicable is dropped and its place closed up, the same rule the
- * service screen uses for on/off.
- */
-export function userMenu(
-  user: CustomerDetail,
-  allowed: readonly AdminPermission[],
-): InlineKeyboard {
-  const blocked = user.status === 'BLOCKED';
-  return buildMenu('adminUser', layout('adminUser'), {
-    applies: (action) => {
-      if (action === 'uwp' || action === 'uwm') return allowed.includes('users.wallet');
-      if (action === 'udp') return allowed.includes('users.discount');
-      if (action === 'umg') return allowed.includes('users.message');
-      if (action === 'ubl') return !blocked && allowed.includes('users.block');
-      if (action === 'uub') return blocked && allowed.includes('users.block');
-      return true;
-    },
-    // Every action on this screen except the two back buttons needs to say
-    // WHICH customer. `usf` and `pnl` name no row, so they fall through to the
-    // bare action.
-    target: (action) => (isUserAction(action) ? encode(action, user.id) : undefined),
-  });
-}
-
-/** One line per waiting payment: who, how much, and what the engine thought. */
-export function claimList(page: number, pages: number, total: number): string {
-  const t = TEXTS_NOW;
-  const head = t.render('ADMIN_CLAIM_LIST_TITLE', { total: total.toLocaleString('en-US') });
-  return pages > 1 ? `${head}\n\n${t.render('ADMIN_CLAIM_LIST_PAGE', { page, pages })}` : head;
-}
-
-export interface ClaimRow {
-  id: string;
-  expected_amount_irr: number;
-  username: string | null;
-  telegram_id: number | null;
-  suspect_reason: string | null;
-}
-
-export function claimListMenu(claims: ClaimRow[], page: number, pages: number): InlineKeyboard {
-  return withChrome(
-    [
-      ...claims.map((c) => [
-        {
-          text: `${formatToman(c.expected_amount_irr)} — ${c.username ?? c.telegram_id ?? '؟'}`,
-          callback_data: encodeRef('clv', c.id),
-        },
-      ]),
-      ...paging('clm', page, pages),
-    ],
-    'adminClaims',
-  );
-}
-
-/**
- * One payment, with everything an admin needs to decide and nothing they do
- * not — no card number in full, and no raw SMS text.
- */
-export function claimDetail(
-  claim: {
-    external_order_id: string;
-    expected_amount_irr: number;
-    card_digits: string | null;
-    paid_clicked_at: number | null;
-    suspect_reason: string | null;
-    username: string | null;
-    telegram_id: number | null;
-  },
-  candidates: { amount_irr: number; bank_timestamp: number; sender: string | null }[],
-): string {
-  const t = TEXTS_NOW;
-  const lines = [
-    t.raw('ADMIN_CLAIM_TITLE'),
-    '',
-    t.render('ADMIN_CLAIM_CUSTOMER', {
-      customer: claim.username ? `@${claim.username}` : (claim.telegram_id ?? '؟'),
-    }),
-    t.render('ADMIN_CLAIM_AMOUNT', { amount: formatToman(claim.expected_amount_irr) }),
-    t.render('ADMIN_CLAIM_REF', { ref: claim.external_order_id }),
-  ];
-  if (claim.card_digits) {
-    lines.push(t.render('ADMIN_CLAIM_CARD', { last4: claim.card_digits.slice(-4) }));
-  }
-  if (claim.paid_clicked_at !== null) {
-    lines.push(
-      t.render('ADMIN_CLAIM_PAID_AT', {
-        when: formatTehranDate(new Date(claim.paid_clicked_at)),
-      }),
-    );
-  }
-  if (claim.suspect_reason) {
-    lines.push(t.render('ADMIN_CLAIM_SUSPECT', { reason: claim.suspect_reason }));
-  }
-  lines.push('');
-  lines.push(
-    candidates.length === 0
-      ? t.raw('ADMIN_CLAIM_NO_TX')
-      : t.render('ADMIN_CLAIM_TX_COUNT', { count: candidates.length }),
-  );
-  for (const c of candidates) {
-    const amount = formatToman(c.amount_irr);
-    const when = formatTehranDate(new Date(c.bank_timestamp));
-    lines.push(
-      c.sender
-        ? t.render('ADMIN_CLAIM_TX_LINE_SENDER', { amount, when, sender: c.sender })
-        : t.render('ADMIN_CLAIM_TX_LINE', { amount, when }),
-    );
-  }
-  return lines.join('\n');
-}
-
-export function claimDetailMenu(
-  candidates: { id: string; bank_timestamp: number }[],
-  allowed: readonly AdminPermission[],
-): InlineKeyboard {
-  // The candidate transactions are data rows, so the permission filters the
-  // list rather than the chrome: an operator who may not approve sees the claim
-  // and its evidence, with nothing to press.
-  const rows = allowed.includes('claims.approve')
-    ? candidates.map((c) => [
-        {
-          text: TEXTS_NOW.render('ADMIN_APPROVE_WITH_TX', {
-            when: formatTehranTime(new Date(c.bank_timestamp)),
-          }),
-          callback_data: encodeRef('apv', c.id),
-        },
-      ])
-    : [];
-  return withChrome(rows, 'adminClaimDetail', {
-    applies: (action) => {
-      if (action === 'apx') return allowed.includes('claims.approve_without_tx');
-      if (action === 'rej') return allowed.includes('claims.reject');
-      return true;
-    },
-  });
-}
-
-export function confirmMenu(): InlineKeyboard {
-  return buildMenu('adminConfirm', layout('adminConfirm'));
-}
-
-export function claimApproved(amountIrr: number): string {
-  return TEXTS_NOW.render('ADMIN_CLAIM_APPROVED', { amount: formatToman(amountIrr) });
-}
-
-export function claimRejected(amountIrr: number): string {
-  return TEXTS_NOW.render('ADMIN_CLAIM_REJECTED', { amount: formatToman(amountIrr) });
-}
-
-export function claimNotApproved(reason: string): string {
-  return TEXTS_NOW.render('ADMIN_CLAIM_NOT_APPROVED', { reason });
-}
-
 /**
  * The referral screen.
  *

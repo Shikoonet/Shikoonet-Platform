@@ -18,6 +18,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { handleUpdate, type Reply } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
+import { receiptRef } from '../src/payment.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
@@ -129,21 +130,6 @@ async function claimRow(claimId: string) {
  * the thing under test is which API call the operator's screen will make — and
  * a test that read the column would be green with the wrong one chosen.
  */
-async function showsReceiptToAdmin(claimId: string): Promise<Partial<Reply>> {
-  const { updateId, telegramId } = ids();
-  await db
-    .prepare(
-      `INSERT INTO admins (telegram_id, role, active) VALUES (?1, 'ADMIN', true)
-       ON CONFLICT (telegram_id) DO UPDATE SET active = true`,
-    )
-    .bind(telegramId)
-    .run();
-  await makeCustomer(telegramId);
-  const out = await handleUpdate(db, press(updateId, telegramId, `clv:${claimId}`));
-  await db.prepare(`DELETE FROM admins WHERE telegram_id = ?1`).bind(telegramId).run();
-  return out.replies[0] ?? {};
-}
-
 beforeAll(async () => {
   await ensureCatalog();
 });
@@ -315,31 +301,37 @@ describe('a receipt sent as a file', () => {
     expect((await claimRow(sale.claimId))?.receipt_url_or_r2_key).toBeNull();
   });
 
-  it('is handed back to the admin as a file, not as a photo', async () => {
-    // `sendPhoto` refuses a document handle outright, so an operator would see
-    // nothing at all — while the claim screen behind it still said a receipt
-    // had been sent.
+  it('is stored marked as a file, so whoever shows it sends the right kind', async () => {
+    // Telegram keeps documents and photos in separate id spaces: a document's
+    // handle given to `sendPhoto` is refused outright, and an operator would
+    // see nothing while the screen still said a receipt had arrived. The kind
+    // therefore has to survive WITH the id.
+    //
+    // Asserted on the stored row rather than on a screen. The screen that used
+    // to render this was the bot's own claim page and it is the dashboard's
+    // now — but the marker is what makes that possible, and a guarantee only a
+    // deleted caller tested is a guarantee nobody is keeping.
     const sale = await buyAndClaim('sim-vip-1m-20');
     await handleUpdate(
       db,
       sendsFile(sale.updateId + 2, sale.telegramId, 'AgACdocreceipt0000005', 'image/png'),
     );
 
-    const admin = await showsReceiptToAdmin(sale.claimId);
-    expect(admin.document).toBe('AgACdocreceipt0000005');
-    expect(admin.photo).toBeUndefined();
+    const stored = (await claimRow(sale.claimId))?.receipt_url_or_r2_key;
+    expect(stored).toBe('doc:AgACdocreceipt0000005');
+    expect(receiptRef(stored!)).toEqual({ fileId: 'AgACdocreceipt0000005', isDocument: true });
   });
 
-  it('is handed back as a photo when it arrived as one', async () => {
+  it('is stored bare when it arrived as a photo, as every migrated row is', async () => {
     const sale = await buyAndClaim('sim-vip-1m-50');
     await handleUpdate(
       db,
       sendsPhoto(sale.updateId + 2, sale.telegramId, ['AgACphotoreceipt000006']),
     );
 
-    const admin = await showsReceiptToAdmin(sale.claimId);
-    expect(admin.photo).toBe('AgACphotoreceipt000006');
-    expect(admin.document).toBeUndefined();
+    const stored = (await claimRow(sale.claimId))?.receipt_url_or_r2_key;
+    expect(stored).toBe('AgACphotoreceipt000006');
+    expect(receiptRef(stored!)).toEqual({ fileId: 'AgACphotoreceipt000006', isDocument: false });
   });
 });
 

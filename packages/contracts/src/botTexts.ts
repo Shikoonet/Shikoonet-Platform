@@ -93,14 +93,7 @@ export type ScreenId =
   | 'referral'
   | 'reseller'
   | 'warnings'
-  | 'paging'
-  | 'adminHome'
-  | 'adminClaims'
-  | 'adminClaimDetail'
-  | 'adminConfirm'
-  | 'adminStats'
-  | 'adminUser'
-  | 'adminBulk';
+  | 'paging';
 
 /** The Persian name of each screen, for the admin panel's grouping. */
 export const SCREENS: Record<ScreenId, string> = {
@@ -127,13 +120,6 @@ export const SCREENS: Record<ScreenId, string> = {
   reseller: 'نمایندگی',
   warnings: 'هشدارهای خودکار',
   paging: 'دکمه‌های صفحه‌بندی',
-  adminHome: 'پنل ادمین — خانه',
-  adminClaims: 'پنل ادمین — فهرست پرداخت‌ها',
-  adminClaimDetail: 'پنل ادمین — یک پرداخت',
-  adminConfirm: 'پنل ادمین — تاییدیه‌ها',
-  adminStats: 'پنل ادمین — آمار',
-  adminUser: 'پنل ادمین — کاربر',
-  adminBulk: 'پنل ادمین — کارهای گروهی',
 };
 
 export const SCREEN_IDS = Object.keys(SCREENS) as ScreenId[];
@@ -1411,6 +1397,21 @@ export const TEXTS = {
     screen: 'support',
     hint: 'وقتی آیدی پشتیبانی تنظیم نشده',
   },
+  /**
+   * The wrapper on a message an operator sends one customer from the dashboard.
+   *
+   * Filed under «پشتیبانی» because that is who the CUSTOMER thinks it is from,
+   * and this is a customer-facing line. It used to live under the bot's own
+   * admin panel — where nobody would look for it — and when that panel was
+   * removed it nearly went with it, though the only thing that ever rendered it
+   * is `customerRoutes.ts` in the dashboard.
+   */
+  MESSAGE_FROM_SHOP: {
+    default: '✉️ پیامی از پشتیبانی:\n\n{body}',
+    placeholders: ['body'],
+    screen: 'support',
+    hint: 'همان چیزی که مشتری می‌بیند — سرخط عمداً جدا از متن است تا پیام ناشناس نباشد',
+  },
 
   // --- آموزش و برنامه‌ها -----------------------------------------------------
   CHOOSE_HELP: {
@@ -1583,23 +1584,7 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'به کانال گزارش، با دکمهٔ باز کردن همان کاربر',
   },
-  ADMIN_OPEN_USER: {
-    default: '👤 مدیریت کاربر',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'دکمهٔ زیر گزارش اسپم در کانال',
-  },
 
-  // --- صفحه‌بندی -------------------------------------------------------------
-  // Buttons, but here rather than in the keyboard registry: «قبلی» and «بعدی»
-  // are one callback with a different page number, so they cannot be two rows
-  // in a table keyed by action. Their wording is still the shop's.
-  ADMIN_APPROVE_WITH_TX: {
-    default: '✅ تایید با تراکنش {when}',
-    placeholders: ['when'],
-    screen: 'adminClaimDetail',
-    hint: 'یک دکمه به‌ازای هر تراکنش بانکی نامزد — ساعتش تهران است',
-  },
   PAGING_PREV: {
     default: '« قبلی',
     placeholders: [],
@@ -1625,489 +1610,12 @@ export const TEXTS = {
     hint: 'خط آخر هر دو هشدار — {renewButton} نام زندهٔ دکمهٔ تمدید است',
   },
 
-  // --- پنل ادمین — خانه ----------------------------------------------------
-  ADMIN_HOME_TITLE: {
-    default: '🛠 پنل ادمین',
-    placeholders: [],
-    screen: 'adminHome',
-    hint: 'خط اول پنل ادمین',
-  },
-  ADMIN_NO_WAITING: {
-    default: '✅ رسیدی در انتظار بررسی نیست.',
-    placeholders: [],
-    screen: 'adminHome',
-    hint: 'وقتی صف بررسی خالی است',
-  },
-  ADMIN_WAITING: {
-    default: '🧾 {count} پرداخت در انتظار تصمیم شماست.',
-    placeholders: ['count'],
-    screen: 'adminHome',
-    hint: 'تعداد پرداخت‌های منتظر',
-  },
-  ADMIN_NOT_ALLOWED: {
-    default:
-      '⛔ این کار از دسترس نقش شما بیرون است.\n\nبررسی و تایید پرداخت فقط برای نقش ادمین و مالک باز است. اگر لازمش دارید از مالک ربات بخواهید نقش شما را تغییر دهد.',
-    placeholders: [],
-    screen: 'adminHome',
-    hint: 'وقتی نقش اپراتور اجازهٔ این کار را ندارد',
-  },
 
-  // --- پنل ادمین — فهرست پرداخت‌ها -------------------------------------------
-  ADMIN_CLAIM_LIST_TITLE: {
-    default: '🧾 پرداخت‌های در انتظار ({total} مورد)',
-    placeholders: ['total'],
-    screen: 'adminClaims',
-    hint: 'بالای فهرست پرداخت‌های منتظر',
-  },
-  ADMIN_CLAIM_LIST_PAGE: {
-    default: 'صفحهٔ {page} از {pages}',
-    placeholders: ['page', 'pages'],
-    screen: 'adminClaims',
-    hint: 'فقط وقتی بیش از یک صفحه هست',
-  },
-  ADMIN_NO_CLAIMS: {
-    default: '✅ در حال حاضر پرداختی در انتظار بررسی نیست.',
-    placeholders: [],
-    screen: 'adminClaims',
-    hint: 'فهرست خالی',
-  },
 
-  // --- پنل ادمین — یک پرداخت -----------------------------------------------
-  ADMIN_CLAIM_TITLE: {
-    default: '🧾 بررسی پرداخت',
-    placeholders: [],
-    screen: 'adminClaimDetail',
-    hint: 'خط اول صفحهٔ یک پرداخت',
-  },
-  ADMIN_CLAIM_CUSTOMER: {
-    default: '👤 مشتری: {customer}',
-    placeholders: ['customer'],
-    screen: 'adminClaimDetail',
-    hint: 'مشتری‌ای که پرداخت را ثبت کرده',
-  },
-  ADMIN_CLAIM_AMOUNT: {
-    default: '💳 مبلغ: {amount}',
-    placeholders: ['amount'],
-    screen: 'adminClaimDetail',
-    hint: 'مبلغ ادعاشده',
-  },
-  ADMIN_CLAIM_REF: {
-    default: '🔖 مرجع: {ref}',
-    placeholders: ['ref'],
-    screen: 'adminClaimDetail',
-    hint: 'شناسهٔ سفارش',
-  },
-  ADMIN_CLAIM_CARD: {
-    default: '🏦 کارت مقصد: {last4}',
-    placeholders: ['last4'],
-    screen: 'adminClaimDetail',
-    hint: 'چهار رقم آخر کارت — بیشترش نمایش داده نمی‌شود',
-  },
-  ADMIN_CLAIM_PAID_AT: {
-    default: '🕓 «پرداخت کردم»: {when}',
-    placeholders: ['when'],
-    screen: 'adminClaimDetail',
-    hint: 'لحظه‌ای که مشتری دکمه را زد',
-  },
-  ADMIN_CLAIM_SUSPECT: {
-    default: '⚠️ نظر سامانه: {reason}',
-    placeholders: ['reason'],
-    screen: 'adminClaimDetail',
-    hint: 'دلیلی که موتور تطبیق داده',
-  },
-  ADMIN_RECEIPT_CAPTION: {
-    default: '📸 رسیدی که مشتری فرستاده است.',
-    placeholders: [],
-    screen: 'adminClaimDetail',
-    hint: 'زیرنویس عکس رسید، بالای صفحهٔ بررسی پرداخت',
-  },
-  ADMIN_CLAIM_NO_TX: {
-    default: '🔍 هیچ تراکنش بانکی متناظری پیدا نشد.',
-    placeholders: [],
-    screen: 'adminClaimDetail',
-    hint: 'وقتی تراکنش نامزدی نیست',
-  },
-  ADMIN_CLAIM_TX_COUNT: {
-    default: '🔍 {count} تراکنش بانکی با همین مبلغ و همین حساب:',
-    placeholders: ['count'],
-    screen: 'adminClaimDetail',
-    hint: 'بالای فهرست تراکنش‌های نامزد',
-  },
-  ADMIN_CLAIM_TX_LINE: {
-    default: '• {amount} — {when}',
-    placeholders: ['amount', 'when'],
-    screen: 'adminClaimDetail',
-    hint: 'یک تراکنش نامزد، بدون نام فرستنده',
-  },
-  ADMIN_CLAIM_TX_LINE_SENDER: {
-    default: '• {amount} — {when} — {sender}',
-    placeholders: ['amount', 'when', 'sender'],
-    screen: 'adminClaimDetail',
-    hint: 'یک تراکنش نامزد، با نام فرستنده',
-  },
-  ADMIN_CLAIM_GONE: {
-    default: 'این پرداخت دیگر در انتظار بررسی نیست.',
-    placeholders: [],
-    screen: 'adminClaimDetail',
-    hint: 'پرداختی که کس دیگری تعیین تکلیفش کرده',
-  },
 
-  // --- پنل ادمین — تاییدیه‌ها -------------------------------------------------
-  ADMIN_CONFIRM_APX_TITLE: {
-    default: '⚠️ تایید بدون تراکنش بانکی',
-    placeholders: [],
-    screen: 'adminConfirm',
-    hint: 'خط اول تاییدیهٔ تایید بدون تراکنش',
-  },
-  ADMIN_CONFIRM_APX_BODY: {
-    default: 'یعنی این پرداخت فقط با تصمیم شما تسویه می‌شود و هیچ تراکنش بانکی پشتش نیست.',
-    placeholders: [],
-    screen: 'adminConfirm',
-    hint: 'توضیح تایید بدون تراکنش',
-  },
-  ADMIN_CONFIRM_REJ_TITLE: {
-    default: '❌ رد کردن این پرداخت',
-    placeholders: [],
-    screen: 'adminConfirm',
-    hint: 'خط اول تاییدیهٔ رد کردن',
-  },
-  ADMIN_CONFIRM_REJ_BODY: {
-    default: 'مشتری سرویس نمی‌گیرد و پرداخت به حالت رد شده می‌رود.',
-    placeholders: [],
-    screen: 'adminConfirm',
-    hint: 'توضیح رد کردن',
-  },
-  ADMIN_CONFIRM_AUDIT_NOTE: {
-    default: 'این کار در دفتر ممیزی به نام شما ثبت می‌شود.',
-    placeholders: [],
-    screen: 'adminConfirm',
-    hint: 'خط آخر هر دو تاییدیه',
-  },
-  ADMIN_CLAIM_APPROVED: {
-    default: '✅ پرداخت {amount} تایید شد و سفارش مشتری به جریان افتاد.',
-    placeholders: ['amount'],
-    screen: 'adminConfirm',
-    hint: 'بعد از تایید موفق',
-  },
-  ADMIN_CLAIM_REJECTED: {
-    default: '❌ پرداخت {amount} رد شد.',
-    placeholders: ['amount'],
-    screen: 'adminConfirm',
-    hint: 'بعد از رد کردن',
-  },
-  ADMIN_CLAIM_NOT_APPROVED: {
-    default: '⛔ تایید انجام نشد: {reason}',
-    placeholders: ['reason'],
-    screen: 'adminConfirm',
-    hint: 'وقتی تایید در لحظهٔ آخر رد شد',
-  },
 
-  // --- پنل ادمین — آمار -----------------------------------------------------
-  // Every line is its own entry, so a shop that wants a shorter screen deletes
-  // the wording it does not read rather than editing one blob and losing a
-  // number by accident.
-  ADMIN_STATS_TITLE: {
-    default: '📊 آمار فروشگاه',
-    placeholders: [],
-    screen: 'adminStats',
-    hint: 'خط اول صفحهٔ آمار',
-  },
-  ADMIN_STATS_TODAY: {
-    default: '— امروز —',
-    placeholders: [],
-    screen: 'adminStats',
-    hint: 'سرتیتر بخش امروز (به وقت تهران)',
-  },
-  ADMIN_STATS_ORDERS_TODAY: {
-    default: '🧾 سفارش امروز: {count}',
-    placeholders: ['count'],
-    screen: 'adminStats',
-    hint: 'همهٔ سفارش‌های امروز، پرداخت‌شده یا نه',
-  },
-  ADMIN_STATS_REVENUE_TODAY: {
-    default: '💰 فروش امروز: {amount}',
-    placeholders: ['amount'],
-    screen: 'adminStats',
-    hint: 'فقط سفارش‌های تحویل‌شده — پرداخت‌شدهٔ تحویل‌نشده شمرده نمی‌شود',
-  },
-  ADMIN_STATS_CUSTOMERS_TODAY: {
-    default: '👤 کاربر تازه امروز: {count}',
-    placeholders: ['count'],
-    screen: 'adminStats',
-    hint: 'کسانی که امروز اولین بار /start زده‌اند',
-  },
-  ADMIN_STATS_ALL_TIME: {
-    default: '— از ابتدا —',
-    placeholders: [],
-    screen: 'adminStats',
-    hint: 'سرتیتر بخش کل',
-  },
-  ADMIN_STATS_CUSTOMERS: {
-    default: '👥 کل کاربران: {count}',
-    placeholders: ['count'],
-    screen: 'adminStats',
-    hint: 'همهٔ کسانی که ربات را باز کرده‌اند',
-  },
-  ADMIN_STATS_SUBSCRIPTIONS: {
-    default: '🟢 سرویس فعال: {count}',
-    placeholders: ['count'],
-    screen: 'adminStats',
-    hint: 'اشتراک‌هایی که همین حالا فعال‌اند',
-  },
-  ADMIN_STATS_REVENUE: {
-    default: '💵 فروش کل: {amount}',
-    placeholders: ['amount'],
-    screen: 'adminStats',
-    hint: 'فقط سفارش‌های تحویل‌شده',
-  },
-  ADMIN_STATS_WALLET: {
-    default: '🏦 مجموع کیف پول‌ها: {amount}',
-    placeholders: ['amount'],
-    screen: 'adminStats',
-    hint: 'پولی که مشتری‌ها شارژ کرده‌اند و هنوز خرج نشده — بدهی فروشگاه است، نه درآمد',
-  },
-  ADMIN_STATS_WAITING: {
-    default: '🧾 در انتظار بررسی: {count}',
-    placeholders: ['count'],
-    screen: 'adminStats',
-    hint: 'همان صف رسیدها',
-  },
 
-  // --- پنل ادمین — کاربر ----------------------------------------------------
-  ADMIN_USER_ASK: {
-    default:
-      '👤 شناسهٔ عددی تلگرام، نام کاربری، یا شمارهٔ سفارش را بفرستید.\n\nنام کاربری را می‌شود ناقص نوشت؛ شمارهٔ سفارش باید کامل باشد.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'پرسش جستجوی کاربر',
-  },
-  ADMIN_USER_NONE: {
-    default: '🔍 کسی با این مشخصات پیدا نشد.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'وقتی جستجو نتیجه ندارد',
-  },
-  ADMIN_USER_LIST_TITLE: {
-    default: '👥 {count} نفر پیدا شد. یکی را انتخاب کنید:',
-    placeholders: ['count'],
-    screen: 'adminUser',
-    hint: 'سرتیتر فهرست نتیجه',
-  },
-  ADMIN_USER_GONE: {
-    default: '⛔ این کاربر دیگر نیست.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'وقتی کاربر بین دو فشار حذف شده',
-  },
-  ADMIN_USER_TITLE: {
-    default: '👤 {name}',
-    placeholders: ['name'],
-    screen: 'adminUser',
-    hint: 'خط اول صفحهٔ کاربر — نام کاربری یا شناسهٔ عددی',
-  },
-  ADMIN_USER_TELEGRAM: {
-    default: '🆔 شناسهٔ تلگرام: {id}',
-    placeholders: ['id'],
-    screen: 'adminUser',
-    hint: '',
-  },
-  ADMIN_USER_PHONE: {
-    default: '📞 شماره: {phone}',
-    placeholders: ['phone'],
-    screen: 'adminUser',
-    hint: 'وقتی شماره ثبت شده',
-  },
-  ADMIN_USER_BALANCE: {
-    default: '🏦 موجودی: {amount}',
-    placeholders: ['amount'],
-    screen: 'adminUser',
-    hint: '',
-  },
-  ADMIN_USER_STATUS_BLOCKED: {
-    default: '⛔ مسدود — {reason}',
-    placeholders: ['reason'],
-    screen: 'adminUser',
-    hint: 'وقتی کاربر مسدود است',
-  },
-  ADMIN_USER_RESELLER: {
-    default: '🤝 نماینده',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'فقط برای نماینده‌ها',
-  },
-  ADMIN_USER_DISCOUNT: {
-    default: '🏷 تخفیف همیشگی: {percent}٪',
-    placeholders: ['percent'],
-    screen: 'adminUser',
-    hint: 'وقتی درصد تخفیف شخصی دارد',
-  },
-  ADMIN_USER_ORDERS: {
-    default: '🧾 {count} سفارش — {amount} تحویل‌شده',
-    placeholders: ['count', 'amount'],
-    screen: 'adminUser',
-    hint: '',
-  },
-  ADMIN_USER_SERVICES: {
-    default: '🟢 {count} سرویس فعال',
-    placeholders: ['count'],
-    screen: 'adminUser',
-    hint: '',
-  },
-  ADMIN_USER_SEEN: {
-    default: '🕘 آخرین بار: {when}',
-    placeholders: ['when'],
-    screen: 'adminUser',
-    hint: '',
-  },
-  ADMIN_USER_ASK_CREDIT: {
-    default: '➕ چه مبلغی (به تومان) به موجودی اضافه شود؟',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'پرسش مبلغ افزایش',
-  },
-  ADMIN_USER_ASK_DEBIT: {
-    default: '➖ چه مبلغی (به تومان) از موجودی کم شود؟',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'پرسش مبلغ کاهش',
-  },
-  ADMIN_USER_AMOUNT_BAD: {
-    default: '⛔ فقط عدد، به تومان. دوباره بفرستید.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'وقتی چیزی که تایپ شد عدد نبود',
-  },
-  ADMIN_USER_AMOUNT_TOO_BIG: {
-    default: '⛔ بیشتر از سقف یک تصحیح ({max}) است.',
-    placeholders: ['max'],
-    screen: 'adminUser',
-    hint: 'سقف همان سقف یک واریز کارت‌به‌کارت است — یک صفر اضافه بازپرداختی ندارد',
-  },
-  ADMIN_USER_WALLET_DONE: {
-    default: '✅ انجام شد. موجودی از {before} شد {after}.',
-    placeholders: ['before', 'after'],
-    screen: 'adminUser',
-    hint: 'بعد از تصحیح موفق',
-  },
-  ADMIN_USER_WALLET_NEGATIVE: {
-    default: '⚠️ موجودی این کاربر حالا منفی است.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'وقتی کاهش، موجودی را زیر صفر برد — رد نمی‌شود، فقط گفته می‌شود',
-  },
-  ADMIN_USER_CONFIRM_BLOCK: {
-    default: '⛔ {name} مسدود شود؟\n\nدیگر نه می‌تواند خرید کند و نه ربات جوابش را می‌دهد.',
-    placeholders: ['name'],
-    screen: 'adminUser',
-    hint: 'تاییدیهٔ مسدود کردن',
-  },
-  ADMIN_USER_CONFIRM_UNBLOCK: {
-    default: '✅ مسدودی {name} برداشته شود؟',
-    placeholders: ['name'],
-    screen: 'adminUser',
-    hint: 'تاییدیهٔ رفع مسدودی',
-  },
-  ADMIN_USER_BLOCKED: {
-    default: '⛔ مسدود شد.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: '',
-  },
-  ADMIN_USER_UNBLOCKED: {
-    default: '✅ مسدودی برداشته شد.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: '',
-  },
-  ADMIN_USER_ASK_DISCOUNT: {
-    default: '🏷 چند درصد تخفیف همیشگی؟ عددی بین ۰ تا ۱۰۰ بفرستید. صفر یعنی برداشتن تخفیف.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'پرسش درصد تخفیف شخصی',
-  },
-  ADMIN_USER_DISCOUNT_BAD: {
-    default: '⛔ فقط عددی بین ۰ تا ۱۰۰. دوباره بفرستید.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: '',
-  },
-  ADMIN_USER_DISCOUNT_DONE: {
-    default: '✅ تخفیف همیشگی روی {percent}٪ تنظیم شد.',
-    placeholders: ['percent'],
-    screen: 'adminUser',
-    hint: '',
-  },
-  ADMIN_USER_ASK_MESSAGE: {
-    default: '✉️ متنی که برای این کاربر فرستاده شود را بنویسید.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: 'پرسش متن پیام به یک کاربر',
-  },
-  ADMIN_USER_MESSAGE_SENT: {
-    default: '✅ پیام فرستاده شد.',
-    placeholders: [],
-    screen: 'adminUser',
-    hint: '',
-  },
-  ADMIN_USER_MESSAGE_FROM_SHOP: {
-    default: '✉️ پیامی از پشتیبانی:\n\n{body}',
-    placeholders: ['body'],
-    screen: 'adminUser',
-    hint: 'همان چیزی که مشتری می‌بیند. سرخط عمداً جدا از متن است تا پیام ناشناس نباشد — نام فروشگاه را همین‌جا بنویسید',
-  },
 
-  // --- پنل ادمین — کارهای گروهی ---------------------------------------------
-  ADMIN_BULK_ASK_CREDIT: {
-    default: '💳 چه مبلغی (به تومان) به موجودی هر کاربر فعال اضافه شود؟',
-    placeholders: [],
-    screen: 'adminBulk',
-    hint: 'پرسش مبلغ شارژ گروهی',
-  },
-  ADMIN_BULK_CREDIT_CONFIRM: {
-    default:
-      '⚠️ {amount} به موجودی {count} کاربر فعال اضافه می‌شود.\n\nجمع کل: {total}\n\nاین کار برگشت‌پذیر نیست.',
-    placeholders: ['amount', 'count', 'total'],
-    screen: 'adminBulk',
-    hint: 'تاییدیهٔ شارژ گروهی — جمع کل عمداً نوشته می‌شود، چون یک صفر اضافه فقط همان‌جا دیده می‌شود',
-  },
-  ADMIN_BULK_CREDIT_DONE: {
-    default: '✅ {count} کیف پول شارژ شد.',
-    placeholders: ['count'],
-    screen: 'adminBulk',
-    hint: '',
-  },
-  ADMIN_BULK_ASK_MESSAGE: {
-    default:
-      '📢 متن پیام همگانی را بنویسید.\n\nهمان‌طور که می‌نویسید فرستاده می‌شود — بدون هیچ قالب‌بندی.',
-    placeholders: [],
-    screen: 'adminBulk',
-    hint: 'پرسش متن پیام همگانی',
-  },
-  ADMIN_BULK_MESSAGE_CONFIRM: {
-    default: '⚠️ این پیام برای {count} کاربر فرستاده می‌شود:\n\n{body}\n\nجلوی آن را نمی‌شود گرفت.',
-    placeholders: ['count', 'body'],
-    screen: 'adminBulk',
-    hint: 'تاییدیهٔ پیام همگانی — متن عیناً نشان داده می‌شود',
-  },
-  ADMIN_BULK_MESSAGE_QUEUED: {
-    default:
-      '✅ پیام در صف {count} کاربر قرار گرفت. ارسال چند دقیقه طول می‌کشد و ربات در این مدت کار می‌کند.',
-    placeholders: ['count'],
-    screen: 'adminBulk',
-    hint: '',
-  },
-  ADMIN_BULK_NOBODY: {
-    default: '🔍 هیچ کاربری برای این کار نیست.',
-    placeholders: [],
-    screen: 'adminBulk',
-    hint: 'وقتی مخاطبی وجود ندارد',
-  },
-  ADMIN_BULK_TEXT_TOO_LONG: {
-    default: '⛔ متن بلندتر از حدی است که تلگرام در یک پیام می‌فرستد ({max} نویسه).',
-    placeholders: ['max'],
-    screen: 'adminBulk',
-    hint: '',
-  },
 } as const satisfies Record<string, TextEntry>;
 
 export type TextKey = keyof typeof TEXTS;

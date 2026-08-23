@@ -26,7 +26,6 @@
 import { encode, type CallbackAction } from './callback.js';
 import type { InlineKeyboard } from './telegram.js';
 import {
-  ADMIN_ONLY,
   DEFAULT_LAYOUTS,
   isMenuAction,
   MENUS,
@@ -147,7 +146,6 @@ export function buildMainMenu(
   return buildMenu('main', buttons, {
     applies: (action) => {
       if (viewer.is_reseller && RESELLER_ONLY_HIDDEN.has(action)) return false;
-      if (!viewer.is_admin && ADMIN_ONLY.has(action)) return false;
       return true;
     },
   });

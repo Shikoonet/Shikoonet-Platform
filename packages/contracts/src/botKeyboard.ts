@@ -128,11 +128,6 @@ export const MENUS = {
         label: '👨‍💻 درخواست نمایندگی',
         hint: 'فقط به کاربران غیرنماینده نشان داده می‌شود',
       },
-      {
-        action: 'pnl',
-        label: '👨‍💼 پنل مدیریت',
-        hint: 'فقط به ادمین‌ها نشان داده می‌شود — بقیه اصلاً نمی‌بینندش',
-      },
     ],
   },
   gateChannels: {
@@ -375,166 +370,6 @@ export const MENUS = {
       },
     ],
   },
-  adminHome: {
-    label: 'پنل ادمین — خانه',
-    hint: 'فقط برای ادمین‌ها',
-    buttons: [
-      {
-        action: 'clm',
-        label: '🧾 بررسی پرداخت‌ها',
-        hint: 'فقط وقتی پرداختی در انتظار باشد',
-        conditional: true,
-      },
-      {
-        action: 'sts',
-        label: '📊 آمار فروشگاه',
-        hint: 'فقط به اپراتوری که دسترسی دیدن آمار دارد',
-        conditional: true,
-      },
-      {
-        action: 'usf',
-        label: '👤 جستجوی کاربر',
-        hint: 'فقط به اپراتوری که دسترسی دیدن کاربر دارد',
-        conditional: true,
-      },
-      {
-        action: 'bcr',
-        label: '💳 شارژ گروهی',
-        hint: 'افزودن موجودی به همهٔ کاربران فعال — فقط با دسترسی شارژ گروهی',
-        conditional: true,
-      },
-      {
-        action: 'bct',
-        label: '📢 پیام همگانی',
-        hint: 'فقط با دسترسی پیام همگانی',
-        conditional: true,
-      },
-      BACK_TO_MENU,
-    ],
-  },
-  adminStats: {
-    label: 'پنل ادمین — آمار',
-    hint: 'اعداد سرانگشتی فروشگاه',
-    buttons: [
-      { action: 'sts', label: '🔄 بروزرسانی', hint: 'همان صفحه را دوباره می‌خواند' },
-      { action: 'pnl', label: '🛠 پنل ادمین', hint: 'برگشت به خانهٔ پنل', required: true },
-    ],
-  },
-  adminUsers: {
-    label: 'پنل ادمین — نتیجهٔ جستجوی کاربر',
-    hint: 'زیر فهرست کاربرانی که با جستجو خواندند',
-    buttons: [
-      { action: 'usf', label: '🔍 جستجوی دیگر', hint: 'دوباره می‌پرسد' },
-      { action: 'pnl', label: '🛠 پنل ادمین', hint: 'برگشت به خانهٔ پنل', required: true },
-    ],
-  },
-  adminUser: {
-    label: 'پنل ادمین — صفحهٔ یک کاربر',
-    hint: 'کارهایی که روی یک مشتری می‌شود کرد',
-    buttons: [
-      {
-        action: 'uwp',
-        label: '➕ افزایش موجودی',
-        hint: 'فقط با دسترسی کیف پول',
-        conditional: true,
-      },
-      {
-        action: 'uwm',
-        label: '➖ کاهش موجودی',
-        hint: 'فقط با دسترسی کیف پول',
-        conditional: true,
-      },
-      {
-        action: 'ubl',
-        label: '⛔ مسدود کردن',
-        hint: 'وقتی کاربر فعال است — فقط با دسترسی مسدودسازی',
-        conditional: true,
-      },
-      {
-        action: 'uub',
-        label: '✅ رفع مسدودی',
-        hint: 'به‌جای دکمهٔ بالا، وقتی کاربر مسدود است',
-        conditional: true,
-      },
-      {
-        action: 'udp',
-        label: '🏷 تخفیف همیشگی',
-        hint: 'درصد تخفیف شخصی — فقط با دسترسی تخفیف',
-        conditional: true,
-      },
-      {
-        action: 'umg',
-        label: '✉️ پیام به این کاربر',
-        hint: 'فقط با دسترسی پیام',
-        conditional: true,
-      },
-      { action: 'usf', label: '🔍 جستجوی دیگر', hint: 'یک کاربر دیگر' },
-      { action: 'pnl', label: '🛠 پنل ادمین', hint: 'برگشت به خانهٔ پنل', required: true },
-    ],
-  },
-  adminBulkConfirm: {
-    label: 'پنل ادمین — تاییدیهٔ کار گروهی',
-    hint: 'قبل از شارژ گروهی یا پیام همگانی — آخرین جایی که می‌شود منصرف شد',
-    buttons: [
-      {
-        action: 'cnf',
-        label: 'بله، برای همه انجام شود',
-        hint: 'تنها راه تایید — بدون آن صفحه بن‌بست است',
-        required: true,
-      },
-      { action: 'pnl', label: 'انصراف ⬅️', hint: 'برگشت به خانهٔ پنل بدون انجام کار' },
-    ],
-  },
-  adminUserConfirm: {
-    label: 'پنل ادمین — تاییدیهٔ مسدودسازی',
-    hint: 'قبل از مسدود کردن یا رفع مسدودی یک کاربر',
-    buttons: [
-      {
-        action: 'cnf',
-        label: 'بله، انجام شود',
-        hint: 'تنها راه تایید — بدون آن صفحه بن‌بست است',
-        required: true,
-      },
-      { action: 'usr', label: 'بازگشت ⬅️', hint: 'انصراف — برگشت به همان کاربر' },
-    ],
-  },
-  adminClaims: {
-    label: 'پنل ادمین — فهرست پرداخت‌ها',
-    hint: 'زیر پرداخت‌های در انتظار بررسی',
-    buttons: [{ action: 'pnl', label: '🛠 پنل ادمین', hint: 'برگشت به خانهٔ پنل', required: true }],
-  },
-  adminClaimDetail: {
-    label: 'پنل ادمین — یک پرداخت',
-    hint: 'زیر جزئیات یک پرداخت و تراکنش‌های نامزدش',
-    buttons: [
-      {
-        action: 'apx',
-        label: '⚠️ تایید بدون تراکنش',
-        hint: 'تسویه فقط با تصمیم ادمین — فقط به ادمینی که این دسترسی را دارد نشان داده می‌شود',
-        conditional: true,
-      },
-      {
-        action: 'rej',
-        label: '❌ رد کردن',
-        hint: 'پرداخت رد می‌شود و مشتری سرویس نمی‌گیرد — فقط با دسترسی رد کردن',
-        conditional: true,
-      },
-      { action: 'clm', label: 'بازگشت ⬅️', hint: 'برگشت به فهرست', required: true },
-    ],
-  },
-  adminConfirm: {
-    label: 'پنل ادمین — تاییدیه',
-    hint: 'قبل از تایید بدون تراکنش یا رد کردن',
-    buttons: [
-      {
-        action: 'cnf',
-        label: 'بله، انجام شود',
-        hint: 'تنها راه تایید — بدون آن صفحه بن‌بست است',
-        required: true,
-      },
-      { action: 'clm', label: 'بازگشت ⬅️', hint: 'انصراف' },
-    ],
-  },
 } as const satisfies Record<string, Menu>;
 
 export type MenuId = keyof typeof MENUS;
@@ -561,20 +396,8 @@ export const MENU_ACTIONS: readonly MenuAction[] = MENUS.main.buttons;
  */
 export const RESELLER_ONLY_HIDDEN: ReadonlySet<string> = new Set(['agr']);
 
-/**
- * Actions only an admin ever sees.
- *
- * The live PHP bot appends its admin button to the main menu the same way, and
- * `/panel` alone is a command an operator has to remember. This is the second
- * door to the same screen, not a second authority: `handleAdmin` re-reads
- * `admins` for every press, so the button is a convenience and its absence is
- * not a guard. Hiding it merely keeps a customer from tapping something that
- * would ignore them.
- */
-export const ADMIN_ONLY: ReadonlySet<string> = new Set(['pnl']);
-
 /** Buttons that some viewers never see, whoever they are. */
-const AUDIENCE_LIMITED: ReadonlySet<string> = new Set([...RESELLER_ONLY_HIDDEN, ...ADMIN_ONLY]);
+const AUDIENCE_LIMITED: ReadonlySet<string> = RESELLER_ONLY_HIDDEN;
 
 export interface ButtonPlacement {
   action: string;
@@ -601,10 +424,6 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
     ['hlp', 2, 1],
     ['ref', 2, 2],
     ['agr', 3, 0],
-    // Its own row, last. A reseller-admin would otherwise be left with `agr`'s
-    // hole beside it, and the admin door is not something to put next to a
-    // customer's.
-    ['pnl', 4, 0],
   ],
   gateChannels: [['chk', 0, 0]],
   gateRules: [['acc', 0, 0]],
@@ -664,50 +483,6 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
   ],
   referral: [['menu', 0, 0]],
   prompt: [['back', 0, 0]],
-  adminHome: [
-    ['clm', 0, 0],
-    ['sts', 1, 0],
-    ['usf', 1, 1],
-    ['bcr', 2, 0],
-    ['bct', 2, 1],
-    ['menu', 3, 0],
-  ],
-  adminStats: [
-    ['sts', 0, 0],
-    ['pnl', 1, 0],
-  ],
-  adminUsers: [
-    ['usf', 0, 0],
-    ['pnl', 0, 1],
-  ],
-  adminUserConfirm: [
-    ['cnf', 0, 0],
-    ['usr', 1, 0],
-  ],
-  adminUser: [
-    ['uwp', 0, 0],
-    ['uwm', 0, 1],
-    ['udp', 1, 0],
-    ['umg', 1, 1],
-    ['ubl', 2, 0],
-    ['uub', 2, 1],
-    ['usf', 3, 0],
-    ['pnl', 3, 1],
-  ],
-  adminBulkConfirm: [
-    ['cnf', 0, 0],
-    ['pnl', 1, 0],
-  ],
-  adminClaims: [['pnl', 0, 0]],
-  adminClaimDetail: [
-    ['apx', 0, 0],
-    ['rej', 1, 0],
-    ['clm', 2, 0],
-  ],
-  adminConfirm: [
-    ['cnf', 0, 0],
-    ['clm', 1, 0],
-  ],
 };
 
 function layoutFor(id: MenuId): readonly ButtonPlacement[] {

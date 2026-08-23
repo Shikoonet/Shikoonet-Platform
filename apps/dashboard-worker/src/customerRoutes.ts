@@ -442,7 +442,7 @@ export function registerCustomerRoutes(
       value: string;
     }>();
     const texts = new Texts(Object.fromEntries((results ?? []).map((r) => [r.key, r.value])));
-    const text = texts.render('ADMIN_USER_MESSAGE_FROM_SHOP', { body });
+    const text = texts.render('MESSAGE_FROM_SHOP', { body });
     if (text.length > MAX_MESSAGE_LENGTH) {
       return c.json({ ok: false, error: 'message_too_long' }, 400);
     }
