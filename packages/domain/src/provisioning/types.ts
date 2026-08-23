@@ -183,9 +183,48 @@ export interface PanelGroup {
    * one that decides what the customer receives.
    */
   deliverableInbounds?: number;
+  /**
+   * The panel's own on/off switch for this group, when it has one.
+   *
+   * Not our `status`: a disabled group still exists, still holds its accounts,
+   * and a purchase that sends it still names something real. Shown because a
+   * tier that quietly stopped working looks identical to one that never did.
+   */
+  disabled?: boolean;
 }
 
 export type GroupsResult = { ok: true; groups: PanelGroup[] } | { ok: false; reason: string };
+
+/**
+ * One inbound the panel has, and whether it can actually deliver.
+ *
+ * `hosted` is the same distinction `PanelGroup.deliverableInbounds` counts, at
+ * the level where somebody is choosing. Putting an unhosted inbound into a new
+ * "platinum" group produces a tier that looks richer in every listing and hands
+ * the customer exactly what the cheap tier hands them, so the choice has to
+ * carry the warning.
+ *
+ * Absent, not false, when the host listing could not be read: "we could not
+ * ask" and "nothing delivers" are different sentences and only one of them
+ * should stop an operator.
+ */
+export interface PanelInbound {
+  tag: string;
+  hosted?: boolean;
+}
+
+export type InboundsResult =
+  | { ok: true; inbounds: PanelInbound[] }
+  | { ok: false; reason: string };
+
+/**
+ * What a group looks like after we changed it — read back from the panel's own
+ * reply, never assembled from what we sent. A panel that silently drops an
+ * unknown inbound tag would otherwise be reported as having accepted it.
+ */
+export type GroupWriteResult = { ok: true; group: PanelGroup } | { ok: false; reason: string };
+
+export type GroupDeleteResult = { ok: true } | { ok: false; reason: string };
 
 export type AccountsResult =
   | { ok: true; accounts: RemoteAccount[] }
@@ -263,6 +302,55 @@ export interface ProvisioningAdapter {
    * A caller must treat absence as "cannot be asked", never as "has none".
    */
   listGroups?(provider: ProviderContext): Promise<GroupsResult>;
+
+  /**
+   * Every inbound this panel has, whether or not a group uses it.
+   *
+   * `listGroups` reports the tags each group already carries; this is the
+   * superset somebody picks from when building a new one. They are separate
+   * calls because they answer separate questions, and deriving the second from
+   * the first would hide exactly the inbound nobody has used yet — which is the
+   * one an operator is looking for when they add a tier.
+   */
+  listInbounds?(provider: ProviderContext): Promise<InboundsResult>;
+
+  /**
+   * Create a group on the panel.
+   *
+   * The panel owns the id. We ask for a name and a set of inbound tags and read
+   * back whatever it made, because a tag it does not recognise is a tier that
+   * delivers less than it claims and the reply is the only place that shows up.
+   */
+  createGroup?(
+    provider: ProviderContext,
+    spec: { name: string; inboundTags: string[] },
+  ): Promise<GroupWriteResult>;
+
+  /**
+   * Replace a group's name and inbound set.
+   *
+   * A full replacement rather than a patch, and that is the panel's shape, not
+   * a simplification: `PUT /api/group/{id}` with only `{is_disabled: true}`
+   * answers `422 {"detail":{"name":"Field required"}}` — measured against the
+   * test panel on 2026-08-23. This is the opposite of `PUT /api/user/{u}`,
+   * which IS a partial update, so the two must not be reasoned about together.
+   */
+  updateGroup?(
+    provider: ProviderContext,
+    id: number,
+    spec: { name: string; inboundTags: string[] },
+  ): Promise<GroupWriteResult>;
+
+  /**
+   * Remove a group from the panel.
+   *
+   * Destructive on the panel side and irreversible from here — the accounts in
+   * it keep existing but stop carrying its inbounds. The caller is responsible
+   * for refusing to delete one that our own catalog still sends; the adapter
+   * only asks.
+   */
+  deleteGroup?(provider: ProviderContext, id: number): Promise<GroupDeleteResult>;
+
   /**
    * Act on an existing account at the customer's request: replace its
    * subscription link, or turn it off and on.

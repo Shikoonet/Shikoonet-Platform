@@ -49,6 +49,9 @@ import type {
   RemoteAccount,
   RenewRequest,
   GroupsResult,
+  GroupDeleteResult,
+  GroupWriteResult,
+  InboundsResult,
   PanelGroup,
 } from './types.js';
 
@@ -271,6 +274,126 @@ function pick(request: ProvisionRequest, key: string): unknown {
  */
 export function groupIdsFor(request: ProvisionRequest): unknown {
   return pick(request, 'group_ids') ?? pick(request, 'inbounds');
+}
+
+/**
+ * Which inbound tags currently carry an enabled host.
+ *
+ * Two callers need this and they must not disagree, because the number it
+ * produces is the one an operator builds a price tier on. Null — never an empty
+ * set — when the listing could not be read: an empty set would report every
+ * inbound as delivering nothing, which is the loudest possible way to be wrong
+ * about a panel that is merely slow.
+ */
+async function hostedTags(
+  provider: ProviderContext,
+  base: string,
+  token: string,
+): Promise<Set<string> | null> {
+  try {
+    const res = await withTimeout((signal) =>
+      (provider.fetch ?? fetch)(`${base}/api/hosts`, {
+        headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+        signal,
+      }),
+    );
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    if (!Array.isArray(body)) return null;
+    return new Set(
+      body
+        .filter((h) => (h as { is_disabled?: unknown }).is_disabled !== true)
+        .map((h) => (h as { inbound_tag?: unknown }).inbound_tag)
+        .filter((t): t is string => typeof t === 'string'),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** One group row from the panel, in our shape. Null when it has no usable id. */
+function toGroup(item: unknown, hosted: Set<string> | null): PanelGroup | null {
+  const row = item as {
+    id?: unknown;
+    name?: unknown;
+    total_users?: unknown;
+    inbound_tags?: unknown;
+    is_disabled?: unknown;
+  };
+  if (typeof row.id !== 'number') return null;
+  const tags = Array.isArray(row.inbound_tags)
+    ? row.inbound_tags.filter((t): t is string => typeof t === 'string')
+    : [];
+  return {
+    id: row.id,
+    // A group with no name still has to be pickable, and its id is the only
+    // thing that identifies it either way.
+    name: typeof row.name === 'string' && row.name !== '' ? row.name : `#${row.id}`,
+    ...(typeof row.total_users === 'number' ? { memberCount: row.total_users } : {}),
+    ...(tags.length > 0 ? { inboundTags: tags } : {}),
+    ...(hosted === null ? {} : { deliverableInbounds: tags.filter((t) => hosted.has(t)).length }),
+    ...(typeof row.is_disabled === 'boolean' ? { disabled: row.is_disabled } : {}),
+  };
+}
+
+/**
+ * A write against `/api/group`, with the reply read back rather than assumed.
+ *
+ * Shared by create and update because the two differ only in verb and path, and
+ * the part that is easy to get wrong — parsing the reply instead of echoing the
+ * request — must be identical in both. The panel is the authority on what a
+ * group ended up being: it is the thing that would silently drop an inbound tag
+ * it does not know.
+ */
+async function writeGroup(
+  provider: ProviderContext,
+  method: 'POST' | 'PUT',
+  path: string,
+  spec: { name: string; inboundTags: string[] },
+): Promise<GroupWriteResult> {
+  try {
+    const auth = await login(provider);
+    if ('error' in auth) return { ok: false, reason: auth.error };
+    const base = provider.baseUrl!.replace(/\/+$/, '');
+    const res = await withTimeout((signal) =>
+      (provider.fetch ?? fetch)(`${base}${path}`, {
+        method,
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+          authorization: `Bearer ${auth.token}`,
+        },
+        // `inbound_tags` is required and `name` is required even on the update:
+        // `PUT /api/group/{id}` with `{is_disabled: true}` alone answers 422
+        // «name Field required». Measured 2026-08-23, and the reason this takes
+        // a whole spec rather than a patch.
+        body: JSON.stringify({ name: spec.name, inbound_tags: spec.inboundTags }),
+        signal,
+      }),
+    );
+    if (!res.ok) {
+      // The status and the panel's own `detail`, which is a validation message
+      // («Group already exists», «Inbound not found») and not an echo of what
+      // was submitted. Nothing else from the body: a rejected request repeats
+      // the credentials back in some deployments, and this reaches a browser.
+      let detail = '';
+      try {
+        const body: unknown = await res.json();
+        const d = (body as { detail?: unknown }).detail;
+        if (typeof d === 'string') detail = ` — ${d}`;
+      } catch {
+        detail = '';
+      }
+      return { ok: false, reason: `panel refused the group (HTTP ${res.status})${detail}` };
+    }
+    const hosted = await hostedTags(provider, base, auth.token);
+    const group = toGroup(await res.json(), hosted);
+    if (group === null) return { ok: false, reason: 'the panel replied without a group id' };
+    return { ok: true, group };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ok: false, reason: `could not reach the panel: ${reason}` };
+  }
 }
 
 export const marzbanAdapter: ProvisioningAdapter = {
@@ -578,58 +701,122 @@ export const marzbanAdapter: ProvisioningAdapter = {
         return { ok: false, reason: 'the group listing was neither a list nor {groups: [...]}' };
       }
 
-      // Which inbound tags actually carry a host. A second call, and worth it:
-      // without it this returns the inbound count, which is the number an
-      // operator would reasonably read as "how much the customer gets" and is
-      // not. A failure here is not fatal — the groups are still the answer, and
-      // `deliverableInbounds` is simply absent rather than wrong.
-      let hosted: Set<string> | null = null;
-      try {
-        const hostRes = await withTimeout((signal) =>
-          (provider.fetch ?? fetch)(`${base}/api/hosts`, {
-            headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
-            signal,
-          }),
-        );
-        if (hostRes.ok) {
-          const hostBody: unknown = await hostRes.json();
-          const hostList = Array.isArray(hostBody) ? hostBody : [];
-          hosted = new Set(
-            hostList
-              .filter((h) => (h as { is_disabled?: unknown }).is_disabled !== true)
-              .map((h) => (h as { inbound_tag?: unknown }).inbound_tag)
-              .filter((t): t is string => typeof t === 'string'),
-          );
-        }
-      } catch {
-        hosted = null;
-      }
+      // Two calls, and the second is worth it: without it this reports the
+      // inbound count, which is the number an operator would reasonably read as
+      // "how much the customer gets" and is not. A failure there is not fatal —
+      // the groups are still the answer and the deliverable count is absent.
+      const hosted = await hostedTags(provider, base, auth.token);
 
       const groups: PanelGroup[] = [];
       for (const item of list) {
-        const row = item as {
-          id?: unknown;
-          name?: unknown;
-          total_users?: unknown;
-          inbound_tags?: unknown;
-        };
-        if (typeof row.id !== 'number') continue;
-        const tags = Array.isArray(row.inbound_tags)
-          ? row.inbound_tags.filter((t): t is string => typeof t === 'string')
-          : [];
-        groups.push({
-          id: row.id,
-          // A group with no name still has to be pickable, and its id is the
-          // only thing that identifies it either way.
-          name: typeof row.name === 'string' && row.name !== '' ? row.name : `#${row.id}`,
-          ...(typeof row.total_users === 'number' ? { memberCount: row.total_users } : {}),
-          ...(tags.length > 0 ? { inboundTags: tags } : {}),
-          ...(hosted === null
-            ? {}
-            : { deliverableInbounds: tags.filter((t) => hosted.has(t)).length }),
-        });
+        const group = toGroup(item, hosted);
+        if (group !== null) groups.push(group);
       }
       return { ok: true, groups };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}` };
+    }
+  },
+
+  /**
+   * `GET /api/inbounds`, which answers a bare array of tag strings.
+   *
+   * Not derived from `listGroups`: an inbound no group uses yet is invisible
+   * there, and it is exactly the one somebody is hunting for when they build a
+   * new tier. `hosted` comes from the same host listing the group counts use,
+   * so the two screens cannot disagree about which inbound delivers.
+   */
+  async listInbounds(provider: ProviderContext): Promise<InboundsResult> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        (provider.fetch ?? fetch)(`${base}/api/inbounds`, {
+          headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+          signal,
+        }),
+      );
+      if (!res.ok) return { ok: false, reason: `could not list inbounds (HTTP ${res.status})` };
+
+      const body: unknown = await res.json();
+      // A bare array of strings on PasarGuard 5.2.1, measured. `{inbounds: []}`
+      // is accepted too rather than guessed at, on the same reasoning as the
+      // group listing: a shape we cannot read is an error, never an empty list,
+      // because "this panel has no inbounds" sends an operator to build a tier
+      // out of nothing.
+      const list = Array.isArray(body)
+        ? body
+        : Array.isArray((body as { inbounds?: unknown }).inbounds)
+          ? (body as { inbounds: unknown[] }).inbounds
+          : null;
+      if (list === null) {
+        return { ok: false, reason: 'the inbound listing was neither a list nor {inbounds: [...]}' };
+      }
+
+      const hosted = await hostedTags(provider, base, auth.token);
+      const inbounds = list
+        .map((item) =>
+          typeof item === 'string' ? item : asString((item as { tag?: unknown }).tag),
+        )
+        .filter((tag): tag is string => tag !== null && tag !== '')
+        .map((tag) => ({ tag, ...(hosted === null ? {} : { hosted: hosted.has(tag) }) }));
+      return { ok: true, inbounds };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}` };
+    }
+  },
+
+  /**
+   * `POST /api/group` — singular.
+   *
+   * The plural answers `405 Method Not Allowed`, which is not a shape anyone
+   * would guess from `GET /api/groups` two lines above. Measured 2026-08-23.
+   */
+  createGroup(
+    provider: ProviderContext,
+    spec: { name: string; inboundTags: string[] },
+  ): Promise<GroupWriteResult> {
+    return writeGroup(provider, 'POST', '/api/group', spec);
+  },
+
+  updateGroup(
+    provider: ProviderContext,
+    id: number,
+    spec: { name: string; inboundTags: string[] },
+  ): Promise<GroupWriteResult> {
+    return writeGroup(provider, 'PUT', `/api/group/${encodeURIComponent(String(id))}`, spec);
+  },
+
+  /**
+   * `DELETE /api/group/{id}` — answers 204 with no body.
+   *
+   * The panel deletes it whether or not accounts are in it, and does not say
+   * how many were. Whatever guard belongs in front of that belongs in the
+   * caller, which is the only layer that knows what our own catalog still
+   * sends.
+   */
+  async deleteGroup(provider: ProviderContext, id: number): Promise<GroupDeleteResult> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        (provider.fetch ?? fetch)(`${base}/api/group/${encodeURIComponent(String(id))}`, {
+          method: 'DELETE',
+          headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+          signal,
+        }),
+      );
+      // 404 is success for a delete: the group is not there, which is what was
+      // asked for. Reporting it as a failure would leave an operator retrying a
+      // button that already worked.
+      if (!res.ok && res.status !== 404) {
+        return { ok: false, reason: `panel refused the delete (HTTP ${res.status})` };
+      }
+      return { ok: true };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return { ok: false, reason: `could not reach the panel: ${reason}` };
