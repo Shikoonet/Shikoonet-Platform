@@ -154,6 +154,61 @@ describe('sendMessage', () => {
   });
 });
 
+describe('a button label that starts with a number', () => {
+  /**
+   * Measured in the real client on 2026-08-23, then in the browser's own bidi
+   * engine: Telegram lays inline-button labels out LEFT-TO-RIGHT — the button
+   * resolves to `direction: ltr`, `unicode-bidi: normal`, no `dir` attribute.
+   * So a label whose first character is a digit has no strong character to
+   * anchor it, the digit resolves left-to-right, and it is drawn at the far end
+   * of the button away from the word it belongs to:
+   *
+   *     sent      ۳۰ گیگ - یک‌ماهه — 150,000 تومان
+   *     drawn     ۳۰ | تومان 150,000 — یک‌ماهه - گیگ
+   *
+   * Asserted on the PAYLOAD, not on what a menu function returned: the string
+   * we compose is right either way, and the whole defect is what happens to it
+   * afterwards.
+   */
+  const RLM = '‏';
+
+  it('is anchored so the number stays with its word', async () => {
+    const { api, calls } = apiWith(() => ok(true));
+    await api.sendMessage(42, 'x', [[{ text: '۳۰ گیگ - یک‌ماهه — 150,000 تومان', callback_data: 'plan:1' }]]);
+    const sent = (calls[0]?.body as { reply_markup: { inline_keyboard: { text: string }[][] } })
+      .reply_markup.inline_keyboard[0]![0]!.text;
+    expect(sent).toBe(`${RLM}۳۰ گیگ - یک‌ماهه — 150,000 تومان`);
+  });
+
+  it('anchors an ASCII-digit name too — the shop has both', async () => {
+    // «10 گیگ 30 روزه» is a real product on the test panel. Persian and ASCII
+    // digits are different code blocks that look alike, and only one of them
+    // being handled is the kind of half-fix nobody sees.
+    const { api, calls } = apiWith(() => ok(true));
+    await api.sendMessage(42, 'x', [[{ text: '10 گیگ 30 روزه', callback_data: 'prd:1' }]]);
+    const sent = (calls[0]?.body as { reply_markup: { inline_keyboard: { text: string }[][] } })
+      .reply_markup.inline_keyboard[0]![0]!.text;
+    expect(sent).toBe(`${RLM}10 گیگ 30 روزه`);
+  });
+
+  it('leaves alone every label that already draws correctly', async () => {
+    // An emoji-led label renders right as it is — a neutral takes the
+    // paragraph's own direction and stays put — and anchoring it moves the
+    // emoji to the far end instead. Measured, not assumed. A Persian-led label
+    // and a digits-only one have nothing to anchor either.
+    const { api, calls } = apiWith(() => ok(true));
+    const untouched = ['🟢 پلاتینیوم — ۳۰ گیگ', 'سرویس تست — 123,000 تومان', '150,000', 'Back'];
+    await api.sendMessage(
+      42,
+      'x',
+      [untouched.map((text, i) => ({ text, callback_data: `x:${i}` }))],
+    );
+    const row = (calls[0]?.body as { reply_markup: { inline_keyboard: { text: string }[][] } })
+      .reply_markup.inline_keyboard[0]!;
+    expect(row.map((b) => b.text)).toEqual(untouched);
+  });
+});
+
 describe('editMessageText', () => {
   it('sends the keyboard along with the new text', async () => {
     const { api, calls } = apiWith(() => ok(true));

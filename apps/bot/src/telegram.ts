@@ -290,9 +290,57 @@ function clamp(text: string): string {
   return text.slice(0, MAX_MESSAGE_LENGTH - TRUNCATION_MARK.length) + TRUNCATION_MARK;
 }
 
+/**
+ * A button label whose leading number stays attached to the word it belongs to.
+ *
+ * Telegram lays inline-button labels out LEFT-TO-RIGHT. Measured in the real
+ * client on 2026-08-23: the button element resolves to `direction: ltr`,
+ * `unicode-bidi: normal`, and no `dir` attribute anywhere above it. In an
+ * LTR paragraph the first strong character decides where a leading NUMBER
+ * lands, and a label that starts with a number has no strong character before
+ * it — so the number is resolved as left-to-right and rendered at the far end,
+ * detached from the word it belongs to:
+ *
+ *     sent      ۳۰ گیگ - یک‌ماهه — 150,000 تومان
+ *     drawn     ۳۰ | تومان 150,000 — یک‌ماهه - گیگ
+ *
+ * A U+200F RIGHT-TO-LEFT MARK in front gives it that strong character. Both
+ * orders above were measured by laying the string out in the browser's own bidi
+ * engine, in a box with the button's exact properties, and reading back where
+ * each token actually landed — not by reasoning about the algorithm.
+ *
+ * ONLY a leading digit, and only when the label has Arabic-script letters in it
+ * to be torn away from. An emoji-led label — «🟢 پلاتینیوم» — renders correctly
+ * as it is, because a neutral takes the paragraph's own direction and stays
+ * put; anchoring that one moves the emoji to the far end instead. Measured too.
+ *
+ * Here rather than where the labels are built, for the same reason `clamp` is
+ * here: it is the one place every screen passes through, so a screen written
+ * later cannot forget it. The menu functions keep returning the plain string,
+ * which is what their tests read.
+ */
+// Escapes, not the characters themselves. RTL_MARK is zero-width: written
+// literally it is an invisible byte in the middle of a line, which is how it
+// gets deleted by a hand that cannot see it. The ranges are spelled out for the
+// same reason — `٠-٩` and `۰-۹` are two different digit blocks that look alike,
+// and both appear in this shop's product names.
+const RTL_MARK = '\u200F';
+const LEADING_DIGIT = /^[\d\u0660-\u0669\u06F0-\u06F9]/;
+const ARABIC_LETTER = /[\u0621-\u064A\u066E-\u06D3\u06FA-\u06FF]/;
+
+export function anchorLabel(text: string): string {
+  return LEADING_DIGIT.test(text) && ARABIC_LETTER.test(text) ? RTL_MARK + text : text;
+}
+
+/** The same, applied to every label in a keyboard. `copy_text` is left alone:
+ *  that one goes on the clipboard and then into a banking app. */
+function anchorKeyboard(keyboard: InlineKeyboard): InlineKeyboard {
+  return keyboard.map((row) => row.map((b) => ({ ...b, text: anchorLabel(b.text) })));
+}
+
 /** Omitted entirely when there is no keyboard, so a menu is never sent as `null`. */
 function markup(keyboard?: InlineKeyboard): Record<string, unknown> {
-  return keyboard === undefined ? {} : { reply_markup: { inline_keyboard: keyboard } };
+  return keyboard === undefined ? {} : { reply_markup: { inline_keyboard: anchorKeyboard(keyboard) } };
 }
 
 /** Telegram answered. `call()` says "failed" when we never reached it at all. */
@@ -500,7 +548,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       form.set('photo', new Blob([bytes], { type: 'image/png' }), 'qr.png');
       if (caption !== undefined) form.set('caption', caption.slice(0, MAX_CAPTION_LENGTH));
       if (keyboard !== undefined) {
-        form.set('reply_markup', JSON.stringify({ inline_keyboard: keyboard }));
+        form.set('reply_markup', JSON.stringify({ inline_keyboard: anchorKeyboard(keyboard) }));
       }
       await callForm('sendPhoto', form, 30_000);
     },
