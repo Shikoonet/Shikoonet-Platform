@@ -21,7 +21,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
-import { ProductsPage } from '../src/pages/ProductsPage.js';
+import { CatalogPage } from '../src/pages/CatalogPage.js';
 import type { PanelRole } from '../src/api.js';
 
 vi.mock('../src/api.js', async () => {
@@ -29,13 +29,13 @@ vi.mock('../src/api.js', async () => {
   return {
     ...actual,
     api: {
-      products: vi.fn(async () => ({
+      catalog: vi.fn(async () => ({
         ok: true,
         total: 0,
         page: 1,
         pageSize: 25,
         items: [],
-        providers: [],
+        panels: [],
       })),
       productCategories: vi.fn(async () => ({ ok: true, items: [] })),
     },
@@ -50,13 +50,13 @@ async function button(name: string): Promise<HTMLButtonElement> {
 function renderAs(role: PanelRole | null) {
   return render(
     <RoleProvider role={role}>
-      <ProductsPage />
+      <CatalogPage />
     </RoleProvider>,
   );
 }
 
 /** The catalogue's write entry point, by the label an admin reads. */
-const NEW_PRODUCT = 'محصول تازه';
+const NEW_PRODUCT = 'سرویس تازه';
 /** A read on the same screen, as the control that must NOT move. */
 const SEARCH = 'جست‌وجو';
 
@@ -95,7 +95,7 @@ describe('the admin surface — /api/v1/admin/*', () => {
     // The default every existing unit test renders under. Unknown role means
     // unknown, and the server is what refuses — guessing «disabled» here would
     // make a screen nobody ever sees the one the tests describe.
-    render(<ProductsPage />);
+    render(<CatalogPage />);
     expect((await button(NEW_PRODUCT)).disabled).toBe(false);
   });
 });

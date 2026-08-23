@@ -39,13 +39,13 @@ import { createCache } from './hub/query.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
 import { BulkPage } from './pages/BulkPage.js';
-import { ProductsPage } from './pages/ProductsPage.js';
+import { CatalogPage } from './pages/CatalogPage.js';
 import { PanelsPage } from './pages/PanelsPage.js';
 import { ContentPage } from './pages/ContentPage.js';
 import { StockPage } from './pages/StockPage.js';
 import { ExpensesPage } from './pages/ExpensesPage.js';
 import { DiscountsPage } from './pages/DiscountsPage.js';
-import { OrdersPage, ServicesPage, TransactionsPage } from './pages/LedgerPages.js';
+import { OrdersPage, SubscriptionsPage, TransactionsPage } from './pages/LedgerPages.js';
 import { SettingsPage, RequestsPage } from './pages/SettingsPage.js';
 import { BotTextsPage, KeyboardPage } from './pages/BotContentPages.js';
 import './theme.css';
@@ -98,8 +98,8 @@ function Body({
       return <CustomersPage />;
     case 'bulk':
       return <BulkPage />;
-    case 'products':
-      return <ProductsPage />;
+    case 'catalog':
+      return <CatalogPage />;
     case 'panels':
       return <PanelsPage />;
     case 'stock':
@@ -110,8 +110,8 @@ function Body({
       return <DiscountsPage />;
     case 'orders':
       return <OrdersPage />;
-    case 'services':
-      return <ServicesPage />;
+    case 'subscriptions':
+      return <SubscriptionsPage />;
     case 'transactions':
       return <TransactionsPage />;
     case 'requests':

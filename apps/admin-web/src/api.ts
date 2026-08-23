@@ -128,6 +128,51 @@ export interface PlanRow {
   ordersCount: number;
 }
 
+/**
+ * One config — a price line inside a service.
+ *
+ * The same row `PlanRow` describes, minus the product it hangs off, because
+ * here it hangs off the service that owns it instead of repeating it on every
+ * line.
+ */
+export interface ConfigRow {
+  id: number;
+  name: string;
+  priceIrr: number;
+  /** null is unmetered. Zero is a real, free allowance — not the same thing. */
+  volumeGb: number | null;
+  durationDays: number | null;
+  userLimit: number | null;
+  status: string;
+  sortOrder: number;
+  ordersCount: number;
+}
+
+/**
+ * One service — what the customer picks first, with its configs inside it.
+ *
+ * `panel` is null for a service with no panel. That service cannot be sold at
+ * all (the bot INNER JOINs the panel), which is exactly why it is listed rather
+ * than hidden.
+ */
+export interface ServiceRow {
+  id: number;
+  code: string;
+  name: string;
+  kind: string;
+  status: string;
+  description: string | null;
+  sortOrder: number;
+  categoryId: number | null;
+  categoryName: string | null;
+  resellersOnly: boolean;
+  oncePerUser: boolean;
+  /** null when this service does not choose, and the panel's default applies. */
+  groupIds: number[] | null;
+  panel: { id: number; name: string | null; code: string | null; status: string | null } | null;
+  configs: ConfigRow[];
+}
+
 export interface ProviderOption {
   id: number;
   code: string;
@@ -828,6 +873,31 @@ export const api = {
       items: PlanRow[];
       providers: ProviderOption[];
     }>(`/products?${qs.toString()}`);
+  },
+
+  /** The same catalogue as `products()`, paged by service instead of by config. */
+  catalog(params: {
+    q?: string;
+    status?: string;
+    providerId?: number;
+    page: number;
+    pageSize: number;
+  }) {
+    const qs = new URLSearchParams({
+      page: String(params.page),
+      pageSize: String(params.pageSize),
+    });
+    if (params.q) qs.set('q', params.q);
+    if (params.status) qs.set('status', params.status);
+    if (params.providerId) qs.set('providerId', String(params.providerId));
+    return req<{
+      ok: boolean;
+      total: number;
+      page: number;
+      pageSize: number;
+      items: ServiceRow[];
+      panels: ProviderOption[];
+    }>(`/catalog?${qs.toString()}`);
   },
 
   updatePlan(id: number, patch: PlanPatch) {

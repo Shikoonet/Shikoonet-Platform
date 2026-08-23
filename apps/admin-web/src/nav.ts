@@ -28,8 +28,8 @@ export type PageId =
   | 'customers'
   | 'bulk'
   | 'orders'
-  | 'services'
-  | 'products'
+  | 'catalog'
+  | 'subscriptions'
   | 'transactions'
   | 'expenses'
   | 'requests'
@@ -62,8 +62,8 @@ export const NAV: NavGroup[] = [
       { id: 'customers', label: 'کاربران', icon: 'users' },
       { id: 'bulk', label: 'ارسال گروهی', icon: 'send' },
       { id: 'orders', label: 'سفارشات', icon: 'receipt' },
-      { id: 'services', label: 'سرویس‌ها', icon: 'package' },
-      { id: 'products', label: 'محصولات', icon: 'grid' },
+      { id: 'catalog', label: 'سرویس‌ها', icon: 'grid' },
+      { id: 'subscriptions', label: 'اشتراک‌های مشتری', icon: 'package' },
       { id: 'transactions', label: 'تراکنش‌ها', icon: 'wallet' },
       { id: 'expenses', label: 'هزینه‌ها و تعدیل‌ها', icon: 'wallet' },
       { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list' },
@@ -115,7 +115,7 @@ export const NAV: NavGroup[] = [
  * offers a door and then refuses it reads as broken rather than as a boundary.
  *
  * Kept here rather than derived from a route, because a section is not a path —
- * «سرویس‌ها» reads `/subscriptions` and the sidebar has no idea.
+ * «اشتراک‌های مشتری» reads `/subscriptions` and «سرویس‌ها» reads `/catalog`.
  */
 /**
  * Sections only the shop's owner is offered.
@@ -143,7 +143,7 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'accounts',
   'banks',
   'devices',
-  'products',
+  'catalog',
   'panels',
   // Counting the shelf is stock control; the accounts on it are not handed
   // over — `stockRoutes.ts` withholds the subscription link from anyone but an

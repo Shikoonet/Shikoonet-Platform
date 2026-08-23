@@ -45,6 +45,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
+import { anyHosted, InboundCount, InboundPicker } from '../groups.js';
 import type { PanelGroupItem, PanelGroups, PanelHostItem, PanelTestResult } from '../api.js';
 
 /**
@@ -605,100 +606,6 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
   );
 }
 
-/**
- * How many inbounds a group has, and how many of them the customer feels.
- *
- * These are different numbers and the difference cost a whole afternoon to see.
- * PasarGuard builds a subscription from HOSTS, and a host belongs to one inbound
- * tag — so an inbound with no host contributes nothing. Measured on the live
- * test panel: a `vip` group with two inbounds and a `normal` group with one
- * delivered the SAME single config, because only one of vip's two had a host.
- * Adding a host on the other one took the same subscription link to two configs
- * with nothing re-delivered.
- *
- * So the raw count is shown quietly and the deliverable one loudly. An operator
- * building a VIP tier off "this group has more inbounds" is reading the number
- * that does not decide anything.
- */
-function InboundCount({ group }: { group: PanelGroupItem }) {
-  const total = group.inboundTags?.length;
-  if (total === undefined) return <>—</>;
-  const live = group.deliverableInbounds;
-  if (live === undefined) return <>{count(total)}</>;
-  return (
-    <>
-      <div>{live === total ? count(total) : `${count(live)} از ${count(total)}`}</div>
-      {live < total && (
-        <div className="page-head__sub">
-          {count(total - live)} اینباند بدون هاست — به مشتری کانفیگ نمی‌دهد
-        </div>
-      )}
-      {live === 0 && total > 0 && <span className="badge badge-block">هیچ کانفیگی نمی‌دهد</span>}
-    </>
-  );
-}
-
-/**
- * Picking inbounds for a group, out of what the panel actually has.
- *
- * The legacy wizard took a typed comma-separated list, so a mistyped tag saved
- * cleanly and delivered nothing — the tier existed, cost more, and handed the
- * customer the cheap set. Nothing anywhere said so.
- *
- * `hosted === false` is called out on the row rather than hidden, because it is
- * the same failure wearing a different hat: an inbound with no host is real,
- * selectable, counts toward every total, and gives the customer nothing. A
- * «پلاتینیوم» built out of two of them is a tier that costs more and delivers
- * less than «معمولی».
- */
-function InboundPicker({
-  inbounds,
-  reason,
-  chosen,
-  onToggle,
-  disabledProps,
-}: {
-  inbounds: Array<{ tag: string; hosted?: boolean }> | null;
-  reason: string | null;
-  chosen: string[];
-  onToggle: (tag: string) => void;
-  disabledProps: Record<string, unknown>;
-}) {
-  if (inbounds === null) {
-    return (
-      <div className="alert alert-warning">
-        فهرست اینباندها از پنل خوانده نشد{reason ? ` — ${reason}` : ''}.
-      </div>
-    );
-  }
-  if (inbounds.length === 0) {
-    return <div className="alert alert-warning">این پنل هیچ اینباندی ندارد.</div>;
-  }
-  return (
-    <div className="pick-list">
-      {inbounds.map((i) => {
-        const on = chosen.includes(i.tag);
-        return (
-          <label key={i.tag} className={on ? 'pick pick--on' : 'pick'}>
-            <input
-              type="checkbox"
-              checked={on}
-              onChange={() => onToggle(i.tag)}
-              {...disabledProps}
-            />
-            <span>
-              <span className="ltr">{i.tag}</span>
-              {i.hosted === false && (
-                <div className="page-head__sub">بدون هاست — به مشتری کانفیگ نمی‌دهد</div>
-              )}
-            </span>
-          </label>
-        );
-      })}
-    </div>
-  );
-}
-
 /** Name + inbounds, shared by «گروه تازه» and the per-row editor. */
 function GroupForm({
   title,
@@ -727,9 +634,8 @@ function GroupForm({
   onCancel: () => void;
   w: Record<string, unknown>;
 }) {
-  const deliverable = inbounds === null ? null : tags.filter((t) =>
-    inbounds.some((i) => i.tag === t && i.hosted !== false),
-  ).length;
+  // Empty selection is not "delivers nothing" — it is "nothing chosen yet".
+  const undeliverable = tags.length > 0 && !anyHosted(inbounds, tags);
 
   return (
     <div className="card" style={{ marginBlock: 12 }}>
@@ -771,7 +677,7 @@ function GroupForm({
       {/* Said before the save, not after: a tier with no delivering inbound
           costs more than the cheap one and hands the customer the same thing,
           and nothing downstream ever complains about it. */}
-      {deliverable === 0 && (
+      {undeliverable && (
         <div className="alert alert-warning">
           هیچ‌کدام از اینباندهای انتخاب‌شده هاست ندارد — مشتریِ این گروه هیچ کانفیگی نمی‌گیرد.
         </div>

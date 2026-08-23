@@ -70,11 +70,11 @@ describe('navigation', () => {
       // the last two of the bot admin panel's twelve permissions to get a web
       // screen. See `bot-subset.test.ts`.
       'bulk',
-      'products',
+      'catalog',
       'panels',
       'discounts',
       'orders',
-      'services',
+      'subscriptions',
       'transactions',
       'requests',
       'settings',

@@ -354,7 +354,7 @@ export function OrdersPage() {
   );
 }
 
-export function ServicesPage() {
+export function SubscriptionsPage() {
   return (
     <ListPage<SubscriptionRow>
       title="سرویس‌ها"

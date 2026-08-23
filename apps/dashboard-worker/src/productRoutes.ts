@@ -264,6 +264,109 @@ function shape(r: PlanRow) {
   };
 }
 
+/** One service row, before its configs are hung off it. */
+interface ServiceRow {
+  id: number;
+  code: string;
+  name: string;
+  kind: string;
+  status: string;
+  description: string | null;
+  sort_order: number;
+  category_id: number | null;
+  resellers_only: boolean;
+  once_per_user: boolean;
+  group_ids: number[] | null;
+  provider_id: number | null;
+  provider_name: string | null;
+  provider_code: string | null;
+  provider_status: string | null;
+  category_name: string | null;
+}
+
+interface ConfigRow {
+  id: number;
+  product_id: number;
+  name: string;
+  price_irr: number;
+  duration_days: number | null;
+  volume_gb: number | null;
+  user_limit: number | null;
+  status: string;
+  sort_order: number;
+  orders_count: number;
+}
+
+/**
+ * Every config of the services on this page, in one statement.
+ *
+ * A query per service would be `pageSize` round trips for a screen that is one
+ * list. The ids are spread into `?N` placeholders rather than passed as an
+ * array: `packages/db` translates positional parameters and closes the
+ * parameter gap, and handing it a JS array where a scalar is expected is the
+ * kind of thing that works on SQLite and does not on Postgres.
+ *
+ * Every status comes back, ACTIVE or not. An operator looking at a service
+ * needs to see the config they disabled last week — that is usually why they
+ * opened it.
+ */
+async function configsFor(db: D1Database, productIds: number[]): Promise<ConfigRow[]> {
+  const holes = productIds.map((_, i) => `?${i + 1}`).join(', ');
+  const rows = await db
+    .prepare(
+      `SELECT pl.id, pl.product_id, pl.name, pl.price_irr, pl.duration_days, pl.volume_gb,
+              pl.user_limit, pl.status, pl.sort_order,
+              (SELECT COUNT(*) FROM orders o WHERE o.plan_id = pl.id) AS orders_count
+         FROM product_plans pl
+        WHERE pl.product_id IN (${holes})
+        ORDER BY pl.sort_order, pl.price_irr, pl.id`,
+    )
+    .bind(...productIds)
+    .all<ConfigRow>();
+  return rows.results ?? [];
+}
+
+function shapeService(r: ServiceRow, configs: ConfigRow[]) {
+  return {
+    id: r.id,
+    code: r.code,
+    name: r.name,
+    kind: r.kind,
+    status: r.status,
+    description: r.description,
+    sortOrder: r.sort_order,
+    categoryId: r.category_id,
+    categoryName: r.category_name,
+    resellersOnly: r.resellers_only,
+    oncePerUser: r.once_per_user,
+    groupIds: r.group_ids,
+    panel: r.provider_id
+      ? {
+          id: r.provider_id,
+          name: r.provider_name,
+          code: r.provider_code,
+          status: r.provider_status,
+        }
+      : null,
+    configs: configs
+      .filter((cf) => cf.product_id === r.id)
+      .map((cf) => ({
+        id: cf.id,
+        name: cf.name,
+        priceIrr: Number(cf.price_irr),
+        durationDays: cf.duration_days,
+        // NULL is unmetered and 0 is a free gigabyte allowance. The flat route
+        // learned this the hard way; collapsing them here would resell the
+        // lesson.
+        volumeGb: cf.volume_gb === null ? null : Number(cf.volume_gb),
+        userLimit: cf.user_limit,
+        status: cf.status,
+        sortOrder: cf.sort_order,
+        ordersCount: Number(cf.orders_count),
+      })),
+  };
+}
+
 const SELECT_PLAN = `
   SELECT pl.id, pl.name AS plan_name, pl.price_irr, pl.duration_days, pl.volume_gb,
          pl.user_limit, pl.status AS plan_status, pl.sort_order,
@@ -452,6 +555,117 @@ export function registerProductRoutes(
       pageSize,
       items: (rows.results ?? []).map(shape),
       providers: (providers.results ?? []).map((p) => ({
+        id: p.id,
+        code: p.code,
+        name: p.name,
+        status: p.status,
+      })),
+    });
+  });
+
+  // --- the catalogue, shaped the way it is sold ---------------------------
+
+  /**
+   * Services, each with its configs inside it.
+   *
+   * `GET /products` above answers one row per PLAN. That is the right shape for
+   * a price list and the wrong one for the screen an operator builds a service
+   * on: it pages by plan, so a service with five configs can be cut in half
+   * across two pages, and the service itself — the thing the customer actually
+   * picks first — is never a row, only a repeated sub-line.
+   *
+   * So this one pages by SERVICE and carries the configs along. `total` counts
+   * services. Both routes stay: the flat one is what the stock shelf and the
+   * discount scopes read a plan through, and collapsing them would make one of
+   * the two screens lie about what it is listing.
+   *
+   * What is NOT here: the group's name and whether it can deliver anything.
+   * Both are facts about the panel, not about our rows, and asking five panels
+   * over HTTP before this route may answer would let one sleeping panel hold
+   * the whole catalogue screen shut. The browser asks `/panels/:id/groups` once
+   * per panel it is showing and merges — the same call the tier picker already
+   * makes, and a panel that does not answer costs one column, not the page.
+   */
+  app.get('/api/v1/admin/catalog', async (c) => {
+    const parsed = ListQuery.safeParse({
+      q: c.req.query('q') || undefined,
+      status: c.req.query('status') || undefined,
+      providerId: c.req.query('providerId') || undefined,
+      page: c.req.query('page') ?? undefined,
+      pageSize: c.req.query('pageSize') ?? undefined,
+    });
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
+    const { q, status, providerId, page, pageSize } = parsed.data;
+
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (status) {
+      // The SERVICE's status, not a config's. On the flat route the same
+      // parameter means the plan's, and one screen filtering by the other's
+      // would quietly drop services that have exactly one disabled config.
+      params.push(status);
+      where.push(`p.status = ?${params.length}`);
+    }
+    if (providerId) {
+      params.push(providerId);
+      where.push(`p.provider_id = ?${params.length}`);
+    }
+    if (q) {
+      // Name, code, or the name of any config inside it — an operator hunting
+      // «۵۰ گیگ» is looking for the service that sells it.
+      params.push(`%${q}%`);
+      const n = params.length;
+      where.push(
+        `(p.name ILIKE ?${n} OR p.code ILIKE ?${n}
+          OR EXISTS (SELECT 1 FROM product_plans pl
+                      WHERE pl.product_id = p.id AND pl.name ILIKE ?${n}))`,
+      );
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const totalRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM products p ${whereSql}`,
+    )
+      .bind(...params)
+      .first<{ n: number }>();
+
+    params.push(pageSize);
+    const limitParam = params.length;
+    params.push((page - 1) * pageSize);
+    // The customer's order, so the list on this screen reads top to bottom the
+    // way the shop does. A product with no panel sorts last, which is also
+    // where it belongs: it cannot be sold at all.
+    const services = await c.env.DB.prepare(
+      `SELECT p.id, p.code, p.name, p.kind, p.status, p.description, p.sort_order,
+              p.category_id, p.resellers_only, p.once_per_user,
+              p.attrs->'group_ids' AS group_ids,
+              pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
+              pr.status AS provider_status, pr.sort_order AS provider_sort_order,
+              cat.name AS category_name
+         FROM products p
+         LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
+         LEFT JOIN product_categories cat ON cat.id = p.category_id
+         ${whereSql}
+        ORDER BY pr.sort_order, pr.id, p.sort_order, p.id
+        LIMIT ?${limitParam} OFFSET ?${params.length}`,
+    )
+      .bind(...params)
+      .all<ServiceRow>();
+
+    const rows = services.results ?? [];
+    const configs = rows.length === 0 ? [] : await configsFor(c.env.DB, rows.map((r) => r.id));
+
+    const panels = await c.env.DB.prepare(
+      `SELECT id, code, name, status FROM provisioning_providers ORDER BY sort_order, id`,
+    ).all<{ id: number; code: string; name: string; status: string }>();
+
+    return c.json({
+      ok: true,
+      total: totalRow?.n ?? 0,
+      page,
+      pageSize,
+      items: rows.map((r) => shapeService(r, configs)),
+      panels: (panels.results ?? []).map((p) => ({
         id: p.id,
         code: p.code,
         name: p.name,
