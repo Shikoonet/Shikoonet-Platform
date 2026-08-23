@@ -408,6 +408,9 @@ export interface PanelTestResult {
   /** True for a kind with nothing to log into, so the UI does not draw a green tick. */
   untestable?: boolean;
   ms?: number;
+  /** How many groups the panel answered with. Proof the login worked. */
+  groups?: number;
+  /** Only from adapters with no group listing — see panelRoutes.ts. */
   accounts?: number;
   reason?: string;
 }
@@ -433,6 +436,28 @@ export interface PanelGroupItem {
 export interface PanelInbounds {
   ok: boolean;
   inbounds: Array<{ tag: string; hosted?: boolean }> | null;
+  reason?: string;
+}
+
+/**
+ * One host — the thing a subscription is actually built out of.
+ *
+ * The panel has no inbound endpoint (`POST /api/inbound` is 404), because an
+ * inbound is part of its Xray core config. A host is what points at an inbound
+ * and carries the address, and an inbound with no host delivers nothing. So
+ * this is what «اینباند تازه» on the screen creates, and the screen says so.
+ */
+export interface PanelHostItem {
+  id: number;
+  remark: string;
+  inboundTag: string;
+  addresses: string[];
+  disabled: boolean;
+}
+
+export interface PanelHosts {
+  ok: boolean;
+  hosts: PanelHostItem[] | null;
   reason?: string;
 }
 
@@ -1117,6 +1142,21 @@ export const api = {
 
   deletePanelGroup(id: number, groupId: number) {
     return req<{ ok: boolean }>(`/panels/${id}/panel-groups/${groupId}`, { method: 'DELETE' });
+  },
+
+  panelHosts(id: number) {
+    return req<PanelHosts>(`/panels/${id}/hosts`);
+  },
+
+  createPanelHost(id: number, spec: { remark: string; inboundTag: string; addresses: string[] }) {
+    return req<{ ok: boolean; host: PanelHostItem }>(`/panels/${id}/hosts`, {
+      method: 'POST',
+      body: JSON.stringify(spec),
+    });
+  },
+
+  deletePanelHost(id: number, hostId: number) {
+    return req<{ ok: boolean }>(`/panels/${id}/hosts/${hostId}`, { method: 'DELETE' });
   },
 
   updatePanel(

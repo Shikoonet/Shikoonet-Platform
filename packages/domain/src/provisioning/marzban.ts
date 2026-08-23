@@ -51,8 +51,12 @@ import type {
   GroupsResult,
   GroupDeleteResult,
   GroupWriteResult,
+  HostDeleteResult,
+  HostWriteResult,
+  HostsResult,
   InboundsResult,
   PanelGroup,
+  PanelHost,
 } from './types.js';
 
 const GB = 1024 * 1024 * 1024;
@@ -302,9 +306,9 @@ async function hostedTags(
     if (!Array.isArray(body)) return null;
     return new Set(
       body
-        .filter((h) => (h as { is_disabled?: unknown }).is_disabled !== true)
-        .map((h) => (h as { inbound_tag?: unknown }).inbound_tag)
-        .filter((t): t is string => typeof t === 'string'),
+        .map(toHost)
+        .filter((h): h is PanelHost => h !== null && !h.disabled)
+        .map((h) => h.inboundTag),
     );
   } catch {
     return null;
@@ -394,6 +398,28 @@ async function writeGroup(
     const reason = error instanceof Error ? error.message : String(error);
     return { ok: false, reason: `could not reach the panel: ${reason}` };
   }
+}
+
+/** One host row from the panel, in our shape. Null when it has no usable id. */
+function toHost(item: unknown): PanelHost | null {
+  const row = item as {
+    id?: unknown;
+    remark?: unknown;
+    inbound_tag?: unknown;
+    address?: unknown;
+    is_disabled?: unknown;
+  };
+  if (typeof row.id !== 'number') return null;
+  if (typeof row.inbound_tag !== 'string') return null;
+  return {
+    id: row.id,
+    remark: typeof row.remark === 'string' && row.remark !== '' ? row.remark : `#${row.id}`,
+    inboundTag: row.inbound_tag,
+    addresses: Array.isArray(row.address)
+      ? row.address.filter((a): a is string => typeof a === 'string')
+      : [],
+    disabled: row.is_disabled === true,
+  };
 }
 
 export const marzbanAdapter: ProvisioningAdapter = {
@@ -813,6 +839,117 @@ export const marzbanAdapter: ProvisioningAdapter = {
       // 404 is success for a delete: the group is not there, which is what was
       // asked for. Reporting it as a failure would leave an operator retrying a
       // button that already worked.
+      if (!res.ok && res.status !== 404) {
+        return { ok: false, reason: `panel refused the delete (HTTP ${res.status})` };
+      }
+      return { ok: true };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}` };
+    }
+  },
+
+  async listHosts(provider: ProviderContext): Promise<HostsResult> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        (provider.fetch ?? fetch)(`${base}/api/hosts`, {
+          headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+          signal,
+        }),
+      );
+      if (!res.ok) return { ok: false, reason: `could not list hosts (HTTP ${res.status})` };
+      const body: unknown = await res.json();
+      if (!Array.isArray(body)) {
+        return { ok: false, reason: 'the host listing was not a list' };
+      }
+      const hosts: PanelHost[] = [];
+      for (const item of body) {
+        const host = toHost(item);
+        if (host !== null) hosts.push(host);
+      }
+      return { ok: true, hosts };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}` };
+    }
+  },
+
+  /**
+   * `POST /api/host/` — with the TRAILING SLASH.
+   *
+   * Without it the panel answers `307` and the redirect drops the body, so the
+   * call looks like it worked and creates nothing. Measured, along with the two
+   * required fields nobody would guess: `priority`, which is not optional and
+   * is not in any example, and `address`, which must be a LIST — a bare string
+   * answers «Input should be a valid set».
+   *
+   * An unknown inbound tag is `400 "<tag> not found"`, which is the panel
+   * telling us the tier would have been empty. Passed through.
+   */
+  async createHost(
+    provider: ProviderContext,
+    spec: { remark: string; inboundTag: string; addresses: string[] },
+  ): Promise<HostWriteResult> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        (provider.fetch ?? fetch)(`${base}/api/host/`, {
+          method: 'POST',
+          headers: {
+            accept: 'application/json',
+            'content-type': 'application/json',
+            authorization: `Bearer ${auth.token}`,
+          },
+          body: JSON.stringify({
+            remark: spec.remark,
+            inbound_tag: spec.inboundTag,
+            address: spec.addresses,
+            // Required, and deliberately not asked for on screen: somebody
+            // adding an address for a tier has no opinion about it, and 0 is
+            // what every existing host on the live panel carries.
+            priority: 0,
+          }),
+          signal,
+        }),
+      );
+      if (!res.ok) {
+        let detail = '';
+        try {
+          const body: unknown = await res.json();
+          const d = (body as { detail?: unknown }).detail;
+          if (typeof d === 'string') detail = ` — ${d}`;
+        } catch {
+          detail = '';
+        }
+        return { ok: false, reason: `panel refused the host (HTTP ${res.status})${detail}` };
+      }
+      const host = toHost(await res.json());
+      if (host === null) return { ok: false, reason: 'the panel replied without a host id' };
+      return { ok: true, host };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}` };
+    }
+  },
+
+  async deleteHost(provider: ProviderContext, id: number): Promise<HostDeleteResult> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        (provider.fetch ?? fetch)(`${base}/api/host/${encodeURIComponent(String(id))}`, {
+          method: 'DELETE',
+          headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+          signal,
+        }),
+      );
+      // 404 is the state that was asked for, same as a group delete.
       if (!res.ok && res.status !== 404) {
         return { ok: false, reason: `panel refused the delete (HTTP ${res.status})` };
       }

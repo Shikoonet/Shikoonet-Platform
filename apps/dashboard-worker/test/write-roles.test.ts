@@ -199,6 +199,13 @@ describe('every write route, asked directly', () => {
     //
     // `GET /panels/:id/inbounds` is not in this count and should not be: it
     // reads, and the three tests above only cover writes.
-    expect(writeRoutes().length).toBe(121);
+    //
+    // 123, same day: `POST /panels/:id/hosts` and
+    // `DELETE /panels/:id/hosts/:hostId`. A host is what puts an inbound into a
+    // customer's subscription, so removing the last one on an inbound empties
+    // every tier carrying it — silently, since the links keep working and stop
+    // producing that config. ADMIN-only, and the delete refuses outright when a
+    // group we sell would be stranded.
+    expect(writeRoutes().length).toBe(123);
   });
 });

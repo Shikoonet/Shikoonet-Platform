@@ -387,6 +387,25 @@ const GroupSpec = z
   })
   .strict();
 
+/**
+ * A host, as an operator asks for it.
+ *
+ * `addresses` may be empty — the panel accepts it and the host then resolves to
+ * the panel's own address, which is the common case for a single-server shop.
+ * Refusing it here would block the simplest thing somebody wants to do.
+ */
+const HostSpec = z
+  .object({
+    remark: z.string().trim().min(1).max(120),
+    inboundTag: z.string().trim().min(1).max(200),
+    addresses: z
+      .array(z.string().trim().min(1).max(253))
+      .max(20)
+      .default([])
+      .transform((a) => [...new Set(a)]),
+  })
+  .strict();
+
 const PanelTest = z
   .object({
     baseUrl: z.string().trim().max(300).optional(),
@@ -1112,6 +1131,185 @@ export function registerPanelRoutes(
     return c.json({ ok: true });
   });
 
+  /**
+   * The hosts on this panel — what actually puts an inbound in a subscription.
+   *
+   * The panel has no inbound endpoint at all: `POST /api/inbound` is 404 and
+   * `/api/inbounds` is 405. An inbound is a section of the Xray core config,
+   * and the only way to add one is to rewrite that whole config — which a
+   * dashboard should not do, because one bad edit takes every customer's proxy
+   * down rather than one tier.
+   *
+   * A host is the piece that was actually missing, and it is the one that
+   * decides delivery: an inbound with no host is in every listing, counts
+   * toward every total, and hands the customer nothing.
+   */
+  app.get('/api/v1/admin/panels/:id/hosts', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role === null) return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const ctx = await panelContext(c.env.DB, id);
+    if (!ctx.ok) {
+      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
+      return c.json({ ok: true, hosts: null, reason: ctx.reason });
+    }
+    if (!ctx.adapter.listHosts) {
+      return c.json({ ok: true, hosts: null, reason: 'این نوع پنل هاست ندارد.' });
+    }
+
+    const result = await ctx.adapter.listHosts(ctx.provider);
+    return c.json({
+      ok: true,
+      hosts: result.ok ? result.hosts : null,
+      ...(result.ok ? {} : { reason: result.reason }),
+    });
+  });
+
+  app.post('/api/v1/admin/panels/:id/hosts', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const body = HostSpec.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    const ctx = await panelContext(c.env.DB, id);
+    if (!ctx.ok) {
+      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
+      return c.json({ ok: false, error: 'panel_unavailable', detail: ctx.reason }, 400);
+    }
+    if (!ctx.adapter.createHost) {
+      return c.json({ ok: false, error: 'unsupported', detail: 'این نوع پنل هاست ندارد.' }, 400);
+    }
+
+    const result = await ctx.adapter.createHost(ctx.provider, body.data);
+    if (!result.ok) {
+      return c.json({ ok: false, error: 'panel_refused', detail: result.reason }, 400);
+    }
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.panel_host_created',
+      'PROVISIONING_PROVIDER',
+      String(id),
+      null,
+      {
+        code: ctx.code,
+        host: result.host.id,
+        remark: result.host.remark,
+        inbound: result.host.inboundTag,
+      },
+      null,
+    );
+    return c.json({ ok: true, host: result.host });
+  });
+
+  /**
+   * Remove a host — refused when it is the last one keeping a tier alive.
+   *
+   * Same shape as the group guard and the same failure it prevents, one level
+   * down. Deleting the last enabled host on an inbound does not break anything
+   * loudly: every customer keeps their subscription link, and the link quietly
+   * stops producing that config. A tier that used to hand out two now hands out
+   * one, and the first report of it is a support message.
+   *
+   * Only when a group WE SELL carries that inbound. A host on an inbound no
+   * tier of ours uses is the operator's own business.
+   */
+  app.delete('/api/v1/admin/panels/:id/hosts/:hostId', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    const hostId = Number(c.req.param('hostId'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    if (!Number.isInteger(hostId) || hostId < 0) {
+      return c.json({ ok: false, error: 'invalid_host_id' }, 400);
+    }
+
+    const ctx = await panelContext(c.env.DB, id);
+    if (!ctx.ok) {
+      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
+      return c.json({ ok: false, error: 'panel_unavailable', detail: ctx.reason }, 400);
+    }
+    if (!ctx.adapter.deleteHost || !ctx.adapter.listHosts) {
+      return c.json({ ok: false, error: 'unsupported', detail: 'این نوع پنل هاست ندارد.' }, 400);
+    }
+
+    const hosts = await ctx.adapter.listHosts(ctx.provider);
+    if (!hosts.ok) {
+      // Refusing rather than guessing. The guard below cannot run without this
+      // listing, and deleting with the guard skipped is exactly the delete the
+      // guard exists to stop.
+      return c.json(
+        {
+          ok: false,
+          error: 'panel_unavailable',
+          detail: `فهرست هاست‌ها خوانده نشد، پس نمی‌دانیم حذفش چه چیزی را خالی می‌کند: ${hosts.reason}`,
+        },
+        400,
+      );
+    }
+    const target = hosts.hosts.find((h) => h.id === hostId);
+    if (target) {
+      const survivors = hosts.hosts.filter(
+        (h) => h.inboundTag === target.inboundTag && h.id !== hostId && !h.disabled,
+      );
+      if (survivors.length === 0) {
+        const inUse = await groupIdsInUse(c.env.DB, id);
+        const groups = ctx.adapter.listGroups
+          ? await ctx.adapter.listGroups(ctx.provider)
+          : { ok: false as const, reason: 'no group listing' };
+        const stranded =
+          groups.ok
+            ? groups.groups.filter(
+                (g) => inUse.has(g.id) && (g.inboundTags ?? []).includes(target.inboundTag),
+              )
+            : [];
+        if (stranded.length > 0) {
+          return c.json(
+            {
+              ok: false,
+              error: 'host_in_use',
+              detail: `این تنها هاستِ «${target.inboundTag}» است و گروه ${stranded
+                .map((g) => `«${g.name}»`)
+                .join('، ')} که می‌فروشیم روی همین اینباند است. با حذفش، مشتری‌های آن گروه بی‌سروصدا یک کانفیگ کمتر می‌گیرند. اول اینباند را از گروه بردارید.`,
+            },
+            409,
+          );
+        }
+      }
+    }
+
+    const result = await ctx.adapter.deleteHost(ctx.provider, hostId);
+    if (!result.ok) {
+      return c.json({ ok: false, error: 'panel_refused', detail: result.reason }, 400);
+    }
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.panel_host_deleted',
+      'PROVISIONING_PROVIDER',
+      String(id),
+      { code: ctx.code, host: hostId, inbound: target?.inboundTag ?? null },
+      null,
+      null,
+    );
+    return c.json({ ok: true });
+  });
+
   app.post('/api/v1/admin/panels/:id/test', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
@@ -1190,7 +1388,7 @@ export function registerPanelRoutes(
     // it came back "آدرس پنل وارد نشده" — which reads as something the operator
     // should go and fix, about a kind that will never have one.
     const adapter = adapterFor(kind);
-    if (!adapter?.listAccounts) {
+    if (!adapter?.listGroups && !adapter?.listAccounts) {
       // Honest rather than green. Answering "OK" for a kind a person fulfils by
       // hand would teach an operator to trust a tick that means nothing.
       return c.json({
@@ -1222,7 +1420,7 @@ export function registerPanelRoutes(
     }
 
     try {
-      const result = await adapter.listAccounts({
+      const context = {
         id: unsaved ? 0 : id,
         code: String(id),
         name,
@@ -1230,7 +1428,26 @@ export function registerPanelRoutes(
         credentials,
         config: {},
         fetch: fetch,
-      });
+      };
+
+      /**
+       * The login is proved with the GROUP listing, not the account listing.
+       *
+       * Both answer the only question this button asks — can we log in — and
+       * they cost wildly different amounts. `listAccounts` pages through every
+       * user on the panel; on the deployed dashboard that took longer than
+       * nginx's 60-second default and the button answered `504 Gateway
+       * Time-out` on a panel that was perfectly healthy. Reading the groups is
+       * one GET.
+       *
+       * The account count was the nicer number to show and it is not worth a
+       * button that appears broken. What replaces it is more useful anyway:
+       * the group count is what this screen is about, and a panel answering
+       * «۰ گروه» is telling an operator something real.
+       */
+      const result = adapter.listGroups
+        ? await adapter.listGroups(context)
+        : await adapter.listAccounts!(context);
       const ms = Date.now() - started;
       if (!result.ok) {
         return c.json({
@@ -1248,7 +1465,9 @@ export function registerPanelRoutes(
         reachable: true,
         authenticated: true,
         ms,
-        accounts: result.accounts.length,
+        ...('groups' in result
+          ? { groups: result.groups.length }
+          : { accounts: result.accounts.length }),
       });
     } catch (err) {
       // The probe above already said something is there, so this is the adapter

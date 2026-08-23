@@ -45,7 +45,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
-import type { PanelGroupItem, PanelGroups, PanelTestResult } from '../api.js';
+import type { PanelGroupItem, PanelGroups, PanelHostItem, PanelTestResult } from '../api.js';
 
 /**
  * `kind` is the adapter that fulfils an order.
@@ -377,6 +377,7 @@ function ConnectionTest({
           {result.authenticated ? (
             <>
               ارتباط برقرار شد و ورود موفق بود
+              {typeof result.groups === 'number' && ` — ${count(result.groups)} گروه روی پنل`}
               {typeof result.accounts === 'number' && ` — ${count(result.accounts)} حساب روی پنل`}
             </>
           ) : result.untestable ? (
@@ -1208,11 +1209,272 @@ function PanelGroupsSection({
   );
 }
 
-type Tab = 'info' | 'link' | 'groups' | 'status';
+/**
+ * اینباندها — and what «ساختن» one actually means here.
+ *
+ * The panel has no inbound endpoint. `POST /api/inbound` is 404 and
+ * `/api/inbounds` is 405, asked on 2026-08-23: an inbound is a section of the
+ * panel's Xray core config, and the only way to add one is to rewrite that
+ * whole config. A dashboard that offers a button for that can take every
+ * customer's proxy down with one bad edit, not one tier — so it does not offer
+ * one.
+ *
+ * What was actually missing is the HOST, and it is the half that decides
+ * delivery. A host points at an inbound and carries the address the customer
+ * connects to; an inbound with no host is in every listing, counts toward every
+ * total, and hands the customer nothing. That was measured the hard way: a
+ * `vip` group with two inbounds delivered exactly what a `normal` group with
+ * one delivered, until a host went on the second and the same subscription link
+ * went to two configs with nothing re-delivered.
+ *
+ * So the screen shows the inbounds the panel HAS, and lets an address be added
+ * to any of them. That is the whole of what an operator building a tier needs,
+ * and it is honest about which of the two things it is doing.
+ */
+function PanelHostsSection({ panel }: { panel: PanelItem }) {
+  const w = useAdminWriteProps();
+  const [hosts, setHosts] = useState<PanelHostItem[] | null>(null);
+  const [inbounds, setInbounds] = useState<Array<{ tag: string; hosted?: boolean }> | null>(null);
+  const [reason, setReason] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState<string | null>(null);
+  const [remark, setRemark] = useState('');
+  const [address, setAddress] = useState('');
+  const noticeRef = useRef<HTMLDivElement | null>(null);
+
+  async function load() {
+    setBusy(true);
+    try {
+      const [h, i] = await Promise.all([api.panelHosts(panel.id), api.panelInbounds(panel.id)]);
+      setHosts(h.hosts);
+      setInbounds(i.inbounds);
+      setReason(h.reason ?? i.reason ?? null);
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [panel.id]);
+
+  useEffect(() => {
+    if (err !== null || done !== null) {
+      noticeRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [err, done]);
+
+  async function create() {
+    if (adding === null) return;
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      const host = await api.createPanelHost(panel.id, {
+        remark: remark.trim(),
+        inboundTag: adding,
+        // Empty is a real answer and the panel accepts it: the host then
+        // resolves to the panel's own address, which is what a single-server
+        // shop wants and what somebody leaving the box blank means.
+        addresses: address.trim() === '' ? [] : address.split(',').map((a) => a.trim()),
+      });
+      setDone(`هاست «${host.host.remark}» روی «${adding}» ساخته شد — این اینباند حالا کانفیگ می‌دهد.`);
+      setAdding(null);
+      setRemark('');
+      setAddress('');
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(h: PanelHostItem) {
+    if (
+      !window.confirm(
+        `هاست «${h.remark}» روی «${h.inboundTag}» حذف شود؟ اگر آخرین هاست این اینباند باشد، مشتری‌های آن اینباند یک کانفیگ کمتر می‌گیرند.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await api.deletePanelHost(panel.id, h.id);
+      setDone(`هاست «${h.remark}» حذف شد.`);
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <p className="muted" style={{ marginBlockStart: 0 }}>
+        اینباند را پنل در تنظیمات Xray خودش تعریف می‌کند و از این‌جا ساخته نمی‌شود — API ندارد، و
+        دست‌بردن در آن تنظیمات یعنی ریسکِ قطع‌شدن سرویسِ همهٔ مشتری‌ها، نه یک سطح. آن‌چه از این‌جا
+        ساخته می‌شود <b>هاست</b> است: آدرسی که روی یک اینباند می‌نشیند. اینباندی که هاست ندارد در
+        همهٔ فهرست‌ها هست و در اشتراک مشتری <b>نیست</b>.
+      </p>
+
+      <div ref={noticeRef}>
+        {err && <div className="alert alert-error">{err}</div>}
+        {done && <div className="alert alert-ok">{done}</div>}
+      </div>
+
+      {inbounds === null ? (
+        <div className="alert alert-warning">
+          فهرست اینباندها از پنل خوانده نشد{reason ? ` — ${reason}` : ''}.
+        </div>
+      ) : (
+        <div className="table-wrap">
+          <table className="app-table">
+            <thead>
+              <tr>
+                <th>اینباند</th>
+                <th>هاست‌ها</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {inbounds.length === 0 && (
+                <tr>
+                  <td className="empty" colSpan={3}>
+                    این پنل هیچ اینباندی ندارد.
+                  </td>
+                </tr>
+              )}
+              {inbounds.map((i) => {
+                const mine = (hosts ?? []).filter((h) => h.inboundTag === i.tag);
+                const live = mine.filter((h) => !h.disabled);
+                return (
+                  <tr key={i.tag}>
+                    <td>
+                      <div className="ltr">{i.tag}</div>
+                      {live.length === 0 && (
+                        <span className="badge badge-block">به مشتری کانفیگ نمی‌دهد</span>
+                      )}
+                    </td>
+                    <td>
+                      {mine.length === 0 ? (
+                        <span className="muted">هیچ</span>
+                      ) : (
+                        mine.map((h) => (
+                          <div key={h.id} style={{ marginBlockEnd: 4 }}>
+                            <span className="ltr">{h.remark}</span>
+                            {h.addresses.length > 0 && (
+                              <span className="muted ltr"> · {h.addresses.join('، ')}</span>
+                            )}
+                            {h.disabled && <span className="badge badge-warning">خاموش</span>}{' '}
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-danger"
+                              onClick={() => void remove(h)}
+                              {...w}
+                            >
+                              حذف
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => {
+                          setAdding(i.tag);
+                          setRemark('');
+                          setAddress('');
+                          setDone(null);
+                        }}
+                        {...w}
+                      >
+                        + هاست
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {adding !== null && (
+        <div className="card" style={{ marginBlock: 12 }}>
+          <div className="card__head">
+            <span className="card__title">
+              هاست تازه روی <span className="ltr">{adding}</span>
+            </span>
+            <button type="button" className="btn btn-sm" onClick={() => setAdding(null)}>
+              انصراف
+            </button>
+          </div>
+          <div className="filters">
+            <div className="grow">
+              <label className="form-label" htmlFor="host-remark">
+                نام هاست
+              </label>
+              <input
+                id="host-remark"
+                className="form-control"
+                type="text"
+                maxLength={120}
+                placeholder="آلمان-۱"
+                value={remark}
+                onChange={(e) => setRemark(e.target.value)}
+                {...w}
+              />
+            </div>
+            <div className="grow">
+              <label className="form-label" htmlFor="host-address">
+                آدرس
+              </label>
+              <input
+                id="host-address"
+                className="form-control ltr"
+                type="text"
+                placeholder="de1.example.com"
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                {...w}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || remark.trim() === ''}
+              onClick={() => void create()}
+              {...w}
+            >
+              بساز
+            </button>
+          </div>
+          <p className="muted">
+            آدرس خالی یعنی همان آدرس خودِ پنل، که برای فروشگاهِ تک‌سروری همان چیزی است که می‌خواهید.
+            چند آدرس را با ویرگول جدا کنید.
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
+
+type Tab = 'info' | 'link' | 'inbounds' | 'groups' | 'status';
 
 const TAB_FA: ReadonlyArray<{ id: Tab; label: string }> = [
   { id: 'info', label: 'اطلاعات' },
   { id: 'link', label: 'اتصال و رمز' },
+  { id: 'inbounds', label: 'اینباند و هاست' },
   { id: 'groups', label: 'گروه‌ها' },
   { id: 'status', label: 'وضعیت' },
 ];
@@ -1245,6 +1507,7 @@ function PanelEditor({
   const flagged: Record<Tab, boolean> = {
     info: false,
     link: r.tone === 'bad',
+    inbounds: false,
     groups: groupProblem,
     status: false,
   };
@@ -1482,6 +1745,8 @@ function PanelEditor({
           />
         </>
       )}
+
+      {tab === 'inbounds' && <PanelHostsSection panel={panel} />}
 
       {/* Mounted even while another tab is showing, so its own alerts stay its
           own and the tab flag above is truthful from the moment the card opens

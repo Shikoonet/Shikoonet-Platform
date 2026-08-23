@@ -226,6 +226,39 @@ export type GroupWriteResult = { ok: true; group: PanelGroup } | { ok: false; re
 
 export type GroupDeleteResult = { ok: true } | { ok: false; reason: string };
 
+/**
+ * One host, which is the thing a customer's subscription is actually built out
+ * of.
+ *
+ * An inbound is a section of the panel's Xray core config and has no API of its
+ * own — `POST /api/inbound` is 404 and `/api/inbounds` is 405, asked 2026-08-23.
+ * The only way to add one is to rewrite the whole core config, and a dashboard
+ * that does that can take every customer's proxy down with one bad edit, not
+ * just one tier.
+ *
+ * A HOST is the piece that was actually missing. It points at an inbound by tag
+ * and carries the address the customer connects to, and an inbound without one
+ * contributes nothing to a subscription — measured: a `vip` group with two
+ * inbounds delivered exactly what a `normal` group with one delivered, until a
+ * host was added on the second and the same link went to two configs.
+ *
+ * So this is what «اینباند بساز» means here, and the naming on screen says so
+ * rather than pretending the panel has an inbound endpoint it does not.
+ */
+export interface PanelHost {
+  id: number;
+  remark: string;
+  /** The inbound this host serves. The panel rejects a tag it does not have. */
+  inboundTag: string;
+  /** Addresses the customer connects to. May be empty — the panel allows it. */
+  addresses: string[];
+  disabled: boolean;
+}
+
+export type HostsResult = { ok: true; hosts: PanelHost[] } | { ok: false; reason: string };
+export type HostWriteResult = { ok: true; host: PanelHost } | { ok: false; reason: string };
+export type HostDeleteResult = { ok: true } | { ok: false; reason: string };
+
 export type AccountsResult =
   | { ok: true; accounts: RemoteAccount[] }
   | { ok: false; reason: string };
@@ -350,6 +383,34 @@ export interface ProvisioningAdapter {
    * only asks.
    */
   deleteGroup?(provider: ProviderContext, id: number): Promise<GroupDeleteResult>;
+
+  /**
+   * Every host on the panel, so a screen can say which inbounds actually
+   * deliver and which are decoration.
+   */
+  listHosts?(provider: ProviderContext): Promise<HostsResult>;
+
+  /**
+   * Point a new host at an inbound.
+   *
+   * `priority` is required by the panel and is not asked for here — a person
+   * adding an address for a tier has no opinion about it, and 0 is what the
+   * existing hosts carry. `addresses` may be empty and the panel accepts it,
+   * which produces a host that resolves to the panel's own address.
+   */
+  createHost?(
+    provider: ProviderContext,
+    spec: { remark: string; inboundTag: string; addresses: string[] },
+  ): Promise<HostWriteResult>;
+
+  /**
+   * Remove a host.
+   *
+   * Removing the last one on an inbound silently empties every tier that
+   * carries that inbound — the customers keep their links and the links stop
+   * producing that config. The caller is what knows which tiers those are.
+   */
+  deleteHost?(provider: ProviderContext, id: number): Promise<HostDeleteResult>;
 
   /**
    * Act on an existing account at the customer's request: replace its

@@ -60,6 +60,14 @@ function fakePanel(options: {
   const inbounds = options.inbounds ?? ['Shadowsocks TCP', 'VLESS TCP 17846'];
   const hostFor = options.hostFor ?? inbounds;
   let nextId = Math.max(0, ...groups.map((g) => g.id)) + 1;
+  let nextHostId = 100;
+  const extraHosts: Array<{
+    id: number;
+    remark: string;
+    inbound_tag: string;
+    address: unknown;
+    is_disabled: boolean;
+  }> = [];
 
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -81,13 +89,16 @@ function fakePanel(options: {
         return new Response('{}', { status: options.hostStatus });
       }
       return new Response(
-        JSON.stringify(
-          inbounds.map((tag, i) => ({
+        JSON.stringify([
+          ...inbounds.map((tag, i) => ({
             id: i + 1,
+            remark: `host-${tag}`,
+            address: [],
             inbound_tag: tag,
             is_disabled: !hostFor.includes(tag),
           })),
-        ),
+          ...extraHosts,
+        ]),
         { status: 200 },
       );
     }
@@ -142,6 +153,48 @@ function fakePanel(options: {
       const at = groups.findIndex((g) => g.id === Number(put[1]));
       if (at < 0) return new Response('{}', { status: 404 });
       groups.splice(at, 1);
+      return new Response(null, { status: 204 });
+    }
+    if (method === 'POST' && url.endsWith('/api/host/')) {
+      const spec = body as {
+        remark?: unknown;
+        inbound_tag?: unknown;
+        address?: unknown;
+        priority?: unknown;
+      };
+      // Every one of these is a 422 on the real panel if it is missing, and
+      // `priority` is the one nobody would guess. The fake refuses it the same
+      // way so a regression that drops it fails here rather than on a panel.
+      if (typeof spec?.priority !== 'number') {
+        return new Response(JSON.stringify({ detail: { priority: 'Field required' } }), {
+          status: 422,
+        });
+      }
+      if (!Array.isArray(spec?.address)) {
+        return new Response(JSON.stringify({ detail: { address: 'Input should be a valid set' } }), {
+          status: 422,
+        });
+      }
+      if (!inbounds.includes(String(spec.inbound_tag))) {
+        return new Response(JSON.stringify({ detail: `${String(spec.inbound_tag)} not found` }), {
+          status: 400,
+        });
+      }
+      const row = {
+        id: nextHostId++,
+        remark: String(spec.remark ?? ''),
+        inbound_tag: String(spec.inbound_tag),
+        address: spec.address,
+        is_disabled: false,
+      };
+      extraHosts.push(row);
+      return new Response(JSON.stringify(row), { status: 201 });
+    }
+    const hostPath = /\/api\/host\/(\d+)$/.exec(url);
+    if (hostPath && method === 'DELETE') {
+      const at = extraHosts.findIndex((h) => h.id === Number(hostPath[1]));
+      if (at < 0) return new Response('{}', { status: 404 });
+      extraHosts.splice(at, 1);
       return new Response(null, { status: 204 });
     }
     return new Response('{}', { status: 500 });
@@ -385,5 +438,129 @@ describe('listGroups, after the refactor that gave create and list one parser', 
         disabled: true,
       },
     ]);
+  });
+});
+
+describe('hosts, which is what «اینباند بساز» actually means', () => {
+  it('POSTs the path WITH the trailing slash, and sends priority', () => {
+    /**
+     * Two things measured on the live panel that nothing in the API's shape
+     * hints at: `/api/host` without the slash answers 307 and the redirect
+     * drops the body, so the call looks like it worked and creates nothing;
+     * and `priority` is required, answering
+     * `422 {"detail":{"priority":"Field required"}}` when it is absent.
+     *
+     * Asserted on the request rather than on "it returned ok", because a fake
+     * that accepted either would agree with a bug that only a real panel could
+     * show.
+     */
+    const panel = fakePanel();
+    return marzbanAdapter
+      .createHost!(provider(panel.fetchImpl), {
+        remark: 'آلمان-۱',
+        inboundTag: 'Shadowsocks TCP',
+        addresses: ['de1.example.com'],
+      })
+      .then((result) => {
+        expect(result.ok).toBe(true);
+        const call = panel.calls.find((c) => c.method === 'POST' && c.url.includes('/api/host'));
+        expect(call!.url.endsWith('/api/host/'), 'the trailing slash is load-bearing').toBe(true);
+        expect(call!.body).toEqual({
+          remark: 'آلمان-۱',
+          inbound_tag: 'Shadowsocks TCP',
+          address: ['de1.example.com'],
+          priority: 0,
+        });
+      });
+  });
+
+  it('accepts an empty address list, because the panel does', async () => {
+    // A host with no address resolves to the panel's own, which is what a
+    // single-server shop wants and what leaving the box blank means. Refusing
+    // it would block the simplest thing an operator does.
+    const panel = fakePanel();
+    const result = await marzbanAdapter.createHost!(provider(panel.fetchImpl), {
+      remark: 'default',
+      inboundTag: 'Shadowsocks TCP',
+      addresses: [],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.host.addresses).toEqual([]);
+    expect(result.host.inboundTag).toBe('Shadowsocks TCP');
+  });
+
+  it('carries the panel’s «not found» for an inbound that does not exist', async () => {
+    // The panel is the only thing that knows its inbound tags, and a host on a
+    // tag it does not have is a tier that would deliver nothing.
+    const panel = fakePanel();
+    const result = await marzbanAdapter.createHost!(provider(panel.fetchImpl), {
+      remark: 'ghost',
+      inboundTag: 'No Such Inbound',
+      addresses: [],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain('not found');
+    expect(result.reason).not.toContain('p:ss:word');
+  });
+
+  it('lists hosts with the disabled ones marked, not dropped', async () => {
+    // A disabled host is the difference between «this inbound has no address»
+    // and «somebody switched it off», and only one of those is fixed by adding
+    // another host.
+    const panel = fakePanel({ hostFor: ['Shadowsocks TCP'] });
+    const result = await marzbanAdapter.listHosts!(provider(panel.fetchImpl));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.hosts.map((h) => [h.inboundTag, h.disabled])).toEqual([
+      ['Shadowsocks TCP', false],
+      ['VLESS TCP 17846', true],
+    ]);
+  });
+
+  it('deletes a host, and treats one already gone as done', async () => {
+    const panel = fakePanel();
+    const made = await marzbanAdapter.createHost!(provider(panel.fetchImpl), {
+      remark: 'temp',
+      inboundTag: 'Shadowsocks TCP',
+      addresses: [],
+    });
+    expect(made.ok).toBe(true);
+    if (!made.ok) return;
+    expect((await marzbanAdapter.deleteHost!(provider(panel.fetchImpl), made.host.id)).ok).toBe(
+      true,
+    );
+    expect((await marzbanAdapter.deleteHost!(provider(panel.fetchImpl), 9999)).ok).toBe(true);
+  });
+
+  it('counts a new host toward what the group delivers, immediately', async () => {
+    // The whole point of the feature. `vip` carries two inbounds and only one
+    // has a host, so it delivers one config; adding a host on the other takes
+    // the same group to two — which is exactly what was measured on the live
+    // panel, subscription link and all.
+    const panel = fakePanel({
+      groups: [
+        {
+          id: 2,
+          name: 'vip',
+          inbound_tags: ['Shadowsocks TCP', 'VLESS TCP 17846'],
+          is_disabled: false,
+          total_users: 1,
+        },
+      ],
+      hostFor: ['Shadowsocks TCP'],
+    });
+    const before = await marzbanAdapter.listGroups!(provider(panel.fetchImpl));
+    expect(before.ok && before.groups[0]!.deliverableInbounds).toBe(1);
+
+    await marzbanAdapter.createHost!(provider(panel.fetchImpl), {
+      remark: 'vip-only',
+      inboundTag: 'VLESS TCP 17846',
+      addresses: [],
+    });
+
+    const after = await marzbanAdapter.listGroups!(provider(panel.fetchImpl));
+    expect(after.ok && after.groups[0]!.deliverableInbounds).toBe(2);
   });
 });

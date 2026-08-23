@@ -24,6 +24,7 @@
 
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
+import { panelSecretKey, seal } from '@shikoo/domain';
 import { app } from '../src/index.js';
 
 const ADMIN = 'admin@example.com';
@@ -58,6 +59,25 @@ async function del(path: string, email = ADMIN): Promise<Response> {
     }),
     envAs(email),
   );
+}
+
+/**
+ * Give a panel a credential that opens.
+ *
+ * Some checks only happen AFTER `panelContext` has a login to work with — the
+ * host guard reads the panel's host listing before it decides anything — and a
+ * panel without one stops at «این پنل هنوز رمزی ندارد» and never reaches them.
+ * Sealed with the real key rather than written raw, because the route opens it
+ * with the real `open()`.
+ */
+async function withCredential(panelId: number): Promise<void> {
+  await baseEnv.DB.prepare(
+    `INSERT INTO provider_secrets (provider_id, sealed, key_id, set_by)
+     VALUES (?1, ?2, 'test', 'test')
+     ON CONFLICT (provider_id) DO UPDATE SET sealed = EXCLUDED.sealed`,
+  )
+    .bind(panelId, seal('admin:hunter2', panelSecretKey()))
+    .run();
 }
 
 /** A product and a plan on this panel, so a plan can hold its own group ids. */
@@ -108,6 +128,12 @@ async function purge(): Promise<void> {
     .bind(`${PREFIX}%`)
     .run();
   await baseEnv.DB.prepare(`DELETE FROM products WHERE code LIKE ?1`).bind(`${PREFIX}%`).run();
+  await baseEnv.DB.prepare(
+    `DELETE FROM provider_secrets WHERE provider_id IN
+       (SELECT id FROM provisioning_providers WHERE code LIKE ?1)`,
+  )
+    .bind(`${PREFIX}%`)
+    .run();
   await baseEnv.DB.prepare(`DELETE FROM provisioning_providers WHERE code LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();
@@ -381,5 +407,80 @@ describe('creating and deleting a group on the panel', () => {
     // same reason the group listing is not.
     const id = await migratedPanel('inb-rev', { group_ids: [] });
     expect((await get(`/api/v1/admin/panels/${id}/inbounds`, REVIEWER)).status).toBe(200);
+  }, 30_000);
+});
+
+/**
+ * Hosts — and the one delete that has to be refused.
+ *
+ * `panel.invalid` never resolves, so what is provable here is the order of the
+ * checks, which is the part that matters: the host guard needs the panel's host
+ * listing to know what a delete would strand, and a guard that gives up and
+ * deletes anyway when it cannot read that listing is worse than no guard. It
+ * refuses instead.
+ */
+describe('hosts on the panel', () => {
+  it('refuses the delete when it cannot read what the delete would empty', async () => {
+    // The listing is unreachable here. The wrong behaviour would be to shrug
+    // and pass the delete through — every tier this host feeds would go quiet
+    // and nothing would have said so.
+    const id = await migratedPanel('host-blind', { group_ids: [2] });
+    await withCredential(id);
+    const res = await del(`/api/v1/admin/panels/${id}/hosts/1`);
+    expect(res.status).toBe(400);
+    const out = (await res.json()) as { error: string; detail: string };
+    expect(out.error).toBe('panel_unavailable');
+    expect(out.detail).toContain('نمی‌دانیم');
+  }, 30_000);
+
+  it('needs a name before it will ask the panel for anything', async () => {
+    const id = await migratedPanel('host-noname', { group_ids: [] });
+    const res = await post(`/api/v1/admin/panels/${id}/hosts`, {
+      inboundTag: 'Shadowsocks TCP',
+      addresses: [],
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('invalid_body');
+  });
+
+  it('takes an empty address list, because an empty one is a real answer', async () => {
+    // A host with no address resolves to the panel's own — the single-server
+    // case. It must get past the schema and fail at the PANEL, not before.
+    const id = await migratedPanel('host-empty-addr', { group_ids: [] });
+    await withCredential(id);
+    const res = await post(`/api/v1/admin/panels/${id}/hosts`, {
+      remark: 'آلمان-۱',
+      inboundTag: 'Shadowsocks TCP',
+      addresses: [],
+    });
+    // Past the schema and into the adapter, which is the whole claim: the
+    // failure is the unreachable `panel.invalid`, NOT a rejected body.
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('panel_refused');
+  }, 30_000);
+
+  it('refuses a REVIEWER on both writes', async () => {
+    const id = await migratedPanel('host-rev', { group_ids: [] });
+    expect(
+      (
+        await post(
+          `/api/v1/admin/panels/${id}/hosts`,
+          { remark: 'x', inboundTag: 'y', addresses: [] },
+          REVIEWER,
+        )
+      ).status,
+    ).toBe(403);
+    expect((await del(`/api/v1/admin/panels/${id}/hosts/1`, REVIEWER)).status).toBe(403);
+  });
+
+  it('lets a REVIEWER read the host list, and answers null rather than empty', async () => {
+    const id = await migratedPanel('host-read', { group_ids: [] });
+    const res = await get(`/api/v1/admin/panels/${id}/hosts`, REVIEWER);
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as { hosts: unknown; reason?: string };
+    // «could not ask» and «has none» are different sentences, and only one of
+    // them should send an operator to add an address that already exists.
+    expect(out.hosts).toBeNull();
+    expect(typeof out.reason).toBe('string');
   }, 30_000);
 });
