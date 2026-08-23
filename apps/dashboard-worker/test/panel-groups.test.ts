@@ -334,6 +334,35 @@ describe('creating and deleting a group on the panel', () => {
     expect(((await res.json()) as { error: string }).error).toBe('group_in_use');
   });
 
+  it('reports which services still ride the panel default', async () => {
+    // The screen draws a tick column and a «فروخته می‌شود در» column side by
+    // side. The tick is the panel's FALLBACK and reaches a customer only
+    // through a service that has no level of its own — so without knowing which
+    // services those are, the two columns describe different things under one
+    // heading and contradict each other: on the live panel `normal` sat
+    // unticked next to «سرویس معمولی».
+    const id = await migratedPanel('inherit', { group_ids: [2] });
+    await productWithGroups(id, 'has-level', [6]);
+    await baseEnv.DB.prepare(
+      `INSERT INTO products (provider_id, code, name, kind, status)
+       VALUES (?1, ?2, 'بدون سطح', 'vpn', 'ACTIVE')`,
+    )
+      .bind(id, `${PREFIX}no-level`)
+      .run();
+
+    const res = await app.request(`/api/v1/admin/panels/${id}/groups`, {}, envAs(ADMIN));
+    const out = (await res.json()) as {
+      selected: number[];
+      inherit: { name: string }[];
+      plans: { name: string; level: string }[];
+    };
+    expect(out.selected).toEqual([2]);
+    // Only the one with no level of its own. A service that chose is not
+    // affected by the tick and must not be listed under it.
+    expect(out.inherit.map((p) => p.name)).toEqual(['بدون سطح']);
+    expect(out.plans.map((p) => p.name)).toContain('سرویس has-level');
+  });
+
   it('refuses when a SERVICE sends it, with nothing on the panel or the plan', async () => {
     // The level this whole change added. «پلاتینیوم» is sold by pointing a
     // PRODUCT at group 6, and that is now the ordinary way a tier is set up —

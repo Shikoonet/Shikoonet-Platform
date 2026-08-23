@@ -807,6 +807,31 @@ export function registerPanelRoutes(
       .bind(id)
       .all<{ id: number; name: string; level: string; groups: unknown }>();
 
+    /**
+     * The services on this panel that do NOT choose their own level.
+     *
+     * They are the only ones the panel's own ticks still decide, and the screen
+     * never said which they were — so the tick column and the «فروخته می‌شود در»
+     * column beside it described two different things under one heading and
+     * contradicted each other on any row where a service named a group the
+     * panel had not ticked.
+     *
+     * Naming them is what makes the default legible. On the test panel it is
+     * three groups at once, so a service with no level of its own lands in all
+     * three — which nobody chose on purpose and nothing said out loud.
+     */
+    const inheriting = await c.env.DB.prepare(
+      `SELECT p.id, p.name
+         FROM products p
+        WHERE p.provider_id = ?1
+          AND p.status <> 'DISABLED'
+          AND NOT (jsonb_exists(p.attrs, 'group_ids') OR jsonb_exists(p.attrs, 'inbounds'))
+        ORDER BY p.sort_order, p.id`,
+    )
+      .bind(id)
+      .all<{ id: number; name: string }>();
+    const inherit = inheriting.results ?? [];
+
     const adapter = adapterFor(row.kind);
     if (!adapter?.listGroups) {
       return c.json({
@@ -816,6 +841,7 @@ export function registerPanelRoutes(
         untestable: true,
         reason: `یک پنل «${row.kind}» گروه ندارد.`,
         plans: overrides.results ?? [],
+        inherit,
       });
     }
 
@@ -829,6 +855,7 @@ export function registerPanelRoutes(
         available: null,
         reason: `اعتبارنامهٔ ذخیره‌شده باز نشد: ${(err as Error).message}`,
         plans: overrides.results ?? [],
+        inherit,
       });
     }
     if (!row.base_url || !credentials) {
@@ -838,6 +865,7 @@ export function registerPanelRoutes(
         available: null,
         reason: row.base_url ? 'این پنل هنوز رمزی ندارد.' : 'آدرس پنل وارد نشده است.',
         plans: overrides.results ?? [],
+        inherit,
       });
     }
 
@@ -857,6 +885,7 @@ export function registerPanelRoutes(
       available: result.ok ? result.groups : null,
       ...(result.ok ? {} : { reason: result.reason }),
       plans: overrides.results ?? [],
+        inherit,
     });
   });
 

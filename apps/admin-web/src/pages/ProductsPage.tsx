@@ -1039,22 +1039,27 @@ function TierPicker({
   onChange: (next: number[] | null) => void;
 }) {
   const [groups, setGroups] = useState<PanelGroupItem[] | null>(null);
+  /** What this panel sends when a service does not decide. */
+  const [fallback, setFallback] = useState<number[]>([]);
   const [reason, setReason] = useState<string | null>(null);
 
   useEffect(() => {
     if (providerId === '') {
       setGroups(null);
+      setFallback([]);
       setReason(null);
       return;
     }
     let live = true;
     setGroups(null);
+    setFallback([]);
     setReason(null);
     api
       .panelGroups(Number(providerId))
       .then((d) => {
         if (!live) return;
         setGroups(d.available);
+        setFallback(d.selected);
         setReason(d.available === null ? (d.reason ?? 'فهرست گروه‌ها از پنل خوانده نشد.') : null);
       })
       .catch((e) => {
@@ -1104,7 +1109,16 @@ function TierPicker({
           </div>
           <p className="muted">
             {value === null
-              ? 'دست‌نخورده — هرچه در «مدیریت پنل‌ها» تیک خورده باشد فرستاده می‌شود.'
+              ? // Named, not pointed at. «هرچه در مدیریت پنل‌ها تیک خورده باشد»
+                // is true and useless — it sends the operator to another screen
+                // to find out what this one is about to do, and on a panel whose
+                // default is three groups at once, what they land in is three
+                // levels at once.
+                fallback.length === 0
+                ? 'این سرویس هیچ گروهی نمی‌فرستد — پنل هم پیش‌فرضی ندارد. مشتری کانفیگی نمی‌گیرد.'
+                : `سطحی انتخاب نشده، پس پیش‌فرض پنل می‌رود: ${fallback
+                    .map((id) => groups?.find((g) => g.id === id)?.name ?? `#${id}`)
+                    .join('، ')}`
               : value.length === 0
                 ? 'هیچ گروهی فرستاده نمی‌شود. اگر منظورتان پیش‌فرض پنل است، «برگرداندن به پیش‌فرض پنل» را بزنید.'
                 : `این سرویس در ${value.length} گروه ساخته می‌شود.`}

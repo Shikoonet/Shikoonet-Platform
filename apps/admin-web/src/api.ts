@@ -493,6 +493,12 @@ export interface PanelGroups {
    * plan of one.
    */
   plans: Array<{ id: number; name: string; level: 'PRODUCT' | 'PLAN'; groups: unknown }>;
+  /**
+   * The services on this panel with no level of their own — the only ones the
+   * panel's ticks still decide. Empty means the ticks decide nothing at all,
+   * which a screen that draws them as the answer has to say out loud.
+   */
+  inherit: Array<{ id: number; name: string }>;
 }
 
 export interface PanelItem {

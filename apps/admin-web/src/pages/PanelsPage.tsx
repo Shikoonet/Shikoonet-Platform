@@ -913,7 +913,7 @@ function PanelGroupsSection({
       if (editing === 0) {
         const r = await api.createPanelGroup(panel.id, spec);
         setDone(
-          `گروه «${r.group.name}» روی پنل ساخته شد. تا وقتی تیک «می‌فروشیم» را نزنید و ذخیره نکنید، هیچ مشتری‌ای آن را نمی‌گیرد.`,
+          `گروه «${r.group.name}» روی پنل ساخته شد. تا وقتی سرویسی در «محصولات» آن را به‌عنوان سطح خودش نگیرد — یا این‌جا پیش‌فرض پنل نشود — هیچ مشتری‌ای آن را نمی‌گیرد.`,
         );
       } else if (editing !== null) {
         await api.updatePanelGroup(panel.id, editing, spec);
@@ -997,7 +997,14 @@ function PanelGroupsSection({
    */
   function soldBy(id: number): string[] {
     const via: string[] = [];
-    if (data !== null && data.selected.includes(id)) via.push('پیش‌فرض پنل');
+    // The panel's tick only reaches a customer through a service that has no
+    // level of its own. Saying «پیش‌فرض پنل» when no such service exists is how
+    // this column came to disagree with the tick beside it — one of them
+    // describing what is configured, the other what actually happens.
+    const riders = data?.inherit ?? [];
+    if (data !== null && data.selected.includes(id) && riders.length > 0) {
+      via.push(`پیش‌فرض پنل (${riders.map((p) => p.name).join('، ')})`);
+    }
     for (const pl of data?.plans ?? []) {
       if (!Array.isArray(pl.groups) || !(pl.groups as unknown[]).includes(id)) continue;
       via.push(pl.level === 'PRODUCT' ? `سرویس ${pl.name}` : `پلن ${pl.name}`);
@@ -1008,9 +1015,10 @@ function PanelGroupsSection({
   return (
     <>
       <p className="muted" style={{ marginBlockStart: 0 }}>
-        گروه، همان «سطح» محصول است. وقتی مشتری از این پنل خرید می‌کند، اکانتش در گروه‌های تیک‌خورده
-        ساخته می‌شود، و اینباندهای آن گروه‌ها همان چیزی است که در اشتراکش می‌بیند. فهرست از خودِ پنل
-        خوانده می‌شود، نه از تنظیمات ما.
+        گروه، همان «سطح» محصول است، و <b>هر سرویس سطح خودش را دارد</b> — در «محصولات» انتخابش
+        می‌کنید. تیک‌های این‌جا فقط <b>پیش‌فرض</b>اند: تنها سرویس‌هایی را می‌سازند که خودشان سطحی
+        نگرفته‌اند. ستون «فروخته می‌شود در» می‌گوید واقعاً چه کسی در هر گروه می‌افتد. فهرست از خودِ
+        پنل خوانده می‌شود، نه از تنظیمات ما.
       </p>
 
       <div ref={noticeRef}>
@@ -1069,7 +1077,7 @@ function PanelGroupsSection({
             <table className="app-table">
               <thead>
                 <tr>
-                  <th>می‌فروشیم</th>
+                  <th>پیش‌فرض پنل</th>
                   <th>گروه</th>
                   <th>شناسه</th>
                   <th>اینباند</th>
