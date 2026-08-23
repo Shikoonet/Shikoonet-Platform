@@ -68,14 +68,8 @@ describe('every button we draw', () => {
     menu.mainMenu(CUSTOMER),
     menu.mainMenu(RESELLER),
     menu.productMenu([
-      { productId: 1, name: 'یک', plans: 2, fromPriceIrr: 1_000_000, providerName: 'پ' },
-      {
-        productId: 999_999_999,
-        name: 'دو',
-        plans: 1,
-        fromPriceIrr: 2_000_000,
-        providerName: 'پ',
-      },
+      { productId: 1, name: 'یک', providerName: 'پ' },
+      { productId: 999_999_999, name: 'دو', providerName: 'پ' },
     ]),
     menu.planMenu([PLAN]),
     menu.planMenu([]),
@@ -123,40 +117,41 @@ describe('every button we draw', () => {
 
 const SERVICE: CatalogProduct = {
   productId: 7,
-  name: '۱ماهه - ۵۰ گیگ',
-  plans: 1,
-  fromPriceIrr: 1_950_000,
+  name: 'پلاتینیوم',
   providerName: '🥇 سرویس VIP',
 };
 
 describe('the service list', () => {
-  it('adds the price when the name does not carry one', () => {
+  it('is names, and nothing else', () => {
+    // A level does not have a price. A service holding three sizes has three
+    // of them, and quoting the cheapest with «از» — which this drew at first —
+    // puts a number on the button the customer cannot find on the next screen.
+    // A one-plan service does have a single price, but quoting it on some rows
+    // and not others makes two rows that mean different things look the same.
     const [row] = menu.productMenu([SERVICE]);
-    expect(row?.[0]?.text).toBe('۱ماهه - ۵۰ گیگ — 195,000 تومان');
+    expect(row?.[0]?.text).toBe('پلاتینیوم');
     expect(row?.[0]?.callback_data).toBe('prd:7');
   });
 
-  it('does not repeat a price the migrated name already spells out', () => {
-    // What the live bot showed on 2026-08-12: '...-195.000ت 🚀 — 195,000 تومان'.
+  it('puts no price on any row, whatever the sizes behind it cost', () => {
+    const rows = menu.productMenu([
+      SERVICE,
+      { ...SERVICE, productId: 8, name: 'طلایی' },
+      { ...SERVICE, productId: 9, name: 'معمولی' },
+    ]);
+    for (const label of rows.flat().map((b) => b.text)) {
+      expect(label).not.toMatch(/\d/);
+      expect(label).not.toContain('تومان');
+      expect(label).not.toContain('از ');
+    }
+  });
+
+  it('leaves a migrated name alone, price and all', () => {
+    // The importer typed the price into the name because the legacy schema had
+    // nowhere else for it. That is the shop's own text, not ours to edit.
     const migrated = { ...SERVICE, name: '1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀' };
     const [row] = menu.productMenu([migrated]);
     expect(row?.[0]?.text).toBe('1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀');
-  });
-
-  it('always quotes a discounted customer their own price', () => {
-    // The name says 195.000, which is not what this customer pays. Production
-    // shows the name alone here and quotes a price the customer will not be
-    // charged.
-    const migrated = { ...SERVICE, name: '1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀' };
-    const [row] = menu.productMenu([migrated], 15);
-    expect(row?.[0]?.text).toContain('165,750 تومان');
-  });
-
-  it('says «از» only when there is more than one size behind the button', () => {
-    const [one] = menu.productMenu([SERVICE]);
-    expect(one?.[0]?.text).not.toContain('از');
-    const [many] = menu.productMenu([{ ...SERVICE, plans: 3 }]);
-    expect(many?.[0]?.text).toContain('از 195,000 تومان');
   });
 
   it('names the panel only on a service whose name is not unique', () => {

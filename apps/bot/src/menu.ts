@@ -426,19 +426,22 @@ export function choosePlan(productName: string): string {
  * so the eight customers with a standing discount read the full price on the
  * button and a different one at checkout.
  */
-function priced(name: string, listedIrr: number, price: Price, prefix = ''): string {
+function priced(name: string, listedIrr: number, price: Price): string {
   const quoted = price.discountIrr === 0 && nameMentionsPrice(name, listedIrr);
-  return quoted ? name : `${name} — ${prefix}${formatToman(price.totalIrr)}`;
+  return quoted ? name : `${name} — ${formatToman(price.totalIrr)}`;
 }
 
 /**
  * One row per service — پلاتینیوم, طلایی, معمولی. The shop's first screen.
  *
- * The cheapest plan is quoted with «از», because a service holding several
- * plans has no single price and a bare number on the button would be one the
- * customer cannot then find on the next screen. A service holding exactly one
- * plan has a price, so it is quoted flat — and that is the whole of the legacy
- * shop's button, unchanged, for the catalogue that has one plan per product.
+ * Names only. This screen picks a LEVEL, and a level does not have a price: a
+ * service holding three sizes has three of them, and quoting the cheapest with
+ * «از» — which is what this drew at first — puts a number on the button that
+ * the customer then cannot find on the next screen. A service holding one plan
+ * does have a single price, but quoting it on some rows and not others makes a
+ * list where two rows mean different things while looking the same.
+ *
+ * Prices belong one screen down, where every row is a real, payable amount.
  *
  * The panel's name is appended ONLY to a service whose name is not unique in
  * this list. One panel is the shop today and putting «(پنل تست)» on every row
@@ -446,23 +449,19 @@ function priced(name: string, listedIrr: number, price: Price, prefix = ''): str
  * otherwise draw the same button twice, which is the defect this whole screen
  * was built to remove.
  */
-export function productMenu(products: CatalogProduct[], discountPercent = 0): InlineKeyboard {
+export function productMenu(products: CatalogProduct[]): InlineKeyboard {
   const seen = new Map<string, number>();
   for (const p of products) seen.set(p.name, (seen.get(p.name) ?? 0) + 1);
   return withChrome(
-    products.map((product) => {
-      const price = priceForUser(product.fromPriceIrr, discountPercent);
-      const name =
-        (seen.get(product.name) ?? 0) > 1
-          ? `${product.name} (${product.providerName})`
-          : product.name;
-      return [
-        {
-          text: priced(name, product.fromPriceIrr, price, product.plans > 1 ? 'از ' : ''),
-          callback_data: encode('prd', product.productId),
-        },
-      ];
-    }),
+    products.map((product) => [
+      {
+        text:
+          (seen.get(product.name) ?? 0) > 1
+            ? `${product.name} (${product.providerName})`
+            : product.name,
+        callback_data: encode('prd', product.productId),
+      },
+    ]),
     'products',
   );
 }

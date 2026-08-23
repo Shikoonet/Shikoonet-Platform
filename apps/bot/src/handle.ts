@@ -2014,7 +2014,7 @@ async function handleCallback(
       if (products.length === 0) {
         return screen(menu.SHOP_EMPTY, menu.mainMenu(user));
       }
-      return screen(menu.CHOOSE_PRODUCT, menu.productMenu(products, user.discount_percent));
+      return screen(menu.CHOOSE_PRODUCT, menu.productMenu(products));
     }
 
     case 'panel': {
@@ -2030,7 +2030,7 @@ async function handleCallback(
         // answer for both.
         return screen(menu.PANEL_EMPTY, menu.productMenu([]));
       }
-      return screen(menu.CHOOSE_PRODUCT, menu.productMenu(products, user.discount_percent));
+      return screen(menu.CHOOSE_PRODUCT, menu.productMenu(products));
     }
 
     case 'prd': {

@@ -74,10 +74,6 @@ const PURCHASABLE = `
 export interface CatalogProduct {
   productId: number;
   name: string;
-  /** How many plans this customer can buy inside it. Never zero. */
-  plans: number;
-  /** The cheapest of them, before this customer's own discount. */
-  fromPriceIrr: number;
   /**
    * The panel it is delivered from.
    *
@@ -90,7 +86,7 @@ export interface CatalogProduct {
 }
 
 /**
- * The services this customer can buy, cheapest plan quoted.
+ * The services this customer can buy.
  *
  * Across every panel, because the shop's first question is «which level», not
  * «which location». The panel is still what delivers, and the plan page still
@@ -110,10 +106,12 @@ export async function productsForUser(
 ): Promise<CatalogProduct[]> {
   const rows = await db
     .prepare(
+      // No price and no plan count in the SELECT: this screen picks a LEVEL,
+      // and a level does not have one price. The JOIN and the GROUP BY stay —
+      // they are what keeps a service with nothing sellable inside it off the
+      // list, which is a rule about visibility rather than about money.
       `SELECT p.id                AS product_id,
               p.name              AS name,
-              COUNT(pl.id)::int   AS plans,
-              MIN(pl.price_irr)   AS from_price_irr,
               pr.name             AS provider_name
          FROM products p
          JOIN product_plans pl          ON pl.product_id = p.id
@@ -127,18 +125,10 @@ export async function productsForUser(
         ORDER BY pr.sort_order, pr.id, p.sort_order, p.id`,
     )
     .bind(userId, providerId ?? null)
-    .all<{
-      product_id: number;
-      name: string;
-      plans: number;
-      from_price_irr: number;
-      provider_name: string;
-    }>();
+    .all<{ product_id: number; name: string; provider_name: string }>();
   return rows.results.map((r) => ({
     productId: r.product_id,
     name: r.name,
-    plans: r.plans,
-    fromPriceIrr: Number(r.from_price_irr),
     providerName: r.provider_name,
   }));
 }

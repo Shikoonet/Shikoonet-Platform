@@ -322,11 +322,10 @@ describe('a panel that sells more than one level', () => {
     const shop = await handleUpdate(db, press(updateId + 1, telegramId, 'buy'));
     const services = shop.replies[0]?.keyboard?.flat() ?? [];
     const row = services.find((b) => b.callback_data === `prd:${platinum}`);
-    expect(row, 'the service is on the panel screen').toBeDefined();
-    // «از», because three sizes have no single price. A bare number here is one
-    // the customer then cannot find on the next screen.
-    expect(row?.text).toContain('از');
-    expect(row?.text).toContain('پلاتینیوم');
+    expect(row, 'the service is on the shop screen').toBeDefined();
+    // The name and nothing else. Three sizes have three prices, so any number
+    // printed here is one the customer cannot find on the next screen.
+    expect(row?.text).toBe('پلاتینیوم');
 
     const inside = await handleUpdate(db, press(updateId + 2, telegramId, `prd:${platinum}`));
     expect(inside.replies[0]?.text).toContain('پلاتینیوم');
