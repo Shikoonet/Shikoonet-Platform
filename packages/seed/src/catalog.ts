@@ -58,6 +58,16 @@ interface ProviderSpec {
   status?: 'ACTIVE' | 'DISABLED';
 }
 
+interface PlanSpec {
+  name: string;
+  /** IRR. Toman only ever exists at the bot's edge. */
+  priceIrr: number;
+  durationDays: number | null;
+  /** NULL = unmetered. */
+  volumeGb: number | null;
+  userLimit: number | null;
+}
+
 interface ProductSpec {
   code: string;
   name: string;
@@ -68,12 +78,22 @@ interface ProductSpec {
   /** Legacy one_buy_status: shown only to a customer who has never bought. */
   firstPurchaseOnly?: boolean;
   resellersOnly?: boolean;
-  /** IRR. Toman only ever exists at the bot's edge. */
-  priceIrr: number;
-  durationDays: number | null;
-  /** NULL = unmetered. */
-  volumeGb: number | null;
-  userLimit: number | null;
+  /**
+   * The groups on the panel an account bought here joins — the tier.
+   *
+   * Left out by every migrated-shaped row on purpose: those inherit the panel's
+   * default, which is the only thing that existed before a product could carry
+   * its own.
+   */
+  groupIds?: number[];
+  /**
+   * What is actually for sale, cheapest first.
+   *
+   * A legacy `product` row IS one plan, so most of these hold exactly one and
+   * its name is the product's. `sim-vip-platinum` holds three, which is the
+   * shape the shop grew: one service, several sizes inside it.
+   */
+  plans: PlanSpec[];
 }
 
 /**
@@ -106,20 +126,18 @@ const PRODUCTS: ProductSpec[] = [
     name: '۱ماهه - ۲۰ گیگ - چند کاربر',
     kind: 'vpn',
     provider: 'sim-vip',
-    priceIrr: 1_000_000,
-    durationDays: 30,
-    volumeGb: 20,
-    userLimit: 3,
+    plans: [
+      { name: '۱ماهه - ۲۰ گیگ - چند کاربر', priceIrr: 1_000_000, durationDays: 30, volumeGb: 20, userLimit: 3 },
+    ],
   },
   {
     code: 'sim-vip-1m-50',
     name: '۱ماهه - ۵۰ گیگ - چند کاربر',
     kind: 'vpn',
     provider: 'sim-vip',
-    priceIrr: 1_950_000,
-    durationDays: 30,
-    volumeGb: 50,
-    userLimit: 3,
+    plans: [
+      { name: '۱ماهه - ۵۰ گیگ - چند کاربر', priceIrr: 1_950_000, durationDays: 30, volumeGb: 50, userLimit: 3 },
+    ],
   },
   {
     // The free row. Exercises the price=0 branch, which is the one that gets
@@ -129,10 +147,9 @@ const PRODUCTS: ProductSpec[] = [
     kind: 'vpn',
     provider: 'sim-vip',
     firstPurchaseOnly: true,
-    priceIrr: 0,
-    durationDays: 1,
-    volumeGb: 1,
-    userLimit: 1,
+    plans: [
+      { name: 'اکانت تست - ۱ روزه - ۱ گیگ', priceIrr: 0, durationDays: 1, volumeGb: 1, userLimit: 1 },
+    ],
   },
   {
     code: 'sim-vip-hidden',
@@ -140,10 +157,9 @@ const PRODUCTS: ProductSpec[] = [
     kind: 'vpn',
     provider: 'sim-vip',
     status: 'HIDDEN',
-    priceIrr: 5_000_000,
-    durationDays: 30,
-    volumeGb: 100,
-    userLimit: 3,
+    plans: [
+      { name: '۱ماهه - ۱۰۰ گیگ - پنهان', priceIrr: 5_000_000, durationDays: 30, volumeGb: 100, userLimit: 3 },
+    ],
   },
   {
     code: 'sim-vip-reseller',
@@ -151,40 +167,57 @@ const PRODUCTS: ProductSpec[] = [
     kind: 'vpn',
     provider: 'sim-vip',
     resellersOnly: true,
-    priceIrr: 15_000_000,
-    durationDays: 30,
-    volumeGb: 300,
-    userLimit: 10,
+    plans: [
+      { name: 'پک نمایندگی - ۱۰ کاربر', priceIrr: 15_000_000, durationDays: 30, volumeGb: 300, userLimit: 10 },
+    ],
+  },
+  {
+    // The shape the shop grew into: one SERVICE holding three sizes, delivered
+    // into its own groups on the panel.
+    //
+    // Every other row here is the legacy shape — one product, one plan, the
+    // price typed into the name — and a fixture made only of those cannot test
+    // the level between a panel and a plan at all. It was missing in exactly
+    // that way: the shop drew plans straight off a panel, every button carried
+    // its PRODUCT's name, and `group_ids` existed only on the panel, so one
+    // panel could sell exactly one tier however many groups it had.
+    code: 'sim-vip-platinum',
+    name: 'پلاتینیوم',
+    kind: 'vpn',
+    provider: 'sim-vip',
+    groupIds: [6, 7],
+    plans: [
+      { name: '۳۰ گیگ - یک‌ماهه', priceIrr: 1_500_000, durationDays: 30, volumeGb: 30, userLimit: 2 },
+      { name: '۵۰ گیگ - یک‌ماهه', priceIrr: 2_200_000, durationDays: 30, volumeGb: 50, userLimit: 2 },
+      { name: '۱۰۰ گیگ - سه‌ماهه', priceIrr: 5_400_000, durationDays: 90, volumeGb: 100, userLimit: 3 },
+    ],
   },
   {
     code: 'sim-gold-10',
     name: '۱۰ گیگ - بدون محدودیت زمان',
     kind: 'vpn',
     provider: 'sim-gold',
-    priceIrr: 1_000_000,
-    durationDays: 365,
-    volumeGb: 10,
-    userLimit: null,
+    plans: [
+      { name: '۱۰ گیگ - بدون محدودیت زمان', priceIrr: 1_000_000, durationDays: 365, volumeGb: 10, userLimit: null },
+    ],
   },
   {
     code: 'sim-shop-spotify',
     name: 'اسپاتیفای - ۱ ماهه',
     kind: 'spotify',
     provider: 'sim-shop',
-    priceIrr: 2_500_000,
-    durationDays: 30,
-    volumeGb: null,
-    userLimit: 1,
+    plans: [
+      { name: 'اسپاتیفای - ۱ ماهه', priceIrr: 2_500_000, durationDays: 30, volumeGb: null, userLimit: 1 },
+    ],
   },
   {
     code: 'sim-shop-ai',
     name: 'اکانت هوش مصنوعی - ۱ ماهه',
     kind: 'ai_account',
     provider: 'sim-shop',
-    priceIrr: 9_000_000,
-    durationDays: 30,
-    volumeGb: null,
-    userLimit: 1,
+    plans: [
+      { name: 'اکانت هوش مصنوعی - ۱ ماهه', priceIrr: 9_000_000, durationDays: 30, volumeGb: null, userLimit: 1 },
+    ],
   },
   {
     code: 'sim-empty-hidden',
@@ -192,20 +225,18 @@ const PRODUCTS: ProductSpec[] = [
     kind: 'manual',
     provider: 'sim-empty',
     status: 'HIDDEN',
-    priceIrr: 1_000_000,
-    durationDays: 30,
-    volumeGb: null,
-    userLimit: 1,
+    plans: [
+      { name: 'تنها محصول این لوکیشن، و پنهان', priceIrr: 1_000_000, durationDays: 30, volumeGb: null, userLimit: 1 },
+    ],
   },
   {
     code: 'sim-off-1m',
     name: '۱ماهه - روی لوکیشن غیرفعال',
     kind: 'vpn',
     provider: 'sim-off',
-    priceIrr: 1_000_000,
-    durationDays: 30,
-    volumeGb: 20,
-    userLimit: 1,
+    plans: [
+      { name: '۱ماهه - روی لوکیشن غیرفعال', priceIrr: 1_000_000, durationDays: 30, volumeGb: 20, userLimit: 1 },
+    ],
   },
 ];
 
@@ -283,12 +314,15 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
 
     await db
       .prepare(
-        `INSERT INTO products (code, name, kind, provider_id, status, once_per_user, resellers_only, sort_order)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        `INSERT INTO products (code, name, kind, provider_id, status, once_per_user, resellers_only, sort_order, attrs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                 CASE WHEN ?9::jsonb IS NULL THEN '{}'::jsonb
+                      ELSE jsonb_build_object('group_ids', ?9::jsonb) END)
          ON CONFLICT (code) DO UPDATE SET
            name = EXCLUDED.name, kind = EXCLUDED.kind, provider_id = EXCLUDED.provider_id,
            status = EXCLUDED.status, once_per_user = EXCLUDED.once_per_user,
-           resellers_only = EXCLUDED.resellers_only, sort_order = EXCLUDED.sort_order`,
+           resellers_only = EXCLUDED.resellers_only, sort_order = EXCLUDED.sort_order,
+           attrs = EXCLUDED.attrs`,
       )
       .bind(
         prod.code,
@@ -299,6 +333,7 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
         prod.firstPurchaseOnly ?? false,
         prod.resellersOnly ?? false,
         i,
+        prod.groupIds === undefined ? null : JSON.stringify(prod.groupIds),
       )
       .run();
     const row = await db
@@ -309,22 +344,48 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
 
     // product_plans has no natural unique key in the schema — (product_id, name)
     // is what identifies a plan to a customer, so that is what makes the
-    // re-run a no-op. The plan carries the product's own name, because in the
-    // legacy shape being migrated from they are the same thing.
-    const existing = await db
-      .prepare(`SELECT id FROM product_plans WHERE product_id = ?1 AND name = ?2`)
-      .bind(row.id, prod.name)
-      .first<{ id: number }>();
-    if (!existing) {
-      await db
-        .prepare(
-          `INSERT INTO product_plans (product_id, name, price_irr, duration_days, volume_gb, user_limit, sort_order)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)`,
-        )
-        .bind(row.id, prod.name, prod.priceIrr, prod.durationDays, prod.volumeGb, prod.userLimit)
-        .run();
+    // re-run a no-op. For a legacy-shaped row the one plan carries the
+    // product's own name, because there they are the same thing.
+    //
+    // Plans this file no longer lists are removed, for the same reason
+    // `pruneStaleFixture` exists one level up: a database seeded before a
+    // service was reshaped otherwise keeps selling the old sizes, ACTIVE, in a
+    // real customer's shop on the test bot.
+    await db
+      .prepare(
+        `DELETE FROM product_plans WHERE product_id = ?1 AND name <> ALL($2)`,
+      )
+      .bind(
+        row.id,
+        prod.plans.map((pl) => pl.name),
+      )
+      .run();
+    for (const [j, pl] of prod.plans.entries()) {
+      const existing = await db
+        .prepare(`SELECT id FROM product_plans WHERE product_id = ?1 AND name = ?2`)
+        .bind(row.id, pl.name)
+        .first<{ id: number }>();
+      if (existing) {
+        await db
+          .prepare(
+            `UPDATE product_plans
+                SET price_irr = ?3, duration_days = ?4, volume_gb = ?5, user_limit = ?6,
+                    sort_order = ?7, status = 'ACTIVE', updated_at = now()
+              WHERE id = ?1 AND product_id = ?2`,
+          )
+          .bind(existing.id, row.id, pl.priceIrr, pl.durationDays, pl.volumeGb, pl.userLimit, j)
+          .run();
+      } else {
+        await db
+          .prepare(
+            `INSERT INTO product_plans (product_id, name, price_irr, duration_days, volume_gb, user_limit, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+          )
+          .bind(row.id, pl.name, pl.priceIrr, pl.durationDays, pl.volumeGb, pl.userLimit, j)
+          .run();
+      }
+      plans++;
     }
-    plans++;
   }
 
   await seedContent(db);

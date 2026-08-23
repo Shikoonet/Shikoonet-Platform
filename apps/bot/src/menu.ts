@@ -33,7 +33,7 @@
  */
 
 import { encode, encodeRef } from './callback.js';
-import type { CatalogPlan, Panel } from './catalog.js';
+import type { CatalogPlan, CatalogProduct, Panel } from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
 import {
@@ -95,9 +95,11 @@ export let GATE_RULES = DEFAULT_TEXTS.raw('GATE_RULES');
 export let GATE_RULES_ACCEPTED = DEFAULT_TEXTS.raw('GATE_RULES_ACCEPTED');
 export let SOON = DEFAULT_TEXTS.raw('SOON');
 export let CHOOSE_PANEL = DEFAULT_TEXTS.raw('CHOOSE_PANEL');
-export let CHOOSE_PLAN = DEFAULT_TEXTS.raw('CHOOSE_PLAN');
+export let CHOOSE_PRODUCT = DEFAULT_TEXTS.raw('CHOOSE_PRODUCT');
 /** Shown when a panel that was listed a moment ago now has nothing on it. */
 export let PANEL_EMPTY = DEFAULT_TEXTS.raw('PANEL_EMPTY');
+/** The same, one level down: a service whose plans went away between two taps. */
+export let PRODUCT_EMPTY = DEFAULT_TEXTS.raw('PRODUCT_EMPTY');
 /** No panel has anything this customer can buy. */
 export let SHOP_EMPTY = DEFAULT_TEXTS.raw('SHOP_EMPTY');
 /** The one answer to a plan that is gone, hidden, or was never theirs to see. */
@@ -258,8 +260,9 @@ export function applyContent(content: BotContent): void {
   GATE_RULES_ACCEPTED = t.raw('GATE_RULES_ACCEPTED');
   SOON = t.raw('SOON');
   CHOOSE_PANEL = t.raw('CHOOSE_PANEL');
-  CHOOSE_PLAN = t.raw('CHOOSE_PLAN');
+  CHOOSE_PRODUCT = t.raw('CHOOSE_PRODUCT');
   PANEL_EMPTY = t.raw('PANEL_EMPTY');
+  PRODUCT_EMPTY = t.raw('PRODUCT_EMPTY');
   SHOP_EMPTY = t.raw('SHOP_EMPTY');
   PLAN_GONE = t.raw('PLAN_GONE');
   NOT_REGISTERED = t.raw('NOT_REGISTERED');
@@ -400,6 +403,17 @@ export function gateRulesMenu(): InlineKeyboard {
   return buildMenu('gateRules', layout('gateRules'));
 }
 
+/**
+ * The plan list's title, which names the service it belongs to.
+ *
+ * A function rather than one of the exported strings above, because it renders
+ * a placeholder: without the name on it, three plan lists reached from three
+ * different services are three identical screens.
+ */
+export function choosePlan(productName: string): string {
+  return TEXTS_NOW.render('CHOOSE_PLAN', { product: productName });
+}
+
 export function panelMenu(panels: Panel[]): InlineKeyboard {
   return withChrome(
     panels.map((panel) => [{ text: panel.name, callback_data: encode('panel', panel.id) }]),
@@ -408,12 +422,12 @@ export function panelMenu(panels: Panel[]): InlineKeyboard {
 }
 
 /**
- * One row per plan.
+ * How a shop button quotes a price.
  *
- * The price is appended only when the name does not already carry it. Every
- * migrated product has it typed in ('...-195.000ت') because the legacy schema
- * had nowhere else to put it, and appending ours makes the button say the
- * number twice — seen on the live bot on 2026-08-12.
+ * Appended only when the name does not already carry it. Every migrated product
+ * has it typed in ('...-195.000ت') because the legacy schema had nowhere else to
+ * put it, and appending ours makes the button say the number twice — seen on the
+ * live bot on 2026-08-12.
  *
  * A discounted customer always gets the price appended, whatever the name says,
  * because then the name is quoting a price that is not theirs. Production has
@@ -421,19 +435,76 @@ export function panelMenu(panels: Panel[]): InlineKeyboard {
  * so the eight customers with a standing discount read the full price on the
  * button and a different one at checkout.
  */
-export function planMenu(plans: CatalogPlan[], discountPercent = 0): InlineKeyboard {
+function priced(name: string, listedIrr: number, price: Price, prefix = ''): string {
+  const quoted = price.discountIrr === 0 && nameMentionsPrice(name, listedIrr);
+  return quoted ? name : `${name} — ${prefix}${formatToman(price.totalIrr)}`;
+}
+
+/**
+ * One row per service — پلاتینیوم, طلایی, معمولی.
+ *
+ * The cheapest plan is quoted with «از», because a service holding several
+ * plans has no single price and a bare number on the button would be one the
+ * customer cannot then find on the next screen. A service holding exactly one
+ * plan has a price, so it is quoted flat — and that is the whole of the legacy
+ * shop's button, unchanged, for the catalogue that has one plan per product.
+ */
+export function productMenu(products: CatalogProduct[], discountPercent = 0): InlineKeyboard {
+  return withChrome(
+    products.map((product) => {
+      const price = priceForUser(product.fromPriceIrr, discountPercent);
+      return [
+        {
+          text: priced(product.name, product.fromPriceIrr, price, product.plans > 1 ? 'از ' : ''),
+          callback_data: encode('prd', product.productId),
+        },
+      ];
+    }),
+    'products',
+  );
+}
+
+/**
+ * One row per plan, inside one service.
+ *
+ * Labelled with the PLAN's name, not the product's. Every button on this screen
+ * belongs to the same product, so labelling by product drew the same words on
+ * every row and the only thing telling «۳۰ گیگ» from «۵۰ گیگ» apart was a price
+ * — which a migrated name already quotes, so two plans of one product could
+ * come out as literally the same button twice.
+ *
+ * `providerId` is what «بازگشت به سرویس‌ها» goes to. Optional only so an empty
+ * list — the screen for a service that emptied out between two taps — can be
+ * drawn without inventing a panel to return to.
+ */
+export function planMenu(
+  plans: CatalogPlan[],
+  discountPercent = 0,
+  providerId?: number,
+): InlineKeyboard {
   return withChrome(
     plans.map((plan) => {
       const price = priceForUser(plan.priceIrr, discountPercent);
-      const quoted = price.discountIrr === 0 && nameMentionsPrice(plan.productName, plan.priceIrr);
       return [
         {
-          text: quoted ? plan.productName : `${plan.productName} — ${formatToman(price.totalIrr)}`,
+          text: priced(plan.planName, plan.priceIrr, price),
           callback_data: encode('plan', plan.planId),
         },
       ];
     }),
     'plans',
+    {
+      // ONLY `panel`. `buildMenu` consults this for every button it draws, so
+      // answering for an action this cares nothing about — `menu`, say — sends
+      // «بازگشت به منو» to the panel list instead of the menu. Returning
+      // undefined is what lets the default stand.
+      target: (action) =>
+        action === 'panel'
+          ? providerId === undefined
+            ? encode('buy')
+            : encode('panel', providerId)
+          : undefined,
+    },
   );
 }
 
@@ -488,7 +559,14 @@ export function planDetailMenu(plan: CatalogPlan, applied?: AppliedCode | null):
       action === 'dsx' ? applied != null : action === 'dsc' ? applied == null : true,
     target: (action) =>
       action === 'panel'
-        ? encode('panel', plan.providerId)
+        ? // One step back is the plan list when this service drew one, and the
+          // service list when it did not. A service with a single plan skips
+          // straight from the service list to here, so sending «بازگشت» to a
+          // plan list of one would hand the customer a screen with one button
+          // that leads back to the screen they just left.
+          plan.siblings > 1
+          ? encode('prd', plan.productId)
+          : encode('panel', plan.providerId)
         : action === 'menu'
           ? encode('menu')
           : encode(action as 'order', plan.planId),

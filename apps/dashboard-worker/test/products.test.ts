@@ -689,6 +689,71 @@ describe('POST /api/v1/admin/products/:id', () => {
     expect((await edit(productId, { priceIrr: 5 })).status).toBe(400);
   });
 
+  it('writes the tier a service delivers into, and reads it back', async () => {
+    // «پلاتینیوم» is a product pointed at a group on the panel. Until this
+    // field existed there was nowhere to point it: `group_ids` was readable on
+    // the panel row and on one plan's `attrs`, and no route wrote either — so
+    // one panel could sell exactly one level however many groups it had.
+    const { productId, providerId } = await makeCatalog('tier');
+    expect((await edit(productId, { groupIds: [6, 7] })).status).toBe(200);
+
+    // Read from `products.attrs`, not from the response. The response would
+    // pass this test by echoing the request back.
+    const row = await baseEnv.DB.prepare(`SELECT attrs FROM products WHERE id = ?1`)
+      .bind(productId)
+      .first<{ attrs: Record<string, unknown> }>();
+    expect(row!.attrs['group_ids']).toEqual([6, 7]);
+
+    const listed = await app.request(
+      `/api/v1/admin/products?providerId=${providerId}`,
+      {},
+      envAs(ADMIN),
+    );
+    const items = (await listed.json()) as {
+      items: Array<{ product: { id: number; groupIds: number[] | null } }>;
+    };
+    expect(items.items.find((i) => i.product.id === productId)?.product.groupIds).toEqual([6, 7]);
+  });
+
+  it('tells «no groups at all» apart from «the panel decides»', async () => {
+    // Two different instructions that a single field would collapse into one.
+    // `[]` sends an empty list; null takes the key OUT so `pick()` falls
+    // through to the panel — and an operator who cleared the boxes must not
+    // silently keep selling the old tier.
+    const { productId } = await makeCatalog('tier-clear');
+    await edit(productId, { groupIds: [6] });
+
+    expect((await edit(productId, { groupIds: [] })).status).toBe(200);
+    const emptied = await baseEnv.DB.prepare(`SELECT attrs FROM products WHERE id = ?1`)
+      .bind(productId)
+      .first<{ attrs: Record<string, unknown> }>();
+    expect(emptied!.attrs['group_ids']).toEqual([]);
+
+    expect((await edit(productId, { groupIds: null })).status).toBe(200);
+    const cleared = await baseEnv.DB.prepare(`SELECT attrs FROM products WHERE id = ?1`)
+      .bind(productId)
+      .first<{ attrs: Record<string, unknown> }>();
+    expect(cleared!.attrs).not.toHaveProperty('group_ids');
+  });
+
+  it('leaves the rest of `attrs` alone when only the tier changes', async () => {
+    // `attrs` is the adapter's bag and migrated rows carry more than groups in
+    // it. An overwrite here would drop whatever else the importer wrote.
+    const { productId } = await makeCatalog('tier-merge');
+    await baseEnv.DB.prepare(
+      `UPDATE products SET attrs = jsonb_build_object('proxies', '["vless"]'::jsonb) WHERE id = ?1`,
+    )
+      .bind(productId)
+      .run();
+
+    await edit(productId, { groupIds: [4] });
+    const row = await baseEnv.DB.prepare(`SELECT attrs FROM products WHERE id = ?1`)
+      .bind(productId)
+      .first<{ attrs: Record<string, unknown> }>();
+    expect(row!.attrs['proxies']).toEqual(['vless']);
+    expect(row!.attrs['group_ids']).toEqual([4]);
+  });
+
   it('is refused for a reviewer', async () => {
     const { productId } = await makeCatalog('reviewer-edit');
     expect((await edit(productId, { name: 'تغییر' }, REVIEWER)).status).toBe(403);

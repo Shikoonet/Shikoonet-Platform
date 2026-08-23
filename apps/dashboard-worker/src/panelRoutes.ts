@@ -229,17 +229,27 @@ async function groupIdsInUse(db: D1Database, panelId: number): Promise<Set<numbe
   const own = panel?.config?.['group_ids'] ?? panel?.config?.['inbounds'];
   if (Array.isArray(own)) for (const v of own) if (typeof v === 'number') inUse.add(v);
 
-  const plans = await db
+  // Both levels of override in one query. The SERVICE level is the newer of
+  // the two and it is the one an operator now actually uses — «پلاتینیوم» sells
+  // into group 6 because its product row says so — so leaving it out of this
+  // set would let the delete button remove exactly the group the shop is
+  // selling, which is the failure this guard exists to stop.
+  const overrides = await db
     .prepare(
       `SELECT COALESCE(pl.attrs->'group_ids', pl.attrs->'inbounds') AS groups
          FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
         WHERE p.provider_id = ?1
-          AND (jsonb_exists(pl.attrs, 'group_ids') OR jsonb_exists(pl.attrs, 'inbounds'))`,
+          AND (jsonb_exists(pl.attrs, 'group_ids') OR jsonb_exists(pl.attrs, 'inbounds'))
+        UNION ALL
+       SELECT COALESCE(p.attrs->'group_ids', p.attrs->'inbounds') AS groups
+         FROM products p
+        WHERE p.provider_id = ?1
+          AND (jsonb_exists(p.attrs, 'group_ids') OR jsonb_exists(p.attrs, 'inbounds'))`,
     )
     .bind(panelId)
     .all<{ groups: unknown }>();
-  for (const r of plans.results ?? []) {
+  for (const r of overrides.results ?? []) {
     if (Array.isArray(r.groups)) for (const v of r.groups) if (typeof v === 'number') inUse.add(v);
   }
   return inUse;
@@ -765,10 +775,16 @@ export function registerPanelRoutes(
       ? rawSelected.filter((v): v is number => typeof v === 'number')
       : [];
 
-    // Which plans ignore this panel's choice. `attrs` wins in `pick()`, so a
-    // plan listed here is unaffected by anything saved on this screen.
+    // What ignores this panel's choice. `attrs` wins in `pick()`, so anything
+    // listed here is unaffected by whatever is saved on this screen — and that
+    // is now most of the catalogue, because a service picking its own tier is
+    // the normal case rather than a migrated oddity.
+    //
+    // Services and plans in one list, each saying which it is. The screen shows
+    // «فروخته می‌شود در», and an operator reading it needs to know whether the
+    // thing overriding them is a whole service or one plan inside one.
     const overrides = await c.env.DB.prepare(
-      `SELECT pl.id, pl.name,
+      `SELECT pl.id, pl.name, 'PLAN' AS level,
               COALESCE(pl.attrs->'group_ids', pl.attrs->'inbounds') AS groups
          FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
@@ -780,10 +796,16 @@ export function registerPanelRoutes(
           -- is the adapter doing its job rather than guessing. The function
           -- form has no such collision.
           AND (jsonb_exists(pl.attrs, 'group_ids') OR jsonb_exists(pl.attrs, 'inbounds'))
-        ORDER BY pl.id`,
+        UNION ALL
+       SELECT p.id, p.name, 'PRODUCT' AS level,
+              COALESCE(p.attrs->'group_ids', p.attrs->'inbounds') AS groups
+         FROM products p
+        WHERE p.provider_id = ?1
+          AND (jsonb_exists(p.attrs, 'group_ids') OR jsonb_exists(p.attrs, 'inbounds'))
+        ORDER BY level, id`,
     )
       .bind(id)
-      .all<{ id: number; name: string; groups: unknown }>();
+      .all<{ id: number; name: string; level: string; groups: unknown }>();
 
     const adapter = adapterFor(row.kind);
     if (!adapter?.listGroups) {

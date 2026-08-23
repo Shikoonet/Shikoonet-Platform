@@ -263,6 +263,7 @@ describe('the card-to-card note that names the «paid» button', () => {
     userLimit: 1,
     providerId: 7,
     providerName: 'سیم',
+    siblings: 1,
   };
   const invoice = (): string =>
     menu.checkout('ord0000001', PLAN, 1_950_000, '6037997512345678', null);

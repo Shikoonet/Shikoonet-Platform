@@ -24,6 +24,7 @@ import {
   type CatalogStatus,
   type CategoryRow,
   type PlanRow,
+  type PanelGroupItem,
   type ProviderOption,
 } from '../api.js';
 import { count, irrToToman, toman } from '../format.js';
@@ -413,6 +414,7 @@ function NewProductCard({
   const [description, setDescription] = useState('');
   const [resellersOnly, setResellersOnly] = useState(false);
   const [oncePerUser, setOncePerUser] = useState(false);
+  const [groupIds, setGroupIds] = useState<number[] | null>(null);
   const [planName, setPlanName] = useState('');
   const [planPrice, setPlanPrice] = useState('');
   const [planDays, setPlanDays] = useState('');
@@ -433,6 +435,7 @@ function NewProductCard({
         description: description.trim() === '' ? null : description.trim(),
         resellersOnly,
         oncePerUser,
+        groupIds,
       });
       // A product with no plan is invisible to the bot, so the first plan is
       // part of creating rather than a second trip. It is still optional — a
@@ -539,6 +542,8 @@ function NewProductCard({
           onOnce={setOncePerUser}
         />
       </div>
+
+      <TierPicker providerId={providerId} value={groupIds} onChange={setGroupIds} />
 
       <h4>اولین پلن</h4>
       <div className="filters">
@@ -1006,6 +1011,118 @@ function PlanDrawer({
   );
 }
 
+/**
+ * Which groups on the panel this service delivers into — its «سطح».
+ *
+ * This is the control the shop was missing, and its absence had one specific
+ * consequence: `group_ids` lived only on the panel, so every service sold from
+ * one panel provisioned into the same group and a panel could sell exactly one
+ * tier. Building «پلاتینیوم» and «طلایی» on the panel changed nothing, because
+ * nothing in the catalogue could point at either of them.
+ *
+ * The list is read from the PANEL, never from our own configuration, for the
+ * same reason the panel screen reads it there: a group we remember and a group
+ * the panel has are two different facts, and the one that decides whether a
+ * purchase succeeds is the panel's.
+ *
+ * Untouched means untouched. `value === null` is «پنل تصمیم می‌گیرد» and it is
+ * left alone until an operator actually picks something, so opening a product
+ * to fix a typo in its name never quietly rewrites where it is sold.
+ */
+function TierPicker({
+  providerId,
+  value,
+  onChange,
+}: {
+  providerId: string;
+  value: number[] | null;
+  onChange: (next: number[] | null) => void;
+}) {
+  const [groups, setGroups] = useState<PanelGroupItem[] | null>(null);
+  const [reason, setReason] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (providerId === '') {
+      setGroups(null);
+      setReason(null);
+      return;
+    }
+    let live = true;
+    setGroups(null);
+    setReason(null);
+    api
+      .panelGroups(Number(providerId))
+      .then((d) => {
+        if (!live) return;
+        setGroups(d.available);
+        setReason(d.available === null ? (d.reason ?? 'فهرست گروه‌ها از پنل خوانده نشد.') : null);
+      })
+      .catch((e) => {
+        if (live) setReason(message(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [providerId]);
+
+  if (providerId === '') return null;
+
+  return (
+    <div style={{ marginBlockStart: 12 }}>
+      <label className="form-label">سطح سرویس — گروه‌های پنل</label>
+      <p className="muted" style={{ marginBlockStart: 0 }}>
+        مشتری که این سرویس را می‌خرد، اکانتش در همین گروه‌ها ساخته می‌شود. با این تیک‌ها یک پنل
+        می‌تواند چند سطح بفروشد — پلاتینیوم، طلایی، معمولی — بی‌آنکه پنل تازه‌ای بسازید.
+      </p>
+      {reason !== null && <div className="alert alert-warning">{reason}</div>}
+      {groups !== null && groups.length === 0 && (
+        <div className="alert alert-warning">این پنل هیچ گروهی ندارد.</div>
+      )}
+      {groups !== null && groups.length > 0 && (
+        <>
+          <div className="pick-list">
+            {groups.map((g) => {
+              const on = value !== null && value.includes(g.id);
+              return (
+                <button
+                  key={g.id}
+                  type="button"
+                  className={on ? 'pick pick--on' : 'pick'}
+                  onClick={() =>
+                    onChange(
+                      on
+                        ? (value ?? []).filter((v) => v !== g.id)
+                        : [...(value ?? []), g.id].sort((a, b) => a - b),
+                    )
+                  }
+                >
+                  {g.name}
+                  <span className="muted ltr"> #{g.id}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="muted">
+            {value === null
+              ? 'دست‌نخورده — هرچه در «مدیریت پنل‌ها» تیک خورده باشد فرستاده می‌شود.'
+              : value.length === 0
+                ? 'هیچ گروهی فرستاده نمی‌شود. اگر منظورتان پیش‌فرض پنل است، «برگرداندن به پیش‌فرض پنل» را بزنید.'
+                : `این سرویس در ${value.length} گروه ساخته می‌شود.`}
+            {value !== null && (
+              <>
+                {' '}
+                <button type="button" className="btn btn-sm" onClick={() => onChange(null)}>
+                  برگرداندن به پیش‌فرض پنل
+                </button>
+              </>
+            )}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ProductSection({
   plan,
   providers,
@@ -1031,6 +1148,7 @@ function ProductSection({
   const [description, setDescription] = useState(p.description ?? '');
   const [resellersOnly, setResellersOnly] = useState(p.resellersOnly);
   const [oncePerUser, setOncePerUser] = useState(p.oncePerUser);
+  const [groupIds, setGroupIds] = useState<number[] | null>(p.groupIds);
   const [newPlanName, setNewPlanName] = useState('');
   const [newPlanPrice, setNewPlanPrice] = useState('');
   const [newPlanDays, setNewPlanDays] = useState('');
@@ -1059,6 +1177,7 @@ function ProductSection({
         description: description.trim() === '' ? null : description.trim(),
         resellersOnly,
         oncePerUser,
+        groupIds,
       });
       setDone('محصول ذخیره شد.');
       onChanged();
@@ -1182,6 +1301,8 @@ function ProductSection({
           onAdded={onCategoryAdded}
         />
       </div>
+
+      <TierPicker providerId={providerId} value={groupIds} onChange={setGroupIds} />
 
       <div className="filters">
         <div className="grow">

@@ -96,6 +96,16 @@ async function planWithGroups(panelId: number, label: string, groups: number[]):
     .run();
 }
 
+/** A SERVICE on this panel that carries its own groups — «پلاتینیوم». */
+async function productWithGroups(panelId: number, label: string, groups: number[]): Promise<void> {
+  await baseEnv.DB.prepare(
+    `INSERT INTO products (provider_id, code, name, kind, status, attrs)
+     VALUES (?1, ?2, ?3, 'vpn', 'ACTIVE', ?4::jsonb)`,
+  )
+    .bind(panelId, `${PREFIX}${label}`, `سرویس ${label}`, JSON.stringify({ group_ids: groups }))
+    .run();
+}
+
 /**
  * A panel carrying the legacy spelling, exactly as the importer wrote it.
  *
@@ -320,6 +330,19 @@ describe('creating and deleting a group on the panel', () => {
     const id = await migratedPanel('plan-only', { group_ids: [] });
     await planWithGroups(id, 'vip', [42]);
     const res = await del(`/api/v1/admin/panels/${id}/panel-groups/42`);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe('group_in_use');
+  });
+
+  it('refuses when a SERVICE sends it, with nothing on the panel or the plan', async () => {
+    // The level this whole change added. «پلاتینیوم» is sold by pointing a
+    // PRODUCT at group 6, and that is now the ordinary way a tier is set up —
+    // so a guard reading only the panel's ticks and the plans' overrides would
+    // wave through the delete of exactly the group the shop is selling, and the
+    // next purchase of that service would come back `404 Group not found`.
+    const id = await migratedPanel('service-only', { group_ids: [] });
+    await productWithGroups(id, 'platinum', [6]);
+    const res = await del(`/api/v1/admin/panels/${id}/panel-groups/6`);
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toBe('group_in_use');
   });

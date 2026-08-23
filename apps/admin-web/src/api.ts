@@ -120,6 +120,8 @@ export interface PlanRow {
     categoryId: number | null;
     resellersOnly: boolean;
     oncePerUser: boolean;
+    /** null when this service does not decide and the panel's default applies. */
+    groupIds: number[] | null;
   };
   provider: { id: number; name: string | null; code: string | null; status: string | null } | null;
   categoryName: string | null;
@@ -173,6 +175,14 @@ export interface ProductBody {
   oncePerUser?: boolean;
   sortOrder?: number;
   status?: CatalogStatus;
+  /**
+   * The panel groups an account bought here joins — this service's tier.
+   *
+   * `null` and `[]` are different and both are sent: null hands the decision
+   * back to the panel's own default, `[]` means this service sends no groups at
+   * all. Leaving the field out changes nothing.
+   */
+  groupIds?: number[] | null;
 }
 
 export interface CategoryRow {
@@ -476,8 +486,13 @@ export interface PanelGroups {
   /** True for a kind that has no groups at all, so the UI says so rather than erroring. */
   untestable?: boolean;
   reason?: string;
-  /** Plans whose own `group_ids` override the panel — changing it here misses them. */
-  plans: Array<{ id: number; name: string; groups: unknown }>;
+  /**
+   * Everything that overrides the panel's own tick — services and the plans
+   * inside them. `level` says which, because «فروخته می‌شود در: پلاتینیوم» means
+   * something different when پلاتینیوم is a whole service than when it is one
+   * plan of one.
+   */
+  plans: Array<{ id: number; name: string; level: 'PRODUCT' | 'PLAN'; groups: unknown }>;
 }
 
 export interface PanelItem {

@@ -46,7 +46,13 @@ import {
 import { actOnService } from './actions.js';
 import { type Callback, decode, encode } from './callback.js';
 import type { CatalogPlan } from './catalog.js';
-import { panelsForUser, plansOnPanel, purchasablePlan } from './catalog.js';
+import {
+  panelsForUser,
+  plansInProduct,
+  plansOnPanel,
+  productsOnPanel,
+  purchasablePlan,
+} from './catalog.js';
 import {
   checkCode,
   type DiscountCode,
@@ -1912,6 +1918,26 @@ async function clearAdminSession(tx: D1DatabaseSession, telegramId: number): Pro
   if (userId !== null) await clearSession(tx, userId);
 }
 
+/**
+ * One plan's page, with whatever discount code is being held against it.
+ *
+ * Two callbacks land here — `plan` from the plan list, and `prd` for a service
+ * that has only one plan and therefore never draws a list. Written once because
+ * the page is not just a render: it re-checks the held code against the price,
+ * and a second copy of that check is a second place for it to go stale.
+ */
+async function planScreen(
+  tx: D1DatabaseSession,
+  user: Caller,
+  plan: CatalogPlan,
+  screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+): Promise<HandleOutcome> {
+  const price = priceForUser(plan.priceIrr, user.discount_percent);
+  const held = await heldCode(tx, user, plan, price.totalIrr);
+  const applied = held ? { code: held.code.code, discountIrr: held.discountIrr } : null;
+  return screen(menu.planDetail(plan, price, applied), menu.planDetailMenu(plan, applied));
+}
+
 async function handleCallback(
   tx: D1DatabaseSession,
   query: TelegramCallbackQuery,
@@ -1993,23 +2019,38 @@ async function handleCallback(
 
     case 'panel': {
       if (action.id === undefined) return IGNORED;
-      const plans = await plansOnPanel(tx, user.id, action.id);
-      if (plans.length === 0) {
+      const products = await productsOnPanel(tx, user.id, action.id);
+      if (products.length === 0) {
         // Either the panel emptied out between two taps, or it was never
         // theirs to open. One answer for both.
-        return screen(menu.PANEL_EMPTY, menu.planMenu([]));
+        return screen(menu.PANEL_EMPTY, menu.productMenu([]));
       }
-      return screen(menu.CHOOSE_PLAN, menu.planMenu(plans, user.discount_percent));
+      return screen(menu.CHOOSE_PRODUCT, menu.productMenu(products, user.discount_percent));
+    }
+
+    case 'prd': {
+      if (action.id === undefined) return IGNORED;
+      const plans = await plansInProduct(tx, user.id, action.id);
+      if (plans.length === 0) return screen(menu.PRODUCT_EMPTY, menu.planMenu([]));
+      // A list of one is not a choice. The customer already made it on the
+      // screen before, so a service with a single plan opens that plan
+      // directly — which is also what the shop did before services existed,
+      // and the whole catalogue migrated from the PHP bot is one plan per
+      // product. Falling through by hand rather than recursing: `plan` needs
+      // the discount check and the held code, and having two ways to reach it
+      // is how the two drift apart.
+      if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
+      return screen(
+        menu.choosePlan(plans[0]!.productName),
+        menu.planMenu(plans, user.discount_percent, plans[0]!.providerId),
+      );
     }
 
     case 'plan': {
       if (action.id === undefined) return IGNORED;
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
-      const price = priceForUser(plan.priceIrr, user.discount_percent);
-      const held = await heldCode(tx, user, plan, price.totalIrr);
-      const applied = held ? { code: held.code.code, discountIrr: held.discountIrr } : null;
-      return screen(menu.planDetail(plan, price, applied), menu.planDetailMenu(plan, applied));
+      return planScreen(tx, user, plan, screen);
     }
 
     case 'dsc': {

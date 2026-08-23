@@ -18,6 +18,8 @@ const PROVIDER_CODE = 'sim-provision-panel';
 /** A panel that answers, and remembers what it was asked to make. */
 function fakePanel() {
   const created: string[] = [];
+  /** Every create body, so a test can ask what the panel was actually sent. */
+  const bodies: Record<string, unknown>[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
@@ -35,6 +37,7 @@ function fakePanel() {
     if (method === 'POST' && url.endsWith('/api/user')) {
       const body = JSON.parse(String(init?.body)) as { username: string };
       created.push(body.username);
+      bodies.push(body);
       return new Response(
         JSON.stringify({ username: body.username, subscription_url: `/sub/${body.username}` }),
         { status: 200 },
@@ -42,7 +45,7 @@ function fakePanel() {
     }
     return new Response('{}', { status: 500 });
   }) as unknown as typeof globalThis.fetch;
-  return { created, fetchImpl };
+  return { created, bodies, fetchImpl };
 }
 
 const deadPanel = (async () =>
@@ -77,6 +80,9 @@ async function paidOrder(options: { kind?: string; planCode?: string } = {}): Pr
 }> {
   const { telegramId, publicId } = nextIds();
   const userId = await makeCustomer(telegramId);
+  // `ORDER BY id` inside the helper, so a product with several plans always
+  // yields the same one: a fixture that picks a different plan per run is a
+  // test that fails for somebody else's reason.
   const plan = await planId(options.planCode ?? 'sim-vip-1m-50');
 
   if (options.kind) {
@@ -699,5 +705,78 @@ describe('an order that ended without telling anyone', () => {
 
     // No half-made service left behind on a panel that was never called.
     expect(await subsFor(order.orderId)).toHaveLength(0);
+  });
+});
+
+describe('which tier the panel is asked for', () => {
+  /**
+   * A service decides its own groups, and that decision reaches the panel.
+   *
+   * This is the whole of «مشتری پلاتینیوم بخرد». Before it, `group_ids` was
+   * readable from exactly two places — the panel's own config and one plan's
+   * `attrs` — and nothing in the dashboard wrote either. So every service on
+   * one panel provisioned into the same groups, and building «پلاتینیوم» and
+   * «طلایی» on the panel changed nothing at all: a panel could sell one level,
+   * and selling a second meant registering the same panel twice, which is
+   * exactly what the PHP shop did with five rows pointing at one PasarGuard.
+   *
+   * Asserted against the REQUEST BODY, not against our own row. Our row records
+   * what we meant; only the body says what the panel was told.
+   */
+  it('sends the groups the service carries', async () => {
+    const order = await paidOrder({ planCode: 'sim-vip-platinum', kind: 'pasarguard' });
+    const panel = fakePanel();
+
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    const mine = panel.bodies.find((b) => String(b['username']).endsWith(order.publicId));
+    expect(mine, 'the platinum order was delivered').toBeDefined();
+    expect(mine?.['group_ids']).toEqual([6, 7]);
+  });
+
+  it('sends nothing for a service that does not carry any', async () => {
+    // The migrated shape, which is most of the catalogue: nothing on the
+    // product and nothing on this panel, so nothing is sent and the panel's own
+    // default applies. The service level was added UNDERNEATH the old
+    // behaviour — a product beside «پلاتینیوم» on the same panel must not
+    // inherit its tier.
+    const order = await paidOrder({ planCode: 'sim-vip-1m-50', kind: 'pasarguard' });
+    const panel = fakePanel();
+
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    const mine = panel.bodies.find((b) => String(b['username']).endsWith(order.publicId));
+    expect(mine, 'the plain order was delivered').toBeDefined();
+    expect(mine).not.toHaveProperty('group_ids');
+  });
+
+  it('lets one plan override the service it sits in', async () => {
+    // Plan over service over panel, and the middle one is the new part. A plan
+    // naming its own groups is a migrated row's shape and it must still win, or
+    // every such row silently changes what it delivers.
+    const order = await paidOrder({ planCode: 'sim-vip-platinum', kind: 'pasarguard' });
+    const panel = fakePanel();
+    const planRow = await db
+      .prepare(`SELECT plan_id FROM orders WHERE id = ?1`)
+      .bind(order.orderId)
+      .first<{ plan_id: number }>();
+    await db
+      .prepare(`UPDATE product_plans SET attrs = jsonb_build_object('group_ids', '[3]'::jsonb)
+                 WHERE id = ?1`)
+      .bind(planRow!.plan_id)
+      .run();
+    try {
+      await provisionPaidOrders(db, panel.fetchImpl);
+      const mine = panel.bodies.find((b) => String(b['username']).endsWith(order.publicId));
+      expect(mine?.['group_ids']).toEqual([3]);
+    } finally {
+      // Restored whatever the assertion did. This is a fixture row the rest of
+      // the suite reads, and leaving [3] on it would fail a later file for a
+      // reason that has nothing to do with that file.
+      await db
+        .prepare(`UPDATE product_plans SET attrs = '{}'::jsonb WHERE id = ?1`)
+        .bind(planRow!.plan_id)
+        .run();
+    }
   });
 });

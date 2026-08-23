@@ -57,17 +57,41 @@ export async function providerId(code: string): Promise<number> {
   return row.id;
 }
 
+export async function productId(code: string): Promise<number> {
+  const row = await db
+    .prepare(`SELECT id FROM products WHERE code = ?1`)
+    .bind(code)
+    .first<{ id: number }>();
+  if (!row) throw new Error(`fixture product ${code} is missing`);
+  return row.id;
+}
+
 /** The one plan of a fixture product — legacy shape, one plan per product. */
 export async function planId(productCode: string): Promise<number> {
   const row = await db
     .prepare(
       `SELECT pl.id FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
-        WHERE p.code = ?1`,
+        WHERE p.code = ?1
+        ORDER BY pl.sort_order, pl.id`,
     )
     .bind(productCode)
     .first<{ id: number }>();
   if (!row) throw new Error(`fixture product ${productCode} has no plan`);
+  return row.id;
+}
+
+/** One named plan of a product that has several — the tiered shape. */
+export async function planIdIn(productCode: string, planName: string): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT pl.id FROM product_plans pl
+         JOIN products p ON p.id = pl.product_id
+        WHERE p.code = ?1 AND pl.name = ?2`,
+    )
+    .bind(productCode, planName)
+    .first<{ id: number }>();
+  if (!row) throw new Error(`fixture product ${productCode} has no plan ${planName}`);
   return row.id;
 }
 

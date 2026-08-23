@@ -69,6 +69,20 @@ const PLAN_FIELDS = {
   status: z.enum(STATUSES),
 };
 
+/**
+ * `attrs` after this product's group selection is written into it.
+ *
+ * A merge rather than an overwrite: `attrs` is the adapter's bag and holds more
+ * than groups on migrated rows. `?N::jsonb` for the list, and the key is
+ * REMOVED for null so that "the panel decides" is the absence of the key, which
+ * is what `pick()` reads.
+ */
+function groupIdsSql(param: number): string {
+  return `attrs = CASE WHEN ?${param}::jsonb IS NULL THEN attrs - 'group_ids'
+                       ELSE COALESCE(attrs, '{}'::jsonb) || jsonb_build_object('group_ids', ?${param}::jsonb)
+                  END`;
+}
+
 const PlanPatch = z
   .object({
     name: PLAN_FIELDS.name.optional(),
@@ -125,6 +139,21 @@ const PRODUCT_FIELDS = {
   oncePerUser: z.boolean(),
   sortOrder: z.number().int().min(0).max(10_000),
   status: z.enum(STATUSES),
+  /**
+   * Which groups on the panel an account bought here joins — the tier.
+   *
+   * `[]` and `null` are different answers and both are kept. An empty list
+   * means "send no groups at all"; null means "this service does not decide,
+   * the panel's default does". Collapsing them would make clearing the boxes
+   * indistinguishable from never having opened the section, and one of those
+   * silently keeps selling the old tier.
+   *
+   * The ids are the panel's own, not ours — they are read from the panel and
+   * sent back to it — so the range is only sanity, never a foreign key. A
+   * group deleted on the panel is caught by the delete guard on the other side
+   * and by the purchase itself, not here.
+   */
+  groupIds: z.array(z.number().int().positive().max(1_000_000)).max(50).nullable(),
 };
 
 const ProductCreate = z
@@ -139,6 +168,7 @@ const ProductCreate = z
     oncePerUser: PRODUCT_FIELDS.oncePerUser.default(false),
     sortOrder: PRODUCT_FIELDS.sortOrder.default(0),
     status: PRODUCT_FIELDS.status.default('ACTIVE'),
+    groupIds: PRODUCT_FIELDS.groupIds.default(null),
   })
   .strict();
 
@@ -154,6 +184,7 @@ const ProductPatch = z
     oncePerUser: PRODUCT_FIELDS.oncePerUser.optional(),
     sortOrder: PRODUCT_FIELDS.sortOrder.optional(),
     status: PRODUCT_FIELDS.status.optional(),
+    groupIds: PRODUCT_FIELDS.groupIds.optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
@@ -186,6 +217,7 @@ interface PlanRow {
   category_id: number | null;
   resellers_only: boolean;
   once_per_user: boolean;
+  group_ids: number[] | null;
   provider_id: number | null;
   provider_name: string | null;
   provider_code: string | null;
@@ -217,6 +249,7 @@ function shape(r: PlanRow) {
       categoryId: r.category_id,
       resellersOnly: r.resellers_only,
       oncePerUser: r.once_per_user,
+      groupIds: r.group_ids,
     },
     provider: r.provider_id
       ? {
@@ -239,6 +272,7 @@ const SELECT_PLAN = `
          p.description AS product_description, p.sort_order AS product_sort_order,
          p.category_id,
          p.resellers_only, p.once_per_user,
+         p.attrs->'group_ids' AS group_ids,
          pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
          pr.status AS provider_status,
          cat.name AS category_name,
@@ -627,8 +661,10 @@ export function registerProductRoutes(
     const row = await c.env.DB.prepare(
       `INSERT INTO products
          (code, name, kind, provider_id, category_id, description,
-          resellers_only, once_per_user, sort_order, status)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+          resellers_only, once_per_user, sort_order, status, attrs)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+               CASE WHEN ?11::jsonb IS NULL THEN '{}'::jsonb
+                    ELSE jsonb_build_object('group_ids', ?11::jsonb) END)
        ON CONFLICT (code) DO NOTHING RETURNING id`,
     )
       .bind(
@@ -642,6 +678,7 @@ export function registerProductRoutes(
         p.oncePerUser,
         p.sortOrder,
         p.status,
+        p.groupIds === null ? null : JSON.stringify(p.groupIds),
       )
       .first<{ id: number }>()
       // A provider or category id that does not exist fails the foreign key.
@@ -689,7 +726,8 @@ export function registerProductRoutes(
     }
 
     const SELECT_PRODUCT = `SELECT id, code, name, kind, provider_id, category_id, description,
-                                   resellers_only, once_per_user, sort_order, status
+                                   resellers_only, once_per_user, sort_order, status,
+                                   attrs->'group_ids' AS group_ids
                               FROM products WHERE id = ?1`;
     const before = await c.env.DB.prepare(SELECT_PRODUCT).bind(id).first<Record<string, unknown>>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
@@ -711,6 +749,12 @@ export function registerProductRoutes(
     if (patch.oncePerUser !== undefined) put('once_per_user', patch.oncePerUser);
     if (patch.sortOrder !== undefined) put('sort_order', patch.sortOrder);
     if (patch.status !== undefined) put('status', patch.status);
+    if (patch.groupIds !== undefined) {
+      // Not `put()`: this one writes a CASE over `attrs` rather than a column,
+      // and it reads its parameter twice.
+      params.push(patch.groupIds === null ? null : JSON.stringify(patch.groupIds));
+      sets.push(groupIdsSql(params.length));
+    }
     params.push(id);
 
     const written = await c.env.DB.prepare(

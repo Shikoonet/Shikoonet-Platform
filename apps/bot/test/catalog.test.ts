@@ -20,10 +20,14 @@ describe('seedCatalog', () => {
     const result = await seedCatalog(db);
 
     // No categories: `category` has zero rows in production and
-    // setting.statuscategory is 'offcategory'. One plan per product, because a
-    // legacy `product` row IS a purchasable plan.
-    expect(result).toEqual({ providers: 5, products: 10, plans: 10 });
-    expect(result.plans).toBe(result.products);
+    // setting.statuscategory is 'offcategory'.
+    //
+    // Ten of the eleven products hold one plan each, because a legacy `product`
+    // row IS a purchasable plan and that is the shape being migrated from. The
+    // eleventh is «پلاتینیوم» and holds three — a fixture made only of the
+    // legacy shape cannot test the level between a panel and a plan, which is
+    // exactly how that level came to be missing.
+    expect(result).toEqual({ providers: 5, products: 11, plans: 13 });
 
     const rows = await db
       .prepare(
@@ -53,7 +57,13 @@ describe('seedCatalog', () => {
       }>();
 
     const byCode = new Map(rows.results.map((r) => [r.code, r]));
-    expect(byCode.size).toBe(10);
+    expect(byCode.size).toBe(11);
+    // The tier, and the fact that makes it one: it carries its own groups, so
+    // a purchase from it lands somewhere different from a purchase from the
+    // product beside it on the same panel.
+    expect(byCode.get('sim-vip-platinum')?.plans).toBe(3);
+    expect(byCode.get('sim-vip-platinum')?.provider_code).toBe('sim-vip');
+    expect(byCode.get('sim-vip-1m-50')?.plans).toBe(1);
     expect(byCode.get('sim-vip-1m-50')?.provider_code).toBe('sim-vip');
     expect(byCode.get('sim-gold-10')?.provider_code).toBe('sim-gold');
     expect(byCode.get('sim-shop-spotify')?.kind).toBe('spotify');

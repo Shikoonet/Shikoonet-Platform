@@ -93,6 +93,54 @@ export async function panelsForUser(db: Db, userId: number): Promise<Panel[]> {
   return rows.results;
 }
 
+/**
+ * One sellable service on a panel — «پلاتینیوم», «طلایی», «معمولی».
+ *
+ * This level did not exist in the shop until now, and its absence is what made
+ * a panel able to sell exactly one tier. The plan list was drawn straight off
+ * the panel and every button on it was labelled with its PRODUCT's name, so
+ * three plans of one product read as the same button three times, and three
+ * products of one panel read as a flat list with no grouping at all.
+ */
+export interface CatalogProduct {
+  productId: number;
+  name: string;
+  /** How many plans this customer can buy inside it. Never zero. */
+  plans: number;
+  /** The cheapest of them, before this customer's own discount. */
+  fromPriceIrr: number;
+}
+
+/** The services worth showing this customer on one panel, in the admin's order. */
+export async function productsOnPanel(
+  db: Db,
+  userId: number,
+  providerId: number,
+): Promise<CatalogProduct[]> {
+  const rows = await db
+    .prepare(
+      `SELECT p.id                AS product_id,
+              p.name              AS name,
+              COUNT(pl.id)::int   AS plans,
+              MIN(pl.price_irr)   AS from_price_irr
+         FROM products p
+         JOIN product_plans pl          ON pl.product_id = p.id
+         JOIN provisioning_providers pr ON pr.id = p.provider_id
+         JOIN users u                   ON u.id = ?1
+        WHERE pr.id = ?2 AND ${PURCHASABLE}
+        GROUP BY p.id, p.name, p.sort_order
+        ORDER BY p.sort_order, p.id`,
+    )
+    .bind(userId, providerId)
+    .all<{ product_id: number; name: string; plans: number; from_price_irr: number }>();
+  return rows.results.map((r) => ({
+    productId: r.product_id,
+    name: r.name,
+    plans: r.plans,
+    fromPriceIrr: Number(r.from_price_irr),
+  }));
+}
+
 export interface CatalogPlan {
   planId: number;
   /** The product the plan belongs to. A discount code can be scoped to one. */
@@ -105,6 +153,12 @@ export interface CatalogPlan {
   userLimit: number | null;
   providerId: number;
   providerName: string;
+  /**
+   * How many plans this customer may buy inside the same product, this one
+   * included. Decides where «بازگشت» goes: to the plan list when there is one
+   * to go back to, and to the service list when this plan never drew one.
+   */
+  siblings: number;
 }
 
 interface PlanRow {
@@ -118,6 +172,7 @@ interface PlanRow {
   user_limit: number | null;
   provider_id: number;
   provider_name: string;
+  siblings: number;
 }
 
 const PLAN_COLUMNS = `
@@ -130,7 +185,10 @@ const PLAN_COLUMNS = `
   pl.volume_gb    AS volume_gb,
   pl.user_limit   AS user_limit,
   pr.id           AS provider_id,
-  pr.name         AS provider_name
+  pr.name         AS provider_name,
+  (SELECT COUNT(*)::int
+     FROM product_plans sib
+    WHERE sib.product_id = p.id AND sib.status = 'ACTIVE') AS siblings
 `;
 
 const PLAN_FROM = `
@@ -152,10 +210,20 @@ function toPlan(row: PlanRow): CatalogPlan {
     userLimit: row.user_limit,
     providerId: row.provider_id,
     providerName: row.provider_name,
+    siblings: row.siblings,
   };
 }
 
-/** What this customer can buy on one panel. Empty if the panel is not theirs to see. */
+/**
+ * Every plan on one panel, flat.
+ *
+ * The SHOP no longer draws this — it goes through services now — but a RENEWAL
+ * does, and the difference is real rather than an oversight. A renewal is not
+ * choosing a tier: it is extending an account that already exists, and the plan
+ * it was sold under is gone for roughly half the migrated services. So it is
+ * offered everything the panel sells, labelled by product because on this list
+ * the product is what tells two rows apart.
+ */
 export async function plansOnPanel(
   db: Db,
   userId: number,
@@ -168,6 +236,30 @@ export async function plansOnPanel(
         ORDER BY p.sort_order, pl.sort_order, pl.price_irr`,
     )
     .bind(userId, providerId)
+    .all<PlanRow>();
+  return rows.results.map(toPlan);
+}
+
+/**
+ * The plans inside one service. Empty if it is not this customer's to open.
+ *
+ * Ordered by price rather than by `sort_order` first: inside a single service
+ * the plans differ only in how much you get, so cheapest-first is the order the
+ * customer is reading them in. Between services that is not true, which is why
+ * the list above it keeps the admin's arrangement.
+ */
+export async function plansInProduct(
+  db: Db,
+  userId: number,
+  productId: number,
+): Promise<CatalogPlan[]> {
+  const rows = await db
+    .prepare(
+      `SELECT ${PLAN_COLUMNS} ${PLAN_FROM}
+        WHERE p.id = ?2 AND ${PURCHASABLE}
+        ORDER BY pl.sort_order, pl.price_irr, pl.id`,
+    )
+    .bind(userId, productId)
     .all<PlanRow>();
   return rows.results.map(toPlan);
 }

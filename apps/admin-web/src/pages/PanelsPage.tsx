@@ -999,7 +999,8 @@ function PanelGroupsSection({
     const via: string[] = [];
     if (data !== null && data.selected.includes(id)) via.push('پیش‌فرض پنل');
     for (const pl of data?.plans ?? []) {
-      if (Array.isArray(pl.groups) && (pl.groups as unknown[]).includes(id)) via.push(pl.name);
+      if (!Array.isArray(pl.groups) || !(pl.groups as unknown[]).includes(id)) continue;
+      via.push(pl.level === 'PRODUCT' ? `سرویس ${pl.name}` : `پلن ${pl.name}`);
     }
     return via;
   }
@@ -1194,12 +1195,13 @@ function PanelGroupsSection({
       {data.plans.length > 0 && (
         <>
           <p className="muted" style={{ marginBlockStart: 16 }}>
-            این پلن‌ها گروه خودشان را دارند و تیک‌های بالا رویشان اثر ندارد:
+            این‌ها گروه خودشان را دارند و تیک‌های بالا رویشان اثر ندارد:
           </p>
           <ul className="muted">
             {data.plans.map((pl) => (
-              <li key={pl.id}>
-                {pl.name} — <span className="ltr">{JSON.stringify(pl.groups)}</span>
+              <li key={`${pl.level}-${pl.id}`}>
+                {pl.level === 'PRODUCT' ? 'سرویس' : 'پلن'} {pl.name} —{' '}
+                <span className="ltr">{JSON.stringify(pl.groups)}</span>
               </li>
             ))}
           </ul>

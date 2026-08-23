@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CUSTOMER, RESELLER } from './helpers/viewers.js';
 import { CALLBACK_MAX_BYTES, decode } from '../src/callback.js';
-import type { CatalogPlan } from '../src/catalog.js';
+import type { CatalogPlan, CatalogProduct } from '../src/catalog.js';
 import * as menu from '../src/menu.js';
 import { priceForUser } from '../src/money.js';
 import type { InlineKeyboard } from '../src/telegram.js';
@@ -35,6 +35,7 @@ const PLAN: CatalogPlan = {
   userLimit: 3,
   providerId: 7,
   providerName: '🥇 سرویس VIP',
+  siblings: 1,
 };
 
 describe('the main menu', () => {
@@ -114,17 +115,24 @@ describe('every button we draw', () => {
   });
 });
 
-describe('the plan list', () => {
+const SERVICE: CatalogProduct = {
+  productId: 7,
+  name: '۱ماهه - ۵۰ گیگ',
+  plans: 1,
+  fromPriceIrr: 1_950_000,
+};
+
+describe('the service list', () => {
   it('adds the price when the name does not carry one', () => {
-    const [row] = menu.planMenu([PLAN]);
+    const [row] = menu.productMenu([SERVICE]);
     expect(row?.[0]?.text).toBe('۱ماهه - ۵۰ گیگ — 195,000 تومان');
-    expect(row?.[0]?.callback_data).toBe('plan:42');
+    expect(row?.[0]?.callback_data).toBe('prd:7');
   });
 
   it('does not repeat a price the migrated name already spells out', () => {
     // What the live bot showed on 2026-08-12: '...-195.000ت 🚀 — 195,000 تومان'.
-    const migrated = { ...PLAN, productName: '1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀' };
-    const [row] = menu.planMenu([migrated]);
+    const migrated = { ...SERVICE, name: '1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀' };
+    const [row] = menu.productMenu([migrated]);
     expect(row?.[0]?.text).toBe('1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀');
   });
 
@@ -132,15 +140,78 @@ describe('the plan list', () => {
     // The name says 195.000, which is not what this customer pays. Production
     // shows the name alone here and quotes a price the customer will not be
     // charged.
-    const migrated = { ...PLAN, productName: '1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀' };
-    const [row] = menu.planMenu([migrated], 15);
+    const migrated = { ...SERVICE, name: '1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀' };
+    const [row] = menu.productMenu([migrated], 15);
     expect(row?.[0]?.text).toContain('165,750 تومان');
   });
 
+  it('says «از» only when there is more than one size behind the button', () => {
+    const [one] = menu.productMenu([SERVICE]);
+    expect(one?.[0]?.text).not.toContain('از');
+    const [many] = menu.productMenu([{ ...SERVICE, plans: 3 }]);
+    expect(many?.[0]?.text).toContain('از 195,000 تومان');
+  });
+
   it('is just a way back when there is nothing to list', () => {
-    expect(callbacks(menu.planMenu([])).every((b) => /^(buy|menu)$/.test(b.callback_data))).toBe(
+    expect(callbacks(menu.productMenu([])).every((b) => /^(buy|menu)$/.test(b.callback_data))).toBe(
       true,
     );
+  });
+});
+
+describe('the plan list', () => {
+  it('names the PLAN, because every row on it is the same product', () => {
+    // The bug this replaced: labelling by product drew «پلاتینیوم» on all three
+    // rows of a three-size service, and where a migrated name already quotes a
+    // price the two cheapest came out as literally the same button.
+    const rows = menu.planMenu([
+      { ...PLAN, planId: 1, planName: '۳۰ گیگ - یک‌ماهه', priceIrr: 1_500_000, siblings: 3 },
+      { ...PLAN, planId: 2, planName: '۵۰ گیگ - یک‌ماهه', priceIrr: 2_200_000, siblings: 3 },
+    ]);
+    expect(rows[0]?.[0]?.text).toBe('۳۰ گیگ - یک‌ماهه — 150,000 تومان');
+    expect(rows[1]?.[0]?.text).toBe('۵۰ گیگ - یک‌ماهه — 220,000 تومان');
+    expect(rows[0]?.[0]?.callback_data).toBe('plan:1');
+  });
+
+  it('goes back to the services of the panel it came from', () => {
+    const targets = callbacks(menu.planMenu([PLAN], 0, 9)).map((b) => b.callback_data);
+    expect(targets).toContain('panel:9');
+  });
+
+  it('is just a way back when there is nothing to list', () => {
+    expect(
+      callbacks(menu.planMenu([])).every((b) => /^(buy|menu)$/.test(b.callback_data)),
+    ).toBe(true);
+  });
+
+  it('leaves «بازگشت به منو» pointing at the menu', () => {
+    // `buildMenu` asks the target callback about EVERY button it draws, so a
+    // callback that answers for actions it does not care about rewrites them
+    // too. Mine did: it sent `menu` to the panel list, and the emptiness test
+    // above could not see it because both answers matched the same pattern.
+    const targets = callbacks(menu.planMenu([PLAN], 0, 9)).map((b) => b.callback_data);
+    expect(targets).toContain('menu');
+  });
+});
+
+describe('«بازگشت» on a plan page', () => {
+  it('returns to the plan list when the service had one', () => {
+    const targets = callbacks(menu.planDetailMenu({ ...PLAN, siblings: 3 })).map(
+      (b) => b.callback_data,
+    );
+    expect(targets).toContain('prd:7');
+    expect(targets).not.toContain('panel:7');
+  });
+
+  it('returns to the service list when it did not', () => {
+    // A single-plan service opens its plan directly, so there is no list to go
+    // back to. Sending them to one of one is a screen whose only button leads
+    // back where they just were.
+    const targets = callbacks(menu.planDetailMenu({ ...PLAN, siblings: 1 })).map(
+      (b) => b.callback_data,
+    );
+    expect(targets).toContain('panel:7');
+    expect(targets).not.toContain('prd:7');
   });
 });
 

@@ -74,6 +74,7 @@ interface PendingOrder {
   target_expires_at: string | null;
   plan_name: string | null;
   plan_attrs: Record<string, unknown> | null;
+  product_attrs: Record<string, unknown> | null;
   volume_gb: string | number | null;
   duration_days: number | null;
   total_irr: number;
@@ -287,6 +288,31 @@ async function untoldNote(
  * everywhere else here: a message that has left cannot be recalled by a
  * ROLLBACK.
  */
+/**
+ * The settings a purchase sends, with the service's underneath the plan's.
+ *
+ * Three levels now decide what a panel is asked for, and they are the three an
+ * admin actually sets: the PANEL's default, the SERVICE — پلاتینیوم, طلایی —
+ * and one PLAN inside it. `pick()` in the adapter already reads plan over
+ * panel; flattening the service in here puts it between them without teaching
+ * every adapter about a third source.
+ *
+ * This is what makes a tier a tier. Before it, `group_ids` lived only on the
+ * panel and on a plan, so every service on one panel provisioned into the same
+ * group and a panel could sell exactly one level — which is precisely the shape
+ * the shop was stuck in.
+ *
+ * A key present but null on the plan does NOT fall through, on purpose: an
+ * admin who cleared one plan's groups means that plan sends none, not that it
+ * goes back to inheriting. `pick()` reads null the same way one level up.
+ */
+function planAttrsFor(row: {
+  plan_attrs: Record<string, unknown> | null;
+  product_attrs: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  return { ...(row.product_attrs ?? {}), ...(row.plan_attrs ?? {}) };
+}
+
 export async function provisionPaidOrders(
   db: D1Database,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
@@ -317,6 +343,7 @@ export async function provisionPaidOrders(
               s.expires_at    AS target_expires_at,
               pl.name         AS plan_name,
               pl.attrs        AS plan_attrs,
+              pr.attrs        AS product_attrs,
               pl.volume_gb    AS volume_gb,
               pl.duration_days AS duration_days,
               pr.name         AS product_name,
@@ -479,7 +506,7 @@ async function deliver(
     durationDays,
     note: `shikoo ${row.order_public_id}`,
     providerConfig: row.provider_config ?? {},
-    planAttrs: row.plan_attrs ?? {},
+    planAttrs: planAttrsFor(row),
     expiresAt: durationDays === null ? null : new Date(now + durationDays * 86_400_000),
   };
 
@@ -705,7 +732,7 @@ async function renew(
         addon === null ? row.duration_days : addon.kind === 'ADD_TIME' ? addon.quantity : 0,
       note: `shikoo ${row.order_public_id}`,
       providerConfig: row.provider_config ?? {},
-      planAttrs: row.plan_attrs ?? {},
+      planAttrs: planAttrsFor(row),
       mode,
       renewFrom: new Date(now),
     },

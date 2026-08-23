@@ -74,6 +74,7 @@ export type ScreenId =
   | 'welcome'
   | 'gate'
   | 'panels'
+  | 'products'
   | 'plans'
   | 'planDetail'
   | 'checkout'
@@ -107,6 +108,7 @@ export const SCREENS: Record<ScreenId, string> = {
   welcome: 'خوش‌آمد و منوی اصلی',
   gate: 'عضویت کانال و پذیرش قوانین',
   panels: 'انتخاب لوکیشن',
+  products: 'فهرست سرویس‌ها',
   plans: 'فهرست پلن‌ها',
   planDetail: 'جزئیات پلن',
   checkout: 'فاکتور و کارت‌به‌کارت',
@@ -235,18 +237,32 @@ export const TEXTS = {
     hint: 'وقتی هیچ چیزی برای فروش نیست',
   },
 
-  // --- فهرست پلن‌ها ---------------------------------------------------------
-  CHOOSE_PLAN: {
+  // --- فهرست سرویس‌ها -------------------------------------------------------
+  CHOOSE_PRODUCT: {
     default: '🛍 سرویس مورد نظرتان را انتخاب کنید.',
     placeholders: [],
-    screen: 'plans',
-    hint: 'فهرست پلن‌های یک لوکیشن',
+    screen: 'products',
+    hint: 'فهرست سرویس‌های یک لوکیشن — پلاتینیوم، طلایی، معمولی',
   },
   PANEL_EMPTY: {
     default: 'در حال حاضر محصولی روی این لوکیشن موجود نیست.',
     placeholders: [],
-    screen: 'plans',
+    screen: 'products',
     hint: 'لوکیشنی که پلن فروختنی ندارد',
+  },
+
+  // --- فهرست پلن‌ها ---------------------------------------------------------
+  CHOOSE_PLAN: {
+    default: '📦 یکی از پلن‌های «{product}» را انتخاب کنید.',
+    placeholders: ['product'],
+    screen: 'plans',
+    hint: 'فهرست پلن‌های یک سرویس',
+  },
+  PRODUCT_EMPTY: {
+    default: 'در حال حاضر پلنی روی این سرویس موجود نیست.',
+    placeholders: [],
+    screen: 'plans',
+    hint: 'سرویسی که پلن فروختنی ندارد',
   },
 
   // --- جزئیات پلن ----------------------------------------------------------

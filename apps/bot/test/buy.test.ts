@@ -3,7 +3,14 @@ import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
-import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
+import {
+  ensureCatalog,
+  makeCustomer,
+  planId,
+  planIdIn,
+  productId,
+  providerId,
+} from './helpers/shop.js';
 
 /**
  * The buy flow end to end, through the real handler and the real database:
@@ -83,19 +90,29 @@ describe('walking from /start to an order', () => {
     expect(shop.replies[0]?.editMessageId).toBe(4242);
     expect(shop.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(`panel:${vip}`);
 
+    const product = await productId('sim-vip-1m-50');
     const panel = await handleUpdate(db, press(updateId + 2, telegramId, `panel:${vip}`));
-    expect(panel.replies[0]?.text).toBe(menu.CHOOSE_PLAN);
+    expect(panel.replies[0]?.text).toBe(menu.CHOOSE_PRODUCT);
+    // Services now, not plans. The row for this one carries its own name and
+    // the price it sells at, which for a legacy-shaped product — one plan, the
+    // price typed into the name — is the same button the shop drew before.
     expect(panel.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(
-      `plan:${plan}`,
+      `prd:${product}`,
     );
 
-    const detail = await handleUpdate(db, press(updateId + 3, telegramId, `plan:${plan}`));
+    // A service holding one plan is not a choice, so it opens that plan.
+    const only = await handleUpdate(db, press(updateId + 3, telegramId, `prd:${product}`));
+    expect(only.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(
+      `order:${plan}`,
+    );
+
+    const detail = await handleUpdate(db, press(updateId + 4, telegramId, `plan:${plan}`));
     expect(detail.replies[0]?.text).toContain('195,000 تومان');
     expect(detail.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(
       `order:${plan}`,
     );
 
-    const placed = await handleUpdate(db, press(updateId + 4, telegramId, `order:${plan}`));
+    const placed = await handleUpdate(db, press(updateId + 5, telegramId, `order:${plan}`));
     expect(placed.status).toBe('processed');
     expect(placed.replies[0]?.text).toContain('سفارش شما ثبت شد');
 
@@ -281,3 +298,55 @@ async function userIdOf(telegramId: number): Promise<number> {
   if (!row) throw new Error(`no user for telegram_id ${telegramId}`);
   return row.id;
 }
+
+describe('a panel that sells more than one level', () => {
+  /**
+   * The whole point of the service level, walked the way a customer walks it.
+   *
+   * Before it, the shop drew plans straight off a panel and labelled each
+   * button with its PRODUCT's name — so «پلاتینیوم ۳۰ گیگ» and «پلاتینیوم ۵۰
+   * گیگ» came out as two buttons reading «پلاتینیوم», told apart only by a
+   * price, and where a migrated name already quotes its price they came out
+   * identical. A panel could sell exactly one tier however many groups it had,
+   * because `group_ids` lived only on the panel row.
+   */
+  it('lists services, then the sizes inside the one that was picked', async () => {
+    const { updateId, telegramId } = ids();
+    const vip = await providerId('sim-vip');
+    const platinum = await productId('sim-vip-platinum');
+    const fifty = await planIdIn('sim-vip-platinum', '۵۰ گیگ - یک‌ماهه');
+
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+
+    const panel = await handleUpdate(db, press(updateId + 1, telegramId, `panel:${vip}`));
+    const services = panel.replies[0]?.keyboard?.flat() ?? [];
+    const row = services.find((b) => b.callback_data === `prd:${platinum}`);
+    expect(row, 'the service is on the panel screen').toBeDefined();
+    // «از», because three sizes have no single price. A bare number here is one
+    // the customer then cannot find on the next screen.
+    expect(row?.text).toContain('از');
+    expect(row?.text).toContain('پلاتینیوم');
+
+    const inside = await handleUpdate(db, press(updateId + 2, telegramId, `prd:${platinum}`));
+    expect(inside.replies[0]?.text).toContain('پلاتینیوم');
+    const plans = inside.replies[0]?.keyboard?.flat() ?? [];
+    // Named by PLAN, and every one of them distinct — this is the assertion the
+    // old shape could not have passed.
+    const labels = plans.filter((b) => b.callback_data?.startsWith('plan:')).map((b) => b.text);
+    expect(labels).toHaveLength(3);
+    expect(new Set(labels).size).toBe(3);
+    for (const label of labels) expect(label).not.toContain('پلاتینیوم');
+
+    // Cheapest first, and the prices are the plans' own.
+    expect(labels[0]).toContain('150,000');
+    expect(labels[2]).toContain('540,000');
+
+    const detail = await handleUpdate(db, press(updateId + 3, telegramId, `plan:${fifty}`));
+    expect(detail.replies[0]?.text).toContain('220,000 تومان');
+    const back = (detail.replies[0]?.keyboard?.flat() ?? []).map((b) => b.callback_data);
+    expect(back).toContain(`order:${fifty}`);
+    // Back goes to the plan list it came from, not two levels up to the panel.
+    expect(back).toContain(`prd:${platinum}`);
+    expect(back).not.toContain(`panel:${vip}`);
+  });
+});

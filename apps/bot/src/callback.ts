@@ -36,7 +36,9 @@ export const CALLBACK_ACTIONS = [
   //        is allowed to do
   'menu', // back to the main menu
   'buy', // the panel/location list
-  'panel', // <providerId> — the products on one panel
+  'panel', // <providerId> — the services on one panel
+  'prd', // <productId> — the plans inside one service. A service holding a
+  //        single plan answers with that plan's page instead of a list of one.
   'plan', // <planId> — one plan, with its price
   'order', // <planId> — create the order and show the card to pay into
   'paid', // <orderId> — the customer says they have paid
