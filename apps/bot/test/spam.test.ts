@@ -13,7 +13,7 @@
  * against a comment would agree with itself for ever (rule 6).
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleUpdate } from '../src/handle.js';
@@ -107,19 +107,44 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * `legacy/` is in `.gitignore` and has never been part of a clone.
+ *
+ * The assertion below wanted the PHP itself rather than a comment quoting it,
+ * which is right — but it read the file unconditionally, and on CI the file is
+ * simply not there. Every run from 2026-08-20 died on
+ * `ENOENT: legacy/mirzabot-php/index.php`, and since `pnpm -r` stops at the
+ * first failing package, a great deal else stopped being checked behind it.
+ *
+ * The original comment anticipated half of this: "if `legacy/` is ever removed
+ * this must be turned into a pinned literal deliberately". The case it missed
+ * is that on a fresh checkout it was never present to begin with. So the check
+ * runs where the reference exists and is reported as SKIPPED where it does not
+ * — the same shape `packages/db/test/hub-sql.test.ts` already uses for the same
+ * reason. A skip that vitest prints is a different thing from a check nobody
+ * knows stopped happening.
+ */
+const PHP = fileURLToPath(new URL('../../../legacy/mirzabot-php/index.php', import.meta.url));
+const phpPresent = existsSync(PHP);
+
 describe('the threshold is the legacy’s', () => {
-  it('matches the two numbers hardcoded in index.php', () => {
-    // Not a comment citing them — the file itself. If `legacy/` is ever removed
-    // this must be turned into a pinned literal deliberately, not discovered
-    // when the guard has quietly drifted.
-    const php = readFileSync(
-      fileURLToPath(new URL('../../../legacy/mirzabot-php/index.php', import.meta.url)),
-      'utf8',
-    );
-    const spam = php.slice(php.indexOf('#---------anti spam--------------#'));
+  it.skipIf(!phpPresent)('matches the two numbers hardcoded in index.php', () => {
+    // Not a comment citing them — the file itself.
+    const php = readFileSync(PHP, 'utf8');
+    const marker = php.indexOf('#---------anti spam--------------#');
+    // A missing marker would make both assertions below run against an empty
+    // string and pass, which is exactly the silent green this file exists to
+    // prevent.
+    expect(marker, 'the anti-spam block is no longer in index.php').toBeGreaterThan(-1);
+    const spam = php.slice(marker);
     expect(spam.slice(0, 900)).toContain(`>= "${SPAM_LIMIT}"`);
     // `floor($TimeLastMessage / 60) >= 1` — sixty seconds.
     expect(spam.slice(0, 900)).toMatch(/\/\s*60\)\s*>=\s*1/);
+  });
+
+  it('pins the window at sixty seconds', () => {
+    // Kept outside the skip: this half needs no PHP, so letting it disappear
+    // with `legacy/` would trade a check for nothing.
     expect(SPAM_WINDOW_MS).toBe(60 * 1000);
   });
 });
