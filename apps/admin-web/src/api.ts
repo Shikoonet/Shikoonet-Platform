@@ -412,6 +412,30 @@ export interface PanelTestResult {
   reason?: string;
 }
 
+/** One group as the panel reports it. */
+export interface PanelGroupItem {
+  id: number;
+  name: string;
+  memberCount?: number;
+  inboundTags?: string[];
+  /** How many of those inbounds have a host — the number the customer feels. */
+  deliverableInbounds?: number;
+  /** The panel's own on/off switch, when it has one. */
+  disabled?: boolean;
+}
+
+/**
+ * Every inbound the panel has, whether a group uses it or not.
+ *
+ * `inbounds: null` is «could not ask», never «has none» — the same distinction
+ * `PanelGroups.available` makes, for the same reason.
+ */
+export interface PanelInbounds {
+  ok: boolean;
+  inbounds: Array<{ tag: string; hosted?: boolean }> | null;
+  reason?: string;
+}
+
 /**
  * What a panel sends, what it has, and who ignores it.
  *
@@ -423,14 +447,7 @@ export interface PanelGroups {
   ok: boolean;
   /** The group ids this panel sends today. */
   selected: number[];
-  available: Array<{
-    id: number;
-    name: string;
-    memberCount?: number;
-    inboundTags?: string[];
-    /** How many of those inbounds have a host — the number the customer feels. */
-    deliverableInbounds?: number;
-  }> | null;
+  available: PanelGroupItem[] | null;
   /** True for a kind that has no groups at all, so the UI says so rather than erroring. */
   untestable?: boolean;
   reason?: string;
@@ -1069,6 +1086,37 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ groupIds }),
     });
+  },
+
+  panelInbounds(id: number) {
+    return req<PanelInbounds>(`/panels/${id}/inbounds`);
+  },
+
+  /**
+   * The three that write a group ON THE PANEL, at `panel-groups` rather than
+   * `groups`.
+   *
+   * The two paths are one character apart and mean opposite things — `groups`
+   * replaces this panel's whole SELECTION, `panel-groups` creates or edits one
+   * group on the panel itself. Named apart on purpose: a typo between them
+   * would silently rewrite what every existing customer of this panel is sold.
+   */
+  createPanelGroup(id: number, spec: { name: string; inboundTags: string[] }) {
+    return req<{ ok: boolean; group: PanelGroupItem }>(`/panels/${id}/panel-groups`, {
+      method: 'POST',
+      body: JSON.stringify(spec),
+    });
+  },
+
+  updatePanelGroup(id: number, groupId: number, spec: { name: string; inboundTags: string[] }) {
+    return req<{ ok: boolean; group: PanelGroupItem }>(`/panels/${id}/panel-groups/${groupId}`, {
+      method: 'POST',
+      body: JSON.stringify(spec),
+    });
+  },
+
+  deletePanelGroup(id: number, groupId: number) {
+    return req<{ ok: boolean }>(`/panels/${id}/panel-groups/${groupId}`, { method: 'DELETE' });
   },
 
   updatePanel(

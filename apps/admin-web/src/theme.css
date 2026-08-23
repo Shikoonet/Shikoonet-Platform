@@ -577,6 +577,105 @@ body {
   color: var(--text-main);
 }
 
+/* A success alert, which this file did not have.
+   `alert-ok` was already being written in PanelsPage before it existed here, so
+   «ارتباط برقرار شد و ورود موفق بود» rendered in the same neutral grey as a
+   plain notice — a passing connection test that looked like nothing had
+   happened. The badge scale has had a green since the beginning; the alert
+   scale simply skipped it. */
+.alert-ok {
+  background: var(--success-soft);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: var(--success);
+}
+
+.alert-warning {
+  background: var(--warning-soft);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: var(--warning);
+}
+
+/* ---------------------------------------------------------------------------
+   تب‌ها.
+
+   Built for «مدیریت پنل‌ها», where editing one panel meant a single card
+   holding four unrelated forms — three save buttons at three depths, all
+   reporting into one message bar at the very top, and two identical «تست
+   ارتباط» buttons that tested different things. Splitting it by question
+   («اطلاعات», «اتصال», «گروه‌ها», «وضعیت») is what lets each section own its
+   own buttons and its own result line.
+
+   `--dot` marks a tab whose section has a problem, so a fault does not hide
+   behind a tab nobody opened. That is the whole reason the flag exists: tabs
+   hide things, and the one thing that must never be hidden is the reason a
+   paid order will fail.
+--------------------------------------------------------------------------- */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-block-end: 1px solid var(--border-mid);
+  margin-block: 6px 18px;
+}
+.tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-block-end: 2px solid transparent;
+  padding: 9px 16px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-block-end: -1px;
+}
+.tab:hover {
+  color: var(--text-main);
+}
+.tab--on {
+  color: var(--text-main);
+  border-block-end-color: var(--accent);
+}
+.tab__dot {
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+/* A checkbox with its label, in a list somebody is picking from. The inbound
+   picker needs the whole row clickable — a 13px checkbox as the only target is
+   how a tier ends up missing the inbound the operator thought they ticked. */
+.pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  background: var(--surface-1);
+}
+.pick:hover {
+  border-color: var(--border-mid);
+}
+.pick--on {
+  border-color: var(--accent-mid);
+  background: var(--accent-soft);
+}
+.pick input {
+  margin-block-start: 2px;
+}
+.pick-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block: 8px 4px;
+}
+
 .muted {
   color: var(--text-muted);
 }

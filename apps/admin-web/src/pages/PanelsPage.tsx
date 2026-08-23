@@ -14,19 +14,38 @@
  * show is `group_ids`, because that is not a secret; it is the number that
  * decides what a paying customer receives.
  *
- * What it adds instead is the number the PHP screen does not have: how many
- * live subscriptions sit on each panel. Disabling a panel is routine or
- * catastrophic depending entirely on that figure, and over there an admin finds
- * it out from the customers.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Rebuilt 2026-08-23 after Sam walked it: «اصلا ui و ux خوبی نداره و بیشتر آدم
+ * رو به اشتباه میندازه». Four things were actively misleading rather than
+ * merely plain, and each fix below is answering one of them:
+ *
+ *   1. The status cell drew «فعال» in GREEN and then wrote «بدون آدرس — سفارشی
+ *      از این پنل تحویل نمی‌شود» underneath it. Two cells arguing. Now one
+ *      column answers one question — can this panel fulfil an order — and the
+ *      colour is that answer, not the admin's intent.
+ *   2. The editor was a single card holding four unrelated forms, with three
+ *      «ذخیره» buttons at three depths all reporting into one message bar at
+ *      the very top. Pressing «ذخیرهٔ گروه‌ها» put its result a screen and a
+ *      half away. Now: tabs, and each tab owns its own buttons and its own
+ *      result line.
+ *   3. TWO buttons both reading «تست ارتباط با پنل» sat on that card, one
+ *      testing the stored password and one testing the typed one. Nothing on
+ *      either said which. They are now named for what they test.
+ *   4. `alert-ok` — the class the passing connection test asked for — did not
+ *      exist in theme.css, so success rendered in the same neutral grey as a
+ *      notice. Added there rather than worked around here.
+ *
+ * And the thing that was missing rather than wrong: groups could be TICKED but
+ * not made. A group is the product tier — «پلاتینیوم» is a group with more
+ * inbounds in it — so a shop that cannot create one cannot add a tier without
+ * somebody opening the panel's own web UI. It can now.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
-import type { PanelGroups, PanelTestResult } from '../api.js';
-
-const STATUS_FA: Record<string, string> = { ACTIVE: 'فعال', DISABLED: 'غیرفعال' };
+import type { PanelGroupItem, PanelGroups, PanelTestResult } from '../api.js';
 
 /**
  * `kind` is the adapter that fulfils an order.
@@ -78,31 +97,46 @@ const REACHES_A_PANEL: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Why an ACTIVE panel still cannot fulfil an order, or null when it can.
+ * One sentence about whether a paid order on this panel will be delivered.
  *
- * The status column reported the admin's *intent* and nothing else: walking
- * this screen on 2026-08-22 showed `sim-vip` — PasarGuard, five products, five
- * live services — as «فعال» in green with no address and no credential. It
- * cannot provision anything. `marzban.ts:147` answers that state with
- * `retryable: false`, which is right and means the customer pays, waits, and
- * is refunded with a «تماس بگیرید» — a lost sale and a support conversation
- * that the row itself already had enough information to prevent.
+ * This replaces a status column that reported the admin's *intent* and a
+ * separate credential column that reported one input to it. Walking the screen
+ * on 2026-08-22 showed `sim-vip` — PasarGuard, five products, five live
+ * services — as «فعال» in green, with no address and no credential, next to a
+ * red «ندارد» two cells over. It cannot provision anything, and the green was
+ * the biggest thing on the row.
  *
- * Both halves are named rather than one «تنظیم نشده». They used to be fixed in
- * different places — the address on this screen, the credential only in the
- * server's environment — which is why this screen could describe the problem
- * and not let anybody solve it. Since 2026-08-23 both are fixed here.
+ * `marzban.ts` answers that state with `retryable: false`, which is right and
+ * means the customer pays, waits, and is refunded with a «تماس بگیرید» — a lost
+ * sale and a support conversation that the row itself already had enough
+ * information to prevent. So the row says it, once, in the colour it means.
  */
-function cannotDeliver(p: {
+type Readiness = { tone: 'ok' | 'warn' | 'bad'; label: string; why: string | null };
+
+function readiness(p: {
   kind: string;
   status: string;
   baseUrl: string | null;
   hasSecretRef: boolean;
-}): string | null {
-  if (p.status !== 'ACTIVE' || !REACHES_A_PANEL.has(p.kind)) return null;
-  const missing = [...(p.baseUrl ? [] : ['آدرس']), ...(p.hasSecretRef ? [] : ['اعتبارنامه'])];
-  return missing.length === 0 ? null : `بدون ${missing.join(' و ')}`;
+}): Readiness {
+  if (p.status !== 'ACTIVE') {
+    return { tone: 'warn', label: 'غیرفعال', why: 'از خرید و تمدید برداشته شده' };
+  }
+  if (!REACHES_A_PANEL.has(p.kind)) return { tone: 'ok', label: 'فعال', why: null };
+  // Both halves are named rather than one «تنظیم نشده», because they used to be
+  // fixed in different places and an operator has to know which one to open.
+  const missing = [...(p.baseUrl ? [] : ['آدرس']), ...(p.hasSecretRef ? [] : ['رمز'])];
+  if (missing.length > 0) {
+    return { tone: 'bad', label: 'تحویل نمی‌دهد', why: `${missing.join(' و ')} ندارد` };
+  }
+  return { tone: 'ok', label: 'آمادهٔ تحویل', why: null };
 }
+
+const TONE_CLASS: Record<Readiness['tone'], string> = {
+  ok: 'badge badge-active',
+  warn: 'badge badge-warning',
+  bad: 'badge badge-block',
+};
 
 /** The address without its scheme — the list is about identity, not linking. */
 function host(url: string | null): string {
@@ -139,13 +173,17 @@ export function PanelsPage() {
   }, []);
 
   const open = rows.find((r) => r.id === openId) ?? null;
+  const broken = rows.filter((r) => readiness(r).tone === 'bad').length;
 
   return (
     <>
       <div className="page-head">
         <div>
           <div className="page-head__title">مدیریت پنل‌ها</div>
-          <div className="page-head__sub">{count(rows.length)} پنل</div>
+          <div className="page-head__sub">
+            {count(rows.length)} پنل
+            {broken > 0 && ` — ${count(broken)} تای‌شان سفارش تحویل نمی‌دهند`}
+          </div>
         </div>
         {/* Spread last, so it overrides `disabled` only for a role the server
             is going to refuse anyway — see role.tsx. */}
@@ -163,12 +201,25 @@ export function PanelsPage() {
         </button>
       </div>
 
+      {/* Both editors sit ABOVE the list. They used to render underneath it, so
+          pressing «ویرایش» on a row near the top scrolled nothing and changed
+          nothing an operator could see — the form they had just asked for was
+          off the bottom of the screen. */}
       {creating && (
         <PanelCreator
           onClose={() => setCreating(false)}
           onCreated={() => {
             void load();
           }}
+        />
+      )}
+
+      {open && (
+        <PanelEditor
+          key={open.id}
+          panel={open}
+          onClose={() => setOpenId(null)}
+          onChanged={() => void load()}
         />
       )}
 
@@ -179,84 +230,73 @@ export function PanelsPage() {
           <table className="app-table">
             <thead>
               <tr>
-                <th>نام پنل</th>
+                <th>پنل</th>
                 <th>نوع</th>
-                <th>آدرس</th>
-                <th>ظرفیت</th>
-                <th>محصولات</th>
-                <th>سرویس زنده</th>
-                <th>اعتبارنامه</th>
                 <th>وضعیت</th>
+                <th>سرویس زنده</th>
+                <th>می‌فروشد</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 && !loading && (
                 <tr>
-                  <td className="empty" colSpan={9}>
+                  <td className="empty" colSpan={6}>
                     هیچ پنلی ثبت نشده است.
                   </td>
                 </tr>
               )}
-              {rows.map((p) => (
-                <tr key={p.id}>
-                  <td>
-                    <div>{p.name}</div>
-                    <div className="page-head__sub ltr">{p.code}</div>
-                  </td>
-                  <td>{KIND_FA[p.kind] ?? p.kind}</td>
-                  <td className="ltr">{host(p.baseUrl)}</td>
-                  {/* NULL capacity is unlimited — the legacy 'unlimited' string. */}
-                  <td>{p.capacity === null ? 'نامحدود' : count(p.capacity)}</td>
-                  <td>
-                    {count(p.productCount)} محصول · {count(p.planCount)} پلن
-                  </td>
-                  <td>{count(p.liveSubscriptions)}</td>
-                  <td>
-                    {p.hasSecretRef ? (
-                      <span className="badge badge-active">ثبت شده</span>
-                    ) : (
-                      <span className="badge badge-block">ندارد</span>
-                    )}
-                  </td>
-                  <td>
-                    {/* «فعال» is what the admin asked for; whether it can act
-                        on that is a second question this cell now answers. */}
-                    <span
-                      className={
-                        p.status === 'ACTIVE' && cannotDeliver(p) === null
-                          ? 'badge badge-active'
-                          : 'badge badge-block'
-                      }
-                    >
-                      {STATUS_FA[p.status] ?? p.status}
-                    </span>
-                    {cannotDeliver(p) !== null && (
-                      <div className="page-head__sub">
-                        {cannotDeliver(p)} — سفارشی از این پنل تحویل نمی‌شود
+              {rows.map((p) => {
+                const r = readiness(p);
+                return (
+                  <tr key={p.id}>
+                    <td>
+                      <div>{p.name}</div>
+                      <div className="page-head__sub ltr">
+                        {p.code} · {host(p.baseUrl)}
                       </div>
-                    )}
-                  </td>
-                  <td>
-                    <button type="button" className="btn btn-sm" onClick={() => setOpenId(p.id)}>
-                      ویرایش
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td>{KIND_FA[p.kind] ?? p.kind}</td>
+                    <td>
+                      <span className={TONE_CLASS[r.tone]}>{r.label}</span>
+                      {r.why !== null && <div className="page-head__sub">{r.why}</div>}
+                    </td>
+                    {/* Capacity is only meaningful beside what is on it, and
+                        NULL capacity is unlimited — the legacy 'unlimited'. */}
+                    <td className="ltr">
+                      {count(p.liveSubscriptions)}
+                      <span className="muted">
+                        {p.capacity === null ? ' / ∞' : ` / ${count(p.capacity)}`}
+                      </span>
+                    </td>
+                    <td>
+                      {count(p.productCount)} محصول · {count(p.planCount)} پلن
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => {
+                          setCreating(false);
+                          setOpenId(p.id);
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                      >
+                        مدیریت
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
 
         <p className="muted">
           رمز پنل هیچ‌جا نشان داده نمی‌شود — رمزنگاری‌شده ذخیره می‌شود و فقط سرویس‌هایی که تحویل
-          می‌دهند می‌توانند بازش کنند. برای گذاشتن یا عوض‌کردنش «ویرایش» را باز کنید.
+          می‌دهند می‌توانند بازش کنند. برای گذاشتن یا عوض‌کردنش «مدیریت» را باز کنید.
         </p>
       </div>
-
-      {open && (
-        <PanelEditor panel={open} onClose={() => setOpenId(null)} onChanged={() => void load()} />
-      )}
     </>
   );
 }
@@ -273,11 +313,20 @@ export function PanelsPage() {
  *   untestable    — a kind with nothing to log into. Deliberately NOT a tick: a
  *                   green here would teach an operator to trust a mark that
  *                   means nothing.
+ *
+ * `label` is required rather than defaulted. Two of these live on one card —
+ * one testing the stored credential, one testing what has just been typed — and
+ * while both read «تست ارتباط با پنل» there was no way to tell from the screen
+ * which question was being answered, or which answer belonged to which button.
  */
 function ConnectionTest({
+  label,
+  hint,
   run,
   disabled,
 }: {
+  label: string;
+  hint?: string;
   run: () => Promise<PanelTestResult>;
   disabled?: boolean;
 }) {
@@ -306,8 +355,13 @@ function ConnectionTest({
         onClick={() => void go()}
         disabled={busy || disabled}
       >
-        {busy ? 'در حال تست…' : 'تست ارتباط با پنل'}
+        {busy ? 'در حال تست…' : label}
       </button>
+      {hint !== undefined && (
+        <div className="page-head__sub" style={{ marginBlockStart: 4 }}>
+          {hint}
+        </div>
+      )}
       {err && (
         <div className="alert alert-error" style={{ marginBlockStart: 8 }}>
           {err}
@@ -315,7 +369,9 @@ function ConnectionTest({
       )}
       {result && (
         <div
-          className={`alert ${result.authenticated ? 'alert-ok' : 'alert-error'}`}
+          className={`alert ${
+            result.authenticated ? 'alert-ok' : result.untestable ? 'alert-info' : 'alert-error'
+          }`}
           style={{ marginBlockStart: 8 }}
         >
           {result.authenticated ? (
@@ -387,7 +443,7 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
   }
 
   return (
-    <div className="card" style={{ marginBlockStart: 16 }}>
+    <div className="card" style={{ marginBlockEnd: 16 }}>
       <div className="card__head">
         <span className="card__title">پنل تازه</span>
         <button type="button" className="btn btn-sm" onClick={onClose}>
@@ -515,6 +571,7 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
           is ACTIVE for however long it takes somebody to notice. */}
       {needsLogin && (
         <ConnectionTest
+          label="تست ارتباط، قبل از ساخت"
           disabled={baseUrl.trim() === '' || !hasCredential}
           run={() =>
             api.testPanel(0, {
@@ -527,7 +584,7 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
       )}
 
       {needsLogin && !hasCredential && (
-        <div className="alert" style={{ marginBlockStart: 8 }}>
+        <div className="alert alert-warning" style={{ marginBlockStart: 8 }}>
           بدون رمز، پنل <b>غیرفعال</b> ساخته می‌شود — چون پنلی که نتواند وارد شود، سفارشِ پرداخت‌شده
           را رد می‌کند و پول مشتری برمی‌گردد.
         </div>
@@ -548,26 +605,6 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
 }
 
 /**
- * گروه‌های پنل — the thing that decides what a paying customer receives.
- *
- * The legacy shop had five "panels" all pointing at one PasarGuard, differing
- * only in which groups they sent: `[42,2]` for VIP, `[83]` for the unlimited
- * line, `[2]` for the rest. Buying VIP got you groups 42 and 2 because a row in
- * `marzban_panel` said so. That is carried into
- * `provisioning_providers.config`, and until now no screen showed it — the
- * number deciding what a customer receives lived only in a jsonb column.
- *
- * The list is asked of the PANEL, not typed. That is the whole point: group 42
- * was in our configuration and had been deleted from the live panel, and
- * PasarGuard answers a create with `404 Group not found`, which the adapter
- * classifies as non-retryable — so every VIP order would have gone FAILED and
- * refunded on the first day of cutover. A number frozen in our config cannot
- * notice that; a list the panel supplies can.
- *
- * A selected id the panel does not have is drawn anyway, and marked. Hiding it
- * would remove the only warning that this exact failure is armed.
- */
-/**
  * How many inbounds a group has, and how many of them the customer feels.
  *
  * These are different numbers and the difference cost a whole afternoon to see.
@@ -582,11 +619,7 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
  * building a VIP tier off "this group has more inbounds" is reading the number
  * that does not decide anything.
  */
-function InboundCount({
-  group,
-}: {
-  group: { inboundTags?: string[]; deliverableInbounds?: number };
-}) {
+function InboundCount({ group }: { group: PanelGroupItem }) {
   const total = group.inboundTags?.length;
   if (total === undefined) return <>—</>;
   const live = group.deliverableInbounds;
@@ -604,13 +637,209 @@ function InboundCount({
   );
 }
 
-function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged: () => void }) {
+/**
+ * Picking inbounds for a group, out of what the panel actually has.
+ *
+ * The legacy wizard took a typed comma-separated list, so a mistyped tag saved
+ * cleanly and delivered nothing — the tier existed, cost more, and handed the
+ * customer the cheap set. Nothing anywhere said so.
+ *
+ * `hosted === false` is called out on the row rather than hidden, because it is
+ * the same failure wearing a different hat: an inbound with no host is real,
+ * selectable, counts toward every total, and gives the customer nothing. A
+ * «پلاتینیوم» built out of two of them is a tier that costs more and delivers
+ * less than «معمولی».
+ */
+function InboundPicker({
+  inbounds,
+  reason,
+  chosen,
+  onToggle,
+  disabledProps,
+}: {
+  inbounds: Array<{ tag: string; hosted?: boolean }> | null;
+  reason: string | null;
+  chosen: string[];
+  onToggle: (tag: string) => void;
+  disabledProps: Record<string, unknown>;
+}) {
+  if (inbounds === null) {
+    return (
+      <div className="alert alert-warning">
+        فهرست اینباندها از پنل خوانده نشد{reason ? ` — ${reason}` : ''}.
+      </div>
+    );
+  }
+  if (inbounds.length === 0) {
+    return <div className="alert alert-warning">این پنل هیچ اینباندی ندارد.</div>;
+  }
+  return (
+    <div className="pick-list">
+      {inbounds.map((i) => {
+        const on = chosen.includes(i.tag);
+        return (
+          <label key={i.tag} className={on ? 'pick pick--on' : 'pick'}>
+            <input
+              type="checkbox"
+              checked={on}
+              onChange={() => onToggle(i.tag)}
+              {...disabledProps}
+            />
+            <span>
+              <span className="ltr">{i.tag}</span>
+              {i.hosted === false && (
+                <div className="page-head__sub">بدون هاست — به مشتری کانفیگ نمی‌دهد</div>
+              )}
+            </span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Name + inbounds, shared by «گروه تازه» and the per-row editor. */
+function GroupForm({
+  title,
+  name,
+  setName,
+  tags,
+  toggleTag,
+  inbounds,
+  inboundsReason,
+  busy,
+  submitLabel,
+  onSubmit,
+  onCancel,
+  w,
+}: {
+  title: string;
+  name: string;
+  setName: (v: string) => void;
+  tags: string[];
+  toggleTag: (tag: string) => void;
+  inbounds: Array<{ tag: string; hosted?: boolean }> | null;
+  inboundsReason: string | null;
+  busy: boolean;
+  submitLabel: string;
+  onSubmit: () => void;
+  onCancel: () => void;
+  w: Record<string, unknown>;
+}) {
+  const deliverable = inbounds === null ? null : tags.filter((t) =>
+    inbounds.some((i) => i.tag === t && i.hosted !== false),
+  ).length;
+
+  return (
+    <div className="card" style={{ marginBlock: 12 }}>
+      <div className="card__head">
+        <span className="card__title">{title}</span>
+        <button type="button" className="btn btn-sm" onClick={onCancel}>
+          انصراف
+        </button>
+      </div>
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="group-name">
+            نام گروه
+          </label>
+          <input
+            id="group-name"
+            className="form-control"
+            type="text"
+            maxLength={120}
+            placeholder="پلاتینیوم"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            {...w}
+          />
+        </div>
+      </div>
+
+      <label className="form-label" style={{ marginBlockStart: 8 }}>
+        اینباندها
+      </label>
+      <InboundPicker
+        inbounds={inbounds}
+        reason={inboundsReason}
+        chosen={tags}
+        onToggle={toggleTag}
+        disabledProps={w}
+      />
+
+      {/* Said before the save, not after: a tier with no delivering inbound
+          costs more than the cheap one and hands the customer the same thing,
+          and nothing downstream ever complains about it. */}
+      {deliverable === 0 && (
+        <div className="alert alert-warning">
+          هیچ‌کدام از اینباندهای انتخاب‌شده هاست ندارد — مشتریِ این گروه هیچ کانفیگی نمی‌گیرد.
+        </div>
+      )}
+
+      <div style={{ marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || name.trim() === ''}
+          onClick={onSubmit}
+          {...w}
+        >
+          {busy ? 'در حال ذخیره…' : submitLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * گروه‌های پنل — the thing that decides what a paying customer receives.
+ *
+ * The legacy shop had five "panels" all pointing at one PasarGuard, differing
+ * only in which groups they sent: `[42,2]` for VIP, `[83]` for the unlimited
+ * line, `[2]` for the rest. Buying VIP got you groups 42 and 2 because a row in
+ * `marzban_panel` said so. That is carried into
+ * `provisioning_providers.config`, and until 2026-08-23 no screen showed it —
+ * the number deciding what a customer receives lived only in a jsonb column.
+ *
+ * The list is asked of the PANEL, not typed. That is the whole point: group 42
+ * was in our configuration and had been deleted from the live panel, and
+ * PasarGuard answers a create with `404 Group not found`, which the adapter
+ * classifies as non-retryable — so every VIP order would have gone FAILED and
+ * refunded on the first day of cutover. A number frozen in our config cannot
+ * notice that; a list the panel supplies can.
+ *
+ * A selected id the panel does not have is drawn anyway, and marked. Hiding it
+ * would remove the only warning that this exact failure is armed.
+ *
+ * Since 2026-08-23 the groups can also be MADE here. A group is the product
+ * tier — «پلاتینیوم» is a group with more inbounds in it — so a shop that could
+ * tick groups but not create one still needed somebody in the panel's own web
+ * UI before it could add a tier, and «کدام اینباند» was answered there from
+ * memory.
+ */
+function PanelGroupsSection({
+  panel,
+  onChanged,
+  onProblem,
+}: {
+  panel: PanelItem;
+  onChanged: () => void;
+  onProblem: (has: boolean) => void;
+}) {
   const w = useAdminWriteProps();
   const [data, setData] = useState<PanelGroups | null>(null);
+  const [inbounds, setInbounds] = useState<Array<{ tag: string; hosted?: boolean }> | null>(null);
+  const [inboundsReason, setInboundsReason] = useState<string | null>(null);
   const [chosen, setChosen] = useState<number[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const noticeRef = useRef<HTMLDivElement | null>(null);
+
+  // The inline group form: null = closed, 0 = creating, >0 = editing that id.
+  const [editing, setEditing] = useState<number | null>(null);
+  const [formName, setFormName] = useState('');
+  const [formTags, setFormTags] = useState<string[]>([]);
 
   async function load() {
     setBusy(true);
@@ -626,12 +855,24 @@ function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged:
     }
   }
 
+  async function loadInbounds() {
+    try {
+      const r = await api.panelInbounds(panel.id);
+      setInbounds(r.inbounds);
+      setInboundsReason(r.reason ?? null);
+    } catch (e) {
+      setInbounds(null);
+      setInboundsReason(message(e));
+    }
+  }
+
   useEffect(() => {
     // Reloads when a different panel is opened. `load` is stable enough for
     // this — the page unmounts the editor between panels — and the repo has no
     // react-hooks plugin configured, so an exhaustive-deps pragma here would
     // reference a rule that does not exist.
     void load();
+    void loadInbounds();
   }, [panel.id]);
 
   async function save() {
@@ -658,38 +899,122 @@ function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged:
     });
   }
 
-  if (data === null) {
-    return (
-      <>
-        <h4>گروه‌های پنل</h4>
-        {err ? <div className="alert alert-error">{err}</div> : <p className="muted">…</p>}
-      </>
-    );
+  function toggleTag(tag: string) {
+    setFormTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
+  }
+
+  async function submitForm() {
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      const spec = { name: formName.trim(), inboundTags: formTags };
+      if (editing === 0) {
+        const r = await api.createPanelGroup(panel.id, spec);
+        setDone(
+          `گروه «${r.group.name}» روی پنل ساخته شد. تا وقتی تیک «می‌فروشیم» را نزنید و ذخیره نکنید، هیچ مشتری‌ای آن را نمی‌گیرد.`,
+        );
+      } else if (editing !== null) {
+        await api.updatePanelGroup(panel.id, editing, spec);
+        setDone('گروه روی پنل ذخیره شد.');
+      }
+      setEditing(null);
+      await load();
+      await loadInbounds();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(g: PanelGroupItem) {
+    const members = g.memberCount ?? 0;
+    const warning =
+      members > 0
+        ? `${members.toLocaleString('fa-IR')} اکانت در گروه «${g.name}» است. با حذف گروه، اکانت‌ها می‌مانند ولی اینباندهای این گروه را از دست می‌دهند. حذف شود؟`
+        : `گروه «${g.name}» از روی خودِ پنل حذف شود؟ این کار برگشت‌پذیر نیست.`;
+    if (!window.confirm(warning)) return;
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await api.deletePanelGroup(panel.id, g.id);
+      setDone(`گروه «${g.name}» از پنل حذف شد.`);
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   const selected = chosen ?? [];
-  const available = data.available;
+  const available = data?.available ?? null;
   // Ids we send that the panel does not have. This is the group-42 case, and it
   // is the reason this screen exists.
   const missing =
-    available === null ? [] : selected.filter((id) => !available.some((g) => g.id === id));
+    available === null || data === null
+      ? []
+      : data.selected.filter((id) => !available.some((g) => g.id === id));
+
+  useEffect(() => {
+    onProblem(missing.length > 0);
+  }, [missing.length]);
+
+  // Bring the answer to where the operator is looking.
+  //
+  // Found by walking it: «حذف» sits at the END of the group table and its reply
+  // renders at the TOP of the section, so refusing a delete — the single most
+  // important thing this screen says — landed off the top of the window and the
+  // row simply stayed put. Indistinguishable from a button that did nothing.
+  // The same shape as the bug this whole rebuild was about, one level down.
+  useEffect(() => {
+    if (err !== null || done !== null) {
+      noticeRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [err, done]);
+
+  if (data === null) {
+    return err ? <div className="alert alert-error">{err}</div> : <p className="muted">…</p>;
+  }
+
   const dirty =
-    JSON.stringify([...selected].sort((a, b) => a - b)) ===
-    JSON.stringify([...data.selected].sort((a, b) => a - b))
-      ? false
-      : true;
+    JSON.stringify([...selected].sort((a, b) => a - b)) !==
+    JSON.stringify([...data.selected].sort((a, b) => a - b));
+
+  /**
+   * Which of our plans send this group, so «چطور مشتری پلاتینیوم می‌خرد» has an
+   * answer on the row itself.
+   *
+   * A group can be sold two ways and they are not interchangeable: on the
+   * PANEL, where it goes to every product on it, or on a PLAN, where it goes
+   * only to that one. The legacy shop did the second — five `marzban_panel`
+   * rows on one PasarGuard, differing only in `inbounds` — and an operator who
+   * ticks it here expecting the second silently changes what every existing
+   * customer of this panel receives on their next renewal.
+   */
+  function soldBy(id: number): string[] {
+    const via: string[] = [];
+    if (data !== null && data.selected.includes(id)) via.push('پیش‌فرض پنل');
+    for (const pl of data?.plans ?? []) {
+      if (Array.isArray(pl.groups) && (pl.groups as unknown[]).includes(id)) via.push(pl.name);
+    }
+    return via;
+  }
 
   return (
     <>
-      <h4>گروه‌های پنل</h4>
-      <p className="muted">
-        وقتی مشتری از این پنل خرید می‌کند، اکانتش در همین گروه‌ها ساخته می‌شود. فهرست از خودِ پنل
-        خوانده می‌شود، نه از تنظیمات ما. ستون «اینباند» تعدادی را می‌گوید که واقعاً به مشتری کانفیگ
-        می‌دهد — اینباندی که هاست ندارد در اشتراک ظاهر نمی‌شود.
+      <p className="muted" style={{ marginBlockStart: 0 }}>
+        گروه، همان «سطح» محصول است. وقتی مشتری از این پنل خرید می‌کند، اکانتش در گروه‌های تیک‌خورده
+        ساخته می‌شود، و اینباندهای آن گروه‌ها همان چیزی است که در اشتراکش می‌بیند. فهرست از خودِ پنل
+        خوانده می‌شود، نه از تنظیمات ما.
       </p>
 
-      {err && <div className="alert alert-error">{err}</div>}
-      {done && <div className="alert alert-info">{done}</div>}
+      <div ref={noticeRef}>
+        {err && <div className="alert alert-error">{err}</div>}
+        {done && <div className="alert alert-ok">{done}</div>}
+      </div>
 
       {available === null ? (
         <div className="alert alert-error">
@@ -704,56 +1029,130 @@ function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged:
               هر خریدی که این گروه را بفرستد شکست می‌خورد و پول مشتری برمی‌گردد.
             </div>
           )}
-          <div className="table-wrap">
+
+          {editing === null && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => {
+                setEditing(0);
+                setFormName('');
+                setFormTags([]);
+                setDone(null);
+              }}
+              {...w}
+            >
+              + گروه تازه روی پنل
+            </button>
+          )}
+
+          {editing !== null && (
+            <GroupForm
+              title={editing === 0 ? 'گروه تازه روی پنل' : `ویرایش گروه ${editing}`}
+              name={formName}
+              setName={setFormName}
+              tags={formTags}
+              toggleTag={toggleTag}
+              inbounds={inbounds}
+              inboundsReason={inboundsReason}
+              busy={busy}
+              submitLabel={editing === 0 ? 'بساز' : 'ذخیره روی پنل'}
+              onSubmit={() => void submitForm()}
+              onCancel={() => setEditing(null)}
+              w={w}
+            />
+          )}
+
+          <div className="table-wrap" style={{ marginBlockStart: 12 }}>
             <table className="app-table">
               <thead>
                 <tr>
-                  <th />
+                  <th>می‌فروشیم</th>
                   <th>گروه</th>
                   <th>شناسه</th>
                   <th>اینباند</th>
                   <th>اعضا</th>
+                  <th>فروخته می‌شود در</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
                 {available.length === 0 && (
                   <tr>
-                    <td className="empty" colSpan={5}>
-                      این پنل هیچ گروهی ندارد.
+                    <td className="empty" colSpan={7}>
+                      این پنل هیچ گروهی ندارد. با «+ گروه تازه روی پنل» اولی را بسازید.
                     </td>
                   </tr>
                 )}
-                {available.map((g) => (
-                  <tr key={g.id}>
-                    <td>
-                      <input
-                        type="checkbox"
-                        aria-label={g.name}
-                        checked={selected.includes(g.id)}
-                        onChange={() => toggle(g.id)}
-                        {...w}
-                      />
-                    </td>
-                    <td>
-                      <div>{g.name}</div>
-                      {g.inboundTags && g.inboundTags.length > 0 && (
-                        <div className="page-head__sub ltr">{g.inboundTags.join(' · ')}</div>
-                      )}
-                    </td>
-                    <td className="ltr">{g.id}</td>
-                    <td>
-                      <InboundCount group={g} />
-                    </td>
-                    <td>{g.memberCount === undefined ? '—' : count(g.memberCount)}</td>
-                  </tr>
-                ))}
+                {available.map((g) => {
+                  const via = soldBy(g.id);
+                  return (
+                    <tr key={g.id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={g.name}
+                          checked={selected.includes(g.id)}
+                          onChange={() => toggle(g.id)}
+                          {...w}
+                        />
+                      </td>
+                      <td>
+                        <div>{g.name}</div>
+                        {g.inboundTags && g.inboundTags.length > 0 && (
+                          <div className="page-head__sub ltr">{g.inboundTags.join(' · ')}</div>
+                        )}
+                        {g.disabled === true && (
+                          <span className="badge badge-warning">روی پنل خاموش است</span>
+                        )}
+                      </td>
+                      <td className="ltr">{g.id}</td>
+                      <td>
+                        <InboundCount group={g} />
+                      </td>
+                      <td>{g.memberCount === undefined ? '—' : count(g.memberCount)}</td>
+                      <td>
+                        {via.length === 0 ? (
+                          <span className="muted">فروخته نمی‌شود</span>
+                        ) : (
+                          via.join('، ')
+                        )}
+                      </td>
+                      <td>
+                        <div className="row-actions">
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => {
+                              setEditing(g.id);
+                              setFormName(g.name);
+                              setFormTags([...(g.inboundTags ?? [])]);
+                              setDone(null);
+                            }}
+                            {...w}
+                          >
+                            ویرایش
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-danger"
+                            onClick={() => void remove(g)}
+                            {...w}
+                          >
+                            حذف
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
                 {missing.map((id) => (
                   <tr key={`missing-${id}`}>
                     <td>
                       <input
                         type="checkbox"
                         aria-label={`گروه ${id}`}
-                        checked
+                        checked={selected.includes(id)}
                         onChange={() => toggle(id)}
                         {...w}
                       />
@@ -764,11 +1163,14 @@ function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged:
                     <td className="ltr">{id}</td>
                     <td>—</td>
                     <td>—</td>
+                    <td>{soldBy(id).join('، ') || <span className="muted">فروخته نمی‌شود</span>}</td>
+                    <td />
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+
           <div style={{ marginBlockStart: 12 }}>
             <button
               type="button"
@@ -777,16 +1179,21 @@ function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged:
               onClick={() => void save()}
               {...w}
             >
-              ذخیرهٔ گروه‌ها
+              ذخیرهٔ تیک‌ها
             </button>
+            {dirty && (
+              <div className="page-head__sub" style={{ marginBlockStart: 6 }}>
+                تیک‌ها عوض شده‌اند و هنوز ذخیره نشده‌اند.
+              </div>
+            )}
           </div>
         </>
       )}
 
       {data.plans.length > 0 && (
         <>
-          <p className="muted" style={{ marginBlockStart: 12 }}>
-            این پلن‌ها گروه خودشان را دارند و انتخاب بالا رویشان اثر ندارد:
+          <p className="muted" style={{ marginBlockStart: 16 }}>
+            این پلن‌ها گروه خودشان را دارند و تیک‌های بالا رویشان اثر ندارد:
           </p>
           <ul className="muted">
             {data.plans.map((pl) => (
@@ -801,6 +1208,15 @@ function PanelGroupsSection({ panel, onChanged }: { panel: PanelItem; onChanged:
   );
 }
 
+type Tab = 'info' | 'link' | 'groups' | 'status';
+
+const TAB_FA: ReadonlyArray<{ id: Tab; label: string }> = [
+  { id: 'info', label: 'اطلاعات' },
+  { id: 'link', label: 'اتصال و رمز' },
+  { id: 'groups', label: 'گروه‌ها' },
+  { id: 'status', label: 'وضعیت' },
+];
+
 function PanelEditor({
   panel,
   onClose,
@@ -811,6 +1227,7 @@ function PanelEditor({
   onChanged: () => void;
 }) {
   const w = useAdminWriteProps();
+  const [tab, setTab] = useState<Tab>('info');
   const [name, setName] = useState(panel.name);
   const [capacity, setCapacity] = useState(panel.capacity === null ? '' : String(panel.capacity));
   const [sortOrder, setSortOrder] = useState(String(panel.sortOrder));
@@ -819,6 +1236,18 @@ function PanelEditor({
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [groupProblem, setGroupProblem] = useState(false);
+
+  const r = readiness(panel);
+  // Which tabs hold something an operator has to see. Tabs hide things, and the
+  // one thing that must never be hidden is the reason a paid order will fail —
+  // so a fault marks its own tab from the moment the card opens.
+  const flagged: Record<Tab, boolean> = {
+    info: false,
+    link: r.tone === 'bad',
+    groups: groupProblem,
+    status: false,
+  };
 
   async function send(patch: Parameters<typeof api.updatePanel>[1], okMessage: string) {
     setBusy(true);
@@ -880,148 +1309,206 @@ function PanelEditor({
   }
 
   return (
-    <div className="card" style={{ marginBlockStart: 16 }}>
+    <div className="card" style={{ marginBlockEnd: 16 }}>
       <div className="card__head">
         <span className="card__title">
-          {panel.name} <span className="muted ltr">{panel.code}</span>
+          {panel.name} <span className="muted ltr">{panel.code}</span>{' '}
+          <span className={TONE_CLASS[r.tone]}>{r.label}</span>
         </span>
         <button type="button" className="btn btn-sm" onClick={onClose}>
           بستن
         </button>
       </div>
 
+      <div className="tabs">
+        {TAB_FA.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            className={tab === t.id ? 'tab tab--on' : 'tab'}
+            onClick={() => {
+              setTab(t.id);
+              setErr(null);
+              setDone(null);
+            }}
+          >
+            {t.label}
+            {flagged[t.id] && <span className="tab__dot" aria-label="مشکل دارد" />}
+          </button>
+        ))}
+      </div>
+
+      {/* One message bar per card, but reset on every tab switch, so a «ذخیره
+          شد» from another tab can never sit above a form it has nothing to do
+          with. That reading — the result of a button pressed a screen and a
+          half away — is the one this card used to invite. */}
       {err && <div className="alert alert-error">{err}</div>}
-      {done && <div className="alert alert-info">{done}</div>}
+      {done && <div className="alert alert-ok">{done}</div>}
 
-      <div className="filters">
-        <div className="grow">
-          <label className="form-label" htmlFor="panel-name">
-            نام پنل
-          </label>
-          <input
-            id="panel-name"
-            className="form-control"
-            type="text"
-            maxLength={120}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
+      {tab === 'info' && (
+        <>
+          <div className="filters">
+            <div className="grow">
+              <label className="form-label" htmlFor="panel-name">
+                نام پنل
+              </label>
+              <input
+                id="panel-name"
+                className="form-control"
+                type="text"
+                maxLength={120}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="form-label" htmlFor="panel-capacity">
+                ظرفیت
+              </label>
+              <input
+                id="panel-capacity"
+                className="form-control ltr"
+                type="number"
+                value={capacity}
+                onChange={(e) => setCapacity(e.target.value)}
+                placeholder="نامحدود"
+              />
+            </div>
+            <div>
+              <label className="form-label" htmlFor="panel-sort">
+                ترتیب نمایش
+              </label>
+              <input
+                id="panel-sort"
+                className="form-control ltr"
+                type="number"
+                value={sortOrder}
+                onChange={(e) => setSortOrder(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void save()}
+              {...w}
+            >
+              ذخیره
+            </button>
+          </div>
+          <p className="muted">
+            ظرفیت خالی یعنی نامحدود. الان {count(panel.liveSubscriptions)} سرویس زنده،{' '}
+            {count(panel.productCount)} محصول و {count(panel.planCount)} پلن روی این پنل است. آدرس و
+            نوع پنل از این‌جا عوض نمی‌شوند.
+          </p>
+        </>
+      )}
+
+      {tab === 'link' && (
+        <>
+          <p className="muted" style={{ marginBlockStart: 0 }}>
+            آدرس: <span className="ltr">{panel.baseUrl ?? '—'}</span>
+          </p>
+          {r.tone === 'bad' && (
+            <div className="alert alert-error">
+              {r.why} — تا وقتی این درست نشود، هر سفارشِ پرداخت‌شده روی این پنل رد می‌شود و پول
+              مشتری برمی‌گردد.
+            </div>
+          )}
+
+          {/* Uses the STORED credential, so pressing it on an untouched panel
+              answers the question an operator actually has: does this panel
+              work right now. */}
+          <ConnectionTest
+            label="تست با رمزِ ذخیره‌شده"
+            hint="همان رمزی که ربات هنگام تحویل استفاده می‌کند."
+            run={() => api.testPanel(panel.id, {})}
           />
-        </div>
-        <div>
-          <label className="form-label" htmlFor="panel-capacity">
-            ظرفیت
-          </label>
-          <input
-            id="panel-capacity"
-            className="form-control ltr"
-            type="number"
-            value={capacity}
-            onChange={(e) => setCapacity(e.target.value)}
-            placeholder="نامحدود"
+
+          <h4>عوض‌کردن رمز</h4>
+          <p className="muted">
+            رمز فعلی هیچ‌جا نشان داده نمی‌شود — رمزنگاری‌شده ذخیره شده و فقط سرویس‌هایی که تحویل
+            می‌دهند می‌توانند بازش کنند.
+          </p>
+          <div className="filters">
+            <div className="grow">
+              <label className="form-label" htmlFor="panel-username">
+                نام کاربری پنل
+              </label>
+              <input
+                id="panel-username"
+                className="form-control ltr"
+                type="text"
+                autoComplete="off"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+              />
+            </div>
+            <div className="grow">
+              <label className="form-label" htmlFor="panel-password">
+                رمز تازه
+              </label>
+              <input
+                id="panel-password"
+                className="form-control ltr"
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || username.trim() === '' || password === ''}
+              onClick={() => void saveCredential()}
+              {...w}
+            >
+              ذخیرهٔ رمز
+            </button>
+          </div>
+          {/* Testing what was TYPED, before it replaces what is stored. Pressing
+              «ذخیرهٔ رمز» on a wrong password takes the panel down silently — it
+              stays ACTIVE and every order on it starts failing. */}
+          <ConnectionTest
+            label="تست رمزی که نوشتم، قبل از ذخیره"
+            hint="آن‌چه در دو خانهٔ بالاست را می‌آزماید، بدون اینکه رمز ذخیره‌شده را عوض کند."
+            disabled={username.trim() === '' || password === ''}
+            run={() =>
+              api.testPanel(panel.id, {
+                credential: { username: username.trim(), password },
+              })
+            }
           />
-        </div>
-        <div>
-          <label className="form-label" htmlFor="panel-sort">
-            ترتیب نمایش
-          </label>
-          <input
-            id="panel-sort"
-            className="form-control ltr"
-            type="number"
-            value={sortOrder}
-            onChange={(e) => setSortOrder(e.target.value)}
-          />
-        </div>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={busy}
-          onClick={() => void save()}
-          {...w}
-        >
-          ذخیره
-        </button>
+        </>
+      )}
+
+      {/* Mounted even while another tab is showing, so its own alerts stay its
+          own and the tab flag above is truthful from the moment the card opens
+          — a missing group must not wait for somebody to click «گروه‌ها». */}
+      <div style={{ display: tab === 'groups' ? undefined : 'none' }}>
+        <PanelGroupsSection panel={panel} onChanged={onChanged} onProblem={setGroupProblem} />
       </div>
-      <p className="muted">ظرفیت خالی یعنی نامحدود. آدرس و نوع پنل از این‌جا عوض نمی‌شوند.</p>
 
-      <h4>ارتباط با پنل</h4>
-      {/* Uses the STORED credential when the two boxes are empty, so pressing
-          it on an untouched panel answers the question an operator actually
-          has: does this panel work right now. */}
-      <ConnectionTest run={() => api.testPanel(panel.id, {})} />
-
-      <h4>رمز پنل</h4>
-      <p className="muted">
-        رمز فعلی هیچ‌جا نشان داده نمی‌شود — رمزنگاری‌شده ذخیره شده و فقط سرویس‌هایی که تحویل می‌دهند
-        می‌توانند بازش کنند. برای عوض‌کردن، رمز تازه را این‌جا بنویسید.
-      </p>
-      <div className="filters">
-        <div className="grow">
-          <label className="form-label" htmlFor="panel-username">
-            نام کاربری پنل
-          </label>
-          <input
-            id="panel-username"
-            className="form-control ltr"
-            type="text"
-            autoComplete="off"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-        </div>
-        <div className="grow">
-          <label className="form-label" htmlFor="panel-password">
-            رمز تازه
-          </label>
-          <input
-            id="panel-password"
-            className="form-control ltr"
-            type="password"
-            autoComplete="new-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </div>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={busy || username.trim() === '' || password === ''}
-          onClick={() => void saveCredential()}
-          {...w}
-        >
-          ذخیرهٔ رمز
-        </button>
-      </div>
-      {/* Testing what was TYPED, before it replaces what is stored. Pressing
-          «ذخیرهٔ رمز» on a wrong password takes the panel down silently — it
-          stays ACTIVE and every order on it starts failing. */}
-      <ConnectionTest
-        disabled={username.trim() === '' || password === ''}
-        run={() =>
-          api.testPanel(panel.id, {
-            credential: { username: username.trim(), password },
-          })
-        }
-      />
-
-      <PanelGroupsSection panel={panel} onChanged={onChanged} />
-
-      <h4>وضعیت</h4>
-      <p className="muted" style={{ marginBlockStart: 0 }}>
-        {count(panel.liveSubscriptions)} سرویس زنده و {count(panel.planCount)} پلن روی این پنل است.
-        غیرفعال‌کردن، پنل را از خرید و تمدید برمی‌دارد؛ سرویس‌های فروخته‌شده پاک نمی‌شوند.
-      </p>
-      <div className="filters">
-        <button
-          type="button"
-          className={panel.status === 'ACTIVE' ? 'btn btn-danger' : 'btn btn-primary'}
-          disabled={busy}
-          onClick={() => void toggleStatus()}
-          {...w}
-        >
-          {panel.status === 'ACTIVE' ? 'غیرفعال کن' : 'فعال کن'}
-        </button>
-      </div>
+      {tab === 'status' && (
+        <>
+          <p className="muted" style={{ marginBlockStart: 0 }}>
+            {count(panel.liveSubscriptions)} سرویس زنده و {count(panel.planCount)} پلن روی این پنل
+            است. غیرفعال‌کردن، پنل را از خرید و تمدید برمی‌دارد؛ سرویس‌های فروخته‌شده پاک نمی‌شوند.
+          </p>
+          <div className="filters">
+            <button
+              type="button"
+              className={panel.status === 'ACTIVE' ? 'btn btn-danger' : 'btn btn-primary'}
+              disabled={busy}
+              onClick={() => void toggleStatus()}
+              {...w}
+            >
+              {panel.status === 'ACTIVE' ? 'غیرفعال کن' : 'فعال کن'}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

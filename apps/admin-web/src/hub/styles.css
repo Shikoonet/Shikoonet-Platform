@@ -2249,7 +2249,14 @@
 }
 
 /* === Tabs === */
-.tabs {
+/* Scoped 2026-08-23, and the scope test is what found it.
+   «مدیریت پنل‌ها» gained its own tabs that day, so theme.css started defining
+   `.tab` too — and these three rules were still at the document level, holding
+   `color: var(--muted)` and a gold underline. They would have repainted a panel
+   screen that has nothing to do with payments, which is the exact failure this
+   file was scoped for in the first place. `Tabs.tsx` is currently rendered
+   nowhere, so nothing moved on screen; the collision was armed, not firing. */
+.hub .tabs {
   display: flex;
   gap: 0.25rem;
   margin: 1rem 0;
@@ -2257,7 +2264,7 @@
   flex-wrap: wrap;
 }
 
-.tab {
+.hub .tab {
   background: transparent;
   border: 0;
   color: var(--muted);
@@ -2268,7 +2275,7 @@
   border-radius: 0;
 }
 
-.tab.active {
+.hub .tab.active {
   color: var(--gold);
   border-bottom-color: var(--gold);
 }
