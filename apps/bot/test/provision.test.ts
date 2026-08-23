@@ -708,6 +708,35 @@ describe('an order that ended without telling anyone', () => {
   });
 });
 
+describe('what a delivered service is called', () => {
+  /**
+   * Two tiers, one panel, one size — and two rows a customer can tell apart.
+   *
+   * `plan_name_at_sale` is the only name «سرویس های من» has, and plan names
+   * stopped being self-describing the moment services arrived: «پلاتینیوم» and
+   * «معمولی» both hold a «۳۰ گیگ - یک‌ماهه», so recording the plan alone gives
+   * a customer two identical lines and no way to know which is which. Not a
+   * hypothetical — it is the shape an operator gets from building tiers, which
+   * is the whole feature.
+   */
+  it('carries the service, so two tiers of one size are not the same row', async () => {
+    const first = await paidOrder({ planCode: 'sim-vip-platinum', kind: 'pasarguard' });
+    await provisionPaidOrders(db, fakePanel().fetchImpl);
+    const [sub] = await subsFor(first.orderId);
+    expect(sub!.plan_name_at_sale).toBe('پلاتینیوم — ۳۰ گیگ - یک‌ماهه');
+  });
+
+  it('says a migrated name once, not twice', async () => {
+    // The importer wrote the same string into the product and its one plan.
+    // Every migrated service would otherwise be renamed «X — X» on its own
+    // page, on a screen customers already know.
+    const legacy = await paidOrder({ planCode: 'sim-vip-1m-50', kind: 'pasarguard' });
+    await provisionPaidOrders(db, fakePanel().fetchImpl);
+    const [sub] = await subsFor(legacy.orderId);
+    expect(sub!.plan_name_at_sale).toBe('۱ماهه - ۵۰ گیگ - چند کاربر');
+  });
+});
+
 describe('which tier the panel is asked for', () => {
   /**
    * A service decides its own groups, and that decision reaches the panel.

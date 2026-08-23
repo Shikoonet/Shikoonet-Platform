@@ -344,7 +344,13 @@ describe('creating and deleting a group on the panel', () => {
     await productWithGroups(id, 'platinum', [6]);
     const res = await del(`/api/v1/admin/panels/${id}/panel-groups/6`);
     expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toBe('group_in_use');
+    const out = (await res.json()) as { error: string; detail: string };
+    expect(out.error).toBe('group_in_use');
+    // The refusal has to name the level that actually fired. It used to say
+    // «این پنل یا یکی از پلن‌هایش» — true before services existed, and after
+    // them a sentence that sends the operator looking in the two places the
+    // group is NOT.
+    expect(out.detail).toContain('سرویس');
   });
 
   it('reads the legacy `inbounds` spelling when deciding what is in use', async () => {

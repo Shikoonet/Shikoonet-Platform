@@ -572,7 +572,13 @@ async function deliver(
           row.plan_id,
           row.provider_id,
           row.provider_name,
-          row.plan_name ?? row.product_name ?? 'plan',
+          // What was sold, snapshotted at the sale. A legacy row's plan and
+          // product are the same string, so those are untouched; a tiered one
+          // needs both, because the plan names inside «پلاتینیوم», «طلایی» and
+          // «معمولی» are sizes and three services can hold the same size. The
+          // customer's «سرویس های من» is keyed off this column, so without the
+          // service on it two different levels list as the same line.
+          menu.soldAs(row.product_name ?? '', row.plan_name ?? ''),
           row.total_irr,
           JSON.stringify(result.remoteRef),
           result.remoteUsername,

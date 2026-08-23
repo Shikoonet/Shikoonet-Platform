@@ -215,6 +215,32 @@ describe('«بازگشت» on a plan page', () => {
   });
 });
 
+describe('what a purchase is called', () => {
+  it('names the service and the size when they differ', () => {
+    expect(menu.soldAs('پلاتینیوم', '۵۰ گیگ - یک‌ماهه')).toBe('پلاتینیوم — ۵۰ گیگ - یک‌ماهه');
+  });
+
+  it('says a legacy name once, not twice', () => {
+    // The importer wrote the same string into the product and its single plan,
+    // so every migrated row would otherwise read «X — X» on its own invoice.
+    const legacy = '1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀';
+    expect(menu.soldAs(legacy, legacy)).toBe(legacy);
+  });
+
+  it('reaches the invoice and the plan page, not just the helper', () => {
+    // Where it actually matters. Three services on one panel each holding a
+    // «۳۰ گیگ - یک‌ماهه» is the shape an operator gets the moment they build
+    // پلاتینیوم/طلایی/معمولی — and an invoice naming only one half of that
+    // cannot say which level was bought.
+    const tiered = { ...PLAN, productName: 'پلاتینیوم', planName: '۳۰ گیگ - یک‌ماهه' };
+    const price = priceForUser(tiered.priceIrr, 0);
+    expect(menu.planDetail(tiered, price)).toContain('پلاتینیوم — ۳۰ گیگ - یک‌ماهه');
+    expect(menu.checkout('ord1', tiered, tiered.priceIrr, '6037997512345678', null)).toContain(
+      'پلاتینیوم — ۳۰ گیگ - یک‌ماهه',
+    );
+  });
+});
+
 describe('the plan detail', () => {
   it('shows what was bought and what it costs', () => {
     const text = menu.planDetail(PLAN, priceForUser(PLAN.priceIrr, 0));

@@ -508,6 +508,22 @@ export function planMenu(
   );
 }
 
+/**
+ * What the customer is buying, said in full.
+ *
+ * A legacy row's plan IS its product — the importer wrote the same string into
+ * both — so those come out unchanged and every migrated invoice reads exactly
+ * as it did. A tiered service does not: «پلاتینیوم» alone leaves out which size,
+ * and «۵۰ گیگ - یک‌ماهه» alone leaves out which level, and three services each
+ * holding a «۳۰ گیگ - یک‌ماهه» is not a hypothetical — it is the shape the shop
+ * has the moment an operator builds پلاتینیوم/طلایی/معمولی on one panel.
+ */
+export function soldAs(productName: string, planName: string): string {
+  const product = productName.trim();
+  const plan = planName.trim();
+  return plan === '' || plan === product ? product : `${product} — ${plan}`;
+}
+
 /** A code the customer typed and the checker allowed, as the screen shows it. */
 export interface AppliedCode {
   code: string;
@@ -517,7 +533,7 @@ export interface AppliedCode {
 export function planDetail(plan: CatalogPlan, price: Price, applied?: AppliedCode | null): string {
   const t = TEXTS_NOW;
   const lines = [
-    t.render('PLAN_TITLE', { product: plan.productName }),
+    t.render('PLAN_TITLE', { product: soldAs(plan.productName, plan.planName) }),
     t.render('PLAN_LOCATION', { provider: plan.providerName }),
     '',
     plan.volumeGb === null
@@ -1144,7 +1160,7 @@ export function checkout(
     t.raw('CHECKOUT_INTRO'),
     '',
     t.render('CHECKOUT_ORDER_ID', { id: publicId }),
-    t.render('CHECKOUT_SERVICE', { product: plan.productName }),
+    t.render('CHECKOUT_SERVICE', { product: soldAs(plan.productName, plan.planName) }),
     t.render('CHECKOUT_AMOUNT', { amount: formatToman(totalIrr) }),
     '',
     ...checkoutTail(cardDigits, cardHolder),
