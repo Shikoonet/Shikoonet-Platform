@@ -412,7 +412,12 @@ function GroupCell({ service, data }: { service: ServiceRow; data: PanelGroups |
   const inherited = service.groupIds === null;
   const ids = service.groupIds ?? data.selected;
   if (ids.length === 0) {
-    return <span className="badge badge-block">هیچ گروهی — چیزی تحویل نمی‌دهد</span>;
+    // Not «چیزی تحویل نمی‌دهد», which this said until it was read on a real
+    // screen. `marzban.ts` omits `group_ids` from the create when nothing is
+    // chosen, so what the customer receives is then the PANEL's own default —
+    // which we have not asked and cannot state. Naming the fact (nothing is
+    // chosen) is true; naming the consequence would be a guess in red.
+    return <span className="badge badge-warning">گروهی انتخاب نشده</span>;
   }
   return (
     <>
@@ -1963,6 +1968,7 @@ function CategoryPicker({
   onAdded: () => void;
 }) {
   const [adding, setAdding] = useState('');
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function add() {
@@ -1972,6 +1978,7 @@ function CategoryPicker({
       const { category } = await api.createCategory(adding.trim());
       onChange(String(category.id));
       setAdding('');
+      setOpen(false);
       onAdded();
     } finally {
       setBusy(false);
@@ -1996,18 +2003,35 @@ function CategoryPicker({
           </option>
         ))}
       </select>
-      <div className="filters" style={{ marginBlockStart: 4 }}>
-        <input
-          className="form-control"
-          value={adding}
-          onChange={(e) => setAdding(e.target.value)}
-          placeholder="دستهٔ تازه"
-          aria-label="دستهٔ تازه"
-        />
-        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void add()}>
-          افزودن
+      {/* Folded away until asked for.
+          `.filters` aligns its cells to the BOTTOM, so an always-open add-box
+          made this one cell two rows taller than every other and pushed «پنل»
+          and its «افزودن» button onto a line of their own. A category is added
+          a few times a year; the form was crooked every time it was opened. */}
+      {!open ? (
+        <button
+          type="button"
+          className="btn btn-sm"
+          style={{ marginBlockStart: 4 }}
+          onClick={() => setOpen(true)}
+        >
+          + دستهٔ تازه
         </button>
-      </div>
+      ) : (
+        <div style={{ display: 'flex', gap: 6, marginBlockStart: 4 }}>
+          <input
+            className="form-control"
+            value={adding}
+            onChange={(e) => setAdding(e.target.value)}
+            placeholder="دستهٔ تازه"
+            aria-label="دستهٔ تازه"
+            autoFocus
+          />
+          <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void add()}>
+            افزودن
+          </button>
+        </div>
+      )}
     </div>
   );
 }

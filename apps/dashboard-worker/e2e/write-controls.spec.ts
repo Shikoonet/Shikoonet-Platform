@@ -51,7 +51,7 @@ const READER_SECTIONS = [
   'accounts',
   'banks',
   'devices',
-  'products',
+  'catalog',
   'panels',
   'stock',
   'discounts',
@@ -133,9 +133,9 @@ test('the reads are untouched, so the sections are still worth opening', async (
   // counts what is off.
   await signInAsReader(page);
 
-  await page.goto(`${BASE}/admin/products`);
+  await page.goto(`${BASE}/admin/catalog`);
   await expect(page.getByRole('button', { name: 'جست‌وجو' })).toBeEnabled();
-  await expect(page.locator('#prod-q')).toBeEditable();
+  await expect(page.locator('#cat-q')).toBeEditable();
 
   await page.goto(`${BASE}/admin/discounts`);
   await expect(page.getByRole('button', { name: 'جست‌وجو' })).toBeEnabled();

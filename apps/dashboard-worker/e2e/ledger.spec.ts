@@ -160,7 +160,7 @@ test('an add-on order says how much was bought', async ({ page }) => {
 });
 
 test('a service is found by its panel account name', async ({ page }) => {
-  await search(page, '/admin/services', PANEL_ACCOUNT);
+  await search(page, '/admin/subscriptions', PANEL_ACCOUNT);
 
   const row = page.locator(`tbody tr:has-text("${PANEL_ACCOUNT}")`);
   await expect(row).toHaveCount(1);
@@ -171,7 +171,7 @@ test('a service is found by its panel account name', async ({ page }) => {
   // A customer search still works — the account name is an addition to the
   // box, not a replacement for what it did.
   const owner = (await row.locator('td').first().textContent())!.trim();
-  await search(page, '/admin/services', owner);
+  await search(page, '/admin/subscriptions', owner);
   await expect(page.locator(`tbody tr:has-text("${PANEL_ACCOUNT}")`)).toHaveCount(1);
 });
 

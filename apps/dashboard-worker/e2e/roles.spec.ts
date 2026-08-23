@@ -36,7 +36,12 @@ const WITHHELD = [
   'کاربران',
   'ارسال گروهی',
   'سفارشات',
-  'سرویس‌ها',
+  // Customer subscriptions. It was «سرویس‌ها» until 2026-08-24, when that name
+  // went to the catalogue — which a reader IS offered. Two sections named the
+  // same thing is exactly why this list is written in labels: if the rename had
+  // been done in ids alone, this test would have gone on passing while the
+  // sidebar handed a reader the wrong one.
+  'اشتراک‌های مشتری',
   'تراکنش‌ها',
   'هزینه‌ها و تعدیل‌ها',
   'لیست درخواست‌ها',
@@ -70,9 +75,8 @@ test('none of the nine withheld sections is drawn', async ({ page }) => {
   await signInAsReader(page);
   const sidebar = page.locator('.sidebar-link');
   for (const label of WITHHELD) {
-    // Exact, because «سرویس‌ها» is a prefix of nothing here but «تراکنش‌ها»
-    // appears inside finance copy elsewhere on the page — matching loosely
-    // would pass on text that is not a link.
+    // Exact, because «تراکنش‌ها» appears inside finance copy elsewhere on the
+    // page — matching loosely would pass on text that is not a link.
     await expect(sidebar.filter({ hasText: new RegExp(`^${label}$`) })).toHaveCount(0);
   }
 });

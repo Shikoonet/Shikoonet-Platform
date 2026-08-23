@@ -171,8 +171,12 @@ test('a panel that cannot deliver does not read as فعال', async ({ page }) =
   // `marzban.ts:147` answers every order with `retryable: false` — the customer
   // pays, waits, and is refunded with «تماس بگیرید». The row already carried
   // everything needed to say so before a single order was placed.
-  await expect(row).toContainText('بدون آدرس و اعتبارنامه');
-  await expect(row).toContainText('سفارشی از این پنل تحویل نمی‌شود');
+  // The words the screen actually uses. This asserted «بدون آدرس و اعتبارنامه»
+  // and «سفارشی از این پنل تحویل نمی‌شود» until 2026-08-24 — neither string has
+  // ever existed in `PanelsPage.tsx`, so this spec was red from the day it was
+  // written and nothing said so, because `pnpm e2e` is not part of `pnpm test`.
+  await expect(row).toContainText('تحویل نمی‌دهد');
+  await expect(row).toContainText('آدرس و رمز ندارد');
   await expect(row.locator('.badge-active')).toHaveCount(0);
 });
 
