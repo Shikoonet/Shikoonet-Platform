@@ -50,6 +50,32 @@ async function post(path: string, body: unknown, email = ADMIN): Promise<Respons
   );
 }
 
+async function del(path: string, email = ADMIN): Promise<Response> {
+  return app.fetch(
+    new Request(`http://localhost${path}`, {
+      method: 'DELETE',
+      headers: { origin: 'http://localhost' },
+    }),
+    envAs(email),
+  );
+}
+
+/** A product and a plan on this panel, so a plan can hold its own group ids. */
+async function planWithGroups(panelId: number, label: string, groups: number[]): Promise<void> {
+  const product = await baseEnv.DB.prepare(
+    `INSERT INTO products (provider_id, code, name, kind, status)
+     VALUES (?1, ?2, 'محصول', 'vpn', 'ACTIVE') RETURNING id`,
+  )
+    .bind(panelId, `${PREFIX}${label}`)
+    .first<{ id: number }>();
+  await baseEnv.DB.prepare(
+    `INSERT INTO product_plans (product_id, name, price_irr, status, attrs)
+     VALUES (?1, ?2, 1000, 'ACTIVE', ?3::jsonb)`,
+  )
+    .bind(product!.id, `پلن ${label}`, JSON.stringify({ group_ids: groups }))
+    .run();
+}
+
 /**
  * A panel carrying the legacy spelling, exactly as the importer wrote it.
  *
@@ -229,5 +255,131 @@ describe('saving a panel’s groups', () => {
       selected: number[];
     };
     expect(out.selected).toEqual([42]);
+  }, 30_000);
+});
+
+/**
+ * Making and unmaking a group on the panel.
+ *
+ * These routes reach a real panel, and `panel.invalid` can never resolve
+ * (RFC 2606), so what is provable here without one is exactly the part that
+ * matters most: the ORDER of the checks. The delete guard runs before anything
+ * is sent, which is the whole of its value — a guard that only fires after the
+ * panel has been asked is a guard that does nothing when the panel is up.
+ */
+describe('creating and deleting a group on the panel', () => {
+  it('refuses to delete a group this panel still sells, before touching the panel', async () => {
+    // The group-42 story with the arrow reversed. Deleting a group our own
+    // config still sends turns the next purchase into `404 Group not found` →
+    // non-retryable → the customer pays, waits, and is refunded with a «تماس
+    // بگیرید». Preventable here rather than merely reportable, so prevented.
+    //
+    // 409 and not 400: this is a state conflict, and the caller can fix it by
+    // unticking the group. The reply says so.
+    const id = await migratedPanel('sells-2', { group_ids: [2, 7] });
+    const res = await del(`/api/v1/admin/panels/${id}/panel-groups/2`);
+    expect(res.status).toBe(409);
+    const out = (await res.json()) as { error: string; detail: string };
+    expect(out.error).toBe('group_in_use');
+    expect(out.detail).toContain('تیک');
+  });
+
+  it('refuses when only a PLAN sends it, not the panel', async () => {
+    // `pick()` reads the plan's `attrs.group_ids` before the panel's, so a plan
+    // is not a lesser claim on a group — it is the stronger one. The legacy
+    // shop sold every tier this way. A guard that checked only the panel's own
+    // selection would wave through the delete that breaks the VIP plan and
+    // leave the panel default untouched, which is the exact shape of a bug
+    // nobody notices until a customer pays.
+    const id = await migratedPanel('plan-only', { group_ids: [] });
+    await planWithGroups(id, 'vip', [42]);
+    const res = await del(`/api/v1/admin/panels/${id}/panel-groups/42`);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe('group_in_use');
+  });
+
+  it('reads the legacy `inbounds` spelling when deciding what is in use', async () => {
+    // Every migrated panel carries the old key. A guard that read only the
+    // current spelling would be OFF for all five production panels — which is
+    // the only way it could matter and the only way nobody would find out.
+    const id = await migratedPanel('legacy-use', { inbounds: [42, 2] });
+    expect((await del(`/api/v1/admin/panels/${id}/panel-groups/42`)).status).toBe(409);
+  });
+
+  it('lets an unused group through the guard, and then fails on the panel', async () => {
+    // The other half of the same proof: the guard is a guard, not a wall. 9 is
+    // in nothing, so the request reaches the adapter — and dies at
+    // `panel.invalid`, which is 400 and NOT 409. Without this the first three
+    // tests would also pass if the route refused everything.
+    const id = await migratedPanel('unused', { group_ids: [2] });
+    await planWithGroups(id, 'other', [7]);
+    const res = await del(`/api/v1/admin/panels/${id}/panel-groups/9`);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('panel_unavailable');
+  }, 30_000);
+
+  it('refuses a REVIEWER on all three writes', async () => {
+    const id = await migratedPanel('rev-crud', { group_ids: [] });
+    expect(
+      (await post(`/api/v1/admin/panels/${id}/panel-groups`, { name: 'x', inboundTags: [] }, REVIEWER))
+        .status,
+    ).toBe(403);
+    expect(
+      (
+        await post(
+          `/api/v1/admin/panels/${id}/panel-groups/1`,
+          { name: 'x', inboundTags: [] },
+          REVIEWER,
+        )
+      ).status,
+    ).toBe(403);
+    expect((await del(`/api/v1/admin/panels/${id}/panel-groups/1`, REVIEWER)).status).toBe(403);
+  });
+
+  it('rejects a nameless group before it reaches the panel', async () => {
+    // The panel would answer 422 «name Field required» anyway. Catching it here
+    // is what turns that into a sentence about the field that is missing.
+    const id = await migratedPanel('noname', { group_ids: [] });
+    const res = await post(`/api/v1/admin/panels/${id}/panel-groups`, { inboundTags: [] });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('invalid_body');
+  });
+
+  it('says WHY a panel could not be reached, rather than 500', async () => {
+    // An operator who is told «آدرس پنل وارد نشده است» opens the right field.
+    // One who is told «500» opens a support ticket.
+    const bare = await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind, status, base_url, config)
+       VALUES (?1, 'بدون آدرس', 'pasarguard', 'ACTIVE', NULL, '{}'::jsonb)
+       RETURNING id`,
+    )
+      .bind(`${PREFIX}bare`)
+      .first<{ id: number }>();
+    const res = await post(`/api/v1/admin/panels/${bare!.id}/panel-groups`, {
+      name: 'پلاتینیوم',
+      inboundTags: [],
+    });
+    expect(res.status).toBe(400);
+    const out = (await res.json()) as { error: string; detail: string };
+    expect(out.error).toBe('panel_unavailable');
+    expect(out.detail).toContain('آدرس');
+  });
+
+  it('answers `inbounds: null`, never an empty list, when the panel cannot be asked', async () => {
+    // Same distinction the group listing makes. An empty list here would send
+    // an operator to build a tier out of nothing.
+    const id = await migratedPanel('inb', { group_ids: [] });
+    const res = await get(`/api/v1/admin/panels/${id}/inbounds`);
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as { inbounds: unknown; reason?: string };
+    expect(out.inbounds).toBeNull();
+    expect(typeof out.reason).toBe('string');
+  }, 30_000);
+
+  it('lets a REVIEWER read the inbound list', async () => {
+    // A read. The three writes above are ADMIN-only; this one is not, for the
+    // same reason the group listing is not.
+    const id = await migratedPanel('inb-rev', { group_ids: [] });
+    expect((await get(`/api/v1/admin/panels/${id}/inbounds`, REVIEWER)).status).toBe(200);
   }, 30_000);
 });

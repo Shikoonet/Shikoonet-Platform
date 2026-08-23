@@ -188,6 +188,17 @@ describe('every write route, asked directly', () => {
     // purchase puts the customer's account in — the `[42, 2]` the legacy shop
     // kept on its VIP panel row — so it is ADMIN-only for the same reason the
     // catalogue is.
-    expect(writeRoutes().length).toBe(118);
+    //
+    // 121, still 2026-08-23: the three that write a group ON THE PANEL —
+    // `POST /panels/:id/panel-groups`, `POST /panels/:id/panel-groups/:groupId`
+    // and `DELETE /panels/:id/panel-groups/:groupId`. A group is the product
+    // tier, so creating one is a catalogue decision, and deleting one reaches
+    // past our database into somebody else's server and cannot be undone from
+    // here. ADMIN-only, and the delete additionally refuses while any plan or
+    // the panel itself still sends that group.
+    //
+    // `GET /panels/:id/inbounds` is not in this count and should not be: it
+    // reads, and the three tests above only cover writes.
+    expect(writeRoutes().length).toBe(121);
   });
 });

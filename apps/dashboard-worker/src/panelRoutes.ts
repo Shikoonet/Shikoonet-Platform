@@ -47,6 +47,7 @@ import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import { audit, type Ident } from './adminAudit.js';
 import { adapterFor, open, panelSecretKey, seal, splitCredential } from '@shikoo/domain';
+import type { ProviderContext, ProvisioningAdapter } from '@shikoo/domain';
 import { createHash } from 'node:crypto';
 
 /**
@@ -132,6 +133,116 @@ function credentialFor(row: {
   if (!row.secret_ref) return null;
   const raw = process.env[`PANEL_${row.secret_ref.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`];
   return raw ? splitCredential(raw) : null;
+}
+
+/**
+ * The panel, ready to be asked something — or the Persian sentence saying why
+ * it cannot be.
+ *
+ * Five routes need the same four steps (row, adapter, credential, address) and
+ * they must fail identically, because the difference between «آدرس وارد نشده»
+ * and «رمز باز نشد» is the difference between an operator fixing the right
+ * field and retyping a password that was already correct. Written once here
+ * rather than five times: the group listing already had its own copy of this
+ * and a second one drifting would show two screens disagreeing about the same
+ * panel.
+ *
+ * `status` is deliberately NOT part of it. A disabled panel can still be
+ * inspected and repaired — refusing to read its groups because it is off is how
+ * a panel gets stuck off.
+ */
+type PanelContext =
+  | { ok: true; adapter: ProvisioningAdapter; provider: ProviderContext; code: string }
+  | { ok: false; status: 404 | 200; reason: string };
+
+async function panelContext(db: D1Database, id: number): Promise<PanelContext> {
+  const row = await db
+    .prepare(
+      `SELECT pr.id, pr.code, pr.name, pr.kind, pr.base_url, pr.secret_ref,
+              pr.config, ps.sealed
+         FROM provisioning_providers pr
+         LEFT JOIN provider_secrets ps ON ps.provider_id = pr.id
+        WHERE pr.id = ?1`,
+    )
+    .bind(id)
+    .first<{
+      id: number;
+      code: string;
+      name: string;
+      kind: string;
+      base_url: string | null;
+      secret_ref: string | null;
+      config: Record<string, unknown> | null;
+      sealed: string | null;
+    }>();
+  if (!row) return { ok: false, status: 404, reason: 'not_found' };
+
+  const adapter = adapterFor(row.kind);
+  if (!adapter.listGroups) {
+    return { ok: false, status: 200, reason: `یک پنل «${row.kind}» گروه ندارد.` };
+  }
+
+  let credentials: { username: string; password: string } | null;
+  try {
+    credentials = credentialFor(row);
+  } catch (err) {
+    // Thrown, not null: a sealed value that will not open is almost always a
+    // wrong PANEL_SECRET_KEY, and «این پنل رمز ندارد» would send somebody to
+    // retype one that was already right.
+    return { ok: false, status: 200, reason: `اعتبارنامهٔ ذخیره‌شده باز نشد: ${(err as Error).message}` };
+  }
+  if (!row.base_url) return { ok: false, status: 200, reason: 'آدرس پنل وارد نشده است.' };
+  if (!credentials) return { ok: false, status: 200, reason: 'این پنل هنوز رمزی ندارد.' };
+
+  return {
+    ok: true,
+    adapter,
+    code: row.code,
+    provider: {
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      baseUrl: row.base_url,
+      credentials,
+      config: row.config ?? {},
+      fetch,
+    },
+  };
+}
+
+/**
+ * Every group id our own catalog still sends to this panel.
+ *
+ * Both the panel's default and every plan that overrides it, because deleting a
+ * group either one names turns the next purchase on it into
+ * `404 Group not found` — which the adapter classifies as non-retryable, so the
+ * customer pays, waits, and is refunded. This is the group-42 failure with the
+ * arrow reversed, and it is the one thing this screen can prevent outright
+ * rather than merely warn about.
+ */
+async function groupIdsInUse(db: D1Database, panelId: number): Promise<Set<number>> {
+  const inUse = new Set<number>();
+  const panel = await db
+    .prepare(`SELECT config FROM provisioning_providers WHERE id = ?1`)
+    .bind(panelId)
+    .first<{ config: Record<string, unknown> | null }>();
+  const own = panel?.config?.['group_ids'] ?? panel?.config?.['inbounds'];
+  if (Array.isArray(own)) for (const v of own) if (typeof v === 'number') inUse.add(v);
+
+  const plans = await db
+    .prepare(
+      `SELECT COALESCE(pl.attrs->'group_ids', pl.attrs->'inbounds') AS groups
+         FROM product_plans pl
+         JOIN products p ON p.id = pl.product_id
+        WHERE p.provider_id = ?1
+          AND (jsonb_exists(pl.attrs, 'group_ids') OR jsonb_exists(pl.attrs, 'inbounds'))`,
+    )
+    .bind(panelId)
+    .all<{ groups: unknown }>();
+  for (const r of plans.results ?? []) {
+    if (Array.isArray(r.groups)) for (const v of r.groups) if (typeof v === 'number') inUse.add(v);
+  }
+  return inUse;
 }
 
 /**
@@ -253,6 +364,26 @@ const GroupSelection = z
       .array(z.number().int().min(0).max(1_000_000))
       .max(200)
       .transform((ids) => [...new Set(ids)].sort((a, b) => a - b)),
+  })
+  .strict();
+
+/**
+ * A group as an operator asks for it to be.
+ *
+ * `name` is trimmed and required because the panel requires it — even on an
+ * update, where a body carrying only the inbound list answers
+ * `422 {"detail":{"name":"Field required"}}`. `inboundTags` may be empty and
+ * that is a real state, not a mistake to reject: an empty group is a tier that
+ * exists and delivers nothing, which is exactly what somebody building one step
+ * at a time has for a minute. The screen warns; the schema does not refuse.
+ */
+const GroupSpec = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    inboundTags: z
+      .array(z.string().trim().min(1).max(200))
+      .max(100)
+      .transform((tags) => [...new Set(tags)]),
   })
   .strict();
 
@@ -750,6 +881,235 @@ export function registerPanelRoutes(
       .bind(id)
       .first<PanelRow>();
     return c.json({ ok: true, panel: after ? shape(after) : null });
+  });
+
+  /**
+   * Every inbound the panel has, so a group can be built out of a list rather
+   * than out of remembered tag names.
+   *
+   * The legacy wizard had no equivalent: panel/panels.php took a typed
+   * comma-separated inbounds string, so a typo produced a tier that saved
+   * cleanly and delivered nothing. This is the same fix the group listing was —
+   * ask the panel, do not accept a name.
+   *
+   * `hosted` is on each row because it is the whole difference between a
+   * platinum tier and a platinum-shaped one. An inbound with no host is in
+   * every listing, counts toward every total, and hands the customer nothing.
+   */
+  app.get('/api/v1/admin/panels/:id/inbounds', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role === null) return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const ctx = await panelContext(c.env.DB, id);
+    if (!ctx.ok) {
+      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
+      return c.json({ ok: true, inbounds: null, reason: ctx.reason });
+    }
+    if (!ctx.adapter.listInbounds) {
+      return c.json({ ok: true, inbounds: null, reason: 'این نوع پنل اینباند ندارد.' });
+    }
+
+    const result = await ctx.adapter.listInbounds(ctx.provider);
+    return c.json({
+      ok: true,
+      inbounds: result.ok ? result.inbounds : null,
+      ...(result.ok ? {} : { reason: result.reason }),
+    });
+  });
+
+  /**
+   * Make a group ON THE PANEL.
+   *
+   * Note what this does NOT do: it does not add the new group to what this
+   * panel sends. Creating a tier and selling it are two decisions, and folding
+   * them together would mean every customer of every existing plan silently
+   * started receiving the new inbounds the moment somebody pressed «بساز».
+   * The screen offers the checkbox right after; the route keeps them apart.
+   *
+   * A separate path from POST …/groups, which saves the SELECTION. One verb on
+   * one noun meaning two different writes is how an operator ends up replacing
+   * a panel's whole tier list while trying to add one to it.
+   */
+  app.post('/api/v1/admin/panels/:id/panel-groups', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const body = GroupSpec.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    const ctx = await panelContext(c.env.DB, id);
+    if (!ctx.ok) {
+      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
+      return c.json({ ok: false, error: 'panel_unavailable', detail: ctx.reason }, 400);
+    }
+    if (!ctx.adapter.createGroup) {
+      return c.json({ ok: false, error: 'unsupported', detail: 'این نوع پنل گروه نمی‌سازد.' }, 400);
+    }
+
+    const result = await ctx.adapter.createGroup(ctx.provider, body.data);
+    if (!result.ok) {
+      return c.json({ ok: false, error: 'panel_refused', detail: result.reason }, 400);
+    }
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.panel_group_created',
+      'PROVISIONING_PROVIDER',
+      String(id),
+      null,
+      {
+        code: ctx.code,
+        group: result.group.id,
+        name: result.group.name,
+        inbounds: result.group.inboundTags ?? [],
+      },
+      null,
+    );
+    return c.json({ ok: true, group: result.group });
+  });
+
+  /**
+   * Rename a group or change which inbounds it carries.
+   *
+   * A full replacement, because the panel makes it one — PUT /api/group/{id}
+   * rejects a body without a name. That is worth knowing at this layer too: a
+   * caller that sent only the changed field would get a 422 back and no
+   * explanation of which field it had forgotten.
+   *
+   * Changing the inbounds of a group people already bought does not re-deliver
+   * anything, and it does not have to: a PasarGuard subscription link is
+   * resolved when it is fetched, so existing customers pick the change up on
+   * their next refresh. That cuts both ways, which is why the screen says the
+   * member count out loud next to this button.
+   */
+  app.post('/api/v1/admin/panels/:id/panel-groups/:groupId', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    const groupId = Number(c.req.param('groupId'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    if (!Number.isInteger(groupId) || groupId < 0) {
+      return c.json({ ok: false, error: 'invalid_group_id' }, 400);
+    }
+
+    const body = GroupSpec.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    const ctx = await panelContext(c.env.DB, id);
+    if (!ctx.ok) {
+      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
+      return c.json({ ok: false, error: 'panel_unavailable', detail: ctx.reason }, 400);
+    }
+    if (!ctx.adapter.updateGroup) {
+      return c.json({ ok: false, error: 'unsupported', detail: 'این نوع پنل گروه ندارد.' }, 400);
+    }
+
+    const result = await ctx.adapter.updateGroup(ctx.provider, groupId, body.data);
+    if (!result.ok) {
+      return c.json({ ok: false, error: 'panel_refused', detail: result.reason }, 400);
+    }
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.panel_group_updated',
+      'PROVISIONING_PROVIDER',
+      String(id),
+      { code: ctx.code, group: groupId },
+      {
+        code: ctx.code,
+        group: groupId,
+        name: result.group.name,
+        inbounds: result.group.inboundTags ?? [],
+      },
+      null,
+    );
+    return c.json({ ok: true, group: result.group });
+  });
+
+  /**
+   * Delete a group from the panel — refused while our own catalog still sends it.
+   *
+   * The guard is here and not in the adapter because this is the only layer
+   * that knows what we sell. A group named by this panel's group_ids, or by any
+   * plan's attrs.group_ids, is one whose deletion turns the next purchase into
+   * 404 Group not found → non-retryable → the customer pays, waits, and is
+   * refunded with a «تماس بگیرید». That is precisely the group-42 story this
+   * screen was built to end, and here it is preventable rather than merely
+   * reportable, so it is prevented.
+   *
+   * Members are NOT a refusal. Accounts in a deleted group keep existing; they
+   * stop carrying its inbounds, which is a real consequence and a decision an
+   * admin is allowed to make. The count travels to the screen so the decision
+   * gets made with the number in view.
+   */
+  app.delete('/api/v1/admin/panels/:id/panel-groups/:groupId', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    const groupId = Number(c.req.param('groupId'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    if (!Number.isInteger(groupId) || groupId < 0) {
+      return c.json({ ok: false, error: 'invalid_group_id' }, 400);
+    }
+
+    const inUse = await groupIdsInUse(c.env.DB, id);
+    if (inUse.has(groupId)) {
+      return c.json(
+        {
+          ok: false,
+          error: 'group_in_use',
+          detail:
+            'این گروه هنوز در فروش این پنل یا در یکی از پلن‌هایش فرستاده می‌شود. اول تیکش را بردارید، بعد حذفش کنید.',
+        },
+        409,
+      );
+    }
+
+    const ctx = await panelContext(c.env.DB, id);
+    if (!ctx.ok) {
+      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
+      return c.json({ ok: false, error: 'panel_unavailable', detail: ctx.reason }, 400);
+    }
+    if (!ctx.adapter.deleteGroup) {
+      return c.json({ ok: false, error: 'unsupported', detail: 'این نوع پنل گروه ندارد.' }, 400);
+    }
+
+    const result = await ctx.adapter.deleteGroup(ctx.provider, groupId);
+    if (!result.ok) {
+      return c.json({ ok: false, error: 'panel_refused', detail: result.reason }, 400);
+    }
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.panel_group_deleted',
+      'PROVISIONING_PROVIDER',
+      String(id),
+      { code: ctx.code, group: groupId },
+      null,
+      null,
+    );
+    return c.json({ ok: true });
   });
 
   app.post('/api/v1/admin/panels/:id/test', async (c) => {
