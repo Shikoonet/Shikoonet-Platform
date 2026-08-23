@@ -241,6 +241,29 @@ describe('what a purchase is called', () => {
   });
 });
 
+describe('the renewal plan list', () => {
+  it('names the tier, because it offers the whole panel flat', async () => {
+    // A renewal is not choosing a level — it extends an account that exists,
+    // and the plan it was sold under is gone for roughly half the migrated
+    // services — so it is offered everything the panel sells, in one list. That
+    // makes it the one screen where three plans of «پلاتینیوم» sit next to each
+    // other, and labelling by product alone drew the same word three times.
+    const rows = menu.renewPlanMenu(9, [
+      { ...PLAN, planId: 1, productName: 'پلاتینیوم', planName: '۳۰ گیگ', priceIrr: 1_500_000 },
+      { ...PLAN, planId: 2, productName: 'پلاتینیوم', planName: '۵۰ گیگ', priceIrr: 2_200_000 },
+    ]);
+    const labels = rows.flat().map((b) => b.text);
+    expect(labels[0]).toBe('پلاتینیوم — ۳۰ گیگ — 150,000 تومان');
+    expect(labels[1]).toBe('پلاتینیوم — ۵۰ گیگ — 220,000 تومان');
+  });
+
+  it('still says a migrated name once', () => {
+    const legacy = '1️⃣ 1ماهه-50گیگ-چند کاربر-195.000ت🚀';
+    const [row] = menu.renewPlanMenu(9, [{ ...PLAN, productName: legacy, planName: legacy }]);
+    expect(row?.[0]?.text).toBe(legacy);
+  });
+});
+
 describe('the plan detail', () => {
   it('shows what was bought and what it costs', () => {
     const text = menu.planDetail(PLAN, priceForUser(PLAN.priceIrr, 0));

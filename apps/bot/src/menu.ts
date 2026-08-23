@@ -1965,10 +1965,17 @@ export function renewPlanMenu(
     // the code applies to is not known until one is chosen, and a button that
     // promised a discount the chosen plan turns out not to qualify for would be
     // worse than one that says nothing.
-    const quoted = price.discountIrr === 0 && nameMentionsPrice(plan.productName, plan.priceIrr);
+    // `soldAs`, not the product alone. A renewal is offered EVERYTHING the panel
+    // sells — flat, because the plan a service was sold under is gone for
+    // roughly half the migrated ones — so once tiers exist this list holds three
+    // buttons reading «پلاتینیوم» told apart only by a price. Seen on the test
+    // bot on 2026-08-23, after the buy flow had already been fixed: the same bug
+    // in the one screen the fix did not reach.
+    const label = soldAs(plan.productName, plan.planName);
+    const quoted = price.discountIrr === 0 && nameMentionsPrice(label, plan.priceIrr);
     return [
       {
-        text: quoted ? plan.productName : `${plan.productName} — ${formatToman(price.totalIrr)}`,
+        text: quoted ? label : `${label} — ${formatToman(price.totalIrr)}`,
         callback_data: encode('rord', subscriptionId, plan.planId),
       },
     ];
