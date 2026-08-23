@@ -1369,10 +1369,19 @@ function PanelHostsSection({ panel }: { panel: PanelItem }) {
                       ) : (
                         mine.map((h) => (
                           <div key={h.id} style={{ marginBlockEnd: 4 }}>
-                            <span className="ltr">{h.remark}</span>
-                            {h.addresses.length > 0 && (
-                              <span className="muted ltr"> · {h.addresses.join('، ')}</span>
-                            )}
+                            {/* One `ltr` span around the whole pair, not two
+                                side by side. Two of them in an RTL row put the
+                                second BEFORE the first and swallowed the
+                                separator — «www.shikoneet.comtest-host» on the
+                                live screen, which reads as one broken string
+                                rather than a name and an address. Seen in the
+                                screenshot; the markup looked fine. */}
+                            <span className="ltr">
+                              {h.remark}
+                              {h.addresses.length > 0 && (
+                                <span className="muted"> · {h.addresses.join(', ')}</span>
+                              )}
+                            </span>{' '}
                             {h.disabled && <span className="badge badge-warning">خاموش</span>}{' '}
                             <button
                               type="button"
