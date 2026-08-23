@@ -17,6 +17,7 @@ import { useEffect, useState } from 'react';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
+import type { PanelTestResult } from '../api.js';
 
 const STATUS_FA: Record<string, string> = { ACTIVE: 'فعال', DISABLED: 'غیرفعال' };
 
@@ -80,9 +81,10 @@ const REACHES_A_PANEL: ReadonlySet<string> = new Set([
  * is refunded with a «تماس بگیرید» — a lost sale and a support conversation
  * that the row itself already had enough information to prevent.
  *
- * Both halves are named rather than one «تنظیم نشده», because the two are
- * fixed in different places: the address on this screen, the credential only
- * in the server's secret store.
+ * Both halves are named rather than one «تنظیم نشده». They used to be fixed in
+ * different places — the address on this screen, the credential only in the
+ * server's environment — which is why this screen could describe the problem
+ * and not let anybody solve it. Since 2026-08-23 both are fixed here.
  */
 function cannotDeliver(p: {
   kind: string;
@@ -110,6 +112,8 @@ export function PanelsPage() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [openId, setOpenId] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
+  const aw = useAdminWriteProps();
 
   async function load() {
     setLoading(true);
@@ -136,7 +140,30 @@ export function PanelsPage() {
           <div className="page-head__title">مدیریت پنل‌ها</div>
           <div className="page-head__sub">{count(rows.length)} پنل</div>
         </div>
+        {/* Spread last, so it overrides `disabled` only for a role the server
+            is going to refuse anyway — see role.tsx. */}
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => {
+            setOpenId(null);
+            setCreating(true);
+          }}
+          disabled={creating}
+          {...aw}
+        >
+          پنل تازه
+        </button>
       </div>
+
+      {creating && (
+        <PanelCreator
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            void load();
+          }}
+        />
+      )}
 
       <div className="card">
         {err && <div className="alert alert-error">{err}</div>}
@@ -215,8 +242,8 @@ export function PanelsPage() {
         </div>
 
         <p className="muted">
-          نام کاربری، رمز و توکن پنل این‌جا نه نشان داده می‌شوند و نه قابل تغییرند — در secret store
-          سرور می‌مانند و هیچ مسیری در این پنل نمی‌تواند بنویسدشان.
+          رمز پنل هیچ‌جا نشان داده نمی‌شود — رمزنگاری‌شده ذخیره می‌شود و فقط سرویس‌هایی که تحویل
+          می‌دهند می‌توانند بازش کنند. برای گذاشتن یا عوض‌کردنش «ویرایش» را باز کنید.
         </p>
       </div>
 
@@ -224,6 +251,280 @@ export function PanelsPage() {
         <PanelEditor panel={open} onClose={() => setOpenId(null)} onChanged={() => void load()} />
       )}
     </>
+  );
+}
+
+/**
+ * تست ارتباط — one control, used by the create form and by the editor.
+ *
+ * Shared rather than written twice because the two must not disagree about
+ * what counts as a pass. The server answers three distinguishable things and
+ * all three are rendered differently on purpose:
+ *
+ *   authenticated — reached it AND logged in. The only green.
+ *   reachable     — reached it, login refused. The password is wrong, not the address.
+ *   untestable    — a kind with nothing to log into. Deliberately NOT a tick: a
+ *                   green here would teach an operator to trust a mark that
+ *                   means nothing.
+ */
+function ConnectionTest({
+  run,
+  disabled,
+}: {
+  run: () => Promise<PanelTestResult>;
+  disabled?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<PanelTestResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function go() {
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    try {
+      setResult(await run());
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginBlockStart: 12 }}>
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() => void go()}
+        disabled={busy || disabled}
+      >
+        {busy ? 'در حال تست…' : 'تست ارتباط با پنل'}
+      </button>
+      {err && (
+        <div className="alert alert-error" style={{ marginBlockStart: 8 }}>
+          {err}
+        </div>
+      )}
+      {result && (
+        <div
+          className={`alert ${result.authenticated ? 'alert-ok' : 'alert-error'}`}
+          style={{ marginBlockStart: 8 }}
+        >
+          {result.authenticated ? (
+            <>
+              ارتباط برقرار شد و ورود موفق بود
+              {typeof result.accounts === 'number' && ` — ${count(result.accounts)} حساب روی پنل`}
+            </>
+          ) : result.untestable ? (
+            <>{result.reason}</>
+          ) : result.reachable ? (
+            <>پنل جواب داد ولی ورود پذیرفته نشد — نام کاربری یا رمز درست نیست.</>
+          ) : result.reason === 'no_base_url' ? (
+            <>آدرس پنل وارد نشده است.</>
+          ) : result.reason === 'no_credential' ? (
+            <>این پنل هنوز رمزی ندارد.</>
+          ) : (
+            <>به پنل نرسیدیم — آدرس اشتباه است یا پنل بالا نیست.</>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The nine `kind`s the schema's CHECK allows, with the names an admin reads. */
+const KINDS: ReadonlyArray<{ value: string; label: string; login: boolean }> = [
+  { value: 'pasarguard', label: 'پاسارگارد', login: true },
+  { value: 'marzban', label: 'مرزبان', login: true },
+  { value: 'marzneshin', label: 'مرزنشین', login: true },
+  { value: 'hiddify', label: 'هیدیفای', login: true },
+  { value: 'xui', label: 'X-UI', login: true },
+  { value: 'wireguard', label: 'وایرگارد', login: true },
+  { value: 'spotify', label: 'اسپاتیفای', login: true },
+  { value: 'ai_account', label: 'حساب هوش مصنوعی', login: false },
+  { value: 'manual', label: 'دستی', login: false },
+];
+
+function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [code, setCode] = useState('');
+  const [name, setName] = useState('');
+  const [kind, setKind] = useState('pasarguard');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const needsLogin = KINDS.find((k) => k.value === kind)?.login ?? true;
+  const hasCredential = username.trim() !== '' && password !== '';
+
+  async function create() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.createPanel({
+        code: code.trim(),
+        name: name.trim(),
+        kind,
+        baseUrl: baseUrl.trim() === '' ? null : baseUrl.trim(),
+        ...(hasCredential ? { credential: { username: username.trim(), password } } : {}),
+      });
+      onCreated();
+      onClose();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <span className="card__title">پنل تازه</span>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن
+        </button>
+      </div>
+
+      {err && <div className="alert alert-error">{err}</div>}
+
+      {/* `filters` + `grow` + `form-label` + `form-control` — the same classes
+          PanelEditor uses. An earlier version of this form invented
+          `form-grid` and `input`, neither of which exists in theme.css, so
+          every field rendered unstyled on one cramped row. Reading the
+          screenshot is what caught it; the markup looked reasonable. */}
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="new-panel-code">
+            کد پنل
+          </label>
+          <input
+            id="new-panel-code"
+            className="form-control ltr"
+            type="text"
+            maxLength={60}
+            placeholder="test-panel"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+          />
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="new-panel-name">
+            نام
+          </label>
+          <input
+            id="new-panel-name"
+            className="form-control"
+            type="text"
+            maxLength={120}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="new-panel-kind">
+            نوع
+          </label>
+          <select
+            id="new-panel-kind"
+            className="form-control"
+            value={kind}
+            onChange={(e) => setKind(e.target.value)}
+          >
+            {KINDS.map((k) => (
+              <option key={k.value} value={k.value}>
+                {k.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <p className="muted">کد پنل حروف کوچک انگلیسی، رقم و خط تیره است و بعداً عوض نمی‌شود.</p>
+
+      {needsLogin && (
+        <div className="filters">
+          <div className="grow">
+            <label className="form-label" htmlFor="new-panel-url">
+              آدرس پنل
+            </label>
+            <input
+              id="new-panel-url"
+              className="form-control ltr"
+              type="text"
+              placeholder="https://panel.example.com"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+            />
+          </div>
+          <div className="grow">
+            <label className="form-label" htmlFor="new-panel-user">
+              نام کاربری پنل
+            </label>
+            <input
+              id="new-panel-user"
+              className="form-control ltr"
+              type="text"
+              autoComplete="off"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+          </div>
+          <div className="grow">
+            <label className="form-label" htmlFor="new-panel-pass">
+              رمز پنل
+            </label>
+            <input
+              id="new-panel-pass"
+              className="form-control ltr"
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+        </div>
+      )}
+
+      {needsLogin && (
+        <p className="muted">رمز رمزنگاری‌شده ذخیره می‌شود و هیچ صفحه‌ای دوباره نشانش نمی‌دهد.</p>
+      )}
+
+      {/* Before saving, deliberately: a panel saved and only then found broken
+          is ACTIVE for however long it takes somebody to notice. */}
+      {needsLogin && (
+        <ConnectionTest
+          disabled={baseUrl.trim() === '' || !hasCredential}
+          run={() =>
+            api.testPanel(0, {
+              baseUrl: baseUrl.trim(),
+              kind,
+              credential: { username: username.trim(), password },
+            })
+          }
+        />
+      )}
+
+      {needsLogin && !hasCredential && (
+        <div className="alert" style={{ marginBlockStart: 8 }}>
+          بدون رمز، پنل <b>غیرفعال</b> ساخته می‌شود — چون پنلی که نتواند وارد شود، سفارشِ پرداخت‌شده
+          را رد می‌کند و پول مشتری برمی‌گردد.
+        </div>
+      )}
+
+      <div style={{ marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => void create()}
+          disabled={busy || code.trim() === '' || name.trim() === ''}
+        >
+          {busy ? 'در حال ساخت…' : 'ساخت پنل'}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -240,6 +541,8 @@ function PanelEditor({
   const [name, setName] = useState(panel.name);
   const [capacity, setCapacity] = useState(panel.capacity === null ? '' : String(panel.capacity));
   const [sortOrder, setSortOrder] = useState(String(panel.sortOrder));
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -271,6 +574,22 @@ function PanelEditor({
       return;
     }
     await send(patch, 'ذخیره شد.');
+  }
+
+  async function saveCredential() {
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await api.setPanelCredential(panel.id, { username: username.trim(), password });
+      setPassword('');
+      setDone('رمز پنل ذخیره شد.');
+      onChanged();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function toggleStatus() {
@@ -350,9 +669,67 @@ function PanelEditor({
           ذخیره
         </button>
       </div>
+      <p className="muted">ظرفیت خالی یعنی نامحدود. آدرس و نوع پنل از این‌جا عوض نمی‌شوند.</p>
+
+      <h4>ارتباط با پنل</h4>
+      {/* Uses the STORED credential when the two boxes are empty, so pressing
+          it on an untouched panel answers the question an operator actually
+          has: does this panel work right now. */}
+      <ConnectionTest run={() => api.testPanel(panel.id, {})} />
+
+      <h4>رمز پنل</h4>
       <p className="muted">
-        ظرفیت خالی یعنی نامحدود. آدرس، نوع پنل و اعتبارنامه از این‌جا عوض نمی‌شوند.
+        رمز فعلی هیچ‌جا نشان داده نمی‌شود — رمزنگاری‌شده ذخیره شده و فقط سرویس‌هایی که تحویل می‌دهند
+        می‌توانند بازش کنند. برای عوض‌کردن، رمز تازه را این‌جا بنویسید.
       </p>
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="panel-username">
+            نام کاربری پنل
+          </label>
+          <input
+            id="panel-username"
+            className="form-control ltr"
+            type="text"
+            autoComplete="off"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="panel-password">
+            رمز تازه
+          </label>
+          <input
+            id="panel-password"
+            className="form-control ltr"
+            type="password"
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </div>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || username.trim() === '' || password === ''}
+          onClick={() => void saveCredential()}
+          {...w}
+        >
+          ذخیرهٔ رمز
+        </button>
+      </div>
+      {/* Testing what was TYPED, before it replaces what is stored. Pressing
+          «ذخیرهٔ رمز» on a wrong password takes the panel down silently — it
+          stays ACTIVE and every order on it starts failing. */}
+      <ConnectionTest
+        disabled={username.trim() === '' || password === ''}
+        run={() =>
+          api.testPanel(panel.id, {
+            credential: { username: username.trim(), password },
+          })
+        }
+      />
 
       <h4>وضعیت</h4>
       <p className="muted" style={{ marginBlockStart: 0 }}>

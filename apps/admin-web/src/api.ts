@@ -400,6 +400,18 @@ export interface BulkSend {
   amountIrr: number | null;
 }
 
+/** What «تست ارتباط» answers. Never the panel's response body — see panelRoutes.ts. */
+export interface PanelTestResult {
+  ok: boolean;
+  reachable: boolean;
+  authenticated: boolean;
+  /** True for a kind with nothing to log into, so the UI does not draw a green tick. */
+  untestable?: boolean;
+  ms?: number;
+  accounts?: number;
+  reason?: string;
+}
+
 export interface PanelItem {
   id: number;
   code: string;
@@ -979,6 +991,47 @@ export const api = {
 
   panels() {
     return req<{ ok: boolean; items: PanelItem[] }>('/panels');
+  },
+
+  createPanel(body: {
+    code: string;
+    name: string;
+    kind: string;
+    baseUrl?: string | null;
+    capacity?: number | null;
+    sortOrder?: number;
+    credential?: { username: string; password: string };
+  }) {
+    return req<{ ok: boolean; panel: PanelItem }>('/panels', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  setPanelCredential(id: number, credential: { username: string; password: string }) {
+    return req<{ ok: boolean; panel: PanelItem | null }>(`/panels/${id}/credentials`, {
+      method: 'POST',
+      body: JSON.stringify(credential),
+    });
+  },
+
+  /**
+   * تست ارتباط. `id: 0` means "not saved yet" — the create form asking whether
+   * the address and password it is holding actually work, before it writes
+   * anything. A panel saved and then found broken is the order this avoids.
+   */
+  testPanel(
+    id: number,
+    body: {
+      baseUrl?: string;
+      kind?: string;
+      credential?: { username: string; password: string };
+    },
+  ) {
+    return req<PanelTestResult>(`/panels/${id}/test`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
   },
 
   updatePanel(
