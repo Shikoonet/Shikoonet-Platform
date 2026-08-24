@@ -444,10 +444,14 @@ export const TEXTS = {
     hint: 'نکتهٔ ۳ — بدون این دکمه هیچ claimی باز نمی‌شود · {paidButton} نام زندهٔ دکمه است',
   },
   CHECKOUT_NOTE_WAIT: {
-    default: '۴- رسید را برای ادمین نفرستید؛ در صورت واریز درست، حداکثر تا ۱۰ دقیقه تایید می‌شود.',
+    // Was «رسید را برای ادمین نفرستید», one line under a note telling the
+    // customer to send the receipt. Both were true — send it to the BOT, not in
+    // a private message to an admin — and read together they cancelled out. The
+    // distinction that matters is where, so that is what it says.
+    default: '۴- رسید را همین‌جا برای ربات بفرستید، نه در پیام خصوصی به ادمین.',
     placeholders: [],
     screen: 'checkout',
-    hint: 'نکتهٔ ۴ — ۱۰ دقیقه همان پنجرهٔ انتظار تطبیق است',
+    hint: 'نکتهٔ ۴ — رسید به ربات، نه به ادمین',
   },
   CHECKOUT_COPY_CARD: {
     default: '📋 کپی شمارهٔ کارت',
@@ -528,10 +532,21 @@ export const TEXTS = {
     hint: 'خط آخر پیام ثبت پرداخت',
   },
   PAID_SEND_RECEIPT: {
-    default: '📸 اگر رسید واریز دارید، همین‌جا عکسش را بفرستید. بررسی را سریع‌تر می‌کند.',
+    // An instruction, not an offer. It used to open «اگر رسید واریز دارید…»,
+    // which reads as optional and sat at the bottom of a message whose first
+    // line already said the payment was recorded — so a customer finished
+    // reading believing there was nothing left to do. Sam read it exactly that
+    // way on 2026-08-24 and reported that the bot never asked.
+    //
+    // It stays an instruction rather than a requirement: the claim is opened by
+    // the button press, and automatic verification against the bank SMS needs
+    // no picture at all. A customer who sends nothing still gets their service
+    // when the money arrives; what they cost is the operator's certainty if it
+    // does not.
+    default: '📸 حالا عکس رسید واریز را همین‌جا بفرستید.',
     placeholders: [],
     screen: 'paid',
-    hint: 'دعوت به فرستادن عکس رسید، بعد از «پرداخت کردم»',
+    hint: 'درخواست عکس رسید، بعد از «پرداخت کردم» — در هر دو حالت اول و تکرار گفته می‌شود',
   },
   RECEIPT_RECEIVED_TITLE: {
     default: '📸 رسید شما دریافت شد و به پروندهٔ پرداخت اضافه شد.',
@@ -1609,7 +1624,6 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'خط آخر هر دو هشدار — {renewButton} نام زندهٔ دکمهٔ تمدید است',
   },
-
 
 
 

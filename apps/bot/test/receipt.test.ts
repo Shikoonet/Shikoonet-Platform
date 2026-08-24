@@ -161,7 +161,14 @@ describe('a customer sending their receipt', () => {
     const sale = await buyAndClaim('sim-gold-10');
     // Not a claim about the registry — the sentence has to be in the message the
     // customer is actually sent, which is the thing that was missing.
-    expect(sale.paid.replies[0]?.text).toContain('عکسش را بفرستید');
+    //
+    // The wording changed on 2026-08-24 and the change is the point. It opened
+    // «اگر رسید واریز دارید…», which reads as an offer, and sat under a first
+    // line already saying the payment was recorded — so a customer finished
+    // reading believing there was nothing left to do. Sam read it exactly that
+    // way and reported that the bot never asked.
+    expect(sale.paid.replies[0]?.text).toContain('عکس رسید واریز را همین‌جا بفرستید');
+    expect(sale.paid.replies[0]?.text).not.toContain('اگر رسید');
   });
 
   it('keeps the newest picture without moving the waiting clock', async () => {
@@ -424,5 +431,34 @@ describe('a blocked customer who has already paid', () => {
     );
     expect(stray.status).toBe('ignored');
     expect(stray.replies).toEqual([]);
+  });
+});
+
+describe('asking twice', () => {
+  it('still asks for the receipt on a second press of «پرداخت کردم»', async () => {
+    /*
+     * The first press is the one a customer is least likely to be reading
+     * carefully, having just come back from their banking app — and pressing
+     * again is what somebody does when they are not sure the first tap
+     * registered. That reply was the title and the tracking id and nothing
+     * else, so the bot mentioned a receipt exactly once, at the worst possible
+     * moment, and never again.
+     *
+     * `checkoutFor` also answers `claimed` for an order that already has a live
+     * claim, and that path lands on this same reply.
+     */
+    const sale = await buyAndClaim('sim-gold-10');
+    const order = await db
+      .prepare(`SELECT id FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`)
+      .bind(sale.userId)
+      .first<{ id: number }>();
+
+    const again = await handleUpdate(
+      db,
+      press(sale.updateId + 2, sale.telegramId, `paid:${order!.id}`),
+    );
+
+    expect(again.replies[0]?.text).toContain('قبلاً ثبت شده');
+    expect(again.replies[0]?.text).toContain('عکس رسید واریز را همین‌جا بفرستید');
   });
 });

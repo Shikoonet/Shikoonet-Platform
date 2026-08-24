@@ -820,12 +820,28 @@ export function receiptReceived(publicId: string): string {
   );
 }
 
-/** Second press of a button that is already spent. Same screen, no scolding. */
+/**
+ * Second press of a button that is already spent. Same screen, no scolding.
+ *
+ * And the same ask. This reply used to be the title and the tracking id and
+ * nothing else, so the one line inviting a receipt appeared only on the very
+ * first press — the press a customer is least likely to be reading carefully,
+ * having just come back from their banking app. Press the button twice and the
+ * bot never mentioned a receipt at all.
+ *
+ * That is very likely what Sam saw on 2026-08-24: «یک ضرب گفت اوکیه و صبر کن».
+ * `checkoutFor` answers `claimed` for an order that already has a live claim,
+ * and `handle.ts` sends this reply on that path too.
+ */
 export function paidAlready(publicId: string): string {
   const t = TEXTS_NOW;
-  return [t.raw('PAID_ALREADY_TITLE'), '', t.render('PAID_TRACKING_ID', { id: publicId })].join(
-    '\n',
-  );
+  return [
+    t.raw('PAID_ALREADY_TITLE'),
+    '',
+    t.render('PAID_TRACKING_ID', { id: publicId }),
+    '',
+    t.raw('PAID_SEND_RECEIPT'),
+  ].join('\n');
 }
 
 /**

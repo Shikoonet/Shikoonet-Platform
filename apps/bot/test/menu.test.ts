@@ -382,7 +382,12 @@ describe('the card-to-card notes', () => {
       expect(text, which).toContain('نکات مهم قبل از کارت به کارت');
       expect(text, which).toContain('فیلترشکن');
       expect(text, which).toContain('ساتنا');
-      expect(text, which).toContain('۱۰ دقیقه');
+      // Note 4 used to promise «حداکثر تا ۱۰ دقیقه تایید می‌شود», and that
+      // promise was not the shop's to make: ten minutes is the auto-match
+      // window, and a claim that does not match an isolated bank SMS waits for
+      // an operator for as long as the operator takes. It now says the one
+      // thing about note 4 that is always true — where the receipt goes.
+      expect(text, which).toContain('در پیام خصوصی به ادمین');
     }
   });
 
