@@ -120,6 +120,20 @@ export interface PaymentItem {
   accountHint: string | null;
   paidClickedAt: number | null;
   receiptSubmittedAt: number | null;
+  /**
+   * Whether there is a document to look at — NOT the same question as
+   * `receiptSubmittedAt`, and the two come apart in the case that matters.
+   *
+   * The stamp records when the waiting clock was anchored, and the anchor falls
+   * back to the «پرداخت کردم» press, so a claim can carry a timestamp and no
+   * receipt at all. Reading the stamp as "a receipt exists" is exactly the
+   * mistake `NO_TRANSACTION_AFTER_10M` used to make in prose.
+   *
+   * A boolean, never the handle. A Telegram file_id is a bearer capability for
+   * anyone holding the bot token; the picture comes from
+   * `GET /payment-claims/:id/receipt`, which reads the handle server-side.
+   */
+  hasReceipt?: boolean;
   createdAt: number;
   effectiveTs: number;
   reviewState: ReviewState;

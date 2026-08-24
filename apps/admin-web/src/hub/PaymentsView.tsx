@@ -798,6 +798,62 @@ function emptyText(tab: PaymentTab): string {
   return 'پرداختی پیدا نشد.';
 }
 
+/**
+ * The customer's own evidence, on the screen where their money is decided.
+ *
+ * The bot has stored these since it was written and nothing showed them:
+ * `receiptFor()` had zero callers and the column was not in the list query, so
+ * a customer sent a picture of their transfer, the bot said «رسید شما دریافت
+ * شد», and no operator could ever look at it. Sam asked where the admin sees
+ * the receipt and the honest answer was: nowhere.
+ *
+ * Rendered as an ordinary `<img>` pointed at the route, so the browser does the
+ * fetching and the bytes never pass through React state. The handle is not
+ * here and never will be — the client is told only `hasReceipt`, and the
+ * server reads the file_id.
+ *
+ * The absent case is written out rather than left blank, because on this screen
+ * "no receipt" is a fact an operator is entitled to act on: a claim in
+ * «مشکوک به جعل» with no document behind it means the customer pressed a button
+ * and sent nothing, which is a different conversation from a disputed image.
+ */
+function ReceiptSection({ item }: { item: PaymentItem }) {
+  const [failed, setFailed] = useState(false);
+
+  return (
+    <section className="drawer-section">
+      <h3 className="drawer-section__heading">رسید</h3>
+      {item.hasReceipt !== true ? (
+        <p className="muted">مشتری رسیدی نفرستاده است.</p>
+      ) : failed ? (
+        // Telegram refused, or the worker has no bot token. Said plainly: an
+        // operator looking at a broken image should not have to guess whether
+        // the receipt is gone or the panel is misconfigured.
+        <p className="muted">
+          رسید ثبت شده، ولی الان قابل نمایش نیست.{' '}
+          <a href={`/api/v1/payment-claims/${item.id}/receipt`} target="_blank" rel="noreferrer">
+            تلاش دوباره
+          </a>
+        </p>
+      ) : (
+        <a
+          href={`/api/v1/payment-claims/${item.id}/receipt`}
+          target="_blank"
+          rel="noreferrer"
+          className="payment-receipt"
+        >
+          <img
+            src={`/api/v1/payment-claims/${item.id}/receipt`}
+            alt="رسید پرداخت مشتری"
+            loading="lazy"
+            onError={() => setFailed(true)}
+          />
+        </a>
+      )}
+    </section>
+  );
+}
+
 function collectReasons(items: PaymentItem[]): string[] {
   return [...new Set(items.map((i) => i.suspectReason).filter((r): r is string => r != null))];
 }
@@ -1349,6 +1405,8 @@ function ReviewPanel({
           <dd>{stateLabel(item.reviewState)}</dd>
         </dl>
       </section>
+
+      <ReceiptSection item={item} />
 
       <section className="drawer-section">
         <h3 className="drawer-section__heading">دستگاه</h3>

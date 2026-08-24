@@ -692,6 +692,49 @@ describe('review drawer', () => {
   });
 });
 
+describe('the receipt in the review panel', () => {
+  /*
+   * Two things, and the second matters more than it looks.
+   *
+   * The first is that the picture is reachable at all — it was not, for as long
+   * as the bot had been storing them: `receiptFor()` had zero callers and the
+   * column was not in the list query.
+   *
+   * The second is that «رسید» and `receiptSubmittedAt` are different questions.
+   * The stamp records when the ten-minute clock was anchored, and the anchor
+   * falls back to the «پرداخت کردم» press — so a claim carries a timestamp
+   * whether or not any document arrived. Reading the stamp as "a receipt
+   * exists" is exactly the mistake `NO_TRANSACTION_AFTER_10M` made in prose, on
+   * the screen where a payment is judged for being forged. The panel must not
+   * repeat it in pixels.
+   */
+  it('shows the customer’s receipt, fetched from the server by the browser', async () => {
+    mockApi({ needs_review: [item({ id: 'rc1', hasReceipt: true })] });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByText(/سفارش A12B/i));
+
+    const img = await screen.findByAltText('رسید پرداخت مشتری');
+    // The route, not a data URI and not a handle. The file_id stays on the
+    // server: it is a bearer capability for anyone holding the bot token.
+    expect(img.getAttribute('src')).toBe('/api/v1/payment-claims/rc1/receipt');
+  });
+
+  it('says plainly when there is no receipt, however the clock was stamped', async () => {
+    // `receiptSubmittedAt` is set — as it is for every claim, because the
+    // anchor falls back to the button press — and no document was ever sent.
+    mockApi({
+      needs_review: [item({ id: 'rc2', hasReceipt: false, receiptSubmittedAt: BASE + 5_000 })],
+    });
+    renderView();
+    await goOpenQueue();
+    fireEvent.click(await screen.findByText(/سفارش A12B/i));
+
+    expect(await screen.findByText('مشتری رسیدی نفرستاده است.')).toBeTruthy();
+    expect(screen.queryByAltText('رسید پرداخت مشتری')).toBeNull();
+  });
+});
+
 describe('reason presentation', () => {
   it.each([
     ['AMBIGUOUS_TRANSACTIONS', 'چند تراکنش بانکی با این پرداخت می‌خوانند'],

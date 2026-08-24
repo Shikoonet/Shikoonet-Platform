@@ -149,13 +149,18 @@ function waitingEndsAt(
   return anchor != null ? anchor + WAITING_TIMEOUT_MS : null;
 }
 
+/**
+ * What a claim's row says about itself.
+ *
+ * Takes no clock. It used to take three more arguments — the receipt stamp, the
+ * click stamp and `now` — to decide between two branches that returned the same
+ * value, so the timestamps were read, compared, and thrown away. The wait is
+ * still shown on the row; it is computed beside this call, where it is used.
+ */
 function deriveReviewState(
   claimStatus: string,
   matchStatus: string | null,
   suspectReason: string | null,
-  receiptSubmittedAt: number | null,
-  paidClickedAt: number | null,
-  now: number,
 ): ReviewState {
   if (claimStatus === 'VERIFIED') {
     return matchStatus === 'AUTO_VERIFIED' ? 'AUTO_VERIFIED' : 'MANUALLY_VERIFIED';
@@ -229,6 +234,7 @@ type ClaimRow = {
   card_digits: string | null;
   paid_clicked_at: number | null;
   receipt_submitted_at: number | null;
+  has_receipt: boolean;
   created_at: number;
   suspect_reason: string | null;
   suspect_metadata_json: string;
@@ -765,7 +771,6 @@ export function registerMirzabotRoutes(
     const ident = c.get('identity');
     const url = new URL(c.req.url);
     const now = Date.now();
-    const nowBind = now;
     const range = parseHistoryRange(url.searchParams.get('range'));
     const day =
       range === 'day'
@@ -949,6 +954,12 @@ export function registerMirzabotRoutes(
       `SELECT c.id, c.external_order_id, c.customer_reference, c.expected_amount_irr,
               c.target_financial_account_id, c.card_digits, c.paid_clicked_at,
               c.receipt_submitted_at, c.created_at, c.suspect_reason,
+              -- Whether there IS one, never the handle itself. A Telegram
+              -- file_id is a bearer capability for anyone holding the bot
+              -- token, and it has no business in a browser. The picture is
+              -- fetched by GET /payment-claims/:id/receipt, which reads the
+              -- handle server-side and streams the bytes.
+              (c.receipt_url_or_r2_key IS NOT NULL) AS has_receipt,
               c.suspect_metadata_json, c.metadata_json, c.status,
               ${projectionExtras}
               fa.display_name AS account_display, fa.bank_name AS account_bank,
@@ -1008,14 +1019,7 @@ export function registerMirzabotRoutes(
           candidateTransactionIds?: string[];
           timeDeltaMs?: number | null;
         };
-        const state = deriveReviewState(
-          row.status,
-          row.match_status,
-          row.suspect_reason,
-          row.receipt_submitted_at,
-          row.paid_clicked_at,
-          now,
-        );
+        const state = deriveReviewState(row.status, row.match_status, row.suspect_reason);
         const ends = waitingEndsAt(row.receipt_submitted_at, row.paid_clicked_at);
         const waitingRemainingMs = ends != null ? Math.max(0, ends - now) : null;
         const waitingElapsedMs =
@@ -1049,6 +1053,12 @@ export function registerMirzabotRoutes(
           accountHint: row.account_hint,
           paidClickedAt: row.paid_clicked_at,
           receiptSubmittedAt: row.receipt_submitted_at,
+          // `receiptSubmittedAt` was already here and is NOT the same question.
+          // The stamp says when the waiting clock was anchored; this says
+          // whether there is a document to look at. They come apart in the case
+          // that matters: a claim can be stamped without a receipt, because the
+          // anchor falls back to the «پرداخت کردم» press.
+          hasReceipt: row.has_receipt === true,
           createdAt: row.created_at,
           effectiveTs: row.effective_ts,
           reviewState: state,
@@ -1212,9 +1222,11 @@ export function registerMirzabotRoutes(
     const parsed = SuspectRejectBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const claimId = c.req.param('claimId');
-    const claim = await c.env.DB.prepare(`SELECT status FROM payment_claims WHERE id = ?1`)
+    const claim = await c.env.DB.prepare(
+      `SELECT status, external_order_id FROM payment_claims WHERE id = ?1`,
+    )
       .bind(claimId)
-      .first<{ status: import('@shikoo/contracts').ClaimStatus }>();
+      .first<{ status: import('@shikoo/contracts').ClaimStatus; external_order_id: string }>();
     if (!claim) return c.json({ ok: false, error: 'not_found' }, 404);
     try {
       assertTransitionClaim(claim.status, 'REJECTED');
@@ -1222,7 +1234,58 @@ export function registerMirzabotRoutes(
       return c.json({ ok: false, error: 'illegal_claim_transition' }, 409);
     }
     const now = Date.now();
-    await c.env.DB.prepare(SQL.updateClaimStatus).bind(claimId, 'REJECTED', now).run();
+
+    /*
+     * Three statements in one transaction, and the second is the one that was
+     * missing.
+     *
+     * Rejecting a claim used to write `payment_claims` and stop there, which
+     * left the customer's order open FOREVER. `expireUnpaidOrders` refuses to
+     * close an order that has a live payment against it — deliberately, and
+     * correctly: expiring an order somebody has claimed to have paid is how a
+     * verified payment settles onto an order nothing will advance
+     * (`apps/bot/src/expire.ts:107-110`). But the payment row stayed
+     * AWAITING_REVIEW after a rejection, so that guard went on protecting an
+     * order whose payment had just been refused. Not for twenty-four hours —
+     * for good.
+     *
+     * So the rejection is carried through to the payment. The order then meets
+     * its ordinary expiry, the customer is told, and the stale card stops
+     * being live.
+     *
+     * `batch()` is a real transaction in `packages/db`. It has to be: a claim
+     * marked REJECTED with its payment still AWAITING_REVIEW is exactly the
+     * state this is fixing, and a half-applied pair would recreate it.
+     */
+    await c.env.DB.batch([
+      c.env.DB.prepare(SQL.updateClaimStatus).bind(claimId, 'REJECTED', now),
+      // Matched through the same string the bot writes when it opens a claim
+      // ('shikoo:' || p.public_id). A claim that came from the PHP bot has a
+      // different external id and simply matches nothing, which is right — this
+      // platform does not own those orders.
+      c.env.DB.prepare(
+        `UPDATE payments
+            SET status = 'REJECTED', reject_reason = ?2, updated_at = now()
+          WHERE 'shikoo:' || public_id = ?1
+            AND status = 'AWAITING_REVIEW'`,
+      ).bind(claim.external_order_id, parsed.data.reason),
+      // The rejection is the only claim decision that wrote no audit row.
+      // `approve` and `mark-fake` both did, and this one refuses a customer's
+      // money — of the three it is the one most likely to be asked about later.
+      c.env.DB.prepare(SQL.insertAudit).bind(
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        'claim.rejected',
+        'CLAIM',
+        claimId,
+        JSON.stringify({ status: claim.status }),
+        JSON.stringify({ status: 'REJECTED', reason: parsed.data.reason }),
+        parsed.data.comment ?? 'Manual rejection',
+        c.req.header('cf-ray') ?? null,
+        now,
+      ),
+    ]);
     return c.json({ ok: true });
   });
 

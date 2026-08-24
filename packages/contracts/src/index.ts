@@ -15,6 +15,7 @@ export * from './mirzabot.js';
 export * from './botTexts.js';
 export * from './botKeyboard.js';
 export * from './configName.js';
+export * from './receipt.js';
 
 export const INGEST_PATH = '/api/v1/sms';
 export const MAX_BODY_BYTES = 8 * 1024; // 8 KB hard cap

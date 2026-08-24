@@ -60,6 +60,9 @@ const PASSTHROUGH = [
   'ALLOWED_ORIGINS',
   // Which header the proxy sets to the real client address. See `clientIp`.
   'TRUSTED_PROXY_IP_HEADER',
+  // The bot's token, for `GET /payment-claims/:id/receipt`. Absent, that one
+  // route answers 503 with a sentence and everything else is unaffected.
+  'TELEGRAM_BOT_TOKEN',
 ] as const satisfies readonly (keyof Env)[];
 
 export function buildEnv(db: Env['DB']): Env {

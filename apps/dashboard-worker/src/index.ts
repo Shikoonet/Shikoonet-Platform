@@ -61,6 +61,7 @@ import { registerStockRoutes } from './stockRoutes.js';
 import { registerRevenueRoutes } from './revenueRoutes.js';
 import { registerChannelRoutes } from './channelRoutes.js';
 import { registerEventRoutes } from './eventRoutes.js';
+import { registerReceiptRoutes } from './receiptRoutes.js';
 import { tehranDayFromUtc } from './tehranDay.js';
 
 /**
@@ -141,6 +142,16 @@ export interface Env {
   TRUSTED_PROXY_IP_HEADER?: string;
   /** Comma-separated second hosts allowed to POST here. Same-origin is implicit. */
   ALLOWED_ORIGINS?: string;
+  /**
+   * The bot's own token, so the panel can show a customer's receipt.
+   *
+   * `getFile` is authenticated per bot and there is no other way to read a
+   * `file_id`, so serving receipts means holding the same token the bot runs
+   * with. Optional: a worker without it refuses that one route with a sentence
+   * saying so, rather than failing to boot or drawing a broken image.
+   * See `receiptRoutes.ts` — it is never logged and never leaves the server.
+   */
+  TELEGRAM_BOT_TOKEN?: string;
 }
 
 type DB = D1Database;
@@ -4560,6 +4571,7 @@ registerStockRoutes(app);
 registerRevenueRoutes(app);
 registerChannelRoutes(app);
 registerEventRoutes(app);
+registerReceiptRoutes(app);
 
 // No default export: it was `export default { fetch }`'s descendant, from when
 // this ran as a Worker. Nothing has imported it since — `server.ts` and every

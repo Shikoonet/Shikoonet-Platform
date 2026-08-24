@@ -18,7 +18,10 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
-import { receiptRef } from '../src/payment.js';
+// The encoding moved to `@shikoo/contracts` when the dashboard needed to read
+// it too — the bot writes a receipt handle and the panel serves it, so neither
+// of them can own the format.
+import { receiptRef } from '@shikoo/contracts';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 

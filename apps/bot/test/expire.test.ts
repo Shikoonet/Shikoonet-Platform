@@ -227,6 +227,39 @@ describe('an invoice with a deadline', () => {
     });
   });
 
+  it('is closed once the operator refuses the payment', async () => {
+    /*
+     * The other half of the test above, and the half that was missing.
+     *
+     * The guard is right to hold while a payment is under review: expiring an
+     * order somebody has claimed to have paid is how a verified payment settles
+     * onto an order nothing will advance. But it protects the order for exactly
+     * as long as the payment row is live — and until 2026-08-24 the dashboard's
+     * «رد» wrote only `payment_claims`, so the payment stayed AWAITING_REVIEW
+     * after being refused and the guard went on protecting an order whose
+     * payment had been rejected. Not for a day. For good.
+     *
+     * `REJECTED` here is the state the reject route now writes; the panel's own
+     * `receipt.test.ts` sibling asserts it produces exactly this. The two meet
+     * at a value, not at a comment.
+     */
+    const sale = await buy('sim-vip-1m-20');
+    await handleUpdate(db, press(sale.updateId + 1, sale.telegramId, `paid:${sale.order.id}`));
+    await age(sale.order.id);
+
+    await db
+      .prepare(`UPDATE payments SET status = 'REJECTED' WHERE order_id = ?1`)
+      .bind(sale.order.id)
+      .run();
+
+    await expireUnpaidOrders(db);
+
+    expect(await statuses(sale.order.id)).toEqual({
+      order: 'EXPIRED',
+      payment: 'REJECTED',
+    });
+  });
+
   it('expires once, however many times the sweep runs', async () => {
     const sale = await buy('sim-gold-10');
     await age(sale.order.id);

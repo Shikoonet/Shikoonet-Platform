@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { MIRZABOT_SOURCE } from '@shikoo/contracts';
+import { MIRZABOT_SOURCE, RECEIPT_FILE_ID, storedReceipt } from '@shikoo/contracts';
 import type { D1DatabaseSession } from '@shikoo/database';
 
 export interface CheckoutPayment {
@@ -334,39 +334,6 @@ export async function recordPaidClick(
     : { outcome: 'claimed', publicId: payment.public_id };
 }
 
-/**
- * What a `file_id` may look like.
- *
- * Telegram's own handles are a few dozen base64url characters. This is an
- * untrusted field on an untrusted update — anyone can post an update-shaped
- * body at a bot — and it ends up in a row we later hand back to `sendPhoto`.
- * A shape that is not a handle is not one, and a megabyte of text in a column
- * nobody bounded is a nuisance we do not have to accept.
- */
-const FILE_ID = /^[A-Za-z0-9_-]{16,200}$/;
-
-/**
- * What marks a stored handle as a document rather than a photo.
- *
- * The two are different id spaces at Telegram — a document's handle given to
- * `sendPhoto` is refused, and the other way round — so the kind has to survive
- * with the id or the admin's screen finds out by being rejected.
- *
- * A prefix rather than a column, because `receipt_url_or_r2_key` is already a
- * reference of an unstated kind: its name says it may hold a URL or an R2 key,
- * and it has held a Telegram handle since the bot was written. Every row that
- * exists today is a photo and carries no prefix, so nothing has to be migrated
- * and no value already stored changes meaning.
- */
-const DOC_PREFIX = 'doc:';
-
-/** Splits a stored receipt back into what it is and how to send it. */
-export function receiptRef(stored: string): { fileId: string; isDocument: boolean } {
-  return stored.startsWith(DOC_PREFIX)
-    ? { fileId: stored.slice(DOC_PREFIX.length), isDocument: true }
-    : { fileId: stored, isDocument: false };
-}
-
 export type ReceiptResult =
   /** Attached, and it is the first one for this claim. */
   | { outcome: 'received'; publicId: string }
@@ -407,8 +374,8 @@ export async function recordReceipt(
 ): Promise<ReceiptResult> {
   // Validated before the prefix is added, so the guard still sees exactly what
   // Telegram sent and a crafted `doc:` inside a handle cannot become one.
-  if (!FILE_ID.test(fileId)) return { outcome: 'none' };
-  const stored = isDocument ? `${DOC_PREFIX}${fileId}` : fileId;
+  if (!RECEIPT_FILE_ID.test(fileId)) return { outcome: 'none' };
+  const stored = storedReceipt(fileId, isDocument);
 
   const claim = await tx
     .prepare(

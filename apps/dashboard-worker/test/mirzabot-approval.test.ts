@@ -229,4 +229,72 @@ describe('manual approval of Mirzabot suspects', () => {
     expect(claim?.status).toBe('REJECTED');
     expect(claim?.status).not.toBe('FAKE_RECEIPT');
   });
+
+  it('lets go of the order it was refusing, and says who refused it', async () => {
+    /*
+     * Rejecting used to write `payment_claims` and stop, which left the
+     * customer's order open forever.
+     *
+     * `expireUnpaidOrders` refuses to close an order that has a live payment
+     * against it — deliberately, because expiring an order somebody claims to
+     * have paid is how a verified payment settles onto an order nothing will
+     * advance. But the payment row stayed AWAITING_REVIEW after the rejection,
+     * so that guard went on protecting an order whose payment had just been
+     * refused, and no sweep anywhere would ever close it. Order `5e783d5c25` on
+     * the practice box is still in that state at the time of writing.
+     *
+     * The other half of the chain is asserted where the sweep lives:
+     * `apps/bot/test/expire.test.ts` — "is closed once the operator refuses the
+     * payment". The two meet at the value REJECTED rather than at a comment.
+     */
+    const now = Date.now();
+    // Cleaned first: `payments.public_id` is UNIQUE and this suite shares a
+    // database across runs, so a leftover row from the last one fails the
+    // INSERT and the test goes red for a reason that has nothing to do with
+    // what it is asserting — which is exactly how a mutation check gets read
+    // as a pass.
+    await baseEnv.DB.prepare(`DELETE FROM payments WHERE public_id = ?1`).bind('c-release').run();
+    await baseEnv.DB.prepare(`DELETE FROM audit_logs WHERE entity_id = ?1`).bind('c-release').run();
+    await seedClaim('c-release');
+    await baseEnv.DB.prepare(
+      `INSERT INTO payments (public_id, amount_irr, method, status, created_at, updated_at)
+       VALUES (?1, ?2, 'CARD_TO_CARD', 'AWAITING_REVIEW', now(), now())`,
+    )
+      .bind('c-release', AMOUNT)
+      .run();
+    // The link the bot writes when it opens a claim, so this is the real join
+    // rather than a convenient one.
+    await baseEnv.DB.prepare(`UPDATE payment_claims SET external_order_id = ?2 WHERE id = ?1`)
+      .bind('c-release', 'shikoo:c-release')
+      .run();
+
+    const r = await app.fetch(
+      new Request('https://example.com/api/v1/suspects/c-release/reject', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'NO_BANK_TRANSACTION' }),
+      }),
+      envAs(),
+    );
+    expect(r.status).toBe(200);
+
+    const payment = await baseEnv.DB.prepare(
+      `SELECT status, reject_reason FROM payments WHERE public_id = 'c-release'`,
+    ).first<{ status: string; reject_reason: string | null }>();
+    expect(payment?.status).toBe('REJECTED');
+    expect(payment?.reject_reason).toBe('NO_BANK_TRANSACTION');
+
+    // And the decision is on the record. Of the three claim decisions this was
+    // the only one writing no audit row — and it is the one that refuses a
+    // customer's money, so the one most likely to be asked about later.
+    const audit = await baseEnv.DB.prepare(
+      `SELECT actor_email, action FROM audit_logs
+        WHERE entity_id = 'c-release' AND action = 'claim.rejected'
+          AND created_at >= ?1`,
+    )
+      .bind(now - 60_000)
+      .first<{ actor_email: string; action: string }>();
+    expect(audit?.action).toBe('claim.rejected');
+    expect(audit?.actor_email).toBe(EMAIL);
+  });
 });
