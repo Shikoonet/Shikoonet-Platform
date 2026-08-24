@@ -451,11 +451,40 @@ function DeliveryCell({
 
   const ids = service.groupIds ?? data.selected;
   const found: PanelGroupItem[] = [];
+  const missing: number[] = [];
   for (const id of ids) {
     const g = data.available?.find((x) => x.id === id);
     if (g) found.push(g);
+    else missing.push(id);
   }
-  if (found.length === 0) return <span className="muted">—</span>;
+
+  /*
+   * A group we sell that the panel does not have.
+   *
+   * This alarm used to live on «مدیریت پنل‌ها» › «گروه‌ها», where it named a
+   * group id. Here it names the SERVICE — which is the thing that breaks, and
+   * the thing an operator can act on. PasarGuard answers `404 Group not found`
+   * and the adapter treats that as non-retryable, so every purchase of this
+   * service fails and refunds in front of the customer.
+   *
+   * The ids were already being computed and silently dropped: the loop kept
+   * what it found and said «—» if it found nothing, so a service pointing
+   * entirely at deleted groups looked exactly like a service with no groups.
+   */
+  if (missing.length > 0) {
+    return (
+      <div className="tone-orange">
+        <strong>
+          {missing.length === 1
+            ? `گروه ${missing[0]} روی پنل نیست`
+            : `${missing.length} گروه روی پنل نیست`}
+        </strong>
+        <div className="muted">هر خریدی از این سرویس شکست می‌خورد.</div>
+      </div>
+    );
+  }
+
+  if (found.length === 0) return <span className="muted">گروهی انتخاب نشده</span>;
   return (
     <>
       {/* One line per group, and the group named when there is more than one.
@@ -2071,8 +2100,21 @@ function Flags({
         />
       </div>
       <div>
+        {/*
+         * The same column as before — `products.once_per_user` — under the name
+         * of what it actually does.
+         *
+         * «هر مشتری یک بار» reads as "one copy per customer", and it is not
+         * that. The bot's predicate hides the service from anyone who owns ANY
+         * subscription (`catalog.ts:51-63`), so it is a first-timers-only flag
+         * and always has been. Sam asked for a tick that shows a service only to
+         * customers who have never bought — and it existed, wearing a name that
+         * described a different feature.
+         *
+         * No migration, no change to the bot. A label and a sentence.
+         */}
         <label className="form-label" htmlFor={`${idPrefix}-once`}>
-          هر مشتری یک بار
+          فقط برای مشتری‌های اولین‌بار
         </label>
         <input
           id={`${idPrefix}-once`}
@@ -2080,6 +2122,10 @@ function Flags({
           checked={oncePerUser}
           onChange={(e) => onOnce(e.target.checked)}
         />
+        <p className="muted">
+          تا وقتی مشتری هیچ سرویسی نخریده این را می‌بیند؛ بعد از اولین خرید، برایش ناپدید می‌شود —
+          پس تمدیدش باید از سرویس دیگری روی همان پنل انجام شود.
+        </p>
       </div>
     </>
   );

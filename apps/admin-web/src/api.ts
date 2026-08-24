@@ -1197,12 +1197,11 @@ export const api = {
     return req<PanelGroups>(`/panels/${id}/groups`);
   },
 
-  setPanelGroups(id: number, groupIds: number[]) {
-    return req<{ ok: boolean; panel: PanelItem | null }>(`/panels/${id}/groups`, {
-      method: 'POST',
-      body: JSON.stringify({ groupIds }),
-    });
-  },
+  // `setPanelGroups` was here and is gone with the route behind it. It wrote a
+  // panel-level default group list that nothing ever read: `groupIdsFor` looks
+  // at the plan's attrs and the provider config, never at that column, and on
+  // the practice box the stored value was `[]` on every panel. It had had no
+  // caller in this file since the group editing moved to «سرویس‌ها».
 
   panelInbounds(id: number) {
     return req<PanelInbounds>(`/panels/${id}/inbounds`);

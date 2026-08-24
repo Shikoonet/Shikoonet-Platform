@@ -206,6 +206,12 @@ describe('every write route, asked directly', () => {
     // every tier carrying it — silently, since the links keep working and stop
     // producing that config. ADMIN-only, and the delete refuses outright when a
     // group we sell would be stranded.
-    expect(writeRoutes().length).toBe(123);
+    // 122 on 2026-08-24, and this is the counter going DOWN, which it had never
+    // done before: `POST /panels/:id/groups` was removed. It saved a
+    // panel-level default group list that no purchase consulted — delivery
+    // reads the tier through `groupIdsFor`, which never looks at that column —
+    // so it was a write route that decided nothing, with a tick box in front of
+    // it that an admin could save three times and change nothing at all.
+    expect(writeRoutes().length).toBe(122);
   });
 });

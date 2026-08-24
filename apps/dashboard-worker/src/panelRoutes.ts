@@ -361,23 +361,6 @@ const PanelCreate = z
  * the button on an existing panel does.
  */
 /**
- * A set of group ids.
- *
- * Deduplicated and sorted before it is stored, so two saves that mean the same
- * thing produce the same row and an audit diff shows a real change rather than
- * a reordering. Empty is allowed and means "send no groups", which is what a
- * panel whose plans all override it should say.
- */
-const GroupSelection = z
-  .object({
-    groupIds: z
-      .array(z.number().int().min(0).max(1_000_000))
-      .max(200)
-      .transform((ids) => [...new Set(ids)].sort((a, b) => a - b)),
-  })
-  .strict();
-
-/**
  * A group as an operator asks for it to be.
  *
  * `name` is trimmed and required because the panel requires it — even on an
@@ -889,69 +872,23 @@ export function registerPanelRoutes(
     });
   });
 
-  /**
-   * Save which groups this panel sends.
+  /*
+   * `POST /panels/:id/groups` was here and is gone.
    *
-   * Written as `group_ids` and the legacy `inbounds` key is REMOVED in the same
-   * write. Leaving it would put two spellings of the same fact in one row, and
-   * `pick()` reads `group_ids` first — so the stale one would sit there looking
-   * authoritative and doing nothing, until somebody read it during an incident.
+   * It saved a panel-level default group list, and nothing read it. Delivery
+   * resolves the tier through `groupIdsFor`, which looks at the plan's attrs
+   * and then the provider config — never at this column — so the value it wrote
+   * decided nothing about any purchase. Asked of the practice box on
+   * 2026-08-24, every panel's stored selection was `[]`, and the UI that called
+   * this had already been removed when group editing moved to «سرویس‌ها».
    *
-   * Everything else in `config` is preserved: it carries `proxies`, including a
-   * hysteria shared secret provisioning has to send, and a screen that owns one
-   * key must not rewrite the object around it.
+   * A write route with no reader is worse than dead code: it is a button that
+   * looks like it does something. Sam ticked that column three times, saved,
+   * and correctly reported that the bot did not change.
+   *
+   * This takes `write-roles.test.ts` from 123 to 122. It is the only counter
+   * movement in this branch and it is deliberate.
    */
-  app.post('/api/v1/admin/panels/:id/groups', async (c) => {
-    const ident = c.get('identity');
-    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
-
-    const id = Number(c.req.param('id'));
-    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
-
-    const body = GroupSelection.safeParse(await c.req.json().catch(() => null));
-    if (!body.success) {
-      return c.json(
-        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
-        400,
-      );
-    }
-
-    const before = await c.env.DB.prepare(
-      `SELECT code, config FROM provisioning_providers WHERE id = ?1`,
-    )
-      .bind(id)
-      .first<{ code: string; config: Record<string, unknown> | null }>();
-    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
-
-    const previous = before.config ?? {};
-    const wasSending = previous['group_ids'] ?? previous['inbounds'] ?? null;
-
-    await c.env.DB.prepare(
-      `UPDATE provisioning_providers
-          SET config = (COALESCE(config, '{}'::jsonb) - 'inbounds')
-                       || jsonb_build_object('group_ids', ?2::jsonb),
-              updated_at = now()
-        WHERE id = ?1`,
-    )
-      .bind(id, JSON.stringify(body.data.groupIds))
-      .run();
-
-    await audit(
-      c.env.DB,
-      ident,
-      'catalog.panel_groups_set',
-      'PROVISIONING_PROVIDER',
-      String(id),
-      { code: before.code, groups: wasSending },
-      { code: before.code, groups: body.data.groupIds },
-      null,
-    );
-
-    const after = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
-      .bind(id)
-      .first<PanelRow>();
-    return c.json({ ok: true, panel: after ? shape(after) : null });
-  });
 
   /**
    * Every inbound the panel has, so a group can be built out of a list rather

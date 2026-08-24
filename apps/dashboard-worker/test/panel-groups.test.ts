@@ -231,77 +231,20 @@ describe('reading a panel’s groups', () => {
   }, 30_000);
 });
 
-describe('saving a panel’s groups', () => {
-  it('writes `group_ids` and removes the legacy key in the same write', async () => {
-    // Two spellings of one fact in one row is a trap: `pick()` reads
-    // `group_ids` first, so a leftover `inbounds` would sit there looking
-    // authoritative and doing nothing.
-    const id = await migratedPanel('save', { inbounds: [42, 2], proxies: { vless: {} } });
-    expect((await post(`/api/v1/admin/panels/${id}/groups`, { groupIds: [2, 83] })).status).toBe(
-      200,
-    );
-
-    const row = await baseEnv.DB.prepare(
-      `SELECT config::text AS config FROM provisioning_providers WHERE id = ?1`,
-    )
-      .bind(id)
-      .first<{ config: string }>();
-    const config = JSON.parse(row!.config) as Record<string, unknown>;
-    expect(config['group_ids']).toEqual([2, 83]);
-    expect(config, 'the legacy key must be gone, not left beside it').not.toHaveProperty(
-      'inbounds',
-    );
-    // Everything else survives: `proxies` carries a hysteria shared secret that
-    // provisioning has to send.
-    expect(config['proxies']).toEqual({ vless: {} });
-  });
-
-  it('deduplicates and sorts, so one meaning is one row', async () => {
-    const id = await migratedPanel('dedupe', {});
-    await post(`/api/v1/admin/panels/${id}/groups`, { groupIds: [9, 2, 9, 2, 7] });
-    const row = await baseEnv.DB.prepare(
-      `SELECT config->'group_ids' AS g FROM provisioning_providers WHERE id = ?1`,
-    )
-      .bind(id)
-      .first<{ g: unknown }>();
-    expect(row!.g).toEqual([2, 7, 9]);
-  });
-
-  it('records the before and after in audit_logs', async () => {
-    const id = await migratedPanel('audited', { inbounds: [42, 2] });
-    await post(`/api/v1/admin/panels/${id}/groups`, { groupIds: [2] });
-    const log = await baseEnv.DB.prepare(
-      `SELECT action, before_json::text AS b, after_json::text AS a
-         FROM audit_logs WHERE entity_type = 'PROVISIONING_PROVIDER' AND entity_id = ?1`,
-    )
-      .bind(String(id))
-      .first<{ action: string; b: string; a: string }>();
-    expect(log?.action).toBe('catalog.panel_groups_set');
-    // The change a person needs during an incident: what it used to send.
-    expect(log?.b).toContain('42');
-    expect(log?.a).toContain('2');
-  });
-
-  it('refuses a REVIEWER, and changes nothing', async () => {
-    const id = await migratedPanel('rev', { inbounds: [42] });
-    expect(
-      (await post(`/api/v1/admin/panels/${id}/groups`, { groupIds: [1] }, REVIEWER)).status,
-    ).toBe(403);
-    const out = (await (await get(`/api/v1/admin/panels/${id}/groups`)).json()) as {
-      selected: number[];
-    };
-    expect(out.selected).toEqual([42]);
-  }, 30_000);
-});
-
-/**
- * Making and unmaking a group on the panel.
+/*
+ * «saving a panel's groups» was a describe block here, covering
+ * `POST /panels/:id/groups`. Both are gone.
  *
- * These routes reach a real panel, and `panel.invalid` can never resolve
- * (RFC 2606), so what is provable here without one is exactly the part that
- * matters most: the ORDER of the checks. The delete guard runs before anything
- * is sent, which is the whole of its value — a guard that only fires after the
- * panel has been asked is a guard that does nothing when the panel is up.
+ * The route wrote a panel-level default group list that nothing read: delivery
+ * resolves the tier through `groupIdsFor`, which looks at the plan's attrs and
+ * then the provider config and never at that column. The tests were real — they
+ * proved the write deduplicated, removed the legacy `inbounds` spelling, and
+ * audited itself — and every one of them proved a property of a value no
+ * purchase consulted. That is the shape rule 6 warns about at its most
+ * expensive: four green tests around a control whose effect was zero.
+ *
+ * Reading a panel's groups stays, and is covered above; it is what the
+ * catalogue screen uses to tell an operator which service will fail.
  */
 describe('creating and deleting a group on the panel', () => {
   it('refuses to delete a group this panel still sells, before touching the panel', async () => {

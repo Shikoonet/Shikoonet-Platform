@@ -45,8 +45,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
-import { InboundCount } from '../groups.js';
-import type { PanelGroups, PanelHostItem, PanelTestResult } from '../api.js';
+import type { PanelHostItem, PanelTestResult } from '../api.js';
 
 /**
  * `kind` is the adapter that fulfils an order.
@@ -607,171 +606,6 @@ function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: 
 }
 
 /**
- * گروه‌های پنل — what this panel HAS, and who sells it.
- *
- * A report, not an editor. Until 2026-08-24 this tab also carried a tick column
- * («پیش‌فرض پنل»), a save button, and create/edit/delete for the groups
- * themselves — which made it the second half of a job whose first half was on
- * another screen, with nothing on either saying so. An operator ticked a group
- * here three times, saved, and watched the bot not change: the ticks are a
- * FALLBACK that only reaches a customer through a service which has chosen no
- * level of its own, and every service on that panel had chosen one.
- *
- * All of that moved to «سرویس‌ها», next to the service that sells the group.
- * What stays is the half only this screen can answer, because it is about the
- * panel rather than about our rows:
- *
- *   - what the panel actually has, asked of the panel
- *   - how much of each group reaches a customer (an inbound with no host is in
- *     every listing and delivers nothing)
- *   - **a group we send that the panel does not have** — the group-42 case.
- *     PasarGuard answers a create with `404 Group not found` and the adapter
- *     calls that non-retryable, so every order on that level would go FAILED
- *     and refund. A number frozen in our config cannot notice; this can.
- */
-export function PanelGroupsSection({
-  panel,
-  onProblem,
-}: {
-  panel: PanelItem;
-  onProblem: (has: boolean) => void;
-}) {
-  const [data, setData] = useState<PanelGroups | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    api
-      .panelGroups(panel.id)
-      .then((next) => {
-        if (live) setData(next);
-      })
-      .catch((e) => {
-        if (live) setErr(message(e));
-      });
-    return () => {
-      live = false;
-    };
-  }, [panel.id]);
-
-  const available = data?.available ?? null;
-  // Ids we send that the panel does not have. This is the group-42 case, and it
-  // is the reason this tab still exists.
-  const missing =
-    available === null || data === null
-      ? []
-      : data.selected.filter((id) => !available.some((g) => g.id === id));
-
-  useEffect(() => {
-    onProblem(missing.length > 0);
-  }, [missing.length]);
-
-  if (err !== null) return <div className="alert alert-error">{err}</div>;
-  if (data === null) return <p className="muted">…</p>;
-
-  /** Which of our services sell this group, so the row answers «چه کسی؟». */
-  function soldBy(id: number): string[] {
-    const via: string[] = [];
-    const riders = data?.inherit ?? [];
-    if (data !== null && data.selected.includes(id) && riders.length > 0) {
-      via.push(`پیش‌فرض پنل (${riders.map((p) => p.name).join('، ')})`);
-    }
-    for (const pl of data?.plans ?? []) {
-      if (!Array.isArray(pl.groups) || !(pl.groups as unknown[]).includes(id)) continue;
-      via.push(pl.level === 'PRODUCT' ? `سرویس ${pl.name}` : `کانفیگ ${pl.name}`);
-    }
-    return via;
-  }
-
-  return (
-    <>
-      <p className="muted" style={{ marginBlockStart: 0 }}>
-        این‌ها گروه‌هایی هستند که <b>خودِ پنل</b> دارد — فهرست از پنل خوانده می‌شود، نه از
-        تنظیمات ما. ساختن، ویرایش و الصاق اینباند در صفحهٔ <b>«سرویس‌ها»</b> انجام می‌شود، کنار
-        همان سرویسی که گروه را می‌فروشد.
-      </p>
-
-      {available === null ? (
-        <div className="alert alert-error">
-          فهرست گروه‌ها از پنل خوانده نشد{data.reason ? ` — ${data.reason}` : ''}.
-        </div>
-      ) : (
-        <>
-          {missing.length > 0 && (
-            <div className="alert alert-error">
-              گروه {missing.join('، ')} در تنظیمات این پنل هست ولی <b>روی خودِ پنل وجود ندارد</b>.
-              هر خریدی که این گروه را بفرستد شکست می‌خورد و پول مشتری برمی‌گردد.
-            </div>
-          )}
-
-          <div className="table-wrap" style={{ marginBlockStart: 12 }}>
-            <table className="app-table">
-              <thead>
-                <tr>
-                  <th>گروه</th>
-                  <th>شناسه</th>
-                  <th>اینباند</th>
-                  <th>اعضا</th>
-                  <th>فروخته می‌شود در</th>
-                </tr>
-              </thead>
-              <tbody>
-                {available.length === 0 && (
-                  <tr>
-                    <td className="empty" colSpan={5}>
-                      این پنل هیچ گروهی ندارد. اولی را از «سرویس‌ها» بسازید.
-                    </td>
-                  </tr>
-                )}
-                {available.map((g) => {
-                  const via = soldBy(g.id);
-                  return (
-                    <tr key={g.id}>
-                      <td>
-                        <div>{g.name}</div>
-                        {g.inboundTags && g.inboundTags.length > 0 && (
-                          <div className="page-head__sub ltr">{g.inboundTags.join(' · ')}</div>
-                        )}
-                        {g.disabled === true && (
-                          <span className="badge badge-warning">روی پنل خاموش است</span>
-                        )}
-                      </td>
-                      <td className="ltr">{g.id}</td>
-                      <td>
-                        <InboundCount group={g} />
-                      </td>
-                      <td>{g.memberCount === undefined ? '—' : count(g.memberCount)}</td>
-                      <td>
-                        {via.length === 0 ? (
-                          <span className="muted">فروخته نمی‌شود</span>
-                        ) : (
-                          via.join('، ')
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {missing.map((id) => (
-                  <tr key={`missing-${id}`}>
-                    <td>
-                      <span className="badge badge-block">روی پنل نیست</span>
-                    </td>
-                    <td className="ltr">{id}</td>
-                    <td>—</td>
-                    <td>—</td>
-                    <td>{soldBy(id).join('، ') || <span className="muted">فروخته نمی‌شود</span>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-    </>
-  );
-}
-
-/**
  * اینباندها — and what «ساختن» one actually means here.
  *
  * The panel has no inbound endpoint. `POST /api/inbound` is 404 and
@@ -1040,13 +874,12 @@ function PanelHostsSection({ panel }: { panel: PanelItem }) {
   );
 }
 
-type Tab = 'info' | 'link' | 'inbounds' | 'groups' | 'status';
+type Tab = 'info' | 'link' | 'inbounds' | 'status';
 
 const TAB_FA: ReadonlyArray<{ id: Tab; label: string }> = [
   { id: 'info', label: 'اطلاعات' },
   { id: 'link', label: 'اتصال و رمز' },
   { id: 'inbounds', label: 'اینباند و هاست' },
-  { id: 'groups', label: 'گروه‌ها' },
   { id: 'status', label: 'وضعیت' },
 ];
 
@@ -1069,7 +902,6 @@ function PanelEditor({
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [groupProblem, setGroupProblem] = useState(false);
 
   const r = readiness(panel);
   // Which tabs hold something an operator has to see. Tabs hide things, and the
@@ -1079,7 +911,6 @@ function PanelEditor({
     info: false,
     link: r.tone === 'bad',
     inbounds: false,
-    groups: groupProblem,
     status: false,
   };
 
@@ -1319,12 +1150,20 @@ function PanelEditor({
 
       {tab === 'inbounds' && <PanelHostsSection panel={panel} />}
 
-      {/* Mounted even while another tab is showing, so its own alerts stay its
-          own and the tab flag above is truthful from the moment the card opens
-          — a missing group must not wait for somebody to click «گروه‌ها». */}
-      <div style={{ display: tab === 'groups' ? undefined : 'none' }}>
-        <PanelGroupsSection panel={panel} onProblem={setGroupProblem} />
-      </div>
+      {/*
+        «گروه‌ها» was a tab here and is gone.
+        It became read-only on 2026-08-24 when creating and editing groups moved
+        to «سرویس‌ها», and what was left was a report — which is what Sam saw
+        when he said this screen has nothing to offer.
+        Its one irreplaceable part, the alarm for a group we sell that the panel
+        does not have, did not go with it: it moved to the «تحویل» column of
+        «سرویس‌ها», where it names the SERVICE whose purchases will fail rather
+        than a group id. That is strictly more useful, and it costs no extra
+        request — the catalogue screen was already reading each panel's groups.
+        What stays here is everything only this screen can do: making a panel,
+        its address and credentials, the connection tests, inbounds and hosts,
+        capacity, and switching it off.
+      */}
 
       {tab === 'status' && (
         <>
