@@ -434,6 +434,32 @@ body {
   padding: 26px 0;
 }
 
+/*
+ * «چیزی نیست» — outside a table as well as in one.
+ *
+ * `.app-table td.empty` above styles the row a table draws when it has nothing
+ * to show, and it stays: it is more specific than this and keeps winning, which
+ * was checked in the browser rather than reasoned about — a `<td class="empty">`
+ * still computes `padding: 26px 0` and `--text-dim`.
+ *
+ * This is for the other shape. Four places say the same sentence in a `<p>` or
+ * a `<div>` because there is no table around them, and all four are in the
+ * «پول» screens; the rule for them lived in `hub/styles.css` as
+ * `:where(.hub) .empty` and could not reach anywhere else. Nothing on the panel
+ * side needs it TODAY — every one of its twenty-two `.empty` elements is a
+ * table cell — so this changes no screen, measured: 7479 elements across nine
+ * hub screens, 0 differing.
+ *
+ * What it buys is that `.empty` means one thing in one place. It was on the
+ * list of primitives this project believed the hub had redefined; it had not
+ * redefined it, it had defined it, and behind a scope nobody else could use.
+ */
+.empty {
+  color: var(--text-muted);
+  padding: 1rem;
+  text-align: center;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

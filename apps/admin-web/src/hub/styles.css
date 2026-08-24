@@ -2004,11 +2004,15 @@
   margin: 0 0 1rem;
 }
 
-:where(.hub) .empty {
-  color: var(--text-muted);
-  padding: 1rem;
-  text-align: center;
-}
+/*
+ * `:where(.hub) .empty` moved to `theme.css`, unchanged.
+ *
+ * It was not a second meaning for a panel primitive — it was the ONLY meaning,
+ * scoped so that only these six screens could have it. The panel's twenty-two
+ * empty states are all `<td>`, covered by `.app-table td.empty`; the four here
+ * are a `<p>` or a `<div>`, and had this. Moving it costs nothing and lets one
+ * rule answer for both.
+ */
 
 .dim {
   opacity: 0.55;
