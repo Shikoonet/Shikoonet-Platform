@@ -107,19 +107,30 @@ export type ReviewState =
   | 'FAKE'
   | 'EXPIRED';
 
-export type PaymentTab =
-  | 'income'
-  | 'needs_review'
-  | 'declined_income'
-  | 'waiting'
-  | 'suspected_fake'
-  | 'bot_auto_verified'
-  | 'manually_verified'
-  | 'reseller'
-  | 'all';
+/**
+ * Re-exported, not restated. The union lives in `paymentsHubRoutes.ts`, which
+ * this file already imports from; two copies of it is what this codebase has
+ * been paying for elsewhere all week.
+ *
+ * About `open` — the tab this branch added. It is every claim nobody has
+ * decided about yet: the queue an operator works. It replaces `needs_review`,
+ * `waiting` and `suspected_fake` on the screen; those three stay in the union
+ * because old links carry them and because «همه» still filters by them, but
+ * they stopped being the only way to reach a row.
+ *
+ * The three of them together did not cover the pending claims, and that is the
+ * whole reason this exists. Between them they asked for
+ * `suspect_reason IS NOT NULL`, `suspect_reason IS NULL AND still inside a
+ * ten-minute window`, and `suspect_reason IN (…)` — so a claim with no suspect
+ * reason whose ten minutes had elapsed matched none of them. It was PENDING, it
+ * was real money, and outside «همه» it appeared on no screen in the panel. Sam
+ * pressed «پرداخت کردم» in the bot on 2026-08-24, opened «پرداخت‌ها», and
+ * correctly reported seeing nothing.
+ */
+export type { PaymentTab } from './paymentsHubRoutes.js';
+import type { PaymentTab } from './paymentsHubRoutes.js';
 
 const EFFECTIVE_TS = `COALESCE(c.paid_clicked_at, c.receipt_submitted_at, c.created_at)`;
-const WAITING_ANCHOR = `COALESCE(c.receipt_submitted_at, c.paid_clicked_at)`;
 const PENDING_CLAIM = `c.status IN ('PENDING','MATCH_SUGGESTED')`;
 const SUSPECTED_FAKE_REASONS = `('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION')`;
 
@@ -156,12 +167,25 @@ function deriveReviewState(
     return 'SUSPECTED_FAKE';
   }
   if (suspectReason) return 'NEEDS_REVIEW';
-  const ends = waitingEndsAt(receiptSubmittedAt, paidClickedAt);
-  if (ends != null && now <= ends) return 'WAITING';
+  // Everything else pending is WAITING, whether its ten minutes have run out or
+  // not. There were two branches here and both returned this, which read as a
+  // distinction and was not one: `waitingEndsAt` was computed, compared, and
+  // then ignored.
+  //
+  // Harmless on its own, and not harmless beside `stateSql('WAITING')`, which
+  // DID apply that cutoff. The row-mapper labelled a stale claim «در انتظار»
+  // while the query refused to select it, so the badge counted rows the list
+  // would not show. Deleting the dead branch is what makes the two agree.
   return 'WAITING';
 }
 
-function stateSql(state: ReviewState, nowParam: string): string {
+/**
+ * No clock parameter any more. `WAITING` was the only case that took one, to
+ * apply a ten-minute cutoff that turned a label into a disappearance; with that
+ * gone every branch is a pure function of the row, and the three call sites stop
+ * having to special-case one state.
+ */
+function stateSql(state: ReviewState): string {
   switch (state) {
     case 'AUTO_VERIFIED':
       return `c.status = 'VERIFIED' AND m.status = 'AUTO_VERIFIED'`;
@@ -170,7 +194,21 @@ function stateSql(state: ReviewState, nowParam: string): string {
     case 'NEEDS_REVIEW':
       return `${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL AND c.suspect_reason NOT IN ${SUSPECTED_FAKE_REASONS}`;
     case 'WAITING':
-      return `${PENDING_CLAIM} AND c.suspect_reason IS NULL AND ${WAITING_ANCHOR} + ${WAITING_TIMEOUT_MS} > ${nowParam}`;
+      // No upper bound on the wait, and that removal is the fix.
+      //
+      // It used to add `COALESCE(receipt_submitted_at, paid_clicked_at) +
+      // WAITING_TIMEOUT_MS > now`, which
+      // reads as "still within the window" and behaves as "disappears from the
+      // panel". The ten minutes are how long the MATCHER keeps looking; they
+      // were never meant to decide whether an operator can see the row.
+      //
+      // The claim is supposed to leave this bucket by acquiring a
+      // `suspect_reason` — which is exactly what the sweeper that stamps one
+      // refuses to do when `target_financial_account_id IS NULL`
+      // (`integrations/mirzabot.ts:278`), and the bot opens claims with a null
+      // account on purpose whenever the card is not mapped yet. So for those,
+      // the exit condition never fires and the timer alone hid them forever.
+      return `${PENDING_CLAIM} AND c.suspect_reason IS NULL`;
     case 'SUSPECTED_FAKE':
       return `${PENDING_CLAIM} AND c.suspect_reason IN ${SUSPECTED_FAKE_REASONS}`;
     case 'REJECTED':
@@ -398,8 +436,6 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
 
 /** Tab badges + the "today" header, counted over the whole population. */
 async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, actorEmail?: string) {
-  const now = Date.now();
-  const nowParam = '?4';
   const rows = await db
     .prepare(
       `SELECT
@@ -411,8 +447,6 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
            WHEN c.status = 'EXPIRED' THEN 'EXPIRED'
            WHEN ${PENDING_CLAIM} AND c.suspect_reason IN ${SUSPECTED_FAKE_REASONS} THEN 'SUSPECTED_FAKE'
            WHEN ${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL THEN 'NEEDS_REVIEW'
-           WHEN ${PENDING_CLAIM} AND c.suspect_reason IS NULL
-                AND ${WAITING_ANCHOR} + ${WAITING_TIMEOUT_MS} > ${nowParam} THEN 'WAITING'
            WHEN ${PENDING_CLAIM} AND c.suspect_reason IS NULL THEN 'WAITING'
            ELSE 'NEEDS_REVIEW'
          END AS review_state,
@@ -423,7 +457,15 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
        WHERE c.source_system = ?1
        GROUP BY review_state`,
     )
-    .bind(MIRZABOT_SOURCE, dayStart, dayEnd, now)
+    // Three binds, not four. The fourth was the clock, for a `WHEN` arm that
+    // applied the ten-minute cutoff and was followed immediately by an
+    // identical arm without it — so the first could only ever match rows the
+    // second would have caught anyway. Dead, and not harmlessly: that arm was
+    // the badge's half of a disagreement with `stateSql`, which DID drop the
+    // stale rows. Removing it also has to remove the bind, because
+    // `packages/db` refuses a statement with a parameter nothing uses rather
+    // than guessing — SQLite ignored those, Postgres cannot.
+    .bind(MIRZABOT_SOURCE, dayStart, dayEnd)
     .all<{ review_state: ReviewState; n: number; n_today: number }>();
 
   const total: Record<ReviewState, number> = {
@@ -466,6 +508,18 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
       needsReview: total.NEEDS_REVIEW,
       waiting: total.WAITING,
       suspectedFake: total.SUSPECTED_FAKE,
+      /**
+       * The badge on «در انتظار بررسی».
+       *
+       * Summed from the three undecided states rather than counted by its own
+       * query, and that is the point: the number on the tab and the rows in the
+       * list are then the same population by construction. A second query is
+       * how the old badge came to say «۱» over a list showing nothing.
+       *
+       * These three are exactly `PENDING`/`MATCH_SUGGESTED` — every other state
+       * in this record is a decision somebody already made.
+       */
+      open: total.NEEDS_REVIEW + total.WAITING + total.SUSPECTED_FAKE,
       autoVerified: total.AUTO_VERIFIED,
       botAutoVerified: total.AUTO_VERIFIED,
       manuallyVerified: total.MANUALLY_VERIFIED,
@@ -721,6 +775,7 @@ export function registerMirzabotRoutes(
       const raw = url.searchParams.get('tab');
       const allowed: PaymentTab[] = [
         'income',
+        'open',
         'needs_review',
         'declined_income',
         'waiting',
@@ -732,7 +787,14 @@ export function registerMirzabotRoutes(
       ];
       if (raw === 'auto_verified') return 'bot_auto_verified';
       if (raw && allowed.includes(raw as PaymentTab)) return raw as PaymentTab;
-      return 'income';
+      // The landing tab, and it is «واریزی‌ها» on purpose no longer.
+      //
+      // `income` reads `transaction_candidates` — bank credits nobody has
+      // claimed — which is a real screen and the wrong first one. It is also
+      // the exact reason Sam opened «پرداخت‌ها» looking for the order he had
+      // just placed and found an empty list: his claim was never going to be
+      // in that table, whatever the filters said.
+      return 'open';
     })();
 
     const financialSummary = await loadFinancialSummary(c.env.DB, range, now, day);
@@ -812,6 +874,14 @@ export function registerMirzabotRoutes(
     };
 
     const where = [`c.source_system = ${p(MIRZABOT_SOURCE)}`];
+
+    // The whole of «در انتظار بررسی», and it is deliberately not expressed as a
+    // `ReviewState`. The three old queues each described a SHAPE of claim and
+    // between them left a gap; this one describes the only thing that actually
+    // matters to an operator — nobody has decided about it yet — so there is no
+    // shape left for a row to fall between.
+    if (tab === 'open') where.push(PENDING_CLAIM);
+
     const tabState: ReviewState | null =
       tab === 'needs_review'
         ? 'NEEDS_REVIEW'
@@ -824,13 +894,7 @@ export function registerMirzabotRoutes(
               : tab === 'manually_verified'
                 ? 'MANUALLY_VERIFIED'
                 : null;
-    if (tabState) {
-      if (tabState === 'WAITING') {
-        where.push(stateSql(tabState, p(nowBind)));
-      } else {
-        where.push(stateSql(tabState, ''));
-      }
-    }
+    if (tabState) where.push(stateSql(tabState));
     if (tab === 'all' && statusFilter) {
       const allowed: ReviewState[] = [
         'AUTO_VERIFIED',
@@ -844,11 +908,7 @@ export function registerMirzabotRoutes(
       ];
       if (allowed.includes(statusFilter as ReviewState)) {
         const st = statusFilter as ReviewState;
-        if (st === 'WAITING') {
-          where.push(stateSql(st, p(nowBind)));
-        } else {
-          where.push(stateSql(st, ''));
-        }
+        where.push(stateSql(st));
       }
     }
     if (accountId) where.push(`c.target_financial_account_id = ${p(accountId)}`);

@@ -555,7 +555,28 @@ export function PaymentsView({ cache }: { cache: Cache }) {
               tab !== 'manually_verified' && (
                 <ul className="hub-list hub-list--table">
                   {claimItems.map((item) => {
-                    if (tab === 'needs_review') {
+                    /*
+                     * On «در انتظار بررسی» the row is chosen by what the CLAIM
+                     * is, not by which tab is open.
+                     *
+                     * This matters more than it looks. The three queues that
+                     * this one replaced each had their own row with its own
+                     * actions — «مشکوک به جعل» carried a «حذف» that rejects
+                     * with NO_BANK_TRANSACTION, «نیاز به بررسی» a review
+                     * button. Merging the tabs and rendering `AllRow` for
+                     * everything would have quietly taken those away: the
+                     * screen would look tidier and do less, which is the worst
+                     * kind of simplification and exactly what the merge was
+                     * NOT for.
+                     *
+                     * So the state did not disappear when the tabs did — it
+                     * moved into the row, where it belongs. What kind of
+                     * attention a payment needs is a property of the payment,
+                     * never an address you have to navigate to first.
+                     */
+                    const kind = tab === 'open' ? item.reviewState : tab;
+
+                    if (kind === 'needs_review' || kind === 'NEEDS_REVIEW') {
                       return (
                         <NeedsReviewRow
                           key={item.id}
@@ -565,7 +586,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                         />
                       );
                     }
-                    if (tab === 'waiting') {
+                    if (kind === 'waiting' || kind === 'WAITING') {
                       return (
                         <WaitingRow
                           key={item.id}
@@ -574,7 +595,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                         />
                       );
                     }
-                    if (tab === 'suspected_fake') {
+                    if (kind === 'suspected_fake' || kind === 'SUSPECTED_FAKE') {
                       return (
                         <SuspectedFakeRow
                           key={item.id}
@@ -760,6 +781,12 @@ export function PaymentsView({ cache }: { cache: Cache }) {
 }
 
 function emptyText(tab: PaymentTab): string {
+  // The only empty state on this screen that is unambiguously good news, and it
+  // is worth saying so plainly. Under the old three tabs an operator had to
+  // check all three to learn this, and even then the answer could be wrong: a
+  // pending claim that matched none of their predicates left every one of them
+  // looking empty while the money sat undecided.
+  if (tab === 'open') return 'هیچ پرداختی منتظر تصمیم نیست.';
   if (tab === 'needs_review') return 'چیزی نیاز به بررسی ندارد.';
   if (tab === 'income') return 'در این بازه واریزی تخصیص‌نیافته‌ای نیست.';
   if (tab === 'declined_income') return 'در این بازه واریزی ردشده‌ای نیست.';

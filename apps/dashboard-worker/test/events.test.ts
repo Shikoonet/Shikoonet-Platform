@@ -77,6 +77,21 @@ afterAll(async () => {
   await pool.end();
 });
 
+/**
+ * Scope the QUERY to this file's rows, not just the assertion.
+ *
+ * `mine()` below filters the response, which is not enough and quietly stopped
+ * being enough: the route pages at 25 rows ordered newest-first, and
+ * `app_events` is shared and accumulating. Once the table passed 25 rows the
+ * fixture's forty-day-old row was simply not on page one, so «همه» appeared not
+ * to reach it — a red test caused entirely by the size of the table.
+ *
+ * The two neighbouring tests were worse off, because they assert
+ * `not.toContain`: they went on passing for exactly the wrong reason, and would
+ * have kept passing if `window` had stopped filtering altogether.
+ */
+const SCOPED = `svc=${encodeURIComponent(SVC)}`;
+
 /** Only the rows this file created, whatever else the shared database holds. */
 function mine(body: Page) {
   return body.items.filter((i) => i.svc.startsWith(SVC));
@@ -102,20 +117,22 @@ describe('who may read the shop’s own failures', () => {
 
 describe('the filters', () => {
   it('defaults to the last seven days, so a forty-day-old row is not in it', async () => {
-    const body = (await (await get('/api/v1/admin/events')).json()) as Page;
+    const body = (await (await get(`/api/v1/admin/events?${SCOPED}`)).json()) as Page;
     const evts = mine(body).map((i) => i.evt);
     expect(evts).toContain('provision.failed');
     expect(evts).not.toContain('settle.failed');
   });
 
   it('reaches the old row when asked for everything', async () => {
-    const body = (await (await get('/api/v1/admin/events?window=all')).json()) as Page;
+    const body = (await (await get(`/api/v1/admin/events?window=all&${SCOPED}`)).json()) as Page;
     expect(mine(body).map((i) => i.evt)).toContain('settle.failed');
   });
 
   it('treats an unknown window as the default rather than as «همه»', async () => {
     // A typo in a query string must not quietly widen what is read.
-    const body = (await (await get('/api/v1/admin/events?window=24hours')).json()) as Page;
+    const body = (await (
+      await get(`/api/v1/admin/events?window=24hours&${SCOPED}`)
+    ).json()) as Page;
     expect(mine(body).map((i) => i.evt)).not.toContain('settle.failed');
   });
 

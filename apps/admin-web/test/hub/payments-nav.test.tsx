@@ -9,6 +9,9 @@ const COUNTS = {
   needsReview: 2,
   waiting: 3,
   suspectedFake: 1,
+  // 2 + 3 + 1 — the three undecided states, which is what «در انتظار بررسی»
+  // shows. Summed rather than picked, so the badge and the list cannot drift.
+  open: 6,
   autoVerified: 10,
   botAutoVerified: 10,
   income: 4,
@@ -80,9 +83,11 @@ describe('Payments grouped navigation', () => {
     render(<PaymentsView cache={createCache()} />);
     const hub = await screen.findByRole('navigation', { name: 'نماهای پرداخت' });
     expect(within(hub).getByRole('tab', { name: /واریزی‌ها 4/i })).toBeTruthy();
-    expect(within(hub).getByRole('tab', { name: /نیاز به بررسی 2/i })).toBeTruthy();
-    expect(within(hub).getByRole('tab', { name: /در انتظار 3/i })).toBeTruthy();
-    expect(within(hub).getByRole('tab', { name: /مشکوک به جعل 1/i })).toBeTruthy();
+    // One badge where there were three. The number is the sum, so an operator
+    // learns whether there is work from a single glance instead of adding up
+    // three tabs — and, more to the point, without a fourth population of
+    // pending claims that belonged to none of them going uncounted.
+    expect(within(hub).getByRole('tab', { name: /در انتظار بررسی 6/i })).toBeTruthy();
     expect(within(hub).getByRole('tab', { name: /تایید خودکار ربات 10/i })).toBeTruthy();
     const reviewTab = opsNav().getByRole('tab', { name: 'بررسی' });
     expect(reviewTab.textContent).toContain('20');
@@ -93,21 +98,21 @@ describe('Payments grouped navigation', () => {
     Object.defineProperty(document, 'hidden', { configurable: true, value: false });
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
 
-    let counts = { ...COUNTS, waiting: 3 };
+    let counts = { ...COUNTS, open: 6 };
     mockPaymentsFetch(counts);
 
     const cache = createCache();
     render(<PaymentsView cache={cache} />);
-    expect(await screen.findByRole('tab', { name: /در انتظار 3/i })).toBeTruthy();
+    expect(await screen.findByRole('tab', { name: /در انتظار بررسی 6/i })).toBeTruthy();
 
-    counts = { ...COUNTS, waiting: 4 };
+    counts = { ...COUNTS, open: 7 };
     mockPaymentsFetch(counts);
 
     await act(async () => {
       vi.advanceTimersByTime(DASHBOARD_POLL_INTERVAL_MS);
     });
     await waitFor(() => {
-      expect(screen.getByRole('tab', { name: /در انتظار 4/i })).toBeTruthy();
+      expect(screen.getByRole('tab', { name: /در انتظار بررسی 7/i })).toBeTruthy();
     });
   });
 

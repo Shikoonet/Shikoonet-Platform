@@ -29,6 +29,15 @@ export type ReviewState =
 
 export type PaymentTab =
   | 'income'
+  /**
+   * Every claim nobody has decided about — the one queue an operator works.
+   *
+   * `needs_review`, `waiting` and `suspected_fake` stay in this union and keep
+   * working, because links and bookmarks carry them and «همه» still filters by
+   * them. They are simply no longer drawn as tabs: between them they had a gap,
+   * and a pending claim that fell into it was on no screen in the panel.
+   */
+  | 'open'
   | 'needs_review'
   | 'declined_income'
   | 'waiting'

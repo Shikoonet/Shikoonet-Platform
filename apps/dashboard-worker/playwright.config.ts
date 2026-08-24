@@ -97,7 +97,16 @@ function freePort(from: number, key: string): number {
   // ERR_CONNECTION_REFUSED and reads as "the server did not start".
   const already = process.env[key];
   if (already) return Number(already);
-  for (let port = from; port < from + 200; port++) {
+  // Wide, because the reserved blocks MOVE and they are not small. This span
+  // was 200 ports when it was written on 2026-08-24; the next Docker Desktop
+  // restart put 8424–9523 out of reach in one contiguous block and swallowed
+  // the entire window, so the suite died in the config before a single test
+  // ran. Probing 200 ports proved the mechanism and then failed at the first
+  // change of weather. Anything under 1024 is privileged and anything over
+  // ~49151 is the ephemeral range Windows hands out to clients, so this stays
+  // inside the registered band and simply keeps looking.
+  const SPAN = 8000;
+  for (let port = from; port < from + SPAN; port++) {
     if (taken.has(port)) continue;
     try {
       // A real bind is the only proof. A reserved range refuses at bind time
@@ -117,7 +126,7 @@ function freePort(from: number, key: string): number {
       // Reserved, or in use. Both mean "not this one".
     }
   }
-  throw new Error(`no free port in ${from}..${from + 200}`);
+  throw new Error(`no free port in ${from}..${from + SPAN}`);
 }
 
 const taken = new Set<number>();

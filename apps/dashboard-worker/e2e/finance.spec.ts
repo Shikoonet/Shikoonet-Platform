@@ -51,11 +51,15 @@ test('the bell changes tab even when the payments screen is already open', async
 });
 
 test('a payment tab can be linked to, and clicking one writes the link', async ({ page }) => {
-  await page.goto('/admin/payments?tab=waiting');
-  await expect(page.locator('.ops-nav__subtab--active').first()).toContainText('در انتظار');
+  // `open` rather than `waiting`. «نیاز به بررسی» · «در انتظار» ·
+  // «مشکوک به جعل» are one queue now, and their three predicates had a gap that
+  // swallowed pending claims; the URLs still resolve, they are simply no longer
+  // drawn as tabs, so there is no sub-tab for this to find active.
+  await page.goto('/admin/payments?tab=open');
+  await expect(page.locator('.ops-nav__subtab--active').first()).toContainText('در انتظار بررسی');
 
-  await page.getByRole('tab', { name: /مشکوک به جعل/ }).click();
-  await expect(page).toHaveURL(/tab=suspected_fake$/);
+  await page.getByRole('tab', { name: /تایید خودکار ربات/ }).click();
+  await expect(page).toHaveURL(/tab=bot_auto_verified$/);
 
   // `replaceState`, so Back leaves the payments screen rather than stepping
   // backwards through nine sub-tabs. Deliberate, and asserted so it stays that

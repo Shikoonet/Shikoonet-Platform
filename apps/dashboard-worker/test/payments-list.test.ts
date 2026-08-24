@@ -57,6 +57,12 @@ interface ClaimSeed {
   suspectReason?: string | null;
   paidClickedAt?: number;
   suspectMeta?: object;
+  /**
+   * `null` for the case the bot creates deliberately: a card nobody has mapped
+   * to a financial account yet still opens a claim, because the alternative is
+   * losing the customer's money in silence (`apps/bot/src/payment.ts:294-302`).
+   */
+  accountId?: string | null;
 }
 
 async function seedClaim(id: string, seed: ClaimSeed = {}) {
@@ -74,7 +80,7 @@ async function seedClaim(id: string, seed: ClaimSeed = {}) {
       id,
       `mirzabot:test:${id}`,
       AMOUNT,
-      ACCOUNT,
+      seed.accountId === undefined ? ACCOUNT : seed.accountId,
       paid,
       seed.status ?? 'PENDING',
       seed.suspectReason ?? null,
@@ -432,5 +438,97 @@ describe('GET /api/v1/payments', () => {
     expect(after.counts.botAutoVerified).toBe(2);
     expect(after.counts.botAutoVerifiedUnread).toBe(0);
     expect(after.items.every((i) => i.isNew === false)).toBe(true);
+  });
+});
+
+/**
+ * «در انتظار بررسی» — the queue that replaced three.
+ *
+ * On 2026-08-24 Sam pressed «پرداخت کردم» in the bot, opened «پرداخت‌ها», and
+ * saw nothing. He was right, and it was not the wrong tab alone: `needs_review`,
+ * `waiting` and `suspected_fake` between them asked for
+ * `suspect_reason IS NOT NULL`, `suspect_reason IS NULL AND within ten minutes`,
+ * and `suspect_reason IN (…)`. A pending claim with no suspect reason and more
+ * than ten minutes on the clock satisfied none of the three. It was real money
+ * and it was on no screen but «همه».
+ *
+ * These assert the property rather than the wording: a claim nobody has decided
+ * about is in this queue, whatever shape it has and however old it is.
+ */
+describe('the open review queue', () => {
+  it('keeps a claim after the ten-minute matching window has passed', async () => {
+    // Eleven minutes. This is the exact row that used to vanish: PENDING, no
+    // suspect reason, past the window. `WAITING_TIMEOUT_MS` is ten minutes.
+    const stale = Date.now() - 11 * 60_000;
+    await seedClaim('c-stale', { paidClickedAt: stale });
+
+    const body = await get('tab=open');
+    expect(body.items.map((i) => i.id)).toContain('c-stale');
+  });
+
+  it('keeps a claim whose card was never mapped to an account', async () => {
+    // The permanent case, and the worse one. The sweeper that would give this
+    // claim a `suspect_reason` skips every row with a null account
+    // (`apps/ingest-worker/src/integrations/mirzabot.ts:278`), so the condition
+    // that was supposed to move it into another queue can never fire. Under the
+    // old rules it was invisible not for ten minutes but forever.
+    await seedClaim('c-unmapped', {
+      accountId: null,
+      paidClickedAt: Date.now() - 3 * 24 * 60 * 60_000,
+    });
+
+    const body = await get('tab=open');
+    expect(body.items.map((i) => i.id)).toContain('c-unmapped');
+  });
+
+  it('holds every undecided claim and nothing that was decided', async () => {
+    const base = Date.now();
+    await seedClaim('o-fresh', { paidClickedAt: base });
+    await seedClaim('o-stale', { paidClickedAt: base - 11 * 60_000 });
+    await seedClaim('o-flagged', { suspectReason: 'AMBIGUOUS_TRANSACTIONS' });
+    await seedClaim('o-suspect', { suspectReason: 'NO_TRANSACTION_AFTER_10M' });
+    await seedClaim('o-suggested', { status: 'MATCH_SUGGESTED' });
+    // Decided, each a different way. None of these is anybody's work any more.
+    await seedClaim('o-verified', { status: 'VERIFIED' });
+    await seedClaim('o-rejected', { status: 'REJECTED' });
+    await seedClaim('o-fake', { status: 'FAKE_RECEIPT' });
+    await seedClaim('o-expired', { status: 'EXPIRED' });
+
+    const body = await get('tab=open');
+    expect(body.items.map((i) => i.id).sort()).toEqual([
+      'o-flagged',
+      'o-fresh',
+      'o-stale',
+      'o-suggested',
+      'o-suspect',
+    ]);
+  });
+
+  it('counts on the badge exactly what the list returns', async () => {
+    // The divergence this whole change exists to end. The badge summed one
+    // population and the query selected another, so «در انتظار» could read «۱»
+    // over an empty list — which is worse than either being wrong, because the
+    // operator is told there is work and then told there is none.
+    await seedClaim('b-fresh');
+    await seedClaim('b-stale', { paidClickedAt: Date.now() - 11 * 60_000 });
+    await seedClaim('b-unmapped', { accountId: null });
+    await seedClaim('b-flagged', { suspectReason: 'AMBIGUOUS_CLAIMS' });
+    await seedClaim('b-suspect', { suspectReason: 'NO_TRANSACTION' });
+    await seedClaim('b-done', { status: 'VERIFIED' });
+
+    const body = await get('tab=open');
+    expect(body.counts['open']).toBe(body.items.length);
+    expect(body.counts['open']).toBe(5);
+  });
+
+  it('is what an operator lands on', async () => {
+    // The default used to be `income`, which reads `transaction_candidates` —
+    // a table a claim is never in. Sam went looking for the order he had just
+    // placed and the panel could not have shown it whatever he filtered by.
+    await seedClaim('d-open');
+
+    const body = await get('');
+    expect(body.tab).toBe('open');
+    expect(body.items.map((i) => i.id)).toContain('d-open');
   });
 });

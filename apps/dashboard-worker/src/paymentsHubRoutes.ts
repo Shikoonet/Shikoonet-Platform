@@ -25,8 +25,19 @@ import {
 } from '@shikoo/domain';
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 
+/**
+ * The tabs of «پرداخت‌ها», defined once.
+ *
+ * This union used to exist twice — here and in `mirzabotRoutes.ts` — with
+ * nothing keeping the two in step. `mirzabotRoutes` already imports from this
+ * file, so this is the end that can hold it without a cycle; the other end
+ * re-exports this type rather than restating it.
+ *
+ * `open` is documented at the re-export, next to the queue it replaced.
+ */
 export type PaymentTab =
   | 'income'
+  | 'open'
   | 'needs_review'
   | 'declined_income'
   | 'waiting'
@@ -38,7 +49,17 @@ export type PaymentTab =
 
 type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
 
-const OPEN_QUEUE_TABS = new Set<PaymentTab>(['needs_review', 'waiting', 'suspected_fake']);
+/**
+ * Queues an operator WORKS, as opposed to history they browse.
+ *
+ * Membership here means one thing: the date filter does not apply. A work queue
+ * that hides everything older than the chosen range is not a queue, it is a
+ * report — and the oldest row is precisely the one that most needs deciding.
+ *
+ * `open` joins them for exactly that reason, and it is the tab that made the
+ * point: the claim Sam could not find was three days old.
+ */
+const OPEN_QUEUE_TABS = new Set<PaymentTab>(['open', 'needs_review', 'waiting', 'suspected_fake']);
 
 function rangeClause(
   column: string,

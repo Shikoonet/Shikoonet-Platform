@@ -69,6 +69,11 @@ const COUNTS = {
   needsReview: 7,
   waiting: 8,
   suspectedFake: 2,
+  // The badge on «در انتظار بررسی», summed the way the server sums it. Not a
+  // fourth independent number: the point of the merged queue is that the count
+  // and the rows are one population, so a fixture that could disagree with
+  // itself would be testing the wrong shape.
+  open: 17,
   autoVerified: 143,
   botAutoVerified: 143,
   income: 5,
@@ -124,14 +129,30 @@ function mockApi(byTab: Record<string, PaymentsResponse['items']>) {
     if (url.startsWith('/api/v1/resellers')) {
       return new Response(JSON.stringify({ ok: true, items: [] }), { status: 200 });
     }
-    const tab = new URL(url, 'http://local').searchParams.get('tab') ?? 'income';
+    // `open`, matching the real default in `parsePaymentTabFromLocation` and in
+    // the worker. It used to be `income`, and that was the bug: a claim is never
+    // in `transaction_candidates`, so the landing screen could not show the
+    // thing an operator had just come to look at.
+    const tab = new URL(url, 'http://local').searchParams.get('tab') ?? 'open';
     const range = new URL(url, 'http://local').searchParams.get('range') ?? 'all';
     return new Response(
       JSON.stringify({
         ok: true,
         tab,
         range,
-        items: byTab[tab] ?? [],
+        // «در انتظار بررسی» is every undecided claim, so unless a test says
+        // otherwise it is the three old queues put together — exactly what the
+        // server returns for `tab=open`. Tests that seeded one of those three
+        // therefore keep meaning what they meant.
+        items:
+          byTab[tab] ??
+          (tab === 'open'
+            ? [
+                ...(byTab['needs_review'] ?? []),
+                ...(byTab['waiting'] ?? []),
+                ...(byTab['suspected_fake'] ?? []),
+              ]
+            : []),
         counts: COUNTS,
         summary: SUMMARY,
         incomeTotals: { count: 5, amountIrr: 1_000_000 },
@@ -160,8 +181,15 @@ function opsNav() {
   return within(screen.getByRole('tablist', { name: 'بخش‌های پرداخت' }));
 }
 
-async function goNeedsReview() {
-  fireEvent.click(await hubNav().findByRole('tab', { name: /نیاز به بررسی/i }));
+/**
+ * The merged review queue.
+ *
+ * «نیاز به بررسی» · «در انتظار» · «مشکوک به جعل» were three tabs and are one.
+ * The state they used to name is drawn on the row instead, so these walks reach
+ * the same rows through one door.
+ */
+async function goOpenQueue() {
+  fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار بررسی/i }));
 }
 
 beforeEach(() => {
@@ -200,7 +228,7 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار 8/i }));
+    await goOpenQueue();
     expect(await screen.findByText(/سفارش WAIT1/)).toBeTruthy();
     expect(screen.getByText('About 6 minutes remaining')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Review$/i })).toBeNull();
@@ -221,7 +249,7 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /مشکوک به جعل 2/i }));
+    await goOpenQueue();
     expect(await screen.findByText(/سفارش SF1/)).toBeTruthy();
     expect(screen.getByText(/تا ۱۰ دقیقه هیچ واریزی پیدا نشد/)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Review suspected fake/i })).toBeTruthy();
@@ -241,7 +269,7 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /مشکوک به جعل 2/i }));
+    await goOpenQueue();
     fireEvent.click(await screen.findByRole('button', { name: 'حذف' }));
     fireEvent.click(await screen.findByRole('button', { name: 'تایید' }));
 
@@ -253,13 +281,16 @@ describe('PaymentsView tabs', () => {
   it('lists engine-flagged payments under نیاز به بررسی', async () => {
     mockApi({ needs_review: [item({ id: 'p1', orderId: 'A12B' })] });
     renderView();
-    await goNeedsReview();
+    await goOpenQueue();
 
     expect(await screen.findByText(/@ali/)).toBeTruthy();
     expect(await screen.findByText(/سفارش A12B/)).toBeTruthy();
     expect(screen.getByText('۱۹۵٬۰۰۰ تومان')).toBeTruthy();
     expect(screen.getByText(/چند تراکنش بانکی با این پرداخت می‌خوانند/)).toBeTruthy();
-    expect(screen.getAllByText('نیاز به بررسی')[1]).toBeTruthy();
+    // Once, on the ROW. It used to appear twice — the tab and the pill — and the
+    // test reached past the tab to index [1]. With one queue the state has only
+    // one place left to be said, which is where it belongs.
+    expect(screen.getByText('نیاز به بررسی')).toBeTruthy();
   });
 
   it('lists automatically verified payments under تایید خودکار ربات', async () => {
@@ -344,6 +375,9 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
+    // Navigated to, not landed on. «واریزی‌ها» was the default tab and is not
+    // any more — the queue is.
+    fireEvent.click(await hubNav().findByRole('tab', { name: /واریزی‌ها/i }));
     await waitFor(() => expect(screen.getByText('۵۰٬۰۰۰ تومان')).toBeTruthy());
     fireEvent.click(
       await screen.findByLabelText('علامت‌زدن 3 مورد خوانده‌نشده به‌عنوان خوانده‌شده'),
@@ -525,17 +559,15 @@ describe('PaymentsView tabs', () => {
       all: [],
     });
     renderView();
-    expect(await screen.findByText('در این بازه واریزی تخصیص‌نیافته‌ای نیست.')).toBeTruthy();
 
-    await goNeedsReview();
-    expect(await screen.findByText('چیزی نیاز به بررسی ندارد.')).toBeTruthy();
+    // The landing screen is the queue now, so this is the first thing an
+    // operator reads — and on this screen it is the one empty state that is
+    // good news rather than a dead end.
+    expect(await screen.findByText('هیچ پرداختی منتظر تصمیم نیست.')).toBeTruthy();
     expect(screen.queryByText(/Every payment was handled automatically/)).toBeNull();
 
-    fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار 8/i }));
-    expect(await screen.findByText('پرداختی در انتظار نیست.')).toBeTruthy();
-
-    fireEvent.click(await hubNav().findByRole('tab', { name: /مشکوک به جعل 2/i }));
-    expect(await screen.findByText('رسید مشکوکی در انتظار بررسی نیست.')).toBeTruthy();
+    fireEvent.click(await hubNav().findByRole('tab', { name: /واریزی‌ها/i }));
+    expect(await screen.findByText('در این بازه واریزی تخصیص‌نیافته‌ای نیست.')).toBeTruthy();
 
     fireEvent.click(await opsNav().findByRole('tab', { name: 'بایگانی' }));
     fireEvent.click(await hubNav().findByRole('tab', { name: /همه 157/i }));
@@ -564,7 +596,7 @@ describe('PaymentsView tabs', () => {
       ],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /مشکوک به جعل 2/i }));
+    await goOpenQueue();
     fireEvent.click(await screen.findByRole('button', { name: /Review suspected fake/i }));
     const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
     expect(within(drawer).getByRole('button', { name: 'علامت‌زدن به‌عنوان جعلی' })).toBeTruthy();
@@ -574,7 +606,7 @@ describe('PaymentsView tabs', () => {
   it('never renders a full card number in the list', async () => {
     mockApi({ needs_review: [item({ id: 'p1' })] });
     const { container } = renderView();
-    await goNeedsReview();
+    await goOpenQueue();
     await screen.findByText(/سفارش A12B/);
     expect(container.textContent).not.toContain(FULL_CARD);
     expect(container.textContent).toContain('****6006');
@@ -591,7 +623,7 @@ describe('review drawer', () => {
   it('Review opens the details drawer with the candidate transactions', async () => {
     mockApi({ needs_review: [ambiguous] });
     renderView();
-    await goNeedsReview();
+    await goOpenQueue();
 
     fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
     const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
@@ -607,7 +639,7 @@ describe('review drawer', () => {
   it('cannot verify manually until the operator picks a transaction', async () => {
     mockApi({ needs_review: [ambiguous] });
     renderView();
-    await goNeedsReview();
+    await goOpenQueue();
 
     fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
     const approve = await screen.findByRole('button', { name: 'تایید انتخاب‌شده‌ها' });
@@ -620,7 +652,7 @@ describe('review drawer', () => {
   it('تایید انتخاب‌شده‌ها posts the chosen transaction to the existing endpoint', async () => {
     mockApi({ needs_review: [ambiguous] });
     renderView();
-    await goNeedsReview();
+    await goOpenQueue();
 
     fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
     fireEvent.click(screen.getAllByRole('radio')[1]!);
@@ -636,7 +668,7 @@ describe('review drawer', () => {
   it('رد پرداخت posts a rejection reason to the existing endpoint', async () => {
     mockApi({ needs_review: [ambiguous] });
     renderView();
-    await goNeedsReview();
+    await goOpenQueue();
 
     fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
     fireEvent.click(screen.getByRole('button', { name: 'رد پرداخت' }));
@@ -704,7 +736,7 @@ describe('PaymentsView device display', () => {
       ],
     });
     renderView();
-    await goNeedsReview();
+    await goOpenQueue();
     expect(await screen.findByText(/دستگاه: Puyan-iPhone/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Review payment from/i }));
     const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
@@ -716,7 +748,7 @@ describe('PaymentsView device display', () => {
       waiting: [item({ id: 'w1', reviewState: 'WAITING', suspectReason: null, device: null })],
     });
     renderView();
-    fireEvent.click(await hubNav().findByRole('tab', { name: /در انتظار 8/i }));
+    await goOpenQueue();
     expect(await screen.findByText(/دستگاه: —/)).toBeTruthy();
   });
 });

@@ -9,8 +9,6 @@ import {
   IconPayments,
   IconReseller,
   IconReview,
-  IconSuspected,
-  IconWaiting,
 } from './paymentsIcons.js';
 
 /*
@@ -34,28 +32,30 @@ const REVIEW_TABS = [
     unreadKey: 'incomeUnread' as const,
     Icon: IconIncome,
   },
+  /**
+   * One queue where «نیاز به بررسی» · «در انتظار» · «مشکوک به جعل» used to be.
+   *
+   * Three tabs for three shapes of the same thing — a payment nobody has
+   * decided about — and the operator had to visit all three to know whether
+   * there was work. Worse, the three did not add up to the whole: their
+   * predicates left a gap, and a pending claim that fell into it appeared on
+   * none of them. That is what Sam hit on 2026-08-24.
+   *
+   * The state has not been thrown away; it moved into the row, where `AllRow`
+   * already draws it as a pill. That is the right place for it: it tells you
+   * what KIND of attention a payment needs, which is a property of the payment,
+   * not an address you have to navigate to.
+   *
+   * The unread badge follows «نیاز به بررسی», which is the one of the three
+   * that raised notifications.
+   */
   {
-    value: 'needs_review' as const,
-    label: 'نیاز به بررسی',
+    value: 'open' as const,
+    label: 'در انتظار بررسی',
     shortLabel: 'بررسی',
-    countKey: 'needsReview' as const,
+    countKey: 'open' as const,
     unreadKey: 'needsReviewUnread' as const,
     Icon: IconReview,
-  },
-  {
-    value: 'waiting' as const,
-    label: 'در انتظار',
-    shortLabel: 'انتظار',
-    countKey: 'waiting' as const,
-    Icon: IconWaiting,
-  },
-  {
-    value: 'suspected_fake' as const,
-    label: 'مشکوک به جعل',
-    shortLabel: 'مشکوک',
-    countKey: 'suspectedFake' as const,
-    unreadKey: 'suspectedFakeUnread' as const,
-    Icon: IconSuspected,
   },
   {
     value: 'bot_auto_verified' as const,
@@ -117,6 +117,7 @@ export function parsePaymentTabFromLocation(search = window.location.search): Pa
   const raw = new URLSearchParams(search).get('tab');
   const allowed: PaymentTab[] = [
     'income',
+    'open',
     'needs_review',
     'declined_income',
     'waiting',
@@ -128,7 +129,15 @@ export function parsePaymentTabFromLocation(search = window.location.search): Pa
   ];
   if (raw === 'auto_verified') return 'bot_auto_verified';
   if (raw && allowed.includes(raw as PaymentTab)) return raw as PaymentTab;
-  return 'income';
+  // The work, not the bank statement.
+  //
+  // This used to be `income`, which lists `transaction_candidates` — bank
+  // credits no order has claimed. A payment claim is never in that table, so
+  // an operator who opened «پرداخت‌ها» to find an order that had just been
+  // placed was looking at a screen that could not contain it, and no filter on
+  // that screen would have helped. Kept in step with the server's own default
+  // in `mirzabotRoutes.ts`, which answers the same way when `?tab=` is absent.
+  return 'open';
 }
 
 export function syncPaymentTabToLocation(tab: PaymentTab) {
@@ -140,7 +149,8 @@ export function syncPaymentTabToLocation(tab: PaymentTab) {
 
 function defaultSubTab(group: Level1Group): PaymentTab {
   if (group === 'payments') return 'manually_verified';
-  return 'income';
+  // Pressing «بررسی» should land on the reviewing, not on the bank statement.
+  return 'open';
 }
 
 function NavBadge({ count, unread }: { count?: number | undefined; unread?: number | undefined }) {
