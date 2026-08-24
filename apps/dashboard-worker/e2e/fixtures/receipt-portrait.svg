@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  What a receipt actually looks like when it arrives.
+
+  Sam sent a real one on 2026-08-24 — an «آسان پرداخت» transaction report,
+  screenshotted from a phone: 591×1280, portrait, aspect 0.46. Before it, the
+  only receipt this code had ever been shown was a landscape placeholder I drew
+  myself, and `.payment-receipt img { max-height: 320px }` was written against
+  that shape. It renders this one 148px wide, which turns مبلغ, شمارهٔ ارجاع and
+  the last four digits of both cards into something a few pixels tall.
+
+  This is a COPY of that shape, not the photograph. His file carries a real
+  customer's name, both card numbers and the bank reference; it stays on disk
+  and out of git (see `.gitignore`), because a repository remembers a file long
+  after it is deleted.
+
+  Nothing is lost by copying. Every assertion in `money-layout.spec.ts` is
+  about SIZE — any 591×1280 image passes or fails them identically. And a
+  fixture made of text has something a photograph does not: it diffs, it
+  reviews, and anyone can see what is being asserted against without opening an
+  image editor.
+
+  What is kept: the dimensions, the aspect, where each number sits, and how big
+  its text is. What is replaced: everything that identifies anybody.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="591" height="1280" viewBox="0 0 591 1280" font-family="Tahoma, sans-serif">
+  <rect width="591" height="1280" fill="#f2f2f5"/>
+
+  <rect x="0" y="0" width="591" height="150" fill="#ffffff"/>
+  <text x="295" y="122" font-size="21" fill="#1c1c1e" text-anchor="middle" direction="rtl">گزارش تراکنش</text>
+
+  <rect x="14" y="176" width="563" height="784" rx="14" fill="#ffffff"/>
+
+  <rect x="14" y="176" width="563" height="110" rx="14" fill="#d9f0e5"/>
+  <circle cx="330" cy="231" r="18" fill="#1aa06d"/>
+  <text x="295" y="240" font-size="24" font-weight="bold" fill="#1aa06d" text-anchor="middle" direction="rtl">موفق</text>
+
+  <text x="295" y="332" font-size="21" fill="#1c1c1e" text-anchor="middle" direction="rtl">انتقال وجه کارت به کارت</text>
+
+  <!-- The six rows an operator reads. Every value here is invented. -->
+  <g font-size="17">
+    <rect x="34" y="378" width="523" height="54" rx="8" fill="#f4f4f6"/>
+    <text x="545" y="412" fill="#8a8a8e" text-anchor="end" direction="rtl">تاریخ</text>
+    <text x="46" y="412" fill="#1c1c1e" direction="rtl">۱۴۰۵/۰۶/۰۲ ۱۰:۰۸</text>
+
+    <text x="545" y="468" fill="#8a8a8e" text-anchor="end" direction="rtl">مبلغ</text>
+    <text x="46" y="468" fill="#1c1c1e" direction="rtl">۱,۱۹۰,۰۰۰ ریال</text>
+
+    <rect x="34" y="490" width="523" height="54" rx="8" fill="#f4f4f6"/>
+    <text x="545" y="524" fill="#8a8a8e" text-anchor="end" direction="rtl">کارت مبدا</text>
+    <text x="46" y="524" fill="#1c1c1e">۶۰۳۷ - ۰۰** - **** - ۰۰۰۰</text>
+
+    <rect x="34" y="546" width="523" height="54" rx="8" fill="#f4f4f6"/>
+    <text x="545" y="580" fill="#8a8a8e" text-anchor="end" direction="rtl">کارت مقصد</text>
+    <text x="46" y="580" fill="#1c1c1e">۵۰۵۴ - ۰۰** - **** - ۰۰۰۰</text>
+
+    <rect x="34" y="602" width="523" height="54" rx="8" fill="#f4f4f6"/>
+    <text x="545" y="636" fill="#8a8a8e" text-anchor="end" direction="rtl">به نام</text>
+    <text x="46" y="636" fill="#1c1c1e" direction="rtl">نام نمونه</text>
+
+    <text x="545" y="692" fill="#8a8a8e" text-anchor="end" direction="rtl">شماره ارجاع</text>
+    <text x="46" y="692" fill="#1c1c1e">۰۰۰۰۰۰۰۰۰۰۰۰</text>
+  </g>
+
+  <rect x="180" y="800" width="90" height="70" rx="6" fill="#e6e6ea"/>
+  <rect x="310" y="800" width="90" height="70" rx="6" fill="#e6e6ea"/>
+
+  <rect x="14" y="980" width="563" height="96" rx="14" fill="#e8e8ec"/>
+  <rect x="300" y="1170" width="277" height="72" rx="12" fill="#ffffff" stroke="#d0d0d5"/>
+  <rect x="14" y="1170" width="277" height="72" rx="12" fill="#e8503a"/>
+</svg>

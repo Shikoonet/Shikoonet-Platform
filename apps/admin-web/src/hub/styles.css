@@ -2215,34 +2215,20 @@
   line-height: 1;
 }
 
-.drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  /* Same reason as `.modal-backdrop`, one step below it so a modal opened from
-     inside the review drawer still lands on top. */
-  z-index: 1100;
-}
-
-.drawer {
-  width: min(320px, 80vw);
-  background: var(--surface-overlay);
-  border-inline-end: 1px solid var(--border);
-  padding: 1rem;
-  outline: none;
-}
-
-/* Right-side variant — used for the Comments panel at compact-desktop
-   and tablet widths so the transaction table gets the full content width. */
-.drawer--right {
-  margin-inline-start: auto;
-  width: min(360px, 90vw);
-  border-inline-end: 0;
-  border-inline-start: 1px solid var(--border);
-  max-height: 100vh;
-  overflow-y: auto;
-}
+/* `.drawer`, `.drawer--right` and `.drawer-backdrop` were here, with
+ * `Drawer.tsx`, and all four are gone.
+ *
+ * The only thing still using them was «بررسی پرداخت», which is a page now —
+ * see `.review-page` at the end of this file. The drawer was
+ * `width: min(360px, 90vw)` and it was holding the screen where somebody
+ * decides about real money.
+ *
+ * `.drawer-section` and `.drawer-title` below are NOT part of that and stay:
+ * they are the panel's own section styling, named after the container it used
+ * to sit in. Renaming them is a rename of forty call sites for no behaviour,
+ * so the names outlive the drawer. This note is here so the next reader does
+ * not go looking for a component that no longer exists.
+ */
 
 .drawer-nav {
   display: flex;
@@ -4664,20 +4650,135 @@
   overflow-y: auto;
 }
 
-/* The receipt inside the review panel.
-   Capped rather than natural-size: a bank screenshot from a phone is often
-   1080px tall, and a panel that scrolls past the decision buttons to show it is
-   a panel where the buttons are hard to find. Click opens the original. */
+/* A receipt is a PHONE SCREENSHOT, and that decides the sizing.
+ *
+ * Sam sent a real one on 2026-08-24: 591×1280, portrait, aspect 0.46 — a bank
+ * app's «گزارش تراکنش» page. The numbers an operator has to read off it are
+ * مبلغ, شمارهٔ ارجاع and the last four of both cards, set in the middle of that
+ * page at ordinary phone text size.
+ *
+ * This was `max-height: 320px`, written against a landscape placeholder. A
+ * 591×1280 image inside that comes out 148px wide, and every one of those
+ * numbers becomes two pixels tall — an operator would be deciding about money
+ * from a thumbnail, which is the same as deciding without looking.
+ *
+ * So the cap is a viewport fraction rather than a fixed number of pixels, and
+ * the whole thing stays a link to the full-size original for the cases a
+ * screen still cannot hold.
+ */
 .payment-receipt {
   display: block;
   max-width: 100%;
 }
 .payment-receipt img {
   display: block;
-  max-width: 100%;
-  max-height: 320px;
+  max-width: min(100%, 420px);
+  max-height: 70vh;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   object-fit: contain;
   background: var(--surface-2);
+}
+
+/* On the review page, the WIDTH is fixed and the box scrolls.
+ *
+ * Capping the height instead is what a landscape placeholder teaches you to
+ * do, and against a 591×1280 screenshot it fails quietly: on a 720px-tall
+ * window `max-height: 80vh` renders it 267px wide — 45% scale, at which the
+ * reference number is about eight pixels tall. Measured, not guessed; the
+ * e2e test that caught it asserts the width for exactly this reason.
+ *
+ * So the width is chosen for reading and the height follows the aspect. The
+ * box never grows past 80vh, and if the receipt is taller than that it scrolls
+ * INSIDE the box — which keeps the decision buttons where they were instead of
+ * pushing them a screen and a half down the page.
+ */
+.review-page .payment-receipt {
+  display: block;
+  max-height: 80vh;
+  overflow-y: auto;
+  border-radius: var(--radius-md);
+}
+
+.review-page .payment-receipt img {
+  width: min(100%, 420px);
+  max-width: none;
+  max-height: none;
+  height: auto;
+}
+
+/* ── بررسی پرداخت — the review, at the size of the decision ──────────────────
+ *
+ * This was `.drawer--right` at `width: min(360px, 90vw)`. The panel inside it
+ * is 493 lines: the claim, the customer, the bank transaction it was matched
+ * to, the candidates it was NOT matched to, the receipt, and six buttons that
+ * each move real money. None of that was legible in 360px, and half of it was
+ * only reachable by scrolling a column that also had the list showing through
+ * behind it.
+ *
+ * `max-width` rather than full bleed: line length still matters, and a form at
+ * 1400px is its own kind of unreadable. 1100 is the width at which the panel's
+ * two-column blocks stop stacking.
+ */
+.review-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  max-width: 1100px;
+  margin-inline: auto;
+  width: 100%;
+}
+
+.review-page__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding-block-end: var(--space-sm);
+  border-block-end: 1px solid var(--border);
+}
+
+.review-page__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+/* The panel is a stack of eight sections, each with a heading and exactly ONE
+ * content block. At 360px that stack was the only possible shape. At 1065px it
+ * is a very long thin ribbon with two thirds of the screen empty beside it.
+ *
+ * So the grid goes on the PANEL and the sections are its cells — measured
+ * first: a grid on the sections themselves put one 339px block in a 1065px row
+ * and left two columns empty, which is worse than the ribbon it replaced.
+ *
+ * `auto-fit` with a floor, so this needs no breakpoint and folds back to one
+ * column on a phone by itself.
+ */
+.review-page .payment-review {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: var(--space-md) var(--space-xl);
+  align-items: start;
+}
+
+/* Cells, not a stack: the rule that separated one section from the next below
+ * it says nothing once they are side by side, and the margin it carried would
+ * push the columns out of line with each other. */
+.review-page .payment-review > .drawer-section {
+  margin-bottom: 0;
+  padding-bottom: var(--space-md);
+  border-bottom: 0;
+}
+
+/* The two that do not divide.
+ *
+ * «رسید» holds an image and «تصمیم» holds the buttons that move the money —
+ * neither belongs in a 320px column beside something else, and the decision in
+ * particular stays in one predictable place at the end rather than floating
+ * into whichever cell the grid has left.
+ */
+.review-page .payment-review > .drawer-section:has(.payment-receipt),
+.review-page .payment-review > .drawer-section:last-child {
+  grid-column: 1 / -1;
 }

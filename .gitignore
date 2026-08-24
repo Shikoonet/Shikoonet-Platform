@@ -23,3 +23,13 @@ legacy/mirzabot-php/db/
 # history (hub-cloudflare still tracks its GitHub remote), so they are not
 # vendored into this repo. Deleted in phase 5 once the strangler completes.
 legacy/
+
+# The real bank receipt Sam supplied on 2026-08-24 for the layout test.
+#
+# It carries a customer's name, both card numbers and the bank reference, and a
+# repository remembers a file long after it is deleted — so it lives on disk and
+# never in history. Sam's decision, 2026-08-24.
+#
+# Nothing depends on it: `e2e/fixtures/receipt-portrait.svg` is a drawn copy at
+# the same 591×1280, and every assertion in `money-layout.spec.ts` is about size.
+apps/dashboard-worker/e2e/fixtures/*.local.*

@@ -147,6 +147,46 @@ export function syncPaymentTabToLocation(tab: PaymentTab) {
   window.history.replaceState(null, '', next);
 }
 
+/**
+ * Which payment is being reviewed, read off the address bar.
+ *
+ * The review used to be a `useState` and nothing else, inside a drawer
+ * `width: min(360px, 90vw)`. Four hundred and ninety-three lines of the one
+ * screen where somebody decides about real money, in a column narrower than a
+ * phone — and with no address, so it could not be linked to, reloaded, or
+ * reached with the back button. Closing it was the only way out and it left no
+ * trace that it had been open.
+ *
+ * A query parameter rather than a path segment, because the queue underneath
+ * it is addressed the same way (`?tab=`), and the review is a state OF the
+ * payments screen rather than a different screen. It also means the tab and
+ * the filters survive going in and coming back.
+ */
+export function parseReviewIdFromLocation(search = window.location.search): string | null {
+  const raw = new URLSearchParams(search).get('claim');
+  // Ids here are uuids written by us. Anything else is somebody editing the
+  // address bar, and the answer to that is the queue, not an error page.
+  return raw && /^[A-Za-z0-9_-]{1,64}$/.test(raw) ? raw : null;
+}
+
+/**
+ * `pushState`, not `replaceState` — unlike the tab.
+ *
+ * Opening a payment is somewhere you went, and Back is how a person expects to
+ * leave it. The tab uses `replaceState` because switching tabs is changing
+ * what you are looking at rather than going somewhere; if this did the same,
+ * Back would jump past the whole review and out of the screen.
+ */
+export function syncReviewToLocation(claimId: string | null) {
+  const qs = new URLSearchParams(window.location.search);
+  if (claimId === null) qs.delete('claim');
+  else qs.set('claim', claimId);
+  const query = qs.toString();
+  const next = query === '' ? window.location.pathname : `${window.location.pathname}?${query}`;
+  if (next === `${window.location.pathname}${window.location.search}`) return;
+  window.history.pushState(null, '', next);
+}
+
 function defaultSubTab(group: Level1Group): PaymentTab {
   if (group === 'payments') return 'manually_verified';
   // Pressing «بررسی» should land on the reviewing, not on the bank statement.

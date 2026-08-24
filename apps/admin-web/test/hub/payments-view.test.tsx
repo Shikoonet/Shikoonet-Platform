@@ -169,6 +169,19 @@ function mockApi(byTab: Record<string, PaymentsResponse['items']>) {
   });
 }
 
+/**
+ * The review, wherever it is.
+ *
+ * It was `findByRole('dialog', { name: 'بررسی پرداخت' })` in five places —
+ * a drawer `width: min(360px, 90vw)`. Since 2026-08-24 it is a page with its
+ * own address and no dialog role, so the five call sites go through here and
+ * a move like that costs one function instead of five edits.
+ */
+async function openReviewPanel(): Promise<HTMLElement> {
+  const page = await screen.findByTestId('review-page');
+  return page;
+}
+
 function renderView() {
   return render(<PaymentsView cache={createCache()} />);
 }
@@ -517,7 +530,7 @@ describe('PaymentsView tabs', () => {
     fireEvent.click(await opsNav().findByRole('tab', { name: 'بایگانی' }));
     fireEvent.click(await hubNav().findByRole('tab', { name: /تایید دستی/i }));
     fireEvent.click(await screen.findByText(/سفارش A12B/i));
-    const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
+    const drawer = await openReviewPanel();
     const reopen = within(drawer).getByRole('button', { name: 'بازکردن دوبارهٔ تایید' });
     expect(reopen).toHaveProperty('disabled', false);
     fireEvent.click(reopen);
@@ -547,7 +560,7 @@ describe('PaymentsView tabs', () => {
     fireEvent.click(await opsNav().findByRole('tab', { name: 'بایگانی' }));
     fireEvent.click(await hubNav().findByRole('tab', { name: /تایید دستی/i }));
     fireEvent.click(await screen.findByText(/سفارش A12B/i));
-    const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
+    const drawer = await openReviewPanel();
     const reopen = within(drawer).getByRole('button', { name: 'بازکردن دوبارهٔ تایید' });
     expect(reopen).toHaveProperty('disabled', true);
     expect(within(drawer).getByText(/revert snapshot/i)).toBeTruthy();
@@ -602,7 +615,7 @@ describe('PaymentsView tabs', () => {
     renderView();
     await goOpenQueue();
     fireEvent.click(await screen.findByRole('button', { name: /Review suspected fake/i }));
-    const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
+    const drawer = await openReviewPanel();
     expect(within(drawer).getByRole('button', { name: 'علامت‌زدن به‌عنوان جعلی' })).toBeTruthy();
     expect(within(drawer).queryByRole('button', { name: 'رد پرداخت' })).toBeNull();
   });
@@ -630,7 +643,7 @@ describe('review drawer', () => {
     await goOpenQueue();
 
     fireEvent.click(await screen.findByRole('button', { name: /Review payment from/i }));
-    const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
+    const drawer = await openReviewPanel();
     expect(within(drawer).getByText('بررسی پرداخت')).toBeTruthy();
     expect(within(drawer).getByText('سفارش: A12B')).toBeTruthy();
     expect(within(drawer).getByText('User ID: 42')).toBeTruthy();
@@ -786,7 +799,7 @@ describe('PaymentsView device display', () => {
     await goOpenQueue();
     expect(await screen.findByText(/دستگاه: Puyan-iPhone/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Review payment from/i }));
-    const drawer = await screen.findByRole('dialog', { name: 'بررسی پرداخت' });
+    const drawer = await openReviewPanel();
     expect(within(drawer).getByText('Puyan-iPhone')).toBeTruthy();
   });
 

@@ -8,7 +8,6 @@
 import { useEffect, useState } from 'react';
 import type { Cache } from './query.js';
 import { QK } from './queries.js';
-import { Drawer } from './Drawer.js';
 import { formatTomanFromIrr, formatTimeSeconds } from './format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { ClaimChangeAccount } from './ClaimChangeAccount.js';
@@ -18,7 +17,9 @@ import {
   HeaderPrimaryOpsNav,
   ReviewSubNav,
   parsePaymentTabFromLocation,
+  parseReviewIdFromLocation,
   syncPaymentTabToLocation,
+  syncReviewToLocation,
   level1GroupFromTab,
 } from './paymentsNav.js';
 import { HeaderSlot } from './shikoonetShell.js';
@@ -149,7 +150,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   // DEV-only: filters specific to the Bot Auto Verified tab.
   const botAutoFilter = useBotAutoVerifiedFilter();
-  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [reviewingId, setReviewingId] = useState<string | null>(() => parseReviewIdFromLocation());
   const [incomeAction, setIncomeAction] = useState<IncomeItem | null>(null);
   const [assignIncome, setAssignIncome] = useState<IncomeItem | null>(null);
   const [declineTarget, setDeclineTarget] = useState<IncomeItem | null>(null);
@@ -164,7 +165,13 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const [markingReadAll, setMarkingReadAll] = useState(false);
 
   useEffect(() => {
-    const onPop = () => setTab(parsePaymentTabFromLocation());
+    const onPop = () => {
+      setTab(parsePaymentTabFromLocation());
+      // Back out of a review and you land on the queue you came from, with its
+      // tab and filters intact — which is what `pushState` in `openReview` is
+      // for. Without this line the address changed and the screen did not.
+      setReviewingId(parseReviewIdFromLocation());
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
@@ -225,10 +232,28 @@ export function PaymentsView({ cache }: { cache: Cache }) {
     }
   }
 
+  /**
+   * Open a payment for review — and say so in the address bar.
+   *
+   * Every row goes through here now. Three of them used to call
+   * `setReviewingId` directly, which opened the same panel at the same size
+   * with no address and no way back, so whether the review had a URL depended
+   * on which row you clicked.
+   */
+  function openReview(item: PaymentItem) {
+    setReviewingId(item.id);
+    syncReviewToLocation(item.id);
+  }
+
   function openClaim(item: PaymentItem) {
     setLocallyReadClaims((prev) => new Set(prev).add(item.id));
     void markClaimSeen(item);
-    setReviewingId(item.id);
+    openReview(item);
+  }
+
+  function closeReview() {
+    setReviewingId(null);
+    syncReviewToLocation(null);
   }
 
   function isClaimNew(item: PaymentItem): boolean {
@@ -287,8 +312,107 @@ export function PaymentsView({ cache }: { cache: Cache }) {
       const j = (await r.json().catch(() => ({}))) as { error?: string };
       throw new Error(j.error ?? `${r.status}`);
     }
-    setReviewingId(null);
+    closeReview();
     cache.refetch(queryKey, QK.suggested, QK.today);
+  }
+
+  /*
+   * The review, when there is one — and it takes the whole screen.
+   *
+   * It used to live in `<Drawer side="right">`, which is
+   * `width: min(360px, 90vw)`: four hundred and ninety-three lines about a
+   * real payment, in a column narrower than the phone in your pocket, over a
+   * list you could still half-see. Sam's words for the result were «نمیدونم چی
+   * به چیه».
+   *
+   * An early return rather than a branch inside the tree below, because the
+   * queue is not behind this page — it is replaced by it. Rendering both and
+   * hiding one would keep the list's fetches, its keyboard focus and its
+   * scroll position alive underneath, which is most of what made the drawer
+   * feel like a lid rather than a screen.
+   *
+   * Every hook this component has runs above; nothing below is conditional.
+   */
+  if (reviewingId !== null) {
+    return (
+      <>
+        <HeaderSlot slot="center">
+          <HeaderPrimaryOpsNav tab={tab} counts={counts} onChange={selectTab} />
+        </HeaderSlot>
+
+        <section className="payments-shell">
+          <div className="payments-shell__surface">
+            <div className="review-page" data-testid="review-page">
+              <div className="review-page__bar">
+                <button type="button" className="btn btn-ghost" onClick={closeReview}>
+                  → بازگشت به صف
+                </button>
+                <h2 className="review-page__title">بررسی پرداخت</h2>
+              </div>
+
+              {error && <div className="alert alert-error">{error}</div>}
+
+              {reviewing === null ? (
+                /*
+                 * An address that names a payment this list does not hold —
+                 * a link opened after the payment was decided, or with another
+                 * tab selected. Said out loud rather than silently falling back
+                 * to the queue, because a link that quietly shows you something
+                 * else is worse than one that does not work.
+                 */
+                <div className="empty">
+                  {status === 'loading'
+                    ? 'در حال خواندن…'
+                    : 'این پرداخت در فهرست باز نیست — شاید تصمیمش گرفته شده یا در تب دیگری است.'}
+                </div>
+              ) : (
+                <ReviewPanel
+                  key={reviewing.id}
+                  item={reviewing}
+                  cache={cache}
+                  onRefresh={() => cache.refetch(queryKey, QK.suggested, QK.today)}
+                  onApprove={(transactionId) =>
+                    post(`/api/v1/suspects/${reviewing.id}/approve`, { transactionId })
+                  }
+                  onVerifyManual={(reason) =>
+                    post(`/api/v1/suspects/${reviewing.id}/verify-manual`, { reason })
+                  }
+                  onReassign={(body) =>
+                    post(`/api/v1/payment-claims/${reviewing.id}/reassign-transaction`, body)
+                  }
+                  onReject={(reason) => post(`/api/v1/suspects/${reviewing.id}/reject`, { reason })}
+                  onRemove={() =>
+                    post(`/api/v1/suspects/${reviewing.id}/reject`, {
+                      reason: 'NO_BANK_TRANSACTION',
+                    })
+                  }
+                  onMarkFake={() =>
+                    post(`/api/v1/suspects/${reviewing.id}/mark-fake`, { confirmed: true })
+                  }
+                  onReopen={() => setReopenTarget(reviewing)}
+                  onError={setError}
+                />
+              )}
+            </div>
+          </div>
+        </section>
+
+        {reopenTarget && (
+          <ReopenVerificationModal
+            item={reopenTarget}
+            onClose={() => setReopenTarget(null)}
+            onDone={() => {
+              setReopenTarget(null);
+              setToast('تایید دوباره باز شد');
+              setTimeout(() => setToast(null), 4000);
+              cache.refetch(queryKey, QK.suggested, QK.today);
+            }}
+            onError={setError}
+          />
+        )}
+        {toast && <div className="toast">{toast}</div>}
+      </>
+    );
   }
 
   return (
@@ -591,7 +715,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                         <WaitingRow
                           key={item.id}
                           item={item}
-                          onDetails={() => setReviewingId(item.id)}
+                          onDetails={() => openReview(item)}
                         />
                       );
                     }
@@ -612,7 +736,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                       );
                     }
                     return (
-                      <AllRow key={item.id} item={item} onOpen={() => setReviewingId(item.id)} />
+                      <AllRow key={item.id} item={item} onOpen={() => openReview(item)} />
                     );
                   })}
                 </ul>
@@ -624,7 +748,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   <ManuallyVerifiedRow
                     key={item.id}
                     item={item}
-                    onOpen={() => setReviewingId(item.id)}
+                    onOpen={() => openReview(item)}
                     onReopen={() => setReopenTarget(item)}
                   />
                 ))}
@@ -737,41 +861,6 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 onError={setError}
               />
             )}
-            <Drawer
-              open={reviewing != null}
-              onClose={() => setReviewingId(null)}
-              label="بررسی پرداخت"
-              side="right"
-            >
-              {reviewing && (
-                <ReviewPanel
-                  key={reviewing.id}
-                  item={reviewing}
-                  cache={cache}
-                  onRefresh={() => cache.refetch(queryKey, QK.suggested, QK.today)}
-                  onApprove={(transactionId) =>
-                    post(`/api/v1/suspects/${reviewing.id}/approve`, { transactionId })
-                  }
-                  onVerifyManual={(reason) =>
-                    post(`/api/v1/suspects/${reviewing.id}/verify-manual`, { reason })
-                  }
-                  onReassign={(body) =>
-                    post(`/api/v1/payment-claims/${reviewing.id}/reassign-transaction`, body)
-                  }
-                  onReject={(reason) => post(`/api/v1/suspects/${reviewing.id}/reject`, { reason })}
-                  onRemove={() =>
-                    post(`/api/v1/suspects/${reviewing.id}/reject`, {
-                      reason: 'NO_BANK_TRANSACTION',
-                    })
-                  }
-                  onMarkFake={() =>
-                    post(`/api/v1/suspects/${reviewing.id}/mark-fake`, { confirmed: true })
-                  }
-                  onReopen={() => setReopenTarget(reviewing)}
-                  onError={setError}
-                />
-              )}
-            </Drawer>
           </div>
         </div>
         <div className="payments-shell__decor" aria-hidden="true" />
@@ -1387,8 +1476,9 @@ function ReviewPanel({
 
   return (
     <div className="payment-review">
-      <h2 className="drawer-title">بررسی پرداخت</h2>
-
+      {/* The title lives on the page bar now, next to the way back. It was
+          here when this was a drawer and the drawer had no header of its
+          own. */}
       <section className="drawer-section">
         <h3 className="drawer-section__heading">هویت</h3>
         <PaymentIdentity item={item} />

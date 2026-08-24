@@ -28,6 +28,7 @@
  * checked here is the thing the operator actually suffers: how tall the row is.
  */
 
+import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { createPostgresD1 } from '@shikoo/db';
 
@@ -224,15 +225,19 @@ test('the «مرجع» column of the bot-verified table stays one line', async (
   }
 });
 
-test('an overlay covers what is behind it', async ({ page }) => {
-  // The drawer's background resolved through `--panel` → `--surface` →
-  // `--surface-1`, which is `rgba(20, 22, 30, 0.48)`. It was 48% opaque, so the
-  // table underneath read straight through the text on top. `z-index` and
-  // `position` were correct the whole time, which is why the stacking order
-  // told nobody anything.
-  //
-  // Asserted on the COMPUTED colour rather than on the token name: what matters
-  // is that no light gets through, whichever variable ends up supplying it.
+test('the review is a page, at the size of the decision', async ({ page }) => {
+  /*
+   * This test used to open `.drawer` and assert its background was opaque —
+   * the drawer resolved through `--panel` → `--surface` → `--surface-1`, which
+   * is `rgba(20, 22, 30, 0.48)`, so the list read straight through the text on
+   * top of it.
+   *
+   * The transparency is fixed and the drawer is gone: «بررسی پرداخت» is 493
+   * lines about a real payment and it was living in `width: min(360px, 90vw)`.
+   * So what is asserted now is the thing that replaced it, and the assertions
+   * are the ones the drawer would fail — width, its own address, and nothing
+   * from the queue left rendered underneath.
+   */
   await page.goto('/admin/payments?tab=all');
   await expect(page.locator('.hub')).toBeVisible();
 
@@ -240,15 +245,118 @@ test('an overlay covers what is behind it', async ({ page }) => {
   await expect(opener).toBeVisible();
   await opener.click();
 
-  const drawer = page.locator('.drawer');
-  await expect(drawer).toBeVisible();
+  const review = page.locator('.review-page');
+  await expect(review).toBeVisible();
 
-  const alpha = await drawer.evaluate((el) => {
-    const bg = getComputedStyle(el).backgroundColor;
-    const parts = bg.match(/[\d.]+/g);
-    // `rgb(...)` has three components and is fully opaque by definition;
-    // `rgba(...)` carries the fourth.
-    return parts && parts.length === 4 ? Number(parts[3]) : 1;
-  });
-  expect(alpha).toBe(1);
+  // Gone, not hidden. A drawer left the list mounted behind it — its fetches,
+  // its focus and its scroll position all still live.
+  await expect(page.locator('.drawer')).toHaveCount(0);
+  await expect(page.locator('.hub-list-row__button')).toHaveCount(0);
+
+  // Somewhere you went, so Back is how you leave.
+  expect(new URL(page.url()).searchParams.get('claim')).toBeTruthy();
+
+  const width = await review.evaluate((el) => el.getBoundingClientRect().width);
+  // The drawer was 360. Anything in that neighbourhood means the panel is back
+  // in a column, whatever the markup says.
+  expect(width).toBeGreaterThan(700);
+
+  await page.goBack();
+  await expect(page.locator('.hub-list-row__button').first()).toBeVisible();
+  expect(new URL(page.url()).searchParams.get('claim')).toBeNull();
+});
+
+test('a receipt the shape customers actually send is legible', async ({ page }) => {
+  /*
+   * `e2e/fixtures/receipt-portrait.svg` is drawn to the shape of a real one
+   * Sam supplied: an «آسان پرداخت» report screenshotted from a phone,
+   * 591×1280, portrait. His own file stays on disk and out of git — it carries
+   * a customer's name and both card numbers — and nothing is lost, because
+   * every assertion below is about SIZE and any 591×1280 image answers them
+   * identically.
+   *
+   * The cap on this image was `max-height: 320px`, written against a landscape
+   * placeholder I had drawn myself — the only receipt this code had ever been
+   * shown. At that cap a 591×1280 image renders **148px wide**, and مبلغ,
+   * شمارهٔ ارجاع and the last four digits of both cards become a few pixels
+   * tall. Every unit test passed, because none of them has a viewport.
+   *
+   * The route is intercepted rather than reaching Telegram: this asserts our
+   * layout, and a test that needs a bot token and a live third party to tell
+   * you your CSS is wrong is a test that will be skipped.
+   */
+  const bytes = readFileSync(new URL('./fixtures/receipt-portrait.svg', import.meta.url));
+  await page.route('**/api/v1/payment-claims/*/receipt', (route) =>
+    route.fulfill({ status: 200, contentType: 'image/svg+xml', body: bytes }),
+  );
+
+  const claim = await withDb((d) =>
+    d
+      .prepare(
+        `SELECT id FROM payment_claims
+          WHERE status IN ('PENDING', 'MATCH_SUGGESTED') AND source_system = 'MIRZABOT'
+          ORDER BY id LIMIT 1`,
+      )
+      .first<{ id: string }>(),
+  );
+  if (!claim) throw new Error('no open claim to hang a receipt on — run seed:sim');
+
+  const before = await withDb((d) =>
+    d
+      .prepare(`SELECT receipt_url_or_r2_key AS handle FROM payment_claims WHERE id = ?1`)
+      .bind(claim.id)
+      .first<{ handle: string | null }>(),
+  );
+
+  // A well-formed handle so the route gets past its own validation; the
+  // interception above means Telegram is never asked about it.
+  await withDb((d) =>
+    d
+      .prepare(`UPDATE payment_claims SET receipt_url_or_r2_key = ?2 WHERE id = ?1`)
+      .bind(claim.id, 'AgACAgQAAxkBAAIe2etestreceipthandle01')
+      .run(),
+  );
+
+  try {
+    await page.goto(`/admin/payments?tab=open&dateFilter=all&claim=${claim.id}`);
+    const img = page.locator('.payment-receipt img');
+    await expect(img).toBeVisible();
+
+    const size = await img.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const image = el as HTMLImageElement;
+      return {
+        w: r.width,
+        h: r.height,
+        naturalW: image.naturalWidth,
+        naturalH: image.naturalHeight,
+      };
+    });
+
+    // The fixture really is the portrait shape, not something that got swapped
+    // for a square placeholder — without this the rest measures nothing.
+    expect(size.naturalW).toBe(591);
+    expect(size.naturalH).toBe(1280);
+
+    // 148px is what the old cap produced. The width is what decides whether
+    // the text on a 591px-wide phone screenshot can be read, so the width is
+    // what is asserted — the first version of this capped the HEIGHT instead
+    // and rendered 267px on a 720px-tall window without failing anything.
+    expect(size.w).toBeGreaterThan(350);
+
+    // And the box it sits in stays on screen. A tall receipt scrolls inside
+    // its own frame rather than pushing the buttons that decide the money a
+    // screen and a half down the page.
+    const frame = await page
+      .locator('.payment-receipt')
+      .evaluate((el) => el.getBoundingClientRect().height);
+    expect(frame).toBeLessThanOrEqual(page.viewportSize()!.height);
+  } finally {
+    await withDb((d) =>
+      d
+        .prepare(`UPDATE payment_claims SET receipt_url_or_r2_key = ?2 WHERE id = ?1`)
+        .bind(claim.id, before?.handle ?? null)
+        .run(),
+    );
+  }
 });
