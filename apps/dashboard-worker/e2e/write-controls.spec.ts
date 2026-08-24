@@ -30,9 +30,18 @@
  */
 
 import { expect, test, type Page } from '@playwright/test';
+import { LOGIN_PORT } from '../playwright.config.js';
 import { READER_EMAIL, READER_PASSWORD } from './global-setup.js';
 
-const BASE = 'http://127.0.0.1:8800';
+/**
+ * The front-door server's address, from the config rather than typed.
+ *
+ * It was `http://127.0.0.1:8800` in three specs until 2026-08-24, when a Docker
+ * Desktop restart moved Windows' Hyper-V port reservations over that number and
+ * the whole suite died at startup. The port is probed now, so it has to be
+ * imported.
+ */
+const BASE = `http://127.0.0.1:${LOGIN_PORT}`;
 
 test.use({ baseURL: BASE });
 

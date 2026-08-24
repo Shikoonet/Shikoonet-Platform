@@ -458,8 +458,16 @@ function DeliveryCell({
   if (found.length === 0) return <span className="muted">—</span>;
   return (
     <>
+      {/* One line per group, and the group named when there is more than one.
+          Seen on the live panel on 2026-08-24: four groups rendered inline came
+          out as «۱۲۲۱» — four separate counts read as one four-digit number,
+          in the column that is supposed to say whether a customer gets
+          anything. Nothing in a unit test could see it; the browser could. */}
       {found.map((g) => (
-        <InboundCount key={g.id} group={g} />
+        <div key={g.id}>
+          {found.length > 1 && <span className="muted">{g.name}: </span>}
+          <InboundCount group={g} unit=" اینباند" />
+        </div>
       ))}
     </>
   );

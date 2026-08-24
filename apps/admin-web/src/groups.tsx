@@ -22,15 +22,20 @@
 import type { PanelGroupItem } from './api.js';
 import { count } from './format.js';
 
-/** «۲ از ۳» plus what the missing one costs, or a bare count when unknown. */
-export function InboundCount({ group }: { group: PanelGroupItem }) {
+/**
+ * «۲ از ۳» plus what the missing one costs, or a bare count when unknown.
+ *
+ * `unit` because a bare «۲» is legible under a column headed «اینباند» and not
+ * under one headed «تحویل» — the catalogue screen says «۲ اینباند» in full.
+ */
+export function InboundCount({ group, unit = '' }: { group: PanelGroupItem; unit?: string }) {
   const total = group.inboundTags?.length;
   if (total === undefined) return <>—</>;
   const live = group.deliverableInbounds;
-  if (live === undefined) return <>{count(total)}</>;
+  if (live === undefined) return <>{count(total) + unit}</>;
   return (
     <>
-      <div>{live === total ? count(total) : `${count(live)} از ${count(total)}`}</div>
+      <div>{(live === total ? count(total) : `${count(live)} از ${count(total)}`) + unit}</div>
       {live < total && (
         <div className="page-head__sub">
           {count(total - live)} اینباند بدون هاست — به مشتری کانفیگ نمی‌دهد

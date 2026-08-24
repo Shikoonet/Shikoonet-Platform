@@ -19,7 +19,12 @@ import type { PanelGroups, ServiceRow } from '../src/api.js';
 
 const PANEL = { id: 3, name: 'پنل تست', code: 'test-panel', status: 'ACTIVE' };
 
-function service(id: number, name: string, groupId: number, configs: string[]): ServiceRow {
+function service(
+  id: number,
+  name: string,
+  groupIds: number[],
+  configs: string[],
+): ServiceRow {
   return {
     id,
     code: `svc-${id}`,
@@ -32,7 +37,7 @@ function service(id: number, name: string, groupId: number, configs: string[]): 
     categoryName: null,
     resellersOnly: false,
     oncePerUser: false,
-    groupIds: [groupId],
+    groupIds,
     panel: PANEL,
     configs: configs.map((cfName, i) => ({
       id: id * 100 + i,
@@ -49,8 +54,11 @@ function service(id: number, name: string, groupId: number, configs: string[]): 
 }
 
 const SERVICES = [
-  service(8, 'پلاتینیوم', 6, ['۱ ماهه - ۱۰ گیگ', '۱ ماهه - ۲۰ گیگ', '۱ ماهه - ۳۰ گیگ']),
-  service(9, 'طلایی', 7, ['۱ ماهه - ۱۰ گیگ']),
+  service(8, 'پلاتینیوم', [6], ['۱ ماهه - ۱۰ گیگ', '۱ ماهه - ۲۰ گیگ', '۱ ماهه - ۳۰ گیگ']),
+  service(9, 'طلایی', [7], ['۱ ماهه - ۱۰ گیگ']),
+  // Two groups at once — the shape the live panel had, where four of these
+  // rendered inline and came out as one four-digit number.
+  service(10, 'همه‌کاره', [6, 7], ['۱ ماهه - ۵۰ گیگ']),
 ];
 
 const GROUPS: PanelGroups = {
@@ -108,7 +116,7 @@ describe('the catalogue screen', () => {
     // Counted on the code sub-line, which appears exactly once per service row
     // and never on a config. Four configs across two services: row-per-plan
     // would be four rows, row-per-service is two.
-    expect(screen.getAllByText(/^svc-/)).toHaveLength(2);
+    expect(screen.getAllByText(/^svc-/)).toHaveLength(SERVICES.length);
 
     // The configs are NOT on screen until the service is opened.
     expect(screen.queryByText('۱ ماهه - ۲۰ گیگ')).toBeNull();
@@ -130,7 +138,7 @@ describe('the catalogue screen', () => {
     // The old screen showed `[6]`. «پلاتینیوم» is what an operator can act on.
     await waitFor(() => expect(screen.getAllByText('پلاتینیوم').length).toBeGreaterThan(1));
     // Latin, like every other id on this panel — it is what PasarGuard's own UI shows.
-    expect(screen.getByText('#6')).toBeTruthy();
+    expect(screen.getAllByText('#6').length).toBeGreaterThan(0);
   });
 
   it('says on the row when a service can deliver nothing', async () => {
@@ -139,7 +147,25 @@ describe('the catalogue screen', () => {
     // the only way to find out was to buy one.
     draw();
     await waitFor(() => expect(screen.getByText('طلایی')).toBeTruthy());
-    expect(screen.getByText('هیچ کانفیگی نمی‌دهد')).toBeTruthy();
+    expect(screen.getAllByText('هیچ کانفیگی نمی‌دهد').length).toBeGreaterThan(0);
+  });
+
+  it('keeps each group of a multi-group service on its own line', async () => {
+    // Found by walking the deployed panel on 2026-08-24, not by a test: a
+    // service on four groups printed «۱۲۲۱» in the «تحویل» column — four
+    // separate inbound counts with nothing between them, read as one number, in
+    // the column whose whole job is to say whether a customer receives anything.
+    draw();
+    const row = await screen.findByText('همه‌کاره');
+    const cells = row.closest('tr')!.querySelectorAll('td');
+    const delivery = cells[3]!;
+
+    expect(delivery.textContent).toContain('پلاتینیوم:');
+    expect(delivery.textContent).toContain('طلایی:');
+    // The unit is spelled out, because a bare «۲» under «تحویل» says nothing.
+    expect(delivery.textContent).toContain('۲ اینباند');
+    // And the counts are not glued together.
+    expect(delivery.textContent).not.toMatch(/۲۱|۱۲/);
   });
 
   it('asks each panel for its groups once, however many services sit on it', async () => {

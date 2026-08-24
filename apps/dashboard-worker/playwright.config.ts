@@ -21,6 +21,7 @@
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { defineConfig } from '@playwright/test';
 
 /**
@@ -74,10 +75,57 @@ loadSimEnv();
 process.env.NO_PROXY = [process.env.NO_PROXY, '127.0.0.1', 'localhost'].filter(Boolean).join(',');
 process.env.no_proxy = process.env.NO_PROXY;
 
+/**
+ * A port this machine will actually let us bind.
+ *
+ * Not a constant, and this cost a run to find out. Windows keeps blocks of TCP
+ * ports reserved for Hyper-V (`netsh interface ipv4 show excludedportrange`),
+ * and **the blocks move when Docker Desktop restarts**. On 2026-08-24 a restart
+ * put 8725–8824 out of reach, which is both ports this suite had hardcoded, and
+ * the whole run died on `listen EACCES 127.0.0.1:8799` — an error that reads as
+ * "something else is running" when nothing is.
+ *
+ * So the ports are probed rather than declared. `server.listen(0)` would be
+ * simpler still, but the two servers have to be named in `webServer.url` before
+ * they start, so the number must be known up front.
+ */
+function freePort(from: number, key: string): number {
+  // Decided once, in the runner, and handed to the workers through the
+  // environment. A spec importing this file re-evaluates it in its own process,
+  // and probing again there returned a DIFFERENT port — the servers listened on
+  // one number while every `page.goto` used another, which arrives as
+  // ERR_CONNECTION_REFUSED and reads as "the server did not start".
+  const already = process.env[key];
+  if (already) return Number(already);
+  for (let port = from; port < from + 200; port++) {
+    if (taken.has(port)) continue;
+    try {
+      // A real bind is the only proof. A reserved range refuses at bind time
+      // and is invisible to anything that merely checks for a listener.
+      execFileSync(
+        process.execPath,
+        [
+          '-e',
+          `const s=require('net').createServer();s.on('error',()=>process.exit(1));s.listen(${port},'127.0.0.1',()=>s.close(()=>process.exit(0)))`,
+        ],
+        { stdio: 'ignore' },
+      );
+      taken.add(port);
+      process.env[key] = String(port);
+      return port;
+    } catch {
+      // Reserved, or in use. Both mean "not this one".
+    }
+  }
+  throw new Error(`no free port in ${from}..${from + 200}`);
+}
+
+const taken = new Set<number>();
+
 // Not 8788: the local dashboard is often already running on that port, and
 // `reuseExistingServer` would then quietly test whatever it happens to be
 // serving, with whatever environment it happens to have.
-const PORT = 8799;
+const PORT = freePort(8799, 'E2E_PORT');
 
 /**
  * A second server, without `TEST_ACCESS_USER`.
@@ -88,7 +136,7 @@ const PORT = 8799;
  * both — the bypass for the twelve specs that are about the panel, and a real
  * front door for the ones that are about getting through it.
  */
-export const LOGIN_PORT = 8800;
+export const LOGIN_PORT = freePort(PORT + 1, 'E2E_LOGIN_PORT');
 
 const spaPath = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url));
 
