@@ -427,11 +427,24 @@ export function formatExactDateTime(ms: number | null | undefined): string {
   return `${lookup('year')}-${lookup('month')}-${lookup('day')} ${hh}:${lookup('minute')}:${lookup('second')}`;
 }
 
+/**
+ * How long is left, in the language the rest of this screen is written in.
+ *
+ * The general case used to return «About N minutes remaining» while the
+ * `min === 1` case beside it was already Persian — a translation that stopped
+ * after the first branch, and stopped at the branch that almost never runs.
+ * Seen in the browser on 2026-08-24, on the top row of «در انتظار بررسی»:
+ * one English sentence in a right-to-left column of Persian ones.
+ *
+ * The number goes through `count` for the same reason every other number on
+ * this screen does — «About 10» and «۱۰» in one table are two notations for
+ * one quantity.
+ */
 export function formatRelativeFuture(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
   const min = Math.max(1, Math.ceil(totalSec / 60));
   if (min === 1) return 'حدود ۱ دقیقه مانده';
-  return `About ${min} minutes remaining`;
+  return `حدود ${count(min)} دقیقه مانده`;
 }
 
 /** Whether the operator can reopen this manually verified payment. */

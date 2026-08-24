@@ -25,7 +25,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { AUTO_MATCH_MAX_TIME_DELTA_MS, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
-import { reasonText } from '../../src/hub/paymentReview.js';
+import { formatRelativeFuture, reasonText } from '../../src/hub/paymentReview.js';
 
 /** Every suspect reason the engine can stamp, from the contract, not a copy. */
 const REASONS = [
@@ -94,5 +94,35 @@ describe('the reason a payment is on the review screen', () => {
   it('answers an unknown reason without inventing one', () => {
     expect(reasonText('SOMETHING_NEW')).toBe('به‌صورت خودکار تایید نشد');
     expect(reasonText(null)).toBe('در انتظار واریز بانکی');
+  });
+});
+
+describe('how long is left, on the same screen and in the same language', () => {
+  /*
+   * Found in the browser, not here: the top row of «در انتظار بررسی» read
+   * «About 10 minutes remaining» in a right-to-left column of Persian.
+   *
+   * `formatRelativeFuture` had two branches. The `min === 1` one was Persian
+   * and the general one was not — a translation that stopped after the first
+   * case and stopped at the case that almost never runs, so the screen looked
+   * translated to anyone who did not wait for a one-minute claim.
+   *
+   * Swept rather than spot-checked, because the bug was a branch nobody
+   * visited, and a single example would have picked the branch somebody
+   * already thought about.
+   */
+  const MINUTE = 60_000;
+
+  it('never answers in English, at any distance', () => {
+    for (const ms of [0, 1, MINUTE, 90_000, 9 * MINUTE, 10 * MINUTE, 59 * MINUTE, 3 * 3_600_000]) {
+      expect(formatRelativeFuture(ms), `${ms}ms`).not.toMatch(/[A-Za-z]/);
+    }
+  });
+
+  it('writes its number the way every other number on the screen is written', () => {
+    // «About 10» and «۱۰» in one table are two notations for one quantity, and
+    // the operator has to notice they are the same thing.
+    expect(formatRelativeFuture(10 * MINUTE)).not.toMatch(/[0-9]/);
+    expect(formatRelativeFuture(10 * MINUTE)).toContain('۱۰');
   });
 });

@@ -230,7 +230,11 @@ describe('PaymentsView tabs', () => {
     renderView();
     await goOpenQueue();
     expect(await screen.findByText(/سفارش WAIT1/)).toBeTruthy();
-    expect(screen.getByText('About 6 minutes remaining')).toBeTruthy();
+    // Persian since 2026-08-24. This line pinned «About 6 minutes remaining»
+    // and was green the whole time the screen showed one English sentence in a
+    // column of Persian ones — the assertion agreed with the code and neither
+    // of them agreed with the rest of the panel.
+    expect(screen.getByText('حدود ۶ دقیقه مانده')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Review$/i })).toBeNull();
     expect(screen.queryByRole('button', { name: 'علامت‌زدن به‌عنوان جعلی' })).toBeNull();
   });
