@@ -74,11 +74,30 @@ function suggestDeviceCode(displayName: string): string {
     .slice(0, 60);
 }
 
-function connectionStateLabel(d: DeviceListItem): {
+/**
+ * Whether this phone is being heard from — which is NOT whether it is switched
+ * on in the panel.
+ *
+ * «وضعیت» is `d.active`: an operator flipped a switch. «اتصال» is this: what
+ * the timestamps say. They are independent, and a device that is enabled but
+ * silent is the single most important row on this screen — it is a phone that
+ * should be relaying bank SMS and is not, which means payments stop verifying
+ * themselves and nobody is told.
+ *
+ * Both used to answer «غیرفعال». One word, two meanings, on the same row: the
+ * screen showed «وضعیت: فعال» beside «اتصال: غیرفعال» and read as a
+ * contradiction rather than as the warning it was. The data was right the whole
+ * time; only the word was wrong.
+ *
+ * So the administrative sense keeps «خاموش» and the liveness sense says what it
+ * actually knows — how long the silence has been. Nothing here shares a string
+ * with `d.active` any more.
+ */
+export function connectionStateLabel(d: DeviceListItem): {
   label: string;
   tone: 'good' | 'warn' | 'idle' | 'bad' | 'muted';
 } {
-  if (!d.active) return { label: 'غیرفعال', tone: 'muted' };
+  if (!d.active) return { label: 'خاموش شده', tone: 'muted' };
   if (!d.credential) return { label: 'نیازمند توکن', tone: 'warn' };
   if (
     d.last_auth_failure_at &&
@@ -90,11 +109,19 @@ function connectionStateLabel(d: DeviceListItem): {
   const now = Date.now();
   const age = now - d.last_seen_at;
   if (age < 60_000) return { label: 'متصل', tone: 'good' };
-  if (age < 5 * 60_000) return { label: 'به‌تازگی فعال', tone: 'good' };
+  if (age < 5 * 60_000) return { label: 'چند دقیقه پیش', tone: 'good' };
   if (d.last_success_at && now - d.last_success_at < 24 * 60 * 60 * 1000) {
-    return { label: 'به‌تازگی فعال', tone: 'good' };
+    return { label: 'امروز فعال بوده', tone: 'good' };
   }
-  return { label: 'غیرفعال', tone: 'muted' };
+  // Enabled, credentialled, and nothing for a day. Said out loud, because
+  // «غیرفعال» here used to make it look like somebody had turned it off on
+  // purpose — the one reading that stops an operator investigating.
+  //
+  // `warn`, not `bad`: an unheard-from phone may be switched off on a shelf,
+  // and `bad` is reserved for a device that ANSWERED and was refused. Worth
+  // looking at is not the same as known broken, and a screen that paints both
+  // the same colour teaches the operator to ignore the colour.
+  return { label: 'بیش از ۲۴ ساعت بی‌خبر', tone: 'warn' };
 }
 
 export function DevicesView({ cache }: DevicesViewProps) {

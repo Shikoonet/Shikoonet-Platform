@@ -42,6 +42,16 @@
   /* Panel `--surface-1` / `--surface-2` — same names, written out. */
   --surface-1: rgba(20, 22, 30, 0.48);
   --surface-2: rgba(28, 30, 40, 0.74);
+  /* The same colour as `--surface-1`, at full alpha, for the surfaces whose job
+     is to COVER what is behind them rather than to sit on it.
+     Glass is right for a card: it lies on the opaque page background and the
+     translucency reads as depth. It is wrong for a drawer and a modal, and
+     nothing said so — both took `--panel`, which resolves through
+     `--surface` to `--surface-1`, so both were 48% opaque and the table
+     underneath read straight through the text on top. That is the overlap in
+     the 2026-08-24 screenshots; `z-index` and `position` were correct all
+     along, which is why looking at the stacking order found nothing. */
+  --surface-overlay: #14161e;
   --surface: var(--surface-1);
   --surface-muted: var(--surface-2);
   --surface-elevated: var(--surface-3);
@@ -1179,6 +1189,15 @@
   width: 100%;
   border-collapse: collapse;
   font-size: 0.8125rem;
+  /* The floor that makes the wrapper's `overflow-x: auto` mean something.
+     `width: 100%` alone tells the table to be exactly as wide as whatever box
+     it is given, so it obeys a narrow container by crushing its own columns
+     instead of overflowing — and a wrapper that is never overflowed never
+     scrolls. Ten to eleven columns of identifiers, amounts and timestamps do
+     not fit in less than this; below it the operator scrolls, which is the
+     honest outcome. `min-width` beats `width` in the used-value cascade, so
+     these two lines do not fight: 100% up to the floor, scroll under it. */
+  min-width: 900px;
 }
 
 .txn-table thead th {
@@ -2208,7 +2227,7 @@
 
 .drawer {
   width: min(320px, 80vw);
-  background: var(--panel);
+  background: var(--surface-overlay);
   border-inline-end: 1px solid var(--border);
   padding: 1rem;
   outline: none;
@@ -2876,7 +2895,7 @@
   position: absolute;
   inset-inline-end: 0;
   top: calc(100% + 0.25rem);
-  background: var(--panel);
+  background: var(--surface-overlay);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.4rem;
@@ -3939,7 +3958,7 @@
 }
 
 .modal-body {
-  background: var(--panel);
+  background: var(--surface-overlay);
   border-radius: var(--radius);
   padding: 1rem 1.25rem 1.25rem;
   width: min(560px, 100%);
@@ -4172,8 +4191,18 @@
   padding: 0.05rem 0.35rem;
   background: var(--code-bg, rgba(0, 0, 0, 0.06));
   border-radius: 3px;
-  word-break: break-all;
-  overflow-wrap: anywhere;
+  /* `break-word`, and NEVER `break-all`/`anywhere`. This is the rule
+     `IdentifierText.tsx` documents in its own header and then tried to enforce
+     with an inline style — which could not work, because the inline style set
+     `overflow-wrap` and the killer here was `word-break`, a different property
+     no inline `overflow-wrap` can override.
+     What `break-all` does is not "wrap sooner": it drops the cell's MIN-CONTENT
+     width to one glyph, so an auto-layout table is then free to squeeze that
+     column to its header width. Measured on «تایید خودکار ربات» 2026-08-24: a
+     36-character transaction id rendered one character per line, ~1000px tall,
+     and `vertical-align: middle` floated every other cell in the middle of the
+     band it made. The column and the row height are one bug. */
+  overflow-wrap: break-word;
   max-width: 100%;
   display: inline-block;
   /* Plain text selection only — never allow the long string to push the
@@ -4238,16 +4267,35 @@
 }
 .data-table {
   table-layout: auto;
-  min-width: 0;
+  /* Was `min-width: 0` — the table was explicitly told it may shrink to
+     nothing, inside a wrapper whose `overflow-x: auto` then had nothing to
+     scroll. A floor is what makes that wrapper do its job; the sibling tables
+     `.unmatched-table--compact` and `.today-table--compact` already had one
+     (`min-width: 720px`, styles.css ~3020) and did not have this bug. */
+  min-width: 720px;
 }
 .data-table th,
 .data-table td {
   overflow: hidden;
   word-break: break-word;
 }
-.data-table td > code {
-  word-break: break-all;
-  overflow-wrap: anywhere;
+.data-table td > code,
+.txn-table .identifier-text code {
+  /* Inside a table, an identifier does not wrap at all — the wrapper scrolls.
+     `break-all` was what split `admin-phone-shadow` into `admin-phon` /
+     `e-shadow`, but simply relaxing it to `break-word` was not enough and the
+     measurement said so: the row came down from 32 lines to 13.6, not to 1.
+     `break-word` still breaks an unbreakable token whenever the column is too
+     narrow to hold it, so as long as the column can be squeezed the identifier
+     is still shredded — just in bigger pieces.
+     The cure is to stop the squeeze being possible. `nowrap` makes the token
+     part of the table's min-content width, the table grows past its wrapper,
+     and `overflow-x: auto` finally has something to scroll. An operator drags
+     sideways, which is the honest cost, and every row stays one line tall.
+     Deliberately NOT applied to `.identifier-text code` everywhere: in a card
+     or a drawer there is no scrolling wrapper to absorb it, and there
+     `break-word` is right. */
+  white-space: nowrap;
 }
 .data-table .identifier-text {
   min-width: 0;
@@ -4406,14 +4454,18 @@
   max-width: 100%;
 }
 
-/* === DEV: Bot Auto Verified table — prevent Telegram ID / Verified At from
-   breaking row alignment on narrow widths === */
-.txn-table--bot-auto-verified th:nth-child(4),
-.txn-table--bot-auto-verified td:nth-child(4),
-.txn-table--bot-auto-verified th:nth-child(10),
-.txn-table--bot-auto-verified td:nth-child(10) {
-  white-space: nowrap;
-}
+/* Two columns used to be pinned `nowrap` here by position — the 4th and the
+   10th — to stop the Telegram id and the verified-at stamp from breaking row
+   alignment. It is gone, and it was worse than useless.
+   Pinning two columns does not create width; it moves it. Every pixel columns
+   4 and 10 refused to give up was taken from their neighbours, and the two
+   neighbours that gave it were 7 («حساب / کارت») and 8 («مرجع») — the two
+   columns that then collapsed to one character per line. The patch aimed at a
+   symptom and fed the disease.
+   The floor on `.txn-table` fixes both: no column has to be starved, because
+   the table is allowed to be wider than its wrapper and scroll. Anything that
+   must not wrap should say so by what it IS, not by where it sits — a column
+   addressed by :nth-child silently retargets the day someone inserts one. */
 
 /* ---------------------------------------------------------------------------
    Payment cards — issuer badges and the rotation weight control

@@ -664,7 +664,14 @@ describe('reason presentation', () => {
   it.each([
     ['AMBIGUOUS_TRANSACTIONS', 'چند تراکنش بانکی با این پرداخت می‌خوانند'],
     ['AMBIGUOUS_CLAIMS', 'چند پرداخت می‌توانند با این واریزی بخوانند'],
-    ['NO_TRANSACTION_AFTER_10M', 'رسید ثبت شد، ولی تا ۱۰ دقیقه هیچ واریزی پیدا نشد'],
+    // «پرداخت», not «رسید». This reason is stamped off
+    // `COALESCE(receipt_submitted_at, paid_clicked_at)`, so it fires for a claim
+    // that has no receipt at all — and it lands on «مشکوک به جعل», where
+    // claiming a receipt exists turns "never paid" into "forged a document" in
+    // the mind of whoever is about to decide. What is guaranteed here is the
+    // button press, and that is all this sentence may assert.
+    // See `test/hub/reason-text.test.ts` for the rule rather than the string.
+    ['NO_TRANSACTION_AFTER_10M', 'پرداخت ثبت شد، ولی تا ۱۰ دقیقه هیچ واریزی پیدا نشد'],
     ['UNMAPPED_CARD', 'کارت به هیچ حساب بانکی وصل نیست'],
     ['ACCOUNT_NOT_ACTIVE', 'این حساب بانکی فعال نیست'],
     ['AMOUNT_MISMATCH', 'یک واریزی نزدیک، مبلغش فرق دارد'],

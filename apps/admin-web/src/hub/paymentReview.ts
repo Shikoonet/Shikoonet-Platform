@@ -2,7 +2,20 @@
  * Presentation layer for the payment review inbox.
  */
 
+import { AUTO_MATCH_MAX_TIME_DELTA_MS, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
 import { count } from '../format.js';
+
+/**
+ * The two windows, in minutes, taken from the constants the engine actually
+ * uses rather than typed into the prose beside them.
+ *
+ * Both numbers were hard-coded in Persian sentences below — «۱۰ دقیقه» and
+ * «۵ دقیقه‌ای» — with nothing tying them to `WAITING_TIMEOUT_MS` or
+ * `AUTO_MATCH_MAX_TIME_DELTA_MS`. Changing either constant would have left the
+ * panel confidently quoting the old figure to an operator deciding about money.
+ */
+const waitMinutes = count(Math.round(WAITING_TIMEOUT_MS / 60_000));
+const matchMinutes = count(Math.round(AUTO_MATCH_MAX_TIME_DELTA_MS / 60_000));
 
 export type ReviewState =
   | 'AUTO_VERIFIED'
@@ -224,8 +237,19 @@ const REASON_TEXT: Record<string, string> = {
   AMBIGUOUS_TRANSACTIONS: 'چند تراکنش بانکی با این پرداخت می‌خوانند',
   AMBIGUOUS_CLAIMS: 'چند پرداخت می‌توانند با این واریزی بخوانند',
   NO_TRANSACTION: 'واریزی منطبقی پیدا نشد',
-  NO_TRANSACTION_AFTER_10M: 'رسید ثبت شد، ولی تا ۱۰ دقیقه هیچ واریزی پیدا نشد',
-  OUTSIDE_AUTO_MATCH_WINDOW: 'واریزی منطبق پیدا شد، ولی بیرون از پنجرهٔ ۵ دقیقه‌ای تایید خودکار',
+  // Says «پرداخت ثبت شد» — the button press — and NOT «رسید ثبت شد», which is
+  // what it used to claim. The reason is stamped off
+  // `COALESCE(receipt_submitted_at, paid_clicked_at)`, so it fires identically
+  // for a claim that has no receipt at all; on 2026-08-24 three such rows sat
+  // in «مشکوک به جعل» each telling the operator a receipt had been filed.
+  //
+  // That is not a wording slip. This reason is one of `SUSPECTED_FAKE_REASONS`,
+  // so the sentence arrives on the fake-suspicion screen — and «رسید ثبت شد»
+  // there turns "they never paid" into "they forged a receipt" in the mind of
+  // the person about to decide. Whether a receipt exists is a separate column;
+  // this string must not answer it.
+  NO_TRANSACTION_AFTER_10M: `پرداخت ثبت شد، ولی تا ${waitMinutes} دقیقه هیچ واریزی پیدا نشد`,
+  OUTSIDE_AUTO_MATCH_WINDOW: `واریزی منطبق پیدا شد، ولی بیرون از پنجرهٔ ${matchMinutes} دقیقه‌ای تایید خودکار`,
   UNMAPPED_CARD: 'کارت به هیچ حساب بانکی وصل نیست',
   AMBIGUOUS_CARD_MAPPING: 'این کارت به بیش از یک حساب بانکی وصل است',
   ACCOUNT_NOT_ACTIVE: 'این حساب بانکی فعال نیست',

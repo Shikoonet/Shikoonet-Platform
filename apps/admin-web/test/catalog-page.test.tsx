@@ -146,8 +146,13 @@ describe('the catalogue screen', () => {
     // the customer pays and receives nothing — and until this column existed
     // the only way to find out was to buy one.
     draw();
-    await waitFor(() => expect(screen.getByText('طلایی')).toBeTruthy());
-    expect(screen.getAllByText('هیچ کانفیگی نمی‌دهد').length).toBeGreaterThan(0);
+    // Waits for the SENTENCE, not for the service name beside it. The name
+    // arrives with the catalogue fetch; the delivery column is filled by a
+    // second, later call to `panelGroups`. Waiting for the name and then
+    // reading the column synchronously passed alone and failed in a full run —
+    // a test that is green on a fast machine and red on a loaded one is not
+    // evidence, it is a coin toss with a comment on it.
+    expect((await screen.findAllByText('هیچ کانفیگی نمی‌دهد')).length).toBeGreaterThan(0);
   });
 
   it('keeps each group of a multi-group service on its own line', async () => {
@@ -157,15 +162,21 @@ describe('the catalogue screen', () => {
     // the column whose whole job is to say whether a customer receives anything.
     draw();
     const row = await screen.findByText('همه‌کاره');
-    const cells = row.closest('tr')!.querySelectorAll('td');
-    const delivery = cells[3]!;
+    const cell = () => row.closest('tr')!.querySelectorAll('td')[3]!;
 
-    expect(delivery.textContent).toContain('پلاتینیوم:');
-    expect(delivery.textContent).toContain('طلایی:');
-    // The unit is spelled out, because a bare «۲» under «تحویل» says nothing.
-    expect(delivery.textContent).toContain('۲ اینباند');
-    // And the counts are not glued together.
-    expect(delivery.textContent).not.toMatch(/۲۱|۱۲/);
+    // Every assertion inside the wait, for the same reason as the test above:
+    // the group names come from a second fetch, and the row exists before they
+    // do. Retrying the whole group also means the first assertion cannot pass
+    // against half-arrived data and the next one fail against the other half.
+    await waitFor(() => {
+      const delivery = cell().textContent ?? '';
+      expect(delivery).toContain('پلاتینیوم:');
+      expect(delivery).toContain('طلایی:');
+      // The unit is spelled out, because a bare «۲» under «تحویل» says nothing.
+      expect(delivery).toContain('۲ اینباند');
+      // And the counts are not glued together.
+      expect(delivery).not.toMatch(/۲۱|۱۲/);
+    });
   });
 
   it('asks each panel for its groups once, however many services sit on it', async () => {

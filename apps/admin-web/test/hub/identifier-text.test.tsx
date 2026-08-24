@@ -53,14 +53,30 @@ describe('IdentifierText', () => {
     expect(code.getAttribute('title')).toBe('110.7007.2377306.1');
   });
 
-  it('applies user-select: text and overflow-wrap for selectable text', () => {
+  it('stays selectable text rather than a widget', () => {
     render(<IdentifierText value="110.7007.2377306.1" />);
     const code = screen.getByText('110.7007.2377306.1');
     expect(code.style.userSelect).toBe('text');
-    // Not `anywhere`: that collapses the container's min-content width and
-    // splits account numbers mid-digit in narrow columns like the review drawer.
-    expect(code.style.overflowWrap).toBe('break-word');
   });
+
+  /*
+   * The wrapping rule used to be asserted here, as `style.overflowWrap ===
+   * 'break-word'`, with a correct comment about `anywhere` collapsing the
+   * min-content width. The comment was right; the assertion was worthless, and
+   * on 2026-08-24 it proved it.
+   *
+   * `styles.css` was setting `word-break: break-all` on this same element —
+   * a DIFFERENT property, which no inline `overflow-wrap` overrides — and the
+   * column collapsed to one character per line on every wide table in the money
+   * section. This test stayed green throughout, because it read back the inline
+   * style the component had just set: the component agreeing with itself, with
+   * no stylesheet in the room. jsdom loads no CSS and computes no layout, so
+   * nothing in this file could ever have seen the bug.
+   *
+   * The rule now lives in exactly one place (`.identifier-text code`) and is
+   * proved where it can actually be observed — in a browser, by measuring how
+   * tall the row is: `apps/dashboard-worker/e2e/money-layout.spec.ts`.
+   */
 
   it('does not break the document width with long identifiers', () => {
     const { container } = render(

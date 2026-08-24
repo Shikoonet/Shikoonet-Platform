@@ -8,6 +8,18 @@
  *   genuinely cannot fit. `anywhere` would also collapse the container's
  *   min-content width, splitting account numbers mid-digit in narrow columns.
  *
+ * That paragraph was right and the code under it was wrong for as long as both
+ * existed. It was enforced with an inline `overflowWrap` — which cannot work,
+ * because `styles.css` was setting `word-break: break-all` on this same
+ * element, and `word-break` is a DIFFERENT PROPERTY that no inline
+ * `overflow-wrap` overrides. The min-content collapse this header warns about
+ * happened on every wide table until 2026-08-24.
+ *
+ * So the rule lives in ONE place now — `.identifier-text code` in
+ * `styles.css` — and this component states the intent rather than restating
+ * the declaration. A defence written twice is a defence that can disagree with
+ * itself, and this one did.
+ *
  * For secrets (one-time device tokens), use the dedicated Copy button in
  * the device-setup flow, not this component.
  */
@@ -41,7 +53,6 @@ export function IdentifierText({
       style={{
         userSelect: 'text',
         cursor: 'text',
-        overflowWrap: 'break-word',
       }}
     >
       {value}
