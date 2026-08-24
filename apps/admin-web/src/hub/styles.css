@@ -22,7 +22,7 @@
  * instruction on 2026-08-16, once the merged panel was on screen: make it match
  * the panel. So every value here now comes from `theme.css`, and only the names
  * stay — five hundred rules and thirty components read `var(--gold)` and
- * `var(--panel)`, and renaming them would be a four-thousand-line diff that
+ * `var(--surface)`, and renaming them would be a four-thousand-line diff that
  * changes no pixel.
  *
  * `--gold` is blue. That reads wrong and it is deliberate: the alternative is a
@@ -86,16 +86,19 @@
   --radius-lg: 20px;
   --transition-theme: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
 
-  /* Legacy aliases */
-  --bg: var(--background);
-  --panel: var(--surface);
-  --text: var(--text-primary);
-  --muted: var(--text-muted);
-  --warn: var(--warning);
-  --ok: var(--success);
-  --radius: 14px;
+  /*
+   * `--code-bg` is a value of its own; the eight names that sat beside it were
+   * not. `--panel`, `--muted`, `--text`, `--bg`, `--warn`, `--ok`, `--radius`
+   * and `--hover` each pointed at a panel token that already had a name, so
+   * every colour in this file could be written two ways and a reader had to
+   * check which. Measured before removing them: `--panel` and `--surface-1`
+   * both compute to `rgba(20, 22, 30, .48)`, `--muted` and `--text-muted` both
+   * to `#8b94a6`.
+   *
+   * They are spelled out at their use sites now. Nothing changed on any
+   * screen — same value, one name.
+   */
   --code-bg: rgba(148, 163, 184, 0.12);
-  --hover: var(--glass-sheen);
 }
 
 .tabular-nums {
@@ -181,7 +184,7 @@
 
 :where(.hub) button.ghost {
   background: transparent;
-  color: var(--text);
+  color: var(--text-primary);
   border: 1px solid var(--border);
 }
 
@@ -1766,7 +1769,7 @@
 .toast--success {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 .payment-warning {
@@ -1975,12 +1978,15 @@
 }
 
 .refresh-button:hover {
-  background: var(--hover, rgba(0, 0, 0, 0.04));
+  background: var(--glass-sheen, rgba(0, 0, 0, 0.04));
 }
 
-:where(.hub) .muted {
-  color: var(--muted);
-}
+/*
+ * `:where(.hub) .muted` was here and said `color: var(--text-muted)` — which is
+ * what `theme.css` already gives `.muted`, through an alias that spelled the
+ * same token a second way. Measured in the browser before removing it: the
+ * computed colour is `#8b94a6` on both sides of the boundary.
+ */
 
 .error{
   background: rgba(239, 68, 68, 0.15);
@@ -1999,7 +2005,7 @@
 }
 
 :where(.hub) .empty {
-  color: var(--muted);
+  color: var(--text-muted);
   padding: 1rem;
   text-align: center;
 }
@@ -2027,7 +2033,7 @@
 :where(.hub) code.hint {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   background: rgba(245, 158, 11, 0.18);
-  color: var(--warn);
+  color: var(--warning);
   padding: 0.1rem 0.4rem;
   border-radius: 4px;
   font-size: 0.85em;
@@ -2067,7 +2073,7 @@
 }
 
 .form label > span {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.85rem;
 }
 
@@ -2096,7 +2102,7 @@
 /* === Header hamburger + drawer === */
 .hamburger {
   background: transparent;
-  color: var(--text);
+  color: var(--text-primary);
   border: 1px solid var(--border);
   padding: 0.4rem 0.7rem;
   font-size: 1.1rem;
@@ -2126,7 +2132,7 @@
 
 .drawer-link {
   background: transparent;
-  color: var(--text);
+  color: var(--text-primary);
   border: 0;
   text-align: start;
   padding: 0.85rem 1rem;
@@ -2145,7 +2151,7 @@
 /* Scoped 2026-08-23, and the scope test is what found it.
    «مدیریت پنل‌ها» gained its own tabs that day, so theme.css started defining
    `.tab` too — and these three rules were still at the document level, holding
-   `color: var(--muted)` and a gold underline. They would have repainted a panel
+   `color: var(--text-muted)` and a gold underline. They would have repainted a panel
    screen that has nothing to do with payments, which is the exact failure this
    file was scoped for in the first place. `Tabs.tsx` is currently rendered
    nowhere, so nothing moved on screen; the collision was armed, not firing. */
@@ -2160,7 +2166,7 @@
 .hub .tab {
   background: transparent;
   border: 0;
-  color: var(--muted);
+  color: var(--text-muted);
   padding: 0.6rem 1rem;
   cursor: pointer;
   border-bottom: 2px solid transparent;
@@ -2373,7 +2379,7 @@
 }
 
 .payment-row--declined-income {
-  border-inline-start: 3px solid var(--muted, #888);
+  border-inline-start: 3px solid var(--text-muted, #888);
 }
 
 .notification-bell__dropdown {
@@ -2382,7 +2388,7 @@
   inset-inline-end: 0;
   min-width: 320px;
   max-width: 380px;
-  background: var(--bg);
+  background: var(--background);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
@@ -2401,7 +2407,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  background: var(--panel);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
@@ -2418,7 +2424,7 @@
 }
 
 .notification-bell__counts .count-label {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -2427,7 +2433,7 @@
 .notification-bell__counts .count-value {
   font-size: 1.4rem;
   font-weight: 600;
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 .notification-bell__recent {
@@ -2440,7 +2446,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--muted);
+  color: var(--text-muted);
   margin: 0 0 0.5rem;
 }
 
@@ -2474,7 +2480,7 @@
 
 .notification-bell__empty {
   font-size: 0.85rem;
-  color: var(--muted);
+  color: var(--text-muted);
   margin: 0;
 }
 
@@ -2502,12 +2508,12 @@
 }
 
 .notification-bell__item:hover {
-  background: var(--panel);
+  background: var(--surface);
 }
 
 .notification-bell__item .dir {
   font-weight: 600;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .notification-bell__item .account {
@@ -2517,7 +2523,7 @@
 }
 
 .notification-bell__item .status {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.75rem;
 }
 
@@ -2594,8 +2600,8 @@
 :where(.hub) table {
   width: 100%;
   border-collapse: collapse;
-  background: var(--panel);
-  border-radius: var(--radius);
+  background: var(--surface);
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
@@ -2610,7 +2616,7 @@
 :where(.hub) th {
   background: var(--surface-2);
   font-weight: 500;
-  color: var(--muted);
+  color: var(--text-muted);
   /* Headers must never break letter-by-letter. */
   white-space: nowrap;
 }
@@ -2658,7 +2664,7 @@
   list-style: none;
   cursor: pointer;
   background: transparent;
-  color: var(--text);
+  color: var(--text-primary);
   border: 1px solid var(--border);
   padding: 0.55rem 0.95rem;
   border-radius: 6px;
@@ -2682,7 +2688,7 @@
 
 .actions-more[open] summary {
   background: var(--accent);
-  color: var(--bg);
+  color: var(--background);
   border-color: var(--accent);
 }
 
@@ -2709,7 +2715,7 @@
   width: 100%;
   text-align: start;
   background: transparent;
-  color: var(--text);
+  color: var(--text-primary);
   border: 1px solid transparent;
   padding: 0.55rem 0.75rem;
   border-radius: 4px;
@@ -2743,7 +2749,7 @@
   list-style: none;
   cursor: pointer;
   background: transparent;
-  color: var(--text);
+  color: var(--text-primary);
   border: 1px solid var(--border);
   padding: 0.55rem 0.95rem;
   border-radius: 6px;
@@ -2758,7 +2764,7 @@
 }
 .actions-more-trigger[aria-expanded='true'] {
   background: var(--accent);
-  color: var(--bg);
+  color: var(--background);
   border-color: var(--accent);
 }
 .actions-more-trigger__caret {
@@ -2834,8 +2840,8 @@
 }
 
 :where(.hub) .card {
-  background: var(--panel);
-  border-radius: var(--radius);
+  background: var(--surface);
+  border-radius: var(--radius-md);
   padding: 0.85rem 1rem;
   border: 1px solid var(--border);
   border-inline-start: 4px solid var(--accent);
@@ -2846,7 +2852,7 @@
 }
 
 :where(.hub) .card.selected {
-  border-inline-start-color: var(--ok);
+  border-inline-start-color: var(--success);
   outline: 1px solid var(--accent);
 }
 
@@ -2871,7 +2877,7 @@
 }
 
 .card-row .label {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.85rem;
   align-self: center;
   flex-shrink: 0;
@@ -2930,7 +2936,7 @@
 
 .status-pill.status-accepted {
   background: rgba(34, 197, 94, 0.18);
-  color: var(--ok);
+  color: var(--success);
 }
 
 .status-pill.status-rejected {
@@ -2956,7 +2962,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem 1.25rem;
-  color: var(--muted, #94a3b8);
+  color: var(--text-muted, #94a3b8);
   font-size: 0.9rem;
 }
 
@@ -3002,11 +3008,11 @@
 }
 
 .payment-row--review {
-  border-inline-start: 4px solid var(--warn);
+  border-inline-start: 4px solid var(--warning);
 }
 
 .payment-row--auto {
-  border-inline-start: 4px solid var(--ok);
+  border-inline-start: 4px solid var(--success);
 }
 
 .payments-nav {
@@ -3029,7 +3035,7 @@
   padding: 0.45rem 0.75rem;
   border: 1px solid var(--border, #ddd);
   border-radius: 8px;
-  background: var(--bg);
+  background: var(--background);
   font: inherit;
   cursor: pointer;
 }
@@ -3045,7 +3051,7 @@
   top: calc(100% + 0.35rem);
   inset-inline-start: 0;
   min-width: 12rem;
-  background: var(--bg);
+  background: var(--background);
   border: 1px solid var(--border, #ddd);
   border-radius: 8px;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
@@ -3079,7 +3085,7 @@
 
 .payment-row--auto-compact {
   padding: 0;
-  border-inline-start: 3px solid var(--ok);
+  border-inline-start: 3px solid var(--success);
 }
 
 .payment-row--auto-compact__button {
@@ -3276,7 +3282,7 @@
 
 .sales-trend__label {
   font-size: 0.65rem;
-  color: var(--muted, #94a3b8);
+  color: var(--text-muted, #94a3b8);
   margin-top: 0.25rem;
   white-space: nowrap;
 }
@@ -3329,7 +3335,7 @@
   padding: 0.75rem;
   border: 1px solid var(--border, #ddd);
   border-radius: 8px;
-  background: var(--panel, #fff);
+  background: var(--surface, #fff);
 }
 
 :where(.hub) .stat-card--highlight {
@@ -3345,7 +3351,7 @@
   margin: 0 0 0.35rem;
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--muted, #64748b);
+  color: var(--text-muted, #64748b);
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
@@ -3359,7 +3365,7 @@
 :where(.hub) .stat-card__meta {
   margin: 0.25rem 0 0;
   font-size: 0.8rem;
-  color: var(--muted, #64748b);
+  color: var(--text-muted, #64748b);
 }
 
 :where(.hub) .stat-card__queue-grid {
@@ -3434,7 +3440,7 @@
 }
 
 .warn {
-  color: var(--warn, #f59e0b);
+  color: var(--warning, #f59e0b);
 }
 
 .account-ref {
@@ -3458,7 +3464,7 @@
 }
 
 .payment-reason__flag {
-  color: var(--warn);
+  color: var(--warning);
   white-space: nowrap;
 }
 
@@ -3470,7 +3476,7 @@
 }
 
 .payment-review__facts dt {
-  color: var(--muted, #94a3b8);
+  color: var(--text-muted, #94a3b8);
   font-size: 0.8rem;
 }
 
@@ -3599,7 +3605,7 @@
 
 .modal-body {
   background: var(--surface-overlay);
-  border-radius: var(--radius);
+  border-radius: var(--radius-md);
   padding: 1rem 1.25rem 1.25rem;
   width: min(560px, 100%);
   max-height: calc(100vh - 2rem);
@@ -3640,9 +3646,9 @@
 
 /* === Comments === */
 .panel {
-  background: var(--panel);
+  background: var(--surface);
   padding: 1rem;
-  border-radius: var(--radius);
+  border-radius: var(--radius-md);
 }
 
 .panel h3 {
@@ -3664,7 +3670,7 @@
   width: 100%;
   background: var(--surface-2);
   border: 1px solid var(--border);
-  color: var(--text);
+  color: var(--text-primary);
   border-radius: 6px;
   padding: 0.55rem;
   font-family: inherit;
@@ -3673,7 +3679,7 @@
 
 .reason {
   font-size: 0.8rem;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .identifier {
@@ -3694,7 +3700,7 @@
 }
 
 :where(.hub) dl dt {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.85rem;
 }
 
@@ -3861,7 +3867,7 @@
   margin: 0.5rem 0 1rem;
 }
 .ref-counts dt {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.85rem;
 }
 .ref-counts dd {
