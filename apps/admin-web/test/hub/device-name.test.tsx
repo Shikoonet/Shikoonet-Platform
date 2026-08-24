@@ -224,7 +224,12 @@ describe('Today — mobile card device row', () => {
       );
     render(<TodayView cache={createCache()} />);
     await screen.findByText('Poyan Android Phone');
-    const card = screen.getByText('Poyan Android Phone').closest('.card') as HTMLElement;
+    // `.hub-card` since 2026-08-25, when the hub's own status-striped card
+    // stopped answering to `.card` — a name the panel had already given to a
+    // different component. `closest('.card')` returned null here and the
+    // failure read as "container is not an Element", which is what a rename
+    // looks like from inside `within()`.
+    const card = screen.getByText('Poyan Android Phone').closest('.hub-card') as HTMLElement;
     expect(within(card).getByText('poyan-01')).toBeTruthy();
     expect(within(card).getByText('دستگاه')).toBeTruthy();
   });

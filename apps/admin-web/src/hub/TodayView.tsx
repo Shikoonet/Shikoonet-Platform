@@ -378,7 +378,7 @@ function TodayTxCard({
   return (
     <li
       key={t.id}
-      className={`card tx-card${isNew ? ' transaction-row--new' : ''}`}
+      className={`hub-card tx-card${isNew ? ' transaction-row--new' : ''}`}
       onClick={() => {
         if (isNew) onSeen(t.id);
       }}

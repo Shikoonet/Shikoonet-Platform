@@ -215,7 +215,7 @@ function CardPrefixesPanel() {
                 {test.luhnOk ? (
                   'درست'
                 ) : (
-                  <span className="badge badge-danger">نادرست — این نمی‌تواند کارت واقعی باشد</span>
+                  <span className="badge badge-block">نادرست — این نمی‌تواند کارت واقعی باشد</span>
                 )}
               </dd>
               <dt>پیش‌شماره</dt>

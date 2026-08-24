@@ -232,7 +232,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
           </p>
           <ul className="card-list">
             {pendingItems.map((a) => (
-              <li key={a.id} className={`card review-queue-card status-${a.status.toLowerCase()}`}>
+              <li key={a.id} className={`hub-card review-queue-card status-${a.status.toLowerCase()}`}>
                 <div className="card-row card-row--top">
                   <strong>{a.display_name}</strong>
                   <span className={`status-pill status-pill--${a.status.toLowerCase()}`}>
@@ -653,7 +653,7 @@ function AccountCard({
 }) {
   const w = useWriteProps();
   return (
-    <li className={`card account-card${a.active ? '' : ' dim'}`}>
+    <li className={`hub-card account-card${a.active ? '' : ' dim'}`}>
       <div className="card-row card-row--top">
         <strong>{a.display_name}</strong>
         <span className={`status-pill status-pill--${a.status.toLowerCase()}`}>
@@ -886,7 +886,7 @@ function PaymentCardsPanel({
               {/* A card number that fails its own check digit cannot exist. One
                   such row is live in production and quietly broke claim-to-account
                   resolution for a whole bank until a human counted the digits. */}
-              {!c.luhn_ok && <span className="badge badge-danger">رقم کنترلی نادرست</span>}
+              {!c.luhn_ok && <span className="badge badge-block">رقم کنترلی نادرست</span>}
               {c.status !== 'ACTIVE' && <span className="badge">{c.status}</span>}
             </span>
             <span className="payment-cards-list__actions">

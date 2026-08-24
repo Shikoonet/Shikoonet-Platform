@@ -290,21 +290,32 @@ test('a receipt the shape customers actually send is legible', async ({ page }) 
     route.fulfill({ status: 200, contentType: 'image/svg+xml', body: bytes }),
   );
 
-  const claim = await withDb((d) =>
-    d
-      .prepare(
-        `SELECT id FROM payment_claims
-          WHERE status IN ('PENDING', 'MATCH_SUGGESTED') AND source_system = 'MIRZABOT'
-          ORDER BY id LIMIT 1`,
-      )
-      .first<{ id: string }>(),
-  );
-  if (!claim) throw new Error('no open claim to hang a receipt on — run seed:sim');
+  /*
+   * The claim is taken from the SCREEN, not from `ORDER BY id LIMIT 1`.
+   *
+   * The first version of this picked the lowest id and then opened
+   * `?claim=<id>` directly, which passed on the seed I happened to have and
+   * failed on the next one: the queue loads at most 200 rows, and a claim
+   * outside them makes the review page say «این پرداخت در فهرست باز نیست» —
+   * correctly. The test was asserting against whichever claim the seed's
+   * random ids happened to sort first.
+   *
+   * Clicking the first row also exercises the path an operator uses, instead
+   * of a URL nobody types.
+   */
+  await page.goto('/admin/payments?tab=open&dateFilter=all');
+  const firstRow = page.locator('.hub-list-row__button').first();
+  await expect(firstRow).toBeVisible();
+  await firstRow.click();
+  await expect(page.locator('.review-page')).toBeVisible();
+
+  const claimId = new URL(page.url()).searchParams.get('claim');
+  if (!claimId) throw new Error('opening a row did not put a claim in the address');
 
   const before = await withDb((d) =>
     d
       .prepare(`SELECT receipt_url_or_r2_key AS handle FROM payment_claims WHERE id = ?1`)
-      .bind(claim.id)
+      .bind(claimId)
       .first<{ handle: string | null }>(),
   );
 
@@ -313,12 +324,12 @@ test('a receipt the shape customers actually send is legible', async ({ page }) 
   await withDb((d) =>
     d
       .prepare(`UPDATE payment_claims SET receipt_url_or_r2_key = ?2 WHERE id = ?1`)
-      .bind(claim.id, 'AgACAgQAAxkBAAIe2etestreceipthandle01')
+      .bind(claimId, 'AgACAgQAAxkBAAIe2etestreceipthandle01')
       .run(),
   );
 
   try {
-    await page.goto(`/admin/payments?tab=open&dateFilter=all&claim=${claim.id}`);
+    await page.goto(`/admin/payments?tab=open&dateFilter=all&claim=${claimId}`);
     const img = page.locator('.payment-receipt img');
     await expect(img).toBeVisible();
 
@@ -355,7 +366,7 @@ test('a receipt the shape customers actually send is legible', async ({ page }) 
     await withDb((d) =>
       d
         .prepare(`UPDATE payment_claims SET receipt_url_or_r2_key = ?2 WHERE id = ?1`)
-        .bind(claim.id, before?.handle ?? null)
+        .bind(claimId, before?.handle ?? null)
         .run(),
     );
   }

@@ -2843,7 +2843,20 @@
   min-width: 0;
 }
 
-:where(.hub) .card {
+/*
+ * Not a `.card`. It wears a status stripe, and that is the whole point of it.
+ *
+ * Four lists use this — the account review queue, an account, a device, a
+ * transaction — and every one of them already carried a second, specific class
+ * beside it. What `card` was doing was supplying the base, under a name the
+ * panel had already taken for something else: a 20px glass panel with no
+ * stripe. That is the collision this file was accused of, and it was real.
+ *
+ * Renamed rather than merged, because merging loses the stripe: `status-*` and
+ * `.selected` colour it, and it is how an operator sees at a glance which row
+ * in a queue needs them. A name is cheap; the signal is not.
+ */
+.hub-card {
   background: var(--surface);
   border-radius: var(--radius-md);
   padding: 0.85rem 1rem;
@@ -2855,7 +2868,7 @@
   overflow-wrap: anywhere;
 }
 
-:where(.hub) .card.selected {
+.hub-card.selected {
   border-inline-start-color: var(--success);
   outline: 1px solid var(--accent);
 }
@@ -2894,9 +2907,9 @@
 
 /* Cards contain `<code class="masked">` for identifiers. Long hex / account
    strings must wrap or shrink — never push the card past its container. */
-:where(.hub) .card code,
-:where(.hub) .card .masked,
-:where(.hub) .card .parser-id {
+.hub-card code,
+.hub-card .masked,
+.hub-card .parser-id {
   overflow-wrap: anywhere;
   word-break: break-word;
   max-width: 100%;
@@ -4104,22 +4117,21 @@
   white-space: nowrap;
 }
 
-:where(.hub) .badge {
-  display: inline-block;
-  padding: 1px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  color: var(--text-secondary);
-  font-size: 0.75em;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
+/*
+ * `.badge` and `.badge-danger` were redefined here and are not any more.
+ *
+ * The hub's version was a small square chip; the panel's is a pill. Six places
+ * use one — a bank name, a card status, «رقم کنترلی نادرست», a rotation weight —
+ * and every one of them is the same idea as the badges on the other fourteen
+ * screens. Two shapes for one idea, decided by which half of the app the label
+ * happened to be in.
+ *
+ * The panel's wins, because it is the one fourteen screens already use. The
+ * danger variant is `badge-block` there, so the call sites say that now:
+ * `--danger-soft` behind red text, which is louder than the hub's outline-only
+ * version and should be, given what it says.
+ */
 
-:where(.hub) .badge-danger {
-  border-color: var(--danger);
-  color: var(--danger);
-}
 
 /* ---------------------------------------------------------------------------
    Banks — card prefixes, SMS patterns, and the two test boxes

@@ -446,7 +446,7 @@ function DeviceCard({
   const w = useWriteProps();
   const cs = connectionStateLabel(d);
   return (
-    <li className={`card device-card${d.active ? '' : ' dim'}`}>
+    <li className={`hub-card device-card${d.active ? '' : ' dim'}`}>
       <div className="card-row card-row--top">
         <strong>{d.display_name}</strong>
         <span className={`status-pill status-${cs.tone}`}>{cs.label}</span>
