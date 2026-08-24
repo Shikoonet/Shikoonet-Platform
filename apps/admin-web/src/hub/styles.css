@@ -3331,49 +3331,19 @@
   margin-bottom: 1rem;
 }
 
-:where(.hub) .stat-card {
-  padding: 0.75rem;
-  border: 1px solid var(--border, #ddd);
-  border-radius: 8px;
-  background: var(--surface, #fff);
-}
-
-:where(.hub) .stat-card--highlight {
-  border-color: var(--accent, #38bdf8);
-  background: color-mix(in srgb, var(--accent, #38bdf8) 8%, transparent);
-}
-
-:where(.hub) .stat-card--wide {
-  grid-column: 1 / -1;
-}
-
-:where(.hub) .stat-card h3 {
-  margin: 0 0 0.35rem;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--text-muted, #64748b);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-:where(.hub) .stat-card__value {
-  margin: 0;
-  font-size: 1.15rem;
-  font-weight: 700;
-}
-
-:where(.hub) .stat-card__meta {
-  margin: 0.25rem 0 0;
-  font-size: 0.8rem;
-  color: var(--text-muted, #64748b);
-}
-
-:where(.hub) .stat-card__queue-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem 1.5rem;
-  font-size: 0.9rem;
-}
+/*
+ * A seven-rule redefinition of `.stat-card` was here — and the hub does not use
+ * `.stat-card`.
+ *
+ * Not once: `className="stat-card"` appears zero times under `src/hub`, and the
+ * class never appears in the DOM of any of the six «پول» screens at any of
+ * three viewport widths. What these screens actually draw is
+ * `.statistics-overview` and `.statistics-chart-card`, right above and below
+ * this note, which are theirs and are staying.
+ *
+ * It was one of the six primitives this file was said to give a second meaning
+ * to. The second meaning had no readers.
+ */
 
 .statistics-chart-card {
   padding: 0.75rem;
