@@ -27,6 +27,7 @@ import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { randomUUID } from 'node:crypto';
 import {
   adapterFor,
+  groupIdsFor,
   open,
   panelSecretKey,
   remoteUsernameFor,
@@ -739,6 +740,28 @@ async function renew(
       note: `shikoo ${row.order_public_id}`,
       providerConfig: row.provider_config ?? {},
       planAttrs: planAttrsFor(row),
+      /*
+       * The tier being renewed into — for a renewal, and never for an add-on.
+       *
+       * Renewing from a DIFFERENT service is already legal (`handle.ts` only
+       * requires the same panel), and for a first-timers-only tier it is the
+       * only way out: that service disappears from its own renewal list the
+       * moment the customer owns anything. The panel account kept whatever
+       * groups it was created with, so the customer paid the new tier's price
+       * and went on receiving the old tier's inbounds. Nothing said so.
+       *
+       * An add-on buys quota or days, not a tier, and `mode` cannot make the
+       * distinction — `renewModeFor` answers 'ADD' for ordinary renewals in
+       * some shops. So the caller, which knows, decides.
+       */
+      ...(addon === null
+        ? {
+            groupIds: groupIdsFor({
+              planAttrs: planAttrsFor(row),
+              providerConfig: row.provider_config ?? {},
+            }),
+          }
+        : {}),
       mode,
       renewFrom: new Date(now),
     },

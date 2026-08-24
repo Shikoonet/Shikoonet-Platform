@@ -74,6 +74,23 @@ export interface RenewRequest {
   planAttrs: Record<string, unknown>;
   mode: RenewMode;
   /**
+   * The tier the customer is renewing INTO, or absent to leave the account's
+   * groups alone.
+   *
+   * A renewal used to send only quota, expiry and note, which meant the panel
+   * account kept whichever groups it was created with. That is invisible until
+   * somebody renews from a DIFFERENT service — and the whole point of a
+   * first-timers-only tier is that they must, because it disappears from its
+   * own renewal list the moment they own anything. So the customer paid
+   * «طلایی» prices and kept the starter tier's inbounds, quietly, forever.
+   *
+   * Set by the caller and only for a real renewal. An add-on — five more
+   * gigabytes, ten more days — buys no tier and must not touch the groups, and
+   * `mode` cannot answer that question: `renewModeFor` returns 'ADD' for
+   * ordinary renewals in some shops too.
+   */
+  groupIds?: unknown;
+  /**
    * The moment the renewal takes effect, resolved by the caller so the adapter
    * still has no clock. In ADD mode the new expiry is measured from whichever
    * is later, this or the account's own remaining time — which is what stops an

@@ -258,7 +258,10 @@ function quotaBytes(raw: unknown): number | null {
 }
 
 /** Plan-level settings win over panel-level ones, same precedence as the legacy bot. */
-function pick(request: ProvisionRequest, key: string): unknown {
+function pick(
+  request: { planAttrs: Record<string, unknown>; providerConfig: Record<string, unknown> },
+  key: string,
+): unknown {
   return request.planAttrs[key] ?? request.providerConfig[key];
 }
 
@@ -276,7 +279,10 @@ function pick(request: ProvisionRequest, key: string): unknown {
  * `login`'s sibling classifies as non-retryable, so every VIP order would have
  * gone FAILED and refunded in front of the customer on the first day.
  */
-export function groupIdsFor(request: ProvisionRequest): unknown {
+export function groupIdsFor(request: {
+  planAttrs: Record<string, unknown>;
+  providerConfig: Record<string, unknown>;
+}): unknown {
   return pick(request, 'group_ids') ?? pick(request, 'inbounds');
 }
 
@@ -653,7 +659,27 @@ export const marzbanAdapter: ProvisioningAdapter = {
             'content-type': 'application/json',
             authorization: `Bearer ${auth.token}`,
           },
-          body: JSON.stringify({ data_limit: dataLimit, expire, note: request.note }),
+          /*
+           * `group_ids` goes with a renewal, and NEVER an empty array.
+           *
+           * Sending `[]` to PasarGuard is not "leave them alone" — it is "this
+           * account belongs to no group", which strips every inbound and kills
+           * the subscription silently: the link still resolves and returns
+           * nothing. Absent is the way to say "leave them alone", so the key is
+           * omitted rather than sent empty.
+           *
+           * The caller supplies this only for a real renewal. An add-on buys no
+           * tier, and `mode` cannot be used to tell the two apart because
+           * `renewModeFor` answers 'ADD' for ordinary renewals in some shops.
+           */
+          body: JSON.stringify({
+            data_limit: dataLimit,
+            expire,
+            note: request.note,
+            ...(Array.isArray(request.groupIds) && request.groupIds.length > 0
+              ? { group_ids: request.groupIds }
+              : {}),
+          }),
           signal,
         }),
       );

@@ -56,6 +56,21 @@ function fakePanel(options: { users?: Record<string, unknown>; onCreate?: () => 
         ? new Response(JSON.stringify(found), { status: 200 })
         : new Response('{}', { status: 404 });
     }
+    if (method === 'POST' && url.endsWith('/reset')) {
+      // RESET mode zeroes the usage counter before the PUT. Without this the
+      // fake answered 500, the renewal bailed before it ever reached the PUT,
+      // and the assertions below looked at an undefined body — which is how the
+      // add-on case passed while asserting nothing at all.
+      return new Response('{}', { status: 200 });
+    }
+    if (method === 'PUT' && url.includes('/api/user/')) {
+      // What a renewal does: the adapter reads the account, then PUTs the new
+      // quota, expiry and — since 2026-08-24 — the tier being renewed into.
+      const name = decodeURIComponent(url.split('/api/user/')[1]!);
+      const row = { ...(users[name] as object), ...(body as object) };
+      users[name] = row;
+      return new Response(JSON.stringify(row), { status: 200 });
+    }
     if (method === 'POST' && url.endsWith('/api/user')) {
       if (options.onCreate) return options.onCreate();
       const created = body as { username: string };
@@ -849,5 +864,88 @@ describe('a panel that is not configured', () => {
       fetch: rejecting(503),
     });
     expect(panelIll.ok === false && panelIll.retryable).toBe(true);
+  });
+});
+
+/** The renewal PUT, which is a different call from the create POST. */
+function renewCall(calls: Call[]): Call | undefined {
+  return calls.find((c) => c.method === 'PUT' && c.url.includes('/api/user/'));
+}
+
+describe('renewing an account into a different tier', () => {
+  /*
+   * A renewal used to send quota, expiry and note — and nothing about groups.
+   * The panel account therefore kept whatever it was created with, which is
+   * invisible until somebody renews from a DIFFERENT service.
+   *
+   * That is not an edge case. Renewing across services is already legal (the
+   * bot only requires the same panel), and for a first-timers-only tier it is
+   * the ONLY route: such a service vanishes from its own renewal list the
+   * moment the customer owns anything. So the customer paid the new tier's
+   * price and quietly went on receiving the old tier's inbounds, for as long as
+   * the account lived.
+   */
+  const account = { username: 'u1', subscription_url: '/sub/u1-tok' };
+
+  function renewRequest(over: Record<string, unknown> = {}) {
+    return {
+      username: 'u1',
+      volumeGb: 20,
+      durationDays: 30,
+      note: 'shikoo order-1',
+      providerConfig: { group_ids: [42, 2], proxy_settings: { vless: {} } },
+      planAttrs: {},
+      mode: 'RESET' as const,
+      renewFrom: new Date(NOW),
+      ...over,
+    };
+  }
+
+  it('sends the tier being renewed into', async () => {
+    const panel = fakePanel({ users: { u1: account } });
+    await marzbanAdapter.renew!(
+      renewRequest({ groupIds: [7] }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    const put = renewCall(panel.calls);
+    expect(put, 'the renewal never reached the panel').toBeDefined();
+    expect((put!.body as { group_ids?: unknown }).group_ids).toEqual([7]);
+  });
+
+  it('never sends an empty list', async () => {
+    /*
+     * `[]` is not "leave the groups alone" — to PasarGuard it means "this
+     * account belongs to no group", which strips every inbound and kills the
+     * subscription in the quietest possible way: the link still resolves and
+     * returns nothing at all. Absent is how you say "leave them alone".
+     */
+    const panel = fakePanel({ users: { u1: account } });
+    await marzbanAdapter.renew!(
+      renewRequest({ groupIds: [] }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    const put = renewCall(panel.calls);
+    expect(put, 'the renewal never reached the panel').toBeDefined();
+    expect(put!.body).not.toHaveProperty('group_ids');
+  });
+
+  it('leaves the groups alone when the caller names none', async () => {
+    // An add-on — five more gigabytes, ten more days — buys quota, not a tier.
+    // The caller omits `groupIds` for those, and `mode` cannot be used to tell
+    // the two apart: `renewModeFor` answers 'ADD' for ordinary renewals too.
+    const panel = fakePanel({ users: { u1: account } });
+    await marzbanAdapter.renew!(
+      renewRequest({ mode: 'ADD' }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    // Asserted to EXIST first. Without that, `?.body` on a renewal that never
+    // happened is undefined, `not.toHaveProperty` is trivially true, and the
+    // test passes no matter what the adapter does.
+    const put = renewCall(panel.calls);
+    expect(put, 'the renewal never reached the panel').toBeDefined();
+    expect(put!.body).not.toHaveProperty('group_ids');
   });
 });
