@@ -69,7 +69,24 @@ export const securityHeaders: MiddlewareHandler = async (c, next) => {
     `form-action 'self'`,
   ].join('; ');
 
-  c.res.headers.set('Content-Security-Policy', csp);
+  // Not `set` — a route that has already chosen a policy keeps it.
+  //
+  // This ran `set` unconditionally and overwrote a route's own header on the
+  // way out. `GET /payment-claims/:id/receipt` asks for
+  // `default-src 'none'; sandbox`, because it streams a customer-supplied file
+  // through our origin and one of the types it allows is `application/pdf` —
+  // a document the browser renders in a viewer of its own. What actually
+  // reached the browser was the app-wide policy above, measured against the
+  // running server on 2026-08-24. The route's own test asserted the type and
+  // `nosniff` and never looked at this header, so nothing said a word.
+  //
+  // Only one route sets it, and it sets something stricter. A route that ever
+  // wants something LOOSER than this baseline is a route that should be
+  // arguing its case in review rather than winning silently — the check below
+  // is the place that would have to change to allow it.
+  if (!c.res.headers.has('Content-Security-Policy')) {
+    c.res.headers.set('Content-Security-Policy', csp);
+  }
 
   c.res.headers.set(
     'Permissions-Policy',

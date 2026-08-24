@@ -158,6 +158,13 @@ describe('serving a receipt', () => {
     // A customer's bank receipt behind an operator's session. A shared cache
     // holding it would outlive the session that was allowed to see it.
     expect(res.headers.get('cache-control')).toBe('private, no-store');
+    // The route's OWN policy, not the app-wide one — and this is asserted on
+    // the served response rather than at the point it is set, because that is
+    // exactly where it was lost. `securityHeaders` used to `set` the app-wide
+    // CSP after the handler returned and overwrite this. Nothing was red; the
+    // header simply was not what this file says it is, which is how a browser
+    // ended up free to render an `application/pdf` receipt as a document.
+    expect(res.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
     expect(await res.text()).toBe('JPEGBYTES');
   });
 
