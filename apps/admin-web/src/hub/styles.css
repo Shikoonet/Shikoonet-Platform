@@ -105,8 +105,7 @@
 @media (prefers-reduced-motion: reduce) {
   :where(.hub) {
     --transition-theme: none;
-  }
-}
+  }}
 
 /*
  * Inherit the panel rather than repaint over it.
@@ -238,13 +237,6 @@
   padding: 1rem 1.25rem 4rem;
 }
 
-.app--ops {
-  max-width: none;
-  width: calc(100% - 48px);
-  margin: 0 auto;
-  padding: 24px 0 5rem;
-}
-
 /* === Shikoonet app header === */
 .shikoonet-header {
   margin-bottom: 0;
@@ -350,69 +342,7 @@
 
   .shikoonet-header__center {
     display: none;
-  }
-}
-
-/* === Theme switcher === */
-.theme-switcher {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.15rem;
-  padding: 0.15rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-}
-
-.theme-switcher__btn {
-  background: transparent;
-  color: var(--text-muted);
-  border: 0;
-  padding: 0.3rem 0.45rem;
-  min-height: 0;
-  min-width: 0;
-  border-radius: 999px;
-  font-size: 0.85rem;
-  line-height: 1;
-  transition: var(--transition-theme);
-}
-
-.theme-switcher__btn--active {
-  background: var(--accent-muted);
-  color: var(--accent);
-}
-
-.theme-switcher--menu {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  padding: 0.25rem;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.theme-switcher__menu-item {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  background: transparent;
-  color: var(--text-primary);
-  border: 0;
-  padding: 0.45rem 0.65rem;
-  min-height: 0;
-  min-width: 0;
-  border-radius: var(--radius-sm);
-  font-size: 0.8125rem;
-  text-align: start;
-  cursor: pointer;
-}
-
-.theme-switcher__menu-item--active {
-  background: var(--gold-muted);
-  color: var(--gold);
-}
+  }}
 
 /* === Operator menu === */
 .operator-menu {
@@ -607,13 +537,6 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface);
-}
-
-.empty-state {
-  color: var(--text-muted);
-  font-size: 0.875rem;
-  padding: var(--space-md) 0;
-  margin: 0;
 }
 
 /* === Payments premium shell === */
@@ -874,12 +797,10 @@
 
   .payments-header__actions {
     width: 100%;
-  }
-}
+  }}
 
 /* === Ops navigation (Shikoonet segmented) === */
-.ops-nav,
-.hub-nav {
+.ops-nav{
   margin: 0;
   display: flex;
   flex-direction: column;
@@ -914,9 +835,7 @@
 }
 
 .ops-nav__level1,
-.ops-nav__level2,
-.hub-nav__level1,
-.hub-nav__level2 {
+.ops-nav__level2{
   margin: 0;
 }
 
@@ -926,8 +845,7 @@
    a 326px column stretched the document to 997px, and every screen on the
    dashboard scrolled sideways. The strip keeps its intrinsic width; the rail
    around it is what scrolls. */
-.ops-nav,
-.hub-nav {
+.ops-nav{
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
@@ -938,8 +856,7 @@
   padding-block: 2px;
 }
 
-.ops-nav__strip,
-.hub-nav__strip {
+.ops-nav__strip{
   display: inline-flex;
   align-items: stretch;
   gap: 0.2rem;
@@ -950,8 +867,7 @@
   border-radius: var(--radius-md);
 }
 
-.ops-nav__strip--primary,
-.hub-nav__strip--primary {
+.ops-nav__strip--primary{
   width: 100%;
   max-width: 100%;
 }
@@ -976,15 +892,12 @@
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25), 0 0 20px rgba(59, 130, 246, 0.14);
 }
 
-.ops-nav__strip--secondary,
-.hub-nav__strip--secondary {
+.ops-nav__strip--secondary{
   width: auto;
 }
 
 .ops-nav__tab,
-.ops-nav__subtab,
-.hub-nav__tab,
-.hub-nav__subtab {
+.ops-nav__subtab{
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -1004,25 +917,20 @@
     border-color 140ms ease;
 }
 
-.ops-nav__subtab,
-.hub-nav__subtab {
+.ops-nav__subtab{
   padding: 0.4rem 0.7rem;
   font-size: 0.8125rem;
   font-weight: 500;
 }
 
 .ops-nav__tab-icon,
-.ops-nav__subtab-icon,
-.hub-nav__tab-icon,
-.hub-nav__subtab-icon {
+.ops-nav__subtab-icon{
   flex-shrink: 0;
   opacity: 0.85;
 }
 
 .ops-nav__tab--active,
-.ops-nav__subtab--active,
-.hub-nav__tab--active,
-.hub-nav__subtab--active {
+.ops-nav__subtab--active{
   color: var(--gold);
   background: var(--gold-muted);
   border-color: var(--border-gold);
@@ -1030,15 +938,12 @@
 }
 
 .ops-nav__tab--active .ops-nav__tab-icon,
-.ops-nav__subtab--active .ops-nav__subtab-icon,
-.hub-nav__tab--active .hub-nav__tab-icon,
-.hub-nav__subtab--active .hub-nav__subtab-icon {
+.ops-nav__subtab--active .ops-nav__subtab-icon{
   color: var(--gold);
   opacity: 1;
 }
 
-.ops-nav__badge,
-.hub-nav__badge {
+.ops-nav__badge{
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1060,17 +965,9 @@
   margin-inline-start: 0.35rem;
 }
 
-.ops-nav__badge--new,
-.hub-nav__badge--new {
+.ops-nav__badge--new{
   color: var(--background);
   background: var(--gold);
-}
-
-.hub-nav__count {
-  margin-inline-start: 0.35rem;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  font-weight: 400;
 }
 
 /* === Bot verified metrics + table === */
@@ -1503,14 +1400,9 @@
 
   .bot-verified-layout__rail {
     position: static;
-  }
-}
+  }}
 
 @media (max-width: 639px) {
-  .app--ops {
-    width: calc(100% - 24px);
-    padding: 12px 0 4rem;
-  }
 
   .bot-metrics {
     grid-template-columns: 1fr;
@@ -1533,8 +1425,7 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     min-width: 0;
-  }
-}
+  }}
 
 /* === Context metrics (compact inline totals per filter) === */
 .hub-context-metrics {
@@ -1641,8 +1532,7 @@
 @media (max-width: 639px) {
   .metrics-strip {
     grid-template-columns: 1fr;
-  }
-}
+  }}
 
 /* === Account usage ranking === */
 .account-usage-ranking {
@@ -1684,8 +1574,7 @@
     grid-template-columns: 1fr auto auto;
     gap: 2rem;
     min-width: 12rem;
-  }
-}
+  }}
 
 /* === Hub list rows === */
 .hub-list {
@@ -2093,8 +1982,7 @@
   color: var(--muted);
 }
 
-.error,
-.error-inline {
+.error{
   background: rgba(239, 68, 68, 0.15);
   color: var(--danger);
   padding: 0.75rem 1rem;
@@ -2293,56 +2181,6 @@
   min-width: 0;
 }
 
-.tabs--scroll {
-  flex-wrap: nowrap;
-  min-width: max-content;
-}
-
-/* === Live status === */
-.live-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  font-size: 0.85rem;
-}
-
-.live-status .dot {
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 50%;
-  background: var(--ok);
-  display: inline-block;
-}
-
-.live-status .refresh-now {
-  background: transparent;
-  color: var(--text);
-  border: 1px solid var(--border);
-  padding: 0.25rem 0.5rem;
-  min-height: 0;
-  min-width: 0;
-  font-size: 0.8rem;
-  border-radius: 999px;
-}
-
-.live-status--refreshing .dot {
-  background: var(--accent);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.live-status--error .dot {
-  background: var(--warn);
-}
-
-.live-status--offline .dot,
-.live-status--paused .dot {
-  background: var(--muted);
-}
-
 @keyframes pulse {
   0%,
   100% {
@@ -2434,8 +2272,7 @@
 @media (prefers-reduced-motion: reduce) {
   .notification-bell__button--shake .notification-bell__icon {
     animation: none;
-  }
-}
+  }}
 
 .notification-bell__sound {
   display: flex;
@@ -2460,29 +2297,6 @@
   display: flex;
   justify-content: flex-end;
   margin: 0.5rem 0;
-}
-
-.income-bulk-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem;
-  margin: 0.75rem 0;
-  padding: 0.5rem 0;
-}
-
-.income-bulk-toolbar__count {
-  font-weight: 600;
-}
-
-.income-bulk-toolbar--with-header {
-  border-bottom: 1px solid var(--border, #ddd);
-}
-
-.income-bulk-toolbar__select-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
 }
 
 .history-date-nav {
@@ -2774,8 +2588,7 @@
   .new-badge {
     transition: none !important;
     animation: none !important;
-  }
-}
+  }}
 
 /* === Tables === */
 :where(.hub) table {
@@ -2952,56 +2765,6 @@
   font-size: 0.8em;
   opacity: 0.8;
 }
-.more-menu-portal {
-  /* Wrapper — no background, just the positioning shell. */
-  background: transparent;
-  opacity: 1;
-  isolation: isolate;
-  position: fixed;
-  z-index: 1200;
-}
-.more-menu-panel {
-  /* The opaque panel. background-color uses var(--surface-elevated) with
-     a hard opaque fallback so computed-style alpha is always 1. */
-  background-color: #1e293b;
-  background-color: var(--surface-elevated, #1e293b);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.4rem;
-  min-width: 180px;
-  max-height: 360px;
-  overflow: hidden;
-  display: grid;
-  gap: 0.4rem;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
-  opacity: 1;
-  isolation: isolate;
-}
-.more-menu-portal__item {
-  width: 100%;
-  text-align: start;
-  background: transparent;
-  color: var(--text);
-  border: 1px solid transparent;
-  padding: 0.55rem 0.75rem;
-  border-radius: 4px;
-  min-height: 44px;
-  font-family: inherit;
-  font-size: 1rem;
-}
-.more-menu-portal__item:hover:not(:disabled) {
-  border-color: var(--border);
-  background: var(--gold-muted);
-}
-.more-menu-portal__item--danger {
-  background: transparent;
-  color: var(--danger);
-}
-.more-menu-portal__item:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 
 /* === Compact-desktop table (1200–1439px) ===
    Only used by the Unmatched compact 6-column table. The fixed layout
@@ -3149,8 +2912,7 @@
 @media (max-width: 359px) {
   .card-actions {
     grid-template-columns: 1fr;
-  }
-}
+  }}
 
 /* `inline-block` and `nowrap` are new. It was a bare inline span, which held up
    only while this table had the whole viewport; inside the panel the column is
@@ -3450,7 +3212,7 @@
   border-inline-start: 2px solid var(--accent);
 }
 
-.income-totals,
+
 .reseller-stats {
   margin: 0.75rem 0;
   padding: 0.75rem;
@@ -3616,98 +3378,6 @@
 .statistics-chart-card h3 {
   margin: 0 0 0.75rem;
   font-size: 0.95rem;
-}
-
-.mix-bar {
-  display: flex;
-  height: 1.25rem;
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--border, #e2e8f0);
-}
-
-.mix-bar__bot {
-  background: var(--accent, #38bdf8);
-}
-
-.mix-bar__manual {
-  background: #a78bfa;
-}
-
-.mix-bar__legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  margin-top: 0.5rem;
-  font-size: 0.85rem;
-}
-
-.mix-bar__swatch {
-  display: inline-block;
-  width: 0.65rem;
-  height: 0.65rem;
-  border-radius: 2px;
-  margin-inline-end: 0.25rem;
-  vertical-align: middle;
-}
-
-.mix-bar__swatch--bot {
-  background: var(--accent, #38bdf8);
-}
-
-.mix-bar__swatch--manual {
-  background: #a78bfa;
-}
-
-.volume-bars {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.volume-bars__row {
-  display: grid;
-  grid-template-columns: 7rem 1fr auto;
-  gap: 0.5rem;
-  align-items: center;
-  font-size: 0.85rem;
-}
-
-.volume-bars__track {
-  height: 0.65rem;
-  background: var(--border, #e2e8f0);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.volume-bars__fill {
-  height: 100%;
-  border-radius: 3px;
-  min-width: 0;
-}
-
-.volume-bars__fill--sales {
-  background: var(--accent, #38bdf8);
-}
-
-.volume-bars__fill--inflow {
-  background: #34d399;
-}
-
-.volume-bars__fill--reseller {
-  background: #fbbf24;
-}
-
-.volume-bars__fill--income {
-  background: #94a3b8;
-}
-
-.volume-bars__amount {
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
 .account-analytics {
@@ -3903,26 +3573,10 @@
   gap: 1rem;
 }
 
-/* Only applies at wide-desktop (>=1440px). At narrower widths Comments
-   opens as a right-side drawer — see .drawer--right below. */
-.split--with-side {
-  grid-template-columns: 1fr 320px;
-}
-
 .matches-section {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  min-width: 0;
-}
-
-.match-list-scroll {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  /* Without `min-width: 0`, this flex column inherits its content's
-     intrinsic min-width (long identifiers, wide tabs) and pushes the
-     parent wider than the viewport. */
   min-width: 0;
 }
 
@@ -4044,10 +3698,6 @@
   font-size: 0.85rem;
 }
 
-.analysis h4 {
-  margin-top: 0.75rem;
-}
-
 /* === Responsive === */
 @media (min-width: 640px) {
   .app {
@@ -4067,17 +3717,12 @@
   }
   .hamburger {
     display: none;
-  }
-}
+  }}
 
 @media (min-width: 1440px) {
   .app {
     max-width: 1600px;
-  }
-  .split--with-side {
-    grid-template-columns: 1fr 380px;
-  }
-}
+  }}
 
 @media (max-width: 639px) {
   :where(.hub) .app-header {
@@ -4090,11 +3735,7 @@
   .tab {
     padding: 0.6rem 0.7rem;
     font-size: 0.95rem;
-  }
-  .match-list-scroll {
-    max-height: none;
-  }
-}
+  }}
 
 /* === A11y === */
 :focus-visible {
@@ -4121,8 +3762,7 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
-  }
-}
+  }}
 
 /* === Sortable header button (fills <th>) === */
 .th-button {
@@ -4146,14 +3786,6 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 2px;
-}
-.th-button .sort-glyph {
-  flex: 0 0 auto;
-  opacity: 0.7;
-}
-.th-button[aria-sort='ascending'] .sort-glyph,
-.th-button[aria-sort='descending'] .sort-glyph {
-  opacity: 1;
 }
 
 /* === Mobile sort dropdown === */
@@ -4368,8 +4000,7 @@
   }
   .segmented--dates {
     align-self: flex-end;
-  }
-}
+  }}
 
 .bot-verified-empty {
   display: flex;
@@ -4407,14 +4038,12 @@
 @media (min-width: 1100px) {
   .bot-metrics {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
+  }}
 
 @media (max-width: 720px) {
   .bot-metrics {
     grid-template-columns: 1fr;
-  }
-}
+  }}
 
 .metric-card {
   min-width: 0;
