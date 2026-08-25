@@ -993,9 +993,33 @@ function NeedsReviewRow({
         <div className="hub-list-row__line3 payment-reason">
           <StatusBadge tone="review">نیاز به بررسی</StatusBadge>
           <span className="payment-reason__text">{reasonText(item.suspectReason)}</span>
+          <ReceiptMark item={item} />
         </div>
       </button>
     </li>
+  );
+}
+
+/**
+ * Whether this claim has a receipt behind it — on the row, before anyone opens
+ * anything.
+ *
+ * The list has carried `hasReceipt` since the viewer was built and no row ever
+ * showed it, so the one fact that decides whether an operator has evidence to
+ * look at was only discoverable by opening each claim in turn. Sam sent a
+ * receipt through the bot on 2026-08-25, looked at this queue, and could not
+ * tell his claim from the three beside it that have nothing.
+ *
+ * Silent when there is no receipt. An absent receipt is the ordinary case — the
+ * customer pressed the button and sent nothing — and a row that announced it
+ * would put a warning on most of the queue for no decision.
+ */
+function ReceiptMark({ item }: { item: PaymentItem }) {
+  if (item.hasReceipt !== true) return null;
+  return (
+    <span className="payment-reason__receipt" title="مشتری رسید فرستاده است">
+      📸 رسید دارد
+    </span>
   );
 }
 
@@ -1019,8 +1043,9 @@ function WaitingRow({ item, onDetails }: { item: PaymentItem; onDetails: () => v
         <div className="hub-list-row__line2 muted">
           سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
         </div>
-        <div className="hub-list-row__line3">
+        <div className="hub-list-row__line3 payment-reason">
           <StatusBadge tone="waiting">{waitNote}</StatusBadge>
+          <ReceiptMark item={item} />
         </div>
       </button>
     </li>
@@ -1079,18 +1104,34 @@ function SuspectedFakeRow({
         </div>
         <div className="hub-list-row__line3 payment-reason">
           <StatusBadge tone="suspected">{reasonText(item.suspectReason)}</StatusBadge>
+          <ReceiptMark item={item} />
         </div>
       </button>
       <div className="hub-list-row__inline-actions">
+        {/*
+          «بررسی» first, and it is new.
+
+          The row body has always been a button that opens the review, and
+          nothing said so — so the only thing an operator could SEE on a claim
+          in this queue was «حذف», a destructive action sitting where the
+          primary one belongs. Sam looked at this screen on 2026-08-25, saw four
+          rows offering nothing but delete, and reported that the receipt he had
+          just sent was nowhere. It was there. There was no visible way in.
+        */}
         {!confirmRemove ? (
-          <button
-            type="button"
-            className="ghost hub-list-row__action"
-            disabled={busy}
-            onClick={() => setConfirmRemove(true)}
-          >
-            حذف
-          </button>
+          <>
+            <button type="button" className="primary hub-list-row__action" onClick={onReview}>
+              بررسی
+            </button>
+            <button
+              type="button"
+              className="ghost hub-list-row__action"
+              disabled={busy}
+              onClick={() => setConfirmRemove(true)}
+            >
+              حذف
+            </button>
+          </>
         ) : (
           <>
             <button
@@ -1320,6 +1361,7 @@ function AllRow({ item, onOpen }: { item: PaymentItem; onOpen: () => void }) {
         </div>
         <div className="hub-list-row__line2 muted">
           سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
+          <ReceiptMark item={item} />
         </div>
       </button>
     </li>

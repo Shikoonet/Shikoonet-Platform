@@ -4403,3 +4403,18 @@
 .review-page .payment-review > .drawer-section:last-child {
   grid-column: 1 / -1;
 }
+/* Whether a claim has evidence behind it, on the row.
+ *
+ * The list has carried `hasReceipt` since the receipt viewer was built and no
+ * row showed it, so an operator could not tell a claim with a receipt from one
+ * without except by opening each in turn. Quiet rather than loud: it marks the
+ * minority that HAVE one, and says nothing about the rest, because arriving
+ * without a receipt is the ordinary case and not a warning. */
+.payment-reason__receipt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}

@@ -926,3 +926,61 @@ describe('PaymentsView تایید خودکار ربات read state', () => {
     });
   });
 });
+
+describe('what a row in the review queue offers, and what it says it has', () => {
+  /*
+   * Both of these come from one screenshot. Sam sent a receipt through the bot
+   * on 2026-08-25, opened «در انتظار بررسی» on the live panel, and reported
+   * that what I had described was not there.
+   *
+   * It was there. Two things hid it:
+   *
+   *   - the row body has always been a button that opens the review, and
+   *     nothing said so, so the only VISIBLE control on a suspected claim was
+   *     «حذف» — a destructive action standing where the primary one belongs;
+   *   - the list has carried `hasReceipt` since the viewer was built and no row
+   *     ever rendered it, so a claim with evidence looked exactly like one
+   *     without.
+   */
+  it('offers «بررسی» beside «حذف», not «حذف» alone', async () => {
+    mockApi({
+      needs_review: [],
+      suspected_fake: [
+        item({ id: 'sf-a', reviewState: 'SUSPECTED_FAKE', suspectReason: 'NO_TRANSACTION_AFTER_10M' }),
+      ],
+    });
+    renderView();
+    await goOpenQueue();
+
+    // The destructive one must not be the only way to act on a payment.
+    expect(await screen.findByRole('button', { name: 'بررسی' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'حذف' })).toBeTruthy();
+  });
+
+  it('says on the row when a claim has a receipt, and stays quiet when it does not', async () => {
+    mockApi({
+      needs_review: [],
+      suspected_fake: [
+        item({ id: 'sf-with', reviewState: 'SUSPECTED_FAKE', suspectReason: 'NO_TRANSACTION_AFTER_10M', hasReceipt: true }),
+      ],
+    });
+    renderView();
+    await goOpenQueue();
+    expect(await screen.findByText(/رسید دارد/)).toBeTruthy();
+  });
+
+  it('does not mark a claim that has none', async () => {
+    // Silence is the point: arriving without a receipt is the ordinary case,
+    // and a mark on every row would be a mark on none.
+    mockApi({
+      needs_review: [],
+      suspected_fake: [
+        item({ id: 'sf-without', reviewState: 'SUSPECTED_FAKE', suspectReason: 'NO_TRANSACTION_AFTER_10M', hasReceipt: false }),
+      ],
+    });
+    renderView();
+    await goOpenQueue();
+    await screen.findByRole('button', { name: 'بررسی' });
+    expect(screen.queryByText(/رسید دارد/)).toBeNull();
+  });
+});

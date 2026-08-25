@@ -68,13 +68,28 @@ function VersionBadge() {
 
   if (!info) return null;
   const isProd = info.env === 'production';
+  /*
+   * Seven characters, because `APP_VERSION` is a full git sha.
+   *
+   * On production the badge printed `v` followed by all forty of them, so the
+   * header carried `v70fb1055bd5fff3e378c0296d4eb2887ae2d66ae` — wider than the
+   * «بررسی» tab beside it, and unreadable at any width. Sam's screenshot of the
+   * live panel on 2026-08-25 is a strip of hexadecimal where a version should
+   * be.
+   *
+   * Seven is what git itself abbreviates to and what a person can compare
+   * against `git log` at a glance. The whole value stays in `title`, so nothing
+   * is lost for the one case that wants it — and the slice is harmless if the
+   * value is ever a real version like `1.4.2`, which is shorter than seven.
+   */
+  const short = info.version.slice(0, 7);
 
   return (
     <span
       className={`env-badge${isProd ? '' : ' env-badge--nonprod'}`}
-      title={`${info.env} — v${info.version}`}
+      title={`${info.env} — ${info.version}`}
     >
-      {isProd ? `v${info.version}` : `${info.env.toUpperCase()} v${info.version}`}
+      {isProd ? `v${short}` : `${info.env.toUpperCase()} v${short}`}
     </span>
   );
 }
