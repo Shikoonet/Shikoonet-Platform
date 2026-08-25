@@ -106,3 +106,58 @@ describe('the hub stylesheet is scoped to .hub', () => {
     expect(loose).toEqual([]);
   });
 });
+
+/**
+ * A badge that names a tone the stylesheet does not define is invisible, and
+ * invisible in the way that is hardest to notice: it still renders, still
+ * carries its text, and simply looks like every other badge on the screen.
+ *
+ * `StatusBadge` emits `status-badge status-badge--${tone}`. It used to be
+ * `StatusChip` emitting `status-chip--${tone}`, and the rename moved the
+ * component and half the stylesheet. `--verified` and `--neutral` were carried
+ * over as doubled selectors; `--review`, `--waiting` and `--suspected` were
+ * not, so the whole of «در انتظار بررسی» — three different kinds of attention
+ * — drew three identical grey pills for weeks. Sam described that screen as
+ * «نمیدونم چی به چیه».
+ *
+ * The tone union is the outside truth here, read from the component's own
+ * source rather than restated: a tenth tone added tomorrow has to bring a rule
+ * with it or fail here.
+ */
+describe('every badge tone the component can emit', () => {
+  const COMPONENT = readFileSync(resolve(process.cwd(), 'src/hub/paymentsComponents.tsx'), 'utf8');
+
+  /** `StatusBadgeTone`'s members, parsed out of the union declaration. */
+  const TONES = (() => {
+    const decl = /export type StatusBadgeTone =([\s\S]*?);/.exec(COMPONENT);
+    if (!decl) throw new Error('StatusBadgeTone is not declared the way this test reads it');
+    return [...decl[1]!.matchAll(/'([a-z-]+)'/g)].map((m) => m[1]!);
+  })();
+
+  it('parses the union rather than trusting a copy of it', () => {
+    // If the shape of the declaration changes, the sweep below would silently
+    // check nothing. This is the tripwire for that.
+    expect(TONES.length).toBeGreaterThanOrEqual(7);
+    expect(TONES).toContain('no-transfer');
+  });
+
+  it('has a rule in the stylesheet', () => {
+    const defined = new Set(
+      [...CSS.matchAll(/\.status-badge--([a-z-]+)/g)].map((m) => m[1]!),
+    );
+    expect(TONES.filter((t) => !defined.has(t))).toEqual([]);
+  });
+
+  it('is defined after the base rule, whose border shorthand would win', () => {
+    // `.status-badge` sets `border: 1px solid transparent`. Equal specificity,
+    // so source order decides: a modifier above the base loses its
+    // `border-color` outright. `--verified` did, for as long as it existed.
+    const base = CSS.indexOf('\n.status-badge {');
+    expect(base).toBeGreaterThan(-1);
+    const early = TONES.filter((t) => {
+      const at = CSS.indexOf(`\n.status-badge--${t} {`);
+      return at > -1 && at < base;
+    });
+    expect(early).toEqual([]);
+  });
+});

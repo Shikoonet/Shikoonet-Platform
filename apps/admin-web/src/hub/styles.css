@@ -678,43 +678,14 @@
   font-weight: 700;
 }
 
-.status-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.12rem 0.45rem;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  border: 1px solid transparent;
-  white-space: nowrap;
-}
-
-.status-chip--review {
-  color: var(--gold);
-  background: var(--gold-muted);
-  border-color: var(--border-gold);
-}
-
-.status-chip--waiting {
-  color: var(--warning);
-  background: rgba(251, 191, 36, 0.12);
-  border-color: rgba(251, 191, 36, 0.25);
-}
-
-.status-chip--suspected {
-  color: var(--danger);
-  background: rgba(248, 113, 113, 0.12);
-  border-color: rgba(248, 113, 113, 0.25);
-}
-
-.status-chip--verified,
-.status-badge--verified {
-  color: var(--success);
-  background: rgba(52, 211, 153, 0.12);
-  border-color: rgba(52, 211, 153, 0.25);
-}
-
+/*
+ * The base first, and that ordering is load-bearing.
+ *
+ * It sets `border: 1px solid transparent` — a shorthand, so it resets
+ * `border-color`. `--verified` used to sit above it with equal specificity,
+ * which meant the base won and the green border was thrown away on every
+ * verified badge in the panel. Modifiers go after.
+ */
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -725,6 +696,12 @@
   letter-spacing: 0.02em;
   border: 1px solid transparent;
   white-space: nowrap;
+}
+
+.status-badge--verified {
+  color: var(--success);
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.25);
 }
 
 .status-badge--bot {
@@ -743,7 +720,39 @@
   font-size: 0.6875rem;
 }
 
-.status-chip--neutral,
+/*
+ * The three tones of «در انتظار بررسی», which had no rules at all.
+ *
+ * `.status-chip` and `.status-badge` were byte-identical base rules — a rename
+ * that stopped halfway. `--verified` and `--neutral` were carried across as
+ * doubled selectors; `--review`, `--waiting` and `--suspected` were left on the
+ * old prefix while `StatusBadge` emitted the new one. So every badge in the
+ * review queue fell back to bare `.status-badge` and every row looked alike.
+ *
+ * Ordered by what the operator should do, which is not the order they arrive
+ * in: a claim still inside its ten minutes wants nothing from anyone, so it is
+ * the quiet one.
+ */
+.status-badge--waiting {
+  color: var(--text-secondary);
+  background: var(--surface-muted);
+  border-color: var(--border-subtle);
+}
+
+/* The window closed with no bank credit — the reason to open the row. */
+.status-badge--no-transfer {
+  color: var(--warning);
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.25);
+}
+
+/* Evidence exists and disagrees with itself; the most specific work there is. */
+.status-badge--review {
+  color: var(--gold);
+  background: var(--gold-muted);
+  border-color: var(--border-gold);
+}
+
 .status-badge--neutral {
   color: var(--text-secondary);
   background: var(--surface-muted);
