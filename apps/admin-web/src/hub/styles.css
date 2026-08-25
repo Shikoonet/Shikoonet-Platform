@@ -317,27 +317,6 @@
   padding-top: var(--space-sm);
 }
 
-.app-tabs {
-  margin: 0;
-  border-bottom: 0;
-  gap: 0.15rem;
-}
-
-.app-tabs .tab {
-  padding: 0.45rem 0.85rem;
-  font-size: 0.875rem;
-  font-weight: 500;
-  border-radius: var(--radius-sm);
-  border-bottom: 0;
-  color: var(--text-muted);
-}
-
-.app-tabs .tab.active {
-  color: var(--gold);
-  background: var(--gold-muted);
-  box-shadow: inset 0 0 0 1px var(--border-gold);
-}
-
 @media (max-width: 1023px) {
   .shikoonet-header__bar {
     grid-template-columns: 1fr auto;
@@ -413,12 +392,6 @@
 
 .operator-menu__item:hover {
   background: var(--surface-hover);
-}
-
-.operator-menu__divider {
-  height: 1px;
-  margin: 0.25rem 0;
-  background: var(--border-subtle);
 }
 
 /* === Unified date control === */
@@ -521,14 +494,6 @@
   flex-shrink: 0;
 }
 
-.page-header--compact {
-  margin-bottom: var(--space-md);
-}
-
-.page-header--compact .page-header__title {
-  font-size: 1.1rem;
-}
-
 .section-heading {
   margin: 0 0 var(--space-md);
   font-size: 0.95rem;
@@ -606,52 +571,6 @@
   flex-direction: column;
   gap: var(--space-sm);
   min-width: 0;
-}
-
-.payments-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-md);
-  padding-bottom: var(--space-sm);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.payments-header__brand {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-md);
-  min-width: 0;
-}
-
-.payments-header__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: var(--radius-md);
-  background: var(--accent-muted);
-  color: var(--accent);
-  flex-shrink: 0;
-  box-shadow: var(--shadow-glow);
-}
-
-.payments-header__title {
-  margin: 0;
-  font-size: 1.15rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.payments-header__desc {
-  margin: 0.15rem 0 0;
-  font-size: 0.8125rem;
-}
-
-.payments-header__actions {
-  flex-shrink: 0;
 }
 
 .compact-empty,
@@ -1282,33 +1201,6 @@
   color: var(--gold);
 }
 
-.stats-rail__list {
-  margin: 0;
-}
-
-.stats-rail__row {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-md);
-  padding: 0.35rem 0;
-  border-bottom: 1px solid var(--border-subtle);
-  font-size: 0.8125rem;
-}
-
-.stats-rail__row:last-child {
-  border-bottom: 0;
-}
-
-.stats-rail__row dt {
-  color: var(--text-muted);
-}
-
-.stats-rail__row dd {
-  margin: 0;
-  text-align: end;
-  font-weight: 600;
-}
-
 .stats-rail__sub {
   display: block;
   font-size: 0.75rem;
@@ -1801,12 +1693,6 @@
   align-items: center;
 }
 
-/* === Drawer sections === */
-.drawer-title {
-  margin: 0 0 var(--space-lg);
-  font-size: 1.1rem;
-}
-
 .drawer-section {
   margin-bottom: var(--space-xl);
   padding-bottom: var(--space-md);
@@ -1826,13 +1712,6 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
-}
-
-/* === Account usage ranked list === */
-.account-analytics--compact .account-usage-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
 }
 
 .account-usage-row {
@@ -1966,28 +1845,9 @@
   transition: border-color 120ms ease;
 }
 
-.notification-bell__item:hover {
-  background: var(--surface-muted);
-}
-
 .notification-bell__badge {
   background: var(--accent);
   color: var(--background);
-}
-
-.refresh-button {
-  background: none;
-  border: 1px solid var(--border, #d0d7de);
-  border-radius: 6px;
-  padding: 0.35rem 0.6rem;
-  font-size: 1rem;
-  line-height: 1;
-  cursor: pointer;
-  color: inherit;
-}
-
-.refresh-button:hover {
-  background: var(--glass-sheen, rgba(0, 0, 0, 0.04));
 }
 
 /*
@@ -2120,44 +1980,6 @@
   padding: 0.4rem 0.7rem;
   font-size: 1.1rem;
   line-height: 1;
-}
-
-/* `.drawer`, `.drawer--right` and `.drawer-backdrop` were here, with
- * `Drawer.tsx`, and all four are gone.
- *
- * The only thing still using them was «بررسی پرداخت», which is a page now —
- * see `.review-page` at the end of this file. The drawer was
- * `width: min(360px, 90vw)` and it was holding the screen where somebody
- * decides about real money.
- *
- * `.drawer-section` and `.drawer-title` below are NOT part of that and stay:
- * they are the panel's own section styling, named after the container it used
- * to sit in. Renaming them is a rename of forty call sites for no behaviour,
- * so the names outlive the drawer. This note is here so the next reader does
- * not go looking for a component that no longer exists.
- */
-
-.drawer-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.drawer-link {
-  background: transparent;
-  color: var(--text-primary);
-  border: 0;
-  text-align: start;
-  padding: 0.85rem 1rem;
-  border-radius: 6px;
-  font-size: 1rem;
-  min-height: 44px;
-  border-bottom: 2px solid transparent;
-}
-
-.drawer-link.active {
-  background: var(--gold-muted);
-  border-bottom-color: var(--gold);
 }
 
 /* === Tabs === */
@@ -2312,52 +2134,6 @@
   cursor: pointer;
 }
 
-.payments-tab-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin: 0.5rem 0;
-}
-
-.history-date-nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: center;
-}
-
-.history-day-nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-}
-
-.history-day-nav__label {
-  font-weight: 600;
-  min-width: 9rem;
-  text-align: center;
-}
-
-.history-day-nav__picker {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.history-day-nav__picker input[type='date'] {
-  max-width: 9rem;
-}
-
-.statistics-overview--three {
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-}
-
-.account-analytics--compact .account-usage-list {
-  list-style: none;
-  padding: 0;
-  margin: 0.75rem 0 0;
-}
-
 .account-usage-row {
   display: flex;
   flex-wrap: wrap;
@@ -2365,13 +2141,6 @@
   gap: 0.5rem 1rem;
   padding: 0.55rem 0;
   border-bottom: 1px solid var(--border, #eee);
-}
-
-.account-usage-row__metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  font-size: 0.9rem;
 }
 
 .visually-hidden {
@@ -2384,15 +2153,6 @@
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
-}
-
-.payment-row__select {
-  align-self: flex-start;
-  margin-inline-end: 0.5rem;
-}
-
-.payment-row--declined-income {
-  border-inline-start: 3px solid var(--text-muted, #888);
 }
 
 .notification-bell__dropdown {
@@ -2495,49 +2255,6 @@
   font-size: 0.85rem;
   color: var(--text-muted);
   margin: 0;
-}
-
-.notification-bell__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.notification-bell__item {
-  display: grid;
-  grid-template-columns: 1.5rem 1fr 1.5fr auto;
-  gap: 0.5rem;
-  width: 100%;
-  padding: 0.4rem 0.5rem;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  text-align: start;
-  font-family: inherit;
-  font-size: 0.85rem;
-  min-height: 0;
-  min-width: 0;
-}
-
-.notification-bell__item:hover {
-  background: var(--surface);
-}
-
-.notification-bell__item .dir {
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.notification-bell__item .account {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.notification-bell__item .status {
-  color: var(--text-muted);
-  font-size: 0.75rem;
 }
 
 /* === New banner === */
@@ -2666,147 +2383,13 @@
   margin: 0;
 }
 
-/* "More" dropdown menu shown inside .actions-cell. Native <details> +
-   <summary> so no extra state — opens on click, closes when the user
-   clicks outside or selects an item. */
-.actions-more {
-  position: relative;
-}
-
-.actions-more summary {
-  list-style: none;
-  cursor: pointer;
-  background: transparent;
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  padding: 0.55rem 0.95rem;
-  border-radius: 6px;
-  font-weight: 500;
-  min-height: 44px;
-  min-width: 44px;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.actions-more summary::-webkit-details-marker {
-  display: none;
-}
-
-.actions-more summary::after {
-  content: '▾';
-  font-size: 0.8em;
-  opacity: 0.8;
-}
-
-.actions-more[open] summary {
-  background: var(--accent);
-  color: var(--background);
-  border-color: var(--accent);
-}
-
-.actions-more[open] summary::after {
-  content: '▴';
-}
-
-.actions-more-menu {
-  position: absolute;
-  inset-inline-end: 0;
-  top: calc(100% + 0.25rem);
-  background: var(--surface-overlay);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.4rem;
-  min-width: 200px;
-  z-index: 5;
-  display: grid;
-  gap: 0.4rem;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
-}
-
-.actions-more-menu button {
-  width: 100%;
-  text-align: start;
-  background: transparent;
-  color: var(--text-primary);
-  border: 1px solid transparent;
-  padding: 0.55rem 0.75rem;
-  border-radius: 4px;
-  min-height: 44px;
-}
-
-.actions-more-menu button:hover {
-  border-color: var(--border);
-  background: var(--gold-muted);
-}
-
-.actions-more-menu button.danger {
-  background: transparent;
-  color: var(--danger);
-}
-
-/* === Portal-based "More" menu (replaces native <details>) ===
-   .data-table-wrapper's `overflow-x: auto` clips position:absolute
-   descendants — so the More menu must escape the wrapper via a React
-   portal into document.body. The trigger stays in-flow; the menu is
-   position:fixed with coordinates recomputed from the trigger's
-   getBoundingClientRect().
-
-   Structure is two divs:
-     .more-menu-portal  — outer wrapper, position:fixed, z-index:1200
-     .more-menu-panel   — inner panel with the opaque background
-
-   The panel MUST be opaque (no rgba, no alpha) — it sits above table
-   rows and any transparency would leak the underlying text through. */
-.actions-more-trigger {
-  list-style: none;
-  cursor: pointer;
-  background: transparent;
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  padding: 0.55rem 0.95rem;
-  border-radius: 6px;
-  font-weight: 500;
-  min-height: 44px;
-  min-width: 44px;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-family: inherit;
-  font-size: 1rem;
-}
-.actions-more-trigger[aria-expanded='true'] {
-  background: var(--accent);
-  color: var(--background);
-  border-color: var(--accent);
-}
-.actions-more-trigger__caret {
-  font-size: 0.8em;
-  opacity: 0.8;
-}
-
-/* === Compact-desktop table (1200–1439px) ===
-   Only used by the Unmatched compact 6-column table. The fixed layout
-   here lets us guarantee the 6 columns split the available width with
-   no per-cell wrapping of short fields. */
-.unmatched-table--compact {
-  table-layout: fixed;
-  min-width: 720px;
-}
-
-.unmatched-table--compact th,
-.unmatched-table--compact td {
-  overflow-wrap: normal;
-}
-
 /* === Compact tables for Today / Suggested / Reviewed (1200–1439px) ===
    The compact variant drops the standalone Device column and folds
    display_name + device_code into the Account cell. Same shared rules as
    the Unmatched compact table: fixed layout, no per-letter wrapping, no
    document overflow. */
 .today-table--compact,
-.suggested-table--compact,
-.reviewed-table--compact {
+.suggested-table--compact {
   table-layout: fixed;
   min-width: 0;
 }
@@ -2814,9 +2397,7 @@
 .today-table--compact th,
 .today-table--compact td,
 .suggested-table--compact th,
-.suggested-table--compact td,
-.reviewed-table--compact th,
-.reviewed-table--compact td {
+.suggested-table--compact td {
   overflow-wrap: normal;
 }
 
@@ -2970,34 +2551,6 @@
   color: var(--danger);
 }
 
-/* === Payment review inbox === */
-.payments-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5rem 1.5rem;
-  margin-bottom: 0.75rem;
-}
-
-.payments-summary h2 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.payments-summary__stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 1.25rem;
-  color: var(--text-muted, #94a3b8);
-  font-size: 0.9rem;
-}
-
-.payments-summary__stats strong {
-  color: inherit;
-  font-size: 1.05rem;
-  margin-inline-end: 0.25rem;
-}
-
 .payments-filters {
   display: flex;
   flex-wrap: wrap;
@@ -3011,133 +2564,6 @@
   flex-direction: column;
   gap: 0.2rem;
   font-size: 0.8rem;
-}
-
-.payment-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.payment-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.75rem 0.9rem;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 10px;
-}
-
-.payment-row--review {
-  border-inline-start: 4px solid var(--warning);
-}
-
-.payment-row--auto {
-  border-inline-start: 4px solid var(--success);
-}
-
-.payments-nav {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0.75rem 0;
-}
-
-.payments-nav__dropdown {
-  position: relative;
-}
-
-.payments-nav__trigger,
-.payments-nav__reseller {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.45rem 0.75rem;
-  border: 1px solid var(--border, #ddd);
-  border-radius: 8px;
-  background: var(--background);
-  font: inherit;
-  cursor: pointer;
-}
-
-.payments-nav__trigger--open,
-.payments-nav__reseller--active {
-  border-color: var(--accent, #2563eb);
-  box-shadow: inset 0 0 0 1px var(--accent, #2563eb);
-}
-
-.payments-nav__menu {
-  position: absolute;
-  top: calc(100% + 0.35rem);
-  inset-inline-start: 0;
-  min-width: 12rem;
-  background: var(--background);
-  border: 1px solid var(--border, #ddd);
-  border-radius: 8px;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
-  z-index: 20;
-  padding: 0.35rem;
-}
-
-.payments-nav__item {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  width: 100%;
-  text-align: start;
-  padding: 0.45rem 0.55rem;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-}
-
-.payments-nav__item:hover,
-.payments-nav__item--active {
-  background: rgba(37, 99, 235, 0.08);
-}
-
-.payments-nav__check {
-  width: 1rem;
-  color: var(--accent, #2563eb);
-}
-
-.payment-row--auto-compact {
-  padding: 0;
-  border-inline-start: 3px solid var(--success);
-}
-
-.payment-row--auto-compact__button {
-  display: block;
-  width: 100%;
-  text-align: start;
-  padding: 0.45rem 0.65rem;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-}
-
-.payment-row--auto-compact__line1,
-.payment-row--auto-compact__line2,
-.payment-row--auto-compact__line3 {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.payment-row--auto-compact__line2,
-.payment-row--auto-compact__line3 {
-  font-size: 0.9rem;
-  margin-top: 0.1rem;
 }
 
 .account-usage-row__head {
@@ -3168,106 +2594,14 @@
   grid-template-columns: 1fr 1fr;
 }
 
-.payment-row__main {
-  flex: 1 1 18rem;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.payment-row__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.payment-row__time {
-  margin-inline-start: auto;
-  font-size: 0.8rem;
-}
-
-.payment-row__amount {
-  font-size: 1.05rem;
-  font-weight: 600;
-}
-
-.payment-row__target {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.35rem;
-}
-
-.payment-row__actions {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  align-items: flex-end;
-  flex-shrink: 0;
-}
-
-.payment-row__confirm {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  align-items: flex-end;
-  max-width: 14rem;
-  text-align: end;
-}
-
 .payment-review__remove {
   width: 100%;
-}
-
-.payments-toolbar {
-  margin-bottom: 0.75rem;
 }
 
 .history-range {
   display: flex;
   gap: 0.5rem;
   align-items: center;
-}
-
-.payments-summary--financial .payments-summary__stats {
-  flex-wrap: wrap;
-}
-
-.payments-queue-hint {
-  margin: 0;
-  padding: 0.35rem 0.55rem;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  background: transparent;
-  border-inline-start: 2px solid var(--accent);
-}
-
-
-.reseller-stats {
-  margin: 0.75rem 0;
-  padding: 0.75rem;
-  border: 1px solid var(--border, #ddd);
-  border-radius: 6px;
-}
-
-.reseller-stats__table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 0.5rem;
-  font-size: 0.9rem;
-}
-
-.reseller-stats__table th,
-.reseller-stats__table td {
-  text-align: start;
-  padding: 0.35rem 0.5rem;
-  border-bottom: 1px solid var(--border, #eee);
-}
-
-.payments-summary--analytics .payments-summary__highlight {
-  flex-basis: 100%;
 }
 
 .sales-trend {
@@ -3318,121 +2652,8 @@
   font-size: 0.85rem;
 }
 
-.statistics__toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.statistics__title {
-  margin: 0;
-  font-size: 1.1rem;
-}
-
-.statistics__charts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1rem;
-  margin: 1rem 0;
-}
-
 .statistics__chart-card {
   grid-column: 1 / -1;
-}
-
-.statistics__summary-muted {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1.5rem;
-  margin-bottom: 1.5rem;
-  font-size: 0.9rem;
-}
-
-.statistics-overview {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-}
-
-/*
- * A seven-rule redefinition of `.stat-card` was here — and the hub does not use
- * `.stat-card`.
- *
- * Not once: `className="stat-card"` appears zero times under `src/hub`, and the
- * class never appears in the DOM of any of the six «پول» screens at any of
- * three viewport widths. What these screens actually draw is
- * `.statistics-overview` and `.statistics-chart-card`, right above and below
- * this note, which are theirs and are staying.
- *
- * It was one of the six primitives this file was said to give a second meaning
- * to. The second meaning had no readers.
- */
-
-.statistics-chart-card {
-  padding: 0.75rem;
-  border: 1px solid var(--border, #ddd);
-  border-radius: 8px;
-}
-
-.statistics-chart-card h3 {
-  margin: 0 0 0.75rem;
-  font-size: 0.95rem;
-}
-
-.account-analytics {
-  margin-top: 2rem;
-}
-
-.account-analytics__summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem 1.25rem;
-  margin-bottom: 1rem;
-  font-size: 0.9rem;
-}
-
-.account-bars {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.account-bar-row {
-  padding: 0.75rem 0;
-  border-bottom: 1px solid var(--border, #eee);
-}
-
-.account-bar-row__head {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.35rem;
-}
-
-.account-bar-row__metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  font-size: 0.9rem;
-}
-
-.account-bar-row__bar {
-  height: 0.45rem;
-  background: var(--accent, #38bdf8);
-  border-radius: 3px;
-  max-width: 100%;
-}
-
-.account-bar-row__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-top: 0.35rem;
-  font-size: 0.8rem;
 }
 
 .warn {
@@ -3575,13 +2796,6 @@
   gap: 1rem;
 }
 
-.matches-section {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  min-width: 0;
-}
-
 /* === Modal === */
 .modal-backdrop {
   position: fixed;
@@ -3629,8 +2843,7 @@
 }
 
 .accounts h2,
-.accounts h4,
-.matches-section h4 {
+.accounts h4 {
   margin: 1rem 0 0.5rem;
 }
 
@@ -3829,18 +3042,6 @@
      page wider than the viewport. */
   user-select: text;
   cursor: text;
-}
-
-/* === Detected identifier stack === */
-.detected-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  min-width: 0;
-  max-width: 100%;
-}
-.detected-stack--rows .identifier {
-  margin-bottom: 0;
 }
 
 /* === Danger / wider modal for delete === */
@@ -4063,8 +3264,7 @@
   line-height: 1.15;
 }
 
-.stats-rail__grid-row dd,
-.stats-rail__row dd {
+.stats-rail__grid-row dd {
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
   word-break: break-word;

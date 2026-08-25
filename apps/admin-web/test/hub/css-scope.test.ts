@@ -23,8 +23,18 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
+/** Every source file under a directory, recursively. */
+function filesUnder(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const p = join(dir, entry);
+    if (statSync(p).isDirectory()) filesUnder(p, out);
+    else if (/\.(tsx?|html)$/.test(p)) out.push(p);
+  }
+  return out;
+}
 
 const CSS = readFileSync(resolve(process.cwd(), 'src/hub/styles.css'), 'utf8');
 const PANEL_CSS = readFileSync(resolve(process.cwd(), 'src/theme.css'), 'utf8');
@@ -159,5 +169,73 @@ describe('every badge tone the component can emit', () => {
       return at > -1 && at < base;
     });
     expect(early).toEqual([]);
+  });
+});
+
+/**
+ * A rule whose class no file mentions cannot reach the browser.
+ *
+ * `hub/styles.css` is on its way out — the five money screens move onto
+ * `theme.css` primitives and the file gets deleted. Until then it keeps
+ * accumulating rules for markup that has already been rewritten: 801 lines of
+ * it were removed on 2026-08-25, whole families at a time — `.payment-row*`
+ * (the list before `hub-list-row`), `.payments-nav__*` (before `ops-nav`),
+ * `.drawer-*` (the component was deleted three commits ago).
+ *
+ * This makes the file one-way. It is a source-level check, which is weaker
+ * than asking a browser what it rendered — a class can be written and never
+ * used — but what it catches, it catches with certainty: if the string is in
+ * no file, nothing can put it in the DOM.
+ *
+ * `test/` and `e2e/` count as source. A Playwright spec selects by class, and
+ * calling one dead would turn the browser run red — the slowest place to find
+ * out.
+ */
+describe('rules for markup that no longer exists', () => {
+  const SOURCE = [
+    resolve(process.cwd(), 'src'),
+    resolve(process.cwd(), 'test'),
+    resolve(process.cwd(), '../dashboard-worker/e2e'),
+  ]
+    .flatMap((d) => filesUnder(d))
+    .map((f) => readFileSync(f, 'utf8'))
+    .join('\n');
+
+  /**
+   * Prefixes that appear immediately before an interpolation, e.g. the
+   * `status-badge--` of `` `status-badge--${tone}` ``.
+   *
+   * Without this the sweep reports every badge tone as dead, because no file
+   * contains the string `status-badge--verified`. A census whose output is a
+   * delete list has to answer "unknown", not "dead", when it cannot tell.
+   */
+  const DYNAMIC = [
+    ...new Set([...SOURCE.matchAll(/([a-zA-Z_][\w-]*)\$\{/g)].map((m) => m[1]!)),
+  ].filter((p) => p.length > 2);
+
+  const mentioned = (c: string) => SOURCE.includes(c) || DYNAMIC.some((p) => c.startsWith(p));
+
+  it('knows about interpolated class names', () => {
+    // The tripwire for the sweep below: if this stops holding, every dynamic
+    // class reads as dead and the assertion after it becomes noise.
+    expect(DYNAMIC).toContain('status-badge--');
+    expect(mentioned('status-badge--verified')).toBe(true);
+  });
+
+  it('are not in the stylesheet', () => {
+    const dead = topLevelSelectors(CSS).flatMap((rule) =>
+      rule
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .filter((arm) => {
+          // Inside :not()/:is()/:where()/:has() a dead class only narrows the
+          // match — the rule still fires, so it is not evidence of death.
+          const outside = arm.replace(/:(?:not|is|where|has)\([^()]*\)/g, ' ');
+          const named = [...outside.matchAll(/\.([a-zA-Z_][\w-]*)/g)].map((m) => m[1]!);
+          return named.length > 0 && named.some((c) => !mentioned(c));
+        }),
+    );
+    expect(dead).toEqual([]);
   });
 });
