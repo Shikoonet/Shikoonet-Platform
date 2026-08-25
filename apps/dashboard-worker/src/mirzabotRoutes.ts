@@ -856,6 +856,26 @@ export function registerMirzabotRoutes(
     }
 
     const statusFilter = url.searchParams.get('status');
+    /**
+     * One claim by id, for the review page's deep link.
+     *
+     * `?claim=` in the address bar opens «بررسی پرداخت» directly, and the
+     * screen resolved it by searching the page it had already loaded —
+     * `claimItems.find(...)` over `LIMIT 200`. A link to the 201st claim, or
+     * to one on another tab, rendered «این پرداخت در فهرست باز نیست», which
+     * reads as "somebody decided this" and is not what happened. On a queue of
+     * 505 that is most of them.
+     *
+     * A filter here rather than a `GET /payment-claims/:id`: everything the
+     * review page needs — the candidate transactions, the device, whether a
+     * receipt exists — is already assembled by the mapper below, and a second
+     * route would be a second copy of it that has to stay in step.
+     *
+     * It overrides the tab, deliberately. The point of the link is to reach a
+     * payment without knowing which queue it is sitting in.
+     */
+    const claimIdParam = url.searchParams.get('claim');
+    const claimId = claimIdParam && /^[A-Za-z0-9_-]{1,64}$/.test(claimIdParam) ? claimIdParam : null;
     const accountId = url.searchParams.get('accountId');
     const reason = url.searchParams.get('reason');
     const from = numParam(url.searchParams.get('from'));
@@ -880,54 +900,64 @@ export function registerMirzabotRoutes(
 
     const where = [`c.source_system = ${p(MIRZABOT_SOURCE)}`];
 
-    // The whole of «در انتظار بررسی», and it is deliberately not expressed as a
-    // `ReviewState`. The three old queues each described a SHAPE of claim and
-    // between them left a gap; this one describes the only thing that actually
-    // matters to an operator — nobody has decided about it yet — so there is no
-    // shape left for a row to fall between.
-    if (tab === 'open') where.push(PENDING_CLAIM);
+    /*
+     * `?claim=` answers with that one row and nothing else — no tab predicate,
+     * no range, no ordering that could push it past the limit. Returning early
+     * is the whole point: every filter below narrows, and any of them could
+     * narrow the one row the caller asked for back out of the answer.
+     */
+    if (claimId) {
+      where.push(`c.id = ${p(claimId)}`);
+    } else {
+      // The whole of «در انتظار بررسی», and it is deliberately not expressed as
+      // a `ReviewState`. The three old queues each described a SHAPE of claim
+      // and between them left a gap; this one describes the only thing that
+      // actually matters to an operator — nobody has decided about it yet — so
+      // there is no shape left for a row to fall between.
+      if (tab === 'open') where.push(PENDING_CLAIM);
 
-    const tabState: ReviewState | null =
-      tab === 'needs_review'
-        ? 'NEEDS_REVIEW'
-        : tab === 'waiting'
-          ? 'WAITING'
-          : tab === 'suspected_fake'
-            ? 'NO_TRANSFER_FOUND'
-            : tab === 'bot_auto_verified'
-              ? 'AUTO_VERIFIED'
-              : tab === 'manually_verified'
-                ? 'MANUALLY_VERIFIED'
-                : null;
-    if (tabState) where.push(stateSql(tabState));
-    if (tab === 'all' && statusFilter) {
-      const allowed: ReviewState[] = [
-        'AUTO_VERIFIED',
-        'NEEDS_REVIEW',
-        'MANUALLY_VERIFIED',
-        'WAITING',
-        'NO_TRANSFER_FOUND',
-        'REJECTED',
-        'FAKE',
-        'EXPIRED',
-      ];
-      if (allowed.includes(statusFilter as ReviewState)) {
-        const st = statusFilter as ReviewState;
-        where.push(stateSql(st));
+      const tabState: ReviewState | null =
+        tab === 'needs_review'
+          ? 'NEEDS_REVIEW'
+          : tab === 'waiting'
+            ? 'WAITING'
+            : tab === 'suspected_fake'
+              ? 'NO_TRANSFER_FOUND'
+              : tab === 'bot_auto_verified'
+                ? 'AUTO_VERIFIED'
+                : tab === 'manually_verified'
+                  ? 'MANUALLY_VERIFIED'
+                  : null;
+      if (tabState) where.push(stateSql(tabState));
+      if (tab === 'all' && statusFilter) {
+        const allowed: ReviewState[] = [
+          'AUTO_VERIFIED',
+          'NEEDS_REVIEW',
+          'MANUALLY_VERIFIED',
+          'WAITING',
+          'NO_TRANSFER_FOUND',
+          'REJECTED',
+          'FAKE',
+          'EXPIRED',
+        ];
+        if (allowed.includes(statusFilter as ReviewState)) {
+          const st = statusFilter as ReviewState;
+          where.push(stateSql(st));
+        }
       }
-    }
-    if (accountId) where.push(`c.target_financial_account_id = ${p(accountId)}`);
-    if (reason) where.push(`c.suspect_reason = ${p(reason)}`);
-    if (from != null) where.push(`${EFFECTIVE_TS} >= ${p(from)}`);
-    if (to != null) where.push(`${EFFECTIVE_TS} <= ${p(to)}`);
-    if (purchaseTypeForQuery) {
-      where.push(`c.purchase_type = ${p(purchaseTypeForQuery)}`);
-    }
+      if (accountId) where.push(`c.target_financial_account_id = ${p(accountId)}`);
+      if (reason) where.push(`c.suspect_reason = ${p(reason)}`);
+      if (from != null) where.push(`${EFFECTIVE_TS} >= ${p(from)}`);
+      if (to != null) where.push(`${EFFECTIVE_TS} <= ${p(to)}`);
+      if (purchaseTypeForQuery) {
+        where.push(`c.purchase_type = ${p(purchaseTypeForQuery)}`);
+      }
 
-    if (!OPEN_QUEUE_TABS.has(tab) && tab !== 'needs_review') {
-      const { start: rs, end: re } = historyRangeBounds(range, now, day);
-      if (rs != null && re != null) {
-        where.push(`${EFFECTIVE_TS} >= ${p(rs)} AND ${EFFECTIVE_TS} < ${p(re)}`);
+      if (!OPEN_QUEUE_TABS.has(tab) && tab !== 'needs_review') {
+        const { start: rs, end: re } = historyRangeBounds(range, now, day);
+        if (rs != null && re != null) {
+          where.push(`${EFFECTIVE_TS} >= ${p(rs)} AND ${EFFECTIVE_TS} < ${p(re)}`);
+        }
       }
     }
 

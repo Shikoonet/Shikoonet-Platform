@@ -212,7 +212,41 @@ export function PaymentsView({ cache }: { cache: Cache }) {
     tab === 'declined_income' ? ((data?.items ?? []) as DeclinedIncomeItem[]) : [];
   const resellerItems = tab === 'reseller' ? ((data?.items ?? []) as ResellerItem[]) : [];
   const counts = data?.counts;
-  const reviewing = claimItems.find((i) => i.id === reviewingId) ?? null;
+  const inLoadedPage = claimItems.find((i) => i.id === reviewingId) ?? null;
+
+  /**
+   * The claim a `?claim=` link points at, when it is not on the page in hand.
+   *
+   * `claimItems` is one `LIMIT 200` slice of one tab, and the review page used
+   * to resolve the link by searching it and nothing else. So the link worked
+   * for a claim near the top of the queue you happened to be on, and for
+   * every other claim it rendered «این پرداخت در فهرست باز نیست» — which reads
+   * as "somebody already decided this" and was not what happened. Found in the
+   * browser on 2026-08-25, on a queue of 505, using a link I had handed Sam an
+   * hour earlier.
+   *
+   * The key is the id, so opening the same payment twice costs one request,
+   * and it is only ever asked for when the list did not already answer.
+   */
+  const needsFetch = reviewingId !== null && inLoadedPage === null;
+  // A constant key when there is nothing to fetch, rather than a conditional
+  // hook: the comment on the early return below is a promise that every hook
+  // in this component runs unconditionally, and it is worth keeping.
+  const { data: fetchedClaim } = cache.useQuery<PaymentsResponse>(
+    needsFetch ? QK.payments(`claim=${reviewingId}`) : QK.payments('claim=idle'),
+    {
+      fetcher: async (signal) => {
+        if (!needsFetch) return { items: [] };
+        const r = await fetch(`/api/v1/payments?claim=${encodeURIComponent(reviewingId)}`, {
+          signal,
+        });
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json();
+      },
+    },
+  );
+  const reviewing =
+    inLoadedPage ?? (needsFetch ? ((fetchedClaim?.items ?? []).filter(isPaymentItem)[0] ?? null) : null);
 
   async function markClaimSeen(item: PaymentItem) {
     try {

@@ -532,3 +532,67 @@ describe('the open review queue', () => {
     expect(body.items.map((i) => i.id)).toContain('d-open');
   });
 });
+
+/**
+ * `?claim=<id>` — one payment, wherever it is sitting.
+ *
+ * The review page opens from the address bar (`?claim=` in
+ * `paymentsNav.tsx`), and it used to resolve that id by searching the page it
+ * had already loaded: `claimItems.find(...)` over one `LIMIT 200` slice of one
+ * tab. So the link worked for a claim near the top of the queue you happened
+ * to be on, and every other link rendered «این پرداخت در فهرست باز نیست» —
+ * which an operator reads as "somebody already decided this".
+ *
+ * Found in a browser on 2026-08-25, against a seeded queue of 505, using a
+ * link handed to Sam an hour earlier. No test could have caught it: the whole
+ * failure is that the row is outside the window, and every test here seeds a
+ * handful of rows.
+ *
+ * The filter answers with that row and nothing else — no tab predicate, no
+ * range, no ordering. That is what these assert, one narrowing at a time.
+ */
+describe('one claim by id', () => {
+  it('answers with the claim and nothing else', async () => {
+    await seedClaim('by-id-a');
+    await seedClaim('by-id-b');
+
+    const body = await get('claim=by-id-a');
+    expect(body.items.map((i) => i.id)).toEqual(['by-id-a']);
+  });
+
+  it('ignores the tab, because the point is not knowing which queue it is in', async () => {
+    // Decided, so it is in no open queue at all. A link to it still has to work
+    // — reading a settled payment is most of what a link gets used for.
+    await seedClaim('by-id-verified', { status: 'VERIFIED' });
+
+    expect((await get('tab=open&claim=by-id-verified')).items.map((i) => i.id)).toEqual([
+      'by-id-verified',
+    ]);
+    expect((await get('tab=bot_auto_verified&claim=by-id-verified')).items.map((i) => i.id)).toEqual(
+      ['by-id-verified'],
+    );
+  });
+
+  it('ignores the date range', async () => {
+    // Two months old, on a tab that applies `historyRangeBounds`. The range is
+    // the narrowing most likely to silently drop the answer, because the
+    // default is not «همه».
+    await seedClaim('by-id-old', {
+      status: 'VERIFIED',
+      paidClickedAt: Date.now() - 60 * 24 * 60 * 60_000,
+    });
+
+    const body = await get('tab=manually_verified&range=today&claim=by-id-old');
+    expect(body.items.map((i) => i.id)).toEqual(['by-id-old']);
+  });
+
+  it('answers empty for an id that does not exist, rather than the whole queue', async () => {
+    // The failure that matters if the filter is ever dropped: the parameter is
+    // ignored and 200 unrelated rows come back, which the screen would render
+    // as "found it" by picking the first one.
+    await seedClaim('by-id-present');
+
+    const body = await get('claim=no-such-claim');
+    expect(body.items).toEqual([]);
+  });
+});
