@@ -194,7 +194,7 @@ describe('reopen manual verification API', () => {
     expect(reviewBody.items.find((i) => i.id === 'c-reopen')).toBeTruthy();
   });
 
-  it('reclassifies to Suspected Fake when no evidence after threshold', async () => {
+  it('reclassifies to «واریزی پیدا نشد» when no evidence after threshold', async () => {
     const oldPaid = Date.now() - 20 * 60_000;
     const now = Date.now();
     await baseEnv.DB.prepare(
@@ -220,7 +220,7 @@ describe('reopen manual verification API', () => {
     const resp = await reopen('c-old', 'No real payment');
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as { reviewQueue: string };
-    expect(body.reviewQueue).toBe('SUSPECTED_FAKE');
+    expect(body.reviewQueue).toBe('NO_TRANSFER_FOUND');
   });
 
   it('concurrent reopen: exactly one wins', async () => {

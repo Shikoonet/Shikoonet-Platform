@@ -102,7 +102,7 @@ export type ReviewState =
   | 'NEEDS_REVIEW'
   | 'MANUALLY_VERIFIED'
   | 'WAITING'
-  | 'SUSPECTED_FAKE'
+  | 'NO_TRANSFER_FOUND'
   | 'REJECTED'
   | 'FAKE'
   | 'EXPIRED';
@@ -132,7 +132,7 @@ import type { PaymentTab } from './paymentsHubRoutes.js';
 
 const EFFECTIVE_TS = `COALESCE(c.paid_clicked_at, c.receipt_submitted_at, c.created_at)`;
 const PENDING_CLAIM = `c.status IN ('PENDING','MATCH_SUGGESTED')`;
-const SUSPECTED_FAKE_REASONS = `('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION')`;
+const NO_TRANSFER_REASONS = `('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION')`;
 
 /** The one match row that settled a claim, if any (auto beats manual). */
 const SETTLED_MATCH_ID = `
@@ -169,7 +169,7 @@ function deriveReviewState(
   if (claimStatus === 'REJECTED') return 'REJECTED';
   if (claimStatus === 'EXPIRED') return 'EXPIRED';
   if (suspectReason === 'NO_TRANSACTION_AFTER_10M' || suspectReason === 'NO_TRANSACTION') {
-    return 'SUSPECTED_FAKE';
+    return 'NO_TRANSFER_FOUND';
   }
   if (suspectReason) return 'NEEDS_REVIEW';
   // Everything else pending is WAITING, whether its ten minutes have run out or
@@ -197,7 +197,7 @@ function stateSql(state: ReviewState): string {
     case 'MANUALLY_VERIFIED':
       return `c.status = 'VERIFIED' AND (m.status IS NULL OR m.status = 'CONFIRMED')`;
     case 'NEEDS_REVIEW':
-      return `${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL AND c.suspect_reason NOT IN ${SUSPECTED_FAKE_REASONS}`;
+      return `${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL AND c.suspect_reason NOT IN ${NO_TRANSFER_REASONS}`;
     case 'WAITING':
       // No upper bound on the wait, and that removal is the fix.
       //
@@ -214,8 +214,8 @@ function stateSql(state: ReviewState): string {
       // account on purpose whenever the card is not mapped yet. So for those,
       // the exit condition never fires and the timer alone hid them forever.
       return `${PENDING_CLAIM} AND c.suspect_reason IS NULL`;
-    case 'SUSPECTED_FAKE':
-      return `${PENDING_CLAIM} AND c.suspect_reason IN ${SUSPECTED_FAKE_REASONS}`;
+    case 'NO_TRANSFER_FOUND':
+      return `${PENDING_CLAIM} AND c.suspect_reason IN ${NO_TRANSFER_REASONS}`;
     case 'REJECTED':
       return `c.status = 'REJECTED'`;
     case 'FAKE':
@@ -451,7 +451,7 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
            WHEN c.status = 'FAKE_RECEIPT' THEN 'FAKE'
            WHEN c.status = 'REJECTED' THEN 'REJECTED'
            WHEN c.status = 'EXPIRED' THEN 'EXPIRED'
-           WHEN ${PENDING_CLAIM} AND c.suspect_reason IN ${SUSPECTED_FAKE_REASONS} THEN 'SUSPECTED_FAKE'
+           WHEN ${PENDING_CLAIM} AND c.suspect_reason IN ${NO_TRANSFER_REASONS} THEN 'NO_TRANSFER_FOUND'
            WHEN ${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL THEN 'NEEDS_REVIEW'
            WHEN ${PENDING_CLAIM} AND c.suspect_reason IS NULL THEN 'WAITING'
            ELSE 'NEEDS_REVIEW'
@@ -479,7 +479,7 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
     NEEDS_REVIEW: 0,
     MANUALLY_VERIFIED: 0,
     WAITING: 0,
-    SUSPECTED_FAKE: 0,
+    NO_TRANSFER_FOUND: 0,
     REJECTED: 0,
     FAKE: 0,
     EXPIRED: 0,
@@ -493,7 +493,7 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
   }
 
   const decidedToday =
-    today.AUTO_VERIFIED + today.NEEDS_REVIEW + today.MANUALLY_VERIFIED + today.SUSPECTED_FAKE;
+    today.AUTO_VERIFIED + today.NEEDS_REVIEW + today.MANUALLY_VERIFIED + today.NO_TRANSFER_FOUND;
 
   const paymentUnread = actorEmail
     ? await getPaymentEventUnreadCounts(db as unknown as DomainD1Database, actorEmail)
@@ -513,7 +513,7 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
       ...total,
       needsReview: total.NEEDS_REVIEW,
       waiting: total.WAITING,
-      suspectedFake: total.SUSPECTED_FAKE,
+      suspectedFake: total.NO_TRANSFER_FOUND,
       /**
        * The badge on «در انتظار بررسی».
        *
@@ -525,7 +525,7 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
        * These three are exactly `PENDING`/`MATCH_SUGGESTED` — every other state
        * in this record is a decision somebody already made.
        */
-      open: total.NEEDS_REVIEW + total.WAITING + total.SUSPECTED_FAKE,
+      open: total.NEEDS_REVIEW + total.WAITING + total.NO_TRANSFER_FOUND,
       autoVerified: total.AUTO_VERIFIED,
       botAutoVerified: total.AUTO_VERIFIED,
       manuallyVerified: total.MANUALLY_VERIFIED,
@@ -893,7 +893,7 @@ export function registerMirzabotRoutes(
         : tab === 'waiting'
           ? 'WAITING'
           : tab === 'suspected_fake'
-            ? 'SUSPECTED_FAKE'
+            ? 'NO_TRANSFER_FOUND'
             : tab === 'bot_auto_verified'
               ? 'AUTO_VERIFIED'
               : tab === 'manually_verified'
@@ -906,7 +906,7 @@ export function registerMirzabotRoutes(
         'NEEDS_REVIEW',
         'MANUALLY_VERIFIED',
         'WAITING',
-        'SUSPECTED_FAKE',
+        'NO_TRANSFER_FOUND',
         'REJECTED',
         'FAKE',
         'EXPIRED',
@@ -1027,7 +1027,7 @@ export function registerMirzabotRoutes(
             ? now - (row.receipt_submitted_at ?? row.paid_clicked_at)!
             : null;
         const candidates =
-          state === 'NEEDS_REVIEW' || state === 'SUSPECTED_FAKE'
+          state === 'NEEDS_REVIEW' || state === 'NO_TRANSFER_FOUND'
             ? await loadCandidates(c.env.DB, row, suspectMeta.candidateTransactionIds ?? [])
             : [];
         const cardDigits = row.card_digits ?? meta.cardDigits ?? null;

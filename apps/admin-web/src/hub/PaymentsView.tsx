@@ -685,9 +685,9 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                      *
                      * This matters more than it looks. The three queues that
                      * this one replaced each had their own row with its own
-                     * actions — «مشکوک به جعل» carried a «حذف» that rejects
-                     * with NO_BANK_TRANSACTION, «نیاز به بررسی» a review
-                     * button. Merging the tabs and rendering `AllRow` for
+                     * actions — «واریزی پیدا نشد» (then called «مشکوک به
+                     * جعل») carried a «حذف» that rejects with
+                     * NO_BANK_TRANSACTION, «نیاز به بررسی» a review button. Merging the tabs and rendering `AllRow` for
                      * everything would have quietly taken those away: the
                      * screen would look tidier and do less, which is the worst
                      * kind of simplification and exactly what the merge was
@@ -719,9 +719,9 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                         />
                       );
                     }
-                    if (kind === 'suspected_fake' || kind === 'SUSPECTED_FAKE') {
+                    if (kind === 'suspected_fake' || kind === 'NO_TRANSFER_FOUND') {
                       return (
-                        <SuspectedFakeRow
+                        <NoTransferRow
                           key={item.id}
                           item={item}
                           isNew={isClaimNew(item)}
@@ -880,7 +880,7 @@ function emptyText(tab: PaymentTab): string {
   if (tab === 'income') return 'در این بازه واریزی تخصیص‌نیافته‌ای نیست.';
   if (tab === 'declined_income') return 'در این بازه واریزی ردشده‌ای نیست.';
   if (tab === 'waiting') return 'پرداختی در انتظار نیست.';
-  if (tab === 'suspected_fake') return 'رسید مشکوکی در انتظار بررسی نیست.';
+  if (tab === 'suspected_fake') return 'پرداختی بدون واریزی منطبق نمانده است.';
   if (tab === 'bot_auto_verified') return 'در این بازه پرداختی با تایید خودکار ربات نیست.';
   if (tab === 'manually_verified') return 'در این بازه پرداختی با تایید دستی نیست.';
   if (tab === 'reseller') return 'در این بازه پرداخت نمایندگی نیست.';
@@ -903,8 +903,9 @@ function emptyText(tab: PaymentTab): string {
  *
  * The absent case is written out rather than left blank, because on this screen
  * "no receipt" is a fact an operator is entitled to act on: a claim in
- * «مشکوک به جعل» with no document behind it means the customer pressed a button
- * and sent nothing, which is a different conversation from a disputed image.
+ * «واریزی پیدا نشد» with no document behind it means the customer pressed a
+ * button and sent nothing, which is a different conversation from a disputed
+ * image.
  */
 function ReceiptSection({ item }: { item: PaymentItem }) {
   const [failed, setFailed] = useState(false);
@@ -1052,7 +1053,7 @@ function WaitingRow({ item, onDetails }: { item: PaymentItem; onDetails: () => v
   );
 }
 
-function SuspectedFakeRow({
+function NoTransferRow({
   item,
   isNew,
   onReview,
@@ -1083,11 +1084,11 @@ function SuspectedFakeRow({
   }
 
   return (
-    <li className={`hub-list-row hub-list-row--suspected${isNew ? ' hub-list-row--new' : ''}`}>
+    <li className={`hub-list-row${isNew ? ' hub-list-row--new' : ''}`}>
       <button
         type="button"
         className="hub-list-row__button"
-        aria-label={`Review suspected fake from ${identity || item.orderId}`}
+        aria-label={`Review payment with no bank transfer from ${identity || item.orderId}`}
         onClick={onReview}
       >
         <div className="hub-list-row__line1">
@@ -1103,7 +1104,7 @@ function SuspectedFakeRow({
           سفارش {item.orderId} · {masked} · {paymentDeviceLine(item)}
         </div>
         <div className="hub-list-row__line3 payment-reason">
-          <StatusBadge tone="suspected">{reasonText(item.suspectReason)}</StatusBadge>
+          <StatusBadge tone="no-transfer">{reasonText(item.suspectReason)}</StatusBadge>
           <ReceiptMark item={item} />
         </div>
       </button>
@@ -1484,8 +1485,8 @@ function ReviewPanel({
   const [manualReason, setManualReason] = useState('');
   const [showReassign, setShowReassign] = useState(false);
   const [busy, setBusy] = useState(false);
-  const actionable = item.reviewState === 'NEEDS_REVIEW' || item.reviewState === 'SUSPECTED_FAKE';
-  const canMarkFake = item.reviewState === 'SUSPECTED_FAKE';
+  const actionable = item.reviewState === 'NEEDS_REVIEW' || item.reviewState === 'NO_TRANSFER_FOUND';
+  const canMarkFake = item.reviewState === 'NO_TRANSFER_FOUND';
   const isManuallyVerified = item.reviewState === 'MANUALLY_VERIFIED';
   const canReopen = isReopenEligible(item);
   const reopenBlocked = reopenBlockedReason(item);
@@ -1613,11 +1614,17 @@ function ReviewPanel({
       <section className="drawer-section">
         <h3 className="drawer-section__heading">تصمیم</h3>
         <p className="payment-reason">
-          {actionable && item.reviewState === 'NEEDS_REVIEW' && (
-            <span className="payment-reason__flag">نیاز به بررسی</span>
-          )}{' '}
-          {actionable && item.reviewState === 'SUSPECTED_FAKE' && (
-            <span className="payment-reason__flag">مشکوک به جعل</span>
+          {/*
+            One flag off `stateLabel`, not two hand-written branches.
+
+            The branches spelled «نیاز به بررسی» and «مشکوک به جعل» out again
+            as literals — a second copy of `STATE_LABEL` that nothing kept in
+            step with the first. Renaming the state in `paymentReview.ts` is
+            exactly the edit that would have left the old accusation standing
+            here, on the one screen where money is decided.
+          */}
+          {actionable && (
+            <span className="payment-reason__flag">{stateLabel(item.reviewState)}</span>
           )}{' '}
           {reasonText(item.suspectReason)}
         </p>

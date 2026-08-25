@@ -69,7 +69,7 @@ export interface MirzabotDecision {
 }
 
 export interface MirzabotEvaluationOptions {
-  /** Wall clock used to decide WAIT vs Suspected Fake. */
+  /** Wall clock used to decide WAIT vs «no transfer found». */
   now?: number;
   maxDeltaMs?: number;
   waitingTimeoutMs?: number;

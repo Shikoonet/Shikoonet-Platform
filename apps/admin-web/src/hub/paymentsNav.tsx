@@ -33,7 +33,8 @@ const REVIEW_TABS = [
     Icon: IconIncome,
   },
   /**
-   * One queue where «نیاز به بررسی» · «در انتظار» · «مشکوک به جعل» used to be.
+   * One queue where «نیاز به بررسی» · «در انتظار» · «مشکوک به جعل» used to be
+   * (the last of those is «واریزی پیدا نشد» now, and only ever meant that).
    *
    * Three tabs for three shapes of the same thing — a payment nobody has
    * decided about — and the operator had to visit all three to know whether

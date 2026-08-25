@@ -41,7 +41,7 @@ export type RevertManualVerificationFailure =
     >
   | 'ALREADY_REVERTED';
 
-export type ReopenReviewQueue = 'WAITING' | 'NEEDS_REVIEW' | 'SUSPECTED_FAKE';
+export type ReopenReviewQueue = 'WAITING' | 'NEEDS_REVIEW' | 'NO_TRANSFER_FOUND';
 
 export type ReopenManualVerificationResult =
   | {
@@ -157,7 +157,7 @@ function orderId(external: string): string {
 function reviewQueueFromDecision(decision: MirzabotDecision): ReopenReviewQueue {
   if (decision.decision === 'WAIT') return 'WAITING';
   if (decision.reason === 'NO_TRANSACTION_AFTER_10M' || decision.reason === 'NO_TRANSACTION') {
-    return 'SUSPECTED_FAKE';
+    return 'NO_TRANSFER_FOUND';
   }
   return 'NEEDS_REVIEW';
 }

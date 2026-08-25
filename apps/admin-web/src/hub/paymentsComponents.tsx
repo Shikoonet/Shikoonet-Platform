@@ -17,7 +17,7 @@ import { IconBotVerified, IconReview } from './paymentsIcons.js';
 export type StatusBadgeTone =
   | 'review'
   | 'waiting'
-  | 'suspected'
+  | 'no-transfer'
   | 'verified'
   | 'neutral'
   | 'bot'

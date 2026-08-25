@@ -7,7 +7,7 @@ import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 import { INCOME_TX_WHERE } from './incomeEligibility.js';
 
 const PENDING_CLAIM = `c.status IN ('PENDING','MATCH_SUGGESTED')`;
-const SUSPECTED_FAKE_REASONS = `('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION')`;
+const NO_TRANSFER_REASONS = `('NO_TRANSACTION_AFTER_10M','NO_TRANSACTION')`;
 
 const SETTLED_MATCH = `
   SELECT m2.id FROM reconciliation_matches m2
@@ -49,14 +49,14 @@ export async function getPaymentEventUnreadCounts(
   const needsReview = await db
     .prepare(
       unreadClaimSql(
-        `${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL AND c.suspect_reason NOT IN ${SUSPECTED_FAKE_REASONS}`,
+        `${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL AND c.suspect_reason NOT IN ${NO_TRANSFER_REASONS}`,
       ),
     )
     .bind(actorEmail)
     .first<{ c: number }>();
 
   const suspectedFake = await db
-    .prepare(unreadClaimSql(`${PENDING_CLAIM} AND c.suspect_reason IN ${SUSPECTED_FAKE_REASONS}`))
+    .prepare(unreadClaimSql(`${PENDING_CLAIM} AND c.suspect_reason IN ${NO_TRANSFER_REASONS}`))
     .bind(actorEmail)
     .first<{ c: number }>();
 
@@ -153,9 +153,9 @@ export async function markPaymentEventsReadAll(
   } else {
     let stateWhere = '';
     if (tab === 'needs_review') {
-      stateWhere = `${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL AND c.suspect_reason NOT IN ${SUSPECTED_FAKE_REASONS}`;
+      stateWhere = `${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL AND c.suspect_reason NOT IN ${NO_TRANSFER_REASONS}`;
     } else if (tab === 'suspected_fake') {
-      stateWhere = `${PENDING_CLAIM} AND c.suspect_reason IN ${SUSPECTED_FAKE_REASONS}`;
+      stateWhere = `${PENDING_CLAIM} AND c.suspect_reason IN ${NO_TRANSFER_REASONS}`;
     } else {
       stateWhere = `c.status = 'VERIFIED' AND m.status = 'AUTO_VERIFIED'`;
     }

@@ -181,7 +181,7 @@ describe('GET /api/v1/payments', () => {
     expect(body.items[0]!.matchedTransaction?.timeDeltaSeconds).toBe(18);
   });
 
-  it('all returns every bucket including waiting and suspected fake', async () => {
+  it('all returns every bucket including waiting and no-transfer-found', async () => {
     await seedClaim('c-r', { suspectReason: 'NO_TRANSACTION_AFTER_10M' });
     await seedClaim('c-old-no', { suspectReason: 'NO_TRANSACTION' });
     await seedClaim('c-w');
@@ -194,7 +194,7 @@ describe('GET /api/v1/payments', () => {
 
     const all = await get('tab=all');
     expect(new Set(all.items.map((i) => i.reviewState))).toEqual(
-      new Set(['SUSPECTED_FAKE', 'WAITING', 'REJECTED', 'FAKE', 'EXPIRED', 'MANUALLY_VERIFIED']),
+      new Set(['NO_TRANSFER_FOUND', 'WAITING', 'REJECTED', 'FAKE', 'EXPIRED', 'MANUALLY_VERIFIED']),
     );
 
     const waiting = await get('tab=waiting');
@@ -224,7 +224,7 @@ describe('GET /api/v1/payments', () => {
     expect(body.summary.unassignedIncome.count).toBeGreaterThanOrEqual(0);
   });
 
-  it('includes Suspected Fake in the automation-rate denominator but not Waiting', async () => {
+  it('includes «واریزی پیدا نشد» in the automation-rate denominator but not Waiting', async () => {
     const base = Date.now();
     await seedClaim('c-a1', { status: 'VERIFIED', paidClickedAt: base });
     await seedTx('t-a1', base);
@@ -348,7 +348,7 @@ describe('GET /api/v1/payments', () => {
     expect(body.items[0]!.device).toEqual({ id: 'dev-cand', name: 'Candidate Phone' });
   });
 
-  it('resolves device from account SMS history when suspected fake has no match or candidates', async () => {
+  it('resolves device from account SMS history when a no-transfer claim has no match or candidates', async () => {
     const base = Date.now();
     await baseEnv.DB.prepare(
       `INSERT OR IGNORE INTO devices (id, device_code, display_name, active, created_at, updated_at)

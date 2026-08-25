@@ -10,11 +10,14 @@
  * such rows sat on Sam's screen each announcing a receipt that did not exist.
  *
  * It is not a wording slip, because of where the sentence lands. This reason is
- * one of `SUSPECTED_FAKE_REASONS` (`mirzabotRoutes.ts:124`), so it appears on
- * the fake-suspicion queue — and «رسید ثبت شد» there converts "this customer
- * never paid" into "this customer forged a receipt" in the mind of the person
- * about to decide about their money. The claim about evidence is the one thing
- * a suspicion screen must not invent.
+ * one of `NO_TRANSFER_REASONS` (`mirzabotRoutes.ts:135`), and «رسید ثبت شد»
+ * beside them converts "this customer never paid" into "this customer sent
+ * something" in the mind of the person about to decide about their money. The
+ * claim about evidence is the one thing this screen must not invent.
+ *
+ * The second describe block is about the other half of the same sentence — the
+ * STATE, not the reason. That queue was called «مشکوک به جعل» until
+ * 2026-08-25, which is a claim about evidence too, and a worse one.
  *
  * The second half of this file is about numbers. Two windows were typed into
  * the Persian prose by hand — «۱۰ دقیقه» and «۵ دقیقه‌ای» — with nothing
@@ -25,7 +28,12 @@
 
 import { describe, expect, it } from 'vitest';
 import { AUTO_MATCH_MAX_TIME_DELTA_MS, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
-import { formatRelativeFuture, reasonText } from '../../src/hub/paymentReview.js';
+import {
+  ALL_TAB_STATES,
+  formatRelativeFuture,
+  reasonText,
+  stateLabel,
+} from '../../src/hub/paymentReview.js';
 
 /** Every suspect reason the engine can stamp, from the contract, not a copy. */
 const REASONS = [
@@ -94,6 +102,54 @@ describe('the reason a payment is on the review screen', () => {
   it('answers an unknown reason without inventing one', () => {
     expect(reasonText('SOMETHING_NEW')).toBe('به‌صورت خودکار تایید نشد');
     expect(reasonText(null)).toBe('در انتظار واریز بانکی');
+  });
+});
+
+/**
+ * A forgery is something an operator concludes, never something the queue
+ * announces on arrival.
+ *
+ * `NO_TRANSFER_FOUND` was `SUSPECTED_FAKE`, labelled «مشکوک به جعل», and the
+ * only two suspect reasons that reach it — `NO_TRANSACTION` and
+ * `NO_TRANSACTION_AFTER_10M` — both mean the matcher found no bank credit.
+ * That is the absence of evidence. The one reason in `SuspectReason` that
+ * would evidence a forged receipt is `RECEIPT_REUSED`, and nothing writes it:
+ * every `suspect_reason` in this system comes from `suggest()` in
+ * `mirzabotMatch.ts`, whose arguments are enumerable and do not include it.
+ *
+ * So the bucket could not have held a forgery signal even in principle. What
+ * it held on Sam's screen on 2026-08-25 was four people whose bank SMS had not
+ * arrived.
+ */
+describe('what the queue is allowed to accuse a customer of', () => {
+  /** «جعل» and everything built on it — «جعلی», «مشکوک به جعل». */
+  const FORGERY = /جعل/;
+
+  /**
+   * The states a claim can be in while nobody has decided about it. These are
+   * exactly the three that make up «در انتظار بررسی».
+   */
+  const UNDECIDED = ['NEEDS_REVIEW', 'WAITING', 'NO_TRANSFER_FOUND'] as const;
+
+  it('never accuses a claim nobody has looked at yet', () => {
+    for (const state of UNDECIDED) {
+      expect(stateLabel(state), state).not.toMatch(FORGERY);
+    }
+  });
+
+  it('still lets an operator say it, once they have', () => {
+    // The cure is not to delete the word. `FAKE` is `payment_claims.status =
+    // 'FAKE_RECEIPT'`, which only «علامت‌زدن به‌عنوان جعلی» writes — a person
+    // looked at a receipt and decided. That label must keep saying so.
+    expect(stateLabel('FAKE')).toMatch(FORGERY);
+  });
+
+  it('leaves exactly one state carrying the word', () => {
+    // Swept, so a future state cannot quietly join `FAKE`. The failure this
+    // guards against is not a typo; it is somebody adding a bucket and
+    // reaching for the strongest available word to name it.
+    const accusing = ALL_TAB_STATES.filter((s) => FORGERY.test(stateLabel(s)));
+    expect(accusing).toEqual(['FAKE']);
   });
 });
 

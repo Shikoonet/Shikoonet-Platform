@@ -17,12 +17,35 @@ import { count } from '../format.js';
 const waitMinutes = count(Math.round(WAITING_TIMEOUT_MS / 60_000));
 const matchMinutes = count(Math.round(AUTO_MATCH_MAX_TIME_DELTA_MS / 60_000));
 
+/**
+ * About `NO_TRANSFER_FOUND` — it was called `SUSPECTED_FAKE` and shown as
+ * «مشکوک به جعل».
+ *
+ * Two suspect reasons reach it and only two: `NO_TRANSACTION` and
+ * `NO_TRANSACTION_AFTER_10M`. Both mean one thing — the matcher looked for a
+ * bank credit and found none. That is the absence of evidence, and the panel
+ * was reading it as evidence of forgery.
+ *
+ * The one reason in `SuspectReason` that would actually evidence a forged
+ * receipt is `RECEIPT_REUSED`, and nothing in this codebase ever writes it
+ * (declared in `contracts/mirzabot.ts`, zero producers — checked, not assumed).
+ * So the bucket named «مشکوک به جعل» has never once held a forgery signal. It
+ * could not: no such signal exists to put in it.
+ *
+ * What it held instead was customers who had not paid yet. Sam opened this
+ * screen on 2026-08-25 and four rows were accusing four people of fraud for
+ * the crime of a bank SMS not having arrived.
+ *
+ * The set of rows is unchanged and «جعلی» is still one click away — an
+ * operator who opens a receipt and sees a forgery must be able to say so. What
+ * changed is that the panel no longer says it for them, before anyone looked.
+ */
 export type ReviewState =
   | 'AUTO_VERIFIED'
   | 'NEEDS_REVIEW'
   | 'MANUALLY_VERIFIED'
   | 'WAITING'
-  | 'SUSPECTED_FAKE'
+  | 'NO_TRANSFER_FOUND'
   | 'REJECTED'
   | 'FAKE'
   | 'EXPIRED';
@@ -266,11 +289,13 @@ const REASON_TEXT: Record<string, string> = {
   // for a claim that has no receipt at all; on 2026-08-24 three such rows sat
   // in «مشکوک به جعل» each telling the operator a receipt had been filed.
   //
-  // That is not a wording slip. This reason is one of `SUSPECTED_FAKE_REASONS`,
-  // so the sentence arrives on the fake-suspicion screen — and «رسید ثبت شد»
-  // there turns "they never paid" into "they forged a receipt" in the mind of
-  // the person about to decide. Whether a receipt exists is a separate column;
-  // this string must not answer it.
+  // That is not a wording slip. This reason is one of `NO_TRANSFER_REASONS`,
+  // and «رسید ثبت شد» beside them turns "they never paid" into "they sent
+  // something" in the mind of the person about to decide. Whether a receipt
+  // exists is a separate column; this string must not answer it.
+  //
+  // The screen it lands on no longer says «مشکوک به جعل» either — see
+  // `ReviewState` above.
   NO_TRANSACTION_AFTER_10M: `پرداخت ثبت شد، ولی تا ${waitMinutes} دقیقه هیچ واریزی پیدا نشد`,
   OUTSIDE_AUTO_MATCH_WINDOW: `واریزی منطبق پیدا شد، ولی بیرون از پنجرهٔ ${matchMinutes} دقیقه‌ای تایید خودکار`,
   UNMAPPED_CARD: 'کارت به هیچ حساب بانکی وصل نیست',
@@ -295,7 +320,7 @@ const STATE_LABEL: Record<ReviewState, string> = {
   NEEDS_REVIEW: 'نیاز به بررسی',
   MANUALLY_VERIFIED: 'تایید دستی',
   WAITING: 'در انتظار',
-  SUSPECTED_FAKE: 'مشکوک به جعل',
+  NO_TRANSFER_FOUND: 'واریزی پیدا نشد',
   REJECTED: 'رد شده',
   FAKE: 'جعلی',
   EXPIRED: 'منقضی',
@@ -310,7 +335,7 @@ export const ALL_TAB_STATES: ReviewState[] = [
   'NEEDS_REVIEW',
   'MANUALLY_VERIFIED',
   'WAITING',
-  'SUSPECTED_FAKE',
+  'NO_TRANSFER_FOUND',
   'REJECTED',
   'FAKE',
   'EXPIRED',

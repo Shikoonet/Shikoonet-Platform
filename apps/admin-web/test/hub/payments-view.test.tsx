@@ -252,13 +252,13 @@ describe('PaymentsView tabs', () => {
     expect(screen.queryByRole('button', { name: 'علامت‌زدن به‌عنوان جعلی' })).toBeNull();
   });
 
-  it('lists NO_TRANSACTION_AFTER_10M under Suspected Fake with review and Remove', async () => {
+  it('lists NO_TRANSACTION_AFTER_10M under «واریزی پیدا نشد» with review and Remove', async () => {
     mockApi({
       needs_review: [],
       suspected_fake: [
         item({
           id: 'sf1',
-          reviewState: 'SUSPECTED_FAKE',
+          reviewState: 'NO_TRANSFER_FOUND',
           suspectReason: 'NO_TRANSACTION_AFTER_10M',
           orderId: 'SF1',
           waitingElapsedMs: 872_000,
@@ -269,18 +269,18 @@ describe('PaymentsView tabs', () => {
     await goOpenQueue();
     expect(await screen.findByText(/سفارش SF1/)).toBeTruthy();
     expect(screen.getByText(/تا ۱۰ دقیقه هیچ واریزی پیدا نشد/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Review suspected fake/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Review payment with no bank transfer/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'حذف' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'علامت‌زدن به‌عنوان جعلی' })).toBeNull();
   });
 
-  it('Remove on Suspected Fake rejects with NO_BANK_TRANSACTION', async () => {
+  it('Remove on «واریزی پیدا نشد» rejects with NO_BANK_TRANSACTION', async () => {
     mockApi({
       needs_review: [],
       suspected_fake: [
         item({
           id: 'sf1',
-          reviewState: 'SUSPECTED_FAKE',
+          reviewState: 'NO_TRANSFER_FOUND',
           suspectReason: 'NO_TRANSACTION_AFTER_10M',
         }),
       ],
@@ -600,13 +600,13 @@ describe('PaymentsView tabs', () => {
     expect(screen.getByRole('button', { name: 'تلاش دوباره' })).toBeTruthy();
   });
 
-  it('مشکوک به جعل Review opens mark-fake confirmation flow', async () => {
+  it('«واریزی پیدا نشد» Review opens mark-fake confirmation flow', async () => {
     mockApi({
       needs_review: [],
       suspected_fake: [
         item({
           id: 'sf1',
-          reviewState: 'SUSPECTED_FAKE',
+          reviewState: 'NO_TRANSFER_FOUND',
           suspectReason: 'NO_TRANSACTION_AFTER_10M',
           candidates: [candidate('t1', 400)],
         }),
@@ -614,7 +614,7 @@ describe('PaymentsView tabs', () => {
     });
     renderView();
     await goOpenQueue();
-    fireEvent.click(await screen.findByRole('button', { name: /Review suspected fake/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Review payment with no bank transfer/i }));
     const drawer = await openReviewPanel();
     expect(within(drawer).getByRole('button', { name: 'علامت‌زدن به‌عنوان جعلی' })).toBeTruthy();
     expect(within(drawer).queryByRole('button', { name: 'رد پرداخت' })).toBeNull();
@@ -946,7 +946,7 @@ describe('what a row in the review queue offers, and what it says it has', () =>
     mockApi({
       needs_review: [],
       suspected_fake: [
-        item({ id: 'sf-a', reviewState: 'SUSPECTED_FAKE', suspectReason: 'NO_TRANSACTION_AFTER_10M' }),
+        item({ id: 'sf-a', reviewState: 'NO_TRANSFER_FOUND', suspectReason: 'NO_TRANSACTION_AFTER_10M' }),
       ],
     });
     renderView();
@@ -961,7 +961,7 @@ describe('what a row in the review queue offers, and what it says it has', () =>
     mockApi({
       needs_review: [],
       suspected_fake: [
-        item({ id: 'sf-with', reviewState: 'SUSPECTED_FAKE', suspectReason: 'NO_TRANSACTION_AFTER_10M', hasReceipt: true }),
+        item({ id: 'sf-with', reviewState: 'NO_TRANSFER_FOUND', suspectReason: 'NO_TRANSACTION_AFTER_10M', hasReceipt: true }),
       ],
     });
     renderView();
@@ -975,7 +975,7 @@ describe('what a row in the review queue offers, and what it says it has', () =>
     mockApi({
       needs_review: [],
       suspected_fake: [
-        item({ id: 'sf-without', reviewState: 'SUSPECTED_FAKE', suspectReason: 'NO_TRANSACTION_AFTER_10M', hasReceipt: false }),
+        item({ id: 'sf-without', reviewState: 'NO_TRANSFER_FOUND', suspectReason: 'NO_TRANSACTION_AFTER_10M', hasReceipt: false }),
       ],
     });
     renderView();
