@@ -108,32 +108,43 @@ fi
 
 log "${BRANCH} is at ${head_sha:0:12}, last seen ${seen:0:12}"
 
-# Every check run on the commit, collapsed to one word.
+# Every workflow run on the commit, collapsed to one word.
 #
-# `/commits/:sha/check-runs` rather than the older `/status`: the CI here is a
-# GitHub Actions workflow, and Actions reports through check runs. The legacy
-# combined status is empty for this repo and would read as «no CI configured»,
-# which is the one answer that must not be treated as a pass.
-if ! gh "/commits/${head_sha}/check-runs?per_page=100"; then
-  if [ "$gh_status" = "403" ]; then
+# `/actions/runs?head_sha=` rather than `/commits/:sha/check-runs`, and not by
+# preference: GitHub no longer offers **Checks** in the fine-grained token
+# permission list at all — checked 2026-08-26, the list runs
+# «Attestations · Code quality · Code scanning alerts» with nothing between
+# them. So the check-runs API cannot be granted to a PAT any more.
+#
+# `Commit statuses` is the substitute it looks like and is not: the CI here is
+# a GitHub Actions workflow, Actions reports through check runs, and the legacy
+# combined status is empty for this repository — «no CI configured», the one
+# answer that must never read as a pass. The runs themselves carry the same
+# verdict and open with `Actions: Read-only`.
+if ! gh "/actions/runs?head_sha=${head_sha}&per_page=100"; then
+  if [ "$gh_status" = "403" ] || [ "$gh_status" = "404" ]; then
     # Not a failure of this box, and not something a retry fixes. The PAT in
     # /etc/shikoo/autodeploy.env is fine-grained and was issued for the deploy
     # key work, so it carries `Contents: Read-only` and nothing else. Reading
-    # whether CI passed needs one more: **Checks: Read-only** on this repository.
+    # whether CI passed needs one more: **Actions: Read-only** on this repo.
+    #
+    # 404 is the same answer wearing a different number: a fine-grained token
+    # without the scope is told the resource does not exist, rather than that
+    # it may not look.
     #
     # Deliberately quiet, and deliberately NOT recorded: the sha stays unseen,
     # so the minute the permission is added this deploys with nobody re-pushing.
-    log "cannot read CI on ${head_sha:0:12} — the GitHub token needs «Checks: Read-only» on ${GH_REPO}. NOT deploying."
+    log "cannot read CI on ${head_sha:0:12} — the GitHub token needs «Actions: Read-only» on ${GH_REPO}. NOT deploying."
     exit 0
   fi
-  die "could not read the checks on ${head_sha:0:12} (HTTP ${gh_status})"
+  die "could not read the workflow runs on ${head_sha:0:12} (HTTP ${gh_status})"
 fi
 checks=$gh_body
 
 verdict=$(printf '%s' "$checks" | jq -r '
   if (.total_count // 0) == 0 then "none"
-  elif any(.check_runs[]; .status != "completed") then "pending"
-  elif all(.check_runs[]; .conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "green"
+  elif any(.workflow_runs[]; .status != "completed") then "pending"
+  elif all(.workflow_runs[]; .conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "green"
   else "red" end
 ')
 
@@ -142,7 +153,7 @@ case "$verdict" in
     # Not deployed, and not recorded either: a workflow that has not registered
     # its checks yet looks exactly like this for the first few seconds after a
     # push. Recording it here would skip the commit forever.
-    log "no checks on ${head_sha:0:12} yet — waiting"
+    log "no workflow run on ${head_sha:0:12} yet — waiting"
     exit 0
     ;;
   pending)
@@ -151,7 +162,7 @@ case "$verdict" in
     ;;
   red)
     failed=$(printf '%s' "$checks" |
-      jq -r '[.check_runs[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped") | .name] | join(", ")')
+      jq -r '[.workflow_runs[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped") | .name] | join(", ")')
     # Recorded, so this is said once rather than every minute. A red commit is
     # fixed by pushing another one, and that one gets its own turn.
     printf '%s' "$head_sha" > "$STATE"
