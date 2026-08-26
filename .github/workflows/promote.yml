@@ -1,12 +1,19 @@
 # Promote a digest that staging is already running to production.
 #
-# Production has no automatic path. Running this workflow by hand IS the
-# approval — the GitHub feature for this is a required reviewer on the
-# `production` environment, and this repository cannot have one today: on the
-# free plan a private repository's environment protection rules and branch
-# protection both answer 403. The moment that changes, add the reviewer and
-# this workflow becomes a request rather than the decision. Until then the
-# gate is that a person types a digest.
+# The normal path to production is a merge to main: ci.yml deploys the digest
+# to development, waits for it to prove itself there, and then sends the SAME
+# digest on. This workflow is the other two cases.
+#
+# One: re-promoting an OLDER digest — a version that was fine, when the newest
+# one is not and you want something specific rather than the previous line of
+# the history (that is what rollback.yml is for).
+#
+# Two: when `PRODUCTION_AUTO_DEPLOY` is `false`. On the day real customers are
+# migrated that variable goes off, merges stop at development, and running this
+# by hand becomes the approval again — which is what a required reviewer on the
+# `production` environment would do properly, if this repository could have one.
+# It cannot: on the free plan a private repository's environment protection
+# rules and branch protection both answer 403.
 #
 # Nothing is rebuilt. The digest that goes to production is byte-for-byte the
 # one CI gated and staging has been running, which is the entire point of

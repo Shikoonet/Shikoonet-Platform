@@ -1,13 +1,24 @@
 name: CI
 
+# Every branch, and `push` rather than `pull_request`, deliberately.
+#
+# A branch is deployed to development before it is merged, which means the
+# workflow that deploys it holds the server's SSH key. `pull_request` fires for
+# code from anywhere, including a fork nobody has read; `push` fires only for a
+# branch that already exists in this repository, which means somebody with
+# write access put it there. That distinction is the whole reason this is safe
+# to do at all, and it is why there is no `pull_request` trigger here: a run
+# from a push already appears on the pull request as its checks.
+#
+# The cost, stated: a fork's pull request gets no CI. On a private repository
+# with two people that trade is worth making; on a public one it would not be.
 on:
   push:
-    branches: [main]
-  pull_request:
+    branches: ['**']
 
 # Read-only by default. Exactly one job below widens this — `publish`, which
-# needs `packages: write` to push the image. A pull request never reaches that
-# job, so a pull request never holds a token that can write anything.
+# needs `packages: write` to push the image. Every run here comes from a push
+# by someone with write access; nothing else can trigger this workflow.
 permissions:
   contents: read
 
@@ -337,7 +348,6 @@ jobs:
   # a build arg would be a layer, and a new layer per commit is a cache miss
   # per commit.
   publish:
-    if: github.event_name == 'push'
     needs: [gate, e2e, workflows-lint]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -429,8 +439,12 @@ jobs:
 
   # Staging deploys itself. It is the environment that exists to be wrong
   # before production is, so nothing waits for a human here.
+  # Development receives every branch, before it is merged. That is the flow:
+  # push → see it on shikoo-dev → merge when it is right. Two people share one
+  # development environment, so deploys queue (the concurrency group in
+  # deploy.yml, never cancelled mid-run) and the last push wins — the cost of
+  # one environment, accepted and written down rather than discovered.
   deploy-staging:
-    if: github.event_name == 'push'
     needs: publish
     # No `secrets: inherit`. Everything this workflow reads — DEPLOY_HOST,
     # DEPLOY_PORT, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS — is an
@@ -441,5 +455,28 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       environment: staging
+      digest: ${{ needs.publish.outputs.digest }}
+      expected_sha: ${{ github.sha }}
+
+  # Production is a merge to main — through development first, never around it.
+  #
+  # `needs: deploy-staging` is the gate that used to be a person: this job runs
+  # only after the SAME digest — one publish feeds both jobs — has migrated,
+  # started, answered its smoke checks and held exactly one poller lock on
+  # shikoo-dev. A merge whose development deploy fails never reaches here, and
+  # nothing is rebuilt in between, so what production runs is byte-for-byte
+  # what development just verified.
+  #
+  # `PRODUCTION_AUTO_DEPLOY` is the kill-switch for the day real customers are
+  # migrated: set the repository variable to `false` and merges stop at
+  # development, with promote.yml as the manual approval — no code change, one
+  # setting. Until that day this box holds seed data and an automatic deploy
+  # costs nothing.
+  deploy-production:
+    if: github.ref == 'refs/heads/main' && vars.PRODUCTION_AUTO_DEPLOY == 'true'
+    needs: [publish, deploy-staging]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
       digest: ${{ needs.publish.outputs.digest }}
       expected_sha: ${{ github.sha }}

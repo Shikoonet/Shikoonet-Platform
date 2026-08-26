@@ -484,22 +484,54 @@ to say afterwards which build is actually running. The pipeline below exists
 to close exactly that gap, and nothing wider.
 
 ```
-feature branch ──▶ pull request ──▶ gate · e2e · workflows-lint     no secrets, no deploy
-                                          │
-                        merge to main ────┤
-                                          ▼
-                                      publish            build → the 3 artifact gates → push
-                                          │              ghcr.io/<repo>:sha-<commit>  ⇒ DIGEST
-                                          ▼
-                                   deploy-staging        automatic, no approval
-                                          │
-                            a person runs │ «Promote to production»
-                                          ▼
-                                      promote            same DIGEST, never rebuilt
+push to any branch
+      │
+      ▼
+gate · e2e · workflows-lint
+      │
+      ▼
+   publish              build → the 3 artifact gates → push
+      │                 ghcr.io/<repo>:sha-<commit>  ⇒ DIGEST
+      ▼
+deploy-staging ────▶ shikoo-dev        every branch, automatically
+      │
+      │   ...look at it. Right? Merge the branch.
+      │
+merge to main  ─▶ the same four steps again, on the merge commit
+                        │
+                        ▼
+                 deploy-production ──▶ shikoo     the digest dev just verified
 ```
+
+**Development is where a branch goes before it is merged**, which is the whole
+point: push, look at `shikoo-dev`, merge when it is right.
+
+**Merging is the approval.** `deploy-production` does not rebuild and does not
+take a different image: one `publish` feeds both deploys, and production runs
+only after that exact digest has migrated, started, answered its smoke checks
+and held exactly one poller lock on development. A merge whose development
+deploy fails never reaches production.
 
 The digest is the identity all the way through. A tag is a pointer for humans
 reading a registry listing; `latest` does not exist here at all.
+
+Two things about this that are worth knowing before they surprise you:
+
+- **One development environment, two developers.** Every push deploys, so a
+  branch pushed by one person replaces the branch the other was looking at.
+  Deploys queue rather than interrupting each other, and the last push wins.
+  That is the price of one environment, not a bug to report.
+- **`PRODUCTION_AUTO_DEPLOY` is the switch that makes merging safe later.**
+  It is a repository variable, `true` today, and while it is true a merge
+  becomes production without anyone approving it. That is right while
+  production holds seed data. **Set it to `false` before real customers are
+  migrated** — merges then stop at development, and «Promote to production»
+  becomes a thing a person does again. One setting, no code change:
+
+  ```bash
+  gh api -X PATCH repos/Shikoonet/Shikoonet-Platform/actions/variables/PRODUCTION_AUTO_DEPLOY \
+    -f name=PRODUCTION_AUTO_DEPLOY -f value=false
+  ```
 
 ### Two environments, one machine, nothing shared
 
@@ -773,6 +805,10 @@ The pipeline can address production. Production must not receive real customer
 data until every one of these is resolved — they are recorded here rather than
 fixed, because fixing them is a separate piece of work with its own decisions:
 
+- **`PRODUCTION_AUTO_DEPLOY` must be turned off before the real customer
+  migration.** While it is `true` a merge to main deploys to production with
+  no person in between — correct for seed data, wrong the moment the database
+  holds somebody's money.
 - **The production environment does not exist yet**: no database resource, no
   network, no hostname or certificate, no terminator container, no bot token,
   no device credentials, no operator rows, no env files.
