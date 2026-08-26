@@ -129,9 +129,15 @@ say "config: $ENV_DIR/deploy.env"
 # The token goes to curl through a config file on stdin, never on the command
 # line. `--fail-with-body` so a 4xx is an error and still shows what the API
 # said, which a bare `--fail` throws away.
+# `--max-time` is not decoration. This script holds the environment's flock for
+# its whole life, so a panel that accepts a connection and never answers would
+# hang the deploy AND block every later one — including the rollback somebody
+# runs to recover from it. The GitHub job timeout kills the ssh client; it does
+# not reach the process on the host.
 api() {
   local method=$1 path=$2 body=${3:-}
-  local args=(--silent --show-error --fail-with-body --request "$method" "$COOLIFY_URL/api/v1$path")
+  local args=(--silent --show-error --fail-with-body --connect-timeout 10 --max-time 120
+    --request "$method" "$COOLIFY_URL/api/v1$path")
   [ -z "$body" ] || args+=(--header 'Content-Type: application/json' --data "$body")
   curl "${args[@]}" --config - <<CFG
 header = "Authorization: Bearer $COOLIFY_TOKEN"
@@ -154,7 +160,8 @@ summary "sha=$EXPECTED_SHA"
 PREV_TAG=""
 PREV_SHA=""
 if [ -s "$STATE_FILE" ]; then
-  PREV_TAG=$(awk 'END{print $2}' "$STATE_FILE")
+  # Stored canonically as `sha256:<hex>`; Coolify's tag field wants the hyphen.
+  PREV_TAG=$(awk 'END{print $2}' "$STATE_FILE" | sed 's/^sha256:/sha256-/')
   PREV_SHA=$(awk 'END{print $3}' "$STATE_FILE")
   say "rollback candidate: $PREV_TAG ($PREV_SHA)"
 else
@@ -238,28 +245,47 @@ set_version() { # uuid sha
 # changes on every deploy, `coolify.name` is the application UUID and does not.
 container_for() { docker ps -q --filter "label=coolify.name=$1" | head -1; }
 
-wait_healthy() { # uuid name
-  local uuid=$1 name=$2 deadline cid state
+# Waits for the REPLACEMENT container, which is the whole difficulty here.
+#
+# `POST /deploy` queues a deployment; it does not start a container. While that
+# deployment sits in the queue the previous container is still running and
+# still healthy, and `coolify.name` is stable across deploys precisely so it
+# keeps matching. Asking only «is a container with this label healthy» there
+# gets `yes` from the container being replaced — so a new image that cannot
+# boot would be called healthy, recorded as deployed, and never rolled back.
+#
+# Two things have to change before this returns 0: the container id, and the
+# image it was started from. The image is compared by ID rather than by name,
+# because a name can be a tag pointing anywhere while an ID is the bytes.
+wait_healthy() { # uuid name old_cid want_image_id
+  local uuid=$1 name=$2 old_cid=$3 want=$4 deadline cid state img
   deadline=$(($(date +%s) + WAIT_TIMEOUT))
   while :; do
     cid=$(container_for "$uuid")
-    if [ -n "$cid" ]; then
-      state=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || echo "gone none")
-      case "$state" in
-        "running healthy")
-          say "$name: healthy"
-          return 0
-          ;;
-        "exited "*)
-          echo "$name exited" >&2
-          docker logs --tail 20 "$cid" >&2 || true
-          return 1
-          ;;
-      esac
+    if [ -n "$cid" ] && [ "$cid" != "$old_cid" ]; then
+      img=$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null || echo "")
+      if [ "$img" = "$want" ]; then
+        state=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || echo "gone none")
+        case "$state" in
+          "running healthy")
+            say "$name: healthy, on the deployed image"
+            return 0
+            ;;
+          "exited "*)
+            echo "$name exited" >&2
+            docker logs --tail 20 "$cid" >&2 || true
+            return 1
+            ;;
+        esac
+      fi
     fi
     [ "$(date +%s)" -lt "$deadline" ] || {
-      echo "$name not healthy within ${WAIT_TIMEOUT}s" >&2
-      [ -z "$cid" ] || docker logs --tail 20 "$cid" >&2 || true
+      if [ -n "$cid" ] && [ "$cid" = "$old_cid" ]; then
+        echo "$name was never replaced within ${WAIT_TIMEOUT}s — the deployment did not start" >&2
+      else
+        echo "$name not healthy on the deployed image within ${WAIT_TIMEOUT}s" >&2
+        [ -z "$cid" ] || docker logs --tail 20 "$cid" >&2 || true
+      fi
       return 1
     }
     sleep 5
@@ -267,10 +293,21 @@ wait_healthy() { # uuid name
 }
 
 roll_one() { # uuid name tag sha
+  local old_cid want ref
+  old_cid=$(container_for "$1")
+  # The image must be here to have an ID to compare against. It already is for
+  # a forward deploy; on a rollback the previous digest may not be, so this
+  # pulls rather than assuming.
+  ref="$IMAGE_NAME@sha256:${3#sha256-}"
+  docker pull -q "$ref" >/dev/null || {
+    echo "cannot pull $ref" >&2
+    return 1
+  }
+  want=$(docker inspect --format '{{.Id}}' "$ref")
   set_image "$1" "$3"
   set_version "$1" "$4"
   api POST "/deploy?uuid=$1" >/dev/null
-  wait_healthy "$1" "$2"
+  wait_healthy "$1" "$2" "$old_cid" "$want"
 }
 
 on_err() {
@@ -357,6 +394,11 @@ say "no published ports"
 # ------------------------------------------------------------------ record
 trap - ERR
 mkdir -p "$(dirname "$STATE_FILE")"
-printf '%s %s %s\n' "$(date -Is)" "$COOLIFY_TAG" "$EXPECTED_SHA" >>"$STATE_FILE"
+# The canonical spelling is `sha256:<hex>` — what a registry, `promote.yml`
+# and `rollback.yml` all speak. `sha256-<hex>` exists only because it is the
+# spelling Coolify's tag field requires, and writing THAT into the history
+# meant a digest copied out of this file could never be promoted: promote
+# greps the history for `sha256:<hex>` and would never have found it.
+printf '%s %s %s\n' "$(date -Is)" "sha256:$DIGEST_HEX" "$EXPECTED_SHA" >>"$STATE_FILE"
 say "recorded in $STATE_FILE"
 summary "verdict=DEPLOYED"

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # One-time, as root, on the server: create the dedicated deployment user.
 #
 #   sh provision-deploy-user.sh "ssh-ed25519 AAAA… deploy@github"
@@ -12,7 +12,7 @@
 #
 # Until this has been run, CD has no way in: that is a deployment blocker by
 # design, not an oversight.
-set -eu
+set -Eeuo pipefail
 
 [ "$(id -u)" = "0" ] || {
   echo "run as root" >&2
@@ -22,9 +22,9 @@ set -eu
   echo "usage: provision-deploy-user.sh \"<ssh public key line>\"" >&2
   exit 2
 }
-PUBKEY=$1
+PUBKEY="$1"
 case "$PUBKEY" in
-  ssh-ed25519\ * | ssh-rsa\ * | ecdsa-sha2-*) ;;
+  "ssh-ed25519 "* | "ssh-rsa "* | "ecdsa-sha2-"*) ;;
   *)
     echo "that does not look like an SSH public key" >&2
     exit 2
@@ -37,7 +37,7 @@ id "$USERNAME" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$USER
 usermod -aG docker "$USERNAME"
 passwd -l "$USERNAME" >/dev/null # key-only, like the rest of the box
 
-HOME_DIR=$(getent passwd "$USERNAME" | cut -d: -f6)
+HOME_DIR="$(getent passwd "$USERNAME" | cut -d: -f6)"
 install -d -m 700 -o "$USERNAME" -g "$USERNAME" "$HOME_DIR/.ssh"
 printf '%s\n' "$PUBKEY" >"$HOME_DIR/.ssh/authorized_keys"
 chmod 600 "$HOME_DIR/.ssh/authorized_keys"

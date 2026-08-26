@@ -670,7 +670,7 @@ ssh-keygen -t ed25519 -f ./shikoo-deploy-key -C 'deploy@github' -N ''
 
 # 2. the deployment user (as root, once)
 scp deploy/host/provision-deploy-user.sh root@<host>:/tmp/
-ssh root@<host> "sh /tmp/provision-deploy-user.sh \"$(cat ./shikoo-deploy-key.pub)\""
+ssh root@<host> "bash /tmp/provision-deploy-user.sh \"$(cat ./shikoo-deploy-key.pub)\""
 
 # 3. pin the host key from a session you trust — not with ssh-keyscan at deploy time
 ssh-keyscan -p 22 <host> 2>/dev/null

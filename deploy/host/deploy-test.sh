@@ -53,7 +53,7 @@ fail() {
 cleanup() {
   set +e
   [ -z "$API_PID" ] || kill "$API_PID" 2>/dev/null
-  docker rm -f "$PG" "$REG" >/dev/null 2>&1
+  docker rm -f "$PG" "$REG" deploytest-old >/dev/null 2>&1
   docker rmi "127.0.0.1:$REG_PORT/shikoo:good" >/dev/null 2>&1
   docker network rm "$NET" >/dev/null 2>&1
   rm -rf "$WORK"
@@ -107,9 +107,29 @@ createServer((req, res) => {
 JS
 
 DB="postgres://postgres:deploytest@$PG:5432/shikoo"
-node "$WORK/fake-coolify.mjs" "$API_PORT" "$DB" "$WORK/api.log" &
-API_PID=$!
-until curl -s -o /dev/null "http://127.0.0.1:$API_PORT/api/v1/ping"; do sleep 0.2; done
+
+# Started and restarted through one function, because doing it by hand three
+# times is how the port ends up contested: `kill` returns when the signal is
+# sent, not when the process is gone. The replacement can then fail to bind and
+# exit, which leaves an unbounded readiness loop to hang the CI job until its
+# timeout — or worse, leaves the OLD server answering, so the next assertion
+# passes against the previous log and the previous database.
+start_api() { # db-url
+  if [ -n "$API_PID" ]; then
+    kill "$API_PID" 2>/dev/null || true
+    wait "$API_PID" 2>/dev/null || true
+  fi
+  node "$WORK/fake-coolify.mjs" "$API_PORT" "$1" "$WORK/api.log" &
+  API_PID=$!
+  local n=0
+  until curl -s -o /dev/null "http://127.0.0.1:$API_PORT/api/v1/ping"; do
+    n=$((n + 1))
+    [ "$n" -lt 100 ] || fail "the fake Coolify API never became ready"
+    kill -0 "$API_PID" 2>/dev/null || fail "the fake Coolify API exited during startup"
+    sleep 0.2
+  done
+}
+start_api "$DB"
 
 mkdir -p "$WORK/staging" "$WORK/state" "$WORK/lock"
 cat > "$WORK/staging/deploy.env" <<EOF
@@ -175,11 +195,7 @@ pass "verified all three, changed nothing, recorded nothing"
 # ------------------------------------------------ the migration is the fence
 say "a failed migration touches no application"
 : >"$WORK/api.log"
-kill "$API_PID" 2>/dev/null || true
-node "$WORK/fake-coolify.mjs" "$API_PORT" \
-  "postgres://postgres:WRONG@$PG:5432/shikoo" "$WORK/api.log" &
-API_PID=$!
-until curl -s -o /dev/null "http://127.0.0.1:$API_PORT/api/v1/ping"; do sleep 0.2; done
+start_api "postgres://postgres:WRONG@$PG:5432/shikoo"
 if run staging "$GOOD" "$GOOD_SHA" >"$WORK/mig.log" 2>&1; then
   fail "a broken migration deployed"
 fi
@@ -192,10 +208,7 @@ pass "no application touched, nothing recorded"
 # --------------------------------------------- the digest reaches the API
 say "the digest is what gets written to Coolify"
 : >"$WORK/api.log"
-kill "$API_PID" 2>/dev/null || true
-node "$WORK/fake-coolify.mjs" "$API_PORT" "$DB" "$WORK/api.log" &
-API_PID=$!
-until curl -s -o /dev/null "http://127.0.0.1:$API_PORT/api/v1/ping"; do sleep 0.2; done
+start_api "$DB"
 # Health can never go green here — nothing starts containers — so this is
 # expected to fail at the wait. What is asserted is the request that was made
 # before it got there.
@@ -222,6 +235,42 @@ grep -qE 'verdict=(DEPLOY FAILED|MANUAL INTERVENTION)' "$WORK/deploy.log" ||
   fail "a failed deploy produced no verdict: $(tail -3 "$WORK/deploy.log")"
 [ "$(state_lines)" = "0" ] || fail "a failed deploy was recorded as deployed"
 pass "failure reported, nothing recorded"
+
+# ------------------------------------- the old container is not the new one
+# The bug this guards against: `coolify.name` is stable across deploys, so a
+# health check that only asks «is a container with this label healthy» gets
+# `yes` from the container being REPLACED — while the new deployment is still
+# queued, or after it has failed to start at all. A broken image would reach
+# `health=ok`, be recorded as deployed, and never roll back.
+#
+# Here the fake API never starts anything, so the only container carrying the
+# label is the one standing before the deploy. Success would be the bug.
+say "a healthy container from BEFORE the deploy is not mistaken for the new one"
+: >"$WORK/api.log"
+docker run -d --name deploytest-old --network "$NET" \
+  --label coolify.name=uuid-ingest \
+  -e SERVICE=ingest -e ENV_NAME=staging -e DATABASE_URL="$DB" \
+  "127.0.0.1:$REG_PORT/shikoo:good" >/dev/null
+health_of() { docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$1" 2>/dev/null || true; }
+for _ in $(seq 1 45); do
+  [ "$(health_of deploytest-old)" = healthy ] && break
+  sleep 2
+done
+if [ "$(health_of deploytest-old)" != healthy ]; then
+  docker logs --tail 10 deploytest-old >&2 || true
+  fail "the stand-in container never became healthy, so this case proves nothing"
+fi
+if run staging "$GOOD" "$GOOD_SHA" >"$WORK/stale.log" 2>&1; then
+  fail "a stale container was accepted as the deploy"
+fi
+grep -q 'never replaced' "$WORK/stale.log" ||
+  fail "did not report that the container was never replaced: $(tail -3 "$WORK/stale.log")"
+if grep -q 'health=ok' "$WORK/stale.log"; then
+  fail "reported health=ok on the pre-deploy container"
+fi
+[ "$(state_lines)" = "0" ] || fail "recorded a deploy that never happened"
+docker rm -f deploytest-old >/dev/null 2>&1
+pass "refused, and said the container was never replaced"
 
 printf '\n%s checks passed\n' "$PASSED"
 printf 'not covered here (needs a real Coolify): the deploy-and-rollback path end to end.\n'

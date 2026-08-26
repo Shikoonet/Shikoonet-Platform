@@ -53,6 +53,10 @@ jobs:
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
           case "$INPUT" in
             sha256:*)
+              # Checked, not merely prefixed: this value ends up in a remote
+              # command and in a grep over the deploy history.
+              echo "$INPUT" | grep -qE '^sha256:[0-9a-f]{64}$' ||
+                { echo "not a sha256 digest" >&2; exit 1; }
               digest=$INPUT
               ;;
             *)
