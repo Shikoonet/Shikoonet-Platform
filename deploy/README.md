@@ -157,7 +157,7 @@ told.
 
 **It waits for CI on purpose.** A webhook fires in milliseconds and the gate
 takes minutes, so a push-triggered deploy races the gate and wins — which makes
-the gate decorative. The verdict comes from `/commits/:sha/check-runs`: every
+the gate decorative. The verdict comes from `/actions/runs?head_sha=`: every
 run `completed`, every conclusion `success` / `neutral` / `skipped`. A commit
 whose CI failed is recorded as seen and never deployed, and never asked about
 again: a red commit is fixed by pushing another one.
@@ -183,17 +183,22 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
   "http://localhost:8000/api/v1/deploy?uuid=<app-uuid>"
 ```
 
-**Open item.** The fine-grained PAT was issued for the deploy-key work and
-carries `Contents: Read-only`, so all three ways of asking whether CI passed
-answer `403`. Until the token also has **`Checks: Read-only`** on this
-repository, every tick logs
+**The token needs `Actions: Read-only`, and «Checks» is not on offer.** The
+obvious permission for reading a CI verdict is `Checks`, and the obvious
+endpoint is `/commits/:sha/check-runs`. GitHub no longer lists `Checks` among
+the fine-grained token permissions at all — checked 2026-08-26, the list runs
+«Attestations · Code quality · Code scanning alerts» with nothing between them,
+and the endpoint answers `403` to this token no matter what else is granted.
 
-> `cannot read CI on <sha> — the GitHub token needs «Checks: Read-only»`
+`Commit statuses` is the substitute it looks like and is not: Actions reports
+through check runs, so the legacy combined status is empty here and would read
+as «no CI configured» — the one answer that must never pass. So the verdict
+comes from the runs themselves, `/actions/runs?head_sha=`, which
+`Actions: Read-only` opens. Same three words out the other end.
 
-and deploys nothing. That is deliberate: the alternative is deploying commits
-whose tests were never consulted. The sha is not recorded while this is the
-answer, so the minute the permission is added the next tick deploys — nobody
-needs to re-push.
+Granted and proven end to end 2026-08-26 16:05Z, before any push: the tick read
+`CI | completed | success` on `c0b855a` and queued all three apps; the next tick
+was silent because the sha was recorded.
 
 ## Schema, before anything else
 
