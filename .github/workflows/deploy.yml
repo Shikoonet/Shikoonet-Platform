@@ -46,8 +46,8 @@ jobs:
       group: deploy-${{ inputs.environment }}
       cancel-in-progress: false
     steps:
-      # At the deployed commit, not at the branch tip: the script and compose
-      # file that run must be the ones from the commit being deployed.
+      # At the deployed commit, not at the branch tip: the script that runs
+      # must be the one from the commit being deployed.
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           ref: ${{ inputs.expected_sha }}
@@ -74,7 +74,7 @@ jobs:
           test -s ~/.ssh/deploy_key
           test -s ~/.ssh/known_hosts
 
-      - name: Send the deploy script and the compose file
+      - name: Send the deploy script
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           PORT: ${{ secrets.DEPLOY_PORT }}
@@ -83,7 +83,7 @@ jobs:
           set -euo pipefail
           scp -P "$PORT" -i ~/.ssh/deploy_key \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            deploy/host/deploy.sh deploy/compose.yaml "$USER_@$HOST:/opt/shikoo/"
+            deploy/host/deploy.sh "$USER_@$HOST:/opt/shikoo/"
           ssh -p "$PORT" -i ~/.ssh/deploy_key \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$USER_@$HOST" 'chmod 0755 /opt/shikoo/deploy.sh'

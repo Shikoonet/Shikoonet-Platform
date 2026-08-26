@@ -1,5 +1,14 @@
 # Deploying — three services that do not have to share a host
 
+> **Two machines are described in this file.** Everything up to «CI/CD» was
+> written for the earlier server — nginx `shikoo-tls`, port `:9443`, the
+> `mahamsteel.ir` names, certbot with DNS-01. The server the pipeline deploys
+> to today is a different box: Coolify **4.3.11**, its own **Traefik** on
+> `:80`/`:443`, and the `chopon.uk` names. Inspected 2026-08-26; see «CI/CD».
+> Where the two disagree, the CI/CD section is the one measured against a live
+> machine.
+
+
 ## The short version
 
 The bot and the dashboard have **zero code coupling**. No import edge, no HTTP
@@ -507,13 +516,13 @@ Separate, per environment, with no exceptions:
 | --- | --- | --- |
 | Postgres | the existing Coolify resource | its own Coolify database resource, own volume, own credentials, own backups |
 | Docker network | the existing `coolify` network | its own network |
-| compose project | `shikoo-staging` | `shikoo-production` |
+| Coolify project/environment | `shikoo` / `staging` | `shikoo` / `production` |
 | env files | `/etc/shikoo/staging/` | `/etc/shikoo/production/` |
 | deploy history | `/var/lib/shikoo/staging/deployed` | `/var/lib/shikoo/production/deployed` |
 | Telegram bot token | the test bot | the real bot |
 | SMS device credentials | test devices only | real devices |
 | operators | staging rows | production rows |
-| hostname | `shikoo.mahamsteel.ir:9443` | its own name, its own certificate, its own terminator container on its own port |
+| hostnames | `shikoo.chopon.uk`, `sms.chopon.uk` | its own names, its own Traefik certificates |
 
 `deploy.sh` refuses to run if the environments are not actually separate: each
 env file's `ENV_NAME` must match the environment being deployed, and
@@ -522,28 +531,51 @@ against the other environment's files — so the collision is caught and neither
 value is ever printed. A shared bot token would mean two pollers on one
 Telegram token; a shared database would mean staging test data in production.
 
-### Coolify keeps what it is good at
+### Coolify keeps the containers — it just stops rebuilding them
 
-Coolify keeps the panel and the **databases** — the resource type whose ids
-are stable and whose backup scheduling already works. The three application
-services move into `deploy/compose.yaml`.
+Coolify writes the Traefik labels that put `shikoo.chopon.uk` and
+`sms.chopon.uk` in front of these services, and renews their certificates
+through ACME. Taking the containers away from it would mean owning fifteen
+labels per service and the ACME wiring by hand, forever, to gain nothing.
 
-That is a deliberate transfer of ownership and the reason is narrow: a Coolify
-application builds from git, so it cannot deploy a digest that was built and
-tested somewhere else. Everything else about it was fine. What compose adds
-beyond the digest is that the topology is now a reviewed file in this
-repository rather than a set of fields in a panel — and stable service names,
-which is the property every hardcoded Coolify container name lacked.
+The one thing it could not do was deploy an image built somewhere else. The
+three applications were `dockerfile` build-packs — every deploy rebuilt from
+git, so the artifact CI tested was never the artifact that ran. That is the
+whole change, and it is three fields on an application record:
 
-The network aliases `ingest` and `dashboard` are preserved exactly, because
-`shikoo-tls` resolves those names through `127.0.0.11` and knows nothing about
-what is behind them. Nothing about the edge changes.
+| field | value |
+| --- | --- |
+| `build_pack` | `dockerimage` |
+| `docker_registry_image_name` | `ghcr.io/shikoonet/shikoonet-platform` |
+| `docker_registry_image_tag` | **`sha256-<hex>`** — note the hyphen |
+
+The hyphen is not a typo and not a workaround. `ApplicationDeploymentJob.php`
+lines 1191-1193 in the installed version read a tag beginning `sha256-` and
+pull `name@sha256:<hex>`: a digest, not a tag. It is Coolify's own spelling for
+a digest deploy, read out of the source of **4.3.11** rather than assumed.
+
+Applications are addressed by **UUID**, which is stable across deploys, and
+their containers are found by the `coolify.name` label, which carries that same
+UUID. Neither is a container name — those change every deploy, which is the
+trap this project has already been caught by twice.
+
+| application | UUID |
+| --- | --- |
+| `shikoo-bot` | `3xetld1oi3x7viq8cr8is0ls` |
+| `shikoo-dashboard` | `huneuqvzyw0cjd4u0f7s37cf` |
+| `shikoo-ingest` | `d9ulbwkdjpvg2ajalecruxzh` |
+
+The API is called on **`http://localhost:8000`, from the server itself**, over
+SSH. That is the reason SSH is in this pipeline at all: the Coolify panel
+answers plain HTTP, so a token sent to it from GitHub would cross the internet
+in clear text. Called from localhost, the token never leaves the machine. If
+the panel is ever put behind TLS, the SSH hop can go away.
 
 ### The deploy sequence
 
 `deploy/host/deploy.sh <env> <image@digest> <commit-sha>`, run on the server
-over SSH by the deploy workflow, which copies both the script and the compose
-file up from the commit being deployed first — a deploy script that lives only
+over SSH by the deploy workflow, which copies the script up from the commit
+being deployed first — a deploy script that lives only
 on the server is a script nobody reviews.
 
 1. `flock` on `/var/lock/shikoo-deploy-<env>.lock`. Fails fast rather than
@@ -660,24 +692,29 @@ Then write `/etc/shikoo/staging/*.env` by copying each Coolify application's
 environment verbatim, with `ENV_NAME=staging` and the `MIRZABOT_*` /
 `AUTO_*` switches decided out loud — ingest refuses to boot without them.
 
-### Cutover — moving staging's apps from Coolify to compose
+### Cutover — switching the applications from git-build to digest
 
 Do this once, in this order, with the merge pipeline already green:
 
-1. Let a merge run to the end of `publish`. Note the digest from the summary.
-2. In Coolify, **stop** `shikoo-bot`, `shikoo-ingest`, `shikoo-dashboard`.
-   Stop, not delete: they are the way back if the first compose deploy fails.
-   Leave `shikoo-postgres`, its backups, and the panel alone.
-3. Run the first deploy by hand from the server, so a person watches it:
-   `sudo -u shikoo-deploy /opt/shikoo/deploy.sh staging <image@digest> <sha>`
-   — or `--dry-run` first, which validates everything and stops before the
-   migration.
-4. Check the edge, from outside: `https://shikoo.mahamsteel.ir:9443/admin/`
-   answers, `https://sms.mahamsteel.ir:9443/health` answers 200. If nginx
-   cannot reach the services, the aliases are wrong — that is the only thing
-   this move can break.
-5. Turn off automatic deploys on the three Coolify applications so nothing
-   deploys them behind the pipeline's back.
+1. Create the API token (Coolify → Keys & Tokens → API tokens) with the
+   abilities `read`, `write` and `deploy`, and write `/etc/shikoo/staging/deploy.env`
+   as shown above. Nothing else needs the token, and it never leaves the box.
+2. Let a merge run to the end of `publish`. Note the digest from the summary.
+3. `deploy.sh staging <image@digest> <sha> --dry-run` — it verifies the token,
+   the image and its revision label, and that all three applications answer,
+   then stops before the migration.
+4. Run it for real, by hand the first time, and watch it. It is the run that
+   flips each application from `dockerfile` to `dockerimage`.
+5. Check from outside: `https://shikoo.chopon.uk/admin/` answers and
+   `https://sms.chopon.uk/health` returns 200. Traefik routes by labels Coolify
+   still owns, so this should be unchanged — but it is the one thing this move
+   could break, so look rather than assume.
+6. Turn off automatic deploys on the three applications, so nothing redeploys
+   them from git behind the pipeline's back.
+
+**Going back** is a Coolify UI change, not a code change: set the application's
+build pack to Dockerfile and deploy. Worth knowing before step 4 rather than
+during it.
 
 ### Rollback
 
@@ -784,10 +821,9 @@ different claims, and only one of them is true today.
 | `pnpm test` | **2,272 passed, 52 skipped, 180 files, 9 packages** — the skips are the MySQL tests, which need the production dump and skip themselves under `CI` |
 | `schema up` + `status` + `verify_invariants.sql` | 31 migrations, **32 invariants PASS** |
 | Playwright | **100 passed**, on schema → `seed:sim` → e2e |
-| `deploy/host/deploy-test.sh` — **9 checks**, now part of CI | pass |
-| a full deploy, against a throwaway Postgres and a local registry | migrate → gate → ingest+dashboard → bot → smoke → one lock holder → recorded |
+| `deploy/host/deploy-test.sh` — **9 checks**, part of CI | pass |
 | a failing migration | stops the deploy with **zero** services touched and no state written |
-| a new image whose `ingest` cannot boot | health-wait fails in seconds, the previous digest is restored, all three containers verified back on it, exit 1, `DEPLOY FAILED, ROLLBACK SUCCEEDED`, and the schema left as migrated |
+| the digest that reaches Coolify | `build_pack=dockerimage` and `docker_registry_image_tag=sha256-<hex>`, ingest first — asserted against a fake API that records every call |
 | two deploys at once | the second dies immediately on the lock and succeeds once it is released |
 | a mutable tag as the image argument | refused |
 | a digest whose commit label disagrees | refused |
@@ -806,3 +842,8 @@ different claims, and only one of them is true today.
   Merging into `main` is unprotected right now.
 - **Production deployment is disabled** in the only sense that matters: the
   environment does not exist, so `promote.yml` has nothing to deploy to.
+- **The deploy-and-rollback path has not run against a real Coolify.** The
+  harness fakes the API deliberately — a fake that also started containers
+  would be a reimplementation, and testing a reimplementation proves nothing.
+  So the first real deploy is a `--dry-run` followed by a watched run, and the
+  rollback is unproven on this server until a deploy fails or is made to.

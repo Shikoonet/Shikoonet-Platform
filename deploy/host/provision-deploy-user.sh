@@ -43,12 +43,12 @@ printf '%s\n' "$PUBKEY" >"$HOME_DIR/.ssh/authorized_keys"
 chmod 600 "$HOME_DIR/.ssh/authorized_keys"
 chown "$USERNAME:$USERNAME" "$HOME_DIR/.ssh/authorized_keys"
 
-# Where CD syncs the script and compose file, and where deploy history lives.
+# Where CD syncs the deploy script, and where deploy history lives.
 install -d -m 755 -o "$USERNAME" -g "$USERNAME" /opt/shikoo
 install -d -m 755 -o "$USERNAME" -g "$USERNAME" /var/lib/shikoo/staging /var/lib/shikoo/production
 
-# Env files are root-owned and group-readable: the deploy user (and compose,
-# which reads env_file client-side) can read them, only root edits them.
+# Env files are root-owned and group-readable: the deploy user can read them,
+# only root edits them. deploy.env holds the Coolify API token.
 install -d -m 750 -o root -g "$USERNAME" /etc/shikoo /etc/shikoo/staging /etc/shikoo/production
 
 cat <<EOF
@@ -60,7 +60,8 @@ Coolify application envs — see deploy/README.md «CI/CD»:
   /etc/shikoo/<env>/bot.env         DATABASE_URL, TELEGRAM_BOT_TOKEN, ENV_NAME=<env>, …
   /etc/shikoo/<env>/ingest.env      DATABASE_URL, ENV_NAME=<env>, MIRZABOT_*/AUTO_* decided out loud, …
   /etc/shikoo/<env>/dashboard.env   DATABASE_URL, ENV_NAME=<env>, TRUSTED_PROXY_IP_HEADER, …
-  /etc/shikoo/<env>/deploy.env      GHCR_USER, GHCR_TOKEN (read:packages only),
-                                    DB_CONTAINER=<that env's Postgres container>,
-                                    SHIKOO_NETWORK=<that env's docker network>
+  /etc/shikoo/<env>/deploy.env      COOLIFY_URL=http://localhost:8000,
+                                    COOLIFY_TOKEN=<read,write,deploy abilities>,
+                                    APP_INGEST / APP_DASHBOARD / APP_BOT=<uuids>,
+                                    DB_CONTAINER=<that env's Postgres container>
 EOF
