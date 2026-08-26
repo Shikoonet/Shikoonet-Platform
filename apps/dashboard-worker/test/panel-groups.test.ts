@@ -22,7 +22,7 @@
  *   could not ask                          → NOT "has no groups"
  */
 
-import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { panelSecretKey, seal } from '@shikoo/domain';
 import { app } from '../src/index.js';
@@ -184,6 +184,10 @@ beforeEach(async () => {
   process.env['PANEL_SECRET_KEY'] = KEY;
   await purge();
   await baseEnv.DB.prepare(`TRUNCATE audit_logs CASCADE`).run();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 afterAll(async () => {
@@ -677,5 +681,144 @@ describe('deleting a panel', () => {
 
   it('404s on a panel that is already gone', async () => {
     expect((await del('/api/v1/admin/panels/2000000004')).status).toBe(404);
+  });
+});
+
+/**
+ * Retiring a tier: the move that belongs in front of the delete.
+ *
+ * `deleteGroup` on its own leaves the members' accounts alive and their
+ * subscription links empty — a PasarGuard link is resolved when it is fetched,
+ * so nothing breaks at the moment of deletion and every one of those customers
+ * quietly stops receiving configs on their next refresh. The route under test
+ * is the step that makes that avoidable, and the assertions here are about the
+ * two ways it can be worse than doing nothing: moving people into a group that
+ * is not there, and telling an operator «done» when it stopped halfway.
+ */
+describe('moving a group’s members before retiring it', () => {
+  /** A panel that answers, with two groups and three accounts. */
+  function panelAnswers(): void {
+    const users = [
+      { username: 'ali', group_ids: [3] },
+      { username: 'sara', group_ids: [3, 6] },
+      { username: 'reza', group_ids: [6] },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        const method = init?.method ?? 'GET';
+        const json = (body: unknown, status = 200) =>
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { 'content-type': 'application/json' },
+          });
+
+        if (url.endsWith('/api/admin/token')) return json({ access_token: 'tok' });
+        if (url.includes('/api/groups')) {
+          return json({
+            groups: [
+              { id: 3, name: 'خرید اولی‌ها', inbound_tags: ['Shadowsocks TCP'], total_users: 2 },
+              { id: 6, name: 'طلایی', inbound_tags: ['Shadowsocks TCP'], total_users: 2 },
+            ],
+          });
+        }
+        if (url.includes('/api/hosts')) return json([]);
+        // The whole list whatever the query string says, because the panel does.
+        if (url.includes('/api/users')) return json({ users });
+        const put = /\/api\/user\/([^/?]+)$/.exec(url);
+        if (put && method === 'PUT') {
+          const found = users.find((u) => u.username === decodeURIComponent(put[1]!));
+          const spec = JSON.parse(String(init?.body ?? '{}')) as { group_ids?: number[] };
+          if (found && Array.isArray(spec.group_ids)) found.group_ids = spec.group_ids;
+          return json(found ?? {});
+        }
+        return new Response('', { status: 200 });
+      },
+    );
+  }
+
+  it('moves them, and says how many', async () => {
+    panelAnswers();
+    const id = await migratedPanel('retire', { group_ids: [6] });
+    await withCredential(id);
+    const res = await post(`/api/v1/admin/panels/${id}/panel-groups/3/move-members`, {
+      toGroupId: 6,
+    });
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as { moved: number; scanned: number };
+    expect(out.moved).toBe(2);
+    // The population it had to read to find them. Not the same number, and the
+    // gap is the whole reason this walks the panel instead of asking it.
+    expect(out.scanned).toBe(3);
+  }, 30_000);
+
+  it('refuses a destination the panel does not have, before moving anybody', async () => {
+    // Group 42 again, pointed the other way. `PUT` would take some of the
+    // members into a group that is not there and the operator would be told the
+    // tier was migrated — then every one of those accounts delivers nothing.
+    // Checked against the panel's OWN listing, because the screen's copy can be
+    // a minute old and a minute is enough for somebody else to have deleted it.
+    panelAnswers();
+    const id = await migratedPanel('bad-target', { group_ids: [6] });
+    await withCredential(id);
+    const res = await post(`/api/v1/admin/panels/${id}/panel-groups/3/move-members`, {
+      toGroupId: 42,
+    });
+    expect(res.status).toBe(400);
+    const out = (await res.json()) as { error: string; detail: string };
+    expect(out.error).toBe('target_missing');
+    expect(out.detail).toContain('هیچ‌کس جابه‌جا نشد');
+  }, 30_000);
+
+  it('refuses moving a group into itself', async () => {
+    panelAnswers();
+    const id = await migratedPanel('same', { group_ids: [6] });
+    await withCredential(id);
+    const res = await post(`/api/v1/admin/panels/${id}/panel-groups/3/move-members`, {
+      toGroupId: 3,
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('same_group');
+  }, 30_000);
+
+  it('records the move in the audit log, with the count', async () => {
+    // An append-only log that records only the successes cannot answer «who was
+    // moved before it broke», which is the question a half-finished move leaves.
+    panelAnswers();
+    const id = await migratedPanel('audited', { group_ids: [6] });
+    await withCredential(id);
+    await post(`/api/v1/admin/panels/${id}/panel-groups/3/move-members`, { toGroupId: 6 });
+
+    // `::text`, like the audit assertion two blocks up: the driver hands jsonb
+    // back as a string here, and a `toMatchObject` against it passes for the
+    // wrong reason on the day it starts arriving parsed.
+    const row = await baseEnv.DB.prepare(
+      `SELECT after_json::text AS after FROM audit_logs
+        WHERE action = 'catalog.panel_group_members_moved' ORDER BY id DESC LIMIT 1`,
+    ).first<{ after: string }>();
+    expect(row, 'nothing was audited').not.toBeNull();
+    expect(JSON.parse(row!.after)).toMatchObject({ from: 3, to: 6, moved: 2 });
+  }, 30_000);
+
+  it('refuses a REVIEWER', async () => {
+    const id = await migratedPanel('rev-move', { group_ids: [6] });
+    const res = await post(
+      `/api/v1/admin/panels/${id}/panel-groups/3/move-members`,
+      { toGroupId: 6 },
+      REVIEWER,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects a body with anything else in it', async () => {
+    // `.strict()`, like every other body in this app. A typo'd field silently
+    // ignored is how a caller believes it asked for something it did not.
+    const id = await migratedPanel('strict-move', { group_ids: [6] });
+    const res = await post(`/api/v1/admin/panels/${id}/panel-groups/3/move-members`, {
+      toGroupId: 6,
+      alsoDelete: true,
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('invalid_body');
   });
 });

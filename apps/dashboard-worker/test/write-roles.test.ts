@@ -232,6 +232,16 @@ describe('every write route, asked directly', () => {
     // `ON DELETE SET NULL`, so a count-then-delete pair that lost the race
     // would not raise — it would silently strip the panel off every live
     // subscription and look like it worked.
-    expect(writeRoutes().length).toBe(124);
+    //
+    // 125 on 2026-08-26: `POST /panels/:id/panel-groups/:groupId/move-members`.
+    // It is the step that belongs in FRONT of the group delete two entries up.
+    // Deleting a tier leaves its members' accounts alive and their subscription
+    // links empty — a PasarGuard link is resolved when it is fetched, so nothing
+    // breaks at the moment of deletion and every one of those customers quietly
+    // stops receiving configs on their next refresh. ADMIN-only, and it is the
+    // only write in this file that is not one request: it is one `PUT` per
+    // member against somebody else's panel, so it reports how many actually
+    // moved on the failure path too, and audits both outcomes.
+    expect(writeRoutes().length).toBe(125);
   });
 });

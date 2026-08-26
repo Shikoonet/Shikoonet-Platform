@@ -571,6 +571,18 @@ const GroupSelection = z
   })
   .strict();
 
+/**
+ * Where a retiring group's members go.
+ *
+ * One field, and no «remove them from every group» option. That variant is what
+ * deleting the group already does, and offering it here as a destination would
+ * put the accident this route prevents back on the same screen wearing a
+ * different label.
+ */
+const MoveMembers = z
+  .object({ toGroupId: z.number().int().min(0).max(1_000_000) })
+  .strict();
+
 const GroupSpec = z
   .object({
     name: z.string().trim().min(1).max(120),
@@ -1414,6 +1426,131 @@ export function registerPanelRoutes(
       null,
     );
     return c.json({ ok: true, group: result.group });
+  });
+
+  /**
+   * Move a retiring group's members into another one, before it is deleted.
+   *
+   * The case is «خرید اولی‌ها»: a first-timers tier stops being offered, and the
+   * people who bought it still hold it. Deleting the group on its own leaves
+   * their accounts alive and their subscriptions empty — a PasarGuard link is
+   * resolved when it is fetched, so nothing breaks at the moment of deletion and
+   * every one of them quietly stops receiving configs on their next refresh.
+   * That is the failure this route exists to make impossible to reach by
+   * accident: the screen offers the move first, and the delete after.
+   *
+   * Both ids are checked against the panel's OWN listing rather than trusted.
+   * Moving accounts into a group id that is not there is the group-42 story
+   * again with the damage already done — `PUT` would take some of them and the
+   * operator would be told «done» about a tier that delivers nothing.
+   *
+   * Not a transaction, because it cannot be: it is one `PUT` per member against
+   * somebody else's panel. So the count that actually moved is reported on the
+   * failure path too, and the operation is idempotent — a member that already
+   * moved no longer carries the old group, so pressing it again resumes.
+   */
+  app.post('/api/v1/admin/panels/:id/panel-groups/:groupId/move-members', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    const groupId = Number(c.req.param('groupId'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    if (!Number.isInteger(groupId) || groupId < 0) {
+      return c.json({ ok: false, error: 'invalid_group_id' }, 400);
+    }
+
+    const body = MoveMembers.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+    const toGroupId = body.data.toGroupId;
+    if (toGroupId === groupId) {
+      return c.json(
+        { ok: false, error: 'same_group', detail: 'مبدأ و مقصد یکی است.' },
+        400,
+      );
+    }
+
+    const ctx = await panelContext(c.env.DB, id);
+    if (!ctx.ok) {
+      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
+      return c.json({ ok: false, error: 'panel_unavailable', detail: ctx.reason }, 400);
+    }
+    if (!ctx.adapter.moveGroupMembers || !ctx.adapter.listGroups) {
+      return c.json({ ok: false, error: 'unsupported', detail: 'این نوع پنل گروه ندارد.' }, 400);
+    }
+
+    // Asked, not assumed. The screen's list can be a minute old, and a minute is
+    // long enough for somebody else to have deleted the destination.
+    const listed = await ctx.adapter.listGroups(ctx.provider);
+    if (!listed.ok) {
+      return c.json({ ok: false, error: 'panel_unavailable', detail: listed.reason }, 400);
+    }
+    const onPanel = new Set(listed.groups.map((g) => g.id));
+    if (!onPanel.has(groupId)) {
+      return c.json(
+        { ok: false, error: 'group_missing', detail: `گروه #${groupId} روی این پنل نیست.` },
+        400,
+      );
+    }
+    if (!onPanel.has(toGroupId)) {
+      return c.json(
+        {
+          ok: false,
+          error: 'target_missing',
+          detail: `گروه مقصد #${toGroupId} روی این پنل نیست — هیچ‌کس جابه‌جا نشد.`,
+        },
+        400,
+      );
+    }
+
+    const result = await ctx.adapter.moveGroupMembers(ctx.provider, groupId, toGroupId);
+
+    // Audited on both paths. A move that stopped halfway changed the panel, and
+    // an append-only log that only records the successes cannot answer «who was
+    // moved before it broke».
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.panel_group_members_moved',
+      'PROVISIONING_PROVIDER',
+      String(id),
+      { code: ctx.code, group: groupId },
+      {
+        code: ctx.code,
+        from: groupId,
+        to: toGroupId,
+        moved: result.moved,
+        ...(result.ok ? {} : { failed: result.reason }),
+      },
+      null,
+    );
+
+    if (!result.ok) {
+      // The count goes INTO the sentence, not beside it: `ApiError` on the
+      // browser side carries `error` and `detail` and drops everything else, so
+      // a `moved` field here would arrive nowhere. And this is the one number
+      // that decides what the operator does next — «hE moved none, retry» reads
+      // the same as «it moved five, retry» without it.
+      const done =
+        result.moved === 0
+          ? 'هیچ‌کس جابه‌جا نشد'
+          : `${result.moved} حساب جابه‌جا شد و بقیه نه — دوباره زدنِ همین دکمه از همان‌جا ادامه می‌دهد`;
+      return c.json(
+        {
+          ok: false,
+          error: 'panel_refused',
+          detail: `${done}. ${result.reason}`,
+          moved: result.moved,
+        },
+        400,
+      );
+    }
+    return c.json({ ok: true, moved: result.moved, scanned: result.scanned });
   });
 
   /**

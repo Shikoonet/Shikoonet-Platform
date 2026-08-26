@@ -54,9 +54,14 @@ function fakePanel(options: {
   hostStatus?: number;
   refuseWrite?: { status: number; detail?: string };
   inboundsBody?: unknown;
+  /** Accounts, for the group-membership walk. */
+  users?: Array<{ username: string; group_ids?: number[] }>;
+  /** Usernames the panel refuses to update, so a partial failure can be asserted. */
+  refuseUser?: string[];
 } = {}) {
   const calls: Call[] = [];
   const groups: Group[] = [...(options.groups ?? [])];
+  const users = (options.users ?? []).map((u) => ({ ...u }));
   const inbounds = options.inbounds ?? ['Shadowsocks TCP', 'VLESS TCP 17846'];
   const hostFor = options.hostFor ?? inbounds;
   let nextId = Math.max(0, ...groups.map((g) => g.id)) + 1;
@@ -104,6 +109,31 @@ function fakePanel(options: {
     }
     if (method === 'GET' && url.endsWith('/api/groups')) {
       return new Response(JSON.stringify({ groups, total: groups.length }), { status: 200 });
+    }
+    // Every account, and — deliberately — the whole list no matter what is in
+    // the query string. The real panel does exactly this: `?group_id=3`,
+    // `?group_id=7` and `?group_id=999` each answered 200 with all thirteen
+    // accounts, measured 2026-08-26. A fake that honoured the parameter would
+    // make a filter-on-the-panel implementation pass here and move every account
+    // on a real one.
+    if (method === 'GET' && url.includes('/api/users')) {
+      return new Response(JSON.stringify({ users, total: users.length }), { status: 200 });
+    }
+    const userPut = /\/api\/user\/([^/?]+)$/.exec(url);
+    if (userPut && method === 'PUT') {
+      const name = decodeURIComponent(userPut[1]!);
+      if ((options.refuseUser ?? []).includes(name)) {
+        return new Response(JSON.stringify({ detail: 'nope' }), { status: 409 });
+      }
+      const found = users.find((u) => u.username === name);
+      if (!found) return new Response(JSON.stringify({ detail: 'not found' }), { status: 404 });
+      const spec = body as { group_ids?: unknown };
+      // A PARTIAL update, which is the real panel's shape for users and the
+      // opposite of `PUT /api/group/{id}` fifty lines down. A fake that demanded
+      // the whole account here would hide a regression that stopped sending the
+      // quota — by requiring the very field whose absence is the point.
+      if (Array.isArray(spec?.group_ids)) found.group_ids = spec.group_ids as number[];
+      return new Response(JSON.stringify(found), { status: 200 });
     }
     if (method === 'POST' && url.endsWith('/api/group')) {
       if (options.refuseWrite) {
@@ -200,7 +230,7 @@ function fakePanel(options: {
     return new Response('{}', { status: 500 });
   }) as unknown as typeof globalThis.fetch;
 
-  return { calls, groups, fetchImpl };
+  return { calls, groups, users, fetchImpl };
 }
 
 function provider(fetchImpl: typeof globalThis.fetch): ProviderContext {
@@ -562,5 +592,101 @@ describe('hosts, which is what «اینباند بساز» actually means', () =
 
     const after = await marzbanAdapter.listGroups!(provider(panel.fetchImpl));
     expect(after.ok && after.groups[0]!.deliverableInbounds).toBe(2);
+  });
+});
+
+/**
+ * Retiring a tier without emptying its members' subscriptions.
+ *
+ * The case is «خرید اولی‌ها»: a first-timers group is withdrawn and the people
+ * who bought it still hold it. `deleteGroup` alone leaves their accounts alive
+ * and their links empty — a PasarGuard subscription is resolved when it is
+ * fetched, so nothing breaks at the moment of deletion and every one of them
+ * quietly stops receiving configs on their next refresh.
+ *
+ * The fake above answers `/api/users` with the WHOLE list regardless of the
+ * query string, because the panel does. That is what makes the first test here
+ * a test rather than a restatement.
+ */
+describe('moving a group’s members', () => {
+  const POPULATION = [
+    { username: 'ali', group_ids: [3] },
+    { username: 'sara', group_ids: [3, 6] },
+    { username: 'reza', group_ids: [6] },
+    { username: 'nobody', group_ids: [] },
+  ];
+
+  it('moves only the members of the group it was asked about', async () => {
+    // The whole point. `?group_id=` is ignored by the panel, so a filter pushed
+    // to it would move `reza` and `nobody` too — and the caller would be told
+    // «۴ حساب جابه‌جا شد» about a panel where every tier had just collapsed into
+    // one. Asserted on the fake's own rows, not on the return value.
+    const panel = fakePanel({ users: POPULATION });
+    const out = await marzbanAdapter.moveGroupMembers!(provider(panel.fetchImpl), 3, 7);
+
+    expect(out.ok).toBe(true);
+    expect(out.moved).toBe(2);
+    expect(panel.users.find((u) => u.username === 'ali')!.group_ids).toEqual([7]);
+    expect(panel.users.find((u) => u.username === 'reza')!.group_ids).toEqual([6]);
+    expect(panel.users.find((u) => u.username === 'nobody')!.group_ids).toEqual([]);
+  });
+
+  it('keeps the other groups a member is in', async () => {
+    // `sara` is in the retiring tier AND in 6. Replacing her groups with `[7]`
+    // instead of amending them would take away a tier she also paid for, and
+    // nothing would report it — she would simply receive less on her next
+    // refresh, which is the same silent shape this whole route exists to stop.
+    const panel = fakePanel({ users: POPULATION });
+    await marzbanAdapter.moveGroupMembers!(provider(panel.fetchImpl), 3, 7);
+    expect(panel.users.find((u) => u.username === 'sara')!.group_ids).toEqual([6, 7]);
+  });
+
+  it('sends only `group_ids`, so quota and expiry survive', async () => {
+    // `PUT /api/user/{u}` is a PARTIAL update — proven against the live panel on
+    // 2026-08-18 — and this route has no business resending an account's volume
+    // or expiry. A body carrying more would silently rewrite what a customer
+    // bought while moving them between tiers.
+    const panel = fakePanel({ users: POPULATION });
+    await marzbanAdapter.moveGroupMembers!(provider(panel.fetchImpl), 3, 7);
+    const puts = panel.calls.filter((c) => c.method === 'PUT' && c.url.includes('/api/user/'));
+    expect(puts).toHaveLength(2);
+    for (const put of puts) expect(Object.keys(put.body as object)).toEqual(['group_ids']);
+  });
+
+  it('is idempotent — running it again moves nobody', async () => {
+    // What makes a retry after a partial failure safe. A member that already
+    // moved no longer carries the old group, so the second pass finds nothing
+    // and says so rather than doing it twice.
+    const panel = fakePanel({ users: POPULATION });
+    await marzbanAdapter.moveGroupMembers!(provider(panel.fetchImpl), 3, 7);
+    const again = await marzbanAdapter.moveGroupMembers!(provider(panel.fetchImpl), 3, 7);
+    expect(again.ok && again.moved).toBe(0);
+  });
+
+  it('reports how many moved when the panel refuses one of them', async () => {
+    // Not one request — one per member. «It failed» and «it failed after one»
+    // need different next steps from the operator, and only the second sentence
+    // lets them tell a retry from a rollback. The count is on the failure arm of
+    // the result type for exactly this.
+    const panel = fakePanel({ users: POPULATION, refuseUser: ['sara'] });
+    const out = await marzbanAdapter.moveGroupMembers!(provider(panel.fetchImpl), 3, 7);
+
+    expect(out.ok).toBe(false);
+    expect(out.moved, 'ali went through before sara was refused').toBe(1);
+    expect(!out.ok && out.reason).toContain('sara');
+    expect(panel.users.find((u) => u.username === 'ali')!.group_ids).toEqual([7]);
+  });
+
+  it('skips an account the panel described without any groups at all', async () => {
+    // A missing `group_ids` must not become a written one. This says «skipped»,
+    // not «treated as unknown»: an earlier version returned `null` for the
+    // missing case to keep it apart from `[]`, and removing that distinction
+    // turned nothing red — there is no branch where the two differ, because
+    // neither carries the group being retired. The comment claiming otherwise
+    // went with it.
+    const panel = fakePanel({ users: [{ username: 'mystery' }, { username: 'ali', group_ids: [3] }] });
+    const out = await marzbanAdapter.moveGroupMembers!(provider(panel.fetchImpl), 3, 7);
+    expect(out.ok && out.moved).toBe(1);
+    expect(panel.calls.some((c) => c.method === 'PUT' && c.url.includes('mystery'))).toBe(false);
   });
 });
