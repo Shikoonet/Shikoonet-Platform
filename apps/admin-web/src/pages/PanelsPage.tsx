@@ -267,201 +267,6 @@ const KINDS: ReadonlyArray<{ value: string; label: string; login: boolean }> = [
   { value: 'manual', label: 'دستی', login: false },
 ];
 
-function PanelCreator({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const [code, setCode] = useState('');
-  const [name, setName] = useState('');
-  const [kind, setKind] = useState('pasarguard');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const needsLogin = KINDS.find((k) => k.value === kind)?.login ?? true;
-  const hasCredential = username.trim() !== '' && password !== '';
-
-  async function create() {
-    setBusy(true);
-    setErr(null);
-    try {
-      await api.createPanel({
-        code: code.trim(),
-        name: name.trim(),
-        kind,
-        baseUrl: baseUrl.trim() === '' ? null : baseUrl.trim(),
-        ...(hasCredential ? { credential: { username: username.trim(), password } } : {}),
-      });
-      onCreated();
-      onClose();
-    } catch (e) {
-      setErr(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="card" style={{ marginBlockEnd: 16 }}>
-      <div className="card__head">
-        <span className="card__title">پنل تازه</span>
-        <button type="button" className="btn btn-sm" onClick={onClose}>
-          بستن
-        </button>
-      </div>
-
-      {err && <div className="alert alert-error">{err}</div>}
-
-      {/* `filters` + `grow` + `form-label` + `form-control` — the same classes
-          PanelEditor uses. An earlier version of this form invented
-          `form-grid` and `input`, neither of which exists in theme.css, so
-          every field rendered unstyled on one cramped row. Reading the
-          screenshot is what caught it; the markup looked reasonable. */}
-      <div className="filters">
-        <div className="grow">
-          <label className="form-label" htmlFor="new-panel-code">
-            کد پنل
-          </label>
-          <input
-            id="new-panel-code"
-            className="form-control ltr"
-            type="text"
-            maxLength={60}
-            placeholder="test-panel"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-          />
-        </div>
-        <div className="grow">
-          <label className="form-label" htmlFor="new-panel-name">
-            نام
-          </label>
-          <input
-            id="new-panel-name"
-            className="form-control"
-            type="text"
-            maxLength={120}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="form-label" htmlFor="new-panel-kind">
-            نوع
-          </label>
-          <select
-            id="new-panel-kind"
-            className="form-control"
-            value={kind}
-            onChange={(e) => setKind(e.target.value)}
-          >
-            {KINDS.map((k) => (
-              <option key={k.value} value={k.value}>
-                {k.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      <p className="muted">کد پنل حروف کوچک انگلیسی، رقم و خط تیره است و بعداً عوض نمی‌شود.</p>
-
-      {needsLogin && (
-        <div className="filters">
-          <div className="grow">
-            <label className="form-label" htmlFor="new-panel-url">
-              آدرس پنل
-            </label>
-            <input
-              id="new-panel-url"
-              className="form-control ltr"
-              type="text"
-              placeholder="https://panel.example.com"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-            />
-          </div>
-          <div className="grow">
-            <label className="form-label" htmlFor="new-panel-user">
-              نام کاربری پنل
-            </label>
-            <input
-              id="new-panel-user"
-              className="form-control ltr"
-              type="text"
-              autoComplete="off"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-            />
-          </div>
-          <div className="grow">
-            <label className="form-label" htmlFor="new-panel-pass">
-              رمز پنل
-            </label>
-            <input
-              id="new-panel-pass"
-              className="form-control ltr"
-              type="password"
-              autoComplete="new-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-        </div>
-      )}
-
-      {needsLogin && (
-        <>
-          {/* The legacy wizard printed these rules and trusted the operator to
-              apply them by hand. The server applies them now — this paragraph
-              is the courtesy of saying so, not the guard. */}
-          <p className="muted">
-            آدرس را بدون <span className="ltr">/dashboard</span> و بدون{' '}
-            <span className="ltr">/</span> آخر بنویسید، و اگر پورت ۴۴۳ است لازم نیست وارد شود.
-            هرکدام را فراموش کنید خودمان برمی‌داریم — ولی <span className="ltr">http</span> یا{' '}
-            <span className="ltr">https</span> باید باشد، چون حدس‌زدنش یا رمز را لخت می‌فرستد یا روی
-            گواهی می‌شکند.
-          </p>
-          <p className="muted">رمز رمزنگاری‌شده ذخیره می‌شود و هیچ صفحه‌ای دوباره نشانش نمی‌دهد.</p>
-        </>
-      )}
-
-      {/* Before saving, deliberately: a panel saved and only then found broken
-          is ACTIVE for however long it takes somebody to notice. */}
-      {needsLogin && (
-        <ConnectionTest
-          label="تست ارتباط، قبل از ساخت"
-          disabled={baseUrl.trim() === '' || !hasCredential}
-          run={() =>
-            api.testPanel(0, {
-              baseUrl: baseUrl.trim(),
-              kind,
-              credential: { username: username.trim(), password },
-            })
-          }
-        />
-      )}
-
-      {needsLogin && !hasCredential && (
-        <div className="alert alert-warning" style={{ marginBlockStart: 8 }}>
-          بدون رمز، پنل <b>غیرفعال</b> ساخته می‌شود — چون پنلی که نتواند وارد شود، سفارشِ پرداخت‌شده
-          را رد می‌کند و پول مشتری برمی‌گردد.
-        </div>
-      )}
-
-      <div style={{ marginBlockStart: 12 }}>
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => void create()}
-          disabled={busy || code.trim() === '' || name.trim() === ''}
-        >
-          {busy ? 'در حال ساخت…' : 'ساخت پنل'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /**
  * اینباندها — and what «ساختن» one actually means here.
  *
@@ -843,6 +648,21 @@ function PanelGroupsSection({ panel }: { panel: PanelItem }) {
         <div className="alert alert-warning">
           گروه‌ها از پنل خوانده نشد{reason ? ` — ${reason}` : ''}. تیک‌های ذخیره‌شده دست‌نخورده
           می‌مانند؛ فهرستِ خالی نشان‌دادن یعنی دعوت به «درست‌کردن» چیزی که درست است.
+          {/*
+            And what those ticks ARE, by number. Walking an unreachable panel is
+            how this gap showed: the warning said the saved selection was safe
+            without ever saying what it was, so the one screen that could have
+            named «۴۲ و ۲» — the ids on the migrated VIP panel, one of which the
+            panel no longer has — showed nothing at all. This is the state where
+            that matters most, because the panel cannot be asked.
+          */}
+          {selected.length > 0 && (
+            <div style={{ marginBlockStart: 6 }}>
+              الان این گروه‌ها فرستاده می‌شوند:{' '}
+              <b className="ltr">{selected.map((id) => `#${id}`).join(' · ')}</b> — و تا وقتی پنل
+              جواب ندهد نمی‌دانیم روی پنل هستند یا نه.
+            </div>
+          )}
         </div>
       ) : (
         <div className="pick-list">
@@ -916,7 +736,20 @@ function PanelGroupsSection({ panel }: { panel: PanelItem }) {
         an operator saving three times and seeing no effect.
       */}
       <p className="muted" style={{ marginBlockStart: 8 }}>
-        {inherit.length === 0 ? (
+        {/*
+          Three states, not two. A panel with no services at all and a panel
+          whose every service overrides these ticks are both "the ticks decide
+          nothing", and saying it the same way about both is wrong the way the
+          old status column was wrong: it names a cause that is not the cause.
+          Walking a freshly-added panel in the browser is what showed it — it
+          read «همه گروه خودشان را دارند» about a panel that had no services.
+        */}
+        {panel.productCount === 0 ? (
+          <>
+            هنوز سرویسی روی این پنل نیست. این تیک‌ها پیش‌فرضِ سرویس‌هایی هستند که بعداً این‌جا
+            ساخته می‌شوند.
+          </>
+        ) : inherit.length === 0 ? (
           <>
             هیچ سرویسی روی این پنل به این تیک‌ها تکیه ندارد — همه گروه خودشان را دارند، پس این‌ها
             فعلاً هیچ خریدی را تصمیم نمی‌گیرند.
@@ -981,7 +814,14 @@ function PanelModal({
   /** null = adding. */
   panel: PanelItem | null;
   onClose: () => void;
-  onSaved: () => void;
+  /**
+   * `panel` is the row as it came back. Creating hands it over so the caller
+   * can turn this modal into the EDITOR for the panel just made — which is
+   * what puts the groups section on screen without a second click, and is the
+   * whole flow Sam asked for: add the panel, it tests itself, its groups
+   * appear, tick them.
+   */
+  onSaved: (panel: PanelItem) => void;
 }) {
   const w = useAdminWriteProps();
   const editing = panel !== null;
@@ -1022,14 +862,26 @@ function PanelModal({
             : {}),
         });
         setNote(statusNote(created.panel, created.probe));
-        onSaved();
+        onSaved(created.panel);
         return;
       }
 
-      // The credential first: if it fails, the auto-status probe below would be
-      // answering about the OLD password and would switch a good panel off.
-      if (username.trim() !== '' && password !== '') {
-        await api.setPanelCredential(panel.id, { username: username.trim(), password });
+      /**
+       * The credential first, and a password ALONE is enough.
+       *
+       * First: if it went second, the auto-status probe below would answer
+       * about the OLD password and switch a good panel off.
+       *
+       * Alone: no route hands a stored username back, so this box is empty on
+       * a panel that already has one. Requiring both here is what made a typed
+       * password vanish without a word under a label promising the opposite —
+       * the server fills the username in from what is already sealed.
+       */
+      if (password !== '') {
+        await api.setPanelCredential(panel.id, {
+          ...(username.trim() === '' ? {} : { username: username.trim() }),
+          password,
+        });
       }
 
       const capacityValue = capacity.trim() === '' ? null : Number(capacity);
@@ -1048,7 +900,7 @@ function PanelModal({
       });
       setNote(statusNote(updated.panel, updated.probe));
       setPassword('');
-      onSaved();
+      onSaved(updated.panel);
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -1724,12 +1576,17 @@ export function PanelsPage() {
             setCreating(false);
             setEditing(null);
           }}
-          onSaved={() => {
-            void load().then(() => {
-              // Re-read the open panel from the fresh list, so the modal that
-              // stays open is not showing the values from before the save.
-              setEditing((prev) => (prev === null ? null : prev));
-            });
+          onSaved={(saved) => {
+            // Creating leaves the modal OPEN, as the editor for the panel just
+            // made. Closing it would be the wrong end of the flow: the groups
+            // section only exists for a saved panel, so closing here would mean
+            // adding a panel and then having to find it and re-open it before
+            // it could be told what to sell. Walking this in the browser is how
+            // that was noticed — the first version left the CREATE form open
+            // and a second «ذخیره» answered 409 on its own code.
+            setCreating(false);
+            setEditing(saved);
+            void load();
           }}
         />
       )}

@@ -30,6 +30,14 @@ const SECRET_VALUE = 'zp-LIVE-e2e-3f9a2b71';
 const PLAIN_KEY = 'minbalancecart';
 
 const PANEL_CODE = 'e2e-unreachable';
+/**
+ * The panel's NAME, because the card view draws that and not the code.
+ *
+ * Kept beside the code rather than inlined, so the insert below and the two
+ * specs that look for it cannot drift — the whole reason those specs were red
+ * for a day was a locator matching a string the screen did not have.
+ */
+const PANEL_NAME = 'پنل ناتمام (e2e)';
 
 async function withDb<T>(fn: (d: ReturnType<typeof createPostgresD1>['db']) => Promise<T>) {
   const { db, pool } = createPostgresD1({ connectionString: process.env['DATABASE_URL']! });
@@ -72,9 +80,9 @@ test.beforeAll(async () => {
     await d
       .prepare(
         `INSERT INTO provisioning_providers (code, name, kind, status, base_url, secret_ref)
-         VALUES (?1, 'پنل ناتمام (e2e)', 'pasarguard', 'ACTIVE', NULL, NULL)`,
+         VALUES (?1, ?2, 'pasarguard', 'ACTIVE', NULL, NULL)`,
       )
-      .bind(PANEL_CODE)
+      .bind(PANEL_CODE, PANEL_NAME)
       .run();
   });
 });
@@ -165,7 +173,12 @@ test('a panel that cannot deliver does not read as فعال', async ({ page }) =
   await page.goto('/admin/panels');
   await expect(page.locator('.sidebar-link.active')).toHaveText('مدیریت پنل‌ها');
 
-  const row = page.locator(`tbody tr:has-text("${PANEL_CODE}")`);
+  // A CARD since 2026-08-26, not a table row. The list kept the table as a
+  // second view and this reads the default one, because the default is what an
+  // operator sees. Located by NAME rather than by code: the code is only drawn
+  // in the table view, and asserting on a card by a string the card does not
+  // show would pass for the wrong reason on the day the table went away.
+  const card = page.locator(`.card:has-text("${PANEL_NAME}")`);
   // The status column reported the admin's intent and nothing else. This panel
   // is ACTIVE and PasarGuard with no address and no credential, so
   // `marzban.ts:147` answers every order with `retryable: false` — the customer
@@ -175,9 +188,9 @@ test('a panel that cannot deliver does not read as فعال', async ({ page }) =
   // and «سفارشی از این پنل تحویل نمی‌شود» until 2026-08-24 — neither string has
   // ever existed in `PanelsPage.tsx`, so this spec was red from the day it was
   // written and nothing said so, because `pnpm e2e` is not part of `pnpm test`.
-  await expect(row).toContainText('تحویل نمی‌دهد');
-  await expect(row).toContainText('آدرس و رمز ندارد');
-  await expect(row.locator('.badge-active')).toHaveCount(0);
+  await expect(card).toContainText('تحویل نمی‌دهد');
+  await expect(card).toContainText('آدرس و رمز ندارد');
+  await expect(card.locator('.badge-active')).toHaveCount(0);
 });
 
 test('a panel that fulfils by hand is not flagged for having no address', async ({ page }) => {
@@ -191,9 +204,9 @@ test('a panel that fulfils by hand is not flagged for having no address', async 
       .run(),
   );
   await page.goto('/admin/panels');
-  const row = page.locator(`tbody tr:has-text("${PANEL_CODE}")`);
-  await expect(row).not.toContainText('سفارشی از این پنل تحویل نمی‌شود');
-  await expect(row.locator('.badge-active')).toHaveCount(1);
+  const card = page.locator(`.card:has-text("${PANEL_NAME}")`);
+  await expect(card).not.toContainText('تحویل نمی‌دهد');
+  await expect(card.locator('.badge-active')).toHaveCount(1);
 
   await withDb((d) =>
     d
