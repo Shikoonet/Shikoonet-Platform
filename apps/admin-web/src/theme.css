@@ -1056,24 +1056,307 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
-   Arranging a shop screen
-   The chips ARE the editor rather than a preview beside one, so each carries
-   its own controls. `.preview-button` already draws the Telegram-shaped chip;
-   this only stacks a label, a hint and a row of small buttons inside it.
+   Arranging a shop screen — «چیدمان»
+
+   The first version of this put every button on a card of its own, stacked
+   down the page, each carrying five glyph controls. It answered the wrong
+   question. An admin arranging a shop screen is asking «what will the customer
+   see», and a column of admin cards is not what anybody sees.
+
+   So this draws the phone. A narrow frame, the screen's own message above the
+   keyboard, and chips sized the way Telegram sizes an inline row — equal
+   widths, tight gaps, two lines at most. The controls are gone from the chips
+   entirely: you drag a button where you want it, exactly as in the panel this
+   is modelled on, and the keyboard does the same job for anyone not using a
+   mouse.
    --------------------------------------------------------------------------- */
-.preview-button > small {
-  display: block;
+
+/* The phone and everything said about it, side by side.
+   The frame is 420px at most, so on a desktop it left half the card empty and
+   the instructions ended up above it, competing with the card's own heading.
+   Beside it they read as a caption to the thing they describe. */
+.arrange {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+.arrange__side {
+  flex: 1 1 16rem;
+  min-width: 14rem;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.layout-chip__tools {
+.phone {
+  /* A basis, not only a maximum: inside `.arrange` the caption column claimed
+     the slack and squeezed the frame to a third of a phone. */
+  flex: 1 1 340px;
+  max-width: 420px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.06), transparent 30%), var(--bg-body);
+  padding: 16px;
+}
+
+/* The bot's own message, above the buttons, so the chips read as an answer to
+   something rather than as a loose grid. */
+.phone__message {
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-start-start-radius: var(--radius);
+  border-start-end-radius: var(--radius);
+  border-end-end-radius: var(--radius);
+  border-end-start-radius: 4px;
+  padding: 10px 14px;
+  margin-block-end: 8px;
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.phone__keyboard {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kb-row {
+  display: flex;
+  gap: 6px;
+  min-height: 46px;
+  border-radius: var(--radius-sm);
+}
+/* Only while something is being dragged over it — a permanent outline on every
+   row would read as a border, and the rows have no border in Telegram. */
+.kb-row--over {
+  outline: 2px dashed var(--accent);
+  outline-offset: 3px;
+}
+
+.kb-chip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
   gap: 2px;
-  margin-block-start: 6px;
+  padding: 8px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  border: 1px solid var(--border-mid);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: center;
+  cursor: grab;
+  overflow-wrap: anywhere;
+}
+.kb-chip:hover {
+  border-color: var(--accent-mid);
+}
+.kb-chip:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.kb-chip--dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+/* The insertion point, on the chip the dragged one would land in front of. */
+.kb-chip--before {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.kb-chip__hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
-.layout-chip__tools .btn {
-  padding: 2px 6px;
-  min-width: 0;
-  line-height: 1.2;
+/* The strip between two rows. Invisible until it is the only place a drop
+   would mean something new, which is the moment it has to be findable. */
+.kb-split {
+  height: 8px;
+  border-radius: 4px;
+  transition: background 0.12s ease;
+}
+.kb-split--over {
+  background: var(--accent);
+  height: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kb-split {
+    transition: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   A toolbar that says what it is filtering, and how to stop
+   --------------------------------------------------------------------------- */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  padding-block-end: 14px;
+  margin-block-end: 14px;
+  border-block-end: 1px solid var(--border-soft);
+}
+.toolbar .grow {
+  flex: 1 1 14rem;
+  min-width: 10rem;
+}
+.toolbar select.form-control {
+  width: auto;
+  min-width: 8.5rem;
+}
+
+/* Row actions on one line. Two stacked buttons in a narrow cell was the single
+   ugliest thing on the first version of «محصولات». */
+.row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+/* The name is what the eye lands on, so it gets the room, and the cells that
+   would otherwise take it are cut with an ellipsis and keep the full string in
+   a title. Panel names in this shop run to «سرویس VIP (شبیه‌سازی)», which wrapped
+   every product name onto two lines and made the table ragged. */
+.app-table td.cell-name {
+  min-width: 12rem;
+}
+/* On an INNER element, not the cell. `max-width` on a `td` is advisory under
+   `table-layout: auto` — the column algorithm sizes from content and the text
+   wraps anyway, which is what «موقتاً بسته» did across two lines. A block child
+   inside the cell is bound by it. */
+.app-table td .trunc {
+  display: block;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* `width: 1%` on a table cell means «as narrow as your content allows» — the
+   browser hands the slack to the other columns. Without it the buttons are the
+   first thing squeezed, and «حذف» came out sliced in half at the table edge. */
+.app-table td.cell-actions,
+.app-table th.cell-actions {
+  width: 1%;
+}
+/* Short words that must not break: «در فروشگاه» split across two lines in a
+   column narrow enough to allow it. */
+.app-table td.cell-tight {
+  white-space: nowrap;
+}
+
+/* Delete, on a row that has fifteen of them.
+   `.btn-danger` is right for a delete an operator is about to press and wrong
+   for a column of them: fifteen filled red buttons is the loudest thing on the
+   screen and none of them is the thing being looked at. This stays quiet until
+   it is pointed at, and then says exactly what `.btn-danger` says. */
+.btn-quiet-danger {
+  color: var(--text-muted);
+}
+.btn-quiet-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: var(--danger);
+}
+
+/* Numbers that are read down a column: prices, volumes, days, ids. */
+.num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.num--strong {
+  font-weight: 700;
+}
+.num--dim {
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Category cards
+   A category is four facts — a button face, a count, a switch, an order. A
+   four-column table spends a whole row on that and still makes the button face
+   compete with the count for weight. A card puts the face first at the size it
+   is actually seen, and the rest underneath it.
+   --------------------------------------------------------------------------- */
+
+.cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+}
+
+.cat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-1);
+}
+.cat-card--off {
+  border-style: dashed;
+  border-color: var(--border-mid);
+}
+.cat-card--off .cat-card__face {
+  opacity: 0.55;
+}
+.cat-card__face {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.cat-card__emoji {
+  font-size: 22px;
+  line-height: 1;
+}
+.cat-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.cat-card__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-block-start: auto;
+  padding-block-start: 6px;
+  border-block-start: 1px solid var(--border-soft);
+}
+
+/* The add-a-category card, last in the grid rather than a form above it. */
+.cat-card--new {
+  border-style: dashed;
+  border-color: var(--border-mid);
+  background: transparent;
+}
+/* Its closed state is a button, and a button brings its own centring and line
+   height. Stated here rather than inline so the plus and the words stack. */
+button.cat-card--new {
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 120px;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+button.cat-card--new:hover {
+  border-color: var(--accent-mid);
+  color: var(--text-main);
 }

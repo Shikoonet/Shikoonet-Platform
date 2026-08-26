@@ -10,14 +10,20 @@
  * what an admin did with their hands into the exact array the server writes
  * positions from. Array ORDER is column order and `sortOrder` is never sent, so
  * the body is the whole contract.
+ *
+ * The gestures are driven through the KEYBOARD path wherever both would do.
+ * Not because dragging matters less — it is the gesture an admin actually
+ * uses — but because both call the same `move()`, and jsdom's drag events carry
+ * no real dataTransfer, so a suite written entirely on drags would be testing
+ * the event plumbing rather than the moves. One drag test is here for the
+ * plumbing.
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
-import { LayoutEditor } from '../src/pages/LayoutEditor.js';
+import { LayoutEditor, type LayoutButton } from '../src/pages/LayoutEditor.js';
 import type { LayoutItem, LayoutScope } from '../src/api.js';
-import type { LayoutButton } from '../src/pages/LayoutEditor.js';
 
 const saveCatalogLayout = vi.fn(async (_scope: LayoutScope, _items: LayoutItem[]) => ({ ok: true }));
 
@@ -39,28 +45,32 @@ const THREE: LayoutButton[] = [
 function draw(items: LayoutButton[] = THREE) {
   render(
     <RoleProvider role="ADMIN">
-      <LayoutEditor scope="category:7" items={items} onSaved={() => {}} />
+      <LayoutEditor
+        scope="category:7"
+        items={items}
+        screenText="کدام را می‌خواهید؟"
+        onSaved={() => {}}
+      />
     </RoleProvider>,
   );
 }
 
-/** The chip carrying this label, so its own controls can be pressed. */
+/** The chip carrying this label. */
 function chip(label: string): HTMLElement {
-  return screen.getByText(label).closest('.preview-button') as HTMLElement;
+  return screen.getByText(label).closest('.kb-chip') as HTMLElement;
 }
 
-function press(label: string, title: string) {
-  fireEvent.click(within(chip(label), title));
+/** Move a chip with the arrow keys — the same `move()` a drag calls. */
+function press(label: string, key: string) {
+  fireEvent.keyDown(chip(label), { key });
 }
 
-function within(el: HTMLElement, title: string): HTMLElement {
-  const found = el.querySelector(`button[title="${title}"]`);
-  if (!found) throw new Error(`no «${title}» on this chip`);
-  return found as HTMLElement;
+function saveButton(): HTMLElement {
+  return screen.getByRole('button', { name: 'ذخیرهٔ چیدمان' });
 }
 
 async function save() {
-  fireEvent.click(screen.getByRole('button', { name: 'ذخیرهٔ چیدمان' }));
+  fireEvent.click(saveButton());
   await waitFor(() => expect(saveCatalogLayout).toHaveBeenCalled());
   return saveCatalogLayout.mock.calls.at(-1)!;
 }
@@ -75,7 +85,7 @@ describe('the arrangement editor', () => {
     // interleave with the new ones — so a page that posted only what changed
     // would be refused every time, and correctly.
     draw();
-    press('سه ماهه', 'به ردیف بالا');
+    press('سه ماهه', 'ArrowUp');
     const [scope, items] = await save();
 
     expect(scope).toBe('category:7');
@@ -83,11 +93,11 @@ describe('the arrangement editor', () => {
   });
 
   it('makes the array order the column order', async () => {
-    // Two on the first row, and then swapped. Nothing about `sortOrder` is
-    // sent; the position in this array IS the position on the row, which is
-    // what deletes the whole class of «two buttons claim column 2».
+    // Nothing about `sortOrder` is sent; the position in this array IS the
+    // position on the row, which deletes the whole class of «two buttons claim
+    // column 2».
     draw();
-    press('سه ماهه', 'به ردیف بالا');
+    press('سه ماهه', 'ArrowUp');
     let [, items] = await save();
     expect(items).toEqual([
       { id: 11, rowIndex: 0 },
@@ -95,7 +105,8 @@ describe('the arrangement editor', () => {
       { id: 33, rowIndex: 1 },
     ]);
 
-    press('سه ماهه', 'یک جا به راست');
+    // Right is BACK in an RTL row, so this is «one place earlier».
+    press('سه ماهه', 'ArrowRight');
     [, items] = await save();
     expect(items).toEqual([
       { id: 22, rowIndex: 0 },
@@ -104,14 +115,29 @@ describe('the arrangement editor', () => {
     ]);
   });
 
-  it('never sends a gap or a row that goes backwards', async () => {
-    // Not a restatement of the server's rule — it is why the editor works in
-    // rows instead of in numbers. Emptying the middle row here would leave
-    // rows 0 and 2 in the numbers if positions were stored on the chips;
-    // serialising from the rows renumbers them, so the state is unreachable
-    // rather than refused.
+  it('lands a dragged button in front of the one it was dropped on', async () => {
+    // The plumbing test. Everything else here goes through the keyboard, so
+    // this is what would notice if `onDragStart` stopped recording which chip
+    // is moving, or the row stopped accepting the drop.
     draw();
-    press('یک ماهه', 'به ردیف پایین');
+    fireEvent.dragStart(chip('شش ماهه'));
+    fireEvent.dragOver(chip('یک ماهه'));
+    fireEvent.drop(chip('یک ماهه'));
+
+    const [, items] = await save();
+    expect(items).toEqual([
+      { id: 33, rowIndex: 0 },
+      { id: 11, rowIndex: 0 },
+      { id: 22, rowIndex: 1 },
+    ]);
+  });
+
+  it('never sends a gap or a row that goes backwards', async () => {
+    // Not a restatement of the server's rule — it is why this editor works in
+    // rows instead of in numbers. Serialising from the rows renumbers them, so
+    // the state is unreachable rather than refused.
+    draw();
+    press('یک ماهه', 'ArrowDown');
     const [, items] = await save();
 
     const rows = items.map((i) => i.rowIndex);
@@ -136,22 +162,29 @@ describe('the arrangement editor', () => {
     ]);
   });
 
-  it('offers «برداشتن چیدمان» only when there is one to take away', async () => {
+  it('will not save a screen nobody changed', () => {
+    // An arrangement that was only looked at is not an edit, and posting it
+    // would write an audit row saying the shop had been rearranged.
     draw();
-    expect(screen.getByRole('button', { name: 'برداشتن چیدمان' })).toHaveProperty('disabled', true);
+    expect(saveButton()).toHaveProperty('disabled', true);
+    press('سه ماهه', 'ArrowUp');
+    expect(saveButton()).toHaveProperty('disabled', false);
   });
 
-  it('will not put a ninth button on a row Telegram would reject', async () => {
-    // The read path clamps this too (`groupIntoRows`), and the route refuses
-    // it, and the CHECK constraint bounds the column. This is the first of the
+  it('refuses a ninth button on a row Telegram would reject', () => {
+    // The read path clamps this too (`groupIntoRows`), the route refuses it,
+    // and the CHECK constraint bounds the column. This is the first of the
     // four, and the only one that stops an admin producing the state at all: a
     // keyboard Telegram rejects takes the whole message down, not one button.
-    const eight = Array.from({ length: 8 }, (_, n) => ({
+    const eight: LayoutButton[] = Array.from({ length: 8 }, (_, n) => ({
       id: n + 1,
       label: `دکمه ${n + 1}`,
       rowIndex: 0,
     }));
     draw([...eight, { id: 9, label: 'نهم', rowIndex: 1 }]);
-    expect(within(chip('نهم'), 'به ردیف بالا')).toHaveProperty('disabled', true);
+
+    press('نهم', 'ArrowUp');
+    // The move was refused, so nothing changed, so there is nothing to save.
+    expect(saveButton()).toHaveProperty('disabled', true);
   });
 });

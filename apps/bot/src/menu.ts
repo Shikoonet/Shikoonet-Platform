@@ -417,8 +417,8 @@ export function productMenu(products: CatalogProduct[]): InlineKeyboard {
  * — which a migrated name already quotes, so two plans of one product could
  * come out as literally the same button twice.
  *
- * «بازگشت به سرویس‌ها» needs no argument: the service list is the shop's first
- * screen now, so it is plain `buy`.
+ * «بازگشت به دسته‌بندی‌ها» needs no argument: the category list is the shop's
+ * first screen now, so it is plain `buy`.
  */
 export function planMenu(plans: CatalogPlan[], discountPercent = 0): InlineKeyboard {
   return withChrome(
