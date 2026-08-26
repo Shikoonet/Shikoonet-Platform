@@ -283,7 +283,37 @@ export function groupIdsFor(request: {
   planAttrs: Record<string, unknown>;
   providerConfig: Record<string, unknown>;
 }): unknown {
-  return pick(request, 'group_ids') ?? pick(request, 'inbounds');
+  return firstConfigured(
+    request.planAttrs['group_ids'],
+    request.providerConfig['group_ids'],
+    request.planAttrs['inbounds'],
+    request.providerConfig['inbounds'],
+  );
+}
+
+/**
+ * The first level that actually names a tier — where an EMPTY list is not one.
+ *
+ * `pick` used `??`, and `[]` is not nullish, so a service saved with no groups
+ * shadowed the panel underneath it and the create body carried `group_ids: []`.
+ * PasarGuard reads that as «this account belongs to no group», which strips
+ * every inbound: the subscription link resolves, returns nothing, and the
+ * customer who just paid has an account that cannot connect. `renew` has
+ * refused to send an empty array since it was written (see the body it builds
+ * below); this is the same rule on the create side, where it was missing.
+ *
+ * Measured on the test panel 2026-08-26: five of its thirteen accounts carry
+ * `group_ids: []`. Absence is the only way to say «no opinion here», so an
+ * empty list falls through to the next level, and all four levels empty answers
+ * `undefined` — which omits the key entirely.
+ */
+function firstConfigured(...levels: unknown[]): unknown {
+  for (const value of levels) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    return value;
+  }
+  return undefined;
 }
 
 /**

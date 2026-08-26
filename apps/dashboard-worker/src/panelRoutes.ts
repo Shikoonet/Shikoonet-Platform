@@ -46,9 +46,18 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import { audit, type Ident } from './adminAudit.js';
-import { adapterFor, open, panelSecretKey, seal, splitCredential } from '@shikoo/domain';
+import {
+  adapterFor,
+  open,
+  panelSecretKey,
+  renewAllowed,
+  renewModeFor,
+  seal,
+  splitCredential,
+} from '@shikoo/domain';
 import type { ProviderContext, ProvisioningAdapter } from '@shikoo/domain';
 import { createHash } from 'node:crypto';
+import { faNum } from './fa.js';
 
 /**
  * A short fingerprint of the key that sealed a row, so a future rotation can
@@ -67,6 +76,28 @@ const PanelPatch = z
     // NULL is unlimited, which is what the legacy 'unlimited' string became.
     capacity: z.number().int().min(0).max(1_000_000).nullable().optional(),
     sortOrder: z.number().int().min(0).max(9999).optional(),
+    /**
+     * The address was create-only until 2026-08-26, so a panel that moved host
+     * could not be repaired — only deleted and rebuilt, which loses the id every
+     * sold subscription points at. Normalised through the same helper as create,
+     * so the two cannot disagree about a trailing slash.
+     */
+    baseUrl: z.string().trim().max(300).nullable().optional(),
+    /**
+     * The two `config` keys `renewModeFor` and `renewAllowed` already read.
+     * They were written for a dashboard that had not been built — the comment
+     * in `provisioning/index.ts` says `renew_mode` "is what an admin sets from
+     * here on", and until now nothing did. The Persian-phrase legacy keys stay
+     * as the fallback and are never written from here.
+     */
+    renewMode: z.enum(['ADD', 'RESET']).optional(),
+    renewEnabled: z.boolean().optional(),
+    /**
+     * Re-probe the panel and let the answer decide ACTIVE/DISABLED, the way
+     * «وضعیت خودکار» does in the shop this screen is modelled on. Ignored when
+     * `status` is also sent: an explicit choice by a person outranks a probe.
+     */
+    autoStatus: z.boolean().optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
@@ -107,6 +138,142 @@ async function reachable(baseUrl: string): Promise<boolean> {
     return false;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * One probe, two callers: «تست ارتباط» and «وضعیت خودکار».
+ *
+ * They ask the same question — can this panel be logged into right now — and
+ * the moment they answer it separately they will disagree, which is the worst
+ * possible outcome: a green test beside a panel the save switched off. So the
+ * whole ladder lives here and both callers read the same verdict.
+ *
+ * `untestable` is NOT a failure. A `manual` panel has nothing to log into and
+ * fulfils by hand; auto-status must leave it ACTIVE rather than switching off
+ * every panel that was never going to answer.
+ */
+type PanelProbe =
+  | { state: 'untestable'; reason: string }
+  | { state: 'no_base_url' | 'no_credential' }
+  | { state: 'unreachable'; ms: number; reason: string }
+  | { state: 'unauthenticated'; ms: number; reason: string }
+  | { state: 'ok'; ms: number; groups?: number; accounts?: number };
+
+async function probePanel(target: {
+  id: number;
+  name: string;
+  kind: string;
+  baseUrl: string | null;
+  credentials: { username: string; password: string } | null;
+}): Promise<PanelProbe> {
+  // Asked BEFORE the address, because it is the more informative answer and
+  // the order was wrong the first time: a `manual` panel has no base_url, so
+  // it came back "آدرس پنل وارد نشده" — which reads as something the operator
+  // should go and fix, about a kind that will never have one.
+  const adapter = adapterFor(target.kind);
+  if (!adapter?.listGroups && !adapter?.listAccounts) {
+    return {
+      state: 'untestable',
+      reason: `یک پنل «${target.kind}» چیزی برای ورود ندارد — تحویلش دستی است.`,
+    };
+  }
+  if (!target.baseUrl) return { state: 'no_base_url' };
+  if (!target.credentials) return { state: 'no_credential' };
+
+  const started = Date.now();
+
+  // Asked before the adapter, so the two answers cannot contradict.
+  if (!(await reachable(target.baseUrl))) {
+    return {
+      state: 'unreachable',
+      ms: Date.now() - started,
+      reason: 'the address did not answer — wrong hostname, or the panel is down',
+    };
+  }
+
+  const context = {
+    id: target.id,
+    code: String(target.id),
+    name: target.name,
+    baseUrl: target.baseUrl,
+    credentials: target.credentials,
+    config: {},
+    fetch: fetch,
+  };
+
+  /**
+   * The login is proved with the GROUP listing, not the account listing.
+   *
+   * Both answer the only question this asks — can we log in — and they cost
+   * wildly different amounts. `listAccounts` pages through every user on the
+   * panel; on the deployed dashboard that took longer than nginx's 60-second
+   * default and the button answered `504 Gateway Time-out` on a panel that was
+   * perfectly healthy. Reading the groups is one GET.
+   *
+   * The account count was the nicer number to show and it is not worth a button
+   * that appears broken. What replaces it is more useful anyway: the group count
+   * is what this screen is about, and a panel answering «۰ گروه» is telling an
+   * operator something real.
+   */
+  try {
+    const result = adapter.listGroups
+      ? await adapter.listGroups(context)
+      : await adapter.listAccounts!(context);
+    const ms = Date.now() - started;
+    if (!result.ok) {
+      // The adapter's own reason. It is built from the panel's STATUS, not its
+      // body — see the file header on why the body never comes back.
+      return { state: 'unauthenticated', ms, reason: result.reason };
+    }
+    return {
+      state: 'ok',
+      ms,
+      ...('groups' in result
+        ? { groups: result.groups.length }
+        : { accounts: result.accounts.length }),
+    };
+  } catch (err) {
+    // The probe above already said something is there, so this is the adapter
+    // itself throwing rather than the address being wrong.
+    return { state: 'unauthenticated', ms: Date.now() - started, reason: (err as Error).message };
+  }
+}
+
+/**
+ * The probe, in the shape «تست ارتباط» has always answered in.
+ *
+ * Kept as a separate mapping rather than folded into `probePanel`, because the
+ * verdict and the wire format have different reasons to change: auto-status
+ * cares only about `state`, and it must not start depending on the wording of a
+ * message written for a person to read.
+ */
+function probeReply(probe: PanelProbe): Record<string, unknown> {
+  switch (probe.state) {
+    case 'untestable':
+      // Honest rather than green. Answering "OK" for a kind a person fulfils by
+      // hand would teach an operator to trust a tick that means nothing.
+      return {
+        reachable: false,
+        authenticated: false,
+        untestable: true,
+        reason: probe.reason,
+      };
+    case 'no_base_url':
+    case 'no_credential':
+      return { reachable: false, authenticated: false, reason: probe.state };
+    case 'unreachable':
+      return { reachable: false, authenticated: false, ms: probe.ms, reason: probe.reason };
+    case 'unauthenticated':
+      return { reachable: true, authenticated: false, ms: probe.ms, reason: probe.reason };
+    case 'ok':
+      return {
+        reachable: true,
+        authenticated: true,
+        ms: probe.ms,
+        ...(probe.groups === undefined ? {} : { groups: probe.groups }),
+        ...(probe.accounts === undefined ? {} : { accounts: probe.accounts }),
+      };
   }
 }
 
@@ -370,6 +537,23 @@ const PanelCreate = z
  * exists and delivers nothing, which is exactly what somebody building one step
  * at a time has for a minute. The screen warns; the schema does not refuse.
  */
+/**
+ * The panel's own selection of its groups.
+ *
+ * De-duplicated and sorted so two saves of the same ticks produce the same
+ * stored value and the audit trail does not record a change that was not one.
+ * An empty list is a real answer — «this panel names no default» — and the
+ * route turns it into the ABSENCE of the key, never `[]`.
+ */
+const GroupSelection = z
+  .object({
+    groupIds: z
+      .array(z.number().int().min(0).max(1_000_000))
+      .max(200)
+      .transform((ids) => [...new Set(ids)].sort((a, b) => a - b)),
+  })
+  .strict();
+
 const GroupSpec = z
   .object({
     name: z.string().trim().min(1).max(120),
@@ -407,6 +591,23 @@ const PanelTest = z
   })
   .strict();
 
+/**
+ * Why a panel could not be deleted, in the words an operator can act on.
+ *
+ * Names what is attached and then names the alternative, because "in_use" on
+ * its own sends somebody hunting for a delete button that will never work. The
+ * three counts are not interchangeable: products are a catalogue edit, live
+ * subscriptions are customers, and stock is inventory already paid for.
+ */
+function refusal(counts: { products: number; subscriptions: number; stock: number }): string {
+  const parts: string[] = [];
+  if (counts.products > 0) parts.push(`${faNum(counts.products)} سرویس`);
+  if (counts.subscriptions > 0) parts.push(`${faNum(counts.subscriptions)} اشتراک زنده`);
+  if (counts.stock > 0) parts.push(`${faNum(counts.stock)} کانفیگ در انبار`);
+  if (parts.length === 0) return 'چیزی به این پنل وصل است و حذف انجام نشد.';
+  return `${parts.join(' و ')} روی این پنل است. «غیرفعال کن» پنل را از خرید و تمدید برمی‌دارد بدون اینکه چیزی از دست برود.`;
+}
+
 interface PanelRow {
   id: number;
   code: string;
@@ -416,6 +617,7 @@ interface PanelRow {
   base_url: string | null;
   capacity: number | null;
   sort_order: number;
+  config: Record<string, unknown> | null;
   has_secret_ref: boolean;
   product_count: number;
   plan_count: number;
@@ -432,6 +634,17 @@ function shape(r: PanelRow) {
     baseUrl: r.base_url,
     capacity: r.capacity,
     sortOrder: r.sort_order,
+    /**
+     * The two renewal settings, DERIVED — not the config they come from.
+     *
+     * Both have a legacy spelling underneath them (`Methodextend`, a Persian
+     * phrase, and `status_extend`) and the rule for reading them lives in
+     * `provisioning/index.ts`. Calling those functions here rather than
+     * re-implementing the fallback is the whole point: the screen and the bot
+     * must never disagree about whether a panel accumulates or resets.
+     */
+    renewMode: renewModeFor(r.config ?? {}),
+    renewEnabled: renewAllowed(r.config ?? {}),
     // Whether a credential is configured, never which one. An unconfigured
     // panel cannot provision, and that is worth seeing on the list.
     hasSecretRef: r.has_secret_ref,
@@ -443,12 +656,16 @@ function shape(r: PanelRow) {
 
 /**
  * A boolean rather than the value: the column names a secret in the runtime
- * store, and even the NAME does not need to reach the browser. `config` is
- * absent from this projection on purpose — see the file header.
+ * store, and even the NAME does not need to reach the browser.
+ *
+ * `config` IS selected, and never returned. `shape` turns it into the two
+ * derived renewal answers and drops the object — the hysteria shared secret in
+ * `config.proxies` is why nothing here may hand the row back whole.
  */
 const SELECT_PANEL = `
   SELECT pr.id, pr.code, pr.name, pr.kind, pr.status, pr.base_url,
          pr.capacity, pr.sort_order,
+         pr.config,
          -- Either resolution path counts. Reporting only secret_ref would
          -- show a panel added through this screen as having no credential,
          -- which is the one thing this column exists to warn about.
@@ -530,7 +747,29 @@ export function registerPanelRoutes(
     // wrong for one waiting on a password: catalogue routing does not ask
     // whether a panel has a credential, it asks whether it is ACTIVE.
     const needsLogin = p.kind !== 'manual' && p.kind !== 'ai_account';
-    const status = !p.credential && needsLogin ? 'DISABLED' : 'ACTIVE';
+    let status = !p.credential && needsLogin ? 'DISABLED' : 'ACTIVE';
+
+    /**
+     * «وضعیت خودکار» on the way in: having a password is not the same as the
+     * password being right.
+     *
+     * Until now a panel with a typo in its address was created ACTIVE, joined
+     * the catalogue, and the first customer to buy from it paid, waited and was
+     * refunded. The probe costs one GET and answers before anything is written.
+     * A kind with nothing to log into is left alone — `untestable` is not a
+     * failure.
+     */
+    let probe: PanelProbe | null = null;
+    if (status === 'ACTIVE' && needsLogin) {
+      probe = await probePanel({
+        id: 0,
+        name: p.name,
+        kind: p.kind,
+        baseUrl,
+        credentials: p.credential ?? null,
+      });
+      if (probe.state !== 'ok' && probe.state !== 'untestable') status = 'DISABLED';
+    }
 
     let sealed: string | null = null;
     let sealedKeyId: string | null = null;
@@ -598,7 +837,17 @@ export function registerPanelRoutes(
       null,
     );
 
-    return c.json({ ok: true, panel: shape(created), status: 201 }, 201);
+    return c.json(
+      {
+        ok: true,
+        panel: shape(created),
+        // So the screen can say WHY a panel it just made is switched off,
+        // instead of leaving the operator to guess and press «تست اتصال».
+        ...(probe === null ? {} : { probe: probeReply(probe) }),
+        status: 201,
+      },
+      201,
+    );
   });
 
   /**
@@ -872,23 +1121,93 @@ export function registerPanelRoutes(
     });
   });
 
-  /*
-   * `POST /panels/:id/groups` was here and is gone.
+  /**
+   * Which of the panel's own groups this panel sells, when a service does not
+   * name its own.
    *
-   * It saved a panel-level default group list, and nothing read it. Delivery
-   * resolves the tier through `groupIdsFor`, which looks at the plan's attrs
-   * and then the provider config — never at this column — so the value it wrote
-   * decided nothing about any purchase. Asked of the practice box on
-   * 2026-08-24, every panel's stored selection was `[]`, and the UI that called
-   * this had already been removed when group editing moved to «سرویس‌ها».
+   * ─────────────────────────────────────────────────────────────────────────
+   * This route existed, was deleted on 2026-08-24, and is back on 2026-08-26.
+   * The note that removed it said delivery "looks at the plan's attrs and then
+   * the provider config — never at this column", and that sentence contradicts
+   * itself: this column IS the provider config. Three things measured from
+   * outside say so, none of them this file:
    *
-   * A write route with no reader is worse than dead code: it is a button that
-   * looks like it does something. Sam ticked that column three times, saved,
-   * and correctly reported that the bot did not change.
+   *   - `provisioning.test.ts` has a green case literally named «the panel
+   *     default», and it asserts against the body the fake panel received.
+   *   - `GET` below returns `inherit` — the services with no level of their own,
+   *     which exists precisely because these ticks decide them.
+   *   - `config.group_ids` on panel 7 was moved from `[1]` to `[3]` by hand and
+   *     `panel:preflight` went from failing to passing. Nothing else changed.
    *
-   * This takes `write-roles.test.ts` from 123 to 122. It is the only counter
-   * movement in this branch and it is deliberate.
+   * What was really wrong was the value it wrote. Every stored selection on the
+   * practice box was `[]`, and `[]` is not nullish, so it won the `??` chain and
+   * the create body carried `group_ids: []` — «this account belongs to no
+   * group», which strips every inbound and hands the customer a subscription
+   * link that resolves and returns nothing. So an empty selection now DELETES
+   * the key rather than storing an empty list, and `groupIdsFor` skips an empty
+   * array at every level as well. Two fences, because this one was expensive.
+   * ─────────────────────────────────────────────────────────────────────────
    */
+  app.post('/api/v1/admin/panels/:id/groups', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const body = GroupSelection.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    const before = await c.env.DB.prepare(
+      `SELECT code, config FROM provisioning_providers WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ code: string; config: Record<string, unknown> | null }>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const previous = before.config ?? {};
+    const wasSending = previous['group_ids'] ?? previous['inbounds'] ?? null;
+    const groupIds = body.data.groupIds;
+
+    // Both spellings go in either branch. Leaving the legacy `inbounds` behind
+    // would let it answer for a panel an operator had just cleared, because
+    // `groupIdsFor` falls through to it.
+    await c.env.DB.prepare(
+      groupIds.length === 0
+        ? `UPDATE provisioning_providers
+              SET config = (COALESCE(config, '{}'::jsonb) - 'inbounds') - 'group_ids',
+                  updated_at = now()
+            WHERE id = ?1`
+        : `UPDATE provisioning_providers
+              SET config = (COALESCE(config, '{}'::jsonb) - 'inbounds')
+                           || jsonb_build_object('group_ids', ?2::jsonb),
+                  updated_at = now()
+            WHERE id = ?1`,
+    )
+      .bind(...(groupIds.length === 0 ? [id] : [id, JSON.stringify(groupIds)]))
+      .run();
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.panel_groups_set',
+      'PROVISIONING_PROVIDER',
+      String(id),
+      { code: before.code, groups: wasSending },
+      { code: before.code, groups: groupIds.length === 0 ? null : groupIds },
+      null,
+    );
+
+    const after = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
+      .bind(id)
+      .first<PanelRow>();
+    return c.json({ ok: true, panel: after ? shape(after) : null });
+  });
 
   /**
    * Every inbound the panel has, so a group can be built out of a list rather
@@ -1372,103 +1691,94 @@ export function registerPanelRoutes(
 
     if (!kind) return c.json({ ok: false, error: 'kind_required' }, 400);
 
-    // Asked BEFORE the address, because it is the more informative answer and
-    // the order was wrong the first time: a `manual` panel has no base_url, so
-    // it came back "آدرس پنل وارد نشده" — which reads as something the operator
-    // should go and fix, about a kind that will never have one.
-    const adapter = adapterFor(kind);
-    if (!adapter?.listGroups && !adapter?.listAccounts) {
-      // Honest rather than green. Answering "OK" for a kind a person fulfils by
-      // hand would teach an operator to trust a tick that means nothing.
-      return c.json({
-        ok: true,
-        reachable: false,
-        authenticated: false,
-        untestable: true,
-        reason: `یک پنل «${kind}» چیزی برای ورود ندارد — تحویلش دستی است.`,
-      });
-    }
-    if (!baseUrl) {
-      return c.json({ ok: true, reachable: false, authenticated: false, reason: 'no_base_url' });
-    }
-    if (!credentials) {
-      return c.json({ ok: true, reachable: false, authenticated: false, reason: 'no_credential' });
-    }
+    const probe = await probePanel({
+      id: unsaved ? 0 : id,
+      name,
+      kind,
+      baseUrl,
+      credentials,
+    });
+    return c.json({ ok: true, ...probeReply(probe) });
+  });
 
-    const started = Date.now();
+  /**
+   * Remove a panel — the button this screen did not have.
+   *
+   * The shop this is modelled on deletes unconditionally: it COUNTS the
+   * services pointing at the panel, deletes anyway, and then reports «N سرویس
+   * بدون پنل ماندند» after the fact (`legacy/faoxima/panel/panels.php:1219`).
+   * On our schema that is worse than it sounds, because
+   * `subscriptions.provider_id` is `ON DELETE SET NULL` — Postgres would not
+   * even raise: every live subscription would quietly lose the panel it is
+   * fulfilled from and nothing would look wrong until a renewal.
+   *
+   * So the guard is inside the DELETE, the same shape as `catalog.product`:
+   * the count is only ever used to WORD the refusal, never to decide it. A
+   * count-then-delete pair has a window between the two, and this is the one
+   * table where that window costs a customer their service.
+   */
+  app.delete('/api/v1/admin/panels/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
 
-    // Asked before the adapter, so the two answers cannot contradict.
-    if (!(await reachable(baseUrl))) {
-      return c.json({
-        ok: true,
-        reachable: false,
-        authenticated: false,
-        ms: Date.now() - started,
-        reason: 'the address did not answer — wrong hostname, or the panel is down',
-      });
-    }
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
-    try {
-      const context = {
-        id: unsaved ? 0 : id,
-        code: String(id),
-        name,
-        baseUrl,
-        credentials,
-        config: {},
-        fetch: fetch,
+    const before = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
+      .bind(id)
+      .first<PanelRow>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    // `provider_secrets` and `discount_codes` cascade and are deliberately not
+    // in this list: a sealed password and a discount code that named this panel
+    // have no meaning once it is gone. Products, live subscriptions and stock
+    // do, and each is a different conversation with the operator.
+    const gone = await c.env.DB.prepare(
+      `DELETE FROM provisioning_providers
+        WHERE id = ?1
+          AND NOT EXISTS (SELECT 1 FROM products p WHERE p.provider_id = ?1)
+          AND NOT EXISTS (SELECT 1 FROM subscriptions s
+                           WHERE s.provider_id = ?1
+                             AND s.status IN ('ACTIVE', 'ON_HOLD'))
+          AND NOT EXISTS (SELECT 1 FROM provisioning_stock st WHERE st.provider_id = ?1)
+       RETURNING id`,
+    )
+      .bind(id)
+      .first<{ id: number }>();
+
+    if (!gone) {
+      const refs = await c.env.DB.prepare(
+        `SELECT (SELECT COUNT(*) FROM products p WHERE p.provider_id = ?1) AS products,
+                (SELECT COUNT(*) FROM subscriptions s
+                  WHERE s.provider_id = ?1
+                    AND s.status IN ('ACTIVE', 'ON_HOLD')) AS subscriptions,
+                (SELECT COUNT(*) FROM provisioning_stock st WHERE st.provider_id = ?1) AS stock`,
+      )
+        .bind(id)
+        .first<{ products: number; subscriptions: number; stock: number }>();
+      const counts = {
+        products: Number(refs?.products ?? 0),
+        subscriptions: Number(refs?.subscriptions ?? 0),
+        stock: Number(refs?.stock ?? 0),
       };
-
-      /**
-       * The login is proved with the GROUP listing, not the account listing.
-       *
-       * Both answer the only question this button asks — can we log in — and
-       * they cost wildly different amounts. `listAccounts` pages through every
-       * user on the panel; on the deployed dashboard that took longer than
-       * nginx's 60-second default and the button answered `504 Gateway
-       * Time-out` on a panel that was perfectly healthy. Reading the groups is
-       * one GET.
-       *
-       * The account count was the nicer number to show and it is not worth a
-       * button that appears broken. What replaces it is more useful anyway:
-       * the group count is what this screen is about, and a panel answering
-       * «۰ گروه» is telling an operator something real.
-       */
-      const result = adapter.listGroups
-        ? await adapter.listGroups(context)
-        : await adapter.listAccounts!(context);
-      const ms = Date.now() - started;
-      if (!result.ok) {
-        return c.json({
-          ok: true,
-          reachable: true,
-          authenticated: false,
-          ms,
-          // The adapter's own reason. It is built from the panel's STATUS, not
-          // its body — see the file header on why the body never comes back.
-          reason: result.reason,
-        });
-      }
-      return c.json({
-        ok: true,
-        reachable: true,
-        authenticated: true,
-        ms,
-        ...('groups' in result
-          ? { groups: result.groups.length }
-          : { accounts: result.accounts.length }),
-      });
-    } catch (err) {
-      // The probe above already said something is there, so this is the adapter
-      // itself throwing rather than the address being wrong.
-      return c.json({
-        ok: true,
-        reachable: true,
-        authenticated: false,
-        ms: Date.now() - started,
-        reason: (err as Error).message,
-      });
+      return c.json({ ok: false, error: 'in_use', detail: refusal(counts), counts }, 409);
     }
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.panel_deleted',
+      'PROVIDER',
+      String(id),
+      { code: before.code, name: before.name, kind: before.kind, base_url: before.base_url },
+      null,
+      null,
+    );
+
+    // Nothing was touched on the panel itself. Deleting our row is a statement
+    // about our catalogue, not about somebody else's server, and the accounts
+    // already living there keep working.
+    return c.json({ ok: true });
   });
 
   app.post('/api/v1/admin/panels/:id', async (c) => {
@@ -1491,25 +1801,97 @@ export function registerPanelRoutes(
       .first<PanelRow>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
+    const patch = body.data;
+
+    let baseUrl: string | null | undefined = patch.baseUrl;
+    if (baseUrl) {
+      // The same helper create uses. Two normalisers would eventually store an
+      // address the connection test never tried.
+      const normalised = normalisePanelUrl(baseUrl);
+      if ('error' in normalised) {
+        return c.json({ ok: false, error: 'invalid_body', detail: normalised.error }, 400);
+      }
+      baseUrl = normalised.url;
+    }
+    if (baseUrl === '') baseUrl = null;
+
+    /**
+     * «وضعیت خودکار» — probe first, then write once.
+     *
+     * Deliberately a one-shot at save time, never a background sweep.
+     * `panelContext` refuses to couple reads to `status` for a reason it spells
+     * out: a panel that goes unreachable for ten minutes must not become a panel
+     * an operator cannot get back. So an explicit `status` in the same patch
+     * always wins, and the manual switch on the screen still works.
+     *
+     * `untestable` leaves the status alone entirely — a `manual` panel has
+     * nothing to log into and is not broken for failing to answer.
+     */
+    let autoStatus: 'ACTIVE' | 'DISABLED' | null = null;
+    let probe: PanelProbe | null = null;
+    if (patch.autoStatus && patch.status === undefined) {
+      const secret = await c.env.DB.prepare(
+        `SELECT pr.secret_ref, ps.sealed
+           FROM provisioning_providers pr
+           LEFT JOIN provider_secrets ps ON ps.provider_id = pr.id
+          WHERE pr.id = ?1`,
+      )
+        .bind(id)
+        .first<{ secret_ref: string | null; sealed: string | null }>();
+      let credentials: { username: string; password: string } | null = null;
+      try {
+        credentials = secret ? credentialFor(secret) : null;
+      } catch {
+        // A sealed row that will not open is a panel that cannot log in, which
+        // is exactly what the auto status is asking about.
+        credentials = null;
+      }
+      probe = await probePanel({
+        id,
+        name: before.name,
+        kind: before.kind,
+        baseUrl: baseUrl === undefined ? before.base_url : baseUrl,
+        credentials,
+      });
+      if (probe.state === 'ok') autoStatus = 'ACTIVE';
+      else if (probe.state !== 'untestable') autoStatus = 'DISABLED';
+    }
+
     const sets: string[] = [];
     const params: unknown[] = [];
     const put = (column: string, value: unknown) => {
       params.push(value);
       sets.push(`${column} = ?${params.length}`);
     };
-    const patch = body.data;
     if (patch.name !== undefined) put('name', patch.name);
     if (patch.status !== undefined) put('status', patch.status);
+    else if (autoStatus !== null) put('status', autoStatus);
     if (patch.capacity !== undefined) put('capacity', patch.capacity);
     if (patch.sortOrder !== undefined) put('sort_order', patch.sortOrder);
-    params.push(id);
+    if (baseUrl !== undefined) put('base_url', baseUrl);
 
-    await c.env.DB.prepare(
-      `UPDATE provisioning_providers SET ${sets.join(', ')}, updated_at = now()
-        WHERE id = ?${params.length}`,
-    )
-      .bind(...params)
-      .run();
+    // The two renewal keys, merged into `config` rather than replacing it —
+    // `proxies` and the migrated group ids live in the same object and a
+    // wholesale write would take them with it.
+    const configPatch: Record<string, unknown> = {};
+    if (patch.renewMode !== undefined) configPatch['renew_mode'] = patch.renewMode;
+    if (patch.renewEnabled !== undefined) configPatch['renew_enabled'] = patch.renewEnabled;
+    if (Object.keys(configPatch).length > 0) {
+      params.push(JSON.stringify(configPatch));
+      sets.push(`config = COALESCE(config, '{}'::jsonb) || ?${params.length}::jsonb`);
+    }
+
+    // A patch of only `autoStatus` on an untestable panel changes nothing, and
+    // `SET , updated_at = now()` is a syntax error rather than a no-op.
+    if (sets.length > 0) {
+      params.push(id);
+      await c.env.DB.prepare(
+        `UPDATE provisioning_providers SET ${sets.join(', ')}, updated_at = now()
+          WHERE id = ?${params.length}`,
+      )
+        .bind(...params)
+        .run();
+    }
 
     const after = await c.env.DB.prepare(`${SELECT_PANEL} WHERE pr.id = ?1`)
       .bind(id)
@@ -1527,12 +1909,18 @@ export function registerPanelRoutes(
         status: before.status,
         capacity: before.capacity,
         sort_order: before.sort_order,
+        base_url: before.base_url,
+        renew_mode: renewModeFor(before.config ?? {}),
+        renew_enabled: renewAllowed(before.config ?? {}),
       },
       {
         name: after.name,
         status: after.status,
         capacity: after.capacity,
         sort_order: after.sort_order,
+        base_url: after.base_url,
+        renew_mode: renewModeFor(after.config ?? {}),
+        renew_enabled: renewAllowed(after.config ?? {}),
       },
       null,
     );
@@ -1540,6 +1928,10 @@ export function registerPanelRoutes(
     return c.json({
       ok: true,
       panel: shape(after),
+      // Why the status moved, when it moved by itself. Without this the screen
+      // can only say «غیرفعال شد» and the operator has to go and press «تست
+      // اتصال» to find out what this call already knows.
+      ...(probe === null ? {} : { probe: probeReply(probe) }),
       // The caller shows this before and after: disabling a panel that is
       // still fulfilling renewals is a decision, not a typo, but it should be
       // a decision made with the number in view.

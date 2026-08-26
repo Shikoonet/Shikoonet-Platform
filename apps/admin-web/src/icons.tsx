@@ -126,6 +126,24 @@ const GLYPHS: Record<string, ReactNode> = {
       <line x1="18" y1="12" x2="18.01" y2="12" />
     </>
   ),
+  // The two «مدیریت پنل‌ها» needed once its rows became cards: an edit that is
+  // not the only button on the card any more, and a delete that has to read as
+  // destructive before it is hovered.
+  pencil: (
+    <>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+    </>
+  ),
+  trash: (
+    <>
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    </>
+  ),
 };
 
 export function Icon({ name, size = 18 }: { name: string; size?: number }) {

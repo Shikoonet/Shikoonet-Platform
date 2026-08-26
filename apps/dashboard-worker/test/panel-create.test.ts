@@ -17,7 +17,7 @@
  * other whatever that function does.
  */
 
-import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { open, panelSecretKey, splitCredential } from '@shikoo/domain';
@@ -90,8 +90,41 @@ const BODY = {
   credential: { username: 'admin', password: PASSWORD },
 };
 
+/**
+ * A panel that answers, and one that does not.
+ *
+ * «وضعیت خودکار» probes on the way in, so a create with an unreachable address
+ * is DISABLED — and the only way to write a test about the other branch is to
+ * be the panel. `panel.invalid` is deliberately unresolvable, so anything not
+ * stubbed here fails for real rather than by arrangement.
+ */
+function panelAnswers(): void {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.endsWith('/api/admin/token')) {
+      return new Response(JSON.stringify({ access_token: 'tok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.includes('/api/groups')) {
+      return new Response(JSON.stringify({ groups: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    // The reachability GET on the base URL, and anything else.
+    return new Response('', { status: 200 });
+  });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe('creating a panel', () => {
-  it('creates it ACTIVE with a credential the bot can open', async () => {
+  it('creates it ACTIVE when the panel answers, with a credential the bot can open', async () => {
+    panelAnswers();
     const res = await post('/api/v1/admin/panels', BODY);
     expect(res.status).toBe(201);
     const json = (await res.json()) as {
@@ -110,6 +143,48 @@ describe('creating a panel', () => {
       username: 'admin',
       password: PASSWORD,
     });
+  });
+
+  /**
+   * The half that used to be missing, and the one the file header calls the
+   * second way this can hurt: «a panel that exists, is ACTIVE, and cannot log
+   * in — worse than no panel, because routing sends paid orders to it and
+   * `retryable: false` refunds the customer».
+   *
+   * Until 2026-08-26 having a password was treated as proof the password
+   * WORKED. `panel.invalid` does not resolve, so this is the real failure, not
+   * a stubbed one.
+   */
+  it('creates it DISABLED when the address does not answer, and says why', async () => {
+    const res = await post('/api/v1/admin/panels', BODY);
+    expect(res.status).toBe(201);
+    const json = (await res.json()) as {
+      panel: { status: string };
+      probe?: { reachable: boolean; authenticated: boolean };
+    };
+    expect(json.panel.status).toBe('DISABLED');
+    expect(json.probe?.reachable, 'the screen cannot explain a status it was not told about').toBe(
+      false,
+    );
+    expect(json.probe?.authenticated).toBe(false);
+  });
+
+  it('creates it DISABLED when the panel answers but refuses the login', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input instanceof Request ? input.url : input);
+      // Reached, and the login rejected: the password is wrong, not the address.
+      return url.endsWith('/api/admin/token')
+        ? new Response('{}', { status: 401 })
+        : new Response('', { status: 200 });
+    });
+    const res = await post('/api/v1/admin/panels', BODY);
+    const json = (await res.json()) as {
+      panel: { status: string };
+      probe?: { reachable: boolean; authenticated: boolean };
+    };
+    expect(json.panel.status).toBe('DISABLED');
+    expect(json.probe?.reachable).toBe(true);
+    expect(json.probe?.authenticated).toBe(false);
   });
 
   it('never lets the password back out, at any key or depth', async () => {

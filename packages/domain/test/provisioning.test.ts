@@ -247,6 +247,10 @@ describe('the marzban adapter', () => {
         name: 'a plan `inbounds` beating a panel `inbounds`',
         over: { providerConfig: { inbounds: [7] }, planAttrs: { inbounds: [11] } },
       },
+      {
+        name: 'an empty plan list falling through to the panel',
+        over: { providerConfig: { group_ids: [3] }, planAttrs: { group_ids: [] } },
+      },
     ];
 
     for (const { name, over } of cases) {
@@ -270,6 +274,29 @@ describe('the marzban adapter', () => {
       // Not the same as an empty list. The preflight has to tell "this plan
       // lets the panel decide" apart from "this plan asks for no groups",
       // because only the second one is worth reporting.
+      expect(groupIdsFor(req)).toBeUndefined();
+      expect(createCall(panel.calls)!.body).not.toHaveProperty('group_ids');
+    });
+
+    /**
+     * An empty list is «no opinion», never «no groups» — on CREATE too.
+     *
+     * `renew` has refused to send `[]` since it was written, because PasarGuard
+     * reads it as «this account belongs to no group» and strips every inbound:
+     * the subscription link keeps resolving and returns nothing. `provision`
+     * sent it, so the same plan behaved differently on the day it was bought and
+     * on the day it was renewed.
+     *
+     * Measured on the live test panel 2026-08-26: five of its thirteen accounts
+     * carry `group_ids: []`. Asserted against the body the fake panel received,
+     * not against the stored value, for the reason at the top of this block.
+     */
+    it('never sends an empty group list, the way renew never has', async () => {
+      const panel = fakePanel();
+      const req = request({ providerConfig: { group_ids: [] }, planAttrs: { group_ids: [] } });
+
+      await marzbanAdapter.provision(req, provider({ fetch: panel.fetchImpl }));
+
       expect(groupIdsFor(req)).toBeUndefined();
       expect(createCall(panel.calls)!.body).not.toHaveProperty('group_ids');
     });

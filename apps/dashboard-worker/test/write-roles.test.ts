@@ -212,6 +212,26 @@ describe('every write route, asked directly', () => {
     // reads the tier through `groupIdsFor`, which never looks at that column —
     // so it was a write route that decided nothing, with a tick box in front of
     // it that an admin could save three times and change nothing at all.
-    expect(writeRoutes().length).toBe(122);
+    //
+    // 124 on 2026-08-26, and one of the two is that same route coming back.
+    // The sentence above is wrong and contradicts itself: `groupIdsFor` reads
+    // the plan's attrs and then the PROVIDER CONFIG, and that column IS the
+    // provider config. `provisioning.test.ts` has a green case named «the panel
+    // default» that proves it against the body a fake panel received, and
+    // moving `config.group_ids` by hand on the live box flipped
+    // `panel:preflight` from failing to passing. What was really wrong was the
+    // VALUE: every stored selection was `[]`, which is not nullish, so it beat
+    // the panel underneath and sent `group_ids: []` — an account in no group,
+    // with no inbounds, on a link that resolves and returns nothing. Ticking
+    // nothing now deletes the key instead. ADMIN-only, for the same reason it
+    // was the first time: it decides what a paying customer receives.
+    //
+    // The other is `DELETE /panels/:id`, which this screen has never had. It is
+    // the most destructive route in this file and the only one whose guard had
+    // to go INSIDE the statement: `subscriptions.provider_id` is
+    // `ON DELETE SET NULL`, so a count-then-delete pair that lost the race
+    // would not raise — it would silently strip the panel off every live
+    // subscription and look like it worked.
+    expect(writeRoutes().length).toBe(124);
   });
 });

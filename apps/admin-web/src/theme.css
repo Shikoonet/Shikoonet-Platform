@@ -923,3 +923,134 @@ body {
   font-size: 13px;
   cursor: pointer;
 }
+
+/* ---------------------------------------------------------------------------
+   The modal.
+
+   `hub/styles.css` has had one since the payment hub was its own document; the
+   main app never did, so «مدیریت پنل‌ها» was the first screen here that needed
+   one. Ported rather than shared: the hub is a separate Cloudflare Access app
+   and the two stylesheets do not import each other on purpose.
+
+   The z-index is the part worth keeping. The header is 1001 and the sidebar
+   1002, and a backdrop that starts below either of them puts its close button
+   underneath the header — visible, and not clickable.
+   --------------------------------------------------------------------------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 1110;
+  padding: 24px 16px;
+  overflow-y: auto;
+}
+.modal-body {
+  /* Layered over the page's own body colour, not just `--surface-1`: every
+     surface token here is translucent by design, and a translucent dialogue
+     over a dim backdrop lets the table underneath read straight through the
+     form an operator is typing a password into. */
+  background: linear-gradient(var(--surface-2), var(--surface-2)), var(--bg-body);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  width: min(620px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.modal-body--danger {
+  width: min(520px, 100%);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-block-end: 14px;
+}
+.modal-head__title {
+  font-weight: 800;
+  font-size: 17px;
+}
+.modal-actions {
+  margin-block-start: 18px;
+  padding-block-start: 14px;
+  border-block-start: 1px solid var(--border-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ---------------------------------------------------------------------------
+   The panel card.
+
+   A panel is not a row of numbers: it is an address, a login, and a decision
+   about what it sells. The table said «۷ پنل» and made an operator open each
+   one to see any of that. These cards put the address, whether a credential
+   exists, and the groups it sells on the face of it.
+   --------------------------------------------------------------------------- */
+.panel-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-block-end: 14px;
+}
+.panel-card__name {
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.info-line {
+  display: flex;
+  gap: 8px;
+  padding-block: 3px;
+  font-size: 13px;
+  align-items: baseline;
+}
+.info-line__k {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  min-width: 72px;
+}
+.info-line__v {
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+.panel-card__foot {
+  margin-block-start: 12px;
+  padding-block-start: 10px;
+  border-block-start: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+/* The card/table switch, the one piece of chrome copied straight across. */
+.view-toggle {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+}
+.view-toggle__btn {
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 12px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.view-toggle__btn.active {
+  background: var(--accent-soft);
+  color: var(--text-main);
+}

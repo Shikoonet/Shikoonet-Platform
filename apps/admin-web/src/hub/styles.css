@@ -2797,7 +2797,13 @@
 }
 
 /* === Modal === */
-.modal-backdrop {
+/* The modal, scoped.
+   `theme.css` grew its own `.modal-*` on 2026-08-26 for «مدیریت پنل‌ها», so
+   these names now exist in both stylesheets and the css-scope test refuses an
+   unscoped copy. It is the right refusal: both sheets load in one document, so
+   an unscoped `.modal-body` here would restyle the panel's dialogues from a
+   file that knows nothing about them. */
+.hub .modal-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.55);
@@ -2813,7 +2819,7 @@
   overflow-y: auto;
 }
 
-.modal-body {
+.hub .modal-body {
   background: var(--surface-overlay);
   border-radius: var(--radius-md);
   padding: 1rem 1.25rem 1.25rem;
@@ -2822,18 +2828,18 @@
   overflow-y: auto;
 }
 
-.modal-body h3 {
+.hub .modal-body h3 {
   margin: 0;
 }
 
-.modal-actions {
+.hub .modal-actions {
   margin-top: 0.75rem;
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
 }
 
-.modal-actions button {
+.hub .modal-actions button {
   margin-inline-start: 0;
 }
 
@@ -3045,7 +3051,7 @@
 }
 
 /* === Danger / wider modal for delete === */
-.modal-body--danger {
+.hub .modal-body--danger {
   max-width: 520px;
 }
 .warn-banner {

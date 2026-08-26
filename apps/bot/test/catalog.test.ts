@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { seedCatalog } from '@shikoo/seed';
 import { plansOnPanel, productsForUser, purchasablePlan } from '../src/catalog.js';
 import { db } from './helpers/env.js';
@@ -278,3 +278,127 @@ async function countPlans(): Promise<number> {
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
+
+/**
+ * «محدودیت ساخت اکانت» — the panel cap, which until 2026-08-26 was written,
+ * drawn on the dashboard beside the live count, and read by nothing.
+ *
+ * The dashboard has offered the field since «مدیریت پنل‌ها» was built, so an
+ * operator who set it had every reason to believe it did something. Nothing in
+ * the bot asked: `PURCHASABLE` checked status, reseller and once-per-user, and
+ * `capacity` appeared zero times in `apps/bot/src`. The legacy shop counted it
+ * at `index.php:3600` and refused the purchase, which is the behaviour being
+ * restored.
+ *
+ * Counted the way the PHP counted it — live subscriptions on OUR side, not
+ * accounts on the panel, because a panel can hold accounts this shop never
+ * sold and the cap is about what we are willing to sell.
+ */
+describe('the panel cap', () => {
+  let customer: number;
+  let vip: number;
+
+  beforeAll(async () => {
+    await ensureCatalog();
+    customer = await makeCustomer(810_010);
+    vip = await providerId('sim-vip');
+  });
+
+  async function setCapacity(value: number | null): Promise<void> {
+    await db
+      .prepare(`UPDATE provisioning_providers SET capacity = ?2 WHERE id = ?1`)
+      .bind(vip, value)
+      .run();
+  }
+
+  async function liveOn(panelId: number): Promise<number> {
+    const row = await db
+      .prepare(
+        `SELECT COUNT(*)::int AS n FROM subscriptions
+          WHERE provider_id = ?1 AND status IN ('ACTIVE', 'ON_HOLD')`,
+      )
+      .bind(panelId)
+      .first<{ n: number }>();
+    return row!.n;
+  }
+
+  /**
+   * Asked through `productsForUser` narrowed to this panel, not by re-running
+   * the predicate: the whole point of the change is that the SHOP stops
+   * offering the panel, and a test that queries the table would pass with the
+   * guard deleted.
+   */
+  async function sellsFrom(panelId: number): Promise<boolean> {
+    return (await productsForUser(db, customer, panelId)).length > 0;
+  }
+
+  afterAll(async () => {
+    await setCapacity(null);
+    await db.prepare(`DELETE FROM subscriptions WHERE public_id LIKE 'cap-%'`).run();
+  });
+
+  it('sells nothing more once the live count reaches the cap, and sells again above it', async () => {
+    const live = await liveOn(vip);
+
+    // A cap above what is already sold changes nothing.
+    await setCapacity(live + 1);
+    expect(await sellsFrom(vip)).toBe(true);
+
+    // Exactly at the cap is full: the legacy check is `>= limit_panel`, and
+    // off-by-one here means selling one account past a limit somebody set
+    // because the panel could not carry more.
+    await setCapacity(live);
+    expect(await sellsFrom(vip)).toBe(false);
+
+    await setCapacity(0);
+    expect(await sellsFrom(vip)).toBe(false);
+
+    // NULL is unlimited — what the legacy string 'unlimited' migrated to. A
+    // cap of 0 and no cap at all must not be the same thing, and `capacity IS
+    // NULL` rather than a falsy test is what keeps them apart.
+    await setCapacity(null);
+    expect(await sellsFrom(vip)).toBe(true);
+  });
+
+  it('counts only live subscriptions, not every row ever sold', async () => {
+    const live = await liveOn(vip);
+    await setCapacity(live + 1);
+
+    // A cancelled sale must not hold a seat. Statuses the schema allows that
+    // are NOT live: PENDING_PAYMENT, DISABLED, REMOVED, FAILED.
+    for (const [id, status] of [
+      ['cap-removed', 'REMOVED'],
+      ['cap-failed', 'FAILED'],
+      ['cap-pending', 'PENDING_PAYMENT'],
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO subscriptions
+             (public_id, user_id, provider_id, plan_name_at_sale, price_irr, status, purchased_at)
+           VALUES (?1, ?2, ?3, 'cap fixture', 1000, ?4, now())
+           ON CONFLICT (public_id) DO UPDATE SET status = EXCLUDED.status`,
+        )
+        .bind(id, customer, vip, status)
+        .run();
+    }
+
+    expect(await liveOn(vip)).toBe(live);
+    expect(await sellsFrom(vip)).toBe(true);
+  });
+
+  it('does not touch renewals — a full panel still renews what it already sold', async () => {
+    await setCapacity(0);
+    // `RENEWABLE` in owned.ts is a separate predicate and deliberately has no
+    // cap in it. A customer who already paid must not be locked out of
+    // extending because the panel filled up after they bought.
+    const renewable = await db
+      .prepare(
+        `SELECT COUNT(*)::int AS n FROM provisioning_providers
+          WHERE id = ?1 AND status = 'ACTIVE'`,
+      )
+      .bind(vip)
+      .first<{ n: number }>();
+    expect(renewable!.n).toBe(1);
+    await setCapacity(null);
+  });
+});

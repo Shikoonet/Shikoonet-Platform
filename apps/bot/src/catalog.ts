@@ -60,6 +60,26 @@ const PURCHASABLE = `
            WHERE s.user_id = u.id AND s.status <> 'PENDING_PAYMENT'
         )
       )
+  /*
+   * «محدودیت ساخت اکانت» — legacy 'limit_panel', migrated into
+   * provisioning_providers.capacity, where it sat unread. The dashboard has
+   * written it and drawn it beside the live count since the screen was built,
+   * so an operator setting it had every reason to believe it did something;
+   * nothing in the bot ever asked. NULL is unlimited, which is what the legacy
+   * 'unlimited' string became.
+   *
+   * Counted the way the PHP counted it (index.php:3600) — live subscriptions on
+   * the panel, not accounts on the panel itself, because the panel may carry
+   * accounts this shop never sold.
+   */
+  AND (
+        pr.capacity IS NULL
+     OR pr.capacity > (
+          SELECT COUNT(*) FROM subscriptions cap
+           WHERE cap.provider_id = pr.id
+             AND cap.status IN ('ACTIVE', 'ON_HOLD')
+        )
+      )
 `;
 
 /**
