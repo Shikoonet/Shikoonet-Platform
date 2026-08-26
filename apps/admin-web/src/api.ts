@@ -1177,7 +1177,13 @@ export const api = {
     });
   },
 
-  setPanelCredential(id: number, credential: { username: string; password: string }) {
+  /**
+   * Replace the panel's login. The username is optional and normally absent:
+   * nothing here can read a stored one back, so the edit form's box is empty on
+   * a panel that already has a credential, and the server fills it in from what
+   * is already sealed. Omitting it on a panel with NO credential is a 400.
+   */
+  setPanelCredential(id: number, credential: { username?: string; password: string }) {
     return req<{ ok: boolean; panel: PanelItem | null }>(`/panels/${id}/credentials`, {
       method: 'POST',
       body: JSON.stringify(credential),

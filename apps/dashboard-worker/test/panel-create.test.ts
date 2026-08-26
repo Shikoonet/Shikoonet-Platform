@@ -274,6 +274,86 @@ describe('creating a panel', () => {
 });
 
 describe('replacing a credential', () => {
+
+  /**
+   * A password on its own, which is all the screen can send.
+   *
+   * No route in this app hands a stored username back — the sealed blob is the
+   * only copy — so the edit form's username box is empty on a panel that already
+   * has a credential. The first version required both, which meant a correct
+   * password typed under a label reading «پسورد جدید (خالی = بدون تغییر)» was
+   * dropped in silence and the panel came back «ورود پذیرفته نشد». Found by
+   * typing one into the browser, not by reading the code.
+   *
+   * Asserted by OPENING the sealed value the way the bot does, so the username
+   * really is the one that was already there rather than an empty string that
+   * happens to seal cleanly.
+   */
+  it('replaces the password alone, keeping the username already sealed', async () => {
+    const created = await post('/api/v1/admin/panels', BODY);
+    const { panel } = (await created.json()) as { panel: { id: number } };
+
+    const res = await post(`/api/v1/admin/panels/${panel.id}/credentials`, {
+      password: 'zz-second-password-4c1d',
+    });
+    expect(res.status).toBe(200);
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT sealed FROM provider_secrets WHERE provider_id = ?1`,
+    )
+      .bind(panel.id)
+      .first<{ sealed: string }>();
+    expect(splitCredential(open(row!.sealed, panelSecretKey()))).toEqual({
+      username: 'admin',
+      password: 'zz-second-password-4c1d',
+    });
+  });
+
+  it('records the username it filled in, and never the password', async () => {
+    const created = await post('/api/v1/admin/panels', BODY);
+    const { panel } = (await created.json()) as { panel: { id: number } };
+    await post(`/api/v1/admin/panels/${panel.id}/credentials`, { password: PASSWORD });
+
+    const log = await baseEnv.DB.prepare(
+      `SELECT after_json::text AS after FROM audit_logs
+        WHERE action = 'catalog.panel_credential_set' AND entity_id = ?1`,
+    )
+      .bind(String(panel.id))
+      .first<{ after: string }>();
+    // The username is an operational fact somebody needs during an incident.
+    // It has to be the REAL one, not the empty string a missing field would
+    // otherwise leave behind.
+    expect(log?.after).toContain('"username":"admin"');
+    expect(log?.after).not.toContain(PASSWORD);
+  });
+
+  /**
+   * The one case where the username cannot be filled in for you.
+   *
+   * A panel with nothing sealed has no username to inherit, and inventing one
+   * would seal `:password` — a credential that logs in as nobody and fails at
+   * the panel with a message about the password.
+   */
+  it('refuses a password alone on a panel that has no credential yet', async () => {
+    const created = await post('/api/v1/admin/panels', {
+      ...BODY,
+      code: `${PREFIX}nocred`,
+      credential: undefined,
+    });
+    const { panel } = (await created.json()) as { panel: { id: number } };
+
+    const res = await post(`/api/v1/admin/panels/${panel.id}/credentials`, {
+      password: 'zz-orphan-password',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { detail: string };
+    expect(body.detail).toContain('یوزرنیم');
+
+    const row = await baseEnv.DB.prepare(`SELECT 1 FROM provider_secrets WHERE provider_id = ?1`)
+      .bind(panel.id)
+      .first();
+    expect(row, 'a credential was sealed with no username').toBeNull();
+  });
   it('replaces in place rather than keeping a history of passwords', async () => {
     const res = await post('/api/v1/admin/panels', BODY);
     const { panel } = (await res.json()) as { panel: { id: number } };

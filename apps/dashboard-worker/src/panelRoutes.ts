@@ -486,6 +486,23 @@ const Credential = z
   })
   .strict();
 
+/**
+ * Replacing a credential, where the username may be left out.
+ *
+ * No route here hands a stored username back — the sealed blob is the only copy
+ * — so the edit form's username box is empty on a panel that already has one.
+ * The first version of that form dropped a typed password on the floor when the
+ * box was blank, silently, under a label reading «پسورد جدید (خالی = بدون
+ * تغییر)». Found by typing a correct password into the browser and watching the
+ * panel come back «ورود پذیرفته نشد».
+ *
+ * So the server supplies what the browser cannot: absent, the username is read
+ * out of the existing sealed value and re-sealed with the new password. This is
+ * deliberately NOT `Credential` — creating a panel and testing one both have
+ * nothing stored to fall back on, and must keep asking for both halves.
+ */
+const CredentialReplacement = Credential.partial({ username: true });
+
 const PanelCreate = z
   .object({
     // Lowercase and dashed, because this doubles as the `PANEL_<CODE>`
@@ -865,7 +882,7 @@ export function registerPanelRoutes(
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
-    const body = Credential.safeParse(await c.req.json().catch(() => null));
+    const body = CredentialReplacement.safeParse(await c.req.json().catch(() => null));
     if (!body.success) {
       return c.json(
         { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
@@ -888,6 +905,34 @@ export function registerPanelRoutes(
       );
     }
 
+    // The username, from the caller or from what is already sealed here.
+    let username = body.data.username ?? null;
+    if (username === null) {
+      const stored = await c.env.DB.prepare(
+        `SELECT pr.secret_ref, ps.sealed
+           FROM provisioning_providers pr
+           LEFT JOIN provider_secrets ps ON ps.provider_id = pr.id
+          WHERE pr.id = ?1`,
+      )
+        .bind(id)
+        .first<{ secret_ref: string | null; sealed: string | null }>();
+      try {
+        username = stored ? (credentialFor(stored)?.username ?? null) : null;
+      } catch {
+        username = null;
+      }
+      if (username === null) {
+        return c.json(
+          {
+            ok: false,
+            error: 'invalid_body',
+            detail: 'این پنل هنوز اعتبارنامه‌ای ندارد — یوزرنیم هم باید داده شود.',
+          },
+          400,
+        );
+      }
+    }
+
     await c.env.DB.prepare(
       `INSERT INTO provider_secrets (provider_id, sealed, key_id, set_by)
        VALUES (?1, ?2, ?3, ?4)
@@ -897,7 +942,7 @@ export function registerPanelRoutes(
              set_by = EXCLUDED.set_by,
              updated_at = now()`,
     )
-      .bind(id, seal(`${body.data.username}:${body.data.password}`, key), keyId(key), ident.email)
+      .bind(id, seal(`${username}:${body.data.password}`, key), keyId(key), ident.email)
       .run();
 
     await audit(
@@ -910,7 +955,7 @@ export function registerPanelRoutes(
       // The username is recorded because it is an operational fact somebody
       // will need during an incident, and it is not the secret. The password
       // is not here in any form, hashed or otherwise.
-      { code: before.code, username: body.data.username },
+      { code: before.code, username },
       null,
     );
 
