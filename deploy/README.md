@@ -580,6 +580,16 @@ on the server is a script nobody reviews.
     published port is a public port.
 12. Append `<time> <digest> <sha>` to the state file.
 
+`deploy/host/deploy-test.sh` proves those steps against real containers — a
+throwaway database, registry and network it builds and removes itself. It runs
+in CI on every change, because the interesting half of that script is the half
+that only executes on a bad day:
+
+```bash
+docker build -t shikoo-ci .
+deploy/host/deploy-test.sh shikoo-ci      # ~3 minutes, 9 checks
+```
+
 Any failure after step 7 restores the previous digest, re-runs the health
 checks against it, and still exits non-zero — a successful rollback is not a
 successful deploy. The summary says which of three things happened: rolled
@@ -774,6 +784,7 @@ different claims, and only one of them is true today.
 | `pnpm test` | **2,272 passed, 52 skipped, 180 files, 9 packages** — the skips are the MySQL tests, which need the production dump and skip themselves under `CI` |
 | `schema up` + `status` + `verify_invariants.sql` | 31 migrations, **32 invariants PASS** |
 | Playwright | **100 passed**, on schema → `seed:sim` → e2e |
+| `deploy/host/deploy-test.sh` — **9 checks**, now part of CI | pass |
 | a full deploy, against a throwaway Postgres and a local registry | migrate → gate → ingest+dashboard → bot → smoke → one lock holder → recorded |
 | a failing migration | stops the deploy with **zero** services touched and no state written |
 | a new image whose `ingest` cannot boot | health-wait fails in seconds, the previous digest is restored, all three containers verified back on it, exit 1, `DEPLOY FAILED, ROLLBACK SUCCEEDED`, and the schema left as migrated |

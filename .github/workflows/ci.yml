@@ -185,6 +185,26 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 'is not one of'
 
+      # The deploy script, against real containers.
+      #
+      # Everything that script is for is a refusal or a recovery — a failed
+      # migration touching nothing, a broken image being rolled back, two
+      # deploys not interleaving — and none of it happens on a good day. Left
+      # unexercised it would be verified exactly once, by hand, and then only
+      # ever run again during an outage.
+      #
+      # It builds its own database, registry and network, prefixed
+      # `deploytest`, and removes them on exit. It cannot reach a real
+      # environment: every path it hands the deploy script is a temporary
+      # directory, which is why those are environment variables in the first
+      # place.
+      #
+      # Here rather than in a job of its own so it reuses the image built
+      # above; it adds roughly three minutes, most of it waiting for health
+      # checks to settle.
+      - name: The deploy script's refusals and its rollback
+        run: deploy/host/deploy-test.sh shikoo-ci
+
   # The browser half. It is a separate job rather than more steps in `gate`
   # because it needs a browser, a built SPA and two servers of its own, and
   # because a red e2e and a red unit suite are different questions — running
