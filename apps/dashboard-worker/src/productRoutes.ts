@@ -32,7 +32,12 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
-import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
+import {
+  MAX_CATALOG_ROWS,
+  MAX_SINGLE_PAYMENT_IRR,
+  checkCatalogLayout,
+  type CatalogLayoutProblem,
+} from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 import { faNum } from './fa.js';
 
@@ -46,6 +51,16 @@ const ListQuery = z.object({
   q: z.string().trim().max(64).optional(),
   status: z.enum(['ACTIVE', 'HIDDEN', 'DISABLED']).optional(),
   providerId: z.coerce.number().int().positive().optional(),
+  categoryId: z.coerce.number().int().positive().optional(),
+  /**
+   * Absent means «both», which is why this is not a boolean with a default.
+   * `?resellersOnly=false` is a real question — «what does an ordinary customer
+   * see» — and it has to be askable separately from not asking at all.
+   */
+  resellersOnly: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(25),
 });
@@ -191,10 +206,70 @@ const ProductPatch = z
 
 const ProductStatusBody = z.object({ status: z.enum(STATUSES) }).strict();
 
+/**
+ * A category — the shop's first screen, one button per row of this table.
+ *
+ * `emoji` is stored and not validated beyond a length, and the length is
+ * generous on purpose: a family or a flag is several code points joined by
+ * zero-width joiners, and a cap tight enough to mean «one glyph» refuses those.
+ * What it is NOT is a label — that is `name`, and it is what the button says.
+ *
+ * `active` is the switch that takes a category's products off sale without
+ * deleting anything. Deleting is what the foreign key refuses while products
+ * point at it; this is the thing an operator actually wants when a tier is
+ * retired for a month.
+ */
+const CATEGORY_FIELDS = {
+  name: z.string().trim().min(1).max(80),
+  emoji: z.string().trim().min(1).max(16).nullable(),
+  sortOrder: z.number().int().min(0).max(10_000),
+  active: z.boolean(),
+};
+
 const CategoryBody = z
   .object({
-    name: z.string().trim().min(1).max(80),
-    sortOrder: z.number().int().min(0).max(10_000).default(0),
+    name: CATEGORY_FIELDS.name,
+    emoji: CATEGORY_FIELDS.emoji.default(null),
+    sortOrder: CATEGORY_FIELDS.sortOrder.default(0),
+    active: CATEGORY_FIELDS.active.default(true),
+  })
+  .strict();
+
+const CategoryPatch = z
+  .object({
+    name: CATEGORY_FIELDS.name.optional(),
+    emoji: CATEGORY_FIELDS.emoji.optional(),
+    sortOrder: CATEGORY_FIELDS.sortOrder.optional(),
+    active: CATEGORY_FIELDS.active.optional(),
+  })
+  .strict()
+  .refine((b) => Object.keys(b).length > 0, 'no fields to change');
+
+/**
+ * An arrangement, as the browser sends it.
+ *
+ * The array's ORDER is the horizontal order and is the whole of what the server
+ * writes into `sort_order`; `sort_order` itself is never sent. That deletes the
+ * entire class of «two buttons claim position 3» bugs rather than validating
+ * against it — there is no second place for the order to be written down, so
+ * there is nothing for it to disagree with.
+ *
+ * `rowIndex` is bounded here as well as by the CHECK constraint. Reaching the
+ * constraint would mean a 500 and a driver message; this is a sentence.
+ */
+const CatalogLayoutBody = z
+  .object({
+    items: z
+      .array(
+        z
+          .object({
+            id: z.number().int().positive(),
+            rowIndex: z.number().int().min(0).max(MAX_CATALOG_ROWS - 1).nullable(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(1000),
   })
   .strict();
 
@@ -261,6 +336,27 @@ function shape(r: PlanRow) {
       : null,
     categoryName: r.category_name,
     ordersCount: Number(r.orders_count),
+  };
+}
+
+/** One category row, as every category screen reads it. */
+function shapeCategory(r: {
+  id: number;
+  name: string;
+  emoji: string | null;
+  active: boolean;
+  sort_order: number;
+  row_index: number | null;
+  products: number;
+}) {
+  return {
+    id: Number(r.id),
+    name: r.name,
+    emoji: r.emoji,
+    active: r.active,
+    sortOrder: r.sort_order,
+    rowIndex: r.row_index,
+    productsCount: Number(r.products),
   };
 }
 
@@ -481,6 +577,37 @@ function refusal(refs: Refs): string {
   return `${parts.join(' و ')} به این ردیف وصل است؛ حذف تاریخچهٔ فروش را خالی می‌کند. «غیرفعال» همین کار را بدون از دست رفتن تاریخچه انجام می‌دهد.`;
 }
 
+/**
+ * Why an arrangement was refused, in the admin's own words.
+ *
+ * Every one of these is a bug in the page that posted it rather than something
+ * an operator typed, so the sentences name what the screen did wrong instead of
+ * asking for a correction. They are still Persian and still specific: this text
+ * is what gets pasted into a bug report.
+ */
+function catalogLayoutProblem(problem: CatalogLayoutProblem): string {
+  switch (problem.kind) {
+    case 'EMPTY':
+      return 'چیدمان بدون دکمه فرستاده شد.';
+    case 'DUPLICATE_ID':
+      return `این ردیف‌ها دو بار در چیدمان آمده‌اند: ${problem.ids.map(faNum).join('، ')}`;
+    case 'FOREIGN_ID':
+      return `این ردیف‌ها مالِ این صفحه نیستند: ${problem.ids.map(faNum).join('، ')}`;
+    case 'MISSING_ID':
+      return `چیدمان باید کلِ صفحه را بفرستد؛ جای این ردیف‌ها در آن خالی است: ${problem.ids.map(faNum).join('، ')}`;
+    case 'MIXED_ARRANGEMENT':
+      return 'بخشی از دکمه‌ها چیده شده‌اند و بخشی نه. یا همه، یا هیچ‌کدام.';
+    case 'ROW_NOT_MONOTONIC':
+      return `شمارهٔ ردیف باید رو به جلو برود؛ این‌ها به عقب برمی‌گردند: ${problem.ids.map(faNum).join('، ')}`;
+    case 'ROW_GAP':
+      return `ردیف‌های ${problem.rows.map(faNum).join('، ')} خالی مانده‌اند و ردیف خالی وجود ندارد.`;
+    case 'ROW_TOO_WIDE':
+      return `ردیف ${faNum(problem.row)} بیش از ${faNum(problem.limit)} دکمه دارد و تلگرام آن را رد می‌کند.`;
+    case 'TOO_MANY_ROWS':
+      return `بیش از ${faNum(problem.limit)} ردیف روی یک صفحهٔ فروشگاه خوانده نمی‌شود؛ این‌جا جای دسته‌بندی تازه است.`;
+  }
+}
+
 function counts(row: Record<string, unknown> | null): Refs {
   return {
     orders: Number(row?.['orders'] ?? 0),
@@ -501,11 +628,13 @@ export function registerProductRoutes(
       q: c.req.query('q') || undefined,
       status: c.req.query('status') || undefined,
       providerId: c.req.query('providerId') || undefined,
+      categoryId: c.req.query('categoryId') || undefined,
+      resellersOnly: c.req.query('resellersOnly') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, status, providerId, page, pageSize } = parsed.data;
+    const { q, status, providerId, categoryId, resellersOnly, page, pageSize } = parsed.data;
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -516,6 +645,21 @@ export function registerProductRoutes(
     if (providerId) {
       params.push(providerId);
       where.push(`p.provider_id = ?${params.length}`);
+    }
+    // Both of these filter the SERVICE, not the config, and both are on the
+    // flat screen because that screen's columns come from both levels. They are
+    // answered here rather than in the browser for the reason the panel being
+    // replaced demonstrates: `panel/js/datatable.js` filters the rows already
+    // loaded and loads them all, which is honest on eight rows and a lie on
+    // eight hundred. This list is paged, so a browser-side filter would hide
+    // matches on page two and show a total that counts them.
+    if (categoryId) {
+      params.push(categoryId);
+      where.push(`p.category_id = ?${params.length}`);
+    }
+    if (resellersOnly !== undefined) {
+      params.push(resellersOnly);
+      where.push(`p.resellers_only = ?${params.length}`);
     }
     if (q) {
       // An admin looking for "آلمان" does not know whether that word is on the
@@ -788,20 +932,32 @@ export function registerProductRoutes(
 
   // --- categories ---------------------------------------------------------
 
+  /**
+   * The category list, with the number that makes switching one off a decision.
+   *
+   * `productsCount` is here so the screen can say «۷ محصول با این کار از فروشگاه
+   * برداشته می‌شوند» BEFORE the switch is thrown, rather than afterwards. It is
+   * also what the delete refusal counts, and reading it in the same shape from
+   * both places is deliberate: the number in the warning and the number in the
+   * refusal are the same number.
+   */
   app.get('/api/v1/admin/product-categories', async (c) => {
     const rows = await c.env.DB.prepare(
-      `SELECT cat.id, cat.name, cat.sort_order,
+      `SELECT cat.id, cat.name, cat.emoji, cat.active, cat.sort_order, cat.row_index,
               (SELECT COUNT(*) FROM products p WHERE p.category_id = cat.id) AS products
          FROM product_categories cat ORDER BY cat.sort_order, cat.id`,
-    ).all<{ id: number; name: string; sort_order: number; products: number }>();
+    ).all<{
+      id: number;
+      name: string;
+      emoji: string | null;
+      active: boolean;
+      sort_order: number;
+      row_index: number | null;
+      products: number;
+    }>();
     return c.json({
       ok: true,
-      items: (rows.results ?? []).map((r) => ({
-        id: Number(r.id),
-        name: r.name,
-        sortOrder: r.sort_order,
-        productsCount: Number(r.products),
-      })),
+      items: (rows.results ?? []).map(shapeCategory),
     });
   });
 
@@ -821,10 +977,11 @@ export function registerProductRoutes(
     // than looking first keeps two admins typing «آلمان» at once from both
     // being told they succeeded.
     const row = await c.env.DB.prepare(
-      `INSERT INTO product_categories (name, sort_order) VALUES (?1, ?2)
+      `INSERT INTO product_categories (name, emoji, active, sort_order)
+            VALUES (?1, ?2, ?3, ?4)
        ON CONFLICT (name) DO NOTHING RETURNING id`,
     )
-      .bind(body.data.name, body.data.sortOrder)
+      .bind(body.data.name, body.data.emoji, body.data.active, body.data.sortOrder)
       .first<{ id: number }>();
     if (!row) {
       return c.json(
@@ -840,7 +997,12 @@ export function registerProductRoutes(
       'PRODUCT_CATEGORY',
       String(row.id),
       null,
-      { name: body.data.name, sort_order: body.data.sortOrder },
+      {
+        name: body.data.name,
+        emoji: body.data.emoji,
+        active: body.data.active,
+        sort_order: body.data.sortOrder,
+      },
       null,
     );
     return c.json(
@@ -849,12 +1011,265 @@ export function registerProductRoutes(
         category: {
           id: Number(row.id),
           name: body.data.name,
+          emoji: body.data.emoji,
+          active: body.data.active,
           sortOrder: body.data.sortOrder,
+          rowIndex: null,
           productsCount: 0,
         },
       },
       201,
     );
+  });
+
+  // --- edit a category ----------------------------------------------------
+
+  app.post('/api/v1/admin/product-categories/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const body = CategoryPatch.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    const SELECT_CATEGORY = `SELECT id, name, emoji, active, sort_order, row_index
+                               FROM product_categories WHERE id = ?1`;
+    const before = await c.env.DB.prepare(SELECT_CATEGORY)
+      .bind(id)
+      .first<Record<string, unknown>>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    const put = (column: string, value: unknown) => {
+      params.push(value);
+      sets.push(`${column} = ?${params.length}`);
+    };
+    const patch = body.data;
+    if (patch.name !== undefined) put('name', patch.name);
+    if (patch.emoji !== undefined) put('emoji', patch.emoji);
+    if (patch.active !== undefined) put('active', patch.active);
+    if (patch.sortOrder !== undefined) put('sort_order', patch.sortOrder);
+    params.push(id);
+
+    // `name` is UNIQUE. Letting the constraint answer rather than looking first
+    // is the same choice the create above makes, for the same reason.
+    const written = await c.env.DB.prepare(
+      `UPDATE product_categories SET ${sets.join(', ')} WHERE id = ?${params.length}`,
+    )
+      .bind(...params)
+      .run()
+      .then(() => true)
+      .catch(() => false);
+    if (!written) {
+      return c.json(
+        { ok: false, error: 'duplicate_name', detail: 'دسته‌بندی دیگری با این نام هست.' },
+        409,
+      );
+    }
+
+    const after = await c.env.DB.prepare(SELECT_CATEGORY).bind(id).first<Record<string, unknown>>();
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.category_updated',
+      'PRODUCT_CATEGORY',
+      String(id),
+      before,
+      after,
+      null,
+    );
+    return c.json({ ok: true });
+  });
+
+  // --- delete a category --------------------------------------------------
+
+  /**
+   * Remove a category only if no product names it.
+   *
+   * `products.category_id` is NOT NULL with `ON DELETE RESTRICT` since 0032, so
+   * Postgres refuses this on its own — but it refuses it as a driver error,
+   * which reaches an operator as a 500 with nothing in it they can act on. The
+   * `NOT EXISTS` inside the statement turns the same refusal into a sentence
+   * with a count, and it does so without opening the window a count-then-delete
+   * pair would: both clauses are evaluated under the delete's own row locks.
+   *
+   * The foreign key stays regardless. It is what makes this true for a psql
+   * session and a migration as well as for this route; the route's version is
+   * the wording, not the guarantee.
+   */
+  app.delete('/api/v1/admin/product-categories/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const before = await c.env.DB.prepare(
+      `SELECT id, name, emoji, active, sort_order FROM product_categories WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<Record<string, unknown>>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const gone = await c.env.DB.prepare(
+      `DELETE FROM product_categories WHERE id = ?1
+         AND NOT EXISTS (SELECT 1 FROM products WHERE category_id = ?1)
+       RETURNING id`,
+    )
+      .bind(id)
+      .first<{ id: number }>();
+    if (!gone) {
+      const row = await c.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM products WHERE category_id = ?1`,
+      )
+        .bind(id)
+        .first<{ n: number }>();
+      const n = Number(row?.n ?? 0);
+      return c.json(
+        {
+          ok: false,
+          error: 'in_use',
+          detail: `${faNum(n)} محصول در این دسته‌بندی است و محصول بی‌دسته‌بندی نمی‌شود. اول آن‌ها را به دسته‌بندی دیگری ببرید، یا این دسته‌بندی را خاموش کنید — خاموش‌کردن همان کار را بدون از دست رفتن چیزی انجام می‌دهد.`,
+          counts: { products: n },
+        },
+        409,
+      );
+    }
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.category_deleted',
+      'PRODUCT_CATEGORY',
+      String(id),
+      before,
+      null,
+      null,
+    );
+    return c.json({ ok: true });
+  });
+
+  // --- where the shop breaks its rows -------------------------------------
+
+  /**
+   * Save one shop screen's arrangement — the categories, or the configs inside
+   * one category.
+   *
+   * Two things about this route carry the whole feature.
+   *
+   * **The scope's real contents are read from Postgres, never taken from the
+   * request.** `checkCatalogLayout` is handed that list, so a post naming a
+   * config from category 7 while addressing category 3 is refused rather than
+   * silently rewriting category 7's order — and a post naming only half of
+   * category 3 is refused too, because the unnamed half would keep yesterday's
+   * `sort_order` and interleave with the new one.
+   *
+   * **`sort_order` is the array index and is never sent.** The browser posts an
+   * ORDERED array of `{id, rowIndex}`; horizontal position is that order. There
+   * is no second place for the order to be written down, so there is nothing
+   * for it to disagree with, and the whole class of «two rows claim position 3»
+   * stops existing rather than being validated against.
+   *
+   * The write is one `batch()` — a real transaction in `packages/db` — for the
+   * reason `bot-keyboard/:menu` gives: there is no moment at which the bot can
+   * read half an arrangement.
+   *
+   * What is deliberately NOT here is the legacy panel's mechanism.
+   * `faoxima/panel/product.php:68-74` moves a row by swapping PRIMARY KEYS
+   * through a hardcoded sentinel id, in three un-transacted UPDATEs, over GET.
+   * Every `plan:<id>` already sitting in a customer's chat then buys a
+   * different product. This moves two integers that nothing points at.
+   */
+  app.post('/api/v1/admin/catalog-layout/:scope', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const scope = c.req.param('scope');
+    const inCategory = /^category:(\d+)$/.exec(scope);
+    if (scope !== 'categories' && !inCategory) {
+      return c.json({ ok: false, error: 'unknown_scope' }, 404);
+    }
+
+    const body = CatalogLayoutBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    let table: 'product_categories' | 'product_plans';
+    let scopeIds: number[];
+    if (inCategory) {
+      const categoryId = Number(inCategory[1]);
+      const cat = await c.env.DB.prepare(`SELECT id FROM product_categories WHERE id = ?1`)
+        .bind(categoryId)
+        .first<{ id: number }>();
+      if (!cat) return c.json({ ok: false, error: 'not_found' }, 404);
+      table = 'product_plans';
+      // Every status, not only ACTIVE: the admin arranges the screen they are
+      // looking at, and that screen holds the config they disabled last week.
+      // Leaving disabled configs out of the scope would make every save a
+      // MISSING_ID refusal.
+      const rows = await c.env.DB.prepare(
+        `SELECT pl.id FROM product_plans pl
+           JOIN products p ON p.id = pl.product_id
+          WHERE p.category_id = ?1`,
+      )
+        .bind(categoryId)
+        .all<{ id: number }>();
+      scopeIds = (rows.results ?? []).map((r) => Number(r.id));
+    } else {
+      table = 'product_categories';
+      const rows = await c.env.DB.prepare(`SELECT id FROM product_categories`).all<{ id: number }>();
+      scopeIds = (rows.results ?? []).map((r) => Number(r.id));
+    }
+
+    const items = body.data.items;
+    const problem = checkCatalogLayout(items, scopeIds);
+    if (problem) {
+      return c.json(
+        {
+          ok: false,
+          error: 'invalid_layout',
+          kind: problem.kind,
+          detail: catalogLayoutProblem(problem),
+        },
+        400,
+      );
+    }
+
+    // The table name is one of the two literals chosen above and never touches
+    // the request; ids and positions are all parameters.
+    await c.env.DB.batch(
+      items.map((item, at) =>
+        c.env.DB.prepare(`UPDATE ${table} SET row_index = ?2, sort_order = ?3 WHERE id = ?1`).bind(
+          item.id,
+          item.rowIndex,
+          at,
+        ),
+      ),
+    );
+
+    await audit(
+      c.env.DB,
+      ident,
+      'catalog.layout_updated',
+      'CATALOG_LAYOUT',
+      scope,
+      null,
+      { items: items.map((i, at) => ({ id: i.id, row: i.rowIndex, at })) },
+      null,
+    );
+    return c.json({ ok: true });
   });
 
   // --- create a product ---------------------------------------------------

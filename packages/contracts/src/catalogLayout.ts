@@ -47,6 +47,7 @@ export type CatalogLayoutProblem =
   | { kind: 'EMPTY' }
   | { kind: 'DUPLICATE_ID'; ids: number[] }
   | { kind: 'FOREIGN_ID'; ids: number[] }
+  | { kind: 'MISSING_ID'; ids: number[] }
   | { kind: 'MIXED_ARRANGEMENT' }
   | { kind: 'ROW_NOT_MONOTONIC'; ids: number[] }
   | { kind: 'ROW_GAP'; rows: number[] }
@@ -91,6 +92,17 @@ export function checkCatalogLayout(
   const belongs = new Set(scopeIds);
   const foreign = items.filter((i) => !belongs.has(i.id)).map((i) => i.id);
   if (foreign.length > 0) return { kind: 'FOREIGN_ID', ids: foreign };
+
+  // …and the same boundary from the other side. A save writes the column
+  // position of every button it names, so a save that names half the screen
+  // leaves the other half on yesterday's numbers and the two halves interleave
+  // — three buttons at 0,1,2 among seven still at 0. What comes out is not the
+  // old screen and not the new one, and nothing anywhere reports an error.
+  // This is not hypothetical: `catalog-layout.test.ts` opens with the two red
+  // runs it cost before the fixture was rewritten to arrange whole screens.
+  const posted = new Set(items.map((i) => i.id));
+  const absent = scopeIds.filter((id) => !posted.has(id));
+  if (absent.length > 0) return { kind: 'MISSING_ID', ids: absent };
 
   const arranged = items.filter((i) => i.rowIndex !== null);
   if (arranged.length === 0) return null;

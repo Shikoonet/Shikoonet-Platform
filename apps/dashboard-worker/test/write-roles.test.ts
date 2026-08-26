@@ -242,6 +242,26 @@ describe('every write route, asked directly', () => {
     // only write in this file that is not one request: it is one `PUT` per
     // member against somebody else's panel, so it reports how many actually
     // moved on the failure path too, and audits both outcomes.
-    expect(writeRoutes().length).toBe(125);
+    //
+    // 128 on 2026-08-27, all three from the shop becoming category-first.
+    // «POST /product-categories/:id» and «DELETE /product-categories/:id»
+    // finish a screen that could create a category and then never touch it
+    // again. The delete is guarded INSIDE the statement even though 0032 gave
+    // `products.category_id` a RESTRICT foreign key that already refuses it:
+    // the key refuses as a driver error, which is a 500 with nothing an
+    // operator can act on, and the clause turns it into a sentence with a
+    // count. The key is what makes the guarantee true for psql and migrations;
+    // the route is only the wording.
+    //
+    // «POST /catalog-layout/:scope» is the one worth the look. It writes
+    // `row_index` and `sort_order` across a whole shop screen, and it is the
+    // route the legacy panel implements by SWAPPING PRIMARY KEYS through a
+    // hardcoded sentinel id, in three un-transacted UPDATEs, over GET
+    // (`faoxima/panel/product.php:68-74`) — after which every `plan:<id>`
+    // sitting in a customer’s chat buys a different product. Ours moves two
+    // integers nothing points at, in one transaction, ADMIN-only, and it reads
+    // the scope’s real membership out of Postgres so a post addressed to one
+    // category cannot reorder another’s.
+    expect(writeRoutes().length).toBe(128);
   });
 });

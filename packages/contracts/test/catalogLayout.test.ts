@@ -112,9 +112,20 @@ describe('whether an arrangement may be saved', () => {
     expect(checkCatalogLayout(items, scope)).toEqual({ kind: 'FOREIGN_ID', ids: [404] });
   });
 
+  it('refuses an id the screen has but the save left out', () => {
+    // The other half of the trust boundary. A save writes the position of
+    // every id it names and nothing else, so a save naming four of six leaves
+    // the other two on yesterday's numbers and the two sets interleave —
+    // neither the old order nor the new one, and no error anywhere. This is
+    // the failure `apps/bot/test/catalog-layout.test.ts` cost two red runs to
+    // find in its own fixture, before it was a rule.
+    const items = arranged(2, 2);
+    expect(checkCatalogLayout(items, scope)).toEqual({ kind: 'MISSING_ID', ids: [5, 6] });
+  });
+
   it('refuses half an arrangement, because a save carries a whole screen', () => {
     const items: CatalogPlacement[] = [...arranged(2), { id: 3, rowIndex: null }];
-    expect(checkCatalogLayout(items, scope)).toEqual({ kind: 'MIXED_ARRANGEMENT' });
+    expect(checkCatalogLayout(items, [1, 2, 3])).toEqual({ kind: 'MIXED_ARRANGEMENT' });
   });
 
   it('refuses rows that go backwards', () => {
@@ -126,7 +137,7 @@ describe('whether an arrangement may be saved', () => {
       { id: 2, rowIndex: 1 },
       { id: 3, rowIndex: 0 },
     ];
-    expect(checkCatalogLayout(items, scope)).toEqual({ kind: 'ROW_NOT_MONOTONIC', ids: [3] });
+    expect(checkCatalogLayout(items, [1, 2, 3])).toEqual({ kind: 'ROW_NOT_MONOTONIC', ids: [3] });
   });
 
   it('refuses a skipped row number', () => {
@@ -134,7 +145,7 @@ describe('whether an arrangement may be saved', () => {
       { id: 1, rowIndex: 0 },
       { id: 2, rowIndex: 2 },
     ];
-    expect(checkCatalogLayout(items, scope)).toEqual({ kind: 'ROW_GAP', rows: [1] });
+    expect(checkCatalogLayout(items, [1, 2])).toEqual({ kind: 'ROW_GAP', rows: [1] });
   });
 
   it('refuses a row wider than Telegram accepts', () => {
@@ -160,7 +171,7 @@ describe('whether an arrangement may be saved', () => {
       { id: 1, rowIndex: 0 },
       { id: 1, rowIndex: 1 },
     ];
-    expect(checkCatalogLayout(items, scope)).toEqual({ kind: 'DUPLICATE_ID', ids: [1] });
+    expect(checkCatalogLayout(items, [1])).toEqual({ kind: 'DUPLICATE_ID', ids: [1] });
   });
 
   it('refuses an empty screen', () => {
