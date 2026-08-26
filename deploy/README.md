@@ -132,6 +132,69 @@ there is nothing to configure in Coolify. Leave those fields empty.
 | `dashboard` | `GET /api/v1/health` on `$PORT` (8788) — 200, **or 401**, because the route sits behind the session gate and a refusal still proves the process is answering. There is no `/health` on the dashboard                                          |
 | `bot`       | the heartbeat file's mtime, fresher than 90s. The bot opens no port — it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name — so a file the poll loop touches every cycle is what "alive" means for it |
 
+
+## Push to `main` → deployed, once CI is green
+
+Set up 2026-08-26. `deploy/autodeploy.sh` runs on the server every minute under
+`shikoo-autodeploy.timer`, asks GitHub whether `main` has moved, waits for the
+CI gate on that commit to finish green, and then asks Coolify to deploy all
+three apps.
+
+```
+git push  →  .github/workflows/ci.yml  →  (≤60s)  →  POST /api/v1/deploy ×3
+```
+
+**It polls, and that is not laziness.** Every conventional answer here is
+inbound — a GitHub webhook into Coolify's `manual_webhook_secret_github`, or a
+GitHub Action calling the deploy API. Both need GitHub to reach the box, and it
+cannot: Coolify listens on `0.0.0.0:8000`, but the router in front forwards only
+80 and 443, so `:8000` answers nothing from the internet. Measured 2026-08-26,
+and it is the posture worth keeping. Routing the Coolify API through Traefik to
+earn a webhook would put this server's whole control plane on the internet
+behind one bearer token, to save under a minute. Outbound is unrestricted —
+`api.github.com` answers the box in 0.4s — so the box asks instead of being
+told.
+
+**It waits for CI on purpose.** A webhook fires in milliseconds and the gate
+takes minutes, so a push-triggered deploy races the gate and wins — which makes
+the gate decorative. The verdict comes from `/commits/:sha/check-runs`: every
+run `completed`, every conclusion `success` / `neutral` / `skipped`. A commit
+whose CI failed is recorded as seen and never deployed, and never asked about
+again: a red commit is fixed by pushing another one.
+
+| where | what |
+| --- | --- |
+| `/opt/shikoo/autodeploy.sh` | the script, root-owned, 0755 |
+| `/etc/shikoo/autodeploy.env` | `GH_REPO` `GH_TOKEN` `COOLIFY_URL` `COOLIFY_TOKEN` `APP_UUIDS` `BRANCH` — **0600 root**, two tokens, not in this repository |
+| `/var/lib/shikoo-autodeploy/last-sha` | the last sha it acted on. Delete it to make the next tick reconsider `main`. |
+| `systemctl status shikoo-autodeploy` | the last run |
+| `journalctl -u shikoo-autodeploy -f` | every decision, with its reason |
+
+Every value in the env file is single-quoted, and that is not style: the Coolify
+token begins `1|`, the file is `.`-sourced by bash, and unquoted the `|` became
+a pipe into a command named after the rest of the token. The same shape as the
+`$` Coolify itself expanded out of a panel password — anything sourced or
+interpolated needs the quotes, every time.
+
+To deploy by hand, without waiting for the timer or for GitHub:
+
+```bash
+curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
+  "http://localhost:8000/api/v1/deploy?uuid=<app-uuid>"
+```
+
+**Open item.** The fine-grained PAT was issued for the deploy-key work and
+carries `Contents: Read-only`, so all three ways of asking whether CI passed
+answer `403`. Until the token also has **`Checks: Read-only`** on this
+repository, every tick logs
+
+> `cannot read CI on <sha> — the GitHub token needs «Checks: Read-only»`
+
+and deploys nothing. That is deliberate: the alternative is deploying commits
+whose tests were never consulted. The sha is not recorded while this is the
+answer, so the minute the permission is added the next tick deploys — nobody
+needs to re-push.
+
 ## Schema, before anything else
 
 On 2026-08-17 the dashboard was deployed carrying the operator-login code while

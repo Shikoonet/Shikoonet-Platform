@@ -1,0 +1,29 @@
+[Unit]
+Description=Deploy shikoo from main once CI is green
+# The whole job is two HTTPS calls out and one in to Coolify. Without this it
+# runs on every boot before the network is up, fails, and leaves a red unit that
+# means nothing.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root, because the config file holds the Coolify token and the GitHub PAT and
+# is 0600 root. Nothing here needs a shell or a home.
+User=root
+# `flock` rather than trusting the timer: a hand-run during a tick is the one
+# way two of these meet, and both would ask GitHub, both would see the same sha,
+# and both would queue three builds.
+ExecStart=/usr/bin/flock -n /run/shikoo-autodeploy.lock /opt/shikoo/autodeploy.sh
+
+# The failure this hardening is actually about: the script holds two tokens in
+# its environment, so anything it can read, an injected command could exfiltrate.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/shikoo-autodeploy /run
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
