@@ -73,8 +73,15 @@ describe('seedCatalog', () => {
     expect(byCode.get('sim-vip-trial')?.once_per_user).toBe(true);
     expect(byCode.get('sim-vip-trial')?.price).toBe(0);
     expect(byCode.get('sim-off-1m')?.provider_status).toBe('DISABLED');
-    // Nothing is filed under a category, because production files nothing.
-    expect(rows.results.every((r) => r.category_id === null)).toBe(true);
+    // Everything is filed under a category, and that is not a preference — the
+    // shop's first screen IS the category list now, so a product without one
+    // has no button and none of its plans can be reached from anywhere. The
+    // schema refuses the state; this asserts the fixture does not go looking
+    // for a way around it.
+    expect(rows.results.every((r) => r.category_id !== null)).toBe(true);
+    // And more than one of them, or the category screen never draws a list:
+    // `buy` falls straight through to the single category's prices.
+    expect(new Set(rows.results.map((r) => r.category_id)).size).toBeGreaterThan(1);
   });
 
   it('is safe to run twice', async () => {

@@ -453,8 +453,8 @@ describe('bulk repricing', () => {
     ).first<{ id: number }>();
     panel = pr!.id;
     const prod = await baseEnv.DB.prepare(
-      `INSERT INTO products (code, name, kind, provider_id, status)
-       VALUES ('wbp-p', 'wbp-p', 'vpn', ?1, 'ACTIVE') RETURNING id`,
+      `INSERT INTO products (code, name, kind, provider_id, category_id, status)
+       VALUES ('wbp-p', 'wbp-p', 'vpn', ?1, (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE') RETURNING id`,
     )
       .bind(panel)
       .first<{ id: number }>();

@@ -4,9 +4,12 @@
  * Shaped like production, not like the schema's ambitions. Three facts from the
  * 2026-08-11 dump decide the shape:
  *
- *   - `category` has ZERO rows, and `setting.statuscategory = 'offcategory'`.
- *     The category step is switched off and has no data behind it. This fixture
- *     therefore creates no categories; `products.category_id` stays NULL.
+ *   - `category` had ZERO rows and `setting.statuscategory = 'offcategory'`, so
+ *     this fixture created none and left `products.category_id` NULL. **That
+ *     stopped being true on 2026-08-26**, when the shop's first screen became
+ *     the category list and `category_id` became NOT NULL. What the dump says
+ *     about the LEGACY shop is still true; what this fixture must produce is
+ *     not the legacy shape but the one the bot now reads.
  *   - `product.Location` is the panel NAME (index.php:1507 binds
  *     `marzban_panel.name_panel` into it). The buy menu is panel → product.
  *   - A legacy `product` row IS one purchasable plan: its price, volume and
@@ -72,8 +75,10 @@ interface ProductSpec {
   code: string;
   name: string;
   kind: ProductKind;
-  /** Provider code. This is what the buy menu groups by. */
+  /** Provider code — the panel that delivers it. */
   provider: string;
+  /** Category code. This is what the buy menu groups by now. */
+  category: string;
   status?: 'ACTIVE' | 'HIDDEN' | 'DISABLED';
   /** Legacy one_buy_status: shown only to a customer who has never bought. */
   firstPurchaseOnly?: boolean;
@@ -120,9 +125,31 @@ const PROVIDERS: ProviderSpec[] = [
   },
 ];
 
+interface CategorySpec {
+  code: string;
+  name: string;
+  emoji?: string;
+  active?: boolean;
+}
+
+/**
+ * The shop's first screen.
+ *
+ * Three of them, and the third earns its place: «موقتاً بسته» is switched OFF
+ * with a real product inside it. That is the one state where the category layer
+ * can silently take something off sale, so a fixture without it means no test
+ * can find the day it starts doing that by accident.
+ */
+const CATEGORIES: CategorySpec[] = [
+  { code: 'sim-cat-vpn', name: 'وی‌پی‌ان', emoji: '🌐' },
+  { code: 'sim-cat-accounts', name: 'اکانت‌ها', emoji: '📦' },
+  { code: 'sim-cat-closed', name: 'موقتاً بسته', active: false },
+];
+
 const PRODUCTS: ProductSpec[] = [
   {
     code: 'sim-vip-1m-20',
+    category: 'sim-cat-vpn',
     name: '۱ماهه - ۲۰ گیگ - چند کاربر',
     kind: 'vpn',
     provider: 'sim-vip',
@@ -132,6 +159,7 @@ const PRODUCTS: ProductSpec[] = [
   },
   {
     code: 'sim-vip-1m-50',
+    category: 'sim-cat-vpn',
     name: '۱ماهه - ۵۰ گیگ - چند کاربر',
     kind: 'vpn',
     provider: 'sim-vip',
@@ -143,6 +171,7 @@ const PRODUCTS: ProductSpec[] = [
     // The free row. Exercises the price=0 branch, which is the one that gets
     // forgotten until a customer finds it.
     code: 'sim-vip-trial',
+    category: 'sim-cat-vpn',
     name: 'اکانت تست - ۱ روزه - ۱ گیگ',
     kind: 'vpn',
     provider: 'sim-vip',
@@ -153,6 +182,7 @@ const PRODUCTS: ProductSpec[] = [
   },
   {
     code: 'sim-vip-hidden',
+    category: 'sim-cat-vpn',
     name: '۱ماهه - ۱۰۰ گیگ - پنهان',
     kind: 'vpn',
     provider: 'sim-vip',
@@ -163,6 +193,7 @@ const PRODUCTS: ProductSpec[] = [
   },
   {
     code: 'sim-vip-reseller',
+    category: 'sim-cat-vpn',
     name: 'پک نمایندگی - ۱۰ کاربر',
     kind: 'vpn',
     provider: 'sim-vip',
@@ -182,6 +213,7 @@ const PRODUCTS: ProductSpec[] = [
     // its PRODUCT's name, and `group_ids` existed only on the panel, so one
     // panel could sell exactly one tier however many groups it had.
     code: 'sim-vip-platinum',
+    category: 'sim-cat-vpn',
     name: 'پلاتینیوم',
     kind: 'vpn',
     provider: 'sim-vip',
@@ -194,6 +226,7 @@ const PRODUCTS: ProductSpec[] = [
   },
   {
     code: 'sim-gold-10',
+    category: 'sim-cat-vpn',
     name: '۱۰ گیگ - بدون محدودیت زمان',
     kind: 'vpn',
     provider: 'sim-gold',
@@ -203,6 +236,7 @@ const PRODUCTS: ProductSpec[] = [
   },
   {
     code: 'sim-shop-spotify',
+    category: 'sim-cat-accounts',
     name: 'اسپاتیفای - ۱ ماهه',
     kind: 'spotify',
     provider: 'sim-shop',
@@ -212,6 +246,7 @@ const PRODUCTS: ProductSpec[] = [
   },
   {
     code: 'sim-shop-ai',
+    category: 'sim-cat-accounts',
     name: 'اکانت هوش مصنوعی - ۱ ماهه',
     kind: 'ai_account',
     provider: 'sim-shop',
@@ -221,6 +256,7 @@ const PRODUCTS: ProductSpec[] = [
   },
   {
     code: 'sim-empty-hidden',
+    category: 'sim-cat-vpn',
     name: 'تنها محصول این لوکیشن، و پنهان',
     kind: 'manual',
     provider: 'sim-empty',
@@ -231,6 +267,7 @@ const PRODUCTS: ProductSpec[] = [
   },
   {
     code: 'sim-off-1m',
+    category: 'sim-cat-closed',
     name: '۱ماهه - روی لوکیشن غیرفعال',
     kind: 'vpn',
     provider: 'sim-off',
@@ -307,19 +344,45 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
     providerIds.set(p.code, row.id);
   }
 
+  // Categories before products, because `products.category_id` is NOT NULL.
+  // Keyed on `name` rather than a code column, which is what the table has:
+  // `product_categories` carries a UNIQUE name and no code, so the fixture's
+  // `code` is its own handle and never reaches the database.
+  const categoryIds = new Map<string, number>();
+  for (const [i, cat] of CATEGORIES.entries()) {
+    await db
+      .prepare(
+        `INSERT INTO product_categories (name, emoji, active, sort_order)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (name) DO UPDATE SET
+           emoji = EXCLUDED.emoji, active = EXCLUDED.active, sort_order = EXCLUDED.sort_order`,
+      )
+      .bind(cat.name, cat.emoji ?? null, cat.active ?? true, i)
+      .run();
+    const row = await db
+      .prepare(`SELECT id FROM product_categories WHERE name = ?1`)
+      .bind(cat.name)
+      .first<{ id: number }>();
+    if (!row) throw new Error(`category ${cat.code} missing after insert`);
+    categoryIds.set(cat.code, row.id);
+  }
+
   let plans = 0;
   for (const [i, prod] of PRODUCTS.entries()) {
     const providerId = providerIds.get(prod.provider);
     if (providerId === undefined) throw new Error(`product ${prod.code} names no known provider`);
+    const categoryId = categoryIds.get(prod.category);
+    if (categoryId === undefined) throw new Error(`product ${prod.code} names no known category`);
 
     await db
       .prepare(
-        `INSERT INTO products (code, name, kind, provider_id, status, once_per_user, resellers_only, sort_order, attrs)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+        `INSERT INTO products (code, name, kind, provider_id, category_id, status, once_per_user, resellers_only, sort_order, attrs)
+         VALUES (?1, ?2, ?3, ?4, ?10, ?5, ?6, ?7, ?8,
                  CASE WHEN ?9::jsonb IS NULL THEN '{}'::jsonb
                       ELSE jsonb_build_object('group_ids', ?9::jsonb) END)
          ON CONFLICT (code) DO UPDATE SET
            name = EXCLUDED.name, kind = EXCLUDED.kind, provider_id = EXCLUDED.provider_id,
+           category_id = EXCLUDED.category_id,
            status = EXCLUDED.status, once_per_user = EXCLUDED.once_per_user,
            resellers_only = EXCLUDED.resellers_only, sort_order = EXCLUDED.sort_order,
            attrs = EXCLUDED.attrs`,
@@ -334,6 +397,7 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
         prod.resellersOnly ?? false,
         i,
         prod.groupIds === undefined ? null : JSON.stringify(prod.groupIds),
+        categoryId,
       )
       .run();
     const row = await db

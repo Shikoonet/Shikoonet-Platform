@@ -73,6 +73,7 @@ export interface TextEntry {
 export type ScreenId =
   | 'welcome'
   | 'gate'
+  | 'categories'
   | 'products'
   | 'plans'
   | 'planDetail'
@@ -99,6 +100,7 @@ export type ScreenId =
 export const SCREENS: Record<ScreenId, string> = {
   welcome: 'خوش‌آمد و منوی اصلی',
   gate: 'عضویت کانال و پذیرش قوانین',
+  categories: 'فهرست دسته‌بندی‌ها',
   products: 'فهرست سرویس‌ها',
   plans: 'فهرست پلن‌ها',
   planDetail: 'جزئیات پلن',
@@ -207,6 +209,26 @@ export const TEXTS = {
     hint: 'بالای منوی اصلی، بلافاصله بعد از پذیرش قوانین',
   },
 
+  // --- فهرست دسته‌بندی‌ها ----------------------------------------------------
+  CHOOSE_CATEGORY: {
+    default: '🛍 دسته‌بندی مورد نظرتان را انتخاب کنید.',
+    placeholders: [],
+    screen: 'categories',
+    hint: 'اولین صفحهٔ خرید',
+  },
+  CATEGORY_PLANS: {
+    default: '📦 یکی از گزینه‌های «{category}» را انتخاب کنید.',
+    placeholders: ['category'],
+    screen: 'categories',
+    hint: 'فهرست قیمت‌های یک دسته — صفحهٔ دوم خرید',
+  },
+  CATEGORY_EMPTY: {
+    default: 'در حال حاضر چیزی در این دسته موجود نیست.',
+    placeholders: [],
+    screen: 'categories',
+    hint: 'دسته‌ای که هیچ گزینهٔ فروختنی ندارد',
+  },
+
   // --- فهرست سرویس‌ها -------------------------------------------------------
   SHOP_EMPTY: {
     default: 'در حال حاضر سرویسی برای فروش موجود نیست. کمی بعد دوباره سر بزنید.',
@@ -219,7 +241,7 @@ export const TEXTS = {
     default: '🛍 سرویس مورد نظرتان را انتخاب کنید.',
     placeholders: [],
     screen: 'products',
-    hint: 'اولین صفحهٔ خرید — پلاتینیوم، طلایی، معمولی',
+    hint: 'صفحهٔ قدیمی — فقط از دکمه‌های `prd:` که در چت‌های قبلی مانده‌اند',
   },
   PANEL_EMPTY: {
     default: 'در حال حاضر محصولی روی این لوکیشن موجود نیست.',

@@ -35,10 +35,17 @@ export const CALLBACK_ACTIONS = [
   'acc', // «قوانین را می‌پذیرم» — the one thing a customer behind the rules gate
   //        is allowed to do
   'menu', // back to the main menu
-  'buy', // the panel/location list
+  'buy', // the shop's first screen — the category list
   'panel', // <providerId> — the services on one panel
+  'cat', // <categoryId> — the priced rows inside one category. The shop's
+  //        second screen, and the first one that carries prices.
   'prd', // <productId> — the plans inside one service. A service holding a
   //        single plan answers with that plan's page instead of a list of one.
+  //        LEGACY: the shop is category-first now and draws no `prd:` button,
+  //        but Telegram keeps a button pressable forever and these are sitting
+  //        in customers' chats. Dropping the case would make an old button
+  //        answer nothing at all, which reads as a broken bot rather than an
+  //        old screen — the same reason `panel` is still here.
   'plan', // <planId> — one plan, with its price
   'order', // <planId> — create the order and show the card to pay into
   'paid', // <orderId> — the customer says they have paid

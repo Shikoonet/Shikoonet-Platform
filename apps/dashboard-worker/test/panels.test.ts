@@ -143,7 +143,8 @@ describe('GET /api/v1/admin/panels', () => {
   it('counts the products, plans and live subscriptions sitting on a panel', async () => {
     const id = await makePanel('counted');
     const product = await baseEnv.DB.prepare(
-      `INSERT INTO products (code, name, kind, provider_id) VALUES (?1, 'p', 'vpn', ?2) RETURNING id`,
+      `INSERT INTO products (code, name, kind, provider_id, category_id)
+       VALUES (?1, 'p', 'vpn', ?2, (SELECT id FROM product_categories WHERE name = '__fixture')) RETURNING id`,
     )
       .bind(`${PREFIX}counted-product`, id)
       .first<{ id: number }>();

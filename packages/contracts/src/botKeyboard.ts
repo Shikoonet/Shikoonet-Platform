@@ -154,9 +154,14 @@ export const MENUS = {
       },
     ],
   },
+  categories: {
+    label: 'فهرست دسته‌بندی‌ها',
+    hint: 'اولین صفحهٔ خرید — دسته‌هایی که چیزی برای فروش دارند',
+    buttons: [BACK_TO_MENU],
+  },
   products: {
-    label: 'فهرست سرویس‌ها',
-    hint: 'اولین صفحهٔ خرید — پلاتینیوم، طلایی، معمولی',
+    label: 'فهرست سرویس‌ها (صفحهٔ قدیمی)',
+    hint: 'دکمه‌های `prd:` که هنوز در چت مشتری‌های قدیمی نشسته‌اند به این‌جا می‌رسند',
     buttons: [BACK_TO_MENU],
   },
   plans: {
@@ -427,6 +432,7 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
   ],
   gateChannels: [['chk', 0, 0]],
   gateRules: [['acc', 0, 0]],
+  categories: [['menu', 0, 0]],
   products: [['menu', 0, 0]],
   plans: [
     ['buy', 0, 0],

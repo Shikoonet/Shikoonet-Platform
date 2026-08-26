@@ -279,6 +279,8 @@ describe('the card-to-card note that names the «paid» button', () => {
     userLimit: 1,
     providerId: 7,
     providerName: 'سیم',
+    categoryId: 1,
+    rowIndex: null,
     siblings: 1,
   };
   const invoice = (): string =>
