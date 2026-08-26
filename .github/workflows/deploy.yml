@@ -1,0 +1,125 @@
+# One environment, one digest, over SSH.
+#
+# Called twice: by ci.yml for staging on every merge, and by promote.yml or
+# rollback.yml for production. There is one copy of the SSH handling because
+# there is one way to reach the server, and two copies would be two places for
+# a `StrictHostKeyChecking=no` to appear in a hurry.
+#
+# What this workflow does NOT do is decide anything. It hands the server a
+# digest and a commit sha and reads back the summary; every check, every
+# ordering rule and the whole rollback path live in deploy/host/deploy.sh,
+# which is version-controlled and is copied up from THIS commit before it runs.
+# A deploy script that lives only on the server is a script nobody reviews.
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: staging or production
+        required: true
+        type: string
+      digest:
+        description: the image digest to deploy, sha256:…
+        required: true
+        type: string
+      expected_sha:
+        description: the full 40-character commit the digest was built from
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The environment is what carries the secrets: staging's host and key are
+    # not reachable from a production deploy and the reverse. It is also where
+    # a required reviewer goes the day this repository can have one.
+    environment: ${{ inputs.environment }}
+    # One deploy per environment at a time, and a newer commit QUEUES rather
+    # than cancelling. Cancelling mid-deploy is how a half-migrated database
+    # meets a half-replaced set of containers.
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      # At the deployed commit, not at the branch tip: the script and compose
+      # file that run must be the ones from the commit being deployed.
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ inputs.expected_sha }}
+          persist-credentials: false
+
+      # The key never appears in a command line — an argument is visible in
+      # `ps` to every process on the runner. `install -m 600` creates the file
+      # unreadable by anyone else before a byte of it is written.
+      #
+      # known_hosts is pinned from a secret. No `ssh-keyscan` here: keyscanning
+      # at deploy time is trust-on-first-use every single time, which is not
+      # verification, it is the shape of verification.
+      - name: Prepare SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          install -m 600 /dev/null ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          install -m 600 /dev/null ~/.ssh/known_hosts
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          test -s ~/.ssh/deploy_key
+          test -s ~/.ssh/known_hosts
+
+      - name: Send the deploy script and the compose file
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          PORT: ${{ secrets.DEPLOY_PORT }}
+          USER_: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          scp -P "$PORT" -i ~/.ssh/deploy_key \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            deploy/host/deploy.sh deploy/compose.yaml "$USER_@$HOST:/opt/shikoo/"
+          ssh -p "$PORT" -i ~/.ssh/deploy_key \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$USER_@$HOST" 'chmod 0755 /opt/shikoo/deploy.sh'
+
+      # The digest and the commit sha are not secrets — they are a fingerprint
+      # of a private repository, the same reasoning that keeps ingest's
+      # /version public. They can safely be arguments; the credentials cannot,
+      # and are not.
+      - name: Deploy
+        id: run
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          PORT: ${{ secrets.DEPLOY_PORT }}
+          USER_: ${{ secrets.DEPLOY_USER }}
+          IMAGE: ghcr.io/${{ github.repository }}@${{ inputs.digest }}
+        run: |
+          set -euo pipefail
+          ssh -p "$PORT" -i ~/.ssh/deploy_key \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$USER_@$HOST" \
+            "/opt/shikoo/deploy.sh '${{ inputs.environment }}' '$IMAGE' '${{ inputs.expected_sha }}'" \
+            2>&1 | tee deploy.log
+
+      # Written whether the deploy passed or failed — a failed deploy is when
+      # the verdict line matters most, because it says whether the rollback
+      # worked. Only the SUMMARY: lines the script prints deliberately; the
+      # full log stays in the job output.
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "### Deploy — ${{ inputs.environment }}"
+            echo ""
+            if [ -f deploy.log ]; then
+              grep '^SUMMARY: ' deploy.log | sed 's/^SUMMARY: /- /' || echo "- no summary was produced"
+            else
+              echo "- the deploy step did not run"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

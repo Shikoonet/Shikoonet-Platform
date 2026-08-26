@@ -5,9 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only by default. Exactly one job below widens this — `publish`, which
+# needs `packages: write` to push the image. A pull request never reaches that
+# job, so a pull request never holds a token that can write anything.
+permissions:
+  contents: read
+
 jobs:
   gate:
     runs-on: ubuntu-latest
+    # A wedged container or a hung test must not hold a runner all day.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -21,11 +29,18 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to commit shas, not tags: a tag is mutable and these
+      # run with a token. The trailing comment is the release each sha is.
+      #
+      # `persist-credentials: false` because nothing here pushes. The default
+      # leaves a working git credential in the runner for every later step.
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
       # No `version:` here — action-setup v4 errors out if it is given one *and*
       # package.json has `packageManager`. That field is the single source.
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 22
           cache: pnpm
@@ -73,12 +88,17 @@ jobs:
       # of the three services it is, which is a message it can only print if it
       # ran. A `Cannot find module` or a `permission denied` fails this.
       #
-      # ponytail: builds the image on every run, which is the slow part of this
-      # workflow. Cache it with buildx if the wait ever matters more than the
-      # certainty.
+      # ponytail: this used to say «builds the image on every run … cache it with
+      # buildx if the wait ever matters more than the certainty». It does now:
+      # the same image is built a second time in `publish` to be pushed, so the
+      # build happens twice per merge. The cache is layer-level and shared
+      # through the Actions cache, so the second build is a few seconds and the
+      # certainty is unchanged — what is gated is still a real build of this
+      # commit, not a downloaded artifact.
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
       - name: The image reaches its entrypoint
         run: |
-          docker build -t shikoo-ci .
+          docker buildx build --load --cache-from type=gha --cache-to type=gha,mode=max -t shikoo-ci .
           out=$(docker run --rm shikoo-ci 2>&1 || true)
           echo "$out"
           echo "$out" | grep -q 'SERVICE is required'
@@ -116,3 +136,279 @@ jobs:
           out=$(docker run --rm --network host -e SERVICE=bot -e DATABASE_URL="$behind" shikoo-ci 2>&1 || true)
           echo "$out"
           echo "$out" | grep -q 'refusing to start'
+
+      # Every SERVICE the entrypoint accepts, and one it does not.
+      #
+      # The gate above proves the entrypoint runs and refuses an unset SERVICE.
+      # It says nothing about the four values that are supposed to work, and
+      # `SERVICE` is the whole switch: a typo in one branch of that `case`
+      # starts the wrong process, or nothing, and the image still passes every
+      # check written before this one.
+      #
+      # The bot is deliberately absent from the started services. Starting it
+      # needs a real Telegram token, and this workflow is never getting one —
+      # its entrypoint branch is already exercised by the schema-refusal gate
+      # above, which runs `SERVICE=bot` and proves the branch is reached.
+      - name: All four SERVICE values behave
+        run: |
+          set -euo pipefail
+
+          # migrate, against the database this job already migrated: it must
+          # find nothing to do and exit 0. A migrate that re-applies is a
+          # migrate that would fail on the second deploy of any release.
+          out=$(docker run --rm --network host -e SERVICE=migrate -e DATABASE_URL="$DATABASE_URL" shikoo-ci 2>&1)
+          echo "$out"
+          echo "$out" | grep -q 'nothing to apply'
+
+          # ingest and dashboard, started for real and asked the question their
+          # own HEALTHCHECK asks. ENV_NAME is `test`, not production: the point
+          # is the process boots and answers, not that it is configured for
+          # customers.
+          for svc in ingest:8787:/health dashboard:8788:/api/v1/health; do
+            name=${svc%%:*}; rest=${svc#*:}; port=${rest%%:*}; path=${rest#*:}
+            docker run -d --rm --name "ci-$name" --network host \
+              -e SERVICE="$name" -e ENV_NAME=test -e DATABASE_URL="$DATABASE_URL" shikoo-ci
+            ok=0
+            for _ in $(seq 1 30); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$path" || true)
+              if [ "$code" = "200" ]; then ok=1; break; fi
+              sleep 2
+            done
+            docker logs "ci-$name" 2>&1 | tail -20
+            docker stop "ci-$name" >/dev/null
+            [ "$ok" = "1" ] || { echo "$name never answered 200 on $path"; exit 1; }
+            echo "$name: 200 on $path"
+          done
+
+          # And a value that is not one of the four.
+          out=$(docker run --rm -e SERVICE=nonsense shikoo-ci 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q 'is not one of'
+
+  # The browser half. It is a separate job rather than more steps in `gate`
+  # because it needs a browser, a built SPA and two servers of its own, and
+  # because a red e2e and a red unit suite are different questions — running
+  # them in parallel means both answers arrive, not just the first one.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: shikoo_test
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ['5432:5432']
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # playwright.config.ts throws if this file is absent — it is how the
+      # simulation environment is declared, and a config that silently invented
+      # a database would be worse. The values here are a throwaway database and
+      # an address nobody can receive mail at: `.invalid` is reserved by RFC
+      # 2606 precisely so it can never be a real recipient.
+      #
+      # Written, not committed: `sim/.env.local` is gitignored because on a
+      # developer's machine it holds a bot token.
+      - name: Declare the simulation environment
+        run: |
+          cat > sim/.env.local <<'ENV'
+          DATABASE_URL=postgres://postgres:ci@localhost:5432/shikoo_test
+          TEST_ACCESS_USER=ci@example.invalid
+          ENV
+
+      # global-setup seeds operators and the shop; it does not create the
+      # schema, and says so. Same runner as production, same ledger.
+      - name: Apply migrations
+        run: pnpm --filter @shikoo/db schema up
+
+      # And the rest of the data the specs are written against.
+      #
+      # `global-setup` runs `seedShop`, which is the catalog and the operators.
+      # It is NOT the whole simulation: the devices with credentials, the bank
+      # transactions, the payment claims and the stock rows come from
+      # `seed:sim`, which wipes and rebuilds deterministically. Without it 13
+      # specs fail on their own premise — «the seed should give at least one
+      # device a credential» — which reads like a broken feature and is a
+      # missing fixture. Measured 2026-08-26: 87 passing without this step, 100
+      # with it.
+      #
+      # Safe here by its own three guards, all of which this job satisfies: the
+      # host is local, ENV_NAME is unset or relaxed, and the database holds
+      # nothing. It refuses to run against anything else.
+      - name: Seed the simulation
+        run: pnpm --filter @shikoo/seed seed:sim
+
+      # Chromium only — the suite declares no projects, so this is the whole
+      # matrix. `--with-deps` because the runner has none of the shared
+      # libraries a headless browser needs.
+      - name: Install the browser
+        run: pnpm --filter @shikoo/dashboard exec playwright install --with-deps chromium
+
+      # Builds the SPA, then runs the specs. Playwright starts both servers
+      # itself — the bypass one it points baseURL at, and a second with no
+      # TEST_ACCESS_USER so the real login can be tested through the front door.
+      - name: Browser tests
+        run: pnpm --filter @shikoo/dashboard e2e
+
+      # Traces are `retain-on-failure`, so this directory is empty on green and
+      # holds a replayable trace of every failed spec on red. No secrets reach
+      # it: the only credentials in play are the throwaway ones above.
+      - name: Keep the traces of what failed
+        if: failure()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: playwright-traces
+          path: apps/dashboard-worker/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The pipeline's own code, checked by the same kind of tool it checks
+  # everything else with. A workflow typo is not a compile error anywhere: it
+  # is a job that silently never runs, or a deploy step that expands to
+  # nothing. Both are cheaper to find here.
+  workflows-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      # Pinned by digest for the same reason the actions are pinned by sha.
+      - name: Lint the workflows
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 \
+            -color  # 1.7.7
+      # shellcheck is preinstalled on the runner. These four scripts run as root
+      # or as the deploy user on a server that has customer money in its
+      # database; an unquoted variable there is not a style question.
+      - name: Lint the shell scripts
+        run: shellcheck deploy/*.sh deploy/host/*.sh
+
+  # ---------------------------------------------------------------- publish
+  # Everything above runs on pull requests too. Nothing from here down does:
+  # `github.event_name == 'push'` and the branch filter at the top of this file
+  # mean these two jobs exist only for a commit that is already on main.
+  #
+  # This is the job that turns a green commit into a deployable identity. It
+  # builds the image AGAIN — from the layer cache `gate` filled, so it is
+  # seconds — runs the same three artifact gates against THAT image, and only
+  # then pushes it. Gating a local image and pushing the same local image is
+  # what makes «the deployed artifact is the tested artifact» a fact rather
+  # than an assumption; a rebuild after the gates would be a different image
+  # with the same source.
+  #
+  # The commit goes into the image as an OCI label, which is what the server
+  # checks after pulling. It is a label rather than a build arg on purpose:
+  # a build arg would be a layer, and a new layer per commit is a cache miss
+  # per commit.
+  publish:
+    if: github.event_name == 'push'
+    needs: [gate, e2e, workflows-lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: shikoo_test
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ['5432:5432']
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
+      IMAGE: ghcr.io/${{ github.repository }}
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the image that will be deployed
+        run: |
+          docker buildx build --load --cache-from type=gha \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            -t "$IMAGE:sha-${{ github.sha }}" .
+
+      # The three gates from `gate`, re-run here because THIS is the image that
+      # leaves the runner. Each one's reasoning is written out where it was
+      # first added, above — this is the same assertion, not a second policy.
+      - name: The gates, against the image being pushed
+        run: |
+          set -euo pipefail
+          img="$IMAGE:sha-${{ github.sha }}"
+
+          out=$(docker run --rm "$img" 2>&1 || true)
+          echo "$out" | grep -q 'SERVICE is required'
+
+          dev=$(docker run --rm --entrypoint sh "$img" -c 'ls node_modules/.pnpm | grep -ciE "^(vitest|@vitest|playwright|@playwright|eslint|typescript|@typescript-eslint)@" || true')
+          ours=$(docker run --rm --entrypoint sh "$img" -c 'find /app/apps /app/packages \( -name "*.test.ts" -o -name "*.spec.ts" \) | wc -l')
+          echo "dev-tooling packages: $dev   our test files: $ours"
+          [ "$dev" = "0" ] && [ "$ours" = "0" ]
+
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c 'CREATE DATABASE behind_by_everything'
+          behind="${DATABASE_URL%/*}/behind_by_everything"
+          out=$(docker run --rm --network host -e SERVICE=bot -e DATABASE_URL="$behind" "$img" 2>&1 || true)
+          echo "$out" | grep -q 'refusing to start'
+
+          # And the label the server will check before it deploys this.
+          rev=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$img")
+          [ "$rev" = "${{ github.sha }}" ]
+
+      # The tag is for humans reading a registry listing. The DIGEST is the
+      # deployment identity, and it is the only thing handed downstream: a tag
+      # can be moved, a digest cannot, so «which commit is on the server» stays
+      # answerable months later.
+      - name: Push, and take the digest
+        id: push
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE:sha-${{ github.sha }}"
+          ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:sha-${{ github.sha }}")
+          digest="sha256:${ref##*@sha256:}"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Published"
+            echo ""
+            echo "- commit: \`${{ github.sha }}\`"
+            echo "- digest: \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Staging deploys itself. It is the environment that exists to be wrong
+  # before production is, so nothing waits for a human here.
+  deploy-staging:
+    if: github.event_name == 'push'
+    needs: publish
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: staging
+      digest: ${{ needs.publish.outputs.digest }}
+      expected_sha: ${{ github.sha }}
+    secrets: inherit

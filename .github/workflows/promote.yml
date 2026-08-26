@@ -1,0 +1,115 @@
+# Promote a digest that staging is already running to production.
+#
+# Production has no automatic path. Running this workflow by hand IS the
+# approval — the GitHub feature for this is a required reviewer on the
+# `production` environment, and this repository cannot have one today: on the
+# free plan a private repository's environment protection rules and branch
+# protection both answer 403. The moment that changes, add the reviewer and
+# this workflow becomes a request rather than the decision. Until then the
+# gate is that a person types a digest.
+#
+# Nothing is rebuilt. The digest that goes to production is byte-for-byte the
+# one CI gated and staging has been running, which is the entire point of
+# carrying a digest instead of a tag through the pipeline.
+name: Promote to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'the digest to promote (sha256:…) or the commit sha it was built from'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # Accepts either half of the pair and works out the other, so the operator
+  # can paste whichever one is in front of them — a digest from a deploy
+  # summary, or a commit sha from the merge.
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      digest: ${{ steps.r.outputs.digest }}
+      sha: ${{ steps.r.outputs.sha }}
+    steps:
+      - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: r
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          INPUT: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          case "$INPUT" in
+            sha256:*)
+              digest=$INPUT
+              ;;
+            *)
+              if ! echo "$INPUT" | grep -qE '^[0-9a-f]{40}$'; then
+                echo "input is neither a sha256: digest nor a 40-character commit sha" >&2
+                exit 1
+              fi
+              digest=$(docker buildx imagetools inspect "$IMAGE:sha-$INPUT" --format '{{.Manifest.Digest}}')
+              ;;
+          esac
+          # The commit always comes from the image's own label, never from the
+          # tag that pointed at it — a tag can be moved onto another build, a
+          # label travels inside the thing it describes.
+          sha=$(docker buildx imagetools inspect "$IMAGE@$digest" \
+            --format '{{index .Image.Config.Labels "org.opencontainers.image.revision"}}')
+          if ! echo "$sha" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "that image carries no usable org.opencontainers.image.revision label" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "resolved $INPUT -> $digest ($sha)"
+
+  # Production only ever receives something staging has actually run. The proof
+  # is staging's own deploy history on the server, not a green checkmark in
+  # this repository: a workflow can be green because it was never asked the
+  # question.
+  verify-staging:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    steps:
+      - name: This digest is deployed on staging
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          PORT: ${{ secrets.DEPLOY_PORT }}
+          USER_: ${{ secrets.DEPLOY_USER }}
+          DIGEST: ${{ needs.resolve.outputs.digest }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          install -m 600 /dev/null ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          install -m 600 /dev/null ~/.ssh/known_hosts
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -p "$PORT" -i ~/.ssh/deploy_key \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes "$USER_@$HOST" \
+            "grep -q '$DIGEST' /var/lib/shikoo/staging/deployed" \
+            || { echo "staging has never deployed $DIGEST — promote what was tested, or deploy it to staging first" >&2; exit 1; }
+          echo "staging has run $DIGEST"
+
+  promote:
+    needs: [resolve, verify-staging]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
+      digest: ${{ needs.resolve.outputs.digest }}
+      expected_sha: ${{ needs.resolve.outputs.sha }}
+    secrets: inherit

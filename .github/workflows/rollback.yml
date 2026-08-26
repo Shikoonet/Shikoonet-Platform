@@ -1,0 +1,78 @@
+# Put a previously published image back, in either environment.
+#
+# Deliberately does NOT check that the digest is what staging is running —
+# that check exists in promote.yml to stop an untested image going forward,
+# and applying it here would block the one deploy you make while something is
+# already wrong. This is the same reasoning that makes the schema gate WARN
+# rather than refuse when the database is ahead of the image.
+#
+# The database is never rolled back, by this or by anything else. Migrations
+# are additive, so an older image runs on a newer schema; a schema rollback in
+# a system holding payments is a data-loss decision and belongs to a person.
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: which environment to put the image back in
+        required: true
+        type: choice
+        options: [staging, production]
+      image:
+        description: 'the digest to go back to (sha256:…) or its commit sha — /var/lib/shikoo/<env>/deployed is the history'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      digest: ${{ steps.r.outputs.digest }}
+      sha: ${{ steps.r.outputs.sha }}
+    steps:
+      - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: r
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          INPUT: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          case "$INPUT" in
+            sha256:*) digest=$INPUT ;;
+            *)
+              if ! echo "$INPUT" | grep -qE '^[0-9a-f]{40}$'; then
+                echo "input is neither a sha256: digest nor a 40-character commit sha" >&2
+                exit 1
+              fi
+              digest=$(docker buildx imagetools inspect "$IMAGE:sha-$INPUT" --format '{{.Manifest.Digest}}')
+              ;;
+          esac
+          sha=$(docker buildx imagetools inspect "$IMAGE@$digest" \
+            --format '{{index .Image.Config.Labels "org.opencontainers.image.revision"}}')
+          if ! echo "$sha" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "that image carries no usable org.opencontainers.image.revision label" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  rollback:
+    needs: resolve
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: ${{ inputs.environment }}
+      digest: ${{ needs.resolve.outputs.digest }}
+      expected_sha: ${{ needs.resolve.outputs.sha }}
+    secrets: inherit

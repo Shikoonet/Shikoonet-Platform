@@ -465,3 +465,333 @@ Both strings that assumed the retired Cloudflare hostnames are gone.
 `DEFAULT_INGEST_URL` was replaced by a nullable `ingestUrl()` — the routes that
 need it answer 503 `INGEST_URL_MISSING` rather than pointing a phone at a
 hostname that is no longer ours.
+
+## CI/CD — build once, verify once, promote the same digest
+
+Until 2026-08-26 every deploy was a person in the Coolify panel, and Coolify
+rebuilt the image from git each time. That is one artifact tested and a
+different artifact deployed — same source, different bytes, and nothing able
+to say afterwards which build is actually running. The pipeline below exists
+to close exactly that gap, and nothing wider.
+
+```
+feature branch ──▶ pull request ──▶ gate · e2e · workflows-lint     no secrets, no deploy
+                                          │
+                        merge to main ────┤
+                                          ▼
+                                      publish            build → the 3 artifact gates → push
+                                          │              ghcr.io/<repo>:sha-<commit>  ⇒ DIGEST
+                                          ▼
+                                   deploy-staging        automatic, no approval
+                                          │
+                            a person runs │ «Promote to production»
+                                          ▼
+                                      promote            same DIGEST, never rebuilt
+```
+
+The digest is the identity all the way through. A tag is a pointer for humans
+reading a registry listing; `latest` does not exist here at all.
+
+### Two environments, one machine, nothing shared
+
+The existing server — the one `docs/threat-model.md` describes — is the
+**staging** box. It was called "practice" in the older sections of this file;
+same machine, clearer name. Production is a
+second, entirely separate deployment which does **not exist yet**, and which
+this pipeline can address the day it does, initially on the same host and
+later on another one by changing GitHub Environment values alone.
+
+Separate, per environment, with no exceptions:
+
+| | staging | production |
+| --- | --- | --- |
+| Postgres | the existing Coolify resource | its own Coolify database resource, own volume, own credentials, own backups |
+| Docker network | the existing `coolify` network | its own network |
+| compose project | `shikoo-staging` | `shikoo-production` |
+| env files | `/etc/shikoo/staging/` | `/etc/shikoo/production/` |
+| deploy history | `/var/lib/shikoo/staging/deployed` | `/var/lib/shikoo/production/deployed` |
+| Telegram bot token | the test bot | the real bot |
+| SMS device credentials | test devices only | real devices |
+| operators | staging rows | production rows |
+| hostname | `shikoo.mahamsteel.ir:9443` | its own name, its own certificate, its own terminator container on its own port |
+
+`deploy.sh` refuses to run if the environments are not actually separate: each
+env file's `ENV_NAME` must match the environment being deployed, and
+`DATABASE_URL` and `TELEGRAM_BOT_TOKEN` are compared **as sha256 hashes**
+against the other environment's files — so the collision is caught and neither
+value is ever printed. A shared bot token would mean two pollers on one
+Telegram token; a shared database would mean staging test data in production.
+
+### Coolify keeps what it is good at
+
+Coolify keeps the panel and the **databases** — the resource type whose ids
+are stable and whose backup scheduling already works. The three application
+services move into `deploy/compose.yaml`.
+
+That is a deliberate transfer of ownership and the reason is narrow: a Coolify
+application builds from git, so it cannot deploy a digest that was built and
+tested somewhere else. Everything else about it was fine. What compose adds
+beyond the digest is that the topology is now a reviewed file in this
+repository rather than a set of fields in a panel — and stable service names,
+which is the property every hardcoded Coolify container name lacked.
+
+The network aliases `ingest` and `dashboard` are preserved exactly, because
+`shikoo-tls` resolves those names through `127.0.0.11` and knows nothing about
+what is behind them. Nothing about the edge changes.
+
+### The deploy sequence
+
+`deploy/host/deploy.sh <env> <image@digest> <commit-sha>`, run on the server
+over SSH by the deploy workflow, which copies both the script and the compose
+file up from the commit being deployed first — a deploy script that lives only
+on the server is a script nobody reviews.
+
+1. `flock` on `/var/lock/shikoo-deploy-<env>.lock`. Fails fast rather than
+   queueing: GitHub already queues, so a second copy here means a hand-run
+   racing CI and should be looked at.
+2. The four env files exist; `ENV_NAME` agrees; the cross-environment
+   credential check passes; `docker login` with a **server-side** GHCR
+   credential — GitHub never sends a registry token per run.
+3. The previous digest is read from the state file. That is the rollback
+   candidate.
+4. Pull by digest, then check `org.opencontainers.image.revision` on the
+   pulled image equals the commit sha that was passed. A digest that was not
+   built from that commit is refused.
+5. **Migrate**, in a one-off `SERVICE=migrate` container, *before any service
+   is touched*. If it fails the deploy stops here — nothing changed, the
+   running containers are still consistent with the schema they booted on, and
+   there is nothing to roll back.
+6. `schema gate` against the migrated database — `gate`, not `status`, so a
+   rollback deploy onto an ahead schema is a warning rather than a refusal.
+7. `ingest` and `dashboard`, then wait for the image's own health checks.
+8. **The bot last, by itself.** `up -d` on a single-replica service is a stop
+   of the old container followed by a start of the new one, so the old
+   poller's advisory-lock session is gone before the new one asks for it.
+9. Smoke tests from a throwaway container **on the same network**, resolving
+   the same aliases nginx resolves: `ingest`'s `/version` must return the
+   deployed commit, the dashboard's health must answer 200, and
+   `/api/v1/version` must answer **401** — proof the session gate did not fall
+   off a route.
+10. Exactly one advisory-lock holder in that environment's database
+    (`classid = 1399324672`, the namespace in `apps/bot/src/singleton.ts`). Two
+    means a deploy overlapped; zero means the bot is not polling however
+    healthy it looks.
+11. No container publishes a host port. There is no firewall on this box, so a
+    published port is a public port.
+12. Append `<time> <digest> <sha>` to the state file.
+
+Any failure after step 7 restores the previous digest, re-runs the health
+checks against it, and still exits non-zero — a successful rollback is not a
+successful deploy. The summary says which of three things happened: rolled
+back, rollback also failed, or no rollback candidate existed.
+
+**The schema is never rolled back.** Migrations are additive and the boot gate
+only warns when the database is ahead, which is exactly what makes yesterday's
+image deployable while something is already wrong.
+
+### Secrets and variables — names only
+
+GitHub, per environment (`staging` and `production` carry the same names with
+different values, which is what makes moving production to another host a
+configuration change rather than a redesign):
+
+| Name | What it is |
+| --- | --- |
+| `DEPLOY_HOST` | the server this environment lives on |
+| `DEPLOY_PORT` | its SSH port |
+| `DEPLOY_USER` | `shikoo-deploy` |
+| `DEPLOY_SSH_KEY` | that user's private key — **a dedicated key, never the root key from `.notes/`** |
+| `DEPLOY_KNOWN_HOSTS` | the host's public key line, pinned from a session you trust |
+
+Nothing else is sent from GitHub. In particular the registry pull credential
+and the Coolify database container id stay on the server, in
+`/etc/shikoo/<env>/deploy.env`:
+
+| Name | What it is |
+| --- | --- |
+| `GHCR_USER`, `GHCR_TOKEN` | a fine-grained token with `read:packages` **only** |
+| `DB_CONTAINER` | that environment's Postgres container |
+| `SHIKOO_NETWORK` | that environment's docker network |
+| `PGUSER` | optional, defaults to `postgres` |
+
+The application secrets — bot token, database password, HMAC key — never enter
+GitHub at all. They stay in `/etc/shikoo/<env>/{bot,ingest,dashboard}.env`,
+root-owned and group-readable by the deploy user.
+
+### One-time setup
+
+From the machine that holds the server key:
+
+```bash
+# 1. a key that exists only for this
+ssh-keygen -t ed25519 -f ./shikoo-deploy-key -C 'deploy@github' -N ''
+
+# 2. the deployment user (as root, once)
+scp deploy/host/provision-deploy-user.sh root@<host>:/tmp/
+ssh root@<host> "sh /tmp/provision-deploy-user.sh \"$(cat ./shikoo-deploy-key.pub)\""
+
+# 3. pin the host key from a session you trust — not with ssh-keyscan at deploy time
+ssh-keyscan -p 22 <host> 2>/dev/null
+
+# 4. the GitHub environments and their secrets
+gh api -X PUT repos/Shikoonet/Shikoonet-Platform/environments/staging
+gh api -X PUT repos/Shikoonet/Shikoonet-Platform/environments/production
+for e in staging production; do
+  gh secret set DEPLOY_HOST        --env "$e" --body '<host>'
+  gh secret set DEPLOY_PORT        --env "$e" --body '22'
+  gh secret set DEPLOY_USER        --env "$e" --body 'shikoo-deploy'
+  gh secret set DEPLOY_SSH_KEY     --env "$e" < ./shikoo-deploy-key
+  gh secret set DEPLOY_KNOWN_HOSTS --env "$e" --body '<the ssh-keyscan line>'
+done
+rm ./shikoo-deploy-key           # GitHub has it; this machine does not need it
+```
+
+Then write `/etc/shikoo/staging/*.env` by copying each Coolify application's
+environment verbatim, with `ENV_NAME=staging` and the `MIRZABOT_*` /
+`AUTO_*` switches decided out loud — ingest refuses to boot without them.
+
+### Cutover — moving staging's apps from Coolify to compose
+
+Do this once, in this order, with the merge pipeline already green:
+
+1. Let a merge run to the end of `publish`. Note the digest from the summary.
+2. In Coolify, **stop** `shikoo-bot`, `shikoo-ingest`, `shikoo-dashboard`.
+   Stop, not delete: they are the way back if the first compose deploy fails.
+   Leave `shikoo-postgres`, its backups, and the panel alone.
+3. Run the first deploy by hand from the server, so a person watches it:
+   `sudo -u shikoo-deploy /opt/shikoo/deploy.sh staging <image@digest> <sha>`
+   — or `--dry-run` first, which validates everything and stops before the
+   migration.
+4. Check the edge, from outside: `https://shikoo.mahamsteel.ir:9443/admin/`
+   answers, `https://sms.mahamsteel.ir:9443/health` answers 200. If nginx
+   cannot reach the services, the aliases are wrong — that is the only thing
+   this move can break.
+5. Turn off automatic deploys on the three Coolify applications so nothing
+   deploys them behind the pipeline's back.
+
+### Rollback
+
+```bash
+gh workflow run rollback.yml -f environment=staging -f image=<digest-or-commit-sha>
+```
+
+The history is on the server: `/var/lib/shikoo/<env>/deployed`, one line per
+successful deploy, newest last. Either half of the pair works as input — the
+workflow resolves the other from the image's own label.
+
+The database is not part of this. A schema rollback in a system holding
+payments is a data-loss decision and belongs to a person, with the restore
+drill above, not to a workflow.
+
+### Branch protection — not configured, and it cannot be today
+
+`gh api repos/Shikoonet/Shikoonet-Platform/branches/main/protection` answers
+**403: «Upgrade to GitHub Pro or make this repository public»**. Rulesets
+answer the same. So merging into `main` is **not** blocked by anything right
+now, no matter how green CI is, and the same limitation means the
+`production` environment cannot have a required reviewer. Running the promote
+workflow by hand is the approval instead.
+
+The moment the repository is on a plan that allows it, the required checks are
+exactly these three names — they are stable and safe to write into settings:
+
+```
+gate
+e2e
+workflows-lint
+```
+
+```bash
+gh api -X PUT repos/Shikoonet/Shikoonet-Platform/branches/main/protection --input - <<'JSON'
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["gate", "e2e", "workflows-lint"]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": { "required_approving_review_count": 1 },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
+```
+
+and on the `production` environment, add yourself as a required reviewer —
+after which `promote.yml` becomes a request rather than the decision itself.
+
+### Production is not enabled, and these are the reasons
+
+The pipeline can address production. Production must not receive real customer
+data until every one of these is resolved — they are recorded here rather than
+fixed, because fixing them is a separate piece of work with its own decisions:
+
+- **The production environment does not exist yet**: no database resource, no
+  network, no hostname or certificate, no terminator container, no bot token,
+  no device credentials, no operator rows, no env files.
+- **Coolify's panel is on `:8000` over plain HTTP** — its root token crosses
+  the wire in clear text on every call (`docs/threat-model.md`).
+- **There is no firewall.** `ufw` is not installed and `DOCKER-USER` is empty,
+  so any published port is public. The deploy script asserts none appear; that
+  is a smaller claim than a firewall.
+- **Only the root SSH key exists.** Until `provision-deploy-user.sh` has run,
+  CD has no way in that is not root — this is a blocker by design.
+- **Tokens need rotating.** The Coolify and Cloudflare tokens have been pasted
+  into chat; the Coolify token expires 2026-09-16 and the Cloudflare DNS token
+  expired 2026-08-22, which means certificate renewal fails silently today.
+- **No offsite backup** — `save_s3=false`, every copy on the same disk as the
+  database it came from.
+- **The TLS renewal hook is not installed** on the server, so a renewed
+  certificate is not served until nginx is reloaded by hand.
+- **Capacity is unmeasured.** Two environments on one VPS is a decision that
+  needs numbers. Measure before creating production:
+  ```bash
+  free -m; df -h /var/lib/docker; docker system df; docker stats --no-stream
+  ```
+  Each service was 49–54 MB in 2026-08; a second Postgres plus three services
+  is roughly another 400 MB plus its volume. **If it does not fit, production
+  goes on a second VPS** — it does not get merged back into staging. Moving it
+  is a change of `DEPLOY_HOST` and the server-side env files, nothing else.
+- **Rollback has been proven in simulation, not on this server.** The three
+  failure paths are exercised in a throwaway environment; the first real one
+  should be watched by a person.
+
+### What has been proven, and what has not — 2026-08-26
+
+Written down because "the workflow files exist" and "the pipeline works" are
+different claims, and only one of them is true today.
+
+**Exercised, with output:**
+
+| | |
+| --- | --- |
+| `actionlint` on all four workflows | clean |
+| `shellcheck` on every script in `deploy/` | clean |
+| the image builds and carries its revision label | yes |
+| the three artifact gates, against that image | pass |
+| all four `SERVICE` values | `migrate` idempotent, `ingest` 200 on `/health`, `dashboard` 200 on `/api/v1/health`, an invalid value refused |
+| `pnpm typecheck` · `pnpm lint` | exit 0 |
+| `pnpm test` | **2,272 passed, 52 skipped, 180 files, 9 packages** — the skips are the MySQL tests, which need the production dump and skip themselves under `CI` |
+| `schema up` + `status` + `verify_invariants.sql` | 31 migrations, **32 invariants PASS** |
+| Playwright | **100 passed**, on schema → `seed:sim` → e2e |
+| a full deploy, against a throwaway Postgres and a local registry | migrate → gate → ingest+dashboard → bot → smoke → one lock holder → recorded |
+| a failing migration | stops the deploy with **zero** services touched and no state written |
+| a new image whose `ingest` cannot boot | health-wait fails in seconds, the previous digest is restored, all three containers verified back on it, exit 1, `DEPLOY FAILED, ROLLBACK SUCCEEDED`, and the schema left as migrated |
+| two deploys at once | the second dies immediately on the lock and succeeds once it is released |
+| a mutable tag as the image argument | refused |
+| a digest whose commit label disagrees | refused |
+| the two environments sharing a bot token | refused |
+
+**Not exercised, and why:**
+
+- **No deployment to any server has happened.** The deploy key, the Coolify
+  token and the server address live on the operator's other machine. Every
+  server-side step above is a runbook, not a completed action.
+- **No GitHub Environment or secret has been created.** The names are settled
+  and the `gh` commands are above; the values are not this session's to hold.
+- **`publish` has never pushed to GHCR** — it needs a merge to `main`, and
+  nothing here has been pushed.
+- **Branch protection is not configured and cannot be** on this plan (403).
+  Merging into `main` is unprotected right now.
+- **Production deployment is disabled** in the only sense that matters: the
+  environment does not exist, so `promote.yml` has nothing to deploy to.

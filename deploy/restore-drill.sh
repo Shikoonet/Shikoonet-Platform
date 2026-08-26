@@ -55,6 +55,8 @@ PGUSER="${PGUSER:-postgres}"
 # one. Now both the invariants and the migration list are resolved relative to
 # this file, so the thing being checked and the thing checking it ship as one
 # unit. Override only if you have deliberately split them.
+# shellcheck disable=SC1007  # `CDPATH= cd` is the idiom, not a typo: it blanks
+# CDPATH for this one command so `cd` cannot print a different directory.
 REPO_ROOT="${REPO_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$REPO_ROOT/migrations}"
 INVARIANTS="${INVARIANTS:-$MIGRATIONS_DIR/verify_invariants.sql}"
@@ -62,6 +64,8 @@ INVARIANTS="${INVARIANTS:-$MIGRATIONS_DIR/verify_invariants.sql}"
 say() { printf '%s\n' "$*"; }
 psql_() { docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -v ON_ERROR_STOP=1 -q "$@"; }
 
+# shellcheck disable=SC2012  # newest-first is what `ls -t` is for; these are
+# pg_dump filenames on a server we control, not arbitrary user input.
 DUMP=$(ls -1t "$BACKUP_DIR"/*.dmp 2>/dev/null | head -1)
 [ -n "$DUMP" ] || { say "no dump found in $BACKUP_DIR"; exit 1; }
 
