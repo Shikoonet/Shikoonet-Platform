@@ -232,8 +232,13 @@ $$, 'the same gift code cannot be redeemed twice by one user');
 -- section brings its own plan and provider. It used to reach for whatever
 -- `ORDER BY id LIMIT 1` returned, which is a row that exists on a seeded
 -- database and nowhere else.
-INSERT INTO products (code, name, kind)
-     VALUES ('__inv-product', 'invariant fixture', 'vpn');
+-- A category too, since 0032: `products.category_id` is NOT NULL, because the
+-- shop's first screen is the category list and a product without one has no
+-- button anywhere.
+INSERT INTO product_categories (name) VALUES ('__inv-category');
+INSERT INTO products (code, name, kind, category_id)
+     VALUES ('__inv-product', 'invariant fixture', 'vpn',
+             (SELECT id FROM product_categories WHERE name = '__inv-category'));
 INSERT INTO product_plans (product_id, name, price_irr)
      VALUES ((SELECT id FROM products WHERE code = '__inv-product'), '__inv-plan', 1800000);
 INSERT INTO provisioning_providers (code, name, kind)

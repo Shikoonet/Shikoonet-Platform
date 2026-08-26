@@ -25,8 +25,15 @@ import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { renewAllowed, renewModeFor } from '@shikoo/domain';
 import { actOnService } from './actions.js';
 import { decode, encode } from './callback.js';
-import type { CatalogPlan } from './catalog.js';
-import { plansInProduct, plansOnPanel, productsForUser, purchasablePlan } from './catalog.js';
+import type { CatalogCategory, CatalogPlan } from './catalog.js';
+import {
+  categoriesForUser,
+  plansInCategory,
+  plansInProduct,
+  plansOnPanel,
+  productsForUser,
+  purchasablePlan,
+} from './catalog.js';
 import {
   checkCode,
   type DiscountCode,
@@ -1067,6 +1074,27 @@ async function planScreen(
   return screen(menu.planDetail(plan, price, applied), menu.planDetailMenu(plan, applied));
 }
 
+/**
+ * One category's price list.
+ *
+ * Two callbacks land here — `cat` from the category list, and `buy` for a shop
+ * with only one category and therefore no list to draw. Written once for the
+ * same reason `planScreen` is: a second copy of «a list of one is not a choice»
+ * is a second place for the two to disagree about what the customer already
+ * chose.
+ */
+async function categoryScreen(
+  tx: D1DatabaseSession,
+  user: Caller,
+  category: CatalogCategory,
+  screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+): Promise<HandleOutcome> {
+  const plans = await plansInCategory(tx, user.id, category.categoryId);
+  if (plans.length === 0) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu([]));
+  if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
+  return screen(menu.categoryPlans(category.name), menu.planMenu(plans, user.discount_percent));
+}
+
 async function handleCallback(
   tx: D1DatabaseSession,
   query: TelegramCallbackQuery,
@@ -1139,17 +1167,39 @@ async function handleCallback(
       return screen(menu.SOON, menu.mainMenu(user));
 
     case 'buy': {
-      // The services, not the panels. A customer's first question is which
-      // level they want, and the panel that delivers it is named on the plan's
-      // own page. The legacy shop asked location-first because a legacy panel
-      // WAS a level — five `marzban_panel` rows on one PasarGuard differing
-      // only in `inbounds` — and a service carrying its own groups retires that
-      // reason along with the extra tap.
-      const products = await productsForUser(tx, user.id);
-      if (products.length === 0) {
+      // Categories, not panels and not services. A customer's first question is
+      // which KIND of thing they want, and the panel that delivers it is named
+      // on the plan's own page. The legacy shop asked location-first because a
+      // legacy panel WAS a level — five `marzban_panel` rows on one PasarGuard
+      // differing only in `inbounds` — and a service carrying its own groups
+      // retires that reason along with the extra tap.
+      //
+      // A service list sat here until 2026-08-26 and its problem was that a
+      // service is a TIER: it has no single price, so the screen could only
+      // show names and the customer chose blind. A category groups priced rows,
+      // so the very next screen is payable amounts.
+      const categories = await categoriesForUser(tx, user.id);
+      if (categories.length === 0) {
         return screen(menu.SHOP_EMPTY, menu.mainMenu(user));
       }
-      return screen(menu.CHOOSE_PRODUCT, menu.productMenu(products));
+      // A list of one is not a choice — the same rule the plan list has always
+      // applied. One category means the shop has no kinds, only prices, so the
+      // customer meets them on the first tap instead of after a pointless one.
+      if (categories.length === 1) {
+        return categoryScreen(tx, user, categories[0]!, screen);
+      }
+      return screen(menu.CHOOSE_CATEGORY, menu.categoryMenu(categories));
+    }
+
+    case 'cat': {
+      if (action.id === undefined) return IGNORED;
+      const categories = await categoriesForUser(tx, user.id);
+      const category = categories.find((c) => c.categoryId === action.id);
+      // Either the category emptied out, was switched off, or was never theirs
+      // to open. One answer for all three: telling them apart would hand out a
+      // map of the hidden catalogue.
+      if (!category) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu(categories));
+      return categoryScreen(tx, user, category, screen);
     }
 
     case 'panel': {

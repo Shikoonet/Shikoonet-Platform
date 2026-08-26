@@ -35,6 +35,8 @@ const PLAN: CatalogPlan = {
   userLimit: 3,
   providerId: 7,
   providerName: '🥇 سرویس VIP',
+  categoryId: 1,
+  rowIndex: null,
   siblings: 1,
 };
 
@@ -213,23 +215,28 @@ describe('the plan list', () => {
 });
 
 describe('«بازگشت» on a plan page', () => {
-  it('returns to the plan list when the service had one', () => {
+  it('returns to the category’s list when it drew one', () => {
+    // `cat:`, not `prd:`. The shop became category-first on 2026-08-26 and the
+    // screen behind a plan page is the category's price list; `prd:` is only
+    // reachable now from a button sitting in an old chat, and sending a live
+    // customer back to it would take them somewhere the shop no longer draws.
     const targets = callbacks(menu.planDetailMenu({ ...PLAN, siblings: 3 })).map(
       (b) => b.callback_data,
     );
-    expect(targets).toContain('prd:7');
+    expect(targets).toContain('cat:1');
+    expect(targets).not.toContain('prd:7');
     expect(targets).not.toContain('panel:7');
   });
 
-  it('returns to the service list when it did not', () => {
-    // A single-plan service opens its plan directly, so there is no list to go
-    // back to. Sending them to one of one is a screen whose only button leads
-    // back where they just were.
+  it('returns to the shop’s first screen when it did not', () => {
+    // A category holding a single plan opens that plan directly, so there is no
+    // list to go back to. Sending them to one of one is a screen whose only
+    // button leads back where they just were.
     const targets = callbacks(menu.planDetailMenu({ ...PLAN, siblings: 1 })).map(
       (b) => b.callback_data,
     );
     expect(targets).toContain('buy');
-    expect(targets).not.toContain('prd:7');
+    expect(targets).not.toContain('cat:1');
   });
 });
 

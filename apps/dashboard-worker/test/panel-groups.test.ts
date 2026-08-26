@@ -83,8 +83,8 @@ async function withCredential(panelId: number): Promise<void> {
 /** A product and a plan on this panel, so a plan can hold its own group ids. */
 async function planWithGroups(panelId: number, label: string, groups: number[]): Promise<void> {
   const product = await baseEnv.DB.prepare(
-    `INSERT INTO products (provider_id, code, name, kind, status)
-     VALUES (?1, ?2, 'محصول', 'vpn', 'ACTIVE') RETURNING id`,
+    `INSERT INTO products (provider_id, code, name, kind, category_id, status)
+     VALUES (?1, ?2, 'محصول', 'vpn', (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE') RETURNING id`,
   )
     .bind(panelId, `${PREFIX}${label}`)
     .first<{ id: number }>();
@@ -99,8 +99,8 @@ async function planWithGroups(panelId: number, label: string, groups: number[]):
 /** A SERVICE on this panel that carries its own groups — «پلاتینیوم». */
 async function productWithGroups(panelId: number, label: string, groups: number[]): Promise<void> {
   await baseEnv.DB.prepare(
-    `INSERT INTO products (provider_id, code, name, kind, status, attrs)
-     VALUES (?1, ?2, ?3, 'vpn', 'ACTIVE', ?4::jsonb)`,
+    `INSERT INTO products (provider_id, code, name, kind, category_id, status, attrs)
+     VALUES (?1, ?2, ?3, 'vpn', (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE', ?4::jsonb)`,
   )
     .bind(panelId, `${PREFIX}${label}`, `سرویس ${label}`, JSON.stringify({ group_ids: groups }))
     .run();
@@ -231,8 +231,8 @@ describe('reading a panel’s groups', () => {
   it('names the plans that override the panel, because saving here misses them', async () => {
     const id = await migratedPanel('overridden', { inbounds: [2] });
     const product = await baseEnv.DB.prepare(
-      `INSERT INTO products (provider_id, code, name, kind, status)
-       VALUES (?1, ?2, 'محصول', 'vpn', 'ACTIVE') RETURNING id`,
+      `INSERT INTO products (provider_id, code, name, kind, category_id, status)
+       VALUES (?1, ?2, 'محصول', 'vpn', (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE') RETURNING id`,
     )
       .bind(id, `${PREFIX}prod`)
       .first<{ id: number }>();
@@ -306,8 +306,8 @@ describe('creating and deleting a group on the panel', () => {
     const id = await migratedPanel('inherit', { group_ids: [2] });
     await productWithGroups(id, 'has-level', [6]);
     await baseEnv.DB.prepare(
-      `INSERT INTO products (provider_id, code, name, kind, status)
-       VALUES (?1, ?2, 'بدون سطح', 'vpn', 'ACTIVE')`,
+      `INSERT INTO products (provider_id, code, name, kind, category_id, status)
+       VALUES (?1, ?2, 'بدون سطح', 'vpn', (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE')`,
     )
       .bind(id, `${PREFIX}no-level`)
       .run();

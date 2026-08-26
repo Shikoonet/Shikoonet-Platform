@@ -51,8 +51,8 @@ async function makeCatalog(
   const providerId = Number(provider!.id);
 
   const product = await baseEnv.DB.prepare(
-    `INSERT INTO products (code, name, kind, provider_id, status, resellers_only)
-     VALUES (?1, ?2, 'vpn', ?3, ?4, ?5) RETURNING id`,
+    `INSERT INTO products (code, name, kind, provider_id, category_id, status, resellers_only)
+     VALUES (?1, ?2, 'vpn', ?3, (SELECT id FROM product_categories WHERE name = '__fixture'), ?4, ?5) RETURNING id`,
   )
     .bind(
       `${PREFIX}${label}`,

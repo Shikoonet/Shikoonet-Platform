@@ -78,6 +78,8 @@ export async function applySchema(): Promise<void> {
         'Apply migrations/000*.sql to DATABASE_URL first (pnpm sim:up).',
     );
   }
+  // Every fixture product needs one; see `fixtureCategory` below.
+  await fixtureCategory();
 }
 
 /** Empties every hub table so each suite starts from a known state. */
@@ -120,4 +122,26 @@ export async function signIn(email: string, role = 'ADMIN'): Promise<string> {
     .bind(crypto.randomUUID(), hash, email)
     .run();
   return `shikoo_session=${token}`;
+}
+
+/**
+ * A category to hang fixture products off.
+ *
+ * `products.category_id` became NOT NULL in migration 0032, because the shop's
+ * first screen is the category list and a product without one has no button on
+ * any screen. Six fixture files insert products and none of them is about
+ * categories, so they share this rather than each inventing one — and it is
+ * never deleted, for the same reason `applySchema` does not drop tables between
+ * files: the next file would find it gone.
+ */
+export async function fixtureCategory(name = '__fixture'): Promise<number> {
+  const row = await env.DB.prepare(
+    `INSERT INTO product_categories (name) VALUES (?1)
+     ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`,
+  )
+    .bind(name)
+    .first<{ id: number }>();
+  if (!row) throw new Error(`could not make the fixture category ${name}`);
+  return row.id;
 }

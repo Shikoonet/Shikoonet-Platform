@@ -33,7 +33,7 @@
  */
 
 import { encode } from './callback.js';
-import type { CatalogPlan, CatalogProduct } from './catalog.js';
+import type { CatalogCategory, CatalogPlan, CatalogProduct } from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
 import {
@@ -46,7 +46,7 @@ import {
   type MenuViewer,
 } from './keyboard.js';
 import type { Layouts } from './botContent.js';
-import { DEFAULT_TEXTS, type TextKey, type Texts } from '@shikoo/contracts';
+import { DEFAULT_TEXTS, groupIntoRows, type TextKey, type Texts } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
 import { MAX_COPY_TEXT_LENGTH, type InlineButton, type InlineKeyboard } from './telegram.js';
 
@@ -89,6 +89,8 @@ export let MENU_TITLE = DEFAULT_TEXTS.raw('MENU_TITLE');
 export let GATE_RULES = DEFAULT_TEXTS.raw('GATE_RULES');
 export let GATE_RULES_ACCEPTED = DEFAULT_TEXTS.raw('GATE_RULES_ACCEPTED');
 export let SOON = DEFAULT_TEXTS.raw('SOON');
+export let CHOOSE_CATEGORY = DEFAULT_TEXTS.raw('CHOOSE_CATEGORY');
+export let CATEGORY_EMPTY = DEFAULT_TEXTS.raw('CATEGORY_EMPTY');
 export let CHOOSE_PRODUCT = DEFAULT_TEXTS.raw('CHOOSE_PRODUCT');
 export let PANEL_EMPTY = DEFAULT_TEXTS.raw('PANEL_EMPTY');
 export let PRODUCT_EMPTY = DEFAULT_TEXTS.raw('PRODUCT_EMPTY');
@@ -209,6 +211,8 @@ export function applyContent(content: BotContent): void {
   GATE_RULES = t.raw('GATE_RULES');
   GATE_RULES_ACCEPTED = t.raw('GATE_RULES_ACCEPTED');
   SOON = t.raw('SOON');
+  CHOOSE_CATEGORY = t.raw('CHOOSE_CATEGORY');
+  CATEGORY_EMPTY = t.raw('CATEGORY_EMPTY');
   CHOOSE_PRODUCT = t.raw('CHOOSE_PRODUCT');
   PANEL_EMPTY = t.raw('PANEL_EMPTY');
   PRODUCT_EMPTY = t.raw('PRODUCT_EMPTY');
@@ -264,10 +268,15 @@ export function mainMenu(viewer: MenuViewer): InlineKeyboard {
 /**
  * The rows that come from the database, above the shop's chrome.
  *
- * Always in that order. A plan, a service or a bank transaction is a row that
- * does not exist until the query runs, so letting the shop position it would
- * need an anchor scheme for something with no fixed identity — and nobody has
- * asked for one.
+ * Always in that order, and that part has not changed. What has: these rows are
+ * no longer always one per row. This used to say a data row had «no fixed
+ * identity» and so could not be positioned — but a category and a plan carry
+ * the same id their callback does, which is exactly the anchor that was
+ * missing. `groupIntoRows` reads it; see `packages/contracts/src/catalogLayout.ts`.
+ *
+ * The chrome below still comes from `bot_keyboard_buttons`, and the two must
+ * not be merged: that table is keyed on a closed action set `isMenuAction`
+ * validates, this one on rows that come and go.
  */
 function withChrome(
   dataRows: InlineKeyboard,
@@ -340,6 +349,11 @@ export function choosePlan(productName: string): string {
   return TEXTS_NOW.render('CHOOSE_PLAN', { product: productName });
 }
 
+/** The heading over a category's price list. */
+export function categoryPlans(categoryName: string): string {
+  return TEXTS_NOW.render('CATEGORY_PLANS', { category: categoryName });
+}
+
 /**
  * How a shop button quotes a price.
  *
@@ -408,16 +422,40 @@ export function productMenu(products: CatalogProduct[]): InlineKeyboard {
  */
 export function planMenu(plans: CatalogPlan[], discountPercent = 0): InlineKeyboard {
   return withChrome(
-    plans.map((plan) => {
-      const price = priceForUser(plan.priceIrr, discountPercent);
-      return [
-        {
-          text: priced(plan.planName, plan.priceIrr, price),
-          callback_data: encode('plan', plan.planId),
-        },
-      ];
-    }),
+    // The label and the callback are built together, from ONE plan object,
+    // inside the row mapping. Not by index into a parallel array, and not
+    // before the grouping: an arrangement that paired a price with somebody
+    // else's id is the one way this feature could sell the wrong thing.
+    groupIntoRows(plans).map((row) =>
+      row.map((plan) => ({
+        text: priced(plan.planName, plan.priceIrr, priceForUser(plan.priceIrr, discountPercent)),
+        callback_data: encode('plan', plan.planId),
+      })),
+    ),
     'plans',
+  );
+}
+
+/**
+ * The shop's first screen — the categories holding something to buy.
+ *
+ * It replaced the service list, and the reason is written one screen down: a
+ * service is a TIER, a tier has no single price, so that screen could only show
+ * names and the customer chose blind. A category groups priced rows, so the
+ * very next screen is payable amounts.
+ *
+ * Rows come from `groupIntoRows` rather than one-per-row, which is the whole of
+ * what «چیدمان» does here.
+ */
+export function categoryMenu(categories: CatalogCategory[]): InlineKeyboard {
+  return withChrome(
+    groupIntoRows(categories).map((row) =>
+      row.map((category) => ({
+        text: category.emoji ? `${category.emoji} ${category.name}` : category.name,
+        callback_data: encode('cat', category.categoryId),
+      })),
+    ),
+    'categories',
   );
 }
 
@@ -488,13 +526,18 @@ export function planDetailMenu(plan: CatalogPlan, applied?: AppliedCode | null):
       action === 'dsx' ? applied != null : action === 'dsc' ? applied == null : true,
     target: (action) =>
       action === 'buy'
-        ? // One step back is the plan list when this service drew one, and the
-          // service list when it did not. A service with a single plan skips
-          // straight from the service list to here, so sending «بازگشت» to a
-          // plan list of one would hand the customer a screen with one button
-          // that leads back to the screen they just left.
+        ? // One step back is the category's list when it drew one, and the shop's
+          // first screen when it did not. A category holding a single plan is
+          // opened straight from `buy`, so sending «بازگشت» to a list of one
+          // would hand the customer a screen with one button that leads back to
+          // the screen they just left.
+          //
+          // Re-pointed through `target` rather than by changing `MENUS`:
+          // removing `buy` from this screen would make `checkLayout` reject
+          // every layout a shop already saved for it, and `buildMenu` drop the
+          // button — a customer with no way back.
           plan.siblings > 1
-          ? encode('prd', plan.productId)
+          ? encode('cat', plan.categoryId)
           : encode('buy')
         : action === 'menu'
           ? encode('menu')

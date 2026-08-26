@@ -109,7 +109,12 @@ describe('a screen other than the main menu', () => {
     // The shop's first screen and its back button, renamed and hidden nowhere
     // else. Before this slice the only editable keyboard in the whole bot was
     // the main menu.
-    await save('products', [
+    //
+    // `categories`, not `products`: `buy` opens the category list since
+    // 2026-08-26. Saving against `products` here left the third test in this
+    // block green for the wrong reason — it asserted only that SOME button
+    // fires `menu`, which the untouched default layout also does.
+    await save('categories', [
       { action: 'menu', label: '🏠 برگرد خانه', rowIndex: 0, colIndex: 0, visible: true },
     ]);
 
@@ -124,7 +129,7 @@ describe('a screen other than the main menu', () => {
   it('leaves every other screen on the shipped layout', async () => {
     // Per menu, not all or nothing: a shop that renames one button still
     // receives later releases' improvements everywhere else.
-    await save('products', [
+    await save('categories', [
       { action: 'menu', label: '🏠 برگرد خانه', rowIndex: 0, colIndex: 0, visible: true },
     ]);
     await applySaved();
@@ -137,12 +142,13 @@ describe('a screen other than the main menu', () => {
   });
 
   it('keeps the callback working after a rename', async () => {
-    await save('products', [
+    await save('categories', [
       { action: 'menu', label: 'هرچیزی', rowIndex: 0, colIndex: 0, visible: true },
     ]);
     const { updateId, telegramId } = ids();
     await handleUpdate(db, startUpdate(updateId, telegramId));
     const shop = await handleUpdate(db, press(updateId + 1, telegramId, 'buy'));
+    expect(labels(shop.replies[0]?.keyboard).flat()).toContain('هرچیزی');
     expect(datas(shop.replies[0]?.keyboard)).toContain('menu');
   });
 
@@ -153,7 +159,7 @@ describe('a screen other than the main menu', () => {
 
     const rows = shop.replies[0]?.keyboard ?? [];
     const chromeAt = rows.findIndex((r) => r.some((b) => b.callback_data === 'menu'));
-    const dataAt = rows.findIndex((r) => r.some((b) => b.callback_data?.startsWith('prd:')));
+    const dataAt = rows.findIndex((r) => r.some((b) => b.callback_data?.startsWith('cat:')));
     expect(dataAt).toBeGreaterThanOrEqual(0);
     expect(dataAt).toBeLessThan(chromeAt);
   });

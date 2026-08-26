@@ -65,6 +65,8 @@ describe('a composed config name, seen by the bot', () => {
       userLimit: null,
       providerId: 1,
       providerName: 'پنل تست',
+      categoryId: 1,
+      rowIndex: null,
       siblings: 2,
       ...plan,
     };

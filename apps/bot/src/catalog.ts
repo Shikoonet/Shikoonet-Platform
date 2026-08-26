@@ -153,6 +153,62 @@ export async function productsForUser(
   }));
 }
 
+/**
+ * One button on the shop's first screen.
+ *
+ * A category is the level the customer now picks first, and it replaced the
+ * service list for one reason: a service is a TIER and a tier has no price, so
+ * that screen could only ever show names — the customer chose blind and met the
+ * numbers one screen later. A category groups priced rows, so the very next
+ * screen is payable amounts.
+ */
+export interface CatalogCategory {
+  categoryId: number;
+  name: string;
+  /** Drawn on the button before the name, when the admin gave it one. */
+  emoji: string | null;
+  /** Where the admin broke the row, or null for «never arranged». */
+  rowIndex: number | null;
+}
+
+/**
+ * The categories holding something this customer can actually buy.
+ *
+ * The JOIN down to `product_plans` and the `PURCHASABLE` predicate are what
+ * make this list honest: a category whose every product is HIDDEN, or is
+ * resellers-only for a customer who is not one, draws no button at all rather
+ * than a button onto an empty screen. That is the same rule `productsForUser`
+ * already applies one level down, and it is the reason this cannot be a plain
+ * `SELECT * FROM product_categories`.
+ *
+ * `active` is the admin's own switch and is checked here rather than in the
+ * screen: a category taken off sale must be off sale everywhere, including the
+ * `cat:<id>` a customer still has sitting in an old message.
+ */
+export async function categoriesForUser(db: Db, userId: number): Promise<CatalogCategory[]> {
+  const rows = await db
+    .prepare(
+      `SELECT cat.id AS category_id, cat.name AS name, cat.emoji AS emoji,
+              cat.row_index AS row_index
+         FROM product_categories cat
+         JOIN products p                ON p.category_id = cat.id
+         JOIN product_plans pl          ON pl.product_id = p.id
+         JOIN provisioning_providers pr ON pr.id = p.provider_id
+         JOIN users u                   ON u.id = ?1
+        WHERE cat.active AND ${PURCHASABLE}
+        GROUP BY cat.id, cat.name, cat.emoji, cat.row_index, cat.sort_order
+        ORDER BY cat.sort_order, cat.id`,
+    )
+    .bind(userId)
+    .all<{ category_id: number; name: string; emoji: string | null; row_index: number | null }>();
+  return rows.results.map((r) => ({
+    categoryId: r.category_id,
+    name: r.name,
+    emoji: r.emoji,
+    rowIndex: r.row_index,
+  }));
+}
+
 export interface CatalogPlan {
   planId: number;
   /** The product the plan belongs to. A discount code can be scoped to one. */
@@ -165,10 +221,23 @@ export interface CatalogPlan {
   userLimit: number | null;
   providerId: number;
   providerName: string;
+  /** The category it is sold under. Decides where «بازگشت» lands. */
+  categoryId: number;
   /**
-   * How many plans this customer may buy inside the same product, this one
-   * included. Decides where «بازگشت» goes: to the plan list when there is one
-   * to go back to, and to the service list when this plan never drew one.
+   * Where the admin broke the row, or null for «this screen was never
+   * arranged». Read by `groupIntoRows`; see `packages/contracts/src/catalogLayout.ts`.
+   */
+  rowIndex: number | null;
+  /**
+   * How many plans sit in the same CATEGORY, this one included. Decides where
+   * «بازگشت» goes: to the category's list when there is one to go back to, and
+   * to the shop's first screen when this plan never drew one — a category
+   * holding a single plan is opened straight from `buy`.
+   *
+   * It counts ACTIVE plans rather than PURCHASABLE ones, and that is a
+   * deliberate approximation: the exact number costs the whole predicate a
+   * second time per row, and being wrong only ever sends «بازگشت» to a list of
+   * one instead of to the shop.
    */
   siblings: number;
 }
@@ -184,6 +253,8 @@ interface PlanRow {
   user_limit: number | null;
   provider_id: number;
   provider_name: string;
+  category_id: number;
+  row_index: number | null;
   siblings: number;
 }
 
@@ -198,9 +269,12 @@ const PLAN_COLUMNS = `
   pl.user_limit   AS user_limit,
   pr.id           AS provider_id,
   pr.name         AS provider_name,
+  p.category_id   AS category_id,
+  pl.row_index    AS row_index,
   (SELECT COUNT(*)::int
      FROM product_plans sib
-    WHERE sib.product_id = p.id AND sib.status = 'ACTIVE') AS siblings
+     JOIN products sp ON sp.id = sib.product_id
+    WHERE sp.category_id = p.category_id AND sib.status = 'ACTIVE') AS siblings
 `;
 
 const PLAN_FROM = `
@@ -222,8 +296,45 @@ function toPlan(row: PlanRow): CatalogPlan {
     userLimit: row.user_limit,
     providerId: row.provider_id,
     providerName: row.provider_name,
+    categoryId: row.category_id,
+    rowIndex: row.row_index,
     siblings: row.siblings,
   };
+}
+
+/**
+ * Every priced row inside one category. Empty if it is not this customer's to open.
+ *
+ * The ORDER BY here IS the layout's column order — `groupIntoRows` reads this
+ * list as given — so changing it silently rearranges every arranged screen.
+ *
+ * `pl.sort_order` comes first because that is what the arrangement writes, and
+ * once a screen has been arranged it is a total order and nothing after it ever
+ * matters. Everything after it is the DEFAULT for a screen nobody has touched,
+ * where every `sort_order` is still 0: group a service's rows together, in the
+ * admin's own service order, cheapest first inside each. Sorting the whole
+ * category by price instead would interleave three services' sizes into one
+ * ladder, which is the shape the service level was introduced to remove.
+ *
+ * `${PURCHASABLE}` is here for the same reason it is in `purchasablePlan`:
+ * `cat:<id>` is unsigned callback data and anyone can post one for a category
+ * they were never offered. An empty list is the whole of the answer.
+ */
+export async function plansInCategory(
+  db: Db,
+  userId: number,
+  categoryId: number,
+): Promise<CatalogPlan[]> {
+  const rows = await db
+    .prepare(
+      `SELECT ${PLAN_COLUMNS} ${PLAN_FROM}
+        JOIN product_categories cat ON cat.id = p.category_id
+        WHERE p.category_id = ?2 AND cat.active AND ${PURCHASABLE}
+        ORDER BY pl.sort_order, p.sort_order, p.id, pl.price_irr, pl.id`,
+    )
+    .bind(userId, categoryId)
+    .all<PlanRow>();
+  return rows.results.map(toPlan);
 }
 
 /**

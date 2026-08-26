@@ -57,6 +57,16 @@ export async function providerId(code: string): Promise<number> {
   return row.id;
 }
 
+/** The category a fixture product is filed under. */
+export async function categoryIdOfProduct(code: string): Promise<number> {
+  const row = await db
+    .prepare(`SELECT category_id FROM products WHERE code = ?1`)
+    .bind(code)
+    .first<{ category_id: number }>();
+  if (!row) throw new Error(`fixture product ${code} is missing`);
+  return row.category_id;
+}
+
 export async function productId(code: string): Promise<number> {
   const row = await db
     .prepare(`SELECT id FROM products WHERE code = ?1`)
@@ -82,6 +92,20 @@ export async function planId(productCode: string): Promise<number> {
 }
 
 /** One named plan of a product that has several — the tiered shape. */
+/** Every plan of one fixture product, in the shop's own default order. */
+export async function planIdsIn(productCode: string): Promise<number[]> {
+  const rows = await db
+    .prepare(
+      `SELECT pl.id FROM product_plans pl
+         JOIN products p ON p.id = pl.product_id
+        WHERE p.code = ?1
+        ORDER BY pl.sort_order, pl.price_irr, pl.id`,
+    )
+    .bind(productCode)
+    .all<{ id: number }>();
+  return rows.results.map((r) => r.id);
+}
+
 export async function planIdIn(productCode: string, planName: string): Promise<number> {
   const row = await db
     .prepare(

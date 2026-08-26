@@ -60,8 +60,8 @@ async function makeService(
 ): Promise<number> {
   const attrs = opts.groupIds == null ? '{}' : JSON.stringify({ group_ids: opts.groupIds });
   const row = await baseEnv.DB.prepare(
-    `INSERT INTO products (code, name, kind, provider_id, status, sort_order, attrs)
-     VALUES (?1, ?2, 'vpn', ?3, ?4, ?5, ?6::jsonb) RETURNING id`,
+    `INSERT INTO products (code, name, kind, provider_id, category_id, status, sort_order, attrs)
+     VALUES (?1, ?2, 'vpn', ?3, (SELECT id FROM product_categories WHERE name = '__fixture'), ?4, ?5, ?6::jsonb) RETURNING id`,
   )
     .bind(
       `${PREFIX}${label}`,

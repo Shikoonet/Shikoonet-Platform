@@ -48,8 +48,8 @@ async function makeCatalogue(): Promise<Fixture> {
       // `products.kind` is what is being SOLD ('vpn'), not the panel software
       // that delivers it — that lives on `provisioning_providers.kind`. The two
       // columns share a name and nothing else.
-      `INSERT INTO products (code, name, kind, provider_id, status)
-       VALUES (?1, ?2, 'vpn', ?3, 'ACTIVE') RETURNING id`,
+      `INSERT INTO products (code, name, kind, provider_id, category_id, status)
+       VALUES (?1, ?2, 'vpn', ?3, (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE') RETURNING id`,
     )
       .bind(`${PREFIX}${label}`, `محصول ${label}`, providerId)
       .first<{ id: number }>();

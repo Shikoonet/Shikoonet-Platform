@@ -42,6 +42,10 @@ async function cleanup(): Promise<void> {
   await db
     .prepare(`DELETE FROM provisioning_providers WHERE code IN ('bp-panel-a', 'bp-panel-b')`)
     .run();
+  // After the products, never before: `products.category_id` is ON DELETE
+  // RESTRICT, so a category still holding one refuses to go and takes the rest
+  // of the cleanup with it.
+  await db.prepare(`DELETE FROM product_categories WHERE name = 'bp-category'`).run();
 }
 
 afterAll(async () => {
@@ -69,14 +73,24 @@ async function seed(prices: number[], other: number[] = []): Promise<void> {
   panelA = await mk('bp-panel-a');
   panelB = await mk('bp-panel-b');
 
+  // Every product needs a category since 0032 — the shop's first screen is the
+  // category list, so a product without one is unreachable and the schema says
+  // so. Nothing in this file is about categories; one is enough.
+  const category = await db
+    .prepare(
+      `INSERT INTO product_categories (name) VALUES ('bp-category')
+       ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+    )
+    .first<{ id: number }>();
+
   const addPlans = async (providerId: number, tag: string, list: number[]): Promise<void> => {
     if (list.length === 0) return;
     const product = await db
       .prepare(
-        `INSERT INTO products (code, name, kind, provider_id, status)
-         VALUES (?1, ?1, 'vpn', ?2, 'ACTIVE') RETURNING id`,
+        `INSERT INTO products (code, name, kind, provider_id, category_id, status)
+         VALUES (?1, ?1, 'vpn', ?2, ?3, 'ACTIVE') RETURNING id`,
       )
-      .bind(`bp-${tag}`, providerId)
+      .bind(`bp-${tag}`, providerId, category!.id)
       .first<{ id: number }>();
     for (const [i, price] of list.entries()) {
       await db
