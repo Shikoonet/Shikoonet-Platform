@@ -165,11 +165,13 @@ export const MENUS = {
     buttons: [BACK_TO_MENU],
   },
   plans: {
-    label: 'فهرست پلن‌ها',
-    hint: 'زیر پلن‌های یک سرویس — ۳۰ گیگ یک‌ماهه، ۵۰ گیگ یک‌ماهه',
+    label: 'فهرست محصول‌های یک دسته‌بندی',
+    hint: 'محصول‌های خریدنیِ یک دسته‌بندی، با قیمتشان روی دکمه',
     buttons: [
-      // `buy` IS the service list now, so one step back is one action.
-      { action: 'buy', label: 'بازگشت به سرویس‌ها ⬅️', hint: 'برگشت به فهرست سرویس‌ها' },
+      // `buy` is the CATEGORY list now, so one step back is one action. The
+      // label said «سرویس‌ها» while this screen was one service's plans; the
+      // screen changed underneath it on 2026-08-27 and the word did not.
+      { action: 'buy', label: 'بازگشت به دسته‌بندی‌ها ⬅️', hint: 'برگشت به فهرست دسته‌بندی‌ها' },
       BACK_TO_MENU,
     ],
   },

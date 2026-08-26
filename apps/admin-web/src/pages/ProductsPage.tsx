@@ -1,25 +1,30 @@
 /**
- * محصولات — one row per sellable thing, the way the panel we are replacing
- * lists it.
+ * محصولات — one row per sellable thing, the way the panel being replaced lists
+ * it.
  *
  * WHY THIS EXISTS NEXT TO «سرویس‌ها» RATHER THAN INSTEAD OF IT. Faoxima's
  * catalogue is one table, because in its schema a second duration is a second
- * `product` row: name, price, volume, days, panel, user group, category, all
- * on one line. That is the right unit for pricing work, and it is what an admin
+ * `product` row: name, price, volume, days, panel, user group, category, all on
+ * one line. That is the right unit for pricing work, and it is what an admin
  * asked for. It is NOT the right unit for building a service, because the panel
  * and the groups an account joins are decided once for a whole family of
  * configs — which is why «سرویس‌ها» stays and this page links into it.
  *
  * So the two levels stay in the database and only the SCREEN is flat. Which
- * makes one thing this page has to say out loud: four of the fields on a row
+ * makes one thing this page has to say out loud: three of the fields on a row
  * belong to the service, not to the row, and editing them from here edits every
- * sibling config too. The modal says so with the number, before the save.
+ * sibling config too. The edit form says so with the number, before the save.
  *
  * FILTERS ARE THE SERVER'S. Faoxima filters in the browser over rows it has
  * already loaded, and loads the whole table to make that work
- * (`panel/js/datatable.js:121-163`). That is honest on eight rows and a lie on
- * eight hundred: this list is paged, so a browser-side filter would hide
- * matches on page two while the total above still counted them.
+ * (`panel/js/datatable.js:121-163`). Honest on eight rows and a lie on eight
+ * hundred: this list is paged, so a browser-side filter would hide matches on
+ * page two while the total above still counted them.
+ *
+ * TYPOGRAPHY IS THE HIERARCHY. Nine columns of the same weight is a wall, which
+ * is what the first version of this screen was. The name and the price carry
+ * weight; volume, days and the id are dim tabular numbers; everything else is a
+ * badge or plain text. An admin scanning this is looking for a price.
  */
 
 import { useEffect, useState } from 'react';
@@ -83,7 +88,7 @@ export function ProductsPage() {
   const [resellers, setResellers] = useState('');
 
   const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<PlanRow | null>(null);
   const [adding, setAdding] = useState(false);
   const [arranging, setArranging] = useState(false);
@@ -111,17 +116,15 @@ export function ProductsPage() {
     }
   }
 
-  async function loadCategories() {
-    try {
-      setCategories((await api.productCategories()).items);
-    } catch {
-      // The filter loses its options and the table still works. A category list
-      // that failed to load is not a reason to show nothing.
-    }
-  }
-
   useEffect(() => {
-    void loadCategories();
+    void (async () => {
+      try {
+        setCategories((await api.productCategories()).items);
+      } catch {
+        // The filter loses its options and the table still works. A category
+        // list that failed to load is not a reason to show nothing.
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -140,17 +143,31 @@ export function ProductsPage() {
 
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const chosenCategory = categoryId ? categories.find((c) => c.id === Number(categoryId)) : null;
+  const filtered = Boolean(q.trim() || status || providerId || categoryId || resellers);
+
+  function clear() {
+    setQ('');
+    setStatus('');
+    setProviderId('');
+    setCategoryId('');
+    setResellers('');
+    setArranging(false);
+    setPage(1);
+  }
 
   return (
     <>
       <div className="page-head">
         <div>
           <div className="page-head__title">محصولات</div>
-          <div className="page-head__sub">{count(total)} محصول</div>
+          <div className="page-head__sub">
+            {filtered ? `${count(rows.length)} از ${count(total)} محصول` : `${count(total)} محصول`}
+            {chosenCategory ? ` · ${chosenCategory.name}` : ''}
+          </div>
         </div>
-        <div className="filters" style={{ marginBlock: 0 }}>
+        <div className="row-actions">
           {/* Arranging is per category, because a shop screen IS a category —
-              there is no screen that shows the whole catalogue at once. */}
+              no screen shows the whole catalogue at once. */}
           <button
             type="button"
             className="btn"
@@ -158,7 +175,7 @@ export function ProductsPage() {
             title={chosenCategory ? '' : 'اول یک دسته‌بندی را انتخاب کنید'}
             onClick={() => setArranging((v) => !v)}
           >
-            {arranging ? 'بستن چیدمان' : 'چیدمان و ترتیب'}
+            {arranging ? 'بستن چیدمان' : 'چیدمان در ربات'}
           </button>
           <button
             type="button"
@@ -166,7 +183,7 @@ export function ProductsPage() {
             onClick={() => setAdding((v) => !v)}
             {...w}
           >
-            {adding ? 'بستن فرم' : 'افزودن محصول +'}
+            {adding ? 'بستن' : 'محصول تازه'}
           </button>
         </div>
       </div>
@@ -182,15 +199,20 @@ export function ProductsPage() {
       )}
 
       {arranging && chosenCategory && (
-        <div className="card">
-          <h4>چیدمان «{chosenCategory.name}» در ربات</h4>
+        <div className="card" style={{ marginBlockEnd: 20 }}>
+          <div className="card__head">
+            <div className="card__title">صفحهٔ «{chosenCategory.name}» در ربات</div>
+            <div className="page-head__sub">
+              محصول پنهان این‌جا هست و به مشتری نشان داده نمی‌شود
+            </div>
+          </div>
           <ArrangeCategory category={chosenCategory} onSaved={() => void load()} />
         </div>
       )}
 
       <div className="card">
         <form
-          className="filters"
+          className="toolbar"
           onSubmit={(e) => {
             e.preventDefault();
             setPage(1);
@@ -293,6 +315,14 @@ export function ProductsPage() {
           <button type="submit" className="btn btn-primary" disabled={loading}>
             جست‌وجو
           </button>
+          {/* Drawn only when there is something to clear. A permanent «پاک کن»
+              beside five «همه» dropdowns is a button that does nothing most of
+              the time, which is how an admin learns to stop reading a toolbar. */}
+          {filtered && (
+            <button type="button" className="btn" onClick={clear}>
+              پاک‌کردن فیلترها
+            </button>
+          )}
         </form>
 
         {err && <div className="alert alert-error">{err}</div>}
@@ -310,64 +340,85 @@ export function ProductsPage() {
                 <th>گروه کاربری</th>
                 <th>دسته‌بندی</th>
                 <th>وضعیت</th>
-                <th />
+                <th className="cell-actions" />
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 && !loading && (
                 <tr>
                   <td className="empty" colSpan={10}>
-                    محصولی با این فیلترها پیدا نشد.
+                    {filtered
+                      ? 'محصولی با این فیلترها نیست. فیلترها را پاک کنید یا کلمهٔ دیگری بزنید.'
+                      : 'هنوز محصولی ساخته نشده. «محصول تازه» یک قیمت روی یکی از سرویس‌ها می‌گذارد.'}
                   </td>
                 </tr>
               )}
               {rows.map((r) => (
                 <tr key={r.id}>
-                  <td className="ltr">{r.id}</td>
-                  <td>
+                  <td className="ltr num num--dim">{r.id}</td>
+                  <td className="cell-name">
                     <div>{r.name}</div>
-                    <div className="page-head__sub">{r.product.name}</div>
+                    {/* Only when it says something the line above did not. A
+                        migrated row's plan IS its product — the importer wrote
+                        the same string into both — so on those rows the first
+                        version of this printed the same words twice. */}
+                    {r.product.name !== r.name && (
+                      <div className="page-head__sub">{r.product.name}</div>
+                    )}
                   </td>
-                  <td>{toman(r.priceIrr)}</td>
-                  <td>{volume(r.volumeGb)}</td>
-                  <td>{duration(r.durationDays)}</td>
-                  <td>{r.provider?.name ?? '—'}</td>
-                  <td>
+                  <td className="num num--strong">{toman(r.priceIrr)}</td>
+                  <td className="num num--dim">{volume(r.volumeGb)}</td>
+                  <td className="num num--dim">{duration(r.durationDays)}</td>
+                  <td title={r.provider?.name ?? ''}>
+                    <span className="trunc">{r.provider?.name ?? '—'}</span>
+                  </td>
+                  <td className="cell-tight">
                     {r.product.resellersOnly ? (
                       <span className="badge badge-info">فقط نماینده</span>
                     ) : (
-                      'مشتری عادی'
+                      <span className="num--dim">مشتری عادی</span>
                     )}
                   </td>
-                  <td>{r.categoryName ?? '—'}</td>
-                  <td>
-                    <span className={STATUS_BADGE[r.status] ?? 'badge'}>
-                      {STATUS_FA[r.status] ?? r.status}
-                    </span>
+                  <td title={r.categoryName ?? ''}>
+                    <span className="trunc">{r.categoryName ?? '—'}</span>
                   </td>
-                  <td>
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => setEditing(r)}
-                      {...w}
-                    >
-                      ویرایش
-                    </button>{' '}
-                    {/* A config with sales cannot be deleted — the route
-                        refuses it inside the DELETE so the sales history
-                        cannot be detached. «غیرفعال» is the button that
-                        works there, and the modal offers it. */}
-                    {r.ordersCount === 0 && (
+                  <td className="cell-tight">
+                    {/* A badge marks the exception. Fifteen green «در فروشگاه»
+                        chips down a column say nothing and hide the one row
+                        that is off sale, which is the row being looked for. */}
+                    {r.status === 'ACTIVE' ? (
+                      <span className="num--dim">{STATUS_FA.ACTIVE}</span>
+                    ) : (
+                      <span className={STATUS_BADGE[r.status] ?? 'badge'}>
+                        {STATUS_FA[r.status] ?? r.status}
+                      </span>
+                    )}
+                  </td>
+                  <td className="cell-actions">
+                    <div className="row-actions">
                       <button
                         type="button"
-                        className="btn btn-sm btn-danger"
-                        onClick={() => void remove(r)}
+                        className="btn btn-sm"
+                        onClick={() => setEditing(r)}
                         {...w}
                       >
-                        حذف
+                        ویرایش
                       </button>
-                    )}
+                      {/* A config with sales cannot be deleted — the route
+                          refuses it inside the DELETE so the sales history
+                          cannot be detached. «غیرفعال» in the edit form is the
+                          button that works there. */}
+                      {r.ordersCount === 0 && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-quiet-danger"
+                          onClick={() => void remove(r)}
+                          {...w}
+                        >
+                          حذف
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -375,27 +426,29 @@ export function ProductsPage() {
           </table>
         </div>
 
-        <div className="filters">
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={page <= 1 || loading}
-            onClick={() => setPage(page - 1)}
-          >
-            قبلی
-          </button>
-          <span className="muted">
-            صفحهٔ {count(page)} از {count(lastPage)}
-          </span>
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={page >= lastPage || loading}
-            onClick={() => setPage(page + 1)}
-          >
-            بعدی
-          </button>
-        </div>
+        {lastPage > 1 && (
+          <div className="pager">
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={page <= 1 || loading}
+              onClick={() => setPage(page - 1)}
+            >
+              قبلی
+            </button>
+            <span>
+              صفحهٔ {count(page)} از {count(lastPage)}
+            </span>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={page >= lastPage || loading}
+              onClick={() => setPage(page + 1)}
+            >
+              بعدی
+            </button>
+          </div>
+        )}
       </div>
 
       {editing && (
@@ -419,7 +472,7 @@ export function ProductsPage() {
  *
  * A save has to name the WHOLE screen — the server refuses a partial one,
  * because the rows it was not told about would keep their old positions and
- * interleave — so this asks for every config in the category rather than
+ * interleave — so this asks for every product in the category rather than
  * arranging whatever happened to be on the current page of the table above.
  */
 function ArrangeCategory({ category, onSaved }: { category: CategoryRow; onSaved: () => void }) {
@@ -448,15 +501,14 @@ function ArrangeCategory({ category, onSaved }: { category: CategoryRow; onSaved
   return (
     <LayoutEditor
       scope={`category:${category.id}`}
-      note={
-        'همان صفحه‌ای که مشتری بعد از انتخاب این دسته‌بندی می‌بیند. محصولِ پنهان و محصولی که ' +
-        'برای آن مشتری خریدنی نیست این‌جا هست ولی به او نشان داده نمی‌شود؛ ردیفش بسته می‌شود و ' +
-        'بقیهٔ ردیف‌ها سرِ جایشان می‌مانند. ترتیبِ همین کارت‌ها ترتیب دکمه‌هاست.'
-      }
+      screenText={`${category.emoji ? `${category.emoji} ` : ''}${category.name} — کدام را می‌خواهید؟`}
       items={items.map((r) => ({
         id: r.id,
         label: r.name,
-        hint: `${toman(r.priceIrr)}${r.status === 'ACTIVE' ? '' : ` · ${STATUS_FA[r.status] ?? r.status}`}`,
+        hint:
+          r.status === 'ACTIVE'
+            ? toman(r.priceIrr)
+            : `${toman(r.priceIrr)} · ${STATUS_FA[r.status] ?? r.status}`,
         rowIndex: r.rowIndex,
       }))}
       onSaved={() => {
@@ -470,10 +522,10 @@ function ArrangeCategory({ category, onSaved }: { category: CategoryRow; onSaved
 /**
  * A new priced row on a service that already exists.
  *
- * «افزودن محصول» here means what it means in Faoxima — one more sellable
+ * «محصول تازه» here means what it means in Faoxima — one more sellable
  * combination — not a new service. A service decides the panel and the groups
- * an account joins, and building one is «سرویس‌ها»'s job; duplicating that
- * form here would be a second place for the tier to be chosen.
+ * an account joins, and building one is «سرویس‌ها»'s job; duplicating that form
+ * here would be a second place for the tier to be chosen.
  */
 function AddProduct({ onDone }: { onDone: () => void }) {
   const w = useAdminWriteProps();
@@ -489,8 +541,7 @@ function AddProduct({ onDone }: { onDone: () => void }) {
   useEffect(() => {
     void (async () => {
       try {
-        const d = await api.catalog({ page: 1, pageSize: 100 });
-        setServices(d.items);
+        setServices((await api.catalog({ page: 1, pageSize: 100 })).items);
       } catch (e) {
         setErr(message(e));
       }
@@ -522,10 +573,13 @@ function AddProduct({ onDone }: { onDone: () => void }) {
   const chosen = services.find((s) => s.id === Number(productId));
 
   return (
-    <div className="card">
-      <h4>محصول تازه</h4>
+    <div className="card" style={{ marginBlockEnd: 20 }}>
+      <div className="card__head">
+        <div className="card__title">محصول تازه</div>
+        <div className="page-head__sub">یک قیمت روی سرویسی که از قبل ساخته شده</div>
+      </div>
       {err && <div className="alert alert-error">{err}</div>}
-      <div className="filters">
+      <div className="toolbar" style={{ borderBlockEnd: 'none', paddingBlockEnd: 0 }}>
         <div className="grow">
           <label className="form-label" htmlFor="add-service">
             سرویس
@@ -544,17 +598,17 @@ function AddProduct({ onDone }: { onDone: () => void }) {
               </option>
             ))}
           </select>
-          {chosen && (
-            <p className="muted" style={{ marginBlockEnd: 0 }}>
-              لوکیشن و گروه کاربری و دسته‌بندی را همین سرویس تعیین می‌کند:{' '}
-              {chosen.panel?.name ?? 'بدون پنل'} ·{' '}
-              {chosen.resellersOnly ? 'فقط نماینده' : 'مشتری عادی'} ·{' '}
-              {chosen.categoryName ?? 'بدون دسته‌بندی'}
-            </p>
-          )}
         </div>
       </div>
-      <div className="filters">
+      {chosen && (
+        <p className="muted" style={{ marginBlockStart: 0 }}>
+          لوکیشن، گروه کاربری و دسته‌بندیِ این محصول را همین سرویس تعیین می‌کند:{' '}
+          {chosen.panel?.name ?? 'بدون پنل'} ·{' '}
+          {chosen.resellersOnly ? 'فقط نماینده' : 'مشتری عادی'} ·{' '}
+          {chosen.categoryName ?? 'بدون دسته‌بندی'}
+        </p>
+      )}
+      <div className="toolbar" style={{ borderBlockEnd: 'none', paddingBlockEnd: 0 }}>
         <div className="grow">
           <label className="form-label" htmlFor="add-name">
             نام محصول
@@ -565,7 +619,7 @@ function AddProduct({ onDone }: { onDone: () => void }) {
             value={name}
             maxLength={120}
             onChange={(e) => setName(e.target.value)}
-            placeholder="مثلاً: ۳۰ روزه - ۵۰ گیگ"
+            placeholder="۳۰ روزه - ۵۰ گیگ"
           />
         </div>
         <div>
@@ -616,7 +670,7 @@ function AddProduct({ onDone }: { onDone: () => void }) {
           onClick={() => void save()}
           {...w}
         >
-          افزودن
+          بساز
         </button>
       </div>
     </div>
@@ -626,11 +680,11 @@ function AddProduct({ onDone }: { onDone: () => void }) {
 /**
  * One row's fields, on both of the levels they really live on.
  *
- * The four fields below the line belong to the SERVICE. Changing one of them
+ * The three fields below the line belong to the SERVICE. Changing one of them
  * from here changes it for every config of that service, and the count in the
- * heading is the whole reason this modal is worth its size: on a flat table an
- * admin has no way of knowing that «لوکیشن» is not a property of the line they
- * are looking at.
+ * sentence above them is the whole reason this dialogue is worth its size: on a
+ * flat table an admin has no way of knowing that «لوکیشن» is not a property of
+ * the line they are looking at.
  */
 function EditProduct({
   row,
@@ -654,9 +708,7 @@ function EditProduct({
   );
   const [status, setStatus] = useState<CatalogStatus>(row.status as CatalogStatus);
 
-  const [providerId, setProviderId] = useState(
-    row.provider === null ? '' : String(row.provider.id),
-  );
+  const [providerId, setProviderId] = useState(row.provider === null ? '' : String(row.provider.id));
   const [categoryId, setCategoryId] = useState(String(row.product.categoryId ?? ''));
   const [resellersOnly, setResellersOnly] = useState(row.product.resellersOnly);
 
@@ -671,8 +723,7 @@ function EditProduct({
     void (async () => {
       try {
         const d = await api.catalog({ page: 1, pageSize: 100 });
-        const service = d.items.find((s) => s.id === row.product.id);
-        setSiblings(service?.configs.length ?? null);
+        setSiblings(d.items.find((s) => s.id === row.product.id)?.configs.length ?? null);
       } catch {
         setSiblings(null);
       }
@@ -695,9 +746,9 @@ function EditProduct({
         durationDays: durationDays.trim() === '' ? null : Number(durationDays),
         status,
       });
-      // Only when one of them actually moved: an unchanged `updateProduct`
-      // still writes an audit row saying a service was edited, and an audit
-      // trail full of no-op edits is one nobody reads.
+      // Only when one of them actually moved: an unchanged `updateProduct` still
+      // writes an audit row saying a service was edited, and an audit trail full
+      // of no-op edits is one nobody reads.
       if (serviceChanged) {
         await api.updateProduct(row.product.id, {
           code: row.product.code,
@@ -721,13 +772,20 @@ function EditProduct({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-body" onClick={(e) => e.stopPropagation()}>
-        <div className="page-head">
+      <form
+        className="modal-body"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save();
+        }}
+      >
+        <div className="modal-head">
           <div>
-            <div className="page-head__title">{row.name}</div>
+            <div className="modal-head__title">{row.name}</div>
             <div className="page-head__sub">
               {row.product.name}
-              {row.ordersCount > 0 && ` · ${count(row.ordersCount)} سفارش`}
+              {row.ordersCount > 0 ? ` · ${count(row.ordersCount)} سفارش` : ''}
             </div>
           </div>
           <button type="button" className="btn btn-sm" onClick={onClose}>
@@ -737,7 +795,7 @@ function EditProduct({
 
         {err && <div className="alert alert-error">{err}</div>}
 
-        <div className="filters">
+        <div className="toolbar" style={{ borderBlockEnd: 'none', paddingBlockEnd: 0 }}>
           <div className="grow">
             <label className="form-label" htmlFor="ed-name">
               نام محصول
@@ -764,7 +822,7 @@ function EditProduct({
             />
           </div>
         </div>
-        <div className="filters">
+        <div className="toolbar" style={{ borderBlockEnd: 'none', paddingBlockEnd: 0 }}>
           <div>
             <label className="form-label" htmlFor="ed-vol">
               حجم (گیگ)
@@ -810,13 +868,13 @@ function EditProduct({
           </div>
         </div>
 
-        <h4>روی کلِ سرویس «{row.product.name}»</h4>
+        <h4 style={{ marginBlockEnd: 4 }}>روی کلِ سرویس «{row.product.name}»</h4>
         <p className="muted" style={{ marginBlockStart: 0 }}>
-          {siblings === null
-            ? 'این خانه‌ها روی سرویس می‌نشینند، نه روی همین ردیف — پس روی همهٔ کانفیگ‌های این سرویس اثر می‌گذارند.'
-            : `این سه خانه روی سرویس می‌نشینند، نه روی همین ردیف — عوض‌کردنشان روی هر ${count(siblings)} کانفیگِ «${row.product.name}» اثر می‌گذارد.`}
+          {siblings === null || siblings <= 1
+            ? 'این سه خانه روی سرویس می‌نشینند، نه روی همین ردیف.'
+            : `این سه خانه روی سرویس می‌نشینند، نه روی همین ردیف — عوض‌کردنشان روی هر ${count(siblings)} محصولِ این سرویس اثر می‌گذارد.`}
         </p>
-        <div className="filters">
+        <div className="toolbar" style={{ borderBlockEnd: 'none', paddingBlockEnd: 0 }}>
           <div>
             <label className="form-label" htmlFor="ed-panel">
               لوکیشن
@@ -872,12 +930,11 @@ function EditProduct({
           می‌شوند.
         </p>
 
-        <div className="filters">
+        <div className="modal-actions">
           <button
-            type="button"
+            type="submit"
             className="btn btn-primary"
-            disabled={busy || categoryId === ''}
-            onClick={() => void save()}
+            disabled={busy || categoryId === '' || name.trim() === ''}
             {...w}
           >
             ذخیره
@@ -886,7 +943,7 @@ function EditProduct({
             انصراف
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }

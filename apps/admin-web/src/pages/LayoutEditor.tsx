@@ -1,32 +1,28 @@
 /**
- * Where a shop screen breaks its rows — the categories, or the configs in one.
+ * چیدمان — where a shop screen breaks its rows.
  *
- * One component for both levels, because the two screens are the same problem
- * with different labels, and two copies would be two places for the rule to
- * drift.
+ * One component for both levels of the shop, because the categories screen and
+ * a category's products are the same problem with different labels.
  *
- * WHY THIS DOES NOT LOOK LIKE «چیدمان کیبورد». That screen has a row box and a
- * column box per button, and it can: `bot_keyboard_buttons` positions a closed
- * set of buttons that never changes underneath it, so absolute `(row, col)`
- * cells mean something. Here the buttons are database rows — they come and go,
- * and half of them are invisible to any particular customer. So the stored
- * position is one number and a list order, and this editor works in ROWS
- * directly rather than exposing that number.
+ * WHAT THIS DRAWS, AND WHY IT IS A PHONE. An admin arranging a shop screen is
+ * asking one question: what will the customer see. The first version answered a
+ * different one — a column of admin cards, each carrying five glyph buttons —
+ * and it was rejected on sight, correctly. So this draws the message and the
+ * inline keyboard at the width Telegram gives them, and the buttons are moved
+ * by dragging them, which is the gesture the panel this is modelled on uses.
  *
- * That is not a presentation choice. `checkCatalogLayout` refuses a gap, a row
- * number that goes backwards, and a half-arranged screen; a pair of number
- * boxes makes all three one keystroke away and each of them is a refusal the
- * admin has to read and decode. Editing rows instead makes those states
- * unreachable: the arrangement is SERIALISED from the rows at save time, so
- * it is monotonic and gapless by construction. What is left for the server to
- * refuse is a row wider than Telegram accepts and a screen longer than a phone
- * can read, and both are refused HERE first, with the button disabled rather
- * than the save rejected.
+ * WHY THERE IS NO ROW NUMBER ANYWHERE. `checkCatalogLayout` refuses a gap, a
+ * row number that goes backwards, and a half-arranged screen. A pair of number
+ * boxes puts all three one keystroke away, and each is a refusal the admin has
+ * to read and decode. Here the arrangement is SERIALISED from the rows at save
+ * time, so those states are unreachable rather than refused. What is left is a
+ * row wider than Telegram accepts and a screen longer than a phone can read,
+ * and both are refused by the drop itself.
  *
- * The preview is not a preview. It is the editor — the same rows, the same
- * order, with the controls on the chips. A separate preview panel would be a
- * second rendering of the same state and therefore a second thing that can be
- * wrong.
+ * KEYBOARD. Native drag and drop reaches a mouse and nothing else, so every
+ * chip is a real `<button>` and the arrow keys do the same four moves. That is
+ * not a courtesy: it is the only way this screen works on a laptop trackpad
+ * with a stuck drag, and it costs eleven lines.
  */
 
 import { useEffect, useState } from 'react';
@@ -38,7 +34,7 @@ import { useAdminWriteProps } from '../role.js';
 export interface LayoutButton {
   id: number;
   label: string;
-  /** A second line on the chip — a price, a service name, a count. */
+  /** A second line on the chip — a price, or why it is not on sale. */
   hint?: string | null;
   rowIndex: number | null;
 }
@@ -51,103 +47,124 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Move `item` out of `rows` and drop the row if it was the last one in it. */
-function without(rows: LayoutButton[][], id: number): LayoutButton[][] {
-  return rows.map((row) => row.filter((b) => b.id !== id)).filter((row) => row.length > 0);
+type Rows = LayoutButton[][];
+
+/** Where a chip is, as `[row, column]`. `[-1, -1]` if it is not on the board. */
+function locate(rows: Rows, id: number): [number, number] {
+  for (const [r, row] of rows.entries()) {
+    const c = row.findIndex((b) => b.id === id);
+    if (c !== -1) return [r, c];
+  }
+  return [-1, -1];
+}
+
+/**
+ * Move one chip, and tidy up after it.
+ *
+ * `toRow` and `toCol` are positions in the board the admin is LOOKING at, and
+ * the conversion below is the whole of why this is a function rather than three
+ * lines at each call site: lifting a chip out can delete its row, and then
+ * every row after it has shifted by one. Handing the callers the post-lift
+ * indexing instead would make «drop it on the strip below its own row» land a
+ * row too far, and only sometimes — which is the shape of bug that survives a
+ * demo.
+ *
+ * An emptied row is dropped rather than kept, because a row exists only because
+ * a button is in it. That is the same rule `groupIntoRows` reads the saved
+ * arrangement by.
+ */
+function move(rows: Rows, id: number, toRow: number, toCol: number, asNewRow: boolean): Rows {
+  const [from, fromCol] = locate(rows, id);
+  if (from === -1) return rows;
+  const chip = rows[from]!.find((b) => b.id === id)!;
+
+  const vanishes = rows[from]!.length === 1;
+  const lifted = rows.map((row) => row.filter((b) => b.id !== id)).filter((row) => row.length > 0);
+  const shifted = toRow - (vanishes && toRow > from ? 1 : 0);
+
+  if (asNewRow) {
+    if (lifted.length >= MAX_CATALOG_ROWS) return rows;
+    const at = Math.max(0, Math.min(shifted, lifted.length));
+    return [...lifted.slice(0, at), [chip], ...lifted.slice(at)];
+  }
+
+  const at = Math.max(0, Math.min(shifted, lifted.length - 1));
+  const target = lifted[at];
+  if (!target || target.length >= MAX_ROW_WIDTH) return rows;
+  // Same conversion one axis down: dropping on the chip that is fourth in a row
+  // means «go in front of it», and after lifting a chip from in front of it,
+  // it is third.
+  const wanted = toCol < 0 ? target.length : toCol - (toRow === from && toCol > fromCol ? 1 : 0);
+  const col = Math.max(0, Math.min(wanted, target.length));
+  return lifted.map((row, i) => (i === at ? [...row.slice(0, col), chip, ...row.slice(col)] : row));
 }
 
 export function LayoutEditor({
   scope,
   items,
+  screenText,
   onSaved,
-  note,
 }: {
   scope: LayoutScope;
   /** The WHOLE screen, in its saved order. A partial list is refused by the server. */
   items: LayoutButton[];
+  /** The message the bot sends above these buttons, so the frame is the real screen. */
+  screenText: string;
   onSaved: () => void;
-  /** One sentence about what this particular screen is, above the rows. */
-  note?: string;
 }) {
   const w = useAdminWriteProps();
-  const [rows, setRows] = useState<LayoutButton[][]>(() => groupIntoRows(items));
+  const [rows, setRows] = useState<Rows>(() => groupIntoRows(items));
+  const [dragging, setDragging] = useState<number | null>(null);
+  /** Where a drop would land right now: a row and column, or a new row before `row`. */
+  const [over, setOver] = useState<{ row: number; col: number; asNewRow: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
-  // Reloading when the screen's contents change — a config added, a category
-  // renamed — rather than keeping edits across it. Unsaved edits about rows
+  // Reloading when the screen's contents change — a product added, a category
+  // renamed — rather than keeping edits across it. Unsaved positions for rows
   // that no longer exist are not edits worth keeping.
   useEffect(() => {
     setRows(groupIntoRows(items));
     setDone(null);
   }, [items]);
 
-  const at = (id: number): [number, number] => {
-    for (const [r, row] of rows.entries()) {
-      const c = row.findIndex((b) => b.id === id);
-      if (c !== -1) return [r, c];
-    }
-    return [-1, -1];
-  };
+  const dirty = JSON.stringify(serialise(rows)) !== JSON.stringify(serialise(groupIntoRows(items)));
 
-  function swapInRow(id: number, delta: number) {
-    const [r, c] = at(id);
-    const row = rows[r];
-    if (!row || c + delta < 0 || c + delta >= row.length) return;
-    const next = rows.map((x) => [...x]);
-    const line = next[r]!;
-    [line[c], line[c + delta]] = [line[c + delta]!, line[c]!];
-    setRows(next);
+  function drop(row: number, col: number, asNewRow: boolean) {
+    if (dragging === null) return;
+    setRows((current) => move(current, dragging, row, col, asNewRow));
+    setDragging(null);
+    setOver(null);
     setDone(null);
   }
 
-  /** Move a button into the row above or below, joining the end of it. */
-  function toRow(id: number, delta: number) {
-    const [r] = at(id);
-    const target = r + delta;
-    if (target < 0 || target >= rows.length) return;
-    const button = rows[r]!.find((b) => b.id === id)!;
-    if ((rows[target]?.length ?? 0) >= MAX_ROW_WIDTH) return;
-    const stripped = without(rows, id);
-    // `without` may have removed an empty row above the target, which shifts it.
-    const shift = rows[r]!.length === 1 && r < target ? -1 : 0;
-    const next = stripped.map((row, i) => (i === target + shift ? [...row, button] : row));
-    setRows(next);
+  /** The four moves, for anyone reaching this screen without a mouse. */
+  function key(e: React.KeyboardEvent, id: number) {
+    const keys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+    if (!keys.includes(e.key)) return;
+    e.preventDefault();
+    const [r, c] = locate(rows, id);
+    // Right is BACK in an RTL row, so the arrows match what the eye sees rather
+    // than what the array index does.
+    if (e.key === 'ArrowRight') setRows(move(rows, id, r, c - 1, false));
+    if (e.key === 'ArrowLeft') setRows(move(rows, id, r, c + 1, false));
+    if (e.key === 'ArrowUp') setRows(move(rows, id, r - 1, -1, false));
+    if (e.key === 'ArrowDown') setRows(move(rows, id, r + 1, -1, false));
     setDone(null);
   }
 
-  /** Give a button a line of its own, immediately below the one it is on. */
-  function split(id: number) {
-    const [r] = at(id);
-    if (rows.length >= MAX_CATALOG_ROWS) return;
-    const button = rows[r]!.find((b) => b.id === id)!;
-    const stripped = rows.map((row) => row.filter((b) => b.id !== id));
-    const next: LayoutButton[][] = [];
-    for (const [i, row] of stripped.entries()) {
-      if (row.length > 0) next.push(row);
-      if (i === r) next.push([button]);
-    }
-    setRows(next);
-    setDone(null);
-  }
-
-  /** The arrangement as the server takes it: array order is column order. */
-  function serialise(): LayoutItem[] {
-    return rows.flatMap((row, r) => row.map((b) => ({ id: b.id, rowIndex: r })));
-  }
-
-  async function save(payload: LayoutItem[], message_: string) {
+  async function save(payload: LayoutItem[], said: string) {
     setBusy(true);
     setErr(null);
     setDone(null);
     try {
       await api.saveCatalogLayout(scope, payload);
-      // Not «تا نیم دقیقهٔ دیگر» like the keyboard screen says. That one is
-      // true there — `loadBotContent` caches for thirty seconds — and false
-      // here: these rows are read live on every screen the customer opens.
-      // Promising less than the truth teaches an admin to save twice.
-      setDone(message_);
+      // Not «تا نیم دقیقهٔ دیگر» like the bot-keyboard screen says. That is true
+      // there — `loadBotContent` caches for thirty seconds — and false here:
+      // these rows are read live on every screen a customer opens. Promising
+      // less than the truth teaches an admin to save twice.
+      setDone(said);
       onSaved();
     } catch (e) {
       setErr(message(e));
@@ -156,128 +173,148 @@ export function LayoutEditor({
     }
   }
 
-  const tooWide = rows.some((row) => row.length > MAX_ROW_WIDTH);
-  const tooMany = rows.length > MAX_CATALOG_ROWS;
   const arranged = items.some((b) => b.rowIndex !== null);
 
   if (items.length === 0) {
-    return <p className="muted">این صفحه هنوز دکمه‌ای ندارد.</p>;
+    return <p className="empty">این صفحه هنوز دکمه‌ای ندارد.</p>;
   }
 
-  return (
-    <>
-      {note && (
-        <p className="muted" style={{ marginBlockStart: 0 }}>
-          {note}
-        </p>
-      )}
-      {err && <div className="alert alert-error">{err}</div>}
-      {done && <div className="alert alert-info">{done}</div>}
-      {tooWide && (
-        <div className="alert alert-error">
-          تلگرام بیش از {count(MAX_ROW_WIDTH)} دکمه در یک ردیف را رد می‌کند و کلِ پیام را نمی‌فرستد.
-        </div>
-      )}
-      {tooMany && (
-        <div className="alert alert-error">
-          بیش از {count(MAX_CATALOG_ROWS)} ردیف روی گوشی خوانده نمی‌شود.
-        </div>
-      )}
-
-      <div className="preview-keyboard">
-        {rows.map((row, r) => (
-          <div key={row[0]!.id} className="preview-row">
-            {row.map((b, c) => (
-              <span key={b.id} className="preview-button">
-                <span>{b.label}</span>
-                {b.hint && <small className="page-head__sub">{b.hint}</small>}
-                <span className="layout-chip__tools">
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    title="یک جا به راست"
-                    disabled={c === 0}
-                    onClick={() => swapInRow(b.id, -1)}
-                    {...w}
-                  >
-                    ‹
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    title="یک جا به چپ"
-                    disabled={c === row.length - 1}
-                    onClick={() => swapInRow(b.id, 1)}
-                    {...w}
-                  >
-                    ›
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    title="به ردیف بالا"
-                    disabled={r === 0 || (rows[r - 1]?.length ?? 0) >= MAX_ROW_WIDTH}
-                    onClick={() => toRow(b.id, -1)}
-                    {...w}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    title="به ردیف پایین"
-                    disabled={r === rows.length - 1 || (rows[r + 1]?.length ?? 0) >= MAX_ROW_WIDTH}
-                    onClick={() => toRow(b.id, 1)}
-                    {...w}
-                  >
-                    ↓
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    title="ردیف تازه، زیر همین ردیف"
-                    disabled={row.length === 1 || rows.length >= MAX_CATALOG_ROWS}
-                    onClick={() => split(b.id)}
-                    {...w}
-                  >
-                    ⏎
-                  </button>
-                </span>
-              </span>
-            ))}
-          </div>
-        ))}
-      </div>
-
-      <div className="filters" style={{ marginBlockStart: 12 }}>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={busy || tooWide || tooMany}
-          onClick={() => void save(serialise(), 'چیدمان ذخیره شد و ربات همین حالا همین را می‌کشد.')}
-          {...w}
-        >
-          ذخیرهٔ چیدمان
-        </button>
-        <button
-          type="button"
-          className="btn"
-          disabled={busy || !arranged}
-          onClick={() => {
-            if (!window.confirm('چیدمان برداشته شود؟ هر دکمه دوباره ردیف خودش را می‌گیرد.')) return;
-            // Every position null is what «never arranged» means, and the bot
-            // reads it as one button per row — the shape this screen had before
-            // anybody arranged it.
-            void save(
-              items.map((b) => ({ id: b.id, rowIndex: null })),
-              'چیدمان برداشته شد؛ هر دکمه دوباره ردیف خودش را دارد.',
-            );
-          }}
-          {...w}
-        >
-          برداشتن چیدمان
-        </button>
-      </div>
-    </>
+  /** A place a dragged chip can land, drawn between two rows. */
+  const splitAt = (row: number) => (
+    <div
+      className={`kb-split${over?.asNewRow && over.row === row ? ' kb-split--over' : ''}`}
+      onDragOver={(e) => {
+        if (dragging === null) return;
+        e.preventDefault();
+        setOver({ row, col: -1, asNewRow: true });
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        drop(row, -1, true);
+      }}
+    />
   );
+
+  return (
+    <div className="arrange">
+      <div className="phone">
+        <div className="phone__message">{screenText}</div>
+        <div className="phone__keyboard" onDragEnd={() => setOver(null)}>
+          {splitAt(0)}
+          {rows.map((row, r) => (
+            <div key={row[0]!.id}>
+              <div
+                className={`kb-row${over && !over.asNewRow && over.row === r ? ' kb-row--over' : ''}`}
+                onDragOver={(e) => {
+                  if (dragging === null || row.length >= MAX_ROW_WIDTH) return;
+                  e.preventDefault();
+                  setOver({ row: r, col: -1, asNewRow: false });
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  drop(r, over?.asNewRow ? -1 : (over?.col ?? -1), false);
+                }}
+              >
+                {row.map((b, c) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    draggable
+                    className={[
+                      'kb-chip',
+                      dragging === b.id ? 'kb-chip--dragging' : '',
+                      over && !over.asNewRow && over.row === r && over.col === c
+                        ? 'kb-chip--before'
+                        : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    onDragStart={() => setDragging(b.id)}
+                    onDragEnd={() => {
+                      setDragging(null);
+                      setOver(null);
+                    }}
+                    onDragOver={(e) => {
+                      if (dragging === null || dragging === b.id) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setOver({ row: r, col: c, asNewRow: false });
+                    }}
+                    onKeyDown={(e) => key(e, b.id)}
+                    {...w}
+                  >
+                    <span>{b.label}</span>
+                    {b.hint && <span className="kb-chip__hint">{b.hint}</span>}
+                  </button>
+                ))}
+              </div>
+              {splitAt(r + 1)}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="arrange__side">
+        <p className="muted" style={{ margin: 0 }}>
+          دکمه‌ها را با ماوس بگیرید و جابه‌جا کنید: روی یک دکمهٔ دیگر بیندازید تا کنارش بنشیند، یا
+          روی فاصلهٔ بین دو ردیف تا ردیف تازه بسازد. با صفحه‌کلید هم می‌شود — روی دکمه Tab بزنید و
+          با کلیدهای جهت‌دار ببریدش.
+        </p>
+
+        {err && <div className="alert alert-error">{err}</div>}
+        {done && <div className="alert alert-ok">{done}</div>}
+
+        <div className="row-actions" style={{ justifyContent: 'flex-start' }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy || !dirty}
+            onClick={() =>
+              void save(serialise(rows), 'چیدمان ذخیره شد. ربات همین حالا همین را می‌کشد.')
+            }
+            {...w}
+          >
+            ذخیرهٔ چیدمان
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy || !arranged}
+            onClick={() => {
+              if (!window.confirm('چیدمان برداشته شود؟ هر دکمه دوباره ردیف خودش را می‌گیرد.')) {
+                return;
+              }
+              // Every position null is what «never arranged» means, and the bot
+              // reads it as one button per row — the shape a screen ships in.
+              void save(
+                items.map((b) => ({ id: b.id, rowIndex: null })),
+                'چیدمان برداشته شد؛ هر دکمه دوباره ردیف خودش را دارد.',
+              );
+            }}
+            {...w}
+          >
+            برداشتن چیدمان
+          </button>
+        </div>
+
+        <p className="muted" style={{ margin: 0 }}>
+          {count(rows.length)} ردیف · حداکثر {count(MAX_ROW_WIDTH)} دکمه در هر ردیف و{' '}
+          {count(MAX_CATALOG_ROWS)} ردیف در کل صفحه.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The arrangement as the server takes it.
+ *
+ * The array ORDER is the column order and `sortOrder` is never sent — the
+ * server writes it as the array index. There is no second place for the order
+ * to live, so there is nothing for it to disagree with, and the whole class of
+ * «two buttons claim column 2» stops existing rather than being validated
+ * against.
+ */
+function serialise(rows: Rows): LayoutItem[] {
+  return rows.flatMap((row, r) => row.map((b) => ({ id: b.id, rowIndex: r })));
 }
