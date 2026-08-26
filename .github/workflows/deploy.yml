@@ -46,6 +46,31 @@ jobs:
       group: deploy-${{ inputs.environment }}
       cancel-in-progress: false
     steps:
+      # Checked HERE, not in the callers.
+      #
+      # `rollback.yml` declares `environment` as a choice and both callers
+      # match the revision against 40 hex characters, so today every value
+      # arriving is already well formed. But that is a property of the callers,
+      # and this workflow is `workflow_call` — the next caller is whoever adds
+      # one. These three values are interpolated into a command that runs as
+      # the deploy user on the host holding the shop's database, so the shape
+      # of each is asserted where it is used rather than where it came from.
+      - name: The inputs are what they claim to be
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            staging | production) ;;
+            *) echo "environment must be staging or production" >&2; exit 1 ;;
+          esac
+          echo "$EXPECTED_SHA" | grep -qE '^[0-9a-f]{40}$' ||
+            { echo "expected_sha is not a full 40-character commit sha" >&2; exit 1; }
+          echo "$DIGEST" | grep -qE '^sha256:[0-9a-f]{64}$' ||
+            { echo "digest is not a sha256 digest" >&2; exit 1; }
+
       # At the deployed commit, not at the branch tip: the script that runs
       # must be the one from the commit being deployed.
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -92,19 +117,32 @@ jobs:
       # of a private repository, the same reasoning that keeps ingest's
       # /version public. They can safely be arguments; the credentials cannot,
       # and are not.
+      #
+      # Every value reaches the shell as an environment variable rather than as
+      # `${{ }}` inside the command string. A template expansion is pasted in
+      # before bash ever sees the line, so a value carrying a quote or a
+      # semicolon would stop being an argument and start being code — running
+      # as the deploy user, on the host that holds the shop's database. The
+      # variables are also what makes the single-quote wrapping unnecessary,
+      # which was its own small bug: a value containing `'` broke the command.
       - name: Deploy
         id: run
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           PORT: ${{ secrets.DEPLOY_PORT }}
           USER_: ${{ secrets.DEPLOY_USER }}
-          IMAGE: ghcr.io/${{ github.repository }}@${{ inputs.digest }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          DIGEST: ${{ inputs.digest }}
         run: |
           set -euo pipefail
+          # A registry path may not contain uppercase and this repository's
+          # name does, so `github.repository` cannot be used verbatim.
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}@$DIGEST"
           ssh -p "$PORT" -i ~/.ssh/deploy_key \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$USER_@$HOST" \
-            "/opt/shikoo/deploy.sh '${{ inputs.environment }}' '$IMAGE' '${{ inputs.expected_sha }}'" \
+            /opt/shikoo/deploy.sh "$ENVIRONMENT" "$IMAGE" "$EXPECTED_SHA" \
             2>&1 | tee deploy.log
 
       # Written whether the deploy passed or failed — a failed deploy is when
@@ -113,9 +151,11 @@ jobs:
       # full log stays in the job output.
       - name: Report
         if: always()
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           {
-            echo "### Deploy — ${{ inputs.environment }}"
+            echo "### Deploy — $ENVIRONMENT"
             echo ""
             if [ -f deploy.log ]; then
               grep '^SUMMARY: ' deploy.log | sed 's/^SUMMARY: /- /' || echo "- no summary was produced"

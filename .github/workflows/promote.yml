@@ -45,10 +45,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: r
         env:
-          IMAGE: ghcr.io/${{ github.repository }}
           INPUT: ${{ inputs.image }}
         run: |
           set -euo pipefail
+          # A registry path may not contain uppercase and this repository's
+          # name does, so `github.repository` cannot be used verbatim.
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
           case "$INPUT" in
             sha256:*)
               digest=$INPUT
@@ -107,9 +109,14 @@ jobs:
 
   promote:
     needs: [resolve, verify-staging]
+    # No `secrets: inherit`. Everything this workflow reads — DEPLOY_HOST,
+    # DEPLOY_PORT, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS — is an
+    # ENVIRONMENT secret, and the called job declares the environment itself,
+    # so those resolve there without being handed down. Inheriting would pass
+    # every repository secret to a workflow that wants five, which is the whole
+    # of what the deploy user can reach.
     uses: ./.github/workflows/deploy.yml
     with:
       environment: production
       digest: ${{ needs.resolve.outputs.digest }}
       expected_sha: ${{ needs.resolve.outputs.sha }}
-    secrets: inherit
