@@ -50,6 +50,7 @@ import type {
   RenewRequest,
   GroupsResult,
   GroupDeleteResult,
+  GroupMoveResult,
   GroupWriteResult,
   HostDeleteResult,
   HostWriteResult,
@@ -84,10 +85,33 @@ interface MarzbanUser {
   used_traffic?: unknown;
   data_limit?: unknown;
   note?: unknown;
+  /** The tiers this account carries. Read by `moveGroupMembers` and nothing else. */
+  group_ids?: unknown;
 }
 
 function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * The group ids on an account the panel just described.
+ *
+ * A first version returned `null` for «the panel did not say», to keep it apart
+ * from `[]` for «in no group» — the distinction that cost this project five
+ * ungrouped accounts elsewhere. Deleting it from the caller turned no test red,
+ * because there is no branch here where the two differ: an unreadable field and
+ * an empty one both mean this account does not carry the group being retired,
+ * and both are skipped. So the distinction was a comment claiming an importance
+ * nothing could demonstrate, and it is gone rather than left to be believed.
+ */
+function asGroupIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const ids: number[] = [];
+  for (const item of value) {
+    const n = typeof item === 'number' ? item : Number(item);
+    if (Number.isInteger(n)) ids.push(n);
+  }
+  return ids;
 }
 
 /**
@@ -902,6 +926,102 @@ export const marzbanAdapter: ProvisioningAdapter = {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return { ok: false, reason: `could not reach the panel: ${reason}` };
+    }
+  },
+
+  /**
+   * Re-group every account that carries `from`, so the group can be retired
+   * without silently emptying its members' subscriptions.
+   *
+   * Read the whole population, filter here. `?group_id=` on `/api/users` is
+   * accepted and ignored — `3`, `7` and `999` each answered 200 with all
+   * thirteen accounts on the test panel, 2026-08-26 — so a filter pushed to the
+   * panel would move every account it has. `listAccounts` above is not reused
+   * for the same reason it exists: it drops `group_ids` on the way out, and
+   * that field is the entire question here.
+   *
+   * The membership test is the account's own `group_ids`, never the group's
+   * `memberCount`. A count answers "how many" and this needs "which".
+   */
+  async moveGroupMembers(
+    provider: ProviderContext,
+    from: number,
+    to: number,
+  ): Promise<GroupMoveResult> {
+    let moved = 0;
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error, moved };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const headers = {
+        accept: 'application/json',
+        authorization: `Bearer ${auth.token}`,
+      };
+
+      let scanned = 0;
+      for (let offset = 0; offset < MAX_ACCOUNTS; offset += PAGE_SIZE) {
+        const res = await withTimeout((signal) =>
+          (provider.fetch ?? fetch)(`${base}/api/users?offset=${offset}&limit=${PAGE_SIZE}`, {
+            headers,
+            signal,
+          }),
+        );
+        if (!res.ok) {
+          return { ok: false, reason: `panel would not list accounts (HTTP ${res.status})`, moved };
+        }
+        const json = (await res.json()) as { users?: unknown };
+        const page = Array.isArray(json.users) ? (json.users as MarzbanUser[]) : [];
+        scanned += page.length;
+
+        for (const user of page) {
+          const username = asString(user.username);
+          if (username === null) continue;
+          const groups = asGroupIds(user.group_ids);
+          if (!groups.includes(from)) continue;
+
+          // Built from what the panel just reported, not from an assumption
+          // that `from` was the account's only group: an account in both the
+          // retiring tier and another one must keep the other one.
+          const next = groups.filter((g) => g !== from);
+          if (!next.includes(to)) next.push(to);
+
+          const put = await withTimeout((signal) =>
+            (provider.fetch ?? fetch)(`${base}/api/user/${encodeURIComponent(username)}`, {
+              method: 'PUT',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({ group_ids: next }),
+              signal,
+            }),
+          );
+          if (!put.ok) {
+            // Named, because the operator's next question is which one. The
+            // status only — a rejected body can echo the submitted account back
+            // and this reaches a browser.
+            return {
+              ok: false,
+              reason: `panel refused to move «${username}» (HTTP ${put.status})`,
+              moved,
+            };
+          }
+          moved += 1;
+        }
+
+        // A short page is the last page, same as `listAccounts`: trusting
+        // `total` would mean trusting a number to agree with the array beside
+        // it.
+        if (page.length < PAGE_SIZE) return { ok: true, moved, scanned };
+      }
+      // The ceiling. Stopping short is reported as a failure rather than a
+      // success with a smaller number, because "moved everyone" is what the
+      // caller is about to delete a group on the strength of.
+      return {
+        ok: false,
+        reason: `this panel has more than ${MAX_ACCOUNTS} accounts; the rest were not moved`,
+        moved,
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}`, moved };
     }
   },
 

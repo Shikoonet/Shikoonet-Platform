@@ -244,6 +244,23 @@ export type GroupWriteResult = { ok: true; group: PanelGroup } | { ok: false; re
 export type GroupDeleteResult = { ok: true } | { ok: false; reason: string };
 
 /**
+ * The outcome of walking a panel's accounts and re-grouping the ones that were
+ * in a group being retired.
+ *
+ * `moved` is on BOTH arms and that is the point. This is not one request: it is
+ * one `PUT` per member, and the interesting failure is the sixth of nine. A
+ * result that said only «failed» would leave an operator unable to tell «none
+ * of them moved, try again» from «five moved, the rest did not», and those need
+ * different next steps.
+ *
+ * `scanned` is the population it had to read to find them, because the panel
+ * will not filter by group — see `moveGroupMembers`.
+ */
+export type GroupMoveResult =
+  | { ok: true; moved: number; scanned: number }
+  | { ok: false; reason: string; moved: number };
+
+/**
  * One host, which is the thing a customer's subscription is actually built out
  * of.
  *
@@ -400,6 +417,34 @@ export interface ProvisioningAdapter {
    * only asks.
    */
   deleteGroup?(provider: ProviderContext, id: number): Promise<GroupDeleteResult>;
+
+  /**
+   * Move every account out of one group and into another.
+   *
+   * What this exists for: retiring a tier. «خرید اولی‌ها» stops being offered,
+   * and the people who bought it are still holding it. `deleteGroup` alone
+   * leaves them in no group at all — their accounts survive and their configs
+   * stop arriving, silently, on the next subscription refresh. So the deletion
+   * has a step in front of it.
+   *
+   * **The panel cannot be asked for one group's members.** `GET /api/users`
+   * accepts `?group_id=` and ignores it: measured against the live panel on
+   * 2026-08-26, `group_id=3`, `group_id=7` and even `group_id=999` each answered
+   * `200` with all thirteen accounts. So the whole population is read, page by
+   * page, and the filter is applied here. Any implementation that trusts that
+   * parameter moves every account on the panel.
+   *
+   * One `PUT /api/user/{u}` per member, which is a partial update — the quota,
+   * expiry and proxy settings of an account this touches are not resent and do
+   * not change. Idempotent by construction: a member that already moved no
+   * longer carries `from`, so a retry after a partial failure resumes rather
+   * than repeating.
+   */
+  moveGroupMembers?(
+    provider: ProviderContext,
+    from: number,
+    to: number,
+  ): Promise<GroupMoveResult>;
 
   /**
    * Every host on the panel, so a screen can say which inbounds actually

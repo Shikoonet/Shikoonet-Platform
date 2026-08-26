@@ -1304,6 +1304,44 @@ function GroupManager({
     }
   }
 
+  /**
+   * Empty a group into another one before it is retired.
+   *
+   * The count in the confirm is the panel's own `memberCount`, already on this
+   * screen — asking the server for a preview would be a second number that can
+   * disagree with the one the operator is looking at.
+   */
+  async function move(g: PanelGroupItem, toId: number) {
+    const to = (available ?? []).find((x) => x.id === toId);
+    const members = g.memberCount ?? 0;
+    if (
+      !window.confirm(
+        `${members} حساب از «${g.name}» به «${to?.name ?? `#${toId}`}» منتقل شود؟ ` +
+          'روی خودِ حساب‌ها چیز دیگری عوض نمی‌شود — نه حجم، نه تاریخ. ' +
+          'گروه‌های دیگری که هر حساب دارد سرِ جایشان می‌مانند.',
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      const r = await api.movePanelGroupMembers(panelId, g.id, toId);
+      setDone(
+        r.moved === 0
+          ? `هیچ حسابی در «${g.name}» نبود — چیزی جابه‌جا نشد.`
+          : `${r.moved} حساب از «${g.name}» به «${to?.name ?? `#${toId}`}» رفت. حالا می‌شود «${g.name}» را حذف کرد.`,
+      );
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function remove(g: PanelGroupItem) {
     // The server refuses a group anything sells, with a sentence naming what.
     // This confirm is for the other case: a group nothing sells yet, whose
@@ -1311,7 +1349,8 @@ function GroupManager({
     const members = g.memberCount ?? 0;
     const question =
       members > 0
-        ? `گروه «${g.name}» روی پنل ${members} عضو دارد. حذفش کنم؟`
+        ? `گروه «${g.name}» روی پنل ${members} عضو دارد و بعد از حذف، کانفیگ‌های این گروه دیگر به آن‌ها نمی‌رسد. ` +
+          'اگر می‌خواهی نگهشان داری، اول «انتقال اعضا» را بزن. با این حال حذف شود؟'
         : `گروه «${g.name}» از خودِ پنل حذف شود؟`;
     if (!window.confirm(question)) return;
     setBusy(true);
@@ -1412,24 +1451,89 @@ function GroupManager({
                 w={w}
               />
               {editing !== 0 && (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-danger"
-                  disabled={busy}
-                  onClick={() => {
-                    const g = available.find((x) => x.id === editing);
-                    if (g) void remove(g);
-                  }}
-                  {...w}
-                >
-                  حذف این گروه از پنل
-                </button>
+                <>
+                  <MoveMembers
+                    group={available.find((x) => x.id === editing) ?? null}
+                    others={available.filter((x) => x.id !== editing)}
+                    busy={busy}
+                    onMove={(g, toId) => void move(g, toId)}
+                    w={w}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger"
+                    disabled={busy}
+                    onClick={() => {
+                      const g = available.find((x) => x.id === editing);
+                      if (g) void remove(g);
+                    }}
+                    {...w}
+                  >
+                    حذف این گروه از پنل
+                  </button>
+                </>
               )}
             </>
           )}
         </>
       )}
     </>
+  );
+}
+
+/**
+ * «انتقال اعضا» — the step that belongs in front of retiring a tier.
+ *
+ * Drawn only when there is something to move and somewhere to move it. A picker
+ * with no options, or one offered for an empty group, is the kind of control an
+ * operator learns to ignore — and this is the one they must not ignore, because
+ * the thing it prevents is invisible at the moment it happens.
+ *
+ * The member count is the panel's own, the same number in the list above. It can
+ * be absent — `memberCount` is optional because not every panel reports it — and
+ * absent is not zero: the move is still offered, because refusing to offer it
+ * over a missing count is how members get stranded.
+ */
+function MoveMembers({
+  group,
+  others,
+  busy,
+  onMove,
+  w,
+}: {
+  group: PanelGroupItem | null;
+  others: PanelGroupItem[];
+  busy: boolean;
+  onMove: (group: PanelGroupItem, toId: number) => void;
+  w: Record<string, unknown>;
+}) {
+  const [to, setTo] = useState('');
+  if (group === null || others.length === 0) return null;
+  if (group.memberCount === 0) return null;
+
+  return (
+    <div className="filters" style={{ marginBlockStart: 8 }}>
+      <label className="field">
+        <span>انتقال اعضا به</span>
+        <select value={to} onChange={(e) => setTo(e.target.value)} {...w}>
+          <option value="">— گروه مقصد —</option>
+          {others.map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.name} #{g.id}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button
+        type="button"
+        className="btn btn-sm"
+        disabled={busy || to === ''}
+        onClick={() => onMove(group, Number(to))}
+        {...w}
+      >
+        انتقال{group.memberCount === undefined ? '' : ` ${group.memberCount} حساب`}
+      </button>
+    </div>
   );
 }
 

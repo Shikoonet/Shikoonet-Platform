@@ -1266,6 +1266,21 @@ export const api = {
     return req<{ ok: boolean }>(`/panels/${id}/panel-groups/${groupId}`, { method: 'DELETE' });
   },
 
+  /**
+   * Empty a group into another one, so retiring a tier does not silently empty
+   * its members' subscriptions.
+   *
+   * `moved` comes back on the ERROR path too — this is one request per member
+   * against somebody else's panel, so «it failed» and «it failed after five»
+   * are different things and the screen has to be able to say which.
+   */
+  movePanelGroupMembers(id: number, groupId: number, toGroupId: number) {
+    return req<{ ok: boolean; moved: number; scanned: number }>(
+      `/panels/${id}/panel-groups/${groupId}/move-members`,
+      { method: 'POST', body: JSON.stringify({ toGroupId }) },
+    );
+  },
+
   panelHosts(id: number) {
     return req<PanelHosts>(`/panels/${id}/hosts`);
   },
