@@ -215,6 +215,25 @@ set_image() { # uuid tag
     "{\"build_pack\":\"dockerimage\",\"docker_registry_image_name\":\"$IMAGE_NAME\",\"docker_registry_image_tag\":\"$2\"}" >/dev/null
 }
 
+# `SOURCE_COMMIT` is injected by Coolify only for GIT builds — it is not a
+# stored variable, and there is no commit behind an image reference. So after
+# the move to `dockerimage` nothing would answer `/version` and both services
+# would go back to reporting the literal string `dev`, which is exactly the
+# bug docs/STATUS.md records under «موج ۳».
+#
+# `APP_VERSION` is the first thing `resolveAppVersion` looks at, ahead of
+# SOURCE_COMMIT, so setting it here is both the fix and the smoke test's
+# premise: /version answering the deployed sha is what proves the running code
+# is the code that was deployed.
+#
+# Update first, create if it is not there yet — the variable does not exist on
+# an application that has only ever been a git build.
+set_version() { # uuid sha
+  local body="{\"key\":\"APP_VERSION\",\"value\":\"$2\",\"is_preview\":false}"
+  api PATCH "/applications/$1/envs" "$body" >/dev/null 2>&1 ||
+    api POST "/applications/$1/envs" "$body" >/dev/null
+}
+
 # Containers are found by Coolify's own label, never by name: a container name
 # changes on every deploy, `coolify.name` is the application UUID and does not.
 container_for() { docker ps -q --filter "label=coolify.name=$1" | head -1; }
@@ -247,8 +266,9 @@ wait_healthy() { # uuid name
   done
 }
 
-roll_one() { # uuid name tag
+roll_one() { # uuid name tag sha
   set_image "$1" "$3"
+  set_version "$1" "$4"
   api POST "/deploy?uuid=$1" >/dev/null
   wait_healthy "$1" "$2"
 }
@@ -262,9 +282,9 @@ on_err() {
     exit 1
   fi
   echo "[deploy:$ENV_ARG] restoring $PREV_TAG ($PREV_SHA) — the schema stays as migrated" >&2
-  if roll_one "$APP_INGEST" ingest "$PREV_TAG" &&
-    roll_one "$APP_DASHBOARD" dashboard "$PREV_TAG" &&
-    roll_one "$APP_BOT" bot "$PREV_TAG"; then
+  if roll_one "$APP_INGEST" ingest "$PREV_TAG" "$PREV_SHA" &&
+    roll_one "$APP_DASHBOARD" dashboard "$PREV_TAG" "$PREV_SHA" &&
+    roll_one "$APP_BOT" bot "$PREV_TAG" "$PREV_SHA"; then
     summary "rollback=ok ($PREV_TAG)"
     summary "verdict=DEPLOY FAILED, ROLLBACK SUCCEEDED"
   else
@@ -275,9 +295,9 @@ on_err() {
 }
 trap on_err ERR
 
-roll_one "$APP_INGEST" ingest "$COOLIFY_TAG"
-roll_one "$APP_DASHBOARD" dashboard "$COOLIFY_TAG"
-roll_one "$APP_BOT" bot "$COOLIFY_TAG"
+roll_one "$APP_INGEST" ingest "$COOLIFY_TAG" "$EXPECTED_SHA"
+roll_one "$APP_DASHBOARD" dashboard "$COOLIFY_TAG" "$EXPECTED_SHA"
+roll_one "$APP_BOT" bot "$COOLIFY_TAG" "$EXPECTED_SHA"
 summary "health=ok (ingest, dashboard, bot)"
 
 # ------------------------------------------------------------------- smoke

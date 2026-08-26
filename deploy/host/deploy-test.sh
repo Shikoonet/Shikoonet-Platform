@@ -209,6 +209,14 @@ grep -q 'POST /api/v1/deploy?uuid=uuid-ingest' "$WORK/api.log" ||
   fail "ingest was not deployed first"
 pass "build_pack=dockerimage and the digest, ingest first"
 
+# Coolify injects SOURCE_COMMIT only for git builds, so without this the
+# deployed services answer /version with the literal string `dev` and the
+# smoke test's premise disappears.
+say "the deployed commit is written as APP_VERSION"
+grep -q "\"key\":\"APP_VERSION\",\"value\":\"$GOOD_SHA\"" "$WORK/api.log" ||
+  fail "APP_VERSION was not set to the deployed sha"
+pass "APP_VERSION=$GOOD_SHA"
+
 say "and a failure after that point reports a verdict"
 grep -qE 'verdict=(DEPLOY FAILED|MANUAL INTERVENTION)' "$WORK/deploy.log" ||
   fail "a failed deploy produced no verdict: $(tail -3 "$WORK/deploy.log")"
