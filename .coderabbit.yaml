@@ -1,0 +1,95 @@
+# CodeRabbit — automated review on pull requests.
+#
+# The point of the path instructions below is that a generic reviewer flags
+# generic things. This repository has rules that are not guessable from the
+# code — money is integer IRR, an applied migration is history, a raw SMS body
+# never reaches a log — and those are exactly the rules worth catching in a
+# review rather than in production. So they are written down here.
+#
+# It reviews; it does not gate. The required checks are `gate`, `e2e` and
+# `workflows-lint`; a bot's opinion is not one of them.
+
+language: en-US
+
+reviews:
+  profile: chill
+  # A review that can block a merge turns every stylistic opinion into a
+  # negotiation. This one comments.
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  poem: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  path_filters:
+    - '!pnpm-lock.yaml'
+    - '!**/dist/**'
+    - '!**/test-results/**'
+    - '!**/playwright-report/**'
+    - '!graphify-out/**'
+    - '!legacy/**'
+
+  path_instructions:
+    - path: 'migrations/*.sql'
+      instructions: >-
+        An applied migration is history: flag ANY edit to an existing numbered
+        file, because the schema ledger stores a sha256 and an edit makes every
+        deployed container refuse to boot on drift. New files only, numbered in
+        sequence, never `000*`. Money guarantees belong in the database — flag a
+        change that removes or weakens a UNIQUE or partial-unique index,
+        especially the one payment per order and one bank transaction per claim
+        constraints. `audit_logs` is append-only.
+
+    - path: 'packages/domain/**'
+      instructions: >-
+        Money is integer IRR everywhere; Toman appears only at the bot edge and
+        is converted exactly once. Flag floats, rounding, or a currency
+        conversion outside that edge. Auto-verification requires an isolated
+        1-to-1 match on exact account and exact amount with no tolerance, within
+        a 300000ms window — flag any widening. Nothing may auto-reject a claim,
+        and nothing may fabricate a receipt.
+
+    - path: 'packages/sms-parser/**'
+      instructions: >-
+        A raw bank SMS body must never be stored, rendered, or logged. Flag any
+        new log line, error message or thrown Error that could carry the body,
+        an OTP, an API key, a bot token, or more than the last four digits of a
+        card.
+
+    - path: 'apps/**'
+      instructions: >-
+        `ENV_NAME` has no default and the process must refuse to start without
+        it — flag any fallback. Flag a runtime import from a devDependency: the
+        production image is pruned, so that is a deploy-time crash and nothing
+        else. Flag secrets reaching a log or an error response.
+
+    - path: 'deploy/**'
+      instructions: >-
+        These run as root or as the deploy user on a server holding customer
+        money. Require `set -Eeuo pipefail`, quoted expansions, and no secret in
+        a command-line argument — argv is visible in `ps`. Flag any hardcoded
+        Coolify APPLICATION container name: those change on every deploy.
+        Resource UUIDs and env-overridable defaults are fine. Flag anything that
+        would run a schema down-migration or the legacy MySQL data migration
+        automatically.
+
+    - path: '.github/workflows/*.yml'
+      instructions: >-
+        Flag `pull_request_target`. Flag any third-party action pinned to a tag
+        rather than a commit sha. Flag a deployment secret reachable from a job
+        that a pull request can trigger. Flag a mutable tag such as `latest`
+        used as a deployment identity — the identity is the digest.
+
+    - path: '**/*.test.ts'
+      instructions: >-
+        Flag `.only`, and `.skip`/`.todo` without a FIXME naming what unblocks
+        it. Time must be pinned with `vi.spyOn(Date, 'now')` rather than read
+        live; fixtures must be deterministic, never `Math.random()`.
+
+chat:
+  auto_reply: true
