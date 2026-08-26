@@ -113,7 +113,17 @@ exec 9>"$LOCK_FILE"
 flock -n 9 || die "another deploy of $ENV_ARG holds $LOCK_FILE"
 
 CONF="$ENV_DIR/deploy.env"
-[ -f "$CONF" ] || die "missing $CONF — this environment is not set up"
+# «missing» and «there but not readable» are different faults with different
+# fixes, and `[ -f ]` answers false to both. It said missing once when the file
+# was present and /etc/shikoo had lost its group execute bit, which sent the
+# search in entirely the wrong direction.
+if [ ! -e "$CONF" ]; then
+  [ -d "$ENV_DIR" ] ||
+    die "$ENV_DIR does not exist, or this user cannot traverse into it — check that $(dirname "$ENV_DIR") is group-executable by $(id -gn)"
+  die "missing $CONF — this environment is not set up"
+fi
+[ -r "$CONF" ] ||
+  die "$CONF exists but is not readable by $(id -un) — it should be mode 0640, group $(id -gn)"
 
 # Read, do not `source`. A Coolify API token is `<id>|<random>` and a shell
 # reads that pipe as a pipeline — `COOLIFY_TOKEN=4|Vhs…` runs `Vhs…` as a
