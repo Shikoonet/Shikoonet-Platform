@@ -1,0 +1,19 @@
+[Unit]
+Description=Ask GitHub whether main has moved
+
+[Timer]
+# A minute after boot, then every minute. The tick costs one conditional GET to
+# api.github.com — GitHub's rate limit for an authenticated token is 5000/hour
+# and this uses 60 at most, plus one more per new commit.
+OnBootSec=1min
+OnUnitActiveSec=1min
+# Without this, every restart of the box lines this up with whatever else runs
+# on the minute. The jitter is free.
+RandomizedDelaySec=10s
+# A tick missed while the box was off must still happen, or a commit pushed
+# during a reboot waits for the next push.
+Persistent=true
+Unit=shikoo-autodeploy.service
+
+[Install]
+WantedBy=timers.target
