@@ -13,6 +13,7 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
+import { renewAllowed, renewModeFor } from '@shikoo/domain';
 
 const ADMIN = 'admin@example.com';
 const REVIEWER = 'reviewer-panels@example.com';
@@ -48,7 +49,7 @@ async function makePanel(
 
 async function panelRow(id: number) {
   return baseEnv.DB.prepare(
-    `SELECT name, status, capacity, sort_order, secret_ref, config::text AS config
+    `SELECT name, status, capacity, sort_order, base_url, secret_ref, config::text AS config
        FROM provisioning_providers WHERE id = ?1`,
   )
     .bind(id)
@@ -57,6 +58,7 @@ async function panelRow(id: number) {
       status: string;
       capacity: number | null;
       sort_order: number;
+      base_url: string | null;
       secret_ref: string | null;
       config: string;
     }>();
@@ -272,8 +274,63 @@ describe('POST /api/v1/admin/panels/:id', () => {
     // that tries to set one gets an error instead of a silent no-op.
     expect((await patch(id, { secretRef: 'attacker-controlled' })).status).toBe(400);
     expect((await patch(id, { config: { proxies: {} } })).status).toBe(400);
-    expect((await patch(id, { baseUrl: 'https://elsewhere.invalid' })).status).toBe(400);
     expect((await panelRow(id))!.secret_ref).toBe(SECRET_REF);
+  });
+
+  /**
+   * The address IS writable, since 2026-08-26, and this test used to assert the
+   * opposite.
+   *
+   * It was create-only, so a panel that moved host could not be repaired — only
+   * deleted and rebuilt, which loses the id every sold subscription points at.
+   * The two things that must NOT come with it are still refused above:
+   * `secretRef` and `config`.
+   *
+   * Normalised through the same helper as create, because the connection test
+   * normalises too, and an address stored differently from the one that was
+   * tested is a green tick followed by a 404 an hour later.
+   */
+  it('lets the address be repaired, normalised, without touching the credential', async () => {
+    const id = await makePanel('moved-host');
+    expect((await patch(id, { baseUrl: 'https://elsewhere.invalid:443/dashboard/' })).status).toBe(
+      200,
+    );
+    const row = await panelRow(id);
+    expect(row!.base_url).toBe('https://elsewhere.invalid');
+    expect(row!.secret_ref).toBe(SECRET_REF);
+
+    expect((await patch(id, { baseUrl: 'elsewhere.invalid' })).status).toBe(400);
+    expect((await panelRow(id))!.base_url).toBe('https://elsewhere.invalid');
+  });
+
+  /**
+   * The two renewal keys, read back through the same functions the BOT reads
+   * them with — not by looking at the JSON we just wrote.
+   *
+   * `renewModeFor` prefers `renew_mode` and falls back to a Persian phrase in
+   * `Methodextend`; this asserts the value that actually reaches a renewal.
+   */
+  it('writes the renewal settings into config without disturbing what is there', async () => {
+    const id = await makePanel('renewal');
+    await baseEnv.DB.prepare(
+      `UPDATE provisioning_providers
+          SET config = '{"proxies":{"vless":{}},"group_ids":[3]}'::jsonb WHERE id = ?1`,
+    )
+      .bind(id)
+      .run();
+
+    expect((await patch(id, { renewMode: 'ADD', renewEnabled: false })).status).toBe(200);
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT config FROM provisioning_providers WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ config: Record<string, unknown> }>();
+    expect(renewModeFor(row!.config)).toBe('ADD');
+    expect(renewAllowed(row!.config)).toBe(false);
+    // A wholesale config write would have taken these with it.
+    expect(row!.config['group_ids']).toEqual([3]);
+    expect(row!.config['proxies']).toEqual({ vless: {} });
   });
 
   it('refuses a status the schema does not allow', async () => {

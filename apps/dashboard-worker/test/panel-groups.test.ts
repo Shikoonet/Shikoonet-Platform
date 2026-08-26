@@ -130,7 +130,22 @@ async function migratedPanel(label: string, config: unknown): Promise<number> {
  * In that order: `products.provider_id` has a foreign key to the panel, so
  * deleting panels first fails on the second test — which is how this was found.
  */
+/** The one customer the delete guard needs, and the only one this file makes. */
+const SUB_OWNER_TELEGRAM_ID = 920_000_001;
+
 async function purge(): Promise<void> {
+  // Subscriptions first, and by TELEGRAM ID rather than by provider: the FK is
+  // `ON DELETE SET NULL`, so a leftover row from a failed run has already lost
+  // the provider that would have identified it.
+  await baseEnv.DB.prepare(
+    `DELETE FROM subscriptions WHERE user_id IN
+       (SELECT id FROM users WHERE telegram_id = ?1)`,
+  )
+    .bind(SUB_OWNER_TELEGRAM_ID)
+    .run();
+  await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id = ?1`)
+    .bind(SUB_OWNER_TELEGRAM_ID)
+    .run();
   await baseEnv.DB.prepare(
     `DELETE FROM product_plans WHERE product_id IN
        (SELECT id FROM products WHERE code LIKE ?1)`,
@@ -484,4 +499,183 @@ describe('hosts on the panel', () => {
     expect(out.hosts).toBeNull();
     expect(typeof out.reason).toBe('string');
   }, 30_000);
+});
+
+/**
+ * Saving which groups a panel sells.
+ *
+ * The route this exercises was deleted on 2026-08-24 with a note saying nothing
+ * read the column, and brought back on 2026-08-26 because that note
+ * contradicted itself — the column IS the provider config, which `groupIdsFor`
+ * reads after the plan's attrs. So these assertions are about the two things
+ * that WERE wrong, not about whether a write lands:
+ *
+ *   - an empty selection must remove the key, never store `[]`. `[]` is not
+ *     nullish, so it beat the panel underneath it and `provision` sent
+ *     `group_ids: []` — an account in no group, with no inbounds, on a
+ *     subscription link that resolves and returns nothing.
+ *   - the legacy `inbounds` spelling must go with it, in BOTH branches. Leaving
+ *     it behind would let it answer for a panel an operator had just cleared.
+ */
+describe('saving which groups a panel sells', () => {
+  async function config(id: number): Promise<Record<string, unknown>> {
+    const row = await baseEnv.DB.prepare(`SELECT config FROM provisioning_providers WHERE id = ?1`)
+      .bind(id)
+      .first<{ config: Record<string, unknown> }>();
+    return row!.config;
+  }
+
+  it('stores the selection and drops the legacy spelling with it', async () => {
+    const id = await migratedPanel('save-basic', { inbounds: [42, 2], proxies: { vless: {} } });
+
+    const res = await post(`/api/v1/admin/panels/${id}/groups`, { groupIds: [7, 3, 7] });
+    expect(res.status).toBe(200);
+
+    const c = await config(id);
+    // De-duplicated and sorted, so saving the same ticks twice is not recorded
+    // as a change.
+    expect(c['group_ids']).toEqual([3, 7]);
+    expect(c).not.toHaveProperty('inbounds');
+    // Everything else in the object survives — `proxies` carries a hysteria
+    // shared secret provisioning has to send.
+    expect(c['proxies']).toEqual({ vless: {} });
+  });
+
+  it('removes the key when nothing is ticked, rather than storing an empty list', async () => {
+    const id = await migratedPanel('save-empty', { inbounds: [42], group_ids: [42] });
+
+    expect((await post(`/api/v1/admin/panels/${id}/groups`, { groupIds: [] })).status).toBe(200);
+
+    const c = await config(id);
+    expect(c).not.toHaveProperty('group_ids');
+    expect(c).not.toHaveProperty('inbounds');
+    // The distinction this test exists for: absent is "the panel names no
+    // default", `[]` is "put the account in no group", and only the first is
+    // ever what an operator clearing the ticks means.
+    expect(JSON.stringify(c)).not.toContain('[]');
+  });
+
+  it('records before and after in audit_logs', async () => {
+    const id = await migratedPanel('save-audit', { inbounds: [42, 2] });
+    await post(`/api/v1/admin/panels/${id}/groups`, { groupIds: [3] });
+
+    const log = await baseEnv.DB.prepare(
+      `SELECT before_json::text AS before, after_json::text AS after
+         FROM audit_logs
+        WHERE action = 'catalog.panel_groups_set' AND entity_id = ?1`,
+    )
+      .bind(String(id))
+      .first<{ before: string; after: string }>();
+    expect(log?.before).toContain('42');
+    expect(log?.after).toContain('3');
+  });
+
+  it('is refused for a reviewer, and nothing moves', async () => {
+    const id = await migratedPanel('save-reviewer', { group_ids: [1] });
+    expect(
+      (await post(`/api/v1/admin/panels/${id}/groups`, { groupIds: [9] }, REVIEWER)).status,
+    ).toBe(403);
+    expect((await config(id))['group_ids']).toEqual([1]);
+  });
+
+  it('refuses a body that is not a list of ids, and 404s on a panel that is gone', async () => {
+    const id = await migratedPanel('save-bad', {});
+    expect((await post(`/api/v1/admin/panels/${id}/groups`, { groupIds: ['x'] })).status).toBe(400);
+    expect((await post(`/api/v1/admin/panels/${id}/groups`, { nope: [1] })).status).toBe(400);
+    expect((await post(`/api/v1/admin/panels/2000000003/groups`, { groupIds: [1] })).status).toBe(
+      404,
+    );
+  });
+});
+
+/**
+ * Deleting a panel.
+ *
+ * The shop this screen is modelled on counts what points at the panel, deletes
+ * anyway, and reports how many services it orphaned afterwards
+ * (`legacy/faoxima/panel/panels.php:1219`). On our schema that is worse than it
+ * sounds: `subscriptions.provider_id` is `ON DELETE SET NULL`, so Postgres does
+ * not raise — it strips the panel off every live subscription and the delete
+ * looks like it worked.
+ *
+ * So the guard is inside the DELETE, and these tests are about the refusal
+ * being real rather than about the happy path.
+ */
+describe('deleting a panel', () => {
+  async function exists(id: number): Promise<boolean> {
+    const row = await baseEnv.DB.prepare(`SELECT 1 FROM provisioning_providers WHERE id = ?1`)
+      .bind(id)
+      .first();
+    return row !== null;
+  }
+
+  it('removes a panel nothing points at, and its sealed credential with it', async () => {
+    const id = await migratedPanel('del-empty', {});
+    await withCredential(id);
+
+    expect((await del(`/api/v1/admin/panels/${id}`)).status).toBe(200);
+    expect(await exists(id)).toBe(false);
+
+    const secret = await baseEnv.DB.prepare(`SELECT 1 FROM provider_secrets WHERE provider_id = ?1`)
+      .bind(id)
+      .first();
+    expect(secret, 'the sealed credential outlived the panel').toBeNull();
+  });
+
+  it('refuses while a service still points at it, and names the count', async () => {
+    const id = await migratedPanel('del-products', {});
+    await productWithGroups(id, 'del-p', [3]);
+
+    const res = await del(`/api/v1/admin/panels/${id}`);
+    expect(res.status).toBe(409);
+    const json = (await res.json()) as { error: string; detail: string; counts: unknown };
+    expect(json.error).toBe('in_use');
+    expect(json.counts).toMatchObject({ products: 1 });
+    // The refusal has to say what to do instead, or it sends an operator
+    // hunting for a button that will never work.
+    expect(json.detail).toContain('غیرفعال');
+    expect(await exists(id)).toBe(true);
+  });
+
+  /**
+   * The one Postgres would NOT have caught.
+   *
+   * `products.provider_id` is `ON DELETE RESTRICT`, so the previous test would
+   * fail loudly even without the guard. `subscriptions.provider_id` is
+   * `ON DELETE SET NULL` — remove the `NOT EXISTS` for subscriptions and this
+   * test goes red while every other one here stays green.
+   */
+  it('refuses while a live subscription still points at it', async () => {
+    const id = await migratedPanel('del-subs', {});
+    const user = await baseEnv.DB.prepare(
+      `INSERT INTO users (telegram_id, registered_at, created_at, updated_at)
+       VALUES (?1, now(), now(), now()) RETURNING id`,
+    )
+      .bind(SUB_OWNER_TELEGRAM_ID)
+      .first<{ id: number }>();
+    await baseEnv.DB.prepare(
+      `INSERT INTO subscriptions
+         (public_id, user_id, provider_id, plan_name_at_sale, price_irr, status, purchased_at)
+       VALUES (?1, ?2, ?3, 'p', 1000, 'ACTIVE', now())`,
+    )
+      .bind(crypto.randomUUID(), Number(user!.id), id)
+      .run();
+
+    const res = await del(`/api/v1/admin/panels/${id}`);
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { counts: unknown }).toMatchObject({
+      counts: { subscriptions: 1 },
+    });
+    expect(await exists(id)).toBe(true);
+  });
+
+  it('is refused for a reviewer, and the panel stays', async () => {
+    const id = await migratedPanel('del-reviewer', {});
+    expect((await del(`/api/v1/admin/panels/${id}`, REVIEWER)).status).toBe(403);
+    expect(await exists(id)).toBe(true);
+  });
+
+  it('404s on a panel that is already gone', async () => {
+    expect((await del('/api/v1/admin/panels/2000000004')).status).toBe(404);
+  });
 });

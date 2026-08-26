@@ -1081,11 +1081,21 @@ function GroupChooser({
 }) {
   const w = useAdminWriteProps();
   const [available, setAvailable] = useState<PanelGroupItem[] | null>(null);
+  /**
+   * The groups the PANEL itself is ticked for, in «مدیریت پنل‌ها».
+   *
+   * Shown, never enforced. A service may sell a group the panel does not name
+   * as its default — that is the whole point of the level. But picking one
+   * silently is how «پلاتینیوم» ended up beside a panel that had never been set
+   * up for it, so the ones outside the panel's own list say so.
+   */
+  const [panelDefault, setPanelDefault] = useState<number[]>([]);
   const [inbounds, setInbounds] = useState<Array<{ tag: string; hosted?: boolean }> | null>(null);
   const [reason, setReason] = useState<string | null>(null);
 
   useEffect(() => {
     setAvailable(null);
+    setPanelDefault([]);
     setInbounds(null);
     setReason(null);
     if (panelId === '') return;
@@ -1094,6 +1104,7 @@ function GroupChooser({
       .panelGroups(id)
       .then((d) => {
         setAvailable(d.available);
+        setPanelDefault(d.selected);
         if (d.available === null) setReason(d.reason ?? null);
       })
       .catch((e) => setReason(message(e)));
@@ -1147,6 +1158,7 @@ function GroupChooser({
               {(available ?? []).map((g) => (
                 <option key={g.id} value={g.id}>
                   {g.name}
+                  {panelDefault.includes(g.id) ? ' — پیش‌فرض این پنل' : ''}
                 </option>
               ))}
             </select>

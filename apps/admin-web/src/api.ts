@@ -555,6 +555,13 @@ export interface PanelItem {
   baseUrl: string | null;
   capacity: number | null;
   sortOrder: number;
+  /**
+   * Derived on the server from `config`, which itself never leaves — it carries
+   * a hysteria shared secret. `'ADD'` accumulates volume and time onto a
+   * renewal, `'RESET'` starts both over.
+   */
+  renewMode: 'ADD' | 'RESET';
+  renewEnabled: boolean;
   hasSecretRef: boolean;
   productCount: number;
   planCount: number;
@@ -1161,7 +1168,10 @@ export const api = {
     sortOrder?: number;
     credential?: { username: string; password: string };
   }) {
-    return req<{ ok: boolean; panel: PanelItem }>('/panels', {
+    // `probe` is present whenever the server actually tried the panel on the
+    // way in — which is what decided whether the new row came out ACTIVE. It is
+    // the difference between «غیرفعال شد» and a screen that can say why.
+    return req<{ ok: boolean; panel: PanelItem; probe?: PanelTestResult }>('/panels', {
       method: 'POST',
       body: JSON.stringify(body),
     });
@@ -1197,11 +1207,27 @@ export const api = {
     return req<PanelGroups>(`/panels/${id}/groups`);
   },
 
-  // `setPanelGroups` was here and is gone with the route behind it. It wrote a
-  // panel-level default group list that nothing ever read: `groupIdsFor` looks
-  // at the plan's attrs and the provider config, never at that column, and on
-  // the practice box the stored value was `[]` on every panel. It had had no
-  // caller in this file since the group editing moved to «سرویس‌ها».
+  /**
+   * Which of the panel's own groups it sells by default.
+   *
+   * This was removed on 2026-08-24 with a note saying nothing read the column —
+   * "`groupIdsFor` looks at the plan's attrs and the provider config, never at
+   * that column". That column IS the provider config, and `provisioning.test.ts`
+   * has a green case named «the panel default» proving delivery reads it. What
+   * was actually broken was the value: every stored selection was `[]`, and `[]`
+   * is not nullish, so it beat the panel underneath and the create body carried
+   * `group_ids: []` — an account in no group, with no inbounds, on a link that
+   * resolves and returns nothing.
+   *
+   * So an empty array here is honest: the route deletes the key rather than
+   * storing it, and the panel goes back to naming no default.
+   */
+  setPanelGroups(id: number, groupIds: number[]) {
+    return req<{ ok: boolean; panel: PanelItem | null }>(`/panels/${id}/groups`, {
+      method: 'POST',
+      body: JSON.stringify({ groupIds }),
+    });
+  },
 
   panelInbounds(id: number) {
     return req<PanelInbounds>(`/panels/${id}/inbounds`);
@@ -1256,12 +1282,38 @@ export const api = {
       status?: 'ACTIVE' | 'DISABLED';
       capacity?: number | null;
       sortOrder?: number;
+      baseUrl?: string | null;
+      renewMode?: 'ADD' | 'RESET';
+      renewEnabled?: boolean;
+      /**
+       * Re-probe and let the answer set the status. Ignored when `status` is in
+       * the same patch — a person's explicit choice outranks a probe, which is
+       * what keeps a panel from getting stuck off after a bad ten minutes.
+       */
+      autoStatus?: boolean;
     },
   ) {
-    return req<{ ok: boolean; panel: PanelItem; liveSubscriptions: number }>(`/panels/${id}`, {
+    return req<{
+      ok: boolean;
+      panel: PanelItem;
+      liveSubscriptions: number;
+      probe?: PanelTestResult;
+    }>(`/panels/${id}`, {
       method: 'POST',
       body: JSON.stringify(patch),
     });
+  },
+
+  /**
+   * Remove the panel row. Nothing on the panel itself is touched.
+   *
+   * Refuses with 409 and `counts` while any service, live subscription or stock
+   * config points at it — `subscriptions.provider_id` is `ON DELETE SET NULL`,
+   * so without that guard Postgres would accept the delete and silently orphan
+   * every subscription instead of raising.
+   */
+  deletePanel(id: number) {
+    return req<{ ok: boolean }>(`/panels/${id}`, { method: 'DELETE' });
   },
 
   discounts(params: { q?: string; state?: string; page: number; pageSize: number }) {
