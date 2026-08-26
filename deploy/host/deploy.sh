@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Deploy one immutable image digest to one environment, through Coolify.
 #
-#   deploy.sh <staging|production> <ghcr.io/…@sha256:…> <40-char sha> [--dry-run]
+#   deploy.sh <staging|production> <ghcr.io/…@sha256:…> <40-char sha> \
+#             [--dry-run] [--registry-token-stdin]
 #
 # Runs ON the server, as the shikoo-deploy user, invoked over SSH by the GitHub
 # deploy workflow — which scp's this file up from the commit being deployed
@@ -55,7 +56,7 @@
 set -Eeuo pipefail
 
 usage() {
-  echo "usage: deploy.sh <staging|production> <image@sha256:digest> <full-sha> [--dry-run]" >&2
+  echo "usage: deploy.sh <staging|production> <image@sha256:digest> <full-sha> [--dry-run] [--registry-token-stdin]" >&2
   exit 2
 }
 
@@ -77,6 +78,12 @@ echo "$EXPECTED_SHA" | grep -qE '^[0-9a-f]{40}$' || {
   echo "refusing: expected sha is not a full 40-character commit sha" >&2
   exit 2
 }
+REGISTRY_LOGIN=0
+case "${5:-}" in
+  --registry-token-stdin) REGISTRY_LOGIN=1 ;;
+  '') ;;
+  *) usage ;;
+esac
 [ -z "$DRY_RUN" ] || [ "$DRY_RUN" = "--dry-run" ] || usage
 
 IMAGE_NAME=${IMAGE_REF%@*}
@@ -125,6 +132,28 @@ for required in COOLIFY_URL COOLIFY_TOKEN APP_INGEST APP_DASHBOARD APP_BOT DB_CO
   [ -n "$(eval "printf '%s' \"\$$required\"")" ] || die "$CONF must set $required"
 done
 say "config: $ENV_DIR/deploy.env"
+
+# ------------------------------------------------------------ registry auth
+# With `--registry-token-stdin` the caller hands a registry credential on
+# STDIN — the deploy workflow passes GitHub's own per-run token, which is
+# scoped to this repository's packages and stops existing when the job ends.
+#
+# That is the better half of a real trade. The alternative is a personal access
+# token living on this host: it reads every package the account can see, it
+# lasts until somebody remembers to rotate it, and it sits in
+# /root/.docker/config.json base64-encoded, which is not encryption.
+#
+# On STDIN and never in an argument, because argv is visible in `ps` to every
+# process on this box, and never in a file.
+if [ "$REGISTRY_LOGIN" = "1" ]; then
+  IFS= read -r REGISTRY_TOKEN || true
+  [ -n "${REGISTRY_TOKEN:-}" ] || die "--registry-token-stdin was given but nothing arrived on stdin"
+  printf '%s' "$REGISTRY_TOKEN" |
+    docker login "${IMAGE_NAME%%/*}" -u x-access-token --password-stdin >/dev/null ||
+    die "registry login failed for ${IMAGE_NAME%%/*}"
+  REGISTRY_TOKEN=
+  say "registry: authenticated for this run only"
+fi
 
 # The token goes to curl through a config file on stdin, never on the command
 # line. `--fail-with-body` so a 4xx is an error and still shows what the API
