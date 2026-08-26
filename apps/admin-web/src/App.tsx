@@ -40,6 +40,8 @@ import { DashboardPage } from './pages/DashboardPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
 import { BulkPage } from './pages/BulkPage.js';
 import { CatalogPage } from './pages/CatalogPage.js';
+import { ProductsPage } from './pages/ProductsPage.js';
+import { CategoriesPage } from './pages/CategoriesPage.js';
 import { PanelsPage } from './pages/PanelsPage.js';
 import { ContentPage } from './pages/ContentPage.js';
 import { StockPage } from './pages/StockPage.js';
@@ -100,6 +102,10 @@ function Body({
       return <BulkPage />;
     case 'catalog':
       return <CatalogPage />;
+    case 'products':
+      return <ProductsPage />;
+    case 'categories':
+      return <CategoriesPage />;
     case 'panels':
       return <PanelsPage />;
     case 'stock':
