@@ -1493,7 +1493,7 @@ export function registerPanelRoutes(
     const onPanel = new Set(listed.groups.map((g) => g.id));
     if (!onPanel.has(groupId)) {
       return c.json(
-        { ok: false, error: 'group_missing', detail: `گروه #${groupId} روی این پنل نیست.` },
+        { ok: false, error: 'group_missing', detail: `گروه #${faNum(groupId)} روی این پنل نیست.` },
         400,
       );
     }
@@ -1502,7 +1502,7 @@ export function registerPanelRoutes(
         {
           ok: false,
           error: 'target_missing',
-          detail: `گروه مقصد #${toGroupId} روی این پنل نیست — هیچ‌کس جابه‌جا نشد.`,
+          detail: `گروه مقصد #${faNum(toGroupId)} روی این پنل نیست — هیچ‌کس جابه‌جا نشد.`,
         },
         400,
       );
@@ -1539,7 +1539,7 @@ export function registerPanelRoutes(
       const done =
         result.moved === 0
           ? 'هیچ‌کس جابه‌جا نشد'
-          : `${result.moved} حساب جابه‌جا شد و بقیه نه — دوباره زدنِ همین دکمه از همان‌جا ادامه می‌دهد`;
+          : `${faNum(result.moved)} حساب جابه‌جا شد و بقیه نه — دوباره زدنِ همین دکمه از همان‌جا ادامه می‌دهد`;
       return c.json(
         {
           ok: false,

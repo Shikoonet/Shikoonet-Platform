@@ -1316,7 +1316,7 @@ function GroupManager({
     const members = g.memberCount ?? 0;
     if (
       !window.confirm(
-        `${members} حساب از «${g.name}» به «${to?.name ?? `#${toId}`}» منتقل شود؟ ` +
+        `${count(members)} حساب از «${g.name}» به «${to?.name ?? `#${count(toId)}`}» منتقل شود؟ ` +
           'روی خودِ حساب‌ها چیز دیگری عوض نمی‌شود — نه حجم، نه تاریخ. ' +
           'گروه‌های دیگری که هر حساب دارد سرِ جایشان می‌مانند.',
       )
@@ -1331,7 +1331,7 @@ function GroupManager({
       setDone(
         r.moved === 0
           ? `هیچ حسابی در «${g.name}» نبود — چیزی جابه‌جا نشد.`
-          : `${r.moved} حساب از «${g.name}» به «${to?.name ?? `#${toId}`}» رفت. حالا می‌شود «${g.name}» را حذف کرد.`,
+          : `${count(r.moved)} حساب از «${g.name}» به «${to?.name ?? `#${count(toId)}`}» رفت. حالا می‌شود «${g.name}» را حذف کرد.`,
       );
       await load();
       onChanged();
@@ -1349,7 +1349,7 @@ function GroupManager({
     const members = g.memberCount ?? 0;
     const question =
       members > 0
-        ? `گروه «${g.name}» روی پنل ${members} عضو دارد و بعد از حذف، کانفیگ‌های این گروه دیگر به آن‌ها نمی‌رسد. ` +
+        ? `گروه «${g.name}» روی پنل ${count(members)} عضو دارد و بعد از حذف، کانفیگ‌های این گروه دیگر به آن‌ها نمی‌رسد. ` +
           'اگر می‌خواهی نگهشان داری، اول «انتقال اعضا» را بزن. با این حال حذف شود؟'
         : `گروه «${g.name}» از خودِ پنل حذف شود؟`;
     if (!window.confirm(question)) return;
@@ -1519,7 +1519,7 @@ function MoveMembers({
           <option value="">— گروه مقصد —</option>
           {others.map((g) => (
             <option key={g.id} value={g.id}>
-              {g.name} #{g.id}
+              {g.name} #{count(g.id)}
             </option>
           ))}
         </select>
@@ -1531,7 +1531,7 @@ function MoveMembers({
         onClick={() => onMove(group, Number(to))}
         {...w}
       >
-        انتقال{group.memberCount === undefined ? '' : ` ${group.memberCount} حساب`}
+        انتقال{group.memberCount === undefined ? '' : ` ${count(group.memberCount)} حساب`}
       </button>
     </div>
   );
