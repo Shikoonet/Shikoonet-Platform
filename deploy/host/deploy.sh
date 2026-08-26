@@ -38,7 +38,8 @@
 #
 # ## Configuration, per environment, on this host
 #
-#   /etc/shikoo/<env>/deploy.env      root:shikoo-deploy 0640
+#   /etc/shikoo/<env>/deploy.env      root:shikoo-deploy 0640, plain KEY=value,
+#                                     read as text — values need no quoting
 #     COOLIFY_URL     http://localhost:8000 — LOCAL on purpose: the panel is
 #                     plain HTTP, so the token must never cross a wire
 #     COOLIFY_TOKEN   abilities read, write, deploy. Never leaves this host
@@ -104,16 +105,25 @@ die() {
 exec 9>"$LOCK_FILE"
 flock -n 9 || die "another deploy of $ENV_ARG holds $LOCK_FILE"
 
-[ -f "$ENV_DIR/deploy.env" ] || die "missing $ENV_DIR/deploy.env — this environment is not set up"
-# shellcheck source=/dev/null
-. "$ENV_DIR/deploy.env"
-: "${COOLIFY_URL:?deploy.env must set COOLIFY_URL}"
-: "${COOLIFY_TOKEN:?deploy.env must set COOLIFY_TOKEN}"
-: "${APP_INGEST:?deploy.env must set APP_INGEST}"
-: "${APP_DASHBOARD:?deploy.env must set APP_DASHBOARD}"
-: "${APP_BOT:?deploy.env must set APP_BOT}"
-: "${DB_CONTAINER:?deploy.env must set DB_CONTAINER}"
-PGUSER=${PGUSER:-postgres}
+CONF="$ENV_DIR/deploy.env"
+[ -f "$CONF" ] || die "missing $CONF — this environment is not set up"
+
+# Read, do not `source`. A Coolify API token is `<id>|<random>` and a shell
+# reads that pipe as a pipeline — `COOLIFY_TOKEN=4|Vhs…` runs `Vhs…` as a
+# command and assigns `4`. Sourcing a secrets file also hands whoever can write
+# it arbitrary execution as this user. This reads values as text and never
+# interprets them, so a `|`, a space or a `$` in any secret is just a character.
+cfg() { sed -n "s/^$1=//p" "$CONF" | tail -1; }
+COOLIFY_URL=$(cfg COOLIFY_URL)
+COOLIFY_TOKEN=$(cfg COOLIFY_TOKEN)
+APP_INGEST=$(cfg APP_INGEST)
+APP_DASHBOARD=$(cfg APP_DASHBOARD)
+APP_BOT=$(cfg APP_BOT)
+DB_CONTAINER=$(cfg DB_CONTAINER)
+PGUSER=$(cfg PGUSER); PGUSER=${PGUSER:-postgres}
+for required in COOLIFY_URL COOLIFY_TOKEN APP_INGEST APP_DASHBOARD APP_BOT DB_CONTAINER; do
+  [ -n "$(eval "printf '%s' \"\$$required\"")" ] || die "$CONF must set $required"
+done
 say "config: $ENV_DIR/deploy.env"
 
 # The token goes to curl through a config file on stdin, never on the command
