@@ -13,7 +13,7 @@
  */
 
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv } from './helpers/env.js';
+import { applySchema, env as baseEnv, fixtureCategory } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 
@@ -170,8 +170,13 @@ async function purge(): Promise<void> {
   }
 }
 
+let CATEGORY = 0;
+
 beforeAll(async () => {
   await applySchema();
+  // `categoryId` is required by `ProductCreate`, because `products.category_id`
+  // is NOT NULL — a service without one has no button on any shop screen.
+  CATEGORY = await fixtureCategory();
   const now = Date.now();
   for (const [email, role] of [
     [ADMIN, 'ADMIN'],
@@ -598,6 +603,7 @@ describe('creating a product and its plans', () => {
       code: `${PREFIX}dupe`,
       name: 'محصول تکراری',
       kind: 'vpn',
+      categoryId: CATEGORY,
     });
     expect(res.status).toBe(409);
   });
@@ -607,6 +613,7 @@ describe('creating a product and its plans', () => {
       code: `${PREFIX}ghost-panel`,
       name: 'محصول بی‌پنل',
       kind: 'vpn',
+      categoryId: CATEGORY,
       providerId: 2_000_000_003,
     });
     expect(res.status).toBe(409);

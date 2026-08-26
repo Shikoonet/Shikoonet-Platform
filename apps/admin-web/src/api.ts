@@ -109,6 +109,8 @@ export interface PlanRow {
   userLimit: number | null;
   status: string;
   sortOrder: number;
+  /** Where the admin broke the row on this category's screen; null = unarranged. */
+  rowIndex: number | null;
   product: {
     id: number;
     code: string;
@@ -233,9 +235,37 @@ export interface ProductBody {
 export interface CategoryRow {
   id: number;
   name: string;
+  /** Drawn on the bot button before the name. Null when the admin gave it none. */
+  emoji: string | null;
+  /** False takes this category's products off the shop without deleting anything. */
+  active: boolean;
   sortOrder: number;
+  /** Where the admin broke the row on the shop's first screen; null = never arranged. */
+  rowIndex: number | null;
   productsCount: number;
 }
+
+export interface CategoryPatch {
+  name?: string;
+  emoji?: string | null;
+  sortOrder?: number;
+  active?: boolean;
+}
+
+/**
+ * One button in a saved arrangement.
+ *
+ * The ARRAY ORDER is the horizontal order and `sortOrder` is deliberately not
+ * a field: the server writes it as the array index, so there is no second place
+ * for the order to live and nothing for it to disagree with.
+ */
+export interface LayoutItem {
+  id: number;
+  rowIndex: number | null;
+}
+
+/** `categories` for the shop's first screen, `category:<id>` for one of them. */
+export type LayoutScope = 'categories' | `category:${number}`;
 
 export interface StockRow {
   id: number;
@@ -862,6 +892,9 @@ export const api = {
     q?: string;
     status?: string;
     providerId?: number;
+    categoryId?: number;
+    /** Undefined is «both». True and false are two different questions. */
+    resellersOnly?: boolean;
     page: number;
     pageSize: number;
   }) {
@@ -872,6 +905,8 @@ export const api = {
     if (params.q) qs.set('q', params.q);
     if (params.status) qs.set('status', params.status);
     if (params.providerId) qs.set('providerId', String(params.providerId));
+    if (params.categoryId) qs.set('categoryId', String(params.categoryId));
+    if (params.resellersOnly !== undefined) qs.set('resellersOnly', String(params.resellersOnly));
     return req<{
       ok: boolean;
       total: number;
@@ -944,10 +979,36 @@ export const api = {
     return req<{ ok: boolean; items: CategoryRow[] }>('/product-categories');
   },
 
-  createCategory(name: string, sortOrder = 0) {
+  createCategory(body: { name: string; emoji?: string | null; sortOrder?: number }) {
     return req<{ ok: boolean; category: CategoryRow }>('/product-categories', {
       method: 'POST',
-      body: JSON.stringify({ name, sortOrder }),
+      body: JSON.stringify(body),
+    });
+  },
+
+  updateCategory(id: number, patch: CategoryPatch) {
+    return req<{ ok: boolean }>(`/product-categories/${id}`, {
+      method: 'POST',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  deleteCategory(id: number) {
+    return req<{ ok: boolean }>(`/product-categories/${id}`, { method: 'DELETE' });
+  },
+
+  /**
+   * Save one shop screen's arrangement.
+   *
+   * `items` must be the WHOLE screen, in the order it should be drawn — the
+   * server refuses a partial save rather than applying it, because the rows it
+   * was not told about would keep their old positions and interleave with the
+   * new ones.
+   */
+  saveCatalogLayout(scope: LayoutScope, items: LayoutItem[]) {
+    return req<{ ok: boolean }>(`/catalog-layout/${scope}`, {
+      method: 'POST',
+      body: JSON.stringify({ items }),
     });
   },
 

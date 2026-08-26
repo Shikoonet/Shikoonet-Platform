@@ -148,7 +148,16 @@ const PRODUCT_FIELDS = {
   name: z.string().trim().min(1).max(160),
   kind: z.enum(PRODUCT_KINDS),
   providerId: z.number().int().positive().nullable(),
-  categoryId: z.number().int().positive().nullable(),
+  /**
+   * Not nullable, unlike `providerId` next to it, and the difference is the
+   * database's: `products.category_id` became NOT NULL in 0032 because the
+   * shop's first screen IS the category list and a product without one has no
+   * button anywhere. Leaving the schema nullable would turn choosing nothing
+   * into a not-null violation caught by a `.catch()` and reported as «کد
+   * تکراری است، یا پنل/دسته‌بندی انتخاب‌شده وجود ندارد» — the wrong sentence
+   * for the right refusal.
+   */
+  categoryId: z.number().int().positive(),
   description: z.string().trim().max(2000).nullable(),
   resellersOnly: z.boolean(),
   oncePerUser: z.boolean(),
@@ -177,7 +186,7 @@ const ProductCreate = z
     name: PRODUCT_FIELDS.name,
     kind: PRODUCT_FIELDS.kind,
     providerId: PRODUCT_FIELDS.providerId.default(null),
-    categoryId: PRODUCT_FIELDS.categoryId.default(null),
+    categoryId: PRODUCT_FIELDS.categoryId,
     description: PRODUCT_FIELDS.description.default(null),
     resellersOnly: PRODUCT_FIELDS.resellersOnly.default(false),
     oncePerUser: PRODUCT_FIELDS.oncePerUser.default(false),
@@ -282,6 +291,7 @@ interface PlanRow {
   user_limit: number | null;
   plan_status: string;
   sort_order: number;
+  row_index: number | null;
   product_id: number;
   product_code: string;
   product_name: string;
@@ -313,6 +323,9 @@ function shape(r: PlanRow) {
     userLimit: r.user_limit,
     status: r.plan_status,
     sortOrder: r.sort_order,
+    // Where the admin broke the row, so the arrangement editor can read back
+    // what it saved instead of holding its own copy.
+    rowIndex: r.row_index,
     product: {
       id: r.product_id,
       code: r.product_code,
@@ -465,7 +478,7 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
 
 const SELECT_PLAN = `
   SELECT pl.id, pl.name AS plan_name, pl.price_irr, pl.duration_days, pl.volume_gb,
-         pl.user_limit, pl.status AS plan_status, pl.sort_order,
+         pl.user_limit, pl.status AS plan_status, pl.sort_order, pl.row_index,
          p.id AS product_id, p.code AS product_code, p.name AS product_name,
          p.kind AS product_kind, p.status AS product_status,
          p.description AS product_description, p.sort_order AS product_sort_order,

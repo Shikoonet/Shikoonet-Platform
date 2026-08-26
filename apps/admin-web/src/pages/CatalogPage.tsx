@@ -1621,6 +1621,14 @@ function NewServiceCard({
       setBusy(false);
       return;
     }
+    if (categoryId === '') {
+      // Refused here as well as by the database. `products.category_id` is NOT
+      // NULL since 0032 because the shop's first screen is the category list,
+      // so a service without one is a service with no button on any screen.
+      setErr('دسته‌بندی را انتخاب کنید — سرویس بی‌دسته‌بندی در فروشگاه دیده نمی‌شود.');
+      setBusy(false);
+      return;
+    }
 
     let productId: number;
     try {
@@ -1629,7 +1637,7 @@ function NewServiceCard({
         name: name.trim(),
         kind,
         providerId: Number(panelId),
-        categoryId: categoryId === '' ? null : Number(categoryId),
+        categoryId: Number(categoryId),
         description: description.trim() === '' ? null : description.trim(),
         resellersOnly,
         oncePerUser,
@@ -1841,7 +1849,7 @@ function ServiceDrawer({
         name: name.trim(),
         kind,
         providerId: panelId === '' ? null : Number(panelId),
-        categoryId: categoryId === '' ? null : Number(categoryId),
+        categoryId: Number(categoryId),
         description: description.trim() === '' ? null : description.trim(),
         resellersOnly,
         oncePerUser,
@@ -2128,7 +2136,7 @@ function CategoryPicker({
     if (adding.trim() === '') return;
     setBusy(true);
     try {
-      const { category } = await api.createCategory(adding.trim());
+      const { category } = await api.createCategory({ name: adding.trim() });
       onChange(String(category.id));
       setAdding('');
       setOpen(false);
@@ -2149,7 +2157,7 @@ function CategoryPicker({
         value={value}
         onChange={(e) => onChange(e.target.value)}
       >
-        <option value="">بدون دسته‌بندی</option>
+        <option value="">— انتخاب کنید —</option>
         {categories.map((c) => (
           <option key={c.id} value={c.id}>
             {c.name}

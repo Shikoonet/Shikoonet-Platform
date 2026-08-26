@@ -29,6 +29,8 @@ export type PageId =
   | 'bulk'
   | 'orders'
   | 'catalog'
+  | 'products'
+  | 'categories'
   | 'subscriptions'
   | 'transactions'
   | 'expenses'
@@ -63,6 +65,12 @@ export const NAV: NavGroup[] = [
       { id: 'bulk', label: 'ارسال گروهی', icon: 'send' },
       { id: 'orders', label: 'سفارشات', icon: 'receipt' },
       { id: 'catalog', label: 'سرویس‌ها', icon: 'grid' },
+      // «محصولات» sits under «سرویس‌ها» because that is the order the work
+      // happens in: a service decides the panel and the tier once, and then a
+      // product is a price on it. The panel being replaced has only the second
+      // screen, which is why building a service there means editing a row and
+      // hoping the copy-paste was right.
+      { id: 'products', label: 'محصولات', icon: 'package' },
       { id: 'subscriptions', label: 'اشتراک‌های مشتری', icon: 'package' },
       { id: 'transactions', label: 'تراکنش‌ها', icon: 'wallet' },
       { id: 'expenses', label: 'هزینه‌ها و تعدیل‌ها', icon: 'wallet' },
@@ -73,6 +81,7 @@ export const NAV: NavGroup[] = [
     label: 'مدیریت',
     items: [
       { id: 'panels', label: 'مدیریت پنل‌ها', icon: 'server' },
+      { id: 'categories', label: 'دسته‌بندی‌ها', icon: 'grid' },
       { id: 'stock', label: 'قفسهٔ انبار', icon: 'package' },
       { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket' },
       { id: 'access', label: 'دسترسی‌ها', icon: 'users' },
@@ -144,6 +153,8 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'banks',
   'devices',
   'catalog',
+  'products',
+  'categories',
   'panels',
   // Counting the shelf is stock control; the accounts on it are not handed
   // over — `stockRoutes.ts` withholds the subscription link from anyone but an

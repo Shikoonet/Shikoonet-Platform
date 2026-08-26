@@ -87,6 +87,12 @@ describe('navigation', () => {
       // screen. See `bot-subset.test.ts`.
       'bulk',
       'catalog',
+      // «محصولات» and «دسته‌بندی‌ها», 2026-08-27. The flat price list the panel
+      // being replaced calls «محصولات», and the category table that has been in
+      // the schema since 0002 with no screen at all — which stopped being
+      // harmless the day the bot's first screen became the category list.
+      'products',
+      'categories',
       'panels',
       'discounts',
       'orders',
