@@ -89,15 +89,33 @@ jobs:
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          PORT: ${{ secrets.DEPLOY_PORT }}
+          USER_: ${{ secrets.DEPLOY_USER }}
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
+          # Every one of these, by name, before anything is written.
+          #
+          # This used to be `test -s ~/.ssh/deploy_key` after the write, which
+          # proved nothing: `printf '%s\n' ""` puts a newline in the file, so an
+          # EMPTY secret produces a one-byte file and passes. The first real
+          # deploy ran with all five secrets empty and got as far as
+          # `scp: bad port ""` before anything noticed.
+          missing=
+          for name in DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS HOST PORT USER_; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "empty or unset secrets:$missing" >&2
+            echo "the environment '$ENVIRONMENT' must define DEPLOY_HOST, DEPLOY_PORT, DEPLOY_USER, DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS, and the calling job must pass them with \`secrets: inherit\`" >&2
+            exit 1
+          fi
           install -d -m 700 ~/.ssh
           install -m 600 /dev/null ~/.ssh/deploy_key
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           install -m 600 /dev/null ~/.ssh/known_hosts
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          test -s ~/.ssh/deploy_key
-          test -s ~/.ssh/known_hosts
 
       - name: Send the deploy script
         env:
