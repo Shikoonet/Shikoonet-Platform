@@ -25,6 +25,7 @@ import { readFileSync } from 'node:fs';
 import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/db.js';
+import { productionDumpAbsent } from './helpers/productionDump.js';
 
 interface Channel {
   remark: string | null;
@@ -42,6 +43,12 @@ interface Loaded {
 async function load(): Promise<Loaded> {
   const cfg = loadConfig();
   const empty = { rollStatus: null, notAccepted: 0, channels: [] };
+  // Before the connection, not after. `describe.skipIf` is evaluated during
+  // collection, and a loader that connects first throws during collection —
+  // which vitest reports as a FAILED FILE, not a skipped one. See
+  // `helpers/productionDump.ts`.
+  const dumpMissing = productionDumpAbsent();
+  if (dumpMissing !== null) return { ...empty, unreachable: dumpMissing };
   try {
     const conn = await createConnection({
       ...cfg.mysql,
@@ -81,7 +88,21 @@ async function load(): Promise<Loaded> {
 
 const { rollStatus, notAccepted, channels, unreachable } = await load();
 
-describe.skipIf(unreachable !== null)('the rules gate', () => {
+/**
+ * These assertions are about the REAL Mirzabot dataset — row counts, actual
+ * discount codes, the 963 customers who never accepted the rules. They only
+ * mean anything against the production dump, so they are gated on a person
+ * saying that is what this database is.
+ *
+ * The gate used to be «can I reach a MySQL», which was a proxy for the same
+ * thing right up until `synthetic-migration.test.ts` started loading a
+ * synthetic legacy database in CI. Then a MySQL was reachable on a runner,
+ * these un-skipped, and failed on `expected 2 to be 31` — correctly. See
+ * `helpers/productionDump.ts`.
+ */
+const dumpAbsent = productionDumpAbsent();
+
+describe.skipIf(unreachable !== null || dumpAbsent !== null)('the rules gate', () => {
   it('spells "on" exactly as `settings.ts` compares against', () => {
     // `requiresRules` is `text('roll_Status') === 'rolleon'` — an equality, not
     // an "is not the off word". A spelling that drifted here leaves the gate
@@ -113,7 +134,7 @@ describe.skipIf(unreachable !== null)('the rules gate', () => {
   });
 });
 
-describe.skipIf(unreachable !== null)('the channel gate', () => {
+describe.skipIf(unreachable !== null || dumpAbsent !== null)('the channel gate', () => {
   it('has a channel to be a member of', () => {
     // Zero rows means the gate is inert by design — `gate.ts` returns "through"
     // without an API call. That is correct behaviour and the wrong state to ship
