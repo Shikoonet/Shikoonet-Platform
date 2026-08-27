@@ -1,0 +1,5 @@
+[{"results":[
+  {"id":"fx-card-1","financial_account_id":"fx-acct-1","card_digits":"0000000000000000","holder_name":"FIXTURE HOLDER ONE","active":1,"created_at":1783966057000,"updated_at":1783966057000},
+  {"id":"fx-card-2","financial_account_id":"fx-acct-2","card_digits":"0000000000000018","holder_name":"FIXTURE HOLDER TWO","active":1,"created_at":1783966057000,"updated_at":1783966057000},
+  {"id":"fx-card-3","financial_account_id":"fx-acct-1","card_digits":"0000000000000003","holder_name":"FIXTURE HOLDER BAD","active":0,"created_at":1783966057000,"updated_at":1783966057000}
+]}]
