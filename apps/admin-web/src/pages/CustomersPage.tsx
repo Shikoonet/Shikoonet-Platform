@@ -30,6 +30,7 @@ import {
   type CustomerListItem,
   type WalletEntryRow,
 } from '../api.js';
+import { CopyButton } from '../CopyButton.js';
 import { count, dateTime, irrToToman, toman } from '../format.js';
 
 const PAGE_SIZE = 25;
@@ -450,7 +451,17 @@ function CustomerDrawer({
       <div className="card__head">
         <span className="card__title">
           {customer?.username ? `@${customer.username}` : 'کاربر'}{' '}
-          <span className="muted ltr">{customer?.telegramId ?? id}</span>
+          <span className="muted ltr">{customer?.telegramId ?? id}</span>{' '}
+          {/* The id is the one thing on this card that gets pasted somewhere
+              else — into a support chat, a panel search, a note. Selecting it
+              by hand out of a muted span next to a username is where a digit
+              gets dropped, and a Telegram id with a digit missing is another
+              real account. */}
+          <CopyButton
+            getText={() => String(customer?.telegramId ?? id)}
+            label="کپی آیدی"
+            title="آیدی تلگرام این کاربر را کپی می‌کند"
+          />
         </span>
         <button type="button" className="btn btn-sm" onClick={onClose}>
           بستن
