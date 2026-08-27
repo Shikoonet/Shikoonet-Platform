@@ -169,15 +169,49 @@ What it demands of the candidate sha, each one a test in
 | latest | one review per reviewer, theirs most recent — an APPROVED later superseded by CHANGES_REQUESTED does not count |
 | fails closed | a sha GitHub cannot associate with a merged PR is refused, not assumed |
 
-### Why it polls
+### `:8000` IS on the public internet — correcting what this file used to say
 
-Every conventional answer is inbound — a GitHub webhook into Coolify, or an
-Action calling the deploy API. Both need GitHub to reach the box, and it cannot:
-Coolify listens on `0.0.0.0:8000` but the router forwards only 80 and 443.
-Routing the Coolify API through Traefik to earn a webhook would put this server's
-whole control plane on the internet behind one bearer token, to save under a
-minute. Outbound is unrestricted, so the box asks instead of being told — and the
-Coolify token never leaves loopback.
+This section previously claimed that "the router forwards only 80 and 443", so
+GitHub could not reach Coolify. **That was false, and it was load-bearing.**
+Measured from off-site on 2026-08-27:
+
+```
+GET  http://164.132.198.184:8000/api/v1/version   →  401 {"message":"Unauthenticated."}
+GET  http://164.132.198.184:8000/                 →  302  (Coolify login page)
+POST http://164.132.198.184:8000/webhooks/source/github/events/manual  →  200
+```
+
+The Coolify **control plane — API and UI — is reachable from the internet over
+plaintext HTTP**, and the GitHub webhook endpoint answers. `docs/threat-model.md`
+had this right all along; the deployment documentation contradicted it.
+
+**Nothing about polling makes the control plane private.** Do not describe it
+that way.
+
+**What actually stops a push from deploying** is `is_auto_deploy_enabled = false`
+on every application. Coolify's webhook handler calls
+`Application::isDeployable()`, which returns `false` when that flag is off — so a
+correctly-signed webhook is accepted and then does nothing. One flag, one UI
+click away from being wrong, which is why `assert_coolify_safe` re-checks all
+three applications on every tick and abandons the tick if any of them has it on.
+
+**The open port is an accepted staging risk, and only that.** Before production,
+or before this host holds real customer data, `:8000` must be bound to a private
+interface, firewalled, or placed behind TLS and a VPN. It is listed as an
+accepted risk in `docs/threat-model.md` §5 for the test period only.
+
+### Why it polls anyway
+
+Two reasons that survive the correction, neither of them "the box is
+unreachable":
+
+* **The Coolify token stays on loopback.** `COOLIFY_URL` is `127.0.0.1:8000`, so
+  the bearer token never crosses an interface — least of all the plaintext one
+  above. A webhook or an Actions-driven deploy would put a credential on that
+  wire or in GitHub.
+* **Nothing external needs a credential into this box.** The alternative designs
+  hand GitHub an SSH private key or a deploy token. This one hands out nothing,
+  which is a smaller blast radius than a shorter deploy latency is worth.
 
 ### The exact sha, not "latest main"
 
@@ -241,6 +275,55 @@ behind it in the order is left untouched, everything already moved is pinned bac
 to the previous sha and re-checked, and the candidate is **not** recorded. If
 there is no previous sha to return to, it says `ROLLBACK IMPOSSIBLE` rather than
 claiming success.
+
+### The one-time bootstrap exception
+
+**The applications on staging do not run commits that are on `main`.** Measured
+2026-08-27:
+
+| app | running sha | ancestor of `main` | associated PR |
+| --- | --- | --- | --- |
+| `shikoo-ingest` | `d48e19b0` | **no** | none |
+| `shikoo-dashboard` | `74b0a85d` | **no** | none |
+| `shikoo-bot` | *not running* | — | — |
+| *(`main` head)* | `9cb0d89f` | yes | **none — a direct push** |
+
+Both running shas are orphaned: reachable objects on no branch, produced by no
+pull request. So there is no sha that is simultaneously *deployed* and
+*approved-on-main*, and the rule this pipeline exists to enforce cannot be
+satisfied by anything currently running.
+
+That creates a deadlock. `ENV_NAME=staging` is set in Coolify but a container
+carries the environment it was **started** with, so the three applications still
+report `production` at runtime — and the guard reads the runtime value, so it
+refuses every tick. Only a redeploy makes the new value live, and the guard
+blocks the redeploy.
+
+It is broken exactly once, deliberately, and narrowly:
+
+* `shikoo-ingest` may be redeployed **only** at `d48e19b0`;
+* `shikoo-dashboard` may be redeployed **only** at `74b0a85d`;
+* the sole purpose is to inject `ENV_NAME=staging`;
+* the database schema must remain at `0031` — the ledger is at `0031` and both
+  shas carry `0031`, so nothing migrates;
+* **this is not an approved-main deployment** and must never be recorded or
+  described as one. It changes no code: same commit in, same commit out.
+
+**Do not manually deploy `main` to break the deadlock.** `main` carries
+migrations through `0033` while the database is at `0031`, so
+`deploy/entrypoint.sh`'s schema gate would refuse to start every container — a
+manual Coolify deploy does not run the migration preflight that
+`autodeploy.sh` does. It would fail, and it would fail after having stopped the
+running containers.
+
+The **first approved-main deployment** must therefore go through autodeploy,
+after PR #3 is merged: its preflight reads the ledger, compares it to the
+candidate's `migrations/`, refuses destructive DDL without a reviewed plan,
+applies `0032` and `0033` under the advisory lock, proves `schema status` clean,
+runs the invariants, and only then deploys in dependency order with health
+checks and rollback.
+
+Order, therefore: **bootstrap redeploy → merge PR #3 → install `GH_TOKEN`**.
 
 ### Where things live
 
@@ -351,9 +434,17 @@ environment variables; two fields changed on each.
 
 Coolify's native **Auto Deploy** is off on all three applications
 (`is_auto_deploy_enabled: false`, set 2026-08-27) and preview deployments were
-already off. There is no GitHub Actions deployment job and no second timer. The
-webhook secrets remain set and are harmless — GitHub cannot reach `:8000` — but
-nothing is listening for them either.
+already off. There is no GitHub Actions deployment job and no second timer.
+
+The webhook secrets remain set, and they are **not** harmless because of the
+network — GitHub *can* reach `:8000`, see above. They are inert because
+`is_auto_deploy_enabled` is false, and for no other reason. No webhook is
+configured on the repository today (`GET /repos/:r/hooks` → `[]`), so nothing
+sends to that endpoint either; but if one were added, the flag is what would
+still refuse it.
+
+That is why the flag is a checked precondition of every tick rather than a
+setting somebody remembers.
 
 Coolify's own access to the private repository is **not** touched by any of this
 and must not be: it still needs to fetch the code it is told to build.

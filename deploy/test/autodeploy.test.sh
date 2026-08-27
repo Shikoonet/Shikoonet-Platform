@@ -192,6 +192,18 @@ case "$sub" in
     args=("$@")
     joined="${args[*]}"
     case "$joined" in
+      *application_settings*)
+        # The Coolify safety gate. Defaults to the safe answer; a test flips one
+        # application by naming it in FAKE_AUTODEPLOY_ON / FAKE_PREVIEW_ON.
+        for u in "$FAKE_U_ING" "$FAKE_U_DASH" "$FAKE_U_BOT"; do
+          a=f; p=f
+          # `if`, not `[ ] && x=y`: this fake runs under `set -e`, and a false
+          # test as the whole statement makes the list return 1 and kills it.
+          if [ "${FAKE_AUTODEPLOY_ON:-}" = "$u" ]; then a=t; fi
+          if [ "${FAKE_PREVIEW_ON:-}" = "$u" ]; then p=t; fi
+          printf '%s|%s|%s\n' "$u" "$a" "$p"
+        done
+        exit 0 ;;
       *pg_locks*)
         # How many processes hold the bot's polling lock. Must be matched BEFORE
         # the generic psql arm below, which would otherwise answer the ledger.
@@ -244,6 +256,7 @@ setup() {
   export FAKE_MIGRATED="$WORK/migrated"
   export FAKE_COOLIFY_HOST='coolify.invalid:8000'
   export FAKE_BOT_UUID="$U_BOT"
+  export FAKE_U_ING="$U_INGEST" FAKE_U_DASH="$U_DASH" FAKE_U_BOT="$U_BOT"
   : > "$FAKE_SCENARIO"; : > "$FAKE_DEPLOYS"; : > "$FAKE_PINS"; : > "$FAKE_MIGRATED"
 
   # A fixture tree shaped like a GitHub tarball: <owner>-<repo>-<sha>/migrations/
@@ -257,7 +270,8 @@ setup() {
         FAKE_DEPLOY_API_FAILS_FOR FAKE_DEPLOY_STATUS_FOR FAKE_DEPLOY_STATUS \
         FAKE_DEPLOYED_COMMIT FAKE_APP_REPORTS_SHA FAKE_APP_BRANCH FAKE_LEDGER \
         FAKE_MIGRATE_FAILS FAKE_STATUS_FAILS FAKE_NO_CONTAINERS \
-        FAKE_RUNNING_COMMIT_OVERRIDE FAKE_COMMIT_CALLS FAKE_BOT_HOLDERS
+        FAKE_RUNNING_COMMIT_OVERRIDE FAKE_COMMIT_CALLS FAKE_BOT_HOLDERS \
+        FAKE_AUTODEPLOY_ON FAKE_PREVIEW_ON
   export FAKE_LEDGER='0001_init.sql'
   export FAKE_RUNNING_COMMIT="$PREV_SHA"
 
@@ -281,6 +295,7 @@ APP_DASHBOARD='${U_DASH}'
 APP_BOT='${U_BOT}'
 EXPECT_ENV_NAME='staging'
 DB_CONTAINER='fake-postgres'
+COOLIFY_DB_CONTAINER='fake-coolify-db'
 BRANCH='main'
 POLL_SECS='1'
 DEPLOY_TIMEOUT='2'
@@ -388,7 +403,7 @@ scenario "/pulls/7/reviews" 200 \
 scenario "/commits/${GREEN_SHA}/pulls" 200 "$(pr_json "$GREEN_SHA" author)"
 scenario "/commits/main" 200 "$(commit_json "$GREEN_SHA")"
 run_script
-check 'an approval superseded by CHANGES_REQUESTED does not count' 0 'no current APPROVED review'
+check 'an approval superseded by CHANGES_REQUESTED does not count' 0 'CHANGES_REQUESTED'
 
 # --- 7. a STALE approval, given before the last push ------------------------
 setup
@@ -397,6 +412,53 @@ scenario "/commits/${GREEN_SHA}/pulls" 200 "$(pr_json "$GREEN_SHA" author)"
 scenario "/commits/main" 200 "$(commit_json "$GREEN_SHA")"
 run_script
 check 'an approval on an earlier head is stale and does not count' 0 'no current APPROVED review'
+
+# --- 7b. a second reviewer requested changes AFTER the approval --------------
+# The gap this closes: per-reviewer «latest» stops one person's approval
+# surviving their own objection, but not somebody else's. Reviewer A approves
+# the final head; reviewer B then reads the same tree and requests changes. The
+# count of A's approvals is still 1, so the old code deployed a commit a
+# reviewer had actively objected to — worse than deploying an unreviewed one,
+# because somebody looked and said no.
+setup
+scenario "/pulls/7/reviews" 200 \
+  "[$(review APPROVED alice "$PR_HEAD" 2026-08-27T09:00:00Z),$(review CHANGES_REQUESTED bob "$PR_HEAD" 2026-08-27T11:00:00Z)]"
+scenario "/commits/${GREEN_SHA}/pulls" 200 "$(pr_json "$GREEN_SHA" author)"
+scenario "/commits/main" 200 "$(commit_json "$GREEN_SHA")"
+run_script
+check 'an outstanding CHANGES_REQUESTED from another reviewer blocks the deploy' 0 'CHANGES_REQUESTED'
+
+# --- 7c. a CHANGES_REQUESTED against an EARLIER head does not block ----------
+# History, not an objection: the author pushed again, and the final head is what
+# the approval and the block are both measured against.
+setup; happy
+: > "$FAKE_SCENARIO"
+scenario "/actions/runs/501/jobs" 200 "$(jobs_json '"success"')"
+scenario "/actions/runs?head_sha=${GREEN_SHA}" 200 "$(runs_json completed '"success"')"
+scenario "/pulls/7/reviews" 200 \
+  "[$(review CHANGES_REQUESTED bob 1111111111111111111111111111111111111111 2026-08-27T08:00:00Z),$(review APPROVED alice "$PR_HEAD" 2026-08-27T10:00:00Z)]"
+scenario "/commits/${GREEN_SHA}/pulls" 200 "$(pr_json "$GREEN_SHA" author)"
+scenario "/commits/main" 200 "$(commit_json "$GREEN_SHA")"
+run_script
+check 'a CHANGES_REQUESTED on a superseded head does not block' 3 "${GREEN_SHA:0:12}"
+
+# --- 7d. the same reviewer approves, then requests changes ------------------
+setup
+scenario "/pulls/7/reviews" 200 \
+  "[$(review APPROVED alice "$PR_HEAD" 2026-08-27T09:00:00Z),$(review CHANGES_REQUESTED alice "$PR_HEAD" 2026-08-27T11:00:00Z)]"
+scenario "/commits/${GREEN_SHA}/pulls" 200 "$(pr_json "$GREEN_SHA" author)"
+scenario "/commits/main" 200 "$(commit_json "$GREEN_SHA")"
+run_script
+check 'a reviewer who later requests changes withdraws their own approval' 0 'CHANGES_REQUESTED'
+
+# --- 7e. the author cannot clear another reviewer's block -------------------
+setup
+scenario "/pulls/7/reviews" 200 \
+  "[$(review CHANGES_REQUESTED bob "$PR_HEAD" 2026-08-27T09:00:00Z),$(review APPROVED author "$PR_HEAD" 2026-08-27T11:00:00Z),$(review APPROVED alice "$PR_HEAD" 2026-08-27T12:00:00Z)]"
+scenario "/commits/${GREEN_SHA}/pulls" 200 "$(pr_json "$GREEN_SHA" author)"
+scenario "/commits/main" 200 "$(commit_json "$GREEN_SHA")"
+run_script
+check 'an approval by a third party does not override an outstanding block' 0 'CHANGES_REQUESTED'
 
 # --- 8. a direct push, with no PR at all ------------------------------------
 setup
@@ -630,6 +692,56 @@ else
   bad 'a failed migration must deploy nothing' "rc=${RC} deploys=$(deploys)"
 fi
 unset FAKE_MIGRATE_FAILS
+
+# --- 25b. the Coolify safety gate ------------------------------------------
+# `:8000` is on the public internet. `is_auto_deploy_enabled = false` is the
+# only thing stopping a GitHub push from deploying behind this script's back, so
+# it is re-checked every tick — and a tick that finds it wrong must abandon
+# EVERYTHING, before a migration is applied or a state file is written.
+for app in ingest dashboard bot; do
+  setup; happy
+  case $app in
+    ingest) u=$U_INGEST ;;
+    dashboard) u=$U_DASH ;;
+    bot) u=$U_BOT ;;
+  esac
+  # A pending migration, so the test proves the gate fires BEFORE migrating.
+  printf 'CREATE TABLE gate_probe (id int);\n' > "$FAKE_TREE/repo-sha/migrations/0002_probe.sql"
+  export FAKE_AUTODEPLOY_ON="$u"
+  run_script
+  if [ "$(deploys)" = '0' ] && [ "$(pins)" = '' ] && [ ! -s "$FAKE_MIGRATED" ]; then
+    ok "native Auto Deploy enabled on ${app} aborts the tick before any mutation"
+  else
+    bad "auto-deploy gate (${app})" "deploys=$(deploys) pins=$(pins) migrated=$(cat "$FAKE_MIGRATED" 2>/dev/null). log: ${OUT}"
+  fi
+  unset FAKE_AUTODEPLOY_ON
+done
+
+setup; happy
+printf 'CREATE TABLE gate_probe (id int);\n' > "$FAKE_TREE/repo-sha/migrations/0002_probe.sql"
+export FAKE_PREVIEW_ON="$U_DASH"
+run_script
+if [ "$(deploys)" = '0' ] && [ ! -s "$FAKE_MIGRATED" ]; then
+  ok 'preview deployments enabled aborts the tick before any mutation'
+else
+  bad 'preview gate' "deploys=$(deploys). log: ${OUT}"
+fi
+unset FAKE_PREVIEW_ON
+
+setup; happy
+export FAKE_AUTODEPLOY_ON="$U_BOT"
+run_script
+if printf '%s' "$OUT" | grep -qF 'Auto Deploy is ENABLED'; then
+  ok 'the refusal names the application whose flag is wrong'
+else
+  bad 'auto-deploy refusal message' "log: ${OUT}"
+fi
+unset FAKE_AUTODEPLOY_ON
+
+# And the gate must not block a correctly-configured host.
+setup; happy
+run_script
+check 'the safety gate passes when all three are correctly configured' 3 'coolify safety gate passed'
 
 echo
 echo '  ── the deploy is of an immutable sha ──'
