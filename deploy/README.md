@@ -149,6 +149,55 @@ test, the bot-singleton check, and the rollback. `deploy/over-ssh.sh` is the
 GitHub half — it copies `deploy.sh` up from the commit being deployed, so what
 runs is always what was reviewed.
 
+### Two approval modes, and why the second one exists
+
+`DEPLOY_APPROVAL_MODE` in `.github/workflows/deploy.yml`. There is **no
+default**: unset, empty or misspelled denies. Both tempting defaults are wrong —
+`team` turns a typo into a deploy that never runs, `solo` turns a typo into a
+deploy nobody reviewed.
+
+| mode | what stands in for review |
+| ---- | ------------------------- |
+| `team` | an `APPROVED` review on the final head from a human who is not the author |
+| `solo` | the allowlisted owner **wrote** the PR **and merged** it, and CI passed on the final head **and on the merge commit** |
+
+`solo` exists because the team policy became unsatisfiable. This repository has
+one person with access, so "a human other than the author" is a condition
+nobody can meet, and the gate denied four merges in a row — correctly, and
+uselessly. The fix was **not** to accept any merged PR, which would have deleted
+the provenance chain. Solo mode replaces the review requirement with the
+narrowest thing that is checkable for one person, and **no approval is
+invented**: the audit line reads `policy=solo-owner` and says in words that
+nobody else reviewed it.
+
+Both modes still refuse a direct push, an unmerged PR, an ambiguous PR
+association, an outstanding `CHANGES_REQUESTED`, a red `Required Quality Gate`,
+a moved `main`, and any API error.
+
+`DEPLOY_APPROVAL_MODE` and `SOLO_DEPLOY_OWNER` live in the workflow file rather
+than in a repository variable **on purpose**: a variable can be changed in the
+settings UI, silently, with no diff and no review. Who may ship unreviewed code
+is exactly the decision that must not be changeable that way. Set the mode back
+to `team` the day a second regular reviewer joins — nothing else changes, and
+the team path stays tested.
+
+Which policy shipped a given release is recorded on the box, as a fourth field
+in `/var/lib/shikoo/<env>/deployed`.
+
+### Promotion to production
+
+Never automatic, in either mode. `workflow_dispatch` with:
+
+- `staging_run_id` — the Deploy run whose digest **passed staging**. The digest
+  is read from that run's artifact, which exists only because the staging deploy
+  ran and smoke-tested. There is no digest input, so an arbitrary tag, sha or
+  digest cannot be promoted: there is nowhere to type one.
+- `confirm` — the literal word `PROMOTE`.
+
+The actor must be `SOLO_DEPLOY_OWNER`. Both checks run in `promote-gate`, a job
+with **no `environment:`**, so an unauthorised promotion is refused before any
+job holding a production secret exists. Nothing is rebuilt.
+
 ### The approval gate, and why it is not an Environment reviewer
 
 This repository is **private on GitHub Free**: no rulesets, no required reviews,
