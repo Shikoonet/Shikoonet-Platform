@@ -808,6 +808,8 @@ export interface KeyboardButton {
   rowIndex: number;
   colIndex: number;
   visible: boolean;
+  /** The whole button's colour. Null is the client's own default. */
+  style: ButtonStyle | null;
 }
 
 export interface MenuActionInfo {
