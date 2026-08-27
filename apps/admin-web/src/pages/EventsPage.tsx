@@ -25,9 +25,9 @@
  * like it gone.
  */
 
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api, ApiError, type AppEventRow } from '../api.js';
-import { copyText } from '../clipboard.js';
+import { CopyButton } from '../CopyButton.js';
 import { count, dateTimeSeconds } from '../format.js';
 
 const PAGE_SIZE = 25;
@@ -92,44 +92,6 @@ export function eventPayload(e: AppEventRow): Record<string, unknown> {
 export function eventText(rows: AppEventRow[]): string {
   const payload = rows.map(eventPayload);
   return JSON.stringify(payload.length === 1 ? payload[0] : payload, null, 2);
-}
-
-/** A button that says whether the copy actually happened. */
-function CopyButton({
-  rows,
-  label,
-  title,
-  small = true,
-}: {
-  rows: AppEventRow[];
-  label: string;
-  title: string;
-  small?: boolean;
-}) {
-  const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle');
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => (timer.current ? clearTimeout(timer.current) : undefined), []);
-
-  return (
-    <button
-      type="button"
-      className={small ? 'btn btn-sm' : 'btn'}
-      title={title}
-      onClick={() => {
-        void copyText(eventText(rows)).then((ok) => {
-          // Reported, not assumed. On a panel opened over plain http the
-          // clipboard API is missing entirely, and a button that always says
-          // «کپی شد» would have an admin pasting whatever was there before.
-          setState(ok ? 'done' : 'failed');
-          if (timer.current) clearTimeout(timer.current);
-          timer.current = setTimeout(() => setState('idle'), 2000);
-        });
-      }}
-    >
-      {state === 'done' ? 'کپی شد ✓' : state === 'failed' ? 'کپی نشد' : label}
-    </button>
-  );
 }
 
 interface SerializedError {
@@ -349,7 +311,7 @@ export function EventsPage() {
 
         <div className="toolbar">
           <CopyButton
-            rows={rows}
+            getText={() => eventText(rows)}
             label={`کپی ${count(rows.length)} ردیف این صفحه`}
             title="همهٔ ردیف‌های همین صفحه را به‌صورت JSON کپی می‌کند"
             small={false}
@@ -420,7 +382,7 @@ export function EventsPage() {
                         {open === e.id ? 'بستن' : 'جزئیات'}
                       </button>
                       <CopyButton
-                        rows={[e]}
+                        getText={() => eventText([e])}
                         label="کپی"
                         title="این رویداد را با همهٔ جزئیاتش به‌صورت JSON کپی می‌کند"
                       />
