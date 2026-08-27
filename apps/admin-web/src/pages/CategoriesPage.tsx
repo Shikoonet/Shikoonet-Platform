@@ -33,6 +33,7 @@ import { isSellable } from '@shikoo/contracts';
 import { count, toman } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 import { LayoutEditor } from './LayoutEditor.js';
+import { BadgeField, badgeValue } from './BadgeField.js';
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -140,7 +141,7 @@ export function CategoriesPage() {
             screenText="کدام دسته‌بندی؟"
             items={rows.map((r) => ({
               id: r.id,
-              label: `${r.emoji ? `${r.emoji} ` : ''}${r.name}`,
+              label: `${r.badge ? `${r.badge} ` : ''}${r.name}`,
               hint: r.active ? `${count(r.sellableCount)} قابل خرید` : 'خاموش',
               rowIndex: r.rowIndex,
             }))}
@@ -197,7 +198,7 @@ export function CategoriesPage() {
           ) : (
             <div key={r.id} className={`cat-card${r.active ? '' : ' cat-card--off'}`}>
               <div className="cat-card__face">
-                {r.emoji && <span className="cat-card__emoji">{r.emoji}</span>}
+                {r.badge && <span className="cat-card__emoji">{r.badge}</span>}
                 <span>{r.name}</span>
               </div>
               <div className="cat-card__meta">
@@ -342,7 +343,7 @@ function ArrangeCategory({ category, onSaved }: { category: CategoryRow; onSaved
   return (
     <LayoutEditor
       scope={`category:${category.id}`}
-      screenText={`${category.emoji ? `${category.emoji} ` : ''}${category.name} — کدام را می‌خواهید؟`}
+      screenText={`${category.badge ? `${category.badge} ` : ''}${category.name} — کدام را می‌خواهید؟`}
       items={items.map((r) => ({
         id: r.id,
         label: r.name,
@@ -382,29 +383,21 @@ function EditCard({
 }: {
   row: CategoryRow;
   onCancel: () => void;
-  onSave: (patch: { name: string; emoji: string | null }) => void;
+  onSave: (patch: { name: string; badge: string | null }) => void;
 }) {
   const w = useAdminWriteProps();
   const [name, setName] = useState(row.name);
-  const [emoji, setEmoji] = useState(row.emoji ?? '');
+  const [badge, setBadge] = useState(row.badge ?? '');
 
   return (
     <form
       className="cat-card"
       onSubmit={(e) => {
         e.preventDefault();
-        onSave({ name: name.trim(), emoji: emoji.trim() === '' ? null : emoji.trim() });
+        onSave({ name: name.trim(), badge: badgeValue(badge) });
       }}
     >
-      <div className="cat-card__face" style={{ gap: 6 }}>
-        <input
-          className="form-control"
-          aria-label="ایموجی"
-          style={{ width: '3.5rem', textAlign: 'center', padding: '9px 4px' }}
-          value={emoji}
-          maxLength={16}
-          onChange={(e) => setEmoji(e.target.value)}
-        />
+      <div className="cat-card__face">
         <input
           className="form-control"
           aria-label="نام دسته‌بندی"
@@ -414,6 +407,12 @@ function EditCard({
           onChange={(e) => setName(e.target.value)}
         />
       </div>
+      <BadgeField
+        id={`cat-badge-${row.id}`}
+        value={badge}
+        onChange={setBadge}
+        preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name.trim() || row.name}`}
+      />
       <div className="cat-card__meta">
         <span>{count(row.planCount)} محصول</span>
       </div>
@@ -440,7 +439,7 @@ function NewCard({ onCreated, nextSort }: { onCreated: () => void; nextSort: num
   const w = useAdminWriteProps();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
-  const [emoji, setEmoji] = useState('');
+  const [badge, setBadge] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -464,13 +463,13 @@ function NewCard({ onCreated, nextSort }: { onCreated: () => void; nextSort: num
         void api
           .createCategory({
             name: name.trim(),
-            emoji: emoji.trim() === '' ? null : emoji.trim(),
+            badge: badgeValue(badge),
             // Last, so a new category does not push itself in front of the shop.
             sortOrder: nextSort,
           })
           .then(() => {
             setName('');
-            setEmoji('');
+            setBadge('');
             setOpen(false);
             onCreated();
           })
@@ -478,16 +477,7 @@ function NewCard({ onCreated, nextSort }: { onCreated: () => void; nextSort: num
           .finally(() => setBusy(false));
       }}
     >
-      <div className="cat-card__face" style={{ gap: 6 }}>
-        <input
-          className="form-control"
-          aria-label="ایموجی"
-          style={{ width: '3.5rem', textAlign: 'center', padding: '9px 4px' }}
-          value={emoji}
-          maxLength={16}
-          placeholder="🇩🇪"
-          onChange={(e) => setEmoji(e.target.value)}
-        />
+      <div className="cat-card__face">
         <input
           className="form-control"
           aria-label="نام دسته‌بندی"
@@ -498,6 +488,12 @@ function NewCard({ onCreated, nextSort }: { onCreated: () => void; nextSort: num
           onChange={(e) => setName(e.target.value)}
         />
       </div>
+      <BadgeField
+        id="cat-badge-new"
+        value={badge}
+        onChange={setBadge}
+        preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name.trim() || 'سرویس‌های اروپا'}`}
+      />
       {err && <div className="alert alert-error">{err}</div>}
       <div className="cat-card__actions">
         <button

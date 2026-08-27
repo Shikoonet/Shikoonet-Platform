@@ -49,6 +49,7 @@ function service(
     configs: configs.map((cfName, i) => ({
       id: id * 100 + i,
       name: cfName,
+      badge: null,
       priceIrr: 1_000_000 * (i + 1),
       volumeGb: 10 * (i + 1),
       durationDays: 30,

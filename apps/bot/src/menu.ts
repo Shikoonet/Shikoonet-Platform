@@ -368,6 +368,24 @@ export function categoryPlans(categoryName: string): string {
  * so the eight customers with a standing discount read the full price on the
  * button and a different one at checkout.
  */
+/**
+ * The admin's badge, in front of the label — «🆕 ۵۰ گیگ — ۹۰,۰۰۰ تومان».
+ *
+ * In FRONT, always, and never appended: a plan's label already ends in a price
+ * and a category's ends in the name, so a badge on the tail would land after
+ * the number on one screen and read as part of the name on the other. The front
+ * is also the side Telegram keeps put in an RTL label — see the measurement in
+ * `telegram.ts:313`, which is why «🟢 پلاتینیوم» was the example there.
+ *
+ * The badge is admin-written free text and goes onto a button label, which is
+ * the one place Telegram treats text as text: no parse_mode is set on these
+ * sends, so there is nothing here for a «<» to escape into.
+ */
+function badged(badge: string | null, label: string): string {
+  const b = badge?.trim();
+  return b ? `${b} ${label}` : label;
+}
+
 function priced(name: string, listedIrr: number, price: Price): string {
   const quoted = price.discountIrr === 0 && nameMentionsPrice(name, listedIrr);
   return quoted ? name : `${name} — ${formatToman(price.totalIrr)}`;
@@ -428,7 +446,10 @@ export function planMenu(plans: CatalogPlan[], discountPercent = 0): InlineKeybo
     // else's id is the one way this feature could sell the wrong thing.
     groupIntoRows(plans).map((row) =>
       row.map((plan) => ({
-        text: priced(plan.planName, plan.priceIrr, priceForUser(plan.priceIrr, discountPercent)),
+        text: badged(
+          plan.badge,
+          priced(plan.planName, plan.priceIrr, priceForUser(plan.priceIrr, discountPercent)),
+        ),
         callback_data: encode('plan', plan.planId),
       })),
     ),
@@ -451,7 +472,7 @@ export function categoryMenu(categories: CatalogCategory[]): InlineKeyboard {
   return withChrome(
     groupIntoRows(categories).map((row) =>
       row.map((category) => ({
-        text: category.emoji ? `${category.emoji} ${category.name}` : category.name,
+        text: badged(category.badge, category.name),
         callback_data: encode('cat', category.categoryId),
       })),
     ),

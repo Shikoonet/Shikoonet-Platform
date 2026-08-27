@@ -85,8 +85,24 @@ const ListQuery = z.object({
  * unmetered plan and null duration is one that does not expire. That is a real
  * distinction in the schema, so the API has to be able to express it.
  */
+/**
+ * What a category and a plan both put in front of their button's name.
+ *
+ * One constant for both, matching the one CHECK migration 0033 wrote onto both
+ * tables: two screens with two ideas of what fits on a button is how the panel
+ * being replaced ended up with labels Telegram truncates.
+ */
+const BADGE = z
+  .string()
+  .trim()
+  .min(1)
+  .max(24)
+  .regex(/^[^\r\n\t]+$/, 'badge is one line')
+  .nullable();
+
 const PLAN_FIELDS = {
   name: z.string().trim().min(1).max(120),
+  badge: BADGE,
   priceIrr: z.number().int().min(0).max(MAX_SINGLE_PAYMENT_IRR),
   durationDays: z.number().int().positive().max(3650).nullable(),
   volumeGb: z.number().min(0).max(100_000).nullable(),
@@ -112,6 +128,7 @@ function groupIdsSql(param: number): string {
 const PlanPatch = z
   .object({
     name: PLAN_FIELDS.name.optional(),
+    badge: PLAN_FIELDS.badge.optional(),
     priceIrr: PLAN_FIELDS.priceIrr.optional(),
     durationDays: PLAN_FIELDS.durationDays.optional(),
     volumeGb: PLAN_FIELDS.volumeGb.optional(),
@@ -132,6 +149,7 @@ const PlanPatch = z
 const PlanCreate = z
   .object({
     name: PLAN_FIELDS.name,
+    badge: PLAN_FIELDS.badge.default(null),
     priceIrr: PLAN_FIELDS.priceIrr,
     durationDays: PLAN_FIELDS.durationDays.default(null),
     volumeGb: PLAN_FIELDS.volumeGb.default(null),
@@ -229,10 +247,16 @@ const ProductStatusBody = z.object({ status: z.enum(STATUSES) }).strict();
 /**
  * A category — the shop's first screen, one button per row of this table.
  *
- * `emoji` is stored and not validated beyond a length, and the length is
+ * `badge` — `emoji` until 0033, and never only an emoji — is what the bot
+ * draws immediately before the name: «🆕», «🔴 آف», «ویژه». It is stored and
+ * not validated beyond a length and a no-newline rule, and the length is
  * generous on purpose: a family or a flag is several code points joined by
  * zero-width joiners, and a cap tight enough to mean «one glyph» refuses those.
  * What it is NOT is a label — that is `name`, and it is what the button says.
+ *
+ * The newline rule is the only real check. A button label is one line; a badge
+ * carrying «\n» produces a keyboard Telegram renders wrong on every client,
+ * and it is not something an operator can mean.
  *
  * `active` is the switch that takes a category's products off sale without
  * deleting anything. Deleting is what the foreign key refuses while products
@@ -241,7 +265,7 @@ const ProductStatusBody = z.object({ status: z.enum(STATUSES) }).strict();
  */
 const CATEGORY_FIELDS = {
   name: z.string().trim().min(1).max(80),
-  emoji: z.string().trim().min(1).max(16).nullable(),
+  badge: BADGE,
   sortOrder: z.number().int().min(0).max(10_000),
   active: z.boolean(),
 };
@@ -249,7 +273,7 @@ const CATEGORY_FIELDS = {
 const CategoryBody = z
   .object({
     name: CATEGORY_FIELDS.name,
-    emoji: CATEGORY_FIELDS.emoji.default(null),
+    badge: CATEGORY_FIELDS.badge.default(null),
     sortOrder: CATEGORY_FIELDS.sortOrder.default(0),
     active: CATEGORY_FIELDS.active.default(true),
   })
@@ -258,7 +282,7 @@ const CategoryBody = z
 const CategoryPatch = z
   .object({
     name: CATEGORY_FIELDS.name.optional(),
-    emoji: CATEGORY_FIELDS.emoji.optional(),
+    badge: CATEGORY_FIELDS.badge.optional(),
     sortOrder: CATEGORY_FIELDS.sortOrder.optional(),
     active: CATEGORY_FIELDS.active.optional(),
   })
@@ -297,6 +321,7 @@ interface PlanRow {
   id: number;
   plan_name: string;
   price_irr: number;
+  badge: string | null;
   duration_days: number | null;
   volume_gb: number | null;
   user_limit: number | null;
@@ -328,6 +353,7 @@ function shape(r: PlanRow) {
   return {
     id: r.id,
     name: r.plan_name,
+    badge: r.badge,
     priceIrr: Number(r.price_irr),
     durationDays: r.duration_days,
     // numeric(12,3) arrives as a number through the adapter; NULL means
@@ -373,7 +399,7 @@ function shape(r: PlanRow) {
 function shapeCategory(r: {
   id: number;
   name: string;
-  emoji: string | null;
+  badge: string | null;
   active: boolean;
   sort_order: number;
   row_index: number | null;
@@ -384,7 +410,7 @@ function shapeCategory(r: {
   return {
     id: Number(r.id),
     name: r.name,
-    emoji: r.emoji,
+    badge: r.badge,
     active: r.active,
     sortOrder: r.sort_order,
     rowIndex: r.row_index,
@@ -423,6 +449,7 @@ interface ConfigRow {
   id: number;
   product_id: number;
   name: string;
+  badge: string | null;
   price_irr: number;
   duration_days: number | null;
   volume_gb: number | null;
@@ -449,7 +476,7 @@ async function configsFor(db: D1Database, productIds: number[]): Promise<ConfigR
   const holes = productIds.map((_, i) => `?${i + 1}`).join(', ');
   const rows = await db
     .prepare(
-      `SELECT pl.id, pl.product_id, pl.name, pl.price_irr, pl.duration_days, pl.volume_gb,
+      `SELECT pl.id, pl.product_id, pl.name, pl.badge, pl.price_irr, pl.duration_days, pl.volume_gb,
               pl.user_limit, pl.status, pl.sort_order,
               (SELECT COUNT(*) FROM orders o WHERE o.plan_id = pl.id) AS orders_count
          FROM product_plans pl
@@ -491,6 +518,7 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
       .map((cf) => ({
         id: cf.id,
         name: cf.name,
+        badge: cf.badge,
         priceIrr: Number(cf.price_irr),
         durationDays: cf.duration_days,
         // NULL is unmetered and 0 is a free gigabyte allowance. The flat route
@@ -549,7 +577,7 @@ const PANEL_CEILING = `
              AND s.status IN ('ACTIVE', 'ON_HOLD')) AS provider_live`;
 
 const SELECT_PLAN = `
-  SELECT pl.id, pl.name AS plan_name, pl.price_irr, pl.duration_days, pl.volume_gb,
+  SELECT pl.id, pl.name AS plan_name, pl.badge, pl.price_irr, pl.duration_days, pl.volume_gb,
          pl.user_limit, pl.status AS plan_status, pl.sort_order, pl.row_index,
          p.id AS product_id, p.code AS product_code, p.name AS product_name,
          p.kind AS product_kind, p.status AS product_status,
@@ -966,6 +994,7 @@ export function registerProductRoutes(
       sets.push(`${column} = ?${params.length}`);
     };
     if (patch.name !== undefined) put('name', patch.name);
+    if (patch.badge !== undefined) put('badge', patch.badge);
     if (patch.priceIrr !== undefined) put('price_irr', patch.priceIrr);
     if (patch.durationDays !== undefined) put('duration_days', patch.durationDays);
     if (patch.volumeGb !== undefined) put('volume_gb', patch.volumeGb);
@@ -1070,7 +1099,7 @@ export function registerProductRoutes(
    */
   app.get('/api/v1/admin/product-categories', async (c) => {
     const rows = await c.env.DB.prepare(
-      `SELECT cat.id, cat.name, cat.emoji, cat.active, cat.sort_order, cat.row_index,
+      `SELECT cat.id, cat.name, cat.badge, cat.active, cat.sort_order, cat.row_index,
               (SELECT COUNT(*) FROM products p WHERE p.category_id = cat.id) AS products,
               -- Configs, not services. The sellable count below is in configs
               -- too, and two numbers on one card in two different units read as
@@ -1089,7 +1118,7 @@ export function registerProductRoutes(
     ).all<{
       id: number;
       name: string;
-      emoji: string | null;
+      badge: string | null;
       active: boolean;
       sort_order: number;
       row_index: number | null;
@@ -1119,11 +1148,11 @@ export function registerProductRoutes(
     // than looking first keeps two admins typing «آلمان» at once from both
     // being told they succeeded.
     const row = await c.env.DB.prepare(
-      `INSERT INTO product_categories (name, emoji, active, sort_order)
+      `INSERT INTO product_categories (name, badge, active, sort_order)
             VALUES (?1, ?2, ?3, ?4)
        ON CONFLICT (name) DO NOTHING RETURNING id`,
     )
-      .bind(body.data.name, body.data.emoji, body.data.active, body.data.sortOrder)
+      .bind(body.data.name, body.data.badge, body.data.active, body.data.sortOrder)
       .first<{ id: number }>();
     if (!row) {
       return c.json(
@@ -1141,7 +1170,7 @@ export function registerProductRoutes(
       null,
       {
         name: body.data.name,
-        emoji: body.data.emoji,
+        badge: body.data.badge,
         active: body.data.active,
         sort_order: body.data.sortOrder,
       },
@@ -1153,7 +1182,7 @@ export function registerProductRoutes(
         category: {
           id: Number(row.id),
           name: body.data.name,
-          emoji: body.data.emoji,
+          badge: body.data.badge,
           active: body.data.active,
           sortOrder: body.data.sortOrder,
           rowIndex: null,
@@ -1181,7 +1210,7 @@ export function registerProductRoutes(
       );
     }
 
-    const SELECT_CATEGORY = `SELECT id, name, emoji, active, sort_order, row_index
+    const SELECT_CATEGORY = `SELECT id, name, badge, active, sort_order, row_index
                                FROM product_categories WHERE id = ?1`;
     const before = await c.env.DB.prepare(SELECT_CATEGORY)
       .bind(id)
@@ -1196,7 +1225,7 @@ export function registerProductRoutes(
     };
     const patch = body.data;
     if (patch.name !== undefined) put('name', patch.name);
-    if (patch.emoji !== undefined) put('emoji', patch.emoji);
+    if (patch.badge !== undefined) put('badge', patch.badge);
     if (patch.active !== undefined) put('active', patch.active);
     if (patch.sortOrder !== undefined) put('sort_order', patch.sortOrder);
     params.push(id);
@@ -1255,7 +1284,7 @@ export function registerProductRoutes(
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
 
     const before = await c.env.DB.prepare(
-      `SELECT id, name, emoji, active, sort_order FROM product_categories WHERE id = ?1`,
+      `SELECT id, name, badge, active, sort_order FROM product_categories WHERE id = ?1`,
     )
       .bind(id)
       .first<Record<string, unknown>>();
@@ -1623,12 +1652,13 @@ export function registerProductRoutes(
 
     const row = await c.env.DB.prepare(
       `INSERT INTO product_plans
-         (product_id, name, price_irr, duration_days, volume_gb, user_limit, sort_order, status)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id`,
+         (product_id, name, badge, price_irr, duration_days, volume_gb, user_limit, sort_order, status)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id`,
     )
       .bind(
         productId,
         p.name,
+        p.badge,
         p.priceIrr,
         p.durationDays,
         p.volumeGb,

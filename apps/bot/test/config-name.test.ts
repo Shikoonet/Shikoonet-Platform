@@ -59,6 +59,7 @@ describe('a composed config name, seen by the bot', () => {
       productId: 1,
       productName: 'طلایی',
       planName: '',
+      badge: null,
       priceIrr: 0,
       durationDays: null,
       volumeGb: null,
