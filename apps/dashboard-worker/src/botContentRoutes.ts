@@ -34,6 +34,7 @@ import {
   MENUS,
   SCREEN_IDS,
   SCREENS,
+  stripCustomEmoji,
   TEXT_KEYS,
   TEXTS,
   type ButtonPlacement,
@@ -228,18 +229,33 @@ export function registerBotContentRoutes(
 
     if (!isTextKey(key)) return c.json({ ok: false, error: 'unknown_key' }, 404);
 
-    const problem = checkOverride(key, value, { customEmoji: await customEmojiOn(c.env.DB) });
-    if (problem) {
-      return c.json({ ok: false, error: 'invalid_text', detail: textProblem(problem) }, 400);
+    // Equal to the default means "not customised" — stored as the absence of a
+    // row, so a later release's better wording still reaches this shop.
+    //
+    // Compared in BOTH shapes: the source default carries <tg-emoji> markup
+    // the admin may have copied verbatim from the dashboard, AND the stripped
+    // form is what `Texts.raw()` sends to a customer when the shop has the
+    // feature off. The reset button saves whichever the page shows, and an
+    // admin who pasted the markup with customEmoji on is doing the same reset
+    // as one who pasted the stripped form with customEmoji off.
+    //
+    // Checked BEFORE `checkOverride`: a save of the default IS a reset, and
+    // the markup check would refuse the markup-bearing source default when
+    // customEmoji is off — even though the row it would have written is the
+    // absence of a row, not the markup.
+    const source = TEXTS[key as TextKey].default;
+    const isDefault = value === source || value === stripCustomEmoji(source);
+
+    if (!isDefault) {
+      const problem = checkOverride(key, value, { customEmoji: await customEmojiOn(c.env.DB) });
+      if (problem) {
+        return c.json({ ok: false, error: 'invalid_text', detail: textProblem(problem) }, 400);
+      }
     }
 
     const before = await c.env.DB.prepare(`SELECT value FROM bot_texts WHERE key = ?1`)
       .bind(key)
       .first<{ value: string }>();
-
-    // Equal to the default means "not customised" — stored as the absence of a
-    // row, so a later release's better wording still reaches this shop.
-    const isDefault = value === TEXTS[key as TextKey].default;
     if (isDefault) {
       await c.env.DB.prepare(`DELETE FROM bot_texts WHERE key = ?1`).bind(key).run();
     } else {

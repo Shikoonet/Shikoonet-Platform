@@ -179,6 +179,20 @@ describe('the switch', () => {
     expect(on.raw('WELCOME')).toBe(rewritten);
   });
 
+  it('strips markup out of the shipped defaults too, not only overrides', () => {
+    // A default that ships with <tg-emoji> markup must behave the same way as
+    // an override that carries markup: when the switch is off, the customer
+    // sees the fallback glyph and never the literal tags. The send path then
+    // has nothing in `hasCustomEmoji(text)`, no failed HTML send, no auto-
+    // disable loop on a non-Premium owner.
+    const off = new Texts({}, false);
+    expect(off.raw('WELCOME')).not.toContain('tg-emoji');
+    expect(off.raw('WELCOME')).toContain('👋');
+
+    const on = new Texts({}, true);
+    expect(on.raw('WELCOME')).toContain('tg-emoji');
+  });
+
   it('sends the fallback to a real customer while it is off', async () => {
     await putText('WELCOME', `خوش آمدید ${FIRE}`);
     await setSwitch(false);
