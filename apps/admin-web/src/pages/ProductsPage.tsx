@@ -31,6 +31,7 @@ import { useEffect, useState } from 'react';
 import {
   api,
   ApiError,
+  type ButtonStyle,
   type CategoryRow,
   type PlanRow,
   type ProviderOption,
@@ -701,6 +702,7 @@ function EditProduct({
   const w = useAdminWriteProps();
   const [name, setName] = useState(row.name);
   const [badge, setBadge] = useState(row.badge ?? '');
+  const [buttonStyle, setButtonStyle] = useState<ButtonStyle | null>(row.buttonStyle);
   const [priceToman, setPriceToman] = useState(String(Math.trunc(row.priceIrr / 10)));
   const [volumeGb, setVolumeGb] = useState(row.volumeGb === null ? '' : String(row.volumeGb));
   const [durationDays, setDurationDays] = useState(
@@ -742,6 +744,7 @@ function EditProduct({
       await api.updatePlan(row.id, {
         name: name.trim(),
         badge: badgeValue(badge),
+        buttonStyle,
         priceIrr: Math.round(Number(priceToman) * 10),
         volumeGb: volumeGb.trim() === '' ? null : Number(volumeGb),
         durationDays: durationDays.trim() === '' ? null : Number(durationDays),
@@ -874,6 +877,8 @@ function EditProduct({
               id="ed-badge"
               value={badge}
               onChange={setBadge}
+              style={buttonStyle}
+              onStyleChange={setButtonStyle}
               preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name.trim() || row.name} — ${toman(
                 Math.round(Number(priceToman) * 10),
               )}`}

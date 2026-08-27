@@ -105,6 +105,8 @@ export interface PlanRow {
   name: string;
   /** Drawn before the label on this config's bot button — «🆕», «🔴 آف». */
   badge: string | null;
+  /** The colour of the button itself. Null = the client's own default. */
+  buttonStyle: ButtonStyle | null;
   priceIrr: number;
   durationDays: number | null;
   volumeGb: number | null;
@@ -205,9 +207,17 @@ export interface ProviderOption {
 
 export type CatalogStatus = 'ACTIVE' | 'HIDDEN' | 'DISABLED';
 
+/**
+ * The whole button's colour — Bot API 9.4's `style`, the same three names the
+ * server, the CHECK in 0034 and the bot all spell. Null is «the client's own
+ * default», which is what a button drew before this existed.
+ */
+export type ButtonStyle = 'primary' | 'success' | 'danger';
+
 export interface PlanPatch {
   name?: string;
   badge?: string | null;
+  buttonStyle?: ButtonStyle | null;
   priceIrr?: number;
   durationDays?: number | null;
   volumeGb?: number | null;
@@ -226,6 +236,7 @@ export interface PlanPatch {
 export interface PlanCreate {
   name: string;
   badge?: string | null;
+  buttonStyle?: ButtonStyle | null;
   priceIrr: number;
   durationDays?: number | null;
   volumeGb?: number | null;
@@ -260,6 +271,8 @@ export interface CategoryRow {
   name: string;
   /** Drawn on the bot button before the name. Null when the admin gave it none. */
   badge: string | null;
+  /** The colour of the button itself. Null = the client's own default. */
+  buttonStyle: ButtonStyle | null;
   /** False takes this category's products off the shop without deleting anything. */
   active: boolean;
   sortOrder: number;
@@ -280,6 +293,7 @@ export interface CategoryRow {
 export interface CategoryPatch {
   name?: string;
   badge?: string | null;
+  buttonStyle?: ButtonStyle | null;
   sortOrder?: number;
   active?: boolean;
 }
@@ -1024,7 +1038,12 @@ export const api = {
     return req<{ ok: boolean; items: CategoryRow[] }>('/product-categories');
   },
 
-  createCategory(body: { name: string; badge?: string | null; sortOrder?: number }) {
+  createCategory(body: {
+    name: string;
+    badge?: string | null;
+    buttonStyle?: ButtonStyle | null;
+    sortOrder?: number;
+  }) {
     return req<{ ok: boolean; category: CategoryRow }>('/product-categories', {
       method: 'POST',
       body: JSON.stringify(body),
