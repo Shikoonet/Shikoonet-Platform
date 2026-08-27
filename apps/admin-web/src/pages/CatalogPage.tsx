@@ -184,6 +184,11 @@ export function CatalogPage() {
     for (const row of rows) {
       const id = row.panel?.id;
       if (id === undefined || asked.current.has(id)) continue;
+      // A switched-off panel is not asked at all. The delivery column already
+      // answers «فروخته نمی‌شود» for it without needing groups, and asking is one
+      // request per dead panel that can only ever fail — five of them on the
+      // practice box, every time this screen opened.
+      if (row.panel?.status !== 'ACTIVE') continue;
       asked.current.add(id);
       api
         .panelGroups(id)
@@ -225,7 +230,8 @@ export function CatalogPage() {
         هر <b>سرویس</b> همان چیزی است که مشتری اول انتخاب می‌کند — پلاتینیوم، طلایی، معمولی — و
         هر <b>کانفیگ</b> یک ردیف قیمت داخل آن. سرویس روی یک <b>گروهِ پنل</b> ساخته می‌شود و
         همان گروه تعیین می‌کند مشتری چه کانفیگ‌هایی تحویل می‌گیرد. سرویسی که هیچ کانفیگی نداشته
-        باشد در ربات دیده نمی‌شود.
+        باشد در ربات دیده نمی‌شود — و سرویسی که پنلش خاموش باشد هم، هرچقدر خودش درست باشد. ستون
+        «تحویل» می‌گوید کدام.
       </p>
 
       {err && <div className="alert alert-error">{err}</div>}
@@ -446,8 +452,27 @@ function DeliveryCell({
   if (service.panel === null) {
     return <span className="badge badge-block">بدون پنل — فروخته نمی‌شود</span>;
   }
+  /*
+   * The panel first, and then stop.
+   *
+   * Asking «which groups does this service send?» about a switched-off panel is
+   * answering a question nobody has yet: whatever the groups say, nothing is
+   * sold. This column used to skip straight past it and print «گروهی انتخاب
+   * نشده» in grey — which on 2026-08-27 was eleven of twelve rows, all of them
+   * saying nothing about the one thing that was actually wrong.
+   */
+  if (service.panel.status !== 'ACTIVE') {
+    return (
+      <div className="tone-orange">
+        <strong>فروخته نمی‌شود</strong>
+        <div className="muted">پنل «{service.panel.name}» از خرید و تمدید برداشته شده.</div>
+      </div>
+    );
+  }
   if (data === undefined) return <span className="muted">…</span>;
-  if (data === null) return <span className="muted">—</span>;
+  // The panel is on and still did not answer — a different thing from «no
+  // groups are ticked», and the two were the same grey sentence until now.
+  if (data === null) return <span className="muted">پنل جواب نداد</span>;
 
   const ids = service.groupIds ?? data.selected;
   const found: PanelGroupItem[] = [];
@@ -484,6 +509,9 @@ function DeliveryCell({
     );
   }
 
+  // Distinct from «پنل جواب نداد» above: the panel answered, and this service
+  // sends nothing of its own, so the panel's own default decides — which we have
+  // not asked and cannot state.
   if (found.length === 0) return <span className="muted">گروهی انتخاب نشده</span>;
   return (
     <>
@@ -524,7 +552,22 @@ function ServiceRows({
           <div>{service.name}</div>
           <div className="page-head__sub ltr">{service.code}</div>
         </td>
-        <td>{service.panel?.name ?? <span className="muted">بدون پنل</span>}</td>
+        <td>
+          {service.panel === null ? (
+            <span className="muted">بدون پنل</span>
+          ) : (
+            <>
+              <div>{service.panel.name}</div>
+              {/* `panel.status` has arrived on every row of this response since
+                  the route was written and was never drawn, so a service on a
+                  switched-off panel looked identical to a live one — in the very
+                  column named after the panel. */}
+              {service.panel.status !== 'ACTIVE' && (
+                <span className="badge badge-block">خاموش</span>
+              )}
+            </>
+          )}
+        </td>
         <td>
           <GroupCell service={service} data={data} />
         </td>

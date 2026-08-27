@@ -1287,12 +1287,15 @@ function PanelCard({
   onEdit,
   onDelete,
   onToggle,
+  onShowProducts,
   busy,
 }: {
   panel: PanelItem;
   onEdit: () => void;
   onDelete: () => void;
   onToggle: () => void;
+  /** Open «محصولات» filtered to this panel — the shop this panel feeds. */
+  onShowProducts: (panelId: number) => void;
   busy: boolean;
 }) {
   const w = useAdminWriteProps();
@@ -1360,8 +1363,21 @@ function PanelCard({
       <div className="panel-card__foot">
         <div className="filters" style={{ margin: 0, justifyContent: 'space-between' }}>
           <span>
-            {count(panel.productCount)} سرویس · {count(panel.planCount)} کانفیگ ·{' '}
-            {count(panel.liveSubscriptions)} اشتراک زنده
+            {/*
+              «کلی پنل داریم که اصلا معلوم نیست کجا نمایش داده میشن» — the shop's
+              owner, 2026-08-27. These three numbers have been here since the
+              card was built and led nowhere; from a panel there was no way at
+              all to reach the shop it feeds. The first one is now the way in.
+            */}
+            <button
+              type="button"
+              className="btn-link"
+              onClick={() => onShowProducts(panel.id)}
+              title={`محصول‌های «${panel.name}» در «محصولات»`}
+            >
+              {count(panel.planCount)} محصول
+            </button>{' '}
+            · {count(panel.productCount)} سرویس · {count(panel.liveSubscriptions)} اشتراک زنده
             {panel.capacity !== null && ` · سقف ${count(panel.capacity)}`}
           </span>
           <button
@@ -1380,7 +1396,7 @@ function PanelCard({
   );
 }
 
-export function PanelsPage() {
+export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) => void }) {
   const [rows, setRows] = useState<PanelItem[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -1411,9 +1427,24 @@ export function PanelsPage() {
   async function toggleStatus(p: PanelItem) {
     if (
       p.status === 'ACTIVE' &&
-      p.liveSubscriptions > 0 &&
+      (p.liveSubscriptions > 0 || p.planCount > 0) &&
+      // Both halves of the consequence, and the second one is new: switching a
+      // panel off takes every product on it out of the shop, and until now the
+      // only number in this sentence was about subscriptions already sold. On
+      // 2026-08-27 five panels were off and thirteen products had silently gone
+      // with them.
       !window.confirm(
-        `«${p.name}» ${p.liveSubscriptions.toLocaleString('fa-IR')} اشتراک زنده دارد. غیرفعال‌کردن، پنل را از خرید و تمدید برمی‌دارد؛ سرویس‌های فروخته‌شده پاک نمی‌شوند. ادامه؟`,
+        `«${p.name}» را غیرفعال می‌کنید.
+
+` +
+          `• ${count(p.planCount)} محصول از فروشگاه برداشته می‌شوند و در ربات دیده نمی‌شوند.
+` +
+          (p.liveSubscriptions > 0
+            ? `• ${count(p.liveSubscriptions)} اشتراک زنده دارد؛ فروخته‌شده‌ها پاک نمی‌شوند و تمدیدشان بسته می‌شود.
+`
+            : '') +
+          `
+ادامه؟`,
       )
     ) {
       return;
@@ -1491,6 +1522,7 @@ export function PanelsPage() {
               onEdit={() => setEditing(p)}
               onDelete={() => setDeleting(p)}
               onToggle={() => void toggleStatus(p)}
+              onShowProducts={(id) => onGo('products', `?providerId=${id}`)}
             />
           ))}
         </div>

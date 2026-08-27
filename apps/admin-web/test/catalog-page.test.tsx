@@ -17,7 +17,14 @@ import { RoleProvider } from '../src/role.js';
 import { CatalogPage } from '../src/pages/CatalogPage.js';
 import type { PanelGroups, ServiceRow } from '../src/api.js';
 
-const PANEL = { id: 3, name: 'پنل تست', code: 'test-panel', status: 'ACTIVE' };
+const PANEL = {
+  id: 3,
+  name: 'پنل تست',
+  code: 'test-panel',
+  status: 'ACTIVE',
+  capacity: null,
+  liveSubscriptions: 0,
+};
 
 function service(
   id: number,

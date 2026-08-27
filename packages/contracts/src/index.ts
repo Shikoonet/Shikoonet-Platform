@@ -15,6 +15,7 @@ export * from './mirzabot.js';
 export * from './botTexts.js';
 export * from './botKeyboard.js';
 export * from './catalogLayout.js';
+export * from './sellable.js';
 export * from './configName.js';
 export * from './receipt.js';
 

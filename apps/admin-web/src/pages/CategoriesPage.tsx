@@ -28,8 +28,9 @@
  */
 
 import { useEffect, useState } from 'react';
-import { api, ApiError, type CategoryRow } from '../api.js';
-import { count } from '../format.js';
+import { api, ApiError, type CategoryRow, type PlanRow } from '../api.js';
+import { isSellable } from '@shikoo/contracts';
+import { count, toman } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 import { LayoutEditor } from './LayoutEditor.js';
 
@@ -50,6 +51,7 @@ export function CategoriesPage() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<number | null>(null);
   const [arranging, setArranging] = useState(false);
+  const [arrangingCategory, setArrangingCategory] = useState<CategoryRow | null>(null);
 
   async function load() {
     setLoading(true);
@@ -96,8 +98,12 @@ export function CategoriesPage() {
     void run(() => api.deleteCategory(r.id));
   }
 
-  const onSale = rows.filter((r) => r.active).length;
   const products = rows.reduce((n, r) => n + r.productsCount, 0);
+  const sellable = rows.reduce((n, r) => n + r.sellableCount, 0);
+  // What the bot will draw: a category with nothing purchasable in it gets no
+  // button at all (`categoriesForUser` joins down to plans and applies
+  // `PURCHASABLE`), so this is the real length of the shop's first screen.
+  const inShop = rows.filter((r) => r.active && r.sellableCount > 0);
 
   return (
     <>
@@ -105,7 +111,10 @@ export function CategoriesPage() {
         <div>
           <div className="page-head__title">دسته‌بندی‌ها</div>
           <div className="page-head__sub">
-            {count(onSale)} در فروشگاه از {count(rows.length)} · {count(products)} محصول
+            {count(inShop.length)} در فروشگاه از {count(rows.length)} · {count(products)} محصول ·{' '}
+            <strong className={sellable === 0 ? 'tone-danger' : ''}>
+              {count(sellable)} قابل خرید
+            </strong>
           </div>
         </div>
         <button
@@ -142,6 +151,35 @@ export function CategoriesPage() {
 
       {err && <div className="alert alert-error">{err}</div>}
 
+      {/*
+        The whole answer to «دسته‌بندی‌ها اصلا چیکار میکنن؟», in the two states it
+        really has. The second one is the important one: the bot skips a
+        one-choice screen (`handle.ts:1188`, «a list of one is not a choice»), so
+        an admin who built three categories and sees none of them in Telegram is
+        looking at correct behaviour with nothing anywhere explaining it. That is
+        exactly what happened on 2026-08-27.
+      */}
+      {!loading && (
+        <p className="muted" style={{ marginBlockStart: 0 }}>
+          {inShop.length > 1 ? (
+            <>
+              این همان صفحهٔ اولی است که مشتری بعد از «خرید اشتراک» می‌بیند —{' '}
+              {count(inShop.length)} دکمه.
+            </>
+          ) : inShop.length === 1 ? (
+            <>
+              فقط «{inShop[0]!.name}» چیز خریدنی دارد، پس ربات این صفحه را رد می‌کند و مشتری
+              مستقیم قیمت‌ها را می‌بیند. با دو دسته‌بندیِ خریدنی، صفحه ظاهر می‌شود.
+            </>
+          ) : (
+            <>
+              هیچ دسته‌بندی‌ای چیز خریدنی ندارد، پس فروشگاه در ربات خالی است. معمولاً یعنی پنل‌ها
+              خاموش‌اند — «محصولات» می‌گوید کدام.
+            </>
+          )}
+        </p>
+      )}
+
       <div className="cat-grid">
         {rows.map((r) =>
           editing === r.id ? (
@@ -163,11 +201,30 @@ export function CategoriesPage() {
                 <span>{r.name}</span>
               </div>
               <div className="cat-card__meta">
-                <span>{count(r.productsCount)} محصول</span>
+                <span>
+                  {count(r.productsCount)} محصول ·{' '}
+                  <strong className={r.sellableCount === 0 ? 'tone-danger' : ''}>
+                    {count(r.sellableCount)} قابل خرید
+                  </strong>
+                </span>
+                {/* The switch is the operator's decision; the count is the
+                    shop's reality. A category can be «در فروشگاه» and draw no
+                    button, which is the contradiction this card now shows
+                    instead of hiding. */}
                 <span className={r.active ? 'badge badge-active' : 'badge badge-block'}>
                   {r.active ? 'در فروشگاه' : 'خاموش'}
                 </span>
               </div>
+              {r.active && r.sellableCount === 0 && (
+                <div className="tone-orange">
+                  <strong>در ربات دیده نمی‌شود</strong>
+                  <div className="page-head__sub">
+                    {r.productsCount === 0
+                      ? 'محصولی ندارد.'
+                      : 'هیچ‌کدام از محصولاتش قابل خرید نیست — معمولاً یعنی پنلشان خاموش است.'}
+                  </div>
+                </div>
+              )}
               <div className="cat-card__actions">
                 <button
                   type="button"
@@ -176,6 +233,21 @@ export function CategoriesPage() {
                   {...w}
                 >
                   ویرایش
+                </button>
+                {/* Arranging lives here now, one button per category, because a
+                    category IS one screen in the bot. It was on «محصولات»
+                    behind a filter and disabled until that filter was set. */}
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={r.productsCount === 0}
+                  title={r.productsCount === 0 ? 'محصولی ندارد که چیده شود' : ''}
+                  onClick={() => {
+                    setArranging(false);
+                    setArrangingCategory(arrangingCategory?.id === r.id ? null : r);
+                  }}
+                >
+                  {arrangingCategory?.id === r.id ? 'بستن چیدمان' : 'چیدمان'}
                 </button>
                 <button type="button" className="btn btn-sm" onClick={() => toggle(r)} {...w}>
                   {r.active ? 'خاموش کن' : 'روشن کن'}
@@ -202,6 +274,21 @@ export function CategoriesPage() {
         <NewCard onCreated={() => void load()} nextSort={rows.length} />
       </div>
 
+      {arrangingCategory && (
+        <div className="card" style={{ marginBlockStart: 20 }}>
+          <div className="card__head">
+            <div className="card__title">صفحهٔ «{arrangingCategory.name}» در ربات</div>
+            <div className="page-head__sub">
+              محصولی که فروخته نمی‌شود این‌جا هست و به مشتری نشان داده نمی‌شود
+            </div>
+          </div>
+          <ArrangeCategory
+            category={arrangingCategory}
+            onSaved={() => void load()}
+          />
+        </div>
+      )}
+
       {rows.length === 0 && !loading && (
         <p className="empty">
           هنوز دسته‌بندی‌ای ساخته نشده. تا وقتی دسته‌بندی نباشد سرویسی هم ساخته نمی‌شود، چون هر
@@ -209,6 +296,77 @@ export function CategoriesPage() {
         </p>
       )}
     </>
+  );
+}
+
+/**
+ * The arrangement of one category, fetched as its own list.
+ *
+ * A save has to name the WHOLE screen — the server refuses a partial one,
+ * because the rows it was not told about would keep their old positions and
+ * interleave — so this asks for every product in the category rather than
+ * arranging whatever a filtered table happened to be showing.
+ *
+ * Moved here from «محصولات» on 2026-08-27. There it lived behind a category
+ * filter and its button was disabled until one was chosen, which read as broken.
+ * A category is one screen in the bot, so the arrangement belongs on the card
+ * for that category and nowhere else.
+ */
+function ArrangeCategory({ category, onSaved }: { category: CategoryRow; onSaved: () => void }) {
+  const [items, setItems] = useState<PlanRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    setErr(null);
+    try {
+      // One page big enough for a whole category. A shop screen longer than
+      // this is refused by `MAX_CATALOG_ROWS` long before it gets here.
+      const d = await api.products({ categoryId: category.id, page: 1, pageSize: 100 });
+      setItems(d.items);
+    } catch (e) {
+      setErr(message(e));
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [category.id]);
+
+  if (err) return <div className="alert alert-error">{err}</div>;
+  if (!items) return <p className="muted">در حال خواندن…</p>;
+
+  return (
+    <LayoutEditor
+      scope={`category:${category.id}`}
+      screenText={`${category.emoji ? `${category.emoji} ` : ''}${category.name} — کدام را می‌خواهید؟`}
+      items={items.map((r) => ({
+        id: r.id,
+        label: r.name,
+        // The price, or why a customer will never see this button. The editor
+        // draws every row of the screen including the ones the shop is not
+        // offering, so saying which is which is the difference between «چیدمان»
+        // and a list of things that may or may not exist.
+        hint: isSellable({
+          planStatus: r.status,
+          productStatus: r.product.status,
+          panel: r.provider
+            ? {
+                name: r.provider.name ?? '—',
+                status: r.provider.status ?? 'DISABLED',
+                capacity: r.provider.capacity,
+                liveSubscriptions: r.provider.liveSubscriptions,
+              }
+            : null,
+        })
+          ? toman(r.priceIrr)
+          : `${toman(r.priceIrr)} · فروخته نمی‌شود`,
+        rowIndex: r.rowIndex,
+      }))}
+      onSaved={() => {
+        void load();
+        onSaved();
+      }}
+    />
   );
 }
 

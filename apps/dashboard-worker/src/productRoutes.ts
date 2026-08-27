@@ -61,6 +61,17 @@ const ListQuery = z.object({
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .optional(),
+  /**
+   * «فقط آن‌هایی که فروخته نمی‌شوند», and its opposite.
+   *
+   * Absent means «both», for the same reason `resellersOnly` above is not a
+   * boolean with a default: `?sellable=false` is a real question an operator
+   * asks after seeing «۱۶ محصول · ۳ قابل خرید» and wanting the other thirteen.
+   */
+  sellable: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(25),
 });
@@ -307,6 +318,8 @@ interface PlanRow {
   provider_name: string | null;
   provider_code: string | null;
   provider_status: string | null;
+  provider_capacity: number | null;
+  provider_live: number | null;
   category_name: string | null;
   orders_count: number;
 }
@@ -345,6 +358,10 @@ function shape(r: PlanRow) {
           name: r.provider_name,
           code: r.provider_code,
           status: r.provider_status,
+          // Null is unlimited, and must stay null — a zero here would read as a
+          // ceiling already reached and put every row on this panel in red.
+          capacity: r.provider_capacity === null ? null : Number(r.provider_capacity),
+          liveSubscriptions: Number(r.provider_live ?? 0),
         }
       : null,
     categoryName: r.category_name,
@@ -361,6 +378,7 @@ function shapeCategory(r: {
   sort_order: number;
   row_index: number | null;
   products: number;
+  sellable?: number;
 }) {
   return {
     id: Number(r.id),
@@ -370,6 +388,9 @@ function shapeCategory(r: {
     sortOrder: r.sort_order,
     rowIndex: r.row_index,
     productsCount: Number(r.products),
+    // How many of them a customer could actually buy. The create route has no
+    // products yet and passes nothing, which is zero either way.
+    sellableCount: Number(r.sellable ?? 0),
   };
 }
 
@@ -390,6 +411,8 @@ interface ServiceRow {
   provider_name: string | null;
   provider_code: string | null;
   provider_status: string | null;
+  provider_capacity: number | null;
+  provider_live: number | null;
   category_name: string | null;
 }
 
@@ -455,6 +478,9 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
           name: r.provider_name,
           code: r.provider_code,
           status: r.provider_status,
+          // Null is unlimited; see the note in `shape()` on the flat route.
+          capacity: r.provider_capacity === null ? null : Number(r.provider_capacity),
+          liveSubscriptions: Number(r.provider_live ?? 0),
         }
       : null,
     configs: configs
@@ -476,6 +502,49 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
   };
 }
 
+/**
+ * «Could anybody buy this?» in SQL — the user-independent half of the bot's
+ * `PURCHASABLE` (`apps/bot/src/catalog.ts:51-83`).
+ *
+ * `resellers_only` and `once_per_user` are deliberately not here: they depend on
+ * who is asking, and these routes answer for an admin with no customer in hand.
+ * `whyNotSellable` in `@shikoo/contracts` draws the same line, and
+ * `apps/bot/test/sellable.test.ts` is what stops the two from drifting — it
+ * seeds a row per reason and asks the bot itself.
+ *
+ * Aliases are `pr` / `p` / `pl`, matching every query in this file, so it can be
+ * interpolated wherever those three are already in scope.
+ */
+const SELLABLE = `
+      pr.status = 'ACTIVE'
+  AND p.status  = 'ACTIVE'
+  AND pl.status = 'ACTIVE'
+  AND (pr.capacity IS NULL
+       OR pr.capacity > (SELECT COUNT(*) FROM subscriptions s
+                          WHERE s.provider_id = pr.id
+                            AND s.status IN ('ACTIVE', 'ON_HOLD')))`;
+
+/**
+ * The panel's ceiling, and how much of it is spent.
+ *
+ * Both catalogue routes need it for the same reason: `whyNotSellable` cannot
+ * answer «پنل پر است» without them, and a full panel takes its whole catalogue
+ * out of the shop with nothing anywhere saying so — the bot's own comment
+ * (`apps/bot/src/catalog.ts:63-74`) records that this column was written by the
+ * dashboard and read by nobody for the life of the panel.
+ *
+ * Counted the way `PURCHASABLE` counts it and the way `panelRoutes.ts`'
+ * `SELECT_PANEL` counts it: ACTIVE and ON_HOLD, because an on-hold subscription
+ * is paid for and still expects this panel to be there. A third spelling of the
+ * same count is a third thing to keep in step, so this is copied deliberately
+ * and named after the two it must agree with.
+ */
+const PANEL_CEILING = `
+         pr.capacity AS provider_capacity,
+         (SELECT COUNT(*) FROM subscriptions s
+           WHERE s.provider_id = pr.id
+             AND s.status IN ('ACTIVE', 'ON_HOLD')) AS provider_live`;
+
 const SELECT_PLAN = `
   SELECT pl.id, pl.name AS plan_name, pl.price_irr, pl.duration_days, pl.volume_gb,
          pl.user_limit, pl.status AS plan_status, pl.sort_order, pl.row_index,
@@ -487,6 +556,7 @@ const SELECT_PLAN = `
          p.attrs->'group_ids' AS group_ids,
          pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
          pr.status AS provider_status,
+         ${PANEL_CEILING},
          cat.name AS category_name,
          (SELECT COUNT(*) FROM orders o WHERE o.plan_id = pl.id) AS orders_count
     FROM product_plans pl
@@ -643,11 +713,13 @@ export function registerProductRoutes(
       providerId: c.req.query('providerId') || undefined,
       categoryId: c.req.query('categoryId') || undefined,
       resellersOnly: c.req.query('resellersOnly') || undefined,
+      sellable: c.req.query('sellable') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, status, providerId, categoryId, resellersOnly, page, pageSize } = parsed.data;
+    const { q, status, providerId, categoryId, resellersOnly, sellable, page, pageSize } =
+      parsed.data;
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -674,6 +746,19 @@ export function registerProductRoutes(
       params.push(resellersOnly);
       where.push(`p.resellers_only = ?${params.length}`);
     }
+    /*
+     * No parameter: `SELLABLE` is a fixed fragment with no user input in it, and
+     * negating it is one operator rather than a second spelling of the rule.
+     *
+     * `IS NOT TRUE`, not `NOT (…)`. A product with no panel at all leaves `pr.*`
+     * NULL, so `pr.status = 'ACTIVE'` is NULL and the whole conjunction is NULL
+     * — which is not TRUE, and whose `NOT` is also not TRUE. Written the obvious
+     * way, a service with no panel would vanish from «قابل خرید» AND from
+     * «فروخته نمی‌شود»: invisible in the one filter built to find it.
+     */
+    if (sellable !== undefined) {
+      where.push(sellable ? `(${SELLABLE})` : `(${SELLABLE}) IS NOT TRUE`);
+    }
     if (q) {
       // An admin looking for "آلمان" does not know whether that word is on the
       // product or on the plan, so both are searched.
@@ -682,11 +767,26 @@ export function registerProductRoutes(
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
+    /*
+     * Two totals, and the second one is the whole reason this screen was
+     * rewritten. `total` is how many rows match the filters; `sellableTotal` is
+     * how many of them a customer could actually buy.
+     *
+     * Counted over the WHOLE filter rather than over the page, because the page
+     * is 25 rows and the header sentence is about the shop. A page-local count
+     * beside a filter-wide total is the shape of number that reads right and is
+     * wrong on page two.
+     */
     const totalRow = await c.env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM product_plans pl JOIN products p ON p.id = pl.product_id ${whereSql}`,
+      `SELECT COUNT(*) AS n,
+              COUNT(*) FILTER (WHERE ${SELLABLE}) AS sellable
+         FROM product_plans pl
+         JOIN products p ON p.id = pl.product_id
+         LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
+         ${whereSql}`,
     )
       .bind(...params)
-      .first<{ n: number }>();
+      .first<{ n: number; sellable: number }>();
 
     params.push(pageSize);
     const limitParam = params.length;
@@ -708,6 +808,7 @@ export function registerProductRoutes(
     return c.json({
       ok: true,
       total: totalRow?.n ?? 0,
+      sellableTotal: Number(totalRow?.sellable ?? 0),
       page,
       pageSize,
       items: (rows.results ?? []).map(shape),
@@ -798,6 +899,7 @@ export function registerProductRoutes(
               p.attrs->'group_ids' AS group_ids,
               pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
               pr.status AS provider_status, pr.sort_order AS provider_sort_order,
+              ${PANEL_CEILING},
               cat.name AS category_name
          FROM products p
          LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
@@ -946,18 +1048,32 @@ export function registerProductRoutes(
   // --- categories ---------------------------------------------------------
 
   /**
-   * The category list, with the number that makes switching one off a decision.
+   * The category list, with the two numbers that make every decision on it.
    *
    * `productsCount` is here so the screen can say «۷ محصول با این کار از فروشگاه
    * برداشته می‌شوند» BEFORE the switch is thrown, rather than afterwards. It is
    * also what the delete refusal counts, and reading it in the same shape from
    * both places is deliberate: the number in the warning and the number in the
    * refusal are the same number.
+   *
+   * `sellableCount` is the one that was missing, and its absence is why the
+   * screen could show «۲ محصول · در فروشگاه» for a category the bot draws no
+   * button for at all. `categoriesForUser` joins down to `product_plans` and
+   * applies `PURCHASABLE`, so a category whose every product sits on a
+   * switched-off panel is simply not in the shop — and a raw row count cannot
+   * see that. This subquery is the user-independent half of that predicate,
+   * matching `whyNotSellable` in `@shikoo/contracts`; the two are held together
+   * by `sellable.test.ts`, which drives the bot itself.
    */
   app.get('/api/v1/admin/product-categories', async (c) => {
     const rows = await c.env.DB.prepare(
       `SELECT cat.id, cat.name, cat.emoji, cat.active, cat.sort_order, cat.row_index,
-              (SELECT COUNT(*) FROM products p WHERE p.category_id = cat.id) AS products
+              (SELECT COUNT(*) FROM products p WHERE p.category_id = cat.id) AS products,
+              (SELECT COUNT(*)
+                 FROM product_plans pl
+                 JOIN products p ON p.id = pl.product_id
+                 JOIN provisioning_providers pr ON pr.id = p.provider_id
+                WHERE p.category_id = cat.id AND ${SELLABLE}) AS sellable
          FROM product_categories cat ORDER BY cat.sort_order, cat.id`,
     ).all<{
       id: number;
@@ -967,6 +1083,7 @@ export function registerProductRoutes(
       sort_order: number;
       row_index: number | null;
       products: number;
+      sellable: number;
     }>();
     return c.json({
       ok: true,

@@ -37,23 +37,53 @@ import {
   type ServiceRow,
   type CatalogStatus,
 } from '../api.js';
+import {
+  whyNotSellable,
+  notSellableFa,
+  notSellableShortFa,
+  type NotSellable,
+} from '@shikoo/contracts';
 import { count, toman } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
-import { LayoutEditor } from './LayoutEditor.js';
 
 const PAGE_SIZE = 25;
 
-const STATUS_FA: Record<string, string> = {
-  ACTIVE: 'در فروشگاه',
-  HIDDEN: 'پنهان',
-  DISABLED: 'غیرفعال',
-};
+/**
+ * What the shop can do with this row — the column that used to draw
+ * `product_plans.status` and call it «در فروشگاه».
+ *
+ * A row is «در فروشگاه» only when a customer could really buy it. Everything
+ * else names the reason in the operator's own words, because the fix differs
+ * completely between «پنل خاموش» (go and switch a panel back on) and «پنهان»
+ * (this one row).
+ *
+ * Both reasons are drawn when there are two: a config that is hidden AND sits on
+ * a dead panel needs both, and showing one at a time is how the second is found
+ * in production.
+ */
+function SellState({ row }: { row: PlanRow }) {
+  const reasons: NotSellable[] = whyNotSellable({
+    planStatus: row.status,
+    productStatus: row.product.status,
+    panel: row.provider
+      ? {
+          name: row.provider.name ?? '—',
+          status: row.provider.status ?? 'DISABLED',
+          capacity: row.provider.capacity,
+          liveSubscriptions: row.provider.liveSubscriptions,
+        }
+      : null,
+  });
 
-const STATUS_BADGE: Record<string, string> = {
-  ACTIVE: 'badge badge-active',
-  HIDDEN: 'badge badge-info',
-  DISABLED: 'badge badge-block',
-};
+  if (reasons.length === 0) return <span className="num--dim">در فروشگاه</span>;
+
+  return (
+    <div className="tone-orange" title={reasons.map(notSellableFa).join(' ')}>
+      <strong>فروخته نمی‌شود</strong>
+      <div className="page-head__sub">{reasons.map(notSellableShortFa).join(' · ')}</div>
+    </div>
+  );
+}
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -73,25 +103,34 @@ function duration(days: number | null): string {
   return days === null ? 'بی‌انقضا' : `${count(days)} روز`;
 }
 
-export function ProductsPage() {
+export function ProductsPage({ onGo }: { onGo: (id: 'categories') => void }) {
   const w = useAdminWriteProps();
   const [rows, setRows] = useState<PlanRow[]>([]);
   const [providers, setProviders] = useState<ProviderOption[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [total, setTotal] = useState(0);
+  const [sellableTotal, setSellableTotal] = useState(0);
   const [page, setPage] = useState(1);
 
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
-  const [providerId, setProviderId] = useState('');
+  /*
+   * Seeded from the address bar, so «مدیریت پنل‌ها» can send an operator here
+   * already filtered to one panel. `useRoute`'s `navigate(id, search)` writes
+   * the query; this reads it once, on mount, which is when this screen is
+   * created by that navigation.
+   */
+  const [providerId, setProviderId] = useState(
+    () => new URLSearchParams(window.location.search).get('providerId') ?? '',
+  );
   const [categoryId, setCategoryId] = useState('');
   const [resellers, setResellers] = useState('');
+  const [sellable, setSellable] = useState('');
 
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<PlanRow | null>(null);
   const [adding, setAdding] = useState(false);
-  const [arranging, setArranging] = useState(false);
 
   async function load(toPage = page) {
     setLoading(true);
@@ -105,9 +144,11 @@ export function ProductsPage() {
         ...(providerId ? { providerId: Number(providerId) } : {}),
         ...(categoryId ? { categoryId: Number(categoryId) } : {}),
         ...(resellers ? { resellersOnly: resellers === 'yes' } : {}),
+        ...(sellable ? { sellable: sellable === 'yes' } : {}),
       });
       setRows(d.items);
       setTotal(d.total);
+      setSellableTotal(d.sellableTotal);
       setProviders(d.providers);
     } catch (e) {
       setErr(message(e));
@@ -129,7 +170,7 @@ export function ProductsPage() {
 
   useEffect(() => {
     void load(page);
-  }, [page, status, providerId, categoryId, resellers]);
+  }, [page, status, providerId, categoryId, resellers, sellable]);
 
   async function remove(r: PlanRow) {
     if (!window.confirm(`«${r.name}» حذف شود؟`)) return;
@@ -143,7 +184,9 @@ export function ProductsPage() {
 
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const chosenCategory = categoryId ? categories.find((c) => c.id === Number(categoryId)) : null;
-  const filtered = Boolean(q.trim() || status || providerId || categoryId || resellers);
+  const filtered = Boolean(
+    q.trim() || status || providerId || categoryId || resellers || sellable,
+  );
 
   function clear() {
     setQ('');
@@ -151,7 +194,7 @@ export function ProductsPage() {
     setProviderId('');
     setCategoryId('');
     setResellers('');
-    setArranging(false);
+    setSellable('');
     setPage(1);
   }
 
@@ -161,21 +204,23 @@ export function ProductsPage() {
         <div>
           <div className="page-head__title">محصولات</div>
           <div className="page-head__sub">
-            {filtered ? `${count(rows.length)} از ${count(total)} محصول` : `${count(total)} محصول`}
+            {count(total)} محصول ·{' '}
+            {/* The number the shop's owner was actually looking for. «۱۶ محصول»
+                said nothing when three of them were on sale, and every badge in
+                the table below agreed with the sixteen. */}
+            <strong className={sellableTotal === 0 ? 'tone-danger' : ''}>
+              {count(sellableTotal)} قابل خرید
+            </strong>
             {chosenCategory ? ` · ${chosenCategory.name}` : ''}
           </div>
         </div>
         <div className="row-actions">
-          {/* Arranging is per category, because a shop screen IS a category —
-              no screen shows the whole catalogue at once. */}
-          <button
-            type="button"
-            className="btn"
-            disabled={!chosenCategory}
-            title={chosenCategory ? '' : 'اول یک دسته‌بندی را انتخاب کنید'}
-            onClick={() => setArranging((v) => !v)}
-          >
-            {arranging ? 'بستن چیدمان' : 'چیدمان در ربات'}
+          {/* Was disabled until a category filter was chosen, which read as a
+              broken button — the first thing the shop's owner said about this
+              screen. Arranging now has exactly one home, «دسته‌بندی‌ها», because
+              a shop screen IS a category; this is the signpost to it. */}
+          <button type="button" className="btn" onClick={() => onGo('categories')}>
+            چیدمان در ربات
           </button>
           <button
             type="button"
@@ -196,18 +241,6 @@ export function ProductsPage() {
             void load(1);
           }}
         />
-      )}
-
-      {arranging && chosenCategory && (
-        <div className="card" style={{ marginBlockEnd: 20 }}>
-          <div className="card__head">
-            <div className="card__title">صفحهٔ «{chosenCategory.name}» در ربات</div>
-            <div className="page-head__sub">
-              محصول پنهان این‌جا هست و به مشتری نشان داده نمی‌شود
-            </div>
-          </div>
-          <ArrangeCategory category={chosenCategory} onSaved={() => void load()} />
-        </div>
       )}
 
       <div className="card">
@@ -242,7 +275,6 @@ export function ProductsPage() {
               value={categoryId}
               onChange={(e) => {
                 setCategoryId(e.target.value);
-                setArranging(false);
                 setPage(1);
               }}
             >
@@ -291,6 +323,27 @@ export function ProductsPage() {
               <option value="">همه</option>
               <option value="no">مشتری عادی</option>
               <option value="yes">فقط نماینده</option>
+            </select>
+          </div>
+          <div>
+            <label className="form-label" htmlFor="prod-sellable">
+              فروش
+            </label>
+            {/* The filter that follows the header's «۳ قابل خرید»: an operator
+                who reads that number wants the other thirteen, and wants them
+                without guessing which of five things is wrong with each. */}
+            <select
+              id="prod-sellable"
+              className="form-control"
+              value={sellable}
+              onChange={(e) => {
+                setSellable(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">همه</option>
+              <option value="yes">قابل خرید</option>
+              <option value="no">فروخته نمی‌شود</option>
             </select>
           </div>
           <div>
@@ -383,16 +436,7 @@ export function ProductsPage() {
                     <span className="trunc">{r.categoryName ?? '—'}</span>
                   </td>
                   <td className="cell-tight">
-                    {/* A badge marks the exception. Fifteen green «در فروشگاه»
-                        chips down a column say nothing and hide the one row
-                        that is off sale, which is the row being looked for. */}
-                    {r.status === 'ACTIVE' ? (
-                      <span className="num--dim">{STATUS_FA.ACTIVE}</span>
-                    ) : (
-                      <span className={STATUS_BADGE[r.status] ?? 'badge'}>
-                        {STATUS_FA[r.status] ?? r.status}
-                      </span>
-                    )}
+                    <SellState row={r} />
                   </td>
                   <td className="cell-actions">
                     <div className="row-actions">
@@ -464,58 +508,6 @@ export function ProductsPage() {
         />
       )}
     </>
-  );
-}
-
-/**
- * The arrangement of one category, fetched as its own list.
- *
- * A save has to name the WHOLE screen — the server refuses a partial one,
- * because the rows it was not told about would keep their old positions and
- * interleave — so this asks for every product in the category rather than
- * arranging whatever happened to be on the current page of the table above.
- */
-function ArrangeCategory({ category, onSaved }: { category: CategoryRow; onSaved: () => void }) {
-  const [items, setItems] = useState<PlanRow[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  async function load() {
-    setErr(null);
-    try {
-      // One page big enough for a whole category. A shop screen longer than
-      // this is refused by `MAX_CATALOG_ROWS` long before it gets here.
-      const d = await api.products({ categoryId: category.id, page: 1, pageSize: 100 });
-      setItems(d.items);
-    } catch (e) {
-      setErr(message(e));
-    }
-  }
-
-  useEffect(() => {
-    void load();
-  }, [category.id]);
-
-  if (err) return <div className="alert alert-error">{err}</div>;
-  if (!items) return <p className="muted">در حال خواندن…</p>;
-
-  return (
-    <LayoutEditor
-      scope={`category:${category.id}`}
-      screenText={`${category.emoji ? `${category.emoji} ` : ''}${category.name} — کدام را می‌خواهید؟`}
-      items={items.map((r) => ({
-        id: r.id,
-        label: r.name,
-        hint:
-          r.status === 'ACTIVE'
-            ? toman(r.priceIrr)
-            : `${toman(r.priceIrr)} · ${STATUS_FA[r.status] ?? r.status}`,
-        rowIndex: r.rowIndex,
-      }))}
-      onSaved={() => {
-        void load();
-        onSaved();
-      }}
-    />
   );
 }
 
