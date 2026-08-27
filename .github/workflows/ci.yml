@@ -243,10 +243,16 @@ jobs:
             if (passed !== total) { console.error("::error::migration tests failed"); process.exit(1); }
           '
 
-      # Coverage as a RATCHET, on the three packages whose branches decide
-      # money, access and what a bank SMS means. The floors are the measured
-      # baseline minus a point of slack — see `vitest.coverage.ts` for each
-      # number and why it was chosen. Their job is to stop coverage falling.
+      # Coverage FLOORS — not a ratchet, and the file says so at length. A
+      # ratchet raises its own floor when coverage improves; nothing here
+      # stores a new measurement, so calling it one would be a promise about
+      # behaviour that does not exist.
+      #
+      # What these are: the measurement rounded down to a whole percent, on
+      # the three packages whose branches decide money, access and what a bank
+      # SMS means. The tolerance — under one point everywhere — is written out
+      # in `vitest.coverage.ts`, and exists because v8 coverage moves slightly
+      # between runs as the set of loaded modules changes.
       #
       # Not every package: four of the others need a live Postgres for almost
       # every line, so their percentage would measure whether the database was

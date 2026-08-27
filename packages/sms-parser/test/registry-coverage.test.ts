@@ -248,6 +248,46 @@ describe('every registered parser has a fixture', () => {
     const ids = REGISTRY.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it('is fourteen parsers — the number, pinned, so prose cannot drift from it', () => {
+    // A report of this work said «15 registered parsers» and then listed
+    // fourteen. The count was wrong, not the list: `dbPatterns.ts` exports
+    // `FallbackParser`, which is a TYPE for the operator-editable patterns
+    // `parseSms` takes as a runtime ARGUMENT — never a member of `REGISTRY`.
+    // `registry.ts` and `types.ts` are not parsers either.
+    //
+    // The completeness test above derives from `REGISTRY` and was never
+    // wrong. This one exists so the number itself has somewhere to live that
+    // is checked, rather than being recounted by hand into a document.
+    expect(REGISTRY.length).toBe(14);
+
+    // And the ids in order, so a reordering — which changes which parser wins
+    // a body both could claim — is a visible diff rather than a silent one.
+    expect(REGISTRY.map((p) => p.id)).toEqual([
+      'generic-otp',
+      'generic-promo',
+      'shahr-credit-v1',
+      'saman-credit-v1',
+      'melli-transfer-v1',
+      'gardeshgari-credit-v1',
+      'internet-transfer-signed-v1',
+      'account-transfer-signed-v1',
+      'parsian-signed-v1',
+      'compact-signed-v1',
+      'generic-credit',
+      'generic-debit',
+      'generic-balance',
+      'fallback-unknown',
+    ]);
+  });
+
+  it('the OTP parser is first, which is what makes redaction possible', () => {
+    // `ingest.ts` decides whether to store a body from the CLASSIFICATION.
+    // If any parser ran before this one and claimed an OTP body, the body
+    // would be stored. The ordering is a security property, not a
+    // preference, so it is asserted rather than commented.
+    expect(REGISTRY[0]?.id).toBe('generic-otp');
+  });
 });
 
 describe.each(FIXTURES)('$label ($parserId)', (f) => {
@@ -316,24 +356,18 @@ describe('the OTP rule, across every fixture', () => {
     }
   });
 
-  it('fails SAFE on an OTP phrasing the vocabulary does not know', () => {
-    // FOUND WRITING THIS FILE, and left as a recorded fact rather than a
-    // silent fix. `otp.ts:6` matches «رمز یکبار» but not «کد یکبار مصرف»,
-    // which is a common Iranian phrasing — the pattern list pairs «یکبار»
-    // with «رمز» and pairs «کد» only with تایید/تأیید/فعالسازی/ورود/احراز.
+  it('recognises «کد یکبار مصرف», the phrasing that used to fall through', () => {
+    // This test used to assert the OPPOSITE — that the message fell through to
+    // UNKNOWN — and was written as a recorded gap rather than a fix. The gap is
+    // closed: `otp.ts` now pairs «یکبار مصرف» with «کد» as well as «رمز».
     //
-    // The consequence is bounded and this test pins the bound: the message
-    // falls through to UNKNOWN, and UNKNOWN creates no transaction candidate
-    // (`shouldCreateTransaction` requires direction CREDIT), so no phantom
-    // money is invented. What DOES happen is that the body is stored in
-    // `raw_sms_events` without the OTP being decided first.
-    //
-    // Widening the vocabulary is a parser change with its own blast radius —
-    // «کد یکبار» would also match a promotional «کد یکبار مصرف تخفیف» — so it
-    // belongs in a change that is about the parser, not in one about CI.
+    // Why it mattered. UNKNOWN is not redactable (`ingest.ts:178`), so the
+    // full body — code included — was written to
+    // `raw_sms_events.normalized_body`. No money was ever at risk, because
+    // UNKNOWN creates no transaction candidate; the guarantee at risk was
+    // `docs/threat-model.md:106`, that an OTP is never stored.
     const r = parseSms(n('کد یکبار مصرف 883012 برای مبلغ 900,000 ریال'));
-    expect(r.classification).toBe('UNKNOWN');
-    // The safety property that matters: no money is read out of it.
+    expect(r.classification).toBe('OTP');
     expect(r.amountIrr).toBeNull();
     expect(r.balanceIrr).toBeNull();
   });
