@@ -140,13 +140,13 @@ export const SCREEN_IDS = Object.keys(SCREENS) as ScreenId[];
 export const TEXTS = {
   // --- خوش‌آمد و منوی اصلی --------------------------------------------------
   WELCOME: {
-    default: 'به شیکو خوش آمدید 👋\n\nاز منوی زیر انتخاب کنید.',
+    default: `به شیکو خوش آمدید <tg-emoji emoji-id="5368324170671202286">👋</tg-emoji>\n\nاز منوی زیر انتخاب کنید.`,
     placeholders: [],
     screen: 'welcome',
     hint: 'اولین پیام بعد از /start',
   },
   SHOP_CLOSED: {
-    default: '🔧 فروشگاه موقتاً بسته است. لطفاً کمی بعد دوباره امتحان کنید.',
+    default: `فروشگاه موقتاً بسته است. لطفاً کمی بعد دوباره امتحان کنید <tg-emoji emoji-id="5467566950868082386">⏰</tg-emoji>.`,
     placeholders: [],
     screen: 'welcome',
     hint: 'تنها چیزی که مشتری می‌بیند وقتی `Bot_Status` خاموش است — ادمین‌ها می‌بینندش نمی‌شوند',
@@ -158,7 +158,7 @@ export const TEXTS = {
     hint: 'بالای منوی اصلی',
   },
   REFERRAL_WELCOME: {
-    default: '👥 شما با لینک دعوت یکی از کاربران وارد شدید.',
+    default: `شما با لینک دعوت یکی از کاربران وارد شدید <tg-emoji emoji-id="5368324170671202286">👋</tg-emoji>.`,
     placeholders: [],
     screen: 'welcome',
     hint: 'ورود با لینک دعوت، بالای پیام خوش‌آمد',
@@ -530,13 +530,13 @@ export const TEXTS = {
 
   // --- ثبت پرداخت ----------------------------------------------------------
   PAID_RECORDED_TITLE: {
-    default: '🕓 ممنون. پرداخت شما ثبت شد و در حال بررسی است.',
+    default: `ممنون. پرداخت شما ثبت شد و در حال بررسی است <tg-emoji emoji-id="5467566950868082386">⏰</tg-emoji>.`,
     placeholders: [],
     screen: 'paid',
     hint: 'بعد از زدن «پرداخت کردم»',
   },
   PAID_ALREADY_TITLE: {
-    default: '🕓 پرداخت این سفارش قبلاً ثبت شده و در حال بررسی است.',
+    default: `پرداخت این سفارش قبلاً ثبت شده و در حال بررسی است <tg-emoji emoji-id="5467566950868082386">⏰</tg-emoji>.`,
     placeholders: [],
     screen: 'paid',
     hint: 'وقتی دکمهٔ «پرداخت کردم» دوباره زده می‌شود',
@@ -602,7 +602,7 @@ export const TEXTS = {
     hint: 'وقتی مشتری فایلی می‌فرستد که عکس یا PDF نیست — بدون این، فایل بی‌صدا دور انداخته می‌شد',
   },
   PAYMENT_CONFIRMED_TITLE: {
-    default: '✅ پرداخت شما تایید شد.',
+    default: `پرداخت شما تایید شد <tg-emoji emoji-id="5237699328843200968">✅</tg-emoji>.`,
     placeholders: [],
     screen: 'paid',
     hint: 'پیام خودکار وقتی تراکنش بانکی جفت شد',
@@ -1727,6 +1727,7 @@ export function checkOverride(
  */
 export class Texts {
   private readonly overrides: Partial<Record<TextKey, string>>;
+  private readonly customEmoji: boolean;
 
   /**
    * @param customEmoji whether the shop has custom emoji switched on.
@@ -1737,6 +1738,12 @@ export class Texts {
    * having it switched off automatically after Telegram refused, would silently
    * throw away every sentence the shop had rewritten. Falling back to the
    * fallback is what the markup is for.
+   *
+   * The same rule applies to defaults that ship with markup (`<tg-emoji>` in
+   * `TEXTS`). `raw()` strips them when the feature is off, so a shop without
+   * Premium never pays the cost of an HTML send Telegram will refuse. The
+   * fallback glyph is still what a customer sees, the same way they see it in
+   * a plain `<tg-emoji>` markup stripped at send time.
    */
   constructor(overrides: Record<string, string> = {}, customEmoji = false) {
     const kept: Partial<Record<TextKey, string>> = {};
@@ -1747,11 +1754,13 @@ export class Texts {
       }
     }
     this.overrides = kept;
+    this.customEmoji = customEmoji;
   }
 
   /** The raw text, with slots still in it. */
   raw(key: TextKey): string {
-    return this.overrides[key] ?? TEXTS[key].default;
+    const value = this.overrides[key] ?? TEXTS[key].default;
+    return this.customEmoji ? value : stripCustomEmoji(value);
   }
 
   /**

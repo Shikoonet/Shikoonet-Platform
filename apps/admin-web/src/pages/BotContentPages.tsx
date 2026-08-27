@@ -24,6 +24,7 @@ import {
 } from '../api.js';
 import { count, dateTime } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
+import { PREMIUM_EMOJI_PACK, premiumEmojiTag } from '@shikoo/contracts';
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -223,6 +224,32 @@ export function BotTextsPage() {
                             </span>{' '}
                             را داشته باشد؛ جایش مقدار واقعی می‌نشیند.
                           </p>
+                        )}
+                        {/* The picker is the only place an operator can be
+                            misled into thinking they pasted text: every chip
+                            here inserts markup that only renders for a Premium
+                            owner, and the row below says so in plain Persian
+                            so the operator can choose. The chips themselves
+                            stay visually identical to the BadgeField colour
+                            squares — a Premium emoji IS a coloured glyph —
+                            but they only appear when the feature is on, so an
+                            operator who hasn't enabled it doesn't get a tool
+                            that does nothing on save. */}
+                        {customEmoji && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBlockStart: 6 }}>
+                            {PREMIUM_EMOJI_PACK.map((e) => (
+                              <button
+                                key={e.id}
+                                type="button"
+                                className="btn btn-sm"
+                                title={`${e.label} (${e.id})`}
+                                onClick={() => setDraft((d) => d + premiumEmojiTag(e))}
+                                {...w}
+                              >
+                                {e.fallback}
+                              </button>
+                            ))}
+                          </div>
                         )}
                       </>
                     ) : (

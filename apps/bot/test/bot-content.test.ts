@@ -23,7 +23,7 @@ import {
   MENU_IDS,
   MENUS,
 } from '../src/keyboard.js';
-import { checkOverride, TEXTS, TEXT_KEYS, Texts, MAX_TEXT_LENGTH } from '@shikoo/contracts';
+import { checkOverride, stripCustomEmoji, TEXTS, TEXT_KEYS, Texts, MAX_TEXT_LENGTH } from '@shikoo/contracts';
 import { decode } from '../src/callback.js';
 import * as menu from '../src/menu.js';
 
@@ -124,7 +124,10 @@ describe('the placeholder contract', () => {
 describe('the texts a customer receives', () => {
   it('says the default when nothing is overridden', async () => {
     const reply = await start(await makeCustomer());
-    expect(reply?.text).toBe(TEXTS.WELCOME.default);
+    // The default ships with <tg-emoji> markup; the bot ships with customEmoji
+    // off by default (the test seeds no override), so `Texts.raw()` strips the
+    // markup before the message is sent and the customer sees the fallback.
+    expect(reply?.text).toBe(stripCustomEmoji(TEXTS.WELCOME.default));
   });
 
   it('says the admin’s wording once it is saved', async () => {
@@ -149,7 +152,7 @@ describe('the texts a customer receives', () => {
     // that had customised it and changed its mind.
     await db.prepare(`DELETE FROM bot_texts WHERE key = 'WELCOME'`).run();
     invalidateBotContent();
-    expect((await start(await makeCustomer()))?.text).toBe(TEXTS.WELCOME.default);
+    expect((await start(await makeCustomer()))?.text).toBe(stripCustomEmoji(TEXTS.WELCOME.default));
   });
 
   it('ignores a row that was written by hand and breaks the contract', async () => {
