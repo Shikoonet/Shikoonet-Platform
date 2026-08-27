@@ -12,7 +12,7 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
-import { DEFAULT_LAYOUT, TEXTS } from '@shikoo/contracts';
+import { DEFAULT_LAYOUT, stripCustomEmoji, TEXTS } from '@shikoo/contracts';
 
 const ADMIN = 'admin@example.com';
 const REVIEWER = 'reviewer-content@example.com';
@@ -98,7 +98,18 @@ describe('GET /api/v1/admin/bot-texts', () => {
     expect(body.items.length).toBe(Object.keys(TEXTS).length);
     const welcome = body.items.find((i) => i.key === 'WELCOME')!;
     expect(welcome.customised).toBe(false);
-    expect(welcome.value).toBe(TEXTS.WELCOME.default);
+    // What the BOT would send, not what the source holds. The shipped
+    // defaults carry `<tg-emoji>` markup and the shop has custom emoji off
+    // here, so `Texts.raw()` strips it before the customer sees it — and this
+    // route has to hand the editor the same string.
+    //
+    // It did not, briefly, and the consequence was worse than cosmetic: the
+    // admin opened the editor on markup, and the SAVE route refused it as
+    // NOT_ALLOWED because the switch was off. Appending a word to the default
+    // you were just shown produced a 400 with no way forward. Caught by
+    // `e2e/bot-content.spec.ts:59`.
+    expect(welcome.value).toBe(stripCustomEmoji(TEXTS.WELCOME.default));
+    expect(welcome.value).not.toContain('tg-emoji');
   });
 
   it('is readable by a reviewer', async () => {
