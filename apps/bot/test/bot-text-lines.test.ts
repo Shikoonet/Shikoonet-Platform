@@ -274,6 +274,7 @@ describe('the card-to-card note that names the «paid» button', () => {
     productName: '۱ماهه',
     planName: '۱ماهه',
     badge: null,
+    buttonStyle: null,
     priceIrr: 1_950_000,
     durationDays: 30,
     volumeGb: 50,

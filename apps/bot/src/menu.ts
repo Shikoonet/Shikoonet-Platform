@@ -48,7 +48,12 @@ import {
 import type { Layouts } from './botContent.js';
 import { DEFAULT_TEXTS, groupIntoRows, type TextKey, type Texts } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
-import { MAX_COPY_TEXT_LENGTH, type InlineButton, type InlineKeyboard } from './telegram.js';
+import {
+  MAX_COPY_TEXT_LENGTH,
+  type ButtonStyle,
+  type InlineButton,
+  type InlineKeyboard,
+} from './telegram.js';
 
 /**
  * A refusal reason, as `discount.ts` names it, mapped to the sentence for it.
@@ -386,6 +391,22 @@ function badged(badge: string | null, label: string): string {
   return b ? `${b} ${label}` : label;
 }
 
+/**
+ * The admin's colour, as a key that is either on the button or not on it.
+ *
+ * Absent and not `style: null`: to Telegram, omitting the field means «your own
+ * default», and `null` is a value it refuses. The column stores the same
+ * absence as NULL, so the two ends agree without a translation table — the
+ * three names in 0034's CHECK are the three `ButtonStyle` allows.
+ *
+ * Spread into the button rather than assigned after it, so a button with no
+ * colour has no `style` key at all and every keyboard test keeps reading the
+ * object it already read.
+ */
+function styled(style: ButtonStyle | null): { style?: ButtonStyle } {
+  return style === null ? {} : { style };
+}
+
 function priced(name: string, listedIrr: number, price: Price): string {
   const quoted = price.discountIrr === 0 && nameMentionsPrice(name, listedIrr);
   return quoted ? name : `${name} — ${formatToman(price.totalIrr)}`;
@@ -451,6 +472,7 @@ export function planMenu(plans: CatalogPlan[], discountPercent = 0): InlineKeybo
           priced(plan.planName, plan.priceIrr, priceForUser(plan.priceIrr, discountPercent)),
         ),
         callback_data: encode('plan', plan.planId),
+        ...styled(plan.buttonStyle),
       })),
     ),
     'plans',
@@ -474,6 +496,7 @@ export function categoryMenu(categories: CatalogCategory[]): InlineKeyboard {
       row.map((category) => ({
         text: badged(category.badge, category.name),
         callback_data: encode('cat', category.categoryId),
+        ...styled(category.buttonStyle),
       })),
     ),
     'categories',
