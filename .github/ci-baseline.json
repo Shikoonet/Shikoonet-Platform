@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Floors for `tools/ci-verify-gate.ts`, which the Required Quality Gate runs after every shard has reported.",
+    "Measured on main (19d9c88) and confirmed against run 33114090903, which is what these numbers came from.",
+    "admin-web was first written down as 290 — that was measured on feat/copy-telegram-id, which adds four tests this",
+    "branch does not have. The gate caught the difference on its first complete run, which is the behaviour it exists for.",
+    "`total` may only ever go UP and `skipped` may only ever go DOWN without a commit that edits this file.",
+    "The 49 skips in packages/migrate are the production-dump suites. They are secure-host-only by design:",
+    "the dump is git-ignored, never reaches a runner, and those suites skip themselves when it is absent.",
+    "The 2 skips in packages/db and the 1 in apps/bot are the legacy/mirzabot-php source checks; `legacy/` is",
+    "untracked, so it is absent on every runner and those cases skip there too."
+  ],
+  "suites": {
+    "packages/contracts": { "name": "@shikoo/contracts", "shard": "unit", "total": 16, "skipped": 0 },
+    "packages/sms-parser": { "name": "@shikoo/sms-parser", "shard": "unit", "total": 229, "skipped": 0 },
+    "apps/admin-web": { "name": "@shikoo/admin-web", "shard": "unit", "total": 286, "skipped": 0 },
+
+    "apps/dashboard-worker": { "name": "@shikoo/dashboard", "shard": "db:hub", "total": 705, "skipped": 0 },
+    "packages/db": { "name": "@shikoo/db", "shard": "db:hub", "total": 80, "skipped": 2 },
+    "packages/seed": { "name": "@shikoo/seed", "shard": "db:hub", "total": 15, "skipped": 0 },
+
+    "apps/bot": { "name": "@shikoo/bot", "shard": "db:services", "total": 642, "skipped": 1 },
+    "apps/ingest-worker": { "name": "@shikoo/ingest", "shard": "db:services", "total": 178, "skipped": 0 },
+    "packages/domain": { "name": "@shikoo/domain", "shard": "db:services", "total": 335, "skipped": 0 },
+
+    "packages/migrate": { "name": "@shikoo/migrate", "shard": "migrations", "total": 117, "skipped": 49 }
+  },
+  "coverage": ["packages/contracts", "packages/sms-parser", "packages/domain"],
+  "playwright": { "scenarios": 104 },
+  "schema": { "migrations": 34, "invariants": 32 }
+}

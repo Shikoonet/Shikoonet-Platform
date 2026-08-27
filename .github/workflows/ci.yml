@@ -2,23 +2,67 @@ name: CI
 
 # Required Pull Request quality gate.
 #
-# The four names Sam asked to keep stable — `gate`, `e2e`, `workflows-lint` —
-# remain job ids so the day branch protection is enabled (private + free plan
-# currently returns 403), the required check list is already in place. Two new
-# jobs join them: `arch` and `secrets`.
+# `Required Quality Gate` is the ONE check a ruleset should require. Everything
+# above it is diagnostic — those names say *why*; this one says *whether*.
 #
-#   lint            — fast feedback, no DB
-#   arch            — architectural boundaries the codebase has chosen
-#   gate            — schema ledger + invariants + serial unit/integration + image build
-#   e2e             — Playwright against a real server, with seed:sim
-#   workflows-lint  — actionlint on .github/workflows/*.yml
-#   secrets         — gitleaks on the diff
+# ## The shape, and why it changed on 2026-08-27
 #
-# `Required Quality Gate` is a final aggregator with `if: always()`. It is the
-# ONE check the ruleset should require: when a job is cancelled mid-run, when
-# a flaky test retries past its window, when something is unexpectedly
-# skipped, this check still reports an explicit verdict. The four individual
-# names are diagnostic — they say *why*; this one says *whether*.
+# It used to be six jobs, one of which — `gate` — did almost everything in a
+# straight line: apply migrations, prove the invariants, run the entire test
+# suite for all ten packages one package at a time, re-run three of them for
+# coverage, then build the Docker image and poke at it. Measured over the five
+# most recent successful runs it took a median of 5m18s while every other job
+# finished inside 3m15s, so the whole pipeline was as slow as its slowest
+# straight line and five runners sat idle waiting for it.
+#
+# Nothing in that line NEEDED to be in one job. It was in one job because the
+# packages share a Postgres, and one job is the cheapest way to have one
+# Postgres. Give each shard its own Postgres and the constraint disappears:
+#
+#   unit          contracts, sms-parser, admin-web — no database at all
+#   db-shard hub       dashboard-worker, db, seed        own Postgres
+#   db-shard services  bot, ingest-worker, domain        own Postgres
+#   migrations    clean database → migrations → invariants → migrate suite,
+#                 then the image checks, which need a database and nothing else
+#   e2e           own Postgres, seed:sim, the browser walk
+#
+# The shards are balanced on MEASURED runtime taken from run 33105968752's own
+# log, not on package count:
+#
+#   dashboard 67.4s  db  4.9s  seed 1.7s   → hub       74.0s
+#   bot       42.8s  ingest 17.2s  domain 12.7s → services  72.7s
+#
+# ## What is NOT parallel, and must not become parallel
+#
+# `--workspace-concurrency=1` is still passed inside every shard, and every
+# database-backed package still carries `fileParallelism: false`. The packages
+# in one shard share that shard's single database and TRUNCATE between files.
+# Sharding made the SHARDS safe to run at once by giving each one its own
+# Postgres; it changed nothing about what is safe *inside* one. See the header
+# of `tools/ci-run-tests.sh`.
+#
+# Playwright likewise keeps `workers: 1`: its specs write shop-wide rows and
+# assert on them, so two workers would be two admins editing one setting.
+#
+# ## Two duplicated units of work that are now done once
+#
+#   - the three coverage-gated packages used to run twice, once inside
+#     `pnpm test` and again under `pnpm coverage`. They now run once, with
+#     `--coverage`, in whichever shard owns them. The floors are unchanged and
+#     are enforced twice: by vitest in the shard, and again by
+#     `tools/ci-verify-gate.ts` in the aggregator against the merged summaries.
+#   - `apps/dashboard-worker`'s `e2e` script rebuilds the admin SPA, which the
+#     `e2e` job had already built in its own step. The job now calls
+#     `playwright test` directly, after the build it does itself.
+#
+# ## The aggregator no longer trusts a green matrix
+#
+# A shard whose filter matched nothing exits 0. A matrix trimmed from two
+# entries to one leaves nothing behind to notice. So every test job uploads a
+# machine-readable report and `Required Quality Gate` checks them against
+# `.github/ci-baseline.json`: every expected suite present, no test count down,
+# no skip count up, every coverage summary present and clearing its floor, the
+# Playwright report complete, the migration and invariant counts intact.
 #
 # Triggers:
 #   - pull_request (opened, synchronize, reopened, ready_for_review)
@@ -27,9 +71,11 @@ name: CI
 #   - push to main, so a direct push does not silently miss the gate
 #
 # Concurrency:
-#   - one running workflow per PR (or per ref for direct pushes)
-#   - older runs are cancelled when a new commit lands, so an admin does not
-#     see a flood of «pending» older runs while a green one is already there
+#   - one running workflow per PR (or per ref for direct pushes). The group is
+#     keyed on the PR number for pull_request and on the ref otherwise, so the
+#     two namespaces are disjoint and a PR run can never cancel a `main` run or
+#     a deployment.
+#   - `cancel-in-progress` is true ONLY for pull_request.
 #
 # Permissions:
 #   - default `contents: read` at the workflow level
@@ -42,7 +88,7 @@ name: CI
 #
 # CodeRabbit:
 #   - reviewer at the App level, configured by `.coderabbit.yaml`, comments
-#     on every PR. Not one of the six required jobs. A CodeRabbit comment is
+#     on every PR. Not one of the required jobs. A CodeRabbit comment is
 #     advisory, never blocking.
 
 on:
@@ -62,12 +108,14 @@ permissions:
 
 jobs:
   # -----------------------------------------------------------------------
-  # The fastest feedback the run can give. Runs first, in seconds, and on
-  # every push so a wrong import does not have to wait for the database.
+  # Fast static checks. Four independent jobs, all starting at t=0, none of
+  # them a dependency of anything expensive — a slow linter must never be the
+  # reason a test shard has not started.
   # -----------------------------------------------------------------------
   lint:
     name: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
@@ -118,15 +166,191 @@ jobs:
         run: pnpm exec tsx tools/architecture-boundaries.ts
 
   # -----------------------------------------------------------------------
-  # Everything else a running container depends on, behind one job so it
-  # shares the database the suite needs. Image build is here for the same
-  # reason — it is what a deployed artifact will look like, not what
-  # TypeScript can see.
+  # The suites that touch no database, no network and no shared process
+  # state, so they need no service container and no serial rule between them.
+  #
+  # Isolation is a property of the packages, not an assumption:
+  #   - `packages/contracts` is pure by architecture rule 2, which `arch`
+  #     enforces on every run — it reaches the browser bundle.
+  #   - `packages/sms-parser` is a string parser over fixtures.
+  #   - `apps/admin-web` runs in happy-dom, in-process, with no server.
+  # None of the three has a `DATABASE_URL` in its vitest config, and none has
+  # a setup file that resets anything shared — the three database-backed apps
+  # all do, which is exactly what puts them in a db-shard instead.
+  #
+  # `contracts` and `sms-parser` run under `--coverage` here because their
+  # floors live in `vitest.coverage.ts`. That replaces their half of the old
+  # separate `pnpm coverage` step rather than adding to it.
   # -----------------------------------------------------------------------
-  gate:
-    name: gate
+  unit:
+    name: unit
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: No database is reachable from this job
+        # The claim this job rests on, asserted rather than assumed. If one of
+        # these three ever grows a database dependency, it fails here with the
+        # reason instead of passing because a connection happened to work.
+        run: |
+          set -Eeuo pipefail
+          if [ -n "${DATABASE_URL:-}" ]; then
+            echo '::error::the unit job must not carry a DATABASE_URL'
+            exit 1
+          fi
+          echo 'unit shard: no service containers, no DATABASE_URL'
+
+      - name: Pure suites
+        run: bash tools/ci-run-tests.sh '@shikoo/admin-web' '@shikoo/contracts @shikoo/sms-parser'
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: reports-unit
+          # `coverage-summary.json` only — percentages and counts per file. The
+          # HTML report embeds the SOURCE, which would put the whole private
+          # codebase in a downloadable artifact.
+          path: |
+            packages/*/vitest-report.json
+            apps/*/vitest-report.json
+            packages/*/coverage/coverage-summary.json
+          retention-days: 7
+          if-no-files-found: error
+
+  # -----------------------------------------------------------------------
+  # The database-backed suites, in two shards balanced on measured runtime.
+  #
+  # EACH SHARD GETS ITS OWN POSTGRES. Not its own database on a shared server
+  # — its own container, on its own runner VM, reachable only from that VM's
+  # loopback. Two shards cannot see each other's data because they cannot
+  # reach each other's network namespace at all. The first step of every shard
+  # prints the server's `system_identifier`, which is generated at initdb
+  # time: two different values in one run is the proof, in the log, that these
+  # are two different Postgres instances and not one shared one.
+  #
+  # Inside a shard nothing changed: `--workspace-concurrency=1` keeps the
+  # packages serial with each other, and `fileParallelism: false` keeps each
+  # package's files serial with themselves. Both are still required — the
+  # packages in a shard share that shard's one database and truncate it.
+  # -----------------------------------------------------------------------
+  db-shard:
+    name: db-shard (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      # A red shard must not cancel its sibling: two failures found in one run
+      # is one round trip, and the aggregator needs every shard's report to say
+      # anything about test counts.
+      fail-fast: false
+      matrix:
+        include:
+          # dashboard 67.4s + db 4.9s + seed 1.7s = 74.0s (measured, run 33105968752)
+          - shard: hub
+            packages: '@shikoo/dashboard @shikoo/db @shikoo/seed'
+            covered: ''
+          # bot 42.8s + ingest 17.2s + domain 12.7s = 72.7s
+          - shard: services
+            packages: '@shikoo/bot @shikoo/ingest'
+            covered: '@shikoo/domain'
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: shikoo_test
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ['5432:5432']
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
+      # Test the failure modes ENV_NAME is supposed to refuse.
+      ENV_NAME: test
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: This shard has its own Postgres, and it starts empty
+        # `system_identifier` is written once, by initdb, into pg_control. It
+        # cannot be shared by two servers, so printing it here is the isolation
+        # proof: compare the two shards' values in one run.
+        #
+        # The emptiness check is the other half. A populated database at this
+        # point would mean the service container was reused or the URL points
+        # at something real, and a suite that truncates must never be aimed at
+        # either.
+        run: |
+          set -Eeuo pipefail
+          case "$DATABASE_URL" in
+            *@localhost:5432/shikoo_test|*@127.0.0.1:5432/shikoo_test) ;;
+            *) echo "::error::refusing to run against ${DATABASE_URL}"; exit 1 ;;
+          esac
+          id=$(psql "$DATABASE_URL" -tAc 'SELECT system_identifier FROM pg_control_system()')
+          started=$(psql "$DATABASE_URL" -tAc 'SELECT pg_postmaster_start_time()')
+          echo "shard=${SHARD} runner=${RUNNER_NAME} pg_system_identifier=${id} started=${started}"
+          echo "| db-shard \`${SHARD}\` | Postgres \`${id}\` |" >> "$GITHUB_STEP_SUMMARY"
+          tables=$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+          [ "$tables" = '0' ] || { echo "::error::shard database is not empty (${tables} tables)"; exit 1; }
+
+      - name: Apply migrations
+        # @shikoo/db runs against a real database, including a check that every
+        # hub SQL statement parses against this schema. It needs the schema to
+        # exist. Through the ledger, not a shell loop over the files: production
+        # runs `schema up`, and a runner CI never exercises is one CI cannot
+        # vouch for.
+        run: pnpm --filter @shikoo/db schema up
+      - name: The schema matches this checkout
+        run: pnpm --filter @shikoo/db schema status
+
+      - name: Run the shard
+        env:
+          PACKAGES: ${{ matrix.packages }}
+          COVERED: ${{ matrix.covered }}
+        run: bash tools/ci-run-tests.sh "$PACKAGES" "$COVERED"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: reports-db-${{ matrix.shard }}
+          path: |
+            packages/*/vitest-report.json
+            apps/*/vitest-report.json
+            packages/*/coverage/coverage-summary.json
+          retention-days: 7
+          if-no-files-found: error
+
+  # -----------------------------------------------------------------------
+  # The clean-database gate: every migration in order, from nothing.
+  #
+  # This job never reuses another job's database. It starts with an empty
+  # Postgres, applies all of them through the ledger, asserts the schema is
+  # current, proves the money invariants and COUNTS them, then runs the
+  # migration suite against the synthetic legacy source.
+  #
+  # The image checks live here rather than in a job of their own because they
+  # need a Postgres and nothing else, and this job already has one that has
+  # finished being interesting by the time they run. A separate job would be a
+  # second container pull and a second billed minute for 40 seconds of work.
+  # -----------------------------------------------------------------------
+  migrations:
+    name: migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -151,16 +375,15 @@ jobs:
         ports: ['3307:3306']
     env:
       DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
-      # Test the failure modes ENV_NAME is supposed to refuse.
       ENV_NAME: test
-      # The migration gate's source. `MIGRATE_FIXTURE_MYSQL=1` is what turns
-      # `synthetic-migration.test.ts` on; without it that file skips, and the
-      # step after `pnpm test` fails the job if it finds it skipped.
+      # `MIGRATE_FIXTURE_MYSQL=1` is what turns `synthetic-migration.test.ts`
+      # on; without it that file skips, and `ci-verify-gate.ts` fails the run
+      # because the skip count went up.
       MIGRATE_FIXTURE_MYSQL: '1'
       MYSQL_HOST: 127.0.0.1
-      # 3307, the same host port `sim/docker-compose.yml` uses and the
-      # default `loadConfig()` returns — so `config.test.ts`, which asserts
-      # that default, is not fighting an override the gate set.
+      # 3307, the same host port `sim/docker-compose.yml` uses and the default
+      # `loadConfig()` returns — so `config.test.ts`, which asserts that
+      # default, is not fighting an override the gate set.
       MYSQL_PORT: '3307'
       MYSQL_USER: root
       MYSQL_PASSWORD: ci
@@ -174,19 +397,17 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # Before the tests, not after: @shikoo/db runs against a real database,
-      # including a check that every hub SQL statement parses against this
-      # schema. It needs the schema to exist.
-      #
-      # Gating the migrations themselves also matters on its own — without it a
-      # migration that fails to apply, or one that quietly drops a partial
-      # unique index, reaches main with every other check green.
-      #
-      # Through the ledger, not a shell loop over the files. The loop applied
-      # the same SQL and proved a different thing: production runs `schema up`,
-      # and a runner CI never exercises is a runner CI cannot vouch for.
-      # The legacy source the migration gate reads. Synthetic, in the repo,
-      # and nothing in it came from the production dump — see the header of
+      - name: The migration gate starts from an empty database
+        run: |
+          set -Eeuo pipefail
+          id=$(psql "$DATABASE_URL" -tAc 'SELECT system_identifier FROM pg_control_system()')
+          echo "runner=${RUNNER_NAME} pg_system_identifier=${id}"
+          echo "| migrations | Postgres \`${id}\` |" >> "$GITHUB_STEP_SUMMARY"
+          tables=$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+          [ "$tables" = '0' ] || { echo "::error::database is not empty (${tables} tables)"; exit 1; }
+
+      # The legacy source the migration gate reads. Synthetic, in the repo, and
+      # nothing in it came from the production dump — see the header of
       # `synthetic-mirzabot.sql` for what it can and cannot prove.
       - name: Load the synthetic legacy database
         run: |
@@ -204,76 +425,50 @@ jobs:
           echo "synthetic users loaded: ${rows}"
           [ "$rows" -gt 0 ] || { echo '::error::the fixture loaded no rows'; exit 1; }
 
-      - name: Apply migrations
-        run: pnpm --filter @shikoo/db schema up
-      - name: The schema matches this checkout
-        run: pnpm --filter @shikoo/db schema status
-      - name: Prove the money invariants
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f migrations/verify_invariants.sql
-
-      # The serial rule: tests that share one Postgres must not run in
-      # parallel. The workspace flag is `--workspace-concurrency=1`, not the
-      # vitest flag, because the serial boundary is the package boundary, not
-      # the test file boundary.
-      - run: pnpm test
-
-      # A required migration gate that silently skips is the failure this
-      # fixture was built to end. `pnpm test` reports a skip as a pass, so the
-      # count is asserted directly: the synthetic migration suite must have
-      # EXECUTED, not merely been collected.
-      - name: The migration gate actually ran
+      - name: Apply every migration, in order, and count them
         run: |
           set -Eeuo pipefail
-          out=$(pnpm --filter @shikoo/migrate exec vitest run \
-            test/synthetic-migration.test.ts --reporter=json 2>/dev/null \
-            | tail -c 200000)
-          printf '%s' "$out" > /tmp/migrate-report.json
-          # shellcheck disable=SC2016
-          # The `${...}` below are JavaScript template literals inside a
-          # single-quoted `node -e` program. Expanding them in the shell is
-          # exactly what must NOT happen.
-          node -e '
-            const r = JSON.parse(require("fs").readFileSync("/tmp/migrate-report.json","utf8"));
-            const total = r.numTotalTests ?? 0;
-            const passed = r.numPassedTests ?? 0;
-            const skipped = (r.numPendingTests ?? 0) + (r.numTodoTests ?? 0);
-            console.log(`migration gate: ${passed}/${total} passed, ${skipped} skipped`);
-            if (total === 0) { console.error("::error::the migration suite collected nothing"); process.exit(1); }
-            if (skipped > 0) { console.error(`::error::${skipped} migration test(s) skipped — the gate did not run`); process.exit(1); }
-            if (passed !== total) { console.error("::error::migration tests failed"); process.exit(1); }
-          '
+          pnpm --filter @shikoo/db schema up
+          pnpm --filter @shikoo/db schema status | tee /tmp/schema-status.txt
+          grep -q 'schema is current' /tmp/schema-status.txt
+          applied=$(awk '/^applied/ { print $2 }' /tmp/schema-status.txt)
+          pending=$(awk '/^pending/ { print $2 }' /tmp/schema-status.txt)
+          echo "migrations applied: ${applied}, pending: ${pending}"
+          [ "$pending" = '0' ] || { echo "::error::${pending} migration(s) pending"; exit 1; }
+          echo "MIGRATIONS_APPLIED=${applied}" >> "$GITHUB_ENV"
 
-      # Coverage FLOORS — not a ratchet, and the file says so at length. A
-      # ratchet raises its own floor when coverage improves; nothing here
-      # stores a new measurement, so calling it one would be a promise about
-      # behaviour that does not exist.
-      #
-      # What these are: the measurement rounded down to a whole percent, on
-      # the three packages whose branches decide money, access and what a bank
-      # SMS means. The tolerance — under one point everywhere — is written out
-      # in `vitest.coverage.ts`, and exists because v8 coverage moves slightly
-      # between runs as the set of loaded modules changes.
-      #
-      # Not every package: four of the others need a live Postgres for almost
-      # every line, so their percentage would measure whether the database was
-      # up. Those are listed as ungated, with a reason, in the same file.
-      - name: Coverage floors
-        run: pnpm coverage
+      - name: Prove the money invariants, and count them
+        # Each assertion in the file emits one `PASS` notice. Counting them is
+        # what turns "the script exited 0" into "the script actually asserted
+        # thirty-two things" — a file whose assertions were commented out also
+        # exits 0.
+        run: |
+          set -Eeuo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+            -f migrations/verify_invariants.sql > /tmp/invariants.log 2>&1
+          cat /tmp/invariants.log
+          # `grep -c` exits 1 on zero matches, which under `set -e` would abort
+          # before the assertion below could report the real problem. Zero is
+          # substituted so the assertion is what fails, with the count in it.
+          invariants=$(grep -c 'PASS ' /tmp/invariants.log || printf '0')
+          echo "invariants proved: ${invariants}"
+          [ "$invariants" -gt 0 ] || { echo '::error::the invariant script asserted nothing'; exit 1; }
+          echo "INVARIANTS_PROVED=${invariants}" >> "$GITHUB_ENV"
 
-      - name: Upload coverage summaries
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: coverage-${{ github.run_id }}
-          # `coverage-summary.json` only — percentages and counts per file.
-          # The HTML report embeds the SOURCE, which would put the whole
-          # private codebase in a downloadable artifact.
-          path: |
-            packages/sms-parser/coverage/coverage-summary.json
-            packages/domain/coverage/coverage-summary.json
-            packages/contracts/coverage/coverage-summary.json
-          retention-days: 7
-          if-no-files-found: warn
+      - name: The migration suite
+        run: bash tools/ci-run-tests.sh '@shikoo/migrate' ''
+
+      - name: Publish the migration and invariant counts
+        run: |
+          set -Eeuo pipefail
+          mkdir -p out
+          printf '{"migrations":%s,"invariants":%s}\n' \
+            "$MIGRATIONS_APPLIED" "$INVARIANTS_PROVED" > out/schema-counts.json
+          cat out/schema-counts.json
+          {
+            echo "| migrations applied | ${MIGRATIONS_APPLIED} |"
+            echo "| invariants proved  | ${INVARIANTS_PROVED} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # The only gate that measures the artifact rather than the source.
       #
@@ -313,17 +508,44 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 'refusing to start'
 
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: reports-migrations
+          path: |
+            packages/*/vitest-report.json
+            out/schema-counts.json
+          retention-days: 7
+          if-no-files-found: error
+
   # -----------------------------------------------------------------------
-  # The browser walk against a real server and a real SPA. The unit suite
-  # has covered the dashboard-worker routes for months; this one proves the
-  # SPA itself wires to them, with the cookies, the redirects and the
-  # keyboard the suite cannot fake.
+  # The browser walk against a real server and a real SPA. The unit suite has
+  # covered the dashboard-worker routes for months; this one proves the SPA
+  # itself wires to them, with the cookies, the redirects and the keyboard the
+  # suite cannot fake.
   #
-  # Needs the schema applied and the simulation seeded (`pnpm sim seed:sim`),
-  # because global-setup.ts grants a role to the operator the browser signs
-  # in as — the failure on an empty database is a flat 403 on every page,
-  # which reads as a broken panel rather than as a missing fixture. See
-  # `memory/e2e-needs-sim-seed`.
+  # Needs the schema applied and the simulation seeded (`seed:sim`), because
+  # global-setup.ts grants a role to the operator the browser signs in as — the
+  # failure on an empty database is a flat 403 on every page, which reads as a
+  # broken panel rather than as a missing fixture. See `memory/e2e-needs-sim-seed`.
+  #
+  # Still ONE job, and still `workers: 1`. Splitting it into two isolated shards
+  # was not estimated, it was RUN — `playwright --shard=i/2`, each shard with its
+  # own Postgres, its own seed and its own pair of servers, on run 33116322185:
+  #
+  #                     wall     billed      compute
+  #   one shard         198s     19 min      844s
+  #   two shards        166s     20 min      911s
+  #
+  # It works, and the aggregator merged both reports and counted the full 104
+  # scenarios. It is simply the wrong side of the runner-minute budget: 32s of
+  # wall time for a billed minute, because 77s of the job's 176s is fixed setup
+  # that sharding duplicates rather than divides, and +17.6% over the old
+  # workflow breaches the 15% ceiling this change was held to.
+  #
+  # If that ceiling is ever raised, this is the first thing to spend it on and
+  # it is one `strategy.matrix` away.
   # -----------------------------------------------------------------------
   e2e:
     name: e2e
@@ -375,6 +597,9 @@ jobs:
               ;;
           esac
           [ "$ENV_NAME" = 'test' ] || { echo "::error::ENV_NAME=${ENV_NAME}"; exit 1; }
+          id=$(psql "$DATABASE_URL" -tAc 'SELECT system_identifier FROM pg_control_system()')
+          echo "runner=${RUNNER_NAME} pg_system_identifier=${id}"
+          echo "| e2e | Postgres \`${id}\` |" >> "$GITHUB_STEP_SUMMARY"
           # A CI database is empty before this job touches it. A populated one
           # means the service container was reused or the URL points somewhere
           # real, and either way seeding it is not safe.
@@ -383,10 +608,6 @@ jobs:
           echo "public tables before schema up: ${existing}"
           [ "$existing" = '0' ] || { echo "::error::database is not empty"; exit 1; }
 
-      # The simulation environment the e2e suite was written against:
-      # schema up writes the ledger, seed:sim fills the deterministic fixture
-      # the specs assert on, and the env file is what playwright.config.ts
-      # and global-setup.ts both reach for.
       - name: Write sim/.env.local
         # BEFORE the schema and seed steps. `seed:sim` itself reads
         # `sim/.env.local` through `--env-file`, so the file must exist first,
@@ -417,18 +638,41 @@ jobs:
         run: pnpm --filter @shikoo/seed seed:sim
 
       # The Playwright browser — the suite asserts on real renders, not a
-      # headless double.
+      # headless double. Cached on the resolved playwright version, so the
+      # ~130MB chromium download happens once per version bump rather than once
+      # per run. `install --with-deps` still runs either way: it is idempotent,
+      # and the apt packages it installs are not part of the cached directory.
+      - name: Resolve the Playwright version
+        id: playwright
+        run: |
+          set -Eeuo pipefail
+          version=$(pnpm --filter @shikoo/dashboard exec playwright --version | awk '{ print $2 }')
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::could not resolve the playwright version (got '${version}')"; exit 1 ;;
+          esac
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: Cache the Playwright browsers
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: ~/.cache/ms-playwright
+          # Scoped to this workflow's own runs and invalidated by the version
+          # alone: the directory holds vendor browser binaries keyed by that
+          # version and nothing this repository produces, so no branch can put
+          # anything of its own into it.
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install Playwright browsers
         run: pnpm --filter @shikoo/dashboard exec playwright install --with-deps chromium
 
-      # Build the SPA the dashboard-worker serves at `/admin`. `e2e` already
-      # does this in its script, but doing it here means a failure here shows
-      # up in the job log rather than swallowed by playwright.
+      # Build the SPA the dashboard-worker serves at `/admin`, once. The
+      # package's `e2e` script builds it too, which is why the run below calls
+      # `playwright test` directly instead — the job was paying for that build
+      # twice.
       - name: Build the admin SPA
         run: pnpm --filter @shikoo/admin-web build
 
       - name: Run the e2e suite
-        run: pnpm --filter @shikoo/dashboard e2e
+        run: pnpm --filter @shikoo/dashboard exec playwright test
 
       # Diagnostics, and only on failure. A trace carries request bodies and
       # rendered pages, so it is scrubbed before it leaves the runner: the env
@@ -458,6 +702,17 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+      # The scenario count, for the aggregator. Titles and outcomes only — the
+      # json reporter carries no page content, unlike the trace above.
+      - name: Upload the Playwright result count
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: reports-e2e
+          path: apps/dashboard-worker/playwright-report.json
+          retention-days: 7
+          if-no-files-found: error
+
       # Always, including on cancellation. The file is git-ignored, so it can
       # never be committed — but a runner is reused within a job, and leaving
       # it means a later step in the same job could read it by accident.
@@ -475,8 +730,8 @@ jobs:
   # now either fixed or carries a `# shellcheck disable=SCxxxx` at the exact
   # line, with the reason beside it.
   #
-  # `deploy/*.sh` is linted separately: those run as root on a box holding
-  # customer money, and they are the scripts most worth a linter.
+  # `deploy/*.sh` and `tools/*.sh` are linted separately: those run as root on
+  # a box holding customer money, and they are the scripts most worth a linter.
   # -----------------------------------------------------------------------
   workflows-lint:
     name: workflows-lint
@@ -505,8 +760,8 @@ jobs:
 
       # The deploy trigger, against a fake GitHub and a fake Coolify.
       #
-      # It lives here rather than in `gate` because it needs no database and no
-      # node_modules — it is bash, `jq` and `curl`, all three on the runner
+      # It lives here rather than in a test job because it needs no database and
+      # no node_modules — it is bash, `jq` and `curl`, all three on the runner
       # already. Thirteen cases; each one fails if the guard it names is
       # removed, which was verified by removing each of them in turn.
       - name: autodeploy — exact-SHA behaviour
@@ -652,31 +907,66 @@ jobs:
   # -----------------------------------------------------------------------
   # Stable final aggregator.
   #
-  # Reports PASS only when every required job passed. Reports FAIL when any
-  # required job failed, was cancelled, or was skipped unexpectedly. Runs
-  # `if: always()` so a cancelled earlier job still produces an explicit
-  # verdict — the ruleset, when it exists, sees one check, not a forest of
-  # pending ones.
+  # Reports PASS only when every required job passed AND every required job
+  # left behind the evidence that it ran what it claims. Runs `if: always()`
+  # so a cancelled earlier job still produces an explicit verdict — the
+  # ruleset, when it exists, sees one check, not a forest of pending ones.
   #
-  # Writes a Step Summary so the PR page carries the verdict and the
-  # artefact links without opening any single job.
+  # Two halves, and the second is why this job grew:
+  #
+  #   1. Job results. `success` is the only acceptable value. `skipped` is
+  #      treated as failure on purpose: a skipped required check is what
+  #      `pull_request_target`-style attacks and missing-path-filter bugs look
+  #      like. For the `db-shard` matrix, `needs.db-shard.result` is already
+  #      the aggregate — one red shard makes it `failure`.
+  #
+  #   2. Evidence. A green matrix proves nothing about a shard that never ran:
+  #      a filter matching no package exits 0, and a matrix trimmed to one
+  #      entry leaves nothing to notice. `tools/ci-verify-gate.ts` reads what
+  #      every shard uploaded and checks it against `.github/ci-baseline.json`.
+  #      A missing report is a failure, not a warning.
   # -----------------------------------------------------------------------
   Required-Quality-Gate:
     name: Required Quality Gate
     runs-on: ubuntu-latest
-    needs: [lint, arch, gate, e2e, workflows-lint, secrets]
+    needs: [lint, arch, unit, db-shard, migrations, e2e, workflows-lint, secrets]
     if: always()
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Aggregate
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Collect every shard's report
+        # `reports-*` only. The Playwright failure artifact carries traces of
+        # rendered pages and is megabytes; nothing here reads it.
+        #
+        # No `continue-on-error`: if not one shard uploaded a report, this step
+        # fails and the gate is red, which is the correct verdict. When SOME
+        # shards uploaded, the download succeeds and the verify step below is
+        # what names the missing ones.
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          path: ci-reports
+          pattern: 'reports-*'
+
+      - name: Every required job succeeded
+        id: results
         env:
           LINT: ${{ needs.lint.result }}
           ARCH: ${{ needs.arch.result }}
-          GATE: ${{ needs.gate.result }}
+          UNIT: ${{ needs.unit.result }}
+          DB: ${{ needs.db-shard.result }}
+          MIGRATIONS: ${{ needs.migrations.result }}
           E2E: ${{ needs.e2e.result }}
           WF: ${{ needs.workflows-lint.result }}
           SECRETS: ${{ needs.secrets.result }}
         run: |
+          set -Eeuo pipefail
           {
             echo "## Required Quality Gate"
             echo
@@ -684,22 +974,32 @@ jobs:
             echo "| --- | --- |"
             echo "| lint            | ${LINT} |"
             echo "| arch            | ${ARCH} |"
-            echo "| gate            | ${GATE} |"
+            echo "| unit            | ${UNIT} |"
+            echo "| db-shard (all)  | ${DB} |"
+            echo "| migrations      | ${MIGRATIONS} |"
             echo "| e2e             | ${E2E} |"
             echo "| workflows-lint  | ${WF} |"
             echo "| secrets         | ${SECRETS} |"
             echo
-            echo "Commit: ${{ github.sha }}"
+            echo "Commit: ${GITHUB_SHA}"
           } >> "$GITHUB_STEP_SUMMARY"
-          # A non-success in any required job fails the aggregator. `skipped`
-          # is treated as failure on purpose: a skipped required check is what
-          # `pull_request_target`-style attacks and missing-path-filter bugs
-          # look like — better to fail loudly and ask why.
-          for r in "${LINT}" "${ARCH}" "${GATE}" "${E2E}" "${WF}" "${SECRETS}"; do
+          bad=0
+          for r in "${LINT}" "${ARCH}" "${UNIT}" "${DB}" "${MIGRATIONS}" "${E2E}" "${WF}" "${SECRETS}"; do
             if [ "$r" != "success" ]; then
-              echo "::error::Required Quality Gate failed: $r"
-              exit 1
+              echo "::error::Required Quality Gate: a required job reported '${r}'"
+              bad=$((bad + 1))
             fi
           done
+          echo "bad=${bad}" >> "$GITHUB_OUTPUT"
+          [ "$bad" -eq 0 ]
+
+      - name: Every required job left the evidence that it ran
+        # `always()` and NOT conditional on the step above: when a shard fails,
+        # its report still names which tests failed, and printing that beside
+        # the red job result is worth more than a second «a job failed».
+        if: always()
+        run: pnpm exec tsx tools/ci-verify-gate.ts ci-reports
+
+      - name: Verdict
+        run: |
           echo "Required Quality Gate: success" >> "$GITHUB_STEP_SUMMARY"
-          exit 0

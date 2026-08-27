@@ -65,6 +65,7 @@ test.afterAll(wipe);
 
 async function create(
   page: import('@playwright/test').Page,
+  code: string,
   fill: (form: import('@playwright/test').Locator) => Promise<void>,
 ) {
   await page.goto('/admin/discounts');
@@ -73,10 +74,25 @@ async function create(
   const form = page.locator('#main-content');
   await fill(form);
   await form.getByRole('button', { name: 'ساخت' }).click();
+  // Waited for, and this is the whole reason the code is a parameter.
+  //
+  // `click()` resolves when the click has been DISPATCHED, not when the POST it
+  // starts has been answered. Every caller's next line opens its own Postgres
+  // connection and reads the row back, so the read raced the write and won:
+  // `codeRow()` returned null and the assertion above it failed with «expected
+  // "PERCENT_OFF", received undefined», which reads as a route that stores the
+  // wrong kind rather than a row that is not there yet. It took three tests
+  // down together on run 33113645737, because the last one asserts on codes the
+  // first three were supposed to have made.
+  //
+  // The row appearing in the list is the acknowledgement: the server answered
+  // and the panel reloaded the list, so the row is committed and every reader
+  // below — SQL or screen — is looking at a shop that has it.
+  await expect(page.locator('#main-content table').locator(`tr:has-text("${code}")`)).toBeVisible();
 }
 
 test('a percentage code is stored as a percentage, with its ceiling', async ({ page }) => {
-  await create(page, async (form) => {
+  await create(page, PCT, async (form) => {
     await form.locator('#new-code').fill(PCT);
     await form.locator('#new-percent').fill('15');
     await form.locator('#new-max').fill('3');
@@ -92,7 +108,7 @@ test('a percentage code is stored as a percentage, with its ceiling', async ({ p
 });
 
 test('a fixed code multiplies Toman into Rial exactly once', async ({ page }) => {
-  await create(page, async (form) => {
+  await create(page, FIX, async (form) => {
     await form.locator('#new-code').fill(FIX);
     await form.locator('#new-kind').selectOption('AMOUNT_OFF');
     await form.locator('#new-amount').fill('25000');
@@ -106,7 +122,7 @@ test('a fixed code multiplies Toman into Rial exactly once', async ({ page }) =>
 });
 
 test('an expiry is stored as the first instant of the next Tehran day', async ({ page }) => {
-  await create(page, async (form) => {
+  await create(page, DATED, async (form) => {
     await form.locator('#new-code').fill(DATED);
     await form.locator('#new-percent').fill('10');
     await form.locator('#new-expires').fill(EXPIRES_ON);
