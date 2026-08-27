@@ -161,7 +161,17 @@ export default defineConfig({
   // A `.only` left in a spec silently narrows the suite to one test while the
   // run still reports success.
   forbidOnly: Boolean(process.env.CI),
-  reporter: process.env.CI ? 'list' : 'html',
+  // `list` for a human reading the job log, `json` for the aggregator.
+  //
+  // `Required Quality Gate` asserts the scenario COUNT, not just the exit code:
+  // a suite that silently collected 40 of its 104 scenarios — a bad shard
+  // split, a `describe.skip`, a testDir that stopped matching — exits 0 and
+  // reads as green. The json report is the only thing that can tell the
+  // difference. It carries titles, files and outcomes; the page content lives
+  // in the trace, which is uploaded only on failure and only after scrubbing.
+  reporter: process.env.CI
+    ? [['list'], ['json', { outputFile: 'playwright-report.json' }]]
+    : 'html',
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,
     trace: 'retain-on-failure',
