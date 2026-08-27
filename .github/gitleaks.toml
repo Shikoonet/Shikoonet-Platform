@@ -1,0 +1,62 @@
+# gitleaks configuration for the CI secret gate.
+#
+# ## Why there are no directory exclusions here
+#
+# The first version of this file allow-listed `^legacy/`, `^sim/\.env\.local$`
+# and every `*.test.ts` in the repository. Each of those is a place a real
+# credential is MORE likely to appear than average, not less:
+#
+#   - `sim/.env.local` holds the test bot's Telegram token. It is git-ignored,
+#     so it should never be in a diff at all — and if it ever is, that is
+#     exactly the commit the gate exists to stop. Allow-listing it would have
+#     made the one case that matters invisible.
+#   - `legacy/` is the retired PHP bot, which carried panel admin JWTs in its
+#     own config. It is git-ignored today; the exclusion only mattered if
+#     somebody un-ignored it, which is the bad case.
+#   - `*.test.ts` is where a developer pastes a real value "just to reproduce
+#     it once". That is the single most common way a live key reaches a public
+#     repository.
+#
+# So the allow-list below names EXACT synthetic values, and nothing else. Each
+# one was found by running `gitleaks dir .` against this checkout, read in
+# context, and confirmed to be a fixture. Adding to this list means reading the
+# value and writing down why it is safe — which is the point.
+
+title = "Shikoonet-Platform"
+
+[extend]
+# Start from gitleaks' own rule set rather than replacing it. A hand-written
+# rule list is a rule list that misses the next provider's key format.
+useDefault = true
+
+[allowlist]
+description = "Exact synthetic fixtures, each verified by reading its file"
+
+# Matched against the detected SECRET, not the file path. A real key that
+# happened to live in one of these files is still reported.
+regexes = [
+  # apps/admin-web/test/hub/device-modal.test.tsx:34,44
+  # The device-credential fixture the Add-Device modal renders. `TESTKEY` is
+  # in the value itself; the ingest endpoint would reject it — device tokens
+  # are stored as hashes and this string hashes to nothing that exists.
+  '''sk_live_TESTKEY_abcdef1234567890''',
+
+  # apps/dashboard-worker/e2e/config.spec.ts:29
+  # The settings-page canary. The spec plants it under a key whose NAME
+  # matches the credential-shaped filter, then asserts the panel refuses to
+  # render the value. A real Zarinpal merchant id is 36 hex characters with
+  # dashes; this is 20 characters and says `e2e`.
+  '''zp-LIVE-e2e-3f9a2b71''',
+
+  # packages/domain/test/log.test.ts:26
+  # The redaction suite's HMAC key. The whole file exists to assert this
+  # value never reaches a log line, so it is printed into the test and
+  # grepped for in the output. Sixteen random bytes generated for the test.
+  '''a3f1c09b7e4d2a685f0c1b9d3e7a4c62''',
+]
+
+# Deliberately empty. Every path in this repository is scanned.
+#
+# `paths = []` is written out rather than omitted so that a future edit that
+# wants to add one has to delete this comment first, and read it on the way.
+paths = []

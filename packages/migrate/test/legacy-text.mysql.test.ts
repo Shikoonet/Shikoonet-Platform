@@ -31,6 +31,7 @@
 import { describe, expect, it } from 'vitest';
 import { connectMysql, loadConfig } from '../src/db.js';
 import { cardDigits, legacyText, phone, tehranString, username } from '../src/transform.js';
+import { productionDumpAbsent } from './helpers/productionDump.js';
 
 interface Shape {
   /** `typeof` of a real value, per SQL data type, through the real connection. */
@@ -42,6 +43,12 @@ interface Shape {
 
 async function load(): Promise<Shape> {
   const empty = { jsTypeOf: {}, jsonColumns: [] };
+  // Before the connection, not after. `describe.skipIf` is evaluated during
+  // collection, and a loader that connects first throws during collection —
+  // which vitest reports as a FAILED FILE, not a skipped one. See
+  // `helpers/productionDump.ts`.
+  const dumpMissing = productionDumpAbsent();
+  if (dumpMissing !== null) return { ...empty, unreachable: dumpMissing };
   let cfg;
   try {
     cfg = loadConfig();
@@ -90,7 +97,22 @@ async function load(): Promise<Shape> {
 }
 
 const shape = await load();
-const withDump = shape.unreachable === null ? describe : describe.skip;
+/**
+ * These assertions are about the REAL Mirzabot dataset — row counts, actual
+ * discount codes, the 963 customers who never accepted the rules. They only
+ * mean anything against the production dump, so they are gated on a person
+ * saying that is what this database is.
+ *
+ * The gate used to be «can I reach a MySQL», which was a proxy for the same
+ * thing right up until `synthetic-migration.test.ts` started loading a
+ * synthetic legacy database in CI. Then a MySQL was reachable on a runner,
+ * these un-skipped, and failed on `expected 2 to be 31` — correctly. See
+ * `helpers/productionDump.ts`.
+ */
+const dumpAbsent = productionDumpAbsent();
+
+const withDump =
+  shape.unreachable === null && dumpAbsent === null ? describe : describe.skip;
 if (shape.unreachable !== null) console.warn(`legacy-text: skipped — ${shape.unreachable}`);
 
 withDump('what the driver hands back, asked of the driver', () => {

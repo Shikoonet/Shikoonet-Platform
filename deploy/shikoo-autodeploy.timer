@@ -1,18 +1,31 @@
 [Unit]
 Description=Ask GitHub whether main has moved
+Documentation=file:///opt/shikoo/README-autodeploy.md
 
 [Timer]
-# A minute after boot, then every minute. The tick costs one conditional GET to
-# api.github.com — GitHub's rate limit for an authenticated token is 5000/hour
-# and this uses 60 at most, plus one more per new commit.
-OnBootSec=1min
-OnUnitActiveSec=1min
+# Two minutes after boot, then every two minutes.
+#
+# It was one minute while the tick was a single conditional GET. It is not any
+# more: a NEW sha costs `/commits`, `/commits/:sha/pulls`, `/pulls/:n/reviews`,
+# `/actions/runs`, `/actions/runs/:id/jobs`, `/commits` again and a tarball —
+# seven or eight calls. An idle tick still costs exactly one, because the sha is
+# compared to the recorded one before anything else is asked.
+#
+# 30 ticks an hour against a 5000/hour authenticated limit, plus a burst per
+# merge. Two minutes is the slowest interval nobody notices and the fastest one
+# that cannot be described as hammering either API.
+OnBootSec=2min
+OnUnitActiveSec=2min
 # Without this, every restart of the box lines this up with whatever else runs
 # on the minute. The jitter is free.
-RandomizedDelaySec=10s
-# A tick missed while the box was off must still happen, or a commit pushed
-# during a reboot waits for the next push.
+RandomizedDelaySec=15s
+# A tick missed while the box was off must still happen, or a commit merged
+# during a reboot waits for the next merge.
 Persistent=true
+# Belt to the service's `flock`: systemd will not start a second invocation
+# while one is still running, so a deploy that takes ten minutes does not
+# accumulate five queued ticks behind it.
+AccuracySec=10s
 Unit=shikoo-autodeploy.service
 
 [Install]

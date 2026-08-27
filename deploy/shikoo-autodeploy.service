@@ -1,29 +1,108 @@
 [Unit]
-Description=Deploy shikoo from main once CI is green
-# The whole job is two HTTPS calls out and one in to Coolify. Without this it
-# runs on every boot before the network is up, fails, and leaves a red unit that
-# means nothing.
-After=network-online.target
+Description=Deploy shikoo from main once a merged, approved PR is green
+Documentation=file:///opt/shikoo/README-autodeploy.md
+# The whole job is a handful of HTTPS calls out and a few to Coolify on
+# loopback. Without this it runs on every boot before the network is up, fails,
+# and leaves a red unit that means nothing.
+After=network-online.target docker.service
 Wants=network-online.target
+Requires=docker.service
 
 [Service]
 Type=oneshot
-# Root, because the config file holds the Coolify token and the GitHub PAT and
-# is 0600 root. Nothing here needs a shell or a home.
-User=root
-# `flock` rather than trusting the timer: a hand-run during a tick is the one
-# way two of these meet, and both would ask GitHub, both would see the same sha,
-# and both would queue three builds.
-ExecStart=/usr/bin/flock -n /run/shikoo-autodeploy.lock /opt/shikoo/autodeploy.sh
 
+# ---------------------------------------------------------------------------
+# The credential, and why it is NOT `EnvironmentFile=`.
+#
+# `EnvironmentFile=` loads every value into the unit's environment, where
+# `systemctl show shikoo-autodeploy -p Environment` prints it back — in full,
+# to anyone who can run systemctl. That turns a 0600 root file into something
+# an operator can leak by running a diagnostic.
+#
+# `LoadCredential=` passes the file itself instead. systemd copies it into a
+# per-invocation ramfs directory, mode 0400, owned by the service user, unmounted
+# when the unit exits — and it appears in NO `systemctl show` property. The
+# script reads `$CREDENTIALS_DIRECTORY/autodeploy.env` when systemd set one, and
+# falls back to /etc/shikoo/autodeploy.env for a hand-run.
+#
+# The source file must still be 0600 root:root — LoadCredential reads it as root
+# before dropping to the service user, so nothing here relaxes that requirement.
+# ---------------------------------------------------------------------------
+LoadCredential=autodeploy.env:/etc/shikoo/autodeploy.env
+
+# Root, and this is a decision rather than a default.
+#
+# The script has to `docker exec` into the ingest container to apply migrations
+# and read `SOURCE_COMMIT`, and `docker exec` into the Postgres container to read
+# the ledger. That means membership of the `docker` group, and the docker socket
+# is root-equivalent by construction — a member can start a privileged container
+# that mounts `/`. A dedicated `shikoo-deploy` account in that group would look
+# like least privilege and grant exactly the same power, while adding an account
+# to keep in step with the group. So: root, sandboxed hard below, and said out
+# loud rather than dressed up.
+User=root
+Group=root
+
+# 0077, so the state file, the journal and the curl config the script writes are
+# unreadable to anybody else even if a path is created outside the state dir.
+UMask=0077
+
+# Deterministic, and not the directory whoever ran `systemctl start` was in.
+WorkingDirectory=/opt/shikoo
+
+# No `flock` on this line, and that is a fix rather than an omission.
+#
+# It used to read `flock -n /run/shikoo-autodeploy.lock /opt/shikoo/autodeploy.sh`
+# while the script ALSO takes the same lock on the same path. The comment in the
+# script asserted that the second one was «a no-op when the caller already holds
+# it via the unit — same file, same fd semantics». It is not. `flock` locks an
+# open file DESCRIPTION; the script's re-exec opens the path again and gets its
+# own, which conflicts with the one the unit is still holding. So `flock -n`
+# returned 1 immediately and the body of the script never ran — measured on this
+# host 2026-08-27, and invisible because a losing `flock -n` prints nothing.
+#
+# The script's own lock is strictly more general than the unit's: it covers the
+# timer path AND the hand-run the unit cannot see. One lock, one place.
+# No secret on this line either — the script reads both from the credential
+# directory systemd hands it.
+ExecStart=/opt/shikoo/autodeploy.sh
+
+# Bounded. A build that wedges must not hold the lock until somebody notices:
+# the unit is killed, the lock is released, and the next tick starts clean. The
+# ceiling is above DEPLOY_TIMEOUT×3 + HEALTH_TIMEOUT×3 so the script's own
+# per-application timeouts are what normally fire.
+TimeoutStartSec=3600
+# A one-shot poller does not restart: the timer IS the retry, sixty seconds
+# later, and a restarting one-shot would double every tick it failed on.
+Restart=no
+
+# Failures stay visible in `systemctl status` and `journalctl -u`, rather than
+# being swallowed into the timer's «last run» line.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shikoo-autodeploy
+
+# The state directory, made by systemd rather than by the script, so its mode is
+# declared where an operator looks for it.
+StateDirectory=shikoo-autodeploy
+StateDirectoryMode=0700
+
+# ---------------------------------------------------------------------------
 # The failure this hardening is actually about: the script holds two tokens in
 # its environment, so anything it can read, an injected command could exfiltrate.
+# ---------------------------------------------------------------------------
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/shikoo-autodeploy /run
+# /run for the lock, the docker socket because everything above depends on it.
+ReadWritePaths=/var/lib/shikoo-autodeploy /run /var/run/docker.sock
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
 RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RemoveIPC=yes

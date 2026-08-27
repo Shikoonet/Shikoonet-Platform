@@ -148,6 +148,19 @@ export function registerBotContentRoutes(
     ).all<{ key: string; value: string; updated_at: string; updated_by: string | null }>();
     const overrides = new Map((rows.results ?? []).map((r) => [r.key, r]));
 
+    // The panel must show what the BOT will send, which is not always what the
+    // source holds. Since the shipped defaults began carrying `<tg-emoji>`
+    // markup, `Texts.raw()` strips it whenever the shop has custom emoji off
+    // — and this route did not, so the editor opened on markup that the save
+    // route then refused as NOT_ALLOWED. An admin appending a word to the
+    // default they were shown got a 400 they could do nothing about.
+    //
+    // Reading the switch once and folding it through both `value` and
+    // `default` keeps the screen, the write gate and the customer's message
+    // agreeing on one string.
+    const emojiOn = await customEmojiOn(c.env.DB);
+    const asSent = (text: string): string => (emojiOn ? text : stripCustomEmoji(text));
+
     return c.json({
       ok: true,
       // The screen list travels with the texts rather than being repeated in the
@@ -164,8 +177,8 @@ export function registerBotContentRoutes(
           screen: entry.screen,
           hint: entry.hint,
           placeholders: entry.placeholders,
-          default: entry.default,
-          value: row?.value ?? entry.default,
+          default: asSent(entry.default),
+          value: asSent(row?.value ?? entry.default),
           customised: row !== undefined,
           updatedAt: row?.updated_at ?? null,
           updatedBy: row?.updated_by ?? null,
@@ -174,7 +187,7 @@ export function registerBotContentRoutes(
       maxLength: MAX_TEXT_LENGTH,
       // Sent with the texts so the editor can say whether markup will be
       // accepted before the admin types it, rather than after they press save.
-      customEmoji: await customEmojiOn(c.env.DB),
+      customEmoji: emojiOn,
     });
   });
 

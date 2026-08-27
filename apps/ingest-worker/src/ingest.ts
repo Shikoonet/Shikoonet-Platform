@@ -5,7 +5,7 @@
  * structured — the route layer maps them to status codes.
  */
 
-import { compilePatterns, normalizeText, parseSms } from '@shikoo/sms-parser';
+import { compilePatterns, normalizeText, parseSms, redactOtp } from '@shikoo/sms-parser';
 import {
   resolveAccountByHint,
   suggestMatchesForTransaction,
@@ -178,6 +178,45 @@ export async function ingest(
   const isRedactable =
     classification === 'OTP' || classification === 'PROMOTIONAL' || classification === 'IGNORED';
 
+  // ---------------------------------------------------------------------
+  // Defence in depth: the body we are about to store, scrubbed of anything
+  // that looks like a one-time password.
+  //
+  // The classifier above is the first line and it is precise, which means it
+  // can be wrong in the direction that matters. `کد یکبار مصرف` matched
+  // nothing until 2026-08-27, fell through to UNKNOWN, and UNKNOWN is not
+  // redactable — so the code went into `normalized_body`. One phrasing the
+  // vocabulary had not met was enough to break the guarantee at
+  // `docs/threat-model.md:106`.
+  //
+  // A vocabulary is a list, and a list is never finished. So the storage
+  // boundary asks its own question, with its own tolerance: `redactOtp` is
+  // eager where the classifier is precise, because its false positive costs
+  // one scrubbed number in a body nothing reads for money, and its false
+  // negative is a password in a database.
+  //
+  // The digits go and the SENTENCE STAYS. `normalized_body` is what an
+  // operator reads on «رویدادها» when a bank SMS did not parse, and it is how
+  // the next `bank_sms_patterns` row gets written — blanking it would make
+  // every unrecognised message mentioning a code permanently unparseable, and
+  // the shop would lose payments to protect a number.
+  //
+  // Runs only when the message was NOT already classified redactable: those
+  // store `[redacted]` and a NULL body, so there is nothing left to scrub.
+  const scrubbed = isRedactable ? null : redactOtp(normalizedBody);
+  if (scrubbed !== null && scrubbed.redacted > 0) {
+    // The COUNT, never the value, and never the body it came out of. That an
+    // OTP reached this point at all means the classifier missed a phrasing,
+    // which is worth an operator seeing — `classification` names what it was
+    // read as instead, so the next vocabulary entry can be written.
+    log.warn('sms.otp_scrubbed_before_persist', {
+      ref: eventId,
+      classification,
+      occurrences: scrubbed.redacted,
+    });
+  }
+  const bodyToStore = scrubbed === null ? null : scrubbed.text;
+
   // Persist raw event. INSERT OR IGNORE on (device_id, body_sha256) defends
   // against a race between two concurrent retries.
   await db
@@ -192,7 +231,11 @@ export async function ingest(
       device.id,
       raw.sender,
       isRedactable ? REDACTED_BODY : null,
-      isRedactable ? null : normalizedBody,
+      // `bodyToStore`, not `normalizedBody`: see the scrubbing block above.
+      // The fingerprint below is still computed over the ORIGINAL text, so
+      // dedupe is unaffected — a sha256 is not reversible and two deliveries
+      // of one message still collide.
+      bodyToStore,
       fingerprint,
       raw.checksum,
       smsTimestamp,
