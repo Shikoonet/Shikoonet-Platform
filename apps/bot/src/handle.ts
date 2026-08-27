@@ -1114,7 +1114,7 @@ async function categoryScreen(
   const plans = await plansInProduct(tx, user.id, only.productId);
   if (plans.length === 0) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu([]));
   if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
-  return screen(menu.choosePlan(only.name), menu.planMenu(plans, user.discount_percent));
+  return screen(menu.choosePlan(only.name), menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate));
 }
 
 async function handleCallback(
@@ -1252,7 +1252,7 @@ async function handleCallback(
       // the discount check and the held code, and having two ways to reach it
       // is how the two drift apart.
       if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
-      return screen(menu.choosePlan(plans[0]!.productName), menu.planMenu(plans, user.discount_percent));
+      return screen(menu.choosePlan(plans[0]!.productName), menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate));
     }
 
     case 'plan': {

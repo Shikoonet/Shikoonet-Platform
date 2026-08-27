@@ -14,6 +14,7 @@
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { invalidateBotContent } from './botContent.js';
 import { createLogger } from '@shikoo/domain';
+import { checkPlanLabel, PLAN_LABEL_SETTING } from '@shikoo/contracts';
 
 const log = createLogger('bot');
 
@@ -213,6 +214,15 @@ export interface ShopSettings {
    */
   customEmoji: boolean;
   /**
+   * How a plan's button is written — `shop.plan_button_template`.
+   *
+   * Null is «the way it has always been written», not «empty»: see
+   * `planLabel.ts`. A template that fails validation is treated as null too,
+   * because a shop whose row was hand-edited into nonsense should draw the old
+   * label rather than «{prise}» to a customer.
+   */
+  planButtonTemplate: string | null;
+  /**
    * Whether these values came from the database or from the fallback below.
    *
    * Every other field here is safe to guess at: a switch the bot cannot read
@@ -257,6 +267,11 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   onHoldDays: 1,
   requiresRules: false,
   customEmoji: false,
+  // Null, and deliberately not a template. `planLabel.ts` says why: every
+  // migrated product has its price typed into its name, so any default that
+  // appended `{price}` would put the number on the button twice for all of
+  // them on the day this shipped.
+  planButtonTemplate: null,
   fromDatabase: false,
 };
 
@@ -287,6 +302,8 @@ function chatId(value: number | null): number | null {
 
 /** Where the custom emoji switch lives, named once so nothing mistypes it. */
 export const CUSTOM_EMOJI_SETTING = { scope: 'bot', key: 'custom_emoji' } as const;
+
+
 
 /**
  * Every row `loadShopSettings` consults, in one place.
@@ -324,9 +341,26 @@ export const SHOP_SETTING_KEYS = [
   ['bot', 'volumewarn'],
   ['bot', 'on_hold_day'],
   ['bot', 'roll_Status'],
+  // Ours, not a migrated legacy column — there was nothing in the PHP schema
+  // that composed a button label, which is the whole reason this exists.
+  [PLAN_LABEL_SETTING.scope, PLAN_LABEL_SETTING.key],
 ] as const satisfies readonly (readonly [SettingScope, string])[];
 
 type ShopSettingKey = (typeof SHOP_SETTING_KEYS)[number][1];
+
+/**
+ * A stored template, or null when it cannot be drawn.
+ *
+ * Never throws and never logs a template body: this runs on the read path of
+ * every shop screen, and a shop with a broken row should keep selling with the
+ * old label rather than stop.
+ */
+function usableTemplate(value: string | null): string | null {
+  if (value === null) return null;
+  const t = value.trim();
+  if (t === '') return null;
+  return checkPlanLabel(t) === null ? t : null;
+}
 
 const CACHE_MS = 30_000;
 let cached: { at: number; value: ShopSettings } | null = null;
@@ -528,6 +562,11 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       // selling for years, this one describes a Premium subscription the bot
       // cannot verify it has.
       customEmoji: text(CUSTOM_EMOJI_SETTING.key) === 'true',
+      // Validated on the way OUT as well as on the way in. The panel refuses a
+      // bad template, but this row is reachable by hand and by a restore, and
+      // the failure mode of trusting it is «{prise}» drawn on a button to a
+      // customer. An unusable value reads as «not configured».
+      planButtonTemplate: usableTemplate(text(PLAN_LABEL_SETTING.key)),
       // The database answered. An empty `settings` table still counts: "the
       // admin has configured nothing" is a fact, and it is not the same fact
       // as "we could not ask".
