@@ -103,6 +103,8 @@ export interface CustomerDetail {
 export interface PlanRow {
   id: number;
   name: string;
+  /** Drawn before the label on this config's bot button — «🆕», «🔴 آف». */
+  badge: string | null;
   priceIrr: number;
   durationDays: number | null;
   volumeGb: number | null;
@@ -140,6 +142,7 @@ export interface PlanRow {
 export interface ConfigRow {
   id: number;
   name: string;
+  badge: string | null;
   priceIrr: number;
   /** null is unmetered. Zero is a real, free allowance — not the same thing. */
   volumeGb: number | null;
@@ -202,6 +205,7 @@ export type CatalogStatus = 'ACTIVE' | 'HIDDEN' | 'DISABLED';
 
 export interface PlanPatch {
   name?: string;
+  badge?: string | null;
   priceIrr?: number;
   durationDays?: number | null;
   volumeGb?: number | null;
@@ -219,6 +223,7 @@ export interface PlanPatch {
  */
 export interface PlanCreate {
   name: string;
+  badge?: string | null;
   priceIrr: number;
   durationDays?: number | null;
   volumeGb?: number | null;
@@ -252,7 +257,7 @@ export interface CategoryRow {
   id: number;
   name: string;
   /** Drawn on the bot button before the name. Null when the admin gave it none. */
-  emoji: string | null;
+  badge: string | null;
   /** False takes this category's products off the shop without deleting anything. */
   active: boolean;
   sortOrder: number;
@@ -272,7 +277,7 @@ export interface CategoryRow {
 
 export interface CategoryPatch {
   name?: string;
-  emoji?: string | null;
+  badge?: string | null;
   sortOrder?: number;
   active?: boolean;
 }
@@ -1010,7 +1015,7 @@ export const api = {
     return req<{ ok: boolean; items: CategoryRow[] }>('/product-categories');
   },
 
-  createCategory(body: { name: string; emoji?: string | null; sortOrder?: number }) {
+  createCategory(body: { name: string; badge?: string | null; sortOrder?: number }) {
     return req<{ ok: boolean; category: CategoryRow }>('/product-categories', {
       method: 'POST',
       body: JSON.stringify(body),

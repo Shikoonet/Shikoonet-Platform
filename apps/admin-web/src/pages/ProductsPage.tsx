@@ -45,6 +45,7 @@ import {
 } from '@shikoo/contracts';
 import { count, toman } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
+import { BadgeField, badgeValue } from './BadgeField.js';
 
 const PAGE_SIZE = 25;
 
@@ -410,7 +411,13 @@ export function ProductsPage({ onGo }: { onGo: (id: 'categories') => void }) {
                 <tr key={r.id}>
                   <td className="ltr num num--dim">{r.id}</td>
                   <td className="cell-name">
-                    <div>{r.name}</div>
+                    {/* In front of the name, because that is where the bot
+                        draws it — a badge listed in its own column would be
+                        the one place it is not read the way it is sold. */}
+                    <div>
+                      {r.badge && <span>{r.badge} </span>}
+                      {r.name}
+                    </div>
                     {/* Only when it says something the line above did not. A
                         migrated row's plan IS its product — the importer wrote
                         the same string into both — so on those rows the first
@@ -693,6 +700,7 @@ function EditProduct({
 }) {
   const w = useAdminWriteProps();
   const [name, setName] = useState(row.name);
+  const [badge, setBadge] = useState(row.badge ?? '');
   const [priceToman, setPriceToman] = useState(String(Math.trunc(row.priceIrr / 10)));
   const [volumeGb, setVolumeGb] = useState(row.volumeGb === null ? '' : String(row.volumeGb));
   const [durationDays, setDurationDays] = useState(
@@ -733,6 +741,7 @@ function EditProduct({
     try {
       await api.updatePlan(row.id, {
         name: name.trim(),
+        badge: badgeValue(badge),
         priceIrr: Math.round(Number(priceToman) * 10),
         volumeGb: volumeGb.trim() === '' ? null : Number(volumeGb),
         durationDays: durationDays.trim() === '' ? null : Number(durationDays),
@@ -857,6 +866,18 @@ function EditProduct({
               <option value="HIDDEN">پنهان</option>
               <option value="DISABLED">غیرفعال</option>
             </select>
+          </div>
+        </div>
+        <div className="toolbar" style={{ borderBlockEnd: 'none', paddingBlockEnd: 0 }}>
+          <div className="grow">
+            <BadgeField
+              id="ed-badge"
+              value={badge}
+              onChange={setBadge}
+              preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name.trim() || row.name} — ${toman(
+                Math.round(Number(priceToman) * 10),
+              )}`}
+            />
           </div>
         </div>
 

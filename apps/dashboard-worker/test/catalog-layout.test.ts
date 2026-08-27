@@ -291,17 +291,17 @@ describe('a category', () => {
     const id = await makeCategory('edit');
     const res = await post(`/api/v1/admin/product-categories/${id}`, {
       name: `${PREFIX}edited`,
-      emoji: '🇩🇪',
+      badge: '🇩🇪',
       active: false,
     });
     expect(res.status).toBe(200);
 
     const row = await baseEnv.DB.prepare(
-      `SELECT name, emoji, active FROM product_categories WHERE id = ?1`,
+      `SELECT name, badge, active FROM product_categories WHERE id = ?1`,
     )
       .bind(id)
-      .first<{ name: string; emoji: string | null; active: boolean }>();
-    expect(row).toMatchObject({ name: `${PREFIX}edited`, emoji: '🇩🇪', active: false });
+      .first<{ name: string; badge: string | null; active: boolean }>();
+    expect(row).toMatchObject({ name: `${PREFIX}edited`, badge: '🇩🇪', active: false });
   });
 
   it('cannot take a name another category already has', async () => {
@@ -342,18 +342,18 @@ describe('a category', () => {
     expect(gone).toBeNull();
   });
 
-  it('carries its emoji, switch and row through the list route', async () => {
+  it('carries its badge, switch and row through the list route', async () => {
     const id = await makeCategory('listed');
     await baseEnv.DB.prepare(
-      `UPDATE product_categories SET emoji = '🎧', active = false, row_index = 2 WHERE id = ?1`,
+      `UPDATE product_categories SET badge = '🎧', active = false, row_index = 2 WHERE id = ?1`,
     )
       .bind(id)
       .run();
     const body = (await (await get('/api/v1/admin/product-categories')).json()) as {
-      items: { id: number; emoji: string | null; active: boolean; rowIndex: number | null }[];
+      items: { id: number; badge: string | null; active: boolean; rowIndex: number | null }[];
     };
     const mine = body.items.find((i) => i.id === id);
-    expect(mine).toMatchObject({ emoji: '🎧', active: false, rowIndex: 2 });
+    expect(mine).toMatchObject({ badge: '🎧', active: false, rowIndex: 2 });
   });
 });
 

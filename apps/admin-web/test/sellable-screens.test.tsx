@@ -42,6 +42,7 @@ function plan(id: number, name: string, provider: PanelRef | null, status = 'ACT
   return {
     id,
     name,
+    badge: null,
     priceIrr: 1_000_000,
     durationDays: 30,
     volumeGb: 10,
@@ -87,7 +88,7 @@ function category(over: Partial<CategoryRow>): CategoryRow {
   return {
     id: 1,
     name: 'سرویس‌ها',
-    emoji: null,
+    badge: null,
     active: true,
     sortOrder: 0,
     rowIndex: null,

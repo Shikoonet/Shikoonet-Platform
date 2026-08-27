@@ -165,8 +165,11 @@ export async function productsForUser(
 export interface CatalogCategory {
   categoryId: number;
   name: string;
-  /** Drawn on the button before the name, when the admin gave it one. */
-  emoji: string | null;
+  /**
+   * Drawn on the button before the name, when the admin gave it one — «🆕»,
+   * «🔴 آف», «ویژه». Was `emoji` until 0033; it was never only an emoji.
+   */
+  badge: string | null;
   /** Where the admin broke the row, or null for «never arranged». */
   rowIndex: number | null;
 }
@@ -188,7 +191,7 @@ export interface CatalogCategory {
 export async function categoriesForUser(db: Db, userId: number): Promise<CatalogCategory[]> {
   const rows = await db
     .prepare(
-      `SELECT cat.id AS category_id, cat.name AS name, cat.emoji AS emoji,
+      `SELECT cat.id AS category_id, cat.name AS name, cat.badge AS badge,
               cat.row_index AS row_index
          FROM product_categories cat
          JOIN products p                ON p.category_id = cat.id
@@ -196,15 +199,15 @@ export async function categoriesForUser(db: Db, userId: number): Promise<Catalog
          JOIN provisioning_providers pr ON pr.id = p.provider_id
          JOIN users u                   ON u.id = ?1
         WHERE cat.active AND ${PURCHASABLE}
-        GROUP BY cat.id, cat.name, cat.emoji, cat.row_index, cat.sort_order
+        GROUP BY cat.id, cat.name, cat.badge, cat.row_index, cat.sort_order
         ORDER BY cat.sort_order, cat.id`,
     )
     .bind(userId)
-    .all<{ category_id: number; name: string; emoji: string | null; row_index: number | null }>();
+    .all<{ category_id: number; name: string; badge: string | null; row_index: number | null }>();
   return rows.results.map((r) => ({
     categoryId: r.category_id,
     name: r.name,
-    emoji: r.emoji,
+    badge: r.badge,
     rowIndex: r.row_index,
   }));
 }
@@ -215,6 +218,8 @@ export interface CatalogPlan {
   productId: number;
   productName: string;
   planName: string;
+  /** Drawn before the label on the plan's button. Same field as a category's. */
+  badge: string | null;
   priceIrr: number;
   durationDays: number | null;
   volumeGb: number | null;
@@ -247,6 +252,7 @@ interface PlanRow {
   product_id: number;
   product_name: string;
   plan_name: string;
+  badge: string | null;
   price_irr: number;
   duration_days: number | null;
   volume_gb: number | null;
@@ -263,6 +269,7 @@ const PLAN_COLUMNS = `
   p.id            AS product_id,
   p.name          AS product_name,
   pl.name         AS plan_name,
+  pl.badge        AS badge,
   pl.price_irr    AS price_irr,
   pl.duration_days AS duration_days,
   pl.volume_gb    AS volume_gb,
@@ -290,6 +297,7 @@ function toPlan(row: PlanRow): CatalogPlan {
     productId: row.product_id,
     productName: row.product_name,
     planName: row.plan_name,
+    badge: row.badge,
     priceIrr: row.price_irr,
     durationDays: row.duration_days,
     volumeGb: row.volume_gb,

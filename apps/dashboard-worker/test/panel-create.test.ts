@@ -439,6 +439,17 @@ describe('تست ارتباط', () => {
 });
 
 describe('the address, normalised the way the legacy wizard asked for by hand', () => {
+  // Every case here posts a REAL hostname under example.com, and the create
+  // route probes the address before it writes (`panelRoutes.ts:130`, 8s). That
+  // probe is a real TCP connect that outlives vitest's 5s timeout, so one test
+  // in this block failed per run — a different one each time, which is what a
+  // network race looks like from the outside.
+  //
+  // Stubbed rather than given a longer timeout: this block is about the string
+  // that gets stored, and a normalisation test that depends on whether
+  // example.com answered today is testing the wrong thing.
+  beforeEach(panelAnswers);
+
   /**
    * `panel/panels.php` printed four rules and trusted the operator to apply
    * them. Each one applied wrongly saves a panel that answers 404 and looks

@@ -128,7 +128,7 @@ const PROVIDERS: ProviderSpec[] = [
 interface CategorySpec {
   code: string;
   name: string;
-  emoji?: string;
+  badge?: string;
   active?: boolean;
 }
 
@@ -141,8 +141,8 @@ interface CategorySpec {
  * can find the day it starts doing that by accident.
  */
 const CATEGORIES: CategorySpec[] = [
-  { code: 'sim-cat-vpn', name: 'وی‌پی‌ان', emoji: '🌐' },
-  { code: 'sim-cat-accounts', name: 'اکانت‌ها', emoji: '📦' },
+  { code: 'sim-cat-vpn', name: 'وی‌پی‌ان', badge: '🌐' },
+  { code: 'sim-cat-accounts', name: 'اکانت‌ها', badge: '📦' },
   { code: 'sim-cat-closed', name: 'موقتاً بسته', active: false },
 ];
 
@@ -352,12 +352,12 @@ export async function seedCatalog(db: D1Database): Promise<CatalogSeedResult> {
   for (const [i, cat] of CATEGORIES.entries()) {
     await db
       .prepare(
-        `INSERT INTO product_categories (name, emoji, active, sort_order)
+        `INSERT INTO product_categories (name, badge, active, sort_order)
          VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (name) DO UPDATE SET
-           emoji = EXCLUDED.emoji, active = EXCLUDED.active, sort_order = EXCLUDED.sort_order`,
+           badge = EXCLUDED.badge, active = EXCLUDED.active, sort_order = EXCLUDED.sort_order`,
       )
-      .bind(cat.name, cat.emoji ?? null, cat.active ?? true, i)
+      .bind(cat.name, cat.badge ?? null, cat.active ?? true, i)
       .run();
     const row = await db
       .prepare(`SELECT id FROM product_categories WHERE name = ?1`)

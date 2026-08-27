@@ -29,6 +29,7 @@ const PLAN: CatalogPlan = {
   productId: 7,
   productName: '۱ماهه - ۵۰ گیگ',
   planName: '۱ماهه - ۵۰ گیگ',
+  badge: null,
   priceIrr: 1_950_000,
   durationDays: 30,
   volumeGb: 50,
@@ -191,6 +192,21 @@ describe('the plan list', () => {
     expect(rows[0]?.[0]?.text).toBe('۳۰ گیگ - یک‌ماهه — 150,000 تومان');
     expect(rows[1]?.[0]?.text).toBe('۵۰ گیگ - یک‌ماهه — 220,000 تومان');
     expect(rows[0]?.[0]?.callback_data).toBe('plan:1');
+  });
+
+  it('draws the admin badge in FRONT of the label, price still last', () => {
+    // The whole of «نیو»/«آف» on a shop screen, through the real builder. In
+    // front, because a plan's label ends in the price and a badge on the tail
+    // would land after the number.
+    const rows = menu.planMenu([{ ...PLAN, badge: '🔴 آف', planName: '۵۰ گیگ' }]);
+    expect(rows[0]?.[0]?.text).toBe('🔴 آف ۵۰ گیگ — 195,000 تومان');
+    // A category badge is the same field on the same side.
+    const cats = menu.categoryMenu([
+      { categoryId: 1, name: 'اروپا', badge: '🆕', rowIndex: null },
+      { categoryId: 2, name: 'آسیا', badge: null, rowIndex: null },
+    ]);
+    expect(cats[0]?.[0]?.text).toBe('🆕 اروپا');
+    expect(cats[1]?.[0]?.text).toBe('آسیا');
   });
 
   it('goes back to the service list, which is the shop first screen', () => {
