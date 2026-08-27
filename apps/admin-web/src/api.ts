@@ -194,6 +194,14 @@ export interface PanelRef {
   name: string | null;
   code: string | null;
   status: string | null;
+  /**
+   * Whether «which groups?» is a question this route can answer at all.
+   *
+   * False for `manual` — the way a Spotify account or a gift card reaches a
+   * customer. Decided on the server from the same table that picks the
+   * adapter, so no screen has to keep its own list of which kinds have groups.
+   */
+  hasGroups: boolean;
   capacity: number | null;
   liveSubscriptions: number;
 }
