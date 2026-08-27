@@ -55,14 +55,23 @@ PGUSER="${PGUSER:-postgres}"
 # one. Now both the invariants and the migration list are resolved relative to
 # this file, so the thing being checked and the thing checking it ship as one
 # unit. Override only if you have deliberately split them.
-REPO_ROOT="${REPO_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
+# `CDPATH=` unset for the subshell only, so a developer's CDPATH cannot make
+# `cd ..` land somewhere else. Written as an env prefix to `cd` rather than as
+# a bare `CDPATH= cd`, which shellcheck reads as an assignment typo (SC1007).
+REPO_ROOT="${REPO_ROOT:-$(env CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$REPO_ROOT/migrations}"
 INVARIANTS="${INVARIANTS:-$MIGRATIONS_DIR/verify_invariants.sql}"
 
 say() { printf '%s\n' "$*"; }
 psql_() { docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -v ON_ERROR_STOP=1 -q "$@"; }
 
-DUMP=$(ls -1t "$BACKUP_DIR"/*.dmp 2>/dev/null | head -1)
+# Newest `.dmp` by mtime. `find -printf` sorts on the timestamp itself rather
+# than on `ls` output, so a filename with a newline in it cannot shift the
+# answer by a line (SC2012). The names this writes are `<name>-<epoch>.dmp`,
+# but the dump directory is operator-writable and the drill must not be the
+# thing that trusts it.
+DUMP=$(find "$BACKUP_DIR" -maxdepth 1 -name '*.dmp' -type f -printf '%T@ %p\n' 2>/dev/null \
+  | sort -rn | head -1 | cut -d' ' -f2-)
 [ -n "$DUMP" ] || { say "no dump found in $BACKUP_DIR"; exit 1; }
 
 DUMP_EPOCH=$(basename "$DUMP" | sed 's/.*-\([0-9]*\)\.dmp/\1/')
