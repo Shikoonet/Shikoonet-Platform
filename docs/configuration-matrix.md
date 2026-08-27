@@ -51,13 +51,13 @@ Environment`. Source file is `0600 root:root` in a `0700` directory.
 | Name | Consumer | Purpose | Sensitive | Required in | Build/runtime | Storage | Required permissions | Rotation | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `GH_REPO` | autodeploy | `owner/name` to ask about | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
-| `GH_TOKEN` | autodeploy | branch head, merged PR, reviews, workflow runs and jobs, the `migrations/` tarball at a sha | **yes** | staging, production | runtime | Server systemd credential | fine-grained, this repo only: Metadata R, Contents R, Pull requests R, Actions R. No write anywhere | 90 days | **MISSING — NEEDS_OWNER_ACTION** |
+| `GH_TOKEN` | autodeploy | branch head, merged PR, reviews, workflow runs and jobs, the `migrations/` tarball at a sha | **yes** | staging, production | runtime | Server systemd credential | see §7 — Metadata R, Contents R, Pull requests R, Actions R, and nothing else | 90 days | **MISSING — NEEDS_OWNER_ACTION** |
 | `COOLIFY_URL` | autodeploy | Coolify API base. Loopback so the token never crosses an interface | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
 | `COOLIFY_TOKEN` | autodeploy | pin `git_commit_sha`, queue a deploy, poll it | **yes** | staging, production | runtime | Server systemd credential | team-scoped `read` + `write` + `deploy`. Not `root`, not `read:sensitive` | 90 days | PRESENT |
 | `APP_INGEST` | autodeploy | Coolify application uuid | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
 | `APP_DASHBOARD` | autodeploy | Coolify application uuid | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
 | `APP_BOT` | autodeploy | Coolify application uuid | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
-| `EXPECT_ENV_NAME` | autodeploy | the `ENV_NAME` this host may deploy to. No default — an unanswerable "which environment is this" is a refusal | no | staging, production | runtime | Server systemd credential | — | never | PRESENT (see §7) |
+| `EXPECT_ENV_NAME` | autodeploy | the `ENV_NAME` this host may deploy to. No default — an unanswerable "which environment is this" is a refusal | no | staging, production | runtime | Server systemd credential | — | never | PRESENT — `staging` (see §8) |
 | `DB_CONTAINER` | autodeploy | Postgres container, for the migration ledger and the invariants | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
 | `PGUSER` | autodeploy | ledger reads | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
 | `PGDATABASE` | autodeploy | ledger reads | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
@@ -88,9 +88,9 @@ Set in each Coolify application. **All sensitive rows must be runtime-only.**
 | `SERVICE` | selects the entry point in `deploy/entrypoint.sh`. No default by design | no | yes | build+runtime (harmless) | PRESENT |
 | `DATABASE_URL` | Postgres | **yes** | yes | runtime-only | PRESENT |
 | `TELEGRAM_BOT_TOKEN` | the bot identity it long-polls with | **yes** | yes | runtime-only | PRESENT |
-| `ENV_NAME` | decides the login bypass, Origin-less writes, cookie flags. `parseEnvName` **throws** rather than defaulting | no | **yes** | runtime | **MISSING — the bot cannot boot without it** |
+| `ENV_NAME` | decides the login bypass, Origin-less writes, cookie flags. `parseEnvName` **throws** rather than defaulting | no | **yes** | runtime-only | PRESENT — `staging`, created 2026-08-27. Its absence is why the bot could not boot |
 | `PANEL_SECRET_KEY` | provisioning panel credential | **yes** | when provisioning | runtime-only | PRESENT |
-| `PANEL_TEST_PANEL` `PANEL_TEST_PANEL_URL` | practice-panel target | **yes** (holds credentials) | practice only | build+runtime | PRESENT — WRONG_LOCATION (should be runtime-only) |
+| `PANEL_TEST_PANEL` `PANEL_TEST_PANEL_URL` | practice-panel target | **yes** (holds credentials) | practice only | runtime-only | PRESENT — moved off build-time 2026-08-27 |
 | `WIRE_TEST_PANEL_ON_HOST` | guard for `scripts/wire-test-panel.ts` | no | practice only | build+runtime | PRESENT |
 | `ALERT_CHAT_ID` | where alerts go | no | optional | build+runtime | PRESENT |
 | `REPORT_CHAT_ID` | fallback for `ALERT_CHAT_ID` | no | optional | runtime | not set (falls back) |
@@ -104,7 +104,7 @@ Set in each Coolify application. **All sensitive rows must be runtime-only.**
 | --- | --- | --- | --- | --- | --- |
 | `SERVICE` | entry point | no | yes | build+runtime | PRESENT |
 | `DATABASE_URL` | Postgres | **yes** | yes | runtime-only | PRESENT |
-| `ENV_NAME` | environment guards | no | yes | build+runtime | PRESENT |
+| `ENV_NAME` | environment guards | no | yes | runtime-only | PRESENT — `staging` |
 | `HOST` `PORT` | listener (8787) | no | yes | build+runtime | PRESENT |
 | `MIRZABOT_INTEGRATION_HMAC_SECRET` | verifies the Mirzabot webhook signature | **yes** | when integration on | runtime-only | PRESENT |
 | `MIRZABOT_INTEGRATION_ID` | integration identity | no | when integration on | build+runtime | PRESENT |
@@ -126,7 +126,7 @@ rows in `device_credentials`. Nothing to store here.
 | --- | --- | --- | --- | --- | --- |
 | `SERVICE` | entry point | no | yes | build+runtime | PRESENT |
 | `DATABASE_URL` | Postgres | **yes** | yes | runtime-only | PRESENT |
-| `ENV_NAME` | environment guards | no | yes | build+runtime | PRESENT |
+| `ENV_NAME` | environment guards | no | yes | runtime-only | PRESENT — `staging` |
 | `HOST` `PORT` | listener (8788) | no | yes | build+runtime | PRESENT |
 | `INGEST_URL` | the ingest service — the only edge between the two | no | yes | build+runtime | PRESENT |
 | `TELEGRAM_BOT_TOKEN` | sends operator messages | **yes** | yes | runtime-only | PRESENT |
@@ -150,8 +150,9 @@ variable to store, and one must not be invented.
 
 | Item | Purpose | Storage | Status |
 | --- | --- | --- | --- |
-| Repository clone credential | how Coolify fetches the private repository | Coolify Source credential | **REQUIRES_ROTATION — see §7** |
-| `shikoo-github-deploy` private key | a deploy key already exists in Coolify | Coolify Source credential | PRESENT, unused by the applications |
+| `shikoo-staging-source` deploy key | how Coolify fetches the private repository | Coolify Source credential | PRESENT — read-only, scoped to this repository, verified |
+| classic PAT in the clone URL | *was* how Coolify fetched it | removed 2026-08-27 | REMOVED from Coolify — **still REQUIRES_ROTATION on GitHub** |
+| `shikoo-github-deploy` private key | an older Coolify key | Coolify Source credential | UNUSED — its public half is already registered elsewhere, so it could not be added to this repository |
 | `manual_webhook_secret_github` | inbound push webhook | Coolify application | PRESENT but inert — GitHub cannot reach `:8000` |
 
 ---
@@ -207,25 +208,57 @@ No two names were found holding the same credential without a reason.
 
 ---
 
-## 7. Outstanding — owner action required
+## 7. `GH_TOKEN` — permission matrix, derived from the calls
+
+Every GitHub endpoint `deploy/autodeploy.sh` makes, and the least permission
+that opens it. Nothing beyond this list is exercised, so nothing beyond it
+should be granted.
+
+| Endpoint | Why | Minimum permission |
+| --- | --- | --- |
+| `GET /repos/{r}/commits/{branch}` | the candidate sha, and the re-read that closes the branch race | Contents: **Read** |
+| `GET /repos/{r}/commits/{sha}/pulls` | which pull request produced this commit | Pull requests: **Read** |
+| `GET /repos/{r}/pulls/{n}/reviews` | the approving review, its author and its commit_id | Pull requests: **Read** |
+| `GET /repos/{r}/actions/runs?head_sha=…&event=push&branch=…` | the push run on that exact sha | Actions: **Read** |
+| `GET /repos/{r}/actions/runs/{id}/jobs` | `Required Quality Gate` by name | Actions: **Read** |
+| `GET /repos/{r}/tarball/{sha}` | the `migrations/` tree at the candidate, for the preflight | Contents: **Read** |
+| *(implicit)* | required by every fine-grained token | Metadata: **Read** |
+
+**Not required, and must not be granted:**
+
+| Permission | Why not |
+| --- | --- |
+| Commit statuses | the script deliberately does not use the combined status API — Actions reports through check runs, so that endpoint is empty here and would read as "no CI configured" |
+| Checks | GitHub no longer offers Checks as a fine-grained permission at all, and the script uses the runs API instead precisely because of that |
+| Contents: Write | it never pushes |
+| Pull requests: Write | it never merges, comments or closes |
+| Administration · Secrets · Workflows · Webhooks | nothing in the script touches any of them |
+
+## 8. Outstanding — owner action required
 
 1. **`GH_TOKEN` does not exist.** Autodeploy fails closed on every tick until it
    is created. It cannot be created through the API; a fine-grained PAT is a UI
    action.
-2. **The Coolify clone credential is an embedded classic PAT with `repo`
-   scope.** It is stored in plaintext in the Coolify database and grants
-   read *and write* across every repository its owner can reach — far beyond
-   what fetching one repository needs. Rotate it and move Coolify onto the
-   deploy key or a GitHub App.
+2. **The old classic PAT still exists on GitHub and must be revoked.** Coolify
+   no longer references it — all three applications clone over SSH with a
+   dedicated read-only deploy key as of 2026-08-27, and no `ghp_` string remains
+   anywhere in the Coolify database. But the token itself is still live, still
+   carries `repo` scope, and belongs to a user account rather than to this
+   deployment, so only its owner can revoke it. Identify any other consumer
+   first: it was in use long enough that something else may depend on it.
 3. **`shikoo-bot` has no `ENV_NAME`** and therefore cannot start.
-4. **`EXPECT_ENV_NAME` says `staging`; the applications report `production`.**
-   One of the two is wrong and only the owner can say which.
+4. **The running containers still report `ENV_NAME=production`.** Coolify's
+   configuration now says `staging` on all three, but a container carries the
+   value it started with. The guard reads the *running* container, so it will
+   keep refusing until the applications are restarted once — and that restart
+   is a deployment, which is why it is an owner action rather than something
+   done here. This is the single step that unblocks autodeploy.
 5. **Sensitive values were previously build arguments**, so `ARG NAME=value` is
    recorded in existing image layer history. The flags are corrected now, but
    the already-built images still carry them — the values need rotating, not
    just re-flagging.
-6. **`PANEL_TEST_PANEL` / `PANEL_TEST_PANEL_URL` are still build-time** and hold
-   panel credentials.
+6. ~~`PANEL_TEST_PANEL` / `PANEL_TEST_PANEL_URL` are still build-time~~ — fixed
+   2026-08-27; both are runtime-only now.
 7. **`PRODUCTION_AUTO_DEPLOY` and the five `DEPLOY_*` environment secrets have
    no consumer on `main`.** Whether they are removed depends on which
    deployment architecture wins — PR #2 (Actions-driven) or PR #3

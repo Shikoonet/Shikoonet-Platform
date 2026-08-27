@@ -273,9 +273,17 @@ Neither token is ever passed on a command line. `curl` reads both from a config
 file in a 0700 temp directory removed on exit, so `ps` shows a path and never a
 bearer token.
 
-Every value is single-quoted, and that is not style: the Coolify token begins
-`1|`, the file is `.`-sourced by bash, and unquoted the `|` became a pipe into a
-command named after the rest of the token.
+**Values are UNQUOTED, and the file is read as text rather than `.`-sourced.**
+It used to be sourced, which meant every value was a shell expression: the
+Coolify token begins `N|`, and unquoted that `|` became a pipe into a command
+named after the rest of the token. The fix was a rule — quote everything — that
+a human had to remember. Reading the file as text needs no rule, because nothing
+is interpreted: a `|`, a `$` or a space in a secret is just a character. It also
+closes the larger hole, which is that sourcing a credentials file hands anybody
+who can write it arbitrary code as root.
+
+Surrounding quotes are still stripped if present, so a file written the old way
+keeps working — but new values should carry none.
 
 ```text
 GH_REPO=<redacted>          COOLIFY_URL=<redacted>      APP_INGEST=<redacted>
@@ -317,6 +325,27 @@ never `root`, and not `read:sensitive`. `write` is needed for exactly one thing:
 `PATCH /api/v1/applications/<uuid>` is what sets `git_commit_sha`, and that same
 verb is what turned native Auto Deploy off. Without `write` there is no way to
 pin an immutable sha, and the deploy degrades to "latest main".
+
+### How Coolify fetches the repository
+
+A **read-only deploy key**, `shikoo-staging-source`, held in Coolify's own
+private-key store and registered on the repository as
+`coolify-france-staging (read-only source)`.
+
+It replaced an HTTPS clone URL with a classic personal access token embedded in
+it. That token carried `repo` scope — read *and write* on every repository its
+owner could reach — to do a job that needs read on one. It sat in plaintext in
+the Coolify database, and rotating it into another URL-embedded token would have
+changed the value and none of the properties that made it wrong.
+
+The key is proven, not assumed: it resolves `Shikoonet-Platform`, it is refused
+by other repositories in the same organisation, and `git push --dry-run` against
+it fails. Coolify still needs this and it must not be removed — turning off
+native Auto Deploy does not turn off Coolify's ability to fetch what it is told
+to build.
+
+The applications were not recreated to do this. Same uuids, same domains, same
+environment variables; two fields changed on each.
 
 ### One trigger, and only one
 
