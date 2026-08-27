@@ -84,6 +84,16 @@
 
 set -Eeuo pipefail
 
+# The lock is taken HERE, on line one of the work, and that placement is the
+# whole guarantee: before the config is read, before the first GitHub call,
+# before anything is asked of Coolify and long before anything is changed. A
+# lock taken later would leave a window in which two ticks both decide to
+# deploy and only then discover each other.
+#
+# `-E 99` so «I could not get the lock» is distinguishable from «the script ran
+# and exited 1». Without it both are exit 1, and an overlap is indistinguishable
+# from a failure — which is how a benign overlap ends up looking like a broken
+# deploy in `systemctl status`.
 LOCK=${SHIKOO_AUTODEPLOY_LOCK:-/run/shikoo-autodeploy.lock}
 if [ "${SHIKOO_AUTODEPLOY_LOCKED:-}" != '1' ]; then
   export SHIKOO_AUTODEPLOY_LOCKED=1
@@ -92,7 +102,25 @@ if [ "${SHIKOO_AUTODEPLOY_LOCKED:-}" != '1' ]; then
   # but the copy in the repository is 0644, so a hand-run from a checkout
   # (which is how it is tested, and how somebody debugs it) died on
   # «Permission denied» before reaching a single line of logic.
-  exec flock -n "$LOCK" bash "$0" "$@"
+  #
+  # Not `exec`: this shell has to survive to tell the difference between the
+  # two exit codes below.
+  # `|| rc=$?` and not a bare call: `set -e` is on, so a non-zero flock would
+  # abort this shell here — before the 99 could ever be translated into the
+  # message below. The lock-out would then be silent, which is the exact
+  # failure this block exists to prevent.
+  rc=0
+  flock -n -E 99 "$LOCK" bash "$0" "$@" || rc=$?
+  if [ "$rc" -eq 99 ]; then
+    # Benign and expected: a hand-run met a tick, or a deploy is still going.
+    # Exit 0 so a normal overlap does not paint the unit red. Nothing about the
+    # holder is printed — there is nothing to say that is not a guess, and
+    # nothing here may leak a path or a credential.
+    printf '%s autodeploy: another run holds %s — this invocation did nothing\n' \
+      "$(date -u +%FT%TZ)" "$LOCK"
+    exit 0
+  fi
+  exit "$rc"
 fi
 
 DRY_RUN=0
@@ -136,8 +164,56 @@ die() {
 }
 
 [ -r "$CONFIG" ] || die "$CONFIG is missing or unreadable"
-# shellcheck source=/dev/null
-. "$CONFIG"
+
+# Read as text. NOT `.`-sourced, and that is a security property rather than a
+# style: sourcing hands anybody who can write that file arbitrary code as this
+# user, and it makes every value a shell expression. A Coolify API token is
+# literally `<id>|<random>` — sourced unquoted, the `|` becomes a pipeline and
+# the rest of the token runs as a command. The old file worked around that by
+# single-quoting every value and saying so in the README, which is a rule a
+# human has to keep; this needs no rule, because nothing is interpreted.
+#
+# Surrounding quotes are stripped if present, so a file written the old way
+# still reads correctly. `tail -1` so a duplicated key takes the last one, the
+# way a sourced file behaved.
+cfg() {
+  local v first last
+  v=$(sed -n "s/^[[:space:]]*$1=//p" "$CONFIG" | tail -1)
+  v=${v%$'\r'}
+  # One matching pair of surrounding quotes, single or double, removed. Written
+  # out longhand rather than as a `case` glob because the pattern for a literal
+  # double quote inside a single-quoted case arm is unreadable and easy to get
+  # subtly wrong.
+  if [ ${#v} -ge 2 ]; then
+    first=${v:0:1}
+    last=${v: -1}
+    if [ "$first" = "$last" ] && { [ "$first" = "'" ] || [ "$first" = '"' ]; }; then
+      v=${v:1:${#v}-2}
+    fi
+  fi
+  printf '%s' "$v"
+}
+
+# Environment first, file second — so a one-off verification run can supply a
+# credential without writing it to disk, and the file stays authoritative for
+# the unit, which has no environment at all.
+GH_REPO=${GH_REPO:-$(cfg GH_REPO)}
+GH_TOKEN=${GH_TOKEN:-$(cfg GH_TOKEN)}
+COOLIFY_URL=${COOLIFY_URL:-$(cfg COOLIFY_URL)}
+COOLIFY_TOKEN=${COOLIFY_TOKEN:-$(cfg COOLIFY_TOKEN)}
+APP_INGEST=${APP_INGEST:-$(cfg APP_INGEST)}
+APP_DASHBOARD=${APP_DASHBOARD:-$(cfg APP_DASHBOARD)}
+APP_BOT=${APP_BOT:-$(cfg APP_BOT)}
+EXPECT_ENV_NAME=${EXPECT_ENV_NAME:-$(cfg EXPECT_ENV_NAME)}
+DB_CONTAINER=${DB_CONTAINER:-$(cfg DB_CONTAINER)}
+BRANCH=${BRANCH:-$(cfg BRANCH)}
+REQUIRED_JOB=${REQUIRED_JOB:-$(cfg REQUIRED_JOB)}
+PGUSER=${PGUSER:-$(cfg PGUSER)}
+PGDATABASE=${PGDATABASE:-$(cfg PGDATABASE)}
+DEPLOY_TIMEOUT=${DEPLOY_TIMEOUT:-$(cfg DEPLOY_TIMEOUT)}
+HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-$(cfg HEALTH_TIMEOUT)}
+POLL_SECS=${POLL_SECS:-$(cfg POLL_SECS)}
+BOT_HEARTBEAT_MAX_AGE=${BOT_HEARTBEAT_MAX_AGE:-$(cfg BOT_HEARTBEAT_MAX_AGE)}
 
 : "${GH_REPO:?GH_REPO must be set, as owner/name}"
 : "${GH_TOKEN:?GH_TOKEN must be set}"
@@ -579,7 +655,40 @@ ingest_container=$(container_for "$APP_INGEST")
 [ -n "$ingest_container" ] ||
   die "no running container for the ingest application — cannot confirm which environment this is, so not deploying"
 
+# Both sides validated against the same four names `packages/contracts/src/env.ts`
+# accepts, and neither is allowed to be something else.
+#
+# Checking only `live == expected` is not enough on its own: two matching
+# misspellings match each other. `EXPECT_ENV_NAME=stagng` against a host that
+# also says `stagng` would sail through the equality test while meaning nothing,
+# and `parseEnvName` would then refuse to boot the very containers this had
+# just approved. So the vocabulary is checked before the comparison.
+env_is_known() {
+  case "$1" in
+    local | test | staging | production) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if ! env_is_known "$EXPECT_ENV_NAME"; then
+  die "EXPECT_ENV_NAME=«${EXPECT_ENV_NAME}» is not one of: local, test, staging, production"
+fi
+
 live_env=$(env_of "$ingest_container" ENV_NAME)
+
+if [ -z "$live_env" ]; then
+  # Unset is its own message. «expected staging, got nothing» reads like a
+  # mismatch; it is a container that would not have booted at all, because
+  # `parseEnvName` throws on undefined rather than defaulting.
+  log "REFUSING: the running ingest container reports no ENV_NAME at all. Not deploying anything."
+  exit 0
+fi
+
+if ! env_is_known "$live_env"; then
+  log "REFUSING: this host reports ENV_NAME=«${live_env}», which is not one of: local, test, staging, production. Not deploying anything."
+  exit 0
+fi
+
 if [ "$live_env" != "$EXPECT_ENV_NAME" ]; then
   # NOT recorded as rejected: this is a property of the host, not of the sha,
   # and the moment somebody fixes the mismatch every waiting commit is eligible.
@@ -607,6 +716,12 @@ log "environment confirmed: ENV_NAME=${live_env}"
 # idiom `deploy/restore-drill.sh` already uses, and the column is `name` —
 # checked against the running database, not assumed.
 psql_() { docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 -qtA "$@"; }
+
+# How many processes hold the bot's polling lock. Empty rather than an error if
+# the database cannot be asked, so the caller treats «cannot tell» as «not one».
+bot_lock_holders() {
+  psql_ -c "SELECT count(DISTINCT pid) FROM pg_locks WHERE locktype = 'advisory' AND granted AND classid = 1399324672" 2>/dev/null || printf ''
+}
 
 applied=$(psql_ -c 'SELECT name FROM schema_migrations ORDER BY name' 2>/dev/null) ||
   die "could not read schema_migrations out of ${DB_CONTAINER}"
@@ -868,15 +983,33 @@ health_check() { # name uuid sha
           fi
           ;;
         bot)
-          # Exactly one, and its heartbeat is fresh. The image's own HEALTHCHECK
-          # is the heartbeat test (Dockerfile:186), so `healthy` here means the
-          # poll loop touched the file inside BOT_HEARTBEAT_MAX_AGE seconds.
-          local n
+          # Three separate claims, and the third is the one that matters.
+          #
+          #   containers   how many are up. Cheap, and wrong on its own: during
+          #                a deploy Coolify starts the new one before stopping
+          #                the old, so two containers is a normal transient.
+          #   healthy      the image's own HEALTHCHECK (Dockerfile:186), which
+          #                for the bot is the heartbeat file's age.
+          #   lock holders `pg_advisory_lock` holders in Postgres. THIS is what
+          #                «exactly one poller» means. A container can be up and
+          #                healthy while blocked on the lock and polling nothing;
+          #                it can also be mid-exit while still holding it.
+          #
+          # 1399324672 is 0x5368_0000 — `BOT_LOCK_NAMESPACE` in
+          # `apps/bot/src/singleton.ts`, read out of the code rather than
+          # assumed. One granted holder is one poller for this token. Two means
+          # a deploy overlapped and Telegram is handing updates to a container
+          # that is about to die; zero means nothing is polling, however healthy
+          # the container looks.
+          local n holders
           n=$(docker ps --filter "name=^${uuid}-" --format '{{.Names}}' | wc -l)
+          holders=$(bot_lock_holders)
           if [ "$n" -ne 1 ]; then
-            log "${name}: ${n} containers polling — waiting for the singleton lock to settle"
+            log "${name}: ${n} containers up — waiting for the singleton lock to settle"
+          elif [ "$holders" != '1' ]; then
+            log "${name}: ${holders:-no} advisory-lock holder(s) — waiting for exactly one poller"
           elif [ "$(docker inspect "$c" --format '{{.State.Health.Status}}' 2>/dev/null)" = 'healthy' ]; then
-            log "${name}: exactly one instance, heartbeat fresher than ${BOT_HEARTBEAT_MAX_AGE}s, SOURCE_COMMIT=${sha:0:12}"
+            log "${name}: exactly one poller holds the lock, heartbeat fresher than ${BOT_HEARTBEAT_MAX_AGE}s, SOURCE_COMMIT=${sha:0:12}"
             return 0
           fi
           ;;

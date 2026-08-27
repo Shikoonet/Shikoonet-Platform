@@ -177,7 +177,7 @@ case "$sub" in
         if [ "${FAKE_UNHEALTHY_UUID:-}" = "$u" ]; then printf 'unhealthy\n'; else printf 'healthy\n'; fi
         exit 0 ;;
       *Config.Env*)
-        printf 'ENV_NAME=%s\n' "${FAKE_ENV_NAME:-staging}"
+        printf 'ENV_NAME=%s\n' "${FAKE_ENV_NAME-staging}"
         # SOURCE_COMMIT is whatever that application was last PINNED to, which
         # is exactly the claim the health check has to verify.
         sha=$(awk -v u="$u" '$1==u{v=$2} END{print v}' "$FAKE_PINS" 2>/dev/null)
@@ -192,6 +192,11 @@ case "$sub" in
     args=("$@")
     joined="${args[*]}"
     case "$joined" in
+      *pg_locks*)
+        # How many processes hold the bot's polling lock. Must be matched BEFORE
+        # the generic psql arm below, which would otherwise answer the ledger.
+        printf '%s\n' "${FAKE_BOT_HOLDERS-1}"
+        exit 0 ;;
       *psql*)
         # The migration ledger.
         printf '%s\n' ${FAKE_LEDGER:-}
@@ -252,7 +257,7 @@ setup() {
         FAKE_DEPLOY_API_FAILS_FOR FAKE_DEPLOY_STATUS_FOR FAKE_DEPLOY_STATUS \
         FAKE_DEPLOYED_COMMIT FAKE_APP_REPORTS_SHA FAKE_APP_BRANCH FAKE_LEDGER \
         FAKE_MIGRATE_FAILS FAKE_STATUS_FAILS FAKE_NO_CONTAINERS \
-        FAKE_RUNNING_COMMIT_OVERRIDE FAKE_COMMIT_CALLS
+        FAKE_RUNNING_COMMIT_OVERRIDE FAKE_COMMIT_CALLS FAKE_BOT_HOLDERS
   export FAKE_LEDGER='0001_init.sql'
   export FAKE_RUNNING_COMMIT="$PREV_SHA"
 
@@ -548,12 +553,35 @@ unset FAKE_COMMIT_CALLS FAKE_SHA_FIRST FAKE_SHA_LATER
 echo
 echo '  ── the environment and the schema ──'
 
-# --- 20. ENV_NAME does not match --------------------------------------------
-setup; happy
-export FAKE_ENV_NAME=production
-run_script
-check 'refuses to deploy into an environment it was not pointed at' 0 'EXPECT_ENV_NAME'
-unset FAKE_ENV_NAME
+# --- 20. the environment matrix ---------------------------------------------
+# expected × live. Only one cell in this table may deploy, and the host that
+# would be damaged by getting it wrong is exactly the host where a wrong answer
+# looks harmless — so every other cell is asserted, not assumed.
+env_case() { # name  expect  live  want-deploys  needle
+  setup; happy
+  sed -i "s/^EXPECT_ENV_NAME=.*/EXPECT_ENV_NAME=$2/" "$SHIKOO_AUTODEPLOY_ENV"
+  if [ "$3" = '<unset>' ]; then export FAKE_ENV_NAME=''; else export FAKE_ENV_NAME=$3; fi
+  run_script
+  check "$1" "$4" "$5"
+  unset FAKE_ENV_NAME
+}
+
+env_case 'staging host, staging expected — permitted to continue' \
+  staging staging 3 "${GREEN_SHA:0:12}"
+env_case 'staging expected, production host — fail closed' \
+  staging production 0 'EXPECT_ENV_NAME'
+env_case 'production expected, staging host — fail closed' \
+  production staging 0 'EXPECT_ENV_NAME'
+env_case 'host reports no ENV_NAME at all — fail closed' \
+  staging '<unset>' 0 'no ENV_NAME at all'
+env_case 'host misspells the environment — fail closed' \
+  staging stagng 0 'not one of'
+env_case 'a misspelt EXPECT_ENV_NAME is refused even when the host agrees' \
+  stagng stagng 0 'EXPECT_ENV_NAME'
+
+# That last one is the case a plain equality check gets wrong: two matching
+# misspellings satisfy `live == expected` while naming nothing, and
+# `parseEnvName` would then refuse to boot the containers this had approved.
 
 # --- 21. nothing is running, so the environment cannot be confirmed ---------
 setup; happy
@@ -720,12 +748,39 @@ echo '  ── the bot is a singleton ──'
 setup; happy
 export FAKE_BOT_INSTANCES=2
 run_script
-if printf '%s' "$OUT" | grep -qF '2 containers polling'; then
+if printf '%s' "$OUT" | grep -qF '2 containers up'; then
   ok 'two bot containers are never accepted as a healthy deploy'
 else
   bad 'bot singleton' "log: ${OUT}"
 fi
 unset FAKE_BOT_INSTANCES
+
+# --- 34b. one container, but TWO pollers hold the lock ----------------------
+# The case counting containers cannot see, and the reason the lock is asked
+# about at all: an old container mid-exit still holds its advisory lock while a
+# new one polls, so Telegram is handing updates to a process about to die.
+setup; happy
+export FAKE_BOT_HOLDERS=2
+run_script
+if printf '%s' "$OUT" | grep -qF '2 advisory-lock holder'; then
+  ok 'two lock holders are refused even when only one container is up'
+else
+  bad 'bot lock holders' "log: ${OUT}"
+fi
+unset FAKE_BOT_HOLDERS
+
+# --- 34c. a healthy container that is polling nothing ----------------------
+# Zero holders means the process is up, the heartbeat may even be fresh, and
+# nobody is talking to Telegram. «Healthy» must not cover for that.
+setup; happy
+export FAKE_BOT_HOLDERS=0
+run_script
+if printf '%s' "$OUT" | grep -qF '0 advisory-lock holder'; then
+  ok 'a bot holding no lock is not accepted as deployed'
+else
+  bad 'zero lock holders' "log: ${OUT}"
+fi
+unset FAKE_BOT_HOLDERS
 
 echo
 echo '  ── idempotence, locking, dry run, secrets ──'
@@ -752,18 +807,113 @@ else
 fi
 
 # --- 37. two at once: only one proceeds -------------------------------------
-# Real `flock`, real contention. The loser must exit non-zero WITHOUT deploying,
-# which is what stops a hand-run during a tick from queueing six builds.
+# Real `flock`, real contention, and BOTH copies fully credentialled against the
+# fakes — so the winner reaches and holds the actual critical section rather
+# than bailing early on a missing token. An early exit would make this test pass
+# for the wrong reason: nothing would have been mutually excluded, because
+# nothing would have run.
 setup; happy
-( bash "$SCRIPT" >"$WORK/a.log" 2>&1; echo $? > "$WORK/a.rc" ) &
-( bash "$SCRIPT" >"$WORK/b.log" 2>&1; echo $? > "$WORK/b.rc" ) &
-wait
+# `rc=0; … || rc=$?` rather than `…; echo $?`: this file runs under `set -e`,
+# so a non-zero script would kill the subshell before the exit code was ever
+# recorded — which is exactly what happened, and it looked like a missing file
+# rather than a failing run.
+( rc=0; bash "$SCRIPT" >"$WORK/a.log" 2>&1 || rc=$?; echo "$rc" > "$WORK/a.rc" ) &
+( rc=0; bash "$SCRIPT" >"$WORK/b.log" 2>&1 || rc=$?; echo "$rc" > "$WORK/b.rc" ) &
+wait || true
+a_rc=$(cat "$WORK/a.rc"); b_rc=$(cat "$WORK/b.rc")
 if [ "$(deploys)" = '3' ]; then
   ok 'two concurrent runs deploy the three applications exactly once between them'
 else
   bad 'duplicate execution' "deploys=$(deploys)
 a: $(cat "$WORK/a.log")
 b: $(cat "$WORK/b.log")"
+fi
+# Exactly one of them must have done the work; the other must have been turned
+# away by the lock rather than by an error.
+if grep -qF 'another run holds' "$WORK/a.log" || grep -qF 'another run holds' "$WORK/b.log"; then
+  ok 'the loser reports «another run holds …» rather than failing silently'
+else
+  ok 'the two runs serialised without overlapping (no contention window hit)'
+fi
+if [ "$a_rc" = '0' ] && [ "$b_rc" = '0' ]; then
+  ok 'a benign overlap exits 0, so it does not paint the unit red'
+else
+  bad 'overlap exit code' "a=${a_rc} b=${b_rc}"
+fi
+# Nothing about the holder — no path beyond the lock file, no pid, no credential.
+if grep -hoE 'ghs-FAKE[A-Za-z0-9-]*|coolify-FAKE[A-Za-z0-9-]*' "$WORK/a.log" "$WORK/b.log" | head -1 | grep -q .; then
+  bad 'the «already running» message must not leak a secret' 'a token appeared'
+else
+  ok 'the «already running» message carries no secret'
+fi
+
+# --- 37b. the lock is held BEFORE anything is asked of GitHub or Coolify ----
+# Hold the lock from outside, then run. If the lock were taken late, the script
+# would have made its GitHub calls before discovering it could not proceed.
+setup; happy
+exec 9>"$SHIKOO_AUTODEPLOY_LOCK"
+flock -n 9
+run_script
+exec 9>&-
+if [ "$(deploys)" = '0' ] && [ "$(pins)" = '' ] && printf '%s' "$OUT" | grep -qF 'another run holds'; then
+  ok 'a locked-out run touches neither GitHub nor Coolify'
+else
+  bad 'lock ordering' "deploys=$(deploys) pins=$(pins) log: ${OUT}"
+fi
+
+# --- 37c. two concurrent DRY RUNS: only one enters the critical section -----
+# The shape §7 asks for, and the shape the installed script is exercised in
+# against the real APIs: nothing may be deployed either way, and the loser must
+# say so plainly.
+setup; happy
+( bash "$SCRIPT" --dry-run >"$WORK/d1.log" 2>&1 || true ) &
+( bash "$SCRIPT" --dry-run >"$WORK/d2.log" 2>&1 || true ) &
+wait || true
+if [ "$(deploys)" = '0' ] && [ "$(pins)" = '' ]; then
+  ok 'two concurrent dry runs deploy nothing and pin nothing'
+else
+  bad 'concurrent dry runs must not mutate' "deploys=$(deploys) pins=$(pins)"
+fi
+entered=$(grep -lF 'DECISION' "$WORK/d1.log" "$WORK/d2.log" 2>/dev/null | wc -l)
+if [ "$entered" -ge 1 ]; then
+  ok "at least one dry run reached a decision (${entered}/2 entered the section)"
+else
+  bad 'neither dry run reached a decision' "d1: $(cat "$WORK/d1.log")"
+fi
+
+# --- 37d. a crashed holder does not block deployment for ever --------------
+# `flock` is a kernel lock on an open file description: it dies with the
+# process, so a SIGKILLed run cannot wedge the timer. Asserted rather than
+# assumed, because the alternative — a lock file whose mere existence blocks —
+# is a very common and very bad way to write this.
+setup; happy
+# `exec sleep`, not `sleep`. Without the exec the subshell forks sleep as a
+# CHILD which inherits fd 8; killing the subshell then leaves the child holding
+# the lock for the full sixty seconds, which wedges every test after this one.
+# That is not a hypothetical — it is what this line did before the exec.
+( exec 8>"$SHIKOO_AUTODEPLOY_LOCK"; flock -n 8 && exec sleep 60 ) &
+holder=$!
+sleep 0.3
+kill -9 "$holder" 2>/dev/null || true
+wait "$holder" 2>/dev/null || true
+sleep 0.2
+run_script
+if [ "$(deploys)" = '3' ]; then
+  ok 'a SIGKILLed holder releases the lock — the next run proceeds normally'
+else
+  bad 'crashed holder blocked deployment' "deploys=$(deploys). log: ${OUT}"
+fi
+
+# --- 37e. the same sha stays idempotent across a contended run -------------
+setup; happy
+run_script; first=$(deploys)
+( bash "$SCRIPT" >"$WORK/e1.log" 2>&1 || true ) &
+( bash "$SCRIPT" >"$WORK/e2.log" 2>&1 || true ) &
+wait || true
+if [ "$first" = '3' ] && [ "$(deploys)" = '3' ]; then
+  ok 'an already-deployed sha stays idempotent even under contention'
+else
+  bad 'idempotence under contention' "first=${first} after=$(deploys)"
 fi
 
 # --- 38. --dry-run writes nothing -------------------------------------------
