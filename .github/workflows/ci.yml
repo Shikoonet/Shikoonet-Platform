@@ -1,12 +1,52 @@
 name: CI
 
+# Four parallel jobs, each one cheap to fix in isolation:
+#
+#   lint           fast feedback — typecheck + eslint, no database
+#   gate           the rest of what a container at boot will refuse: schema,
+#                  unit + integration tests, image build, drift detection
+#   e2e            the browser walk against a real server (Playwright)
+#   workflows-lint the CI files themselves, so the gate that gates the gate
+#                  cannot drift either
+#
+# All four are required for merge to main. CodeRabbit is the reviewer on top
+# of them: it reads `.coderabbit.yaml`, comments, and is not one of the four.
+# Branch protection cannot enforce any of this on this repo (private, free
+# plan), so the four names are stable for the day it can — see
+# `deploy/README.md` § «CI/CD».
+
 on:
   push:
     branches: [main]
   pull_request:
 
 jobs:
+  # -----------------------------------------------------------------------
+  # The fastest feedback the run can give. Runs first, in seconds, and on
+  # every push so a wrong import does not have to wait for the database.
+  # -----------------------------------------------------------------------
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+
+  # -----------------------------------------------------------------------
+  # Everything else a running container depends on, behind one job so it
+  # shares the database the suite needs. Image build is here for the same
+  # reason — it is what a deployed artifact will look like, not what
+  # TypeScript can see.
+  # -----------------------------------------------------------------------
   gate:
+    name: gate
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -22,16 +62,12 @@ jobs:
       DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
     steps:
       - uses: actions/checkout@v4
-      # No `version:` here — action-setup v4 errors out if it is given one *and*
-      # package.json has `packageManager`. That field is the single source.
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm lint
 
       # Before the tests, not after: @shikoo/db runs against a real database,
       # including a check that every hub SQL statement parses against this
@@ -116,3 +152,105 @@ jobs:
           out=$(docker run --rm --network host -e SERVICE=bot -e DATABASE_URL="$behind" shikoo-ci 2>&1 || true)
           echo "$out"
           echo "$out" | grep -q 'refusing to start'
+
+  # -----------------------------------------------------------------------
+  # The browser walk against a real server and a real SPA. The unit suite
+  # has covered the dashboard-worker routes for months; this one proves the
+  # SPA itself wires to them, with the cookies, the redirects and the
+  # keyboard the suite cannot fake.
+  #
+  # Needs the schema applied and the simulation seeded (`pnpm sim seed:sim`),
+  # because global-setup.ts grants a role to the operator the browser signs
+  # in as — the failure on an empty database is a flat 403 on every page,
+  # which reads as a broken panel rather than as a missing fixture. See
+  # `memory/e2e-needs-sim-seed`.
+  # -----------------------------------------------------------------------
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: shikoo_test
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ['5432:5432']
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
+      # `playwright.config.ts` reads sim/.env.local; the global setup and the
+      # panel server both consult it for TEST_ACCESS_USER. The file is created
+      # below, on this runner, with the same DATABASE_URL the service carries.
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # The simulation environment the e2e suite was written against:
+      # schema up writes the ledger, seed:sim fills the deterministic fixture
+      # the specs assert on, and the env file is what playwright.config.ts
+      # and global-setup.ts both reach for.
+      - name: Apply schema
+        run: pnpm --filter @shikoo/db schema up
+      - name: Seed the simulation database
+        run: pnpm --filter @shikoo/seed seed:sim
+      - name: Write sim/.env.local
+        run: |
+          printf 'DATABASE_URL=%s\nTEST_ACCESS_USER=ci-e2e@shikoo.local\n' "$DATABASE_URL" > sim/.env.local
+
+      # The Playwright browser — the suite asserts on real renders, not a
+      # headless double.
+      - name: Install Playwright browsers
+        run: pnpm --filter @shikoo/dashboard exec playwright install --with-deps chromium
+
+      # Build the SPA the dashboard-worker serves at `/admin`. `e2e` already
+      # does this in its script, but doing it here means a failure here shows
+      # up in the job log rather than swallowed by playwright.
+      - name: Build the admin SPA
+        run: pnpm --filter @shikoo/admin-web build
+
+      - name: Run the e2e suite
+        run: pnpm --filter @shikoo/dashboard e2e
+
+  # -----------------------------------------------------------------------
+  # The CI files themselves, so the gate that gates the gate cannot drift.
+  # `actionlint` is the only thing that reads workflow YAML with the
+  # semantics GitHub itself applies at run time.
+  # -----------------------------------------------------------------------
+  workflows-lint:
+    name: workflows-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin to a commit sha, not a tag
+        # `docker.io/rhysd/actionlint:1.7.7` would be the same rule applied to
+        # a Docker action; this is the standalone binary. The version is locked
+        # by `rhysd/actionlint`'s release process.
+        uses: rhysd/actionlint@v1.7.7
+        with:
+          # shellcheck is not on this runner and would fail every script
+          # block; the rest of the rules apply.
+          ignore: 'SC'
+
+# CodeRabbit reviews pull requests as a non-blocking reviewer.
+#
+# `.coderabbit.yaml` is the configuration; the GitHub App reads it on every
+# PR. It comments, it does not gate — the four jobs above are what a merge
+# to main is gated on. The path instructions in that file name the rules
+# this repository has that a generic reviewer cannot guess: integer IRR,
+# append-only audit, no raw SMS body in any log, ENV_NAME required, the
+# migration ledger as history, the deployment digest as identity.
+#
+# Until branch protection can enforce the four required checks on this
+# repo (private, free plan, returns 403 today), a successful `lint` +
+# `gate` + `e2e` + `workflows-lint` is the closest thing to a gate there
+# is. Keep all four passing before merging, and keep CodeRabbit's
+# comments answered even though nothing blocks on them — they are the
+# only review that knows the rules.
