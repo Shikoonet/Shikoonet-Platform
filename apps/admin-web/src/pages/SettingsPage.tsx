@@ -14,6 +14,13 @@
 
 import { useEffect, useState } from 'react';
 import { api, ApiError, type ResellerRequestRow, type SettingRow } from '../api.js';
+import {
+  checkPlanLabel,
+  PLAN_LABEL_PRESETS,
+  PLAN_LABEL_SETTING,
+  PLAN_LABEL_TOKENS,
+  renderPlanLabel,
+} from '@shikoo/contracts';
 import { count, dateTime } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -175,12 +182,17 @@ export function SettingsPage() {
                           {r.isSet ? 'ثبت شده' : 'ندارد'}
                         </span>
                       ) : editing === id ? (
-                        <input
-                          className="form-control ltr"
-                          type="text"
-                          value={draft}
-                          onChange={(e) => setDraft(e.target.value)}
-                        />
+                        <>
+                          <input
+                            className="form-control ltr"
+                            type="text"
+                            value={draft}
+                            onChange={(e) => setDraft(e.target.value)}
+                          />
+                          {r.key === PLAN_LABEL_SETTING.key && (
+                            <PlanLabelHelp draft={draft} onPick={setDraft} />
+                          )}
+                        </>
                       ) : (
                         <span className="ltr">{String(r.value ?? '—')}</span>
                       )}
@@ -387,5 +399,80 @@ export function RequestsPage() {
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * The one setting on this screen whose value has a grammar.
+ *
+ * This page is a generic key/value table and has nowhere to document one, so
+ * the help arrives beside the field it belongs to and nowhere else. Without it
+ * an operator has to know that `{duration}` exists before they can type it,
+ * which is the same as the feature not being there.
+ *
+ * The preview uses sample values rather than a real plan on purpose: the point
+ * is the SHAPE of the label, and a preview that quietly picked the first plan
+ * in the shop would change meaning depending on which plan that happened to be.
+ */
+function PlanLabelHelp({
+  draft,
+  onPick,
+}: {
+  draft: string;
+  onPick: (next: string) => void;
+}) {
+  const problem = draft.trim() === '' ? null : checkPlanLabel(draft);
+  const sample = {
+    name: '۱ ماهه · نامحدود',
+    badge: '⭐ ویژه',
+    duration: '1 ماهه',
+    volume: '100 گیگ',
+    users: 'چند کاربره',
+    price: '350,000 تومان',
+  };
+
+  return (
+    <div style={{ marginBlockStart: 6 }}>
+      <div className="page-head__sub">
+        خالی یعنی همان چیزی که همیشه بوده. فیلدها:
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBlockStart: 4 }}>
+        {Object.entries(PLAN_LABEL_TOKENS).map(([token, hint]) => (
+          <button
+            key={token}
+            type="button"
+            className="btn btn-sm ltr"
+            title={hint}
+            onClick={() => onPick(`${draft}{${token}}`)}
+          >
+            {`{${token}}`}
+          </button>
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBlockStart: 4 }}>
+        {PLAN_LABEL_PRESETS.map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            className="btn btn-sm ltr"
+            title="این قالب را بگذار"
+            onClick={() => onPick(preset)}
+          >
+            {renderPlanLabel(preset, sample)}
+          </button>
+        ))}
+      </div>
+      {problem ? (
+        <div className="alert alert-error" style={{ marginBlockStart: 6 }}>
+          {problem.message}
+        </div>
+      ) : (
+        draft.trim() !== '' && (
+          <div className="page-head__sub" style={{ marginBlockStart: 6 }}>
+            در ربات: <strong>{renderPlanLabel(draft, sample)}</strong>
+          </div>
+        )
+      )}
+    </div>
   );
 }

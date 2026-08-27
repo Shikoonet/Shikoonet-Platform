@@ -161,6 +161,75 @@ describe('settings', () => {
     expect(isSecretKey('APIKey')).toBe(true);
   });
 
+  /**
+   * The row `0035` inserts, put back.
+   *
+   * It is real data rather than schema, and `apps/bot/test/shop-settings.test.ts`
+   * clears every key in `SHOP_SETTING_KEYS` to prove the defaults — this one
+   * included, now that it is one of them. Seeding here rather than depending on
+   * the migration is the same choice `seedPaySettings` makes above.
+   */
+  async function seedTemplateRow(): Promise<void> {
+    await baseEnv.DB.prepare(
+      `INSERT INTO settings (scope, key, value) VALUES ('shop', 'plan_button_template', '""'::jsonb)
+       ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+    ).run();
+  }
+
+  it('refuses a plan-button template that names a field the bot does not have', async () => {
+    await seedTemplateRow();
+    // Saved, this draws the literal characters «{prise}» on a button — or, on
+    // the bot's own guard, is ignored entirely and the operator sees the screen
+    // not change with nothing telling them why. The refusal is the only place
+    // that answer can come from, so it has to happen here.
+    const res = await app.request(
+      '/api/v1/admin/settings',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          scope: 'shop',
+          key: 'plan_button_template',
+          value: '{duration} | {prise}',
+        }),
+      },
+      envAs(ADMIN),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; tokens: Array<{ name: string }> };
+    expect(body.error).toBe('invalid_template');
+    // The refusal carries the field list, because the settings screen is a
+    // generic key/value editor with nowhere to document a grammar.
+    expect(body.tokens.map((t) => t.name)).toContain('price');
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT value::text AS v FROM settings WHERE scope = 'shop' AND key = 'plan_button_template'`,
+    ).first<{ v: string }>();
+    expect(row!.v).not.toContain('prise');
+  });
+
+  it('accepts a valid plan-button template, and accepts emptying it again', async () => {
+    await seedTemplateRow();
+    const save = (value: string) =>
+      app.request(
+        '/api/v1/admin/settings',
+        {
+          method: 'POST',
+          body: JSON.stringify({ scope: 'shop', key: 'plan_button_template', value }),
+        },
+        envAs(ADMIN),
+      );
+
+    expect((await save('{duration} | {volume} | {price}')).status).toBe(200);
+    const set = await baseEnv.DB.prepare(
+      `SELECT value::text AS v FROM settings WHERE scope = 'shop' AND key = 'plan_button_template'`,
+    ).first<{ v: string }>();
+    expect(set!.v).toContain('{duration}');
+
+    // Empty is how a shop goes back to the label the bot has always drawn, so
+    // it is a legitimate save rather than a failed validation.
+    expect((await save('')).status).toBe(200);
+  });
+
   it('refuses to write a secret key even for an admin', async () => {
     await seedPaySettings();
     const res = await app.request(
