@@ -62,8 +62,15 @@ const WITHHELD = [
   'رویدادها',
 ];
 
-/** What is left of twenty-four once those nine are gone. */
-const OFFERED_TO_A_READER = 15;
+/**
+ * What is left of twenty-six once those nine are gone.
+ *
+ * Fifteen of twenty-four until 2026-08-27. «محصولات» and «دسته‌بندی‌ها» are both
+ * in `READABLE_BY_READER`, so both new sections raise this count rather than the
+ * withheld list — a reader may see what the shop sells and how it is arranged,
+ * and every write on those screens already answers 403 for this role.
+ */
+const OFFERED_TO_A_READER = 17;
 
 async function signInAsReader(page: Page): Promise<void> {
   await page.goto(`${BASE}/admin/`);
@@ -73,7 +80,7 @@ async function signInAsReader(page: Page): Promise<void> {
   await expect(page.locator('.sidebar-link.active')).toBeVisible();
 }
 
-test('a reader is offered fifteen sections of twenty-four, and the count is read off the screen', async ({
+test('a reader is offered seventeen sections of twenty-six, and the count is read off the screen', async ({
   page,
 }) => {
   await signInAsReader(page);

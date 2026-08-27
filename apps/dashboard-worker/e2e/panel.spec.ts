@@ -35,11 +35,16 @@ test('every section in the sidebar opens under one session', async ({ page }) =>
   await expect(page.locator('.sidebar-link').first()).toBeVisible();
 
   const labels = await page.locator('.sidebar-link').allInnerTexts();
-  // Seventeen shop sections plus the six that came from the payment hub. A
-  // number rather than a range: if the sidebar quietly loses a group, the walk
-  // below would still pass on whatever was left. The seventeenth is «ارسال
-  // گروهی», which the bot could do and this panel could not.
-  expect(labels.length).toBe(24);
+  // Sixteen shop sections, six from the payment hub, four for the bot. A number
+  // rather than a range: if the sidebar quietly loses a group, the walk below
+  // would still pass on whatever was left.
+  //
+  // Twenty-four until 2026-08-27, when «محصولات» and «دسته‌بندی‌ها» joined it.
+  // Worth stating why this is bumped by hand rather than read off `NAV`: a
+  // count derived from the module that draws the sidebar agrees with itself no
+  // matter what it draws, which is the failure `CLAUDE.md` rule 6 is about. The
+  // outside truth here is that a person decided there are twenty-six sections.
+  expect(labels.length).toBe(26);
 
   for (const label of labels) {
     const name = label.trim();

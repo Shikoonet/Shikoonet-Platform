@@ -215,16 +215,33 @@ test('a service with no panel is listed and says it cannot be sold', async ({ pa
   // The bot INNER JOINs the panel, so such a service is invisible in the shop.
   // Hiding it here too would make it invisible in the one place it can be fixed.
   const name = 'zz-e2e-orphan';
-  await withDb((d) =>
-    d
+  // Its own category, created and removed with it.
+  //
+  // `products.category_id` became NOT NULL in `0032_catalog_categories_and_rows.sql`,
+  // and this fixture predates that — it inserted a product with no category and
+  // died on the constraint, which reads as "the catalogue screen is broken"
+  // rather than as "the fixture is". Borrowing a seeded category instead would
+  // work today and break on the day somebody re-seeds a shop without one; the
+  // rest of this test already creates and deletes what it needs.
+  await withDb(async (d) => {
+    await d
       .prepare(
-        `INSERT INTO products (code, name, kind, provider_id, status)
-         VALUES (?1, ?1, 'vpn', NULL, 'ACTIVE')
+        `INSERT INTO product_categories (name, active, sort_order)
+         VALUES (?1, true, 999)
+         ON CONFLICT (name) DO NOTHING`,
+      )
+      .bind(name)
+      .run();
+    await d
+      .prepare(
+        `INSERT INTO products (code, name, kind, provider_id, status, category_id)
+         VALUES (?1, ?1, 'vpn', NULL, 'ACTIVE',
+                 (SELECT id FROM product_categories WHERE name = ?1))
          ON CONFLICT (code) DO NOTHING`,
       )
       .bind(name)
-      .run(),
-  );
+      .run();
+  });
   try {
     await page.goto('/admin/catalog');
     await page.locator('#cat-q').fill(name);
@@ -234,6 +251,9 @@ test('a service with no panel is listed and says it cannot be sold', async ({ pa
     await expect(row).toBeVisible();
     await expect(row).toContainText('بدون پنل');
   } finally {
-    await withDb((d) => d.prepare(`DELETE FROM products WHERE code = ?1`).bind(name).run());
+    await withDb(async (d) => {
+      await d.prepare(`DELETE FROM products WHERE code = ?1`).bind(name).run();
+      await d.prepare(`DELETE FROM product_categories WHERE name = ?1`).bind(name).run();
+    });
   }
 });
