@@ -1,49 +1,52 @@
 /**
- * Coverage thresholds, as a ratchet.
+ * Coverage floors for the packages whose branches decide money and access.
  *
- * ## What these numbers are
+ * ## These are FLOORS, not a ratchet
  *
- * They are the measured baseline on 2026-08-27, rounded DOWN to the nearest
- * whole percent and then given one point of slack. They are not aspirations
- * and they are not round numbers somebody liked the look of: a threshold
- * above the current reality fails the build on the day it is introduced, and
- * one far below it never fails at all.
+ * An earlier version of this file called them a ratchet. They are not one,
+ * and the difference is worth being exact about, because «ratchet» is a
+ * promise about behaviour that nothing here implements.
  *
- * Their only job is to stop coverage falling. Raising them is a deliberate
- * act, and the right time to do it is when a change has just pushed the real
- * number up — the number in this file should trail reality, never lead it.
+ * A ratchet RAISES its own floor when coverage improves — it stores the new
+ * measurement, so a later change that gives back the gain is refused. That
+ * needs somewhere to write the number: a committed baseline file the CI job
+ * updates, or a service that remembers. Neither exists here, and adding one
+ * to a repository whose gate cannot even be enforced by a branch ruleset
+ * would be building the second thing before the first works.
  *
- * ## Why branches matter more than statements here
+ * What these are is a floor with a **stated tolerance**. Each number is the
+ * measurement rounded DOWN to a whole percent, and the tolerance is the
+ * distance from that to the real figure — under one point in every case,
+ * written out below so nobody has to compute it.
  *
- * A money path is mostly branches: «is this the exact account», «is this
+ * The honest description: coverage may drift down by less than a point
+ * before the build fails. It cannot fall by two.
+ *
+ * ## Why a tolerance at all
+ *
+ * Because v8 coverage is not perfectly stable across runs. Adding a test file
+ * changes which modules the runner loads, and a module that is loaded but not
+ * exercised moves the denominator — the sms-parser branch figure moved
+ * 69.88 → 69.83 → 70.08 across three runs of this branch without anybody
+ * touching a branch. A floor set at the exact measurement fails on the run
+ * after the one that set it, and a check that fails for a reason nobody
+ * caused is a check people learn to re-run rather than read.
+ *
+ * ## Raising them
+ *
+ * By hand, in this file, in the commit that earned it. That is one line of
+ * diff and it puts the new number in front of a reviewer, which an automatic
+ * bump does not.
+ *
+ * ## Why branches carry the tight number
+ *
+ * A money path is mostly branches — «is this the exact account», «is this
  * inside the 300000ms window», «has this claim already settled». Statement
- * coverage counts the line `if (a && b)` as covered the first time it runs;
- * branch coverage asks whether both answers were tried. So for the four
- * packages that decide money, authentication, permissions and SMS content,
- * the branch floor is the one that is set close to the measured value and the
- * statement floor is set loosely.
- *
- * ## Why `packages/contracts` has no statement floor
- *
- * Its statement coverage is 2.58%, and that number is honest but useless:
- * `botTexts.ts` is a 1700-line table of default strings, and a "statement"
- * there is a property in an object literal. Nothing executes it, nothing
- * should, and a threshold over it would only ever be satisfied by writing a
- * test that reads every default back — which asserts that a data table
- * contains what a data table contains.
- *
- * The functions and branches in that package ARE logic — `checkOverride`,
- * `parseEnvName`, `groupIntoRows`, the custom-emoji escape — and those carry
- * real floors.
- *
- * ## Why this is per-package and not one global run
- *
- * A single root `vitest --coverage` would have to load eleven packages'
- * environments at once, and four of them need a Postgres with a specific
- * schema. The suite already runs `--workspace-concurrency=1` for that reason.
- * Coverage is therefore measured where it means something — the four packages
- * whose branches decide money and access — and the rest are reported without
- * a floor.
+ * coverage counts `if (a && b)` as covered the first time it runs; branch
+ * coverage asks whether both answers were tried. So the branch floor sits
+ * close to the measurement and the statement floor is deliberately loose
+ * where most uncovered statements are adapter code that only runs against a
+ * real panel.
  */
 
 /** A floor, in percent. `null` means «report it, do not gate on it». */
@@ -51,61 +54,79 @@ export interface CoverageFloor {
   statements: number | null;
   branches: number | null;
   functions: number | null;
-  /** Why this package is gated, and what the numbers were when set. */
+  /** What was measured when these were set, and why the package is gated. */
   note: string;
 }
 
+/**
+ * Measured 2026-08-27, after the OTP redaction work.
+ *
+ *                       statements   branches   functions
+ *   sms-parser             81.39       70.08      89.77
+ *   domain                 52.24       81.19      63.47
+ *   contracts               2.58       93.44      81.25
+ *
+ * Floors are those figures rounded down to a whole percent. The tolerance —
+ * the room between floor and measurement — is under one point everywhere:
+ *
+ *   sms-parser   0.39 / 0.08 / 0.77
+ *   domain       0.24 / 0.19 / 0.47
+ *   contracts       — / 0.44 / 0.25
+ */
 export const COVERAGE_FLOORS: Record<string, CoverageFloor> = {
   '@shikoo/sms-parser': {
-    // Measured 2026-08-27: statements 81.89, branches 69.88, functions 91.76.
-    statements: 78,
-    branches: 68,
-    functions: 88,
+    statements: 81,
+    branches: 70,
+    functions: 89,
     note:
-      'Every bank SMS enters the platform through here. A branch that stops ' +
-      'being taken is a bank whose format silently stopped being read, and ' +
-      'the symptom is a customer who paid and was not credited.',
+      'Every bank SMS enters the platform through here, and so does every ' +
+      'one-time password. A branch that stops being taken is either a bank ' +
+      'whose format silently stopped being read — a customer who paid and ' +
+      'was not credited — or an OTP phrasing that stopped being recognised, ' +
+      'which is a password reaching the database.',
   },
   '@shikoo/domain': {
-    // Measured 2026-08-27: statements 52.24, branches 81.19, functions 63.47.
-    //
-    // The statement number is low because the package holds the provisioning
-    // adapters, and most of `marzban.ts` only runs against a panel. The
-    // BRANCH number is the one that matters and it is high, because the
-    // decisions — scoring, windows, state transitions — are all tested.
-    statements: 50,
-    branches: 79,
-    functions: 61,
+    statements: 52,
+    branches: 81,
+    functions: 63,
     note:
       'Auto-verification, the settlement state machine, the seal and TOTP. ' +
-      'The branch floor is deliberately close to the measured value: these ' +
-      'are the conditions that decide whether money moves.',
+      'The statement figure is low because the provisioning adapters only ' +
+      'run against a real panel; the BRANCH figure is the one that matters ' +
+      'and it is high, because the decisions that move money are tested.',
   },
   '@shikoo/contracts': {
-    // Measured 2026-08-27: statements 2.58, branches 93.44, functions 81.25.
-    statements: null, // see the header — a 1700-line table of default strings
-    branches: 90,
-    functions: 78,
+    statements: null, // a 1700-line table of default strings — see below
+    branches: 93,
+    functions: 81,
     note:
       'checkOverride, parseEnvName, the custom-emoji escape and the keyboard ' +
-      'layout rules. Statements are not gated because the package is mostly ' +
-      'a data table; branches and functions are.',
+      'layout rules. Statements are NOT gated: the figure is 2.58% and that ' +
+      'is honest but useless — botTexts.ts is a table of default strings, ' +
+      'where a «statement» is a property in an object literal. A threshold ' +
+      'over it could only be met by a test asserting that a data table ' +
+      'contains what a data table contains.',
   },
 };
 
-/** The packages measured but not gated, and why. */
+/** The packages measured but not gated, and why each one is not. */
 export const COVERAGE_UNGATED: Record<string, string> = {
   '@shikoo/db':
-    'Almost every line needs a live Postgres, so the number measures whether ' +
-    'the database was up rather than whether the code is exercised.',
+    'Almost every line needs a live Postgres, so the number would measure ' +
+    'whether the database was up rather than whether the code was exercised.',
   '@shikoo/dashboard':
     'Route coverage is asserted directly by `write-roles.test.ts`, which ' +
     'enumerates every registered write route from `app.routes` — a stronger ' +
     'statement than a percentage.',
+  '@shikoo/ingest':
+    'Covered by behaviour: the vertical-slice tests post through the real ' +
+    'handler and read the resulting rows back, including `otp-persistence`.',
   '@shikoo/bot': 'Covered by behaviour: the suite drives `handleUpdate` and reads the reply.',
-  '@shikoo/admin-web': 'A browser bundle; the e2e suite is the coverage that counts.',
-  '@shikoo/seed': 'Fixture generator — its own output is asserted by `seed-probe`.',
-  '@shikoo/migrate': 'Needs the MySQL dump; see the note in the CI report.',
-  '@shikoo/database': 'Type and SQL-constant surface with no executable logic.',
-  '@shikoo/ingest': 'Covered by the vertical-slice integration tests.',
+  '@shikoo/admin-web': 'A browser bundle; the 104-scenario Playwright suite is its coverage.',
+  '@shikoo/seed': 'A fixture generator — its output is asserted by `seed-probe`.',
+  '@shikoo/migrate':
+    'Split by design: the tooling is covered by `synthetic-migration.test.ts` ' +
+    'in CI, and the ten dump-gated suites only mean anything against the real ' +
+    'dump. A single percentage over both would describe neither.',
+  '@shikoo/database': 'A type and SQL-constant surface with no executable logic.',
 };
