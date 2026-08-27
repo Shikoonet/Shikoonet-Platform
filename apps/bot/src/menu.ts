@@ -547,19 +547,22 @@ export function planDetailMenu(plan: CatalogPlan, applied?: AppliedCode | null):
       action === 'dsx' ? applied != null : action === 'dsc' ? applied == null : true,
     target: (action) =>
       action === 'buy'
-        ? // One step back is the category's list when it drew one, and the shop's
-          // first screen when it did not. A category holding a single plan is
-          // opened straight from `buy`, so sending «بازگشت» to a list of one
-          // would hand the customer a screen with one button that leads back to
-          // the screen they just left.
+        ? // One step back is the screen the customer actually came from, which
+          // since 2026-08-27 is one of three: this service's price list, the
+          // category's tier list, or the shop's first screen. The two counts
+          // mirror the two collapses — a customer never shown a list of one
+          // must not be sent «back» to a screen with a single button on it that
+          // leads where they already are.
           //
           // Re-pointed through `target` rather than by changing `MENUS`:
           // removing `buy` from this screen would make `checkLayout` reject
           // every layout a shop already saved for it, and `buildMenu` drop the
           // button — a customer with no way back.
           plan.siblings > 1
-          ? encode('cat', plan.categoryId)
-          : encode('buy')
+          ? encode('prd', plan.productId)
+          : plan.tiers > 1
+            ? encode('cat', plan.categoryId)
+            : encode('buy')
         : action === 'menu'
           ? encode('menu')
           : encode(action as 'order', plan.planId),

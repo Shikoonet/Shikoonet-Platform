@@ -74,7 +74,17 @@ async function makeCategory(label: string, sortOrder = 0): Promise<number> {
  * every «فروخته نمی‌شود» assertion pass for the wrong reason. One panel per
  * product, so a test can switch one off without touching the others.
  */
-async function makeConfigs(categoryId: number, label: string, count: number): Promise<number[]> {
+/**
+ * One SERVICE with `count` configs in it, and both ids handed back.
+ *
+ * The service id matters since 2026-08-27: the arrangement scope is a service,
+ * because that is the screen the bot draws these buttons on.
+ */
+async function makeConfigs(
+  categoryId: number,
+  label: string,
+  count: number,
+): Promise<{ serviceId: number; ids: number[] }> {
   const panel = await baseEnv.DB.prepare(
     `INSERT INTO provisioning_providers (code, name, kind, status)
      VALUES (?1, ?2, 'marzban', 'ACTIVE') RETURNING id`,
@@ -100,7 +110,7 @@ async function makeConfigs(categoryId: number, label: string, count: number): Pr
       .first<{ id: number }>();
     ids.push(Number(plan!.id));
   }
-  return ids;
+  return { serviceId: productId, ids };
 }
 
 /** `(id, row_index, sort_order)` for a set of configs, as Postgres holds them. */
@@ -152,10 +162,10 @@ describe('saving an arrangement', () => {
     // never sent. And the ids are read back and compared, because the panel
     // this replaces reorders by swapping them.
     const cat = await makeCategory('a');
-    const ids = await makeConfigs(cat, 'a', 4);
+    const { serviceId: svc, ids } = await makeConfigs(cat, 'a', 4);
 
     const reordered = [ids[3]!, ids[0]!, ids[1]!, ids[2]!];
-    const res = await post(`/api/v1/admin/catalog-layout/category:${cat}`, {
+    const res = await post(`/api/v1/admin/catalog-layout/service:${svc}`, {
       items: [
         { id: reordered[0], rowIndex: 0 },
         { id: reordered[1], rowIndex: 0 },
@@ -173,16 +183,18 @@ describe('saving an arrangement', () => {
     expect(after[reordered[3]!]).toEqual([2, 3]);
   });
 
-  it('refuses a config that belongs to another category, and leaves that category alone', async () => {
+  it('refuses a config that belongs to another service, and leaves that service alone', async () => {
     // The trust boundary. Without the scope being re-derived from Postgres,
-    // this post reorders a screen it does not address.
+    // this post reorders a screen it does not address. It reads «another
+    // service» rather than «another category» since 2026-08-27, which is the
+    // tighter of the two: two services in ONE category are now two screens.
     const mine = await makeCategory('mine');
     const theirs = await makeCategory('theirs');
-    const ours = await makeConfigs(mine, 'mine', 2);
-    const stranger = await makeConfigs(theirs, 'theirs', 2);
+    const { serviceId: mySvc, ids: ours } = await makeConfigs(mine, 'mine', 2);
+    const { ids: stranger } = await makeConfigs(theirs, 'theirs', 2);
     const before = await readPlans(stranger);
 
-    const res = await post(`/api/v1/admin/catalog-layout/category:${mine}`, {
+    const res = await post(`/api/v1/admin/catalog-layout/service:${mySvc}`, {
       items: [
         { id: ours[0], rowIndex: 0 },
         { id: ours[1], rowIndex: 0 },
@@ -203,9 +215,9 @@ describe('saving an arrangement', () => {
     // error is raised anywhere — which is why this is refused rather than
     // repaired.
     const cat = await makeCategory('partial');
-    const ids = await makeConfigs(cat, 'partial', 5);
+    const { serviceId: svc, ids } = await makeConfigs(cat, 'partial', 5);
 
-    const res = await post(`/api/v1/admin/catalog-layout/category:${cat}`, {
+    const res = await post(`/api/v1/admin/catalog-layout/service:${svc}`, {
       items: [
         { id: ids[0], rowIndex: 0 },
         { id: ids[1], rowIndex: 0 },
@@ -227,12 +239,12 @@ describe('saving an arrangement', () => {
     // config they disabled last week. If the scope were ACTIVE-only, every save
     // on a category holding one would come back MISSING_ID.
     const cat = await makeCategory('hidden');
-    const ids = await makeConfigs(cat, 'hidden', 3);
+    const { serviceId: svc, ids } = await makeConfigs(cat, 'hidden', 3);
     await baseEnv.DB.prepare(`UPDATE product_plans SET status = 'HIDDEN' WHERE id = ?1`)
       .bind(ids[1])
       .run();
 
-    const res = await post(`/api/v1/admin/catalog-layout/category:${cat}`, {
+    const res = await post(`/api/v1/admin/catalog-layout/service:${svc}`, {
       items: ids.map((id) => ({ id, rowIndex: 0 })),
     });
     expect(res.status).toBe(200);
@@ -241,8 +253,8 @@ describe('saving an arrangement', () => {
 
   it('refuses a row wider than Telegram accepts', async () => {
     const cat = await makeCategory('wide');
-    const ids = await makeConfigs(cat, 'wide', 9);
-    const res = await post(`/api/v1/admin/catalog-layout/category:${cat}`, {
+    const { serviceId: svc, ids } = await makeConfigs(cat, 'wide', 9);
+    const res = await post(`/api/v1/admin/catalog-layout/service:${svc}`, {
       items: ids.map((id) => ({ id, rowIndex: 0 })),
     });
     expect(res.status).toBe(400);
@@ -396,7 +408,7 @@ describe('the number the screens print', () => {
     // unless the negation is written `IS NOT TRUE` — and it is exactly the row
     // an operator opens this filter to find.
     const cat = await makeCategory('unsellable');
-    const live = await makeConfigs(cat, 'unsellable-live', 1);
+    const { ids: live } = await makeConfigs(cat, 'unsellable-live', 1);
     await makeConfigs(cat, 'unsellable-orphan', 1);
     await baseEnv.DB.prepare(`UPDATE products SET provider_id = NULL WHERE code = ?1`)
       .bind(`${PREFIX}unsellable-orphan`)
@@ -436,7 +448,7 @@ describe('the flat catalogue list', () => {
   it('filters by category on the server, not on the page it already sent', async () => {
     const mine = await makeCategory('filter-mine');
     const other = await makeCategory('filter-other');
-    const ours = await makeConfigs(mine, 'filter-mine', 2);
+    const { ids: ours } = await makeConfigs(mine, 'filter-mine', 2);
     await makeConfigs(other, 'filter-other', 3);
 
     const body = (await (
@@ -450,8 +462,8 @@ describe('the flat catalogue list', () => {
     // `?resellersOnly=false` is a real question — «what does an ordinary
     // customer see» — and has to be askable separately from not asking.
     const cat = await makeCategory('resellers');
-    const open = await makeConfigs(cat, 'resellers-open', 1);
-    const closed = await makeConfigs(cat, 'resellers-closed', 1);
+    const { ids: open } = await makeConfigs(cat, 'resellers-open', 1);
+    const { ids: closed } = await makeConfigs(cat, 'resellers-closed', 1);
     await baseEnv.DB.prepare(
       `UPDATE products SET resellers_only = true WHERE code = ?1`,
     )

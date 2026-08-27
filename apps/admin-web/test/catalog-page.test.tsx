@@ -54,6 +54,7 @@ function service(
       volumeGb: 10 * (i + 1),
       durationDays: 30,
       userLimit: null,
+      rowIndex: null,
       status: 'ACTIVE',
       sortOrder: i,
       ordersCount: 0,

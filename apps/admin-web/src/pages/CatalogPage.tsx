@@ -53,6 +53,7 @@ import {
   type ServiceRow,
 } from '../api.js';
 import { count, irrToToman, toman } from '../format.js';
+import { LayoutEditor } from './LayoutEditor.js';
 import { anyHosted, GroupForm, InboundCount, InboundPicker } from '../groups.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -131,6 +132,9 @@ export function CatalogPage() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
+  // One arrangement open at a time, like the config list above it: two phone
+  // previews of two different screens side by side is a way to save the wrong one.
+  const [arrangingId, setArrangingId] = useState<number | null>(null);
   const [editing, setEditing] = useState<ServiceRow | null>(null);
 
   /** Group listings per panel, filled in after the list draws. */
@@ -345,6 +349,8 @@ export function CatalogPage() {
                 open={open === service.id}
                 onToggle={() => setOpen(open === service.id ? null : service.id)}
                 onEdit={() => setEditing(service)}
+                arranging={arrangingId === service.id}
+                onArrange={() => setArrangingId(arrangingId === service.id ? null : service.id)}
                 onChanged={refresh}
               />
             ))}
@@ -536,6 +542,8 @@ function ServiceRows({
   open,
   onToggle,
   onEdit,
+  arranging,
+  onArrange,
   onChanged,
 }: {
   service: ServiceRow;
@@ -543,6 +551,8 @@ function ServiceRows({
   open: boolean;
   onToggle: () => void;
   onEdit: () => void;
+  arranging: boolean;
+  onArrange: () => void;
   onChanged: () => void;
 }) {
   return (
@@ -596,9 +606,34 @@ function ServiceRows({
             <button type="button" className="btn btn-sm" onClick={onEdit}>
               ویرایش سرویس
             </button>
+            {/* Arranging lives on the SERVICE since 2026-08-27. It was one
+                button per category, which named the screen the bot drew before
+                the service level: a category screen lists services now, and
+                the prices — the things this editor moves — are one step
+                further in, on this service's own screen. */}
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={service.configs.length < 2}
+              title={
+                service.configs.length < 2
+                  ? 'یک کانفیگ چیزی برای چیدن ندارد'
+                  : 'چیدمان کانفیگ‌های این سرویس در ربات'
+              }
+              onClick={onArrange}
+            >
+              {arranging ? 'بستن چیدمان' : 'چیدمان'}
+            </button>
           </div>
         </td>
       </tr>
+      {arranging && (
+        <tr>
+          <td colSpan={8}>
+            <ArrangeService service={service} onSaved={onChanged} />
+          </td>
+        </tr>
+      )}
       {open && (
         <tr>
           <td colSpan={8}>
@@ -2295,5 +2330,37 @@ function Flags({
         </p>
       </div>
     </>
+  );
+}
+
+/**
+ * The phone preview for ONE service's prices.
+ *
+ * Its items come from the row the page already loaded rather than from a fetch
+ * of its own: `GET /admin/catalog` returns each service with its configs, and
+ * carrying `rowIndex` out with them (added the same day this moved here) is
+ * what lets the editor open on the CURRENT arrangement instead of offering to
+ * replace it with one button per row.
+ */
+function ArrangeService({ service, onSaved }: { service: ServiceRow; onSaved: () => void }) {
+  return (
+    <LayoutEditor
+      scope={`service:${service.id}`}
+      screenText={`یکی از پلن‌های «${service.name}» را انتخاب کنید.`}
+      items={service.configs.map((cf) => ({
+        id: cf.id,
+        label: cf.name,
+        // Why a customer may never see this button. The editor draws every
+        // config including the ones the shop is not offering, and a switched-off
+        // panel takes the whole service out of the shop however healthy its
+        // prices are — so the service's own state is worth saying once per row.
+        hint:
+          cf.status === 'ACTIVE'
+            ? toman(cf.priceIrr)
+            : `${toman(cf.priceIrr)} · ${STATUS_FA[cf.status] ?? cf.status}`,
+        rowIndex: cf.rowIndex,
+      }))}
+      onSaved={onSaved}
+    />
   );
 }

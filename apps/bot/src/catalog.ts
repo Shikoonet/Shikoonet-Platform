@@ -118,11 +118,17 @@ export interface CatalogProduct {
  * `providerId` narrows it to one panel. Nothing in the shop passes it any more;
  * the `panel:` callback does, so a button in a message sent before this change
  * still opens something sensible instead of silently doing nothing.
+ *
+ * `categoryId` narrows it to one category, and THAT is what the shop asks for:
+ * a category screen lists the levels inside it. Both filters are optional and
+ * independent — a call with neither is «everything this customer may buy»,
+ * which is what `SHOP_EMPTY` is decided on.
  */
 export async function productsForUser(
   db: Db,
   userId: number,
   providerId?: number,
+  categoryId?: number,
 ): Promise<CatalogProduct[]> {
   const rows = await db
     .prepare(
@@ -130,21 +136,28 @@ export async function productsForUser(
       // and a level does not have one price. The JOIN and the GROUP BY stay —
       // they are what keeps a service with nothing sellable inside it off the
       // list, which is a rule about visibility rather than about money.
+      //
+      // `cat.active` is joined for the same reason `plansInCategory` checks it:
+      // `cat:<id>` is unsigned callback data, and a switched-off category must
+      // not become reachable by posting its number.
       `SELECT p.id                AS product_id,
               p.name              AS name,
               pr.name             AS provider_name
          FROM products p
          JOIN product_plans pl          ON pl.product_id = p.id
          JOIN provisioning_providers pr ON pr.id = p.provider_id
+         JOIN product_categories cat    ON cat.id = p.category_id
          JOIN users u                   ON u.id = ?1
-        WHERE (?2::bigint IS NULL OR pr.id = ?2) AND ${PURCHASABLE}
+        WHERE (?2::bigint IS NULL OR pr.id = ?2)
+          AND (?3::bigint IS NULL OR (p.category_id = ?3 AND cat.active))
+          AND ${PURCHASABLE}
         GROUP BY p.id, p.name, p.sort_order, pr.name, pr.sort_order, pr.id
         -- The panel's order first, then the product's. Same reason the panel
         -- list used it: every migrated row carries sort_order 0, so a tiebreak
         -- on name would rearrange a shop customers already know.
         ORDER BY pr.sort_order, pr.id, p.sort_order, p.id`,
     )
-    .bind(userId, providerId ?? null)
+    .bind(userId, providerId ?? null, categoryId ?? null)
     .all<{ product_id: number; name: string; provider_name: string }>();
   return rows.results.map((r) => ({
     productId: r.product_id,
@@ -234,17 +247,27 @@ export interface CatalogPlan {
    */
   rowIndex: number | null;
   /**
-   * How many plans sit in the same CATEGORY, this one included. Decides where
-   * «بازگشت» goes: to the category's list when there is one to go back to, and
-   * to the shop's first screen when this plan never drew one — a category
-   * holding a single plan is opened straight from `buy`.
+   * How many plans sit in the same SERVICE, this one included.
    *
-   * It counts ACTIVE plans rather than PURCHASABLE ones, and that is a
+   * With `tiers` it decides where «بازگشت» goes, and the two of them mirror the
+   * two «a list of one is not a choice» collapses exactly: a customer who was
+   * never shown a screen must not be sent «back» to it.
+   *
+   *   siblings > 1  →  this service's price list   (`prd:`)
+   *   tiers > 1     →  the category's tier list    (`cat:`)
+   *   otherwise     →  the shop's first screen     (`buy`)
+   *
+   * It counted plans in the CATEGORY until 2026-08-27, which was right while a
+   * category screen WAS the price list. It is not one any more.
+   *
+   * Both count ACTIVE rows rather than PURCHASABLE ones, and that is a
    * deliberate approximation: the exact number costs the whole predicate a
-   * second time per row, and being wrong only ever sends «بازگشت» to a list of
-   * one instead of to the shop.
+   * second time per row, and being wrong only ever sends «بازگشت» one screen
+   * further out than it had to.
    */
   siblings: number;
+  /** How many services in this category have something ACTIVE in them. */
+  tiers: number;
 }
 
 interface PlanRow {
@@ -262,6 +285,7 @@ interface PlanRow {
   category_id: number;
   row_index: number | null;
   siblings: number;
+  tiers: number;
 }
 
 const PLAN_COLUMNS = `
@@ -280,8 +304,12 @@ const PLAN_COLUMNS = `
   pl.row_index    AS row_index,
   (SELECT COUNT(*)::int
      FROM product_plans sib
-     JOIN products sp ON sp.id = sib.product_id
-    WHERE sp.category_id = p.category_id AND sib.status = 'ACTIVE') AS siblings
+    WHERE sib.product_id = p.id AND sib.status = 'ACTIVE') AS siblings,
+  (SELECT COUNT(DISTINCT sp.id)::int
+     FROM products sp
+     JOIN product_plans sib ON sib.product_id = sp.id
+    WHERE sp.category_id = p.category_id
+      AND sp.status = 'ACTIVE' AND sib.status = 'ACTIVE') AS tiers
 `;
 
 const PLAN_FROM = `
@@ -307,43 +335,25 @@ function toPlan(row: PlanRow): CatalogPlan {
     categoryId: row.category_id,
     rowIndex: row.row_index,
     siblings: row.siblings,
+    tiers: row.tiers,
   };
 }
 
 /**
- * Every priced row inside one category. Empty if it is not this customer's to open.
+ * `plansInCategory` was here, and it is gone on purpose (2026-08-27).
  *
- * The ORDER BY here IS the layout's column order — `groupIntoRows` reads this
- * list as given — so changing it silently rearranges every arranged screen.
+ * It returned every priced row in a category, flattened across the services
+ * inside it, and `categoryScreen` drew that as the second screen of the shop.
+ * Its own comment said what was wrong with it: sorting a whole category
+ * «would interleave three services' sizes into one ladder, which is the shape
+ * the service level was introduced to remove» — and then it interleaved them
+ * anyway, because the level it described was never actually drawn.
  *
- * `pl.sort_order` comes first because that is what the arrangement writes, and
- * once a screen has been arranged it is a total order and nothing after it ever
- * matters. Everything after it is the DEFAULT for a screen nobody has touched,
- * where every `sort_order` is still 0: group a service's rows together, in the
- * admin's own service order, cheapest first inside each. Sorting the whole
- * category by price instead would interleave three services' sizes into one
- * ladder, which is the shape the service level was introduced to remove.
- *
- * `${PURCHASABLE}` is here for the same reason it is in `purchasablePlan`:
- * `cat:<id>` is unsigned callback data and anyone can post one for a category
- * they were never offered. An empty list is the whole of the answer.
+ * The shop now goes category → service (`productsForUser` with a categoryId)
+ * → plans (`plansInProduct`). Nothing needs the flat list, and leaving it
+ * exported would leave a second, subtly different definition of «what is in
+ * this category» for the next screen to pick up by accident.
  */
-export async function plansInCategory(
-  db: Db,
-  userId: number,
-  categoryId: number,
-): Promise<CatalogPlan[]> {
-  const rows = await db
-    .prepare(
-      `SELECT ${PLAN_COLUMNS} ${PLAN_FROM}
-        JOIN product_categories cat ON cat.id = p.category_id
-        WHERE p.category_id = ?2 AND cat.active AND ${PURCHASABLE}
-        ORDER BY pl.sort_order, p.sort_order, p.id, pl.price_irr, pl.id`,
-    )
-    .bind(userId, categoryId)
-    .all<PlanRow>();
-  return rows.results.map(toPlan);
-}
 
 /**
  * Every plan on one panel, flat.

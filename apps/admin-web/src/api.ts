@@ -150,6 +150,8 @@ export interface ConfigRow {
   userLimit: number | null;
   status: string;
   sortOrder: number;
+  /** Which row of the bot's keyboard this sits on; null until somebody arranges it. */
+  rowIndex: number | null;
   ordersCount: number;
 }
 
@@ -295,7 +297,14 @@ export interface LayoutItem {
 }
 
 /** `categories` for the shop's first screen, `category:<id>` for one of them. */
-export type LayoutScope = 'categories' | `category:${number}`;
+/**
+ * A screen the bot actually draws.
+ *
+ * `category:${number}` was here until 2026-08-27 and named a screen that had
+ * stopped existing: a category lists its SERVICES, and the prices live one step
+ * further in, on the service's own screen.
+ */
+export type LayoutScope = 'categories' | `service:${number}`;
 
 export interface StockRow {
   id: number;

@@ -160,13 +160,19 @@ export const MENUS = {
     buttons: [BACK_TO_MENU],
   },
   products: {
-    label: 'فهرست سرویس‌ها (صفحهٔ قدیمی)',
-    hint: 'دکمه‌های `prd:` که هنوز در چت مشتری‌های قدیمی نشسته‌اند به این‌جا می‌رسند',
-    buttons: [BACK_TO_MENU],
+    label: 'فهرست سرویس‌های یک دسته‌بندی',
+    // Live again since 2026-08-27. It was «صفحهٔ قدیمی» for as long as the only
+    // way here was a `prd:` button left in an old chat; the shop now opens it
+    // from a category, which is the level it was built for.
+    hint: 'سرویس‌های یک دسته‌بندی — پلاتینیوم، طلایی، معمولی. صفحهٔ دوم خرید، وقتی دسته‌بندی بیش از یک سرویس دارد',
+    buttons: [
+      { action: 'buy', label: 'بازگشت به دسته‌بندی‌ها ⬅️', hint: 'برگشت به فهرست دسته‌بندی‌ها' },
+      BACK_TO_MENU,
+    ],
   },
   plans: {
-    label: 'فهرست محصول‌های یک دسته‌بندی',
-    hint: 'محصول‌های خریدنیِ یک دسته‌بندی، با قیمتشان روی دکمه',
+    label: 'فهرست قیمت‌های یک سرویس',
+    hint: 'کانفیگ‌های خریدنیِ یک سرویس، با قیمتشان روی دکمه — صفحهٔ سوم خرید',
     buttons: [
       // `buy` is the CATEGORY list now, so one step back is one action. The
       // label said «سرویس‌ها» while this screen was one service's plans; the
@@ -435,7 +441,15 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
   gateChannels: [['chk', 0, 0]],
   gateRules: [['acc', 0, 0]],
   categories: [['menu', 0, 0]],
-  products: [['menu', 0, 0]],
+  // Two buttons since 2026-08-27, when this became a screen the shop actually
+  // draws again: it is now the SERVICE list inside a category, so «back» has a
+  // level above it to return to. It kept a lone «منو» for as long as the only
+  // way here was a `panel:` button left in an old chat, where there was no
+  // category to go back to.
+  products: [
+    ['buy', 0, 0],
+    ['menu', 0, 1],
+  ],
   plans: [
     ['buy', 0, 0],
     ['menu', 0, 1],

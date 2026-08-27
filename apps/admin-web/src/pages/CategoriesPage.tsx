@@ -28,9 +28,8 @@
  */
 
 import { useEffect, useState } from 'react';
-import { api, ApiError, type CategoryRow, type PlanRow } from '../api.js';
-import { isSellable } from '@shikoo/contracts';
-import { count, toman } from '../format.js';
+import { api, ApiError, type CategoryRow } from '../api.js';
+import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 import { LayoutEditor } from './LayoutEditor.js';
 import { BadgeField, badgeValue } from './BadgeField.js';
@@ -52,7 +51,6 @@ export function CategoriesPage() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<number | null>(null);
   const [arranging, setArranging] = useState(false);
-  const [arrangingCategory, setArrangingCategory] = useState<CategoryRow | null>(null);
 
   async function load() {
     setLoading(true);
@@ -239,21 +237,6 @@ export function CategoriesPage() {
                 >
                   ویرایش
                 </button>
-                {/* Arranging lives here now, one button per category, because a
-                    category IS one screen in the bot. It was on «محصولات»
-                    behind a filter and disabled until that filter was set. */}
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  disabled={r.planCount === 0}
-                  title={r.planCount === 0 ? 'محصولی ندارد که چیده شود' : ''}
-                  onClick={() => {
-                    setArranging(false);
-                    setArrangingCategory(arrangingCategory?.id === r.id ? null : r);
-                  }}
-                >
-                  {arrangingCategory?.id === r.id ? 'بستن چیدمان' : 'چیدمان'}
-                </button>
                 <button type="button" className="btn btn-sm" onClick={() => toggle(r)} {...w}>
                   {r.active ? 'خاموش کن' : 'روشن کن'}
                 </button>
@@ -279,21 +262,6 @@ export function CategoriesPage() {
         <NewCard onCreated={() => void load()} nextSort={rows.length} />
       </div>
 
-      {arrangingCategory && (
-        <div className="card" style={{ marginBlockStart: 20 }}>
-          <div className="card__head">
-            <div className="card__title">صفحهٔ «{arrangingCategory.name}» در ربات</div>
-            <div className="page-head__sub">
-              محصولی که فروخته نمی‌شود این‌جا هست و به مشتری نشان داده نمی‌شود
-            </div>
-          </div>
-          <ArrangeCategory
-            category={arrangingCategory}
-            onSaved={() => void load()}
-          />
-        </div>
-      )}
-
       {rows.length === 0 && !loading && (
         <p className="empty">
           هنوز دسته‌بندی‌ای ساخته نشده. تا وقتی دسته‌بندی نباشد سرویسی هم ساخته نمی‌شود، چون هر
@@ -305,75 +273,19 @@ export function CategoriesPage() {
 }
 
 /**
- * The arrangement of one category, fetched as its own list.
+ * Arranging a category's PRICES used to live here, and it moved to «سرویس‌ها»
+ * on 2026-08-27.
  *
- * A save has to name the WHOLE screen — the server refuses a partial one,
- * because the rows it was not told about would keep their old positions and
- * interleave — so this asks for every product in the category rather than
- * arranging whatever a filtered table happened to be showing.
+ * The reason is that the screen it edited stopped existing. A category screen
+ * lists the SERVICES inside it — پلاتینیوم, طلایی, معمولی — and the prices are
+ * one step further in, on each service's own screen. Arranging a whole category
+ * put two configs from two services on «the same row» of a screen where they
+ * never appear together. The editor now sits on the service, where the row it
+ * draws is the row the customer gets.
  *
- * Moved here from «محصولات» on 2026-08-27. There it lived behind a category
- * filter and its button was disabled until one was chosen, which read as broken.
- * A category is one screen in the bot, so the arrangement belongs on the card
- * for that category and nowhere else.
+ * What is still arranged from THIS page is the category list itself — the
+ * shop's first screen — through the «چیدمان در ربات» button in the header.
  */
-function ArrangeCategory({ category, onSaved }: { category: CategoryRow; onSaved: () => void }) {
-  const [items, setItems] = useState<PlanRow[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  async function load() {
-    setErr(null);
-    try {
-      // One page big enough for a whole category. A shop screen longer than
-      // this is refused by `MAX_CATALOG_ROWS` long before it gets here.
-      const d = await api.products({ categoryId: category.id, page: 1, pageSize: 100 });
-      setItems(d.items);
-    } catch (e) {
-      setErr(message(e));
-    }
-  }
-
-  useEffect(() => {
-    void load();
-  }, [category.id]);
-
-  if (err) return <div className="alert alert-error">{err}</div>;
-  if (!items) return <p className="muted">در حال خواندن…</p>;
-
-  return (
-    <LayoutEditor
-      scope={`category:${category.id}`}
-      screenText={`${category.badge ? `${category.badge} ` : ''}${category.name} — کدام را می‌خواهید؟`}
-      items={items.map((r) => ({
-        id: r.id,
-        label: r.name,
-        // The price, or why a customer will never see this button. The editor
-        // draws every row of the screen including the ones the shop is not
-        // offering, so saying which is which is the difference between «چیدمان»
-        // and a list of things that may or may not exist.
-        hint: isSellable({
-          planStatus: r.status,
-          productStatus: r.product.status,
-          panel: r.provider
-            ? {
-                name: r.provider.name ?? '—',
-                status: r.provider.status ?? 'DISABLED',
-                capacity: r.provider.capacity,
-                liveSubscriptions: r.provider.liveSubscriptions,
-              }
-            : null,
-        })
-          ? toman(r.priceIrr)
-          : `${toman(r.priceIrr)} · فروخته نمی‌شود`,
-        rowIndex: r.rowIndex,
-      }))}
-      onSaved={() => {
-        void load();
-        onSaved();
-      }}
-    />
-  );
-}
 
 /** The same card, with its two editable fields swapped in where they are read. */
 function EditCard({

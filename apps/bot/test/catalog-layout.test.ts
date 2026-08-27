@@ -21,7 +21,7 @@
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { assertSchema, db } from './helpers/env.js';
-import { categoryIdOfProduct, ensureCatalog, planIdsIn } from './helpers/shop.js';
+import { ensureCatalog, planIdsIn, productId } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 
 let nextId = 0;
@@ -54,11 +54,18 @@ function startUpdate(updateId: number, telegramId: number) {
   };
 }
 
-/** The keyboard a customer is sent for one category, as rows of callback data. */
-async function categoryRows(categoryId: number): Promise<string[][]> {
+/**
+ * The keyboard a customer is sent for one SERVICE, as rows of callback data.
+ *
+ * It walked a CATEGORY until 2026-08-27, which is where the prices used to be
+ * drawn. They moved one screen further in when the service level was connected
+ * — a category now lists پلاتینیوم / طلایی / معمولی — and an arrangement is a
+ * property of the screen the buttons land on, so this walks to that screen.
+ */
+async function serviceRows(productId: number): Promise<string[][]> {
   const { updateId, telegramId } = ids();
   await handleUpdate(db, startUpdate(updateId, telegramId));
-  const shown = await handleUpdate(db, press(updateId + 1, telegramId, `cat:${categoryId}`));
+  const shown = await handleUpdate(db, press(updateId + 1, telegramId, `prd:${productId}`));
   return (shown.replies[0]?.keyboard ?? []).map((row) =>
     row.map((b) => b.callback_data ?? ''),
   );
@@ -81,19 +88,18 @@ function planRows(rows: string[][]): string[][] {
  * Reproducing that here cost two red tests before the fixture was the thing
  * that was wrong.
  */
-async function arrangeCategory(
-  categoryId: number,
+async function arrangeService(
+  productId: number,
   first: number[],
   rowIndexes: (number | null)[],
 ): Promise<void> {
   const all = await db
     .prepare(
-      `SELECT pl.id FROM product_plans pl
-         JOIN products p ON p.id = pl.product_id
-        WHERE p.category_id = ?1
-        ORDER BY pl.sort_order, p.sort_order, p.id, pl.price_irr, pl.id`,
+      `SELECT id FROM product_plans
+        WHERE product_id = ?1
+        ORDER BY sort_order, price_irr, id`,
     )
-    .bind(categoryId)
+    .bind(productId)
     .all<{ id: number }>();
 
   const rest = all.results.map((r) => r.id).filter((id) => !first.includes(id));
@@ -116,13 +122,14 @@ async function unarrange(): Promise<void> {
   await db.prepare(`UPDATE product_plans SET row_index = NULL`).run();
 }
 
-let VPN = 0;
+/** The SERVICE whose price screen these rows are drawn on. */
+let PLATINUM_SERVICE = 0;
 let PLATINUM: number[] = [];
 
 beforeAll(async () => {
   await assertSchema();
   await ensureCatalog();
-  VPN = await categoryIdOfProduct('sim-vip-platinum');
+  PLATINUM_SERVICE = await productId('sim-vip-platinum');
   PLATINUM = await planIdsIn('sim-vip-platinum');
   expect(PLATINUM, 'the fixture must offer three sizes to arrange').toHaveLength(3);
 });
@@ -134,7 +141,7 @@ describe('a shop screen nobody has arranged', () => {
     // The day-one guarantee. `row_index` is NULL on every row after the
     // migration, and NULL must reproduce the hardcoded `plans.map(p => [p])`
     // this replaced — or every shop's keyboard rearranges itself on deploy.
-    const rows = planRows(await categoryRows(VPN));
+    const rows = planRows(await serviceRows(PLATINUM_SERVICE));
     expect(rows.length).toBeGreaterThan(1);
     for (const row of rows) expect(row).toHaveLength(1);
   });
@@ -144,8 +151,8 @@ describe('a shop screen the admin arranged', () => {
   it('sends the rows the columns describe', async () => {
     // Two, then one. Asserted on the reply rather than on the column, because
     // the column is what a broken renderer would still have right.
-    await arrangeCategory(VPN, PLATINUM, [0, 0, 1]);
-    const rows = planRows(await categoryRows(VPN));
+    await arrangeService(PLATINUM_SERVICE, PLATINUM, [0, 0, 1]);
+    const rows = planRows(await serviceRows(PLATINUM_SERVICE));
     const mine = rows.filter((row) => row.some((d) => d === `plan:${PLATINUM[0]}`));
     expect(mine).toHaveLength(1);
     expect(mine[0]).toEqual([`plan:${PLATINUM[0]}`, `plan:${PLATINUM[1]}`]);
@@ -163,13 +170,13 @@ describe('a shop screen the admin arranged', () => {
     // Hidden per PLAN, not per product: all three sizes belong to one service,
     // so `resellers_only` on the product takes the whole row away and the test
     // passes for the wrong reason. That cost a red run to notice.
-    await arrangeCategory(VPN, PLATINUM, [0, 0, 0]);
+    await arrangeService(PLATINUM_SERVICE, PLATINUM, [0, 0, 0]);
     await db
       .prepare(`UPDATE product_plans SET status = 'HIDDEN' WHERE id = ?1`)
       .bind(PLATINUM[1])
       .run();
     try {
-      const rows = planRows(await categoryRows(VPN));
+      const rows = planRows(await serviceRows(PLATINUM_SERVICE));
       const withFirst = rows.find((row) => row.includes(`plan:${PLATINUM[0]}`));
       expect(withFirst, 'the first size is still offered').toBeDefined();
       expect(withFirst).toEqual([`plan:${PLATINUM[0]}`, `plan:${PLATINUM[2]}`]);
@@ -188,20 +195,20 @@ describe('a shop screen the admin arranged', () => {
     // migration, a future route. A keyboard Telegram rejects takes the whole
     // message down rather than one button, so the read path has its own fence.
     await db.prepare(`UPDATE product_plans SET row_index = 0, sort_order = id`).run();
-    const rows = planRows(await categoryRows(VPN));
+    const rows = planRows(await serviceRows(PLATINUM_SERVICE));
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(row.length).toBeLessThanOrEqual(8);
   });
 
   it('puts a plan added after the arrangement on its own line, not out of sight', async () => {
-    await arrangeCategory(VPN, [PLATINUM[0]!, PLATINUM[1]!], [0, 0]);
+    await arrangeService(PLATINUM_SERVICE, [PLATINUM[0]!, PLATINUM[1]!], [0, 0]);
     // …then the third size arrives afterwards and has no place yet, which is
     // the state a plan created after the screen was arranged is in.
     await db
       .prepare(`UPDATE product_plans SET row_index = NULL WHERE id = ?1`)
       .bind(PLATINUM[2])
       .run();
-    const rows = planRows(await categoryRows(VPN));
+    const rows = planRows(await serviceRows(PLATINUM_SERVICE));
     expect(rows.some((row) => row.length === 1 && row[0] === `plan:${PLATINUM[2]}`)).toBe(true);
   });
 });

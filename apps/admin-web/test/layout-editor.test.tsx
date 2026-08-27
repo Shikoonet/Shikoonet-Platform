@@ -46,7 +46,7 @@ function draw(items: LayoutButton[] = THREE) {
   render(
     <RoleProvider role="ADMIN">
       <LayoutEditor
-        scope="category:7"
+        scope="service:7"
         items={items}
         screenText="کدام را می‌خواهید؟"
         onSaved={() => {}}
@@ -88,7 +88,7 @@ describe('the arrangement editor', () => {
     press('سه ماهه', 'ArrowUp');
     const [scope, items] = await save();
 
-    expect(scope).toBe('category:7');
+    expect(scope).toBe('service:7');
     expect(items.map((i) => i.id).sort()).toEqual([11, 22, 33]);
   });
 
