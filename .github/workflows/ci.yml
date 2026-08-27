@@ -402,6 +402,15 @@ jobs:
           find deploy tools -name '*.sh' -type f -print0 2>/dev/null \
             | xargs -0 --no-run-if-empty shellcheck --external-sources --severity=style
 
+      # The deploy trigger, against a fake GitHub and a fake Coolify.
+      #
+      # It lives here rather than in `gate` because it needs no database and no
+      # node_modules — it is bash, `jq` and `curl`, all three on the runner
+      # already. Thirteen cases; each one fails if the guard it names is
+      # removed, which was verified by removing each of them in turn.
+      - name: autodeploy — exact-SHA behaviour
+        run: bash deploy/test/autodeploy.test.sh
+
   # -----------------------------------------------------------------------
   # Secret detection.
   #
