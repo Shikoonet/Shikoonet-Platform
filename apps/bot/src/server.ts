@@ -5,6 +5,7 @@
  * loudly, rather than producing odd behaviour at 3am.
  */
 
+import { parseEnvName } from '@shikoo/contracts';
 import { createPostgresD1 } from '@shikoo/db';
 import {
   createLogger,
@@ -40,6 +41,14 @@ function positiveInt(name: string, fallback: number): number {
 }
 
 export async function start(): Promise<{ stop: () => Promise<void> }> {
+  // Same refusal the dashboard-worker and ingest-worker make at boot: a
+  // missing or misspelt `ENV_NAME` is the kind of typo that silently switches
+  // off every guard that separates a deployment from a laptop. The bot has no
+  // HTTP surface to gate, but it reads the database and holds a Telegram
+  // token — the consequences of mis-running it on prod credentials are the
+  // same shape as the dashboard's, and the refusal belongs in the same place.
+  const envName = parseEnvName(process.env['ENV_NAME']);
+
   const { db, pool } = createPostgresD1({ connectionString: required('DATABASE_URL') });
 
   // Before anything that could fail, so the first thing this process can do is
@@ -142,7 +151,7 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
     onCycle: beat,
   });
 
-  log.info('boot.polling');
+  log.info('boot.polling', { envName });
 
   return {
     async stop() {

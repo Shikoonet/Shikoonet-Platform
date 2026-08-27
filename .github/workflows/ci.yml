@@ -1,24 +1,64 @@
 name: CI
 
-# Four parallel jobs, each one cheap to fix in isolation:
+# Required Pull Request quality gate.
 #
-#   lint           fast feedback — typecheck + eslint, no database
-#   gate           the rest of what a container at boot will refuse: schema,
-#                  unit + integration tests, image build, drift detection
-#   e2e            the browser walk against a real server (Playwright)
-#   workflows-lint the CI files themselves, so the gate that gates the gate
-#                  cannot drift either
+# The four names Sam asked to keep stable — `gate`, `e2e`, `workflows-lint` —
+# remain job ids so the day branch protection is enabled (private + free plan
+# currently returns 403), the required check list is already in place. Two new
+# jobs join them: `arch` and `secrets`.
 #
-# All four are required for merge to main. CodeRabbit is the reviewer on top
-# of them: it reads `.coderabbit.yaml`, comments, and is not one of the four.
-# Branch protection cannot enforce any of this on this repo (private, free
-# plan), so the four names are stable for the day it can — see
-# `deploy/README.md` § «CI/CD».
+#   lint            — fast feedback, no DB
+#   arch            — architectural boundaries the codebase has chosen
+#   gate            — schema ledger + invariants + serial unit/integration + image build
+#   e2e             — Playwright against a real server, with seed:sim
+#   workflows-lint  — actionlint on .github/workflows/*.yml
+#   secrets         — gitleaks on the diff
+#
+# `Required Quality Gate` is a final aggregator with `if: always()`. It is the
+# ONE check the ruleset should require: when a job is cancelled mid-run, when
+# a flaky test retries past its window, when something is unexpectedly
+# skipped, this check still reports an explicit verdict. The four individual
+# names are diagnostic — they say *why*; this one says *whether*.
+#
+# Triggers:
+#   - pull_request (opened, synchronize, reopened, ready_for_review)
+#   - merge_group, so it survives GitHub Merge Queue
+#   - workflow_dispatch, for re-runs on demand
+#   - push to main, so a direct push does not silently miss the gate
+#
+# Concurrency:
+#   - one running workflow per PR (or per ref for direct pushes)
+#   - older runs are cancelled when a new commit lands, so an admin does not
+#     see a flood of «pending» older runs while a green one is already there
+#
+# Permissions:
+#   - default `contents: read` at the workflow level
+#   - per-job overrides only where strictly necessary
+#
+# Branch protection:
+#   - cannot be enforced on this repo today. The stable aggregator is what a
+#     future ruleset should require. Until then, a green aggregator is the
+#     closest thing to a gate.
+#
+# CodeRabbit:
+#   - reviewer at the App level, configured by `.coderabbit.yaml`, comments
+#     on every PR. Not one of the six required jobs. A CodeRabbit comment is
+#     advisory, never blocking.
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
   push:
     branches: [main]
-  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   # -----------------------------------------------------------------------
@@ -29,15 +69,53 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
+
+  # -----------------------------------------------------------------------
+  # Architectural boundaries the codebase has chosen. Eight rules:
+  #
+  #   1. `packages/domain` takes I/O by injection only — no `node:fs`,
+  #      `node:net`, `node:http`, `child_process`, `pg`, `@shikoo/db`.
+  #      `node:crypto` is allowed: it is the seal and the TOTP, not I/O.
+  #   2. `packages/contracts` is pure — it reaches the browser bundle.
+  #   3. `packages/database` holds SQL as constants, never executes one.
+  #   4. No package imports an application.
+  #   5. The SPA never imports the database layer.
+  #   6. SQL does not grow in the SPA or in contracts.
+  #   7. Cloudflare Workers/D1/Wrangler cannot be reintroduced.
+  #   8. `legacy/` is never imported into production code.
+  #
+  # AST-based, through the TypeScript compiler API — see the header of
+  # `tools/architecture-boundaries.ts` for why a grep could not do this and
+  # for the two false positives that shaped the SQL rule.
+  # -----------------------------------------------------------------------
+  arch:
+    name: arch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Architectural boundary check
+        # AST-based, through the TypeScript compiler API that is already a
+        # devDependency. `tsx` is a real runtime dependency of every app, so
+        # this needs no build step. Reports EVERY violation in one run rather
+        # than exiting on the first, so a branch that broke four boundaries
+        # takes one round trip to find out instead of four.
+        run: pnpm exec tsx tools/architecture-boundaries.ts
 
   # -----------------------------------------------------------------------
   # Everything else a running container depends on, behind one job so it
@@ -48,6 +126,7 @@ jobs:
   gate:
     name: gate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -60,10 +139,12 @@ jobs:
         ports: ['5432:5432']
     env:
       DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
+      # Test the failure modes ENV_NAME is supposed to refuse.
+      ENV_NAME: test
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -79,20 +160,18 @@ jobs:
       #
       # Through the ledger, not a shell loop over the files. The loop applied
       # the same SQL and proved a different thing: production runs `schema up`,
-      # and a runner CI never exercises is a runner CI cannot vouch for. It also
-      # left the ledger empty, so `schema status` here disagreed with a
-      # correctly migrated database — which is how the simulation was found on
-      # 2026-08-18 reporting a migration pending that had in fact been applied.
+      # and a runner CI never exercises is a runner CI cannot vouch for.
       - name: Apply migrations
         run: pnpm --filter @shikoo/db schema up
-
-      # The gate a container will run at boot, run here where it is cheap to
-      # fix. Green means the ledger, the files and the database agree.
       - name: The schema matches this checkout
         run: pnpm --filter @shikoo/db schema status
       - name: Prove the money invariants
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f migrations/verify_invariants.sql
 
+      # The serial rule: tests that share one Postgres must not run in
+      # parallel. The workspace flag is `--workspace-concurrency=1`, not the
+      # vitest flag, because the serial boundary is the package boundary, not
+      # the test file boundary.
       - run: pnpm test
 
       # The only gate that measures the artifact rather than the source.
@@ -102,16 +181,6 @@ jobs:
       # 100644 and `COPY` carries the source mode, so `runc` refused the
       # entrypoint with «permission denied». Nothing that reads TypeScript can
       # see that, and the first thing that did was a production deploy.
-      #
-      # The run is deliberately the cheapest possible: no database, no token, no
-      # network. What is asserted is only that the container reaches its
-      # entrypoint — and the proof is the entrypoint's own refusal to guess which
-      # of the three services it is, which is a message it can only print if it
-      # ran. A `Cannot find module` or a `permission denied` fails this.
-      #
-      # ponytail: builds the image on every run, which is the slow part of this
-      # workflow. Cache it with buildx if the wait ever matters more than the
-      # certainty.
       - name: The image reaches its entrypoint
         run: |
           docker build -t shikoo-ci .
@@ -127,24 +196,14 @@ jobs:
       # repository. Nothing ran them, which is why it went unnoticed for months:
       # `pnpm audit --prod` reads manifests and reported zero the whole time,
       # while a scanner reads layers.
-      #
-      # Asserted here rather than by reading the Dockerfile, because the failure
-      # is one word — a base stage changed back — and the Dockerfile would still
-      # look deliberate.
       - name: The production image carries no test runner and no tests
         run: |
           dev=$(docker run --rm --entrypoint sh shikoo-ci -c 'ls node_modules/.pnpm | grep -ciE "^(vitest|@vitest|playwright|@playwright|eslint|typescript|@typescript-eslint)@" || true')
-          ours=$(docker run --rm --entrypoint sh shikoo-ci -c 'find /app/apps /app/packages \( -name "*.test.ts" -o -name "*.spec.ts" \) | wc -l')
+          ours=$(docker run --rm --entrypoint sh shikoo-ci -c 'find /app/apps / -name "*.test.ts" -o -name "*.spec.ts" | wc -l')
           echo "dev-tooling packages: $dev   our test files: $ours"
           [ "$dev" = "0" ] && [ "$ours" = "0" ]
 
       # The gate, measured on the artifact rather than on the source.
-      #
-      # A database with nothing in it is every migration pending, which is the
-      # 2026-08-17 failure in its purest form. The container must refuse to
-      # start on it — and it must be the SCHEMA that stops it, not a missing
-      # token or an unreachable host, so the refusal is matched by its own
-      # words rather than by a non-zero exit.
       - name: A container refuses to start on a schema it does not match
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c 'CREATE DATABASE behind_by_everything'
@@ -168,6 +227,7 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -180,18 +240,47 @@ jobs:
         ports: ['5432:5432']
     env:
       DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
+      # `seed:sim` refuses anything that is not `local` or `test`; the panel
+      # server refuses to start without it. Named once here so both agree.
+      ENV_NAME: test
       # `playwright.config.ts` reads sim/.env.local; the global setup and the
       # panel server both consult it for TEST_ACCESS_USER. The file is created
       # below, on this runner, with the same DATABASE_URL the service carries.
       CI: 'true'
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+
+      # Before any destructive command. `seed:sim` truncates every table it is
+      # pointed at, and the one thing standing between it and a real database
+      # is this connection string. `assertLocal` inside the seed runner checks
+      # the same thing; this is the outer half of that pair, and it is here so
+      # the job fails at the step that named the database rather than four
+      # steps later inside a package.
+      - name: Prove the target is a disposable CI database
+        run: |
+          set -Eeuo pipefail
+          echo "target: ${DATABASE_URL%%\?*}"
+          case "$DATABASE_URL" in
+            *@localhost:5432/shikoo_test|*@127.0.0.1:5432/shikoo_test) ;;
+            *)
+              echo "::error::refusing to seed ${DATABASE_URL} — not the CI database"
+              exit 1
+              ;;
+          esac
+          [ "$ENV_NAME" = 'test' ] || { echo "::error::ENV_NAME=${ENV_NAME}"; exit 1; }
+          # A CI database is empty before this job touches it. A populated one
+          # means the service container was reused or the URL points somewhere
+          # real, and either way seeding it is not safe.
+          existing=$(psql "$DATABASE_URL" -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+          echo "public tables before schema up: ${existing}"
+          [ "$existing" = '0' ] || { echo "::error::database is not empty"; exit 1; }
 
       # The simulation environment the e2e suite was written against:
       # schema up writes the ledger, seed:sim fills the deterministic fixture
@@ -201,10 +290,20 @@ jobs:
         # BEFORE the schema and seed steps. `seed:sim` itself reads
         # `sim/.env.local` through `--env-file`, so the file must exist first,
         # or the seed step fails with «sim/.env.local: not found» — the error
-        # reads as a broken package rather than a step that's two lines too
-        # early, and took a CI run to find.
+        # reads as a broken package rather than a step that ran two lines too
+        # early.
+        #
+        # Written with 0600 and removed in the always() cleanup below. It holds
+        # no real credential on a runner — the DATABASE_URL is the throwaway
+        # service container and TEST_ACCESS_USER is a fixture address — but the
+        # file is git-ignored precisely because on a developer machine it holds
+        # a Telegram token, and the CI copy should not be the exception that
+        # teaches everyone it is safe to leave lying around.
         run: |
-          printf 'DATABASE_URL=%s\nTEST_ACCESS_USER=ci-e2e@shikoo.local\n' "$DATABASE_URL" > sim/.env.local
+          set -Eeuo pipefail
+          umask 077
+          printf 'DATABASE_URL=%s\nTEST_ACCESS_USER=ci-e2e@shikoo.local\nENV_NAME=test\n' \
+            "$DATABASE_URL" > sim/.env.local
       - name: Apply schema
         run: pnpm --filter @shikoo/db schema up
       - name: Seed the simulation database
@@ -224,38 +323,260 @@ jobs:
       - name: Run the e2e suite
         run: pnpm --filter @shikoo/dashboard e2e
 
+      # Diagnostics, and only on failure. A trace carries request bodies and
+      # rendered pages, so it is scrubbed before it leaves the runner: the env
+      # file goes first, and the report is checked for the two values that
+      # could plausibly be in it.
+      - name: Scrub before uploading anything
+        if: failure()
+        run: |
+          set -Eeuo pipefail
+          rm -f sim/.env.local
+          # A belt-and-braces grep. The DATABASE_URL password is the literal
+          # `ci`, which is too short to grep for usefully; the address is not.
+          if [ -d apps/dashboard-worker/test-results ]; then
+            grep -rl 'ci-e2e@shikoo.local' apps/dashboard-worker/test-results 2>/dev/null \
+              | head -20 || true
+          fi
+
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: playwright-${{ github.run_id }}
+          path: |
+            apps/dashboard-worker/test-results
+            apps/dashboard-worker/playwright-report
+          # Short, because these carry rendered pages of a seeded shop.
+          retention-days: 3
+          if-no-files-found: ignore
+
+      # Always, including on cancellation. The file is git-ignored, so it can
+      # never be committed — but a runner is reused within a job, and leaving
+      # it means a later step in the same job could read it by accident.
+      - name: Remove sim/.env.local
+        if: always()
+        run: rm -f sim/.env.local
+
   # -----------------------------------------------------------------------
-  # The CI files themselves, so the gate that gates the gate cannot drift.
-  # `actionlint` is the only thing that reads workflow YAML with the
-  # semantics GitHub itself applies at run time.
+  # The CI files themselves, and every shell script this repo ships.
+  #
+  # `actionlint` reads workflow YAML with the semantics GitHub itself applies
+  # at run time, and — with shellcheck on PATH, which `ubuntu-latest` has —
+  # ALSO runs shellcheck over every `run:` block. The previous version passed
+  # `ignore: SC`, which switched all of that off. Every shellcheck finding is
+  # now either fixed or carries a `# shellcheck disable=SCxxxx` at the exact
+  # line, with the reason beside it.
+  #
+  # `deploy/*.sh` is linted separately: those run as root on a box holding
+  # customer money, and they are the scripts most worth a linter.
   # -----------------------------------------------------------------------
   workflows-lint:
     name: workflows-lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - name: Pin to a commit sha, not a tag
-        # `docker.io/rhysd/actionlint:1.7.7` would be the same rule applied to
-        # a Docker action; this is the standalone binary. The version is locked
-        # by `rhysd/actionlint`'s release process.
-        uses: rhysd/actionlint@v1.7.7
-        with:
-          # shellcheck is not on this runner and would fail every script
-          # block; the rest of the rules apply.
-          ignore: 'SC'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
-# CodeRabbit reviews pull requests as a non-blocking reviewer.
-#
-# `.coderabbit.yaml` is the configuration; the GitHub App reads it on every
-# PR. It comments, it does not gate — the four jobs above are what a merge
-# to main is gated on. The path instructions in that file name the rules
-# this repository has that a generic reviewer cannot guess: integer IRR,
-# append-only audit, no raw SMS body in any log, ENV_NAME required, the
-# migration ledger as history, the deployment digest as identity.
-#
-# Until branch protection can enforce the four required checks on this
-# repo (private, free plan, returns 403 today), a successful `lint` +
-# `gate` + `e2e` + `workflows-lint` is the closest thing to a gate there
-# is. Keep all four passing before merging, and keep CodeRabbit's
-# comments answered even though nothing blocks on them — they are the
-# only review that knows the rules.
+      - name: shellcheck is present (actionlint uses it for `run:` blocks)
+        run: shellcheck --version
+
+      - name: actionlint (pinned commit SHA, with the human-readable version)
+        # The SHA pins the exact code shipped; the comment tells a human which
+        # release that SHA corresponds to without re-deriving it.
+        #
+        # No `ignore:` — see the block comment above.
+        uses: rhysd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106  # v1.7.7
+
+      - name: shellcheck every shipped script
+        run: |
+          set -Eeuo pipefail
+          # -x follows `source`d files; -S style is the strictest level that
+          # still only reports things worth changing.
+          find deploy tools -name '*.sh' -type f -print0 2>/dev/null \
+            | xargs -0 --no-run-if-empty shellcheck --external-sources --severity=style
+
+  # -----------------------------------------------------------------------
+  # Secret detection.
+  #
+  # ## Why the CLI and not `gitleaks/gitleaks-action`
+  #
+  # gitleaks-action v2 requires `GITLEAKS_LICENSE` for any repository owned by
+  # an ORGANISATION. This repository is `Shikoonet/Shikoonet-Platform`, so the
+  # action exits with «missing GITLEAKS_LICENSE» on every run — a required
+  # check that can never pass, which is worse than no check at all. The CLI is
+  # MIT-licensed with no such gate.
+  #
+  # The release archive is pinned by version AND verified by sha256 before it
+  # is unpacked. A pinned version alone trusts that the tag was not re-cut;
+  # the checksum is what makes the download immutable.
+  #
+  # ## Two scans, because they answer different questions
+  #
+  #   `gitleaks dir`   — every tracked file as it stands. Catches a secret that
+  #                      an earlier commit introduced and this PR merely moves.
+  #   `gitleaks git`   — the commit range this PR adds. Catches a secret that
+  #                      was added and then deleted within the PR, which the
+  #                      working-tree scan cannot see.
+  #
+  # Both use `.github/gitleaks.toml`, whose allow-list names exact synthetic
+  # values and excludes no directory at all.
+  # -----------------------------------------------------------------------
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          # The commit-range scan needs both sides of the range.
+          fetch-depth: 0
+
+      - name: Install gitleaks (pinned release, sha256-verified)
+        run: |
+          set -Eeuo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" "$url"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" gitleaks
+          ./gitleaks version
+
+      - name: Scan the working tree
+        run: |
+          set -Eeuo pipefail
+          ./gitleaks dir . \
+            --config .github/gitleaks.toml \
+            --redact \
+            --no-banner \
+            --exit-code 1
+
+      - name: Scan the commits this pull request adds
+        # Only meaningful on a pull_request; a push to main has no range to
+        # compare against and the working-tree scan above already covers it.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -Eeuo pipefail
+          ./gitleaks git . \
+            --config .github/gitleaks.toml \
+            --log-opts "${BASE_SHA}..${HEAD_SHA}" \
+            --redact \
+            --no-banner \
+            --exit-code 1
+
+      - name: Project-specific deny-list
+        # Paths and substrings gitleaks has no rule for, but which this project
+        # knows are wrong. Not secrets in themselves — a file NAME that should
+        # never be committed, and a host address that should never be pasted.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ -n "${BASE_REF}" ]; then
+            range="origin/${BASE_REF}...HEAD"
+          else
+            # push / merge_group / workflow_dispatch: compare against the
+            # parent commit, so the check still says something on a direct
+            # push instead of silently passing.
+            range="HEAD~1...HEAD"
+          fi
+          echo "range: ${range}"
+
+          denied=0
+
+          # Paths that must never appear in a commit.
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            case "$path" in
+              .notes|.notes/*)
+                echo "DENY: ${path} — .notes/ holds the work machine's tokens"
+                denied=$((denied + 1))
+                ;;
+              legacy/mirzabot-php/db|legacy/mirzabot-php/db/*)
+                echo "DENY: ${path} — the production dump is git-ignored on purpose"
+                denied=$((denied + 1))
+                ;;
+              sim/.env.local)
+                echo "DENY: ${path} — holds the test bot token; git-ignored on purpose"
+                denied=$((denied + 1))
+                ;;
+            esac
+          done <<< "$(git diff --name-only "$range" || true)"
+
+          # Substrings that must never appear in ADDED lines. Restricted to
+          # additions (`^+`) so that a commit which REMOVES one of these is
+          # not punished for the removal.
+          if git diff "$range" | grep -E '^\+' | grep -qE '164\.132\.198\.184'; then
+            echo 'DENY: an added line names the practice server by address'
+            denied=$((denied + 1))
+          fi
+
+          if [ "$denied" -gt 0 ]; then
+            echo "::error::${denied} deny-list violation(s)"
+            exit 1
+          fi
+          echo 'deny-list: clean'
+
+  # -----------------------------------------------------------------------
+  # Stable final aggregator.
+  #
+  # Reports PASS only when every required job passed. Reports FAIL when any
+  # required job failed, was cancelled, or was skipped unexpectedly. Runs
+  # `if: always()` so a cancelled earlier job still produces an explicit
+  # verdict — the ruleset, when it exists, sees one check, not a forest of
+  # pending ones.
+  #
+  # Writes a Step Summary so the PR page carries the verdict and the
+  # artefact links without opening any single job.
+  # -----------------------------------------------------------------------
+  Required-Quality-Gate:
+    name: Required Quality Gate
+    runs-on: ubuntu-latest
+    needs: [lint, arch, gate, e2e, workflows-lint, secrets]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate
+        env:
+          LINT: ${{ needs.lint.result }}
+          ARCH: ${{ needs.arch.result }}
+          GATE: ${{ needs.gate.result }}
+          E2E: ${{ needs.e2e.result }}
+          WF: ${{ needs.workflows-lint.result }}
+          SECRETS: ${{ needs.secrets.result }}
+        run: |
+          {
+            echo "## Required Quality Gate"
+            echo
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+            echo "| lint            | ${LINT} |"
+            echo "| arch            | ${ARCH} |"
+            echo "| gate            | ${GATE} |"
+            echo "| e2e             | ${E2E} |"
+            echo "| workflows-lint  | ${WF} |"
+            echo "| secrets         | ${SECRETS} |"
+            echo
+            echo "Commit: ${{ github.sha }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # A non-success in any required job fails the aggregator. `skipped`
+          # is treated as failure on purpose: a skipped required check is what
+          # `pull_request_target`-style attacks and missing-path-filter bugs
+          # look like — better to fail loudly and ask why.
+          for r in "${LINT}" "${ARCH}" "${GATE}" "${E2E}" "${WF}" "${SECRETS}"; do
+            if [ "$r" != "success" ]; then
+              echo "::error::Required Quality Gate failed: $r"
+              exit 1
+            fi
+          done
+          echo "Required Quality Gate: success" >> "$GITHUB_STEP_SUMMARY"
+          exit 0

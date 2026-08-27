@@ -356,7 +356,7 @@ async function hostedTags(
 ): Promise<Set<string> | null> {
   try {
     const res = await withTimeout((signal) =>
-      (provider.fetch ?? fetch)(`${base}/api/hosts`, {
+      provider.fetch(`${base}/api/hosts`, {
         headers: { accept: 'application/json', authorization: `Bearer ${token}` },
         signal,
       }),
@@ -420,7 +420,7 @@ async function writeGroup(
     if ('error' in auth) return { ok: false, reason: auth.error };
     const base = provider.baseUrl!.replace(/\/+$/, '');
     const res = await withTimeout((signal) =>
-      (provider.fetch ?? fetch)(`${base}${path}`, {
+      provider.fetch(`${base}${path}`, {
         method,
         headers: {
           accept: 'application/json',
@@ -787,7 +787,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
       const res = await withTimeout((signal) =>
-        (provider.fetch ?? fetch)(`${base}/api/groups`, {
+        provider.fetch(`${base}/api/groups`, {
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
           signal,
         }),
@@ -839,7 +839,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
       const res = await withTimeout((signal) =>
-        (provider.fetch ?? fetch)(`${base}/api/inbounds`, {
+        provider.fetch(`${base}/api/inbounds`, {
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
           signal,
         }),
@@ -910,7 +910,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
       const res = await withTimeout((signal) =>
-        (provider.fetch ?? fetch)(`${base}/api/group/${encodeURIComponent(String(id))}`, {
+        provider.fetch(`${base}/api/group/${encodeURIComponent(String(id))}`, {
           method: 'DELETE',
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
           signal,
@@ -961,7 +961,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       let scanned = 0;
       for (let offset = 0; offset < MAX_ACCOUNTS; offset += PAGE_SIZE) {
         const res = await withTimeout((signal) =>
-          (provider.fetch ?? fetch)(`${base}/api/users?offset=${offset}&limit=${PAGE_SIZE}`, {
+          provider.fetch(`${base}/api/users?offset=${offset}&limit=${PAGE_SIZE}`, {
             headers,
             signal,
           }),
@@ -986,7 +986,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
           if (!next.includes(to)) next.push(to);
 
           const put = await withTimeout((signal) =>
-            (provider.fetch ?? fetch)(`${base}/api/user/${encodeURIComponent(username)}`, {
+            provider.fetch(`${base}/api/user/${encodeURIComponent(username)}`, {
               method: 'PUT',
               headers: { ...headers, 'content-type': 'application/json' },
               body: JSON.stringify({ group_ids: next }),
@@ -1031,7 +1031,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
       const res = await withTimeout((signal) =>
-        (provider.fetch ?? fetch)(`${base}/api/hosts`, {
+        provider.fetch(`${base}/api/hosts`, {
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
           signal,
         }),
@@ -1074,7 +1074,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
       const res = await withTimeout((signal) =>
-        (provider.fetch ?? fetch)(`${base}/api/host/`, {
+        provider.fetch(`${base}/api/host/`, {
           method: 'POST',
           headers: {
             accept: 'application/json',
@@ -1119,7 +1119,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
       if ('error' in auth) return { ok: false, reason: auth.error };
       const base = provider.baseUrl!.replace(/\/+$/, '');
       const res = await withTimeout((signal) =>
-        (provider.fetch ?? fetch)(`${base}/api/host/${encodeURIComponent(String(id))}`, {
+        provider.fetch(`${base}/api/host/${encodeURIComponent(String(id))}`, {
           method: 'DELETE',
           headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
           signal,
