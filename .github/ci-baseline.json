@@ -1,7 +1,9 @@
 {
   "_comment": [
     "Floors for `tools/ci-verify-gate.ts`, which the Required Quality Gate runs after every shard has reported.",
-    "Measured on b76dc4ef8fc45994e62f9668649a4cb88ff17ad4, the head this optimisation branched from.",
+    "Measured on main (19d9c88) and confirmed against run 33114090903, which is what these numbers came from.",
+    "admin-web was first written down as 290 — that was measured on feat/copy-telegram-id, which adds four tests this",
+    "branch does not have. The gate caught the difference on its first complete run, which is the behaviour it exists for.",
     "`total` may only ever go UP and `skipped` may only ever go DOWN without a commit that edits this file.",
     "The 49 skips in packages/migrate are the production-dump suites. They are secure-host-only by design:",
     "the dump is git-ignored, never reaches a runner, and those suites skip themselves when it is absent.",
@@ -11,7 +13,7 @@
   "suites": {
     "packages/contracts": { "name": "@shikoo/contracts", "shard": "unit", "total": 16, "skipped": 0 },
     "packages/sms-parser": { "name": "@shikoo/sms-parser", "shard": "unit", "total": 229, "skipped": 0 },
-    "apps/admin-web": { "name": "@shikoo/admin-web", "shard": "unit", "total": 290, "skipped": 0 },
+    "apps/admin-web": { "name": "@shikoo/admin-web", "shard": "unit", "total": 286, "skipped": 0 },
 
     "apps/dashboard-worker": { "name": "@shikoo/dashboard", "shard": "db:hub", "total": 705, "skipped": 0 },
     "packages/db": { "name": "@shikoo/db", "shard": "db:hub", "total": 80, "skipped": 2 },
