@@ -63,6 +63,7 @@ SHA_MERGED='1111111111111111111111111111111111111111'
 SHA_PRHEAD='2222222222222222222222222222222222222222'
 SHA_OLDER='3333333333333333333333333333333333333333'
 SHA_OTHER='4444444444444444444444444444444444444444'
+OWNER='Isusami'
 
 # ═════════════════════════════════════════════════════════════════════════
 # The fake GitHub
@@ -152,13 +153,18 @@ review() { # state login commit_id type when
   printf '{"state":"%s","user":{"login":"%s","type":"%s"},"commit_id":"%s","submitted_at":"%s"}' \
     "$1" "$2" "${4:-User}" "$3" "${5:-2026-08-27T09:00:00Z}"
 }
-runs_json() { printf '{"workflow_runs":[{"id":9001}]}'; }
+runs_json() { printf '{"workflow_runs":[{"id":%s}]}' "${1:-9001}"; }
+merged_by_json() { printf '{"number":7,"merged_by":{"login":"%s"}}' "$1"; }
 jobs_json() { printf '{"jobs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"Required Quality Gate","status":"completed","conclusion":"%s"}]}' "$1"; }
 commit_json() { printf '{"sha":"%s"}' "$1"; }
 
 # The whole happy path, which each test then breaks in exactly one place.
 happy() { # [reviews-json]
   reset_scenarios
+  # Each helper owns the mode, so a solo case cannot leak into the team case
+  # that follows it and quietly turn it into a test of something else.
+  GATE_MODE='team'
+  GATE_OWNER=''
   scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged author "$SHA_PRHEAD")"
   scenario "/pulls/7/reviews" 200 "${1:-[$(review APPROVED reviewer "$SHA_PRHEAD")]}"
   scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json)"
@@ -167,13 +173,42 @@ happy() { # [reviews-json]
 }
 
 GATE_LOG="$WORK/gate.log"
+
+# `team` unless a test says otherwise, so every case written before there were
+# modes still asks the question it was written to ask. The mode is passed
+# explicitly rather than defaulted inside the script — an unset mode is its own
+# test, below, and it denies.
+GATE_MODE='team'
+GATE_OWNER=''
 run_gate() { # -> exit code, output in $GATE_LOG
   set +e
-  GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_API='https://api.github.com' \
+  env GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_API='https://api.github.com' \
+    DEPLOY_APPROVAL_MODE="$GATE_MODE" SOLO_DEPLOY_OWNER="$GATE_OWNER" \
     bash "$GATE" 'Shikoonet/Shikoonet-Platform' "$SHA_MERGED" >"$GATE_LOG" 2>&1
   local rc=$?
   set -e
   return $rc
+}
+
+# The solo happy path: the owner wrote it, the owner merged it, CI passed on
+# the branch AND on the merge commit, and nobody reviewed it — which is the
+# whole point of the mode.
+#
+# `/pulls/7` is registered AFTER `/pulls/7/reviews` on purpose: the fake matches
+# the first fragment that is a substring of the URL, and `/pulls/7` is one of
+# `/pulls/7/reviews`.
+solo_happy() { # [reviews-json] [merged-by]
+  reset_scenarios
+  GATE_MODE='solo'
+  GATE_OWNER="$OWNER"
+  scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged "$OWNER" "$SHA_PRHEAD")"
+  scenario "/pulls/7/reviews" 200 "${1:-[]}"
+  scenario "/pulls/7" 200 "$(merged_by_json "${2:-$OWNER}")"
+  scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+  scenario "/actions/runs/9001/jobs" 200 "$(jobs_json success)"
+  scenario "/actions/runs?head_sha=${SHA_MERGED}" 200 "$(runs_json 9002)"
+  scenario "/actions/runs/9002/jobs" 200 "$(jobs_json success)"
+  scenario "/commits/main" 200 "$(commit_json "$SHA_MERGED")"
 }
 
 denies() { # name  substring-the-log-must-contain
@@ -267,6 +302,169 @@ fi
 # ═════════════════════════════════════════════════════════════════════════
 # deploy.sh — the bot switch and the lock
 # ═════════════════════════════════════════════════════════════════════════
+section 'the approval mode itself — unset and misspelled both deny'
+
+# There is no default. Both tempting defaults are wrong: `team` turns a typo
+# into a deploy that never runs, `solo` turns a typo into a deploy nobody
+# reviewed.
+happy
+GATE_MODE=''
+denies 'refuses when no approval mode is set at all' "must be exactly 'team' or 'solo'"
+
+for bad_mode in SOLO Solo sOlO solo-owner TEAM 1 yes true; do
+  happy
+  GATE_MODE="$bad_mode"
+  denies "refuses the mode «${bad_mode}» rather than guessing what it meant" \
+    "must be exactly 'team' or 'solo'"
+done
+GATE_MODE='team'
+
+solo_happy
+GATE_OWNER=''
+denies 'refuses solo mode with nobody allowlisted' 'needs SOLO_DEPLOY_OWNER'
+
+section 'team mode — unchanged, and still needs somebody else to have looked'
+
+happy '[]'
+denies 'team mode still requires a non-author human approval' 'no current APPROVED review'
+
+happy
+if run_gate && grep -qF 'policy=team-approved' "$GATE_LOG"; then
+  ok 'team mode passes and records itself as team-approved'
+else
+  bad 'team mode passes and records itself as team-approved' "$(tail -2 "$GATE_LOG")"
+fi
+
+section 'solo-owner mode — one named person, and no invented review'
+
+solo_happy
+if run_gate; then
+  ok 'the owner may ship their own merged, green pull request'
+else
+  bad 'the owner may ship their own merged, green pull request' "$(tail -3 "$GATE_LOG")"
+fi
+
+solo_happy
+if run_gate && grep -qF 'policy=solo-owner' "$GATE_LOG" &&
+  grep -qF 'NOT reviewed by anyone else' "$GATE_LOG"; then
+  ok 'says in the audit line that nobody reviewed it, rather than claiming an approval'
+else
+  bad 'says in the audit line that nobody reviewed it, rather than claiming an approval' \
+    "$(tail -2 "$GATE_LOG")"
+fi
+
+solo_happy
+if run_gate && ! grep -qE 'approved by [1-9]' "$GATE_LOG"; then
+  ok 'never reports a self-approval as a human approval'
+else
+  bad 'never reports a self-approval as a human approval' 'the log claimed an approval'
+fi
+
+# Somebody else's pull request, merged by the owner. The author check is what
+# stops the owner rubber-stamping a branch they did not write.
+solo_happy
+scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged outsider "$SHA_PRHEAD")"
+reset_scenarios
+GATE_MODE='solo'
+GATE_OWNER="$OWNER"
+scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged outsider "$SHA_PRHEAD")"
+scenario "/pulls/7/reviews" 200 '[]'
+scenario "/pulls/7" 200 "$(merged_by_json "$OWNER")"
+scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+scenario "/actions/runs/9001/jobs" 200 "$(jobs_json success)"
+scenario "/commits/main" 200 "$(commit_json "$SHA_MERGED")"
+denies 'refuses a pull request the owner did not write' 'allows only @Isusami to ship unreviewed'
+
+solo_happy '[]' 'someone-else'
+denies 'refuses a pull request the owner did not merge' 'merged by @someone-else'
+
+solo_happy
+scenario '/pulls/7' 200 '{"number":7}'
+reset_scenarios
+GATE_MODE='solo'
+GATE_OWNER="$OWNER"
+scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged "$OWNER" "$SHA_PRHEAD")"
+scenario "/pulls/7/reviews" 200 '[]'
+scenario "/pulls/7" 200 '{"number":7}'
+scenario "/commits/main" 200 "$(commit_json "$SHA_MERGED")"
+denies 'refuses when GitHub names nobody as the merger' 'reports nobody as its merger'
+
+reset_scenarios
+GATE_MODE='solo'
+GATE_OWNER="$OWNER"
+scenario "/commits/${SHA_MERGED}/pulls" 200 '[]'
+denies 'refuses a direct push to main in solo mode too' 'not the result of a merged pull request'
+
+reset_scenarios
+GATE_MODE='solo'
+GATE_OWNER="$OWNER"
+scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json open "$OWNER" "$SHA_PRHEAD")"
+denies 'refuses an unmerged pull request in solo mode' 'not the result of a merged pull request'
+
+solo_happy "[$(review CHANGES_REQUESTED reviewer "$SHA_PRHEAD")]"
+denies 'an objection still blocks the owner' 'outstanding CHANGES_REQUESTED'
+
+solo_happy
+scenario '/actions/runs/9001/jobs' 200 "$(jobs_json failure)"
+reset_scenarios
+GATE_MODE='solo'
+GATE_OWNER="$OWNER"
+scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged "$OWNER" "$SHA_PRHEAD")"
+scenario "/pulls/7/reviews" 200 '[]'
+scenario "/pulls/7" 200 "$(merged_by_json "$OWNER")"
+scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+scenario "/actions/runs/9001/jobs" 200 "$(jobs_json failure)"
+scenario "/commits/main" 200 "$(commit_json "$SHA_MERGED")"
+denies 'refuses when the final head is not green' 'did not succeed on the final head'
+
+# The merge commit is a tree nobody has looked at — on a squash or rebase it
+# has never existed before — so CI on it is the only thing standing between a
+# bad merge and a deploy.
+reset_scenarios
+GATE_MODE='solo'
+GATE_OWNER="$OWNER"
+scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged "$OWNER" "$SHA_PRHEAD")"
+scenario "/pulls/7/reviews" 200 '[]'
+scenario "/pulls/7" 200 "$(merged_by_json "$OWNER")"
+scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+scenario "/actions/runs/9001/jobs" 200 "$(jobs_json success)"
+scenario "/actions/runs?head_sha=${SHA_MERGED}" 200 "$(runs_json 9002)"
+scenario "/actions/runs/9002/jobs" 200 "$(jobs_json failure)"
+scenario "/commits/main" 200 "$(commit_json "$SHA_MERGED")"
+denies 'refuses when post-merge CI failed on the exact commit being deployed' \
+  'did not succeed on the merge commit'
+
+solo_happy
+scenario '/commits/main' 200 "$(commit_json "$SHA_OTHER")"
+reset_scenarios
+GATE_MODE='solo'
+GATE_OWNER="$OWNER"
+scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged "$OWNER" "$SHA_PRHEAD")"
+scenario "/pulls/7/reviews" 200 '[]'
+scenario "/pulls/7" 200 "$(merged_by_json "$OWNER")"
+scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+scenario "/actions/runs/9001/jobs" 200 "$(jobs_json success)"
+scenario "/actions/runs?head_sha=${SHA_MERGED}" 200 "$(runs_json 9002)"
+scenario "/actions/runs/9002/jobs" 200 "$(jobs_json success)"
+scenario "/commits/main" 200 "$(commit_json "$SHA_OTHER")"
+denies 'refuses when main moved while it was being evaluated' 'moved'
+
+solo_happy
+FAKE_CURL_DIES=1
+export FAKE_CURL_DIES
+denies 'fails closed on an API error in solo mode' 'failing closed'
+unset FAKE_CURL_DIES
+
+section 'provenance — one pull request, or none'
+
+# Two merged pull requests claiming one commit means «which one was reviewed»
+# has no answer, and picking the first would make the audit line a coin toss.
+reset_scenarios
+GATE_MODE='team'
+scenario "/commits/${SHA_MERGED}/pulls" 200 \
+  "[$(printf '{"number":7,"merged_at":"x","base":{"ref":"main"},"merge_commit_sha":"%s","head":{"sha":"%s"},"user":{"login":"a"}}' "$SHA_MERGED" "$SHA_PRHEAD"),$(printf '{"number":8,"merged_at":"x","base":{"ref":"main"},"merge_commit_sha":"%s","head":{"sha":"%s"},"user":{"login":"b"}}' "$SHA_MERGED" "$SHA_OLDER")]"
+denies 'refuses when two merged pull requests claim the same commit' 'ambiguous'
+
 section 'deploy.sh — the bot stays off unless the exact string says otherwise'
 
 cat >"$BIN/docker" <<'FAKE'
@@ -525,6 +723,68 @@ if grep -qF 'run-id: ${{ inputs.staging_run_id }}' "$WORKFLOW" &&
   ok 'promotion reads the digest staging passed and never rebuilds'
 else
   bad 'promotion reads the digest staging passed and never rebuilds' 'promote builds, or does not read the artifact'
+fi
+
+section 'deploy.yml — solo mode still cannot reach production on its own'
+
+assert_wf 'the approval mode is versioned in the workflow, not a settings toggle' \
+  'DEPLOY_APPROVAL_MODE: solo'
+assert_wf 'the allowlisted owner is versioned too' 'SOLO_DEPLOY_OWNER: Isusami'
+# These assert the literal text of the workflow, so the `${{ }}` and the `$VAR`
+# below are quoted exactly as they appear in it — SC2016 is the reading these
+# lines want, not a mistake.
+# shellcheck disable=SC2016
+assert_wf 'the gate is told which mode to apply' 'DEPLOY_APPROVAL_MODE: ${{ env.DEPLOY_APPROVAL_MODE }}'
+# shellcheck disable=SC2016
+assert_wf 'the policy reaches the box, so the ledger records which one shipped it' \
+  'DEPLOY_APPROVAL_POLICY: ${{ needs.gate.outputs.policy }}'
+
+# Solo mode changes WHO may ship, not WHERE it lands. Production is still
+# behind the same exact-string variable, which does not exist.
+assert_wf 'production is still behind the exact-string flag under solo mode' \
+  "vars.PRODUCTION_AUTO_DEPLOY == 'true'"
+if [ "$(job_field production 5)" = 'if' ]; then
+  ok 'the production job still never starts while the flag is absent'
+else
+  bad 'the production job still never starts while the flag is absent' 'no if: on production'
+fi
+
+section 'deploy.yml — promotion is deliberate, and only of a digest staging ran'
+
+assert_wf 'promotion demands the word PROMOTE' "!= 'PROMOTE'"
+# shellcheck disable=SC2016
+assert_wf 'promotion demands the owner, not merely a token holder' '"$ACTOR" != "$OWNER"'
+# shellcheck disable=SC2016
+assert_wf 'promotion reads the ledger artifact of a named run' 'run-id: ${{ inputs.staging_run_id }}'
+assert_wf 'promotion refuses anything that is not an immutable digest' \
+  "is not an immutable digest"
+
+# There is no digest input, which is the strongest form of «an arbitrary digest
+# cannot be promoted»: there is nowhere to type one. The digest comes from an
+# artifact that exists only because a staging deploy ran and smoke-tested.
+if awk '/^  workflow_dispatch:/,/^  [a-z]/' "$WORKFLOW" | grep -qE '^ +(digest|image|tag|sha):'; then
+  bad 'promotion accepts no digest, tag or sha as input' 'the dispatch takes one'
+else
+  ok 'promotion accepts no digest, tag or sha as input'
+fi
+
+# The checks live in a job with no `environment:`, so an unauthorised actor is
+# refused before any job holding a production secret exists.
+if [ "$(job_field promote-gate 2)" = '-' ] && [ "$(job_field promote-gate 3)" = '-' ]; then
+  ok 'the promotion checks run before any production secret is in scope'
+else
+  bad 'the promotion checks run before any production secret is in scope' \
+    "$(grep '^promote-gate' "$WORK/jobs.txt")"
+fi
+case "$(job_field promote 4)" in
+  *promote-gate*) ok 'the privileged promote job depends on those checks' ;;
+  *) bad 'the privileged promote job depends on those checks' 'promote does not need promote-gate' ;;
+esac
+
+if awk '/^  promote:/,0' "$WORKFLOW" | grep -qF 'build-push-action'; then
+  bad 'promotion never rebuilds the image' 'promote builds'
+else
+  ok 'promotion never rebuilds the image'
 fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

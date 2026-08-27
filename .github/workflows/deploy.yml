@@ -78,6 +78,10 @@ on:
         description: 'Run id of the Deploy run whose digest passed staging'
         required: true
         type: string
+      confirm:
+        description: 'Type PROMOTE to deploy that digest to production'
+        required: true
+        type: string
 
 # Read-only by default. Every job that needs more says so itself, and no job
 # gets `packages: write` except the one that pushes the image.
@@ -97,6 +101,24 @@ env:
   # The same string is written into the Coolify application records, which is
   # the other place it has to match.
   IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
+
+  # ── The deployment approval policy ────────────────────────────────────────
+  #
+  # `team` — a human who did not write it approved it.
+  # `solo` — one named owner writes, merges and ships their own work.
+  #
+  # Here rather than in a repository variable, and that is deliberate: a
+  # variable can be changed in the settings UI by anybody with access, silently,
+  # with no diff and no review. Who is allowed to ship unreviewed code is
+  # exactly the decision that must not be changeable that way. Changing either
+  # of these lines is a pull request.
+  #
+  # `solo` because this repository has one person with access, so the team
+  # policy is unsatisfiable — see the header of `deploy/approval-gate.sh`. Set
+  # this back to `team` the day a second regular reviewer joins; nothing else
+  # has to change, and the team path is still tested.
+  DEPLOY_APPROVAL_MODE: solo
+  SOLO_DEPLOY_OWNER: Isusami
 
 jobs:
   # ────────────────────────────────────────────────────────────────── gate
@@ -118,6 +140,7 @@ jobs:
       pull-requests: read
     outputs:
       sha: ${{ github.event.workflow_run.head_sha }}
+      policy: ${{ steps.gate.outputs.policy }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -125,10 +148,24 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
-      - name: approval provenance
+      - id: gate
+        name: approval provenance
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_APPROVAL_MODE: ${{ env.DEPLOY_APPROVAL_MODE }}
+          SOLO_DEPLOY_OWNER: ${{ env.SOLO_DEPLOY_OWNER }}
         run: bash deploy/approval-gate.sh "${{ github.repository }}" "${{ github.event.workflow_run.head_sha }}"
+
+      - name: say which policy allowed this, in the run summary
+        run: |
+          set -Eeuo pipefail
+          {
+            echo "## Deployment approval"
+            echo
+            echo "- policy: **${{ steps.gate.outputs.policy }}**"
+            echo "- pull request: #${{ steps.gate.outputs.pr_number }}"
+            echo "- non-author human approvals: ${{ steps.gate.outputs.approvals }}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ───────────────────────────────────────────────────────────────── image
   # Built once, from the sha the gate approved, and pushed once. Everything
@@ -197,6 +234,9 @@ jobs:
           # The staging bot stays OFF. Only the exact lowercase string `true`
           # would start it, and this is not that string.
           DEPLOY_BOT_ENABLED: 'false'
+          # Carried to the box so the deploy ledger records WHICH policy let
+          # this out — «solo-owner» is not the same fact as «team-approved».
+          DEPLOY_APPROVAL_POLICY: ${{ needs.gate.outputs.policy }}
         run: bash deploy/over-ssh.sh staging
 
       # The digest that actually passed staging, written down so a later
@@ -242,6 +282,7 @@ jobs:
           IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
           SHA: ${{ needs.gate.outputs.sha }}
           DEPLOY_BOT_ENABLED: 'false'
+          DEPLOY_APPROVAL_POLICY: ${{ needs.gate.outputs.policy }}
         run: bash deploy/over-ssh.sh production
 
   # ─────────────────────────────────────────────────────────────── promote
@@ -250,20 +291,51 @@ jobs:
   # anything. The artifact only exists if staging succeeded, and staging only
   # runs behind the approval gate — so there is no way to promote a digest that
   # was never approved and never smoke-tested.
-  promote:
-    name: promote
+  # ────────────────────────────────────────────────────────── promote (gate)
+  # Deliberately has NO `environment:`, so it cannot see a production secret.
+  # Everything that decides whether a promotion may happen is answered here,
+  # before any job that holds a credential exists.
+  promote-gate:
+    name: promote-gate
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
-    environment: production
+    outputs:
+      digest: ${{ steps.read.outputs.digest }}
+      sha: ${{ steps.read.outputs.sha }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
+      - name: the two things a person must get right
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ env.SOLO_DEPLOY_OWNER }}
+        run: |
+          set -Eeuo pipefail
+          # Typed in full, and compared exactly. A dispatch form remembers its
+          # last input, so a promotion is otherwise two clicks from anybody who
+          # opened the page — and this one restarts the bot and the panel for
+          # real customers.
+          if [ "$CONFIRM" != 'PROMOTE' ]; then
+            echo "::error::type PROMOTE to confirm; got «${CONFIRM}»"
+            exit 1
+          fi
+          # The same person the gate allows to ship unreviewed. Production is
+          # the half of solo mode that is NOT automatic, so the actor is checked
+          # here rather than inferred from whoever holds a token.
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::only @${OWNER} may promote to production; this run was started by @${ACTOR}"
+            exit 1
+          fi
+          echo "confirmed by @${ACTOR}"
 
+      # The ledger. This artifact exists only because a staging deploy RAN and
+      # SUCCEEDED — `deploy.sh` smoke-tests before the job reaches the upload —
+      # so its existence is the proof, and there is no digest input for anybody
+      # to type. An arbitrary tag, sha or digest cannot be promoted because
+      # there is nowhere to put one.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: staging-digest
@@ -277,14 +349,34 @@ jobs:
           set -Eeuo pipefail
           digest=$(tr -d '[:space:]' < out/digest)
           sha=$(tr -d '[:space:]' < out/sha)
+          # An immutable digest or nothing, checked again here: the artifact is
+          # written by this workflow, but a run id from a different workflow
+          # could carry an artifact of the same name with anything in it.
           case "$digest" in
             sha256:*) ;;
-            *) echo "refusing: '$digest' is not a digest" >&2; exit 1 ;;
+            *) echo "::error::'$digest' is not an immutable digest"; exit 1 ;;
           esac
           echo "$sha" | grep -qE '^[0-9a-f]{40}$' ||
-            { echo "refusing: '$sha' is not a full commit sha" >&2; exit 1; }
+            { echo "::error::'$sha' is not a full commit sha"; exit 1; }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────────────── promote (deploy)
+  promote:
+    name: promote
+    needs: promote-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The commit that digest was built from, so the `deploy.sh` that runs
+          # is the one reviewed on it — not whatever main is now.
+          ref: ${{ needs.promote-gate.outputs.sha }}
+          persist-credentials: false
 
       - name: deploy
         env:
@@ -294,7 +386,9 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ steps.read.outputs.digest }}
-          SHA: ${{ steps.read.outputs.sha }}
+          # The SAME digest staging ran. Nothing is rebuilt here.
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.promote-gate.outputs.digest }}
+          SHA: ${{ needs.promote-gate.outputs.sha }}
           DEPLOY_BOT_ENABLED: 'false'
+          DEPLOY_APPROVAL_POLICY: promoted-by-hand
         run: bash deploy/over-ssh.sh production
