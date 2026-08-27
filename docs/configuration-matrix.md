@@ -64,6 +64,8 @@ Environment`. Source file is `0600 root:root` in a `0700` directory.
 | `BRANCH` | autodeploy | branch to watch. Defaults to `main` | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
 | `REQUIRED_JOB` | autodeploy | the aggregator job name. Defaults to `Required Quality Gate` | no | staging, production | runtime | Server systemd credential | — | never | PRESENT (defaulted) |
 | `DEPLOY_TIMEOUT` `HEALTH_TIMEOUT` `POLL_SECS` `BOT_HEARTBEAT_MAX_AGE` | autodeploy | bounded waits | no | optional | runtime | Server systemd credential | — | never | PRESENT (defaulted) |
+| `AUTODEPLOY_BOT_ENABLED` | autodeploy | opt-in for deploying the bot. Anything but the exact string `true` is off — the bot connects out to Telegram and messages customers, so its rollout is a decision, not a side effect | no | staging, production | runtime | Server systemd credential | — | never | **`false`** — bot rollout OFF for the first approved-main deployment |
+| `COOLIFY_DB_CONTAINER` | autodeploy | reads `application_settings` for the safety gate; the API returns null for both flags | no | staging, production | runtime | Server systemd credential | — | never | PRESENT |
 
 Paths, not variables, but part of the same surface:
 

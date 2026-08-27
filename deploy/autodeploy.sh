@@ -224,6 +224,7 @@ APP_BOT=${APP_BOT:-$(cfg APP_BOT)}
 EXPECT_ENV_NAME=${EXPECT_ENV_NAME:-$(cfg EXPECT_ENV_NAME)}
 DB_CONTAINER=${DB_CONTAINER:-$(cfg DB_CONTAINER)}
 COOLIFY_DB_CONTAINER=${COOLIFY_DB_CONTAINER:-$(cfg COOLIFY_DB_CONTAINER)}
+AUTODEPLOY_BOT_ENABLED=${AUTODEPLOY_BOT_ENABLED:-$(cfg AUTODEPLOY_BOT_ENABLED)}
 BRANCH=${BRANCH:-$(cfg BRANCH)}
 REQUIRED_JOB=${REQUIRED_JOB:-$(cfg REQUIRED_JOB)}
 PGUSER=${PGUSER:-$(cfg PGUSER)}
@@ -248,6 +249,28 @@ BOT_HEARTBEAT_MAX_AGE=${BOT_HEARTBEAT_MAX_AGE:-$(cfg BOT_HEARTBEAT_MAX_AGE)}
 BRANCH=${BRANCH:-main}
 REQUIRED_JOB=${REQUIRED_JOB:-Required Quality Gate}
 COOLIFY_DB_CONTAINER=${COOLIFY_DB_CONTAINER:-coolify-db}
+
+# ---------------------------------------------------------------------------
+# The bot rollout switch, and why the default is off.
+#
+# Deploying the bot is not like deploying the other two. It does not answer a
+# port that somebody chose to call: it CONNECTS OUT, starts long-polling
+# Telegram, and begins sweeping verified payment claims and messaging customers.
+# A deploy of the bot is therefore an act with outside effects, and the first
+# approved-main deployment on a host whose applications have never run an
+# approved commit is not the moment to discover that.
+#
+# So it is opt-in, and anything other than the exact string `true` is off. An
+# unset value, an empty value, a typo, a `yes`, a `1` — all off. That is the
+# fail-closed direction: the accident is "the bot did not start", never "the bot
+# started and talked to customers".
+#
+# When off, the bot is excluded from the deployment order entirely: no
+# `git_commit_sha` pin, no deploy call, no container, no health check. Its
+# Coolify SAFETY configuration is still validated by `assert_coolify_safe` —
+# native auto-deploy being on for the bot is exactly as dangerous whether or not
+# this script deploys it, and that check is about the host, not the rollout.
+AUTODEPLOY_BOT_ENABLED=${AUTODEPLOY_BOT_ENABLED:-false}
 PGUSER=${PGUSER:-postgres}
 PGDATABASE=${PGDATABASE:-shikoo}
 DEPLOY_TIMEOUT=${DEPLOY_TIMEOUT:-900}
@@ -365,7 +388,7 @@ chmod 0700 "$WORKDIR"
 # them is a token, and none of them is derived from one.
 # ---------------------------------------------------------------------------
 R_SHA='-'; R_PR='-'; R_APPROVAL='not reached'; R_RUN_ID='-'
-R_GATE='not reached'; R_ENV='not reached'; R_MIGRATIONS='not reached'; R_COOLIFY_SAFE='not reached'
+R_GATE='not reached'; R_ENV='not reached'; R_MIGRATIONS='not reached'; R_COOLIFY_SAFE='not reached'; R_BOT_ROLLOUT='off'
 R_DECISION='no decision reached'
 
 # Fills in a gate the run short-circuited past.
@@ -410,6 +433,11 @@ dry_fill_env() {
 dry_report() {
   [ "$DRY_RUN" -eq 1 ] || return 0
   local name uuid live
+  if [ "${AUTODEPLOY_BOT_ENABLED:-false}" = 'true' ]; then
+    R_BOT_ROLLOUT='ON — the bot WILL be deployed and will start polling Telegram'
+  else
+    R_BOT_ROLLOUT="OFF — the bot is excluded (AUTODEPLOY_BOT_ENABLED=${AUTODEPLOY_BOT_ENABLED:-unset})"
+  fi
   dry_fill_gate
   dry_fill_env
   printf '\n──────── autodeploy --dry-run ────────\n'
@@ -422,6 +450,7 @@ dry_report() {
   printf '  ENV_NAME                %s\n' "$R_ENV"
   printf '  migrations              %s\n' "$R_MIGRATIONS"
   printf '  coolify safety gate     %s\n' "$R_COOLIFY_SAFE"
+  printf '  bot rollout             %s\n' "$R_BOT_ROLLOUT"
   printf '  coolify                 %s (api %s)\n' "$COOLIFY_URL" "$(co /version >/dev/null 2>&1 && printf %s "$co_body" || printf 'unreachable')"
   for app in "ingest:$APP_INGEST" "dashboard:$APP_DASHBOARD" "bot:$APP_BOT"; do
     name=${app%%:*}; uuid=${app#*:}
@@ -994,7 +1023,12 @@ fi
 # Postgres is not in the list and never will be: it is a Coolify database
 # resource, this script only ever names the three application uuids, and a
 # deploy has no business restarting the thing holding the data.
-APP_ORDER="ingest:${APP_INGEST} dashboard:${APP_DASHBOARD} bot:${APP_BOT}"
+if [ "$AUTODEPLOY_BOT_ENABLED" = 'true' ]; then
+  APP_ORDER="ingest:${APP_INGEST} dashboard:${APP_DASHBOARD} bot:${APP_BOT}"
+else
+  APP_ORDER="ingest:${APP_INGEST} dashboard:${APP_DASHBOARD}"
+  log "bot rollout is OFF (AUTODEPLOY_BOT_ENABLED=${AUTODEPLOY_BOT_ENABLED:-unset}) — the bot will NOT be pinned, deployed or started"
+fi
 
 deployed_uuids=''   # apps this tick has already pointed at the candidate
 deploy_records=''   # "name=<uuid>" pairs for the journal

@@ -294,6 +294,7 @@ APP_INGEST='${U_INGEST}'
 APP_DASHBOARD='${U_DASH}'
 APP_BOT='${U_BOT}'
 EXPECT_ENV_NAME='staging'
+AUTODEPLOY_BOT_ENABLED='true'
 DB_CONTAINER='fake-postgres'
 COOLIFY_DB_CONTAINER='fake-coolify-db'
 BRANCH='main'
@@ -852,6 +853,74 @@ else
   bad 'rollback failure' "rc=${RC}. log: ${OUT}"
 fi
 unset FAKE_PROBE_FAILS
+
+echo
+echo '  ── the bot rollout switch ──'
+
+# Deploying the bot connects OUT: it long-polls Telegram and sweeps verified
+# claims. So it is opt-in, and anything that is not exactly `true` is off.
+bot_off() { sed -i "s/^AUTODEPLOY_BOT_ENABLED=.*/AUTODEPLOY_BOT_ENABLED=$1/" "$SHIKOO_AUTODEPLOY_ENV"; }
+
+for value in 'false' '' 'yes' '1' 'TRUE' 'True'; do
+  setup; happy
+  bot_off "$value"
+  run_script
+  n=$(deploys)
+  botcalls=$(grep -cF "$U_BOT" "$FAKE_DEPLOYS" 2>/dev/null || true)
+  botpins=$(awk -v u="$U_BOT" '$1==u' "$FAKE_PINS" 2>/dev/null | wc -l)
+  if [ "$n" = '2' ] && [ "${botcalls:-0}" = '0' ] && [ "$botpins" = '0' ]; then
+    ok "AUTODEPLOY_BOT_ENABLED='${value}' deploys only ingest and dashboard, zero bot calls"
+  else
+    bad "bot rollout '${value}'" "deploys=${n} botDeployCalls=${botcalls} botPins=${botpins}. log: ${OUT}"
+  fi
+done
+
+# The one value that turns it on.
+setup; happy
+run_script
+if [ "$(deploys)" = '3' ] && [ "$(grep -cF "$U_BOT" "$FAKE_DEPLOYS")" = '1' ]; then
+  ok "AUTODEPLOY_BOT_ENABLED='true' is the only value that deploys the bot"
+else
+  bad 'bot rollout on' "deploys=$(deploys). log: ${OUT}"
+fi
+
+# Off must not mean «unsafe»: the bot's Coolify safety configuration is still
+# validated, because auto-deploy being on for the bot is dangerous whether or
+# not this script is the thing deploying it.
+setup; happy
+bot_off false
+export FAKE_AUTODEPLOY_ON="$U_BOT"
+run_script
+if [ "$(deploys)" = '0' ] && printf '%s' "$OUT" | grep -qF 'Auto Deploy is ENABLED'; then
+  ok 'the bot is still safety-checked while its rollout is off'
+else
+  bad 'bot safety check with rollout off' "deploys=$(deploys). log: ${OUT}"
+fi
+unset FAKE_AUTODEPLOY_ON
+
+# And the refusal is stated, not silent.
+setup; happy
+bot_off false
+run_script
+if printf '%s' "$OUT" | grep -qF 'bot rollout is OFF'; then
+  ok 'the log says the bot was deliberately excluded'
+else
+  bad 'bot exclusion message' "log: ${OUT}"
+fi
+
+# A failure in dashboard must not roll back a bot that was never touched.
+setup; happy
+bot_off false
+export FAKE_DEPLOY_STATUS_FOR="$U_DASH" FAKE_DEPLOY_STATUS=failed
+run_script
+if [ "$(grep -cF "$U_BOT" "$FAKE_DEPLOYS" 2>/dev/null || true)" = '0' ] &&
+   [ "$(awk -v u="$U_BOT" '$1==u' "$FAKE_PINS" | wc -l)" = '0' ]; then
+  ok 'a rollback never touches the bot when its rollout is off'
+else
+  bad 'rollback touched the excluded bot' "pins:
+$(pins)"
+fi
+unset FAKE_DEPLOY_STATUS_FOR FAKE_DEPLOY_STATUS
 
 echo
 echo '  ── the bot is a singleton ──'

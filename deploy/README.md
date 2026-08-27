@@ -237,6 +237,33 @@ candidate sha = pinned sha = deployment .commit = container SOURCE_COMMIT
 is checked, not assumed. The pin also stays put, which is what makes a rollback a
 redeploy of the previous sha rather than a rebuild of something new.
 
+### The bot is opt-in, and off by default
+
+`AUTODEPLOY_BOT_ENABLED` in `/etc/shikoo/autodeploy.env`. **Anything that is not
+the exact string `true` is off** — unset, empty, `yes`, `1`, `TRUE`, a typo.
+
+Deploying the bot is not like deploying the other two. Ingest and the dashboard
+answer a port when somebody calls it. The bot **connects out**: it starts
+long-polling Telegram as a real bot account, and it begins sweeping verified
+payment claims and messaging customers. A bot deploy is an act with effects
+outside this host, so it is a decision somebody makes rather than a side effect
+of merging.
+
+When off, the bot is excluded from the deployment order entirely — no
+`git_commit_sha` pin, no deploy call, no container, no health check, and a
+rollback never touches it either. The log says so on every tick rather than
+staying quiet about it.
+
+Its **safety** configuration is still checked. `assert_coolify_safe` validates
+native auto-deploy and preview deployments on all three applications including
+the bot, because a bot with native Auto Deploy enabled is exactly as dangerous
+whether or not this script is the thing deploying it. Rollout and safety are
+different questions.
+
+To turn it on, once the bot is wanted on staging: set
+`AUTODEPLOY_BOT_ENABLED=true`, confirm the Telegram credential is a staging bot
+and not the live customer one, and let the next tick take it.
+
 ### Order, and why
 
 | | |
