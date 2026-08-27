@@ -149,10 +149,50 @@ test, the bot-singleton check, and the rollback. `deploy/over-ssh.sh` is the
 GitHub half — it copies `deploy.sh` up from the commit being deployed, so what
 runs is always what was reviewed.
 
-Production is not gated in the workflow. It is gated by the `production` GitHub
-environment, which today has no reviewers, so a green `main` reaches customers
-on its own. **Adding a required reviewer there is the whole of turning this back
-into a hand-promote** — no change to any file.
+### The approval gate, and why it is not an Environment reviewer
+
+This repository is **private on GitHub Free**: no rulesets, no required reviews,
+and **no required reviewers on Environments**. The gate everybody reaches for
+first does not exist on this plan, and a workflow that relied on it would look
+gated and be wide open.
+
+So `deploy/approval-gate.sh` re-derives it from the API, before anything is
+built and before any job that can read a deployment secret exists:
+
+| it refuses | because |
+| ---------- | ------- |
+| a commit no merged PR produced | a direct push to `main` must not deploy, and nothing else can stop one here |
+| an approval by the PR's author | self-approval is not review |
+| an approval by a bot | a machine agreeing with a machine is not the guarantee being rebuilt |
+| a `COMMENTED` review | it is not an approval |
+| an approval on a superseded head | GitHub keeps the old row for ever; the reviewer approved a different tree |
+| any outstanding `CHANGES_REQUESTED` on the final head | somebody looked and said no, which is worse than nobody looking |
+| a red or missing `Required Quality Gate` on that final head | — |
+| a `main` that moved while this was being evaluated | the log would name a commit that is not what went out |
+| any API call that fails | fail closed, always |
+
+`deploy/test/deploy-pipeline.test.sh` drives every one of those against a fake
+GitHub, and runs in CI under `Required Quality Gate`.
+
+### Production is OFF
+
+`vars.PRODUCTION_AUTO_DEPLOY == 'true'`, an exact string comparison — missing,
+empty, `false`, `TRUE`, `1` and `yes` are all OFF. **That variable does not
+exist**, and creating it is a deliberate act. While it is absent the production
+job does not run at all, so `environment: production` is never entered and its
+secrets are never loaded onto a runner.
+
+To promote a digest that staging has already run, use the workflow's
+`workflow_dispatch` with the run id of the Deploy run that reached staging. It
+re-deploys that run's recorded digest and never rebuilds.
+
+### The bot is OFF
+
+`DEPLOY_BOT_ENABLED`, and only the exact lowercase string `true` enables it.
+When it is off the bot is not pinned, not deployed, not started, not
+health-checked, not counted in the singleton assertion and not rolled back — its
+Coolify safety configuration is still validated. Both `over-ssh.sh` and
+`deploy.sh` fail closed on their own.
 
 ### Superseded: the polling timer
 

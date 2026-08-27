@@ -143,6 +143,33 @@ for required in COOLIFY_URL COOLIFY_TOKEN APP_INGEST APP_DASHBOARD APP_BOT DB_CO
 done
 say "config: $ENV_DIR/deploy.env"
 
+# ------------------------------------------------------------- the bot switch
+# Deploying the bot is not like deploying the other two. It does not answer a
+# port somebody chose to call: it CONNECTS OUT, takes the advisory lock and
+# starts long-polling Telegram with this environment's token. A staging bot
+# started by accident answers real customers from a database that is not the
+# real one.
+#
+# So it is opt-in, and ONLY the exact lowercase string `true` opts in. Not
+# `TRUE`, not `1`, not `yes`, not empty, not unset — every one of those is a
+# value somebody typed hoping it would work, and the safe reading of a value
+# nobody defined is «no».
+#
+# When it is off the bot is not pinned, not deployed, not waited on, not
+# smoke-tested, not counted in the singleton check and not rolled back. Its
+# Coolify safety configuration is still validated, because that check asks
+# whether something could deploy behind this script's back and the answer
+# matters most about the application nobody is watching.
+DEPLOY_BOT_ENABLED=${DEPLOY_BOT_ENABLED:-false}
+if [ "$DEPLOY_BOT_ENABLED" = 'true' ]; then
+  BOT_ENABLED=1
+  say "bot: ENABLED for this deploy"
+else
+  BOT_ENABLED=0
+  say "bot: excluded (DEPLOY_BOT_ENABLED=${DEPLOY_BOT_ENABLED}; only the exact string 'true' enables it)"
+  summary "bot=EXCLUDED"
+fi
+
 # ------------------------------------------------------------ registry auth
 # With `--registry-token-stdin` the caller hands a registry credential on
 # STDIN — the deploy workflow passes GitHub's own per-run token, which is
@@ -358,9 +385,17 @@ on_err() {
     exit 1
   fi
   echo "[deploy:$ENV_ARG] restoring $PREV_TAG ($PREV_SHA) — the schema stays as migrated" >&2
+  # The bot is rolled back only if it was rolled forward. Restoring a previous
+  # digest onto an application this deploy never touched would START it.
+  rollback_ok=0
   if roll_one "$APP_INGEST" ingest "$PREV_TAG" "$PREV_SHA" &&
-    roll_one "$APP_DASHBOARD" dashboard "$PREV_TAG" "$PREV_SHA" &&
-    roll_one "$APP_BOT" bot "$PREV_TAG" "$PREV_SHA"; then
+    roll_one "$APP_DASHBOARD" dashboard "$PREV_TAG" "$PREV_SHA"; then
+    rollback_ok=1
+    if [ "$BOT_ENABLED" = 1 ] && ! roll_one "$APP_BOT" bot "$PREV_TAG" "$PREV_SHA"; then
+      rollback_ok=0
+    fi
+  fi
+  if [ "$rollback_ok" = 1 ]; then
     summary "rollback=ok ($PREV_TAG)"
     summary "verdict=DEPLOY FAILED, ROLLBACK SUCCEEDED"
   else
@@ -373,8 +408,13 @@ trap on_err ERR
 
 roll_one "$APP_INGEST" ingest "$COOLIFY_TAG" "$EXPECTED_SHA"
 roll_one "$APP_DASHBOARD" dashboard "$COOLIFY_TAG" "$EXPECTED_SHA"
-roll_one "$APP_BOT" bot "$COOLIFY_TAG" "$EXPECTED_SHA"
-summary "health=ok (ingest, dashboard, bot)"
+if [ "$BOT_ENABLED" = 1 ]; then
+  roll_one "$APP_BOT" bot "$COOLIFY_TAG" "$EXPECTED_SHA"
+  summary "health=ok (ingest, dashboard, bot)"
+else
+  say "bot: not deployed, not started, not health-checked"
+  summary "health=ok (ingest, dashboard)"
+fi
 
 # ------------------------------------------------------------------- smoke
 # Run inside each service's own network namespace, so this asks the running
@@ -411,11 +451,20 @@ summary "smoke=ok"
 # 1399324672 is 0x53680000, the namespace in apps/bot/src/singleton.ts. One
 # granted holder means one poller for THIS environment's token. Two means a
 # deploy overlapped; zero means the bot is not polling, however healthy it looks.
-HOLDERS=$(docker exec "$DB_CONTAINER" psql -U "$PGUSER" -tA -c \
-  "SELECT count(DISTINCT pid) FROM pg_locks WHERE locktype='advisory' AND granted AND classid=1399324672" 2>/dev/null || echo "")
-[ "$HOLDERS" = "1" ] || die "expected exactly 1 bot poller lock holder, found ${HOLDERS:-none}"
-say "bot singleton: exactly one poller holds the lock"
-summary "bot_singleton=1 poller"
+#
+# Skipped entirely when the bot is excluded: this deploy did not start a poller,
+# so «exactly one» is not a property it can assert. On a first staging rollout
+# the honest count is zero, and failing on that would be failing on the thing
+# that was asked for.
+if [ "$BOT_ENABLED" = 1 ]; then
+  HOLDERS=$(docker exec "$DB_CONTAINER" psql -U "$PGUSER" -tA -c \
+    "SELECT count(DISTINCT pid) FROM pg_locks WHERE locktype='advisory' AND granted AND classid=1399324672" 2>/dev/null || echo "")
+  [ "$HOLDERS" = "1" ] || die "expected exactly 1 bot poller lock holder, found ${HOLDERS:-none}"
+  say "bot singleton: exactly one poller holds the lock"
+  summary "bot_singleton=1 poller"
+else
+  summary "bot_singleton=not asserted (bot excluded)"
+fi
 
 # ------------------------------------------- nothing quietly became public
 # There is no firewall on this host: a published port is a public port, and
