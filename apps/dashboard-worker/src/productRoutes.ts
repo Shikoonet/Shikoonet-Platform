@@ -38,6 +38,7 @@ import {
   checkCatalogLayout,
   type CatalogLayoutProblem,
 } from '@shikoo/contracts';
+import { isAutomated } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 import { faNum } from './fa.js';
 
@@ -365,6 +366,7 @@ interface PlanRow {
   provider_name: string | null;
   provider_code: string | null;
   provider_status: string | null;
+  provider_kind: string | null;
   provider_capacity: number | null;
   provider_live: number | null;
   category_name: string | null;
@@ -407,6 +409,9 @@ function shape(r: PlanRow) {
           name: r.provider_name,
           code: r.provider_code,
           status: r.provider_status,
+          // See the note on the catalogue route's copy: a `manual` route has no
+          // groups, and both screens read this off one answer rather than two.
+          hasGroups: isAutomated(r.provider_kind ?? ''),
           // Null is unlimited, and must stay null — a zero here would read as a
           // ceiling already reached and put every row on this panel in red.
           capacity: r.provider_capacity === null ? null : Number(r.provider_capacity),
@@ -465,6 +470,7 @@ interface ServiceRow {
   provider_name: string | null;
   provider_code: string | null;
   provider_status: string | null;
+  provider_kind: string | null;
   provider_capacity: number | null;
   provider_live: number | null;
   category_name: string | null;
@@ -534,6 +540,21 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
           name: r.provider_name,
           code: r.provider_code,
           status: r.provider_status,
+          /*
+           * Whether asking «which groups does this send?» means anything here.
+           *
+           * A group is a panel adapter's idea. `manual` — the route a Spotify
+           * account or a gift card is delivered by — has no groups and never
+           * will, so the group question has no answer rather than a bad one.
+           * The screen used to ask anyway and print «گروهی انتخاب نشده» twice
+           * on a row that was perfectly fine, plus one doomed request to the
+           * groups endpoint per manual provider.
+           *
+           * Computed here from `isAutomated` rather than shipped as a `kind`
+           * for the browser to judge: two lists of which kinds have groups
+           * would drift, and this one already decides which adapter runs.
+           */
+          hasGroups: isAutomated(r.provider_kind ?? ''),
           // Null is unlimited; see the note in `shape()` on the flat route.
           capacity: r.provider_capacity === null ? null : Number(r.provider_capacity),
           liveSubscriptions: Number(r.provider_live ?? 0),
@@ -618,7 +639,7 @@ const SELECT_PLAN = `
          p.resellers_only, p.once_per_user,
          p.attrs->'group_ids' AS group_ids,
          pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
-         pr.status AS provider_status,
+         pr.status AS provider_status, pr.kind AS provider_kind,
          ${PANEL_CEILING},
          cat.name AS category_name,
          (SELECT COUNT(*) FROM orders o WHERE o.plan_id = pl.id) AS orders_count
@@ -962,6 +983,7 @@ export function registerProductRoutes(
               p.attrs->'group_ids' AS group_ids,
               pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
               pr.status AS provider_status, pr.sort_order AS provider_sort_order,
+              pr.kind AS provider_kind,
               ${PANEL_CEILING},
               cat.name AS category_name
          FROM products p

@@ -158,7 +158,15 @@ export function CategoriesPage() {
         looking at correct behaviour with nothing anywhere explaining it. That is
         exactly what happened on 2026-08-27.
       */}
-      {!loading && (
+      {/*
+        `err === null` on both this sentence and the empty state below.
+        A failed load leaves `rows` empty, and an empty `rows` used to be read as
+        a fact about the shop: on 2026-08-27 a 500 from this route rendered as
+        «هیچ دسته‌بندی‌ای چیز خریدنی ندارد» AND «هنوز دسته‌بندی‌ای ساخته نشده»,
+        two confident claims produced by knowing nothing at all. When the answer
+        did not arrive, the only honest thing on screen is the error.
+      */}
+      {!loading && err === null && (
         <p className="muted" style={{ marginBlockStart: 0 }}>
           {inShop.length > 1 ? (
             <>
@@ -262,7 +270,7 @@ export function CategoriesPage() {
         <NewCard onCreated={() => void load()} nextSort={rows.length} />
       </div>
 
-      {rows.length === 0 && !loading && (
+      {rows.length === 0 && !loading && err === null && (
         <p className="empty">
           هنوز دسته‌بندی‌ای ساخته نشده. تا وقتی دسته‌بندی نباشد سرویسی هم ساخته نمی‌شود، چون هر
           سرویس باید در یکی از این‌ها بنشیند.
