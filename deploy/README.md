@@ -133,12 +133,37 @@ there is nothing to configure in Coolify. Leave those fields empty.
 | `bot`       | the heartbeat file's mtime, fresher than 90s. The bot opens no port — it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name — so a file the poll loop touches every cycle is what "alive" means for it |
 
 
-## Merged, approved and green → deployed, at that exact sha
+## Green main → staging → production, at one immutable digest
 
-`deploy/autodeploy.sh` runs on the Coolify server every two minutes under
-`shikoo-autodeploy.timer`. It is the **only** thing allowed to deploy this
-project, and it deploys a commit only when all of the following are true of that
-one sha:
+**This is the live path**, and it replaced the polling timer described in the
+next section. `.github/workflows/deploy.yml` fires on a successful CI run of
+`main`, builds ONE image, pushes it to `ghcr.io/shikoonet/shikoonet-platform`,
+and hands the digest to `deploy/deploy.sh` over SSH — first to `staging`, then
+to `production`. Both environments run the identical bytes, and `deploy.sh`
+refuses any digest whose `org.opencontainers.image.revision` label is not the
+commit it was told to deploy.
+
+`deploy.sh` runs ON the box as `shikoo-deploy` and owns everything a deploy
+decides: migrations before any application is touched, the bot last, the smoke
+test, the bot-singleton check, and the rollback. `deploy/over-ssh.sh` is the
+GitHub half — it copies `deploy.sh` up from the commit being deployed, so what
+runs is always what was reviewed.
+
+Production is not gated in the workflow. It is gated by the `production` GitHub
+environment, which today has no reviewers, so a green `main` reaches customers
+on its own. **Adding a required reviewer there is the whole of turning this back
+into a hand-promote** — no change to any file.
+
+### Superseded: the polling timer
+
+`deploy/autodeploy.sh` and `shikoo-autodeploy.timer` were the earlier design.
+The timer is **disabled** on the server and the section below is kept for the
+guards it explains, not as a description of what runs. Do not enable it: two
+deployers racing for the same applications is worse than either alone.
+
+`deploy/autodeploy.sh` ran on the Coolify server every two minutes under
+`shikoo-autodeploy.timer`. It deployed a commit only when all of the following
+were true of that one sha:
 
 ```
 merged PR into main  →  approved by a non-author  →  push run green
