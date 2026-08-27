@@ -258,11 +258,14 @@ export interface CategoryRow {
   sortOrder: number;
   /** Where the admin broke the row on the shop's first screen; null = never arranged. */
   rowIndex: number | null;
+  /** SERVICES in this category — what a delete is refused over. */
   productsCount: number;
+  /** CONFIGS in it — the unit «محصولات» lists and the bot draws a button per. */
+  planCount: number;
   /**
-   * How many of those a customer could actually buy — the number that decides
-   * whether the bot draws a button for this category at all. A category can hold
-   * seven products and be invisible in the shop if every panel under it is off.
+   * How many of those configs a customer could actually buy — the number that
+   * decides whether the bot draws a button for this category at all. A category
+   * can hold seven and be invisible in the shop if every panel under it is off.
    */
   sellableCount: number;
 }
