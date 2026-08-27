@@ -1,0 +1,4 @@
+[{"results":[
+  {"id":"fx-acct-1","bank_name":"FIXTURE BANK","display_name":"fixture account one","account_type":"CARD","card_last_four":"0000","active":1,"status":"ACTIVE","created_at":1783966057000,"updated_at":1783966057000},
+  {"id":"fx-acct-2","bank_name":"FIXTURE BANK","display_name":"fixture account two","account_type":"CARD","card_last_four":"0018","active":1,"status":"ACTIVE","created_at":1783966057000,"updated_at":1783966057000}
+]}]

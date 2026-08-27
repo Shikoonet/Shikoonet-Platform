@@ -33,6 +33,7 @@ import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/db.js';
 import { tomanToIrr } from '../src/transform.js';
+import { productionDumpAbsent } from './helpers/productionDump.js';
 
 interface Row {
   type: string;
@@ -48,6 +49,12 @@ interface Loaded {
 async function load(): Promise<Loaded> {
   const cfg = loadConfig();
   const empty = { rows: [], settingTotal: 0n };
+  // Before the connection, not after. `describe.skipIf` is evaluated during
+  // collection, and a loader that connects first throws during collection —
+  // which vitest reports as a FAILED FILE, not a skipped one. See
+  // `helpers/productionDump.ts`.
+  const dumpMissing = productionDumpAbsent();
+  if (dumpMissing !== null) return { ...empty, unreachable: dumpMissing };
   try {
     const conn = await createConnection({
       ...cfg.mysql,
@@ -82,7 +89,21 @@ async function load(): Promise<Loaded> {
 
 const { rows, settingTotal, unreachable } = await load();
 
-describe.skipIf(unreachable !== null)('the sign of a revenue adjustment', () => {
+/**
+ * These assertions are about the REAL Mirzabot dataset — row counts, actual
+ * discount codes, the 963 customers who never accepted the rules. They only
+ * mean anything against the production dump, so they are gated on a person
+ * saying that is what this database is.
+ *
+ * The gate used to be «can I reach a MySQL», which was a proxy for the same
+ * thing right up until `synthetic-migration.test.ts` started loading a
+ * synthetic legacy database in CI. Then a MySQL was reachable on a runner,
+ * these un-skipped, and failed on `expected 2 to be 31` — correctly. See
+ * `helpers/productionDump.ts`.
+ */
+const dumpAbsent = productionDumpAbsent();
+
+describe.skipIf(unreachable !== null || dumpAbsent !== null)('the sign of a revenue adjustment', () => {
   it('is carried by the amount, not by the type', () => {
     // The property the importer depends on, stated as the data states it. If a
     // later dump ever stores a magnitude with the sign in `type`, this is what

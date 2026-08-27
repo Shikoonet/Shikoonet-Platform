@@ -39,6 +39,7 @@ import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/db.js';
 import { legacyBool } from '../src/transform.js';
+import { productionDumpAbsent } from './helpers/productionDump.js';
 
 interface Sample {
   /** `typeof` of the value the driver returned, per column. */
@@ -51,6 +52,12 @@ interface Sample {
 
 async function load(): Promise<Sample> {
   const empty = { types: {}, values: {}, notAccepted: 0 };
+  // Before the connection, not after. `describe.skipIf` is evaluated during
+  // collection, and a loader that connects first throws during collection —
+  // which vitest reports as a FAILED FILE, not a skipped one. See
+  // `helpers/productionDump.ts`.
+  const dumpMissing = productionDumpAbsent();
+  if (dumpMissing !== null) return { ...empty, unreachable: dumpMissing };
   let cfg;
   try {
     cfg = loadConfig();
@@ -94,7 +101,21 @@ async function load(): Promise<Sample> {
 
 const { types, values, notAccepted, unreachable } = await load();
 
-describe.skipIf(unreachable !== null)('legacy 0/1 flags', () => {
+/**
+ * These assertions are about the REAL Mirzabot dataset — row counts, actual
+ * discount codes, the 963 customers who never accepted the rules. They only
+ * mean anything against the production dump, so they are gated on a person
+ * saying that is what this database is.
+ *
+ * The gate used to be «can I reach a MySQL», which was a proxy for the same
+ * thing right up until `synthetic-migration.test.ts` started loading a
+ * synthetic legacy database in CI. Then a MySQL was reachable on a runner,
+ * these un-skipped, and failed on `expected 2 to be 31` — correctly. See
+ * `helpers/productionDump.ts`.
+ */
+const dumpAbsent = productionDumpAbsent();
+
+describe.skipIf(unreachable !== null || dumpAbsent !== null)('legacy 0/1 flags', () => {
   it('arrive from the driver as numbers, not strings', () => {
     // The fact the whole bug rests on. If a future mysql2 or a changed
     // `typeCast` starts returning strings, `legacyBool` still copes — but this

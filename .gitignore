@@ -33,3 +33,12 @@ legacy/
 # Nothing depends on it: `e2e/fixtures/receipt-portrait.svg` is a drawn copy at
 # the same 591×1280, and every assertion in `money-layout.spec.ts` is about size.
 apps/dashboard-worker/e2e/fixtures/*.local.*
+
+# Deployment credentials. These live on the server at /etc/shikoo/*.env, 0600
+# root, and the only reason this rule exists is the other case: somebody copies
+# one into the checkout to read it, and `git add -A` takes it. `.env.*` above
+# does not cover `autodeploy.env`.
+deploy/*.env
+deploy/**/*.env
+*.env
+!*.env.example
