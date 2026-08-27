@@ -1,1 +1,10 @@
 graphify-out/graph.json merge=graphify
+
+# `core.autocrlf=true` is on for this checkout, so every text file lands in the
+# working tree with CRLF while the repository stores LF. Harmless for git — and
+# not harmless for `migrations/`, because the schema ledger records the sha256
+# of the file's bytes. A migration copied to the server straight from a Windows
+# working tree hashes as the CRLF version, the build clones LF, and the schema
+# gate then refuses to start any container: «was edited after it was applied».
+# That happened on 2026-08-27 with 0033 and took all three services down.
+migrations/*.sql text eol=lf
