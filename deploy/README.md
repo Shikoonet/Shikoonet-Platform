@@ -235,13 +235,32 @@ To promote a digest that staging has already run, use the workflow's
 `workflow_dispatch` with the run id of the Deploy run that reached staging. It
 re-deploys that run's recorded digest and never rebuilds.
 
-### The bot is OFF
+### The bot ships with production, and only with production
 
 `DEPLOY_BOT_ENABLED`, and only the exact lowercase string `true` enables it.
 When it is off the bot is not pinned, not deployed, not started, not
 health-checked, not counted in the singleton assertion and not rolled back — its
 Coolify safety configuration is still validated. Both `over-ssh.sh` and
 `deploy.sh` fail closed on their own.
+
+| job | bot |
+| --- | --- |
+| staging | **off** |
+| production | on |
+| promote | on |
+
+**Staging must stay off.** It shares the shop's Telegram token, and a second
+poller would take updates away from the bot real customers are talking to. The
+deploy test counts the occurrences so the mistake cannot arrive by somebody
+copying the production block.
+
+Production carries it because excluding it everywhere had a cost that showed:
+the bot sat on `7b21ba3` for five hours while the panel moved on, so a shipped
+feature was invisible to every customer and nothing said why. `deploy.sh`
+deploys it LAST — after the migrations, after the two services that only answer
+ports — and then asserts that exactly one poller holds the advisory lock, so a
+restart that produced zero or two fails the deploy rather than being discovered
+by a customer whose message goes unanswered.
 
 ### Superseded: the polling timer
 
