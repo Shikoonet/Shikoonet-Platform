@@ -193,6 +193,9 @@ export function CatalogPage() {
       // request per dead panel that can only ever fail — five of them on the
       // practice box, every time this screen opened.
       if (row.panel?.status !== 'ACTIVE') continue;
+      // Nor is a route that has no groups to list. `manual` answers 404 here,
+      // once per render, for a service that is working perfectly.
+      if (!row.panel.hasGroups) continue;
       asked.current.add(id);
       api
         .panelGroups(id)
@@ -418,6 +421,8 @@ export function CatalogPage() {
  */
 function GroupCell({ service, data }: { service: ServiceRow; data: PanelGroups | null | undefined }) {
   if (service.panel === null) return <span className="muted">—</span>;
+  // A delivery route with no groups is not a panel that failed to name any.
+  if (!service.panel.hasGroups) return <span className="muted">—</span>;
   if (data === undefined) return <span className="muted">…</span>;
   if (data === null) return <span className="muted">پنل جواب نداد</span>;
 
@@ -474,6 +479,18 @@ function DeliveryCell({
         <div className="muted">پنل «{service.panel.name}» از خرید و تمدید برداشته شده.</div>
       </div>
     );
+  }
+  /*
+   * Not every product is delivered by a panel.
+   *
+   * A Spotify account or a gift card goes out through `manual`, which has no
+   * groups and no inbounds — so this column answered «گروهی انتخاب نشده» in
+   * warning grey about a row that was working exactly as intended. What an
+   * operator needs to know here is HOW it reaches the customer, not which
+   * groups it failed to name.
+   */
+  if (!service.panel.hasGroups) {
+    return <span className="badge">تحویل دستی</span>;
   }
   if (data === undefined) return <span className="muted">…</span>;
   // The panel is on and still did not answer — a different thing from «no
