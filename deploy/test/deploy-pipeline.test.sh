@@ -692,6 +692,24 @@ PY
 
 job_field() { awk -F'\t' -v j="$1" -v c="$2" '$1==j{print $c}' "$WORK/jobs.txt"; }
 
+# Every job that hands a registry token to the box must carry `packages: read`.
+#
+# Without it the token logs in and then reads nothing — «installation not
+# allowed to Read organization package», on a digest this same workflow pushed
+# a minute earlier. It cost two failed production deploys, and it is invisible:
+# the job declares no permissions at all and silently inherits a workflow-level
+# block that has no packages scope. Granting the package to the repository does
+# NOT cover it; the token needs the scope too.
+for pulling in staging production promote; do
+  if awk -v j="  ${pulling}:" '$0 == j {f=1; next} /^  [a-z][a-z0-9_-]*:$/ {f=0} f' "$WORKFLOW" |
+    grep -qF 'packages: read'; then
+    ok "the ${pulling} job may read the package it is told to deploy"
+  else
+    bad "the ${pulling} job may read the package it is told to deploy" \
+      "no 'packages: read' in the ${pulling} job — docker pull will be refused"
+  fi
+done
+
 if [ "$(job_field gate 2)" = '-' ] && [ "$(job_field gate 3)" = '-' ]; then
   ok 'the gate job has no environment and touches no deployment secret'
 else
