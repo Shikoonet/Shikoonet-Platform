@@ -137,10 +137,31 @@ jobs:
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
         ports: ['5432:5432']
+      # The legacy source, for the migration gate. Empty at start; the
+      # synthetic fixture is loaded into it below. NOT the production dump —
+      # that is git-ignored and stays on one machine.
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci
+          MYSQL_DATABASE: mirzabot
+        options: >-
+          --health-cmd "mysqladmin ping -h127.0.0.1 -uroot -pci"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+        ports: ['3306:3306']
     env:
       DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
       # Test the failure modes ENV_NAME is supposed to refuse.
       ENV_NAME: test
+      # The migration gate's source. `MIGRATE_FIXTURE_MYSQL=1` is what turns
+      # `synthetic-migration.test.ts` on; without it that file skips, and the
+      # step after `pnpm test` fails the job if it finds it skipped.
+      MIGRATE_FIXTURE_MYSQL: '1'
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: '3306'
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ci
+      MYSQL_DATABASE: mirzabot
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
@@ -161,6 +182,25 @@ jobs:
       # Through the ledger, not a shell loop over the files. The loop applied
       # the same SQL and proved a different thing: production runs `schema up`,
       # and a runner CI never exercises is a runner CI cannot vouch for.
+      # The legacy source the migration gate reads. Synthetic, in the repo,
+      # and nothing in it came from the production dump — see the header of
+      # `synthetic-mirzabot.sql` for what it can and cannot prove.
+      - name: Load the synthetic legacy database
+        run: |
+          set -Eeuo pipefail
+          mysql --protocol=TCP -h127.0.0.1 -P3306 -uroot -pci mirzabot \
+            < packages/migrate/test/fixtures/synthetic-mirzabot.sql
+          echo "D1_EXPORT_DIR=${GITHUB_WORKSPACE}/packages/migrate/test/fixtures/d1-export" \
+            >> "$GITHUB_ENV"
+          # shellcheck disable=SC2016
+          # `user` is a reserved word in MySQL and must stay backticked; the
+          # single quotes keep the shell out of it entirely. Nothing here is
+          # meant to expand.
+          rows=$(mysql --protocol=TCP -h127.0.0.1 -P3306 -uroot -pci mirzabot -sN \
+            -e 'SELECT COUNT(*) FROM `user`')
+          echo "synthetic users loaded: ${rows}"
+          [ "$rows" -gt 0 ] || { echo '::error::the fixture loaded no rows'; exit 1; }
+
       - name: Apply migrations
         run: pnpm --filter @shikoo/db schema up
       - name: The schema matches this checkout
@@ -173,6 +213,32 @@ jobs:
       # vitest flag, because the serial boundary is the package boundary, not
       # the test file boundary.
       - run: pnpm test
+
+      # A required migration gate that silently skips is the failure this
+      # fixture was built to end. `pnpm test` reports a skip as a pass, so the
+      # count is asserted directly: the synthetic migration suite must have
+      # EXECUTED, not merely been collected.
+      - name: The migration gate actually ran
+        run: |
+          set -Eeuo pipefail
+          out=$(pnpm --filter @shikoo/migrate exec vitest run \
+            test/synthetic-migration.test.ts --reporter=json 2>/dev/null \
+            | tail -c 200000)
+          printf '%s' "$out" > /tmp/migrate-report.json
+          # shellcheck disable=SC2016
+          # The `${...}` below are JavaScript template literals inside a
+          # single-quoted `node -e` program. Expanding them in the shell is
+          # exactly what must NOT happen.
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync("/tmp/migrate-report.json","utf8"));
+            const total = r.numTotalTests ?? 0;
+            const passed = r.numPassedTests ?? 0;
+            const skipped = (r.numPendingTests ?? 0) + (r.numTodoTests ?? 0);
+            console.log(`migration gate: ${passed}/${total} passed, ${skipped} skipped`);
+            if (total === 0) { console.error("::error::the migration suite collected nothing"); process.exit(1); }
+            if (skipped > 0) { console.error(`::error::${skipped} migration test(s) skipped — the gate did not run`); process.exit(1); }
+            if (passed !== total) { console.error("::error::migration tests failed"); process.exit(1); }
+          '
 
       # Coverage as a RATCHET, on the three packages whose branches decide
       # money, access and what a bank SMS means. The floors are the measured
