@@ -648,6 +648,25 @@ assert_wf 'the deploy is serialised' 'group: deploy'
 assert_wf 'a running deploy is never cancelled' 'cancel-in-progress: false'
 assert_wf 'production is compared to the exact string true' "vars.PRODUCTION_AUTO_DEPLOY == 'true'"
 assert_wf 'the staging bot is explicitly off' "DEPLOY_BOT_ENABLED: 'false'"
+
+# Exactly one job may start a bot, and it is the production one. Counted rather
+# than merely present: staging shares the shop's Telegram token, so a second
+# poller would take updates from the bot real customers are talking to, and the
+# way that mistake arrives is somebody copying the production block.
+if [ "$(grep -c "DEPLOY_BOT_ENABLED: 'false'" "$WORKFLOW")" = '1' ] &&
+  [ "$(grep -c "DEPLOY_BOT_ENABLED: 'true'" "$WORKFLOW")" = '2' ]; then
+  ok 'the bot ships with production and with a promotion, and with nothing else'
+else
+  bad 'the bot ships with production and with a promotion, and with nothing else' \
+    "$(grep -n DEPLOY_BOT_ENABLED "$WORKFLOW")"
+fi
+
+# The staging job specifically, by walking its block rather than the file.
+if awk '/^  staging:/,/^  production:/' "$WORKFLOW" | grep -qF "DEPLOY_BOT_ENABLED: 'true'"; then
+  bad 'staging never starts a bot' 'the staging job enables it'
+else
+  ok 'staging never starts a bot'
+fi
 refute_wf 'no cache is read from pull request runs' 'type=gha'
 
 # The gate must not be able to see a deployment secret, and everything that can
