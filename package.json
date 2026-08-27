@@ -14,12 +14,14 @@
     "lint": "pnpm -r --parallel lint",
     "sim:up": "docker compose -f sim/docker-compose.yml up -d",
     "sim:down": "docker compose -f sim/docker-compose.yml down -v",
-    "sim:panel": "node sim/fake-panel.mjs"
+    "sim:panel": "node sim/fake-panel.mjs",
+    "coverage": "pnpm --filter @shikoo/sms-parser --filter @shikoo/domain --filter @shikoo/contracts --workspace-concurrency=1 exec vitest run --coverage"
   },
   "dependencies": {
     "tsx": "^4.23.7"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "2.1.4",
     "eslint": "^9.13.0",
     "globals": "^15.11.0",
     "typescript": "5.6.3",
