@@ -378,6 +378,7 @@ function shapeCategory(r: {
   sort_order: number;
   row_index: number | null;
   products: number;
+  plans?: number;
   sellable?: number;
 }) {
   return {
@@ -387,9 +388,11 @@ function shapeCategory(r: {
     active: r.active,
     sortOrder: r.sort_order,
     rowIndex: r.row_index,
+    /** SERVICES — what the foreign key restricts and the delete refusal counts. */
     productsCount: Number(r.products),
-    // How many of them a customer could actually buy. The create route has no
-    // products yet and passes nothing, which is zero either way.
+    /** CONFIGS — the unit «محصولات» lists and the bot draws one button per. */
+    planCount: Number(r.plans ?? 0),
+    /** How many of those configs a customer could actually buy. */
     sellableCount: Number(r.sellable ?? 0),
   };
 }
@@ -1069,6 +1072,14 @@ export function registerProductRoutes(
     const rows = await c.env.DB.prepare(
       `SELECT cat.id, cat.name, cat.emoji, cat.active, cat.sort_order, cat.row_index,
               (SELECT COUNT(*) FROM products p WHERE p.category_id = cat.id) AS products,
+              -- Configs, not services. The sellable count below is in configs
+              -- too, and two numbers on one card in two different units read as
+              -- nonsense: «۱ محصول · ۲ قابل خرید». The services count stays
+              -- because the foreign key and the delete refusal are about them.
+              -- (No backticks in here: this is inside a JS template literal.)
+              (SELECT COUNT(*) FROM product_plans pl
+                 JOIN products p ON p.id = pl.product_id
+                WHERE p.category_id = cat.id) AS plans,
               (SELECT COUNT(*)
                  FROM product_plans pl
                  JOIN products p ON p.id = pl.product_id
@@ -1083,6 +1094,7 @@ export function registerProductRoutes(
       sort_order: number;
       row_index: number | null;
       products: number;
+      plans: number;
       sellable: number;
     }>();
     return c.json({

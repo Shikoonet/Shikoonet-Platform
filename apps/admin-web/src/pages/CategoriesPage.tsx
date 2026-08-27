@@ -82,9 +82,9 @@ export function CategoriesPage() {
   function toggle(r: CategoryRow) {
     if (
       r.active &&
-      r.productsCount > 0 &&
+      r.planCount > 0 &&
       !window.confirm(
-        `«${r.name}» خاموش شود؟ ${count(r.productsCount)} محصول از فروشگاه برداشته می‌شوند. ` +
+        `«${r.name}» خاموش شود؟ ${count(r.planCount)} محصول از فروشگاه برداشته می‌شوند. ` +
           'هیچ‌کدام حذف نمی‌شوند — دوباره روشن کنید و برمی‌گردند.',
       )
     ) {
@@ -98,7 +98,7 @@ export function CategoriesPage() {
     void run(() => api.deleteCategory(r.id));
   }
 
-  const products = rows.reduce((n, r) => n + r.productsCount, 0);
+  const products = rows.reduce((n, r) => n + r.planCount, 0);
   const sellable = rows.reduce((n, r) => n + r.sellableCount, 0);
   // What the bot will draw: a category with nothing purchasable in it gets no
   // button at all (`categoriesForUser` joins down to plans and applies
@@ -141,7 +141,7 @@ export function CategoriesPage() {
             items={rows.map((r) => ({
               id: r.id,
               label: `${r.emoji ? `${r.emoji} ` : ''}${r.name}`,
-              hint: r.active ? `${count(r.productsCount)} محصول` : 'خاموش',
+              hint: r.active ? `${count(r.sellableCount)} قابل خرید` : 'خاموش',
               rowIndex: r.rowIndex,
             }))}
             onSaved={() => void load()}
@@ -202,7 +202,11 @@ export function CategoriesPage() {
               </div>
               <div className="cat-card__meta">
                 <span>
-                  {count(r.productsCount)} محصول ·{' '}
+                  {/* Both in the same unit — configs, the thing «محصولات» lists
+                      and the bot draws one button per. `productsCount` counts
+                      SERVICES and belongs in the two sentences about deleting
+                      and switching off, not beside this one. */}
+                  {count(r.planCount)} محصول ·{' '}
                   <strong className={r.sellableCount === 0 ? 'tone-danger' : ''}>
                     {count(r.sellableCount)} قابل خرید
                   </strong>
@@ -219,7 +223,7 @@ export function CategoriesPage() {
                 <div className="tone-orange">
                   <strong>در ربات دیده نمی‌شود</strong>
                   <div className="page-head__sub">
-                    {r.productsCount === 0
+                    {r.planCount === 0
                       ? 'محصولی ندارد.'
                       : 'هیچ‌کدام از محصولاتش قابل خرید نیست — معمولاً یعنی پنلشان خاموش است.'}
                   </div>
@@ -240,8 +244,8 @@ export function CategoriesPage() {
                 <button
                   type="button"
                   className="btn btn-sm"
-                  disabled={r.productsCount === 0}
-                  title={r.productsCount === 0 ? 'محصولی ندارد که چیده شود' : ''}
+                  disabled={r.planCount === 0}
+                  title={r.planCount === 0 ? 'محصولی ندارد که چیده شود' : ''}
                   onClick={() => {
                     setArranging(false);
                     setArrangingCategory(arrangingCategory?.id === r.id ? null : r);
@@ -411,7 +415,7 @@ function EditCard({
         />
       </div>
       <div className="cat-card__meta">
-        <span>{count(row.productsCount)} محصول</span>
+        <span>{count(row.planCount)} محصول</span>
       </div>
       <div className="cat-card__actions">
         <button type="submit" className="btn btn-sm btn-primary" disabled={name.trim() === ''} {...w}>
