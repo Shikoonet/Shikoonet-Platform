@@ -253,6 +253,81 @@ if [ "$DRY_RUN" = "--dry-run" ]; then
   exit 0
 fi
 
+# What kind of application Coolify thinks this is.
+#
+# python3 rather than jq: this script already depends on python3 for the env
+# parsing below, and jq is not installed on the box.
+app_field() { # uuid field
+  api GET "/applications/$1" |
+    python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get(sys.argv[1]) or "")
+except Exception:
+    print("")' "$2"
+}
+
+# The check that makes leaving `build_pack` alone safe.
+#
+# `dockerimage` is NOT a build strategy. Coolify 4.3.11 offers five of those —
+# railpack, nixpacks, static, dockerfile, dockercompose — and `dockerimage` is
+# none of them: it is an application TYPE, decided when the application is
+# created (`Livewire/Project/New/DockerImage.php`) and reachable by no UI
+# dropdown and no PATCH afterwards. An application created from a Git source is
+# a Git application for life.
+#
+# That distinction is the whole reason this check exists. A Git application
+# asked to deploy runs `deploy_dockerfile_buildpack()`, which CLONES AND
+# REBUILDS, ignoring `docker_registry_image_name` entirely. The run would go
+# green, the container would be healthy, and it would be running a tree this
+# pipeline never verified — the digest guarantee lost in silence.
+#
+# So the refusal is a refusal, and it does not suggest a setting to change,
+# because there is none. Moving a Git application onto this pipeline means
+# creating a Docker Image application beside it and cutting over.
+assert_deployable() { # uuid name
+  local pack image
+  pack=$(app_field "$1" build_pack)
+  if [ "$pack" != 'dockerimage' ]; then
+    die "$2 is a '${pack:-unknown}' application, not a Docker Image application. Coolify would clone the repository and rebuild, ignoring the digest this deploy verified. There is no setting that converts it: «Docker Image» is an application TYPE chosen at creation, not one of the five build strategies. A Docker Image application has to be created beside this one and cut over."
+  fi
+  # The registry the application is pinned to must be the one this pipeline
+  # pushes. Otherwise the tag lands on somebody else's repository and Coolify
+  # pulls an image nothing here built.
+  image=$(app_field "$1" docker_registry_image_name)
+  [ "$image" = "$IMAGE_NAME" ] ||
+    die "$2 is pinned to image repository '${image:-none}', but this deploy builds '$IMAGE_NAME' — refusing to point it somewhere else"
+
+  # ENV_NAME, asked of Coolify before anything is touched.
+  #
+  # `parseEnvName` refuses to boot without it — «there is no safe default» —
+  # and on 2026-08-27 the bot had no such variable, so the deploy pushed a new
+  # image, watched three containers crash-loop, and rolled back. Every minute of
+  # that was knowable from one GET before the first application was touched.
+  api GET "/applications/$1/envs" |
+    python3 -c 'import json,sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    rows = []
+rows = rows if isinstance(rows, list) else []
+sys.exit(0 if any(r.get("key") == "ENV_NAME" and (r.get("value") or "").strip() for r in rows) else 1)' ||
+    die "$2 has no ENV_NAME in Coolify — the image refuses to boot without it, so this deploy would crash-loop and roll back"
+}
+
+# Before the migration, because a misconfigured application should cost
+# nothing: at this point the running containers are still consistent with the
+# schema they booted on and there is nothing to undo.
+#
+# Only the applications this deploy will TOUCH. Demanding the right type of an
+# excluded bot would refuse a good deploy over a setting that does not matter
+# yet.
+assert_deployable "$APP_INGEST" ingest
+assert_deployable "$APP_DASHBOARD" dashboard
+if [ "$BOT_ENABLED" = 1 ]; then
+  assert_deployable "$APP_BOT" bot
+fi
+say "every application this deploy touches is set to deploy an image, not to rebuild"
+
 # ----------------------------------------------------------------- migrate
 # One one-off container, before any application is touched. If it fails nothing
 # has changed: the running containers are still consistent with the schema they
@@ -293,9 +368,22 @@ say "schema gate: safe to start on"
 # --------------------------------------------------------- deploy, in order
 # ingest and dashboard first, the bot last. The bot is the writer, and a new
 # bot against a table its migration has not created is the 2026-08-18 failure.
+# `build_pack` is deliberately NOT sent.
+#
+# Coolify 4.3.11's `BuildPackTypes` enum is nixpacks / static / dockerfile /
+# dockercompose / railpack. There is no `dockerimage` case, so the API refuses
+# any PATCH carrying that value:
+#
+#     {"message":"Validation failed.",
+#      "errors":{"build_pack":["The selected build pack is invalid."]}}
+#
+# The value is legal in the database and legal to `ApplicationDeploymentJob`,
+# which is where this script's header read it from — only the WRITE path
+# disagrees, and the UI sets it by another route. So it is configured once per
+# application by hand and asserted below rather than sent on every deploy.
 set_image() { # uuid tag
   api PATCH "/applications/$1" \
-    "{\"build_pack\":\"dockerimage\",\"docker_registry_image_name\":\"$IMAGE_NAME\",\"docker_registry_image_tag\":\"$2\"}" >/dev/null
+    "{\"docker_registry_image_name\":\"$IMAGE_NAME\",\"docker_registry_image_tag\":\"$2\"}" >/dev/null
 }
 
 # `SOURCE_COMMIT` is injected by Coolify only for GIT builds — it is not a
@@ -416,10 +504,38 @@ on_err() {
 }
 trap on_err ERR
 
+# What the container is actually running, against the registry.
+#
+# `wait_healthy` already compares the container's image ID to the ID of the ref
+# this script pulled, which is strong. This asks the other question: that the
+# image the container runs still CARRIES the digest we were told to deploy.
+# An image ID is local; `RepoDigests` is what the registry called it, and it is
+# the identity the ledger and any later promotion speak in.
+#
+# Belt and braces on purpose. The failure this catches — a healthy container on
+# the wrong bytes — is the one nothing else on the box would ever report.
+assert_running_digest() { # uuid name
+  local cid digests
+  cid=$(container_for "$1")
+  [ -n "$cid" ] || die "$2 has no container after a successful deploy"
+  digests=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+    "$(docker inspect --format '{{.Image}}' "$cid")" 2>/dev/null || echo "")
+  case "$digests" in
+    *"sha256:$DIGEST_HEX"*) ;;
+    *)
+      die "$2 is running an image that does not carry sha256:${DIGEST_HEX:0:12} — deployed bytes do not match the digest this run verified"
+      ;;
+  esac
+  say "$2: running the exact digest this deploy pulled"
+}
+
 roll_one "$APP_INGEST" ingest "$COOLIFY_TAG" "$EXPECTED_SHA"
+assert_running_digest "$APP_INGEST" ingest
 roll_one "$APP_DASHBOARD" dashboard "$COOLIFY_TAG" "$EXPECTED_SHA"
+assert_running_digest "$APP_DASHBOARD" dashboard
 if [ "$BOT_ENABLED" = 1 ]; then
   roll_one "$APP_BOT" bot "$COOLIFY_TAG" "$EXPECTED_SHA"
+  assert_running_digest "$APP_BOT" bot
   summary "health=ok (ingest, dashboard, bot)"
 else
   say "bot: not deployed, not started, not health-checked"

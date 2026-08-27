@@ -103,17 +103,35 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
     "$FAKE_COOLIFY_URL"*)
       path=${url#"$FAKE_COOLIFY_URL"/api/v1}
       method='GET'
+      body=''
       prev=''
       for a in "$@"; do
         [ "$prev" = '--request' ] && method="$a"
+        [ "$prev" = '--data' ] && body="$a"
         prev="$a"
       done
       case "$method:$path" in
         GET:/applications/*/envs)
-          printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"}]' ;;
+          if [ "${FAKE_NO_ENV_NAME:-}" = '1' ]; then
+            printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"}]'
+          else
+            printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"},{"key":"ENV_NAME","value":"production"}]'
+          fi ;;
         PATCH:/applications/*/envs | POST:/applications/*/envs)
           printf '{"ok":true}' ;;
         PATCH:/applications/*)
+          if [ "${FAKE_COOLIFY_REFUSES:-}" = '1' ]; then
+            printf '{"message":"Validation failed."}' >&2
+            exit 22
+          fi
+          # Coolify 4.3.11 has no `dockerimage` case in BuildPackTypes, so any
+          # PATCH carrying that field is a 422. The fake refuses it the same way
+          # so the script cannot start sending it again without a red test.
+          case "$body" in
+            *build_pack*)
+              printf '{"message":"Validation failed.","errors":{"build_pack":["The selected build pack is invalid."]}}' >&2
+              exit 22 ;;
+          esac
           printf '%s\n' "${path#/applications/}" >>"$FAKE_PINS"
           printf '{"ok":true}' ;;
         POST:/deploy*)
@@ -122,7 +140,9 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
           # The replacement container appears only once a deploy is queued.
           printf '%s\n' "$uuid" >>"$FAKE_REPLACED"
           printf '{"ok":true}' ;;
-        GET:/applications/*) printf '{"uuid":"x"}' ;;
+        GET:/applications/*)
+          printf '{"uuid":"x","build_pack":"%s","docker_registry_image_name":"%s"}' \
+            "${FAKE_BUILD_PACK:-dockerimage}" "${FAKE_APP_IMAGE:-ghcr.io/x/y}" ;;
         *) printf '{"message":"no coolify route"}' >&2; exit 22 ;;
       esac
       exit 0 ;;
@@ -496,6 +516,7 @@ case "${1:-}" in
       '{{.Id}}')        printf 'img-deadbeef\n' ;;
       '{{.Image}}')     printf 'img-deadbeef\n' ;;
       *State.Status*)   printf 'running healthy\n' ;;
+      *RepoDigests*)    printf '%s\n' "${FAKE_REPO_DIGEST:-ghcr.io/x/y@sha256:abc}" ;;
       *Ports*)          printf '\n' ;;
       *)                printf '\n' ;;
     esac
@@ -525,7 +546,9 @@ run_deploy() { # bot-flag
   env \
     FAKE_COOLIFY_URL='http://127.0.0.1:8000' \
     FAKE_PINS="$WORK/pins" FAKE_DEPLOYS="$WORK/deploys" FAKE_REPLACED="$WORK/replaced" \
-    FAKE_LABEL_SHA="$SHA_MERGED" \
+    FAKE_LABEL_SHA="$SHA_MERGED" FAKE_BUILD_PACK="${FAKE_BUILD_PACK:-dockerimage}" \
+    FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-ghcr.io/x/y@sha256:abc}" \
+    FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
     bash "$DEPLOY" production "ghcr.io/x/y@sha256:abc" "$SHA_MERGED" \
@@ -574,6 +597,97 @@ else
   bad "the bot deploys for the exact string 'true'" "$(tail -3 "$DEPLOY_LOG")"
 fi
 
+section 'deploy.sh — an application that would rebuild instead of pulling'
+
+# `build_pack=dockerfile` makes Coolify ignore the registry fields and rebuild
+# from git. The deploy would go green, report a healthy container, and be
+# running something this pipeline never verified — the digest guarantee lost
+# silently, which is the worst way to lose it.
+FAKE_BUILD_PACK=dockerfile
+if run_deploy false; then
+  bad 'refuses an application Coolify would rebuild from git' 'it deployed anyway'
+else
+  if grep -qF 'not a Docker Image application' "$DEPLOY_LOG"; then
+    ok 'refuses an application Coolify would rebuild from git'
+  else
+    bad 'refuses an application Coolify would rebuild from git' "$(tail -2 "$DEPLOY_LOG")"
+  fi
+fi
+
+# And refuses it BEFORE the migration, so a misconfigured application costs
+# nothing: the running containers are still consistent with the schema they
+# booted on and there is nothing to undo.
+if grep -qF 'migrating' "$DEPLOY_LOG"; then
+  bad 'refuses before migrating, so nothing has to be undone' 'it migrated first'
+else
+  ok 'refuses before migrating, so nothing has to be undone'
+fi
+unset FAKE_BUILD_PACK
+
+# The application is a Docker Image application, but pinned to somebody else's
+# repository. The tag would land there and Coolify would pull an image nothing
+# here built.
+FAKE_APP_IMAGE='ghcr.io/someone/else'
+if run_deploy false; then
+  bad 'refuses an application pinned to another image repository' 'it deployed anyway'
+else
+  if grep -qF 'refusing to point it somewhere else' "$DEPLOY_LOG"; then
+    ok 'refuses an application pinned to another image repository'
+  else
+    bad 'refuses an application pinned to another image repository' "$(tail -2 "$DEPLOY_LOG")"
+  fi
+fi
+unset FAKE_APP_IMAGE
+
+# ENV_NAME, the failure that actually happened: the bot had none, so a deploy
+# pushed a new image, watched three containers crash-loop and rolled back. All
+# of it knowable from one GET before anything was touched.
+FAKE_NO_ENV_NAME=1
+if run_deploy false; then
+  bad 'refuses an application with no ENV_NAME before touching anything' 'it deployed anyway'
+else
+  if grep -qF 'has no ENV_NAME' "$DEPLOY_LOG" && ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+    ok 'refuses an application with no ENV_NAME before touching anything'
+  else
+    bad 'refuses an application with no ENV_NAME before touching anything' "$(tail -2 "$DEPLOY_LOG")"
+  fi
+fi
+unset FAKE_NO_ENV_NAME
+
+section 'deploy.sh — the container must carry the digest that was deployed'
+
+# Healthy is not the same as correct. This is the one failure nothing else on
+# the box would report: the right container, running the wrong bytes.
+FAKE_REPO_DIGEST='ghcr.io/x/y@sha256:0000000000000000000000000000000000000000000000000000000000000000'
+if run_deploy false; then
+  bad 'fails when the running container carries a different digest' 'it reported success'
+else
+  if grep -qF 'deployed bytes do not match' "$DEPLOY_LOG"; then
+    ok 'fails when the running container carries a different digest'
+  else
+    bad 'fails when the running container carries a different digest' "$(tail -3 "$DEPLOY_LOG")"
+  fi
+fi
+unset FAKE_REPO_DIGEST
+
+if run_deploy false && grep -qF 'running the exact digest this deploy pulled' "$DEPLOY_LOG"; then
+  ok 'verifies the digest of every application it deployed'
+else
+  bad 'verifies the digest of every application it deployed' "$(tail -3 "$DEPLOY_LOG")"
+fi
+
+section 'deploy.sh — a Coolify refusal costs nothing'
+
+# The 422 that started this: Coolify refuses the write, and the deploy must stop
+# with the database and every container exactly as they were.
+FAKE_COOLIFY_REFUSES=1
+if run_deploy false; then
+  bad 'a Coolify API refusal stops the deploy' 'it deployed anyway'
+else
+  ok 'a Coolify API refusal stops the deploy'
+fi
+unset FAKE_COOLIFY_REFUSES
+
 section 'deploy.sh — two deploys cannot run at once'
 
 (
@@ -595,6 +709,17 @@ kill "$HOLDER" 2>/dev/null || true
 wait "$HOLDER" 2>/dev/null || true
 
 section 'over-ssh.sh — only a digest is deployable'
+
+# A malformed digest, and no digest at all. Refused before an SSH session is
+# opened and before the deploy flock is taken, so a bad promotion input never
+# reaches the box.
+for bad_ref in 'ghcr.io/shikoonet/shikoonet-platform@sha256' 'ghcr.io/shikoonet/shikoonet-platform@md5:abc' ''; do
+  if try_over_ssh "$bad_ref"; then
+    bad "refuses the malformed reference '${bad_ref:-<empty>}'" 'it was accepted'
+  else
+    ok "refuses the malformed reference '${bad_ref:-<empty>}'"
+  fi
+done
 
 try_over_ssh() { # image-ref
   set +e
