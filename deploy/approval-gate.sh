@@ -42,10 +42,13 @@ set -Eeuo pipefail
 
 REPO=${1:-}
 SHA=${2:-}
-[ -n "$REPO" ] && [ -n "$SHA" ] || {
+# Spelled as an `if` rather than `A && B || C`, which shellcheck 0.9.0 reads as
+# a possible if-then-else mistake (SC2015) — the same correction ca14816 made
+# for the same reason.
+if [ -z "$REPO" ] || [ -z "$SHA" ]; then
   echo "usage: approval-gate.sh <owner/repo> <sha>" >&2
   exit 2
-}
+fi
 echo "$SHA" | grep -qE '^[0-9a-f]{40}$' || {
   echo "refusing: '$SHA' is not a full 40-character commit sha" >&2
   exit 2
@@ -119,8 +122,9 @@ pr=$(printf '%s' "$gh_body" | jq -c --arg sha "$SHA" --arg base "$BRANCH" '
 PR_NUMBER=$(printf '%s' "$pr" | jq -r '.number')
 PR_AUTHOR=$(printf '%s' "$pr" | jq -r '.user.login // empty')
 PR_HEAD=$(printf '%s' "$pr" | jq -r '.head.sha // empty')
-[ -n "$PR_AUTHOR" ] && [ -n "$PR_HEAD" ] ||
+if [ -z "$PR_AUTHOR" ] || [ -z "$PR_HEAD" ]; then
   deny "PR #${PR_NUMBER} came back without an author or a head sha"
+fi
 say "PR #${PR_NUMBER} by @${PR_AUTHOR}, final head ${PR_HEAD:0:12}"
 
 # ───────────────────────────────────────── 2 & 3. approved, and not objected to
