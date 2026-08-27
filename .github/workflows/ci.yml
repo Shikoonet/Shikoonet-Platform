@@ -197,13 +197,18 @@ jobs:
       # schema up writes the ledger, seed:sim fills the deterministic fixture
       # the specs assert on, and the env file is what playwright.config.ts
       # and global-setup.ts both reach for.
+      - name: Write sim/.env.local
+        # BEFORE the schema and seed steps. `seed:sim` itself reads
+        # `sim/.env.local` through `--env-file`, so the file must exist first,
+        # or the seed step fails with «sim/.env.local: not found» — the error
+        # reads as a broken package rather than a step that's two lines too
+        # early, and took a CI run to find.
+        run: |
+          printf 'DATABASE_URL=%s\nTEST_ACCESS_USER=ci-e2e@shikoo.local\n' "$DATABASE_URL" > sim/.env.local
       - name: Apply schema
         run: pnpm --filter @shikoo/db schema up
       - name: Seed the simulation database
         run: pnpm --filter @shikoo/seed seed:sim
-      - name: Write sim/.env.local
-        run: |
-          printf 'DATABASE_URL=%s\nTEST_ACCESS_USER=ci-e2e@shikoo.local\n' "$DATABASE_URL" > sim/.env.local
 
       # The Playwright browser — the suite asserts on real renders, not a
       # headless double.
