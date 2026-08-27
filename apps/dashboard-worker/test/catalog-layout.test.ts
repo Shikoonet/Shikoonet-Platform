@@ -65,13 +65,28 @@ async function makeCategory(label: string, sortOrder = 0): Promise<number> {
   return Number(row!.id);
 }
 
-/** One product in that category, carrying `count` configs. */
+/**
+ * One product in that category, carrying `count` configs — on a live panel.
+ *
+ * The panel is not decoration. `sellableTotal` and `?sellable=` ask whether a
+ * customer could buy the row, and a product with no `provider_id` can never be
+ * sold, so a fixture without one makes every «قابل خرید» assertion read zero and
+ * every «فروخته نمی‌شود» assertion pass for the wrong reason. One panel per
+ * product, so a test can switch one off without touching the others.
+ */
 async function makeConfigs(categoryId: number, label: string, count: number): Promise<number[]> {
-  const product = await baseEnv.DB.prepare(
-    `INSERT INTO products (code, name, kind, category_id, status)
-     VALUES (?1, ?2, 'vpn', ?3, 'ACTIVE') RETURNING id`,
+  const panel = await baseEnv.DB.prepare(
+    `INSERT INTO provisioning_providers (code, name, kind, status)
+     VALUES (?1, ?2, 'marzban', 'ACTIVE') RETURNING id`,
   )
-    .bind(`${PREFIX}${label}`, `محصول ${label}`, categoryId)
+    .bind(`${PREFIX}${label}`, `پنل ${label}`)
+    .first<{ id: number }>();
+
+  const product = await baseEnv.DB.prepare(
+    `INSERT INTO products (code, name, kind, provider_id, category_id, status)
+     VALUES (?1, ?2, 'vpn', ?3, ?4, 'ACTIVE') RETURNING id`,
+  )
+    .bind(`${PREFIX}${label}`, `محصول ${label}`, panel!.id, categoryId)
     .first<{ id: number }>();
   const productId = Number(product!.id);
 
@@ -111,6 +126,9 @@ async function purge(): Promise<void> {
     .run();
   await baseEnv.DB.prepare(`DELETE FROM products WHERE code LIKE ?1`).bind(`${PREFIX}%`).run();
   await baseEnv.DB.prepare(`DELETE FROM product_categories WHERE name LIKE ?1`)
+    .bind(`${PREFIX}%`)
+    .run();
+  await baseEnv.DB.prepare(`DELETE FROM provisioning_providers WHERE code LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();
 }
@@ -336,6 +354,81 @@ describe('a category', () => {
     };
     const mine = body.items.find((i) => i.id === id);
     expect(mine).toMatchObject({ emoji: '🎧', active: false, rowIndex: 2 });
+  });
+});
+
+describe('the number the screens print', () => {
+  it('counts what a customer could buy, not what rows exist', async () => {
+    // The bug this whole change came from: «۱۶ محصول · همه در فروشگاه» over a
+    // shop that sold three. `total` and `sellableTotal` are two different
+    // questions and the screens now ask the second one.
+    const cat = await makeCategory('count');
+    await makeConfigs(cat, 'count-live', 2);
+    await makeConfigs(cat, 'count-dead', 3);
+    // …and the second service's panel goes off, which is what took thirteen
+    // products off the practice shop without a word.
+    await baseEnv.DB.prepare(
+      `UPDATE provisioning_providers SET status = 'DISABLED'
+        WHERE id = (SELECT provider_id FROM products WHERE code = ?1)`,
+    )
+      .bind(`${PREFIX}count-dead`)
+      .run();
+
+    const body = (await (
+      await get(`/api/v1/admin/products?categoryId=${cat}&pageSize=100`)
+    ).json()) as { total: number; sellableTotal: number };
+    expect(body.total).toBe(5);
+    expect(body.sellableTotal).toBe(2);
+
+    const cats = (await (await get('/api/v1/admin/product-categories')).json()) as {
+      items: { id: number; productsCount: number; sellableCount: number }[];
+    };
+    const mine = cats.items.find((c) => c.id === cat);
+    // The category route counts CONFIGS a customer could buy, the same unit the
+    // flat list counts, so the two screens cannot print different numbers about
+    // the same shop.
+    expect(mine).toMatchObject({ productsCount: 2, sellableCount: 2 });
+  });
+
+  it('finds the unsellable rows, including one with no panel at all', async () => {
+    // `NOT (…)` would drop the panel-less row: with `pr.*` NULL the predicate is
+    // NULL, and NULL is neither true nor false. It is invisible in both filters
+    // unless the negation is written `IS NOT TRUE` — and it is exactly the row
+    // an operator opens this filter to find.
+    const cat = await makeCategory('unsellable');
+    const live = await makeConfigs(cat, 'unsellable-live', 1);
+    await makeConfigs(cat, 'unsellable-orphan', 1);
+    await baseEnv.DB.prepare(`UPDATE products SET provider_id = NULL WHERE code = ?1`)
+      .bind(`${PREFIX}unsellable-orphan`)
+      .run();
+
+    const no = (await (
+      await get(`/api/v1/admin/products?categoryId=${cat}&sellable=false&pageSize=100`)
+    ).json()) as { items: { id: number }[] };
+    const yes = (await (
+      await get(`/api/v1/admin/products?categoryId=${cat}&sellable=true&pageSize=100`)
+    ).json()) as { items: { id: number }[] };
+
+    expect(no.items).toHaveLength(1);
+    expect(yes.items.map((i) => i.id)).toEqual(live);
+  });
+
+  it('carries the panel ceiling, so a full panel can be named', async () => {
+    // Without these two numbers no screen can say «پنل پر است», and a panel at
+    // its ceiling takes its whole catalogue out of the shop in silence.
+    const cat = await makeCategory('ceiling');
+    await makeConfigs(cat, 'ceiling', 1);
+    await baseEnv.DB.prepare(
+      `UPDATE provisioning_providers SET capacity = 5
+        WHERE id = (SELECT provider_id FROM products WHERE code = ?1)`,
+    )
+      .bind(`${PREFIX}ceiling`)
+      .run();
+
+    const body = (await (
+      await get(`/api/v1/admin/products?categoryId=${cat}&pageSize=100`)
+    ).json()) as { items: { provider: { capacity: number; liveSubscriptions: number } }[] };
+    expect(body.items[0]!.provider).toMatchObject({ capacity: 5, liveSubscriptions: 0 });
   });
 });
 

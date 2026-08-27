@@ -103,11 +103,11 @@ function Body({
     case 'catalog':
       return <CatalogPage />;
     case 'products':
-      return <ProductsPage />;
+      return <ProductsPage onGo={go} />;
     case 'categories':
       return <CategoriesPage />;
     case 'panels':
-      return <PanelsPage />;
+      return <PanelsPage onGo={go} />;
     case 'stock':
       return <StockPage />;
     case 'expenses':

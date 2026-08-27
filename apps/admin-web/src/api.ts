@@ -125,7 +125,7 @@ export interface PlanRow {
     /** null when this service does not decide and the panel's default applies. */
     groupIds: number[] | null;
   };
-  provider: { id: number; name: string | null; code: string | null; status: string | null } | null;
+  provider: PanelRef | null;
   categoryName: string | null;
   ordersCount: number;
 }
@@ -171,8 +171,24 @@ export interface ServiceRow {
   oncePerUser: boolean;
   /** null when this service does not choose, and the panel's default applies. */
   groupIds: number[] | null;
-  panel: { id: number; name: string | null; code: string | null; status: string | null } | null;
+  panel: PanelRef | null;
   configs: ConfigRow[];
+}
+
+/**
+ * The panel, as a catalogue row carries it.
+ *
+ * `capacity` and `liveSubscriptions` are here for `whyNotSellable`: a panel at
+ * its ceiling takes its whole catalogue out of the shop, and without the two
+ * numbers no screen can say so. Null capacity is unlimited.
+ */
+export interface PanelRef {
+  id: number;
+  name: string | null;
+  code: string | null;
+  status: string | null;
+  capacity: number | null;
+  liveSubscriptions: number;
 }
 
 export interface ProviderOption {
@@ -243,6 +259,12 @@ export interface CategoryRow {
   /** Where the admin broke the row on the shop's first screen; null = never arranged. */
   rowIndex: number | null;
   productsCount: number;
+  /**
+   * How many of those a customer could actually buy — the number that decides
+   * whether the bot draws a button for this category at all. A category can hold
+   * seven products and be invisible in the shop if every panel under it is off.
+   */
+  sellableCount: number;
 }
 
 export interface CategoryPatch {
@@ -895,6 +917,8 @@ export const api = {
     categoryId?: number;
     /** Undefined is «both». True and false are two different questions. */
     resellersOnly?: boolean;
+    /** Same rule: undefined is «both», `false` asks for what cannot be sold. */
+    sellable?: boolean;
     page: number;
     pageSize: number;
   }) {
@@ -907,9 +931,13 @@ export const api = {
     if (params.providerId) qs.set('providerId', String(params.providerId));
     if (params.categoryId) qs.set('categoryId', String(params.categoryId));
     if (params.resellersOnly !== undefined) qs.set('resellersOnly', String(params.resellersOnly));
+    if (params.sellable !== undefined) qs.set('sellable', String(params.sellable));
     return req<{
       ok: boolean;
       total: number;
+      /** How many of `total` a customer could actually buy — counted server-side
+       *  over the whole filter, not over the page. */
+      sellableTotal: number;
       page: number;
       pageSize: number;
       items: PlanRow[];
