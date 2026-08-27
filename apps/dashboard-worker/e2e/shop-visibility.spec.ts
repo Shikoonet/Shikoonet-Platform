@@ -85,12 +85,38 @@ async function headCounts(page: Page): Promise<{ total: number; sellable: number
   // Scoped to the heading. `page-head__sub` is also the class the table cells
   // use for the reason under «فروخته نمی‌شود», so an unscoped locator matches
   // seven elements — which is how this assertion first failed.
-  const text = await page.locator('.page-head .page-head__sub').first().innerText();
+  const heading = page.locator('.page-head .page-head__sub').first();
   const fa = (m: string) => Number(m.replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))));
-  const total = text.match(/([۰-۹]+)\s*محصول/);
-  const sellable = text.match(/([۰-۹]+)\s*قابل خرید/);
-  if (!total || !sellable) throw new Error(`heading did not carry both counts: «${text}»`);
-  return { total: fa(total[1]!), sellable: fa(sellable[1]!) };
+
+  // Polled, not read once — and this is a real race, not a slow machine.
+  //
+  // `ProductsPage` draws this heading unconditionally from state that starts at
+  // zero and is filled in when `api.products()` resolves, so between `goto` and
+  // the response the screen genuinely says «۰ محصول · ۰ قابل خرید». That parses
+  // perfectly, so `innerText()` returned a well-formed WRONG answer and the
+  // assertion below it failed with «expected >= 2, received 0» — which reads as
+  // a broken shop rather than as a page that had not finished loading. It fired
+  // once in CI on 2026-08-27 and had been latent for as long as the helper has
+  // existed.
+  //
+  // A seeded shop always has products, so a zero TOTAL is the pre-fetch render
+  // rather than an answer. `sellable` is deliberately NOT part of the condition:
+  // zero sellable is a legitimate result — it is exactly what this file switches
+  // a panel off to produce.
+  let counts: { total: number; sellable: number } | null = null;
+  await expect(async () => {
+    const text = await heading.innerText();
+    const total = text.match(/([۰-۹]+)\s*محصول/);
+    const sellable = text.match(/([۰-۹]+)\s*قابل خرید/);
+    if (!total || !sellable) throw new Error(`heading did not carry both counts: «${text}»`);
+    const parsed = { total: fa(total[1]!), sellable: fa(sellable[1]!) };
+    expect(
+      parsed.total,
+      `the heading still reads «${text}» — the product list has not arrived`,
+    ).toBeGreaterThan(0);
+    counts = parsed;
+  }).toPass();
+  return counts!;
 }
 
 test('switching a panel off moves exactly its configs out of «قابل خرید»', async ({ page }) => {

@@ -42,3 +42,10 @@ deploy/*.env
 deploy/**/*.env
 *.env
 !*.env.example
+
+# Machine-readable test reports. Written by every CI shard (vitest) and by the
+# browser walk (playwright), uploaded as artifacts, and read back by
+# `tools/ci-verify-gate.ts` in the Required Quality Gate. Never committed —
+# the numbers that ARE committed live in `.github/ci-baseline.json`.
+vitest-report.json
+playwright-report.json
