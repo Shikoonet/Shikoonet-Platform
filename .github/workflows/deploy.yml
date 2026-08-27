@@ -1,0 +1,300 @@
+# Approved, merged, green `main` → staging. Production only when told twice.
+#
+# The server half of this already existed and had nothing calling it:
+# `deploy/deploy.sh` runs ON the box as `shikoo-deploy` and owns everything that
+# is not "build an image" — migrations first, the bot last, the smoke test, the
+# rollback. Its own header says it is "invoked over SSH by the GitHub deploy
+# workflow", and that workflow was never written. This is it.
+#
+# ══════════════════════════════════════════════════════════════════════════
+# THIS FILE IS THE ONLY THING THAT DEPLOYS, AND THE ONLY THING THAT GATES
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Native Coolify auto-deploy is off on every application. The polling timer is
+# disabled. This repository is private on GitHub Free, which means: no rulesets,
+# no required reviews, and no required reviewers on Environments — the
+# Environment gate people reach for FIRST does not exist on this plan, and a
+# workflow that relied on it would look gated and be wide open.
+#
+# So every guarantee a branch protection rule would have given is re-derived
+# here, from the API, at deploy time, by `deploy/approval-gate.sh`. It runs
+# BEFORE anything is built and before any job that can see a deployment secret
+# exists. Read that file before changing this one.
+#
+# ── Why `workflow_run`, and why three conditions and not one ───────────────
+#
+# `workflow_run` is the only trigger that can say "after CI passed". It is also
+# a trigger that runs with write scope on a repository, so it is only ever safe
+# when it refuses everything it did not mean:
+#
+#   conclusion == 'success'    cancelled and skipped are not passes
+#   event      == 'push'       a CI run FROM A PULL REQUEST must never deploy.
+#                              This is the important one: a fork PR's CI run
+#                              completing is attacker-triggerable, and without
+#                              this line it reaches the deploy path.
+#   head_branch == 'main'      belt to the `branches:` filter above it
+#
+# and then builds `github.event.workflow_run.head_sha` — never a default
+# checkout, which on this trigger is the branch tip and may already be a commit
+# nothing has tested.
+#
+# ── Why no build cache ─────────────────────────────────────────────────────
+#
+# A GitHub Actions build cache is written by pull request runs too, and a PR
+# needs no approval to run CI. A poisoned layer would then be pulled into the
+# image that goes to production, under a digest the gate above had blessed. The
+# rebuild costs minutes; the cache costs the entire provenance chain.
+#
+# `no-cache: true` says it to the builder. The deploy test also greps this file
+# for any cache backend being configured, so the two cannot drift.
+#
+# ── Production is OFF, and stays OFF until a variable says otherwise ───────
+#
+# `vars.PRODUCTION_AUTO_DEPLOY == 'true'` — an exact string comparison, so
+# missing, empty, `false`, `TRUE`, `1` and `yes` are all OFF. The job does not
+# merely skip its steps: it does not run, so its `environment: production` is
+# never entered and the production secrets are never loaded into any runner.
+#
+# The variable is deliberately NOT created. The first rollout is staging-only.
+#
+# ── Promotion re-uses the digest. It never rebuilds ────────────────────────
+#
+# `workflow_dispatch` takes the run id of a Deploy run that reached staging and
+# reads the digest out of that run's artifact. The artifact only exists if the
+# staging job succeeded, and the staging job only runs if the approval gate
+# passed — so the artifact IS the evidence, and promotion cannot invent a
+# digest that never passed anything.
+
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      staging_run_id:
+        description: 'Run id of the Deploy run whose digest passed staging'
+        required: true
+        type: string
+
+# Read-only by default. Every job that needs more says so itself, and no job
+# gets `packages: write` except the one that pushes the image.
+permissions:
+  contents: read
+
+# One deploy at a time, across every trigger, and never cancel one in flight:
+# `deploy.sh` holds a flock on the box, and killing the SSH client does not
+# reach the process behind it — a cancelled run would leave the lock held and
+# the next run would fail on a deploy that is still going.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  # Lowercase because a registry path must be, and `github.repository` is not.
+  # The same string is written into the Coolify application records, which is
+  # the other place it has to match.
+  IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
+
+jobs:
+  # ────────────────────────────────────────────────────────────────── gate
+  # No `environment:`, so this job cannot see a deployment secret even by
+  # accident. Its only credential is the run's own GITHUB_TOKEN, read-only
+  # except for the three scopes the API calls need.
+  gate:
+    name: gate
+    if: >-
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      sha: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The commit CI passed, explicitly. Never the default ref.
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: approval provenance
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/approval-gate.sh "${{ github.repository }}" "${{ github.event.workflow_run.head_sha }}"
+
+  # ───────────────────────────────────────────────────────────────── image
+  # Built once, from the sha the gate approved, and pushed once. Everything
+  # downstream deploys the DIGEST this job resolves.
+  image:
+    name: image
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:sha-${{ needs.gate.outputs.sha }}
+          # `deploy.sh` reads this label back off the pulled image and refuses
+          # the deploy when it is not the commit it was asked for. It is the
+          # whole of what stops a digest built from another tree reaching an
+          # application record, so it is not decoration.
+          labels: org.opencontainers.image.revision=${{ needs.gate.outputs.sha }}
+          # No layer cache at all. See the header: a shared build cache is
+          # writable by pull request runs, which need no approval to start.
+          no-cache: true
+          provenance: false
+
+  # ─────────────────────────────────────────────────────────────── staging
+  staging:
+    name: staging
+    needs: [gate, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          # The staging bot stays OFF. Only the exact lowercase string `true`
+          # would start it, and this is not that string.
+          DEPLOY_BOT_ENABLED: 'false'
+        run: bash deploy/over-ssh.sh staging
+
+      # The digest that actually passed staging, written down so a later
+      # promotion cannot be handed anything else.
+      - name: record the digest staging passed
+        run: |
+          set -Eeuo pipefail
+          mkdir -p out
+          printf '%s\n' "${{ needs.image.outputs.digest }}" > out/digest
+          printf '%s\n' "${{ needs.gate.outputs.sha }}" > out/sha
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: staging-digest
+          path: out/
+          retention-days: 30
+
+  # ──────────────────────────────────────────────────────────── production
+  # Does not run, rather than runs and skips: a job that never starts never
+  # enters `environment: production` and never has its secrets loaded.
+  production:
+    name: production
+    needs: [gate, image, staging]
+    if: vars.PRODUCTION_AUTO_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The SAME digest staging ran. Not a rebuild, not a tag.
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          DEPLOY_BOT_ENABLED: 'false'
+        run: bash deploy/over-ssh.sh production
+
+  # ─────────────────────────────────────────────────────────────── promote
+  # The deliberate, second «yes». Takes the run id of a Deploy run that reached
+  # staging and re-deploys THAT run's digest to production, without building
+  # anything. The artifact only exists if staging succeeded, and staging only
+  # runs behind the approval gate — so there is no way to promote a digest that
+  # was never approved and never smoke-tested.
+  promote:
+    name: promote
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: staging-digest
+          path: out
+          run-id: ${{ inputs.staging_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: read
+        name: read the digest staging passed
+        run: |
+          set -Eeuo pipefail
+          digest=$(tr -d '[:space:]' < out/digest)
+          sha=$(tr -d '[:space:]' < out/sha)
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "refusing: '$digest' is not a digest" >&2; exit 1 ;;
+          esac
+          echo "$sha" | grep -qE '^[0-9a-f]{40}$' ||
+            { echo "refusing: '$sha' is not a full commit sha" >&2; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ steps.read.outputs.digest }}
+          SHA: ${{ steps.read.outputs.sha }}
+          DEPLOY_BOT_ENABLED: 'false'
+        run: bash deploy/over-ssh.sh production

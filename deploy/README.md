@@ -133,12 +133,77 @@ there is nothing to configure in Coolify. Leave those fields empty.
 | `bot`       | the heartbeat file's mtime, fresher than 90s. The bot opens no port — it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name — so a file the poll loop touches every cycle is what "alive" means for it |
 
 
-## Merged, approved and green → deployed, at that exact sha
+## Green main → staging → production, at one immutable digest
 
-`deploy/autodeploy.sh` runs on the Coolify server every two minutes under
-`shikoo-autodeploy.timer`. It is the **only** thing allowed to deploy this
-project, and it deploys a commit only when all of the following are true of that
-one sha:
+**This is the live path**, and it replaced the polling timer described in the
+next section. `.github/workflows/deploy.yml` fires on a successful CI run of
+`main`, builds ONE image, pushes it to `ghcr.io/shikoonet/shikoonet-platform`,
+and hands the digest to `deploy/deploy.sh` over SSH — first to `staging`, then
+to `production`. Both environments run the identical bytes, and `deploy.sh`
+refuses any digest whose `org.opencontainers.image.revision` label is not the
+commit it was told to deploy.
+
+`deploy.sh` runs ON the box as `shikoo-deploy` and owns everything a deploy
+decides: migrations before any application is touched, the bot last, the smoke
+test, the bot-singleton check, and the rollback. `deploy/over-ssh.sh` is the
+GitHub half — it copies `deploy.sh` up from the commit being deployed, so what
+runs is always what was reviewed.
+
+### The approval gate, and why it is not an Environment reviewer
+
+This repository is **private on GitHub Free**: no rulesets, no required reviews,
+and **no required reviewers on Environments**. The gate everybody reaches for
+first does not exist on this plan, and a workflow that relied on it would look
+gated and be wide open.
+
+So `deploy/approval-gate.sh` re-derives it from the API, before anything is
+built and before any job that can read a deployment secret exists:
+
+| it refuses | because |
+| ---------- | ------- |
+| a commit no merged PR produced | a direct push to `main` must not deploy, and nothing else can stop one here |
+| an approval by the PR's author | self-approval is not review |
+| an approval by a bot | a machine agreeing with a machine is not the guarantee being rebuilt |
+| a `COMMENTED` review | it is not an approval |
+| an approval on a superseded head | GitHub keeps the old row for ever; the reviewer approved a different tree |
+| any outstanding `CHANGES_REQUESTED` on the final head | somebody looked and said no, which is worse than nobody looking |
+| a red or missing `Required Quality Gate` on that final head | — |
+| a `main` that moved while this was being evaluated | the log would name a commit that is not what went out |
+| any API call that fails | fail closed, always |
+
+`deploy/test/deploy-pipeline.test.sh` drives every one of those against a fake
+GitHub, and runs in CI under `Required Quality Gate`.
+
+### Production is OFF
+
+`vars.PRODUCTION_AUTO_DEPLOY == 'true'`, an exact string comparison — missing,
+empty, `false`, `TRUE`, `1` and `yes` are all OFF. **That variable does not
+exist**, and creating it is a deliberate act. While it is absent the production
+job does not run at all, so `environment: production` is never entered and its
+secrets are never loaded onto a runner.
+
+To promote a digest that staging has already run, use the workflow's
+`workflow_dispatch` with the run id of the Deploy run that reached staging. It
+re-deploys that run's recorded digest and never rebuilds.
+
+### The bot is OFF
+
+`DEPLOY_BOT_ENABLED`, and only the exact lowercase string `true` enables it.
+When it is off the bot is not pinned, not deployed, not started, not
+health-checked, not counted in the singleton assertion and not rolled back — its
+Coolify safety configuration is still validated. Both `over-ssh.sh` and
+`deploy.sh` fail closed on their own.
+
+### Superseded: the polling timer
+
+`deploy/autodeploy.sh` and `shikoo-autodeploy.timer` were the earlier design.
+The timer is **disabled** on the server and the section below is kept for the
+guards it explains, not as a description of what runs. Do not enable it: two
+deployers racing for the same applications is worse than either alone.
+
+`deploy/autodeploy.sh` ran on the Coolify server every two minutes under
+`shikoo-autodeploy.timer`. It deployed a commit only when all of the following
+were true of that one sha:
 
 ```
 merged PR into main  →  approved by a non-author  →  push run green
