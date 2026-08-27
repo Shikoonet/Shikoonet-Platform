@@ -22,6 +22,7 @@ const PANEL = {
   name: 'پنل تست',
   code: 'test-panel',
   status: 'ACTIVE',
+  hasGroups: true,
   capacity: null,
   liveSubscriptions: 0,
 };
@@ -193,5 +194,46 @@ describe('the catalogue screen', () => {
     await waitFor(() => expect(panelGroups).toHaveBeenCalled());
     // Two services, one panel. A call per row would be a call per service.
     expect(panelGroups).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Not every product is delivered by a panel.
+ *
+ * Sam sold a Spotify account on 2026-08-27, through the `manual` route, and the
+ * row said «گروهی انتخاب نشده» twice about a service that was working — because
+ * both columns took «no groups» to mean «none were chosen» rather than «this
+ * kind has none». The screen also asked the groups endpoint about it, once per
+ * render, and got a 404 every time.
+ */
+describe('a delivery route that has no groups', () => {
+  const MANUAL = { ...PANEL, id: 4, name: 'تحویل دستی', code: 'manual-delivery', hasGroups: false };
+  const SPOTIFY: ServiceRow = {
+    ...service(20, 'اسپاتیفای پریمیوم', [], ['۱ ماهه']),
+    kind: 'spotify',
+    groupIds: null,
+    panel: MANUAL,
+  };
+
+  beforeEach(() => {
+    catalog.mockImplementation(async () => ({
+      ok: true, total: 1, page: 1, pageSize: 25, items: [SPOTIFY], panels: [MANUAL],
+    }));
+  });
+
+  it('says how it is delivered instead of which groups it failed to name', async () => {
+    draw();
+    await waitFor(() => expect(screen.getByText('svc-20')).toBeTruthy());
+    expect(screen.getByText('تحویل دستی', { selector: '.badge' })).toBeTruthy();
+    // The whole point: the warning that was not a warning.
+    expect(screen.queryByText('گروهی انتخاب نشده')).toBeNull();
+  });
+
+  it('does not ask a groupless route for its groups', async () => {
+    draw();
+    await waitFor(() => expect(screen.getByText('svc-20')).toBeTruthy());
+    // Asserted after the row is on screen, so this cannot pass merely by being
+    // checked before the effect had a chance to run.
+    expect(panelGroups).not.toHaveBeenCalled();
   });
 });

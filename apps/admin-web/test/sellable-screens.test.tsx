@@ -22,6 +22,7 @@ const LIVE: PanelRef = {
   name: 'پنل زنده',
   code: 'live',
   status: 'ACTIVE',
+  hasGroups: true,
   capacity: null,
   liveSubscriptions: 0,
 };
@@ -209,5 +210,24 @@ describe('«دسته‌بندی‌ها» explains what it does', () => {
     // An empty screen is an invitation to act, and the likely cause is named.
     await draw([category({ id: 1, sellableCount: 0, planCount: 0, productsCount: 0 })]);
     await waitFor(() => expect(screen.getByText(/فروشگاه در ربات خالی است/)).toBeTruthy());
+  });
+
+  /*
+   * Seen live on 2026-08-27: the route answered 500 and the page reported
+   * «هیچ دسته‌بندی‌ای چیز خریدنی ندارد» and «هنوز دسته‌بندی‌ای ساخته نشده» —
+   * both stated as fact, both derived from an empty `rows` that only meant the
+   * request had failed. A screen that cannot tell «zero» from «I do not know»
+   * lies most confidently exactly when it knows least.
+   */
+  it('reports the failure instead of describing a shop it could not read', async () => {
+    productCategories.mockRejectedValue(new Error('500'));
+    render(
+      <RoleProvider role="ADMIN">
+        <CategoriesPage />
+      </RoleProvider>,
+    );
+    await waitFor(() => expect(screen.getByText('500')).toBeTruthy());
+    expect(screen.queryByText(/فروشگاه در ربات خالی است/)).toBeNull();
+    expect(screen.queryByText(/هنوز دسته‌بندی‌ای ساخته نشده/)).toBeNull();
   });
 });
