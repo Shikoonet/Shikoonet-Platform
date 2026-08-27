@@ -231,8 +231,9 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
           SHA: ${{ needs.gate.outputs.sha }}
-          # The staging bot stays OFF. Only the exact lowercase string `true`
-          # would start it, and this is not that string.
+          # The staging bot stays OFF, and this is the one that must: staging
+          # shares the shop's Telegram token, and a second poller would take
+          # updates away from the bot real customers are talking to.
           DEPLOY_BOT_ENABLED: 'false'
           # Carried to the box so the deploy ledger records WHICH policy let
           # this out — «solo-owner» is not the same fact as «team-approved».
@@ -281,7 +282,21 @@ jobs:
           # The SAME digest staging ran. Not a rebuild, not a tag.
           IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
           SHA: ${{ needs.gate.outputs.sha }}
-          DEPLOY_BOT_ENABLED: 'false'
+          # The bot ships with production, and only with production.
+          #
+          # It was excluded everywhere, and the cost of that showed: it sat on
+          # `7b21ba3` for five hours while the panel moved on, so a feature that
+          # had shipped was invisible to every customer and nothing said why.
+          #
+          # `deploy.sh` deploys it LAST, after the migrations and after the two
+          # services that only answer ports, and then asserts that exactly one
+          # poller holds the advisory lock — so a restart that produced zero
+          # pollers, or two, fails the deploy instead of being discovered by a
+          # customer whose message goes unanswered.
+          #
+          # Staging keeps it off below: a second bot polling the same Telegram
+          # token would take updates from the real one.
+          DEPLOY_BOT_ENABLED: 'true'
           DEPLOY_APPROVAL_POLICY: ${{ needs.gate.outputs.policy }}
         run: bash deploy/over-ssh.sh production
 
@@ -389,6 +404,10 @@ jobs:
           # The SAME digest staging ran. Nothing is rebuilt here.
           IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.promote-gate.outputs.digest }}
           SHA: ${{ needs.promote-gate.outputs.sha }}
-          DEPLOY_BOT_ENABLED: 'false'
+          # A promotion IS a production deploy, so it carries the bot too —
+          # otherwise promoting would quietly leave the bot a version behind
+          # and the two production paths would disagree about what «deployed»
+          # means.
+          DEPLOY_BOT_ENABLED: 'true'
           DEPLOY_APPROVAL_POLICY: promoted-by-hand
         run: bash deploy/over-ssh.sh production
