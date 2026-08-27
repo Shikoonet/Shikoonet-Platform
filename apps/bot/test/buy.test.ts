@@ -74,7 +74,7 @@ beforeAll(async () => {
 });
 
 describe('walking from /start to an order', () => {
-  it('greets with the menu, lists panels, lists plans, and books the order', async () => {
+  it('greets, lists categories, then tiers, then prices, and books the order', async () => {
     const { updateId, telegramId } = ids();
     const vip = await providerId('sim-vip');
     const plan = await planId('sim-vip-1m-50');
@@ -101,33 +101,40 @@ describe('walking from /start to an order', () => {
     expect(offered.some((d) => d?.startsWith('panel:'))).toBe(false);
     expect(offered.some((d) => d?.startsWith('prd:'))).toBe(false);
 
-    // The category's price list — the first screen carrying a number.
-    const priced = await handleUpdate(db, press(updateId + 2, telegramId, `cat:${category}`));
-    expect(priced.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(
-      `plan:${plan}`,
-    );
+    // The category's SERVICE list — the tiers, which carry no price because a
+    // tier does not have one. Connected on 2026-08-27; before that this screen
+    // drew every size of every tier in one ladder.
+    const tiers = await handleUpdate(db, press(updateId + 2, telegramId, `cat:${category}`));
+    const tierButtons = tiers.replies[0]?.keyboard?.flat().map((b) => b.callback_data) ?? [];
+    expect(tierButtons).toContain(`prd:${product}`);
+    expect(tierButtons.some((d) => d?.startsWith('plan:'))).toBe(false);
+    // And a way back up to the categories, not only to the menu.
+    expect(tierButtons).toContain('buy');
 
+    // `sim-vip-1m-50` holds exactly one size, so pressing its tier does NOT
+    // draw a price list — it opens that price. Asserting a `plan:` button here
+    // would be asserting a screen the collapse rule says must not exist.
     // Both still reachable by buttons in messages sent before the change.
     // Telegram keeps a button pressable forever; an old one answering nothing
     // reads as a broken bot rather than an old screen.
-    const panel = await handleUpdate(db, press(updateId + 3, telegramId, `panel:${vip}`));
+    const panel = await handleUpdate(db, press(updateId + 4, telegramId, `panel:${vip}`));
     expect(panel.replies[0]?.text).toBe(menu.CHOOSE_PRODUCT);
     expect(panel.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(
       `prd:${product}`,
     );
 
-    const only = await handleUpdate(db, press(updateId + 4, telegramId, `prd:${product}`));
+    const only = await handleUpdate(db, press(updateId + 5, telegramId, `prd:${product}`));
     expect(only.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(
       `order:${plan}`,
     );
 
-    const detail = await handleUpdate(db, press(updateId + 5, telegramId, `plan:${plan}`));
+    const detail = await handleUpdate(db, press(updateId + 6, telegramId, `plan:${plan}`));
     expect(detail.replies[0]?.text).toContain('195,000 تومان');
     expect(detail.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toContain(
       `order:${plan}`,
     );
 
-    const placed = await handleUpdate(db, press(updateId + 6, telegramId, `order:${plan}`));
+    const placed = await handleUpdate(db, press(updateId + 7, telegramId, `order:${plan}`));
     expect(placed.status).toBe('processed');
     expect(placed.replies[0]?.text).toContain('سفارش شما ثبت شد');
 
@@ -233,9 +240,13 @@ describe('screens with nothing on them', () => {
     const outcome = await handleUpdate(db, press(updateId, telegramId, `panel:${empty}`));
 
     expect(outcome.replies[0]?.text).toBe(menu.PANEL_EMPTY);
-    // «بازگشت به منو» alone: this screen is only reachable from a button in an
-    // old message now, and the shop's first screen is one tap from the menu.
-    expect(outcome.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toEqual(['menu']);
+    // Two buttons since 2026-08-27. This screen is the SERVICE list again — the
+    // shop opens it from a category — so «بازگشت به دسته‌بندی‌ها» has somewhere
+    // to go. It had «منو» alone while the only way here was an expired button.
+    expect(outcome.replies[0]?.keyboard?.flat().map((b) => b.callback_data)).toEqual([
+      'buy',
+      'menu',
+    ]);
   });
 
   it('sends a stranger to /start rather than a menu', async () => {
@@ -324,7 +335,7 @@ describe('a panel that sells more than one level', () => {
    * identical. A panel could sell exactly one tier however many groups it had,
    * because `group_ids` lived only on the panel row.
    */
-  it('lists the category’s prices, with each size its own distinct button', async () => {
+  it('lists one tier’s prices, with each size its own distinct button', async () => {
     const { updateId, telegramId } = ids();
     const platinum = await productId('sim-vip-platinum');
     const category = await categoryIdOfProduct('sim-vip-platinum');
@@ -340,7 +351,16 @@ describe('a panel that sells more than one level', () => {
       'the category is on the shop screen',
     ).toBeDefined();
 
-    const inside = await handleUpdate(db, press(updateId + 2, telegramId, `cat:${category}`));
+    // The tier list, then this tier. Two screens where there used to be one,
+    // and the reason is the whole point of the level: «۳۰ گیگ — ۱۵۰٬۰۰۰» on a
+    // flat category screen does not say whether it is پلاتینیوم or معمولی.
+    const tiers = await handleUpdate(db, press(updateId + 2, telegramId, `cat:${category}`));
+    expect(
+      (tiers.replies[0]?.keyboard?.flat() ?? []).find((b) => b.callback_data === `prd:${platinum}`),
+      'the tier is on the category screen',
+    ).toBeDefined();
+
+    const inside = await handleUpdate(db, press(updateId + 3, telegramId, `prd:${platinum}`));
     const buttons = inside.replies[0]?.keyboard?.flat() ?? [];
     const mine = buttons.filter((b) =>
       ids3.some((id) => b.callback_data === `plan:${id}`),
@@ -353,20 +373,19 @@ describe('a panel that sells more than one level', () => {
     expect(new Set(mine.map((b) => b.text)).size).toBe(3);
     for (const b of mine) expect(b.text).not.toContain('پلاتینیوم');
 
-    // Cheapest first WITHIN the service, which is the default a category screen
-    // falls back to while nobody has arranged it: `sort_order` is 0 on every
-    // row, so the order is service, then price.
+    // Cheapest first, which is the default this screen falls back to while
+    // nobody has arranged it: `sort_order` is 0 on every row, so price decides.
     expect(mine[0]?.text).toContain('150,000');
     expect(mine[2]?.text).toContain('540,000');
 
-    const detail = await handleUpdate(db, press(updateId + 3, telegramId, `plan:${fifty}`));
+    const detail = await handleUpdate(db, press(updateId + 4, telegramId, `plan:${fifty}`));
     expect(detail.replies[0]?.text).toContain('220,000 تومان');
     const back = (detail.replies[0]?.keyboard?.flat() ?? []).map((b) => b.callback_data);
     expect(back).toContain(`order:${fifty}`);
-    // Back goes to the list it came from — the category — not to the service
-    // and not two levels up to the panel.
-    expect(back).toContain(`cat:${category}`);
-    expect(back).not.toContain(`prd:${platinum}`);
+    // Back goes to the list it came from — this tier's three sizes — not up to
+    // the category, and not two levels up to the panel.
+    expect(back).toContain(`prd:${platinum}`);
+    expect(back).not.toContain(`cat:${category}`);
     expect(back.some((d) => d?.startsWith('panel:'))).toBe(false);
   });
 });

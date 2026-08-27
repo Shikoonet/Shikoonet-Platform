@@ -39,6 +39,7 @@ const PLAN: CatalogPlan = {
   categoryId: 1,
   rowIndex: null,
   siblings: 1,
+  tiers: 1,
 };
 
 describe('the main menu', () => {
@@ -231,28 +232,39 @@ describe('the plan list', () => {
 });
 
 describe('«بازگشت» on a plan page', () => {
-  it('returns to the category’s list when it drew one', () => {
-    // `cat:`, not `prd:`. The shop became category-first on 2026-08-26 and the
-    // screen behind a plan page is the category's price list; `prd:` is only
-    // reachable now from a button sitting in an old chat, and sending a live
-    // customer back to it would take them somewhere the shop no longer draws.
-    const targets = callbacks(menu.planDetailMenu({ ...PLAN, siblings: 3 })).map(
+  it('returns to this service’s price list when it drew one', () => {
+    // The screen behind a plan page is the SERVICE's prices — «۳۰ گیگ», «۵۰
+    // گیگ» — since the service level was connected on 2026-08-27. Sending them
+    // to the category would skip the screen they were actually on.
+    const targets = callbacks(menu.planDetailMenu({ ...PLAN, siblings: 3, tiers: 2 })).map(
+      (b) => b.callback_data,
+    );
+    expect(targets).toContain('prd:7');
+    expect(targets).not.toContain('cat:1');
+    expect(targets).not.toContain('panel:7');
+  });
+
+  it('returns to the tier list when the service held a single price', () => {
+    // A service holding one plan opens that plan directly, so its price list
+    // was never drawn — but the category's tier list was, and that is where
+    // they came from.
+    const targets = callbacks(menu.planDetailMenu({ ...PLAN, siblings: 1, tiers: 3 })).map(
       (b) => b.callback_data,
     );
     expect(targets).toContain('cat:1');
     expect(targets).not.toContain('prd:7');
-    expect(targets).not.toContain('panel:7');
   });
 
-  it('returns to the shop’s first screen when it did not', () => {
-    // A category holding a single plan opens that plan directly, so there is no
-    // list to go back to. Sending them to one of one is a screen whose only
-    // button leads back where they just were.
-    const targets = callbacks(menu.planDetailMenu({ ...PLAN, siblings: 1 })).map(
+  it('returns to the shop’s first screen when neither list was drawn', () => {
+    // One service, one price: `buy` opened the plan itself. Sending them to a
+    // list of one is a screen whose only button leads back where they just were
+    // — which is the whole reason this is three cases and not one.
+    const targets = callbacks(menu.planDetailMenu({ ...PLAN, siblings: 1, tiers: 1 })).map(
       (b) => b.callback_data,
     );
     expect(targets).toContain('buy');
     expect(targets).not.toContain('cat:1');
+    expect(targets).not.toContain('prd:7');
   });
 });
 

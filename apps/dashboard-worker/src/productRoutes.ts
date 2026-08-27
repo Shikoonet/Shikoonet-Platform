@@ -456,6 +456,7 @@ interface ConfigRow {
   user_limit: number | null;
   status: string;
   sort_order: number;
+  row_index: number | null;
   orders_count: number;
 }
 
@@ -477,7 +478,7 @@ async function configsFor(db: D1Database, productIds: number[]): Promise<ConfigR
   const rows = await db
     .prepare(
       `SELECT pl.id, pl.product_id, pl.name, pl.badge, pl.price_irr, pl.duration_days, pl.volume_gb,
-              pl.user_limit, pl.status, pl.sort_order,
+              pl.user_limit, pl.status, pl.sort_order, pl.row_index,
               (SELECT COUNT(*) FROM orders o WHERE o.plan_id = pl.id) AS orders_count
          FROM product_plans pl
         WHERE pl.product_id IN (${holes})
@@ -528,6 +529,11 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
         userLimit: cf.user_limit,
         status: cf.status,
         sortOrder: cf.sort_order,
+        // What the bot breaks its rows on. Carried here since 2026-08-27
+        // because arranging a screen moved to this page, and an editor that
+        // could not read the current arrangement would silently offer to
+        // replace it with one button per row.
+        rowIndex: cf.row_index,
         ordersCount: Number(cf.orders_count),
       })),
   };
@@ -1332,7 +1338,19 @@ export function registerProductRoutes(
 
   /**
    * Save one shop screen's arrangement — the categories, or the configs inside
-   * one category.
+   * one SERVICE.
+   *
+   * It was `category:<id>` until 2026-08-27, and that scope named a screen the
+   * shop had stopped drawing. A category screen lists the SERVICES inside it —
+   * پلاتینیوم, طلایی, معمولی — and each service's prices live on its own screen
+   * one step further in. Arranging a whole category therefore put two configs
+   * from two different services on «the same row» of a screen where they never
+   * appear together, and the bot then drew them on two screens with the
+   * arrangement half-applied to each. The scope follows the screen.
+   *
+   * `products` has no `row_index`, so the SERVICE list itself is still one
+   * button per row. That is a migration and a separate slice; nothing here
+   * pretends otherwise.
    *
    * Two things about this route carry the whole feature.
    *
@@ -1364,8 +1382,8 @@ export function registerProductRoutes(
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
 
     const scope = c.req.param('scope');
-    const inCategory = /^category:(\d+)$/.exec(scope);
-    if (scope !== 'categories' && !inCategory) {
+    const inService = /^service:(\d+)$/.exec(scope);
+    if (scope !== 'categories' && !inService) {
       return c.json({ ok: false, error: 'unknown_scope' }, 404);
     }
 
@@ -1379,23 +1397,19 @@ export function registerProductRoutes(
 
     let table: 'product_categories' | 'product_plans';
     let scopeIds: number[];
-    if (inCategory) {
-      const categoryId = Number(inCategory[1]);
-      const cat = await c.env.DB.prepare(`SELECT id FROM product_categories WHERE id = ?1`)
-        .bind(categoryId)
+    if (inService) {
+      const productId = Number(inService[1]);
+      const svc = await c.env.DB.prepare(`SELECT id FROM products WHERE id = ?1`)
+        .bind(productId)
         .first<{ id: number }>();
-      if (!cat) return c.json({ ok: false, error: 'not_found' }, 404);
+      if (!svc) return c.json({ ok: false, error: 'not_found' }, 404);
       table = 'product_plans';
       // Every status, not only ACTIVE: the admin arranges the screen they are
       // looking at, and that screen holds the config they disabled last week.
       // Leaving disabled configs out of the scope would make every save a
       // MISSING_ID refusal.
-      const rows = await c.env.DB.prepare(
-        `SELECT pl.id FROM product_plans pl
-           JOIN products p ON p.id = pl.product_id
-          WHERE p.category_id = ?1`,
-      )
-        .bind(categoryId)
+      const rows = await c.env.DB.prepare(`SELECT id FROM product_plans WHERE product_id = ?1`)
+        .bind(productId)
         .all<{ id: number }>();
       scopeIds = (rows.results ?? []).map((r) => Number(r.id));
     } else {

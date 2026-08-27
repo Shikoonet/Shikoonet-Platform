@@ -28,7 +28,6 @@ import { decode, encode } from './callback.js';
 import type { CatalogCategory, CatalogPlan } from './catalog.js';
 import {
   categoriesForUser,
-  plansInCategory,
   plansInProduct,
   plansOnPanel,
   productsForUser,
@@ -1089,10 +1088,33 @@ async function categoryScreen(
   category: CatalogCategory,
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
 ): Promise<HandleOutcome> {
-  const plans = await plansInCategory(tx, user.id, category.categoryId);
+  // The LEVEL, not the price list.
+  //
+  // A category holds services — «پلاتینیوم», «طلایی», «معمولی» — and each of
+  // those holds its own sizes. Until 2026-08-27 this screen called
+  // `plansInCategory` and drew every size of every service in one flat ladder,
+  // which is precisely the shape `catalog.ts` says the service level exists to
+  // remove: three tiers' worth of «۳۰ گیگ» rows interleaved by price, with
+  // nothing on the button saying which tier a row belonged to.
+  //
+  // `prd:` and its screen were already built — only this call was missing.
+  const services = await productsForUser(tx, user.id, undefined, category.categoryId);
+  if (services.length === 0) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu([]));
+  if (services.length > 1) {
+    return screen(menu.categoryPlans(category.name), menu.productMenu(services));
+  }
+
+  // A list of one is not a choice — the same rule the category list follows one
+  // level up. A category holding a single service opens that service's prices
+  // directly, and a service holding a single price opens the price. Every
+  // catalogue migrated from the PHP bot is one service per category with one
+  // plan in it, so for those customers this collapses to exactly the two
+  // screens they have today.
+  const only = services[0]!;
+  const plans = await plansInProduct(tx, user.id, only.productId);
   if (plans.length === 0) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu([]));
   if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
-  return screen(menu.categoryPlans(category.name), menu.planMenu(plans, user.discount_percent));
+  return screen(menu.choosePlan(only.name), menu.planMenu(plans, user.discount_percent));
 }
 
 async function handleCallback(

@@ -69,6 +69,7 @@ describe('a composed config name, seen by the bot', () => {
       categoryId: 1,
       rowIndex: null,
       siblings: 2,
+      tiers: 1,
       ...plan,
     };
     return planMenu([full], discountPercent)[0]![0]!.text;
