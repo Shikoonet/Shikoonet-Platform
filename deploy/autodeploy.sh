@@ -410,8 +410,9 @@ pr_number=$(printf '%s' "$pr" | jq -r '.number')
 R_PR="#${pr_number}"
 pr_author=$(printf '%s' "$pr" | jq -r '.user.login // empty')
 pr_head=$(printf '%s' "$pr" | jq -r '.head.sha // empty')
-[ -n "$pr_author" ] && [ -n "$pr_head" ] ||
+if [ -z "$pr_author" ] || [ -z "$pr_head" ]; then
   die "PR #${pr_number} came back without an author or a head sha"
+fi
 
 gh "/pulls/${pr_number}/reviews?per_page=100" ||
   die "could not read the reviews on PR #${pr_number} (HTTP ${gh_status})"
