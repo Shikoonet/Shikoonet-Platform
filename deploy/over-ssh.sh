@@ -33,6 +33,17 @@ case "$ENV_ARG" in
     ;;
 esac
 
+# An immutable digest or nothing. `deploy.sh` refuses a mutable tag too, but
+# refusing it HERE means a bad promotion input never reaches the box, never
+# opens an SSH session and never takes the deploy flock.
+case "${IMAGE_REF:-}" in
+  *@sha256:*) ;;
+  *)
+    echo "refusing: IMAGE_REF is not an immutable digest: '${IMAGE_REF:-}'" >&2
+    exit 1
+    ;;
+esac
+
 for required in DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DEPLOY_HOST DEPLOY_USER REGISTRY_TOKEN IMAGE_REF; do
   [ -n "${!required:-}" ] || {
     echo "refusing: $required is empty — check the $ENV_ARG environment's secrets" >&2
@@ -49,6 +60,16 @@ echo "$SHA" | grep -qE '^[0-9a-f]{40}$' || {
 }
 
 PORT=${DEPLOY_PORT:-22}
+
+# Normalised to exactly `true` or exactly `false` before it crosses the wire, so
+# the remote script is never handed `TRUE`, `1` or `yes` to interpret. Both ends
+# fail closed on their own; this is the second of the two.
+if [ "${DEPLOY_BOT_ENABLED:-}" = 'true' ]; then
+  BOT_FLAG=true
+else
+  BOT_FLAG=false
+fi
+echo "==> $ENV_ARG: bot enabled = $BOT_FLAG"
 
 # 0700 dir, 0600 key. `ssh` refuses a key any wider than that, which is a
 # check worth keeping rather than working around with `-o StrictModes=no`.
@@ -82,4 +103,4 @@ echo "==> $ENV_ARG: deploying $IMAGE_REF"
 # and asking for one puts the remote script's prompt characters in the log.
 printf '%s' "$REGISTRY_TOKEN" |
   ssh -T "${SSH_OPTS[@]}" -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
-    "bash /opt/shikoo/deploy.sh $ENV_ARG '$IMAGE_REF' '$SHA' '' --registry-token-stdin"
+    "DEPLOY_BOT_ENABLED='$BOT_FLAG' bash /opt/shikoo/deploy.sh $ENV_ARG '$IMAGE_REF' '$SHA' '' --registry-token-stdin"

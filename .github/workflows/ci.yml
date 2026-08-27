@@ -512,6 +512,13 @@ jobs:
       - name: autodeploy — exact-SHA behaviour
         run: bash deploy/test/autodeploy.test.sh
 
+      # The live deploy path: the approval gate, the bot switch, the deploy
+      # lock, and the assertions about `deploy.yml` that actionlint cannot
+      # make — «a CI run from a pull request cannot deploy» is a property of
+      # the file's meaning, not of its syntax.
+      - name: deploy pipeline — gate, bot switch, digest promotion
+        run: bash deploy/test/deploy-pipeline.test.sh
+
   # -----------------------------------------------------------------------
   # Secret detection.
   #
