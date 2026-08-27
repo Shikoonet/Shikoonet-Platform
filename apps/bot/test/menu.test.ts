@@ -30,6 +30,7 @@ const PLAN: CatalogPlan = {
   productName: '۱ماهه - ۵۰ گیگ',
   planName: '۱ماهه - ۵۰ گیگ',
   badge: null,
+  buttonStyle: null,
   priceIrr: 1_950_000,
   durationDays: 30,
   volumeGb: 50,
@@ -203,11 +204,27 @@ describe('the plan list', () => {
     expect(rows[0]?.[0]?.text).toBe('🔴 آف ۵۰ گیگ — 195,000 تومان');
     // A category badge is the same field on the same side.
     const cats = menu.categoryMenu([
-      { categoryId: 1, name: 'اروپا', badge: '🆕', rowIndex: null },
-      { categoryId: 2, name: 'آسیا', badge: null, rowIndex: null },
+      { categoryId: 1, name: 'اروپا', badge: '🆕', buttonStyle: null, rowIndex: null },
+      { categoryId: 2, name: 'آسیا', badge: null, buttonStyle: null, rowIndex: null },
     ]);
     expect(cats[0]?.[0]?.text).toBe('🆕 اروپا');
     expect(cats[1]?.[0]?.text).toBe('آسیا');
+  });
+
+  it('paints the whole button, and leaves `style` off when there is no colour', () => {
+    // Bot API 9.4's `style`. The KEY has to be absent and not null on a button
+    // with no colour: `null` is a value Telegram refuses, and «omitted» is what
+    // «the client's own default» is spelled as.
+    const cats = menu.categoryMenu([
+      { categoryId: 1, name: 'اروپا', badge: '🆕', buttonStyle: 'primary', rowIndex: null },
+      { categoryId: 2, name: 'آسیا', badge: null, buttonStyle: null, rowIndex: null },
+    ]);
+    expect(cats[0]?.[0]?.style).toBe('primary');
+    expect(cats[1]?.[0]).not.toHaveProperty('style');
+    // A plan's button is the same field, and the colour does not touch the label.
+    const plans = menu.planMenu([{ ...PLAN, buttonStyle: 'danger', planName: '۵۰ گیگ' }]);
+    expect(plans[0]?.[0]?.style).toBe('danger');
+    expect(plans[0]?.[0]?.text).toBe('۵۰ گیگ — 195,000 تومان');
   });
 
   it('goes back to the service list, which is the shop first screen', () => {

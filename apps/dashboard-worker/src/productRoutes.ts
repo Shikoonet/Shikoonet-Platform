@@ -100,9 +100,25 @@ const BADGE = z
   .regex(/^[^\r\n\t]+$/, 'badge is one line')
   .nullable();
 
+/**
+ * The whole button's colour — Bot API 9.4's `style`, straight through.
+ *
+ * The three names are Telegram's, and they are spelled the same here, in
+ * 0034's CHECK and in the bot's `ButtonStyle`, so the string is never
+ * translated on its way from the form to the keyboard JSON. Nullable is the
+ * fourth option and it is «the client's own default», not «no colour»: the
+ * field is simply left off the button.
+ *
+ * A colour is NOT a badge. `badge` is text drawn in front of the name and this
+ * is the button underneath it; «🔥 آف» in red is both, and the panel offers
+ * them as two controls because they are two things.
+ */
+const BUTTON_STYLE = z.enum(['primary', 'success', 'danger']).nullable();
+
 const PLAN_FIELDS = {
   name: z.string().trim().min(1).max(120),
   badge: BADGE,
+  buttonStyle: BUTTON_STYLE,
   priceIrr: z.number().int().min(0).max(MAX_SINGLE_PAYMENT_IRR),
   durationDays: z.number().int().positive().max(3650).nullable(),
   volumeGb: z.number().min(0).max(100_000).nullable(),
@@ -129,6 +145,7 @@ const PlanPatch = z
   .object({
     name: PLAN_FIELDS.name.optional(),
     badge: PLAN_FIELDS.badge.optional(),
+    buttonStyle: PLAN_FIELDS.buttonStyle.optional(),
     priceIrr: PLAN_FIELDS.priceIrr.optional(),
     durationDays: PLAN_FIELDS.durationDays.optional(),
     volumeGb: PLAN_FIELDS.volumeGb.optional(),
@@ -150,6 +167,7 @@ const PlanCreate = z
   .object({
     name: PLAN_FIELDS.name,
     badge: PLAN_FIELDS.badge.default(null),
+    buttonStyle: PLAN_FIELDS.buttonStyle.default(null),
     priceIrr: PLAN_FIELDS.priceIrr,
     durationDays: PLAN_FIELDS.durationDays.default(null),
     volumeGb: PLAN_FIELDS.volumeGb.default(null),
@@ -266,6 +284,7 @@ const ProductStatusBody = z.object({ status: z.enum(STATUSES) }).strict();
 const CATEGORY_FIELDS = {
   name: z.string().trim().min(1).max(80),
   badge: BADGE,
+  buttonStyle: BUTTON_STYLE,
   sortOrder: z.number().int().min(0).max(10_000),
   active: z.boolean(),
 };
@@ -274,6 +293,7 @@ const CategoryBody = z
   .object({
     name: CATEGORY_FIELDS.name,
     badge: CATEGORY_FIELDS.badge.default(null),
+    buttonStyle: CATEGORY_FIELDS.buttonStyle.default(null),
     sortOrder: CATEGORY_FIELDS.sortOrder.default(0),
     active: CATEGORY_FIELDS.active.default(true),
   })
@@ -283,6 +303,7 @@ const CategoryPatch = z
   .object({
     name: CATEGORY_FIELDS.name.optional(),
     badge: CATEGORY_FIELDS.badge.optional(),
+    buttonStyle: CATEGORY_FIELDS.buttonStyle.optional(),
     sortOrder: CATEGORY_FIELDS.sortOrder.optional(),
     active: CATEGORY_FIELDS.active.optional(),
   })
@@ -322,6 +343,7 @@ interface PlanRow {
   plan_name: string;
   price_irr: number;
   badge: string | null;
+  button_style: 'primary' | 'success' | 'danger' | null;
   duration_days: number | null;
   volume_gb: number | null;
   user_limit: number | null;
@@ -354,6 +376,7 @@ function shape(r: PlanRow) {
     id: r.id,
     name: r.plan_name,
     badge: r.badge,
+    buttonStyle: r.button_style,
     priceIrr: Number(r.price_irr),
     durationDays: r.duration_days,
     // numeric(12,3) arrives as a number through the adapter; NULL means
@@ -400,6 +423,7 @@ function shapeCategory(r: {
   id: number;
   name: string;
   badge: string | null;
+  button_style?: 'primary' | 'success' | 'danger' | null;
   active: boolean;
   sort_order: number;
   row_index: number | null;
@@ -411,6 +435,7 @@ function shapeCategory(r: {
     id: Number(r.id),
     name: r.name,
     badge: r.badge,
+    buttonStyle: r.button_style ?? null,
     active: r.active,
     sortOrder: r.sort_order,
     rowIndex: r.row_index,
@@ -583,7 +608,8 @@ const PANEL_CEILING = `
              AND s.status IN ('ACTIVE', 'ON_HOLD')) AS provider_live`;
 
 const SELECT_PLAN = `
-  SELECT pl.id, pl.name AS plan_name, pl.badge, pl.price_irr, pl.duration_days, pl.volume_gb,
+  SELECT pl.id, pl.name AS plan_name, pl.badge, pl.button_style, pl.price_irr,
+         pl.duration_days, pl.volume_gb,
          pl.user_limit, pl.status AS plan_status, pl.sort_order, pl.row_index,
          p.id AS product_id, p.code AS product_code, p.name AS product_name,
          p.kind AS product_kind, p.status AS product_status,
@@ -1001,6 +1027,7 @@ export function registerProductRoutes(
     };
     if (patch.name !== undefined) put('name', patch.name);
     if (patch.badge !== undefined) put('badge', patch.badge);
+    if (patch.buttonStyle !== undefined) put('button_style', patch.buttonStyle);
     if (patch.priceIrr !== undefined) put('price_irr', patch.priceIrr);
     if (patch.durationDays !== undefined) put('duration_days', patch.durationDays);
     if (patch.volumeGb !== undefined) put('volume_gb', patch.volumeGb);
@@ -1105,7 +1132,8 @@ export function registerProductRoutes(
    */
   app.get('/api/v1/admin/product-categories', async (c) => {
     const rows = await c.env.DB.prepare(
-      `SELECT cat.id, cat.name, cat.badge, cat.active, cat.sort_order, cat.row_index,
+      `SELECT cat.id, cat.name, cat.badge, cat.button_style, cat.active, cat.sort_order,
+              cat.row_index,
               (SELECT COUNT(*) FROM products p WHERE p.category_id = cat.id) AS products,
               -- Configs, not services. The sellable count below is in configs
               -- too, and two numbers on one card in two different units read as
@@ -1125,6 +1153,7 @@ export function registerProductRoutes(
       id: number;
       name: string;
       badge: string | null;
+      button_style: 'primary' | 'success' | 'danger' | null;
       active: boolean;
       sort_order: number;
       row_index: number | null;
@@ -1154,11 +1183,17 @@ export function registerProductRoutes(
     // than looking first keeps two admins typing «آلمان» at once from both
     // being told they succeeded.
     const row = await c.env.DB.prepare(
-      `INSERT INTO product_categories (name, badge, active, sort_order)
-            VALUES (?1, ?2, ?3, ?4)
+      `INSERT INTO product_categories (name, badge, button_style, active, sort_order)
+            VALUES (?1, ?2, ?3, ?4, ?5)
        ON CONFLICT (name) DO NOTHING RETURNING id`,
     )
-      .bind(body.data.name, body.data.badge, body.data.active, body.data.sortOrder)
+      .bind(
+        body.data.name,
+        body.data.badge,
+        body.data.buttonStyle,
+        body.data.active,
+        body.data.sortOrder,
+      )
       .first<{ id: number }>();
     if (!row) {
       return c.json(
@@ -1177,6 +1212,7 @@ export function registerProductRoutes(
       {
         name: body.data.name,
         badge: body.data.badge,
+        button_style: body.data.buttonStyle,
         active: body.data.active,
         sort_order: body.data.sortOrder,
       },
@@ -1189,6 +1225,7 @@ export function registerProductRoutes(
           id: Number(row.id),
           name: body.data.name,
           badge: body.data.badge,
+          buttonStyle: body.data.buttonStyle,
           active: body.data.active,
           sortOrder: body.data.sortOrder,
           rowIndex: null,
@@ -1216,7 +1253,7 @@ export function registerProductRoutes(
       );
     }
 
-    const SELECT_CATEGORY = `SELECT id, name, badge, active, sort_order, row_index
+    const SELECT_CATEGORY = `SELECT id, name, badge, button_style, active, sort_order, row_index
                                FROM product_categories WHERE id = ?1`;
     const before = await c.env.DB.prepare(SELECT_CATEGORY)
       .bind(id)
@@ -1232,6 +1269,7 @@ export function registerProductRoutes(
     const patch = body.data;
     if (patch.name !== undefined) put('name', patch.name);
     if (patch.badge !== undefined) put('badge', patch.badge);
+    if (patch.buttonStyle !== undefined) put('button_style', patch.buttonStyle);
     if (patch.active !== undefined) put('active', patch.active);
     if (patch.sortOrder !== undefined) put('sort_order', patch.sortOrder);
     params.push(id);
@@ -1666,13 +1704,15 @@ export function registerProductRoutes(
 
     const row = await c.env.DB.prepare(
       `INSERT INTO product_plans
-         (product_id, name, badge, price_irr, duration_days, volume_gb, user_limit, sort_order, status)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id`,
+         (product_id, name, badge, button_style, price_irr, duration_days, volume_gb,
+          user_limit, sort_order, status)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) RETURNING id`,
     )
       .bind(
         productId,
         p.name,
         p.badge,
+        p.buttonStyle,
         p.priceIrr,
         p.durationDays,
         p.volumeGb,

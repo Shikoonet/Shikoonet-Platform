@@ -28,7 +28,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { api, ApiError, type CategoryRow } from '../api.js';
+import { api, ApiError, type ButtonStyle, type CategoryRow } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 import { LayoutEditor } from './LayoutEditor.js';
@@ -295,18 +295,19 @@ function EditCard({
 }: {
   row: CategoryRow;
   onCancel: () => void;
-  onSave: (patch: { name: string; badge: string | null }) => void;
+  onSave: (patch: { name: string; badge: string | null; buttonStyle: ButtonStyle | null }) => void;
 }) {
   const w = useAdminWriteProps();
   const [name, setName] = useState(row.name);
   const [badge, setBadge] = useState(row.badge ?? '');
+  const [buttonStyle, setButtonStyle] = useState(row.buttonStyle);
 
   return (
     <form
       className="cat-card"
       onSubmit={(e) => {
         e.preventDefault();
-        onSave({ name: name.trim(), badge: badgeValue(badge) });
+        onSave({ name: name.trim(), badge: badgeValue(badge), buttonStyle });
       }}
     >
       <div className="cat-card__face">
@@ -323,6 +324,8 @@ function EditCard({
         id={`cat-badge-${row.id}`}
         value={badge}
         onChange={setBadge}
+        style={buttonStyle}
+        onStyleChange={setButtonStyle}
         preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name.trim() || row.name}`}
       />
       <div className="cat-card__meta">
@@ -352,6 +355,7 @@ function NewCard({ onCreated, nextSort }: { onCreated: () => void; nextSort: num
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [badge, setBadge] = useState('');
+  const [buttonStyle, setButtonStyle] = useState<ButtonStyle | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -376,12 +380,14 @@ function NewCard({ onCreated, nextSort }: { onCreated: () => void; nextSort: num
           .createCategory({
             name: name.trim(),
             badge: badgeValue(badge),
+            buttonStyle,
             // Last, so a new category does not push itself in front of the shop.
             sortOrder: nextSort,
           })
           .then(() => {
             setName('');
             setBadge('');
+            setButtonStyle(null);
             setOpen(false);
             onCreated();
           })
@@ -404,6 +410,8 @@ function NewCard({ onCreated, nextSort }: { onCreated: () => void; nextSort: num
         id="cat-badge-new"
         value={badge}
         onChange={setBadge}
+        style={buttonStyle}
+        onStyleChange={setButtonStyle}
         preview={`${badge.trim() === '' ? '' : `${badge.trim()} `}${name.trim() || 'سرویس‌های اروپا'}`}
       />
       {err && <div className="alert alert-error">{err}</div>}

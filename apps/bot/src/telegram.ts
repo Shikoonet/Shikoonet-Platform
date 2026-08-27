@@ -102,11 +102,25 @@ export type TelegramCallbackQuery = z.infer<typeof CallbackQuerySchema>;
  * optional there — a button carrying none of them is refused by Telegram, which
  * is why nothing builds one.
  */
+/** Telegram owns these three names; `productRoutes` and the CHECK in 0034
+ *  spell them the same way, and the string travels unchanged from the column
+ *  to the JSON. */
+export type ButtonStyle = 'primary' | 'success' | 'danger';
+
 export interface InlineButton {
   text: string;
   callback_data?: string;
   copy_text?: { text: string };
   url?: string;
+  /**
+   * The whole button's colour, added in Bot API 9.4 (9 February 2026).
+   *
+   * Omitted is not "no colour" — it is the client's own default, which is what
+   * every button here drew before this field existed and what an old client
+   * draws now. Nothing needs a fallback: a client that does not know the field
+   * ignores it, and the label is unchanged either way.
+   */
+  style?: ButtonStyle;
 }
 
 /** Telegram's cap on what a copy button may carry. */
