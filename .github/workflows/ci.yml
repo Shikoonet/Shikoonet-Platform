@@ -199,7 +199,7 @@ jobs:
       - name: The production image carries no test runner and no tests
         run: |
           dev=$(docker run --rm --entrypoint sh shikoo-ci -c 'ls node_modules/.pnpm | grep -ciE "^(vitest|@vitest|playwright|@playwright|eslint|typescript|@typescript-eslint)@" || true')
-          ours=$(docker run --rm --entrypoint sh shikoo-ci -c 'find /app/apps / -name "*.test.ts" -o -name "*.spec.ts" | wc -l')
+          ours=$(docker run --rm --entrypoint sh shikoo-ci -c 'find /app/apps /app/packages \( -name "*.test.ts" -o -name "*.spec.ts" \) | wc -l')
           echo "dev-tooling packages: $dev   our test files: $ours"
           [ "$dev" = "0" ] && [ "$ours" = "0" ]
 
@@ -302,7 +302,13 @@ jobs:
         run: |
           set -Eeuo pipefail
           umask 077
-          printf 'DATABASE_URL=%s\nTEST_ACCESS_USER=ci-e2e@shikoo.local\nENV_NAME=test\n' \
+          # NOT an `@shikoo.local` address. `config.spec.ts:303` finds
+          # «somebody other than me» with `tr:has-text("@shikoo.local")`, and
+          # the seeded operators live on that domain — so signing in AS one
+          # made the signed-in row (which correctly has no delete button) the
+          # first match, and the spec failed on a fixture collision that reads
+          # exactly like a broken permission check.
+          printf 'DATABASE_URL=%s\nTEST_ACCESS_USER=ci-operator@example.test\nENV_NAME=test\n' \
             "$DATABASE_URL" > sim/.env.local
       - name: Apply schema
         run: pnpm --filter @shikoo/db schema up
@@ -335,7 +341,7 @@ jobs:
           # A belt-and-braces grep. The DATABASE_URL password is the literal
           # `ci`, which is too short to grep for usefully; the address is not.
           if [ -d apps/dashboard-worker/test-results ]; then
-            grep -rl 'ci-e2e@shikoo.local' apps/dashboard-worker/test-results 2>/dev/null \
+            grep -rl 'ci-operator@example.test' apps/dashboard-worker/test-results 2>/dev/null \
               | head -20 || true
           fi
 
