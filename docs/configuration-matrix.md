@@ -153,7 +153,7 @@ variable to store, and one must not be invented.
 | `shikoo-staging-source` deploy key | how Coolify fetches the private repository | Coolify Source credential | PRESENT — read-only, scoped to this repository, verified |
 | classic PAT in the clone URL | *was* how Coolify fetched it | removed 2026-08-27 | REMOVED from Coolify — **still REQUIRES_ROTATION on GitHub** |
 | `shikoo-github-deploy` private key | an older Coolify key | Coolify Source credential | UNUSED — its public half is already registered elsewhere, so it could not be added to this repository |
-| `manual_webhook_secret_github` | inbound push webhook | Coolify application | PRESENT but inert — GitHub cannot reach `:8000` |
+| `manual_webhook_secret_github` | inbound push webhook | Coolify application | PRESENT but inert — **not** because of the network (`:8000` IS internet-reachable) but because `is_auto_deploy_enabled=false`; no webhook is configured on the repo either |
 
 ---
 

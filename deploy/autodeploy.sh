@@ -6,18 +6,35 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Why this POLLS instead of being a webhook.
 #
-# Every conventional answer here is inbound: a GitHub webhook into Coolify's
-# `manual_webhook_secret_github`, or a GitHub Action calling
-# `POST /api/v1/deploy`. Both need GitHub to reach this box, and it cannot.
-# Coolify listens on `0.0.0.0:8000` but the router in front only forwards 80 and
-# 443, so `:8000` answers nothing from the internet — measured 2026-08-26, and
-# that is the posture we want kept. Exposing the Coolify API through Traefik to
-# get a webhook would put the whole control plane of this server on the internet
-# behind one bearer token, to save 60 seconds of latency.
+# This file used to claim that `:8000` answers nothing from the internet, and
+# that the claim was measured. It is FALSE, and it was load-bearing. Measured
+# again 2026-08-27 from off-site:
 #
-# Outbound works fine: `api.github.com` answers this box in 0.4s. So the box
-# asks, rather than being told. It also means the Coolify token never leaves
-# loopback — see COOLIFY_URL below.
+#   GET  http://164.132.198.184:8000/api/v1/version   -> 401 Unauthenticated
+#   GET  http://164.132.198.184:8000/                 -> 302 (login page)
+#   POST /webhooks/source/github/events/manual        -> 200
+#
+# The Coolify control plane — API and UI — is on the public internet over
+# PLAINTEXT HTTP, and GitHub can reach the webhook endpoint. Polling does not
+# change that and must never be described as if it did.
+#
+# So why poll anyway? Two reasons that survive the correction:
+#
+#   · the Coolify token stays on loopback. `COOLIFY_URL` is 127.0.0.1, so the
+#     bearer token never crosses an interface — least of all the plaintext one.
+#   · nothing external needs a credential into this box. The alternative designs
+#     hand GitHub an SSH key or a deploy token; this one hands out nothing.
+#
+# What actually stops a push from deploying is NOT the network. It is
+# `is_auto_deploy_enabled = false` on every application: Coolify's webhook
+# handler calls `Application::isDeployable()`, which returns false when that
+# flag is off, so a correctly-signed webhook is accepted and then does nothing.
+# That flag is the whole defence, which is why `assert_coolify_safe` below
+# re-checks it on every tick rather than trusting that somebody left it alone.
+#
+# The public port is an ACCEPTED STAGING RISK and nothing more. Before
+# production, or before this host sees real customer data, `:8000` must be
+# bound to a private interface, firewalled, or put behind TLS and a VPN.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # Why the approval check is HERE, and not on GitHub.
@@ -206,6 +223,7 @@ APP_DASHBOARD=${APP_DASHBOARD:-$(cfg APP_DASHBOARD)}
 APP_BOT=${APP_BOT:-$(cfg APP_BOT)}
 EXPECT_ENV_NAME=${EXPECT_ENV_NAME:-$(cfg EXPECT_ENV_NAME)}
 DB_CONTAINER=${DB_CONTAINER:-$(cfg DB_CONTAINER)}
+COOLIFY_DB_CONTAINER=${COOLIFY_DB_CONTAINER:-$(cfg COOLIFY_DB_CONTAINER)}
 BRANCH=${BRANCH:-$(cfg BRANCH)}
 REQUIRED_JOB=${REQUIRED_JOB:-$(cfg REQUIRED_JOB)}
 PGUSER=${PGUSER:-$(cfg PGUSER)}
@@ -229,6 +247,7 @@ BOT_HEARTBEAT_MAX_AGE=${BOT_HEARTBEAT_MAX_AGE:-$(cfg BOT_HEARTBEAT_MAX_AGE)}
 : "${DB_CONTAINER:?DB_CONTAINER must be set to the Postgres container name}"
 BRANCH=${BRANCH:-main}
 REQUIRED_JOB=${REQUIRED_JOB:-Required Quality Gate}
+COOLIFY_DB_CONTAINER=${COOLIFY_DB_CONTAINER:-coolify-db}
 PGUSER=${PGUSER:-postgres}
 PGDATABASE=${PGDATABASE:-shikoo}
 DEPLOY_TIMEOUT=${DEPLOY_TIMEOUT:-900}
@@ -264,6 +283,71 @@ env_of() {
     sed -n "s/^${2}=//p" | head -1
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# The operative defence, re-checked every tick
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# `:8000` is on the public internet (see the header). What actually stops a
+# GitHub push from deploying is `is_auto_deploy_enabled = false` — Coolify's
+# webhook handler calls `Application::isDeployable()`, which returns false when
+# that flag is off. A single UI click re-enables it, and nothing would say so.
+#
+# So it is verified rather than assumed, on every tick, for all three
+# applications, BEFORE any migration is applied, any state file is written or
+# any deployment is queued. A tick that finds it wrong deploys nothing and
+# migrates nothing.
+#
+# Read from Coolify's own database rather than its API: `GET /applications/:uuid`
+# returns `is_auto_deploy_enabled: null` and `is_preview_deployments_enabled:
+# null` — those live on `application_settings` and the API does not serialise
+# them. Measured 2026-08-27. The values are not secret, and this script already
+# holds docker on this host for the ledger and for `SOURCE_COMMIT`.
+coolify_db() { docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At -F'|' -c "$1"; }
+
+assert_coolify_safe() {
+  local rows n bad uuid auto prev c live
+  rows=$(coolify_db "select a.uuid, s.is_auto_deploy_enabled, s.is_preview_deployments_enabled
+    from application_settings s join applications a on a.id = s.application_id
+    where a.uuid in ('${APP_INGEST}','${APP_DASHBOARD}','${APP_BOT}') order by a.uuid;") ||
+    { log "REFUSING: cannot read Coolify application settings from ${COOLIFY_DB_CONTAINER}"; return 1; }
+
+  n=$(printf '%s\n' "$rows" | grep -c . || true)
+  if [ "$n" -ne 3 ]; then
+    log "REFUSING: expected settings for 3 applications, found ${n}"
+    return 1
+  fi
+
+  bad=0
+  while IFS='|' read -r uuid auto prev; do
+    [ -n "$uuid" ] || continue
+    if [ "$auto" != 'f' ]; then
+      log "REFUSING: native Auto Deploy is ENABLED on ${uuid} — a GitHub push could deploy behind this script's back"
+      bad=$((bad + 1))
+    fi
+    if [ "$prev" != 'f' ]; then
+      log "REFUSING: preview deployments are ENABLED on ${uuid} — a pull request could deploy"
+      bad=$((bad + 1))
+    fi
+  done <<EOF
+$rows
+EOF
+  [ "$bad" -eq 0 ] || return 1
+
+  # And the environment, at runtime, for every application that is up. The
+  # ingest check earlier answers "which host is this"; this answers "is every
+  # application on this host the environment we think it is".
+  for uuid in "$APP_INGEST" "$APP_DASHBOARD" "$APP_BOT"; do
+    c=$(container_for "$uuid")
+    [ -n "$c" ] || continue
+    live=$(env_of "$c" ENV_NAME)
+    if [ "$live" != "$EXPECT_ENV_NAME" ]; then
+      log "REFUSING: ${uuid} is running with ENV_NAME=«${live:-unset}», expected «${EXPECT_ENV_NAME}»"
+      return 1
+    fi
+  done
+  return 0
+}
+
 CURLDIR=$(mktemp -d)
 chmod 0700 "$CURLDIR"
 WORKDIR=$(mktemp -d)
@@ -281,7 +365,7 @@ chmod 0700 "$WORKDIR"
 # them is a token, and none of them is derived from one.
 # ---------------------------------------------------------------------------
 R_SHA='-'; R_PR='-'; R_APPROVAL='not reached'; R_RUN_ID='-'
-R_GATE='not reached'; R_ENV='not reached'; R_MIGRATIONS='not reached'
+R_GATE='not reached'; R_ENV='not reached'; R_MIGRATIONS='not reached'; R_COOLIFY_SAFE='not reached'
 R_DECISION='no decision reached'
 
 # Fills in a gate the run short-circuited past.
@@ -337,6 +421,7 @@ dry_report() {
   printf '  «%s»  %s\n' "$REQUIRED_JOB" "$R_GATE"
   printf '  ENV_NAME                %s\n' "$R_ENV"
   printf '  migrations              %s\n' "$R_MIGRATIONS"
+  printf '  coolify safety gate     %s\n' "$R_COOLIFY_SAFE"
   printf '  coolify                 %s (api %s)\n' "$COOLIFY_URL" "$(co /version >/dev/null 2>&1 && printf %s "$co_body" || printf 'unreachable')"
   for app in "ingest:$APP_INGEST" "dashboard:$APP_DASHBOARD" "bot:$APP_BOT"; do
     name=${app%%:*}; uuid=${app#*:}
@@ -503,7 +588,9 @@ gh "/pulls/${pr_number}/reviews?per_page=100" ||
 #
 # `commit_id == $head` is the staleness test. An approval given before another
 # push approved a different tree, and GitHub itself calls that stale.
-approvals=$(printf '%s' "$gh_body" | jq -r --arg author "$pr_author" --arg head "$pr_head" '
+reviews_body=$gh_body
+
+approvals=$(printf '%s' "$reviews_body" | jq -r --arg author "$pr_author" --arg head "$pr_head" '
   if type != "array" then 0 else
     [ .[] | select(.user.login != null and .user.login != $author) ]
     | group_by(.user.login)
@@ -511,6 +598,32 @@ approvals=$(printf '%s' "$gh_body" | jq -r --arg author "$pr_author" --arg head 
     | map(select(.state == "APPROVED" and .commit_id == $head))
     | length
   end')
+
+# An outstanding CHANGES_REQUESTED blocks, whoever left it.
+#
+# The per-reviewer `last` above already stops one person's approval surviving
+# their own later objection. It does NOT stop somebody else's: reviewer A
+# approves, reviewer B then reads the same tree and requests changes, and the
+# count of A's approvals is still 1. That deploys a commit a reviewer has
+# actively objected to, which is worse than deploying an unreviewed one —
+# somebody looked and said no.
+#
+# Counted on the FINAL head only. A CHANGES_REQUESTED against an older push
+# that the author has since addressed is history, not an objection.
+changes_requested=$(printf '%s' "$reviews_body" | jq -r --arg head "$pr_head" '
+  if type != "array" then 0 else
+    [ .[] | select(.user.login != null) ]
+    | group_by(.user.login)
+    | map(sort_by(.submitted_at) | last)
+    | map(select(.state == "CHANGES_REQUESTED" and .commit_id == $head))
+    | length
+  end')
+
+if [ "${changes_requested:-0}" -gt 0 ]; then
+  R_APPROVAL="BLOCKED — ${changes_requested} outstanding CHANGES_REQUESTED on the final head"
+  refuse "$head_sha" \
+    "PR #${pr_number} (${head_sha:0:12}) has ${changes_requested} outstanding CHANGES_REQUESTED review(s) on its final head — NOT deploying"
+fi
 
 if [ "${approvals:-0}" -lt 1 ]; then
   refuse "$head_sha" \
@@ -698,6 +811,20 @@ fi
 
 R_ENV="${live_env} (matches EXPECT_ENV_NAME)"
 log "environment confirmed: ENV_NAME=${live_env}"
+
+# Everything above this line is a read. Everything below can migrate a database
+# or deploy an application, so the operative defence is checked HERE — the last
+# point at which abandoning the tick costs nothing.
+if assert_coolify_safe; then
+  R_COOLIFY_SAFE='auto-deploy off, previews off, every running app on the expected environment'
+  log "coolify safety gate passed: auto-deploy and previews disabled on all three, environments agree"
+else
+  R_COOLIFY_SAFE='FAILED — see the log'
+  # NOT recorded as rejected: this is a property of the host, not of the sha.
+  # The moment somebody puts the flag back, every waiting commit is eligible.
+  log "REFUSING: the Coolify safety gate failed. Nothing was migrated and nothing was deployed."
+  exit 0
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 6. Migration preflight

@@ -22,6 +22,7 @@ Decided 2026-08-27.
 | **Rollback** | manual `workflow_dispatch` to any previous digest, plus automatic restore on failure | automatic on failure, to the previous recorded sha. No manual entry point |
 | **Health checks** | per-app wait, smoke test, bot-singleton via `pg_locks` | per-app wait, `/health` + `/version`, session gate still 401, bot-singleton via `pg_locks` |
 | **Secret storage** | GitHub Environment Secrets **and** host files — two places | host only |
+| **Auto-deploy blast radius** | `deploy-staging` has **no `if:` guard** and `ci.yml` triggers on `push: branches: ['**']` — every push to every branch deploys; `deploy-production` fires on `main` gated only by `vars.PRODUCTION_AUTO_DEPLOY` | one timer, one lock, four gates before anything moves |
 | **Duplicate-deployment risk** | GitHub's environment concurrency, plus a host `flock` | one `flock`, taken before any decision or API call |
 
 ## Why PR #3
@@ -71,6 +72,13 @@ that it is wrong. It changes what CI does (build and push to GHCR), what
 credential Coolify needs (a registry pull secret instead of a git source), and
 the build pack on all three applications. It is also only half-useful until
 there is a production environment to promote *to*, and today there is one host.
+
+The Dockerfile now pins `node:22-slim` by digest, which closes the largest part
+of the gap for a fraction of the cost — but **it does not close it**. `apt-get`
+still fetches whatever Debian currently serves, and any network step is a moment
+in time. Two builds of one commit are *closer* to identical, not identical. Only
+build-once-deploy-the-digest makes the tested artifact and the deployed artifact
+the same bytes.
 
 **It should be revisited when production exists.** The digest mechanism and
 PR #3's approval gate are compatible: nothing about pinning a digest requires
