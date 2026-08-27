@@ -22,6 +22,7 @@
 import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/db.js';
+import { productionDumpAbsent } from './helpers/productionDump.js';
 
 type Pairs = Record<string, string | null>;
 
@@ -36,6 +37,12 @@ interface Loaded {
 async function load(): Promise<Loaded> {
   const cfg = loadConfig();
   const empty = { shop: {}, pay: {}, bot: {} };
+  // Before the connection, not after. `describe.skipIf` is evaluated during
+  // collection, and a loader that connects first throws during collection —
+  // which vitest reports as a FAILED FILE, not a skipped one. See
+  // `helpers/productionDump.ts`.
+  const dumpMissing = productionDumpAbsent();
+  if (dumpMissing !== null) return { ...empty, unreachable: dumpMissing };
   try {
     const conn = await createConnection({
       ...cfg.mysql,
@@ -95,7 +102,21 @@ async function load(): Promise<Loaded> {
 
 const { shop, pay, bot, unreachable } = await load();
 
-describe.skipIf(unreachable !== null)('the switch words the bot compares against', () => {
+/**
+ * These assertions are about the REAL Mirzabot dataset — row counts, actual
+ * discount codes, the 963 customers who never accepted the rules. They only
+ * mean anything against the production dump, so they are gated on a person
+ * saying that is what this database is.
+ *
+ * The gate used to be «can I reach a MySQL», which was a proxy for the same
+ * thing right up until `synthetic-migration.test.ts` started loading a
+ * synthetic legacy database in CI. Then a MySQL was reachable on a runner,
+ * these un-skipped, and failed on `expected 2 to be 31` — correctly. See
+ * `helpers/productionDump.ts`.
+ */
+const dumpAbsent = productionDumpAbsent();
+
+describe.skipIf(unreachable !== null || dumpAbsent !== null)('the switch words the bot compares against', () => {
   it('spells the three off-words exactly as `settings.ts` expects', () => {
     // The bot treats a value it does not recognise as "leave the feature on",
     // so a spelling that drifted here would show customers buttons the shop
@@ -116,7 +137,7 @@ describe.skipIf(unreachable !== null)('the switch words the bot compares against
   });
 });
 
-describe.skipIf(unreachable !== null)('the numbers the bot reads', () => {
+describe.skipIf(unreachable !== null || dumpAbsent !== null)('the numbers the bot reads', () => {
   it('gives the card-to-card path a floor and a ceiling, in Toman', () => {
     const min = Number(pay['minbalancecart']);
     const max = Number(pay['maxbalancecart']);

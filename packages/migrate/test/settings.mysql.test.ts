@@ -20,6 +20,7 @@ import { createConnection } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/db.js';
 import { isSettingSecret } from '../src/migrate.js';
+import { productionDumpAbsent } from './helpers/productionDump.js';
 
 type Row = Record<string, string | null>;
 
@@ -47,6 +48,12 @@ function looksLikeCredential(value: string): string | null {
 
 async function loadPaySettings(): Promise<{ rows: Row[]; unreachable: string | null }> {
   const cfg = loadConfig();
+  // Before the connection, not after. `describe.skipIf` is evaluated during
+  // collection, and a loader that connects first throws during collection —
+  // which vitest reports as a FAILED FILE, not a skipped one. See
+  // `helpers/productionDump.ts`.
+  const dumpMissing = productionDumpAbsent();
+  if (dumpMissing !== null) return { ...{ rows: [] }, unreachable: dumpMissing };
   try {
     const conn = await createConnection({
       ...cfg.mysql,
@@ -71,7 +78,21 @@ async function loadPaySettings(): Promise<{ rows: Row[]; unreachable: string | n
 
 const { rows, unreachable } = await loadPaySettings();
 
-describe.skipIf(unreachable)('the settings import, against the real PaySetting table', () => {
+/**
+ * These assertions are about the REAL Mirzabot dataset — row counts, actual
+ * discount codes, the 963 customers who never accepted the rules. They only
+ * mean anything against the production dump, so they are gated on a person
+ * saying that is what this database is.
+ *
+ * The gate used to be «can I reach a MySQL», which was a proxy for the same
+ * thing right up until `synthetic-migration.test.ts` started loading a
+ * synthetic legacy database in CI. Then a MySQL was reachable on a runner,
+ * these un-skipped, and failed on `expected 2 to be 31` — correctly. See
+ * `helpers/productionDump.ts`.
+ */
+const dumpAbsent = productionDumpAbsent();
+
+describe.skipIf(unreachable !== null || dumpAbsent !== null)('the settings import, against the real PaySetting table', () => {
   it('has rows to judge', () => {
     // Otherwise every assertion below is vacuously true.
     expect(rows.length).toBeGreaterThan(0);
