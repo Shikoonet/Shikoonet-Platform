@@ -24,7 +24,13 @@ import {
 } from '../api.js';
 import { count, dateTime } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
-import { PREMIUM_EMOJI_PACK, premiumEmojiTag } from '@shikoo/contracts';
+import { ButtonGrid, GRID_HELP, type GridRows } from './ButtonGrid.js';
+import {
+  BUTTON_STYLES,
+  PREMIUM_EMOJI_PACK,
+  premiumEmojiTag,
+  type ButtonStyle,
+} from '@shikoo/contracts';
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -365,6 +371,37 @@ export function KeyboardPage() {
     void load();
   }, [menu]);
 
+  /**
+   * The board, from the saved positions.
+   *
+   * Hidden buttons are on it too, faded. They still have a position, and a
+   * board that dropped them would be the only way to arrange buttons while
+   * refusing to arrange one of them — which is what the row/column number
+   * inputs used to be for.
+   */
+  const boardRows: GridRows = (() => {
+    const byRow = new Map<number, KeyboardButton[]>();
+    for (const b of buttons) {
+      const row = byRow.get(b.rowIndex) ?? [];
+      row.push(b);
+      byRow.set(b.rowIndex, row);
+    }
+    return [...byRow.entries()]
+      .sort(([a], [z]) => a - z)
+      .map(([, row]) =>
+        row
+          .slice()
+          .sort((x, y) => x.colIndex - y.colIndex)
+          .map((b) => ({
+            key: b.action,
+            label: b.label,
+            hint: b.action,
+            tint: b.style ? STYLE_TOKENS[b.style] : null,
+            dim: !b.visible,
+          })),
+      );
+  })();
+
   function update(action: string, patch: Partial<KeyboardButton>) {
     setButtons((bs) => bs.map((b) => (b.action === action ? { ...b, ...patch } : b)));
   }
@@ -381,7 +418,9 @@ export function KeyboardPage() {
     const nextRow = buttons.reduce((max, b) => Math.max(max, b.rowIndex), -1) + 1;
     setButtons((bs) => [
       ...bs,
-      { action, label: info.label, rowIndex: nextRow, colIndex: 0, visible: true },
+      // No colour: a button an admin has just added should look like the ones
+      // already there until they say otherwise.
+      { action, label: info.label, rowIndex: nextRow, colIndex: 0, visible: true, style: null },
     ]);
   }
 
@@ -418,8 +457,6 @@ export function KeyboardPage() {
 
   const present = new Set(buttons.map((b) => b.action));
   const missing = actions.filter((a) => !present.has(a.action));
-  // Grouped for the preview, exactly as the bot groups them.
-  const rows = [...new Set(buttons.map((b) => b.rowIndex))].sort((a, b) => a - b);
 
   return (
     <>
@@ -475,23 +512,21 @@ export function KeyboardPage() {
           می‌نشینند و این‌جا دیده نمی‌شوند. دکمه‌های «شرطی» فقط وقتی کشیده می‌شوند که ربات بتواند
           کارشان را انجام دهد؛ وگرنه حذف می‌شوند و جایشان بسته می‌شود.
         </p>
-        <div className="preview-keyboard">
-          {rows.map((r) => {
-            const inRow = buttons
-              .filter((b) => b.rowIndex === r && b.visible)
-              .sort((a, b) => a.colIndex - b.colIndex);
-            if (inRow.length === 0) return null;
-            return (
-              <div key={r} className="preview-row">
-                {inRow.map((b) => (
-                  <span key={b.action} className="preview-button">
-                    {b.label}
-                  </span>
-                ))}
-              </div>
+        <ButtonGrid
+          rows={boardRows}
+          onChange={(next) => {
+            // The board IS the arrangement now: a chip's row is its row index
+            // and its place in that row is its column. There is no second
+            // place for the order to live, so nothing can disagree with it.
+            const placed = new Map<string, { rowIndex: number; colIndex: number }>();
+            next.forEach((row, r) =>
+              row.forEach((chip, c) => placed.set(chip.key, { rowIndex: r, colIndex: c })),
             );
-          })}
-        </div>
+            setButtons((bs) => bs.map((b) => ({ ...b, ...(placed.get(b.action) ?? {}) })));
+          }}
+          screenText={menus.find((m) => m.id === menu)?.hint ?? ''}
+        />
+        <p className="muted">{GRID_HELP}</p>
 
         <h4>دکمه‌ها</h4>
         <div className="table-wrap">
@@ -500,8 +535,7 @@ export function KeyboardPage() {
               <tr>
                 <th>دکمه</th>
                 <th>عنوان</th>
-                <th>سطر</th>
-                <th>ستون</th>
+                <th>رنگ</th>
                 <th>نمایش</th>
                 <th />
               </tr>
@@ -536,23 +570,9 @@ export function KeyboardPage() {
                       />
                     </td>
                     <td>
-                      <input
-                        className="form-control ltr"
-                        type="number"
-                        min={0}
-                        max={19}
-                        value={b.rowIndex}
-                        onChange={(e) => update(b.action, { rowIndex: Number(e.target.value) })}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="form-control ltr"
-                        type="number"
-                        min={0}
-                        max={7}
-                        value={b.colIndex}
-                        onChange={(e) => update(b.action, { colIndex: Number(e.target.value) })}
+                      <StylePicker
+                        value={b.style ?? null}
+                        onChange={(style) => update(b.action, { style })}
                       />
                     </td>
                     <td>
@@ -621,5 +641,68 @@ export function KeyboardPage() {
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * The panel's own paint for Telegram's three names.
+ *
+ * The shade is this panel's, not Telegram's: nothing here can know what a given
+ * client draws, and a swatch claiming to be exact would be a promise the bot
+ * cannot keep. What it does promise is WHICH of the three.
+ */
+const STYLE_TOKENS: Record<ButtonStyle, string> = {
+  primary: 'var(--accent)',
+  success: 'var(--success)',
+  danger: 'var(--danger)',
+};
+
+const STYLE_LABELS: Record<ButtonStyle, string> = {
+  primary: 'آبی',
+  success: 'سبز',
+  danger: 'قرمز',
+};
+
+/** One button's colour, as four chips — the three, and «no colour». */
+function StylePicker({
+  value,
+  onChange,
+}: {
+  value: ButtonStyle | null;
+  onChange: (next: ButtonStyle | null) => void;
+}) {
+  const w = useAdminWriteProps();
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+      {BUTTON_STYLES.map((style) => (
+        <button
+          key={style}
+          type="button"
+          className="btn btn-sm"
+          aria-pressed={value === style}
+          title={`این دکمه ${STYLE_LABELS[style]} شود`}
+          // Filled when chosen, outlined when not: three filled swatches side
+          // by side say nothing about which one the button is wearing.
+          style={
+            value === style
+              ? { background: STYLE_TOKENS[style], borderColor: STYLE_TOKENS[style], color: '#fff' }
+              : { borderColor: STYLE_TOKENS[style], color: STYLE_TOKENS[style] }
+          }
+          onClick={() => onChange(style)}
+          {...w}
+        >
+          {STYLE_LABELS[style]}
+        </button>
+      ))}
+      <button
+        type="button"
+        className="btn btn-sm"
+        aria-pressed={value === null}
+        onClick={() => onChange(null)}
+        {...w}
+      >
+        بدون
+      </button>
+    </div>
   );
 }

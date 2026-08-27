@@ -26,7 +26,7 @@
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { DEFAULT_LAYOUTS, isMenuId, type ButtonPlacement, type MenuId } from './keyboard.js';
-import { Texts } from '@shikoo/contracts';
+import { isButtonStyle, Texts } from '@shikoo/contracts';
 import { createLogger } from '@shikoo/domain';
 
 const log = createLogger('bot');
@@ -82,7 +82,7 @@ async function readTexts(db: Db): Promise<Record<string, string>> {
 async function readLayouts(db: Db): Promise<Layouts> {
   const rows = await db
     .prepare(
-      `SELECT menu, action, label, row_index, col_index, visible
+      `SELECT menu, action, label, row_index, col_index, visible, style
          FROM bot_keyboard_buttons
         ORDER BY menu, row_index, col_index`,
     )
@@ -93,6 +93,7 @@ async function readLayouts(db: Db): Promise<Layouts> {
       row_index: number;
       col_index: number;
       visible: boolean;
+      style: string | null;
     }>();
 
   const saved = new Map<MenuId, ButtonPlacement[]>();
@@ -108,6 +109,10 @@ async function readLayouts(db: Db): Promise<Layouts> {
       rowIndex: Number(b.row_index),
       colIndex: Number(b.col_index),
       visible: b.visible,
+      // Validated on the way out as well as in: the column has a CHECK, but a
+      // restore or a hand-edit is not the write path, and Telegram refuses a
+      // value it does not know rather than ignoring it.
+      style: isButtonStyle(b.style) ? b.style : null,
     });
     saved.set(b.menu, into);
   }

@@ -61,14 +61,24 @@ function startUpdate(updateId: number, telegramId: number) {
   };
 }
 
-async function save(menuId: MenuId, buttons: readonly ButtonPlacement[]): Promise<void> {
+/**
+ * `style` is optional here and nowhere else.
+ *
+ * Every one of these fixtures is about placement — which row a button lands on,
+ * whether a hidden one leaves a gap — and none of them is about colour. Making
+ * the test helper default it keeps those cases reading as what they are,
+ * instead of carrying a `style: null` that means «not what this test is for».
+ */
+type SavedButton = Omit<ButtonPlacement, 'style'> & Partial<Pick<ButtonPlacement, 'style'>>;
+
+async function save(menuId: MenuId, buttons: readonly SavedButton[]): Promise<void> {
   for (const b of buttons) {
     await db
       .prepare(
-        `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+        `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible, style)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
       )
-      .bind(menuId, b.action, b.label, b.rowIndex, b.colIndex, b.visible)
+      .bind(menuId, b.action, b.label, b.rowIndex, b.colIndex, b.visible, b.style ?? null)
       .run();
   }
   invalidateBotContent();
@@ -407,6 +417,25 @@ describe('a saved layout that no longer makes sense', () => {
     ]);
     await applySaved();
     expect(labels(menu.walletMenu())).toEqual([['💰 شارژ'], ['بازگشت']]);
+  });
+
+  it('paints a chrome button the colour the shop chose, and leaves the rest alone', async () => {
+    // «چیدمان کیبورد» had no colour at all before 0036: «خرید اشتراک» and
+    // «بازگشت» were the same grey whatever the shop wanted. The two on one
+    // screen is the whole point, so both are asserted together.
+    await save('wallet', [
+      { action: 'top', label: '💰 شارژ', rowIndex: 0, colIndex: 0, visible: true, style: 'success' },
+      { action: 'gft', label: '🎁 هدیه', rowIndex: 0, colIndex: 1, visible: true },
+      { action: 'menu', label: 'بازگشت', rowIndex: 1, colIndex: 0, visible: true, style: 'danger' },
+    ]);
+    await applySaved();
+    const flat = menu.walletMenu().flat();
+
+    expect(flat.find((b) => b.text === '💰 شارژ')?.style).toBe('success');
+    expect(flat.find((b) => b.text === 'بازگشت')?.style).toBe('danger');
+    // No colour means no key at all: Telegram reads a missing `style` as its
+    // own default and refuses a null.
+    expect(flat.find((b) => b.text === '🎁 هدیه')).not.toHaveProperty('style');
   });
 
   it('leaves no blank row when a whole row is hidden', async () => {

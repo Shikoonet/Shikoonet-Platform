@@ -112,7 +112,13 @@ export function buildMenu(
       rows.push([]);
       currentRow = button.rowIndex;
     }
-    rows[rows.length - 1]!.push({ text: fill(button.label, ctx.values), callback_data: data });
+    rows[rows.length - 1]!.push({
+      text: fill(button.label, ctx.values),
+      callback_data: data,
+      // Absent when there is no colour: Telegram reads a missing `style` as
+      // «your own default» and refuses a null. Same contract as the data rows.
+      ...(button.style === null ? {} : { style: button.style }),
+    });
   }
   return rows.filter((row) => row.length > 0);
 }
