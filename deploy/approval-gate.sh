@@ -24,15 +24,38 @@
 # reviews on that path.
 #
 # ─────────────────────────────────────────────────────────────────────────────
+# Two modes, and why the second one exists
+#
+# `team` is the original policy: somebody who did not write it approved it.
+#
+# `solo` exists because the original policy became unsatisfiable. This shop has
+# one person with repository access, so «a human other than the author» is a
+# condition nobody can ever meet, and the gate denied four merges in a row —
+# correctly, and uselessly. The tempting fix was to accept any merged PR, which
+# would have deleted the provenance chain entirely.
+#
+# So solo mode does not remove the requirement, it REPLACES it with the
+# narrowest thing that is actually checkable for one person: the named owner
+# wrote it, the named owner merged it, and CI passed on both the tree they
+# pushed and the tree that will be built. No approval is invented, and the audit
+# line says «solo-owner» rather than claiming a review happened.
+#
+# ─────────────────────────────────────────────────────────────────────────────
 # What must be true, in order
 #
-#   1. the sha is the result of a MERGED pull request into the branch.
-#      A direct push matches no pull request and fails here. This is the whole
-#      point on a plan that cannot refuse the push itself.
-#   2. that PR's FINAL head has at least one APPROVED review from a human who
-#      is not its author, and that approval is the reviewer's latest.
-#   3. no outstanding CHANGES_REQUESTED on that same final head, from anyone.
-#   4. «Required Quality Gate» completed successfully on that exact final head.
+#   1. the sha is the result of a MERGED pull request into the branch, and of
+#      exactly ONE — a direct push matches none and fails here, and an
+#      ambiguous association has no reviewable answer so it fails too. This is
+#      the whole point on a plan that cannot refuse the push itself.
+#   2. no outstanding CHANGES_REQUESTED on the final head, from anyone, in
+#      either mode: somebody having looked and said no outranks any policy
+#      about who may ship.
+#   3. team — that PR's FINAL head has at least one APPROVED review from a
+#      human who is not its author, and that approval is the reviewer's latest.
+#      solo — the PR was written AND merged by the allowlisted owner.
+#   4. «Required Quality Gate» completed successfully on that exact final head,
+#      and in solo mode on the merge commit too, which on a squash or rebase is
+#      a tree that has never existed before and that nobody has reviewed.
 #   5. the branch still points at the sha we were asked about.
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,6 +81,38 @@ echo "$SHA" | grep -qE '^[0-9a-f]{40}$' || {
 API=${GITHUB_API:-https://api.github.com}
 BRANCH=${BRANCH:-main}
 REQUIRED_JOB=${REQUIRED_JOB:-Required Quality Gate}
+
+# ─────────────────────────────────────────────────────────── the approval mode
+#
+# `team`  — a human who did not write it approved it. The original policy.
+# `solo`  — one named owner writes, merges and ships their own work, and the
+#           audit trail says so in those words instead of pretending somebody
+#           reviewed it.
+#
+# There is no default. An unset, empty or misspelled mode DENIES rather than
+# picking one, because both of the tempting defaults are wrong: defaulting to
+# `team` turns a typo into a deploy that never runs, and defaulting to `solo`
+# turns a typo into a deploy nobody reviewed. The mode is set in `deploy.yml`,
+# which is versioned and reviewed, so «unset» means somebody deleted it.
+#
+# Matched against the exact lowercase string. `SOLO` and `Solo` are not solo —
+# they are unknown, and unknown denies.
+MODE=${DEPLOY_APPROVAL_MODE:-}
+case "$MODE" in
+  team | solo) ;;
+  *)
+    echo "[gate] DENIED: DEPLOY_APPROVAL_MODE is «${MODE:-unset}» — it must be exactly 'team' or 'solo'" >&2
+    exit 1
+    ;;
+esac
+
+# Who `solo` means. Versioned beside the mode, so changing who may ship their
+# own work is a reviewed diff rather than a setting somebody flipped.
+SOLO_OWNER=${SOLO_DEPLOY_OWNER:-}
+if [ "$MODE" = 'solo' ] && [ -z "$SOLO_OWNER" ]; then
+  echo "[gate] DENIED: solo mode needs SOLO_DEPLOY_OWNER — refusing to let anyone ship unreviewed" >&2
+  exit 1
+fi
 
 say() { echo "[gate] $*"; }
 deny() {
@@ -107,17 +162,26 @@ gh() {
 gh "/commits/${SHA}/pulls" ||
   deny "could not ask which PR produced ${SHA:0:12} (HTTP ${gh_status}) — failing closed"
 
-pr=$(printf '%s' "$gh_body" | jq -c --arg sha "$SHA" --arg base "$BRANCH" '
-  if type != "array" then empty else
+matches=$(printf '%s' "$gh_body" | jq -c --arg sha "$SHA" --arg base "$BRANCH" '
+  if type != "array" then [] else
     [ .[] | select(
         .merged_at != null
         and .base.ref == $base
         and (.merge_commit_sha == $sha or .head.sha == $sha)) ]
-    | first // empty
   end') || deny "could not parse the pull request list"
 
-[ -n "$pr" ] ||
+count=$(printf '%s' "$matches" | jq -r 'length') || deny "could not count the matching pull requests"
+
+[ "$count" != '0' ] ||
   deny "${SHA:0:12} is not the result of a merged pull request into ${BRANCH} — a direct push does not deploy"
+
+# More than one merged PR claiming this commit means «which PR was reviewed» has
+# no answer, and picking the first would make the audit line a coin toss. There
+# is no safe way to guess, so it denies.
+[ "$count" = '1' ] ||
+  deny "${SHA:0:12} is claimed by ${count} merged pull requests — the provenance is ambiguous"
+
+pr=$(printf '%s' "$matches" | jq -c '.[0]')
 
 PR_NUMBER=$(printf '%s' "$pr" | jq -r '.number')
 PR_AUTHOR=$(printf '%s' "$pr" | jq -r '.user.login // empty')
@@ -178,41 +242,84 @@ changes_requested=$(printf '%s' "$reviews" | jq -r --arg head "$PR_HEAD" '
 [ "${changes_requested:-0}" -eq 0 ] ||
   deny "PR #${PR_NUMBER} has ${changes_requested} outstanding CHANGES_REQUESTED on its final head"
 
-[ "${approvals:-0}" -ge 1 ] ||
-  deny "PR #${PR_NUMBER} has no current APPROVED review from a human other than @${PR_AUTHOR}"
+# ─────────────────────────────────────────────── the half that differs by mode
+#
+# The CHANGES_REQUESTED check above applies to both: somebody having looked and
+# said no outranks any policy about who may ship.
+if [ "$MODE" = 'team' ]; then
+  [ "${approvals:-0}" -ge 1 ] ||
+    deny "PR #${PR_NUMBER} has no current APPROVED review from a human other than @${PR_AUTHOR}"
+  POLICY='team-approved'
+  say "approved by ${approvals} human reviewer(s) other than the author"
+else
+  # SOLO. No approval is required and none is invented: `approvals` is reported
+  # as it actually is, which on a self-merged PR is zero. What replaces the
+  # review is a narrower question — was this the one person allowed to ship
+  # their own work, at both ends of the pull request.
+  [ "$PR_AUTHOR" = "$SOLO_OWNER" ] ||
+    deny "solo mode allows only @${SOLO_OWNER} to ship unreviewed; PR #${PR_NUMBER} was written by @${PR_AUTHOR}"
 
-say "approved by ${approvals} human reviewer(s) other than the author"
+  # Merged BY, as well as written by. The author field alone would let anybody
+  # with write access merge the owner's branch and ship it under the owner's
+  # name — which is the whole hole a review would otherwise have covered.
+  # `/commits/:sha/pulls` does not carry `merged_by`, so the PR is read whole.
+  gh "/pulls/${PR_NUMBER}" ||
+    deny "could not read PR #${PR_NUMBER} to find who merged it (HTTP ${gh_status}) — failing closed"
+  MERGED_BY=$(printf '%s' "$gh_body" | jq -r '.merged_by.login // empty') ||
+    deny "could not parse PR #${PR_NUMBER}"
+  [ -n "$MERGED_BY" ] ||
+    deny "PR #${PR_NUMBER} reports nobody as its merger — failing closed"
+  [ "$MERGED_BY" = "$SOLO_OWNER" ] ||
+    deny "PR #${PR_NUMBER} was merged by @${MERGED_BY}, not @${SOLO_OWNER}"
 
-# ──────────────────────────────── 4. the required job, on the exact final head
+  POLICY='solo-owner'
+  say "solo-owner policy: @${SOLO_OWNER} wrote and merged PR #${PR_NUMBER}; no human review was required or claimed"
+fi
+
+# ──────────────────────────────────────── 4. the required job, on which shas
 #
 # `/actions/runs?head_sha=` and then the run's jobs, rather than
 # `/commits/:sha/check-runs`: GitHub does not offer Checks in the fine-grained
 # token scopes this workflow can hold, and the name being matched — «Required
 # Quality Gate» — is a JOB inside the «CI» workflow, not a workflow itself.
 #
-# Asked about the PR's FINAL HEAD, which is the tree the reviewer approved.
-gh "/actions/runs?head_sha=${PR_HEAD}&per_page=100" ||
-  deny "could not list the runs on ${PR_HEAD:0:12} (HTTP ${gh_status}) — failing closed"
+# One function, asked twice, because the two questions are genuinely different
+# commits: the FINAL HEAD is the tree somebody reviewed (or, in solo mode, the
+# tree the owner last pushed), and the MERGE SHA is the tree that will actually
+# be built. They differ whenever main moved under the branch, and a squash or
+# rebase merge produces a commit that has never been tested as such.
+require_gate_on() { # sha  description
+  local sha=$1 what=$2 ids id
+  gh "/actions/runs?head_sha=${sha}&per_page=100" ||
+    deny "could not list the runs on ${what} ${sha:0:12} (HTTP ${gh_status}) — failing closed"
 
-run_ids=$(printf '%s' "$gh_body" | jq -r '.workflow_runs[]?.id // empty') ||
-  deny "could not parse the run list for ${PR_HEAD:0:12}"
-[ -n "$run_ids" ] ||
-  deny "no workflow run at all on the final head ${PR_HEAD:0:12}"
+  ids=$(printf '%s' "$gh_body" | jq -r '.workflow_runs[]?.id // empty') ||
+    deny "could not parse the run list for ${what} ${sha:0:12}"
+  [ -n "$ids" ] ||
+    deny "no workflow run at all on ${what} ${sha:0:12}"
 
-gate_ok=0
-for run_id in $run_ids; do
-  gh "/actions/runs/${run_id}/jobs?per_page=100" ||
-    deny "could not read the jobs of run ${run_id} (HTTP ${gh_status}) — failing closed"
-  if printf '%s' "$gh_body" | jq -e --arg n "$REQUIRED_JOB" \
-    'any(.jobs[]?; .name == $n and .status == "completed" and .conclusion == "success")' >/dev/null; then
-    gate_ok=1
-    break
-  fi
-done
-[ "$gate_ok" -eq 1 ] ||
-  deny "«${REQUIRED_JOB}» did not succeed on the final head ${PR_HEAD:0:12}"
+  for id in $ids; do
+    gh "/actions/runs/${id}/jobs?per_page=100" ||
+      deny "could not read the jobs of run ${id} (HTTP ${gh_status}) — failing closed"
+    if printf '%s' "$gh_body" | jq -e --arg n "$REQUIRED_JOB" \
+      'any(.jobs[]?; .name == $n and .status == "completed" and .conclusion == "success")' >/dev/null; then
+      say "«${REQUIRED_JOB}» succeeded on ${what} ${sha:0:12}"
+      return 0
+    fi
+  done
+  deny "«${REQUIRED_JOB}» did not succeed on ${what} ${sha:0:12}"
+}
 
-say "«${REQUIRED_JOB}» succeeded on ${PR_HEAD:0:12}"
+require_gate_on "$PR_HEAD" 'the final head'
+
+# The commit that will be BUILT, which on a squash or rebase merge is a tree
+# that has never existed before. In team mode a reviewer looked at the branch;
+# nobody looked at this. In solo mode nobody looked at either, so the one thing
+# standing between a bad merge and a deploy is that CI passed on the exact
+# artifact being shipped.
+if [ "$MODE" = 'solo' ] && [ "$SHA" != "$PR_HEAD" ]; then
+  require_gate_on "$SHA" 'the merge commit'
+fi
 
 # ────────────────────────────────────────────────────────── 5. the branch race
 #
@@ -229,14 +336,25 @@ head_now=$(printf '%s' "$gh_body" | jq -r '.sha // empty')
   deny "${BRANCH} moved ${SHA:0:12} → ${head_now:0:12} while this was being evaluated — the new head gets its own run"
 
 say "${BRANCH} is still at ${SHA:0:12}"
-say "PASS — PR #${PR_NUMBER}, ${approvals} human approval(s), quality gate green, branch unmoved"
 
-# The only thing written to stdout in a machine-readable shape, so the workflow
-# can put the PR number in a summary without re-asking GitHub.
+# The audit line. It names the POLICY, not just the outcome, because the two
+# are answers to different questions and the difference is the whole point of
+# this file: «team-approved» means a person other than the author read it, and
+# «solo-owner» means nobody did and the shop accepted that on purpose. A log
+# that said only «PASS» would make those indistinguishable a month later.
+if [ "$POLICY" = 'team-approved' ]; then
+  say "PASS [policy=team-approved] — PR #${PR_NUMBER}, ${approvals} human approval(s) other than @${PR_AUTHOR}, quality gate green, branch unmoved"
+else
+  say "PASS [policy=solo-owner] — PR #${PR_NUMBER} written and merged by @${SOLO_OWNER}, NOT reviewed by anyone else, quality gate green on the final head and on the merge commit, branch unmoved"
+fi
+
+# Machine-readable, so the workflow can put this in a step summary and hand the
+# policy down to the deploy script without re-asking GitHub.
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
     printf 'pr_number=%s\n' "$PR_NUMBER"
     printf 'pr_head=%s\n' "$PR_HEAD"
     printf 'approvals=%s\n' "$approvals"
+    printf 'policy=%s\n' "$POLICY"
   } >>"$GITHUB_OUTPUT"
 fi

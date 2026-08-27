@@ -71,6 +71,16 @@ else
 fi
 echo "==> $ENV_ARG: bot enabled = $BOT_FLAG"
 
+# Which policy allowed this deploy, carried through to the ledger on the box.
+# Defaulted to a value that is obviously not a policy, so a deploy run outside
+# the workflow is recorded as what it is rather than inheriting a claim.
+POLICY=${DEPLOY_APPROVAL_POLICY:-unrecorded}
+case "$POLICY" in
+  team-approved | solo-owner | promoted-by-hand | unrecorded) ;;
+  *) POLICY=unrecorded ;;
+esac
+echo "==> $ENV_ARG: approval policy = $POLICY"
+
 # 0700 dir, 0600 key. `ssh` refuses a key any wider than that, which is a
 # check worth keeping rather than working around with `-o StrictModes=no`.
 KEYDIR=$(mktemp -d)
@@ -103,4 +113,4 @@ echo "==> $ENV_ARG: deploying $IMAGE_REF"
 # and asking for one puts the remote script's prompt characters in the log.
 printf '%s' "$REGISTRY_TOKEN" |
   ssh -T "${SSH_OPTS[@]}" -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
-    "DEPLOY_BOT_ENABLED='$BOT_FLAG' bash /opt/shikoo/deploy.sh $ENV_ARG '$IMAGE_REF' '$SHA' '' --registry-token-stdin"
+    "DEPLOY_BOT_ENABLED='$BOT_FLAG' DEPLOY_APPROVAL_POLICY='$POLICY' bash /opt/shikoo/deploy.sh $ENV_ARG '$IMAGE_REF' '$SHA' '' --registry-token-stdin"
