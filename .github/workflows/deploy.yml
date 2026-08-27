@@ -1,0 +1,138 @@
+# Green `main` → staging → production, at one immutable digest.
+#
+# The server half of this already existed and had nothing calling it:
+# `deploy/deploy.sh` runs ON the box as `shikoo-deploy` and owns everything that
+# is not "build an image" — migrations first, the bot last, the smoke test, the
+# rollback. Its own header says it is "invoked over SSH by the GitHub deploy
+# workflow", and that workflow was never written. This is it.
+#
+# ## Why `workflow_run` and not `push`
+#
+# Nothing may deploy a commit CI has not passed. A `push` trigger would race the
+# CI run on the same commit and deploy whichever finished first. `workflow_run`
+# fires only after CI reports, and the `conclusion` guard drops every result
+# that is not success — including cancelled, which is not a failure and is also
+# not a pass.
+#
+# ## Why the image is built here rather than by Coolify
+#
+# The applications were `dockerfile` build-packs, so every deploy rebuilt from
+# git and the artifact CI tested was never the artifact that ran. Building once
+# here and deploying the DIGEST means staging and production run the identical
+# bytes, and `deploy.sh` refuses any digest whose revision label is not the
+# commit it was told to deploy.
+#
+# ## Why production is not gated in this file
+#
+# It is gated in the `production` GitHub environment instead, which today has no
+# reviewers — so a green `main` reaches customers on its own. Adding a required
+# reviewer there turns this into the hand-promote the deploy notes describe,
+# with no change to this file and no redeploy of anything.
+
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one in flight: `deploy.sh` holds a
+# flock on the box and a killed client does not release the process behind it.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  # Lowercase because a registry path must be, and `github.repository` is not.
+  # The same string is written into the Coolify application records, which is
+  # the other place it has to match.
+  IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
+  SHA: ${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  image:
+    name: image
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The commit CI passed, NOT the branch tip. By the time this runs,
+          # `main` may already carry a commit nothing has tested.
+          ref: ${{ env.SHA }}
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:sha-${{ env.SHA }}
+          # `deploy.sh` reads this label back off the pulled image and refuses
+          # the deploy when it is not the commit it was asked for. It is the
+          # whole of what stops a digest from another branch reaching an
+          # application record, so it is not decoration.
+          labels: org.opencontainers.image.revision=${{ env.SHA }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  staging:
+    name: staging
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.SHA }}
+
+      - name: deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
+        run: bash deploy/over-ssh.sh staging
+
+  production:
+    name: production
+    # Staging first, always. The two run the same digest, so a staging deploy
+    # that fails is the same deploy failing before it reaches customers.
+    needs: [image, staging]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.SHA }}
+
+      - name: deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
+        run: bash deploy/over-ssh.sh production
