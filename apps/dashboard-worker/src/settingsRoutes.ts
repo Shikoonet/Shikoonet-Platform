@@ -33,6 +33,7 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
+import { checkPlanLabel, PLAN_LABEL_SETTING, PLAN_LABEL_TOKENS } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 
 /**
@@ -150,6 +151,35 @@ export function registerSettingsRoutes(
 
     if (isSecretKey(key)) {
       return c.json({ ok: false, error: 'secret_key' }, 403);
+    }
+
+    // The one key on this screen whose VALUE has a grammar.
+    //
+    // Checked here rather than left to the bot, because the bot's only options
+    // are to draw «{prise}» to a customer or to ignore the row — and it ignores
+    // it. An operator who typed a slot name wrong would then save, see the
+    // screen unchanged, and have nothing telling them why. The refusal is the
+    // only place that answer can come from.
+    if (scope === PLAN_LABEL_SETTING.scope && key === PLAN_LABEL_SETTING.key) {
+      const text = typeof value === 'string' ? value.trim() : '';
+      // Empty is «not configured», which is a legitimate thing to save: it is
+      // how a shop goes back to the label the bot has always drawn.
+      if (text !== '') {
+        const problem = checkPlanLabel(text);
+        if (problem) {
+          return c.json(
+            {
+              ok: false,
+              error: 'invalid_template',
+              detail: problem.message,
+              // The panel screen is a generic key/value editor and has nowhere
+              // to document a grammar, so the refusal carries the field list.
+              tokens: Object.entries(PLAN_LABEL_TOKENS).map(([name, hint]) => ({ name, hint })),
+            },
+            400,
+          );
+        }
+      }
     }
 
     const before = await c.env.DB.prepare(

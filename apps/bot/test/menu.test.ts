@@ -227,6 +227,59 @@ describe('the plan list', () => {
     expect(plans[0]?.[0]?.text).toBe('۵۰ گیگ — 195,000 تومان');
   });
 
+  it('draws the shop own label when one is configured, from the plan fields', () => {
+    // The two layouts asked for: «1 ماهه | 50 گیگ | 195,000 تومان» and the
+    // two-part version. Built from `durationDays`/`volumeGb`, not from the
+    // typed name, which is the point — the fields cannot drift from what the
+    // customer is actually buying.
+    const three = menu.planMenu([PLAN], 0, '{duration} | {volume} | {price}');
+    expect(three[0]?.[0]?.text).toBe('1 ماهه | 50 گیگ | 195,000 تومان');
+
+    const two = menu.planMenu([PLAN], 0, '{duration} | {volume} {price}');
+    expect(two[0]?.[0]?.text).toBe('1 ماهه | 50 گیگ 195,000 تومان');
+  });
+
+  it('leaves every screen alone when no label is configured', () => {
+    // The default is null and not a template, because every migrated product
+    // has its price typed into its name. This is the assertion that says so.
+    const configured = menu.planMenu([PLAN], 0, null);
+    const omitted = menu.planMenu([PLAN], 0);
+    expect(configured[0]?.[0]?.text).toBe(omitted[0]?.[0]?.text);
+    expect(omitted[0]?.[0]?.text).toBe('۱ماهه - ۵۰ گیگ — 195,000 تومان');
+  });
+
+  it('prices the shop own label for the customer looking at it', () => {
+    // The discount is the one thing on this button that belongs to the viewer
+    // rather than to the plan, and it has to survive the template path.
+    const rows = menu.planMenu([PLAN], 20, '{duration} | {price}');
+    expect(rows[0]?.[0]?.text).toBe('1 ماهه | 156,000 تومان');
+  });
+
+  it('says «نامحدود» for an unmetered plan instead of leaving a gap', () => {
+    const rows = menu.planMenu(
+      [{ ...PLAN, volumeGb: null }],
+      0,
+      '{duration} | {volume} | {price}',
+    );
+    expect(rows[0]?.[0]?.text).toBe('1 ماهه | نامحدود | 195,000 تومان');
+  });
+
+  it('collapses the separator of a slot the plan has nothing for', () => {
+    // One user is the ordinary case and draws nothing, so «{users} |» must not
+    // leave a pipe hanging at the front of every single-user plan.
+    const rows = menu.planMenu([{ ...PLAN, userLimit: 1 }], 0, '{users} | {duration} | {price}');
+    expect(rows[0]?.[0]?.text).toBe('1 ماهه | 195,000 تومان');
+  });
+
+  it('still colours the button when the label is a template', () => {
+    const rows = menu.planMenu(
+      [{ ...PLAN, buttonStyle: 'success' }],
+      0,
+      '{duration} | {price}',
+    );
+    expect(rows[0]?.[0]?.style).toBe('success');
+  });
+
   it('goes back to the service list, which is the shop first screen', () => {
     const targets = callbacks(menu.planMenu([PLAN])).map((b) => b.callback_data);
     expect(targets).toContain('buy');

@@ -46,7 +46,13 @@ import {
   type MenuViewer,
 } from './keyboard.js';
 import type { Layouts } from './botContent.js';
-import { DEFAULT_TEXTS, groupIntoRows, type TextKey, type Texts } from '@shikoo/contracts';
+import {
+  DEFAULT_TEXTS,
+  groupIntoRows,
+  renderPlanLabel,
+  type TextKey,
+  type Texts,
+} from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
 import {
   MAX_COPY_TEXT_LENGTH,
@@ -413,6 +419,49 @@ function priced(name: string, listedIrr: number, price: Price): string {
 }
 
 /**
+ * `30` -> `'1 ماهه'`, `7` -> `'7 روزه'`, `null` -> `''`.
+ *
+ * Whole months only when the days divide evenly. «1.5 ماهه» is not a thing a
+ * shop sells, and 45 days rounded to «1 ماهه» would put a number on the button
+ * that is not what the customer gets — so anything that is not a clean month
+ * stays in days, which is always true.
+ *
+ * Latin digits, like `formatToman` and like every other number the bot draws
+ * (`menu.ts:1226`). A label that mixed «۱ ماهه» with «350,000 تومان» would be
+ * two digit systems on one button.
+ */
+function durationText(days: number | null): string {
+  if (days === null || days <= 0) return '';
+  if (days % 30 === 0) return `${days / 30} ماهه`;
+  return `${days} روزه`;
+}
+
+/**
+ * `100` -> `'100 گیگ'`, `null` -> `'نامحدود'`.
+ *
+ * NULL is unmetered and says so, rather than collapsing to nothing: on a plans
+ * screen «نامحدود» is the thing the customer is choosing between, and an empty
+ * slot there reads as a plan whose volume nobody filled in.
+ */
+function volumeText(gb: number | null): string {
+  if (gb === null) return 'نامحدود';
+  // `numeric(12,3)` arrives as a number; 50.000 must draw as «50 گیگ».
+  const shown = Number.isInteger(gb) ? gb : Number(gb.toFixed(3));
+  return `${shown.toLocaleString('en-US')} گیگ`;
+}
+
+/**
+ * `3` -> `'چند کاربره'`, `1` -> `''`, `null` -> `''`.
+ *
+ * One user is the shape nobody remarks on, so it draws nothing rather than «1
+ * کاربره» — a button that announces the ordinary case spends its one line on
+ * the least interesting thing about the plan.
+ */
+function usersText(limit: number | null): string {
+  return limit !== null && limit > 1 ? 'چند کاربره' : '';
+}
+
+/**
  * One row per service — پلاتینیوم, طلایی, معمولی. The shop's first screen.
  *
  * Names only. This screen picks a LEVEL, and a level does not have a price: a
@@ -459,7 +508,18 @@ export function productMenu(products: CatalogProduct[]): InlineKeyboard {
  * «بازگشت به دسته‌بندی‌ها» needs no argument: the category list is the shop's
  * first screen now, so it is plain `buy`.
  */
-export function planMenu(plans: CatalogPlan[], discountPercent = 0): InlineKeyboard {
+export function planMenu(
+  plans: CatalogPlan[],
+  discountPercent = 0,
+  /**
+   * The shop's own label, or null for the one this screen has always drawn.
+   *
+   * Null and not a default template on purpose — `planLabel.ts` has the
+   * reason, and it is that every migrated product already has its price typed
+   * into its name.
+   */
+  template: string | null = null,
+): InlineKeyboard {
   return withChrome(
     // The label and the callback are built together, from ONE plan object,
     // inside the row mapping. Not by index into a parallel array, and not
@@ -467,16 +527,40 @@ export function planMenu(plans: CatalogPlan[], discountPercent = 0): InlineKeybo
     // else's id is the one way this feature could sell the wrong thing.
     groupIntoRows(plans).map((row) =>
       row.map((plan) => ({
-        text: badged(
-          plan.badge,
-          priced(plan.planName, plan.priceIrr, priceForUser(plan.priceIrr, discountPercent)),
-        ),
+        text: planLabel(plan, discountPercent, template),
         callback_data: encode('plan', plan.planId),
         ...styled(plan.buttonStyle),
       })),
     ),
     'plans',
   );
+}
+
+/**
+ * One plan's button text, by whichever of the two routes the shop has chosen.
+ *
+ * The template path does NOT go through `priced`: that function's job is to
+ * decide whether a hand-typed name already quotes its own price, and a shop
+ * writing `{duration} | {price}` has said where the price goes. Running the
+ * suppression there would silently drop the price from a label that asked for
+ * it, on exactly the migrated plans whose names are the reason it exists.
+ *
+ * The discount is applied either way. It is the one thing on this button that
+ * belongs to the customer looking at it rather than to the plan.
+ */
+function planLabel(plan: CatalogPlan, discountPercent: number, template: string | null): string {
+  const price = priceForUser(plan.priceIrr, discountPercent);
+  if (template === null) {
+    return badged(plan.badge, priced(plan.planName, plan.priceIrr, price));
+  }
+  return renderPlanLabel(template, {
+    name: plan.planName,
+    badge: plan.badge ?? '',
+    duration: durationText(plan.durationDays),
+    volume: volumeText(plan.volumeGb),
+    users: usersText(plan.userLimit),
+    price: formatToman(price.totalIrr),
+  });
 }
 
 /**
