@@ -133,72 +133,202 @@ there is nothing to configure in Coolify. Leave those fields empty.
 | `bot`       | the heartbeat file's mtime, fresher than 90s. The bot opens no port — it long-polls outward, which is why it needs no inbound rule, no certificate and no DNS name — so a file the poll loop touches every cycle is what "alive" means for it |
 
 
-## Push to `main` → deployed, once CI is green
+## Merged, approved and green → deployed, at that exact sha
 
-Set up 2026-08-26. `deploy/autodeploy.sh` runs on the server every minute under
-`shikoo-autodeploy.timer`, asks GitHub whether `main` has moved, waits for the
-CI gate on that commit to finish green, and then asks Coolify to deploy all
-three apps.
+`deploy/autodeploy.sh` runs on the Coolify server every two minutes under
+`shikoo-autodeploy.timer`. It is the **only** thing allowed to deploy this
+project, and it deploys a commit only when all of the following are true of that
+one sha:
 
 ```
-git push  →  .github/workflows/ci.yml  →  (≤60s)  →  POST /api/v1/deploy ×3
+merged PR into main  →  approved by a non-author  →  push run green
+   →  «Required Quality Gate» green on that sha  →  main still unmoved
+   →  ENV_NAME matches  →  migrations safe  →  Coolify pinned to the sha
 ```
 
-**It polls, and that is not laziness.** Every conventional answer here is
-inbound — a GitHub webhook into Coolify's `manual_webhook_secret_github`, or a
-GitHub Action calling the deploy API. Both need GitHub to reach the box, and it
-cannot: Coolify listens on `0.0.0.0:8000`, but the router in front forwards only
-80 and 443, so `:8000` answers nothing from the internet. Measured 2026-08-26,
-and it is the posture worth keeping. Routing the Coolify API through Traefik to
-earn a webhook would put this server's whole control plane on the internet
-behind one bearer token, to save under a minute. Outbound is unrestricted —
-`api.github.com` answers the box in 0.4s — so the box asks instead of being
-told.
+### Why the approval check lives here
 
-**It waits for CI on purpose.** A webhook fires in milliseconds and the gate
-takes minutes, so a push-triggered deploy races the gate and wins — which makes
-the gate decorative. The verdict comes from `/actions/runs?head_sha=`: every
-run `completed`, every conclusion `success` / `neutral` / `skipped`. A commit
-whose CI failed is recorded as seen and never deployed, and never asked about
-again: a red commit is fixed by pushing another one.
+The right place for "no unreviewed commit reaches main" is a branch ruleset, and
+this repository cannot have one: rulesets on a private repository need GitHub
+Team, and `GET /repos/:r/rulesets` answers `403 Upgrade to GitHub Pro` — measured
+2026-08-27. So the deployment controller checks it itself.
+
+That is not a workaround to delete when the plan is upgraded. A ruleset governs
+what may land on `main`; this governs what may reach customers. Keep both.
+
+What it demands of the candidate sha, each one a test in
+`deploy/test/autodeploy.test.sh`:
+
+| | |
+| --- | --- |
+| merged | an approval on an **open** PR deploys nothing |
+| base `main` | a PR merged into another branch does not authorise a `main` deploy |
+| this sha | the sha is the PR's `merge_commit_sha` or its head — covers merge-commit, squash, rebase and the merge queue. A PR that merely *mentions* the commit does not qualify |
+| APPROVED | by somebody other than the author. Self-approval is not review |
+| current | the approval's `commit_id` must be the PR's final head, so an approval given before another push is stale |
+| latest | one review per reviewer, theirs most recent — an APPROVED later superseded by CHANGES_REQUESTED does not count |
+| fails closed | a sha GitHub cannot associate with a merged PR is refused, not assumed |
+
+### Why it polls
+
+Every conventional answer is inbound — a GitHub webhook into Coolify, or an
+Action calling the deploy API. Both need GitHub to reach the box, and it cannot:
+Coolify listens on `0.0.0.0:8000` but the router forwards only 80 and 443.
+Routing the Coolify API through Traefik to earn a webhook would put this server's
+whole control plane on the internet behind one bearer token, to save under a
+minute. Outbound is unrestricted, so the box asks instead of being told — and the
+Coolify token never leaves loopback.
+
+### The exact sha, not "latest main"
+
+`POST /api/v1/deploy?uuid=` on its own means *deploy whatever main is now*, which
+would report one sha and ship another. So each application is first pinned:
+
+```
+PATCH /api/v1/applications/<uuid>  {"git_commit_sha": "<sha>"}
+GET   /api/v1/applications/<uuid>  → must read back that sha, on branch main
+POST  /api/v1/deploy?uuid=<uuid>   → deployment_uuid
+GET   /api/v1/deployments/<uuid>   → poll to a terminal state; .commit must match
+```
+
+Coolify's `ApplicationDeploymentJob::shouldResolveBranchHeadCommit()` resolves the
+branch head **only** when `git_commit_sha` is empty or the literal `HEAD`, and
+checks out the exact commit otherwise. That same value becomes the image tag and
+the container's `SOURCE_COMMIT` — which is what the health checks read back. So
+
+```
+candidate sha = pinned sha = deployment .commit = container SOURCE_COMMIT
+```
+
+is checked, not assumed. The pin also stays put, which is what makes a rollback a
+redeploy of the previous sha rather than a rebuild of something new.
+
+### Order, and why
+
+| | |
+| --- | --- |
+| 1. migrations | `deploy/entrypoint.sh` refuses to start a service whose ledger is behind, so the schema moves first or nothing starts |
+| 2. `ingest` | `dashboard` is configured with `INGEST_URL`; the reverse edge does not exist |
+| 3. `dashboard` | |
+| 4. `bot` | last, and alone. `apps/bot/src/singleton.ts` holds a Postgres advisory lock keyed on the token, and a second poller **blocks** rather than racing — so Coolify's start-new-then-stop-old window cannot make two `getUpdates` callers |
+
+Postgres is never in that list. It is a Coolify **database** resource; the script
+only ever names the three application uuids.
+
+### The schema, and what is refused
+
+Before anything is deployed, the candidate's `migrations/` is fetched at that sha
+and compared to `schema_migrations`:
+
+* a migration in the ledger that the candidate does not have → the database is
+  **ahead** of the code. Refused.
+* a pending migration containing `DROP TABLE/COLUMN/CONSTRAINT`, `TRUNCATE`, a
+  column type change or a rename → refused **unless** the file itself carries the
+  line `-- autodeploy: reviewed-destructive`. That marker is in the migration
+  rather than in a flag on the deployer: it travels with the change, it is in the
+  diff the approving reviewer read, and whoever is deploying cannot set it.
+
+Migrations are applied through the existing `schemaCli` — advisory lock, one
+transaction and one ledger row per file — then `status` must come back clean and
+`verify_invariants.sql` must pass. **A forward migration is never reversed.** What
+makes a code rollback survivable is that the startup gate treats a database
+*ahead* of the checkout as a warning rather than a refusal.
+
+### Failure
+
+The first application that does not come up healthy stops the run. Everything
+behind it in the order is left untouched, everything already moved is pinned back
+to the previous sha and re-checked, and the candidate is **not** recorded. If
+there is no previous sha to return to, it says `ROLLBACK IMPOSSIBLE` rather than
+claiming success.
+
+### Where things live
 
 | where | what |
 | --- | --- |
 | `/opt/shikoo/autodeploy.sh` | the script, root-owned, 0755 |
-| `/etc/shikoo/autodeploy.env` | `GH_REPO` `GH_TOKEN` `COOLIFY_URL` `COOLIFY_TOKEN` `APP_UUIDS` `BRANCH` — **0600 root**, two tokens, not in this repository |
-| `/var/lib/shikoo-autodeploy/last-sha` | the last sha it acted on. Delete it to make the next tick reconsider `main`. |
+| `/etc/shikoo/autodeploy.env` | **0600 root:root**, in a 0700 directory, never in git |
+| `/var/lib/shikoo-autodeploy/last-sha` | the last sha that fully deployed — the rollback target |
+| `/var/lib/shikoo-autodeploy/rejected-sha` | the last sha refused for a terminal reason, so the refusal is said once |
+| `/var/lib/shikoo-autodeploy/deployments.jsonl` | one line per attempt: candidate, previous, deployment uuids, timestamps, verdict |
 | `systemctl status shikoo-autodeploy` | the last run |
 | `journalctl -u shikoo-autodeploy -f` | every decision, with its reason |
 
-Every value in the env file is single-quoted, and that is not style: the Coolify
-token begins `1|`, the file is `.`-sourced by bash, and unquoted the `|` became
-a pipe into a command named after the rest of the token. The same shape as the
-`$` Coolify itself expanded out of a panel password — anything sourced or
-interpolated needs the quotes, every time.
+`/opt/shikoo/autodeploy.sh --dry-run` does every read and no write: it resolves
+the candidate, runs all the gates, prints the run id, the gate verdict, the
+matched uuids and the sha each application is actually running, and says what it
+would decide. Run that first, always.
 
-To deploy by hand, without waiting for the timer or for GitHub:
+### The credential file
 
-```bash
-curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
-  "http://localhost:8000/api/v1/deploy?uuid=<app-uuid>"
+`LoadCredential=` in the unit, **not** `EnvironmentFile=`. `EnvironmentFile=`
+loads every value into the unit's environment, where `systemctl show -p
+Environment` prints it back to anyone who can run systemctl — turning a 0600 file
+into something a diagnostic leaks. `LoadCredential=` passes the file itself
+through a per-invocation ramfs at mode 0400 and appears in no `systemctl show`
+property. The script prefers `$CREDENTIALS_DIRECTORY/autodeploy.env` and falls
+back to `/etc/shikoo/autodeploy.env` for a hand-run.
+
+Neither token is ever passed on a command line. `curl` reads both from a config
+file in a 0700 temp directory removed on exit, so `ps` shows a path and never a
+bearer token.
+
+Every value is single-quoted, and that is not style: the Coolify token begins
+`1|`, the file is `.`-sourced by bash, and unquoted the `|` became a pipe into a
+command named after the rest of the token.
+
+```text
+GH_REPO=<redacted>          COOLIFY_URL=<redacted>      APP_INGEST=<redacted>
+GH_TOKEN=<redacted>         COOLIFY_TOKEN=<redacted>    APP_DASHBOARD=<redacted>
+BRANCH=<redacted>           DB_CONTAINER=<redacted>     APP_BOT=<redacted>
+EXPECT_ENV_NAME=<redacted>  PGUSER=<redacted>           PGDATABASE=<redacted>
 ```
 
-**The token needs `Actions: Read-only`, and «Checks» is not on offer.** The
-obvious permission for reading a CI verdict is `Checks`, and the obvious
-endpoint is `/commits/:sha/check-runs`. GitHub no longer lists `Checks` among
-the fine-grained token permissions at all — checked 2026-08-26, the list runs
-«Attestations · Code quality · Code scanning alerts» with nothing between them,
-and the endpoint answers `403` to this token no matter what else is granted.
+`GH_TOKEN` is left **absent** rather than empty. Absent lets a one-off
+verification run supply it through the environment; systemd sets no environment
+at all, so the unit still fails closed on it.
 
-`Commit statuses` is the substitute it looks like and is not: Actions reports
-through check runs, so the legacy combined status is empty here and would read
-as «no CI configured» — the one answer that must never pass. So the verdict
-comes from the runs themselves, `/actions/runs?head_sha=`, which
-`Actions: Read-only` opens. Same three words out the other end.
+### The GitHub token needs `Actions: Read-only`, and «Checks» is not on offer
 
-Granted and proven end to end 2026-08-26 16:05Z, before any push: the tick read
-`CI | completed | success` on `c0b855a` and queued all three apps; the next tick
-was silent because the sha was recorded.
+The obvious permission for reading a CI verdict is `Checks`, and the obvious
+endpoint is `/commits/:sha/check-runs`. GitHub no longer lists `Checks` among the
+fine-grained token permissions at all — checked 2026-08-26. `Commit statuses` is
+the substitute it looks like and is not: Actions reports through check runs, so
+the legacy combined status is empty here and would read as "no CI configured",
+the one answer that must never pass. So the verdict comes from
+`/actions/runs?head_sha=`, which `Actions: Read-only` opens.
+
+The whole scope list this needs, and nothing beyond it:
+
+| permission | for |
+| --- | --- |
+| Metadata: Read | required by every other one |
+| Contents: Read | the branch head, and the `migrations/` tarball at the candidate sha |
+| Pull requests: Read | the merged PR and its reviews |
+| Actions: Read | the workflow runs and their jobs |
+
+No write anywhere: it must not be able to push, merge, delete a branch, change a
+setting or read a secret.
+
+### The Coolify token
+
+A dedicated token on the correct team, abilities `read`, `write`, `deploy` —
+never `root`, and not `read:sensitive`. `write` is needed for exactly one thing:
+`PATCH /api/v1/applications/<uuid>` is what sets `git_commit_sha`, and that same
+verb is what turned native Auto Deploy off. Without `write` there is no way to
+pin an immutable sha, and the deploy degrades to "latest main".
+
+### One trigger, and only one
+
+Coolify's native **Auto Deploy** is off on all three applications
+(`is_auto_deploy_enabled: false`, set 2026-08-27) and preview deployments were
+already off. There is no GitHub Actions deployment job and no second timer. The
+webhook secrets remain set and are harmless — GitHub cannot reach `:8000` — but
+nothing is listening for them either.
+
+Coolify's own access to the private repository is **not** touched by any of this
+and must not be: it still needs to fetch the code it is told to build.
+
 
 ## Schema, before anything else
 
