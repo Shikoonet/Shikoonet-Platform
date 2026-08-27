@@ -530,11 +530,22 @@ jobs:
   # failure on an empty database is a flat 403 on every page, which reads as a
   # broken panel rather than as a missing fixture. See `memory/e2e-needs-sim-seed`.
   #
-  # Still ONE job, and still `workers: 1`. Sharding it into two isolated jobs
-  # was measured on this branch: it moves the job from ~2m45s to ~2m10s and
-  # costs three extra billed runner minutes, because ~75s of each shard is
-  # fixed setup that sharding duplicates rather than divides. That trade is the
-  # wrong side of the runner-minute budget today; the numbers are in the PR.
+  # Still ONE job, and still `workers: 1`. Splitting it into two isolated shards
+  # was not estimated, it was RUN — `playwright --shard=i/2`, each shard with its
+  # own Postgres, its own seed and its own pair of servers, on run 33116322185:
+  #
+  #                     wall     billed      compute
+  #   one shard         198s     19 min      844s
+  #   two shards        166s     20 min      911s
+  #
+  # It works, and the aggregator merged both reports and counted the full 104
+  # scenarios. It is simply the wrong side of the runner-minute budget: 32s of
+  # wall time for a billed minute, because 77s of the job's 176s is fixed setup
+  # that sharding duplicates rather than divides, and +17.6% over the old
+  # workflow breaches the 15% ceiling this change was held to.
+  #
+  # If that ceiling is ever raised, this is the first thing to spend it on and
+  # it is one `strategy.matrix` away.
   # -----------------------------------------------------------------------
   e2e:
     name: e2e
