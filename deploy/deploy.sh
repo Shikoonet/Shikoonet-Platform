@@ -219,7 +219,17 @@ LABEL_SHA=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.
 [ "$LABEL_SHA" = "$EXPECTED_SHA" ] ||
   die "image revision label is '$LABEL_SHA', expected $EXPECTED_SHA — this digest was not built from that commit"
 say "pulled $IMAGE_REF, revision label matches"
+# Which policy let this out. Recorded rather than assumed, and validated the
+# same way the bot switch is: a value this script does not recognise is written
+# as «unrecorded» instead of being trusted into the ledger.
+DEPLOY_APPROVAL_POLICY=${DEPLOY_APPROVAL_POLICY:-unrecorded}
+case "$DEPLOY_APPROVAL_POLICY" in
+  team-approved | solo-owner | promoted-by-hand) ;;
+  *) DEPLOY_APPROVAL_POLICY=unrecorded ;;
+esac
+
 summary "env=$ENV_ARG"
+summary "approval=$DEPLOY_APPROVAL_POLICY"
 summary "image=$IMAGE_REF"
 summary "sha=$EXPECTED_SHA"
 
@@ -487,6 +497,10 @@ mkdir -p "$(dirname "$STATE_FILE")"
 # spelling Coolify's tag field requires, and writing THAT into the history
 # meant a digest copied out of this file could never be promoted: promote
 # greps the history for `sha256:<hex>` and would never have found it.
-printf '%s %s %s\n' "$(date -Is)" "sha256:$DIGEST_HEX" "$EXPECTED_SHA" >>"$STATE_FILE"
+# A fourth field, appended: `promote` and `rollback` read $2 and $3 and are
+# unaffected, and a line that did not say which policy shipped it would make
+# «somebody reviewed this» and «the owner shipped it alone» indistinguishable
+# afterwards — which is exactly what the ledger is for.
+printf '%s %s %s %s\n' "$(date -Is)" "sha256:$DIGEST_HEX" "$EXPECTED_SHA" "$DEPLOY_APPROVAL_POLICY" >>"$STATE_FILE"
 say "recorded in $STATE_FILE"
 summary "verdict=DEPLOYED"
