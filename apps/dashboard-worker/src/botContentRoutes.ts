@@ -60,6 +60,10 @@ const LayoutBody = z
             rowIndex: z.number().int().min(0).max(19),
             colIndex: z.number().int().min(0).max(7),
             visible: z.boolean(),
+            // Optional so a panel that has never heard of colours — or a
+            // scripted save written before 0036 — keeps working and means
+            // «no colour», rather than being refused for a field it omitted.
+            style: z.enum(['primary', 'success', 'danger']).nullish(),
           })
           .strict(),
       )
@@ -303,7 +307,7 @@ export function registerBotContentRoutes(
     if (!isMenuId(menu)) return c.json({ ok: false, error: 'unknown_menu' }, 404);
 
     const rows = await c.env.DB.prepare(
-      `SELECT action, label, row_index, col_index, visible FROM bot_keyboard_buttons
+      `SELECT action, label, row_index, col_index, visible, style FROM bot_keyboard_buttons
         WHERE menu = ?1
         ORDER BY row_index, col_index`,
     )
@@ -314,6 +318,7 @@ export function registerBotContentRoutes(
         row_index: number;
         col_index: number;
         visible: boolean;
+        style: 'primary' | 'success' | 'danger' | null;
       }>();
     const saved = rows.results ?? [];
 
@@ -332,6 +337,7 @@ export function registerBotContentRoutes(
               rowIndex: Number(b.row_index),
               colIndex: Number(b.col_index),
               visible: b.visible,
+              style: b.style,
             }))
           : DEFAULT_LAYOUTS[menu],
       // The palette: everything this screen can carry, so the admin can add
@@ -365,9 +371,18 @@ export function registerBotContentRoutes(
       ...buttons.map((b) =>
         c.env.DB.prepare(
           `INSERT INTO bot_keyboard_buttons
-               (menu, action, label, row_index, col_index, visible, updated_by)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
-        ).bind(menu, b.action, b.label, b.rowIndex, b.colIndex, b.visible, ident.email),
+               (menu, action, label, row_index, col_index, visible, style, updated_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+        ).bind(
+          menu,
+          b.action,
+          b.label,
+          b.rowIndex,
+          b.colIndex,
+          b.visible,
+          b.style ?? null,
+          ident.email,
+        ),
       ),
     ];
     await c.env.DB.batch(statements);

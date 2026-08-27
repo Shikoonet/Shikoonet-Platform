@@ -27,6 +27,7 @@
 
 import { useEffect, useState } from 'react';
 import { MAX_CATALOG_ROWS, MAX_ROW_WIDTH, groupIntoRows } from '@shikoo/contracts';
+import { ButtonGrid, GRID_HELP, type GridChip } from './ButtonGrid.js';
 import { api, ApiError, type LayoutItem, type LayoutScope } from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
@@ -49,54 +50,9 @@ function message(e: unknown): string {
 
 type Rows = LayoutButton[][];
 
-/** Where a chip is, as `[row, column]`. `[-1, -1]` if it is not on the board. */
-function locate(rows: Rows, id: number): [number, number] {
-  for (const [r, row] of rows.entries()) {
-    const c = row.findIndex((b) => b.id === id);
-    if (c !== -1) return [r, c];
-  }
-  return [-1, -1];
-}
-
-/**
- * Move one chip, and tidy up after it.
- *
- * `toRow` and `toCol` are positions in the board the admin is LOOKING at, and
- * the conversion below is the whole of why this is a function rather than three
- * lines at each call site: lifting a chip out can delete its row, and then
- * every row after it has shifted by one. Handing the callers the post-lift
- * indexing instead would make «drop it on the strip below its own row» land a
- * row too far, and only sometimes — which is the shape of bug that survives a
- * demo.
- *
- * An emptied row is dropped rather than kept, because a row exists only because
- * a button is in it. That is the same rule `groupIntoRows` reads the saved
- * arrangement by.
- */
-function move(rows: Rows, id: number, toRow: number, toCol: number, asNewRow: boolean): Rows {
-  const [from, fromCol] = locate(rows, id);
-  if (from === -1) return rows;
-  const chip = rows[from]!.find((b) => b.id === id)!;
-
-  const vanishes = rows[from]!.length === 1;
-  const lifted = rows.map((row) => row.filter((b) => b.id !== id)).filter((row) => row.length > 0);
-  const shifted = toRow - (vanishes && toRow > from ? 1 : 0);
-
-  if (asNewRow) {
-    if (lifted.length >= MAX_CATALOG_ROWS) return rows;
-    const at = Math.max(0, Math.min(shifted, lifted.length));
-    return [...lifted.slice(0, at), [chip], ...lifted.slice(at)];
-  }
-
-  const at = Math.max(0, Math.min(shifted, lifted.length - 1));
-  const target = lifted[at];
-  if (!target || target.length >= MAX_ROW_WIDTH) return rows;
-  // Same conversion one axis down: dropping on the chip that is fourth in a row
-  // means «go in front of it», and after lifting a chip from in front of it,
-  // it is third.
-  const wanted = toCol < 0 ? target.length : toCol - (toRow === from && toCol > fromCol ? 1 : 0);
-  const col = Math.max(0, Math.min(wanted, target.length));
-  return lifted.map((row, i) => (i === at ? [...row.slice(0, col), chip, ...row.slice(col)] : row));
+/** This screen's row, found again by the key the grid handed back. */
+function toChip(b: LayoutButton): GridChip {
+  return { key: String(b.id), label: b.label, hint: b.hint };
 }
 
 export function LayoutEditor({
@@ -114,9 +70,6 @@ export function LayoutEditor({
 }) {
   const w = useAdminWriteProps();
   const [rows, setRows] = useState<Rows>(() => groupIntoRows(items));
-  const [dragging, setDragging] = useState<number | null>(null);
-  /** Where a drop would land right now: a row and column, or a new row before `row`. */
-  const [over, setOver] = useState<{ row: number; col: number; asNewRow: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -130,29 +83,6 @@ export function LayoutEditor({
   }, [items]);
 
   const dirty = JSON.stringify(serialise(rows)) !== JSON.stringify(serialise(groupIntoRows(items)));
-
-  function drop(row: number, col: number, asNewRow: boolean) {
-    if (dragging === null) return;
-    setRows((current) => move(current, dragging, row, col, asNewRow));
-    setDragging(null);
-    setOver(null);
-    setDone(null);
-  }
-
-  /** The four moves, for anyone reaching this screen without a mouse. */
-  function key(e: React.KeyboardEvent, id: number) {
-    const keys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
-    if (!keys.includes(e.key)) return;
-    e.preventDefault();
-    const [r, c] = locate(rows, id);
-    // Right is BACK in an RTL row, so the arrows match what the eye sees rather
-    // than what the array index does.
-    if (e.key === 'ArrowRight') setRows(move(rows, id, r, c - 1, false));
-    if (e.key === 'ArrowLeft') setRows(move(rows, id, r, c + 1, false));
-    if (e.key === 'ArrowUp') setRows(move(rows, id, r - 1, -1, false));
-    if (e.key === 'ArrowDown') setRows(move(rows, id, r + 1, -1, false));
-    setDone(null);
-  }
 
   async function save(payload: LayoutItem[], said: string) {
     setBusy(true);
@@ -179,86 +109,28 @@ export function LayoutEditor({
     return <p className="empty">این صفحه هنوز دکمه‌ای ندارد.</p>;
   }
 
-  /** A place a dragged chip can land, drawn between two rows. */
-  const splitAt = (row: number) => (
-    <div
-      className={`kb-split${over?.asNewRow && over.row === row ? ' kb-split--over' : ''}`}
-      onDragOver={(e) => {
-        if (dragging === null) return;
-        e.preventDefault();
-        setOver({ row, col: -1, asNewRow: true });
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        drop(row, -1, true);
-      }}
-    />
-  );
+  if (items.length === 0) {
+    return <p className="empty">این صفحه هنوز دکمه‌ای ندارد.</p>;
+  }
+
+  const byId = new Map(items.map((b) => [String(b.id), b]));
 
   return (
     <div className="arrange">
-      <div className="phone">
-        <div className="phone__message">{screenText}</div>
-        <div className="phone__keyboard" onDragEnd={() => setOver(null)}>
-          {splitAt(0)}
-          {rows.map((row, r) => (
-            <div key={row[0]!.id}>
-              <div
-                className={`kb-row${over && !over.asNewRow && over.row === r ? ' kb-row--over' : ''}`}
-                onDragOver={(e) => {
-                  if (dragging === null || row.length >= MAX_ROW_WIDTH) return;
-                  e.preventDefault();
-                  setOver({ row: r, col: -1, asNewRow: false });
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  drop(r, over?.asNewRow ? -1 : (over?.col ?? -1), false);
-                }}
-              >
-                {row.map((b, c) => (
-                  <button
-                    key={b.id}
-                    type="button"
-                    draggable
-                    className={[
-                      'kb-chip',
-                      dragging === b.id ? 'kb-chip--dragging' : '',
-                      over && !over.asNewRow && over.row === r && over.col === c
-                        ? 'kb-chip--before'
-                        : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
-                    onDragStart={() => setDragging(b.id)}
-                    onDragEnd={() => {
-                      setDragging(null);
-                      setOver(null);
-                    }}
-                    onDragOver={(e) => {
-                      if (dragging === null || dragging === b.id) return;
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setOver({ row: r, col: c, asNewRow: false });
-                    }}
-                    onKeyDown={(e) => key(e, b.id)}
-                    {...w}
-                  >
-                    <span>{b.label}</span>
-                    {b.hint && <span className="kb-chip__hint">{b.hint}</span>}
-                  </button>
-                ))}
-              </div>
-              {splitAt(r + 1)}
-            </div>
-          ))}
-        </div>
-      </div>
+      <ButtonGrid
+        rows={rows.map((row) => row.map(toChip))}
+        onChange={(next) => {
+          // Back to this screen's own shape. The grid knows about chips and
+          // nothing about catalogue ids, so the map back lives here.
+          setRows(next.map((row) => row.map((c) => byId.get(c.key)!)));
+          setDone(null);
+        }}
+        screenText={screenText}
+      />
 
       <div className="arrange__side">
         <p className="muted" style={{ margin: 0 }}>
-          دکمه‌ها را با ماوس بگیرید و جابه‌جا کنید: روی یک دکمهٔ دیگر بیندازید تا کنارش بنشیند، یا
-          روی فاصلهٔ بین دو ردیف تا ردیف تازه بسازد. با صفحه‌کلید هم می‌شود — روی دکمه Tab بزنید و
-          با کلیدهای جهت‌دار ببریدش.
+          {GRID_HELP}
         </p>
 
         {err && <div className="alert alert-error">{err}</div>}
