@@ -238,8 +238,8 @@ describe('the keyboard', () => {
   it('drops an action this build no longer handles instead of drawing a dead button', () => {
     const rows = buildMainMenu(
       [
-        { action: 'buy', label: 'خرید', rowIndex: 0, colIndex: 0, visible: true },
-        { action: 'gone', label: 'قدیمی', rowIndex: 0, colIndex: 1, visible: true },
+        { action: 'buy', label: 'خرید', rowIndex: 0, colIndex: 0, visible: true, style: null },
+        { action: 'gone', label: 'قدیمی', rowIndex: 0, colIndex: 1, visible: true, style: null },
       ],
       CUSTOMER,
     );
@@ -249,9 +249,9 @@ describe('the keyboard', () => {
   it('leaves no blank row when a whole row is hidden', () => {
     const rows = buildMainMenu(
       [
-        { action: 'buy', label: 'خرید', rowIndex: 0, colIndex: 0, visible: true },
-        { action: 'wal', label: 'کیف', rowIndex: 1, colIndex: 0, visible: false },
-        { action: 'sup', label: 'پشتیبانی', rowIndex: 2, colIndex: 0, visible: true },
+        { action: 'buy', label: 'خرید', rowIndex: 0, colIndex: 0, visible: true, style: null },
+        { action: 'wal', label: 'کیف', rowIndex: 1, colIndex: 0, visible: false, style: null },
+        { action: 'sup', label: 'پشتیبانی', rowIndex: 2, colIndex: 0, visible: true, style: null },
       ],
       CUSTOMER,
     );
@@ -262,7 +262,7 @@ describe('the keyboard', () => {
 
 describe('layout validation', () => {
   const ok = (over: Partial<Parameters<typeof buildMainMenu>[0][number]> = {}) => [
-    { action: 'buy', label: 'خرید', rowIndex: 0, colIndex: 0, visible: true, ...over },
+    { action: 'buy', label: 'خرید', rowIndex: 0, colIndex: 0, visible: true, style: null, ...over },
   ];
 
   it('accepts every layout the code ships', () => {
@@ -282,7 +282,7 @@ describe('layout validation', () => {
     // every reseller — a subtler version of the same trap.
     expect(
       checkLayout('main', [
-        { action: 'agr', label: 'نمایندگی', rowIndex: 0, colIndex: 0, visible: true },
+        { action: 'agr', label: 'نمایندگی', rowIndex: 0, colIndex: 0, visible: true, style: null },
       ]),
     ).toEqual({ kind: 'NOTHING_VISIBLE' });
   });
@@ -298,7 +298,7 @@ describe('layout validation', () => {
     // dashboard's now, so `agr` is the only limited button left.
     expect(
       checkLayout('main', [
-        { action: 'agr', label: 'نمایندگی', rowIndex: 0, colIndex: 0, visible: true },
+        { action: 'agr', label: 'نمایندگی', rowIndex: 0, colIndex: 0, visible: true, style: null },
       ]),
     ).toEqual({ kind: 'NOTHING_VISIBLE' });
   });
@@ -326,15 +326,15 @@ describe('layout validation', () => {
   it('refuses the same button twice and the same cell twice', () => {
     expect(
       checkLayout('main', [
-        { action: 'buy', label: 'a', rowIndex: 0, colIndex: 0, visible: true },
-        { action: 'buy', label: 'b', rowIndex: 0, colIndex: 1, visible: true },
+        { action: 'buy', label: 'a', rowIndex: 0, colIndex: 0, visible: true, style: null },
+        { action: 'buy', label: 'b', rowIndex: 0, colIndex: 1, visible: true, style: null },
       ]),
     ).toEqual({ kind: 'DUPLICATE_ACTION', actions: ['buy'] });
 
     expect(
       checkLayout('main', [
-        { action: 'buy', label: 'a', rowIndex: 0, colIndex: 0, visible: true },
-        { action: 'wal', label: 'b', rowIndex: 0, colIndex: 0, visible: true },
+        { action: 'buy', label: 'a', rowIndex: 0, colIndex: 0, visible: true, style: null },
+        { action: 'wal', label: 'b', rowIndex: 0, colIndex: 0, visible: true, style: null },
       ]),
     ).toEqual({ kind: 'DUPLICATE_CELL' });
   });

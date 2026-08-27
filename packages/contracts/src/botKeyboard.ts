@@ -418,6 +418,26 @@ export interface ButtonPlacement {
   rowIndex: number;
   colIndex: number;
   visible: boolean;
+  /**
+   * The whole button's colour — Bot API 9.4's `style`, or null for the
+   * client's own default.
+   *
+   * The same three names `product_categories.button_style` uses, because they
+   * are Telegram's and there is nothing to translate. A shop colours «خرید
+   * اشتراک» green and «بازگشت» red on the same screen, so it belongs to the
+   * placement rather than to the action: the same `back` action is chrome on
+   * eleven keyboards and a shop may want it to read differently on each.
+   */
+  style: ButtonStyle | null;
+}
+
+/** Telegram's three, spelled as 0034's CHECK and 0036's spell them. */
+export type ButtonStyle = 'primary' | 'success' | 'danger';
+
+export const BUTTON_STYLES: readonly ButtonStyle[] = ['primary', 'success', 'danger'];
+
+export function isButtonStyle(value: unknown): value is ButtonStyle {
+  return typeof value === 'string' && (BUTTON_STYLES as readonly string[]).includes(value);
 }
 
 /**
@@ -517,6 +537,9 @@ function layoutFor(id: MenuId): readonly ButtonPlacement[] {
     rowIndex,
     colIndex,
     visible: true,
+    // The shipped layout has no colours. A default that painted these would be
+    // a change to every shop's screens on the day the column was added.
+    style: null,
   }));
 }
 
