@@ -214,6 +214,15 @@ jobs:
     needs: [gate, image]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      # The token this job hands to the server on stdin is what `docker pull`
+      # authenticates with. Without `packages: read` it logs in successfully and
+      # then cannot read a thing — «installation not allowed to Read
+      # organization package», on a digest this same workflow pushed a minute
+      # earlier. Granting the package access to the repository is NOT enough on
+      # its own: the job's token has to carry the scope too.
+      packages: read
     environment: staging
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -264,6 +273,15 @@ jobs:
     if: vars.PRODUCTION_AUTO_DEPLOY == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      # The token this job hands to the server on stdin is what `docker pull`
+      # authenticates with. Without `packages: read` it logs in successfully and
+      # then cannot read a thing — «installation not allowed to Read
+      # organization package», on a digest this same workflow pushed a minute
+      # earlier. Granting the package access to the repository is NOT enough on
+      # its own: the job's token has to carry the scope too.
+      packages: read
     environment: production
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -384,6 +402,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      packages: read
     environment: production
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
