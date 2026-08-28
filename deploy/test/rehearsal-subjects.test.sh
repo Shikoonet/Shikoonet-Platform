@@ -145,7 +145,10 @@ refuses() { # label sed-expr reason-regex [extra-env]
     bad "$label" "the rehearsal SUCCEEDED with the guard removed"
   elif grep -qiE "$want" "$mw/out"; then
     # and it must not have left evidence behind
-    if [ -e "$mw/state/attestation/current" ]; then
+    # `-e` follows the symlink, so a pointer left dangling at a removed version
+    # directory read as "no attestation" — a refusal would have looked clean
+    # while leaving a broken pointer behind.
+    if [ -e "$mw/state/attestation/current" ] || [ -L "$mw/state/attestation/current" ]; then
       bad "$label" "refused, but an attestation was still activated"
     else
       ok "$label"
@@ -205,7 +208,7 @@ FAKE_LEDGER_DRIFT=1 run_rehearsal "$MW"; DRC=$?
 if [ "$DRC" -eq 0 ]; then
   bad "refuses when the subject's ledger does not match the restored production copy" "it succeeded"
 elif grep -q 'this is not that database' "$MW/out"; then
-  if [ -e "$MW/state/attestation/current" ]; then
+  if [ -e "$MW/state/attestation/current" ] || [ -L "$MW/state/attestation/current" ]; then
     bad "refuses when the subject's ledger does not match the restored production copy" "an attestation was activated"
   else
     ok "refuses when the subject's ledger does not match the restored production copy"
