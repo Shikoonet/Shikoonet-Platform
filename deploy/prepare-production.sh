@@ -40,6 +40,12 @@ CONF=${CONF:-/etc/shikoo/$ENV_ARG/deploy.env}
 STATE=${STATE:-/var/lib/shikoo/$ENV_ARG}
 BACKUP_DIR=${BACKUP_DIR:-$STATE/backups}
 ATTESTATION=${ATTESTATION:-$STATE/attestation}
+# The comment here used to say this path took the production release lock. It
+# did not — there was no flock anywhere in this script, so Prepare could read
+# `current` in the middle of the rehearsal's swap. Both sides now use one
+# protocol from one file, and this is the side that actually acquires it.
+# shellcheck source=deploy/attestation-store.sh
+. "$HERE/attestation-store.sh"
 
 say() { echo "[prepare] $*"; }
 die() {
@@ -59,9 +65,17 @@ die() {
 # migration, a Coolify write or a ledger line, which is what the ordering was
 # for.
 say "P0. the production-dump rehearsal covers this release"
+# Resolved first, under the shared lock, then verified. Two statements, because
+# folding the resolution into the environment prefix of the verifier would turn
+# the whole line into a plain assignment and the verifier would run with none of
+# the EXPECTED_* values set — checking that an attestation exists rather than
+# that it covers this release.
+ATTESTATION_VERSION=$(att_read "$ATTESTATION") ||
+  die "no activated production-dump attestation — run the rehearsal on the secure host first"
+say "attestation resolved through current → $(basename "$ATTESTATION_VERSION")"
 EXPECTED_SHA="$SHA_ARG" EXPECTED_DIGEST="$DIGEST_ARG" \
   EXPECTED_STAGING_RUN_ID="$STAGING_RUN" \
-  bash "$HERE/verify-dump-attestation.sh" "$ATTESTATION" ||
+  bash "$HERE/verify-dump-attestation.sh" "$ATTESTATION_VERSION" ||
   die "the dump attestation does not cover this release"
 
 # ── P1/P2. recovery points ────────────────────────────────────────────────

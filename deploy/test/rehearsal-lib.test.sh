@@ -237,63 +237,119 @@ refuses 'the refusal names preloading rather than pulling' 'it will not pull' \
   rehearsal_require_local_images "$FAKED/docker-absent" "a@sha256:${HEX}"
 
 # ── D1 export ────────────────────────────────────────────────────────────
-section 'the D1 export is required, real, and never the fixture'
+section 'the D1 export proves its provenance rather than looking plausible'
 
-D1="$WORK/d1"; mkdir -p "$D1"
-mkd1() { # tables... -> writes plausible rows
+# The heuristic these tests replace scanned the first five rows for words like
+# `example.com` and `synthetic` and accepted anything that avoided them. It
+# passed any fabricated dataset written carefully, and failed a genuine export
+# from a customer whose domain happened to be example.com. Provenance is now
+# produced by the export process and verified here as a set.
+D1="$WORK/d1"
+DUMPF="$WORK/mirzabot.sql"
+TABLES='access_users,devices,device_credentials,settings'
+GEN="$ROOT/tools/d1-export-manifest.py"
+
+mkd1() { # -> a complete, signed export
   rm -rf "$D1"; mkdir -p "$D1"
-  for t in "$@"; do
+  local t
+  for t in access_users devices device_credentials settings; do
     printf '[{"id":1,"email":"ops@shikoo.ir"},{"id":2,"email":"a@b.ir"}]' >"$D1/${t}.json"
   done
+  printf 'mysql dump bytes\n' >"$DUMPF"
+  printf '%s\n' access_users devices device_credentials settings >"$WORK/tables.manifest"
+  python3 "$GEN" "$D1" "$DUMPF" "$WORK/tables.manifest" >/dev/null
+  chmod 755 "$D1"; chmod 640 "$D1"/*.json "$D1/d1-export.manifest"
 }
-TABLES='access_users,devices,device_credentials,settings'
-mkd1 access_users devices device_credentials settings
-accepts 'a complete real-looking export is accepted' rehearsal_validate_d1_export "$D1" "$TABLES"
+
+mkd1
+accepts 'a signed, complete, coherent export is accepted' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
 
 refuses 'an empty path is refused, with no default' 'no default' \
-  rehearsal_validate_d1_export '' "$TABLES"
+  rehearsal_validate_d1_export '' "$TABLES" "$DUMPF"
 refuses 'a missing directory is refused' 'does not exist' \
-  rehearsal_validate_d1_export "$WORK/nope" "$TABLES"
+  rehearsal_validate_d1_export "$WORK/nope" "$TABLES" "$DUMPF"
 
 ln -sfn "$D1" "$WORK/d1link"
 refuses 'a symlinked export directory is refused' 'symlink' \
-  rehearsal_validate_d1_export "$WORK/d1link" "$TABLES"
+  rehearsal_validate_d1_export "$WORK/d1link" "$TABLES" "$DUMPF"
 
-mkd1 access_users devices
-refuses 'an incomplete table set is refused' 'incomplete' \
-  rehearsal_validate_d1_export "$D1" "$TABLES"
+# No sidecar at all: this is the case the old heuristic silently accepted.
+mkd1; rm -f "$D1/d1-export.manifest"
+refuses 'an export with no provenance is refused' 'no d1-export.manifest' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+refuses 'the refusal names the generator to run' 'd1-export-manifest.py' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
 
-mkd1 access_users devices device_credentials settings
-: >"$D1/settings.json"
-refuses 'an empty table file is refused' 'empty' \
-  rehearsal_validate_d1_export "$D1" "$TABLES"
+# A missing file.
+mkd1; rm -f "$D1/settings.json"
+refuses 'a missing table file is refused' 'not present' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
 
-mkd1 access_users devices device_credentials settings
-printf '{not json' >"$D1/devices.json"
-refuses 'malformed JSON is refused' 'not valid JSON' \
-  rehearsal_validate_d1_export "$D1" "$TABLES"
+# A modified file: the bytes no longer match what the export recorded.
+mkd1; printf '[{"id":99}]' >"$D1/devices.json"
+refuses 'a modified table file is refused' 'modified or replaced' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
 
-mkd1 access_users devices device_credentials settings
-printf '[]' >"$D1/devices.json"
-refuses 'a table with no rows is refused' 'no rows' \
-  rehearsal_validate_d1_export "$D1" "$TABLES"
+# A file from ANOTHER export dropped in beside these. It is a real export file
+# with a real manifest entry of its own — just not this one's.
+mkd1
+OTHER="$WORK/other"; rm -rf "$OTHER"; mkdir -p "$OTHER"
+printf '[{"id":7,"email":"other@shikoo.ir"}]' >"$OTHER/devices.json"
+cp "$OTHER/devices.json" "$D1/devices.json"
+refuses 'a file from another export is refused' 'modified or replaced' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
 
-# The substitution this policy exists to stop.
-mkd1 access_users devices device_credentials settings
-printf '[{"id":1,"email":"someone@example.com"}]' >"$D1/access_users.json"
-refuses 'a fixture signature is refused' 'fixture signature' \
-  rehearsal_validate_d1_export "$D1" "$TABLES"
+# An extra table that is not part of the contract.
+mkd1; printf '[{"id":1}]' >"$D1/not_in_contract.json"
+refuses 'an extra table file is refused' 'unexpected file' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
 
-mkd1 access_users devices device_credentials settings
-printf '[{"id":1,"note":"synthetic sample"}]' >"$D1/settings.json"
-refuses 'a synthetic marker is refused' 'fixture signature' \
-  rehearsal_validate_d1_export "$D1" "$TABLES"
+# A contract/manifest mismatch in the other direction.
+mkd1
+refuses 'a manifest that does not cover the contract is refused' 'does not cover' \
+  rehearsal_validate_d1_export "$D1" "${TABLES},payment_cards" "$DUMPF"
 
-mkd1 access_users devices device_credentials settings
-chmod 777 "$D1"
+# A symlinked table file.
+mkd1; rm -f "$D1/settings.json"; ln -s "$WORK/mirzabot.sql" "$D1/settings.json"
+refuses 'a symlinked table file is refused' 'symlink' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+
+# Unsafe mode on a table file, and on the directory.
+mkd1; chmod 666 "$D1/devices.json"
+refuses 'a group- or world-writable table file is refused' 'writable' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+mkd1; chmod 777 "$D1"
 refuses 'a world-writable export directory is refused' 'world-writable' \
-  rehearsal_validate_d1_export "$D1" "$TABLES"
-chmod 755 "$D1"
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+mkd1; chmod 666 "$D1/d1-export.manifest"
+refuses 'a writable provenance sidecar is refused' 'writable' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+
+# MySQL and D1 from different snapshots. Both are internally valid; together
+# they describe a database that never existed, and no row count would notice.
+mkd1; printf 'a different mysql dump\n' >"$DUMPF"
+refuses 'a MySQL dump from another snapshot is refused' 'different snapshots' \
+  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+
+# The export identity is returned, not discarded.
+mkd1
+D1ID=$(rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF")
+case "$D1ID" in
+  sha256:*)
+    if [ "${#D1ID}" = 71 ]; then
+      ok 'the export identity is returned for provenance'
+    else
+      bad 'the export identity is returned for provenance' "length ${#D1ID}"
+    fi ;;
+  *) bad 'the export identity is returned for provenance' "got '${D1ID}'" ;;
+esac
+# It is a hash of hashes, so it must not equal any single table file's digest.
+if grep -qF "${D1ID#sha256:}" "$D1/d1-export.manifest"; then
+  bad 'the identity is not any one file digest' 'it matches a listed digest'
+else
+  ok 'the identity is not any one file digest'
+fi
 
 # ── live production images ───────────────────────────────────────────────
 section 'the old image is derived from live state, never configured'
@@ -414,14 +470,171 @@ refuses 'an extra application is refused' 'application set differs' rehearsal_ch
 refuses 'a non-uuid is refused' 'not a Coolify uuid' rehearsal_check_app_uuids \
   "$(obs "shikoo-ingest|../etc" "shikoo-dashboard|${U2}" "shikoo-bot|${U3}")" "$EXPECT"
 
-section 'the backup directory must BE the resource directory'
+section 'the backup directory is compared canonically, not by pattern'
+
+# What was here matched any basename ending in `-<uuid>`, and the negative case
+# it was checked against — `/tmp/evil-<uuid>-staging` — does not end in the
+# uuid, so it failed for an unrelated reason and the guard looked sound.
+# `/tmp/evil-<uuid>` walked straight through. There is no pattern any more:
+# both sides are resolved to real paths and compared.
+B="$WORK/backups"; rm -rf "$B"
+mkdir -p "$B/team/shikoo-postgres-${U1}" "$B/team/shikoo-postgres-${U2}"
+REAL="$B/team/shikoo-postgres-${U1}"
 
 accepts 'the canonical backup directory is accepted' \
-  rehearsal_backup_dir_belongs "/data/coolify/backups/databases/team/shikoo-postgres-${U1}" "$U1"
-refuses 'a directory merely containing the uuid is refused' 'is not the backup directory' \
-  rehearsal_backup_dir_belongs "/tmp/evil-${U1}-staging" "$U1"
-refuses 'an unrelated directory is refused' 'is not the backup directory' \
-  rehearsal_backup_dir_belongs "/data/backups/other-resource" "$U1"
+  rehearsal_canonical_dir_is "$REAL" "$REAL" 'the backup dir'
+
+# The exact attack the pattern permitted.
+mkdir -p "/tmp/evil-${U1}"
+refuses 'a hostile directory whose name ends in the uuid is refused' 'resolves elsewhere' \
+  rehearsal_canonical_dir_is "/tmp/evil-${U1}" "$REAL" 'the backup dir'
+rmdir "/tmp/evil-${U1}" 2>/dev/null || true
+
+refuses 'a sibling resource directory is refused' 'resolves elsewhere' \
+  rehearsal_canonical_dir_is "$B/team/shikoo-postgres-${U2}" "$REAL" 'the backup dir'
+
+# `..` traversal that lands somewhere else, and one that lands on the right
+# place: the first is refused, the second is accepted, because canonicalisation
+# is about where a path ENDS UP, not about how it is spelled.
+refuses 'a traversal to another directory is refused' 'resolves elsewhere' \
+  rehearsal_canonical_dir_is "$B/team/shikoo-postgres-${U1}/../shikoo-postgres-${U2}" "$REAL" 'the backup dir'
+accepts 'a traversal that resolves to the right directory is accepted' \
+  rehearsal_canonical_dir_is "$B/team/shikoo-postgres-${U2}/../shikoo-postgres-${U1}" "$REAL" 'the backup dir'
+
+# A symlink standing in for the directory.
+ln -sfn "$REAL" "$B/link-${U1}"
+refuses 'a symlink to the right directory is still refused' 'symlink' \
+  rehearsal_canonical_dir_is "$B/link-${U1}" "$REAL" 'the backup dir'
+
+# A symlinked PARENT: the path spells out the expected name, but a component
+# above it points somewhere else entirely.
+mkdir -p "$B/elsewhere/shikoo-postgres-${U1}"
+ln -sfn "$B/elsewhere" "$B/team-link"
+refuses 'a symlinked parent component is refused' 'resolves elsewhere' \
+  rehearsal_canonical_dir_is "$B/team-link/shikoo-postgres-${U1}" "$REAL" 'the backup dir'
+
+refuses 'an empty candidate is refused' 'is empty' \
+  rehearsal_canonical_dir_is '' "$REAL" 'the backup dir'
+refuses 'an underivable expectation is refused, not skipped' 'could not be derived' \
+  rehearsal_canonical_dir_is "$REAL" '' 'the backup dir'
+refuses 'a candidate that does not exist is refused' 'does not resolve' \
+  rehearsal_canonical_dir_is "$B/absent" "$REAL" 'the backup dir'
+
+# ── the release lock, judged as an unprivileged user ─────────────────────
+section 'the release lock is validated rather than adopted'
+
+# /var/lock is a sticky world-writable directory, so whoever creates the lock
+# file first owns it. These run as the invoking user — not root — because that
+# is the only context in which "is this file root-owned" can actually be
+# answered in the negative.
+# shellcheck source=deploy/attestation-store.sh
+. "$ROOT/deploy/attestation-store.sh"
+LOCKD="$WORK/lockd"; mkdir -p "$LOCKD"
+
+ATT_LOCK="$LOCKD/absent.lock"
+refuses 'a lock file that does not exist is refused' 'does not exist' att_require_lock_file
+
+ATT_LOCK="$LOCKD/mine.lock"; : >"$ATT_LOCK"; chmod 660 "$ATT_LOCK"
+ATT_LOCK_GROUP=$(stat -c '%G' "$ATT_LOCK")
+if [ "$(id -u)" -eq 0 ]; then
+  ok 'a lock owned by another user is refused (skipped: running as root)'
+else
+  refuses 'a lock owned by another user is refused' 'not root' att_require_lock_file
+fi
+
+ln -sfn "$LOCKD/mine.lock" "$LOCKD/link.lock"
+ATT_LOCK="$LOCKD/link.lock"
+refuses 'a symlinked lock is refused' 'symlink' att_require_lock_file
+unset ATT_LOCK ATT_LOCK_GROUP
+
+# ── the host contract ────────────────────────────────────────────────────
+section 'the host is proven capable, not merely equipped'
+
+# `command -v` answers "is there a file with that name", which is true for a
+# docker client with no daemon, a BusyBox stat with no -c, a date that cannot
+# parse -d, and a python3 built without zipfile. Every check is exercised by
+# breaking exactly one tool and requiring the refusal to name it.
+HB="$WORK/hostbin"
+PROBE="$WORK/probe"; mkdir -p "$PROBE"
+
+# A PATH holding real tools, one of which is then replaced.
+reset_hostbin() {
+  rm -rf "$HB"; mkdir -p "$HB"
+  local t real
+  for t in bash docker git python3 curl sha256sum flock stat sed grep find date mktemp \
+           rm ln mv seq cut tr head wc ls cat chmod mkdir dirname basename; do
+    real=$(command -v "$t" 2>/dev/null) && ln -sf "$real" "$HB/$t"
+  done
+}
+break_with() { # name body
+  # `rm` first, always: these entries are symlinks to the real binaries, and
+  # redirecting onto a symlink writes THROUGH it. Without this the test would
+  # be overwriting /usr/bin/docker rather than shadowing it.
+  rm -f "$HB/$1"
+  printf '#!/bin/sh\n%s\n' "$2" >"$HB/$1"
+  chmod +x "$HB/$1"
+}
+host_refuses() { # name want-substring
+  local out rc
+  set +e
+  out=$(PATH="$HB" bash -c '. '"$ROOT"'/deploy/rehearsal-lib.sh; rehearsal_require_host_deps "'"$PROBE"'"' 2>&1)
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then bad "$1" 'the host was accepted'; return; fi
+  case "$out" in *"$2"*) ok "$1" ;; *) bad "$1" "refused, but not for '$2': $(printf '%s' "$out" | head -2)" ;; esac
+}
+
+reset_hostbin
+if PATH="$HB" bash -c '. '"$ROOT"'/deploy/rehearsal-lib.sh; rehearsal_require_host_deps "'"$PROBE"'"' >/dev/null 2>&1; then
+  ok 'a capable host is accepted'
+else
+  bad 'a capable host is accepted' "$(PATH="$HB" bash -c '. '"$ROOT"'/deploy/rehearsal-lib.sh; rehearsal_require_host_deps "'"$PROBE"'"' 2>&1 | head -3)"
+fi
+
+# Missing outright.
+for t in docker git python3 curl sha256sum flock stat; do
+  reset_hostbin; rm -f "$HB/$t"
+  host_refuses "a missing ${t} is refused" "${t} is not installed"
+done
+
+# Present but incapable — the cases command -v cannot see.
+reset_hostbin; break_with docker 'exit 1'
+host_refuses 'a docker client with no daemon is refused' 'daemon does not answer'
+
+reset_hostbin; break_with python3 'case "$*" in *zipfile*) exit 1 ;; esac; exit 0'
+host_refuses 'a python3 without zipfile is refused' 'cannot import zipfile'
+
+reset_hostbin; break_with curl 'echo "curl 8.0.0"; echo "Protocols: file ftp http"'
+host_refuses 'a curl without https is refused' 'no https protocol support'
+
+reset_hostbin; break_with sha256sum 'echo "0000000000000000000000000000000000000000000000000000000000000000  -"'
+host_refuses 'a sha256sum that computes the wrong digest is refused' 'known digest'
+
+reset_hostbin; break_with stat 'echo not-a-mode'
+host_refuses 'a stat without GNU -c is refused' 'no GNU -c support'
+
+reset_hostbin; break_with flock 'exit 1'
+host_refuses 'a flock that cannot lock is refused' 'cannot take a lock'
+
+reset_hostbin; break_with date 'case "$*" in *-d*) exit 1 ;; esac; exit 0'
+host_refuses 'a date that cannot parse ISO-8601 is refused' 'cannot parse an ISO-8601'
+
+reset_hostbin; break_with sed 'exit 0'
+host_refuses 'a sed that cannot substitute is refused' 'cannot run the substitution'
+
+reset_hostbin; break_with grep 'exit 0'
+host_refuses 'a grep that cannot count is refused' 'does not count lines'
+
+reset_hostbin; break_with find 'exit 1'
+host_refuses 'a find without -maxdepth is refused' 'does not support -maxdepth'
+
+# The filesystem operation the whole publication design rests on.
+reset_hostbin; break_with mv 'exit 1'
+host_refuses 'a filesystem that cannot rename a symlink over a name is refused' 'atomic activation is impossible'
+
+reset_hostbin
+refuses 'a probe directory that does not exist is refused' 'no writable probe directory' \
+  rehearsal_require_host_deps "$WORK/no-such-probe"
 
 section 'the repository remote is an exact allowlist'
 

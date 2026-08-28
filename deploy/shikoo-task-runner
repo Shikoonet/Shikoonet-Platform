@@ -49,7 +49,7 @@ LOCKFILE=/var/lock/shikoo-task-runner.lock
 STATE_DIR=/var/lib/shikoo
 
 # The hash of the manifest that lists every script this may run.
-MANIFEST_SHA256=69616b3dc4a27464f6884c574c2ed0bdd3c6cdc957234e833a9f807d2e44db83
+MANIFEST_SHA256=6affb891064f25935b485276c8c6ebc47d4c984a2c46b6939daddc7592f4eaac
 
 die() { echo "shikoo-task-runner: $*" >&2; exit 1; }
 note() {
@@ -127,6 +127,26 @@ as_deploy() { # script [fixed-arg]
   fi
 }
 
+# The production attestation is resolved through its `current` pointer, never
+# by naming a file in the flat directory. That flat pair no longer exists: it
+# was a second copy of the same fact, published after the pointer swap in two
+# separate renames, so a reader could catch a new .env beside an old .sha256.
+# There is one version directory and one pointer to it.
+attestation_or_absent() { # attest_dir
+  local dir=$1 cur
+  # shellcheck source=deploy/attestation-store.sh
+  . "$LIB/attestation-store.sh"
+  if ! cur=$(att_read "$dir" 2>/dev/null); then
+    if [ -e "$dir/current" ] || [ -L "$dir/current" ]; then
+      echo "  MISMATCH $dir/current"
+    else
+      echo "  absent   $dir/current"
+    fi
+    return 0
+  fi
+  echo "  ok       $dir/current -> $(basename "$cur")"
+}
+
 checksum_or_absent() { # file
   local dir base
   dir=$(dirname "$1")
@@ -200,7 +220,7 @@ case "$1" in
     checksum_or_absent "$STATE_DIR/coolify-contract.env"
     checksum_or_absent "$STATE_DIR/step-e-evidence.env"
     checksum_or_absent "$STATE_DIR/restore-attestation.env"
-    checksum_or_absent "$STATE_DIR/production/attestation/attestation.env"
+    attestation_or_absent "$STATE_DIR/production/attestation"
     note "verify-evidence run"
     ;;
   status)
@@ -214,7 +234,7 @@ case "$1" in
     checksum_or_absent "$STATE_DIR/coolify-contract.env"
     checksum_or_absent "$STATE_DIR/step-e-evidence.env"
     checksum_or_absent "$STATE_DIR/restore-attestation.env"
-    checksum_or_absent "$STATE_DIR/production/attestation/attestation.env"
+    attestation_or_absent "$STATE_DIR/production/attestation"
     ;;
   revoke-access)
     # Removes the grant, not the work. Evidence, backups and application data

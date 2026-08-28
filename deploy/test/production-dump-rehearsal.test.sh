@@ -27,6 +27,7 @@ ok() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n       %s\n' "$1" "$2"; }
 section() { printf '\n%s\n' "$1"; }
 has() { if grep -qF -- "$2" "$1"; then ok "$3"; else bad "$3" "missing: $2"; fi; }
+lacks() { if grep -qF -- "$2" "$1"; then bad "$3" "still present: $2"; else ok "$3"; fi; }
 
 section 'it accepts nothing through argv'
 
@@ -47,6 +48,27 @@ else
 fi
 has "$R" 'REHEARSAL_CONF:-/etc/shikoo/production/rehearsal.env' 'configuration comes from a root-owned file'
 has "$R" 'never sourced' 'the config is read as text, not sourced'
+
+section 'the host is checked before anything sensitive is opened'
+
+has "$R" 'rehearsal_require_host_deps' 'the host dependency contract runs'
+# Ordering is the point of the contract. A missing tool discovered halfway
+# through has already caused the config to be read, the dump to be opened and a
+# temp directory holding customer data to exist.
+deps=$(grep -n 'rehearsal_require_host_deps "$DEP_PROBE"' "$R" | head -1 | cut -d: -f1)
+for later in 'rehearsal_require_secure_file "$CONF"' \
+             'DUMP_PATH=$(cfg MIRZABOT_DUMP)' \
+             'rehearsal_validate_d1_export' \
+             'find "$PROD_BACKUP_DIR"' \
+             'docker network create' \
+             'VERSION_DIR='; do
+  l=$(grep -nF "$later" "$R" | head -1 | cut -d: -f1)
+  if [ -n "$deps" ] && [ -n "$l" ] && [ "$deps" -lt "$l" ]; then
+    ok "the host contract precedes: ${later:0:40}"
+  else
+    bad "the host contract precedes: ${later:0:40}" "deps@${deps:-?} later@${l:-?}"
+  fi
+done
 
 section 'the release is resolved and cross-checked, not asserted'
 
@@ -97,8 +119,15 @@ has "$R" 'schema-only destination is not a rehearsal' 'a zero-row destination is
 has "$R" 'rehearsal_pending_range' 'the range is derived from the restored ledger'
 has "$R" 'rehearsal_check_vitest' 'the suite exit code is judged'
 has "$R" 'on_signal' 'signals end the run'
-has "$R" 'mv -Tf' 'activation is an atomic rename'
-has "$R" 'flock -w 120 8' 'activation takes the release lock'
+# The publication mechanism now lives in attestation-store.sh, shared by the
+# publisher and every reader. These stay as a cheap structural check; the
+# behaviour is proven cross-process in attestation-publication.test.sh.
+S="$ROOT/deploy/attestation-store.sh"
+has "$S" 'mv -Tf' 'activation is an atomic rename'
+has "$S" 'flock -w' 'activation takes the release lock'
+has "$S" 'flock -s -w' 'readers take the same lock, shared'
+has "$R" 'att_publish' 'the rehearsal publishes through the shared store'
+lacks "$R" 'cp -f "$VERSION_DIR/attestation.env"' 'no flat copy is published beside the pointer'
 
 section 'the thresholds are exact'
 
@@ -184,10 +213,10 @@ for gate in 'the newest production backup did not restore' \
   fi
 done
 has "$R" 'VERSION_DIR' 'the attestation is built as a complete version first'
-has "$R" 'looks exactly like tampering' 'the reason pair-atomicity matters is recorded'
-has "$R" 'preserve' 'a failed run preserves the previous version'
+has "$S" 'mixed pair' 'the reason one pointer replaces the flat pair is recorded'
+has "$S" 'previous attestation is untouched' 'a failed swap preserves the previous version'
 has "$R" '/var/lib/shikoo/production' 'it writes to the directory Prepare Production reads'
-has "$R" 'sha256sum -c --status attestation.sha256' 'the checksum is verified immediately'
+has "$S" 'sha256sum -c --status attestation.sha256' 'the checksum is verified before activation'
 has "$R" 'verify-dump-attestation.sh' 'the verifier is run against the same release'
 has "$R" 'EXPECTED_STAGING_RUN_ID' 'verification pins the staging run too'
 
@@ -256,8 +285,9 @@ fi
 section 'the D1 export has no default and no fallback'
 
 has "$R" 'rehearsal_validate_d1_export' 'the export is validated'
-has "$R" 'The repository fixture is refused' 'the fixture is refused by name'
-has "$R" 'no export is generated here' 'no cloud export is performed'
+has "$R" 'd1-export-manifest.py' 'the owner action names the provenance generator'
+has "$R" 'does not generate the export' 'no cloud export is performed'
+has "$R" 'not infer' 'authenticity is not inferred from the rows'
 if grep -v '^[[:space:]]*#' "$R" | grep -qE 'D1_EXPORT_DIR=\$\{D1_EXPORT_DIR:-'; then
   bad 'D1_EXPORT_DIR has no default' 'a default is applied'
 else

@@ -48,7 +48,7 @@ BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
 # The one hard-coded value. Everything else is derived from the manifest it
 # pins, and a CI test asserts this still equals
 # sha256sum deploy/shikoo-task-runner.manifest.
-MANIFEST_SHA256=69616b3dc4a27464f6884c574c2ed0bdd3c6cdc957234e833a9f807d2e44db83
+MANIFEST_SHA256=6affb891064f25935b485276c8c6ebc47d4c984a2c46b6939daddc7592f4eaac
 
 say() { echo "[install] $*"; }
 die() { echo "[install] FAILED: $*" >&2; exit 1; }
@@ -161,6 +161,28 @@ while IFS= read -r f; do
   case "$(stat -c '%a' "$f")" in 644 | 755) ;; *) fail_back "$f has mode $(stat -c '%a' "$f")" ;; esac
 done < <(find "$LIB" -type f; printf '%s\n' "$BIN")
 say "installed files are root:root and not writable by $GRANTEE or $RUN_AS"
+
+# ── the release lock ─────────────────────────────────────────────────────
+#
+# Created here, by root, so that neither side has to create it later. That
+# matters more than it looks: /var/lock is a symlink to /run/lock, mode 1777,
+# so whoever gets there first owns the file. If the rehearsal or Prepare
+# created it on demand, an unprivileged local account could create it first
+# and then hold it — every release would wait on a lock owned by someone else.
+#
+# root:shikoo-deploy 0660 is the whole grant. It lets the root rehearsal take
+# it exclusively to swap the pointer, and the shikoo-deploy Prepare path take
+# it shared to read through the pointer, with no additional sudo rule and no
+# world-writable file anywhere in the protocol.
+RELEASE_LOCK=/var/lock/shikoo-deploy-production.lock
+[ ! -L "$RELEASE_LOCK" ] || fail_back "$RELEASE_LOCK is a symlink — refusing to adopt it"
+if [ -e "$RELEASE_LOCK" ] && [ "$(stat -c '%u' "$RELEASE_LOCK")" != '0' ]; then
+  fail_back "$RELEASE_LOCK already exists and is not owned by root — someone else created it first"
+fi
+install -o root -g "$RUN_AS" -m 0660 /dev/null "$RELEASE_LOCK"
+[ "$(stat -c '%U:%G:%a' "$RELEASE_LOCK")" = "root:$RUN_AS:660" ] ||
+  fail_back "$RELEASE_LOCK is not root:$RUN_AS 0660 after installation"
+say "release lock $RELEASE_LOCK is root:$RUN_AS 0660"
 
 # ── sudoers ──────────────────────────────────────────────────────────────
 TMP_SUDO=$(mktemp)

@@ -18,6 +18,37 @@
 
 # shellcheck shell=bash
 
+# The backup directory, compared as a canonical path against the one Coolify
+# says it is.
+#
+# The suffix test that was here accepted `/tmp/evil-<uuid>` — the basename ends
+# with `-<uuid>`, so it matched — and the negative test only used
+# `/tmp/evil-<uuid>-staging`, which does not. The guard was bypassable and the
+# test that was supposed to prove otherwise had picked the one hostile input
+# that happened to fail for an unrelated reason.
+#
+# So there is no pattern any more. The expected directory is derived from
+# authoritative metadata and both sides are canonicalised, which collapses
+# `..`, symlinked parents and trailing slashes before the comparison rather
+# than trying to spot them in a string.
+rehearsal_canonical_dir_is() { # candidate expected label
+  local cand=$1 want=$2 label=$3 rc rw
+  [ -n "$cand" ] || { echo "[path] ${label} is empty" >&2; return 1; }
+  [ -n "$want" ] || { echo "[path] the expected ${label} could not be derived" >&2; return 1; }
+  rc=$(realpath -e -- "$cand" 2>/dev/null) ||
+    { echo "[path] ${label} does not resolve to a real path" >&2; return 1; }
+  rw=$(realpath -e -- "$want" 2>/dev/null) ||
+    { echo "[path] the expected ${label} does not exist on this host" >&2; return 1; }
+  if [ "$rc" != "$rw" ]; then
+    echo "[path] ${label} resolves elsewhere than the authoritative location" >&2
+    return 1
+  fi
+  # A symlinked component would already have been collapsed by realpath, so the
+  # remaining question is whether the directory itself is one.
+  [ ! -L "$cand" ] || { echo "[path] ${label} is a symlink — refusing" >&2; return 1; }
+  return 0
+}
+
 # ── configuration file security ───────────────────────────────────────────
 #
 # The config names a dump, a backup directory and a GitHub token. A file
@@ -242,49 +273,104 @@ rehearsal_require_local_images() { # docker-cmd ref...
 # The content-set identifier is computed for provenance and deliberately not
 # returned: it is derived from customer data, so it is compared internally and
 # never printed.
-rehearsal_validate_d1_export() { # dir expected-tables-csv
-  local dir=$1 expected=$2
+rehearsal_validate_d1_export() { # dir expected-tables-csv mysql-dump
+  local dir=$1 expected=$2 dump=$3
   [ -n "$dir" ] || { echo "[d1] D1_EXPORT_DIR is empty — it has no default" >&2; return 1; }
   [ ! -L "$dir" ] || { echo "[d1] the export directory is a symlink — refusing" >&2; return 1; }
   [ -d "$dir" ] || { echo "[d1] the export directory does not exist" >&2; return 1; }
   case "$(stat -c '%a' "$dir")" in
     *[2367]) echo "[d1] the export directory is group- or world-writable" >&2; return 1 ;;
   esac
-  python3 - "$dir" "$expected" <<'PY'
-import json, os, sys, hashlib
-d, expected = sys.argv[1], [t for t in sys.argv[2].split(',') if t]
-missing, bad = [], []
-h = hashlib.sha256()
-for t in expected:
-    p = os.path.join(d, t + '.json')
+  if [ ! -f "$dir/d1-export.manifest" ] || [ -L "$dir/d1-export.manifest" ]; then
+    echo "[d1] there is no d1-export.manifest in the export directory." >&2
+    echo "[d1] This export carries no provenance, and the rehearsal will not guess at it" >&2
+    echo "[d1] from the shape of the rows. Produce it with:" >&2
+    echo "[d1]   tools/d1-export-manifest.py <export-dir> <mirzabot-dump> deploy/d1-tables.manifest" >&2
+    return 1
+  fi
+  case "$(stat -c '%a' "$dir/d1-export.manifest")" in
+    *[2367]) echo "[d1] d1-export.manifest is group- or world-writable" >&2; return 1 ;;
+  esac
+  python3 - "$dir" "$expected" "$dump" <<'PY'
+import hashlib, os, sys
+
+d, expected, dump = sys.argv[1], [t for t in sys.argv[2].split(',') if t], sys.argv[3]
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+def refuse(msg):
+    print('[d1] ' + msg, file=sys.stderr)
+    sys.exit(1)
+
+man_path = os.path.join(d, 'd1-export.manifest')
+text = open(man_path, encoding='utf-8').read()
+
+header, listed = {}, {}
+for line in text.splitlines():
+    if not line.strip():
+        continue
+    if '=' in line and '  ' not in line:
+        k, _, v = line.partition('=')
+        header[k.strip()] = v.strip()
+    else:
+        digest, _, name = line.partition('  ')
+        listed[name.strip()] = digest.strip()
+
+if header.get('schema_version') != '1':
+    refuse('d1-export.manifest has an unsupported schema_version')
+
+# The set is bound as one object. Assembling an export from parts of two runs
+# means one of these three comparisons fails, whichever part was substituted.
+want = {t + '.json' for t in expected}
+have = set(listed)
+if want - have:
+    refuse('the manifest does not cover: ' + ','.join(sorted(want - have)))
+if have - want:
+    refuse('the manifest covers files that are not part of the contract: ' + ','.join(sorted(have - want)))
+if header.get('table_count') != str(len(expected)):
+    refuse('the manifest declares table_count=%s, the contract has %d tables'
+           % (header.get('table_count'), len(expected)))
+
+# Anything else in the directory is an intruder: a file from another export
+# dropped in beside these would otherwise ride along unnoticed.
+present = {f for f in os.listdir(d) if f.endswith('.json')}
+if present - want:
+    refuse('unexpected file(s) in the export directory: ' + ','.join(sorted(present - want)))
+
+for name, digest in sorted(listed.items()):
+    p = os.path.join(d, name)
     if os.path.islink(p):
-        print(f"[d1] {t}.json is a symlink — refusing", file=sys.stderr); sys.exit(1)
+        refuse(name + ' is a symlink — refusing')
     if not os.path.isfile(p):
-        missing.append(t); continue
-    if os.path.getsize(p) == 0:
-        bad.append(t + ' (empty)'); continue
-    try:
-        data = json.load(open(p, encoding='utf-8'))
-    except Exception:
-        bad.append(t + ' (not valid JSON)'); continue
-    rows = data if isinstance(data, list) else data.get('results') or data.get('rows')
-    if not isinstance(rows, list) or not rows:
-        bad.append(t + ' (no rows)'); continue
-    # A fixture announces itself. Refusing these by name is cheaper than
-    # explaining later why the attestation covered invented data.
-    blob = json.dumps(rows[:5], sort_keys=True).lower()
-    for marker in ('fixture', 'example.com', 'test-only', 'synthetic', 'lorem ipsum', 'placeholder'):
-        if marker in blob:
-            print(f"[d1] {t}.json carries a fixture signature ({marker}) — refusing", file=sys.stderr)
-            sys.exit(1)
-    h.update(t.encode())
-    h.update(str(len(rows)).encode())
-if missing:
-    print("[d1] the export is incomplete; missing: " + ",".join(sorted(missing)), file=sys.stderr); sys.exit(1)
-if bad:
-    print("[d1] unusable table file(s): " + ",".join(sorted(bad)), file=sys.stderr); sys.exit(1)
-# Computed for provenance and never printed: it is derived from customer data.
-_ = h.hexdigest()
+        refuse(name + ' is named by the manifest but is not present')
+    mode = os.stat(p).st_mode & 0o777
+    if mode & 0o022:
+        refuse(name + ' is group- or world-writable')
+    actual = sha256_file(p)
+    if actual != digest:
+        # The filename is safe to name; the two digests are not printed side by
+        # side, because a per-file digest of customer data is a fingerprint of
+        # customer data.
+        refuse(name + ' does not match the digest its own export recorded — it was modified or replaced')
+
+# MySQL and D1 have to be two views of one moment. A D1 export from Tuesday
+# against a MySQL dump from Thursday migrates cleanly and produces a database
+# that never existed, which is the failure this catches and no row count can.
+want_dump = header.get('mysql_dump_sha256', '')
+if len(want_dump) != 64:
+    refuse('the manifest records no usable mysql_dump_sha256')
+if sha256_file(dump) != want_dump:
+    refuse('the MySQL dump is not the one this D1 export was taken with — they are from different snapshots and must not be migrated together')
+
+# The export identity: a hash over the manifest, so a hash of hashes. It is
+# derived from no customer value directly, and unlike the counterpart it
+# replaces it is returned and used rather than computed and discarded.
+print('sha256:' + hashlib.sha256(text.encode()).hexdigest())
 PY
 }
 
@@ -433,12 +519,139 @@ PY
 
 # The backup path must BE the resource's directory, not merely contain its uuid
 # somewhere. `/tmp/evil-<uuid>-staging` contains it too.
-rehearsal_backup_dir_belongs() { # dir db-uuid
-  local dir=$1 uuid=$2 base
-  base=$(basename "$dir")
-  case "$base" in
-    *"-${uuid}") return 0 ;;
-  esac
-  echo "[backup] '${base}' is not the backup directory of database ${uuid}" >&2
-  return 1
+
+# ── the host contract, proven before anything sensitive is opened ─────────
+#
+# The rehearsal used to discover its dependencies by using them. That ordering
+# is the problem: by the time `python3 -c 'import zipfile'` fails, the config
+# has been read, the production dump has been opened, a temp directory holding
+# a copy of customer data exists, and the failure message is about a missing
+# module rather than about the machine being wrong for this job. On a host
+# where `gh`, `node`, `pnpm` and `psql` are all absent — which is this host —
+# assuming any tool is present is a guess.
+#
+# `command -v` is not the test. It answers "is there a file with that name on
+# PATH", which is true for a `docker` client with no reachable daemon, a
+# BusyBox `stat` with no `-c`, a `date` that cannot parse `-d`, and a `python3`
+# built without zipfile. Each check below therefore performs the exact
+# operation the script later depends on, and nothing broader.
+#
+# Nothing here installs anything and nothing here reaches the network.
+rehearsal_require_host_deps() { # probe_dir
+  local probe=$1 bad=0 out
+  note() { echo "[deps] $*" >&2; bad=1; }
+
+  if [ -z "$probe" ] || [ ! -d "$probe" ]; then
+    echo "[deps] no writable probe directory" >&2
+    return 1
+  fi
+
+  # Bash 4: associative arrays and `${x,,}` are used, and bash 3.2 parses the
+  # script but fails at runtime, which is the worst moment to find out.
+  [ "${BASH_VERSINFO[0]:-0}" -ge 4 ] ||
+    note "bash ${BASH_VERSION:-unknown} is too old — 4.0 or newer is required"
+
+  # Docker: a client alone proves nothing. The daemon has to answer, and the
+  # rehearsal runs containers, execs into them and inspects them.
+  if ! command -v docker >/dev/null 2>&1; then
+    note "docker is not installed"
+  elif ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+    note "the docker daemon does not answer — the rehearsal cannot create its isolated databases"
+  elif ! docker inspect --format '{{.Id}}' --type image hello-world >/dev/null 2>&1 &&
+       ! docker image ls -q >/dev/null 2>&1; then
+    note "docker cannot list or inspect images"
+  fi
+
+  # Git: the repository checkout is verified against a known commit, so the
+  # binary has to support `-C` and plumbing, not merely exist.
+  if ! command -v git >/dev/null 2>&1; then
+    note "git is not installed"
+  elif ! git -C "$probe" init -q "$probe/.gitprobe" 2>/dev/null &&
+       ! git --version >/dev/null 2>&1; then
+    note "git cannot run"
+  fi
+
+  # Python 3 with zipfile: the D1 export arrives as a zip and the contract
+  # generator parses the migrator's TypeScript. A python3 without zipfile is a
+  # real build, not a hypothetical one.
+  if ! command -v python3 >/dev/null 2>&1; then
+    note "python3 is not installed"
+  else
+    python3 -c 'import zipfile, hashlib, json, sys; sys.exit(0)' 2>/dev/null ||
+      note "python3 cannot import zipfile/hashlib/json — the D1 export cannot be validated"
+  fi
+
+  # curl with TLS: the GitHub calls are https and nothing else.
+  if ! command -v curl >/dev/null 2>&1; then
+    note "curl is not installed"
+  else
+    out=$(curl --version 2>/dev/null | head -1)
+    case "$out" in
+      *' '*) ;;
+      *) note "curl does not report a version" ;;
+    esac
+    curl --version 2>/dev/null | grep -qi 'Protocols:.*https' ||
+      note "this curl has no https protocol support"
+  fi
+
+  # sha256sum: computed against a known answer rather than trusted to exist,
+  # because every checksum in the attestation chain rests on it.
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    note "sha256sum is not installed"
+  else
+    out=$(printf 'abc' | sha256sum | cut -d' ' -f1)
+    [ "$out" = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' ] ||
+      note "sha256sum does not produce the known digest of 'abc'"
+  fi
+
+  # flock: the release lock is the only thing standing between a publishing
+  # rehearsal and a reading Prepare.
+  if ! command -v flock >/dev/null 2>&1; then
+    note "flock is not installed — the release lock cannot be taken"
+  else
+    ( : >"$probe/.flockprobe"; exec 7>>"$probe/.flockprobe"; flock -w 2 7 ) 2>/dev/null ||
+      note "flock cannot take a lock on this filesystem"
+  fi
+
+  # stat -c: BSD/BusyBox stat spell this `-f`, and every ownership and mode
+  # check in this library is written against GNU `-c`.
+  if ! command -v stat >/dev/null 2>&1; then
+    note "stat is not installed"
+  else
+    out=$(stat -c '%a' "$probe" 2>/dev/null || true)
+    case "$out" in
+      [0-7][0-7][0-7] | [0-7][0-7][0-7][0-7]) ;;
+      *) note "stat has no GNU -c support — ownership and mode checks would silently not run" ;;
+    esac
+  fi
+
+  # sed / grep / find, in the exact forms used.
+  [ "$(printf 'k=v\n' | sed -n 's/^k=//p')" = 'v' ] ||
+    note "sed cannot run the substitution form the config parser uses"
+  [ "$(printf 'a\nb\n' | grep -c .)" = '2' ] ||
+    note "grep -c does not count lines as expected"
+  find "$probe" -maxdepth 1 -type d >/dev/null 2>&1 ||
+    note "find does not support -maxdepth/-type"
+
+  # date, in both directions: formatting the version-directory stamp, and
+  # parsing an ISO-8601 timestamp back for the staleness check.
+  date -u +%Y%m%dT%H%M%SZ >/dev/null 2>&1 ||
+    note "date cannot format a UTC timestamp"
+  date -u -d '2026-01-02T03:04:05Z' +%s >/dev/null 2>&1 ||
+    note "date cannot parse an ISO-8601 timestamp — attestation staleness could not be judged"
+
+  # The filesystem operations publication depends on. `mv -T` over a symlink
+  # is the activation; if this filesystem cannot do it atomically the whole
+  # publication design is void, and it is better to know that here than to
+  # discover it with a half-swapped pointer.
+  ( ln -sfn "$probe" "$probe/.lnprobe" && mv -Tf "$probe/.lnprobe" "$probe/.lnprobe2" ) 2>/dev/null ||
+    note "this filesystem cannot rename a symlink over a name (mv -T) — atomic activation is impossible here"
+  rm -f "$probe/.lnprobe" "$probe/.lnprobe2" 2>/dev/null || true
+  mktemp -d "$probe/.mkprobe.XXXXXX" >/dev/null 2>&1 ||
+    note "mktemp -d does not work in the state directory"
+
+  rm -rf "$probe/.gitprobe" "$probe/.flockprobe" "$probe"/.mkprobe.* 2>/dev/null || true
+  unset -f note
+  [ "$bad" -eq 0 ] || return 1
+  return 0
 }

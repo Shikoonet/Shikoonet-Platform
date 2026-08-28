@@ -35,6 +35,16 @@ fail() {
   exit 1
 }
 
+# Resolved through the pointer, never by naming a version directory. The flat
+# `attestation.env`/`attestation.sha256` pair this used to read was a second
+# copy that could disagree with `current`; it no longer exists.
+HERE_V=$(CDPATH='' ; cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=deploy/attestation-store.sh
+. "$HERE_V/attestation-store.sh"
+if [ -L "$DIR/current" ] || [ -e "$DIR/current" ]; then
+  DIR=$(att_read "$DIR") || fail "the current attestation could not be resolved or is not intact"
+fi
+
 [ -r "$DIR/attestation.env" ] ||
   fail "no attestation.env — no production-dump rehearsal has been recorded for this release. Run the rehearsal on the secure host first; promotion does not proceed without one."
 [ -r "$DIR/attestation.sha256" ] ||
@@ -105,6 +115,30 @@ RESTORE=$(field restore_result)
 COMPAT=$(field old_app_schema_compat)
 [ "$COMPAT" = 'pass' ] ||
   fail "the rehearsal reports old_app_schema_compat=${COMPAT:-none} — if the current production image cannot serve the migrated schema then image rollback is void and only a restore can recover this release"
+
+# The two subjects, enforced separately.
+#
+# `invariants=32/32` alone was satisfiable by a run that measured the legacy
+# import twice and never migrated the production restore at all — the very
+# thing this rehearsal exists to prove. Each subject now carries its own
+# verdict and every one is required, so half a rehearsal cannot be promoted on.
+LEGACY=$(field legacy_import)
+[ "$LEGACY" = 'pass' ] ||
+  fail "the rehearsal reports legacy_import=${LEGACY:-none} — the MySQL+D1 import half did not pass"
+PRESTORE=$(field prod_restore_migrated)
+[ "$PRESTORE" = 'pass' ] ||
+  fail "the rehearsal reports prod_restore_migrated=${PRESTORE:-none} — the restored production copy was never brought forward over the pending range, so nothing here describes what promotion will do to production"
+PINV=$(field prod_invariants)
+[ "$PINV" = '32/32' ] ||
+  fail "the rehearsal reports prod_invariants=${PINV:-none} — the thirty-two have to hold on the MIGRATED PRODUCTION RESTORE, not only on the freshly built legacy destination"
+PRANGE=$(field prod_migration_range)
+[[ $PRANGE =~ ^[0-9]{4}\.\.[0-9]{4}$ ]] ||
+  fail "attestation prod_migration_range is not NNNN..NNNN"
+[ "$PRANGE" = "$(field migration_range)" ] ||
+  fail "the range applied to the production restore (${PRANGE}) is not the range this release migrates ($(field migration_range))"
+SUBJ=$(field old_app_schema_subject)
+[ "$SUBJ" = 'production-restore' ] ||
+  fail "old-image compatibility was measured against '${SUBJ:-none}' — proving the old image works on a database the NEW code just built says nothing about whether it can serve production's own data after migration"
 
 DUMP_ID=$(field dump_id)
 [[ $DUMP_ID =~ ^sha256:[0-9a-f]{64}\ [0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
