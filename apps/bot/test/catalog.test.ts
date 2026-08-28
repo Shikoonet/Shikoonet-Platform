@@ -137,28 +137,32 @@ describe('what the shop shows a customer', () => {
   it('keeps the services in the order the shop arranged them', async () => {
     // Not alphabetical. Every migrated row carries sort_order 0, so ordering by
     // name reshuffles a menu customers already know: the live bot on 2026-08-12
-    // listed مولتی لوکیشن, then طلایی, then خرید اولی‌ها. The shop no longer
-    // draws the panels, but their order still decides which services come
-    // first, so the same rule is asserted one level down.
+    // listed مولتی لوکیشن, then طلایی, then خرید اولی‌ها. Falling back to
+    // `p.id` keeps that guarantee — it is the order the rows were created in.
+    //
+    // The panel's own order USED TO come first here, and this test asserted it.
+    // It was removed on 2026-08-28 when `products.row_index` made this screen
+    // arrangeable, and the reason is not a preference: `catalog-layout` writes
+    // `sort_order` in the order the operator dragged, so a panel ordering in
+    // front of it silently overrules them. Quieter and worse, `groupIntoRows`
+    // joins CONSECUTIVE equal `row_index` — so a category spanning two panels
+    // would interleave the two and split a row the operator had put together.
+    // A screen somebody arranges has to be drawn in the order they arranged.
     const products = await productsForUser(db, customer);
     const rows = await db
       .prepare(
-        `SELECT p.id, p.sort_order AS product_order,
-                pr.sort_order AS panel_order, pr.id AS panel_id
+        `SELECT p.id, p.sort_order AS product_order
            FROM products p
-           JOIN provisioning_providers pr ON pr.id = p.provider_id
           WHERE p.id = ANY($1)`,
       )
       .bind(products.map((p) => p.productId))
-      .all<{ id: number; product_order: number; panel_order: number; panel_id: number }>();
+      .all<{ id: number; product_order: number }>();
     const meta = new Map(rows.results.map((r) => [r.id, r]));
     const keys = products.map((p) => {
       const m = meta.get(p.productId)!;
-      return [m.panel_order, m.panel_id, m.product_order, p.productId] as const;
+      return [m.product_order, p.productId] as const;
     });
-    const sorted = [...keys].sort(
-      (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3],
-    );
+    const sorted = [...keys].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     expect(keys).toEqual(sorted);
   });
 

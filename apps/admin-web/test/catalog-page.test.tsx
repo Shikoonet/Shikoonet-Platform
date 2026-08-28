@@ -46,6 +46,7 @@ function service(
     resellersOnly: false,
     oncePerUser: false,
     groupIds,
+    rowIndex: null,
     panel: PANEL,
     configs: configs.map((cfName, i) => ({
       id: id * 100 + i,
