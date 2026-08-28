@@ -1,0 +1,193 @@
+# Everything a production release can do while customers are still on the old one.
+#
+# ══════════════════════════════════════════════════════════════════════════
+# THIS WORKFLOW DOES NOT MOVE CUSTOMER TRAFFIC
+# ══════════════════════════════════════════════════════════════════════════
+#
+# It ensures the candidate applications exist, migrates the database, and proves
+# the candidates work on temporary domains. `shikoo.chopon.uk` and
+# `sms.chopon.uk` keep answering from the old applications throughout, and the
+# production bot keeps polling. Moving those is `cutover-production.yml` — a
+# separate file, a separate dispatch, a separate confirmation.
+#
+# The split is the point. A production release has one irreversible step and
+# several reversible ones, and one button means the reversible ones are only
+# ever seen in hindsight. Here the owner runs preparation, reads what it found,
+# and then decides.
+#
+# ── Why a workflow and not a typed phrase ─────────────────────────────────
+#
+# An earlier draft resumed a paused release on a phrase typed into a chat
+# window. That is not a control: no branch restriction, no actor check, no
+# audit trail, no refusal, and it cannot be re-run or reviewed. A dispatch has
+# all five, and the record of who pressed it outlives the conversation.
+#
+# ── No revision inputs ────────────────────────────────────────────────────
+#
+# No sha, no digest, no image, no ref, no run id. The release is whatever the
+# latest successful Deploy Staging run for the current `main` produced. An input
+# naming the artifact would let the button choose what ships, which is the one
+# thing every other guard here exists to prevent.
+
+name: Prepare Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type PREPARE to create candidates and migrate production'
+        type: choice
+        default: 'no — cancel'
+        options:
+          - 'no — cancel'
+          - 'PREPARE'
+        required: true
+
+permissions:
+  contents: read
+
+# The same group as Deploy Staging and Cutover Production. All three write the
+# ledger and take the same flock on the box; two overlapping is the race none of
+# their individual guards can see.
+concurrency:
+  group: shikoo-deploy
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
+  SOLO_DEPLOY_OWNER: Isusami
+
+jobs:
+  # No `environment:`, and therefore no DEPLOY_* secret in scope. Everything
+  # this job refuses is refused before a credential exists.
+  prepare-gate:
+    name: gate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.verify.outputs.sha }}
+      digest: ${{ steps.verify.outputs.digest }}
+      staging_run_id: ${{ steps.pick.outputs.run_id }}
+    steps:
+      - name: main only
+        run: |
+          set -Eeuo pipefail
+          REF='${{ github.ref }}'
+          if [ "$REF" != 'refs/heads/main' ]; then
+            echo "::error::Prepare Production runs from refs/heads/main; this dispatch came from «${REF}»"
+            exit 1
+          fi
+
+      - name: the owner, and the exact word
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ env.SOLO_DEPLOY_OWNER }}
+        run: |
+          set -Eeuo pipefail
+          if [ "$CONFIRM" != 'PREPARE' ]; then
+            echo "::error::type PREPARE to confirm; got «${CONFIRM}»"
+            exit 1
+          fi
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::only @${OWNER} may prepare production; this run was started by @${ACTOR}"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Which release. Resolved from the current head of main, never from an
+      # input, and verified to be a genuine completed successful staging run.
+      - id: pick
+        name: find the staging run for the current main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/pick-staging-run.sh "${{ github.repository }}"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: staging-digest
+          path: staging-artifact
+          run-id: ${{ steps.pick.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: verify
+        name: verify the release manifest
+        env:
+          EXPECTED_REPO: ${{ github.repository }}
+          EXPECTED_RUN_ID: ${{ steps.pick.outputs.run_id }}
+          EXPECTED_RUN_HEAD_SHA: ${{ steps.pick.outputs.head_sha }}
+        run: bash deploy/verify-release-manifest.sh staging-artifact
+
+  prepare:
+    name: prepare
+    needs: prepare-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          persist-credentials: false
+
+      # P1–P10, on the box, in one script so the order cannot be rearranged by
+      # editing YAML. The dump attestation is verified as its first act, before
+      # a migration, a Coolify write or a ledger line — the attestation lives on
+      # the secure host because the dump may not leave it, which is why this
+      # check is here rather than in the gate.
+      - name: prepare production (P1–P10)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.prepare-gate.outputs.digest }}
+          SHA: ${{ needs.prepare-gate.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          bash deploy/run-on-host.sh deploy/prepare-production.sh \
+            '${{ needs.prepare-gate.outputs.sha }}' \
+            '${{ needs.prepare-gate.outputs.digest }}' \
+            '${{ needs.prepare-gate.outputs.staging_run_id }}' | tee prepare.log
+          mkdir -p out
+          sed -n '/^BEGIN-PREPARATION-MANIFEST$/,/^END-PREPARATION-MANIFEST$/p' prepare.log \
+            | sed '1d;$d' > out/preparation.env
+          [ -s out/preparation.env ] || {
+            echo "::error::preparation produced no manifest — nothing may cut over on this run"
+            exit 1
+          }
+          ( cd out && sha256sum preparation.env >preparation.sha256 )
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-preparation
+          path: out/
+          retention-days: 30
+
+      - name: READY FOR CUTOVER
+        run: |
+          set -Eeuo pipefail
+          {
+            echo "## READY FOR CUTOVER"
+            echo
+            echo "Nothing has moved. Customers are still on the old applications, the"
+            echo "candidates are on their temporary domains, and the database is migrated."
+            echo
+            sed 's/^/- /' out/preparation.env
+            echo
+            echo "Read the temporary-domain checks above, then run **Cutover Production**."
+          } >> "$GITHUB_STEP_SUMMARY"

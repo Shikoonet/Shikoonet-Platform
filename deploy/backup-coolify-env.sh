@@ -53,8 +53,19 @@ die() {
   exit 1
 }
 
-[ "$(id -u)" = '0' ] ||
-  die "this writes encrypted secrets to disk and must own the file it writes — run it as root"
+# Not a root requirement, and the reason matters.
+#
+# The obvious rule is "only root may write a file of encrypted secrets". But the
+# user that runs this is the deploy user, and the deploy user holds the Coolify
+# API token — so it can already read every one of these values in PLAINTEXT, at
+# will, through the API. A file of ciphertext it could already decrypt adds no
+# exposure it does not already have.
+#
+# What does matter is that nobody ELSE gains access, so the file is 0600 in a
+# 0700 directory and that is asserted rather than assumed. Demanding root would
+# have meant either a sudo rule or running the release as root, both of which
+# widen the blast radius to buy a guarantee that was already there.
+umask 077
 
 for uuid in "$@"; do
   [[ $uuid =~ ^[a-z0-9]{20,32}$ ]] || die "'$uuid' is not a Coolify application uuid"

@@ -1,0 +1,212 @@
+# The step customers can see.
+#
+# ══════════════════════════════════════════════════════════════════════════
+# THIS IS THE ONLY WORKFLOW THAT MOVES CUSTOMER TRAFFIC
+# ══════════════════════════════════════════════════════════════════════════
+#
+# It repoints `sms.chopon.uk` and `shikoo.chopon.uk` at candidates that
+# `prepare-production.yml` already built and verified, then hands the bot over.
+# It builds nothing, migrates nothing and creates nothing: everything it moves
+# was created, migrated and proven by an earlier run that a person then read.
+#
+# ── Why it re-checks what preparation already checked ─────────────────────
+#
+# Because the gap between them is the point. Preparation stops so somebody can
+# read the evidence, and a gap a person is thinking in is a gap other things
+# happen in: a variable edited by hand, a candidate that fell over an hour
+# later, a migration applied outside the pipeline, `main` moving, native Auto
+# Deploy switched back on, a domain somebody already repointed.
+#
+# So every fact preparation wrote down is re-observed and compared, and any
+# disagreement aborts before a credential moves anything. An observation that
+# was never gathered is treated as a failure rather than a pass — an absent
+# guard has to be louder than a failing one.
+#
+# ── The bot handover ──────────────────────────────────────────────────────
+#
+# Old bot stopped, advisory lock proven to be 0, new bot started, lock proven to
+# be 1. Never both: they share one token, and Telegram hands each update to
+# exactly one getUpdates caller, so two pollers means messages customers sent
+# vanishing into the wrong process. `pg_try_advisory_lock` would make the second
+# exit rather than double-poll, but that is a backstop, not the plan.
+#
+# ── No revision inputs ────────────────────────────────────────────────────
+#
+# No sha, no digest, no image, no ref, no run id.
+
+name: Cutover Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type CUTOVER to move the live domains and hand over the bot'
+        type: choice
+        default: 'no — cancel'
+        options:
+          - 'no — cancel'
+          - 'CUTOVER'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shikoo-deploy
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
+  SOLO_DEPLOY_OWNER: Isusami
+
+jobs:
+  # No `environment:`, no DEPLOY_* secret. Selection and provenance happen where
+  # a refusal costs nothing.
+  cutover-gate:
+    name: gate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.verify.outputs.sha }}
+      digest: ${{ steps.verify.outputs.digest }}
+      staging_run_id: ${{ steps.pick.outputs.run_id }}
+      prepare_run_id: ${{ steps.prep.outputs.run_id }}
+    steps:
+      - name: main only
+        run: |
+          set -Eeuo pipefail
+          REF='${{ github.ref }}'
+          if [ "$REF" != 'refs/heads/main' ]; then
+            echo "::error::Cutover Production runs from refs/heads/main; this dispatch came from «${REF}»"
+            exit 1
+          fi
+
+      - name: the owner, and the exact word
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ env.SOLO_DEPLOY_OWNER }}
+        run: |
+          set -Eeuo pipefail
+          if [ "$CONFIRM" != 'CUTOVER' ]; then
+            echo "::error::type CUTOVER to confirm; got «${CONFIRM}»"
+            exit 1
+          fi
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::only @${OWNER} may cut production over; this run was started by @${ACTOR}"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The sha and digest are derived from the STAGING release, independently
+      # of the preparation being verified. Reading them out of the preparation
+      # manifest and then checking the manifest against them would be the
+      # manifest agreeing with itself.
+      - id: pick
+        name: find the staging run for the current main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/pick-staging-run.sh "${{ github.repository }}"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: staging-digest
+          path: staging-artifact
+          run-id: ${{ steps.pick.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: verify
+        name: verify the release manifest
+        env:
+          EXPECTED_REPO: ${{ github.repository }}
+          EXPECTED_RUN_ID: ${{ steps.pick.outputs.run_id }}
+          EXPECTED_RUN_HEAD_SHA: ${{ steps.pick.outputs.head_sha }}
+        run: bash deploy/verify-release-manifest.sh staging-artifact
+
+      # Which preparation. The latest successful Prepare Production run whose
+      # head sha is the current head of main — never an input.
+      - id: prep
+        name: find the preparation for the current main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: prepare-production.yml
+          ALLOWED_EVENTS: workflow_dispatch
+          LABEL: Prepare Production
+        run: bash deploy/pick-staging-run.sh "${{ github.repository }}"
+
+  cutover:
+    name: cutover
+    needs: cutover-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: production-preparation
+          path: preparation
+          run-id: ${{ needs.cutover-gate.outputs.prepare_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Observe first, compare second, and keep them in different scripts so
+      # neither can quietly skip the other.
+      - id: observe
+        name: read production as it is right now
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -Eeuo pipefail
+          bash deploy/run-on-host.sh deploy/observe-production.sh | tee observed.txt
+          grep -E '^[a-z_]+=' observed.txt >> "$GITHUB_OUTPUT"
+
+      - name: nothing drifted since preparation
+        env:
+          EXPECTED_SHA: ${{ needs.cutover-gate.outputs.sha }}
+          EXPECTED_DIGEST: ${{ needs.cutover-gate.outputs.digest }}
+          EXPECTED_STAGING_RUN_ID: ${{ needs.cutover-gate.outputs.staging_run_id }}
+          OBSERVED_SCHEMA_VERSION: ${{ steps.observe.outputs.schema_version }}
+          OBSERVED_CANDIDATE_HEALTH: ${{ steps.observe.outputs.candidate_health }}
+          OBSERVED_LIVE_INGEST_OWNER: ${{ steps.observe.outputs.live_ingest_owner }}
+          OBSERVED_LIVE_DASHBOARD_OWNER: ${{ steps.observe.outputs.live_dashboard_owner }}
+          OBSERVED_AUTO_DEPLOY: ${{ steps.observe.outputs.auto_deploy }}
+          OBSERVED_BOT_LOCKS: ${{ steps.observe.outputs.bot_locks }}
+          OBSERVED_TEMP_DOMAIN_VERIFY: ${{ steps.observe.outputs.temp_domain_verify }}
+          OBSERVED_BACKUP_PRESENT: ${{ steps.observe.outputs.backup_present }}
+        run: bash deploy/verify-preparation-manifest.sh preparation
+
+      - name: cut over (P11–P17)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.cutover-gate.outputs.digest }}
+          SHA: ${{ needs.cutover-gate.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          bash deploy/run-on-host.sh deploy/cutover-production.sh \
+            '${{ needs.cutover-gate.outputs.sha }}' \
+            '${{ needs.cutover-gate.outputs.digest }}'
