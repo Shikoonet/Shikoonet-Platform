@@ -28,8 +28,8 @@ mkdir -p "$BIN"
 PATH="$BIN:$PATH"
 export PATH
 
-SECRET_STAGING_URL='postgres://shikoo:STAGINGPW@db-stg:5432/shikoo'
-SECRET_PROD_URL='postgres://shikoo:PRODPW@db-prd:5432/shikoo'
+SECRET_STAGING_URL='postgres://shikoo:STAGINGPW@bea6ac92holn5k6vjgopy2ai:5432/shikoo'
+SECRET_PROD_URL='postgres://shikoo:PRODPW@qd2vduj7kv05sp9ejdrmclmu:5432/shikoo'
 SECRET_TOKEN_PROD='111111:PRODUCTION-BOT-TOKEN'
 SECRET_TOKEN_OTHER='222222:SOME-OTHER-TOKEN'
 
@@ -169,7 +169,7 @@ want() { if grep -qF -- "$2" "$OUT"; then ok "$1"; else bad "$1" "missing: $2"; 
 want 'the correct ENV_NAME row is kept by uuid' 'keep eu-ing-env-ok'
 want 'the wrong ENV_NAME row is dropped by uuid' 'drop eu-ing-env-bad'
 want 'the correct SERVICE row is kept' 'keep eu-ing-svc-ok'
-want 'the staging DATABASE_URL is identified by cluster id' '7678322244250038305'
+want 'the staging DATABASE_URL is identified by its container host' 'staging(bea6ac92holn5k6vjgopy2ai)'
 want 'the production DATABASE_URL is named as PRODUCTION' 'PRODUCTION'
 
 section 'the bot row is refused, and only the bot'

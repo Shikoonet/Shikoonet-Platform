@@ -48,7 +48,7 @@ BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
 # The one hard-coded value. Everything else is derived from the manifest it
 # pins, and a CI test asserts this still equals
 # sha256sum deploy/shikoo-task-runner.manifest.
-MANIFEST_SHA256=469ec3ac80e24862aa83f78a12e39fd631240da98d6128a1bc9b3c75bb4425b5
+MANIFEST_SHA256=f8ff15aedf1f820a937a51bf967031133d3fa5ac6e4e118f7185be16f8fe640d
 
 say() { echo "[install] $*"; }
 die() { echo "[install] FAILED: $*" >&2; exit 1; }
@@ -72,7 +72,10 @@ ALLOWED=$( { awk '{print $2}' "$STAGE/MANIFEST"; printf 'MANIFEST\nshikoo-task-r
 
 # Extra staged files are refused rather than ignored. Something unexpected in
 # the directory a root install copies from is a question, not a rounding error.
-staged=$(find "$STAGE" -maxdepth 1 -mindepth 1 -printf '%f\n' | sort)
+# Symlinks are LISTED, not skipped, so the per-file check below names one as a
+# symlink instead of reporting it as a missing file. A refusal that describes
+# the wrong problem sends the reader to the wrong place.
+staged=$(find "$STAGE" \( -type f -o -type l \) -printf '%P\n' | sort)
 extra=$(comm -23 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
 [ -z "$extra" ] || die "unexpected file(s) in $STAGE: $(printf '%s' "$extra" | tr '\n' ' ')"
 missing=$(comm -13 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
@@ -139,9 +142,12 @@ fail_back() { die "$* — the rollback timer will undo this"; }
 # ── install, by exact name, never a wildcard ─────────────────────────────
 rm -rf "$LIB"
 install -d -o root -g root -m 0755 "$LIB"
+# `-D` because the manifest names paths, not just basenames: migrations ship
+# beside the scripts so the restore drill can check the ledger and the
+# invariants, which it cannot do from an installed directory otherwise.
 while read -r _ name; do
   [ -n "$name" ] || continue
-  install -o root -g root -m 0644 "$STAGE/$name" "$LIB/$name"
+  install -D -o root -g root -m 0644 "$STAGE/$name" "$LIB/$name"
 done <"$STAGE/MANIFEST"
 install -o root -g root -m 0644 "$STAGE/MANIFEST" "$LIB/MANIFEST"
 install -o root -g root -m 0755 "$STAGE/shikoo-task-runner" "$BIN"
@@ -150,10 +156,10 @@ say "installed $LIB and $BIN"
 # Installed bytes must equal staged bytes, and nothing may be writable by the
 # grantee or by the account the tasks run as.
 ( cd "$LIB" && sha256sum -c --status MANIFEST ) || fail_back "installed scripts do not match the manifest"
-for f in "$LIB"/* "$BIN"; do
+while IFS= read -r f; do
   [ "$(stat -c '%u:%g' "$f")" = '0:0' ] || fail_back "$f is not root:root"
   case "$(stat -c '%a' "$f")" in 644 | 755) ;; *) fail_back "$f has mode $(stat -c '%a' "$f")" ;; esac
-done
+done < <(find "$LIB" -type f; printf '%s\n' "$BIN")
 say "installed files are root:root and not writable by $GRANTEE or $RUN_AS"
 
 # ── sudoers ──────────────────────────────────────────────────────────────

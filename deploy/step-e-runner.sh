@@ -57,8 +57,11 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # are talking to. It is a disqualifier here, not a target.
 PRODUCTION_BOT_ID=${PRODUCTION_BOT_ID:-8856185613}
 
-STAGING_SYSTEM_ID=${STAGING_SYSTEM_ID:-7678322244250038305}
-PRODUCTION_SYSTEM_ID=${PRODUCTION_SYSTEM_ID:-7678248300486692898}
+# The two database containers, by the name a DATABASE_URL would use. Not
+# secrets — they are container names — and recorded here so that "this row
+# points at production" is a comparison rather than an impression.
+STAGING_DB_HOST=${STAGING_DB_HOST:-bea6ac92holn5k6vjgopy2ai}
+PRODUCTION_DB_HOST=${PRODUCTION_DB_HOST:-qd2vduj7kv05sp9ejdrmclmu}
 COOLIFY_DB_CONTAINER=${COOLIFY_DB_CONTAINER:-coolify-db}
 
 say() { echo "[step-e] $*"; }
@@ -262,7 +265,7 @@ classify_literal() { # name uuid key ids want rows
     v=$(value_of "$rows" "$id")
     if [ "$v" = "$want" ]; then keep="${keep}${id} "; else drop="${drop}${id} "; fi
   done
-  record "$name" "$uuid" "$key" "$keep" "$drop" "wanted '${want}'"
+  record "$name" "$uuid" "$key" "$keep" "$drop" "wanted '${want}'" "$rows"
 }
 
 # A URL is never shown. It is connected to, and only the cluster identifier
@@ -272,8 +275,11 @@ classify_database() { # name uuid key ids rows
   local name=$1 uuid=$2 key=$3 ids=$4 rows=$5 id v sysid keep='' drop='' detail=''
   for id in $ids; do
     v=$(value_of "$rows" "$id")
-    # The URL reaches libpq through a 0600 service file, never through argv.
-    sysid=$(pg_system_identifier "$v")
+    # Parsed, not dialled. See the header of coolify-secret-io.sh: the host is
+    # the database container's own name, which answers the question without a
+    # connection — and without opening a session to production in order to
+    # discover that this row points at production.
+    sysid=$(pg_host_of "$v")
     # The identifier is reported, not just the verdict: it is non-secret, it is
     # the actual evidence, and «staging» with no number behind it is a claim
     # rather than a proof.
@@ -282,19 +288,23 @@ classify_database() { # name uuid key ids rows
     # must not be deleted. It does not clear the lists either: an earlier
     # version did, which silently discarded a correct verdict already reached
     # for a sibling row and turned a clean classification into a blocked one.
+    # An unparsable or unknown host joins NEITHER list: it must not be kept and
+    # must not be deleted. It does not clear the lists either — an earlier
+    # version did, discarding a correct verdict already reached for a sibling.
     case "$sysid" in
-      "$STAGING_SYSTEM_ID")    keep="${keep}${id} "; detail="${detail}${id}=staging(${sysid}) " ;;
-      "$PRODUCTION_SYSTEM_ID") drop="${drop}${id} "; detail="${detail}${id}=PRODUCTION(${sysid}) " ;;
-      '')                      detail="${detail}${id}=unreachable " ;;
-      *)                       detail="${detail}${id}=unknown-cluster(${sysid}) " ;;
+      "$STAGING_DB_HOST")    keep="${keep}${id} "; detail="${detail}${id}=staging(${sysid}) " ;;
+      "$PRODUCTION_DB_HOST") drop="${drop}${id} "; detail="${detail}${id}=PRODUCTION(${sysid}) " ;;
+      '')                    detail="${detail}${id}=unparsable " ;;
+      *)                     detail="${detail}${id}=unknown-host(${sysid}) " ;;
     esac
   done
-  record "$name" "$uuid" "$key" "$keep" "$drop" "$detail"
+  record "$name" "$uuid" "$key" "$keep" "$drop" "$detail" "$rows"
 }
 
 # The bot token is classified by its PUBLIC identity and nothing else.
 classify_bot() { # name uuid key ids rows
   local name=$1 uuid=$2 key=$3 ids=$4 rows=$5 id v identity botid botname keep='' drop='' detail=''
+  local ids_seen=''
   for id in $ids; do
     v=$(value_of "$rows" "$id")
     # The token reaches curl through a 0600 config, never through argv.
@@ -309,17 +319,33 @@ classify_bot() { # name uuid key ids rows
     else
       detail="${detail}${id}=@${botname}(${botid}) "
       keep="${keep}${id} "
+      case " $ids_seen " in *" $botid "*) ;; *) ids_seen="${ids_seen}${botid} " ;; esac
     fi
   done
-  # Exactly one row may be a dedicated non-production bot. Anything else — two
-  # candidates, none, or an invalid token beside a production one — is
-  # ambiguous, and an ambiguous bot token is left alone.
-  if [ "$(printf '%s' "$keep" | wc -w)" -eq 1 ]; then
-    local id
+  # Rows that resolve to the SAME dedicated bot are not ambiguous.
+  #
+  # Telegram issues one active token per bot and invalidates the previous one on
+  # revoke, so two tokens that both answer getMe with the same id are the same
+  # credential. Whichever row survives, the bot is that bot. Refusing here was
+  # the wrong refusal: it left the application undeployable to protect against
+  # a choice that does not exist.
+  #
+  # Genuine ambiguity — two DIFFERENT non-production bots, or none — still
+  # leaves both rows alone, because something would have to say which, and
+  # nothing here can.
+  local nkeep distinct
+  nkeep=$(printf '%s' "$keep" | wc -w)
+  distinct=$(printf '%s' "$ids_seen" | tr ' ' '\n' | grep -c . || true)
+  if [ "$nkeep" -ge 1 ] && [ "$distinct" -eq 1 ]; then
+    local id first=''
+    for id in $keep; do
+      if [ -z "$first" ]; then first=$id; else drop="${drop}${id} "; fi
+    done
     for id in $ids; do
       case " $keep " in *" $id "*) ;; *) drop="${drop}${id} " ;; esac
     done
-    record "$name" "$uuid" "$key" "$keep" "$drop" "$detail"
+    keep=$first
+    record "$name" "$uuid" "$key" "$keep" "$drop" "$detail" "$rows"
   else
     BLOCKED="${BLOCKED}${name}/${key} "
     say "   ${name} ${key}: AMBIGUOUS — ${detail}— both rows left untouched"
@@ -341,13 +367,52 @@ classify_effective() { # name uuid key ids rows
     v=$(value_of "$rows" "$id")
     if [ "$v" = "$eff" ]; then keep="${keep}${id} "; else drop="${drop}${id} "; fi
   done
-  record "$name" "$uuid" "$key" "$keep" "$drop" "matched the running container"
+  record "$name" "$uuid" "$key" "$keep" "$drop" "matched the running container" "$rows"
 }
 
-record() { # name uuid key keep drop detail
-  local name=$1 uuid=$2 key=$3 keep=$4 drop=$5 detail=$6 id
+# All candidates hold byte-identical values?
+#
+# This is the shape MOST duplicates actually have: one form submitted twice, so
+# both rows say `staging`, both say `ingest`, both hold the same URL. An earlier
+# version called that "2 rows qualify" and refused — which is the wrong
+# refusal. When every candidate is correct AND identical, deleting all but one
+# cannot change what the container reads, and refusing leaves the application
+# undeployable for no benefit at all.
+#
+# Different values that both look correct are a different matter and stay
+# refused: something has to say WHICH, and nothing here can.
+all_identical() { # rows id...
+  local rows=$1 first='' v
+  shift
+  for v in "$@"; do
+    v=$(value_of "$rows" "$v")
+    if [ -z "$first" ]; then first=$v; elif [ "$v" != "$first" ]; then return 1; fi
+  done
+  return 0
+}
+
+record() { # name uuid key keep drop detail rows
+  local name=$1 uuid=$2 key=$3 keep=$4 drop=$5 detail=$6 rows=${7:-} id
   local nkeep
   nkeep=$(printf '%s' "$keep" | wc -w)
+
+  # More than one qualifying row, all holding the same value: keep the first
+  # and drop the rest. Deterministic, so two runs agree.
+  # $keep is a space-separated list of row uuids and is meant to split into
+  # arguments here; the uuids are [a-z0-9] and cannot glob.
+  # shellcheck disable=SC2086
+  if [ "$nkeep" -gt 1 ] && [ -n "$rows" ] && all_identical "$rows" $keep; then
+    local first='' rest=''
+    for id in $keep; do
+      if [ -z "$first" ]; then first=$id; else rest="${rest}${id} "; fi
+    done
+    say "   ${name} ${key}: ${nkeep} identical rows — keep ${first}, drop ${rest% } (${detail})"
+    KEEP="${KEEP}${uuid}:${first} "
+    for id in $rest; do DROP="${DROP}${uuid}:${id} "; done
+    for id in $drop; do DROP="${DROP}${uuid}:${id} "; done
+    return
+  fi
+
   if [ "$nkeep" -ne 1 ]; then
     BLOCKED="${BLOCKED}${name}/${key} "
     say "   ${name} ${key}: ${nkeep} rows qualify (${detail}) — left untouched"

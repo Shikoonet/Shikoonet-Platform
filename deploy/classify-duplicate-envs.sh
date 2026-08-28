@@ -71,11 +71,11 @@ die() {
   exit 1
 }
 
-# The identifiers of the two clusters, recorded 2026-08-28. They are not
-# secrets — `pg_control_system()` hands them to anybody who can connect — and
-# writing them down here is what turns "some database" into "the wrong one".
-STAGING_SYSTEM_ID=${STAGING_SYSTEM_ID:-7678322244250038305}
-PRODUCTION_SYSTEM_ID=${PRODUCTION_SYSTEM_ID:-7678248300486692898}
+# The two database containers, by the hostname a DATABASE_URL uses. Not
+# secrets — they are container names — and writing them down is what turns
+# "some database" into "the wrong one".
+STAGING_DB_HOST=${STAGING_DB_HOST:-bea6ac92holn5k6vjgopy2ai}
+PRODUCTION_DB_HOST=${PRODUCTION_DB_HOST:-qd2vduj7kv05sp9ejdrmclmu}
 
 cfg() { # key -> value, read as text, never sourced
   sed -n "s/^$1=//p" "$CONF" | head -n1
@@ -96,19 +96,31 @@ coolify_api_init "$CONF" || die "could not prepare the Coolify client"
 trap coolify_api_cleanup EXIT
 
 # `staging`/`production`/`unknown`, from a URL this function is handed and does
-# not echo. psql runs in the Coolify Postgres container so the host needs no
-# client and the URL never becomes a command-line argument anywhere.
+# not echo.
+#
+# Parsed, never dialled. There is no psql on this host and Coolify's database
+# hostnames do not resolve outside the container network, so the connecting
+# version reported every row "unreachable" — two impossibilities wearing the
+# look of a network problem. It should not have connected regardless:
+# classifying a row as production by opening a session to production is a
+# strange way to learn you should not be touching it.
+#
+# The hostname is the database container's own name. Only that name and the
+# verdict are printed; user, password, port and database are discarded.
 classify_database_url() { # url -> classification
-  local id
-  id=$(PGCONNECT_TIMEOUT=8 psql "$1" -At -c 'select system_identifier from pg_control_system()' 2>/dev/null) || {
-    printf 'unreachable\n'
-    return 0
-  }
-  case "$id" in
-    "$STAGING_SYSTEM_ID") printf 'staging (system_identifier %s)\n' "$id" ;;
-    "$PRODUCTION_SYSTEM_ID") printf 'PRODUCTION (system_identifier %s)\n' "$id" ;;
-    '') printf 'unreachable\n' ;;
-    *) printf 'unknown cluster (system_identifier %s)\n' "$id" ;;
+  local host
+  host=$(python3 - "$1" <<'PY'
+import sys, urllib.parse as u
+p = u.urlparse(sys.argv[1])
+if p.scheme in ("postgres", "postgresql") and p.hostname:
+    print(p.hostname)
+PY
+)
+  case "$host" in
+    "$STAGING_DB_HOST")    printf 'staging (host %s)\n' "$host" ;;
+    "$PRODUCTION_DB_HOST") printf 'PRODUCTION (host %s)\n' "$host" ;;
+    '')                    printf 'not a postgres url\n' ;;
+    *)                     printf 'unknown host (%s)\n' "$host" ;;
   esac
 }
 

@@ -38,7 +38,7 @@ unset CONF STATE CONTRACT LOCK BACKUP_DIR DB_CONTAINER COOLIFY_URL COOLIFY_TOKEN
       COOLIFY_DB_CONTAINER PROBE_IMAGE PROBE_TAG DELETE_TIMEOUT REPO_ROOT \
       MIGRATIONS_DIR INVARIANTS SCRATCH PGUSER PGSERVICE PGSERVICEFILE \
       BACKUP_FREQUENCY BACKUP_RETAIN_LOCAL BACKUP_TIMEOUT IMAGE_NAME \
-      PROJECT_NAME ENVIRONMENT_NAME STAGING_SYSTEM_ID PRODUCTION_SYSTEM_ID \
+      PROJECT_NAME ENVIRONMENT_NAME STAGING_DB_HOST PRODUCTION_DB_HOST \
       PRODUCTION_BOT_ID BASH_ENV ENV CDPATH
 
 LIB=/usr/local/lib/shikoo-step-e
@@ -49,7 +49,7 @@ LOCKFILE=/var/lock/shikoo-task-runner.lock
 STATE_DIR=/var/lib/shikoo
 
 # The hash of the manifest that lists every script this may run.
-MANIFEST_SHA256=469ec3ac80e24862aa83f78a12e39fd631240da98d6128a1bc9b3c75bb4425b5
+MANIFEST_SHA256=f8ff15aedf1f820a937a51bf967031133d3fa5ac6e4e118f7185be16f8fe640d
 
 die() { echo "shikoo-task-runner: $*" >&2; exit 1; }
 note() {
@@ -97,8 +97,10 @@ verify_bundle() {
   # unverified root-owned file in a directory this runs from does not belong
   # there even if nothing currently executes it.
   local extra
+  # `%P` so a manifest entry like `migrations/0001_core.sql` compares against
+  # the path it actually occupies, not against its basename.
   extra=$(comm -23 \
-    <(find "$LIB" -maxdepth 1 -type f -printf '%f\n' | sort) \
+    <(find "$LIB" -type f -printf '%P\n' | sort) \
     <( { awk '{print $2}' "$LIB/MANIFEST"; echo MANIFEST; } | sort ))
   [ -z "$extra" ] || die "unmanaged file(s) in $LIB: $(printf '%s' "$extra" | tr '\n' ' ')"
 

@@ -59,39 +59,28 @@ if d.get("ok") and r.get("id"):
     print(r["id"], r.get("username") or "")'
 }
 
-# The cluster identifier behind a Postgres URL, without the URL reaching argv.
+# Which cluster a Postgres URL points at, WITHOUT connecting to it.
 #
-# `system_identifier` says which database this is and reveals no host, user or
-# password — it is the whole answer needed to tell staging from production, and
-# it is safe to print, which is why classification reports it and nothing else.
-pg_system_identifier() { # url -> system_identifier or empty
-  local url=$1 svc="$SECRET_IO_DIR/pg.service" out
-  umask 077
-  python3 - "$url" "$svc" <<'PY'
+# The connecting version could never have worked, and finding out cost a dry
+# run: there is no psql binary on this host at all, and Coolify's database
+# hostnames do not resolve outside the container network. Every DATABASE_URL
+# came back "unreachable", which reads like a network problem and was in fact
+# two independent impossibilities.
+#
+# It should not have connected anyway. Classifying a row as production by
+# opening a session to the production database is a strange way to find out
+# that you should not be touching it.
+#
+# The hostname in a Coolify DATABASE_URL is the database container's own
+# name — a uuid, not a secret, and the whole answer. So the URL is parsed, the
+# host compared against the two known containers, and nothing is dialled. Only
+# the classification and the matched container name are ever printed; user,
+# password, port and database name are parsed and discarded.
+pg_host_of() { # url -> hostname, or empty when it is not a postgres url
+  python3 - "$1" <<'PY'
 import sys, urllib.parse as u
-raw, path = sys.argv[1], sys.argv[2]
-p = u.urlparse(raw)
-if p.scheme not in ("postgres", "postgresql"):
-    sys.exit(1)
-fields = {
-    "host": p.hostname or "",
-    "port": str(p.port or 5432),
-    "user": u.unquote(p.username or ""),
-    "password": u.unquote(p.password or ""),
-    "dbname": (p.path or "/").lstrip("/") or "postgres",
-}
-with open(path, "w") as fh:
-    fh.write("[probe]\n")
-    for k, v in fields.items():
-        if v:
-            fh.write(f"{k}={v}\n")
+p = u.urlparse(sys.argv[1])
+if p.scheme in ("postgres", "postgresql") and p.hostname:
+    print(p.hostname)
 PY
-  [ -s "$svc" ] || { rm -f "$svc"; return 0; }
-  chmod 600 "$svc"
-  # `probe` is the service NAME, not a credential — the credential stays in the
-  # file that PGSERVICEFILE names.
-  out=$(PGSERVICEFILE="$svc" PGSERVICE=probe PGCONNECT_TIMEOUT=8 \
-    psql -At -c 'select system_identifier from pg_control_system()' 2>/dev/null || true)
-  rm -f "$svc"
-  printf '%s' "$out"
 }

@@ -29,12 +29,19 @@ has() { if grep -qF -- "$2" "$1"; then ok "$3"; else bad "$3" "missing: $2"; fi;
 
 # A staging directory that is correct, so each case can break exactly one thing.
 mkstage() {
-  local d="$WORK/stage.$1"
+  local d="$WORK/stage.$1" src
   rm -rf "$d"
   mkdir -p "$d"
+  # Manifest entries are either deploy/ scripts or repo-root migrations, and
+  # they may name a subdirectory.
   while read -r _ name; do
     [ -n "$name" ] || continue
-    cp "$ROOT/deploy/$name" "$d/$name"
+    case "$name" in
+      migrations/*) src="$ROOT/$name" ;;
+      *)            src="$ROOT/deploy/$name" ;;
+    esac
+    mkdir -p "$d/$(dirname "$name")"
+    cp "$src" "$d/$name"
   done <"$ROOT/deploy/shikoo-task-runner.manifest"
   cp "$ROOT/deploy/shikoo-task-runner.manifest" "$d/MANIFEST"
   cp "$ROOT/deploy/shikoo-task-runner" "$d/shikoo-task-runner"
@@ -79,7 +86,7 @@ verify_stage() { # stage-dir -> rc, message in $WORK/vout
     got=$(sha256sum "$stage/MANIFEST" | cut -d' ' -f1)
     [ "$got" = "$want" ] || { echo 'MANIFEST does not match the hash this installer was built against'; exit 1; }
     allowed=$( { awk '{print $2}' "$stage/MANIFEST"; printf 'MANIFEST\nshikoo-task-runner\nshikoo-task-runner.sudoers\n'; } | sort )
-    staged=$(find "$stage" -maxdepth 1 -mindepth 1 -printf '%f\n' | sort)
+    staged=$(find "$stage" \( -type f -o -type l \) -printf '%P\n' | sort)
     extra=$(comm -23 <(printf '%s\n' "$staged") <(printf '%s\n' "$allowed"))
     [ -z "$extra" ] || { echo "unexpected file(s): $extra"; exit 1; }
     missing=$(comm -13 <(printf '%s\n' "$staged") <(printf '%s\n' "$allowed"))
