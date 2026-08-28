@@ -86,13 +86,25 @@ fi
 CONTRACT=${CONTRACT:-/var/lib/shikoo/coolify-contract.env}
 [ -r "$CONTRACT" ] ||
   die "no Coolify contract attestation at ${CONTRACT} — run coolify-contract-probe.sh on staging first. Production applications are not created against an unverified API contract."
-grep -q '^instant_deploy_false_creates_nothing=proven$' "$CONTRACT" ||
-  die "${CONTRACT} does not record instant_deploy=false as proven"
-grep -q '^autogenerate_domain_false_creates_no_domain=proven$' "$CONTRACT" ||
-  die "${CONTRACT} does not record autogenerate_domain=false as proven"
+# Schema 2 or nothing. A schema-1 attestation was written before anyone knew
+# that `is_auto_deploy_enabled` is accepted and discarded at create time, so it
+# records nothing about hardening — and accepting it here would let a
+# production application be created with push-to-deploy silently ON.
+grep -q '^schema_version=2$' "$CONTRACT" ||
+  die "${CONTRACT} is not a schema-2 attestation — re-run coolify-contract-probe.sh. A schema-1 record predates the discovery that auto-deploy cannot be set at create time, so it proves nothing about hardening."
+for claim in \
+  'instant_deploy_false_creates_nothing=proven' \
+  'autogenerate_domain_false_creates_no_domain=proven' \
+  'auto_deploy_disabled_before_configuration=proven' \
+  'previews_disabled_before_configuration=proven' \
+  'delete_leaves_no_row=proven'; do
+  grep -qx -- "$claim" "$CONTRACT" || die "${CONTRACT} does not record ${claim}"
+done
 
 # shellcheck source=deploy/coolify-api.sh
 . "$(dirname "${BASH_SOURCE[0]}")/coolify-api.sh"
+# shellcheck source=deploy/coolify-app.sh
+. "$(dirname "${BASH_SOURCE[0]}")/coolify-app.sh"
 coolify_api_init "$CONF" || die "could not prepare the Coolify client"
 trap coolify_api_cleanup EXIT
 
@@ -186,7 +198,22 @@ print(json.dumps({
 try: print(json.load(sys.stdin).get("uuid") or "")
 except Exception: print("")')
   [ -n "$uuid" ] || die "${role}: create returned HTTP ${API_STATUS} with no uuid"
-  say "${role}: created ${name} (${uuid}), stopped, no domain, no ports published"
+
+  # Harden BEFORE the application has a domain, an environment row, a queued
+  # deployment or a container — while a push that reached it could do nothing.
+  # The create was asked for `is_auto_deploy_enabled: false` and this version
+  # accepts and discards it, so the flag is true right now.
+  #
+  # A failure here deletes the exact uuid just created rather than leaving a
+  # production application with push-to-deploy on and nobody's name against it.
+  if ! coolify_harden_settings "$uuid"; then
+    say "${role}: hardening failed — deleting ${uuid}"
+    coolify_api DELETE "/applications/${uuid}" >/dev/null 2>&1 || true
+    coolify_await_deletion "$uuid" "${DELETE_TIMEOUT:-120}" >/dev/null 2>&1 || true
+    die "${role}: could not prove Auto Deploy and previews are off on ${name}; the application was deleted rather than left exposed"
+  fi
+
+  say "${role}: created ${name} (${uuid}), stopped, no domain, no ports published, auto-deploy off"
   printf 'created %s' "$uuid"
 }
 

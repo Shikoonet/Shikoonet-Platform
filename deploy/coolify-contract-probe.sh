@@ -81,6 +81,8 @@ fi
 
 # shellcheck source=deploy/coolify-api.sh
 . "$(dirname "${BASH_SOURCE[0]}")/coolify-api.sh"
+# shellcheck source=deploy/coolify-app.sh
+. "$(dirname "${BASH_SOURCE[0]}")/coolify-app.sh"
 coolify_api_init "$CONF" || die "could not prepare the Coolify client"
 
 # Set once the application exists, so the EXIT trap can remove it even if a
@@ -193,6 +195,10 @@ print(json.dumps({
   "description": "disposable API contract probe; safe to delete",
   "instant_deploy": False,
   "autogenerate_domain": False,
+  # Sent because the endpoint documents them, and measured because it
+  # discards one of them. See the header of coolify-app.sh.
+  "is_auto_deploy_enabled": False,
+  "is_preview_deployments_enabled": False,
 }))' "$PROJECT_UUID" "$SERVER_UUID" "$ENVIRONMENT_NAME" "$PROBE_IMAGE" "$PROBE_TAG" "$PROBE_NAME")
 
 coolify_api POST '/applications/dockerimage' "$REQUEST" || die "the create call could not be made"
@@ -239,16 +245,47 @@ except Exception: print(0)')
 CONTAINERS=$(docker ps -a --filter "label=coolify.name=${PROBE_UUID}" --format '{{.Names}}' 2>/dev/null | grep -c . || true)
 [ "${CONTAINERS:-0}" = '0' ] || note_fail "${CONTAINERS} container(s) exist for a probe that was never deployed"
 
-SETTINGS=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At -F'|' \
-  -c "select s.is_auto_deploy_enabled, s.is_preview_deployments_enabled
-        from application_settings s join applications a on a.id = s.application_id
-       where a.uuid = '${PROBE_UUID}';" 2>/dev/null || true)
-AUTO_DEPLOY=${SETTINGS%%|*}
-PREVIEWS=${SETTINGS##*|}
-[ "$AUTO_DEPLOY" = 'f' ] || note_fail "native Auto Deploy defaulted to '${AUTO_DEPLOY:-unreadable}' on a new application"
-[ "$PREVIEWS" = 'f' ] || note_fail "preview deployments defaulted to '${PREVIEWS:-unreadable}' on a new application"
+# The state as CREATED, before anything is hardened. This is the measurement,
+# not an assertion: whether the documented create-time field is honoured is
+# precisely what this probe exists to find out, and on 4.3.13 it is not.
+SETTINGS=$(coolify_settings_flags "$PROBE_UUID")
+AUTO_DEPLOY_DEFAULT=${SETTINGS%%|*}
+PREVIEWS_DEFAULT=${SETTINGS##*|}
+[ -n "$SETTINGS" ] || note_fail "could not read the settings of a freshly created application"
 
-say "   build_pack=${BUILD_PACK} fqdn='${FQDN}' containers=${CONTAINERS:-0} envs=${ENV_COUNT} auto_deploy=${AUTO_DEPLOY:-?} previews=${PREVIEWS:-?} status=${STATUS_BACK}"
+# `status` is NOT evidence of a deployment and is not treated as such.
+#
+# A Docker Image application with no container reports `exited:unhealthy`,
+# because Coolify derives the string from a container it cannot find rather
+# than from anything it did. The authoritative signals are the two below: a
+# container existing, and a row in the deployment queue. Both are zero here.
+DEPLOYMENTS=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At \
+  -c "select count(*) from application_deployment_queues where application_id = '${PROBE_UUID}';" 2>/dev/null || printf '?')
+[ "$DEPLOYMENTS" = '0' ] || note_fail "${DEPLOYMENTS} deployment(s) were queued by a create that asked for none"
+
+say "   build_pack=${BUILD_PACK} fqdn='${FQDN}' containers=${CONTAINERS:-0} envs=${ENV_COUNT} deployments=${DEPLOYMENTS} status=${STATUS_BACK} (status is not deploy evidence)"
+say "   as created: auto_deploy=${AUTO_DEPLOY_DEFAULT:-?} previews=${PREVIEWS_DEFAULT:-?}"
+
+# ── 5b. hardening, before anything deployable exists ──────────────────────
+#
+# Nothing has a domain, an environment row, a queued deployment or a container
+# at this point, and that is asserted above rather than assumed. Auto Deploy is
+# switched off while the application is still inert, so the window in which a
+# push could reach a half-configured production application never opens.
+say "5b. disabling Auto Deploy and previews through the API, then proving it"
+if coolify_harden_settings "$PROBE_UUID"; then
+  HARDENED=proven
+else
+  HARDENED=failed
+  note_fail "could not prove Auto Deploy and previews are false after hardening"
+fi
+
+# Hardening must not have deployed anything either.
+CONTAINERS_AFTER=$(docker ps -a --filter "label=coolify.name=${PROBE_UUID}" --format '{{.Names}}' 2>/dev/null | grep -c . || true)
+[ "${CONTAINERS_AFTER:-0}" = '0' ] || note_fail "${CONTAINERS_AFTER} container(s) appeared while hardening settings"
+DEPLOY_AFTER=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At \
+  -c "select count(*) from application_deployment_queues where application_id = '${PROBE_UUID}';" 2>/dev/null || printf '?')
+[ "$DEPLOY_AFTER" = '0' ] || note_fail "${DEPLOY_AFTER} deployment(s) were queued while hardening settings"
 
 # ── 6. delete exactly that uuid ───────────────────────────────────────────
 say "6. deleting ${PROBE_UUID}"
@@ -257,13 +294,26 @@ DELETE_STATUS=$API_STATUS
 coolify_api GET "/applications/${PROBE_UUID}" || true
 GONE_STATUS=$API_STATUS
 case "$GONE_STATUS" in
-  404 | 401 | 403) say "   gone (HTTP ${GONE_STATUS})" ;;
+  404 | 401 | 403) say "   the API no longer serves it (HTTP ${GONE_STATUS})" ;;
   *) note_fail "the application still answers after DELETE (HTTP ${GONE_STATUS})" ;;
 esac
-LEFTOVER=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At \
-  -c "select count(*) from applications where uuid = '${PROBE_UUID}';" 2>/dev/null || echo '?')
-[ "$LEFTOVER" = '0' ] || note_fail "${LEFTOVER} application row(s) remain for ${PROBE_UUID}"
-PROBE_UUID=''   # deleted; the EXIT trap has nothing left to do
+
+# The API 404s the moment the soft delete lands, and the queued
+# `DeleteResourceJob` removes the row a little later — Coolify's own response
+# says "Application deletion request queued". Asserting on the database
+# immediately therefore fails a deletion that is working correctly, which is
+# what the first run of this probe did.
+#
+# Bounded, because "it will probably be gone soon" is not something a release
+# may assume about a row that could still own a name it is about to reuse.
+say "   waiting for the queued deletion to converge"
+if CONVERGE_SECONDS=$(coolify_await_deletion "$PROBE_UUID" "${DELETE_TIMEOUT:-120}"); then
+  say "   converged to zero rows in ~${CONVERGE_SECONDS}s"
+  PROBE_UUID=''   # gone; the EXIT trap has nothing left to do
+else
+  CONVERGE_SECONDS=''
+  note_fail "the deleted application never disappeared from the database"
+fi
 
 # ── 7. the attestation ────────────────────────────────────────────────────
 COOLIFY_VERSION=unknown
@@ -276,17 +326,23 @@ if [ "$FAILED" -ne 0 ]; then
 fi
 
 {
-  printf 'schema_version=1\n'
+  printf 'schema_version=2\n'
   printf 'coolify_version=%s\n' "$COOLIFY_VERSION"
   printf 'endpoint=POST /api/v1/applications/dockerimage\n'
   printf 'instant_deploy_false_creates_nothing=proven\n'
   printf 'autogenerate_domain_false_creates_no_domain=proven\n'
   printf 'build_pack=dockerimage\n'
-  printf 'auto_deploy_default=%s\n' "$AUTO_DEPLOY"
-  printf 'previews_default=%s\n' "$PREVIEWS"
+  printf 'auto_deploy_default=%s\n' "$AUTO_DEPLOY_DEFAULT"
+  printf 'previews_default=%s\n' "$PREVIEWS_DEFAULT"
+  printf 'auto_deploy_settable_at_create=no\n'
+  printf 'auto_deploy_disabled_before_configuration=%s\n' "$HARDENED"
+  printf 'previews_disabled_before_configuration=%s\n' "$HARDENED"
   printf 'env_rows_on_create=%s\n' "$ENV_COUNT"
   printf 'containers_on_create=%s\n' "${CONTAINERS:-0}"
+  printf 'deployments_on_create=%s\n' "$DEPLOYMENTS"
   printf 'delete_status=%s\n' "$DELETE_STATUS"
+  printf 'delete_semantics=async-hard-delete\n'
+  printf 'delete_converged_seconds=%s\n' "$CONVERGE_SECONDS"
   printf 'delete_leaves_no_row=proven\n'
   printf 'team_count=%s\n' "$TEAM_COUNT"
   printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
