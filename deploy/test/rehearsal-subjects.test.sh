@@ -215,6 +215,41 @@ else
     "$(grep -i 'STOP:' "$MW/out" | head -1)"
 fi
 
+# ── 4. a blocked gate and a broken probe are different answers ───────────
+#
+# The probe that was here called `m.status(db)` with the D1 adapter and no
+# migrations directory, so it threw on every image and the loop wrote
+# OLD_APP_SCHEMA_COMPAT=fail. A broken probe read as "the old code cannot serve
+# the migrated schema" — the most alarming possible verdict, from a bug.
+GW="$WORKROOT/gate-blocked"; build_world "$GW"
+FAKE_GATE_RC=1 run_rehearsal "$GW"; GRC=$?
+if [ "$GRC" -eq 0 ]; then
+  bad "a blocked schema gate stops the rehearsal" "it succeeded"
+elif grep -q 'cannot serve the migrated schema' "$GW/out"; then
+  ok "a blocked schema gate stops the rehearsal"
+else
+  bad "a blocked schema gate stops the rehearsal" "$(grep -i 'STOP:' "$GW/out" | head -1)"
+fi
+
+GW2="$WORKROOT/gate-broken"; build_world "$GW2"
+FAKE_GATE_RC=127 run_rehearsal "$GW2"; GRC2=$?
+if [ "$GRC2" -eq 0 ]; then
+  bad "a probe that cannot run is not reported as incompatibility" "it succeeded"
+elif grep -q 'broken probe, not a compatibility result' "$GW2/out"; then
+  ok "a probe that cannot run is not reported as incompatibility"
+else
+  bad "a probe that cannot run is not reported as incompatibility" "$(grep -i 'STOP:' "$GW2/out" | head -1)"
+fi
+# Neither leaves evidence behind.
+for d in "$GW" "$GW2"; do
+  if [ -e "$d/state/attestation/current" ] || [ -L "$d/state/attestation/current" ]; then
+    bad "a gate refusal activates no attestation" "one was activated"
+  else
+    ok "a gate refusal activates no attestation"
+  fi
+done
+rm -rf "$GW" "$GW2"
+
 echo
 printf 'subjects: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

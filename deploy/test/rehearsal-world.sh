@@ -137,6 +137,7 @@ run_rehearsal() { # world -> exit code; stdout+stderr in $world/out
     FAKE_VITEST_RC="${FAKE_VITEST_RC:-0}" FAKE_RESTORE_RC="${FAKE_RESTORE_RC:-0}" \
     FAKE_GH_STATUS="${FAKE_GH_STATUS:-200}" \
     FAKE_LEDGER_DRIFT="${FAKE_LEDGER_DRIFT:-0}" \
+    FAKE_GATE_RC="${FAKE_GATE_RC:-0}" \
     bash -c 'cd "$1" && exec bash "$2"' _ "$w/repo" "$w/bin/rehearsal.sh" >"$w/out" 2>&1
 }
 
