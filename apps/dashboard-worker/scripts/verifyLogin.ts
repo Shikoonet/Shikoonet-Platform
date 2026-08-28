@@ -21,8 +21,13 @@
  * the same reason `bootstrapOperator.ts` does: it writes an ADMIN row.
  */
 
-import { randomBytes, randomUUID } from 'node:crypto';
-import { createPostgresD1 } from '@shikoo/db';
+import { randomBytes } from 'node:crypto';
+import {
+  countLiveSessions,
+  createPostgresD1,
+  deleteOperatorByEmail,
+  insertOperatorWithHash,
+} from '@shikoo/db';
 import { hashPassword } from '@shikoo/domain';
 import { DEFAULT_ENV } from './bootstrapOperator.js';
 
@@ -74,16 +79,8 @@ async function main(): Promise<number> {
     // Written straight in, hashed by the same function the login route
     // verifies with. The CLI is exercised by its own tests; what is under test
     // here is the deployment, so this keeps the setup to one statement.
-    await db.prepare(`DELETE FROM access_users WHERE email = ?1`).bind(EMAIL).run();
-    const now = Date.now();
-    await db
-      .prepare(
-        `INSERT INTO access_users
-           (id, email, role, active, created_at, updated_at, password_hash, password_updated_at)
-         VALUES (?1, ?2, 'ADMIN', 1, ?3, ?3, ?4, now())`,
-      )
-      .bind(randomUUID(), EMAIL, now, await hashPassword(password))
-      .run();
+    await deleteOperatorByEmail(db, EMAIL);
+    await insertOperatorWithHash(db, EMAIL, await hashPassword(password));
 
     const anon = await fetch(`${base}/api/v1/auth/me`);
     check('no session is refused', anon.status === 401, String(anon.status));
@@ -112,17 +109,10 @@ async function main(): Promise<number> {
     // cookie value is replayed, and the server has to refuse it on its own.
     check('the cookie is dead after logout', after.status === 401, String(after.status));
 
-    const live = await db
-      .prepare(
-        `SELECT COUNT(*)::int AS n FROM operator_sessions s
-           JOIN access_users u ON u.id = s.access_user_id
-          WHERE u.email = ?1 AND s.revoked_at IS NULL`,
-      )
-      .bind(EMAIL)
-      .first<{ n: number }>();
-    check('no live session row is left', (live?.n ?? -1) === 0, `${live?.n ?? '?'} live`);
+    const live = await countLiveSessions(db, EMAIL);
+    check('no live session row is left', live === 0, `${live} live`);
   } finally {
-    await db.prepare(`DELETE FROM access_users WHERE email = ?1`).bind(EMAIL).run();
+    await deleteOperatorByEmail(db, EMAIL);
     await pool.end();
   }
 
