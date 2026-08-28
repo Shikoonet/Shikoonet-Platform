@@ -90,15 +90,10 @@ if [ -z "$COOLIFY_URL" ] || [ -z "$COOLIFY_TOKEN" ]; then
   die "$CONF has no COOLIFY_URL/COOLIFY_TOKEN"
 fi
 
-# Token to curl through a config file on stdin — never argv, which every
-# process on the host can read.
-CURLDIR=$(mktemp -d)
-trap 'rm -rf "$CURLDIR"' EXIT
-chmod 700 "$CURLDIR"
-printf 'header = "Authorization: Bearer %s"\n' "$COOLIFY_TOKEN" >"$CURLDIR/c"
-chmod 600 "$CURLDIR/c"
-
-api() { curl -sS -m 30 -K "$CURLDIR/c" "${COOLIFY_URL}/api/v1$1"; }
+# shellcheck source=deploy/coolify-api.sh
+. "$(dirname "${BASH_SOURCE[0]}")/coolify-api.sh"
+coolify_api_init "$CONF" || die "could not prepare the Coolify client"
+trap coolify_api_cleanup EXIT
 
 # `staging`/`production`/`unknown`, from a URL this function is handed and does
 # not echo. psql runs in the Coolify Postgres container so the host needs no
@@ -133,7 +128,13 @@ classify_bot_token() { # token -> "id=<n> username=<name>"
 for uuid in "$@"; do
   [[ $uuid =~ ^[a-z0-9]{20,32}$ ]] || die "'$uuid' is not a Coolify application uuid"
   say "── application ${uuid}"
-  envs=$(api "/applications/${uuid}/envs") || die "could not read the environment of ${uuid}"
+  # Checked, not assumed. `curl -sS` exits 0 on a 401, so an unchecked call
+  # returns an error document, parses to zero duplicate rows, and reports
+  # «nothing to fix» about an application it was never allowed to read.
+  coolify_api GET "/applications/${uuid}/envs" || die "could not reach Coolify while reading ${uuid}"
+  [ "$API_STATUS" = '200' ] ||
+    die "reading the environment of ${uuid} was refused (HTTP ${API_STATUS}) — refusing to report «no duplicates» about an application this token cannot read"
+  envs=$API_BODY
 
   # One line per row of a duplicated key: id, key, and a verdict. Keys that
   # appear once are not listed — they are not the question.

@@ -779,6 +779,14 @@ jobs:
       # negative half — the sentinel secrets must appear nowhere in its output
       # — because a tool that reads secrets to describe them is one careless
       # printf away from putting a production URL in a CI log.
+      # The client every Coolify caller shares. The regression it encodes: the
+      # status used to be set inside `$(...)`, so callers always read 0 and a
+      # verified 200 reported «the token was refused (HTTP 0)». The mutation
+      # cases exist because the fix is one convenience wrapper away from being
+      # undone.
+      - name: coolify api client — the status survives the call
+        run: bash deploy/test/coolify-api.test.sh
+
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh
 

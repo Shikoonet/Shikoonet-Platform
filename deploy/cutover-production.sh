@@ -75,27 +75,26 @@ LEDGER_DIGEST=$(field digest)
 [ "$LEDGER_DIGEST" = "$DIGEST_ARG" ] ||
   die "the host ledger prepared a different digest than this cutover would deploy"
 
-CURLDIR=$(mktemp -d)
-trap 'rm -rf "$CURLDIR"' EXIT
-chmod 700 "$CURLDIR"
-{
-  printf 'header = "Authorization: Bearer %s"\n' "$COOLIFY_TOKEN"
-  printf 'header = "Accept: application/json"\n'
-} >"$CURLDIR/c"
-chmod 600 "$CURLDIR/c"
-unset COOLIFY_TOKEN
+# shellcheck source=deploy/coolify-api.sh
+. "$(dirname "${BASH_SOURCE[0]}")/coolify-api.sh"
+coolify_api_init "$CONF" || die "could not prepare the Coolify client"
+trap coolify_api_cleanup EXIT
 
-api() { # METHOD PATH [body]
-  local method=$1 path=$2 body=${3:-}
-  if [ -n "$body" ]; then
-    curl -sS -m 45 -K "$CURLDIR/c" -X "$method" -H 'Content-Type: application/json' \
-      --data-binary "$body" "${COOLIFY_URL}/api/v1${path}"
-  else
-    curl -sS -m 45 -K "$CURLDIR/c" -X "$method" "${COOLIFY_URL}/api/v1${path}"
-  fi
-}
+# Every call here CHECKS the status, and that is not tidiness.
+#
+# `curl -sS` exits 0 for a 401 and for a 500, so the previous shape — «curl …
+# || die» — treated «Coolify refused to move the domain» as success. The
+# cutover would then report a completed domain move, verify against a domain
+# that never moved, and roll back something it had not done.
 set_domain() { # uuid fqdn-or-empty
-  api PATCH "/applications/$1" "$(python3 -c 'import json,sys; print(json.dumps({"domains": sys.argv[1]}))' "$2")" >/dev/null
+  coolify_api PATCH "/applications/$1" \
+    "$(python3 -c 'import json,sys; print(json.dumps({"domains": sys.argv[1]}))' "$2")" || return 1
+  case "$API_STATUS" in 2??) return 0 ;; *) return 1 ;; esac
+}
+
+app_action() { # uuid start|stop
+  coolify_api POST "/applications/$1/$2" || return 1
+  case "$API_STATUS" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
 probe() { curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$1" 2>/dev/null || printf '000'; }
@@ -154,7 +153,7 @@ locks() {
 }
 
 say "P13. stopping the old bot"
-api POST "/applications/${OLD_BOT}/stop" >/dev/null || die "could not stop the old production bot"
+app_action "$OLD_BOT" stop || die "could not stop the old production bot (HTTP ${API_STATUS})"
 
 # Observed, not assumed. «I asked it to stop» and «it stopped» are different
 # facts, and starting the second poller on the strength of the first is how one
@@ -167,7 +166,7 @@ done
   die "the old bot still holds an advisory lock after being stopped — refusing to start a second poller on the same token"
 say "P14. zero pollers confirmed; starting the candidate bot"
 
-api POST "/applications/${CAND_BOT}/start" >/dev/null || die "could not start the candidate bot"
+app_action "$CAND_BOT" start || die "could not start the candidate bot (HTTP ${API_STATUS})"
 BOT_OK=''
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ "$(locks)" = '1' ] && { BOT_OK=yes; break; }

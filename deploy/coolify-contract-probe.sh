@@ -79,14 +79,9 @@ if [ -z "$COOLIFY_URL" ] || [ -z "$COOLIFY_TOKEN" ]; then
   die "$CONF has no COOLIFY_URL/COOLIFY_TOKEN"
 fi
 
-CURLDIR=$(mktemp -d)
-chmod 700 "$CURLDIR"
-{
-  printf 'header = "Authorization: Bearer %s"\n' "$COOLIFY_TOKEN"
-  printf 'header = "Accept: application/json"\n'
-} >"$CURLDIR/c"
-chmod 600 "$CURLDIR/c"
-unset COOLIFY_TOKEN
+# shellcheck source=deploy/coolify-api.sh
+. "$(dirname "${BASH_SOURCE[0]}")/coolify-api.sh"
+coolify_api_init "$CONF" || die "could not prepare the Coolify client"
 
 # Set once the application exists, so the EXIT trap can remove it even if a
 # later assertion dies. Cleanup that only runs on the happy path is not cleanup.
@@ -94,26 +89,16 @@ PROBE_UUID=''
 cleanup() {
   if [ -n "$PROBE_UUID" ]; then
     say "cleaning up ${PROBE_UUID}"
-    api DELETE "/applications/${PROBE_UUID}" >/dev/null 2>&1 || true
+    coolify_api DELETE "/applications/${PROBE_UUID}" >/dev/null 2>&1 || true
   fi
-  rm -rf "$CURLDIR"
+  coolify_api_cleanup
 }
 trap cleanup EXIT
 
-api_status=0
-api() { # METHOD PATH [json-body]
-  local method=$1 path=$2 body=${3:-} out
-  if [ -n "$body" ]; then
-    out=$(curl -sS -m 45 -w '%{http_code}' -K "$CURLDIR/c" \
-      -X "$method" -H 'Content-Type: application/json' \
-      --data-binary "$body" "${COOLIFY_URL}/api/v1${path}") || { api_status=0; return 1; }
-  else
-    out=$(curl -sS -m 45 -w '%{http_code}' -K "$CURLDIR/c" \
-      -X "$method" "${COOLIFY_URL}/api/v1${path}") || { api_status=0; return 1; }
-  fi
-  api_status=${out: -3}
-  printf '%s' "${out:0:${#out}-3}"
-}
+# There is deliberately no `api()` wrapper that prints the body. A wrapper is
+# the obvious tidy-up and it reintroduces the exact bug this refactor removes:
+# `body=$(api …)` forks, and the status the wrapper stored dies with the fork.
+# Every call below is a plain command, and reads API_BODY afterwards.
 
 jqr() { python3 -c 'import json,sys
 try: d=json.load(sys.stdin)
@@ -133,8 +118,9 @@ mkdir -p "$OUT"
 
 # ── 1. the token works, without anybody seeing it ─────────────────────────
 say "1. token usability"
-me=$(api GET '/teams/current') || die "cannot reach Coolify at the configured URL"
-[ "$api_status" = '200' ] || die "the token was refused (HTTP ${api_status}) — it is missing, wrong, or lacks API access"
+coolify_api GET '/teams/current' || die "cannot reach Coolify at the configured URL"
+me=$API_BODY
+[ "$API_STATUS" = '200' ] || die "the token was refused (HTTP ${API_STATUS}) — it is missing, wrong, or lacks API access"
 TEAM_ID=$(printf '%s' "$me" | jqr id)
 TEAM_NAME=$(printf '%s' "$me" | jqr name)
 say "   authenticated as team ${TEAM_ID} (${TEAM_NAME})"
@@ -146,8 +132,9 @@ say "   authenticated as team ${TEAM_ID} (${TEAM_NAME})"
 # team-scoped token sees one. Seeing more is broader than this work needs, and
 # broader than approved.
 say "2. token scope"
-teams=$(api GET '/teams') || die "could not enumerate teams"
-if [ "$api_status" = '200' ]; then
+coolify_api GET '/teams' || die "could not enumerate teams"
+teams=$API_BODY
+if [ "$API_STATUS" = '200' ]; then
   TEAM_COUNT=$(printf '%s' "$teams" | python3 -c 'import json,sys
 try: print(len(json.load(sys.stdin)))
 except Exception: print(-1)')
@@ -161,7 +148,9 @@ fi
 
 # ── 3. the identifiers the create call needs ──────────────────────────────
 say "3. staging project, environment, server, destination"
-projects=$(api GET '/projects') || die "could not list projects"
+coolify_api GET '/projects' || die "could not list projects"
+[ "$API_STATUS" = '200' ] || die "listing projects was refused (HTTP ${API_STATUS})"
+projects=$API_BODY
 PROJECT_UUID=$(printf '%s' "$projects" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
 for p in d if isinstance(d,list) else []:
@@ -169,7 +158,9 @@ for p in d if isinstance(d,list) else []:
 else: print("")')
 [ -n "$PROJECT_UUID" ] || die "no project named 'shikoo-dev' — refusing to guess which project is staging"
 
-proj=$(api GET "/projects/${PROJECT_UUID}") || die "could not read project ${PROJECT_UUID}"
+coolify_api GET "/projects/${PROJECT_UUID}" || die "could not read project ${PROJECT_UUID}"
+[ "$API_STATUS" = '200' ] || die "reading project ${PROJECT_UUID} was refused (HTTP ${API_STATUS})"
+proj=$API_BODY
 ENVIRONMENT_NAME=$(printf '%s' "$proj" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
 for e in (d.get("environments") or []):
@@ -177,7 +168,9 @@ for e in (d.get("environments") or []):
 else: print("")')
 [ -n "$ENVIRONMENT_NAME" ] || die "project ${PROJECT_UUID} has no 'dev-fleet' environment"
 
-servers=$(api GET '/servers') || die "could not list servers"
+coolify_api GET '/servers' || die "could not list servers"
+[ "$API_STATUS" = '200' ] || die "listing servers was refused (HTTP ${API_STATUS})"
+servers=$API_BODY
 SERVER_UUID=$(printf '%s' "$servers" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
 d=d if isinstance(d,list) else []
@@ -202,8 +195,9 @@ print(json.dumps({
   "autogenerate_domain": False,
 }))' "$PROJECT_UUID" "$SERVER_UUID" "$ENVIRONMENT_NAME" "$PROBE_IMAGE" "$PROBE_TAG" "$PROBE_NAME")
 
-created=$(api POST '/applications/dockerimage' "$REQUEST") || die "the create call could not be made"
-CREATE_STATUS=$api_status
+coolify_api POST '/applications/dockerimage' "$REQUEST" || die "the create call could not be made"
+created=$API_BODY
+CREATE_STATUS=$API_STATUS
 PROBE_UUID=$(printf '%s' "$created" | jqr uuid)
 if [ -z "$PROBE_UUID" ]; then
   die "create returned HTTP ${CREATE_STATUS} with no uuid — the contract does not hold on this instance; nothing was created to clean up"
@@ -213,7 +207,9 @@ say "   created ${PROBE_UUID} (HTTP ${CREATE_STATUS})"
 # ── 5. what the contract promised ─────────────────────────────────────────
 say "5. proving the create did nothing else"
 
-app=$(api GET "/applications/${PROBE_UUID}") || die "could not read back ${PROBE_UUID}"
+coolify_api GET "/applications/${PROBE_UUID}" || die "could not read back ${PROBE_UUID}"
+[ "$API_STATUS" = '200' ] || die "reading back ${PROBE_UUID} was refused (HTTP ${API_STATUS})"
+app=$API_BODY
 BUILD_PACK=$(printf '%s' "$app" | jqr build_pack)
 FQDN=$(printf '%s' "$app" | jqr fqdn)
 IMAGE_NAME_BACK=$(printf '%s' "$app" | jqr docker_registry_image_name)
@@ -228,7 +224,11 @@ STATUS_BACK=$(printf '%s' "$app" | jqr status)
 [ "$PORTS_BACK" = '8080' ] || note_fail "ports_exposes came back '${PORTS_BACK}'"
 case "$STATUS_BACK" in running*) note_fail "the application is '${STATUS_BACK}' — instant_deploy=false did not prevent a deployment" ;; esac
 
-envs=$(api GET "/applications/${PROBE_UUID}/envs") || envs='[]'
+if coolify_api GET "/applications/${PROBE_UUID}/envs" && [ "$API_STATUS" = '200' ]; then
+  envs=$API_BODY
+else
+  envs='[]'
+fi
 ENV_COUNT=$(printf '%s' "$envs" | python3 -c 'import json,sys
 try: d=json.load(sys.stdin); print(len(d) if isinstance(d,list) else 0)
 except Exception: print(0)')
@@ -252,10 +252,10 @@ say "   build_pack=${BUILD_PACK} fqdn='${FQDN}' containers=${CONTAINERS:-0} envs
 
 # ── 6. delete exactly that uuid ───────────────────────────────────────────
 say "6. deleting ${PROBE_UUID}"
-api DELETE "/applications/${PROBE_UUID}" >/dev/null || note_fail "the delete call could not be made"
-DELETE_STATUS=$api_status
-api GET "/applications/${PROBE_UUID}" >/dev/null 2>&1 || true
-GONE_STATUS=$api_status
+coolify_api DELETE "/applications/${PROBE_UUID}" || note_fail "the delete call could not be made"
+DELETE_STATUS=$API_STATUS
+coolify_api GET "/applications/${PROBE_UUID}" || true
+GONE_STATUS=$API_STATUS
 case "$GONE_STATUS" in
   404 | 401 | 403) say "   gone (HTTP ${GONE_STATUS})" ;;
   *) note_fail "the application still answers after DELETE (HTTP ${GONE_STATUS})" ;;
@@ -266,13 +266,18 @@ LEFTOVER=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At
 PROBE_UUID=''   # deleted; the EXIT trap has nothing left to do
 
 # ── 7. the attestation ────────────────────────────────────────────────────
+COOLIFY_VERSION=unknown
+if coolify_api GET '/version' && [ "$API_STATUS" = '200' ]; then
+  COOLIFY_VERSION=$(printf '%s' "$API_BODY" | tr -d '"\n')
+fi
+
 if [ "$FAILED" -ne 0 ]; then
   die "the contract does NOT hold on this instance — see the FAIL lines above. Nothing may create production candidates until this passes."
 fi
 
 {
   printf 'schema_version=1\n'
-  printf 'coolify_version=%s\n' "$(api GET '/version' | tr -d '"\n' || echo unknown)"
+  printf 'coolify_version=%s\n' "$COOLIFY_VERSION"
   printf 'endpoint=POST /api/v1/applications/dockerimage\n'
   printf 'instant_deploy_false_creates_nothing=proven\n'
   printf 'autogenerate_domain_false_creates_no_domain=proven\n'
