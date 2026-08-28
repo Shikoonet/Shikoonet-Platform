@@ -744,7 +744,16 @@ case "${1:-}" in
   pull) exit 0 ;;
   logs) exit 0 ;;
   run) exit 0 ;;
-  exec) printf '1\n'; exit 0 ;;   # the bot singleton count, if ever asked
+  exec)
+    # Two different questions reach `docker exec`: Coolify's application
+    # settings, and the bot singleton count. Told apart by the SQL, because
+    # answering one with the other's shape is how this fake last lied.
+    if printf '%s ' "$@" | grep -q 'application_settings'; then
+      printf '%s\n' "${FAKE_COOLIFY_SETTINGS-f|f}"
+    else
+      printf '1\n'   # the bot singleton count
+    fi
+    exit 0 ;;
   ps)
     for a in "$@"; do
       case "$a" in label=coolify.name=*) uuid=${a#label=coolify.name=} ;; esac
@@ -961,6 +970,48 @@ unset FAKE_NO_ENV_NAME
 # ENV_NAME, so the check above says yes to it. Which of each pair the container
 # gets is row order, and for two of those keys that is which environment it
 # joins.
+# Native Auto Deploy, asserted by the live path at last.
+#
+# `assert_coolify_safe` in the retired `autodeploy.sh` calls this "the whole
+# defence", and means it literally: Coolify's webhook endpoint is reachable
+# from the internet in plaintext, and the only thing making it inert is this
+# flag being false. The pipeline that replaced that script inherited the risk
+# and not the check — so for the whole of that window a single UI click could
+# have re-enabled push-to-deploy and nothing would have said so.
+FAKE_COOLIFY_SETTINGS='t|f'
+export FAKE_COOLIFY_SETTINGS
+if run_deploy false; then
+  bad 'refuses an application with native Auto Deploy enabled' 'it deployed anyway'
+else
+  if grep -qF 'Auto Deploy ENABLED' "$DEPLOY_LOG" && ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+    ok 'refuses an application with native Auto Deploy enabled'
+  else
+    bad 'refuses an application with native Auto Deploy enabled' "$(tail -2 "$DEPLOY_LOG")"
+  fi
+fi
+
+FAKE_COOLIFY_SETTINGS='f|t'
+if run_deploy false; then
+  bad 'refuses an application with preview deployments enabled' 'it deployed anyway'
+else
+  if grep -qF 'preview deployments ENABLED' "$DEPLOY_LOG" && ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+    ok 'refuses an application with preview deployments enabled'
+  else
+    bad 'refuses an application with preview deployments enabled' "$(tail -2 "$DEPLOY_LOG")"
+  fi
+fi
+
+# Unreadable is not «fine». A deploy that cannot ask says so out loud rather
+# than concluding the flag it could not read is the value it hoped for.
+FAKE_COOLIFY_SETTINGS=''
+if run_deploy false && grep -qF 'UNVERIFIED' "$DEPLOY_LOG"; then
+  ok 'an unreadable Coolify settings row is reported, not assumed safe'
+else
+  bad 'an unreadable Coolify settings row is reported, not assumed safe' \
+    "$(tail -2 "$DEPLOY_LOG")"
+fi
+unset FAKE_COOLIFY_SETTINGS
+
 FAKE_DUPLICATE_ENVS=1
 if run_deploy false; then
   bad 'refuses an application with a variable defined twice' 'it deployed anyway'
