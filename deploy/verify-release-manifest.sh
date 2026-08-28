@@ -58,15 +58,6 @@ case "$POLICY" in
   *) fail "manifest approval_policy is '${POLICY:-none}' — staging did not record an approved policy" ;;
 esac
 
-# The commit must still be on `main`. A manifest for a commit that was reverted,
-# or that only ever lived on a branch, is not a thing to put in front of
-# customers however green its staging run was.
-git rev-parse --verify "$SHA^{commit}" >/dev/null 2>&1 ||
-  fail "commit ${SHA:0:12} is not in this repository"
-git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null ||
-  git merge-base --is-ancestor "$SHA" main 2>/dev/null ||
-  fail "commit ${SHA:0:12} is not reachable from main — it was reverted, or never merged"
-
 # The manifest must describe the run it arrived from.
 #
 # The artifact is downloaded from a run this workflow chose, and the manifest is
@@ -82,6 +73,15 @@ if [ -n "${EXPECTED_RUN_HEAD_SHA:-}" ]; then
   [ "$SHA" = "$EXPECTED_RUN_HEAD_SHA" ] ||
     fail "manifest is for commit ${SHA:0:12}, but the staging run deployed ${EXPECTED_RUN_HEAD_SHA:0:12}"
 fi
+
+# The commit must still be on `main`. A manifest for a commit that was reverted,
+# or that only ever lived on a branch, is not a thing to put in front of
+# customers however green its staging run was.
+git rev-parse --verify "$SHA^{commit}" >/dev/null 2>&1 ||
+  fail "commit ${SHA:0:12} is not in this repository"
+git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null ||
+  git merge-base --is-ancestor "$SHA" main 2>/dev/null ||
+  fail "commit ${SHA:0:12} is not reachable from main — it was reverted, or never merged"
 
 # The two files the deploy path reads. Re-derived from the verified manifest
 # rather than trusted from the artifact, so a tampered `digest` file cannot
