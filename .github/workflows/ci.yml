@@ -782,6 +782,14 @@ jobs:
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh
 
+      # The production-dump attestation, as a control rather than a document.
+      # The question this suite asks is not «can one be written» but «can a
+      # promotion proceed without one that verifies», so most of it is
+      # refusals: missing, malformed, mismatched and stale, each by its own
+      # message.
+      - name: production-dump attestation — missing, stale and mismatched all block
+        run: bash deploy/test/attestation.test.sh
+
   # -----------------------------------------------------------------------
   # Secret detection.
   #
