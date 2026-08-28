@@ -797,6 +797,13 @@ jobs:
       - name: production preparation — drift between prepare and cutover blocks
         run: bash deploy/test/preparation.test.sh
 
+      # "Create three Docker Image applications" is correct exactly once. The
+      # interesting run is the SECOND one, which must create nothing and keep
+      # the same three uuids — otherwise every release leaves three more
+      # near-identically named applications behind it.
+      - name: production candidates — a second release creates zero applications
+        run: bash deploy/test/candidates.test.sh
+
   # -----------------------------------------------------------------------
   # Secret detection.
   #
