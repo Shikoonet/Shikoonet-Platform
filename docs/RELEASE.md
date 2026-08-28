@@ -399,3 +399,59 @@ sudo -u shikoo-deploy bash coolify-contract-probe.sh staging /var/lib/shikoo
 
 If any assertion fails it stops and writes no attestation, and production
 candidates cannot be created until it passes.
+
+#### What the first probe run found
+
+Two live-contract mismatches, both of which had looked correct on paper.
+
+**1. `is_auto_deploy_enabled: false` is accepted and discarded at create time.**
+
+It is in the create endpoint's `$allowedFields` and in its OpenAPI schema,
+documented as *"Defaults to true."* For Docker Image applications it is
+nonetheless ignored: the `dockerimage` branch of `create_application()` has no
+block applying it (the git-backed branches do), it is not in
+`APPLICATION_SETTING_FIELDS`, and `$application->fill()` drops it because it is
+a column of `application_settings` rather than of `applications`.
+
+So a create that asks for `false` returns 200 and leaves native Auto Deploy
+**on**. Anyone reading the schema would believe push-to-deploy was disabled on a
+production application. `PATCH /applications/{uuid}` does apply it.
+
+The candidate creator therefore **creates, then PATCHes, then verifies against
+the database** — never against the PATCH's own status, because a 200 that
+changed nothing is precisely what the create already does. Hardening happens
+while the application still has no domain, no environment row, no queued
+deployment and no container, all of which are asserted rather than assumed. A
+candidate that cannot be proven hardened is **deleted by its exact uuid**, not
+left behind with push-to-deploy on.
+
+**2. `DELETE` is asynchronous.**
+
+`delete_by_uuid()` soft-deletes the row and dispatches `DeleteResourceJob`; the
+response says *"Application deletion request queued."* The API 404s immediately
+while the row is still in the table, so an assertion made right after the DELETE
+fails a deletion that is working perfectly — which is what the first probe run
+did.
+
+It is **not** soft deletion in the sense that would matter. Checked against the
+first probe's exact uuid after the fact, with a raw count that would have
+included a soft-deleted row: `applications`, `application_settings`,
+`environment_variables`, deployment queue and containers were all zero, and
+there are no soft-deleted applications in the table at all. The row converges to
+fully gone.
+
+The probe now polls both tables by exact uuid until they reach zero, with a
+finite timeout, and records the measured duration in the attestation. Never
+converging is a failure, not a delay.
+
+#### A note on `status`
+
+A freshly created Docker Image application reports `exited:unhealthy` while
+having no container at all. Coolify derives that string from a container it
+cannot find, not from anything it did — it is the absence of a container, spelled
+oddly.
+
+`status` is therefore **not** evidence of a deployment and is not used as such.
+The authoritative signals are a container existing (`docker ps -a` filtered on
+the `coolify.name` label) and a row in `application_deployment_queues`. Both are
+asserted to be zero, before and after hardening.

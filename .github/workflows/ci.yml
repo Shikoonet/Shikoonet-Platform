@@ -787,6 +787,13 @@ jobs:
       - name: coolify api client — the status survives the call
         run: bash deploy/test/coolify-api.test.sh
 
+      # Two live-contract mismatches this repository found by measuring instead
+      # of trusting: `is_auto_deploy_enabled: false` is accepted and DISCARDED
+      # at create time for Docker Image applications, and DELETE is
+      # asynchronous. Both looked correct until something checked.
+      - name: coolify app contract — hardening is verified, deletion is awaited
+        run: bash deploy/test/coolify-app.test.sh
+
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh
 

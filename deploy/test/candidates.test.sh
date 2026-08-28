@@ -34,9 +34,12 @@ EOF
 
 CONTRACT="$WORK/coolify-contract.env"
 cat >"$CONTRACT" <<'EOF'
-schema_version=1
+schema_version=2
 instant_deploy_false_creates_nothing=proven
 autogenerate_domain_false_creates_no_domain=proven
+auto_deploy_disabled_before_configuration=proven
+previews_disabled_before_configuration=proven
+delete_leaves_no_row=proven
 EOF
 
 # The fake panel keeps its applications in a file, so a second run of the script
@@ -91,10 +94,24 @@ d.append({"name":name,"uuid":uuid,"build_pack":"dockerimage",
 json.dump(d,open(p,"w"))
 PY
     printf '{"uuid":"%s"}201' "\$uuid" ;;
+  */applications/*)
+    # The hardening PATCH, matched AFTER the create above. The wildcard here
+    # also matches the dockerimage create path, and putting it first made every
+    # create return an empty body with a 200.
+    printf '{}200' ;;
   *) printf '{}404' ;;
 esac
 FAKE
 chmod +x "$BIN/curl"
+
+# `coolify_harden_settings` verifies through Coolify's database, so the fake
+# has to answer that read. `f|f` is a successfully hardened application.
+cat >"$BIN/docker" <<'FAKE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 'f|f\n'
+FAKE
+chmod +x "$BIN/docker"
 
 run_ensure() { # -> output in $1
   set +e
@@ -215,6 +232,63 @@ if [ "$rc" -ne 0 ]; then
 else
   bad 'it refuses an attestation that does not record the proofs' 'it proceeded'
 fi
+
+section 'a candidate that cannot be hardened is deleted, not left exposed'
+
+# The failure this guards is specific and quiet: the create endpoint accepts
+# `is_auto_deploy_enabled: false` and discards it, so a new production
+# application has push-to-deploy ON until the PATCH lands. If the PATCH cannot
+# be proven, leaving the application behind leaves that exposure behind with
+# nobody's name against it.
+DELETES="$WORK/deletes.log"
+: >"$DELETES"
+printf '[]' >"$STATE"
+: >"$POSTS"
+
+cat >"$BIN/docker" <<'FAKE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 't|f
+'   # the PATCH answered 200 and Auto Deploy is still on
+FAKE
+chmod +x "$BIN/docker"
+
+OUT5="$WORK/run5.txt"
+set +e
+# DELETE_TIMEOUT is capped because the abort path waits for the deletion it
+# just requested to converge, and this fake never reports convergence. The real
+# one converges in about a second; the default 120s would make this suite two
+# minutes of sleeping.
+env CONF="$CONF" CONTRACT="$CONTRACT" DELETE_TIMEOUT=2 bash "$SCRIPT" production >"$OUT5" 2>&1
+rc=$?
+set -e
+
+if [ "$rc" -ne 0 ]; then
+  ok 'it fails when Auto Deploy cannot be proven off'
+else
+  bad 'it fails when Auto Deploy cannot be proven off' 'it proceeded'
+fi
+
+if grep -qF 'deleted rather than left exposed' "$OUT5"; then
+  ok 'it says the application was deleted rather than left exposed'
+else
+  bad 'it says the application was deleted rather than left exposed' "$(tail -2 "$OUT5")"
+fi
+
+if grep -qE 'hardening failed — deleting uuid' "$OUT5"; then
+  ok 'it deletes the exact uuid it just created'
+else
+  bad 'it deletes the exact uuid it just created' "$(tail -3 "$OUT5")"
+fi
+
+# Restore a healthy fake for anything after this section.
+cat >"$BIN/docker" <<'FAKE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 'f|f
+'
+FAKE
+chmod +x "$BIN/docker"
 
 section 'the token never appears in the output'
 
