@@ -814,6 +814,17 @@ jobs:
       - name: step-e runner — the live API row shape
         run: bash deploy/test/step-e-live-shape.test.sh
 
+      # The task runner is the only thing that will run as root on the
+      # deployment host, so its source belongs in the pull request that
+      # introduces it. An earlier draft shipped it as 117 KB of base64 with a
+      # self-checksum — which proves internal consistency, not that anybody
+      # reviewed what is inside.
+      - name: task runner — eight subcommands, no wildcard, no interpreter
+        run: bash deploy/test/task-runner.test.sh
+
+      - name: task runner installer — its refusals, exercised
+        run: bash deploy/test/task-runner-installer.test.sh
+
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh
 

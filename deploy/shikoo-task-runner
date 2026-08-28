@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# The only thing hessamx may run as root, and only these eight ways.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# The staging work needs the Coolify token, which only shikoo-deploy can read,
+# and the restore drill, which needs root. hessamx has neither. Both tempting
+# fixes are wrong: adding hessamx to shikoo-deploy widens who can read a
+# production-adjacent token for ever, and a NOPASSWD rule on an interpreter is
+# a root shell wearing a script's name.
+#
+# So this is the entry point, and the sudoers fragment enumerates complete
+# invocations of it. Naming an interpreter and a path in sudoers would make
+# anybody who can write that path root; the scripts here are root-owned and
+# re-verified by hash before every run, which closes that at both ends.
+#
+# ── Why it re-verifies every time ─────────────────────────────────────────
+#
+# Verifying at install proves what was installed. It says nothing about what is
+# there now. A bundle that was correct on Tuesday and is not correct today is
+# precisely the case worth catching, so the check is per-run, not per-install.
+#
+# MANIFEST_SHA256 is the one constant. Everything else is derived from the
+# manifest it pins, and a CI test asserts that constant still matches
+# deploy/shikoo-task-runner.manifest — so the two cannot drift silently.
+
+set -Eeuo pipefail
+
+# Fixed, and first. Everything below runs with a PATH nobody else chose.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+IFS=$' \t\n'
+umask 022
+
+# Anything the caller set that these tasks would read is discarded. sudoers
+# uses env_reset; this is the second of the two, because defence that exists in
+# one place is defence that moves when that place is edited.
+unset CONF STATE CONTRACT LOCK BACKUP_DIR DB_CONTAINER COOLIFY_URL COOLIFY_TOKEN \
+      COOLIFY_DB_CONTAINER PROBE_IMAGE PROBE_TAG DELETE_TIMEOUT REPO_ROOT \
+      MIGRATIONS_DIR INVARIANTS SCRATCH PGUSER PGSERVICE PGSERVICEFILE \
+      BACKUP_FREQUENCY BACKUP_RETAIN_LOCAL BACKUP_TIMEOUT IMAGE_NAME \
+      PROJECT_NAME ENVIRONMENT_NAME STAGING_SYSTEM_ID PRODUCTION_SYSTEM_ID \
+      PRODUCTION_BOT_ID BASH_ENV ENV CDPATH
+
+LIB=/usr/local/lib/shikoo-step-e
+BIN=/usr/local/sbin/shikoo-task-runner
+SUDOERS=/etc/sudoers.d/90-shikoo-task-runner
+RUN_AS=shikoo-deploy
+LOCKFILE=/var/lock/shikoo-task-runner.lock
+STATE_DIR=/var/lib/shikoo
+
+# The hash of the manifest that lists every script this may run.
+MANIFEST_SHA256=469ec3ac80e24862aa83f78a12e39fd631240da98d6128a1bc9b3c75bb4425b5
+
+die() { echo "shikoo-task-runner: $*" >&2; exit 1; }
+note() {
+  echo "shikoo-task-runner: $*"
+  logger -t shikoo-task-runner -- "$*" 2>/dev/null || true
+}
+
+# A regular file, owned by root, not writable by anybody else, not a symlink.
+require_safe_file() { # path expected-modes...
+  local path=$1 mode
+  shift
+  [ -e "$path" ] || die "$path is missing"
+  [ ! -L "$path" ] || die "$path is a symlink — refusing"
+  [ -f "$path" ] || die "$path is not a regular file"
+  [ "$(stat -c '%u:%g' "$path")" = '0:0' ] || die "$path is not owned by root:root"
+  mode=$(stat -c '%a' "$path")
+  case " $* " in
+    *" $mode "*) ;;
+    *) die "$path has mode $mode, expected one of: $*" ;;
+  esac
+}
+
+verify_bundle() {
+  local want name path actual listed=0
+  [ -d "$LIB" ] || die "$LIB is missing"
+  [ ! -L "$LIB" ] || die "$LIB is a symlink — refusing"
+  [ "$(stat -c '%u:%g' "$LIB")" = '0:0' ] || die "$LIB is not owned by root:root"
+
+  require_safe_file "$LIB/MANIFEST" 644
+  actual=$(sha256sum "$LIB/MANIFEST" | cut -d' ' -f1)
+  [ "$actual" = "$MANIFEST_SHA256" ] ||
+    die "$LIB/MANIFEST does not match the hash this runner was built against"
+
+  while read -r want name; do
+    [ -n "$name" ] || continue
+    listed=$((listed + 1))
+    path="$LIB/$name"
+    require_safe_file "$path" 644 755
+    actual=$(sha256sum "$path" | cut -d' ' -f1)
+    [ "$actual" = "$want" ] || die "$path does not match the manifest"
+  done <"$LIB/MANIFEST"
+  [ "$listed" -gt 0 ] || die "$LIB/MANIFEST lists nothing"
+
+  # Anything in that directory the manifest does not name is unverified, and an
+  # unverified root-owned file in a directory this runs from does not belong
+  # there even if nothing currently executes it.
+  local extra
+  extra=$(comm -23 \
+    <(find "$LIB" -maxdepth 1 -type f -printf '%f\n' | sort) \
+    <( { awk '{print $2}' "$LIB/MANIFEST"; echo MANIFEST; } | sort ))
+  [ -z "$extra" ] || die "unmanaged file(s) in $LIB: $(printf '%s' "$extra" | tr '\n' ' ')"
+
+  require_safe_file "$BIN" 755
+}
+
+# One at a time. Two Step-E runs racing would each classify against a world the
+# other is changing.
+take_lock() {
+  exec 9>"$LOCKFILE" || die "cannot open $LOCKFILE"
+  flock -n 9 || die "another shikoo-task-runner holds $LOCKFILE"
+}
+
+# The command line is written here in full. The caller contributes nothing.
+as_deploy() { # script [fixed-arg]
+  if [ "$#" -eq 2 ]; then
+    sudo -n -u "$RUN_AS" /usr/bin/env -i \
+      PATH=/usr/local/bin:/usr/bin:/bin HOME="/home/$RUN_AS" \
+      /bin/bash "$LIB/$1" "$2"
+  else
+    sudo -n -u "$RUN_AS" /usr/bin/env -i \
+      PATH=/usr/local/bin:/usr/bin:/bin HOME="/home/$RUN_AS" \
+      /bin/bash "$LIB/$1"
+  fi
+}
+
+checksum_or_absent() { # file
+  local dir base
+  dir=$(dirname "$1")
+  base=$(basename "${1%.env}.sha256")
+  if [ -r "$1" ] && [ -r "$dir/$base" ]; then
+    if ( cd "$dir" && sha256sum -c --status "$base" ); then
+      echo "  ok       $1"
+    else
+      echo "  MISMATCH $1"
+    fi
+  else
+    echo "  absent   $1"
+  fi
+}
+
+run_task() { # label script [arg]
+  local label=$1
+  shift
+  verify_bundle
+  take_lock
+  note "$label starting"
+  local rc=0
+  as_deploy "$@" || rc=$?
+  note "$label finished rc=$rc"
+  return "$rc"
+}
+
+[ "$#" -eq 1 ] || die "this runner takes exactly one subcommand and no arguments"
+
+case "$1" in
+  step-e-dry-run)  run_task step-e-dry-run  step-e-runner.sh ;;
+  step-e-apply)    run_task step-e-apply    step-e-runner.sh --apply ;;
+  backup-dry-run)  run_task backup-dry-run  ensure-staging-backup.sh ;;
+  backup-apply)    run_task backup-apply    ensure-staging-backup.sh --apply ;;
+  restore-drill-staging)
+    # Root, and the literal word 'staging'. There is deliberately no production
+    # form of this subcommand: the drill restores into a throwaway database and
+    # never writes to a live one, but the argument that would aim it at
+    # production does not exist here at all.
+    verify_bundle
+    take_lock
+    note "restore-drill-staging starting"
+    rc=0
+    /bin/sh "$LIB/restore-drill.sh" staging || rc=$?
+    note "restore-drill-staging finished rc=$rc"
+    exit "$rc"
+    ;;
+  verify-evidence)
+    verify_bundle
+    echo "evidence:"
+    checksum_or_absent "$STATE_DIR/coolify-contract.env"
+    checksum_or_absent "$STATE_DIR/step-e-evidence.env"
+    checksum_or_absent "$STATE_DIR/restore-attestation.env"
+    note "verify-evidence run"
+    ;;
+  status)
+    verify_bundle
+    echo "bundle:   verified against MANIFEST ($(grep -c . "$LIB/MANIFEST") script(s)), root-owned"
+    echo "sudoers:  $([ -f "$SUDOERS" ] && echo present || echo absent)"
+    echo "evidence:"
+    checksum_or_absent "$STATE_DIR/coolify-contract.env"
+    checksum_or_absent "$STATE_DIR/step-e-evidence.env"
+    checksum_or_absent "$STATE_DIR/restore-attestation.env"
+    ;;
+  revoke-access)
+    # Removes the grant, not the work. Evidence, backups and application data
+    # are deliberately untouched: revoking access must never become a way to
+    # lose the record of what was done with it.
+    if [ -f "$SUDOERS" ]; then
+      rm -f "$SUDOERS"
+      visudo -cf /etc/sudoers >/dev/null ||
+        die "/etc/sudoers does not validate after removing the fragment — inspect immediately"
+      note "revoked: $SUDOERS removed, /etc/sudoers still valid"
+      echo "removed $SUDOERS"
+    else
+      echo "$SUDOERS was already absent"
+    fi
+    echo "evidence under $STATE_DIR is untouched"
+    echo "the bundle under $LIB is untouched"
+    ;;
+  *)
+    die "unknown subcommand '$1'. Valid: step-e-dry-run step-e-apply backup-dry-run backup-apply restore-drill-staging verify-evidence status revoke-access"
+    ;;
+esac
