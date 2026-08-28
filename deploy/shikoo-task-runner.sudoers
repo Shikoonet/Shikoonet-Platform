@@ -25,6 +25,7 @@ hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner step-e-dry-run
 hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner step-e-apply
 hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner backup-dry-run
 hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner backup-apply
+hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner production-dump-rehearsal
 hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner restore-drill-staging
 hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner verify-evidence
 hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner status

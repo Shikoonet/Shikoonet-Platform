@@ -825,6 +825,14 @@ jobs:
       - name: task runner installer — its refusals, exercised
         run: bash deploy/test/task-runner-installer.test.sh
 
+      # Prepare Production stopped at P0 because no attestation existed. The
+      # gate was right; the thing that produces the evidence was missing. What
+      # matters about the replacement is that it cannot write an attestation on
+      # anything less than a complete pass, and leaves nothing behind when it
+      # fails.
+      - name: production-dump rehearsal — fail-closed, exact thresholds, cleanup
+        run: bash deploy/test/production-dump-rehearsal.test.sh
+
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh
 
