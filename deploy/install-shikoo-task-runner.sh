@@ -48,7 +48,7 @@ BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
 # The one hard-coded value. Everything else is derived from the manifest it
 # pins, and a CI test asserts this still equals
 # sha256sum deploy/shikoo-task-runner.manifest.
-MANIFEST_SHA256=6affb891064f25935b485276c8c6ebc47d4c984a2c46b6939daddc7592f4eaac
+MANIFEST_SHA256=489a916f4d4f1440838133198dabc18ff39c0c1da19565a8141cfdd6a8955249
 
 say() { echo "[install] $*"; }
 die() { echo "[install] FAILED: $*" >&2; exit 1; }
@@ -68,17 +68,19 @@ actual=$(sha256sum "$STAGE/MANIFEST" | cut -d' ' -f1)
 say "manifest verified"
 
 # The allowlist IS the manifest, plus the three files that are this mechanism.
-ALLOWED=$( { awk '{print $2}' "$STAGE/MANIFEST"; printf 'MANIFEST\nshikoo-task-runner\nshikoo-task-runner.sudoers\n'; } | sort )
+# `LC_ALL=C` on both sides: this host's collation makes `sort` and `comm`
+# disagree about ordering, and comm then rejects input sort produced.
+ALLOWED=$( { awk '{print $2}' "$STAGE/MANIFEST"; printf 'MANIFEST\nshikoo-task-runner\nshikoo-task-runner.sudoers\n'; } | LC_ALL=C sort )
 
 # Extra staged files are refused rather than ignored. Something unexpected in
 # the directory a root install copies from is a question, not a rounding error.
 # Symlinks are LISTED, not skipped, so the per-file check below names one as a
 # symlink instead of reporting it as a missing file. A refusal that describes
 # the wrong problem sends the reader to the wrong place.
-staged=$(find "$STAGE" \( -type f -o -type l \) -printf '%P\n' | sort)
-extra=$(comm -23 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
+staged=$(find "$STAGE" \( -type f -o -type l \) -printf '%P\n' | LC_ALL=C sort)
+extra=$(LC_ALL=C comm -23 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
 [ -z "$extra" ] || die "unexpected file(s) in $STAGE: $(printf '%s' "$extra" | tr '\n' ' ')"
-missing=$(comm -13 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
+missing=$(LC_ALL=C comm -13 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
 [ -z "$missing" ] || die "missing file(s) in $STAGE: $(printf '%s' "$missing" | tr '\n' ' ')"
 
 check_staged() { # name

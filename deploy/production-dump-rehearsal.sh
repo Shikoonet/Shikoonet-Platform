@@ -198,8 +198,8 @@ rehearsal_require_secure_file "$D1_MANIFEST" 644 "the D1 table contract" ||
 D1_TABLES=$(tr '\n' ',' <"$D1_MANIFEST" | sed 's/,$//')
 [ -n "$D1_TABLES" ] || die "the D1 table contract is empty"
 if ! D1_EXPORT_ID=$(rehearsal_validate_d1_export "$D1_EXPORT_DIR" "$D1_TABLES" "$DUMP_PATH"); then
-  echo "[rehearsal] STOP: the production D1 export is absent, incomplete, or carries" >&2
-  echo "[rehearsal] no provenance binding it to this MySQL dump." >&2
+  echo "[rehearsal] STOP: the production D1 export is absent, incomplete, or is not" >&2
+  echo "[rehearsal] sealed as one bundle with this MySQL dump." >&2
   echo "[rehearsal] Owner action, exactly one — on the secure host, in the same" >&2
   echo "[rehearsal] operation that produces the export:" >&2
   echo "[rehearsal]   tools/d1-export-manifest.py <export-dir> <mirzabot-dump> deploy/d1-tables.manifest" >&2
@@ -208,7 +208,7 @@ if ! D1_EXPORT_ID=$(rehearsal_validate_d1_export "$D1_EXPORT_DIR" "$D1_TABLES" "
   echo "[rehearsal] its authenticity from the shape of the rows." >&2
   exit 1
 fi
-say "   D1 export validated: 23 tables bound as one set, coherent with the MySQL dump"
+say "   D1 bundle verified: 23 tables sealed with this dump, capture window and cross-source coherence within contract"
 
 [ -n "$GH_TOKEN_VALUE" ] || die "${CONF} has no GITHUB_TOKEN — release provenance cannot be cross-checked without it"
 
@@ -719,7 +719,8 @@ chmod 0640 "$VERSION_DIR/attestation.env" "$VERSION_DIR/attestation.sha256"
 # attestation into a failed run. Asking the question first is both stricter and
 # safer: an attestation that would not survive Prepare Production never becomes
 # the current one.
-EXPECTED_SHA="$MAIN_SHA" EXPECTED_DIGEST="$DIGEST" \
+ATTESTATION_UNPUBLISHED=1 \
+  EXPECTED_SHA="$MAIN_SHA" EXPECTED_DIGEST="$DIGEST" \
   EXPECTED_REPO="$REPO" EXPECTED_CI_RUN_ID="$CI_RUN_ID" \
   EXPECTED_STAGING_RUN_ID="$STAGING_RUN_ID" \
   bash "$HERE/verify-dump-attestation.sh" "$VERSION_DIR" >/dev/null ||

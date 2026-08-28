@@ -43,7 +43,12 @@ mkatt() { # [override=value ...] -> writes $WORK/att
 LOG="$WORK/verify.log"
 verify() { # [env assignments...] -> rc, output in $LOG
   set +e
-  env EXPECTED_SHA="$SHA" EXPECTED_DIGEST="$DIGEST" "$@" \
+  # These cases are about FIELD validation, so they use the verifier's
+  # pre-publication branch: a version directory that is not reachable through
+  # any `current` pointer. The published path — resolution through the pointer,
+  # under the shared lock, held for the whole read — is exercised as root in
+  # attestation-publication.test.sh, where a real lock exists.
+  env ATTESTATION_UNPUBLISHED=1 EXPECTED_SHA="$SHA" EXPECTED_DIGEST="$DIGEST" "$@" \
     bash "$VERIFY" "$WORK/att" >"$LOG" 2>&1
   local rc=$?
   set -e

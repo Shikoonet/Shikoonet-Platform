@@ -237,121 +237,171 @@ refuses 'the refusal names preloading rather than pulling' 'it will not pull' \
   rehearsal_require_local_images "$FAKED/docker-absent" "a@sha256:${HEX}"
 
 # ── D1 export ────────────────────────────────────────────────────────────
-section 'the D1 export proves its provenance rather than looking plausible'
+section 'the D1 bundle is sealed, bounded, and coherent — and claims no more'
 
-# The heuristic these tests replace scanned the first five rows for words like
-# `example.com` and `synthetic` and accepted anything that avoided them. It
-# passed any fabricated dataset written carefully, and failed a genuine export
-# from a customer whose domain happened to be example.com. Provenance is now
-# produced by the export process and verified here as a set.
+# What is being tested is BUNDLE BINDING plus a bounded-consistency contract,
+# not a snapshot proof. Nothing at this layer can prove two artifacts were read
+# from one consistent moment: D1 is a Cloudflare service and Mirzabot's MySQL is
+# a different machine. The previous version of this file called it a snapshot
+# anyway, which is the kind of overclaim a promotion gate would have believed.
 D1="$WORK/d1"
 DUMPF="$WORK/mirzabot.sql"
-TABLES='access_users,devices,device_credentials,settings'
 GEN="$ROOT/tools/d1-export-manifest.py"
 
-mkd1() { # -> a complete, signed export
+# The generator pins the reviewed table manifest by digest, so the fixture uses
+# the tracked file's exact bytes rather than a list of its own. It is copied at
+# 0644 because that is the mode a verified checkout has on the secure host;
+# this working tree has umask 002 and leaves it group-writable, which the
+# generator is right to refuse.
+TABLES_FILE="$WORK/d1-tables.manifest"
+cp "$ROOT/deploy/d1-tables.manifest" "$TABLES_FILE"
+chmod 644 "$TABLES_FILE"
+ALL_TABLES=$(tr '\n' ',' <"$TABLES_FILE" | sed 's/,$//')
+
+mkd1() { # -> a complete, sealed, in-contract export
   rm -rf "$D1"; mkdir -p "$D1"
   local t
-  for t in access_users devices device_credentials settings; do
-    printf '[{"id":1,"email":"ops@shikoo.ir"},{"id":2,"email":"a@b.ir"}]' >"$D1/${t}.json"
-  done
-  printf 'mysql dump bytes\n' >"$DUMPF"
-  printf '%s\n' access_users devices device_credentials settings >"$WORK/tables.manifest"
-  python3 "$GEN" "$D1" "$DUMPF" "$WORK/tables.manifest" >/dev/null
-  chmod 755 "$D1"; chmod 640 "$D1"/*.json "$D1/d1-export.manifest"
+  while read -r t; do
+    [ -n "$t" ] || continue
+    if [ "$t" = payment_claims ]; then
+      printf '[{"id":1,"source_system":"MIRZABOT","external_order_id":"ORD-7001"}]' >"$D1/${t}.json"
+    else
+      printf '[{"id":1,"email":"ops@shikoo.ir"}]' >"$D1/${t}.json"
+    fi
+  done <"$TABLES_FILE"
+  # The dump contains the order the claim references, and is written LAST so
+  # MySQL is the later capture — the direction the contract requires.
+  printf 'INSERT INTO invoice VALUES (1,"ORD-7001",5000);\n' >"$DUMPF"
+  chmod 755 "$D1"; chmod 640 "$D1"/*.json "$DUMPF"
+  python3 "$GEN" "$D1" "$DUMPF" "$TABLES_FILE" >/dev/null
 }
 
 mkd1
-accepts 'a signed, complete, coherent export is accepted' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+accepts 'a sealed, complete, in-contract bundle is accepted' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
 refuses 'an empty path is refused, with no default' 'no default' \
-  rehearsal_validate_d1_export '' "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export '' "$ALL_TABLES" "$DUMPF"
 refuses 'a missing directory is refused' 'does not exist' \
-  rehearsal_validate_d1_export "$WORK/nope" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$WORK/nope" "$ALL_TABLES" "$DUMPF"
 
 ln -sfn "$D1" "$WORK/d1link"
 refuses 'a symlinked export directory is refused' 'symlink' \
-  rehearsal_validate_d1_export "$WORK/d1link" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$WORK/d1link" "$ALL_TABLES" "$DUMPF"
 
-# No sidecar at all: this is the case the old heuristic silently accepted.
+# No sidecar at all — the case the old heuristic accepted on sight.
 mkd1; rm -f "$D1/d1-export.manifest"
 refuses 'an export with no provenance is refused' 'no d1-export.manifest' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 refuses 'the refusal names the generator to run' 'd1-export-manifest.py' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
-# A missing file.
-mkd1; rm -f "$D1/settings.json"
+# A stale sidecar from an earlier bundle, kept beside new artifacts.
+mkd1; cp "$D1/d1-export.manifest" "$WORK/stale.manifest"
+printf '[{"id":2,"email":"new@shikoo.ir"}]' >"$D1/devices.json"
+cp "$WORK/stale.manifest" "$D1/d1-export.manifest"
+refuses 'a reused stale sidecar is refused' 'modified or replaced' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
+
+mkd1; rm -f "$D1/comments.json"
 refuses 'a missing table file is refused' 'not present' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
-# A modified file: the bytes no longer match what the export recorded.
 mkd1; printf '[{"id":99}]' >"$D1/devices.json"
-refuses 'a modified table file is refused' 'modified or replaced' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+refuses 'a modified D1 file is refused' 'modified or replaced' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
-# A file from ANOTHER export dropped in beside these. It is a real export file
-# with a real manifest entry of its own — just not this one's.
+mkd1; printf 'INSERT INTO invoice VALUES (1,"ORD-7001",9999);\n' >"$DUMPF"
+refuses 'a modified dump is refused' 'sealed with' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
+
+# An arbitrary D1 export paired with a different dump: both internally valid,
+# sealed to each other by nothing.
+mkd1
+OTHERDUMP="$WORK/other.sql"; printf 'INSERT INTO invoice VALUES (1,"ORD-9999",1);\n' >"$OTHERDUMP"
+chmod 640 "$OTHERDUMP"
+refuses 'an export paired with another dump is refused' 'sealed with' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$OTHERDUMP"
+
+# Files mixed in from a second export.
 mkd1
 OTHER="$WORK/other"; rm -rf "$OTHER"; mkdir -p "$OTHER"
 printf '[{"id":7,"email":"other@shikoo.ir"}]' >"$OTHER/devices.json"
 cp "$OTHER/devices.json" "$D1/devices.json"
 refuses 'a file from another export is refused' 'modified or replaced' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
-# An extra table that is not part of the contract.
 mkd1; printf '[{"id":1}]' >"$D1/not_in_contract.json"
 refuses 'an extra table file is refused' 'unexpected file' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
-# A contract/manifest mismatch in the other direction.
 mkd1
 refuses 'a manifest that does not cover the contract is refused' 'does not cover' \
-  rehearsal_validate_d1_export "$D1" "${TABLES},payment_cards" "$DUMPF"
+  rehearsal_validate_d1_export "$D1" "${ALL_TABLES},extra_table" "$DUMPF"
 
-# A symlinked table file.
-mkd1; rm -f "$D1/settings.json"; ln -s "$WORK/mirzabot.sql" "$D1/settings.json"
+mkd1; rm -f "$D1/comments.json"; ln -s "$DUMPF" "$D1/comments.json"
 refuses 'a symlinked table file is refused' 'symlink' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
-# Unsafe mode on a table file, and on the directory.
 mkd1; chmod 666 "$D1/devices.json"
 refuses 'a group- or world-writable table file is refused' 'writable' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 mkd1; chmod 777 "$D1"
 refuses 'a world-writable export directory is refused' 'world-writable' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 mkd1; chmod 666 "$D1/d1-export.manifest"
 refuses 'a writable provenance sidecar is refused' 'writable' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
-# MySQL and D1 from different snapshots. Both are internally valid; together
-# they describe a database that never existed, and no row count would notice.
-mkd1; printf 'a different mysql dump\n' >"$DUMPF"
-refuses 'a MySQL dump from another snapshot is refused' 'different snapshots' \
-  rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF"
+# ── the bounded-consistency contract, enforced by the consumer ───────────
+#
+# These edit the sidecar's recorded verdicts directly, because the consumer has
+# to refuse a bundle whose own generator recorded an out-of-contract capture —
+# not merely trust that the generator would have refused first.
+reseal() { # key=value ... -> rewrite the sidecar and its own coverage
+  local kv
+  for kv in "$@"; do
+    sed -i "s|^${kv%%=*}=.*|${kv}|" "$D1/d1-export.manifest"
+  done
+}
+mkd1; reseal 'capture_window_seconds=99999' 'capture_window_max=3600'
+refuses 'a capture window outside the bound is refused' 'more than the' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
-# The export identity is returned, not discarded.
+mkd1; reseal 'capture_order=d1-newer-than-mysql'
+refuses 'a D1 export newer than the dump is refused' 'later capture' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
+
+mkd1; reseal 'coherence=fail' 'coherence_missing=3'
+refuses 'a recorded coherence mismatch is refused' 'coherence' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
+
+mkd1; reseal 'schema_version=1'
+refuses 'an old sidecar schema is refused' 'unsupported schema_version' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
+
+mkd1; reseal 'capture_id=short'
+refuses 'a sidecar with no capture_id is refused' 'no capture_id' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
+
+# The identity is returned and used, not computed and discarded.
 mkd1
-D1ID=$(rehearsal_validate_d1_export "$D1" "$TABLES" "$DUMPF")
+D1ID=$(rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF")
 case "$D1ID" in
   sha256:*)
     if [ "${#D1ID}" = 71 ]; then
-      ok 'the export identity is returned for provenance'
+      ok 'the bundle identity is returned for provenance'
     else
-      bad 'the export identity is returned for provenance' "length ${#D1ID}"
+      bad 'the bundle identity is returned for provenance' "length ${#D1ID}"
     fi ;;
-  *) bad 'the export identity is returned for provenance' "got '${D1ID}'" ;;
+  *) bad 'the bundle identity is returned for provenance' "got '${D1ID}'" ;;
 esac
-# It is a hash of hashes, so it must not equal any single table file's digest.
 if grep -qF "${D1ID#sha256:}" "$D1/d1-export.manifest"; then
   bad 'the identity is not any one file digest' 'it matches a listed digest'
 else
   ok 'the identity is not any one file digest'
 fi
 
-# ── live production images ───────────────────────────────────────────────
 section 'the old image is derived from live state, never configured'
 
 IMG=sha256:$(printf 'b%.0s' $(seq 64))

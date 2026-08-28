@@ -35,14 +35,39 @@ fail() {
   exit 1
 }
 
-# Resolved through the pointer, never by naming a version directory. The flat
-# `attestation.env`/`attestation.sha256` pair this used to read was a second
-# copy that could disagree with `current`; it no longer exists.
+# Resolved through the pointer, never by naming a version directory, and held
+# under the shared lock for the WHOLE read — not merely for the checksum.
+#
+# Two things were wrong before. `att_read` released the lock and returned a
+# path, so every field was read unlocked: the version directory is immutable,
+# but nothing stopped it being removed between the resolution and the reads.
+# And `prepare-production.sh` resolved the pointer itself and passed the
+# resulting directory here, which took the standalone branch below — so the
+# promotion gate's own verification ran with no lock at all, on a version
+# chosen by its caller rather than by `current`.
+#
+# There is one published path now: the caller names the attestation ROOT and
+# this resolves it. The standalone branch survives only for the rehearsal's
+# pre-publication self-check, where by definition nothing is current yet, and
+# it has to be asked for by name.
 HERE_V=$(CDPATH='' ; cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=deploy/attestation-store.sh
 . "$HERE_V/attestation-store.sh"
-if [ -L "$DIR/current" ] || [ -e "$DIR/current" ]; then
-  DIR=$(att_read "$DIR") || fail "the current attestation could not be resolved or is not intact"
+
+if [ "${ATTESTATION_UNPUBLISHED:-0}" = '1' ]; then
+  # The rehearsal checking a version directory it has built and not yet
+  # activated. There is no pointer to resolve and nothing for a reader to
+  # race, because this directory is not reachable through `current`.
+  [ ! -e "$DIR/current" ] ||
+    fail "ATTESTATION_UNPUBLISHED was set for a directory that has a current pointer"
+else
+  # No pointer pre-check here: `att_resolve` below makes exactly the same test
+  # and refuses with the same sentence, so a check in both places is one rule
+  # written twice — and a mutation removing either is invisible.
+  att_lock_shared || fail "the production release lock could not be taken for reading"
+  # Released however this exits, including every `fail` below.
+  trap 'att_unlock' EXIT
+  DIR=$(att_resolve "$DIR") || fail "the current attestation could not be resolved"
 fi
 
 [ -r "$DIR/attestation.env" ] ||

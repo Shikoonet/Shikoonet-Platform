@@ -321,8 +321,10 @@ for line in text.splitlines():
         digest, _, name = line.partition('  ')
         listed[name.strip()] = digest.strip()
 
-if header.get('schema_version') != '1':
-    refuse('d1-export.manifest has an unsupported schema_version')
+if header.get('schema_version') != '2':
+    refuse('d1-export.manifest has an unsupported schema_version — regenerate it with tools/d1-export-manifest.py')
+if len(header.get('capture_id', '')) != 64:
+    refuse('the sidecar records no capture_id')
 
 # The set is bound as one object. Assembling an export from parts of two runs
 # means one of these three comparisons fails, whichever part was substituted.
@@ -358,14 +360,43 @@ for name, digest in sorted(listed.items()):
         # customer data.
         refuse(name + ' does not match the digest its own export recorded — it was modified or replaced')
 
-# MySQL and D1 have to be two views of one moment. A D1 export from Tuesday
-# against a MySQL dump from Thursday migrates cleanly and produces a database
-# that never existed, which is the failure this catches and no row count can.
+# The dump this bundle was sealed with, and nothing else.
+#
+# This is BUNDLE BINDING, not a snapshot proof: it establishes that these two
+# artifacts were sealed together and have not changed since, which is a
+# different and weaker claim than "they were read from one consistent moment".
+# No layer here can make the stronger claim — D1 is a Cloudflare service and
+# Mirzabot's MySQL is another machine, so there is no cross-database snapshot
+# to take. What stands in for it is the bounded-consistency contract below,
+# recorded by the generator and enforced here.
 want_dump = header.get('mysql_dump_sha256', '')
 if len(want_dump) != 64:
     refuse('the manifest records no usable mysql_dump_sha256')
 if sha256_file(dump) != want_dump:
-    refuse('the MySQL dump is not the one this D1 export was taken with — they are from different snapshots and must not be migrated together')
+    refuse('the MySQL dump is not the one this D1 export was sealed with — the bundle was broken up or re-paired')
+
+# Bounded consistency, in the three parts the generator measured.
+try:
+    window = int(header.get('capture_window_seconds', '-1'))
+    window_max = int(header.get('capture_window_max', '-1'))
+except ValueError:
+    refuse('the sidecar records an unreadable capture window')
+if window < 0 or window_max <= 0:
+    refuse('the sidecar records no capture window')
+if window > window_max:
+    refuse('the artifacts span %ds, more than the %ds this bundle allows — they were not captured together'
+           % (window, window_max))
+if header.get('capture_order') != 'mysql-not-older-than-d1':
+    refuse('the sidecar does not record MySQL as the later capture; a D1 export newer than the dump can reference orders the dump does not contain')
+if header.get('coherence') != 'pass':
+    refuse('the sidecar records cross-source coherence as %r — the D1 export references Mirzabot orders this dump does not contain'
+           % header.get('coherence'))
+try:
+    if int(header.get('coherence_missing', '-1')) != 0:
+        refuse('the sidecar records missing cross-source references')
+    int(header.get('coherence_checked', '-1'))
+except ValueError:
+    refuse('the sidecar records unreadable coherence counts')
 
 # The export identity: a hash over the manifest, so a hash of hashes. It is
 # derived from no customer value directly, and unlike the counterpart it

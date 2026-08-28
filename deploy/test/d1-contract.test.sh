@@ -99,5 +99,16 @@ else
   bad 'the rehearsal reads the committed manifest' 'it does not'
 fi
 
+# The generator pins this manifest by digest so it cannot be handed some other
+# table list. That pin and the tracked file have to stay in step, and the only
+# way to guarantee it is to fail the build when they drift.
+PIN=$(sed -n 's/^TABLES_MANIFEST_SHA256 = "\(.*\)"/\1/p' "$ROOT/tools/d1-export-manifest.py")
+ACTUAL=$(sha256sum "$ROOT/deploy/d1-tables.manifest" | cut -d' ' -f1)
+if [ "$PIN" = "$ACTUAL" ]; then
+  ok 'the sidecar generator pins this exact table manifest'
+else
+  bad 'the sidecar generator pins this exact table manifest' "pin ${PIN:0:12} vs file ${ACTUAL:0:12}"
+fi
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
