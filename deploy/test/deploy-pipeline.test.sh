@@ -626,6 +626,105 @@ denies 'refuses owner-or-approved mode with nobody allowlisted' 'needs SOLO_DEPL
 GATE_OWNER="$OWNER"
 GATE_MODE='team'
 
+# ═════════════════════════════════════════════════════════════════════════
+section 'require-ci-run — the manual redeploy has to find a real green CI run'
+
+# The automatic path gets «CI passed on this sha, as a push, on main» from the
+# `workflow_run` event for free. A dispatch has no event to read it from, so it
+# goes and asks — and the four conditions are asked together, because a run
+# satisfying three of them is not a partial pass.
+
+CI_RUN_LOG="$WORK/ci-run.log"
+run_ci_check() { # -> exit code, output in $CI_RUN_LOG
+  set +e
+  env GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_API='https://api.github.com' \
+    GITHUB_OUTPUT="$WORK/ci-run.out" \
+    bash "$ROOT/deploy/require-ci-run.sh" 'Shikoonet/Shikoonet-Platform' "$SHA_MERGED" \
+    >"$CI_RUN_LOG" 2>&1
+  local rc=$?
+  set -e
+  return $rc
+}
+ci_runs() { # [event] [branch] [status] [conclusion]
+  printf '{"workflow_runs":[{"id":7788,"event":"%s","head_branch":"%s","status":"%s","conclusion":"%s","run_started_at":"2026-08-28T08:00:00Z"}]}' \
+    "${1:-push}" "${2:-main}" "${3:-completed}" "${4:-success}"
+}
+ci_denies() { # name  substring
+  if run_ci_check; then
+    bad "$1" 'it accepted the run when it had to deny'
+    return
+  fi
+  if grep -qF "$2" "$CI_RUN_LOG"; then ok "$1"; else
+    bad "$1" "denied, but not for '$2': $(tail -2 "$CI_RUN_LOG" | tr '\n' ' ')"
+  fi
+}
+
+reset_scenarios
+: >"$WORK/ci-run.out"
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs)"
+if run_ci_check && grep -qF 'ci_run_id=7788' "$WORK/ci-run.out"; then
+  ok 'a completed successful push run on main is accepted, and its id recorded'
+else
+  bad 'a completed successful push run on main is accepted, and its id recorded' \
+    "$(tail -2 "$CI_RUN_LOG" | tr '\n' ' ')"
+fi
+
+# «CI never ran» and «CI ran and failed» are different mistakes and get
+# different sentences: the first usually means the sha is not on main at all.
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 '{"workflow_runs":[]}'
+ci_denies 'refuses a sha nothing has tested' 'no CI run exists'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs push main completed failure)"
+ci_denies 'refuses a sha whose CI run failed' 'none qualifying'
+
+# A CI run FROM A PULL REQUEST must never authorise a deploy — a fork's run
+# completing is something an outsider can trigger. Same refusal the
+# `workflow_run` trigger makes on the automatic path.
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs pull_request main completed success)"
+ci_denies 'refuses a green run that came from a pull request' 'none qualifying'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs push some-branch completed success)"
+ci_denies 'refuses a green run from another branch' 'none qualifying'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs push main in_progress '')"
+ci_denies 'refuses a run that has not finished' 'none qualifying'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs push main completed cancelled)"
+ci_denies 'refuses a cancelled run — cancelled is not a pass' 'none qualifying'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 500 '{"message":"boom"}'
+ci_denies 'fails closed when the CI run list cannot be read' 'failing closed'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs)"
+FAKE_CURL_DIES=1
+export FAKE_CURL_DIES
+ci_denies 'fails closed when the API cannot be reached at all' 'failing closed'
+unset FAKE_CURL_DIES
+
+# The sha is an argument, not a free-text field: a short, uppercase or
+# whitespace-bearing one is refused as malformed rather than repaired.
+for bad_sha in 'abc' "$(printf '%040d' 0 | tr '0' 'A')" '  '; do
+  set +e
+  env GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_API='https://api.github.com' \
+    bash "$ROOT/deploy/require-ci-run.sh" 'Shikoonet/Shikoonet-Platform' "$bad_sha" \
+    >"$CI_RUN_LOG" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    bad "require-ci-run refuses the sha '${bad_sha:0:8}'" 'it was accepted'
+  else
+    ok "require-ci-run refuses the sha '${bad_sha:0:8}'"
+  fi
+done
+
 section 'provenance — one pull request, or none'
 
 # Two merged pull requests claiming one commit means «which one was reviewed»
@@ -1082,7 +1181,47 @@ assert_wf 'only main can deploy' "workflow_run.head_branch == 'main'"
 # The `${{ }}` below are the literal text of the workflow file, which is exactly
 # what these assertions are for — SC2016 is the expected reading, not a mistake.
 # shellcheck disable=SC2016
-assert_wf 'the built ref is the exact sha CI passed' 'ref: ${{ github.event.workflow_run.head_sha }}'
+assert_wf 'the built ref is the exact sha CI passed' 'github.event.workflow_run.head_sha'
+# shellcheck disable=SC2016
+assert_wf 'the image is built from the sha the gate resolved, not a default ref' \
+  'ref: ${{ needs.gate.outputs.sha }}'
+
+# ── the manual redeploy names nothing ─────────────────────────────────────
+#
+# These are the load-bearing ones. Every other guard in this pipeline exists to
+# prove that what ships is what was reviewed; a dispatch input naming a commit,
+# a digest, an image or a ref hands that answer to whoever pressed the button.
+# Asserting their ABSENCE textually is what makes adding one back a red build
+# rather than a review somebody skimmed.
+assert_wf 'the staging workflow can be redeployed by hand' 'workflow_dispatch:'
+
+dispatch_block() { awk '/^on:/,/^permissions:/' "$WORKFLOW"; }
+
+if dispatch_block | grep -qE '^\s+inputs:'; then
+  bad 'the manual redeploy accepts no inputs at all' 'workflow_dispatch declares inputs'
+else
+  ok 'the manual redeploy accepts no inputs at all'
+fi
+
+for forbidden in sha ref digest image tag run_id revision commit; do
+  if grep -qE "inputs\.${forbidden}\b" "$WORKFLOW"; then
+    bad "no user-supplied ${forbidden} can reach the staging deploy" \
+      "deploy-staging.yml reads inputs.${forbidden}"
+  else
+    ok "no user-supplied ${forbidden} can reach the staging deploy"
+  fi
+done
+
+# shellcheck disable=SC2016
+assert_wf 'a manual redeploy is refused unless it came from main' \
+  '[ "$REF" != '"'"'refs/heads/main'"'"' ]'
+assert_wf 'a manual redeploy resolves the sha from the ref, on the server' \
+  'git rev-parse refs/heads/main'
+assert_wf 'a manual redeploy requires CI to have passed on that sha' \
+  'deploy/require-ci-run.sh'
+# shellcheck disable=SC2016
+assert_wf 'the manifest records the CI run that gated the deploy' \
+  'CI_RUN_ID: ${{ needs.gate.outputs.ci_run_id }}'
 assert_wf 'the staging deploy is serialised' 'group: shikoo-deploy'
 assert_wf 'a running deploy is never cancelled' 'cancel-in-progress: false'
 # Off unless a repository variable says otherwise, and the comparison is
@@ -1308,7 +1447,7 @@ section 'the release manifest'
 MAN=$WORK/manifest
 rm -rf "$MAN"
 env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
-  GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=4242 \
+  GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=4242 CI_RUN_ID=1234 \
   bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1
 
 if [ -s "$MAN/release-manifest.json" ] && [ -s "$MAN/manifest.sha256" ]; then
@@ -1371,10 +1510,43 @@ else
   ok 'a missing manifest is refused, not treated as empty'
 fi
 
+# `ci_run_id` used to fall back to GITHUB_RUN_ID — this workflow's own id — so
+# it was always identical to `staging_run_id` and recorded nothing at all. A
+# provenance field that silently describes the wrong run is worse than an
+# absent one, because it reads like evidence.
+rm -rf "$MAN"
+if env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+  GITHUB_RUN_ID=4242 \
+  bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1; then
+  bad 'the manifest writer refuses a missing CI_RUN_ID' 'it fell back instead'
+else
+  ok 'the manifest writer refuses a missing CI_RUN_ID'
+fi
+
+rm -rf "$MAN"
+if env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+  GITHUB_RUN_ID=4242 CI_RUN_ID=4242 \
+  bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1; then
+  bad 'the manifest writer refuses a CI_RUN_ID equal to its own run' 'it was written'
+else
+  ok 'the manifest writer refuses a CI_RUN_ID equal to its own run'
+fi
+
+for bad_run in 'abc' '' '12 34'; do
+  rm -rf "$MAN"
+  if env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+    GITHUB_RUN_ID=4242 CI_RUN_ID="$bad_run" \
+    bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1; then
+    bad "the manifest writer refuses the CI run id '${bad_run}'" 'it was written'
+  else
+    ok "the manifest writer refuses the CI run id '${bad_run}'"
+  fi
+done
+
 for bad_digest in 'sha256:abc' 'latest' "sha256:${DIGEST}
 extra"; do
   rm -rf "$MAN"
-  if env MAIN_SHA="$SHA_MERGED" DIGEST="$bad_digest" \
+  if env MAIN_SHA="$SHA_MERGED" DIGEST="$bad_digest" CI_RUN_ID=1234 \
     bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1; then
     bad "the manifest writer refuses '${bad_digest:0:18}'" 'it was written'
   else
@@ -1504,7 +1676,7 @@ section 'promote-production — the manifest must describe the run it came from'
 MAN2=$WORK/man2
 mkman() { # main_sha staging_run_id
   rm -rf "$MAN2"
-  env MAIN_SHA="$1" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+  env MAIN_SHA="$1" DIGEST="sha256:${DIGEST}" POLICY=solo-owner CI_RUN_ID=1234 \
     GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID="$2" \
     bash "$ROOT/deploy/write-release-manifest.sh" "$MAN2" >/dev/null 2>&1
 }
@@ -1557,7 +1729,7 @@ section 'promote-production — the cross-checks cannot be skipped'
 MAN3=$WORK/man3
 rm -rf "$MAN3"
 env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
-  GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=4242 \
+  GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=4242 CI_RUN_ID=1234 \
   bash "$ROOT/deploy/write-release-manifest.sh" "$MAN3" >/dev/null 2>&1
 
 # Run with the expected values set to whatever the case is testing — including
