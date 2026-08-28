@@ -927,7 +927,7 @@ assert_wf 'only main can deploy' "workflow_run.head_branch == 'main'"
 # what these assertions are for — SC2016 is the expected reading, not a mistake.
 # shellcheck disable=SC2016
 assert_wf 'the built ref is the exact sha CI passed' 'ref: ${{ github.event.workflow_run.head_sha }}'
-assert_wf 'the staging deploy is serialised' 'group: deploy-staging'
+assert_wf 'the staging deploy is serialised' 'group: shikoo-deploy'
 assert_wf 'a running deploy is never cancelled' 'cancel-in-progress: false'
 assert_wf 'the staging bot is explicitly off' "DEPLOY_BOT_ENABLED: 'false'"
 
@@ -1208,6 +1208,167 @@ extra"; do
   fi
 done
 
+
+section 'promote-production — the dispatch cannot be pointed somewhere else'
+
+# The ref guard must be the FIRST step, before the repository, the artifact or
+# any credential. A dispatch runs the workflow file on the ref it was started
+# from, so a branch run would execute guards the actor had just rewritten.
+first_step=$(awk '/^  promote-gate:/,/^  promote:/' "$PROMOTE_WF" | grep -n '^      - ' | head -1 | cut -d: -f2-)
+case "$first_step" in
+  *'only main may promote'*) ok 'the ref guard is the first step of the promotion gate' ;;
+  *) bad 'the ref guard is the first step of the promotion gate' "first step is: ${first_step}" ;;
+esac
+# The comparison AND the exit. Asserting only the comparison passes even when
+# the branch that follows it merely logs — which is exactly how a guard rots
+# into a warning.
+guard_step=$(awk '/- name: only main may promote/,/- name: the two things/' "$PROMOTE_WF")
+if printf '%s' "$guard_step" | grep -qF "!= 'refs/heads/main'" &&
+  printf '%s' "$guard_step" | grep -qE '^\s+exit 1$'; then
+  ok 'a dispatch from any ref but main is refused, and the refusal exits'
+else
+  bad 'a dispatch from any ref but main is refused, and the refusal exits' \
+    'the ref guard does not compare-and-exit'
+fi
+
+# The repository script must not run before the repository exists. It used to,
+# which was both broken and the wrong order in principle.
+ck=$(awk '/^  promote-gate:/,/^  promote:/' "$PROMOTE_WF" | grep -n 'actions/checkout' | head -1 | cut -d: -f1)
+# The `run:` line, not any mention: a comment naming the script sits above the
+# checkout, and matching that would assert the opposite of the truth.
+pk=$(awk '/^  promote-gate:/,/^  promote:/' "$PROMOTE_WF" | grep -n 'run: bash deploy/pick-staging-run.sh' | head -1 | cut -d: -f1)
+if [ -n "$ck" ] && [ -n "$pk" ] && [ "$ck" -lt "$pk" ]; then
+  ok 'the checkout happens before any repository script runs'
+else
+  bad 'the checkout happens before any repository script runs' "checkout line ${ck:-none}, script line ${pk:-none}"
+fi
+assert_pwf 'the promotion checkout names main explicitly' 'ref: main'
+assert_pwf 'the promotion checkout has full history for reachability' 'fetch-depth: 0'
+
+# One group across both workflows, so a promotion cannot read a ledger a
+# staging deploy is still writing.
+if grep -qF 'group: shikoo-deploy' "$WORKFLOW" && grep -qF 'group: shikoo-deploy' "$PROMOTE_WF"; then
+  ok 'staging and promotion share one concurrency group'
+else
+  bad 'staging and promotion share one concurrency group' 'the groups differ'
+fi
+
+section 'promote-production — the staging run is evidence, not an integer'
+
+PICK=$ROOT/deploy/pick-staging-run.sh
+RUNJSON=$WORK/run.json
+cat >"$BIN/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+for a in "$@"; do case "$a" in */actions/runs/*) cat "$FAKE_RUN_JSON"; exit 0 ;; esac; done
+printf '{}'
+FAKEGH
+chmod +x "$BIN/gh"
+export FAKE_RUN_JSON="$RUNJSON"
+
+run_json() { # path status conclusion event branch head_sha
+  printf '{"path":"%s","status":"%s","conclusion":"%s","event":"%s","head_branch":"%s","head_sha":"%s"}' \
+    "$1" "$2" "$3" "$4" "$5" "$6" >"$RUNJSON"
+}
+
+try_pick() {
+  set +e
+  ( cd "$ROOT" && GH_TOKEN=t GIVEN=4242 bash "$PICK" 'Shikoonet/Shikoonet-Platform' ) >"$WORK/pick.log" 2>&1
+  local rc=$?
+  set -e
+  return "$rc"
+}
+
+GOOD_SHA=$SHA_MERGED
+run_json '.github/workflows/deploy-staging.yml' completed success workflow_run main "$GOOD_SHA"
+if try_pick && grep -qF 'verified' "$WORK/pick.log"; then
+  ok 'a genuine staging run is accepted'
+else
+  bad 'a genuine staging run is accepted' "$(tail -1 "$WORK/pick.log")"
+fi
+
+# Each rejection names its own reason. Exit code alone would pass all five.
+run_json '.github/workflows/ci.yml' completed success workflow_run main "$GOOD_SHA"
+if ! try_pick && grep -qF 'is not a staging release' "$WORK/pick.log"; then
+  ok 'a run from another workflow is refused, by name'
+else
+  bad 'a run from another workflow is refused, by name' "$(tail -1 "$WORK/pick.log")"
+fi
+
+run_json '.github/workflows/deploy-staging.yml' in_progress '' workflow_run main "$GOOD_SHA"
+if ! try_pick && grep -qF 'half-written record' "$WORK/pick.log"; then
+  ok 'an unfinished run is refused, by name'
+else
+  bad 'an unfinished run is refused, by name' "$(tail -1 "$WORK/pick.log")"
+fi
+
+run_json '.github/workflows/deploy-staging.yml' completed failure workflow_run main "$GOOD_SHA"
+if ! try_pick && grep -qF 'staging did not pass' "$WORK/pick.log"; then
+  ok 'a failed run is refused, by name'
+else
+  bad 'a failed run is refused, by name' "$(tail -1 "$WORK/pick.log")"
+fi
+
+run_json '.github/workflows/deploy-staging.yml' completed success workflow_dispatch main "$GOOD_SHA"
+if ! try_pick && grep -qF 'real staging runs start no other way' "$WORK/pick.log"; then
+  ok 'a hand-started run is refused, by name'
+else
+  bad 'a hand-started run is refused, by name' "$(tail -1 "$WORK/pick.log")"
+fi
+
+run_json '.github/workflows/deploy-staging.yml' completed success workflow_run some-branch "$GOOD_SHA"
+if ! try_pick && grep -qF "not main" "$WORK/pick.log"; then
+  ok 'a run for another branch is refused, by name'
+else
+  bad 'a run for another branch is refused, by name' "$(tail -1 "$WORK/pick.log")"
+fi
+
+rm -f "$BIN/gh"
+
+section 'promote-production — the manifest must describe the run it came from'
+
+MAN2=$WORK/man2
+mkman() { # main_sha staging_run_id
+  rm -rf "$MAN2"
+  env MAIN_SHA="$1" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+    GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID="$2" \
+    bash "$ROOT/deploy/write-release-manifest.sh" "$MAN2" >/dev/null 2>&1
+}
+try_verify() { # expected_run_id expected_head_sha
+  set +e
+  ( cd "$ROOT" && EXPECTED_REPO='Shikoonet/Shikoonet-Platform' \
+      EXPECTED_RUN_ID="$1" EXPECTED_RUN_HEAD_SHA="$2" \
+      bash deploy/verify-release-manifest.sh "$MAN2" ) >"$WORK/v2.log" 2>&1
+  local rc=$?
+  set -e
+  return "$rc"
+}
+
+REAL_SHA=$(cd "$ROOT" && git rev-parse HEAD)
+
+mkman "$REAL_SHA" 4242
+if ! try_verify 9999 "$REAL_SHA" && grep -qF 'but it arrived from run' "$WORK/v2.log"; then
+  ok 'a manifest from a different staging run is refused'
+else
+  bad 'a manifest from a different staging run is refused' "$(tail -1 "$WORK/v2.log")"
+fi
+
+mkman "$REAL_SHA" 4242
+if ! try_verify 4242 "$SHA_OTHER" && grep -qF 'but the staging run deployed' "$WORK/v2.log"; then
+  ok 'a manifest whose commit differs from the run is refused'
+else
+  bad 'a manifest whose commit differs from the run is refused' "$(tail -1 "$WORK/v2.log")"
+fi
+
+# And nothing is written on the way out of any refusal: the promotion path must
+# leave no digest, no sha and no ledger behind when it declines.
+mkman "$REAL_SHA" 4242
+rm -f "$MAN2/digest" "$MAN2/sha"
+if ! try_verify 9999 "$REAL_SHA" && [ ! -e "$MAN2/digest" ] && [ ! -e "$MAN2/sha" ]; then
+  ok 'a refused manifest leaves no digest or sha behind'
+else
+  bad 'a refused manifest leaves no digest or sha behind' 'files were written despite the refusal'
+fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

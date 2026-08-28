@@ -67,6 +67,22 @@ git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null ||
   git merge-base --is-ancestor "$SHA" main 2>/dev/null ||
   fail "commit ${SHA:0:12} is not reachable from main — it was reverted, or never merged"
 
+# The manifest must describe the run it arrived from.
+#
+# The artifact is downloaded from a run this workflow chose, and the manifest is
+# a file inside it — so without these two, a manifest from an older successful
+# run could be served by a newer one and promote the wrong commit. Each side
+# names the other, and both have to agree.
+if [ -n "${EXPECTED_RUN_ID:-}" ]; then
+  MANIFEST_RUN=$(field staging_run_id)
+  [ "$MANIFEST_RUN" = "$EXPECTED_RUN_ID" ] ||
+    fail "manifest was written by staging run ${MANIFEST_RUN:-unknown}, but it arrived from run ${EXPECTED_RUN_ID}"
+fi
+if [ -n "${EXPECTED_RUN_HEAD_SHA:-}" ]; then
+  [ "$SHA" = "$EXPECTED_RUN_HEAD_SHA" ] ||
+    fail "manifest is for commit ${SHA:0:12}, but the staging run deployed ${EXPECTED_RUN_HEAD_SHA:0:12}"
+fi
+
 # The two files the deploy path reads. Re-derived from the verified manifest
 # rather than trusted from the artifact, so a tampered `digest` file cannot
 # disagree with the manifest that was checked.
