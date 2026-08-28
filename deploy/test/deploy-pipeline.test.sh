@@ -565,6 +565,31 @@ run_deploy_image() { # image-name
   IMAGE_UNDER_TEST="$1" run_deploy false
 }
 
+# The same deploy with a hand-written reference, valid or not, so the digest
+# check can be exercised against the real script rather than against a copy of
+# its regex.
+run_deploy_ref() { # image-ref
+  : >"$WORK/pins"
+  : >"$WORK/deploys"
+  : >"$WORK/replaced"
+  : >"$WORK/appreads"
+  rm -f "$WORK/state"
+  set +e
+  env \
+    FAKE_COOLIFY_URL='http://127.0.0.1:8000' \
+    FAKE_PINS="$WORK/pins" FAKE_DEPLOYS="$WORK/deploys" FAKE_REPLACED="$WORK/replaced" \
+    FAKE_LABEL_SHA="$SHA_MERGED" FAKE_BUILD_PACK=dockerimage \
+    FAKE_APP_IMAGE='ghcr.io/x/y' FAKE_REPO_DIGEST="ghcr.io/x/y@sha256:${DIGEST}" \
+    FAKE_APP_READS="$WORK/appreads" \
+    ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
+    WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED=false \
+    bash "$DEPLOY" production "$1" "$SHA_MERGED" \
+    >"$DEPLOY_LOG" 2>&1
+  local rc=$?
+  set -e
+  return $rc
+}
+
 run_deploy() { # bot-flag
   : >"$WORK/pins"
   : >"$WORK/deploys"
@@ -761,6 +786,39 @@ else
 fi
 unset FAKE_COOLIFY_REFUSES
 
+section 'deploy.sh — a refused reference touches nothing at all'
+
+# Exiting non-zero is not enough. A rejected reference must reach NOTHING: no
+# Coolify request, no migration, no ledger line. The digest check sits above all
+# three, and this is what proves it stays there.
+D_BAD_CASES=(
+  "ghcr.io/x/y@sha256:${DIGEST}
+extra"
+  " ghcr.io/x/y@sha256:${DIGEST}"
+  "ghcr.io/x/y@sha256:${DIGEST} "
+  "ghcr.io/x/y@sha256:${DIGEST}@sha256:${DIGEST}"
+  'ghcr.io/x/y:latest'
+  "ghcr.io/x/y@sha256:abc"
+)
+for ref in "${D_BAD_CASES[@]}"; do
+  label=$(printf '%s' "$ref" | tr '\n' '~')
+  if run_deploy_ref "$ref"; then
+    bad "refuses and touches nothing: ${label:0:44}" 'it was accepted'
+    continue
+  fi
+  problems=''
+  grep -qF 'not an immutable digest' "$DEPLOY_LOG" || problems="$problems no-message"
+  [ ! -s "$WORK/pins" ] || problems="$problems patched-coolify"
+  [ ! -s "$WORK/deploys" ] || problems="$problems queued-deploy"
+  grep -qF 'migrating' "$DEPLOY_LOG" && problems="$problems migrated"
+  [ ! -s "$WORK/state" ] || problems="$problems wrote-ledger"
+  if [ -z "$problems" ]; then
+    ok "refuses and touches nothing: ${label:0:44}"
+  else
+    bad "refuses and touches nothing: ${label:0:44}" "side effects:$problems"
+  fi
+done
+
 section 'deploy.sh — two deploys cannot run at once'
 
 (
@@ -800,6 +858,11 @@ try_over_ssh() { # image-ref
 # `try_over_ssh`'s definition for one commit, so every case exited 127 with
 # «command not found» and was recorded as a pass — a test that asserted
 # nothing while reading green.
+# The multiline case is the subtle one. `echo "$REF" | grep -qE '^…$'` matches
+# LINE BY LINE, so a reference carrying a newline passed as long as one of its
+# lines looked right — a valid digest with anything at all appended after a
+# newline. Both layers match against the whole string now.
+#
 # `@sha256:` followed by anything used to pass: the check was a glob on the
 # prefix, so «@sha256:abc» and «@sha256:» with nothing after it both read as
 # immutable digests. They would have reached the box, taken the deploy flock and
@@ -811,6 +874,8 @@ for bad_ref in \
   'ghcr.io/shikoonet/shikoonet-platform@sha256:' \
   "ghcr.io/shikoonet/shikoonet-platform@sha256:${DIGEST}00" \
   "ghcr.io/shikoonet/shikoonet-platform@sha256:${DIGEST^^}" \
+  "ghcr.io/shikoonet/shikoonet-platform@sha256:${DIGEST}
+extra" \
   ''; do
   name="refuses the malformed reference '${bad_ref:-<empty>}'"
   if try_over_ssh "$bad_ref"; then
