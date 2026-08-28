@@ -72,10 +72,10 @@ if [ -z "$REPO" ] || [ -z "$SHA" ]; then
   echo "usage: approval-gate.sh <owner/repo> <sha>" >&2
   exit 2
 fi
-echo "$SHA" | grep -qE '^[0-9a-f]{40}$' || {
+if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
   echo "refusing: '$SHA' is not a full 40-character commit sha" >&2
   exit 2
-}
+fi
 
 : "${GITHUB_TOKEN:?GITHUB_TOKEN must be set}"
 API=${GITHUB_API:-https://api.github.com}
