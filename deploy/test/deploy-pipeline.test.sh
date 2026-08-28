@@ -800,6 +800,11 @@ try_over_ssh() { # image-ref
 # `try_over_ssh`'s definition for one commit, so every case exited 127 with
 # «command not found» and was recorded as a pass — a test that asserted
 # nothing while reading green.
+# The multiline case is the subtle one. `echo "$REF" | grep -qE '^…$'` matches
+# LINE BY LINE, so a reference carrying a newline passed as long as one of its
+# lines looked right — a valid digest with anything at all appended after a
+# newline. Both layers match against the whole string now.
+#
 # `@sha256:` followed by anything used to pass: the check was a glob on the
 # prefix, so «@sha256:abc» and «@sha256:» with nothing after it both read as
 # immutable digests. They would have reached the box, taken the deploy flock and
@@ -811,6 +816,8 @@ for bad_ref in \
   'ghcr.io/shikoonet/shikoonet-platform@sha256:' \
   "ghcr.io/shikoonet/shikoonet-platform@sha256:${DIGEST}00" \
   "ghcr.io/shikoonet/shikoonet-platform@sha256:${DIGEST^^}" \
+  "ghcr.io/shikoonet/shikoonet-platform@sha256:${DIGEST}
+extra" \
   ''; do
   name="refuses the malformed reference '${bad_ref:-<empty>}'"
   if try_over_ssh "$bad_ref"; then

@@ -40,10 +40,15 @@ esac
 # `name@sha256:` and exactly 64 lowercase hex characters. The prefix alone is
 # not a digest: «@sha256:abc» has the shape and none of the meaning, and would
 # reach the box, take the deploy flock and fail at `docker pull`.
-echo "${IMAGE_REF:-}" | grep -qE '^[^@[:space:]]+@sha256:[0-9a-f]{64}$' || {
+# Matched with bash's own `=~`, not `echo | grep`.
+#
+# `grep` matches LINE BY LINE, so a value carrying a newline passes as long
+# as any one of its lines matches — `…@sha256:<64 hex>\nextra` reads as a
+# valid digest. `[[ =~ ]]` anchors against the whole string, so it cannot.
+if ! [[ ${IMAGE_REF:-} =~ ^[^@[:space:]]+@sha256:[0-9a-f]{64}$ ]]; then
   echo "refusing: IMAGE_REF is not an immutable digest: '${IMAGE_REF:-}'" >&2
   exit 1
-}
+fi
 
 for required in DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DEPLOY_HOST DEPLOY_USER REGISTRY_TOKEN IMAGE_REF; do
   [ -n "${!required:-}" ] || {
@@ -55,10 +60,10 @@ done
 # `GITHUB_SHA` is the workflow's own commit on a `workflow_run` re-run, so the
 # deploy takes the sha explicitly from the environment the workflow set.
 SHA=${SHA:-}
-echo "$SHA" | grep -qE '^[0-9a-f]{40}$' || {
+if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
   echo "refusing: SHA is not a full 40-character commit sha: '$SHA'" >&2
   exit 1
-}
+fi
 
 PORT=${DEPLOY_PORT:-22}
 
