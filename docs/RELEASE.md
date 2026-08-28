@@ -27,11 +27,18 @@ Run it **inside the running dashboard container**, which is the only place that
 already holds `ENV_NAME` and `DATABASE_URL`:
 
 ```bash
-# on the deployment host
-docker exec -it "$(docker ps --filter label=coolify.name --format '{{.Names}}' \
-    | grep "$STAGING_DASHBOARD_UUID")" \
+# on the deployment host. The container name changes on every deploy; the
+# application's Coolify uuid does not, and it is the container's `coolify.name`
+# label — so this finds the right container without anybody reading a name off
+# a list.
+DASH=$(docker ps --filter 'label=coolify.name=3scafhzf40ucpgvoqbms2217' --format '{{.Names}}')
+
+docker exec -it "$DASH" \
   sh -c 'cd /app && corepack pnpm --filter @shikoo/dashboard operator bootstrap you@example.com ADMIN'
 ```
+
+`-it` matters: without a terminal the prompt cannot hide what is typed, and the
+password is echoed to the screen.
 
 It asks for the password twice, hidden, and that is the only place the password
 is ever typed. It is never an argument — `ps` shows arguments to every user on
@@ -50,7 +57,7 @@ rather than an account nobody can sign in as:
 Then check it, from the same container:
 
 ```bash
-docker exec "$CONTAINER" sh -c 'cd /app && corepack pnpm --filter @shikoo/dashboard operator list'
+docker exec "$DASH" sh -c 'cd /app && corepack pnpm --filter @shikoo/dashboard operator list'
 ```
 
 ### The acceptance test for «somebody can sign in»
@@ -62,7 +69,7 @@ survives the proxy and a session the next request actually finds. That needs a
 deployment, so it is a script rather than a test:
 
 ```bash
-docker exec "$CONTAINER" sh -c 'cd /app && corepack pnpm --filter @shikoo/dashboard verify-login'
+docker exec "$DASH" sh -c 'cd /app && corepack pnpm --filter @shikoo/dashboard verify-login'
 ```
 
 It creates its own throwaway operator, generates its password in memory, and
@@ -97,17 +104,28 @@ customers are talking to.
 establish them:
 
 1. **The staging application has a bot of its own.** Not the production token.
-   You do not have to read either token to check this, and you should not: let
-   each bot tell you who it is. Every bot writes its own `@username` into its
-   database at boot —
+
+   Before the first boot there is no check that does not involve reading a
+   token, and reading one is worse than the risk it measures — so this one is
+   yours: the `TELEGRAM_BOT_TOKEN` on the staging application must be a bot you
+   created for staging in @BotFather, and the production application's token is
+   the shop's bot. If you are not certain, make a new bot rather than guessing.
+
+   After the first boot it stops being a matter of certainty. Every bot asks
+   Telegram who it is and writes its own `@username` into its database:
 
    ```sql
    SELECT value FROM settings WHERE scope = 'bot' AND key = 'username';
    ```
 
-   — so run that against the staging database and the production database. Two
-   different handles means two different bots. The same handle means one token
-   in two places, and the staging bot must not start.
+   Run it against the staging database and the production database. Two
+   different handles means two different bots. **The same handle means one
+   token in two places** — stop the staging bot immediately, because from that
+   moment the two are splitting the shop's updates between them. Production's
+   handle as of 2026-08-28 is `Test_Shikoo_bot`; staging must not be that.
+
+   This is also the first thing to check after the rollout, and it is item 13
+   of the checklist below for that reason.
 
 2. **No variable is defined twice on the application.** Coolify accepts a
    variable that is already there instead of replacing it, and a form submitted
@@ -131,8 +149,9 @@ The next `Deploy Staging` deploys the bot last, after the migration and after
 ingest and dashboard are healthy. Verify:
 
 ```bash
-docker logs "$BOT_CONTAINER" 2>&1 | grep -E 'boot\.(polling|poller_lock_wait)'
-docker inspect "$BOT_CONTAINER" --format '{{.State.Health.Status}} restarts={{.RestartCount}}'
+BOT=$(docker ps --filter 'label=coolify.name=icmjwronjw3ltx0gdrtmyfve' --format '{{.Names}}')
+docker logs "$BOT" 2>&1 | grep -E 'boot\.(polling|poller_lock_wait)'
+docker inspect "$BOT" --format '{{.State.Health.Status}} restarts={{.RestartCount}}'
 ```
 
 - `boot.polling` reached, `healthy`, `restarts=0` — a restart loop is a bot that
