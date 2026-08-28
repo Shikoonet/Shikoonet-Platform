@@ -24,7 +24,7 @@
 import { createInterface } from 'node:readline';
 import { stdin, stdout } from 'node:process';
 import { createPostgresD1 } from '@shikoo/db';
-import { BootstrapError, bootstrapOperator } from './bootstrapOperator.js';
+import { BootstrapError, bootstrapOperator, ROLES } from './bootstrapOperator.js';
 import {
   generateSecret,
   hashPassword,
@@ -32,8 +32,6 @@ import {
   passwordProblem,
   verifyTotp,
 } from '@shikoo/domain';
-
-const ROLES = ['ADMIN', 'REVIEWER', 'READ_ONLY'];
 
 /**
  * One interface for the whole run.
@@ -219,7 +217,7 @@ async function main(): Promise<number> {
 
     if (command === 'create') {
       const role = (process.argv[4] ?? 'ADMIN').toUpperCase();
-      if (!ROLES.includes(role)) {
+      if (!(ROLES as readonly string[]).includes(role)) {
         console.error(`role must be one of ${ROLES.join(', ')}`);
         return 2;
       }
