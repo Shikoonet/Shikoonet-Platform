@@ -38,8 +38,12 @@ fail() {
   exit 1
 }
 
+# The raw input, validated whole-string.
+#
+# It used to have whitespace STRIPPED first, which quietly turned «12 34» into
+# «1234» — a different run, accepted without comment. Malformed input must be
+# refused as malformed, not repaired into something plausible.
 GIVEN=${GIVEN:-}
-GIVEN=${GIVEN//[[:space:]]/}
 
 if [ -n "$GIVEN" ]; then
   [[ $GIVEN =~ ^[0-9]{1,20}$ ]] || fail "staging_run_id '${GIVEN}' is not a run id"

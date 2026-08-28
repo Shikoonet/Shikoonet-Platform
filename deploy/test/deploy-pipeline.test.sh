@@ -1151,9 +1151,17 @@ else
   bad 'staging writes a release manifest with a checksum' 'nothing written'
 fi
 
+# Valid expected values on purpose. The run cross-checks are REQUIRED now, so a
+# helper that omitted them would stop every case below at that guard instead of
+# the one it was written to exercise — a suite that passes while testing the
+# wrong thing.
+#
+# 4242 and this sha are what `mkman` writes into the manifest, so the
+# cross-checks agree and each case reaches its own guard.
 verify_manifest() {
   set +e
   ( cd "$ROOT" && EXPECTED_REPO='Shikoonet/Shikoonet-Platform' \
+      EXPECTED_RUN_ID=4242 EXPECTED_RUN_HEAD_SHA="$SHA_MERGED" \
       bash deploy/verify-release-manifest.sh "$MAN" ) >"$WORK/verify.log" 2>&1
   local rc=$?
   set -e
@@ -1373,6 +1381,123 @@ if ! try_verify 9999 "$REAL_SHA" && [ ! -e "$MAN2/digest" ] && [ ! -e "$MAN2/sha
 else
   bad 'a refused manifest leaves no digest or sha behind' 'files were written despite the refusal'
 fi
+
+section 'promote-production — the cross-checks cannot be skipped'
+
+# The gap this closes: both values used to be optional, each comparison wrapped
+# in `if [ -n "${VAR:-}" ]`. A future edit that stopped passing one would have
+# deleted that cross-check silently and promoted anyway. An absent guard has to
+# be louder than a failing one.
+MAN3=$WORK/man3
+rm -rf "$MAN3"
+env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+  GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=4242 \
+  bash "$ROOT/deploy/write-release-manifest.sh" "$MAN3" >/dev/null 2>&1
+
+# Run with the expected values set to whatever the case is testing — including
+# not set at all, which is the whole point.
+try_required() { # name  expected-substring  [env assignments...]
+  local name=$1 want=$2
+  shift 2
+  rm -f "$MAN3/digest" "$MAN3/sha"
+  set +e
+  ( cd "$ROOT" && env EXPECTED_REPO='Shikoonet/Shikoonet-Platform' "$@" \
+      bash deploy/verify-release-manifest.sh "$MAN3" ) >"$WORK/req.log" 2>&1
+  local rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    bad "$name" 'it verified'
+    return
+  fi
+  if ! grep -qF "$want" "$WORK/req.log"; then
+    bad "$name" "refused, but not for '${want}': $(tail -1 "$WORK/req.log")"
+    return
+  fi
+  # A refusal writes nothing. The digest and sha files are what the deploy path
+  # reads, so a refusal that left them behind would hand the next step a value
+  # it never verified.
+  if [ -e "$MAN3/digest" ] || [ -e "$MAN3/sha" ]; then
+    bad "$name" 'the refusal left a digest or sha behind'
+    return
+  fi
+  ok "$name"
+}
+
+try_required 'a missing EXPECTED_RUN_ID is refused, not skipped' \
+  'EXPECTED_RUN_ID is not set' EXPECTED_RUN_HEAD_SHA="$SHA_MERGED"
+
+try_required 'a missing EXPECTED_RUN_HEAD_SHA is refused, not skipped' \
+  'EXPECTED_RUN_HEAD_SHA is not set' EXPECTED_RUN_ID=4242
+
+try_required 'an empty EXPECTED_RUN_ID is refused' \
+  'EXPECTED_RUN_ID is not set' EXPECTED_RUN_ID='' EXPECTED_RUN_HEAD_SHA="$SHA_MERGED"
+
+try_required 'a whitespace EXPECTED_RUN_ID is refused' \
+  'is not a run id' EXPECTED_RUN_ID=' ' EXPECTED_RUN_HEAD_SHA="$SHA_MERGED"
+
+try_required 'a non-numeric EXPECTED_RUN_ID is refused' \
+  'is not a run id' EXPECTED_RUN_ID='42x' EXPECTED_RUN_HEAD_SHA="$SHA_MERGED"
+
+try_required 'a run id with an embedded space is refused, not repaired' \
+  'is not a run id' EXPECTED_RUN_ID='12 34' EXPECTED_RUN_HEAD_SHA="$SHA_MERGED"
+
+try_required 'a short EXPECTED_RUN_HEAD_SHA is refused' \
+  'is not 40 lowercase hex' EXPECTED_RUN_ID=4242 EXPECTED_RUN_HEAD_SHA='abc'
+
+# A sha with LETTERS in it. `SHA_MERGED` is all ones, and uppercasing digits
+# changes nothing — the case would have passed on a value that was still valid
+# lowercase hex, proving nothing.
+HEX_SHA='abcdef0123456789abcdef0123456789abcdef01'
+try_required 'an uppercase EXPECTED_RUN_HEAD_SHA is refused' \
+  'is not 40 lowercase hex' EXPECTED_RUN_ID=4242 EXPECTED_RUN_HEAD_SHA="${HEX_SHA^^}"
+
+try_required 'a multiline EXPECTED_RUN_HEAD_SHA is refused' \
+  'is not 40 lowercase hex' EXPECTED_RUN_ID=4242 EXPECTED_RUN_HEAD_SHA="${SHA_MERGED}
+extra"
+
+# The workflow must actually pass both, or the requirement above turns every
+# promotion into a refusal — correct, but only discovered in production.
+assert_pwf 'the workflow passes the run id to the verifier' 'EXPECTED_RUN_ID:'
+assert_pwf 'the workflow passes the run head sha to the verifier' 'EXPECTED_RUN_HEAD_SHA:'
+
+# And no optional path may creep back into the verifier.
+if grep -qE 'if \[ -n "\$\{EXPECTED_RUN' "$ROOT/deploy/verify-release-manifest.sh"; then
+  bad 'neither cross-check sits behind an optional guard' 'an if-optional path is back'
+else
+  ok 'neither cross-check sits behind an optional guard'
+fi
+
+section 'pick-staging-run — malformed input is refused, not repaired'
+
+# `GIVEN` used to have whitespace STRIPPED, which turned «12 34» into «1234» —
+# a different run, accepted without comment.
+# The literal text of the removed line — SC2016 is the reading this wants.
+# shellcheck disable=SC2016
+if grep -qF '${GIVEN//[[:space:]]/}' "$ROOT/deploy/pick-staging-run.sh"; then
+  bad 'the run id is validated raw, not stripped' 'whitespace is still being stripped'
+else
+  ok 'the run id is validated raw, not stripped'
+fi
+
+try_given() { # value  expected-substring
+  set +e
+  ( cd "$ROOT" && GH_TOKEN=t GIVEN="$1" bash deploy/pick-staging-run.sh 'Shikoonet/Shikoonet-Platform' ) \
+    >"$WORK/given.log" 2>&1
+  local rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    bad "refuses the run id '$1'" 'it was accepted'
+  elif grep -qF "$2" "$WORK/given.log"; then
+    ok "refuses the run id '$1'"
+  else
+    bad "refuses the run id '$1'" "refused, but not for '${2}': $(tail -1 "$WORK/given.log")"
+  fi
+}
+
+try_given '12 34' 'is not a run id'
+try_given ' 4242' 'is not a run id'
+try_given '4242 ' 'is not a run id'
+try_given '42x' 'is not a run id'
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
