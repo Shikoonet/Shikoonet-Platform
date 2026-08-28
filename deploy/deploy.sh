@@ -140,6 +140,9 @@ fi
 # interprets them, so a `|`, a space or a `$` in any secret is just a character.
 cfg() { sed -n "s/^$1=//p" "$CONF" | tail -1; }
 COOLIFY_URL=$(cfg COOLIFY_URL)
+# Coolify's own Postgres, for the two application settings its API serialises
+# as null. Overridable because the name is Coolify's, not ours.
+COOLIFY_DB_CONTAINER=${COOLIFY_DB_CONTAINER:-coolify-db}
 COOLIFY_TOKEN=$(cfg COOLIFY_TOKEN)
 APP_INGEST=$(cfg APP_INGEST)
 APP_DASHBOARD=$(cfg APP_DASHBOARD)
@@ -322,6 +325,38 @@ assert_deployable() { # uuid name
   #
   # Refused, not repaired. Nothing here reads a value, so nothing here can tell
   # which of the two was meant; a person has to delete one in the panel.
+  # Native Auto Deploy and preview deployments, asked of Coolify's own database.
+  #
+  # This assertion existed only in `autodeploy.sh`, the polling deployer this
+  # pipeline replaced — where its comment calls it "the whole defence" and
+  # explains why: Coolify's webhook endpoint is reachable from the internet in
+  # plaintext, and the ONLY thing making it inert is this flag being false. The
+  # live path inherited the risk and not the check, so for the whole of that
+  # window the defence was asserted by a retired script and a README.
+  #
+  # Read from the database rather than the API on purpose: `GET
+  # /applications/:uuid` serialises both fields as `null` — they live on
+  # `application_settings`, which the API does not expose. Measured 2026-08-27.
+  # Neither value is secret.
+  #
+  # Skipped, loudly, when the container is not reachable. A deploy that cannot
+  # ask must not silently conclude «fine».
+  local settings auto prev
+  if settings=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At -F'|' \
+    -c "select s.is_auto_deploy_enabled, s.is_preview_deployments_enabled
+          from application_settings s join applications a on a.id = s.application_id
+         where a.uuid = '$1';" 2>/dev/null) && [ -n "$settings" ]; then
+    IFS='|' read -r auto prev <<EOF
+$settings
+EOF
+    [ "$auto" = 'f' ] ||
+      die "$2 has native Auto Deploy ENABLED in Coolify — a GitHub push could deploy behind this script's back, ignoring the digest this deploy verified"
+    [ "$prev" = 'f' ] ||
+      die "$2 has preview deployments ENABLED in Coolify — a pull request could deploy"
+  else
+    say "WARNING: could not read Coolify application settings for $2 from ${COOLIFY_DB_CONTAINER} — native Auto Deploy is UNVERIFIED for this deploy"
+  fi
+
   local problem
   problem=$(api GET "/applications/$1/envs" |
     python3 -c 'import json,sys
