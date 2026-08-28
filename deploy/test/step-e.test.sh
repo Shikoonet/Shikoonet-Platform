@@ -97,6 +97,110 @@ else
   ok 'no undocumented field is sent'
 fi
 
+section 'row identity is the API uuid, never a numeric id'
+
+# The first run died with `KeyError: 'id'` before mutating anything — a real
+# bug with a lucky outcome. This Coolify serialises environment variables with
+# a `uuid` and NO numeric `id`: measured live, 14/14 rows carry `uuid`, 0/14
+# carry `id`.
+if grep -nE 'r\["id"\]|r\.get\("id"\)' "$RUNNER" | grep -qv '^[0-9]*:#'; then
+  bad 'no code indexes a numeric id on an API row' 'r["id"] is still used'
+else
+  ok 'no code indexes a numeric id on an API row'
+fi
+has "$RUNNER" 'r.get("uuid")' 'rows are addressed by uuid'
+has "$RUNNER" 'db_id_for' 'a database id is resolved rather than assumed'
+has "$RUNNER" "ev.uuid = " 'the mapping keys on the exact row uuid'
+has "$RUNNER" 'resourceable_type' 'the mapping constrains resourceable_type'
+has "$RUNNER" "a.uuid = " 'the mapping constrains the owning application'
+has "$RUNNER" 'expected exactly 1' 'a uuid matching other than one database row stops the run'
+has "$RUNNER" 'refusing to act on rows this API cannot address' 'a row without a uuid is refused'
+
+# Correlating by position in a JSON array works until the array is ordered
+# differently, which is the kind of bug that only appears in production.
+# Narrowed to indexing of the PARSED RESPONSE. `${BASH_SOURCE[0]}` is a bash
+# array subscript and has nothing to do with row correlation; a pattern broad
+# enough to catch it is a pattern that will be silenced rather than fixed.
+if grep -qE 'd\[[0-9]+\]|rows\[[0-9]+\]|enumerate\(|zip\(' "$RUNNER"; then
+  bad 'rows are never correlated by response order' 'positional indexing of the response found'
+else
+  ok 'rows are never correlated by response order'
+fi
+
+section 'the canonical decrypted field is value, not real_value'
+
+# `value` is cast `encrypted` on the model, so the serialiser returns plaintext.
+# `real_value` is an appended accessor that also resolves shared variables and
+# then runs escapeEnvVariables(), quoting literal and multiline values — a
+# shell-ready rendering, which is the wrong thing to compare.
+has "$RUNNER" 'r.get("value")' 'classification reads value'
+if grep -q 'real_value' "$RUNNER"; then
+  if grep -n 'real_value' "$RUNNER" | grep -qv ':#'; then
+    bad 'real_value is never read as the canonical field' 'it is used in code'
+  else
+    ok 'real_value is never read as the canonical field'
+  fi
+else
+  ok 'real_value is never read as the canonical field'
+fi
+
+section 'no secret reaches process argv'
+
+SIO="$ROOT/deploy/coolify-secret-io.sh"
+# `ps` is readable by every process on the host, so a token in a URL argument
+# is a token handed to anybody logged in.
+if grep -qE 'curl .*api\.telegram\.org' "$RUNNER"; then
+  bad 'the bot token never appears in a curl argument' 'a telegram URL is built inline'
+else
+  ok 'the bot token never appears in a curl argument'
+fi
+if grep -qE 'psql "\$[A-Za-z_]*(URL|url)' "$RUNNER"; then
+  bad 'the database URL never appears in a psql argument' 'a URL is passed positionally'
+else
+  ok 'the database URL never appears in a psql argument'
+fi
+has "$SIO" 'curl -K' 'the telegram request is configured from a file'
+has "$SIO" 'PGSERVICEFILE' 'libpq is configured from a service file'
+has "$SIO" 'chmod 600' 'the credential files are 0600'
+has "$SIO" 'rm -f' 'the credential files are removed after use'
+has "$RUNNER" 'trap cleanup_all EXIT INT TERM' 'credentials are cleaned up on signal as well as exit'
+has "$RUNNER" 'tg_get_me' 'the runner uses the secret-safe telegram helper'
+has "$RUNNER" 'pg_system_identifier' 'the runner uses the secret-safe postgres helper'
+
+# Only the public half of each answer may be reported.
+has "$SIO" 'system_identifier' 'only the cluster identifier comes back from a database probe'
+if grep -A4 'tg_get_me' "$SIO" | grep -qE 'print\(.*token|echo .*token'; then
+  bad 'the telegram helper never echoes the token' 'it does'
+else
+  ok 'the telegram helper never echoes the token'
+fi
+
+section 'partial cleanup survives a blocked bot row'
+
+# An unresolved bot token must leave shikoo-dev-bot undeployable WITHOUT
+# preventing ingest and dashboard from being cleaned — otherwise one ambiguous
+# row blocks the whole release.
+has "$RUNNER" 'BLOCKED=' 'blocked keys are tracked separately from dropped rows'
+if awk '/^classify_bot/,/^}/' "$RUNNER" | grep -q 'die '; then
+  bad 'an ambiguous bot token does not abort the run' 'classify_bot can die'
+else
+  ok 'an ambiguous bot token does not abort the run'
+fi
+has "$RUNNER" 'still duplicated and deliberately untouched' 'it reports what it left alone'
+has "$RUNNER" 'will still refuse those applications' 'it says which applications stay undeployable'
+
+section 'the recovery backup covers every deleted row'
+
+has "$RUNNER" 'is not in the recovery backup' 'a row absent from the backup is never deleted'
+has "$RUNNER" 'DROP_DBIDS' 'deleted database ids are recorded as evidence'
+has "$RUNNER" 'env_backup_owner' 'the evidence records the real backup owner'
+has "$RUNNER" 'env_backup_mode' 'the evidence records the real backup mode'
+if grep -q '0600, root' "$ROOT/deploy/backup-coolify-env.sh"; then
+  bad 'the backup no longer claims root ownership it does not have' 'the claim is still there'
+else
+  ok 'the backup no longer claims root ownership it does not have'
+fi
+
 section 'evidence carries no secret'
 
 has "$RUNNER" 'step-e-evidence.env' 'it writes an evidence manifest'

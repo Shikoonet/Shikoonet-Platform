@@ -10,9 +10,14 @@
 # back. Calling that snapshot "reversible" is how a cleanup becomes an outage.
 #
 # So this writes the rows AS STORED — Laravel's ciphertext, untouched and
-# undecrypted — to a root-owned 0600 file, and writes the readable inventory
-# separately. The first is the recovery path and nobody reads it; the second is
-# what a person reviews.
+# undecrypted — to a 0600 file owned by whoever runs it, and writes the
+# readable inventory separately. The first is the recovery path and nobody
+# reads it; the second is what a person reviews.
+#
+# It is NOT root-owned in normal use, and saying so matters: this runs as
+# `shikoo-deploy`, so the file is `shikoo-deploy:shikoo-deploy` mode 0600.
+# Evidence that claimed root ownership would be describing a file that does not
+# exist, and the point of evidence is that somebody can check it.
 #
 # ── The dependency nobody writes down ──────────────────────────────────────
 #
@@ -125,6 +130,6 @@ coolify_db "select a.name, a.uuid, ev.id, ev.key,
   where a.uuid in (${list}) order by a.name, ev.key, ev.id;" >"$INVENTORY" ||
   die "could not write the redacted inventory"
 
-say "wrote ${inserts} encrypted row(s) to ${ROWS} (0600, root)"
+say "wrote ${inserts} encrypted row(s) to ${ROWS} ($(stat -c '%U:%G mode %a' "$ROWS"))"
 say "wrote the redacted inventory to ${INVENTORY}"
 say "restore a row with: docker exec -i ${COOLIFY_DB_CONTAINER} psql -U coolify -d coolify -f - <<< '<the INSERT line>'"

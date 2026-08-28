@@ -807,6 +807,13 @@ jobs:
       - name: step-e runner — the four ways it must refuse
         run: bash deploy/test/step-e.test.sh
 
+      # Against the response this Coolify actually returns: 20 fields, `uuid`
+      # present, numeric `id` absent, both `value` and `real_value`. The
+      # absence of `id` is what killed the first run, before it mutated
+      # anything.
+      - name: step-e runner — the live API row shape
+        run: bash deploy/test/step-e-live-shape.test.sh
+
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh
 
