@@ -60,8 +60,12 @@ case "\$url" in
     esac
     exit 0 ;;
   */envs)
-    cat <<'JSON'
-[
+    # curl writes the http_code with no separator, so the fake has to as well.
+    # Written as one printf rather than a heredoc: a heredoc nested inside the
+    # heredoc that generates this file is a quoting puzzle, and the version
+    # that got it wrong failed as «could not reach Coolify» — pointing at the
+    # network rather than at itself.
+    printf '%s200' '[
  {"id":95,"key":"DATABASE_URL","value":"${SECRET_DB_STAGING}"},
  {"id":96,"key":"DATABASE_URL","value":"${SECRET_DB_PROD}"},
  {"id":111,"key":"TELEGRAM_BOT_TOKEN","value":"${SECRET_TOKEN_A}"},
@@ -71,11 +75,10 @@ case "\$url" in
  {"id":50,"key":"PANEL_SECRET_KEY","value":"a-secret-with-no-special-handling"},
  {"id":51,"key":"PANEL_SECRET_KEY","value":"another-secret-value"},
  {"id":60,"key":"APPEARS_ONCE","value":"not-a-duplicate-and-must-not-be-listed"}
-]
-JSON
+]'
     exit 0 ;;
 esac
-printf '{}'
+printf '{}404'
 FAKE
 chmod +x "$BIN/curl"
 

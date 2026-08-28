@@ -91,34 +91,16 @@ grep -q '^instant_deploy_false_creates_nothing=proven$' "$CONTRACT" ||
 grep -q '^autogenerate_domain_false_creates_no_domain=proven$' "$CONTRACT" ||
   die "${CONTRACT} does not record autogenerate_domain=false as proven"
 
-CURLDIR=$(mktemp -d)
-trap 'rm -rf "$CURLDIR"' EXIT
-chmod 700 "$CURLDIR"
-{
-  printf 'header = "Authorization: Bearer %s"\n' "$COOLIFY_TOKEN"
-  printf 'header = "Accept: application/json"\n'
-} >"$CURLDIR/c"
-chmod 600 "$CURLDIR/c"
-unset COOLIFY_TOKEN
-
-api_status=0
-api() { # METHOD PATH [body]
-  local method=$1 path=$2 body=${3:-} out
-  if [ -n "$body" ]; then
-    out=$(curl -sS -m 45 -w '%{http_code}' -K "$CURLDIR/c" -X "$method" \
-      -H 'Content-Type: application/json' --data-binary "$body" \
-      "${COOLIFY_URL}/api/v1${path}") || { api_status=0; return 1; }
-  else
-    out=$(curl -sS -m 45 -w '%{http_code}' -K "$CURLDIR/c" -X "$method" \
-      "${COOLIFY_URL}/api/v1${path}") || { api_status=0; return 1; }
-  fi
-  api_status=${out: -3}
-  printf '%s' "${out:0:${#out}-3}"
-}
+# shellcheck source=deploy/coolify-api.sh
+. "$(dirname "${BASH_SOURCE[0]}")/coolify-api.sh"
+coolify_api_init "$CONF" || die "could not prepare the Coolify client"
+trap coolify_api_cleanup EXIT
 
 # Which project and environment. Named, never positional: "the first project"
 # is a correct answer exactly until somebody adds one.
-projects=$(api GET '/projects') || die "could not list projects"
+coolify_api GET '/projects' || die "could not list projects"
+[ "$API_STATUS" = '200' ] || die "listing projects was refused (HTTP ${API_STATUS})"
+projects=$API_BODY
 PROJECT_UUID=$(printf '%s' "$projects" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
 for p in (d if isinstance(d,list) else []):
@@ -126,7 +108,9 @@ for p in (d if isinstance(d,list) else []):
 else: print("")' "$PROJECT_NAME")
 [ -n "$PROJECT_UUID" ] || die "no project named '${PROJECT_NAME}'"
 
-servers=$(api GET '/servers') || die "could not list servers"
+coolify_api GET '/servers' || die "could not list servers"
+[ "$API_STATUS" = '200' ] || die "listing servers was refused (HTTP ${API_STATUS})"
+servers=$API_BODY
 SERVER_UUID=$(printf '%s' "$servers" | python3 -c 'import json,sys
 d=json.load(sys.stdin); d=d if isinstance(d,list) else []
 print(d[0].get("uuid") if len(d)==1 else "")')
@@ -134,7 +118,9 @@ print(d[0].get("uuid") if len(d)==1 else "")')
 
 # Every application in this project+environment, once, so three lookups do not
 # become three round trips that could each see a different world.
-existing=$(api GET '/applications') || die "could not list applications"
+coolify_api GET '/applications' || die "could not list applications"
+[ "$API_STATUS" = '200' ] || die "listing applications was refused (HTTP ${API_STATUS})"
+existing=$API_BODY
 
 find_uuid() { # name -> uuid or empty
   printf '%s' "$existing" | python3 -c 'import json,sys
@@ -185,12 +171,21 @@ print(json.dumps({
 }))' "$PROJECT_UUID" "$SERVER_UUID" "$ENVIRONMENT_NAME" "$IMAGE_NAME" \
     "$([ "$role" = 'dashboard' ] && echo 8788 || echo 8787)" "$name")
 
-  local created
-  created=$(api POST '/applications/dockerimage' "$body") || die "${role}: the create call could not be made"
-  uuid=$(printf '%s' "$created" | python3 -c 'import json,sys
+  # Inside this function the status check is in the SAME shell that set it,
+  # even though the function itself is called through `$(...)`. What must not
+  # happen is the check moving outside — which is the whole subject of the
+  # header of coolify-api.sh.
+  coolify_api POST '/applications/dockerimage' "$body" ||
+    die "${role}: the create call could not be made"
+  case "$API_STATUS" in
+    2??) ;;
+    401 | 403) die "${role}: create was refused (HTTP ${API_STATUS}) — the token cannot create applications in this project" ;;
+    *) die "${role}: create returned HTTP ${API_STATUS}" ;;
+  esac
+  uuid=$(printf '%s' "$API_BODY" | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("uuid") or "")
 except Exception: print("")')
-  [ -n "$uuid" ] || die "${role}: create returned HTTP ${api_status} with no uuid"
+  [ -n "$uuid" ] || die "${role}: create returned HTTP ${API_STATUS} with no uuid"
   say "${role}: created ${name} (${uuid}), stopped, no domain, no ports published"
   printf 'created %s' "$uuid"
 }
