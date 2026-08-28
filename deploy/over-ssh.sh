@@ -36,13 +36,14 @@ esac
 # An immutable digest or nothing. `deploy.sh` refuses a mutable tag too, but
 # refusing it HERE means a bad promotion input never reaches the box, never
 # opens an SSH session and never takes the deploy flock.
-case "${IMAGE_REF:-}" in
-  *@sha256:*) ;;
-  *)
-    echo "refusing: IMAGE_REF is not an immutable digest: '${IMAGE_REF:-}'" >&2
-    exit 1
-    ;;
-esac
+#
+# `name@sha256:` and exactly 64 lowercase hex characters. The prefix alone is
+# not a digest: «@sha256:abc» has the shape and none of the meaning, and would
+# reach the box, take the deploy flock and fail at `docker pull`.
+echo "${IMAGE_REF:-}" | grep -qE '^[^@[:space:]]+@sha256:[0-9a-f]{64}$' || {
+  echo "refusing: IMAGE_REF is not an immutable digest: '${IMAGE_REF:-}'" >&2
+  exit 1
+}
 
 for required in DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DEPLOY_HOST DEPLOY_USER REGISTRY_TOKEN IMAGE_REF; do
   [ -n "${!required:-}" ] || {
