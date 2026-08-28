@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# Install the staging task runner. Small on purpose, so it can be read.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# An earlier version of this carried its payload as 117 KB of embedded base64
+# with a self-checksum. That was wrong, and the reason is worth keeping: a
+# self-checksum proves a file is internally consistent, not that anybody
+# reviewed what is inside it. Something that runs as root has to be readable in
+# the pull request that introduces it, and reviewed there.
+#
+# So this installs from a staged directory and hard-codes the one hash that
+# makes that safe — the manifest's — while the manifest itself is version
+# controlled beside this file. Nothing is copied that the manifest does not
+# name, and nothing is copied that does not match its recorded hash.
+#
+# ── What this grants ──────────────────────────────────────────────────────
+#
+# hessamx may run /usr/local/sbin/shikoo-task-runner as root with one of eight
+# fixed subcommands and no arguments of their own. Not a shell, not an
+# interpreter, not sudo -u with a chosen command, not docker, not systemctl,
+# not a wildcard.
+#
+# ── Before it touches sudoers ────────────────────────────────────────────
+#
+# It backs up every target it will replace and arms a systemd timer that
+# restores them in fifteen minutes. A broken /etc/sudoers.d fragment can lock
+# an administrator out of sudo, so the machine has to be able to undo this
+# without anybody remembering to. The timer is cancelled only after every
+# positive AND negative test passes.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Run: sudo bash deploy/install-shikoo-task-runner.sh [staged-dir]
+#
+# staged-dir defaults to /home/hessamx/shikoo-owner-step-e and must contain
+# exactly the files the manifest names, plus the manifest, the runner and the
+# sudoers template.
+
+set -Eeuo pipefail
+
+STAGE=${1:-/home/hessamx/shikoo-owner-step-e}
+LIB=/usr/local/lib/shikoo-step-e
+BIN=/usr/local/sbin/shikoo-task-runner
+SUDOERS=/etc/sudoers.d/90-shikoo-task-runner
+GRANTEE=hessamx
+RUN_AS=shikoo-deploy
+BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
+
+# The one hard-coded value. Everything else is derived from the manifest it
+# pins, and a CI test asserts this still equals
+# sha256sum deploy/shikoo-task-runner.manifest.
+MANIFEST_SHA256=469ec3ac80e24862aa83f78a12e39fd631240da98d6128a1bc9b3c75bb4425b5
+
+say() { echo "[install] $*"; }
+die() { echo "[install] FAILED: $*" >&2; exit 1; }
+
+[ "$(id -u)" = '0' ] || die "run this with sudo"
+id -u "$GRANTEE" >/dev/null 2>&1 || die "user $GRANTEE does not exist"
+id -u "$RUN_AS" >/dev/null 2>&1 || die "user $RUN_AS does not exist"
+[ -d "$STAGE" ] || die "staged directory $STAGE does not exist"
+[ ! -L "$STAGE" ] || die "$STAGE is a symlink — refusing"
+
+# ── verify the staged bundle, before anything is copied ──────────────────
+[ -f "$STAGE/MANIFEST" ] || die "$STAGE/MANIFEST is missing"
+[ ! -L "$STAGE/MANIFEST" ] || die "$STAGE/MANIFEST is a symlink — refusing"
+actual=$(sha256sum "$STAGE/MANIFEST" | cut -d' ' -f1)
+[ "$actual" = "$MANIFEST_SHA256" ] ||
+  die "$STAGE/MANIFEST does not match the hash this installer was built against"
+say "manifest verified"
+
+# The allowlist IS the manifest, plus the three files that are this mechanism.
+ALLOWED=$( { awk '{print $2}' "$STAGE/MANIFEST"; printf 'MANIFEST\nshikoo-task-runner\nshikoo-task-runner.sudoers\n'; } | sort )
+
+# Extra staged files are refused rather than ignored. Something unexpected in
+# the directory a root install copies from is a question, not a rounding error.
+staged=$(find "$STAGE" -maxdepth 1 -mindepth 1 -printf '%f\n' | sort)
+extra=$(comm -23 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
+[ -z "$extra" ] || die "unexpected file(s) in $STAGE: $(printf '%s' "$extra" | tr '\n' ' ')"
+missing=$(comm -13 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
+[ -z "$missing" ] || die "missing file(s) in $STAGE: $(printf '%s' "$missing" | tr '\n' ' ')"
+
+check_staged() { # name
+  local p="$STAGE/$1"
+  [ -e "$p" ] || die "$p is missing"
+  [ ! -L "$p" ] || die "$p is a symlink — refusing"
+  [ -f "$p" ] || die "$p is not a regular file"
+}
+for f in $ALLOWED; do check_staged "$f"; done
+( cd "$STAGE" && sha256sum -c --status MANIFEST ) ||
+  die "a staged script does not match the manifest"
+say "all $(grep -c . "$STAGE/MANIFEST") script(s) match the manifest"
+
+# ── back up every target this will replace ───────────────────────────────
+mkdir -p "$BACKUP"
+chmod 700 "$BACKUP"
+for target in "$BIN" "$SUDOERS"; do
+  [ -e "$target" ] || continue
+  cp -a "$target" "$BACKUP/$(basename "$target")"
+  say "backed up $target"
+done
+[ ! -d "$LIB" ] || { cp -a "$LIB" "$BACKUP/lib" && say "backed up $LIB"; }
+
+# ── arm the rollback BEFORE sudoers changes ──────────────────────────────
+cat >/usr/local/sbin/shikoo-task-runner-rollback <<ROLLBACK
+#!/bin/sh
+set -eu
+rm -f "$SUDOERS" "$BIN"
+rm -rf "$LIB"
+[ ! -e "$BACKUP/90-shikoo-task-runner" ] || cp -a "$BACKUP/90-shikoo-task-runner" "$SUDOERS"
+[ ! -e "$BACKUP/shikoo-task-runner" ] || cp -a "$BACKUP/shikoo-task-runner" "$BIN"
+[ ! -d "$BACKUP/lib" ] || cp -a "$BACKUP/lib" "$LIB"
+logger -t shikoo-task-runner "automatic rollback executed from $BACKUP"
+systemctl disable --now shikoo-task-runner-rollback.timer 2>/dev/null || true
+ROLLBACK
+chmod 0700 /usr/local/sbin/shikoo-task-runner-rollback
+
+cat >/etc/systemd/system/shikoo-task-runner-rollback.service <<'UNIT'
+[Unit]
+Description=Undo an unconfirmed shikoo-task-runner installation
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/shikoo-task-runner-rollback
+UNIT
+cat >/etc/systemd/system/shikoo-task-runner-rollback.timer <<'UNIT'
+[Unit]
+Description=Undo an unconfirmed shikoo-task-runner installation
+[Timer]
+OnActiveSec=15min
+AccuracySec=10s
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now shikoo-task-runner-rollback.timer >/dev/null 2>&1 ||
+  die "could not arm the rollback timer — refusing to change sudoers without one"
+say "rollback armed: everything reverts in 15 minutes unless this run succeeds"
+
+fail_back() { die "$* — the rollback timer will undo this"; }
+
+# ── install, by exact name, never a wildcard ─────────────────────────────
+rm -rf "$LIB"
+install -d -o root -g root -m 0755 "$LIB"
+while read -r _ name; do
+  [ -n "$name" ] || continue
+  install -o root -g root -m 0644 "$STAGE/$name" "$LIB/$name"
+done <"$STAGE/MANIFEST"
+install -o root -g root -m 0644 "$STAGE/MANIFEST" "$LIB/MANIFEST"
+install -o root -g root -m 0755 "$STAGE/shikoo-task-runner" "$BIN"
+say "installed $LIB and $BIN"
+
+# Installed bytes must equal staged bytes, and nothing may be writable by the
+# grantee or by the account the tasks run as.
+( cd "$LIB" && sha256sum -c --status MANIFEST ) || fail_back "installed scripts do not match the manifest"
+for f in "$LIB"/* "$BIN"; do
+  [ "$(stat -c '%u:%g' "$f")" = '0:0' ] || fail_back "$f is not root:root"
+  case "$(stat -c '%a' "$f")" in 644 | 755) ;; *) fail_back "$f has mode $(stat -c '%a' "$f")" ;; esac
+done
+say "installed files are root:root and not writable by $GRANTEE or $RUN_AS"
+
+# ── sudoers ──────────────────────────────────────────────────────────────
+TMP_SUDO=$(mktemp)
+cp "$STAGE/shikoo-task-runner.sudoers" "$TMP_SUDO"
+visudo -cf "$TMP_SUDO" >/dev/null || fail_back "the sudoers fragment does not validate"
+install -o root -g root -m 0440 "$TMP_SUDO" "$SUDOERS"
+rm -f "$TMP_SUDO"
+visudo -cf "$SUDOERS" >/dev/null || fail_back "the installed fragment does not validate"
+visudo -cf /etc/sudoers >/dev/null || fail_back "/etc/sudoers no longer validates"
+say "sudoers validated"
+
+# ── prove it works, and only the way it should ───────────────────────────
+runas_grantee() { sudo -n -u "$GRANTEE" "$@"; }
+
+runas_grantee sudo -n "$BIN" status >/dev/null 2>&1 ||
+  fail_back "$GRANTEE cannot run the permitted 'status' command"
+say "positive: $GRANTEE can run 'status'"
+
+# Negative tests. Each of these succeeding would mean the grant is wider than
+# it reads, which is the failure this whole shape exists to prevent.
+! runas_grantee sudo -n "$BIN" status extra >/dev/null 2>&1 ||
+  fail_back "an extra argument was accepted"
+! runas_grantee sudo -n "$BIN" not-a-subcommand >/dev/null 2>&1 ||
+  fail_back "an arbitrary subcommand was accepted"
+! runas_grantee sudo -n "$BIN" restore-drill-production >/dev/null 2>&1 ||
+  fail_back "a production form of the drill was accepted"
+! runas_grantee sudo -n /bin/bash -c true >/dev/null 2>&1 ||
+  fail_back "$GRANTEE gained a passwordless shell"
+! runas_grantee sudo -n /bin/sh -c true >/dev/null 2>&1 ||
+  fail_back "$GRANTEE gained a passwordless shell"
+! runas_grantee sudo -n /usr/bin/id >/dev/null 2>&1 ||
+  fail_back "$GRANTEE gained passwordless sudo for an arbitrary binary"
+say "negative: extra arguments, unknown subcommands, production forms and shells all refused"
+
+# ── success: stand the rollback down ─────────────────────────────────────
+systemctl disable --now shikoo-task-runner-rollback.timer >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/shikoo-task-runner-rollback.timer \
+      /etc/systemd/system/shikoo-task-runner-rollback.service \
+      /usr/local/sbin/shikoo-task-runner-rollback
+systemctl daemon-reload
+
+say "done. Backups of anything replaced are in $BACKUP"
+say ""
+say "verify (read-only):"
+say "  sudo -n $BIN status"
+say "  sudo -l -U $GRANTEE | sed -n '/shikoo-task-runner/p'"
+say "revoke when finished:"
+say "  sudo -n $BIN revoke-access"
