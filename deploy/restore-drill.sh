@@ -39,8 +39,53 @@
 
 set -eu
 
-DB_CONTAINER="${DB_CONTAINER:-zpuyfk3p3nqfpebybbxz6opy}"
-BACKUP_DIR="${BACKUP_DIR:-/data/coolify/backups/databases/root-team-0/shikoo-postgres-zpuyfk3p3nqfpebybbxz6opy}"
+# Which environment's backup to drill. `production` unless told otherwise,
+# because that is the one whose restore anybody actually needs at 3am.
+ENV_ARG="${1:-production}"
+case "$ENV_ARG" in
+  staging | production) ;;
+  *) echo "usage: restore-drill.sh [staging|production]" >&2; exit 2 ;;
+esac
+
+# Resolved from Coolify, not hardcoded.
+#
+# Both of these used to be literals naming `zpuyfk3p3nqfpebybbxz6opy`, and that
+# container does not exist on this host — the databases are
+# `qd2vduj7kv05sp9ejdrmclmu` (production) and `bea6ac92holn5k6vjgopy2ai`
+# (staging). So the drill would have died on its first docker exec, which is a
+# particularly bad way for a backup verifier to fail: it never ran, and nothing
+# said the backups were unverified.
+#
+# Asking Coolify's own database is the same read path `deploy.sh` already uses
+# for application settings. Neither value is a secret.
+COOLIFY_DB_CONTAINER="${COOLIFY_DB_CONTAINER:-coolify-db}"
+coolify_env_name=production
+[ "$ENV_ARG" = 'staging' ] && coolify_env_name=dev-fleet
+
+if [ -z "${DB_CONTAINER:-}" ]; then
+  DB_CONTAINER=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At \
+    -c "select p.uuid from standalone_postgresqls p
+          join environments e on e.id = p.environment_id
+         where e.name = '${coolify_env_name}' limit 1;" 2>/dev/null || true)
+  [ -n "$DB_CONTAINER" ] || {
+    echo "could not resolve the ${ENV_ARG} database container from Coolify" >&2
+    exit 1
+  }
+fi
+
+# Coolify names each backup directory `<db-name>-<uuid>`, so the uuid is what
+# finds it. Searched rather than composed: the team segment of the path is
+# Coolify's to choose and has changed before.
+if [ -z "${BACKUP_DIR:-}" ]; then
+  BACKUP_DIR=$(find /data/coolify/backups/databases -maxdepth 2 -type d \
+    -name "*${DB_CONTAINER}" 2>/dev/null | head -1)
+  [ -n "$BACKUP_DIR" ] || {
+    echo "no backup directory for ${ENV_ARG} database ${DB_CONTAINER} under /data/coolify/backups/databases" >&2
+    echo "  (a database with no scheduled backup has nothing to restore — configure one in Coolify first)" >&2
+    exit 1
+  }
+fi
+say_target() { printf 'target  %s  container=%s  dir=%s\n' "$ENV_ARG" "$DB_CONTAINER" "$BACKUP_DIR"; }
 # Named for what it is, so nobody wonders whether it matters. Dropped at the end
 # and dropped again on the way in, because a drill that died halfway must not
 # make the next one fail.
@@ -63,6 +108,7 @@ MIGRATIONS_DIR="${MIGRATIONS_DIR:-$REPO_ROOT/migrations}"
 INVARIANTS="${INVARIANTS:-$MIGRATIONS_DIR/verify_invariants.sql}"
 
 say() { printf '%s\n' "$*"; }
+say_target
 psql_() { docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -v ON_ERROR_STOP=1 -q "$@"; }
 
 # Newest `.dmp` by mtime. `find -printf` sorts on the timestamp itself rather

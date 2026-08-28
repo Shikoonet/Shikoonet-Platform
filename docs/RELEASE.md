@@ -376,6 +376,34 @@ the live domain becomes whichever a person last remembered.
 The old Dockerfile applications are never selected as canonical again: the
 lookup is by the `shikoo-prod-*` names, which they do not have.
 
+### The restore drill
+
+`deploy/restore-drill.sh` proves the newest backup can actually be restored:
+`pg_restore` finishes, the schema ledger of the restored copy matches the
+migration files shipped beside the drill, and `verify_invariants.sql` passes
+against it. It restores into a throwaway database beside the real one and drops
+it afterwards; it never writes to the live database and never stops a service.
+
+It needs root, because it reads Coolify's backup directory.
+
+```
+# production (the default)
+sudo sh /usr/local/lib/shikoo-probe/restore-drill.sh production
+
+# staging
+sudo sh /usr/local/lib/shikoo-probe/restore-drill.sh staging
+```
+
+It resolves the database container and backup directory from Coolify rather
+than assuming them. Both used to be hardcoded to `zpuyfk3p3nqfpebybbxz6opy`, a
+container that does not exist on this host — so the drill would have failed on
+its first command, in the way a backup verifier must not: never having run, with
+nothing anywhere saying the backups were unverified.
+
+**Staging has no scheduled backup yet.** The drill will say so by name rather
+than reporting a missing dump as a failed restore. Configure one in Coolify
+before drilling staging.
+
 ### Before the first production release
 
 `Prepare Production` refuses to create anything until a Coolify contract
@@ -400,7 +428,21 @@ sudo -u shikoo-deploy bash coolify-contract-probe.sh staging /var/lib/shikoo
 If any assertion fails it stops and writes no attestation, and production
 candidates cannot be created until it passes.
 
-#### What the first probe run found
+#### Status: proven on this instance, 2026-08-28
+
+The probe has run and passed. `/var/lib/shikoo/coolify-contract.env` holds a
+schema-2 attestation recording `auto_deploy_default=t`,
+`auto_deploy_settable_at_create=no`,
+`auto_deploy_disabled_before_configuration=proven`,
+`delete_semantics=async-hard-delete`, and a measured convergence of ~4s. Its
+disposable application (`kms0pi47i1va0d0vrfbabuof`) was created, hardened,
+deleted, and left no application, container, deployment, domain or environment
+row behind.
+
+Re-run it only if Coolify is upgraded, its API token is rotated to a different
+scope, or a create/delete behaves unlike the record above.
+
+#### What the probe found
 
 Two live-contract mismatches, both of which had looked correct on paper.
 

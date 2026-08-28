@@ -794,6 +794,12 @@ jobs:
       - name: coolify app contract — hardening is verified, deletion is awaited
         run: bash deploy/test/coolify-app.test.sh
 
+      # The drill's defaults named a container that does not exist on the host,
+      # so a backup verifier would have died on its first command — never
+      # having run, with nothing saying the backups were unverified.
+      - name: restore drill — it resolves its target instead of assuming one
+        run: bash deploy/test/restore-drill.test.sh
+
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh
 
