@@ -11,7 +11,7 @@
 #
 # On GitHub Free a private repository gets no rulesets, no required reviews and
 # no required-reviewer environments. There is nothing between `git push origin
-# main` and a production deploy except this file. `deploy.yml` is now the only
+# main` and a production deploy except this file. `deploy-staging.yml` is the only
 # path that deploys, so the guarantees a branch protection rule would have
 # given have to be re-derived here, from the same API, at deploy time.
 #
@@ -84,33 +84,48 @@ REQUIRED_JOB=${REQUIRED_JOB:-Required Quality Gate}
 
 # ─────────────────────────────────────────────────────────── the approval mode
 #
-# `team`  — a human who did not write it approved it. The original policy.
-# `solo`  — one named owner writes, merges and ships their own work, and the
-#           audit trail says so in those words instead of pretending somebody
-#           reviewed it.
+# `team`              — a human who did not write it approved it. The original
+#                       policy. It refuses the owner's own solo work, which is
+#                       most of this repository's history.
+# `solo`              — one named owner writes, merges and ships their own work,
+#                       and the audit trail says so in those words instead of
+#                       pretending somebody reviewed it. It refuses EVERY
+#                       contributor PR, however well reviewed, because the
+#                       author check below has no approved branch to fall to.
+# `owner-or-approved` — the union, and the live policy. The owner may ship their
+#                       own work unreviewed; anybody else needs a real human
+#                       approval on the final head from someone who is not the
+#                       author, and the owner still has to be the one who merged
+#                       it. Nothing is relaxed: CHANGES_REQUESTED, staleness and
+#                       the Quality Gate apply to both halves identically.
 #
 # There is no default. An unset, empty or misspelled mode DENIES rather than
 # picking one, because both of the tempting defaults are wrong: defaulting to
 # `team` turns a typo into a deploy that never runs, and defaulting to `solo`
-# turns a typo into a deploy nobody reviewed. The mode is set in `deploy.yml`,
-# which is versioned and reviewed, so «unset» means somebody deleted it.
+# turns a typo into a deploy nobody reviewed. The mode is set in
+# `deploy-staging.yml`, which is versioned and reviewed, so «unset» means
+# somebody deleted it.
 #
 # Matched against the exact lowercase string. `SOLO` and `Solo` are not solo —
 # they are unknown, and unknown denies.
 MODE=${DEPLOY_APPROVAL_MODE:-}
 case "$MODE" in
-  team | solo) ;;
+  team | solo | owner-or-approved) ;;
   *)
-    echo "[gate] DENIED: DEPLOY_APPROVAL_MODE is «${MODE:-unset}» — it must be exactly 'team' or 'solo'" >&2
+    echo "[gate] DENIED: DEPLOY_APPROVAL_MODE is «${MODE:-unset}» — it must be exactly 'team', 'solo' or 'owner-or-approved'" >&2
     exit 1
     ;;
 esac
 
-# Who `solo` means. Versioned beside the mode, so changing who may ship their
+# Who the owner is. Versioned beside the mode, so changing who may ship their
 # own work is a reviewed diff rather than a setting somebody flipped.
+#
+# Required by `owner-or-approved` as well as `solo`: without it, the merged-by
+# assertion that both modes rely on has nothing to compare against, and an
+# empty comparison would pass.
 SOLO_OWNER=${SOLO_DEPLOY_OWNER:-}
-if [ "$MODE" = 'solo' ] && [ -z "$SOLO_OWNER" ]; then
-  echo "[gate] DENIED: solo mode needs SOLO_DEPLOY_OWNER — refusing to let anyone ship unreviewed" >&2
+if [ "$MODE" != 'team' ] && [ -z "$SOLO_OWNER" ]; then
+  echo "[gate] DENIED: ${MODE} mode needs SOLO_DEPLOY_OWNER — refusing to let anyone ship unreviewed" >&2
   exit 1
 fi
 
@@ -246,23 +261,15 @@ changes_requested=$(printf '%s' "$reviews" | jq -r --arg head "$PR_HEAD" '
 #
 # The CHANGES_REQUESTED check above applies to both: somebody having looked and
 # said no outranks any policy about who may ship.
-if [ "$MODE" = 'team' ]; then
-  [ "${approvals:-0}" -ge 1 ] ||
-    deny "PR #${PR_NUMBER} has no current APPROVED review from a human other than @${PR_AUTHOR}"
-  POLICY='team-approved'
-  say "approved by ${approvals} human reviewer(s) other than the author"
-else
-  # SOLO. No approval is required and none is invented: `approvals` is reported
-  # as it actually is, which on a self-merged PR is zero. What replaces the
-  # review is a narrower question — was this the one person allowed to ship
-  # their own work, at both ends of the pull request.
-  [ "$PR_AUTHOR" = "$SOLO_OWNER" ] ||
-    deny "solo mode allows only @${SOLO_OWNER} to ship unreviewed; PR #${PR_NUMBER} was written by @${PR_AUTHOR}"
-
-  # Merged BY, as well as written by. The author field alone would let anybody
-  # with write access merge the owner's branch and ship it under the owner's
-  # name — which is the whole hole a review would otherwise have covered.
-  # `/commits/:sha/pulls` does not carry `merged_by`, so the PR is read whole.
+# Merged BY, as well as written by. The author field alone would let anybody
+# with write access merge the owner's branch and ship it under the owner's
+# name — which is the whole hole a review would otherwise have covered.
+# `/commits/:sha/pulls` does not carry `merged_by`, so the PR is read whole.
+#
+# Asked by every mode that names an owner, on BOTH of its branches. A
+# contributor PR with a perfect review still has to have been merged by the
+# owner: an approval says the tree was read, not that shipping it was intended.
+require_merged_by_owner() {
   gh "/pulls/${PR_NUMBER}" ||
     deny "could not read PR #${PR_NUMBER} to find who merged it (HTTP ${gh_status}) — failing closed"
   MERGED_BY=$(printf '%s' "$gh_body" | jq -r '.merged_by.login // empty') ||
@@ -271,10 +278,55 @@ else
     deny "PR #${PR_NUMBER} reports nobody as its merger — failing closed"
   [ "$MERGED_BY" = "$SOLO_OWNER" ] ||
     deny "PR #${PR_NUMBER} was merged by @${MERGED_BY}, not @${SOLO_OWNER}"
+}
 
+# The owner's half. No approval is required and none is invented: `approvals`
+# is reported as it actually is, which on a self-merged PR is zero.
+ship_as_owner() {
+  require_merged_by_owner
   POLICY='solo-owner'
   say "solo-owner policy: @${SOLO_OWNER} wrote and merged PR #${PR_NUMBER}; no human review was required or claimed"
-fi
+}
+
+# The reviewed half. `approvals` was already computed to exclude the author and
+# every Bot, and to require `commit_id == final head` — so a self-approval and
+# a stale approval are both already zero by the time control arrives here.
+ship_as_approved() {
+  [ "${approvals:-0}" -ge 1 ] ||
+    deny "PR #${PR_NUMBER} has no current APPROVED review from a human other than @${PR_AUTHOR}"
+  POLICY='team-approved'
+  say "approved by ${approvals} human reviewer(s) other than the author"
+}
+
+case "$MODE" in
+  team)
+    ship_as_approved
+    ;;
+  solo)
+    # What replaces the review is a narrower question — was this the one person
+    # allowed to ship their own work, at both ends of the pull request.
+    [ "$PR_AUTHOR" = "$SOLO_OWNER" ] ||
+      deny "solo mode allows only @${SOLO_OWNER} to ship unreviewed; PR #${PR_NUMBER} was written by @${PR_AUTHOR}"
+    ship_as_owner
+    ;;
+  owner-or-approved)
+    # The author decides WHICH question is asked, never WHETHER one is.
+    #
+    # This is the line that unblocks contributor work. Under `solo` the author
+    # check denied before the merged-by check was ever read, so a contributor
+    # PR could not ship however it was reviewed — no approval, no merger, no
+    # amount of green rescued it. Here the same PR falls to the approved
+    # branch instead of falling off the end.
+    if [ "$PR_AUTHOR" = "$SOLO_OWNER" ]; then
+      ship_as_owner
+    else
+      ship_as_approved
+      # Reviewed is not sufficient on its own: the owner still merged it.
+      require_merged_by_owner
+      say "owner-or-approved: PR #${PR_NUMBER} by @${PR_AUTHOR} was approved on its final head and merged by @${SOLO_OWNER}"
+    fi
+    ;;
+esac
 
 # ──────────────────────────────────────── 4. the required job, on which shas
 #
@@ -314,10 +366,15 @@ require_gate_on "$PR_HEAD" 'the final head'
 
 # The commit that will be BUILT, which on a squash or rebase merge is a tree
 # that has never existed before. In team mode a reviewer looked at the branch;
-# nobody looked at this. In solo mode nobody looked at either, so the one thing
-# standing between a bad merge and a deploy is that CI passed on the exact
-# artifact being shipped.
-if [ "$MODE" = 'solo' ] && [ "$SHA" != "$PR_HEAD" ]; then
+# nobody looked at this. In the owner-merged modes nobody looked at either, so
+# the one thing standing between a bad merge and a deploy is that CI passed on
+# the exact artifact being shipped.
+#
+# Asked in `owner-or-approved` on BOTH of its branches, not only the owner one.
+# A contributor's approval was given on the final head; the merge commit is a
+# different tree, and «somebody approved a tree that is not this one» is exactly
+# the gap this check exists to close.
+if [ "$MODE" != 'team' ] && [ "$SHA" != "$PR_HEAD" ]; then
   require_gate_on "$SHA" 'the merge commit'
 fi
 

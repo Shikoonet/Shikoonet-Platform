@@ -31,6 +31,12 @@ mkdir -p "$OUT_DIR"
 
 : "${MAIN_SHA:?MAIN_SHA is required}"
 : "${DIGEST:?DIGEST is required}"
+# Required, not defaulted. It used to fall back to `GITHUB_RUN_ID`, which is
+# this workflow's own id — so `ci_run_id` was always identical to
+# `staging_run_id` and recorded nothing. A provenance field that silently
+# describes the wrong run is worse than an absent one, because it reads like
+# evidence.
+: "${CI_RUN_ID:?CI_RUN_ID is required — the CI run that gated this deploy}"
 
 # Every field is validated on the way IN. A manifest is only useful if the
 # thing that wrote it refused to write nonsense.
@@ -38,6 +44,10 @@ mkdir -p "$OUT_DIR"
   { echo "refusing: MAIN_SHA is not a 40-character commit sha" >&2; exit 1; }
 [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] ||
   { echo "refusing: DIGEST is not sha256: plus 64 lowercase hex" >&2; exit 1; }
+[[ $CI_RUN_ID =~ ^[0-9]{1,20}$ ]] ||
+  { echo "refusing: CI_RUN_ID is not a run id" >&2; exit 1; }
+[ "$CI_RUN_ID" != "${GITHUB_RUN_ID:-}" ] ||
+  { echo "refusing: CI_RUN_ID equals this run's own id — that is the fallback this field was built to stop" >&2; exit 1; }
 
 IMAGE_NAME=${IMAGE_NAME:-ghcr.io/shikoonet/shikoonet-platform}
 IMAGE_REF="${IMAGE_NAME}@${DIGEST}"
@@ -57,7 +67,7 @@ printf '%s\n' "$MAIN_SHA" >"$OUT_DIR/sha"
   printf 'main_sha=%s\n' "$MAIN_SHA"
   printf 'image_ref=%s\n' "$IMAGE_REF"
   printf 'digest=%s\n' "$DIGEST"
-  printf 'ci_run_id=%s\n' "${CI_RUN_ID:-${GITHUB_RUN_ID:-unknown}}"
+  printf 'ci_run_id=%s\n' "$CI_RUN_ID"
   printf 'staging_run_id=%s\n' "${GITHUB_RUN_ID:-unknown}"
   printf 'workflow=%s\n' "${GITHUB_WORKFLOW:-unknown}"
   printf 'approval_policy=%s\n' "$POLICY"

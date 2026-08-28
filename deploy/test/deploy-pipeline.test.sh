@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # The deploy path, driven against a fake GitHub, a fake Coolify and a fake
-# Docker — plus the assertions about `deploy.yml` that no script can make.
+# Docker — plus the assertions about `deploy-staging.yml` that no script can make.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # Why a shell test
@@ -116,8 +116,17 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
       done
       case "$method:$path" in
         GET:/applications/*/envs)
-          if [ "${FAKE_NO_ENV_NAME:-}" = '1' ]; then
+          if [ "${FAKE_MALFORMED_ENVS:-}" = 'json' ]; then
+            printf '{not-json'
+          elif [ "${FAKE_MALFORMED_ENVS:-}" = 'object' ]; then
+            printf '{"key":"ENV_NAME","value":"production"}'
+          elif [ "${FAKE_NO_ENV_NAME:-}" = '1' ]; then
             printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"}]'
+          elif [ "${FAKE_DUPLICATE_ENVS:-}" = '1' ]; then
+            # The shape the staging bot was actually in: every key twice, one
+            # form submitted twice. ENV_NAME is present, so this passes the
+            # older check and has to be caught by the newer one.
+            printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"},{"key":"DATABASE_URL","value":"postgres://u:p@other:5432/shikoo"},{"key":"ENV_NAME","value":"production"},{"key":"ENV_NAME","value":"production"},{"key":"TELEGRAM_BOT_TOKEN","value":"x"},{"key":"TELEGRAM_BOT_TOKEN","value":"y"}]'
           else
             printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"},{"key":"ENV_NAME","value":"production"}]'
           fi ;;
@@ -350,13 +359,13 @@ section 'the approval mode itself — unset and misspelled both deny'
 # reviewed.
 happy
 GATE_MODE=''
-denies 'refuses when no approval mode is set at all' "must be exactly 'team' or 'solo'"
+denies 'refuses when no approval mode is set at all' "must be exactly 'team', 'solo' or 'owner-or-approved'"
 
 for bad_mode in SOLO Solo sOlO solo-owner TEAM 1 yes true; do
   happy
   GATE_MODE="$bad_mode"
   denies "refuses the mode «${bad_mode}» rather than guessing what it meant" \
-    "must be exactly 'team' or 'solo'"
+    "must be exactly 'team', 'solo' or 'owner-or-approved'"
 done
 GATE_MODE='team'
 
@@ -496,6 +505,230 @@ export FAKE_CURL_DIES
 denies 'fails closed on an API error in solo mode' 'failing closed'
 unset FAKE_CURL_DIES
 
+# ═════════════════════════════════════════════════════════════════════════
+section 'owner-or-approved — the owner ships their own, everybody else is reviewed'
+
+# The mode exists because `solo` could not ship contributor work at all. The
+# author check denied before the merged-by check was ever read, so PR #20 by
+# @arshiajacki — merged by the owner, green, unobjected — was refused with no
+# branch to fall to. These cases pin both halves.
+
+# The owner half is `solo` by another name: no review, and none invented.
+owner_or_approved_owner() { # [reviews-json] [merged-by]
+  solo_happy "${1:-[]}" "${2:-$OWNER}"
+  GATE_MODE='owner-or-approved'
+}
+
+# The contributor half: written by somebody else, approved on the FINAL HEAD by
+# a third human, merged by the owner, green on both shas.
+# Every scenario set is built whole, never overridden after the fact: the fake
+# matches the FIRST registered fragment that is a substring of the url, so a
+# later `scenario` for the same path is dead weight that silently changes
+# nothing.
+owner_or_approved_contributor() { # [reviews] [merged-by] [author] [head-jobs] [merge-jobs] [main-sha]
+  reset_scenarios
+  GATE_MODE='owner-or-approved'
+  GATE_OWNER="$OWNER"
+  scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged "${3:-contributor}" "$SHA_PRHEAD")"
+  scenario "/pulls/7/reviews" 200 "${1:-[$(review APPROVED reviewer "$SHA_PRHEAD")]}"
+  scenario "/pulls/7" 200 "$(merged_by_json "${2:-$OWNER}")"
+  scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+  scenario "/actions/runs/9001/jobs" 200 "$(jobs_json "${4:-success}")"
+  scenario "/actions/runs?head_sha=${SHA_MERGED}" 200 "$(runs_json 9002)"
+  scenario "/actions/runs/9002/jobs" 200 "$(jobs_json "${5:-success}")"
+  scenario "/commits/main" 200 "$(commit_json "${6:-$SHA_MERGED}")"
+}
+
+owner_or_approved_owner
+if run_gate && grep -qF 'policy=solo-owner' "$GATE_LOG"; then
+  ok 'the owner still ships their own work, recorded as solo-owner'
+else
+  bad 'the owner still ships their own work, recorded as solo-owner' \
+    "$(tail -3 "$GATE_LOG" | tr '\n' ' ')"
+fi
+
+owner_or_approved_contributor
+if run_gate && grep -qF 'policy=team-approved' "$GATE_LOG"; then
+  ok 'a reviewed contributor PR ships, recorded as team-approved'
+else
+  bad 'a reviewed contributor PR ships, recorded as team-approved' \
+    "$(tail -3 "$GATE_LOG" | tr '\n' ' ')"
+fi
+
+# This is the exact shape that was denied under `solo` — the regression the
+# mode was added to fix. Naming it here means a revert cannot pass quietly.
+owner_or_approved_contributor '[]' "$OWNER" 'arshiajacki'
+denies 'a contributor PR with NO approval is still refused' \
+  'no current APPROVED review from a human other than'
+
+# Self-approval is not approval. `approvals` already excludes the author, so
+# the count is zero and the deny message is the no-approval one.
+owner_or_approved_contributor "[$(review APPROVED contributor "$SHA_PRHEAD")]"
+denies 'the author approving themselves does not count' \
+  'no current APPROVED review from a human other than'
+
+# A stale approval approved a different tree. GitHub keeps the row for ever.
+owner_or_approved_contributor "[$(review APPROVED reviewer "$SHA_OLDER")]"
+denies 'an approval given on an earlier head does not count' \
+  'no current APPROVED review from a human other than'
+
+# A bot agreeing with a machine is not a person having looked.
+owner_or_approved_contributor "[$(review APPROVED coderabbitai reviewer-bot Bot)]"
+denies 'a Bot approval does not count as a human review' \
+  'no current APPROVED review from a human other than'
+
+# Somebody looked and said no. Outranks any policy about who may ship.
+owner_or_approved_contributor \
+  "[$(review APPROVED reviewer "$SHA_PRHEAD"),$(review CHANGES_REQUESTED other "$SHA_PRHEAD")]"
+denies 'an outstanding CHANGES_REQUESTED blocks a reviewed contributor PR' \
+  'outstanding CHANGES_REQUESTED'
+
+# Reviewed is not sufficient on its own: an approval says the tree was read,
+# not that shipping it was intended.
+owner_or_approved_contributor '' 'someone-else'
+denies 'a reviewed contributor PR merged by somebody else is refused' \
+  'not @'
+
+# The owner half keeps its own merged-by assertion.
+owner_or_approved_owner '[]' 'someone-else'
+denies 'the owner half still refuses a PR merged by somebody else' 'not @'
+
+# The Quality Gate is asked on the merge commit in this mode too — the approval
+# was given on the final head, and the merge commit is a different tree.
+owner_or_approved_contributor '' '' '' success failure
+denies 'a red Quality Gate on the merge commit refuses a reviewed contributor PR' \
+  'did not succeed on the merge commit'
+
+owner_or_approved_contributor '' '' '' failure
+denies 'a red Quality Gate on the final head refuses a reviewed contributor PR' \
+  'did not succeed on the final head'
+
+# Direct pushes do not deploy, in this mode either.
+reset_scenarios
+GATE_MODE='owner-or-approved'
+GATE_OWNER="$OWNER"
+scenario "/commits/${SHA_MERGED}/pulls" 200 '[]'
+denies 'refuses a direct push to main in owner-or-approved mode' \
+  'not the result of a merged pull request'
+
+# The branch race, in this mode too.
+owner_or_approved_contributor '' '' '' success success "$SHA_OTHER"
+denies 'refuses when main moved during an owner-or-approved evaluation' 'moved'
+
+# Fails closed, in this mode too.
+owner_or_approved_contributor
+FAKE_CURL_DIES=1
+export FAKE_CURL_DIES
+denies 'fails closed on an API error in owner-or-approved mode' 'failing closed'
+unset FAKE_CURL_DIES
+
+# The owner allowlist is required by this mode as well — without it the
+# merged-by comparison has nothing to compare against and would pass empty.
+owner_or_approved_contributor
+GATE_OWNER=''
+denies 'refuses owner-or-approved mode with nobody allowlisted' 'needs SOLO_DEPLOY_OWNER'
+GATE_OWNER="$OWNER"
+GATE_MODE='team'
+
+# ═════════════════════════════════════════════════════════════════════════
+section 'require-ci-run — the manual redeploy has to find a real green CI run'
+
+# The automatic path gets «CI passed on this sha, as a push, on main» from the
+# `workflow_run` event for free. A dispatch has no event to read it from, so it
+# goes and asks — and the four conditions are asked together, because a run
+# satisfying three of them is not a partial pass.
+
+CI_RUN_LOG="$WORK/ci-run.log"
+run_ci_check() { # -> exit code, output in $CI_RUN_LOG
+  set +e
+  env GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_API='https://api.github.com' \
+    GITHUB_OUTPUT="$WORK/ci-run.out" \
+    bash "$ROOT/deploy/require-ci-run.sh" 'Shikoonet/Shikoonet-Platform' "$SHA_MERGED" \
+    >"$CI_RUN_LOG" 2>&1
+  local rc=$?
+  set -e
+  return $rc
+}
+ci_runs() { # [event] [branch] [status] [conclusion]
+  printf '{"workflow_runs":[{"id":7788,"event":"%s","head_branch":"%s","status":"%s","conclusion":"%s","run_started_at":"2026-08-28T08:00:00Z"}]}' \
+    "${1:-push}" "${2:-main}" "${3:-completed}" "${4:-success}"
+}
+ci_denies() { # name  substring
+  if run_ci_check; then
+    bad "$1" 'it accepted the run when it had to deny'
+    return
+  fi
+  if grep -qF "$2" "$CI_RUN_LOG"; then ok "$1"; else
+    bad "$1" "denied, but not for '$2': $(tail -2 "$CI_RUN_LOG" | tr '\n' ' ')"
+  fi
+}
+
+reset_scenarios
+: >"$WORK/ci-run.out"
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs)"
+if run_ci_check && grep -qF 'ci_run_id=7788' "$WORK/ci-run.out"; then
+  ok 'a completed successful push run on main is accepted, and its id recorded'
+else
+  bad 'a completed successful push run on main is accepted, and its id recorded' \
+    "$(tail -2 "$CI_RUN_LOG" | tr '\n' ' ')"
+fi
+
+# «CI never ran» and «CI ran and failed» are different mistakes and get
+# different sentences: the first usually means the sha is not on main at all.
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 '{"workflow_runs":[]}'
+ci_denies 'refuses a sha nothing has tested' 'no CI run exists'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs push main completed failure)"
+ci_denies 'refuses a sha whose CI run failed' 'none qualifying'
+
+# A CI run FROM A PULL REQUEST must never authorise a deploy — a fork's run
+# completing is something an outsider can trigger. Same refusal the
+# `workflow_run` trigger makes on the automatic path.
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs pull_request main completed success)"
+ci_denies 'refuses a green run that came from a pull request' 'none qualifying'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs push some-branch completed success)"
+ci_denies 'refuses a green run from another branch' 'none qualifying'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs push main in_progress '')"
+ci_denies 'refuses a run that has not finished' 'none qualifying'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs push main completed cancelled)"
+ci_denies 'refuses a cancelled run — cancelled is not a pass' 'none qualifying'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 500 '{"message":"boom"}'
+ci_denies 'fails closed when the CI run list cannot be read' 'failing closed'
+
+reset_scenarios
+scenario "/actions/workflows/ci.yml/runs" 200 "$(ci_runs)"
+FAKE_CURL_DIES=1
+export FAKE_CURL_DIES
+ci_denies 'fails closed when the API cannot be reached at all' 'failing closed'
+unset FAKE_CURL_DIES
+
+# The sha is an argument, not a free-text field: a short, uppercase or
+# whitespace-bearing one is refused as malformed rather than repaired.
+for bad_sha in 'abc' "$(printf '%040d' 0 | tr '0' 'A')" '  '; do
+  set +e
+  env GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_API='https://api.github.com' \
+    bash "$ROOT/deploy/require-ci-run.sh" 'Shikoonet/Shikoonet-Platform' "$bad_sha" \
+    >"$CI_RUN_LOG" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    bad "require-ci-run refuses the sha '${bad_sha:0:8}'" 'it was accepted'
+  else
+    ok "require-ci-run refuses the sha '${bad_sha:0:8}'"
+  fi
+done
+
 section 'provenance — one pull request, or none'
 
 # Two merged pull requests claiming one commit means «which one was reviewed»
@@ -515,7 +748,16 @@ case "${1:-}" in
   pull) exit 0 ;;
   logs) exit 0 ;;
   run) exit 0 ;;
-  exec) printf '1\n'; exit 0 ;;   # the bot singleton count, if ever asked
+  exec)
+    # Two different questions reach `docker exec`: Coolify's application
+    # settings, and the bot singleton count. Told apart by the SQL, because
+    # answering one with the other's shape is how this fake last lied.
+    if printf '%s ' "$@" | grep -q 'application_settings'; then
+      printf '%s\n' "${FAKE_COOLIFY_SETTINGS-f|f}"
+    else
+      printf '1\n'   # the bot singleton count
+    fi
+    exit 0 ;;
   ps)
     for a in "$@"; do
       case "$a" in label=coolify.name=*) uuid=${a#label=coolify.name=} ;; esac
@@ -603,6 +845,7 @@ run_deploy() { # bot-flag
     FAKE_LABEL_SHA="$SHA_MERGED" FAKE_BUILD_PACK="${FAKE_BUILD_PACK:-dockerimage}" \
     FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a}" \
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
+    FAKE_DUPLICATE_ENVS="${FAKE_DUPLICATE_ENVS:-}" FAKE_MALFORMED_ENVS="${FAKE_MALFORMED_ENVS:-}" \
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
@@ -725,6 +968,87 @@ else
   fi
 fi
 unset FAKE_NO_ENV_NAME
+
+for malformed in json object; do
+  FAKE_MALFORMED_ENVS=$malformed
+  export FAKE_MALFORMED_ENVS
+  if run_deploy false; then
+    bad "refuses a malformed Coolify environment response (${malformed})" 'it deployed anyway'
+  elif grep -qF 'could not read the application environment' "$DEPLOY_LOG" &&
+    ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+    ok "refuses a malformed Coolify environment response (${malformed}) before migration"
+  else
+    bad "refuses a malformed Coolify environment response (${malformed})" "$(tail -3 "$DEPLOY_LOG")"
+  fi
+done
+unset FAKE_MALFORMED_ENVS
+
+# A key defined twice in Coolify. The staging bot held DATABASE_URL, ENV_NAME,
+# SERVICE and TELEGRAM_BOT_TOKEN twice each on 2026-08-26 — and it has an
+# ENV_NAME, so the check above says yes to it. Which of each pair the container
+# gets is row order, and for two of those keys that is which environment it
+# joins.
+# Native Auto Deploy, asserted by the live path at last.
+#
+# `assert_coolify_safe` in the retired `autodeploy.sh` calls this "the whole
+# defence", and means it literally: Coolify's webhook endpoint is reachable
+# from the internet in plaintext, and the only thing making it inert is this
+# flag being false. The pipeline that replaced that script inherited the risk
+# and not the check — so for the whole of that window a single UI click could
+# have re-enabled push-to-deploy and nothing would have said so.
+FAKE_COOLIFY_SETTINGS='t|f'
+export FAKE_COOLIFY_SETTINGS
+if run_deploy false; then
+  bad 'refuses an application with native Auto Deploy enabled' 'it deployed anyway'
+else
+  if grep -qF 'Auto Deploy ENABLED' "$DEPLOY_LOG" && ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+    ok 'refuses an application with native Auto Deploy enabled'
+  else
+    bad 'refuses an application with native Auto Deploy enabled' "$(tail -2 "$DEPLOY_LOG")"
+  fi
+fi
+
+FAKE_COOLIFY_SETTINGS='f|t'
+if run_deploy false; then
+  bad 'refuses an application with preview deployments enabled' 'it deployed anyway'
+else
+  if grep -qF 'preview deployments ENABLED' "$DEPLOY_LOG" && ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+    ok 'refuses an application with preview deployments enabled'
+  else
+    bad 'refuses an application with preview deployments enabled' "$(tail -2 "$DEPLOY_LOG")"
+  fi
+fi
+
+# Unreadable is not «fine». A deploy that cannot ask says so out loud rather
+# than concluding the flag it could not read is the value it hoped for.
+FAKE_COOLIFY_SETTINGS=''
+if run_deploy false && grep -qF 'UNVERIFIED' "$DEPLOY_LOG"; then
+  ok 'an unreadable Coolify settings row is reported, not assumed safe'
+else
+  bad 'an unreadable Coolify settings row is reported, not assumed safe' \
+    "$(tail -2 "$DEPLOY_LOG")"
+fi
+unset FAKE_COOLIFY_SETTINGS
+
+FAKE_DUPLICATE_ENVS=1
+if run_deploy false; then
+  bad 'refuses an application with a variable defined twice' 'it deployed anyway'
+else
+  if grep -qF 'defined more than once' "$DEPLOY_LOG" && ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+    ok 'refuses an application with a variable defined twice'
+  else
+    bad 'refuses an application with a variable defined twice' "$(tail -2 "$DEPLOY_LOG")"
+  fi
+fi
+
+# Every duplicated key, named. A message that stops at the first one sends the
+# operator back to the panel once per duplicate.
+if grep -qF 'DATABASE_URL, ENV_NAME, TELEGRAM_BOT_TOKEN' "$DEPLOY_LOG"; then
+  ok 'names every duplicated variable, not just the first'
+else
+  bad 'names every duplicated variable, not just the first' "$(tail -2 "$DEPLOY_LOG")"
+fi
+unset FAKE_DUPLICATE_ENVS
 
 # The pre-flight runs before the migration, and the migration takes time. An
 # application edited in the Coolify UI during that window would move out from
@@ -914,10 +1238,10 @@ section 'deploy.yml — trigger, gating and secret ordering'
 
 wf() { grep -qF "$1" "$WORKFLOW"; }
 assert_wf() { # name  substring
-  if wf "$2"; then ok "$1"; else bad "$1" "deploy.yml does not contain: $2"; fi
+  if wf "$2"; then ok "$1"; else bad "$1" "deploy-staging.yml does not contain: $2"; fi
 }
 refute_wf() { # name  substring
-  if wf "$2"; then bad "$1" "deploy.yml still contains: $2"; else ok "$1"; fi
+  if wf "$2"; then bad "$1" "deploy-staging.yml still contains: $2"; else ok "$1"; fi
 }
 
 assert_wf 'only a successful CI run triggers a deploy' "workflow_run.conclusion == 'success'"
@@ -926,10 +1250,69 @@ assert_wf 'only main can deploy' "workflow_run.head_branch == 'main'"
 # The `${{ }}` below are the literal text of the workflow file, which is exactly
 # what these assertions are for — SC2016 is the expected reading, not a mistake.
 # shellcheck disable=SC2016
-assert_wf 'the built ref is the exact sha CI passed' 'ref: ${{ github.event.workflow_run.head_sha }}'
+assert_wf 'the built ref is the exact sha CI passed' 'github.event.workflow_run.head_sha'
+# shellcheck disable=SC2016
+assert_wf 'the image is built from the sha the gate resolved, not a default ref' \
+  'ref: ${{ needs.gate.outputs.sha }}'
+
+# ── the manual redeploy names nothing ─────────────────────────────────────
+#
+# These are the load-bearing ones. Every other guard in this pipeline exists to
+# prove that what ships is what was reviewed; a dispatch input naming a commit,
+# a digest, an image or a ref hands that answer to whoever pressed the button.
+# Asserting their ABSENCE textually is what makes adding one back a red build
+# rather than a review somebody skimmed.
+assert_wf 'the staging workflow can be redeployed by hand' 'workflow_dispatch:'
+
+dispatch_block() { awk '/^on:/,/^permissions:/' "$WORKFLOW"; }
+
+if dispatch_block | grep -qE '^\s+inputs:'; then
+  bad 'the manual redeploy accepts no inputs at all' 'workflow_dispatch declares inputs'
+else
+  ok 'the manual redeploy accepts no inputs at all'
+fi
+
+for forbidden in sha ref digest image tag run_id revision commit; do
+  if grep -qE "inputs\.${forbidden}\b" "$WORKFLOW"; then
+    bad "no user-supplied ${forbidden} can reach the staging deploy" \
+      "deploy-staging.yml reads inputs.${forbidden}"
+  else
+    ok "no user-supplied ${forbidden} can reach the staging deploy"
+  fi
+done
+
+# shellcheck disable=SC2016
+assert_wf 'a manual redeploy is refused unless it came from main' \
+  '[ "$REF" != '"'"'refs/heads/main'"'"' ]'
+assert_wf 'a manual redeploy resolves the sha from the ref, on the server' \
+  'git rev-parse refs/heads/main'
+assert_wf 'a manual redeploy requires CI to have passed on that sha' \
+  'deploy/require-ci-run.sh'
+# shellcheck disable=SC2016
+assert_wf 'the manifest records the CI run that gated the deploy' \
+  'CI_RUN_ID: ${{ needs.gate.outputs.ci_run_id }}'
 assert_wf 'the staging deploy is serialised' 'group: shikoo-deploy'
 assert_wf 'a running deploy is never cancelled' 'cancel-in-progress: false'
-assert_wf 'the staging bot is explicitly off' "DEPLOY_BOT_ENABLED: 'false'"
+# The workflow passes the repository variable unchanged. GitHub expression
+# comparisons are case-insensitive, so comparing it here would let TRUE and
+# True through. The case-sensitive shell check in deploy.sh is the gate.
+# shellcheck disable=SC2016
+assert_wf 'the staging workflow does not normalise the bot switch' \
+  'DEPLOY_BOT_ENABLED: ${{ vars.STAGING_BOT_ENABLED }}'
+if grep -qE 'STAGING_BOT_ENABLED[[:space:]]*==' "$WORKFLOW"; then
+  bad 'the workflow performs no case-insensitive comparison on the bot switch' \
+    "$(grep -n STAGING_BOT_ENABLED "$WORKFLOW")"
+else
+  ok 'the workflow performs no case-insensitive comparison on the bot switch'
+fi
+# The literal shell expression is the contract.
+# shellcheck disable=SC2016
+if grep -qF '[ "$DEPLOY_BOT_ENABLED" = '\''true'\'' ]' "$DEPLOY"; then
+  ok 'deploy.sh accepts only exact lowercase true for the bot'
+else
+  bad 'deploy.sh accepts only exact lowercase true for the bot' \
+    'the case-sensitive shell comparison is missing'
+fi
 
 
 refute_wf 'no cache is read from pull request runs' 'type=gha'
@@ -1123,13 +1506,19 @@ esac
 
 section 'the release interface — the bot, and which environment starts one'
 
-# Exactly one workflow may start a bot, and it is the promotion. Staging shares
-# the shop's Telegram token, so a second poller would take updates from the bot
-# real customers are talking to.
-if grep -qF "DEPLOY_BOT_ENABLED: 'false'" "$WORKFLOW" && ! grep -qF "DEPLOY_BOT_ENABLED: 'true'" "$WORKFLOW"; then
-  ok 'staging never starts a bot'
+# Staging starts a bot only if somebody turned it on, and «on» is a repository
+# variable rather than a literal in this file — so the first rollout is not a
+# pull request and neither is turning it back off. What must never appear is a
+# hard-coded `'true'`: Telegram gives each update to one getUpdates caller, so a
+# staging bot on the shop's token silently takes messages from the bot real
+# customers are talking to, and that must stay a decision somebody makes.
+# shellcheck disable=SC2016
+if grep -qF 'DEPLOY_BOT_ENABLED: ${{ vars.STAGING_BOT_ENABLED }}' "$WORKFLOW" &&
+  ! grep -qE 'STAGING_BOT_ENABLED[[:space:]]*==' "$WORKFLOW" &&
+  ! grep -qF "DEPLOY_BOT_ENABLED: 'true'" "$WORKFLOW"; then
+  ok 'staging starts no bot unless a variable was set, and never by default'
 else
-  bad 'staging never starts a bot' "$(grep -n DEPLOY_BOT_ENABLED "$WORKFLOW")"
+  bad 'staging starts no bot unless a variable was set, and never by default' "$(grep -n DEPLOY_BOT_ENABLED "$WORKFLOW")"
 fi
 if grep -qF "DEPLOY_BOT_ENABLED: 'true'" "$PROMOTE_WF"; then
   ok 'production promotion carries the bot'
@@ -1142,7 +1531,7 @@ section 'the release manifest'
 MAN=$WORK/manifest
 rm -rf "$MAN"
 env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
-  GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=4242 \
+  GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=4242 CI_RUN_ID=1234 \
   bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1
 
 if [ -s "$MAN/release-manifest.json" ] && [ -s "$MAN/manifest.sha256" ]; then
@@ -1205,10 +1594,43 @@ else
   ok 'a missing manifest is refused, not treated as empty'
 fi
 
+# `ci_run_id` used to fall back to GITHUB_RUN_ID — this workflow's own id — so
+# it was always identical to `staging_run_id` and recorded nothing at all. A
+# provenance field that silently describes the wrong run is worse than an
+# absent one, because it reads like evidence.
+rm -rf "$MAN"
+if env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+  GITHUB_RUN_ID=4242 \
+  bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1; then
+  bad 'the manifest writer refuses a missing CI_RUN_ID' 'it fell back instead'
+else
+  ok 'the manifest writer refuses a missing CI_RUN_ID'
+fi
+
+rm -rf "$MAN"
+if env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+  GITHUB_RUN_ID=4242 CI_RUN_ID=4242 \
+  bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1; then
+  bad 'the manifest writer refuses a CI_RUN_ID equal to its own run' 'it was written'
+else
+  ok 'the manifest writer refuses a CI_RUN_ID equal to its own run'
+fi
+
+for bad_run in 'abc' '' '12 34'; do
+  rm -rf "$MAN"
+  if env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+    GITHUB_RUN_ID=4242 CI_RUN_ID="$bad_run" \
+    bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1; then
+    bad "the manifest writer refuses the CI run id '${bad_run}'" 'it was written'
+  else
+    ok "the manifest writer refuses the CI run id '${bad_run}'"
+  fi
+done
+
 for bad_digest in 'sha256:abc' 'latest' "sha256:${DIGEST}
 extra"; do
   rm -rf "$MAN"
-  if env MAIN_SHA="$SHA_MERGED" DIGEST="$bad_digest" \
+  if env MAIN_SHA="$SHA_MERGED" DIGEST="$bad_digest" CI_RUN_ID=1234 \
     bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1; then
     bad "the manifest writer refuses '${bad_digest:0:18}'" 'it was written'
   else
@@ -1317,12 +1739,29 @@ else
   bad 'a failed run is refused, by name' "$(tail -1 "$WORK/pick.log")"
 fi
 
+# `workflow_dispatch` became a real staging source when the no-input manual
+# redeploy landed, so refusing it here would refuse the very runs that exist to
+# redeploy current main without a dummy commit. It is not a weaker source: it
+# resolves the sha from the ref on the server, requires a green CI push run for
+# that sha, and goes through the same approval gate.
 run_json '.github/workflows/deploy-staging.yml' completed success workflow_dispatch main "$GOOD_SHA"
-if ! try_pick && grep -qF 'real staging runs start no other way' "$WORK/pick.log"; then
-  ok 'a hand-started run is refused, by name'
+if try_pick; then
+  ok 'the no-input manual redeploy is a promotable staging source'
 else
-  bad 'a hand-started run is refused, by name' "$(tail -1 "$WORK/pick.log")"
+  bad 'the no-input manual redeploy is a promotable staging source' "$(tail -1 "$WORK/pick.log")"
 fi
+
+# Everything else still is hand-made. `push` is the sharp one: it is what a
+# staging run would be triggered by if somebody wired the workflow directly to
+# main and skipped the gate entirely.
+for forged in push schedule repository_dispatch; do
+  run_json '.github/workflows/deploy-staging.yml' completed success "$forged" main "$GOOD_SHA"
+  if ! try_pick && grep -qF 'real Deploy Staging runs start no other way' "$WORK/pick.log"; then
+    ok "a run triggered by '${forged}' is refused, by name"
+  else
+    bad "a run triggered by '${forged}' is refused, by name" "$(tail -1 "$WORK/pick.log")"
+  fi
+done
 
 run_json '.github/workflows/deploy-staging.yml' completed success workflow_run some-branch "$GOOD_SHA"
 if ! try_pick && grep -qF "not main" "$WORK/pick.log"; then
@@ -1338,7 +1777,7 @@ section 'promote-production — the manifest must describe the run it came from'
 MAN2=$WORK/man2
 mkman() { # main_sha staging_run_id
   rm -rf "$MAN2"
-  env MAIN_SHA="$1" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+  env MAIN_SHA="$1" DIGEST="sha256:${DIGEST}" POLICY=solo-owner CI_RUN_ID=1234 \
     GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID="$2" \
     bash "$ROOT/deploy/write-release-manifest.sh" "$MAN2" >/dev/null 2>&1
 }
@@ -1391,7 +1830,7 @@ section 'promote-production — the cross-checks cannot be skipped'
 MAN3=$WORK/man3
 rm -rf "$MAN3"
 env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
-  GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=4242 \
+  GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=4242 CI_RUN_ID=1234 \
   bash "$ROOT/deploy/write-release-manifest.sh" "$MAN3" >/dev/null 2>&1
 
 # Run with the expected values set to whatever the case is testing — including
