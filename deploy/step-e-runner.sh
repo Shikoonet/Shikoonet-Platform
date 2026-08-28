@@ -79,8 +79,15 @@ flock -n 9 || die "another step-e run holds $LOCK"
 . "$HERE/coolify-api.sh"
 # shellcheck source=deploy/coolify-app.sh
 . "$HERE/coolify-app.sh"
+# shellcheck source=deploy/coolify-secret-io.sh
+. "$HERE/coolify-secret-io.sh"
 coolify_api_init "$CONF" || die "could not prepare the Coolify client"
-trap coolify_api_cleanup EXIT
+secret_io_init
+# One trap, both cleanups, and it fires on signal as well as on exit: a
+# credential file that outlives its command is the problem it was created to
+# avoid.
+cleanup_all() { coolify_api_cleanup; secret_io_cleanup; }
+trap cleanup_all EXIT INT TERM
 
 coolify_db() {
   docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At -F'|' -c "$1" 2>/dev/null || true
@@ -179,7 +186,15 @@ print(" ".join(sorted({k for k,n in Counter(r.get("key") for r in d).items() if 
     ids=$(printf '%s' "$rows" | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
-print(" ".join(str(r["id"]) for r in d if r.get("key")==sys.argv[1]))' "$key")
+out=[]
+for r in (d if isinstance(d,list) else []):
+    if r.get("key")!=sys.argv[1]: continue
+    u=r.get("uuid")
+    if not u:
+        sys.stderr.write("row without a uuid\n"); sys.exit(3)
+    out.append(u)
+print(" ".join(out))' "$key") ||
+      die "${name} ${key}: a row came back without a uuid — refusing to act on rows this API cannot address"
 
     case "$key" in
       ENV_NAME)      classify_literal "$name" "$uuid" "$key" "$ids" 'staging' "$rows" ;;
@@ -191,13 +206,53 @@ print(" ".join(str(r["id"]) for r in d if r.get("key")==sys.argv[1]))' "$key")
   done
 }
 
-value_of() { # rows rowid -> value on stdout (never displayed by callers)
+# ── row identity ──────────────────────────────────────────────────────────
+#
+# The API row identity is `uuid`, and only `uuid`.
+#
+# The first version of this script indexed `r["id"]` and died with `KeyError:
+# 'id'` before it mutated anything — which was the good outcome of a real bug:
+# this Coolify serialises environment variables with a `uuid` and NO numeric
+# `id`. Measured on the live instance: 14/14 rows carry `uuid`, 0/14 carry `id`.
+#
+# A numeric id still exists in the database, and the recovery backup is written
+# from the database, so the two have to be tied together. That mapping is made
+# by exact uuid plus exact resourceable, and it must match exactly one row —
+# never by position in the response, never by key, and never by comparing
+# values or ciphertext. Correlating rows by their order in a JSON array is the
+# kind of shortcut that works until the day the array is ordered differently.
+#
+# `value` is the canonical decrypted field, not `real_value`. `value` is cast
+# `encrypted` on the model, so the serialiser hands back plaintext.
+# `real_value` is an appended accessor that additionally resolves shared
+# variables and then runs `escapeEnvVariables()`, wrapping literal and
+# multiline values in quotes — a shell-ready rendering, which is the wrong
+# thing to compare and the wrong thing to store.
+value_of() { # rows row-uuid -> value on stdout (never displayed by callers)
   printf '%s' "$1" | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
-for r in d:
-    if str(r.get("id"))==sys.argv[1]:
+for r in (d if isinstance(d,list) else []):
+    if r.get("uuid")==sys.argv[1]:
         sys.stdout.write(r.get("value") or ""); break' "$2"
+}
+
+# The database row behind an API uuid. Exactly one, or the run stops.
+db_id_for() { # app-uuid row-uuid -> numeric id
+  local app_uuid=$1 row_uuid=$2 n id
+  n=$(coolify_db "select count(*) from environment_variables ev
+        join applications a on a.id = ev.resourceable_id
+       where ev.uuid = '${row_uuid}'
+         and ev.resourceable_type = 'App\\Models\\Application'
+         and a.uuid = '${app_uuid}';")
+  [ "$n" = '1' ] ||
+    die "environment row ${row_uuid} on ${app_uuid} matches ${n:-0} database rows, expected exactly 1 — refusing to guess which"
+  id=$(coolify_db "select ev.id from environment_variables ev
+        join applications a on a.id = ev.resourceable_id
+       where ev.uuid = '${row_uuid}'
+         and ev.resourceable_type = 'App\\Models\\Application'
+         and a.uuid = '${app_uuid}';")
+  printf '%s' "$id"
 }
 
 # Non-secret keys: the correct value is known, so the verdict can name it.
@@ -217,12 +272,21 @@ classify_database() { # name uuid key ids rows
   local name=$1 uuid=$2 key=$3 ids=$4 rows=$5 id v sysid keep='' drop='' detail=''
   for id in $ids; do
     v=$(value_of "$rows" "$id")
-    sysid=$(PGCONNECT_TIMEOUT=8 psql "$v" -At -c 'select system_identifier from pg_control_system()' 2>/dev/null || true)
+    # The URL reaches libpq through a 0600 service file, never through argv.
+    sysid=$(pg_system_identifier "$v")
+    # The identifier is reported, not just the verdict: it is non-secret, it is
+    # the actual evidence, and «staging» with no number behind it is a claim
+    # rather than a proof.
+    #
+    # An unreachable row adds itself to NEITHER list — it must not be kept and
+    # must not be deleted. It does not clear the lists either: an earlier
+    # version did, which silently discarded a correct verdict already reached
+    # for a sibling row and turned a clean classification into a blocked one.
     case "$sysid" in
-      "$STAGING_SYSTEM_ID")    keep="${keep}${id} "; detail="${detail}${id}=staging " ;;
-      "$PRODUCTION_SYSTEM_ID") drop="${drop}${id} "; detail="${detail}${id}=PRODUCTION " ;;
-      '')                      drop=''; keep=''; detail="${detail}${id}=unreachable " ;;
-      *)                       detail="${detail}${id}=unknown-cluster " ;;
+      "$STAGING_SYSTEM_ID")    keep="${keep}${id} "; detail="${detail}${id}=staging(${sysid}) " ;;
+      "$PRODUCTION_SYSTEM_ID") drop="${drop}${id} "; detail="${detail}${id}=PRODUCTION(${sysid}) " ;;
+      '')                      detail="${detail}${id}=unreachable " ;;
+      *)                       detail="${detail}${id}=unknown-cluster(${sysid}) " ;;
     esac
   done
   record "$name" "$uuid" "$key" "$keep" "$drop" "$detail"
@@ -230,20 +294,14 @@ classify_database() { # name uuid key ids rows
 
 # The bot token is classified by its PUBLIC identity and nothing else.
 classify_bot() { # name uuid key ids rows
-  local name=$1 uuid=$2 key=$3 ids=$4 rows=$5 id v body botid botname keep='' drop='' detail=''
+  local name=$1 uuid=$2 key=$3 ids=$4 rows=$5 id v identity botid botname keep='' drop='' detail=''
   for id in $ids; do
     v=$(value_of "$rows" "$id")
-    body=$(curl -sS -m 20 "https://api.telegram.org/bot${v}/getMe" 2>/dev/null || printf '{}')
-    botid=$(printf '%s' "$body" | python3 -c '
-import json,sys
-try: d=json.load(sys.stdin)
-except Exception: d={}
-print((d.get("result") or {}).get("id") or "")' )
-    botname=$(printf '%s' "$body" | python3 -c '
-import json,sys
-try: d=json.load(sys.stdin)
-except Exception: d={}
-print((d.get("result") or {}).get("username") or "")')
+    # The token reaches curl through a 0600 config, never through argv.
+    identity=$(tg_get_me "$v")
+    botid=${identity%% *}
+    botname=${identity#* }
+    [ -n "$identity" ] || { botid=''; botname=''; }
     if [ -z "$botid" ]; then
       detail="${detail}${id}=invalid "
     elif [ "$botid" = "$PRODUCTION_BOT_ID" ]; then
@@ -325,12 +383,19 @@ bash "$HERE/backup-coolify-env.sh" "$BACKUP_PATH" \
   "${APP_UUID[shikoo-dev-ingest]}" "${APP_UUID[shikoo-dev-dashboard]}" "${APP_UUID[shikoo-dev-bot]}" ||
   die "the recovery backup failed — nothing is deleted without one"
 
-# Every row about to be deleted must be IN that backup. A backup that captured
-# the other fourteen rows is not a recovery point for the one being removed.
+# Every row about to be deleted must be IN that backup, checked by its DATABASE
+# id — the backup is written from the database and knows nothing about API
+# uuids. The mapping is made per row, and a uuid that does not resolve to
+# exactly one database row stops the run rather than being skipped.
+DROP_DBIDS=''
 for pair in $DROP; do
-  id=${pair##*:}
-  grep -q "VALUES (${id}," "$BACKUP_PATH/coolify-env-rows.sql" ||
-    die "row ${id} is not in the recovery backup — refusing to delete a row that cannot be put back"
+  app_uuid=${pair%%:*}
+  row_uuid=${pair##*:}
+  dbid=$(db_id_for "$app_uuid" "$row_uuid")
+  [ -n "$dbid" ] || die "could not resolve a database id for row ${row_uuid}"
+  grep -q "VALUES (${dbid}," "$BACKUP_PATH/coolify-env-rows.sql" ||
+    die "database row ${dbid} (api ${row_uuid}) is not in the recovery backup — refusing to delete a row that cannot be put back"
+  DROP_DBIDS="${DROP_DBIDS}${dbid} "
 done
 say "   all ${DROP_COUNT} row(s) to be deleted are present in ${BACKUP_PATH}"
 
@@ -341,8 +406,22 @@ say "4. deleting"
 # removed. `md5(value)` over ciphertext reveals nothing and is only ever
 # compared with itself — it is the evidence that a delete of one row did not
 # quietly rewrite its neighbour.
+# Database ids for the rows being kept, resolved the same exact way.
+KEEP_DBIDS=''
+for pair in $KEEP; do
+  app_uuid=${pair%%:*}
+  row_uuid=${pair##*:}
+  dbid=$(db_id_for "$app_uuid" "$row_uuid")
+  KEEP_DBIDS="${KEEP_DBIDS}${dbid},"
+done
+KEEP_DBIDS=${KEEP_DBIDS%,}
+
+# Non-secret digests of every row being KEPT, taken before anything is removed.
+# `md5(value)` over the stored column reveals nothing and is only ever compared
+# with itself — it is the evidence that deleting one row did not quietly
+# rewrite its neighbour.
 DIGESTS_BEFORE=$(coolify_db "select id||'='||md5(value) from environment_variables
-   where id in ($(printf '%s' "${KEEP// /,}" | sed 's/[a-z0-9]*://g; s/,$//')) order by id;")
+   where id in (${KEEP_DBIDS:-0}) order by id;")
 
 KEYSET_BEFORE=$(coolify_db "select a.name||':'||ev.key
     from environment_variables ev
@@ -351,17 +430,18 @@ KEYSET_BEFORE=$(coolify_db "select a.name||':'||ev.key
    where e.name = 'dev-fleet' group by a.name, ev.key order by 1;")
 
 for pair in $DROP; do
-  uuid=${pair%%:*}
-  id=${pair##*:}
-  # The row's uuid is needed for the delete endpoint; resolved from the id so a
-  # transcription slip cannot address a different row.
-  ev_uuid=$(coolify_db "select uuid from environment_variables where id = ${id};")
-  [ -n "$ev_uuid" ] || die "row ${id} no longer exists — refusing to continue on a moved target"
-  coolify_api DELETE "/applications/${uuid}/envs/${ev_uuid}" ||
-    die "could not reach Coolify to delete row ${id}"
+  app_uuid=${pair%%:*}
+  row_uuid=${pair##*:}
+  # Re-resolved immediately before the delete. If the row moved, vanished or
+  # became ambiguous between classification and now, `db_id_for` stops the run
+  # rather than letting the deletion land somewhere else.
+  dbid=$(db_id_for "$app_uuid" "$row_uuid")
+  [ -n "$dbid" ] || die "row ${row_uuid} no longer resolves — refusing to continue on a moved target"
+  coolify_api DELETE "/applications/${app_uuid}/envs/${row_uuid}" ||
+    die "could not reach Coolify to delete row ${row_uuid}"
   case "$API_STATUS" in
-    2??) say "   deleted row ${id} from ${uuid}" ;;
-    *) die "deleting row ${id} was refused (HTTP ${API_STATUS})" ;;
+    2??) say "   deleted row ${row_uuid} (db ${dbid}) from ${app_uuid}" ;;
+    *) die "deleting row ${row_uuid} was refused (HTTP ${API_STATUS})" ;;
   esac
 done
 
@@ -387,7 +467,7 @@ say "   the keyset is unchanged: every key that existed still exists"
 # The rows that were kept must be byte-identical to what the backup captured,
 # so a deletion cannot have quietly rewritten a neighbour.
 DIGESTS_AFTER=$(coolify_db "select id||'='||md5(value) from environment_variables
-   where id in ($(printf '%s' "${KEEP// /,}" | sed 's/[a-z0-9]*://g; s/,$//')) order by id;")
+   where id in (${KEEP_DBIDS:-0}) order by id;")
 [ "$DIGESTS_BEFORE" = "$DIGESTS_AFTER" ] ||
   die "a row that was supposed to be untouched changed value during the cleanup"
 say "   every kept row is present and byte-identical to before the deletions"
@@ -416,7 +496,8 @@ EVIDENCE="$STATE/step-e-evidence.env"
   printf 'app_bot=%s\n' "${APP_UUID[shikoo-dev-bot]}"
   printf 'duplicated_keys_before=%s\n' "$DUPE_COUNT"
   printf 'rows_deleted=%s\n' "$DROP_COUNT"
-  printf 'deleted_row_ids=%s\n' "$(printf '%s' "$DROP" | tr ' ' ',' | sed 's/,$//')"
+  printf 'deleted_api_uuids=%s\n' "$(printf '%s' "$DROP" | tr ' ' ',' | sed 's/,$//')"
+  printf 'deleted_db_ids=%s\n' "$(printf '%s' "$DROP_DBIDS" | tr ' ' ',' | sed 's/,$//')"
   printf 'keys_left_untouched=%s\n' "${BLOCKED:-none}"
   printf 'duplicated_keys_after=%s\n' "${STILL_COUNT:-0}"
   printf 'keyset_unchanged=yes\n'
@@ -424,6 +505,8 @@ EVIDENCE="$STATE/step-e-evidence.env"
   printf 'auto_deploy_after=%s\n' "${FLAGS_AFTER% }"
   printf 'deployments_triggered=%s\n' "${DEPLOYS:-0}"
   printf 'env_backup=%s\n' "$BACKUP_PATH"
+  printf 'env_backup_owner=%s\n' "$(stat -c '%U:%G' "$BACKUP_PATH/coolify-env-rows.sql" 2>/dev/null || echo unknown)"
+  printf 'env_backup_mode=%s\n' "$(stat -c '%a' "$BACKUP_PATH/coolify-env-rows.sql" 2>/dev/null || echo unknown)"
   printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >"$EVIDENCE"
 ( cd "$STATE" && sha256sum step-e-evidence.env >step-e-evidence.sha256 )
