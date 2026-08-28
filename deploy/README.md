@@ -184,6 +184,60 @@ the team path stays tested.
 Which policy shipped a given release is recorded on the box, as a fourth field
 in `/var/lib/shikoo/<env>/deployed`.
 
+### Docker Image is an application TYPE, not a build strategy
+
+Coolify 4.3.11 offers exactly five build strategies, and this is the list from
+its own view (`livewire/project/application/general.blade.php`):
+
+```text
+railpack · nixpacks · static · dockerfile · dockercompose
+```
+
+**`dockerimage` is not among them, and no UI dropdown or API PATCH can set it.**
+It is decided when the application is created, by
+`Livewire/Project/New/DockerImage.php`, and an application created from a Git
+source stays a Git application for life. `BuildPackTypes` — the enum the API
+validates against — does not contain it either, which is why any PATCH carrying
+it returns:
+
+```json
+{"message":"Validation failed.",
+ "errors":{"build_pack":["The selected build pack is invalid."]}}
+```
+
+So `deploy.sh` never sends it. It **asserts** the type instead, before the
+migration, and the refusal does not suggest a setting to change, because there
+is none:
+
+> `ingest is a 'dockerfile' application, not a Docker Image application. Coolify
+> would clone the repository and rebuild… A Docker Image application has to be
+> created beside this one and cut over.`
+
+**Why the assertion is load-bearing.** `ApplicationDeploymentJob` dispatches on
+the type: `deploy_dockerimage_buildpack()` pulls the image and never clones,
+while a Git application runs `deploy_dockerfile_buildpack()`, which clones and
+rebuilds and ignores `docker_registry_image_name` entirely. A Git application
+asked to deploy would go green, report a healthy container, and be running a
+tree this pipeline never verified.
+
+The same path is what makes digests work at all — Coolify reads a `sha256-`
+prefixed tag and pulls `name@sha256:<hex>`:
+
+```php
+$isImageHash = str($this->dockerImageTag)->startsWith('sha256-');
+```
+
+### Where each environment stands
+
+| | type | digest deploys |
+| --- | --- | --- |
+| `shikoo-dev-*` (staging) | Docker Image | ✅ supported today |
+| `shikoo-*` (production) | Git / Dockerfile | ❌ refused, by design |
+
+Production cannot be converted in place. Moving it onto this pipeline means
+creating Docker Image applications beside the existing ones and cutting the
+domains over — planned, owner-approved, and **not** part of this change.
+
 ### Promotion to production
 
 Never automatic, in either mode. `workflow_dispatch` with:
