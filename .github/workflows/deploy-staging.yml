@@ -166,10 +166,20 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
           SHA: ${{ needs.gate.outputs.sha }}
-          # The staging bot stays OFF, and this is the one that must: staging
-          # shares the shop's Telegram token, and a second poller would take
-          # updates away from the bot real customers are talking to.
-          DEPLOY_BOT_ENABLED: 'false'
+          # Off unless somebody turned it on, and turning it on is a repository
+          # variable rather than an edit here — so the first staging bot rollout
+          # is not a pull request, and turning it back off is not either.
+          #
+          # It stays off by default because the failure it guards against is not
+          # a broken staging bot: it is a SECOND poller on the shop's real
+          # token. Telegram hands each update to one getUpdates caller, so a
+          # staging bot holding the production token silently takes messages
+          # away from the bot customers are talking to. Before setting this,
+          # confirm the staging application's TELEGRAM_BOT_TOKEN is a bot of its
+          # own — `docs/RELEASE.md` says how to confirm it without reading it.
+          #
+          # Anything but the exact string `true` is off, in `deploy.sh` as well.
+          DEPLOY_BOT_ENABLED: ${{ vars.STAGING_BOT_ENABLED == 'true' && 'true' || 'false' }}
           # Carried to the box so the deploy ledger records WHICH policy let
           # this out — «solo-owner» is not the same fact as «team-approved».
           DEPLOY_APPROVAL_POLICY: ${{ needs.gate.outputs.policy }}
