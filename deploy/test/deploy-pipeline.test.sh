@@ -960,7 +960,12 @@ assert_wf 'only main can deploy' "workflow_run.head_branch == 'main'"
 assert_wf 'the built ref is the exact sha CI passed' 'ref: ${{ github.event.workflow_run.head_sha }}'
 assert_wf 'the staging deploy is serialised' 'group: shikoo-deploy'
 assert_wf 'a running deploy is never cancelled' 'cancel-in-progress: false'
-assert_wf 'the staging bot is explicitly off' "DEPLOY_BOT_ENABLED: 'false'"
+# Off unless a repository variable says otherwise, and the comparison is
+# against the exact string. `vars.STAGING_BOT_ENABLED != ''` would let «no» or
+# «0» start a poller on the shop's token.
+# shellcheck disable=SC2016
+assert_wf 'the staging bot is off unless a variable says exactly true' \
+  "DEPLOY_BOT_ENABLED: \${{ vars.STAGING_BOT_ENABLED == 'true' && 'true' || 'false' }}"
 
 
 refute_wf 'no cache is read from pull request runs' 'type=gha'
@@ -1154,13 +1159,18 @@ esac
 
 section 'the release interface — the bot, and which environment starts one'
 
-# Exactly one workflow may start a bot, and it is the promotion. Staging shares
-# the shop's Telegram token, so a second poller would take updates from the bot
-# real customers are talking to.
-if grep -qF "DEPLOY_BOT_ENABLED: 'false'" "$WORKFLOW" && ! grep -qF "DEPLOY_BOT_ENABLED: 'true'" "$WORKFLOW"; then
-  ok 'staging never starts a bot'
+# Staging starts a bot only if somebody turned it on, and «on» is a repository
+# variable rather than a literal in this file — so the first rollout is not a
+# pull request and neither is turning it back off. What must never appear is a
+# hard-coded `'true'`: Telegram gives each update to one getUpdates caller, so a
+# staging bot on the shop's token silently takes messages from the bot real
+# customers are talking to, and that must stay a decision somebody makes.
+# shellcheck disable=SC2016
+if grep -qF "DEPLOY_BOT_ENABLED: \${{ vars.STAGING_BOT_ENABLED == 'true' && 'true' || 'false' }}" "$WORKFLOW" &&
+  ! grep -qF "DEPLOY_BOT_ENABLED: 'true'" "$WORKFLOW"; then
+  ok 'staging starts no bot unless a variable was set, and never by default'
 else
-  bad 'staging never starts a bot' "$(grep -n DEPLOY_BOT_ENABLED "$WORKFLOW")"
+  bad 'staging starts no bot unless a variable was set, and never by default' "$(grep -n DEPLOY_BOT_ENABLED "$WORKFLOW")"
 fi
 if grep -qF "DEPLOY_BOT_ENABLED: 'true'" "$PROMOTE_WF"; then
   ok 'production promotion carries the bot'
