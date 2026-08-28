@@ -52,18 +52,12 @@ import {
   type ProviderOption,
   type ServiceRow,
 } from '../api.js';
-import { count, irrToToman, toman } from '../format.js';
+import { count, irrToToman, STATUS_FA, toman } from '../format.js';
 import { LayoutEditor } from './LayoutEditor.js';
 import { anyHosted, GroupForm, InboundCount, InboundPicker } from '../groups.js';
 import { useAdminWriteProps } from '../role.js';
 
 const PAGE_SIZE = 25;
-
-const STATUS_FA: Record<string, string> = {
-  ACTIVE: 'فعال',
-  HIDDEN: 'پنهان',
-  DISABLED: 'غیرفعال',
-};
 
 const STATUS_BADGE: Record<string, string> = {
   ACTIVE: 'badge badge-active',

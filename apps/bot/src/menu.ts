@@ -482,16 +482,20 @@ function usersText(limit: number | null): string {
 export function productMenu(products: CatalogProduct[]): InlineKeyboard {
   const seen = new Map<string, number>();
   for (const p of products) seen.set(p.name, (seen.get(p.name) ?? 0) + 1);
+  // Rows from `groupIntoRows`, not one per product. This was the last
+  // catalogue keyboard drawing a row per button, and on the live shop it showed:
+  // four tiers as four rows of one, between a category screen with two per row
+  // and a price screen with two per row.
   return withChrome(
-    products.map((product) => [
-      {
+    groupIntoRows(products).map((row) =>
+      row.map((product) => ({
         text:
           (seen.get(product.name) ?? 0) > 1
             ? `${product.name} (${product.providerName})`
             : product.name,
         callback_data: encode('prd', product.productId),
-      },
-    ]),
+      })),
+    ),
     'products',
   );
 }

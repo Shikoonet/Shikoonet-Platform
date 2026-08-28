@@ -82,7 +82,11 @@ async function makeShop(
 /** Open a category as a real customer would, and hand back the keyboard. */
 async function openCategory(
   categoryId: number,
-): Promise<{ text: string; buttons: Array<{ text: string; data: string }> }> {
+): Promise<{
+  text: string;
+  buttons: Array<{ text: string; data: string }>;
+  rows: string[][];
+}> {
   const { updateId, telegramId } = ids();
   await handleUpdate(db, {
     update_id: updateId,
@@ -108,6 +112,9 @@ async function openCategory(
     buttons: (reply?.keyboard ?? [])
       .flat()
       .map((b) => ({ text: b.text, data: b.callback_data ?? '' })),
+    // Kept unflattened too: the arrangement is a fact about ROWS, and a flat
+    // list cannot tell «two buttons side by side» from «two buttons stacked».
+    rows: (reply?.keyboard ?? []).map((row) => row.map((b) => b.text)),
   };
 }
 
@@ -253,5 +260,108 @@ describe('the tier list obeys the same visibility rule as everything else', () =
     const screen = await openCategory(shop.categoryId);
     const services = screen.buttons.filter((b) => b.data.startsWith('prd:'));
     expect(services.map((b) => b.text)).toEqual(['پلاتینیوم', 'معمولی']);
+  });
+});
+
+/**
+ * The tier screen, arranged.
+ *
+ * `products.row_index` (0037) is the last of the three catalogue tables to get
+ * one. Until it did, `productMenu` drew a row per button while the screens
+ * either side of it grouped — so on the live shop four tiers came out as four
+ * rows of one, and no operator had a way to change it.
+ *
+ * Asserted on the KEYBOARD the customer receives, not on what the query
+ * returned: `groupIntoRows` joins CONSECUTIVE equal row_index, so a query that
+ * returns the right rows in the wrong ORDER still draws the wrong screen. That
+ * is exactly what the panel-first `ORDER BY` in `productsForUser` would have
+ * done, and only a row-shaped assertion can see it.
+ */
+describe('the tier screen can be arranged', () => {
+  it('puts two tiers on one row when they were arranged that way', async () => {
+    const shop = await makeShop('rows', [
+      { name: 'پلاتینیوم', plans: 2 },
+      { name: 'طلایی', plans: 2 },
+      { name: 'معمولی', plans: 2 },
+    ]);
+    // Two on row 0, the third alone on row 1 — what the editor writes.
+    await db
+      .prepare(`UPDATE products SET row_index = ?2, sort_order = ?3 WHERE id = ?1`)
+      .bind(shop.tiers[0]!.productId, 0, 0)
+      .run();
+    await db
+      .prepare(`UPDATE products SET row_index = ?2, sort_order = ?3 WHERE id = ?1`)
+      .bind(shop.tiers[1]!.productId, 0, 1)
+      .run();
+    await db
+      .prepare(`UPDATE products SET row_index = ?2, sort_order = ?3 WHERE id = ?1`)
+      .bind(shop.tiers[2]!.productId, 1, 2)
+      .run();
+
+    const screen = await openCategory(shop.categoryId);
+    const tierRows = screen.rows.filter((r) => r.some((t) => t.includes('پلاتینیوم') || t.includes('طلایی') || t.includes('معمولی')));
+
+    expect(tierRows[0]).toEqual(['پلاتینیوم', 'طلایی']);
+    expect(tierRows[1]).toEqual(['معمولی']);
+  });
+
+  it('draws one per row when nothing has been arranged', async () => {
+    // NULL is what every existing row carries, and it has to keep meaning «its
+    // own row» rather than «row zero» — otherwise switching this on would
+    // silently glue an untouched shop's buttons together.
+    const shop = await makeShop('unarranged', [
+      { name: 'پلاتینیوم', plans: 2 },
+      { name: 'طلایی', plans: 2 },
+    ]);
+    const screen = await openCategory(shop.categoryId);
+    const tierRows = screen.rows.filter((r) => r.some((t) => t.includes('پلاتینیوم') || t.includes('طلایی')));
+
+    expect(tierRows).toEqual([['پلاتینیوم'], ['طلایی']]);
+  });
+
+  it('draws the arranged order rather than the panel ordering', async () => {
+    // The trap the old `ORDER BY pr.sort_order, pr.id, ...` set: two panels in
+    // one category, and the panel ordering interleaves the services so that two
+    // the operator put side by side are no longer CONSECUTIVE — which is the
+    // only thing `groupIntoRows` looks at. The row silently comes apart.
+    const shop = await makeShop('twopanels', [
+      { name: 'پلاتینیوم', plans: 1 },
+      { name: 'طلایی', plans: 1 },
+    ]);
+    const other = await db
+      .prepare(
+        `INSERT INTO provisioning_providers (code, name, kind, status)
+         VALUES (?1, ?1, 'marzban', 'ACTIVE') RETURNING id`,
+      )
+      .bind(`${PREFIX}twopanels-b`)
+      .first<{ id: number }>();
+    // «طلایی» moves to a second panel that sorts FIRST, so a panel-led ORDER BY
+    // would draw it before «پلاتینیوم» whatever the operator asked for.
+    await db
+      .prepare(`UPDATE provisioning_providers SET sort_order = 0 WHERE id = ?1`)
+      .bind(Number(other!.id))
+      .run();
+    await db
+      .prepare(`UPDATE provisioning_providers SET sort_order = 9 WHERE code = ?1`)
+      .bind(`${PREFIX}twopanels`)
+      .run();
+    await db
+      .prepare(`UPDATE products SET provider_id = ?1 WHERE id = ?2`)
+      .bind(Number(other!.id), shop.tiers[1]!.productId)
+      .run();
+    // The operator's arrangement: پلاتینیوم first, both on one row.
+    await db
+      .prepare(`UPDATE products SET row_index = 0, sort_order = ?2 WHERE id = ?1`)
+      .bind(shop.tiers[0]!.productId, 0)
+      .run();
+    await db
+      .prepare(`UPDATE products SET row_index = 0, sort_order = ?2 WHERE id = ?1`)
+      .bind(shop.tiers[1]!.productId, 1)
+      .run();
+
+    const screen = await openCategory(shop.categoryId);
+    const tierRows = screen.rows.filter((r) => r.some((t) => t.includes('پلاتینیوم') || t.includes('طلایی')));
+
+    expect(tierRows[0]).toEqual(['پلاتینیوم', 'طلایی']);
   });
 });

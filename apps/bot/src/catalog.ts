@@ -105,6 +105,14 @@ export interface CatalogProduct {
    * a second panel selling its own «پلاتینیوم» would produce.
    */
   providerName: string;
+  /**
+   * Which row of the tier screen this button sits on, or null for its own.
+   *
+   * `products.row_index`, added in 0037. Until then this was the one catalogue
+   * keyboard that could not be arranged, so four tiers came out as four rows of
+   * one while the screens either side of it put two buttons on a line.
+   */
+  rowIndex: number | null;
 }
 
 /**
@@ -144,7 +152,8 @@ export async function productsForUser(
       // not become reachable by posting its number.
       `SELECT p.id                AS product_id,
               p.name              AS name,
-              pr.name             AS provider_name
+              pr.name             AS provider_name,
+              p.row_index         AS row_index
          FROM products p
          JOIN product_plans pl          ON pl.product_id = p.id
          JOIN provisioning_providers pr ON pr.id = p.provider_id
@@ -153,18 +162,35 @@ export async function productsForUser(
         WHERE (?2::bigint IS NULL OR pr.id = ?2)
           AND (?3::bigint IS NULL OR (p.category_id = ?3 AND cat.active))
           AND ${PURCHASABLE}
-        GROUP BY p.id, p.name, p.sort_order, pr.name, pr.sort_order, pr.id
-        -- The panel's order first, then the product's. Same reason the panel
-        -- list used it: every migrated row carries sort_order 0, so a tiebreak
-        -- on name would rearrange a shop customers already know.
-        ORDER BY pr.sort_order, pr.id, p.sort_order, p.id`,
+        GROUP BY p.id, p.name, p.sort_order, p.row_index, pr.name
+        -- The product's own order, and nothing before it.
+        --
+        -- This used to lead with the panel's sort_order and id — correct when
+        -- the query fed the old «pick a panel» screen, and wrong the moment the
+        -- screen became arrangeable. catalog-layout writes sort_order in the
+        -- order the operator dragged, and a panel ordering in front of it
+        -- silently overrules that. Worse quietly: groupIntoRows joins
+        -- CONSECUTIVE equal row_index, so a category spanning two panels would
+        -- interleave them and split a row the operator had put together.
+        -- Every other arrangeable screen here already leads with its own
+        -- sort_order; this is that, not a new idea.
+        --
+        -- p.id is the tiebreak because every migrated row carries sort_order 0,
+        -- and insertion order is at least the order somebody built them in.
+        ORDER BY p.sort_order, p.id`,
     )
     .bind(userId, providerId ?? null, categoryId ?? null)
-    .all<{ product_id: number; name: string; provider_name: string }>();
+    .all<{
+      product_id: number;
+      name: string;
+      provider_name: string;
+      row_index: number | null;
+    }>();
   return rows.results.map((r) => ({
     productId: r.product_id,
     name: r.name,
     providerName: r.provider_name,
+    rowIndex: r.row_index,
   }));
 }
 
