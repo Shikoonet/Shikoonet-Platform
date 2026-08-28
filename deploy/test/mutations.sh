@@ -31,6 +31,18 @@ HERE=$(CDPATH='' ; cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH='' ; cd -- "$HERE/../.." && pwd)
 cd "$ROOT" || exit 1
 
+# This script edits tracked files in place and restores them afterwards, so
+# nothing else may run against this checkout while it does. Running the deploy
+# suite beside it produced two "failures" that were only ever this script
+# holding a mutated rehearsal-lib.sh while the manifest tests hashed it.
+for _f in deploy/*.sh tools/*.py; do
+  [ ! -e "${_f}.orig" ] || {
+    echo "refusing: ${_f}.orig exists — another run is in progress, or a previous one died" >&2
+    exit 1
+  }
+done
+unset _f
+
 ATTEMPTS=0; MATCHED=0; INVALID=0; KILLED=0; SURVIVED=0
 NOMATCH_LIST=''; SURVIVOR_LIST=''; INVALID_LIST=''
 
