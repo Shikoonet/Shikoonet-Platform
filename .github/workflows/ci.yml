@@ -800,6 +800,13 @@ jobs:
       - name: restore drill — it resolves its target instead of assuming one
         run: bash deploy/test/restore-drill.test.sh
 
+      # The Step-E runner deletes rows from a live Coolify. The cases that
+      # matter are the refusals, and the sharpest is the bot one: the id named
+      # as the intended staging identity is what PRODUCTION polls with, so it
+      # is pinned as a disqualifier rather than a target.
+      - name: step-e runner — the four ways it must refuse
+        run: bash deploy/test/step-e.test.sh
+
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh
 
