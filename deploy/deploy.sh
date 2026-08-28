@@ -311,15 +311,33 @@ assert_deployable() { # uuid name
   # and on 2026-08-27 the bot had no such variable, so the deploy pushed a new
   # image, watched three containers crash-loop, and rolled back. Every minute of
   # that was knowable from one GET before the first application was touched.
-  api GET "/applications/$1/envs" |
+  #
+  # The same GET answers a second question: whether any key appears twice.
+  # Coolify accepts a variable that is already there rather than replacing it,
+  # and on 2026-08-26 the staging bot ended up holding DATABASE_URL, ENV_NAME,
+  # SERVICE and TELEGRAM_BOT_TOKEN twice each — one form submitted twice, eight
+  # rows, same second. The container then gets whichever of each pair is written
+  # last, and for DATABASE_URL and TELEGRAM_BOT_TOKEN that is the difference
+  # between this environment and the shop's real one, settled by row order.
+  #
+  # Refused, not repaired. Nothing here reads a value, so nothing here can tell
+  # which of the two was meant; a person has to delete one in the panel.
+  local problem
+  problem=$(api GET "/applications/$1/envs" |
     python3 -c 'import json,sys
+from collections import Counter
 try:
     rows = json.load(sys.stdin)
 except Exception:
     rows = []
 rows = rows if isinstance(rows, list) else []
-sys.exit(0 if any(r.get("key") == "ENV_NAME" and (r.get("value") or "").strip() for r in rows) else 1)' ||
-    die "$2 has no ENV_NAME in Coolify — the image refuses to boot without it, so this deploy would crash-loop and roll back"
+dupes = sorted(k for k, n in Counter(r.get("key") for r in rows).items() if n > 1 and k)
+if dupes:
+    print("has %s defined more than once in Coolify — the container would get whichever row is written last. Delete the duplicate in the panel." % ", ".join(dupes))
+elif not any(r.get("key") == "ENV_NAME" and (r.get("value") or "").strip() for r in rows):
+    print("has no ENV_NAME in Coolify — the image refuses to boot without it, so this deploy would crash-loop and roll back")') ||
+    die "$2: could not read the application environment from Coolify"
+  [ -z "$problem" ] || die "$2 $problem"
 }
 
 # Before the migration, because a misconfigured application should cost

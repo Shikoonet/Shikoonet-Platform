@@ -118,6 +118,11 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
         GET:/applications/*/envs)
           if [ "${FAKE_NO_ENV_NAME:-}" = '1' ]; then
             printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"}]'
+          elif [ "${FAKE_DUPLICATE_ENVS:-}" = '1' ]; then
+            # The shape the staging bot was actually in: every key twice, one
+            # form submitted twice. ENV_NAME is present, so this passes the
+            # older check and has to be caught by the newer one.
+            printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"},{"key":"DATABASE_URL","value":"postgres://u:p@other:5432/shikoo"},{"key":"ENV_NAME","value":"production"},{"key":"ENV_NAME","value":"production"},{"key":"TELEGRAM_BOT_TOKEN","value":"x"},{"key":"TELEGRAM_BOT_TOKEN","value":"y"}]'
           else
             printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"},{"key":"ENV_NAME","value":"production"}]'
           fi ;;
@@ -603,6 +608,7 @@ run_deploy() { # bot-flag
     FAKE_LABEL_SHA="$SHA_MERGED" FAKE_BUILD_PACK="${FAKE_BUILD_PACK:-dockerimage}" \
     FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a}" \
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
+    FAKE_DUPLICATE_ENVS="${FAKE_DUPLICATE_ENVS:-}" \
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
@@ -725,6 +731,31 @@ else
   fi
 fi
 unset FAKE_NO_ENV_NAME
+
+# A key defined twice in Coolify. The staging bot held DATABASE_URL, ENV_NAME,
+# SERVICE and TELEGRAM_BOT_TOKEN twice each on 2026-08-26 — and it has an
+# ENV_NAME, so the check above says yes to it. Which of each pair the container
+# gets is row order, and for two of those keys that is which environment it
+# joins.
+FAKE_DUPLICATE_ENVS=1
+if run_deploy false; then
+  bad 'refuses an application with a variable defined twice' 'it deployed anyway'
+else
+  if grep -qF 'defined more than once' "$DEPLOY_LOG" && ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+    ok 'refuses an application with a variable defined twice'
+  else
+    bad 'refuses an application with a variable defined twice' "$(tail -2 "$DEPLOY_LOG")"
+  fi
+fi
+
+# Every duplicated key, named. A message that stops at the first one sends the
+# operator back to the panel once per duplicate.
+if grep -qF 'DATABASE_URL, ENV_NAME, TELEGRAM_BOT_TOKEN' "$DEPLOY_LOG"; then
+  ok 'names every duplicated variable, not just the first'
+else
+  bad 'names every duplicated variable, not just the first' "$(tail -2 "$DEPLOY_LOG")"
+fi
+unset FAKE_DUPLICATE_ENVS
 
 # The pre-flight runs before the migration, and the migration takes time. An
 # application edited in the Coolify UI during that window would move out from
