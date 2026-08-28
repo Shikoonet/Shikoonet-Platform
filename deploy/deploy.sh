@@ -73,14 +73,19 @@ case "$ENV_ARG" in staging | production) ;; *) usage ;; esac
 # «@sha256:» with nothing at all — which is a malformed reference wearing the
 # shape of a real one. It would survive both layers of this pipeline and fail
 # at «docker pull», after the flock was taken and the ledger consulted.
-echo "$IMAGE_REF" | grep -qE '^[^@[:space:]]+@sha256:[0-9a-f]{64}$' || {
+# Matched with bash's own `=~`, not `echo | grep`.
+#
+# `grep` matches LINE BY LINE, so a value carrying a newline passes as long
+# as any one of its lines matches — `…@sha256:<64 hex>\nextra` reads as a
+# valid digest. `[[ =~ ]]` anchors against the whole string, so it cannot.
+if ! [[ $IMAGE_REF =~ ^[^@[:space:]]+@sha256:[0-9a-f]{64}$ ]]; then
   echo "refusing: not an immutable digest: $IMAGE_REF" >&2
   exit 2
-}
-echo "$EXPECTED_SHA" | grep -qE '^[0-9a-f]{40}$' || {
+fi
+if ! [[ $EXPECTED_SHA =~ ^[0-9a-f]{40}$ ]]; then
   echo "refusing: expected sha is not a full 40-character commit sha" >&2
   exit 2
-}
+fi
 REGISTRY_LOGIN=0
 case "${5:-}" in
   --registry-token-stdin) REGISTRY_LOGIN=1 ;;
