@@ -661,15 +661,38 @@ for entry in $(printf '%s' "$LIVE_IMAGES" | tr ',' ' '); do
     shikoo-dashboard) svc=dashboard ;;
     *) svc=bot ;;
   esac
-  # The real service entrypoint's schema gate, against the migrated restore.
-  # No Telegram token is supplied and no poller is started: the bot is checked
-  # by the gate that touches the migrated tables and nothing else.
+  # The schema gate the image ITSELF runs at startup — `deploy/entrypoint.sh`
+  # line 36, verbatim — against the migrated restore.
+  #
+  # The hand-rolled probe that was here called `m.status(db)`. `status()` takes
+  # a pg client and a migrations directory (`packages/db/src/schema.ts:136`);
+  # `db` is the D1 adapter and has no `.query`, and the directory was missing
+  # entirely. It threw every time, which this loop recorded as
+  # `OLD_APP_SCHEMA_COMPAT=fail` — so the rehearsal could never have got past
+  # step 12 against a real image, and the "failure" would have been read as
+  # "the old code cannot serve the migrated schema" when it was a broken probe.
+  #
+  # `gate`, not `status`, and for the reason the entrypoint gives: a database
+  # AHEAD of the image's checkout is a rollback, not a fault. That is exactly
+  # the situation being rehearsed.
+  #
+  # No Telegram token is supplied and no poller is started.
+  set +e
   docker run --pull=never --rm --network "$NET" \
-    -e ENV_NAME=production -e SERVICE="$svc" -e SCHEMA_GATE_ONLY=1 \
+    -e ENV_NAME=production -e SERVICE="$svc" \
     -e DATABASE_URL="postgres://postgres:rehearsal@${OLD_APP_TARGET}:5432/prodrestore" \
     --entrypoint /bin/sh "$img" -lc \
-    'node --import tsx -e "import(\"@shikoo/db\").then(async m=>{const {db,pool}=m.createPostgresD1();const s=await m.status(db);if(s.pending.length){console.error(\"pending\");process.exit(1)}await pool.end()})"' \
-    >/dev/null 2>&1 || OLD_APP_SCHEMA_COMPAT=fail
+    'cd /app && node --import tsx packages/db/src/schemaCli.ts gate' >"$ART/gate-${svc}.log" 2>&1
+  GATE_RC=$?
+  set -e
+  case "$GATE_RC" in
+    0) ;;
+    1) OLD_APP_SCHEMA_COMPAT=fail
+       say "   ${app}: the gate blocked — $(grep -m1 '^BLOCK' "$ART/gate-${svc}.log" || echo 'see the gate log')" ;;
+    # Anything else is the probe failing, not a verdict about the schema, and
+    # must not be recorded as one.
+    *) die "the schema gate could not be run inside ${app}'s image (exit ${GATE_RC}) — this is a broken probe, not a compatibility result" ;;
+  esac
 done
 say "   old_app_schema_compat=${OLD_APP_SCHEMA_COMPAT} (subject ${OLD_APP_SCHEMA_SUBJECT}=${OLD_APP_TARGET})"
 [ "$OLD_APP_SCHEMA_COMPAT" = 'pass' ] ||

@@ -35,6 +35,19 @@ cd "$ROOT" || exit 1
 # nothing else may run against this checkout while it does. Running the deploy
 # suite beside it produced two "failures" that were only ever this script
 # holding a mutated rehearsal-lib.sh while the manifest tests hashed it.
+#
+# A lock, not just a check. Scanning for leftover `.orig` files is
+# time-of-check-to-time-of-use: two runs can both find none, both start, and
+# both write `rehearsal-lib.sh.orig` — after which one restore puts back the
+# OTHER run's mutant and a weakened deploy script is left in the tree with
+# nothing to say so. The lock lives in `.git`, which is per-checkout, owned by
+# whoever owns the checkout, and never tracked.
+exec 200>"$ROOT/.git/shikoo-mutations.lock"
+flock -n 200 || {
+  echo "refusing: another mutation run holds the lock on this checkout" >&2
+  exit 1
+}
+
 for _f in deploy/*.sh tools/*.py; do
   [ ! -e "${_f}.orig" ] || {
     echo "refusing: ${_f}.orig exists — another run is in progress, or a previous one died" >&2
@@ -213,6 +226,8 @@ echo "== subject separation =="
 mut "$R" 's|\[ "$APPLIED_TO_RESTORE" -eq "$PENDING_COUNT" \]|true|'  "$ST" "subjects: ignore the applied count"
 mut "$R" 's|\[ "$LEDGER_NOW" = "$PROD_LEDGER_BEFORE" \]|true|'       "$ST" "subjects: ignore the ledger marker"
 mut "$R" 's|\[ "$OLD_APP_TARGET" != "$DEST_C" \]|true|'              "$ST" "subjects: old image against the destination"
+mut "$R" 's|    1) OLD_APP_SCHEMA_COMPAT=fail|    1) :|'             "$ST" "subjects: ignore a blocked schema gate"
+mut "$R" 's|    \*) die "the schema gate could not be run|    *) : "the schema gate could not be run|' "$ST" "subjects: treat a broken probe as a verdict"
 mut "$R" 's|\[ "$APPLIED_TO_RESTORE" -gt 0 \]|true|'                 "$ST" "subjects: allow zero migrations applied"
 
 echo "== cleanup =="

@@ -145,9 +145,9 @@ if verb == "run":
                 _json.dump({"testResults": files, "success": True}, fh)
         sys.exit(int(os.environ.get("FAKE_VITEST_RC", "0")))
 
-    if "SCHEMA_GATE_ONLY" in joined or env.get("SCHEMA_GATE_ONLY"):
+    if "schemaCli.ts gate" in joined:
         log("old-image-gate", container=subject, db=dbname, detail=env.get("SERVICE", ""))
-        sys.exit(0)
+        sys.exit(int(os.environ.get("FAKE_GATE_RC", "0")))
 
     if "migrate" in joined:
         # The migrator builds the destination from nothing: its ledger ends at
