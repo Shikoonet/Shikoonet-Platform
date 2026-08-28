@@ -35,6 +35,17 @@ SECRET_TOKEN_B='222222:BBBB-SECRET-TOKEN-BBBB'
 
 BIN="$WORK/bin"
 mkdir -p "$BIN"
+REAL_PYTHON=$(command -v python3)
+PYTHON_ARGV="$WORK/python.argv"
+CURL_ARGV="$WORK/curl.argv"
+: >"$PYTHON_ARGV"
+: >"$CURL_ARGV"
+cat >"$BIN/python3" <<FAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$PYTHON_ARGV"
+exec "$REAL_PYTHON" "\$@"
+FAKE
+chmod +x "$BIN/python3"
 PATH="$BIN:$PATH"
 export PATH
 
@@ -46,54 +57,50 @@ EOF
 
 UUID='aaaaaaaaaaaaaaaaaaaaaaaa'
 
-# Fake Coolify + Telegram. Routed on the url, which is the last argument.
+# The live API shape: uuid, no numeric id.
+cat >"$WORK/envs.json" <<EOF
+[
+ {"uuid":"env-db-staging","key":"DATABASE_URL","value":"${SECRET_DB_STAGING}"},
+ {"uuid":"env-db-prod","key":"DATABASE_URL","value":"${SECRET_DB_PROD}"},
+ {"uuid":"env-bot-prod","key":"TELEGRAM_BOT_TOKEN","value":"${SECRET_TOKEN_A}"},
+ {"uuid":"env-bot-staging","key":"TELEGRAM_BOT_TOKEN","value":"${SECRET_TOKEN_B}"},
+ {"uuid":"env-name-staging","key":"ENV_NAME","value":"staging"},
+ {"uuid":"env-name-prod","key":"ENV_NAME","value":"production"},
+ {"uuid":"env-panel-a","key":"PANEL_SECRET_KEY","value":"a-secret-with-no-special-handling"},
+ {"uuid":"env-panel-b","key":"PANEL_SECRET_KEY","value":"another-secret-value"},
+ {"uuid":"env-once","key":"APPEARS_ONCE","value":"not-a-duplicate-and-must-not-be-listed"}
+]
+EOF
+
+# Fake Coolify + Telegram. Coolify carries its URL as the last argument;
+# Telegram carries its credentialed URL only in the 0600 -K file.
 cat >"$BIN/curl" <<FAKE
 #!/usr/bin/env bash
 set -Eeuo pipefail
+printf '%s\n' "\$*" >>"$CURL_ARGV"
 url=\${*: -1}
+cfg=''
+prev=''
+for a in "\$@"; do [ "\$prev" = '-K' ] && cfg="\$a"; prev="\$a"; done
+if [ -n "\$cfg" ] && grep -q 'api.telegram.org' "\$cfg" 2>/dev/null; then
+  if grep -q '${SECRET_TOKEN_A}' "\$cfg"; then
+    printf '{"ok":true,"result":{"id":8856185613,"username":"Test_Shikoo_bot"}}'
+  elif grep -q '${SECRET_TOKEN_B}' "\$cfg"; then
+    printf '{"ok":true,"result":{"id":9900112233,"username":"Shikoo_Staging_bot"}}'
+  else
+    printf '{"ok":false,"description":"Unauthorized"}'
+  fi
+  exit 0
+fi
 case "\$url" in
-  *api.telegram.org*getMe*)
-    case "\$url" in
-      *${SECRET_TOKEN_A}*) printf '{"ok":true,"result":{"id":8856185613,"username":"Test_Shikoo_bot"}}' ;;
-      *${SECRET_TOKEN_B}*) printf '{"ok":true,"result":{"id":9900112233,"username":"Shikoo_Staging_bot"}}' ;;
-      *) printf '{"ok":false,"description":"Unauthorized"}' ;;
-    esac
-    exit 0 ;;
   */envs)
-    # curl writes the http_code with no separator, so the fake has to as well.
-    # Written as one printf rather than a heredoc: a heredoc nested inside the
-    # heredoc that generates this file is a quoting puzzle, and the version
-    # that got it wrong failed as «could not reach Coolify» — pointing at the
-    # network rather than at itself.
-    printf '%s200' '[
- {"id":95,"key":"DATABASE_URL","value":"${SECRET_DB_STAGING}"},
- {"id":96,"key":"DATABASE_URL","value":"${SECRET_DB_PROD}"},
- {"id":111,"key":"TELEGRAM_BOT_TOKEN","value":"${SECRET_TOKEN_A}"},
- {"id":112,"key":"TELEGRAM_BOT_TOKEN","value":"${SECRET_TOKEN_B}"},
- {"id":97,"key":"ENV_NAME","value":"staging"},
- {"id":98,"key":"ENV_NAME","value":"production"},
- {"id":50,"key":"PANEL_SECRET_KEY","value":"a-secret-with-no-special-handling"},
- {"id":51,"key":"PANEL_SECRET_KEY","value":"another-secret-value"},
- {"id":60,"key":"APPEARS_ONCE","value":"not-a-duplicate-and-must-not-be-listed"}
-]'
+    cat "$WORK/envs.json"
+    printf '200'
     exit 0 ;;
 esac
 printf '{}404'
 FAKE
 chmod +x "$BIN/curl"
-
-# Fake psql: answers with a system_identifier chosen by which url it was given.
-cat >"$BIN/psql" <<FAKE
-#!/usr/bin/env bash
-set -Eeuo pipefail
-url=\${1:-}
-case "\$url" in
-  *db-stg*) printf '7678322244250038305\n' ;;
-  *db-prd*) printf '7678248300486692898\n' ;;
-  *) exit 1 ;;
-esac
-FAKE
-chmod +x "$BIN/psql"
 
 OUT="$WORK/out.txt"
 set +e
@@ -121,14 +128,14 @@ want() { # name  substring
   if grep -qF -- "$2" "$OUT"; then ok "$1"; else bad "$1" "missing: $2"; fi
 }
 
-# The whole point: which row is which, by id, in words a person can act on.
+# The whole point: which row is which, by API uuid, in words a person can act on.
 want 'the staging DATABASE_URL row is named as staging' 'staging (host bea6ac92holn5k6vjgopy2ai)'
 want 'the production DATABASE_URL row is named as PRODUCTION' 'PRODUCTION'
-want 'the DATABASE_URL rows are identified by id' 'row 95'
-want 'both DATABASE_URL rows are classified' 'row 96'
+want 'the DATABASE_URL rows are identified by uuid' 'row env-db-staging'
+want 'both DATABASE_URL rows are classified' 'row env-db-prod'
 want 'the production bot token is named by its public username' '@Test_Shikoo_bot'
 want 'the staging bot token is named by its public username' '@Shikoo_Staging_bot'
-want 'the bot rows are identified by id' 'row 111'
+want 'the bot rows are identified by uuid' 'row env-bot-prod'
 want 'ENV_NAME is shown, because it is not a secret' 'ENV_NAME'
 want 'an unrecognised key is reported as present and nothing more' 'treated as a secret'
 
@@ -146,6 +153,14 @@ else
   ok 'it deletes nothing'
 fi
 
+for secret in "$SECRET_DB_STAGING" "$SECRET_DB_PROD" "$SECRET_TOKEN_A" "$SECRET_TOKEN_B"; do
+  if grep -qF -- "$secret" "$PYTHON_ARGV" "$CURL_ARGV"; then
+    bad 'no database URL or bot token reaches process argv' "secret reached argv: ${secret:0:20}…"
+  else
+    ok "«${secret:0:20}…» appears in no process argv"
+  fi
+done
+
 section 'classify-duplicate-envs — refusals'
 
 refuses() { # name  args...
@@ -160,6 +175,13 @@ refuses() { # name  args...
 refuses 'refuses an unknown environment name' 'prod' "$UUID"
 refuses 'refuses an application id that is not a uuid' 'staging' 'not a uuid'
 refuses 'refuses being given no application at all' 'staging'
+
+printf '{not-json' >"$WORK/envs.json"
+refuses 'refuses malformed JSON from Coolify' 'staging' "$UUID"
+printf '{"rows":[]}' >"$WORK/envs.json"
+refuses 'refuses a non-list Coolify response' 'staging' "$UUID"
+printf '[{"key":"ENV_NAME","value":"staging"},{"key":"ENV_NAME","value":"staging"}]' >"$WORK/envs.json"
+refuses 'refuses a duplicated row without uuid' 'staging' "$UUID"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

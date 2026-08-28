@@ -364,8 +364,9 @@ from collections import Counter
 try:
     rows = json.load(sys.stdin)
 except Exception:
-    rows = []
-rows = rows if isinstance(rows, list) else []
+    raise SystemExit(1)
+if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+    raise SystemExit(1)
 dupes = sorted(k for k, n in Counter(r.get("key") for r in rows).items() if n > 1 and k)
 if dupes:
     print("has %s defined more than once in Coolify — the container would get whichever row is written last. Delete the duplicate in the panel." % ", ".join(dupes))

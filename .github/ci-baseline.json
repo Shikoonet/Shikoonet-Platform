@@ -15,7 +15,7 @@
     "packages/sms-parser": { "name": "@shikoo/sms-parser", "shard": "unit", "total": 229, "skipped": 0 },
     "apps/admin-web": { "name": "@shikoo/admin-web", "shard": "unit", "total": 286, "skipped": 0 },
 
-    "apps/dashboard-worker": { "name": "@shikoo/dashboard", "shard": "db:hub", "total": 705, "skipped": 0 },
+    "apps/dashboard-worker": { "name": "@shikoo/dashboard", "shard": "db:hub", "total": 719, "skipped": 0 },
     "packages/db": { "name": "@shikoo/db", "shard": "db:hub", "total": 85, "skipped": 2 },
     "packages/seed": { "name": "@shikoo/seed", "shard": "db:hub", "total": 15, "skipped": 0 },
 

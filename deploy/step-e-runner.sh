@@ -160,6 +160,7 @@ DUPE_COUNT=$(printf '%s\n' "$DUPES" | grep -c . || true)
   exit 0
 }
 say "   ${DUPE_COUNT} duplicated key(s)"
+EXPECTED_DUPES=$(printf '%s\n' "$DUPES" | awk -F'|' 'NF >= 2 { print $1 "/" $2 }' | sort)
 
 # ── classification ────────────────────────────────────────────────────────
 #
@@ -172,32 +173,51 @@ say "2. classification"
 KEEP=''   # "<uuid>:<rowid>" per key
 DROP=''   # "<uuid>:<rowid>"
 BLOCKED=''
+CLASSIFIED_DUPES=''
+
+duplicate_keys() { # rows -> one validated environment key per line
+  printf '%s' "$1" | python3 -c '
+import json,re,sys
+from collections import Counter
+try:
+    rows=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(2)
+if not isinstance(rows,list) or not all(isinstance(r,dict) for r in rows):
+    raise SystemExit(2)
+for r in rows:
+    if not isinstance(r.get("key"),str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*",r["key"]):
+        raise SystemExit(3)
+    if "value" not in r:
+        raise SystemExit(4)
+for key,n in sorted(Counter(r["key"] for r in rows).items()):
+    if n > 1:
+        print(key)'
+}
 
 classify_app() { # app-name
-  local name=$1 uuid=${APP_UUID[$1]} role=${APP_ROLE[$1]} rows key ids
+  local name=$1 uuid=${APP_UUID[$1]} role=${APP_ROLE[$1]} rows keys key ids
   coolify_api GET "/applications/${uuid}/envs" || die "could not read ${name}'s environment"
   [ "$API_STATUS" = '200' ] ||
     die "reading ${name}'s environment was refused (HTTP ${API_STATUS}) — refusing to report «no duplicates» about an application this token cannot read"
   rows=$API_BODY
 
-  for key in $(printf '%s' "$rows" | python3 -c '
-import json,sys
-from collections import Counter
-d=json.load(sys.stdin)
-d=d if isinstance(d,list) else []
-print(" ".join(sorted({k for k,n in Counter(r.get("key") for r in d).items() if n>1 and k})))'); do
+  keys=$(duplicate_keys "$rows") ||
+    die "${name}: Coolify returned malformed environment rows — refusing to classify an unreadable response"
+  for key in $keys; do
+    CLASSIFIED_DUPES="${CLASSIFIED_DUPES}${name}/${key}"$'\n'
     ids=$(printf '%s' "$rows" | python3 -c '
-import json,sys
+import json,re,sys
 d=json.load(sys.stdin)
 out=[]
-for r in (d if isinstance(d,list) else []):
+for r in d:
     if r.get("key")!=sys.argv[1]: continue
     u=r.get("uuid")
-    if not u:
-        sys.stderr.write("row without a uuid\n"); sys.exit(3)
+    if not isinstance(u,str) or not re.fullmatch(r"[A-Za-z0-9_-]{3,64}",u):
+        sys.stderr.write("row without a safe uuid\n"); sys.exit(3)
     out.append(u)
 print(" ".join(out))' "$key") ||
-      die "${name} ${key}: a row came back without a uuid — refusing to act on rows this API cannot address"
+      die "${name} ${key}: a row came back without a safe uuid — refusing to act on rows this API cannot address"
 
     case "$key" in
       ENV_NAME)      classify_literal "$name" "$uuid" "$key" "$ids" 'staging' "$rows" ;;
@@ -243,6 +263,10 @@ for r in (d if isinstance(d,list) else []):
 # The database row behind an API uuid. Exactly one, or the run stops.
 db_id_for() { # app-uuid row-uuid -> numeric id
   local app_uuid=$1 row_uuid=$2 n id
+  [[ $app_uuid =~ ^[a-z0-9]{20,32}$ ]] ||
+    die "application uuid '${app_uuid}' is not safe to use in the identity lookup"
+  [[ $row_uuid =~ ^[A-Za-z0-9_-]{3,64}$ ]] ||
+    die "environment uuid '${row_uuid}' is not safe to use in the identity lookup"
   n=$(coolify_db "select count(*) from environment_variables ev
         join applications a on a.id = ev.resourceable_id
        where ev.uuid = '${row_uuid}'
@@ -268,19 +292,19 @@ classify_literal() { # name uuid key ids want rows
   record "$name" "$uuid" "$key" "$keep" "$drop" "wanted '${want}'" "$rows"
 }
 
-# A URL is never shown. It is connected to, and only the cluster identifier
-# comes back — a number that says which database this is and reveals no host,
-# user or password.
+# A URL is never shown or dialled. Its container hostname is parsed on stdin;
+# that is enough to distinguish the two databases while user, password, port
+# and database name are discarded.
 classify_database() { # name uuid key ids rows
-  local name=$1 uuid=$2 key=$3 ids=$4 rows=$5 id v sysid keep='' drop='' detail=''
+  local name=$1 uuid=$2 key=$3 ids=$4 rows=$5 id v host keep='' drop='' detail=''
   for id in $ids; do
     v=$(value_of "$rows" "$id")
     # Parsed, not dialled. See the header of coolify-secret-io.sh: the host is
     # the database container's own name, which answers the question without a
     # connection — and without opening a session to production in order to
     # discover that this row points at production.
-    sysid=$(pg_host_of "$v")
-    # The identifier is reported, not just the verdict: it is non-secret, it is
+    host=$(pg_host_of "$v")
+    # The hostname is reported, not just the verdict: it is non-secret, it is
     # the actual evidence, and «staging» with no number behind it is a claim
     # rather than a proof.
     #
@@ -291,11 +315,11 @@ classify_database() { # name uuid key ids rows
     # An unparsable or unknown host joins NEITHER list: it must not be kept and
     # must not be deleted. It does not clear the lists either — an earlier
     # version did, discarding a correct verdict already reached for a sibling.
-    case "$sysid" in
-      "$STAGING_DB_HOST")    keep="${keep}${id} "; detail="${detail}${id}=staging(${sysid}) " ;;
-      "$PRODUCTION_DB_HOST") drop="${drop}${id} "; detail="${detail}${id}=PRODUCTION(${sysid}) " ;;
+    case "$host" in
+      "$STAGING_DB_HOST")    keep="${keep}${id} "; detail="${detail}${id}=staging(${host}) " ;;
+      "$PRODUCTION_DB_HOST") drop="${drop}${id} "; detail="${detail}${id}=PRODUCTION(${host}) " ;;
       '')                    detail="${detail}${id}=unparsable " ;;
-      *)                     detail="${detail}${id}=unknown-host(${sysid}) " ;;
+      *)                     detail="${detail}${id}=unknown-host(${host}) " ;;
     esac
   done
   record "$name" "$uuid" "$key" "$keep" "$drop" "$detail" "$rows"
@@ -310,7 +334,7 @@ classify_bot() { # name uuid key ids rows
     # The token reaches curl through a 0600 config, never through argv.
     identity=$(tg_get_me "$v")
     botid=${identity%% *}
-    botname=${identity#* }
+    if [[ $identity == *' '* ]]; then botname=${identity#* }; else botname=''; fi
     [ -n "$identity" ] || { botid=''; botname=''; }
     if [ -z "$botid" ]; then
       detail="${detail}${id}=invalid "
@@ -355,14 +379,21 @@ classify_bot() { # name uuid key ids rows
 # Everything else: the running container is the authority. Whatever it is
 # using is, by definition, the value this environment has been working with.
 classify_effective() { # name uuid key ids rows
-  local name=$1 uuid=$2 key=$3 ids=$4 rows=$5 id v cid eff keep='' drop=''
+  local name=$1 uuid=$2 key=$3 ids=$4 rows=$5 id v cid line eff keep='' drop=''
   cid=$(docker ps --filter "label=coolify.name=${uuid}" --format '{{.Names}}' 2>/dev/null | head -1)
   if [ -z "$cid" ]; then
     BLOCKED="${BLOCKED}${name}/${key} "
     say "   ${name} ${key}: no running container to resolve the effective value — left untouched"
     return
   fi
-  eff=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$cid" 2>/dev/null | sed -n "s/^${key}=//p" | head -1)
+  line=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$cid" 2>/dev/null |
+    awk -v prefix="${key}=" 'index($0,prefix)==1 { print; exit }')
+  if [ -z "$line" ]; then
+    BLOCKED="${BLOCKED}${name}/${key} "
+    say "   ${name} ${key}: the running container has no such environment key — left untouched"
+    return
+  fi
+  eff=${line#*=}
   for id in $ids; do
     v=$(value_of "$rows" "$id")
     if [ "$v" = "$eff" ]; then keep="${keep}${id} "; else drop="${drop}${id} "; fi
@@ -382,11 +413,16 @@ classify_effective() { # name uuid key ids rows
 # Different values that both look correct are a different matter and stay
 # refused: something has to say WHICH, and nothing here can.
 all_identical() { # rows id...
-  local rows=$1 first='' v
+  local rows=$1 first='' v have_first=0
   shift
   for v in "$@"; do
     v=$(value_of "$rows" "$v")
-    if [ -z "$first" ]; then first=$v; elif [ "$v" != "$first" ]; then return 1; fi
+    if [ "$have_first" -eq 0 ]; then
+      first=$v
+      have_first=1
+    elif [ "$v" != "$first" ]; then
+      return 1
+    fi
   done
   return 0
 }
@@ -426,6 +462,10 @@ record() { # name uuid key keep drop detail rows
 for name in shikoo-dev-ingest shikoo-dev-dashboard shikoo-dev-bot; do
   classify_app "$name"
 done
+
+CLASSIFIED_DUPES=$(printf '%s' "$CLASSIFIED_DUPES" | sed '/^$/d' | sort)
+[ "$CLASSIFIED_DUPES" = "$EXPECTED_DUPES" ] ||
+  die "Coolify API duplicate keys do not match the database inventory — refusing a partial or stale classification"
 
 DROP_COUNT=$(printf '%s' "$DROP" | wc -w)
 BLOCKED_COUNT=$(printf '%s' "$BLOCKED" | wc -w)

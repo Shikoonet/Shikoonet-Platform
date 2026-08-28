@@ -25,6 +25,15 @@ section() { printf '\n%s\n' "$1"; }
 
 BIN="$WORK/bin"
 mkdir -p "$BIN"
+REAL_PYTHON=$(command -v python3)
+PYTHON_ARGV="$WORK/python.argv"
+: >"$PYTHON_ARGV"
+cat >"$BIN/python3" <<FAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$PYTHON_ARGV"
+exec "$REAL_PYTHON" "\$@"
+FAKE
+chmod +x "$BIN/python3"
 PATH="$BIN:$PATH"
 export PATH
 
@@ -32,6 +41,7 @@ SECRET_STAGING_URL='postgres://shikoo:STAGINGPW@bea6ac92holn5k6vjgopy2ai:5432/sh
 SECRET_PROD_URL='postgres://shikoo:PRODPW@qd2vduj7kv05sp9ejdrmclmu:5432/shikoo'
 SECRET_TOKEN_PROD='111111:PRODUCTION-BOT-TOKEN'
 SECRET_TOKEN_OTHER='222222:SOME-OTHER-TOKEN'
+SECRET_TOKEN_OTHER_2='333333:SAME-STAGING-BOT-ROTATED-TOKEN'
 
 CONF="$WORK/deploy.env"
 printf 'COOLIFY_URL=http://127.0.0.1:8000\nCOOLIFY_TOKEN=0|not-real\n' >"$CONF"
@@ -64,19 +74,24 @@ mkrows() { python3 -c 'import sys; print("["+",".join(sys.argv[1:])+"]")' "$@"; 
 
 ENVS_ING=$(mkrows \
   "$(row eu-ing-env-ok  ENV_NAME staging)" \
-  "$(row eu-ing-env-bad ENV_NAME production)" \
+  "$(row eu-ing-env-dup ENV_NAME staging)" \
   "$(row eu-ing-svc-ok  SERVICE ingest)" \
-  "$(row eu-ing-svc-bad SERVICE dashboard)")
+  "$(row eu-ing-svc-dup SERVICE ingest)")
 ENVS_DASH=$(mkrows \
   "$(row eu-dsh-db-ok  DATABASE_URL "$SECRET_STAGING_URL")" \
+  "$(row eu-dsh-db-dup DATABASE_URL "$SECRET_STAGING_URL")" \
   "$(row eu-dsh-db-bad DATABASE_URL "$SECRET_PROD_URL")")
 ENVS_BOT=$(mkrows \
   "$(row eu-bot-tok-a TELEGRAM_BOT_TOKEN "$SECRET_TOKEN_PROD")" \
-  "$(row eu-bot-tok-b TELEGRAM_BOT_TOKEN "$SECRET_TOKEN_OTHER")")
+  "$(row eu-bot-tok-b TELEGRAM_BOT_TOKEN "$SECRET_TOKEN_OTHER")" \
+  "$(row eu-bot-tok-c TELEGRAM_BOT_TOKEN "$SECRET_TOKEN_OTHER_2")")
 
 printf '%s' "$ENVS_ING"  >"$WORK/envs.$APP_ING"
 printf '%s' "$ENVS_DASH" >"$WORK/envs.$APP_DASH"
 printf '%s' "$ENVS_BOT"  >"$WORK/envs.$APP_BOT"
+# Fixture construction above intentionally used Python argv. Clear it now: the
+# property under test is what the runner itself exposes.
+: >"$PYTHON_ARGV"
 
 CURL_ARGV="$WORK/curl.argv"
 : >"$CURL_ARGV"
@@ -93,7 +108,7 @@ if [ -n "\$cfg" ] && grep -q 'api.telegram.org' "\$cfg" 2>/dev/null; then
   if grep -q '${SECRET_TOKEN_PROD}' "\$cfg"; then
     printf '{"ok":true,"result":{"id":8856185613,"username":"Test_Shikoo_bot"}}'
   else
-    printf '{"ok":true,"result":{"id":9900112233,"username":"Shikoo_Staging_bot"}}'
+    printf '{"ok":true,"result":{"id":8902884911,"username":"shikoodevbot"}}'
   fi
   exit 0
 fi
@@ -138,7 +153,11 @@ case "\$q" in
   *"a.name = 'shikoo-dev-bot'"*)       printf '${APP_BOT}\n' ;;
   *"select e.name from applications"*) printf 'dev-fleet\n' ;;
   *is_auto_deploy_enabled*)            printf 'f|f\n' ;;
-  *"having count(*) > 1"*)             printf 'x|y|2\n' ;;
+  *"having count(*) > 1"*)             printf '%s\n' \
+    'shikoo-dev-bot|TELEGRAM_BOT_TOKEN|3' \
+    'shikoo-dev-dashboard|DATABASE_URL|3' \
+    'shikoo-dev-ingest|ENV_NAME|2' \
+    'shikoo-dev-ingest|SERVICE|2' ;;
   *)                                   printf '\n' ;;
 esac
 FAKE
@@ -167,20 +186,22 @@ section 'classification, by uuid'
 
 want() { if grep -qF -- "$2" "$OUT"; then ok "$1"; else bad "$1" "missing: $2"; fi; }
 want 'the correct ENV_NAME row is kept by uuid' 'keep eu-ing-env-ok'
-want 'the wrong ENV_NAME row is dropped by uuid' 'drop eu-ing-env-bad'
+want 'an identical ENV_NAME duplicate is safely dropped' 'drop eu-ing-env-dup'
 want 'the correct SERVICE row is kept' 'keep eu-ing-svc-ok'
+want 'an identical SERVICE duplicate is safely dropped' 'drop eu-ing-svc-dup'
 want 'the staging DATABASE_URL is identified by its container host' 'staging(bea6ac92holn5k6vjgopy2ai)'
 want 'the production DATABASE_URL is named as PRODUCTION' 'PRODUCTION'
+want 'the identical staging DATABASE_URL duplicate is dropped' 'drop eu-dsh-db-dup'
 
-section 'the bot row is refused, and only the bot'
+section 'the dedicated staging bot is unambiguous by public id'
 
 want 'the production bot token is recognised' 'PRODUCTION-BOT'
-want 'the ambiguous bot key is left untouched' 'left untouched'
-# One blocked bot row must not stop ingest/dashboard being cleaned.
-if grep -qE 'drop eu-ing-env-bad|drop eu-ing-svc-bad' "$OUT"; then
-  ok 'ingest cleanup still proceeds despite the blocked bot row'
+want 'the dedicated staging bot identity is recognised' '@shikoodevbot(8902884911)'
+want 'two rows resolving to the same staging bot are deduplicated' 'drop eu-bot-tok-c'
+if grep -qF 'shikoo-dev-bot/TELEGRAM_BOT_TOKEN' "$OUT"; then
+  bad 'same-id staging bot rows are not marked ambiguous' "$(tail -4 "$OUT")"
 else
-  bad 'ingest cleanup still proceeds despite the blocked bot row' "$(tail -4 "$OUT")"
+  ok 'same-id staging bot rows are not marked ambiguous'
 fi
 
 section 'a dry run mutates nothing'
@@ -199,9 +220,9 @@ fi
 
 section 'no secret reached argv or output'
 
-for secret in "$SECRET_STAGING_URL" "$SECRET_PROD_URL" "$SECRET_TOKEN_PROD" "$SECRET_TOKEN_OTHER" \
-  'STAGINGPW' 'PRODPW' 'PRODUCTION-BOT-TOKEN' 'SOME-OTHER-TOKEN'; do
-  for f in "$CURL_ARGV" "$PSQL_ARGV" "$DOCKER_ARGV" "$OUT"; do
+for secret in "$SECRET_STAGING_URL" "$SECRET_PROD_URL" "$SECRET_TOKEN_PROD" "$SECRET_TOKEN_OTHER" "$SECRET_TOKEN_OTHER_2" \
+  'STAGINGPW' 'PRODPW' 'PRODUCTION-BOT-TOKEN' 'SOME-OTHER-TOKEN' 'SAME-STAGING-BOT-ROTATED-TOKEN'; do
+  for f in "$CURL_ARGV" "$PSQL_ARGV" "$PYTHON_ARGV" "$DOCKER_ARGV" "$OUT"; do
     if grep -qF -- "$secret" "$f" 2>/dev/null; then
       bad "«${secret:0:22}…» never appears in $(basename "$f")" 'it does'
       continue 2
@@ -209,6 +230,21 @@ for secret in "$SECRET_STAGING_URL" "$SECRET_PROD_URL" "$SECRET_TOKEN_PROD" "$SE
   done
   ok "«${secret:0:22}…» appears in no argv and no output"
 done
+
+section 'malformed API responses fail closed'
+cp "$WORK/envs.$APP_ING" "$WORK/envs.ing.good"
+printf '{"not":"a list"}' >"$WORK/envs.$APP_ING"
+set +e
+env CONF="$CONF" STATE="$STATE" CONTRACT="$STATE/coolify-contract.env" \
+  LOCK="$WORK/lock-malformed" bash "$RUNNER" >"$WORK/malformed.out" 2>&1
+MALFORMED_RC=$?
+set -e
+mv "$WORK/envs.ing.good" "$WORK/envs.$APP_ING"
+if [ "$MALFORMED_RC" -ne 0 ] && grep -qF 'malformed environment rows' "$WORK/malformed.out"; then
+  ok 'a non-list environment response is refused for the right reason'
+else
+  bad 'a non-list environment response is refused for the right reason' "$(tail -4 "$WORK/malformed.out")"
+fi
 
 # The escaped rendering must never be what got compared.
 if grep -qF -- '-ESCAPED' "$OUT"; then
