@@ -189,7 +189,9 @@ in `/var/lib/shikoo/<env>/deployed`.
 Coolify 4.3.11 offers exactly five build strategies, and this is the list from
 its own view (`livewire/project/application/general.blade.php`):
 
-    railpack · nixpacks · static · dockerfile · dockercompose
+```text
+railpack · nixpacks · static · dockerfile · dockercompose
+```
 
 **`dockerimage` is not among them, and no UI dropdown or API PATCH can set it.**
 It is decided when the application is created, by
@@ -198,7 +200,7 @@ source stays a Git application for life. `BuildPackTypes` — the enum the API
 validates against — does not contain it either, which is why any PATCH carrying
 it returns:
 
-```
+```json
 {"message":"Validation failed.",
  "errors":{"build_pack":["The selected build pack is invalid."]}}
 ```
