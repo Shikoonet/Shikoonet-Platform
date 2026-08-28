@@ -466,6 +466,7 @@ interface ServiceRow {
   resellers_only: boolean;
   once_per_user: boolean;
   group_ids: number[] | null;
+  row_index: number | null;
   provider_id: number | null;
   provider_name: string | null;
   provider_code: string | null;
@@ -534,6 +535,9 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
     resellersOnly: r.resellers_only,
     oncePerUser: r.once_per_user,
     groupIds: r.group_ids,
+    // Which row of the TIER screen this service sits on — `category:<id>`
+    // layout, not the config layout inside it.
+    rowIndex: r.row_index,
     panel: r.provider_id
       ? {
           id: r.provider_id,
@@ -933,11 +937,12 @@ export function registerProductRoutes(
       q: c.req.query('q') || undefined,
       status: c.req.query('status') || undefined,
       providerId: c.req.query('providerId') || undefined,
+      categoryId: c.req.query('categoryId') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, status, providerId, page, pageSize } = parsed.data;
+    const { q, status, providerId, categoryId, page, pageSize } = parsed.data;
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -951,6 +956,12 @@ export function registerProductRoutes(
     if (providerId) {
       params.push(providerId);
       where.push(`p.provider_id = ?${params.length}`);
+    }
+    if (categoryId) {
+      // One category's services — the TIER screen, which is what the
+      // `category:<id>` arrangement editor is arranging.
+      params.push(categoryId);
+      where.push(`p.category_id = ?${params.length}`);
     }
     if (q) {
       // Name, code, or the name of any config inside it — an operator hunting
@@ -980,7 +991,7 @@ export function registerProductRoutes(
     const services = await c.env.DB.prepare(
       `SELECT p.id, p.code, p.name, p.kind, p.status, p.description, p.sort_order,
               p.category_id, p.resellers_only, p.once_per_user,
-              p.attrs->'group_ids' AS group_ids,
+              p.attrs->'group_ids' AS group_ids, p.row_index,
               pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
               pr.status AS provider_status, pr.sort_order AS provider_sort_order,
               pr.kind AS provider_kind,
@@ -1443,7 +1454,12 @@ export function registerProductRoutes(
 
     const scope = c.req.param('scope');
     const inService = /^service:(\d+)$/.exec(scope);
-    if (scope !== 'categories' && !inService) {
+    // `category:<id>` is the TIER screen — the services inside one category —
+    // and is not the same thing as `categories`, which is the screen of
+    // categories itself. One is what «خرید اشتراک» opens; the other is what
+    // pressing a category opens.
+    const inCategory = /^category:(\d+)$/.exec(scope);
+    if (scope !== 'categories' && !inService && !inCategory) {
       return c.json({ ok: false, error: 'unknown_scope' }, 404);
     }
 
@@ -1455,9 +1471,23 @@ export function registerProductRoutes(
       );
     }
 
-    let table: 'product_categories' | 'product_plans';
+    let table: 'product_categories' | 'product_plans' | 'products';
     let scopeIds: number[];
-    if (inService) {
+    if (inCategory) {
+      const categoryId = Number(inCategory[1]);
+      const cat = await c.env.DB.prepare(`SELECT id FROM product_categories WHERE id = ?1`)
+        .bind(categoryId)
+        .first<{ id: number }>();
+      if (!cat) return c.json({ ok: false, error: 'not_found' }, 404);
+      table = 'products';
+      // Every status, for the reason spelled out below on the service scope:
+      // the operator arranges the screen in front of them, and it holds the
+      // service they hid last week.
+      const rows = await c.env.DB.prepare(`SELECT id FROM products WHERE category_id = ?1`)
+        .bind(categoryId)
+        .all<{ id: number }>();
+      scopeIds = (rows.results ?? []).map((r) => Number(r.id));
+    } else if (inService) {
       const productId = Number(inService[1]);
       const svc = await c.env.DB.prepare(`SELECT id FROM products WHERE id = ?1`)
         .bind(productId)

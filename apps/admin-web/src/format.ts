@@ -181,3 +181,21 @@ export function gigabytes(bytes: number | null | undefined): string {
   const places = gb > 0 && gb < 0.1 ? 2 : 1;
   return `${FA.format(Number(gb.toFixed(places)))} گیگ`;
 }
+
+/**
+ * A catalogue row's status, in the words the panel uses everywhere else.
+ *
+ * Here rather than in a page because two screens now read it — «سرویس‌ها» on
+ * every row, and «دسته‌بندی‌ها» inside the tier arrangement editor — and the
+ * second one having its own copy is how «غیرفعال» and «خاموش» end up on two
+ * screens describing one column.
+ *
+ * Indexed by string, not by a union: the value comes from the API, and a status
+ * this build has never heard of should fall through to itself rather than
+ * render as «undefined».
+ */
+export const STATUS_FA: Record<string, string> = {
+  ACTIVE: 'فعال',
+  HIDDEN: 'پنهان',
+  DISABLED: 'غیرفعال',
+};
