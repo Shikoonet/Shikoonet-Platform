@@ -56,10 +56,15 @@ build_world() { # root  [script-override]
   while read -r t; do
     printf '[{"id":1}]\n' >"$w/d1/${t}.json"
   done <"$ROOT/deploy/d1-tables.manifest"
+  # The dump is written LAST and the modes are set BEFORE sealing: the bundle
+  # contract requires MySQL to be the later capture, and the generator refuses
+  # a group-writable input — which this working tree's umask 002 produces.
   printf 'dump\n' >"$w/dump.sql"
+  cp "$ROOT/deploy/d1-tables.manifest" "$w/d1-tables.manifest"
+  chmod 644 "$w/d1-tables.manifest"
+  chmod 755 "$w/d1"; chmod 640 "$w"/d1/*.json "$w/dump.sql"
   python3 "$ROOT/tools/d1-export-manifest.py" "$w/d1" "$w/dump.sql" \
-    "$ROOT/deploy/d1-tables.manifest" >/dev/null
-  chmod 755 "$w/d1"; chmod 640 "$w"/d1/*.json "$w/d1/d1-export.manifest"
+    "$w/d1-tables.manifest" >/dev/null
 
   # Coolify's own backup location, and the directory the config names: the
   # canonical comparison has to see the same inode from both sides.

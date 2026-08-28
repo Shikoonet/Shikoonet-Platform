@@ -869,6 +869,22 @@ jobs:
       - name: rehearsal cleanup — every resource, every ending, exactly once
         run: bash deploy/test/rehearsal-cleanup.test.sh
 
+      # The sidecar generator is the privileged half of D1 provenance: it runs
+      # on the secure host beside the dump and writes the file the promotion
+      # gate later believes. Its own refusals, its atomic publication, and what
+      # it prints are all part of the contract — the consumer's tests cannot
+      # stand in for them.
+      - name: D1 sidecar generator — its refusals, its publication, its silence
+        run: bash deploy/test/d1-sidecar.test.sh
+
+      # Twice in this work the owner staging directory held files from an
+      # earlier revision, followed by an instruction to run `sha256sum -c
+      # MANIFEST` inside it — a check a stale bundle passes perfectly, because
+      # a manifest and its files agree with each other whatever commit they
+      # came from. Provenance comes from a verified checkout or not at all.
+      - name: owner bundle restaging — provenance, or a refusal
+        run: bash deploy/test/stage-owner-bundle.test.sh
+
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh
 

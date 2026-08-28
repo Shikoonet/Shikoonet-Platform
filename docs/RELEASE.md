@@ -365,6 +365,32 @@ exactly that is refused rather than adopted.
 The dump itself never leaves that host. `dump_id` is a sha256 and a date, and a
 value shaped like a path is refused by the writer.
 
+### What the sidecar proves, and what it does not
+
+`tools/d1-export-manifest.py` establishes **bundle binding**: one named MySQL
+dump and one complete 23-table D1 export were sealed together, and neither has
+changed since. A modified file, a file swapped in from another export, a
+missing file, an extra file and a substituted dump are all detected.
+
+It does **not** prove the two were read from one transactionally consistent
+moment, and nothing at this layer could: D1 is a Cloudflare service and
+Mirzabot's MySQL is a different machine, so there is no cross-database snapshot
+to take. An earlier version of this document called it a snapshot proof. That
+was an overclaim of exactly the kind that matters, because the promotion gate
+would have believed a stronger fact than anyone had established.
+
+What stands in its place is a **bounded-consistency contract**, recorded by the
+generator and enforced by the rehearsal before anything is opened:
+
+| Rule | Why |
+|---|---|
+| **capture window** — every artifact written within `capture_window_max` (3600s) of every other | bounds how far the two sources can have drifted. It rests on file mtimes, so it guards against the ordinary mistake — yesterday's export beside today's dump — not against someone who already has root on the secure host |
+| **capture order** — the dump is no older than the newest D1 file | with MySQL captured last it is the superset, so every order D1 has a claim for is in the dump. The other way round, D1 can reference orders the dump has never heard of and the migration would invent them |
+| **cross-source coherence** — every Mirzabot order reference carried by D1's `payment_claims` appears in the dump | catches an export paired with an unrelated dump even when both are fresh. A presence test over the dump text, so it needs no knowledge of Mirzabot's schema |
+
+The sidecar records verdicts and counts only — never a reference, a value, a
+path, or a timestamp of customer activity.
+
 ### Splitting promotion in two
 
 `Prepare Production` and `Cutover Production` replace the single promotion for
@@ -383,6 +409,26 @@ lock count that is not exactly one, a vanished backup.
 
 **A normal release, once production is on Docker Image applications:**
 
+0. **Restage the owner bundle from the merged SHA.** Not optional, and first:
+
+   ```
+   git -C ~/shikoo-checkout fetch origin main && git -C ~/shikoo-checkout checkout -q <merged-sha>
+   bash ~/shikoo-checkout/deploy/stage-owner-bundle.sh ~/shikoo-checkout <merged-sha>
+   ```
+
+   `stage-owner-bundle.sh` verifies the remote, the SHA and a clean tree, copies
+   only what the tracked runner manifest lists, refuses a missing, extra,
+   modified or symlinked file, verifies every hash in a temporary directory,
+   and replaces `~/shikoo-owner-step-e` atomically. It stages the installer
+   beside the bundle from that same revision and writes
+   `~/shikoo-owner-step-e.provenance` recording which SHA it came from.
+
+   This exists because twice in this work that directory held files from an
+   earlier revision and the instruction that followed was `sha256sum -c
+   MANIFEST` — a check a stale bundle passes perfectly, because a manifest and
+   its files agree with each other whatever commit they came from. Never run
+   that check in a directory whose provenance was not established first.
+
 1. Merge the pull request. Nothing else is needed for staging — CI runs, and
    `Deploy Staging` deploys the merge commit automatically.
 2. Read the staging acceptance checklist (§4).
@@ -390,7 +436,9 @@ lock count that is not exactly one, a vanished backup.
    produces the export:
    `tools/d1-export-manifest.py <export-dir> <mirzabot-dump> deploy/d1-tables.manifest`
    The rehearsal refuses an export without it, and does not infer authenticity
-   from the shape of the rows.
+   from the shape of the rows. Capture the MySQL dump **last** — the contract
+   requires it to be no older than the newest D1 file (§ *What the sidecar
+   proves*).
 4. Run the dump rehearsal on the secure host and record its attestation.
 5. **Actions ▸ Prepare Production ▸ Run workflow**, branch `main`,
    `confirm: PREPARE`. Nothing customers can see changes. It ends with

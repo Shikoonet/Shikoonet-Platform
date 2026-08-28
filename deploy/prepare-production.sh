@@ -65,17 +65,14 @@ die() {
 # migration, a Coolify write or a ledger line, which is what the ordering was
 # for.
 say "P0. the production-dump rehearsal covers this release"
-# Resolved first, under the shared lock, then verified. Two statements, because
-# folding the resolution into the environment prefix of the verifier would turn
-# the whole line into a plain assignment and the verifier would run with none of
-# the EXPECTED_* values set — checking that an attestation exists rather than
-# that it covers this release.
-ATTESTATION_VERSION=$(att_read "$ATTESTATION") ||
-  die "no activated production-dump attestation — run the rehearsal on the secure host first"
-say "attestation resolved through current → $(basename "$ATTESTATION_VERSION")"
+# The ROOT is passed, not a version directory. Resolving the pointer here and
+# handing the result to the verifier looked tidier and was worse: the verifier
+# then had a directory chosen by its caller, took its standalone branch, and
+# checked the whole attestation with no lock held. One resolution, inside the
+# verifier, under the shared lock, for the whole read.
 EXPECTED_SHA="$SHA_ARG" EXPECTED_DIGEST="$DIGEST_ARG" \
   EXPECTED_STAGING_RUN_ID="$STAGING_RUN" \
-  bash "$HERE/verify-dump-attestation.sh" "$ATTESTATION_VERSION" ||
+  bash "$HERE/verify-dump-attestation.sh" "$ATTESTATION" ||
   die "the dump attestation does not cover this release"
 
 # ── P1/P2. recovery points ────────────────────────────────────────────────

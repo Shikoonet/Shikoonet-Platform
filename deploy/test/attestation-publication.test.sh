@@ -234,6 +234,83 @@ else
   bad "120 concurrent reads during 80 swaps saw no mixed or unreadable pair" "$(sort -u "$W/mixed" | head -3)"
 fi
 
+# ── 6b. the published read path, as the promotion gate uses it ───────────
+#
+# Every reader must go through `current` and hold the shared lock for the whole
+# read. Two escapes had to be closed: the verifier released the lock as soon as
+# it had resolved, and Prepare resolved the pointer itself and handed the
+# verifier a directory of its own choosing, which took an unlocked branch.
+VERIFY="$ROOT/deploy/verify-dump-attestation.sh"
+VSHA=$(printf '%040d' 5 | tr '0' 'e')
+VDIG="sha256:$(printf '%064d' 5 | tr '0' 'e')"
+VATT="$W/vatt"; mkdir -p "$VATT/versions"
+VV="$VATT/versions/v1"; mkdir -p "$VV"
+env MAIN_SHA="$VSHA" DIGEST="$VDIG" CI_RUN_ID=1 STAGING_RUN_ID=2   DUMP_ID="sha256:$(printf 'a%.0s' $(seq 64)) 2026-08-28"   MIGRATION_RANGE='0035..0037' DUMP_SUITES='49/49' INVARIANTS='32/32'   FINANCIAL_TOTALS=match RESTORE_RESULT=pass RESTORE_SECONDS=1   OLD_APP_SCHEMA_COMPAT=pass LEGACY_IMPORT=pass PROD_RESTORE_MIGRATED=pass   PROD_INVARIANTS='32/32' PROD_MIGRATION_RANGE='0035..0037'   OLD_APP_SCHEMA_SUBJECT=production-restore   D1_EXPORT_ID="sha256:$(printf 'b%.0s' $(seq 64))"   GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform'   bash "$ROOT/deploy/write-dump-attestation.sh" "$VV" >/dev/null 2>&1
+
+# Not yet published: the promotion path must refuse rather than read it.
+if env EXPECTED_SHA="$VSHA" EXPECTED_DIGEST="$VDIG" bash "$VERIFY" "$VATT" >"$W/v1" 2>&1; then
+  bad "an unactivated attestation is refused on the published path" "it was accepted"
+elif grep -q 'is not a pointer' "$W/v1"; then
+  ok "an unactivated attestation is refused on the published path"
+else
+  bad "an unactivated attestation is refused on the published path" "$(head -1 "$W/v1")"
+fi
+
+# A caller naming a version directory directly must not get an unlocked read.
+if env EXPECTED_SHA="$VSHA" EXPECTED_DIGEST="$VDIG" bash "$VERIFY" "$VV" >"$W/v2" 2>&1; then
+  bad "a caller-named version directory is refused" "it was accepted"
+else
+  ok "a caller-named version directory is refused"
+fi
+
+if att_publish "$VATT" "$VV" "$VSHA" "$VDIG" 2>/dev/null; then
+  ok "the version activates"
+else
+  bad "the version activates" ""
+fi
+
+if env EXPECTED_SHA="$VSHA" EXPECTED_DIGEST="$VDIG" bash "$VERIFY" "$VATT" >"$W/v3" 2>&1; then
+  ok "the published attestation verifies through current"
+else
+  bad "the published attestation verifies through current" "$(head -1 "$W/v3")"
+fi
+
+# The pre-publication branch has to be asked for by name, and refuses once the
+# thing it is checking is reachable through a pointer.
+if env ATTESTATION_UNPUBLISHED=1 EXPECTED_SHA="$VSHA" EXPECTED_DIGEST="$VDIG"      bash "$VERIFY" "$VATT" >"$W/v4" 2>&1; then
+  bad "the pre-publication branch refuses a directory that has a pointer" "it was accepted"
+elif grep -q 'has a current pointer' "$W/v4"; then
+  ok "the pre-publication branch refuses a directory that has a pointer"
+else
+  bad "the pre-publication branch refuses a directory that has a pointer" "$(head -1 "$W/v4")"
+fi
+
+# And it holds the lock while it reads: with a publisher holding the exclusive
+# lock, a verification of the published path must not complete.
+mkfifo "$W/held3" "$W/go3"
+(
+  . "$ROOT/deploy/attestation-store.sh"
+  att_lock_exclusive || exit 1
+  echo held >"$W/held3"
+  read -r _ <"$W/go3"
+  att_unlock
+) & VHOLD=$!
+read -r _ <"$W/held3"
+if env ATT_LOCK_WAIT=1 EXPECTED_SHA="$VSHA" EXPECTED_DIGEST="$VDIG"      bash "$VERIFY" "$VATT" >"$W/v5" 2>&1; then
+  bad "verification cannot proceed while a publisher holds the lock" "it completed"
+elif grep -q 'release lock could not be taken' "$W/v5"; then
+  ok "verification cannot proceed while a publisher holds the lock"
+else
+  bad "verification cannot proceed while a publisher holds the lock" "$(head -1 "$W/v5")"
+fi
+echo go >"$W/go3"
+wait "$VHOLD"
+if env EXPECTED_SHA="$VSHA" EXPECTED_DIGEST="$VDIG" bash "$VERIFY" "$VATT" >/dev/null 2>&1; then
+  ok "verification succeeds once the publisher releases"
+else
+  bad "verification succeeds once the publisher releases" ""
+fi
+
 # ── 7. signals and stale versions, driven through the real script ────────
 export FAKE_PROD_DB_UUID=qd2vduj7kv05sp9ejdrmclmu
 export FAKE_STAGING_DB_UUID=bea6ac92holn5k6vjgopy2ai
