@@ -300,9 +300,30 @@ Production is not touched by anything else in this repository.
 
 A production-dump rehearsal, recorded as a checksummed attestation and
 verified before any credential is in scope. It binds the merged sha, the CI
-run, the Deploy Staging run, the exact digest, `49/49` dump suites, `32/32`
-invariants, the financial comparison, the restore result and duration, and
-whether the CURRENT production image still serves the migrated schema.
+run, the Deploy Staging run, the exact digest, the identity of the D1 export,
+`49/49` dump suites, the financial comparison, the restore result and
+duration, and whether the CURRENT production image still serves the migrated
+schema.
+
+The rehearsal has **two subjects**, and the attestation records a verdict for
+each of them separately:
+
+| Field | Subject |
+|---|---|
+| `legacy_import` | the MySQL + D1 dataset imported into a fresh destination |
+| `invariants` | the thirty-two, measured on that legacy destination |
+| `dump_suites` | the forty-nine dump-gated suites, against that destination |
+| `financial_totals` | source aggregates compared against that destination |
+| `prod_restore_migrated`, `prod_migration_range` | production's own restored data, brought forward over the pending range only |
+| `prod_invariants` | the thirty-two, measured on the migrated production restore |
+| `old_app_schema_compat`, `old_app_schema_subject` | today's live images, against the migrated production restore |
+
+They are separate because one `invariants=32/32` line could have come from
+either, so a run that measured the legacy import twice — and never migrated
+the restored production copy at all — produced an attestation indistinguishable
+from a correct one. `old_app_schema_subject` must read `production-restore`:
+proving the old image works against a database the new code just built says
+nothing about whether it can serve production's data after migration.
 
 That last field is what keeps image rollback valid. If it says `fail`, rolling
 back to the old image is not a recovery path and only a database restore is —
@@ -312,6 +333,34 @@ The attestation cannot be produced before the merge: the digest it binds does
 not exist until staging has deployed. `deploy/write-dump-attestation.sh` writes
 it on the secure host; `deploy/verify-dump-attestation.sh` refuses a promotion
 whose attestation is missing, malformed, stale, or for a different release.
+
+**Resolving it.** There is one pointer and one immutable version directory:
+
+```
+/var/lib/shikoo/production/attestation/current -> versions/<sha>-<UTC stamp>/
+```
+
+Every consumer — `prepare-production.sh`, `verify-dump-attestation.sh`, the
+task runner's `status` and `verify-evidence` — resolves through `current` and
+reads nothing beside it. The flat `attestation.env`/`attestation.sha256` pair
+that used to sit in that directory is gone: it was a second copy of the same
+fact, published after the pointer swap in two separate renames, so a reader
+arriving between them saw a new `.env` beside an old `.sha256`. Read it by
+hand with `readlink -f`, never by naming a version directory.
+
+Publication order is fixed, and nothing fallible follows the swap:
+
+1. build the version directory
+2. verify its checksum, its release values, and that the promotion gate's own
+   verifier accepts it
+3. take `/var/lock/shikoo-deploy-production.lock` exclusively
+4. rename `current` onto the new version — one inode operation
+5. release
+
+The lock is created by the installer as `root:shikoo-deploy 0660`, and both the
+root rehearsal and the `shikoo-deploy` Prepare path validate its ownership
+before using it. `/var/lock` is world-writable, so a lock file that is not
+exactly that is refused rather than adopted.
 
 The dump itself never leaves that host. `dump_id` is a sha256 and a date, and a
 value shaped like a path is refused by the writer.
@@ -337,12 +386,17 @@ lock count that is not exactly one, a vanished backup.
 1. Merge the pull request. Nothing else is needed for staging — CI runs, and
    `Deploy Staging` deploys the merge commit automatically.
 2. Read the staging acceptance checklist (§4).
-3. Run the dump rehearsal on the secure host and record its attestation.
-4. **Actions ▸ Prepare Production ▸ Run workflow**, branch `main`,
+3. Produce the D1 export's provenance sidecar in the same operation that
+   produces the export:
+   `tools/d1-export-manifest.py <export-dir> <mirzabot-dump> deploy/d1-tables.manifest`
+   The rehearsal refuses an export without it, and does not infer authenticity
+   from the shape of the rows.
+4. Run the dump rehearsal on the secure host and record its attestation.
+5. **Actions ▸ Prepare Production ▸ Run workflow**, branch `main`,
    `confirm: PREPARE`. Nothing customers can see changes. It ends with
    `READY FOR CUTOVER` and a summary of everything it observed.
-5. Read that summary. This is the step the two-dispatch split exists for.
-6. **Actions ▸ Cutover Production ▸ Run workflow**, branch `main`,
+6. Read that summary. This is the step the two-dispatch split exists for.
+7. **Actions ▸ Cutover Production ▸ Run workflow**, branch `main`,
    `confirm: CUTOVER`. The live domains move and the bot is handed over.
 
 Both refuse a branch other than `main`, an actor other than the owner, and a

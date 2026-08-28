@@ -49,6 +49,8 @@ set -Eeuo pipefail
 HERE=$(CDPATH='' ; cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=deploy/rehearsal-lib.sh
 . "$HERE/rehearsal-lib.sh"
+# shellcheck source=deploy/attestation-store.sh
+. "$HERE/attestation-store.sh"
 CONF=${REHEARSAL_CONF:-/etc/shikoo/production/rehearsal.env}
 STATE=${STATE:-/var/lib/shikoo/production}
 ATTEST_DIR="$STATE/attestation"
@@ -100,6 +102,22 @@ on_signal() { # signame code
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 trap cleanup EXIT
+
+# ── 0. the host, before anything sensitive is opened ─────────────────────
+#
+# First, deliberately. Every check below this line reads a secret, opens the
+# production dump, or creates something; a host that cannot do the job should
+# be refused while none of that has happened yet. The probe directory is
+# self-contained and removed immediately — it is not a rehearsal resource and
+# nothing sensitive touches it.
+say "0. host dependency contract"
+DEP_PROBE=$(mktemp -d)
+if ! rehearsal_require_host_deps "$DEP_PROBE"; then
+  rm -rf "$DEP_PROBE"
+  die "this host does not satisfy the rehearsal's dependency contract"
+fi
+rm -rf "$DEP_PROBE"
+say "   bash, docker, git, python3+zipfile, curl+https, sha256sum, flock, stat -c, sed/grep/find, date, atomic rename"
 
 # Checked before it is read. The config names a dump, a backup directory and a
 # token; a file anybody can rewrite can redirect all three, and "is it
@@ -179,15 +197,18 @@ rehearsal_require_secure_file "$D1_MANIFEST" 644 "the D1 table contract" ||
   die "the D1 table contract is not secured as required"
 D1_TABLES=$(tr '\n' ',' <"$D1_MANIFEST" | sed 's/,$//')
 [ -n "$D1_TABLES" ] || die "the D1 table contract is empty"
-if ! rehearsal_validate_d1_export "$D1_EXPORT_DIR" "$D1_TABLES"; then
-  echo "[rehearsal] STOP: the production D1 export is missing or is not production data." >&2
-  echo "[rehearsal] Owner action, exactly one:" >&2
-  echo "[rehearsal]   place the real D1 export on this host, root-owned and not" >&2
-  echo "[rehearsal]   world-writable, then set D1_EXPORT_DIR=<path> in ${CONF}." >&2
-  echo "[rehearsal]   The repository fixture is refused; no export is generated here." >&2
+if ! D1_EXPORT_ID=$(rehearsal_validate_d1_export "$D1_EXPORT_DIR" "$D1_TABLES" "$DUMP_PATH"); then
+  echo "[rehearsal] STOP: the production D1 export is absent, incomplete, or carries" >&2
+  echo "[rehearsal] no provenance binding it to this MySQL dump." >&2
+  echo "[rehearsal] Owner action, exactly one — on the secure host, in the same" >&2
+  echo "[rehearsal] operation that produces the export:" >&2
+  echo "[rehearsal]   tools/d1-export-manifest.py <export-dir> <mirzabot-dump> deploy/d1-tables.manifest" >&2
+  echo "[rehearsal] then set D1_EXPORT_DIR=<export-dir> in ${CONF}." >&2
+  echo "[rehearsal] The rehearsal does not generate the export and does not infer" >&2
+  echo "[rehearsal] its authenticity from the shape of the rows." >&2
   exit 1
 fi
-say "   D1 export validated"
+say "   D1 export validated: 23 tables bound as one set, coherent with the MySQL dump"
 
 [ -n "$GH_TOKEN_VALUE" ] || die "${CONF} has no GITHUB_TOKEN — release provenance cannot be cross-checked without it"
 
@@ -299,8 +320,14 @@ MYSQL_C="shikoo-rehearsal-mysql-${SUFFIX}"
 DEST_C="shikoo-rehearsal-dest-${SUFFIX}"
 RESTORE_C="shikoo-rehearsal-restore-${SUFFIX}"
 NET="shikoo-rehearsal-net-${SUFFIX}"
-docker network create "$NET" >/dev/null || die "could not create the rehearsal network"
+# Registered BEFORE it is created, not after. "As it is created" still left a
+# window: a signal arriving between the creation call returning and the next line
+# executing would tear down everything except the container that had just been
+# made, which is the one still holding a copy of the dataset. Registering a
+# name that does not exist yet costs nothing — cleanup ignores an unknown
+# container — and closes the window entirely.
 CLEANUP_NETWORKS="$NET"
+docker network create "$NET" >/dev/null || die "could not create the rehearsal network"
 
 wait_pg() { for _ in $(seq 1 60); do docker exec "$1" pg_isready -q >/dev/null 2>&1 && return 0; sleep 2; done; return 1; }
 
@@ -324,9 +351,13 @@ BACKUP_OK=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -A
      join standalone_postgresqls p on p.id = b.database_id
     where p.uuid = '${PROD_DB_UUID}' and b.enabled;" 2>/dev/null || echo 0)
 [ "${BACKUP_OK:-0}" -ge 1 ] || die "production has no enabled scheduled backup to rehearse from"
-# Not a substring test: `/tmp/evil-<uuid>-staging` contains the uuid too.
-rehearsal_backup_dir_belongs "$PROD_BACKUP_DIR" "$PROD_DB_UUID" ||
-  die "PROD_BACKUP_DIR is not the backup directory of the production database"
+# Derived from Coolify, then compared canonically. A pattern on the path was
+# bypassable by `/tmp/evil-<uuid>`; a canonical comparison against the location
+# Coolify itself reports is not.
+BACKUP_ROOT=${BACKUP_ROOT:-/data/coolify/backups/databases}
+DERIVED_BACKUP_DIR=$(find "$BACKUP_ROOT" -maxdepth 2 -type d -name "*-${PROD_DB_UUID}" 2>/dev/null | head -1)
+rehearsal_canonical_dir_is "$PROD_BACKUP_DIR" "$DERIVED_BACKUP_DIR" "the production backup directory" ||
+  die "PROD_BACKUP_DIR is not the production database's backup directory"
 
 NEWEST=$(find "$PROD_BACKUP_DIR" -maxdepth 1 -name '*.dmp' -type f -printf '%T@ %p\n' 2>/dev/null |
   sort -rn | head -1 | cut -d' ' -f2-)
@@ -341,9 +372,9 @@ esac
 [ ! -L "$DUMP_PATH" ] || die "the Mirzabot dump is a symlink — refusing"
 [ -f "$DUMP_PATH" ] || die "the Mirzabot dump is not a regular file"
 
+CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $RESTORE_C"
 docker run --pull=never -d --name "$RESTORE_C" --network "$NET" -e POSTGRES_PASSWORD=rehearsal \
   -e POSTGRES_DB=prodrestore "$PG_IMAGE" >/dev/null || die "could not start the restore target"
-CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $RESTORE_C"
 wait_pg "$RESTORE_C" || die "the restore target never became ready"
 RESTORE_START=$(date +%s)
 if docker exec -i "$RESTORE_C" pg_restore -U postgres -d prodrestore --no-owner <"$NEWEST" >/dev/null 2>&1; then
@@ -362,20 +393,28 @@ docker exec -i "$RESTORE_C" psql -U postgres -d prodrestore -At \
   die "the restored production database has no readable schema_migrations ledger"
 MIGRATION_RANGE=$(rehearsal_pending_range "$ART/applied.txt" "$REPO_DIR/migrations") ||
   die "the pending migration range could not be derived from the restored ledger"
-say "   pending range ${MIGRATION_RANGE} (production ledger had $(grep -c . "$ART/applied.txt"))"
+# Recorded here, from the restored production ledger, and used in step 11 to
+# judge how many migrations were applied. Deriving that number again later from
+# the range itself would be circular: a wrong range would agree with itself.
+PROD_LEDGER_BEFORE=$(grep -c . "$ART/applied.txt" || true)
+PENDING_COUNT=$(find "$REPO_DIR/migrations" -maxdepth 1 -name '[0-9][0-9][0-9][0-9]_*.sql' -type f | wc -l)
+PENDING_COUNT=$((PENDING_COUNT - PROD_LEDGER_BEFORE))
+[ "$PENDING_COUNT" -gt 0 ] ||
+  die "the restored production ledger is already at or beyond the repository's migrations — there is nothing to rehearse"
+say "   pending range ${MIGRATION_RANGE}: ${PENDING_COUNT} migration(s), production ledger had ${PROD_LEDGER_BEFORE}"
 
 # ── 6. the legacy source ─────────────────────────────────────────────────
 say "6. loading the legacy dump"
+CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $MYSQL_C"
 docker run --pull=never -d --name "$MYSQL_C" --network "$NET" \
   -e MYSQL_ALLOW_EMPTY_PASSWORD=1 -e MYSQL_DATABASE=mirzabot \
   "$MYSQL_IMAGE" >/dev/null || die "could not start the throwaway MySQL"
-CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $MYSQL_C"
 for _ in $(seq 1 90); do docker exec "$MYSQL_C" mysqladmin ping --silent >/dev/null 2>&1 && break; sleep 2; done
 docker exec "$MYSQL_C" mysqladmin ping --silent >/dev/null 2>&1 || die "the throwaway MySQL never became ready"
 docker exec -i "$MYSQL_C" mysql mirzabot <"$DUMP_PATH" || die "the dump would not load"
 SRC_ROWS=$(docker exec -i "$MYSQL_C" mysql -N -B mirzabot -e 'select count(*) from user' 2>/dev/null || echo 0)
 [ "${SRC_ROWS:-0}" -gt 0 ] || die "the loaded dump has no users — this is not the real dataset"
-say "   dump loaded (${SRC_ROWS} source users)"
+say "   dump loaded, source dataset is non-empty"
 
 # ── 7. the REAL migration ────────────────────────────────────────────────
 #
@@ -383,9 +422,9 @@ say "   dump loaded (${SRC_ROWS} source users)"
 # and no rows passes every "each wallet equals its own entries" check by having
 # no wallets, and that is what the attestation would have certified.
 say "7. running the migrator"
+CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $DEST_C"
 docker run --pull=never -d --name "$DEST_C" --network "$NET" -e POSTGRES_PASSWORD=rehearsal \
   -e POSTGRES_DB=shikoo "$PG_IMAGE" >/dev/null || die "could not start the migration destination"
-CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $DEST_C"
 wait_pg "$DEST_C" || die "the migration destination never became ready"
 MIG_LIST=$(find "$REPO_DIR/migrations" -maxdepth 1 -name '0*.sql' -type f | sort)
 for f in $MIG_LIST; do
@@ -410,7 +449,8 @@ NODE_RUN=(docker run --pull=never --rm --network "$NET"
   die "the migrator failed against the real dump"
 DEST_ROWS=$(docker exec -i "$DEST_C" psql -U postgres -d shikoo -At -c 'select count(*) from users' 2>/dev/null || echo 0)
 [ "${DEST_ROWS:-0}" -gt 0 ] || die "the migration produced no rows — a schema-only destination is not a rehearsal"
-say "   migrated (${DEST_ROWS} destination users)"
+LEGACY_IMPORT=pass
+say "   legacy import into ${DEST_C}: non-empty destination"
 
 # ── 8. the 49, judged on the exit code too ───────────────────────────────
 say "8. the production-dump suites"
@@ -469,19 +509,79 @@ FIN_DRIFT=$(docker exec -i "$DEST_C" psql -U postgres -d shikoo -tAc "
 [ "$FIN_DRIFT" = '0' ] || die "${FIN_DRIFT} migrated wallet(s) disagree with their own entries"
 
 # ── 11. the pending migrations on the restored PRODUCTION copy ───────────
-say "11. applying the pending range to the restored production copy"
+#
+# This is the OTHER subject, and the one promotion actually depends on. Step 7
+# built a destination from the legacy MySQL+D1 dataset; that database was
+# created by the new code and has never been production. What P6 will do to
+# production is this: take production's own rows and apply only the migrations
+# production has not seen. Measuring the first and reporting it as the second
+# is the conflation this whole step exists to prevent, so the subject is named
+# in every command below and recorded in the attestation.
+say "11. applying the pending range to the restored production copy (${RESTORE_C})"
+PROD_MIGRATION_RANGE="$MIGRATION_RANGE"
+
+# Which database is this, really?
+#
+# The two subjects are told apart by something only one of them can have. The
+# legacy destination was built from nothing by the migrator a moment ago, so
+# its ledger holds every migration in the repository. The restored production
+# copy holds exactly what production has applied — fewer. Asking the subject
+# for its ledger before touching it is therefore a marker, not a formality: a
+# command pointed at ${DEST_C} by mistake answers with the full count and is
+# refused here, before a single migration is applied to the wrong database.
+PROD_SUBJECT="$RESTORE_C"
+[ "$PROD_SUBJECT" != "$DEST_C" ] ||
+  die "the production-restore subject resolves to the legacy destination — refusing to migrate the wrong database"
+LEDGER_NOW=$(docker exec -i "$PROD_SUBJECT" psql -U postgres -d prodrestore -At \
+  -c 'select count(*) from schema_migrations' 2>/dev/null || echo -1)
+[ "$LEDGER_NOW" = "$PROD_LEDGER_BEFORE" ] ||
+  die "the subject of step 11 reports ${LEDGER_NOW} applied migrations, the restored production copy had ${PROD_LEDGER_BEFORE} — this is not that database"
+RANGE_LO=${MIGRATION_RANGE%%..*}
+RANGE_HI=${MIGRATION_RANGE##*..}
+APPLIED_TO_RESTORE=0
 for f in $MIG_LIST; do
   n=$(basename "$f" | cut -c1-4)
-  [ "$n" \> "${MIGRATION_RANGE%%..*}" ] || [ "$n" = "${MIGRATION_RANGE%%..*}" ] || continue
-  docker exec -i "$RESTORE_C" psql -U postgres -d prodrestore -v ON_ERROR_STOP=1 -q <"$f" ||
+  # Bounded at BOTH ends. Only the lower bound was checked before, so a
+  # MIG_LIST that reached past the range would have carried the restore
+  # further than the release does and still called it the pending range.
+  [ ! "$n" \< "$RANGE_LO" ] || continue
+  [ ! "$n" \> "$RANGE_HI" ] || continue
+  docker exec -i "$PROD_SUBJECT" psql -U postgres -d prodrestore -v ON_ERROR_STOP=1 -q <"$f" ||
     die "pending migration $(basename "$f") failed against the restored production copy"
+  APPLIED_TO_RESTORE=$((APPLIED_TO_RESTORE + 1))
 done
-docker exec -i "$RESTORE_C" psql -U postgres -d prodrestore -v ON_ERROR_STOP=1 \
+# A loop that applied nothing exits zero. Without this, a range that selected
+# no files — a typo, an off-by-one, a MIG_LIST built from the wrong directory —
+# would leave the restore at its original schema and every check below would
+# still pass, because they would be measuring an unmigrated database that was
+# already self-consistent.
+[ "$APPLIED_TO_RESTORE" -gt 0 ] ||
+  die "the pending range ${MIGRATION_RANGE} selected no migrations — the restored production copy was never migrated"
+# Compared against the count derived from the production ledger in step 5, not
+# against the range this loop just used. Applying all thirty-seven instead of
+# the three that are pending is the mistake that matters, and a range checked
+# against itself would agree with it.
+[ "$APPLIED_TO_RESTORE" -eq "$PENDING_COUNT" ] ||
+  die "applied ${APPLIED_TO_RESTORE} migration(s) to the restored production copy; its ledger says ${PENDING_COUNT} were pending — the wrong range was applied"
+
+# And the ledger has to have moved by exactly that much.
+LEDGER_AFTER=$(docker exec -i "$PROD_SUBJECT" psql -U postgres -d prodrestore -At \
+  -c 'select count(*) from schema_migrations' 2>/dev/null || echo -1)
+[ "$LEDGER_AFTER" -eq "$((PROD_LEDGER_BEFORE + PENDING_COUNT))" ] ||
+  die "the restored production ledger went from ${PROD_LEDGER_BEFORE} to ${LEDGER_AFTER}, expected $((PROD_LEDGER_BEFORE + PENDING_COUNT))"
+PROD_RESTORE_MIGRATED=pass
+say "   applied ${APPLIED_TO_RESTORE} pending migration(s) to ${RESTORE_C}"
+
+# Invariants on the PRODUCTION restore. Step 9 already ran the same file
+# against ${DEST_C}; that answer is about the legacy import and is kept under
+# its own name. This one is about production's data on the new schema.
+docker exec -i "$PROD_SUBJECT" psql -U postgres -d prodrestore -v ON_ERROR_STOP=1 \
   <"$REPO_DIR/migrations/verify_invariants.sql" >"$ART/prod-inv.log" 2>&1 ||
   die "the invariants do not hold on the migrated production copy"
 PROD_INV=$(grep -c 'PASS ' "$ART/prod-inv.log" || true)
 [ "$PROD_INV" = '32' ] || die "${PROD_INV}/32 invariants on the migrated production copy"
-say "   pending range applied, invariants ${PROD_INV}/32"
+PROD_INVARIANTS="32/32"
+say "   production-restore invariants ${PROD_INVARIANTS} (subject ${RESTORE_C})"
 
 # ── 12. can today's image still serve tomorrow's schema ──────────────────
 #
@@ -545,6 +645,14 @@ LIVE_IMAGES=$(rehearsal_check_live_production "$LIVE_FACTS" 'shikoo-ingest,shiko
   die "the live production applications could not be resolved to exactly one healthy container each"
 say "   live production images resolved by immutable id"
 
+# Named, recorded, and asserted: the old images are tested against the migrated
+# PRODUCTION RESTORE. Pointing this at ${DEST_C} would ask whether the old code
+# can serve a database the new code just built, which is not a question anybody
+# needs answered before a promotion.
+OLD_APP_SCHEMA_SUBJECT=production-restore
+OLD_APP_TARGET="$PROD_SUBJECT"
+[ "$OLD_APP_TARGET" != "$DEST_C" ] ||
+  die "old-image compatibility would run against the legacy destination, not the production restore"
 OLD_APP_SCHEMA_COMPAT=pass
 for entry in $(printf '%s' "$LIVE_IMAGES" | tr ',' ' '); do
   app=${entry%%=*}
@@ -559,76 +667,75 @@ for entry in $(printf '%s' "$LIVE_IMAGES" | tr ',' ' '); do
   # by the gate that touches the migrated tables and nothing else.
   docker run --pull=never --rm --network "$NET" \
     -e ENV_NAME=production -e SERVICE="$svc" -e SCHEMA_GATE_ONLY=1 \
-    -e DATABASE_URL="postgres://postgres:rehearsal@${RESTORE_C}:5432/prodrestore" \
+    -e DATABASE_URL="postgres://postgres:rehearsal@${OLD_APP_TARGET}:5432/prodrestore" \
     --entrypoint /bin/sh "$img" -lc \
     'node --import tsx -e "import(\"@shikoo/db\").then(async m=>{const {db,pool}=m.createPostgresD1();const s=await m.status(db);if(s.pending.length){console.error(\"pending\");process.exit(1)}await pool.end()})"' \
     >/dev/null 2>&1 || OLD_APP_SCHEMA_COMPAT=fail
 done
-say "   old_app_schema_compat=${OLD_APP_SCHEMA_COMPAT}"
+say "   old_app_schema_compat=${OLD_APP_SCHEMA_COMPAT} (subject ${OLD_APP_SCHEMA_SUBJECT}=${OLD_APP_TARGET})"
 [ "$OLD_APP_SCHEMA_COMPAT" = 'pass' ] ||
   die "the live production image cannot serve the migrated schema — image rollback would be void"
 
-# ── 10. the attestation, atomically, only now ────────────────────────────
-say "10. writing the attestation"
+# ── 13. the attestation, atomically, only now ────────────────────────────
+say "13. writing the attestation"
 TMP_ATT=$(mktemp -d); CLEANUP_DIRS="$CLEANUP_DIRS $TMP_ATT"
 MAIN_SHA="$MAIN_SHA" DIGEST="$DIGEST" CI_RUN_ID="$CI_RUN_ID" STAGING_RUN_ID="$STAGING_RUN_ID" \
   DUMP_ID="$DUMP_ID" MIGRATION_RANGE="$MIGRATION_RANGE" DUMP_SUITES="$DUMP_SUITES" \
   INVARIANTS="$INVARIANTS" FINANCIAL_TOTALS="$FINANCIAL_TOTALS" \
   FINANCIAL_AGGREGATES="$FIN_AGGREGATES" \
+  LEGACY_IMPORT="$LEGACY_IMPORT" \
+  PROD_RESTORE_MIGRATED="$PROD_RESTORE_MIGRATED" \
+  PROD_INVARIANTS="$PROD_INVARIANTS" \
+  PROD_MIGRATION_RANGE="$PROD_MIGRATION_RANGE" \
+  OLD_APP_SCHEMA_SUBJECT="$OLD_APP_SCHEMA_SUBJECT" \
+  D1_EXPORT_ID="$D1_EXPORT_ID" \
   RESTORE_RESULT="$RESTORE_RESULT" RESTORE_SECONDS="$RESTORE_SECONDS" \
   OLD_APP_SCHEMA_COMPAT="$OLD_APP_SCHEMA_COMPAT" GITHUB_REPOSITORY="$REPO" \
   bash "$HERE/write-dump-attestation.sh" "$TMP_ATT" >/dev/null ||
   die "the attestation could not be written"
 
-# Pair-atomic, which the two separate `mv` calls were not.
+# ── 14. publication ──────────────────────────────────────────────────────
 #
-# Moving attestation.env and attestation.sha256 one after the other leaves a
-# window in which a reader sees a NEW env beside an OLD checksum — which does
-# not verify, and looks exactly like tampering. A failure between the two moves
-# also destroys a previously valid attestation, which is worse: the evidence
-# that a release was rehearsed disappears because the NEXT rehearsal failed.
+# One pointer to one immutable version directory. See attestation-store.sh for
+# why the flat `attestation.env`/`attestation.sha256` pair that used to be
+# copied up here — after the swap, in two separate renames — is gone.
 #
-# So a complete versioned directory is built and verified, and only then does a
-# symlink swap make it current. `ln -sfn` onto a temporary name followed by
-# `mv -T` is atomic on the same filesystem: a reader either follows the old
-# directory or the new one, never a mixture. A run that fails before this point
-# touches neither, so the previous valid attestation is preserved byte for byte.
-#
-# The swap takes the same lock Prepare Production takes, so Prepare cannot read
-# the pointer while it is moving.
+# The version directory is registered for cleanup while it is being built and
+# unregistered the moment it is activated: an unactivated version is garbage
+# that must not survive a failure or a signal, and an activated one is the
+# release evidence and must survive everything.
+say "14. publishing the attestation"
+mkdir -p "$ATTEST_DIR/versions"
 VERSION_DIR="$ATTEST_DIR/versions/${MAIN_SHA}-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$VERSION_DIR"
+CLEANUP_DIRS="$CLEANUP_DIRS $VERSION_DIR"
 mv -f "$TMP_ATT/attestation.env" "$VERSION_DIR/attestation.env"
 mv -f "$TMP_ATT/attestation.sha256" "$VERSION_DIR/attestation.sha256"
-( cd "$VERSION_DIR" && sha256sum -c --status attestation.sha256 ) ||
-  die "the freshly written attestation does not match its own checksum — not activating it"
+chmod 0640 "$VERSION_DIR/attestation.env" "$VERSION_DIR/attestation.sha256"
 
-LOCKFILE=${REHEARSAL_LOCK:-/var/lock/shikoo-deploy-production.lock}
-exec 8>"$LOCKFILE" || die "cannot open ${LOCKFILE}"
-flock -w 120 8 || die "another release step holds ${LOCKFILE}"
-ln -sfn "$VERSION_DIR" "$ATTEST_DIR/.current.new"
-mv -Tf "$ATTEST_DIR/.current.new" "$ATTEST_DIR/current"
-# Compatibility for readers that expect the flat names: both are replaced from
-# the SAME verified directory, so the pair can never be mixed.
-cp -f "$VERSION_DIR/attestation.env" "$ATTEST_DIR/.attestation.env.new"
-cp -f "$VERSION_DIR/attestation.sha256" "$ATTEST_DIR/.attestation.sha256.new"
-mv -Tf "$ATTEST_DIR/.attestation.env.new" "$ATTEST_DIR/attestation.env"
-mv -Tf "$ATTEST_DIR/.attestation.sha256.new" "$ATTEST_DIR/attestation.sha256"
-flock -u 8
+# The promotion gate's own verifier, run against the new version BEFORE it is
+# activated. The previous ordering ran this after the swap, which meant a
+# rejection arrived too late to prevent anything and turned a live, correct
+# attestation into a failed run. Asking the question first is both stricter and
+# safer: an attestation that would not survive Prepare Production never becomes
+# the current one.
+EXPECTED_SHA="$MAIN_SHA" EXPECTED_DIGEST="$DIGEST" \
+  EXPECTED_REPO="$REPO" EXPECTED_CI_RUN_ID="$CI_RUN_ID" \
+  EXPECTED_STAGING_RUN_ID="$STAGING_RUN_ID" \
+  bash "$HERE/verify-dump-attestation.sh" "$VERSION_DIR" >/dev/null ||
+  die "the new attestation does not verify against this release — not activating it"
 
-# ── 14. verify what was just activated ───────────────────────────────────
-#
-# Against the release it was written for, not against itself. Writing an
-# attestation and trusting it because you wrote it is the failure this whole
-# file exists to prevent.
-say "14. verifying the activated attestation"
-( cd "$ATTEST_DIR" && sha256sum -c --status attestation.sha256 ) ||
-  die "the activated attestation does not match its own checksum"
-EXPECTED_REPO="$REPO" EXPECTED_SHA="$MAIN_SHA" EXPECTED_DIGEST="$DIGEST" \
-  EXPECTED_CI_RUN_ID="$CI_RUN_ID" EXPECTED_STAGING_RUN_ID="$STAGING_RUN_ID" \
-  bash "$HERE/verify-dump-attestation.sh" "$ATTEST_DIR" ||
-  die "the activated attestation does not verify against this release"
+# Everything that can fail happens here, before the lock and before the swap.
+att_publish "$ATTEST_DIR" "$VERSION_DIR" "$MAIN_SHA" "$DIGEST" ||
+  die "the attestation was not activated — the previous one is untouched"
 
-say ""
-say "REHEARSAL COMPLETE for ${MAIN_SHA:0:12} @ ${DIGEST:0:19}…"
-say "attestation: ${ATTEST_DIR}/attestation.env"
+# Activated. It is evidence now, not scratch.
+CLEANUP_DIRS=$(printf '%s' "$CLEANUP_DIRS" | tr ' ' '\n' | grep -vxF "$VERSION_DIR" | tr '\n' ' ')
+
+# No fallible step follows. Reading it back is a courtesy to the operator, not
+# a gate: the checksum and the release values were proven before the pointer
+# moved, and a failure here would report a run as unsuccessful whose evidence
+# is already live and correct — which is exactly the confusion the old
+# copy-after-swap ordering created.
+say "published: $(basename "$VERSION_DIR")"
+say "resolve with: readlink -f ${ATTEST_DIR}/current"
