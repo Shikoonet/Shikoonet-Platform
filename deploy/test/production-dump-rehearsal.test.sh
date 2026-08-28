@@ -41,10 +41,29 @@ for v in MAIN_SHA DIGEST CI_RUN_ID STAGING_RUN_ID; do
     ok "${v} is not read from a positional argument"
   fi
 done
-if grep -qE '\$\{?[1-9][0-9]*\}?' "$R" | grep -v '^#'; then
-  bad 'no positional parameter is read anywhere' 'one is'
+# This was `grep -q ... | grep -v '^#'`, and `grep -q` prints nothing, so the
+# second grep read empty input, exited 1, and the condition could never be
+# true — it reported ok whatever the script did.
+#
+# Corrected, it then failed, because a text search cannot tell the script's own
+# `$1` from a `$1` inside `cfg()` or `wait_pg()`. The property wanted here is
+# behavioural, so it is tested behaviourally: the script must refuse arguments,
+# and refuse them before it does anything at all.
+# `set -e` is on in this suite, so the non-zero exit has to be caught rather
+# than assigned and inspected afterwards.
+ARGRC=0
+ARGOUT=$(bash "$R" unexpected-argument 2>&1) || ARGRC=$?
+if [ "$ARGRC" -eq 2 ] && printf '%s' "$ARGOUT" | grep -q 'takes no arguments'; then
+  ok 'it refuses an argument, with exit 2'
 else
-  ok 'no positional parameter is read anywhere'
+  bad 'it refuses an argument, with exit 2' "rc=${ARGRC}: $(printf '%s' "$ARGOUT" | head -1)"
+fi
+# And refuses before reading its configuration, so an argument cannot steer
+# anything it opens.
+if printf '%s' "$ARGOUT" | grep -qE 'host dependency|rehearsal config'; then
+  bad 'it refuses the argument before doing any work' 'it had already started'
+else
+  ok 'it refuses the argument before doing any work'
 fi
 has "$R" 'REHEARSAL_CONF:-/etc/shikoo/production/rehearsal.env' 'configuration comes from a root-owned file'
 has "$R" 'never sourced' 'the config is read as text, not sourced'
@@ -97,7 +116,7 @@ section 'no fixture is ever substituted for the dump'
 
 has "$R" 'No fixture is substituted' 'a missing dump names one exact owner action'
 has "$R" 'MIRZABOT_DUMP=<path>' 'the owner action is the exact line to add'
-if grep -qiE 'synthetic|fixture.*fallback|MIGRATE_FIXTURE_MYSQL' "$R" | grep -v '^#'; then
+if grep -v '^[[:space:]]*#' "$R" | grep -qiE 'synthetic|fixture.*fallback|MIGRATE_FIXTURE_MYSQL'; then
   bad 'it never falls back to the synthetic fixture' 'a fallback exists'
 else
   ok 'it never falls back to the synthetic fixture'

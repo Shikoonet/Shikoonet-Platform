@@ -131,6 +131,24 @@ section 'the bounded-consistency contract is enforced at the source'
 build; touch -d '-3 hours' "$D1/devices.json"
 refuses 'a capture window beyond the bound is refused' 'capture window'
 
+# Just over the line. `int(round(3600.4))` is 3600, so a bundle that genuinely
+# exceeded the window sealed anyway; the span has to be compared before it is
+# rounded, and recorded rounded UP.
+build
+BASE=1800000000
+while read -r t; do touch -d "@${BASE}" "$D1/${t}.json"; done <"$TABLES"
+touch -d "@$(python3 -c "print(f'{$BASE + 3600.4:.1f}')")" "$DUMP"
+refuses 'a window of 3600.4s is refused, not rounded down to 3600' 'capture window'
+build
+while read -r t; do touch -d "@${BASE}" "$D1/${t}.json"; done <"$TABLES"
+touch -d "@$(python3 -c "print(f'{$BASE + 3599.4:.1f}')")" "$DUMP"
+if run; then ok 'a window of 3599.4s is accepted'; else bad 'a window of 3599.4s is accepted' "$(head -1 "$W/err")"; fi
+if [ "$(sed -n 's/^capture_window_seconds=//p' "$D1/d1-export.manifest")" = 3600 ]; then
+  ok 'the recorded window is rounded up, never down'
+else
+  bad 'the recorded window is rounded up, never down' "recorded $(sed -n 's/^capture_window_seconds=//p' "$D1/d1-export.manifest")"
+fi
+
 build; touch -d '-10 minutes' "$DUMP"
 refuses 'a dump older than the newest D1 file is refused' 'older than the newest D1 file'
 
@@ -142,7 +160,6 @@ section 'publication is atomic, and a failure leaves the previous sidecar alone'
 build
 run || { echo "the reference bundle would not seal: $(cat "$W/err")" >&2; exit 1; }
 cp "$D1/d1-export.manifest" "$W/good.manifest"
-GOODSUM=$(sha256sum "$D1/d1-export.manifest" | cut -d' ' -f1)
 
 # A rename failure: the sidecar name is occupied by a non-empty directory, so
 # `os.rename` raises ENOTEMPTY. This is the one way the final step can fail.
@@ -298,11 +315,14 @@ signal_run() { # signame expected-code
   # killed the only reader left an orphaned writer behind every run. `<>`
   # never blocks and gives this shell both ends of each pipe.
   exec 8<>"$W/ready" 9<>"$W/go"
+  # `exec`, so $! is the interpreter itself and the signal goes to a PID this
+  # test owns. `pkill -f d1-export-manifest.py` hit every process on the host
+  # whose command line contained that string — a second run of this suite, or
+  # any real invocation of the tool, would have been signalled too.
   (
     trap - INT TERM
-    PYTHONPATH="$W/barrier" BARRIER_READY="$W/ready" BARRIER_GO="$W/go" \
+    exec env PYTHONPATH="$W/barrier" BARRIER_READY="$W/ready" BARRIER_GO="$W/go" \
       python3 "$GEN" "$D1" "$DUMP" "$TABLES" >"$W/gen.out" 2>&1
-    echo $? >"$W/src"
   ) & local job=$!
   # Waits until the generator says it is inside the window — no polling, no
   # sleep — but bounded, so a generator that refuses BEFORE the barrier fails
@@ -319,13 +339,12 @@ signal_run() { # signame expected-code
   else
     ok "$sig: the barrier is reached with a temporary file present"
   fi
-  pkill -"$sig" -f 'd1-export-manifest.py' 2>/dev/null
+  kill -"$sig" "$job" 2>/dev/null
   # Released unconditionally: a handler that ignored the signal then shows up
   # as the wrong exit code rather than as a hung test.
   echo go >&9
-  wait "$job" 2>/dev/null
+  wait "$job" 2>/dev/null; rc=$?
   exec 8>&- 9>&-
-  rc=$(cat "$W/src" 2>/dev/null || echo missing)
   if [ "$rc" = "$want" ]; then ok "$sig exits $want"; else bad "$sig exits $want" "exit was $rc"; fi
   if [ "$(sha256sum "$D1/d1-export.manifest" | cut -d' ' -f1)" = "$before" ]; then
     ok "$sig leaves the previous sidecar byte-identical"
@@ -352,10 +371,15 @@ if [ "$TMPDEV" = "$OUTDEV" ]; then
 else
   bad 'the temporary file and the sidecar share one filesystem' "dev ${TMPDEV} vs ${OUTDEV}"
 fi
-if [ "$(sha256sum "$D1/d1-export.manifest" | cut -d' ' -f1)" = "$GOODSUM" ]; then
-  ok 'sealing the same bundle twice produces the same sidecar'
+# Both branches used to call `ok`, so this could not fail and it printed a
+# nondeterministic test name. The claim is that a repeat seal differs ONLY in
+# the timing fields, so those are stripped and the rest must be identical.
+strip_timing() { grep -vE '^(capture_window_seconds|capture_id)=' "$1"; }
+if diff <(strip_timing "$W/good.manifest") <(strip_timing "$D1/d1-export.manifest") >/dev/null; then
+  ok 'sealing the same bundle twice differs only in the timing fields'
 else
-  ok 'sealing the same bundle twice differs only by capture window'
+  bad 'sealing the same bundle twice differs only in the timing fields' \
+    "$(diff <(strip_timing "$W/good.manifest") <(strip_timing "$D1/d1-export.manifest") | head -3)"
 fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

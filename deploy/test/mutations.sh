@@ -44,6 +44,7 @@ done
 unset _f
 
 ATTEMPTS=0; MATCHED=0; INVALID=0; KILLED=0; SURVIVED=0
+CHILD=''
 NOMATCH_LIST=''; SURVIVOR_LIST=''; INVALID_LIST=''
 
 L=deploy/rehearsal-lib.sh
@@ -59,6 +60,30 @@ ST=deploy/test/rehearsal-subjects.test.sh
 CT=deploy/test/rehearsal-cleanup.test.sh
 DT=deploy/test/d1-sidecar.test.sh
 BT=deploy/test/stage-owner-bundle.test.sh
+
+# Every mutated file restored however this ends.
+#
+# `restore` ran only on the normal path, and each suite runs under `timeout
+# 900`, so an interrupt between `apply` and `restore` is realistic — and these
+# mutations DELETE production guards. The working tree would be left holding a
+# weakened deploy script, plus a stray `.orig`, with nothing to say so.
+restore_all() {
+  local f
+  for f in deploy/*.sh tools/*.py; do
+    [ -e "$f.orig" ] || continue
+    mv -f "$f.orig" "$f"
+    echo "[mutations] restored $f" >&2
+  done
+}
+on_signal() { # signame code
+  echo "[mutations] received $1 — restoring every mutated file" >&2
+  [ -z "${CHILD:-}" ] || kill "$CHILD" 2>/dev/null
+  restore_all
+  exit "$2"
+}
+trap 'on_signal INT 130' INT
+trap 'on_signal TERM 143' TERM
+trap restore_all EXIT
 
 apply() { # file expr -> 0 if the source changed
   cp "$1" "$1.orig"
@@ -78,12 +103,19 @@ mut() { # file expr suite label
     return
   fi
   MATCHED=$((MATCHED + 1))
-  if timeout 900 bash "$suite" >/dev/null 2>&1; then
+  # Backgrounded and waited for, so a signal reaches this driver at once. Bash
+  # runs traps BETWEEN commands: with the suite in the foreground an interrupt
+  # sat unhandled for up to the full 900s timeout, and the working tree held a
+  # weakened deploy script for every second of it.
+  timeout 900 bash "$suite" >/dev/null 2>&1 & CHILD=$!
+  if wait "$CHILD"; then
+    CHILD=''
     SURVIVED=$((SURVIVED + 1))
     SURVIVOR_LIST="${SURVIVOR_LIST}
     ${label}"
     printf 'SURVIVED  %s\n' "$label"
   else
+    CHILD=''
     KILLED=$((KILLED + 1))
     printf 'killed    %s\n' "$label"
   fi
@@ -103,11 +135,14 @@ invalid() { # file expr suite label proof-command...
     return
   fi
   MATCHED=$((MATCHED + 1))
-  if ! timeout 900 bash "$suite" >/dev/null 2>&1; then
+  timeout 900 bash "$suite" >/dev/null 2>&1 & CHILD=$!
+  if ! wait "$CHILD"; then
+    CHILD=''
     KILLED=$((KILLED + 1))
     printf 'killed    %s  (declared invalid, but its suite failed — treating as a real kill)\n' "$label"
     restore "$f"; return
   fi
+  CHILD=''
   if "$@" >/dev/null 2>&1; then
     INVALID=$((INVALID + 1))
     INVALID_LIST="${INVALID_LIST}
@@ -149,7 +184,8 @@ mut "$L" 's|refuse(name + . does not match the digest|pass  #|' "$LT" "d1: ignor
 mut "$L" "s|if sha256_file(dump) != want_dump:|if False:|"      "$LT" "d1: ignore a substituted dump"
 mut "$L" "s|if present - want:|if False:|"                      "$LT" "d1: ignore an intruding file"
 mut "$L" "s|if want - have:|if False:|"                         "$LT" "d1: ignore a missing table"
-mut "$L" "s|if window > window_max:|if False:|"                 "$LT" "d1: ignore the capture window"
+mut "$L" "s|if window > CONSUMER_WINDOW_MAX:|if False:|"        "$LT" "d1: ignore the capture window"
+mut "$L" "s|if declared_max > CONSUMER_WINDOW_MAX:|if False:|"  "$LT" "d1: let the sidecar declare its own window limit"
 mut "$L" "s|if header.get('capture_order') != 'mysql-not-older-than-d1':|if False:|" "$LT" "d1: ignore capture order"
 mut "$L" "s|if header.get('coherence') != 'pass':|if False:|"   "$LT" "d1: ignore recorded coherence"
 
@@ -157,7 +193,8 @@ echo "== the sidecar generator =="
 mut "$G" 's|if st.st_mode \& 0o022:|if False:|'                      "$DT" "sidecar: accept a writable input"
 mut "$G" 's|if os.path.islink(path):|if False:|'                     "$DT" "sidecar: accept a symlinked input"
 mut "$G" 's|!= TABLES_MANIFEST_SHA256|!= sha256_file(tables_manifest)|' "$DT" "sidecar: accept any table manifest"
-mut "$G" 's|if window > CAPTURE_WINDOW_MAX:|if False:|'              "$DT" "sidecar: seal an out-of-window bundle"
+mut "$G" 's|if span > CAPTURE_WINDOW_MAX:|if False:|'                "$DT" "sidecar: seal an out-of-window bundle"
+mut "$G" 's|window = math.ceil(span)|window = int(span)|'            "$DT" "sidecar: round the window down instead of up"
 mut "$G" 's|if dump_mtime < max(mtimes):|if False:|'                 "$DT" "sidecar: seal a dump older than the export"
 mut "$G" 's|if coherence != "pass":|if False:|'                      "$DT" "sidecar: seal an incoherent bundle"
 mut "$G" 's|os.chmod(_TMP_PATH, 0o640)|pass|'                        "$DT" "sidecar: leave the published mode to umask"

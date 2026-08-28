@@ -31,6 +31,26 @@
 # authoritative metadata and both sides are canonicalised, which collapses
 # `..`, symlinked parents and trailing slashes before the comparison rather
 # than trying to spot them in a string.
+# Group- or world-writable?
+#
+# What was here was `case "$(stat -c '%a' "$p")" in *[2367])`. In a case pattern
+# `*[2367]` is "any prefix, then exactly one character from that set", so only
+# the LAST digit was ever tested — the "other" bits. Mode 770 passed. Mode 660
+# passed, and 660 is the ordinary mode of a Coolify backup dump, so the guard on
+# the production backup was open to every member of its group.
+#
+# A numeric mask tests both bits and cannot be read two ways.
+rehearsal_refuse_if_writable() { # path label
+  local mode
+  mode=$(stat -c '%a' "$1" 2>/dev/null) || {
+    echo "[secure] ${2} could not be stat'd" >&2; return 1; }
+  if [ "$(( 8#${mode} & 8#022 ))" -ne 0 ]; then
+    echo "[secure] ${2} is group- or world-writable (mode ${mode})" >&2
+    return 1
+  fi
+  return 0
+}
+
 rehearsal_canonical_dir_is() { # candidate expected label
   local cand=$1 want=$2 label=$3 rc rw
   [ -n "$cand" ] || { echo "[path] ${label} is empty" >&2; return 1; }
@@ -68,9 +88,7 @@ rehearsal_require_secure_file() { # path max-mode label
   dir=$(dirname "$path")
   [ "$(stat -c '%U' "$dir")" = 'root' ] ||
     { echo "[secure] the parent directory of ${label} has a non-root owner" >&2; return 1; }
-  case "$(stat -c '%a' "$dir")" in
-    *[2367]) echo "[secure] the directory holding ${label} is group- or world-writable" >&2; return 1 ;;
-  esac
+  rehearsal_refuse_if_writable "$dir" "the directory holding ${label}" || return 1
   return 0
 }
 
@@ -278,9 +296,7 @@ rehearsal_validate_d1_export() { # dir expected-tables-csv mysql-dump
   [ -n "$dir" ] || { echo "[d1] D1_EXPORT_DIR is empty — it has no default" >&2; return 1; }
   [ ! -L "$dir" ] || { echo "[d1] the export directory is a symlink — refusing" >&2; return 1; }
   [ -d "$dir" ] || { echo "[d1] the export directory does not exist" >&2; return 1; }
-  case "$(stat -c '%a' "$dir")" in
-    *[2367]) echo "[d1] the export directory is group- or world-writable" >&2; return 1 ;;
-  esac
+  rehearsal_refuse_if_writable "$dir" "the export directory" || return 1
   if [ ! -f "$dir/d1-export.manifest" ] || [ -L "$dir/d1-export.manifest" ]; then
     echo "[d1] there is no d1-export.manifest in the export directory." >&2
     echo "[d1] This export carries no provenance, and the rehearsal will not guess at it" >&2
@@ -288,10 +304,8 @@ rehearsal_validate_d1_export() { # dir expected-tables-csv mysql-dump
     echo "[d1]   tools/d1-export-manifest.py <export-dir> <mirzabot-dump> deploy/d1-tables.manifest" >&2
     return 1
   fi
-  case "$(stat -c '%a' "$dir/d1-export.manifest")" in
-    *[2367]) echo "[d1] d1-export.manifest is group- or world-writable" >&2; return 1 ;;
-  esac
-  python3 - "$dir" "$expected" "$dump" <<'PY'
+  rehearsal_refuse_if_writable "$dir/d1-export.manifest" "d1-export.manifest" || return 1
+  python3 - "$dir" "$expected" "$dump" "${REHEARSAL_CAPTURE_WINDOW_MAX:-3600}" <<'PY'
 import hashlib, os, sys
 
 d, expected, dump = sys.argv[1], [t for t in sys.argv[2].split(',') if t], sys.argv[3]
@@ -376,16 +390,24 @@ if sha256_file(dump) != want_dump:
     refuse('the MySQL dump is not the one this D1 export was sealed with — the bundle was broken up or re-paired')
 
 # Bounded consistency, in the three parts the generator measured.
+# The limit is THIS side's, not the file's. Comparing a header field against
+# another field of the same header lets a sidecar declaring
+# `capture_window_max=999999` authorise its own arbitrarily wide window; the
+# header is unauthenticated data from the artifact under validation.
+CONSUMER_WINDOW_MAX = int(sys.argv[4]) if len(sys.argv) > 4 else 3600
 try:
     window = int(header.get('capture_window_seconds', '-1'))
-    window_max = int(header.get('capture_window_max', '-1'))
+    declared_max = int(header.get('capture_window_max', '-1'))
 except ValueError:
     refuse('the sidecar records an unreadable capture window')
-if window < 0 or window_max <= 0:
+if window < 0 or declared_max <= 0:
     refuse('the sidecar records no capture window')
-if window > window_max:
-    refuse('the artifacts span %ds, more than the %ds this bundle allows — they were not captured together'
-           % (window, window_max))
+if declared_max > CONSUMER_WINDOW_MAX:
+    refuse('the sidecar declares a %ds capture window, wider than the %ds this release accepts'
+           % (declared_max, CONSUMER_WINDOW_MAX))
+if window > CONSUMER_WINDOW_MAX:
+    refuse('the artifacts span %ds, more than the %ds allowed — they were not captured together'
+           % (window, CONSUMER_WINDOW_MAX))
 if header.get('capture_order') != 'mysql-not-older-than-d1':
     refuse('the sidecar does not record MySQL as the later capture; a D1 export newer than the dump can reference orders the dump does not contain')
 if header.get('coherence') != 'pass':

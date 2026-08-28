@@ -16,6 +16,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 PASS=0
 FAIL=0
+SKIPPED=0
 ok() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n       %s\n' "$1" "$2"; }
 section() { printf '\n%s\n' "$1"; }
@@ -344,7 +345,21 @@ refuses 'a symlinked table file is refused' 'symlink' \
   rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
 mkd1; chmod 666 "$D1/devices.json"
-refuses 'a group- or world-writable table file is refused' 'writable' \
+refuses 'a world-writable table file is refused' 'writable' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
+
+# Group-only. Every case here used 666 or 777, both of which set the "other"
+# write bit — the one digit the old `*[2367]` pattern actually tested. Mode 770
+# and 660 walked straight through, and 660 is the ordinary mode of a Coolify
+# backup dump.
+mkd1; chmod 770 "$D1"
+refuses 'a group-writable export directory is refused' 'writable' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
+mkd1; chmod 660 "$D1/d1-export.manifest"
+refuses 'a group-writable sidecar is refused' 'writable' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
+mkd1; chmod 660 "$D1/devices.json"
+refuses 'a group-writable table file is refused' 'writable' \
   rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 mkd1; chmod 777 "$D1"
 refuses 'a world-writable export directory is refused' 'world-writable' \
@@ -366,6 +381,14 @@ reseal() { # key=value ... -> rewrite the sidecar and its own coverage
 }
 mkd1; reseal 'capture_window_seconds=99999' 'capture_window_max=3600'
 refuses 'a capture window outside the bound is refused' 'more than the' \
+  rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
+
+# The limit belongs to this side. A sidecar that declares a wide window is
+# declaring how much drift it would like to be forgiven, which is not its
+# decision to make — the header is unauthenticated data from the artifact
+# being validated.
+mkd1; reseal 'capture_window_max=999999' 'capture_window_seconds=7200'
+refuses 'a sidecar that declares its own wider window is refused' 'wider than' \
   rehearsal_validate_d1_export "$D1" "$ALL_TABLES" "$DUMPF"
 
 mkd1; reseal 'capture_order=d1-newer-than-mysql'
@@ -586,8 +609,12 @@ refuses 'a lock file that does not exist is refused' 'does not exist' att_requir
 
 ATT_LOCK="$LOCKD/mine.lock"; : >"$ATT_LOCK"; chmod 660 "$ATT_LOCK"
 ATT_LOCK_GROUP=$(stat -c '%G' "$ATT_LOCK")
+# Not `ok` when it cannot run. Calling ok for an assertion that never executed
+# reports the ownership guard as proven while nothing tested it — and a CI
+# container running as root would hide a removed owner check permanently.
 if [ "$(id -u)" -eq 0 ]; then
-  ok 'a lock owned by another user is refused (skipped: running as root)'
+  SKIPPED=$((SKIPPED + 1))
+  printf '  SKIP a lock owned by another user is refused (this suite is running as root)\n'
 else
   refuses 'a lock owned by another user is refused' 'not root' att_require_lock_file
 fi
@@ -702,5 +729,11 @@ for bad_r in https://evil.example/x/Shikoonet/Shikoonet-Platform-backdoor \
     rehearsal_require_known_remote "$bad_r"
 done
 
-printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+# Skips are reported, never folded into the pass count. An assertion that did
+# not run is not an assertion that succeeded.
+if [ "$SKIPPED" -gt 0 ]; then
+  printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIPPED"
+else
+  printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+fi
 [ "$FAIL" -eq 0 ]

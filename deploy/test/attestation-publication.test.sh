@@ -111,6 +111,7 @@ if [ "$(att_read "$ATT")" = "$V2" ]; then ok "readers still resolve the last goo
 # single inode operation can refuse, so it is the one that has to be tested —
 # and running as root, a mode-based test would have proved nothing, because
 # root ignores the mode.
+V2_SUM=$(sha256sum "$V2/attestation.env" | cut -d' ' -f1)
 V6=$(mkver v6 "$SHA_A" "$DIG_A")
 rm -f "$ATT/current"
 mkdir -p "$ATT/current/occupied"
@@ -130,8 +131,15 @@ else
   ok "a failed swap leaves no half-written pointer"
 fi
 if [ -f "$ATT/current/occupied/f" ]; then ok "a failed swap did not disturb what stood in its way"; else bad "a failed swap did not disturb what stood in its way" "the obstruction was destroyed"; fi
-[ "$(sha256sum "$V2/attestation.env" | cut -d' ' -f1)" = "$(sha256sum "$V2/attestation.env" | cut -d' ' -f1)" ] &&
-  if [ -f "$V2/attestation.env" ]; then ok "the previous version survives a failed swap byte for byte"; else bad "the previous version survives a failed swap byte for byte" ""; fi
+# Compared against a digest taken BEFORE the failed swap. What was here
+# compared `sha256sum $V2/attestation.env` with the identical expression, which
+# is true whatever happened to the file — it proved only that it still existed.
+if [ -f "$V2/attestation.env" ] &&
+   [ "$(sha256sum "$V2/attestation.env" | cut -d' ' -f1)" = "$V2_SUM" ]; then
+  ok "the previous version survives a failed swap byte for byte"
+else
+  bad "the previous version survives a failed swap byte for byte" "it changed or vanished"
+fi
 
 # Put the pointer back and confirm readers recover.
 rm -rf "$ATT/current"
@@ -147,13 +155,15 @@ mkfifo "$W/held" "$W/go"
 V7=$(mkver v7 "$SHA_A" "$DIG_A")
 (
   . "$ROOT/deploy/attestation-store.sh"
-  att_lock_exclusive || exit 1
-  echo held >"$W/held"
+  # Announces on BOTH paths. Exiting without writing left the parent blocked
+  # on a FIFO open no writer would ever satisfy — a hang instead of a failure.
+  if att_lock_exclusive; then echo held >"$W/held"; else echo failed >"$W/held"; exit 1; fi
   read -r _ <"$W/go"
   ln -sfn "$V7" "$ATT/.current.new" && mv -Tf "$ATT/.current.new" "$ATT/current"
   att_unlock
 ) & PUB=$!
-read -r _ <"$W/held"
+read -r HELD <"$W/held"
+[ "$HELD" = held ] || bad "the publisher took the exclusive lock (held)" "it reported: $HELD"
 
 # A concurrent reader while the publisher holds the lock: it must block, not
 # read through the swap. Its answer, whenever it arrives, must be complete.
@@ -187,12 +197,14 @@ fi
 mkfifo "$W/held2" "$W/go2"
 (
   . "$ROOT/deploy/attestation-store.sh"
-  att_lock_exclusive || exit 1
-  echo held >"$W/held2"
+  # Announces on BOTH paths. Exiting without writing left the parent blocked
+  # on a FIFO open no writer would ever satisfy — a hang instead of a failure.
+  if att_lock_exclusive; then echo held >"$W/held2"; else echo failed >"$W/held2"; exit 1; fi
   read -r _ <"$W/go2"
   att_unlock
 ) & HOLD=$!
-read -r _ <"$W/held2"
+read -r HELD <"$W/held2"
+[ "$HELD" = held ] || bad "the publisher took the exclusive lock (held2)" "it reported: $HELD"
 if ( ATT_LOCK_WAIT=1 att_lock_shared ) 2>/dev/null; then
   bad "a shared read cannot proceed while the pointer is being swapped" "it acquired the lock"
 else
@@ -290,12 +302,14 @@ fi
 mkfifo "$W/held3" "$W/go3"
 (
   . "$ROOT/deploy/attestation-store.sh"
-  att_lock_exclusive || exit 1
-  echo held >"$W/held3"
+  # Announces on BOTH paths. Exiting without writing left the parent blocked
+  # on a FIFO open no writer would ever satisfy — a hang instead of a failure.
+  if att_lock_exclusive; then echo held >"$W/held3"; else echo failed >"$W/held3"; exit 1; fi
   read -r _ <"$W/go3"
   att_unlock
 ) & VHOLD=$!
-read -r _ <"$W/held3"
+read -r HELD <"$W/held3"
+[ "$HELD" = held ] || bad "the publisher took the exclusive lock (held3)" "it reported: $HELD"
 if env ATT_LOCK_WAIT=1 EXPECTED_SHA="$VSHA" EXPECTED_DIGEST="$VDIG"      bash "$VERIFY" "$VATT" >"$W/v5" 2>&1; then
   bad "verification cannot proceed while a publisher holds the lock" "it completed"
 elif grep -q 'release lock could not be taken' "$W/v5"; then

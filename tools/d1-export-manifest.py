@@ -49,6 +49,7 @@ identifier, a value, a timestamp of customer activity, or a path.
 """
 import hashlib
 import json
+import math
 import os
 import re
 import signal
@@ -182,8 +183,11 @@ def main():
     dump_digest = sha256_file(dump_path)
 
     # ── bounded consistency ──────────────────────────────────────────────
-    window = int(round(max(mtimes + [dump_mtime]) - min(mtimes + [dump_mtime])))
-    if window > CAPTURE_WINDOW_MAX:
+    # Compared unrounded, recorded rounded UP. `int(round(3600.4))` is 3600,
+    # so a bundle that genuinely exceeded the window sealed anyway.
+    span = max(mtimes + [dump_mtime]) - min(mtimes + [dump_mtime])
+    window = math.ceil(span)
+    if span > CAPTURE_WINDOW_MAX:
         refuse(
             f"the artifacts span {window}s, more than the {CAPTURE_WINDOW_MAX}s "
             "capture window — they were not captured together"
@@ -220,9 +224,19 @@ def main():
 
     missing = 0
     if refs:
+        # Delimited, not "appears anywhere". A bare substring test lets a short
+        # reference such as `7` match the middle of an unrelated number while
+        # the order it names is absent from the dump entirely, and the bundle
+        # then records coherence=pass. The reference has to stand alone,
+        # bounded by something that is not part of an identifier.
         blob = open(dump_path, "rb").read()
         for ref in refs:
-            if ref.encode("utf-8", "ignore") not in blob:
+            pattern = (
+                rb"(?<![A-Za-z0-9_-])"
+                + re.escape(ref.encode("utf-8", "ignore"))
+                + rb"(?![A-Za-z0-9_-])"
+            )
+            if not re.search(pattern, blob):
                 missing += 1
         del blob
 
@@ -256,6 +270,12 @@ def main():
     export_id = "sha256:" + hashlib.sha256(text.encode()).hexdigest()
 
     out = os.path.join(export_dir, "d1-export.manifest")
+    # `os.rename` replaces a symlink rather than following it, so publication
+    # is safe either way — but a sidecar that is a symlink at all means someone
+    # has been arranging where this file lands, and that is worth refusing
+    # rather than quietly correcting.
+    if os.path.islink(out):
+        refuse("d1-export.manifest is a symlink — refusing to publish over it")
     global _TMP_PATH
     fd, _TMP_PATH = tempfile.mkstemp(dir=export_dir, prefix=".d1-export.manifest.")
     try:

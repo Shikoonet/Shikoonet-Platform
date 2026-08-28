@@ -106,12 +106,26 @@ section 'the rehearsal is argument-free and root-only'
 has "$RUNNER" 'production-dump-rehearsal.sh' 'the runner invokes the rehearsal script'
 # It runs as root deliberately (throwaway containers, the backup directory) and
 # must not be handed anything.
-if grep -A12 '  production-dump-rehearsal)' "$RUNNER" | grep -q 'as_deploy'; then
+# The whole arm, not a fixed line count. `grep -A12` stopped at the line before
+# the invocation, so both of these reported ok whatever the arm actually did —
+# on a root-privileged path.
+ARM=$(awk '/^  production-dump-rehearsal\)/{f=1} f{print} f&&/^    ;;/{exit}' "$RUNNER")
+if [ -z "$ARM" ]; then
+  bad 'the production-dump-rehearsal arm can be located' 'it could not be extracted'
+else
+  ok 'the production-dump-rehearsal arm can be located'
+fi
+if printf '%s\n' "$ARM" | grep -q 'rehearsal.sh'; then
+  ok 'the extracted arm contains the invocation'
+else
+  bad 'the extracted arm contains the invocation' 'the window is still too small'
+fi
+if printf '%s\n' "$ARM" | grep -q 'as_deploy'; then
   bad 'the rehearsal does not run through as_deploy' 'it does'
 else
   ok 'the rehearsal runs as root, not as the deploy user'
 fi
-if grep -A12 '  production-dump-rehearsal)' "$RUNNER" | grep -qE 'rehearsal\.sh" *[^|]'; then
+if printf '%s\n' "$ARM" | grep -qE 'rehearsal\.sh" +[^|&]'; then
   bad 'the rehearsal is invoked with no arguments' 'an argument is passed'
 else
   ok 'the rehearsal is invoked with no arguments'
