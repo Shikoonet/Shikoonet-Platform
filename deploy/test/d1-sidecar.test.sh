@@ -248,24 +248,83 @@ else
   bad 'a failed write-back leaves no partial sidecar' 'a temporary file survived'
 fi
 
-# INT and TERM before publication.
+# INT and TERM, stopped at a real barrier rather than raced against.
+#
+# The first version of this made the dump large enough that hashing took a
+# while and signalled during it. That passed here and failed on a runner, which
+# hashed faster than the poll loop noticed — a test whose result depended on
+# relative machine speed. The generator refuses a non-regular dump, so a FIFO
+# cannot be the dump; instead a sitecustomize blocks it inside the write-back
+# read, which is exactly the window where a complete temporary file exists and
+# nothing has been published. The test knows it is there because the generator
+# says so on a FIFO before waiting on another.
+mkdir -p "$W/barrier"
+cat >"$W/barrier/sitecustomize.py" <<'PY'
+import builtins
+import os
+
+_real = builtins.open
+
+
+def _open(file, mode="r", *a, **k):
+    if (
+        isinstance(file, str)
+        and ".d1-export.manifest." in file
+        and "r" in mode
+        and "b" not in mode
+    ):
+        # The complete temporary sidecar exists and nothing is published yet.
+        with _real(os.environ["BARRIER_READY"], "w") as fh:
+            fh.write("at-barrier\n")
+        with _real(os.environ["BARRIER_GO"], "r") as fh:
+            # One line, not `read()`: the test holds the write end open, so
+            # EOF never arrives and `read()` would wait for it forever if the
+            # signal under test were ever delayed or ignored.
+            fh.readline()
+    return _real(file, mode, *a, **k)
+
+
+builtins.open = _open
+PY
+
 signal_run() { # signame expected-code
-  local sig=$1 want=$2 rc
+  local sig=$1 want=$2 rc before
   build
   cp "$W/good.manifest" "$D1/d1-export.manifest"; chmod 640 "$D1/d1-export.manifest"
-  local before; before=$(sha256sum "$D1/d1-export.manifest" | cut -d' ' -f1)
-  # A dump large enough to be inside sha256/coherence work when the signal
-  # arrives. A FIFO would be the deterministic way, but the generator refuses a
-  # non-regular dump before it could ever block on one — correctly. If the
-  # signal lands too late the exit code is 0 and this test fails loudly, so a
-  # missed window is never a quiet pass.
-  cp "$W/big.sql" "$DUMP"; chmod 640 "$DUMP"
-  touch "$DUMP"
-  ( trap - INT TERM; python3 "$GEN" "$D1" "$DUMP" "$TABLES" >/dev/null 2>&1; echo $? >"$W/src" ) &
-  local job=$!
-  for _ in $(seq 1 400); do pgrep -f "d1-export-manifest.py" >/dev/null && break; sleep 0.05; done
+  before=$(sha256sum "$D1/d1-export.manifest" | cut -d' ' -f1)
+  rm -f "$W/ready" "$W/go"; mkfifo "$W/ready" "$W/go"
+  # Both ends held read-write. Opening a FIFO for writing alone blocks until a
+  # reader appears, so releasing the barrier after the signal had already
+  # killed the only reader left an orphaned writer behind every run. `<>`
+  # never blocks and gives this shell both ends of each pipe.
+  exec 8<>"$W/ready" 9<>"$W/go"
+  (
+    trap - INT TERM
+    PYTHONPATH="$W/barrier" BARRIER_READY="$W/ready" BARRIER_GO="$W/go" \
+      python3 "$GEN" "$D1" "$DUMP" "$TABLES" >"$W/gen.out" 2>&1
+    echo $? >"$W/src"
+  ) & local job=$!
+  # Waits until the generator says it is inside the window — no polling, no
+  # sleep — but bounded, so a generator that refuses BEFORE the barrier fails
+  # this test while quoting its own reason instead of hanging it.
+  if ! read -r -t 60 _ <&8; then
+    bad "$sig: the barrier is reached with a temporary file present" \
+      "the generator never reached the barrier: $(head -2 "$W/gen.out" 2>/dev/null)"
+    kill "$job" 2>/dev/null; wait "$job" 2>/dev/null
+    exec 8>&- 9>&-
+    return
+  fi
+  if [ -z "$(find "$D1" -maxdepth 1 -name '.d1-export.manifest.*' -print -quit)" ]; then
+    bad "$sig: the barrier is reached with a temporary file present" 'none found'
+  else
+    ok "$sig: the barrier is reached with a temporary file present"
+  fi
   pkill -"$sig" -f 'd1-export-manifest.py' 2>/dev/null
+  # Released unconditionally: a handler that ignored the signal then shows up
+  # as the wrong exit code rather than as a hung test.
+  echo go >&9
   wait "$job" 2>/dev/null
+  exec 8>&- 9>&-
   rc=$(cat "$W/src" 2>/dev/null || echo missing)
   if [ "$rc" = "$want" ]; then ok "$sig exits $want"; else bad "$sig exits $want" "exit was $rc"; fi
   if [ "$(sha256sum "$D1/d1-export.manifest" | cut -d' ' -f1)" = "$before" ]; then
@@ -278,9 +337,8 @@ signal_run() { # signame expected-code
   else
     bad "$sig leaves no partial sidecar" 'a temporary file survived'
   fi
+  rm -f "$W/ready" "$W/go"
 }
-head -c 134217728 /dev/urandom >"$W/big.sql"
-printf 'INSERT INTO invoice VALUES (1,"ORD-7001",5000);\n' >>"$W/big.sql"
 signal_run INT 130
 signal_run TERM 143
 
