@@ -86,19 +86,36 @@ fi
 section 'the subcommand list is closed'
 
 for c in step-e-dry-run step-e-apply backup-dry-run backup-apply \
-         restore-drill-staging verify-evidence status revoke-access; do
+         production-dump-rehearsal restore-drill-staging verify-evidence \
+         status revoke-access; do
   has "$RUNNER" "  $c)" "the runner implements ${c}"
   has "$SUDOERS" "shikoo-task-runner $c" "sudoers grants ${c}"
 done
 
 # Exactly eight grants, and exactly eight case arms plus the catch-all.
 n=$(grep -c '^hessamx ALL=(root) NOPASSWD:' "$SUDOERS" || true)
-if [ "$n" = '8' ]; then ok 'sudoers grants exactly eight commands'; else
-  bad 'sudoers grants exactly eight commands' "found ${n}"
+if [ "$n" = '9' ]; then ok 'sudoers grants exactly nine commands'; else
+  bad 'sudoers grants exactly nine commands' "found ${n}"
 fi
 
 has "$RUNNER" "unknown subcommand" 'an unrecognised subcommand is refused'
 has "$RUNNER" 'exactly one subcommand and no arguments' 'extra arguments are refused'
+
+section 'the rehearsal is argument-free and root-only'
+
+has "$RUNNER" 'production-dump-rehearsal.sh' 'the runner invokes the rehearsal script'
+# It runs as root deliberately (throwaway containers, the backup directory) and
+# must not be handed anything.
+if grep -A12 '  production-dump-rehearsal)' "$RUNNER" | grep -q 'as_deploy'; then
+  bad 'the rehearsal does not run through as_deploy' 'it does'
+else
+  ok 'the rehearsal runs as root, not as the deploy user'
+fi
+if grep -A12 '  production-dump-rehearsal)' "$RUNNER" | grep -qE 'rehearsal\.sh" *[^|]'; then
+  bad 'the rehearsal is invoked with no arguments' 'an argument is passed'
+else
+  ok 'the rehearsal is invoked with no arguments'
+fi
 
 section 'no production form exists'
 
@@ -146,7 +163,7 @@ else
   ok 'no grant omits its subcommand'
 fi
 # Every grant line names the same absolute, root-owned target.
-if [ "$(grep -cE '^hessamx ALL=\(root\) NOPASSWD: /usr/local/sbin/shikoo-task-runner [a-z-]+$' "$SUDOERS")" = '8' ]; then
+if [ "$(grep -cE '^hessamx ALL=\(root\) NOPASSWD: /usr/local/sbin/shikoo-task-runner [a-z-]+$' "$SUDOERS")" = '9' ]; then
   ok 'every grant is one complete absolute command'
 else
   bad 'every grant is one complete absolute command' 'a line has an unexpected shape'
