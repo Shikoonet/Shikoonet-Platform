@@ -67,13 +67,16 @@ EXPECTED_SHA=$3
 DRY_RUN=${4:-}
 
 case "$ENV_ARG" in staging | production) ;; *) usage ;; esac
-case "$IMAGE_REF" in
-  *@sha256:*) ;;
-  *)
-    echo "refusing: not an immutable digest: $IMAGE_REF" >&2
-    exit 2
-    ;;
-esac
+# A digest is `name@sha256:` and then exactly 64 lowercase hex characters.
+#
+# The glob this replaced accepted anything after the colon — «@sha256:abc», or
+# «@sha256:» with nothing at all — which is a malformed reference wearing the
+# shape of a real one. It would survive both layers of this pipeline and fail
+# at «docker pull», after the flock was taken and the ledger consulted.
+echo "$IMAGE_REF" | grep -qE '^[^@[:space:]]+@sha256:[0-9a-f]{64}$' || {
+  echo "refusing: not an immutable digest: $IMAGE_REF" >&2
+  exit 2
+}
 echo "$EXPECTED_SHA" | grep -qE '^[0-9a-f]{40}$' || {
   echo "refusing: expected sha is not a full 40-character commit sha" >&2
   exit 2
