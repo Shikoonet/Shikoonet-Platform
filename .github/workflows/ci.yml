@@ -774,6 +774,14 @@ jobs:
       - name: deploy pipeline — gate, bot switch, digest promotion
         run: bash deploy/test/deploy-pipeline.test.sh
 
+      # The duplicate-variable classifier decrypts a DATABASE_URL and a bot
+      # token in order to say which row is which. Most of this suite is the
+      # negative half — the sentinel secrets must appear nowhere in its output
+      # — because a tool that reads secrets to describe them is one careless
+      # printf away from putting a production URL in a CI log.
+      - name: coolify duplicate classifier — it reads secrets and prints none
+        run: bash deploy/test/classify-envs.test.sh
+
   # -----------------------------------------------------------------------
   # Secret detection.
   #
