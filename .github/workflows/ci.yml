@@ -804,6 +804,13 @@ jobs:
       - name: production candidates — a second release creates zero applications
         run: bash deploy/test/candidates.test.sh
 
+      # actionlint proves these two files are valid. It cannot prove that only
+      # one of them moves a customer domain, or that neither accepts a field
+      # naming what to ship — properties of what the files mean, and exactly
+      # the ones whose loss would be invisible in review.
+      - name: production dispatches — owner-only, main-only, and naming nothing
+        run: bash deploy/test/production-workflows.test.sh
+
   # -----------------------------------------------------------------------
   # Secret detection.
   #
