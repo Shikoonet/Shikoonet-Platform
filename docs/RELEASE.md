@@ -330,9 +330,72 @@ at cutover. Any drift aborts: a schema that moved, an unhealthy candidate, a
 domain somebody already repointed, native Auto Deploy switched back on, a bot
 lock count that is not exactly one, a vanished backup.
 
-**Not yet implemented:** the two workflows' on-box execution. Creating the
-Coolify candidate applications needs the Coolify API token, which is root-only
-on the deployment host, and a write-API payload shape that has not been
-verified against this Coolify version. The gates, both manifests and all of
-their refusals exist and are tested; the step that creates and moves
-applications does not, and is deliberately absent rather than guessed at.
+### The exact procedure, in the GitHub UI
+
+**A normal release, once production is on Docker Image applications:**
+
+1. Merge the pull request. Nothing else is needed for staging — CI runs, and
+   `Deploy Staging` deploys the merge commit automatically.
+2. Read the staging acceptance checklist (§4).
+3. Run the dump rehearsal on the secure host and record its attestation.
+4. **Actions ▸ Prepare Production ▸ Run workflow**, branch `main`,
+   `confirm: PREPARE`. Nothing customers can see changes. It ends with
+   `READY FOR CUTOVER` and a summary of everything it observed.
+5. Read that summary. This is the step the two-dispatch split exists for.
+6. **Actions ▸ Cutover Production ▸ Run workflow**, branch `main`,
+   `confirm: CUTOVER`. The live domains move and the bot is handed over.
+
+Both refuse a branch other than `main`, an actor other than the owner, and a
+confirmation that is not the exact word. Neither has a field for a commit, a
+digest, an image or a run id: the release is whatever the latest successful
+`Deploy Staging` run for the current `main` produced.
+
+**Redeploying staging without a merge:** Actions ▸ Deploy Staging ▸ Run
+workflow. No inputs. It resolves `main` on the server and refuses unless CI
+already passed on that exact commit as a push.
+
+### The one-time bootstrap, and every release after it
+
+These are different problems and only the first one is interesting.
+
+**The first production release** moves production off three Git/Dockerfile
+applications that the deploy path refuses outright — `deploy.sh` will not hand
+a digest to an application Coolify would rebuild from source. So preparation
+creates three *new* Docker Image applications beside the old ones, migrates,
+and proves the candidates on temporary domains while the old applications keep
+serving. The old ones are kept, stopped, for **14 days**.
+
+**Every release after it** reuses those same three applications.
+`ensure-production-candidates.sh` looks them up by name in the production
+project and creates only what is genuinely absent, so the second release
+creates zero applications and the third creates zero — and the count is printed
+on every run rather than left to be inferred. Without that, each release would
+leave three more near-identically named applications behind, and which one owns
+the live domain becomes whichever a person last remembered.
+
+The old Dockerfile applications are never selected as canonical again: the
+lookup is by the `shikoo-prod-*` names, which they do not have.
+
+### Before the first production release
+
+`Prepare Production` refuses to create anything until a Coolify contract
+attestation exists on the host, recording that `instant_deploy=false` and
+`autogenerate_domain=false` were *empirically proven* on this Coolify instance
+rather than read in documentation.
+
+`deploy/coolify-contract-probe.sh` produces it. It runs on **staging**, creates
+one disposable application named `shikoo-api-probe-…`, proves the create
+deployed nothing, started no container, generated no domain and wrote no
+environment row, then deletes it by the exact uuid the API returned — never by
+name match, because a delete driven by a pattern is one bad glob from removing
+the thing it was protecting.
+
+It needs the Coolify token, which lives in `/etc/shikoo/staging/deploy.env` and
+is readable only by `shikoo-deploy`:
+
+```
+sudo -u shikoo-deploy bash coolify-contract-probe.sh staging /var/lib/shikoo
+```
+
+If any assertion fails it stops and writes no attestation, and production
+candidates cannot be created until it passes.
