@@ -17,8 +17,12 @@
 #     is a half-written record
 #   · conclusion is `success`                     — a failed staging deploy
 #     proves the opposite of what promotion needs
-#   · the trigger is `workflow_run`               — the only way real staging
-#     runs start; anything else was hand-made
+#   · the trigger is one of the ways this workflow actually starts — for
+#     `deploy-staging.yml` that is `workflow_run` (after CI) or
+#     `workflow_dispatch` (the no-input manual redeploy). Anything else was
+#     hand-made. The dispatch path is NOT a weaker source: it resolves the sha
+#     from the ref on the server, requires a green CI push run for it, and goes
+#     through the same approval gate — see the header of `require-ci-run.sh`.
 #   · head_branch is `main`                       — a run for a branch never
 #     deployed staging
 #
@@ -31,7 +35,12 @@ set -Eeuo pipefail
 REPO=${1:?usage: pick-staging-run.sh <owner/repo>}
 : "${GH_TOKEN:?GH_TOKEN is required}"
 
-readonly WORKFLOW_FILE='deploy-staging.yml'
+# Overridable so `Cutover Production` can select its own upstream run — a
+# successful `Prepare Production` — through the same verified path rather than
+# a near-copy of this file that would drift from it.
+WORKFLOW_FILE=${WORKFLOW_FILE:-deploy-staging.yml}
+ALLOWED_EVENTS=${ALLOWED_EVENTS:-workflow_run workflow_dispatch}
+LABEL=${LABEL:-Deploy Staging}
 
 fail() {
   echo "::error::$*"
@@ -46,9 +55,9 @@ fail() {
 GIVEN=${GIVEN:-}
 
 if [ -n "$GIVEN" ]; then
-  [[ $GIVEN =~ ^[0-9]{1,20}$ ]] || fail "staging_run_id '${GIVEN}' is not a run id"
+  [[ $GIVEN =~ ^[0-9]{1,20}$ ]] || fail "run id '${GIVEN}' is not a run id"
   RUN_ID=$GIVEN
-  echo "staging run given: ${RUN_ID}"
+  echo "${LABEL} run given: ${RUN_ID}"
 else
   HEAD_SHA=$(gh api "repos/${REPO}/commits/main" --jq '.sha') ||
     fail "could not read the head of main"
@@ -56,11 +65,11 @@ else
 
   RUN_ID=$(gh api "repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=50&status=success" \
     --jq "[.workflow_runs[] | select(.head_sha == \"${HEAD_SHA}\")] | sort_by(.run_started_at) | last | .id // empty") ||
-    fail "could not list Deploy Staging runs"
+    fail "could not list ${LABEL} runs"
 
   [ -n "$RUN_ID" ] ||
-    fail "no successful Deploy Staging run for ${HEAD_SHA:0:12} — merge and let staging finish, or pass a run id"
-  echo "selected the latest successful staging run for ${HEAD_SHA:0:12}: ${RUN_ID}"
+    fail "no successful ${LABEL} run for ${HEAD_SHA:0:12} — let it finish, or pass a run id"
+  echo "selected the latest successful ${LABEL} run for ${HEAD_SHA:0:12}: ${RUN_ID}"
 fi
 
 # Verified against the API whether it was chosen or given. A run id is an
@@ -83,14 +92,18 @@ RUN_HEAD_SHA=$(field head_sha)
   fail "run ${RUN_ID} is '${RUN_STATUS:-unknown}', not completed — its artifact is a half-written record"
 [ "$RUN_CONCLUSION" = 'success' ] ||
   fail "run ${RUN_ID} concluded '${RUN_CONCLUSION:-unknown}', not success — staging did not pass"
-[ "$RUN_EVENT" = 'workflow_run' ] ||
-  fail "run ${RUN_ID} was triggered by '${RUN_EVENT:-unknown}', not workflow_run — real staging runs start no other way"
+event_allowed=false
+for e in $ALLOWED_EVENTS; do
+  [ "$RUN_EVENT" = "$e" ] && event_allowed=true
+done
+[ "$event_allowed" = 'true' ] ||
+  fail "run ${RUN_ID} was triggered by '${RUN_EVENT:-unknown}', not one of: ${ALLOWED_EVENTS} — real ${LABEL} runs start no other way"
 [ "$RUN_BRANCH" = 'main' ] ||
   fail "run ${RUN_ID} is for branch '${RUN_BRANCH:-unknown}', not main"
 [[ $RUN_HEAD_SHA =~ ^[0-9a-f]{40}$ ]] ||
   fail "run ${RUN_ID} reports no usable head sha"
 
-echo "run ${RUN_ID} verified: ${WORKFLOW_FILE}, completed/success, workflow_run on main, head ${RUN_HEAD_SHA:0:12}"
+echo "run ${RUN_ID} verified: ${WORKFLOW_FILE}, completed/success, ${RUN_EVENT} on main, head ${RUN_HEAD_SHA:0:12}"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {

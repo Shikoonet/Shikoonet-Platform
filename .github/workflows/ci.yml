@@ -790,6 +790,13 @@ jobs:
       - name: production-dump attestation — missing, stale and mismatched all block
         run: bash deploy/test/attestation.test.sh
 
+      # The two-dispatch production release leaves a deliberate gap so a person
+      # can read the evidence. This suite is about what happens in that gap:
+      # every fact preparation recorded is re-observed at cutover, and an
+      # observation that was never gathered is refused rather than assumed.
+      - name: production preparation — drift between prepare and cutover blocks
+        run: bash deploy/test/preparation.test.sh
+
   # -----------------------------------------------------------------------
   # Secret detection.
   #

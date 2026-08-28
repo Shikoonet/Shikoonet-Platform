@@ -1706,12 +1706,29 @@ else
   bad 'a failed run is refused, by name' "$(tail -1 "$WORK/pick.log")"
 fi
 
+# `workflow_dispatch` became a real staging source when the no-input manual
+# redeploy landed, so refusing it here would refuse the very runs that exist to
+# redeploy current main without a dummy commit. It is not a weaker source: it
+# resolves the sha from the ref on the server, requires a green CI push run for
+# that sha, and goes through the same approval gate.
 run_json '.github/workflows/deploy-staging.yml' completed success workflow_dispatch main "$GOOD_SHA"
-if ! try_pick && grep -qF 'real staging runs start no other way' "$WORK/pick.log"; then
-  ok 'a hand-started run is refused, by name'
+if try_pick; then
+  ok 'the no-input manual redeploy is a promotable staging source'
 else
-  bad 'a hand-started run is refused, by name' "$(tail -1 "$WORK/pick.log")"
+  bad 'the no-input manual redeploy is a promotable staging source' "$(tail -1 "$WORK/pick.log")"
 fi
+
+# Everything else still is hand-made. `push` is the sharp one: it is what a
+# staging run would be triggered by if somebody wired the workflow directly to
+# main and skipped the gate entirely.
+for forged in push schedule repository_dispatch; do
+  run_json '.github/workflows/deploy-staging.yml' completed success "$forged" main "$GOOD_SHA"
+  if ! try_pick && grep -qF 'real Deploy Staging runs start no other way' "$WORK/pick.log"; then
+    ok "a run triggered by '${forged}' is refused, by name"
+  else
+    bad "a run triggered by '${forged}' is refused, by name" "$(tail -1 "$WORK/pick.log")"
+  fi
+done
 
 run_json '.github/workflows/deploy-staging.yml' completed success workflow_run some-branch "$GOOD_SHA"
 if ! try_pick && grep -qF "not main" "$WORK/pick.log"; then
