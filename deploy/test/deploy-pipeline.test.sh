@@ -355,13 +355,13 @@ section 'the approval mode itself — unset and misspelled both deny'
 # reviewed.
 happy
 GATE_MODE=''
-denies 'refuses when no approval mode is set at all' "must be exactly 'team' or 'solo'"
+denies 'refuses when no approval mode is set at all' "must be exactly 'team', 'solo' or 'owner-or-approved'"
 
 for bad_mode in SOLO Solo sOlO solo-owner TEAM 1 yes true; do
   happy
   GATE_MODE="$bad_mode"
   denies "refuses the mode «${bad_mode}» rather than guessing what it meant" \
-    "must be exactly 'team' or 'solo'"
+    "must be exactly 'team', 'solo' or 'owner-or-approved'"
 done
 GATE_MODE='team'
 
@@ -500,6 +500,131 @@ FAKE_CURL_DIES=1
 export FAKE_CURL_DIES
 denies 'fails closed on an API error in solo mode' 'failing closed'
 unset FAKE_CURL_DIES
+
+# ═════════════════════════════════════════════════════════════════════════
+section 'owner-or-approved — the owner ships their own, everybody else is reviewed'
+
+# The mode exists because `solo` could not ship contributor work at all. The
+# author check denied before the merged-by check was ever read, so PR #20 by
+# @arshiajacki — merged by the owner, green, unobjected — was refused with no
+# branch to fall to. These cases pin both halves.
+
+# The owner half is `solo` by another name: no review, and none invented.
+owner_or_approved_owner() { # [reviews-json] [merged-by]
+  solo_happy "${1:-[]}" "${2:-$OWNER}"
+  GATE_MODE='owner-or-approved'
+}
+
+# The contributor half: written by somebody else, approved on the FINAL HEAD by
+# a third human, merged by the owner, green on both shas.
+# Every scenario set is built whole, never overridden after the fact: the fake
+# matches the FIRST registered fragment that is a substring of the url, so a
+# later `scenario` for the same path is dead weight that silently changes
+# nothing.
+owner_or_approved_contributor() { # [reviews] [merged-by] [author] [head-jobs] [merge-jobs] [main-sha]
+  reset_scenarios
+  GATE_MODE='owner-or-approved'
+  GATE_OWNER="$OWNER"
+  scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged "${3:-contributor}" "$SHA_PRHEAD")"
+  scenario "/pulls/7/reviews" 200 "${1:-[$(review APPROVED reviewer "$SHA_PRHEAD")]}"
+  scenario "/pulls/7" 200 "$(merged_by_json "${2:-$OWNER}")"
+  scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+  scenario "/actions/runs/9001/jobs" 200 "$(jobs_json "${4:-success}")"
+  scenario "/actions/runs?head_sha=${SHA_MERGED}" 200 "$(runs_json 9002)"
+  scenario "/actions/runs/9002/jobs" 200 "$(jobs_json "${5:-success}")"
+  scenario "/commits/main" 200 "$(commit_json "${6:-$SHA_MERGED}")"
+}
+
+owner_or_approved_owner
+if run_gate && grep -qF 'policy=solo-owner' "$GATE_LOG"; then
+  ok 'the owner still ships their own work, recorded as solo-owner'
+else
+  bad 'the owner still ships their own work, recorded as solo-owner' \
+    "$(tail -3 "$GATE_LOG" | tr '\n' ' ')"
+fi
+
+owner_or_approved_contributor
+if run_gate && grep -qF 'policy=team-approved' "$GATE_LOG"; then
+  ok 'a reviewed contributor PR ships, recorded as team-approved'
+else
+  bad 'a reviewed contributor PR ships, recorded as team-approved' \
+    "$(tail -3 "$GATE_LOG" | tr '\n' ' ')"
+fi
+
+# This is the exact shape that was denied under `solo` — the regression the
+# mode was added to fix. Naming it here means a revert cannot pass quietly.
+owner_or_approved_contributor '[]' "$OWNER" 'arshiajacki'
+denies 'a contributor PR with NO approval is still refused' \
+  'no current APPROVED review from a human other than'
+
+# Self-approval is not approval. `approvals` already excludes the author, so
+# the count is zero and the deny message is the no-approval one.
+owner_or_approved_contributor "[$(review APPROVED contributor "$SHA_PRHEAD")]"
+denies 'the author approving themselves does not count' \
+  'no current APPROVED review from a human other than'
+
+# A stale approval approved a different tree. GitHub keeps the row for ever.
+owner_or_approved_contributor "[$(review APPROVED reviewer "$SHA_OLDER")]"
+denies 'an approval given on an earlier head does not count' \
+  'no current APPROVED review from a human other than'
+
+# A bot agreeing with a machine is not a person having looked.
+owner_or_approved_contributor "[$(review APPROVED coderabbitai reviewer-bot Bot)]"
+denies 'a Bot approval does not count as a human review' \
+  'no current APPROVED review from a human other than'
+
+# Somebody looked and said no. Outranks any policy about who may ship.
+owner_or_approved_contributor \
+  "[$(review APPROVED reviewer "$SHA_PRHEAD"),$(review CHANGES_REQUESTED other "$SHA_PRHEAD")]"
+denies 'an outstanding CHANGES_REQUESTED blocks a reviewed contributor PR' \
+  'outstanding CHANGES_REQUESTED'
+
+# Reviewed is not sufficient on its own: an approval says the tree was read,
+# not that shipping it was intended.
+owner_or_approved_contributor '' 'someone-else'
+denies 'a reviewed contributor PR merged by somebody else is refused' \
+  'not @'
+
+# The owner half keeps its own merged-by assertion.
+owner_or_approved_owner '[]' 'someone-else'
+denies 'the owner half still refuses a PR merged by somebody else' 'not @'
+
+# The Quality Gate is asked on the merge commit in this mode too — the approval
+# was given on the final head, and the merge commit is a different tree.
+owner_or_approved_contributor '' '' '' success failure
+denies 'a red Quality Gate on the merge commit refuses a reviewed contributor PR' \
+  'did not succeed on the merge commit'
+
+owner_or_approved_contributor '' '' '' failure
+denies 'a red Quality Gate on the final head refuses a reviewed contributor PR' \
+  'did not succeed on the final head'
+
+# Direct pushes do not deploy, in this mode either.
+reset_scenarios
+GATE_MODE='owner-or-approved'
+GATE_OWNER="$OWNER"
+scenario "/commits/${SHA_MERGED}/pulls" 200 '[]'
+denies 'refuses a direct push to main in owner-or-approved mode' \
+  'not the result of a merged pull request'
+
+# The branch race, in this mode too.
+owner_or_approved_contributor '' '' '' success success "$SHA_OTHER"
+denies 'refuses when main moved during an owner-or-approved evaluation' 'moved'
+
+# Fails closed, in this mode too.
+owner_or_approved_contributor
+FAKE_CURL_DIES=1
+export FAKE_CURL_DIES
+denies 'fails closed on an API error in owner-or-approved mode' 'failing closed'
+unset FAKE_CURL_DIES
+
+# The owner allowlist is required by this mode as well — without it the
+# merged-by comparison has nothing to compare against and would pass empty.
+owner_or_approved_contributor
+GATE_OWNER=''
+denies 'refuses owner-or-approved mode with nobody allowlisted' 'needs SOLO_DEPLOY_OWNER'
+GATE_OWNER="$OWNER"
+GATE_MODE='team'
 
 section 'provenance — one pull request, or none'
 
