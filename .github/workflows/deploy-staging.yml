@@ -246,8 +246,11 @@ jobs:
           # written its own @username down and the two databases can be
           # compared. `docs/RELEASE.md` §2 is the procedure.
           #
-          # Anything but the exact string `true` is off, in `deploy.sh` as well.
-          DEPLOY_BOT_ENABLED: ${{ vars.STAGING_BOT_ENABLED == 'true' && 'true' || 'false' }}
+          # Pass the value through unchanged. GitHub expression comparisons are
+          # case-insensitive, so normalising it here would make TRUE and True
+          # indistinguishable from the one accepted value. `deploy.sh` owns the
+          # exact, case-sensitive comparison: only lowercase `true` is on.
+          DEPLOY_BOT_ENABLED: ${{ vars.STAGING_BOT_ENABLED }}
           # Carried to the box so the deploy ledger records WHICH policy let
           # this out — «solo-owner» is not the same fact as «team-approved».
           DEPLOY_APPROVAL_POLICY: ${{ needs.gate.outputs.policy }}

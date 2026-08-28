@@ -42,9 +42,13 @@ function check(label: string, ok: boolean, detail = ''): void {
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
   const envIndex = args.indexOf('--env');
+  if (envIndex !== -1 && (!args[envIndex + 1] || args[envIndex + 1]?.startsWith('--'))) {
+    console.error('--env requires an environment name');
+    return 2;
+  }
   const expect = envIndex === -1 ? DEFAULT_ENV : args[envIndex + 1];
   const envName = process.env['ENV_NAME'];
-  if (envName !== expect) {
+  if (!envName || !expect || envName !== expect) {
     console.error(
       `this creates and deletes an ADMIN row, so it runs only where ENV_NAME is ${JSON.stringify(expect)} — ` +
         `this process has ${envName === undefined ? 'no ENV_NAME at all' : JSON.stringify(envName)}`,
@@ -64,12 +68,14 @@ async function main(): Promise<number> {
   // public hostname while talking to a loopback port is a 403 that looks like a
   // login failure.
   const origin = new URL(base).origin;
+  const request = (path: string, init: RequestInit = {}): Promise<Response> =>
+    fetch(base + path, { ...init, signal: AbortSignal.timeout(10_000) });
 
   const password = `${randomBytes(18).toString('base64url')}aA1!`;
   const { db, pool } = createPostgresD1({ connectionString: url });
 
   const post = async (path: string, body: unknown, cookie?: string): Promise<Response> =>
-    fetch(base + path, {
+    request(path, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin, ...(cookie ? { cookie } : {}) },
       body: JSON.stringify(body),
@@ -82,7 +88,7 @@ async function main(): Promise<number> {
     await deleteOperatorByEmail(db, EMAIL);
     await insertOperatorWithHash(db, EMAIL, await hashPassword(password));
 
-    const anon = await fetch(`${base}/api/v1/auth/me`);
+    const anon = await request('/api/v1/auth/me');
     check('no session is refused', anon.status === 401, String(anon.status));
 
     const wrong = await post('/api/v1/auth/login', { email: EMAIL, password: 'not the password' });
@@ -98,13 +104,13 @@ async function main(): Promise<number> {
     );
     const cookie = (raw.match(/shikoo_session=[^;]+/) ?? [''])[0];
 
-    const me = await fetch(`${base}/api/v1/auth/me`, { headers: { cookie } });
+    const me = await request('/api/v1/auth/me', { headers: { cookie } });
     check('the session reaches a protected route', me.status === 200, String(me.status));
 
     const bye = await post('/api/v1/auth/logout', {}, cookie);
     check('logout is accepted', bye.status === 200, String(bye.status));
 
-    const after = await fetch(`${base}/api/v1/auth/me`, { headers: { cookie } });
+    const after = await request('/api/v1/auth/me', { headers: { cookie } });
     // The one that catches a logout which only clears the cookie: the same
     // cookie value is replayed, and the server has to refuse it on its own.
     check('the cookie is dead after logout', after.status === 401, String(after.status));

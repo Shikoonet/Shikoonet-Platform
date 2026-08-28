@@ -116,7 +116,11 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
       done
       case "$method:$path" in
         GET:/applications/*/envs)
-          if [ "${FAKE_NO_ENV_NAME:-}" = '1' ]; then
+          if [ "${FAKE_MALFORMED_ENVS:-}" = 'json' ]; then
+            printf '{not-json'
+          elif [ "${FAKE_MALFORMED_ENVS:-}" = 'object' ]; then
+            printf '{"key":"ENV_NAME","value":"production"}'
+          elif [ "${FAKE_NO_ENV_NAME:-}" = '1' ]; then
             printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"}]'
           elif [ "${FAKE_DUPLICATE_ENVS:-}" = '1' ]; then
             # The shape the staging bot was actually in: every key twice, one
@@ -841,7 +845,7 @@ run_deploy() { # bot-flag
     FAKE_LABEL_SHA="$SHA_MERGED" FAKE_BUILD_PACK="${FAKE_BUILD_PACK:-dockerimage}" \
     FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a}" \
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
-    FAKE_DUPLICATE_ENVS="${FAKE_DUPLICATE_ENVS:-}" \
+    FAKE_DUPLICATE_ENVS="${FAKE_DUPLICATE_ENVS:-}" FAKE_MALFORMED_ENVS="${FAKE_MALFORMED_ENVS:-}" \
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
@@ -964,6 +968,20 @@ else
   fi
 fi
 unset FAKE_NO_ENV_NAME
+
+for malformed in json object; do
+  FAKE_MALFORMED_ENVS=$malformed
+  export FAKE_MALFORMED_ENVS
+  if run_deploy false; then
+    bad "refuses a malformed Coolify environment response (${malformed})" 'it deployed anyway'
+  elif grep -qF 'could not read the application environment' "$DEPLOY_LOG" &&
+    ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+    ok "refuses a malformed Coolify environment response (${malformed}) before migration"
+  else
+    bad "refuses a malformed Coolify environment response (${malformed})" "$(tail -3 "$DEPLOY_LOG")"
+  fi
+done
+unset FAKE_MALFORMED_ENVS
 
 # A key defined twice in Coolify. The staging bot held DATABASE_URL, ENV_NAME,
 # SERVICE and TELEGRAM_BOT_TOKEN twice each on 2026-08-26 — and it has an
@@ -1275,12 +1293,26 @@ assert_wf 'the manifest records the CI run that gated the deploy' \
   'CI_RUN_ID: ${{ needs.gate.outputs.ci_run_id }}'
 assert_wf 'the staging deploy is serialised' 'group: shikoo-deploy'
 assert_wf 'a running deploy is never cancelled' 'cancel-in-progress: false'
-# Off unless a repository variable says otherwise, and the comparison is
-# against the exact string. `vars.STAGING_BOT_ENABLED != ''` would let «no» or
-# «0» start a poller on the shop's token.
+# The workflow passes the repository variable unchanged. GitHub expression
+# comparisons are case-insensitive, so comparing it here would let TRUE and
+# True through. The case-sensitive shell check in deploy.sh is the gate.
 # shellcheck disable=SC2016
-assert_wf 'the staging bot is off unless a variable says exactly true' \
-  "DEPLOY_BOT_ENABLED: \${{ vars.STAGING_BOT_ENABLED == 'true' && 'true' || 'false' }}"
+assert_wf 'the staging workflow does not normalise the bot switch' \
+  'DEPLOY_BOT_ENABLED: ${{ vars.STAGING_BOT_ENABLED }}'
+if grep -qE 'STAGING_BOT_ENABLED[[:space:]]*==' "$WORKFLOW"; then
+  bad 'the workflow performs no case-insensitive comparison on the bot switch' \
+    "$(grep -n STAGING_BOT_ENABLED "$WORKFLOW")"
+else
+  ok 'the workflow performs no case-insensitive comparison on the bot switch'
+fi
+# The literal shell expression is the contract.
+# shellcheck disable=SC2016
+if grep -qF '[ "$DEPLOY_BOT_ENABLED" = '\''true'\'' ]' "$DEPLOY"; then
+  ok 'deploy.sh accepts only exact lowercase true for the bot'
+else
+  bad 'deploy.sh accepts only exact lowercase true for the bot' \
+    'the case-sensitive shell comparison is missing'
+fi
 
 
 refute_wf 'no cache is read from pull request runs' 'type=gha'
@@ -1481,7 +1513,8 @@ section 'the release interface — the bot, and which environment starts one'
 # staging bot on the shop's token silently takes messages from the bot real
 # customers are talking to, and that must stay a decision somebody makes.
 # shellcheck disable=SC2016
-if grep -qF "DEPLOY_BOT_ENABLED: \${{ vars.STAGING_BOT_ENABLED == 'true' && 'true' || 'false' }}" "$WORKFLOW" &&
+if grep -qF 'DEPLOY_BOT_ENABLED: ${{ vars.STAGING_BOT_ENABLED }}' "$WORKFLOW" &&
+  ! grep -qE 'STAGING_BOT_ENABLED[[:space:]]*==' "$WORKFLOW" &&
   ! grep -qF "DEPLOY_BOT_ENABLED: 'true'" "$WORKFLOW"; then
   ok 'staging starts no bot unless a variable was set, and never by default'
 else

@@ -13,9 +13,9 @@
 # travelling as an argument.
 #
 # curl already has the answer — `-K file` reads request configuration, including
-# `url`, from a file. libpq has one too: a service file, pointed at by
-# PGSERVICEFILE, holding host/port/user/password/dbname under a name that IS
-# safe to put in argv.
+# `url`, from a file. The database classifier does not connect at all; it feeds
+# the URL to the parser on stdin. Passing it as `python3 ... "$url"` would merely
+# move the credential leak from psql's argv to Python's argv.
 #
 # Both files are written 0600 inside a 0700 directory that is removed on exit,
 # on failure and on signal — a credential file that survives its command is the
@@ -77,10 +77,10 @@ if d.get("ok") and r.get("id"):
 # the classification and the matched container name are ever printed; user,
 # password, port and database name are parsed and discarded.
 pg_host_of() { # url -> hostname, or empty when it is not a postgres url
-  python3 - "$1" <<'PY'
+  printf '%s' "$1" | python3 -c '
 import sys, urllib.parse as u
-p = u.urlparse(sys.argv[1])
+p = u.urlparse(sys.stdin.read())
 if p.scheme in ("postgres", "postgresql") and p.hostname:
     print(p.hostname)
-PY
+'
 }

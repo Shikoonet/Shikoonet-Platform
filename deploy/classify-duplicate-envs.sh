@@ -5,7 +5,7 @@
 # `deploy.sh` already REFUSES an application with a duplicated key, and refusing
 # is correct: nothing in a deploy reads a value, so nothing in a deploy can tell
 # which copy was meant. But a refusal is not a repair, and the person holding
-# the panel still has to know which row id to delete.
+# the panel still has to know which API row uuid to delete.
 #
 # This is that missing half. It is read-only, it deletes nothing, and it never
 # prints a value.
@@ -31,11 +31,9 @@
 #       of `staging` and `production` a row says.
 #
 #   DATABASE_URL
-#       Connected to, and only the cluster's `system_identifier` is reported —
-#       a number that identifies which database this is and reveals no host, no
-#       user and no password. Compared against the identifiers this file knows,
-#       so the answer is `staging`, `production` or `unknown` rather than a
-#       string somebody has to squint at.
+#       Parsed without connecting. Only the database container hostname is
+#       reported — enough to distinguish staging from production, while user,
+#       password, port and database name are discarded.
 #
 #   TELEGRAM_BOT_TOKEN
 #       `getMe`, and only the bot's public id and @username are reported. Those
@@ -90,10 +88,15 @@ if [ -z "$COOLIFY_URL" ] || [ -z "$COOLIFY_TOKEN" ]; then
   die "$CONF has no COOLIFY_URL/COOLIFY_TOKEN"
 fi
 
+HERE=$(dirname "${BASH_SOURCE[0]}")
 # shellcheck source=deploy/coolify-api.sh
-. "$(dirname "${BASH_SOURCE[0]}")/coolify-api.sh"
+. "$HERE/coolify-api.sh"
+# shellcheck source=deploy/coolify-secret-io.sh
+. "$HERE/coolify-secret-io.sh"
 coolify_api_init "$CONF" || die "could not prepare the Coolify client"
-trap coolify_api_cleanup EXIT
+secret_io_init
+cleanup_all() { coolify_api_cleanup; secret_io_cleanup; }
+trap cleanup_all EXIT INT TERM
 
 # `staging`/`production`/`unknown`, from a URL this function is handed and does
 # not echo.
@@ -109,13 +112,7 @@ trap coolify_api_cleanup EXIT
 # verdict are printed; user, password, port and database are discarded.
 classify_database_url() { # url -> classification
   local host
-  host=$(python3 - "$1" <<'PY'
-import sys, urllib.parse as u
-p = u.urlparse(sys.argv[1])
-if p.scheme in ("postgres", "postgresql") and p.hostname:
-    print(p.hostname)
-PY
-)
+  host=$(pg_host_of "$1")
   case "$host" in
     "$STAGING_DB_HOST")    printf 'staging (host %s)\n' "$host" ;;
     "$PRODUCTION_DB_HOST") printf 'PRODUCTION (host %s)\n' "$host" ;;
@@ -127,14 +124,12 @@ PY
 # The bot's public identity, from a token this function is handed and does not
 # echo. Both fields are on the bot's public profile.
 classify_bot_token() { # token -> "id=<n> username=<name>"
-  local body
-  body=$(curl -sS -m 20 "https://api.telegram.org/bot$1/getMe" 2>/dev/null) || {
-    printf 'unreachable\n'
-    return 0
-  }
-  printf '%s' "$body" | jq -er '
-    if .ok then "id=\(.result.id) username=@\(.result.username)" else "invalid token (Telegram refused it)" end
-  ' 2>/dev/null || printf 'unreadable answer from Telegram\n'
+  local identity botid botname
+  identity=$(tg_get_me "$1")
+  [ -n "$identity" ] || { printf 'invalid or unreachable\n'; return 0; }
+  botid=${identity%% *}
+  if [[ $identity == *' '* ]]; then botname=${identity#* }; else botname=''; fi
+  printf 'id=%s username=@%s\n' "$botid" "$botname"
 }
 
 for uuid in "$@"; do
@@ -148,30 +143,51 @@ for uuid in "$@"; do
     die "reading the environment of ${uuid} was refused (HTTP ${API_STATUS}) — refusing to report «no duplicates» about an application this token cannot read"
   envs=$API_BODY
 
-  # One line per row of a duplicated key: id, key, and a verdict. Keys that
-  # appear once are not listed — they are not the question.
-  while IFS=$'\t' read -r id key value; do
-    [ -n "$id" ] || continue
-    case "$key" in
-      ENV_NAME | SERVICE | APP_VERSION | AUTO_* | MIRZABOT_* | TRUSTED_PROXY_*)
-        printf '  row %-6s %-28s = %s\n' "$id" "$key" "$value" ;;
-      DATABASE_URL)
-        printf '  row %-6s %-28s -> %s\n' "$id" "$key" "$(classify_database_url "$value")" ;;
-      TELEGRAM_BOT_TOKEN)
-        printf '  row %-6s %-28s -> %s\n' "$id" "$key" "$(classify_bot_token "$value")" ;;
-      *)
-        printf '  row %-6s %-28s -> present (treated as a secret; not shown)\n' "$id" "$key" ;;
-    esac
-  done < <(printf '%s' "$envs" | python3 -c 'import json,sys
+  # One line per row of a duplicated key: uuid, key, and a base64 transport for
+  # the value. The encoding is never printed; it keeps tabs and newlines inside
+  # a value from becoming fake rows in this internal stream.
+  decoded=$(printf '%s' "$envs" | python3 -c 'import json,sys
+import base64,re
 from collections import Counter
 try:
     rows = json.load(sys.stdin)
 except Exception:
-    rows = []
-rows = rows if isinstance(rows, list) else []
-dupes = {k for k, n in Counter(r.get("key") for r in rows).items() if n > 1 and k}
-for r in sorted((r for r in rows if r.get("key") in dupes), key=lambda r: (r.get("key") or "", r.get("id") or 0)):
-    print("%s\t%s\t%s" % (r.get("id"), r.get("key"), r.get("value") or ""))')
+    raise SystemExit(2)
+if not isinstance(rows,list) or not all(isinstance(r,dict) for r in rows):
+    raise SystemExit(2)
+for r in rows:
+    if not isinstance(r.get("key"),str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*",r["key"]):
+        raise SystemExit(3)
+dupes = {k for k, n in Counter(r["key"] for r in rows).items() if n > 1}
+selected=[]
+for r in rows:
+    if r["key"] not in dupes: continue
+    u=r.get("uuid")
+    if not isinstance(u,str) or not re.fullmatch(r"[A-Za-z0-9_-]{3,64}",u) or "value" not in r:
+        raise SystemExit(4)
+    selected.append(r)
+for r in sorted(selected,key=lambda r:(r["key"],r["uuid"])):
+    value=r.get("value") or ""
+    encoded=base64.b64encode(value.encode()).decode()
+    print("%s\t%s\t%s" % (r["uuid"],r["key"],encoded))') ||
+    die "Coolify returned malformed environment rows for ${uuid} — refusing to classify an unreadable response"
+
+  # Keys that appear once are not listed — they are not the question.
+  while IFS=$'\t' read -r row_uuid key encoded; do
+    [ -n "$row_uuid" ] || continue
+    value=$(printf '%s' "$encoded" | base64 -d) ||
+      die "could not decode ${row_uuid} without exposing its value"
+    case "$key" in
+      ENV_NAME | SERVICE | APP_VERSION | AUTO_* | MIRZABOT_* | TRUSTED_PROXY_*)
+        printf '  row %-24s %-28s = %s\n' "$row_uuid" "$key" "$value" ;;
+      DATABASE_URL)
+        printf '  row %-24s %-28s -> %s\n' "$row_uuid" "$key" "$(classify_database_url "$value")" ;;
+      TELEGRAM_BOT_TOKEN)
+        printf '  row %-24s %-28s -> %s\n' "$row_uuid" "$key" "$(classify_bot_token "$value")" ;;
+      *)
+        printf '  row %-24s %-28s -> present (treated as a secret; not shown)\n' "$row_uuid" "$key" ;;
+    esac
+  done <<<"$decoded"
 done
 
-say "nothing was deleted. Delete the wrong row by id, after backup-coolify-env.sh has written a recovery point."
+say "nothing was deleted. Delete the wrong row by uuid, after backup-coolify-env.sh has written a recovery point."

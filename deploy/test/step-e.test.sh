@@ -115,6 +115,8 @@ has "$RUNNER" 'resourceable_type' 'the mapping constrains resourceable_type'
 has "$RUNNER" "a.uuid = " 'the mapping constrains the owning application'
 has "$RUNNER" 'expected exactly 1' 'a uuid matching other than one database row stops the run'
 has "$RUNNER" 'refusing to act on rows this API cannot address' 'a row without a uuid is refused'
+has "$RUNNER" 'Coolify API duplicate keys do not match the database inventory' 'API duplicates must exactly match the database inventory'
+has "$RUNNER" 'environment uuid' 'row uuids are validated before entering SQL'
 
 # Correlating by position in a JSON array works until the array is ordered
 # differently, which is the kind of bug that only appears in production.
@@ -160,12 +162,19 @@ else
   ok 'the database URL never appears in a psql argument'
 fi
 has "$SIO" 'curl -K' 'the telegram request is configured from a file'
-has "$SIO" 'PGSERVICEFILE' 'libpq is configured from a service file'
 has "$SIO" 'chmod 600' 'the credential files are 0600'
 has "$SIO" 'rm -f' 'the credential files are removed after use'
 has "$RUNNER" 'trap cleanup_all EXIT INT TERM' 'credentials are cleaned up on signal as well as exit'
 has "$RUNNER" 'tg_get_me' 'the runner uses the secret-safe telegram helper'
 has "$RUNNER" 'pg_host_of' 'the runner classifies a database URL by parsing it'
+has "$SIO" 'sys.stdin.read()' 'the database URL reaches the parser through stdin'
+# The literal unsafe argv shape must be absent.
+# shellcheck disable=SC2016
+if grep -qF 'python3 - "$1"' "$SIO"; then
+  bad 'the database URL never appears in Python argv' 'the URL is positional'
+else
+  ok 'the database URL never appears in Python argv'
+fi
 # It must not dial. There is no psql on the host and Coolify hostnames do not
 # resolve outside the container network, so a connecting version reports every
 # row unreachable — and classifying a row as production by connecting TO
@@ -204,6 +213,13 @@ else
 fi
 has "$RUNNER" 'still duplicated and deliberately untouched' 'it reports what it left alone'
 has "$RUNNER" 'will still refuse those applications' 'it says which applications stay undeployable'
+
+section 'identical duplicates are safe without becoming fail-open'
+
+has "$RUNNER" 'have_first=0' 'an empty first value is still a real first value'
+has "$RUNNER" 'all_identical' 'multiple qualifying rows are compared byte-for-byte'
+has "$RUNNER" 'the running container has no such environment key' 'a missing runtime key is blocked, not treated as empty'
+has "$RUNNER" 'Different values that both look correct' 'different qualifying values remain ambiguous'
 
 section 'the recovery backup covers every deleted row'
 

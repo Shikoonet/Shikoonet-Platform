@@ -91,6 +91,16 @@ say_target() { printf 'target  %s  container=%s  dir=%s\n' "$ENV_ARG" "$DB_CONTA
 # make the next one fail.
 SCRATCH="${SCRATCH:-restore_drill_scratch}"
 PGUSER="${PGUSER:-postgres}"
+STATE_DIR="${STATE_DIR:-/var/lib/shikoo}"
+case "$SCRATCH" in
+  '' | [0-9]* | *[!A-Za-z0-9_]*)
+    echo "unsafe scratch database name: $SCRATCH" >&2
+    exit 2 ;;
+esac
+if [ ! -d "$STATE_DIR" ] || [ ! -w "$STATE_DIR" ]; then
+  echo "state directory is absent or not writable: $STATE_DIR" >&2
+  exit 1
+fi
 
 # The SQL this drill checks against travels WITH the drill.
 #
@@ -128,6 +138,26 @@ say() { printf '%s\n' "$*"; }
 say_target
 psql_() { docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -v ON_ERROR_STOP=1 -q "$@"; }
 
+# Once a scratch database might exist, every exit path removes it. The previous
+# version dropped it only on the success path and three named refusals; a failed
+# pg_restore or invariant query left the scratch copy behind, contrary to the
+# drill's safety contract.
+SCRATCH_ACTIVE=0
+TMP_ATTESTATION=''
+TMP_CHECKSUM=''
+cleanup_scratch() {
+  [ "$SCRATCH_ACTIVE" -eq 0 ] ||
+    psql_ -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH" >/dev/null 2>&1 || true
+}
+cleanup_all() {
+  cleanup_scratch
+  [ -z "$TMP_ATTESTATION" ] || rm -f -- "$TMP_ATTESTATION"
+  [ -z "$TMP_CHECKSUM" ] || rm -f -- "$TMP_CHECKSUM"
+}
+trap cleanup_all 0
+trap 'exit 130' 2
+trap 'exit 143' 15
+
 # Newest `.dmp` by mtime. `find -printf` sorts on the timestamp itself rather
 # than on `ls` output, so a filename with a newline in it cannot shift the
 # answer by a line (SC2012). The names this writes are `<name>-<epoch>.dmp`,
@@ -136,10 +166,18 @@ psql_() { docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -v ON_ERROR_STOP=1 -q
 DUMP=$(find "$BACKUP_DIR" -maxdepth 1 -name '*.dmp' -type f -printf '%T@ %p\n' 2>/dev/null \
   | sort -rn | head -1 | cut -d' ' -f2-)
 [ -n "$DUMP" ] || { say "no dump found in $BACKUP_DIR"; exit 1; }
+DUMP_BASE=$(basename "$DUMP")
+case "$DUMP_BASE" in
+  *[!A-Za-z0-9_.-]*) say "refusing a backup filename with unsafe characters"; exit 1 ;;
+esac
 
-DUMP_EPOCH=$(basename "$DUMP" | sed 's/.*-\([0-9]*\)\.dmp/\1/')
-AGE_H=$(( ( $(date +%s) - DUMP_EPOCH ) / 3600 ))
-say "dump    $(basename "$DUMP")  $(date -u -d "@$DUMP_EPOCH" +%Y-%m-%dT%H:%MZ)  ${AGE_H}h old  $(du -h "$DUMP" | cut -f1)"
+DUMP_EPOCH=$(printf '%s' "$DUMP_BASE" | sed -n 's/.*-\([0-9][0-9]*\)\.dmp$/\1/p')
+case "$DUMP_EPOCH" in '' | *[!0-9]*) say "cannot derive a numeric epoch from $DUMP_BASE"; exit 1 ;; esac
+NOW=$(date +%s)
+[ "$DUMP_EPOCH" -le $((NOW + 300)) ] || { say "backup timestamp is in the future: $DUMP_BASE"; exit 1; }
+AGE_H=$(( ( NOW - DUMP_EPOCH ) / 3600 ))
+DUMP_BYTES=$(wc -c <"$DUMP" | tr -d ' ')
+say "dump    $DUMP_BASE  $(date -u -d "@$DUMP_EPOCH" +%Y-%m-%dT%H:%MZ)  ${AGE_H}h old  $(du -h "$DUMP" | cut -f1)"
 
 # The age is reported, not enforced. What counts as too old is an RPO decision
 # and it belongs in deploy/README.md where a person can see it, not hidden in a
@@ -147,6 +185,7 @@ say "dump    $(basename "$DUMP")  $(date -u -d "@$DUMP_EPOCH" +%Y-%m-%dT%H:%MZ) 
 [ "$AGE_H" -gt 48 ] && say "WARNING: newest backup is older than two days"
 
 say "restoring into $SCRATCH …"
+SCRATCH_ACTIVE=1
 psql_ -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH"
 psql_ -d postgres -c "CREATE DATABASE $SCRATCH"
 
@@ -182,7 +221,6 @@ say "  $LEDGER applied, latest $LATEST"
 # count, which can only ever agree with itself.
 [ -d "$MIGRATIONS_DIR" ] || {
   say "FAIL: $MIGRATIONS_DIR not found — copy migrations/ next to deploy/ on this host"
-  psql_ -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH"
   exit 1
 }
 # The ledger stores the file name WITH its extension, and beside it the sha256
@@ -192,6 +230,12 @@ say "  $LEDGER applied, latest $LATEST"
 # was edited after it was applied, which is the shape of drift that hurts.
 MISSING=""
 DRIFTED=""
+DISK_NAMES=$(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '0*.sql' -printf '%f\n' | sort)
+LEDGER_NAMES=$(psql_ -tAd "$SCRATCH" -c "SELECT name FROM schema_migrations ORDER BY name")
+[ "$DISK_NAMES" = "$LEDGER_NAMES" ] || {
+  say "FAIL: the restored ledger and shipped migration filename sets differ"
+  exit 1
+}
 for f in "$MIGRATIONS_DIR"/*.sql; do
   n=$(basename "$f")
   [ "$n" = "verify_invariants.sql" ] && continue
@@ -209,7 +253,6 @@ if [ -n "$MISSING" ] || [ -n "$DRIFTED" ]; then
   [ -n "$DRIFTED" ] && say "      present but a DIFFERENT file was applied:$DRIFTED"
   say "      a dump that restores into an older or divergent schema than the"
   say "      running code cannot be deployed onto — that is this check's point."
-  psql_ -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH"
   exit 1
 fi
 say "  ledger is current against $MIGRATIONS_DIR (name + sha256, every file)"
@@ -220,9 +263,40 @@ if [ -f "$INVARIANTS" ]; then
   say "  invariants PASS ($INVARIANTS)"
 else
   say "FAIL: $INVARIANTS not found — migrations/ must ship beside deploy/ on this host"
-  psql_ -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH"
   exit 1
 fi
 
 psql_ -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH"
+SCRATCH_ACTIVE=0
 say "scratch dropped — drill PASSED"
+
+# Non-secret, checksummed proof for the task runner. The earlier runner checked
+# for this file but the drill never wrote it, so a successful restore was
+# indistinguishable from one that had never run.
+ATTESTATION="$STATE_DIR/restore-attestation.env"
+TMP_ATTESTATION=$(mktemp "$STATE_DIR/.restore-attestation.XXXXXX")
+umask 027
+{
+  printf 'schema_version=1\n'
+  printf 'environment=%s\n' "$ENV_ARG"
+  printf 'database_container=%s\n' "$DB_CONTAINER"
+  printf 'dump_file=%s\n' "$DUMP_BASE"
+  printf 'dump_bytes=%s\n' "$DUMP_BYTES"
+  printf 'dump_age_hours=%s\n' "$AGE_H"
+  printf 'schema_migrations=%s\n' "$LEDGER"
+  printf 'latest_migration=%s\n' "$LATEST"
+  printf 'migration_set_exact=yes\n'
+  printf 'migration_checksums=pass\n'
+  printf 'invariants=pass\n'
+  printf 'scratch_dropped=yes\n'
+  printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} >"$TMP_ATTESTATION"
+chmod 0640 "$TMP_ATTESTATION"
+mv -f "$TMP_ATTESTATION" "$ATTESTATION"
+TMP_ATTESTATION=''
+TMP_CHECKSUM=$(mktemp "$STATE_DIR/.restore-attestation-sha.XXXXXX")
+( cd "$STATE_DIR" && sha256sum "$(basename "$ATTESTATION")" ) >"$TMP_CHECKSUM"
+chmod 0640 "$TMP_CHECKSUM"
+mv -f "$TMP_CHECKSUM" "$STATE_DIR/restore-attestation.sha256"
+TMP_CHECKSUM=''
+say "attestation written — $ATTESTATION"
