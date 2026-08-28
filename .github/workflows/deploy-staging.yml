@@ -50,7 +50,7 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
-  DEPLOY_APPROVAL_MODE: solo
+  DEPLOY_APPROVAL_MODE: owner-or-approved
   SOLO_DEPLOY_OWNER: Isusami
 
 jobs:
