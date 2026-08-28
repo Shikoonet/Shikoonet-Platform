@@ -145,8 +145,11 @@ if grep -E '^(query|migration|invariants)\|(coolify-db|live-)' "$W/log" | grep -
 else ok "the throwaway password never reaches production"; fi
 
 # ── the attestation and the fixtures are clean too ───────────────────────
+# `readlink -f` prints a path whose final component does not exist, so `-n
+# "$VER"` was true even for a run that published nothing — `grep` then failed
+# and the else branch reported this credential check as passing.
 VER=$(readlink -f "$W/state/attestation/current" 2>/dev/null || true)
-if [ -n "$VER" ]; then
+if [ -n "$VER" ] && [ -f "$VER/attestation.env" ]; then
   if grep -qiE "$TOKEN|rehearsal@|/tmp/|wallet_balance=[0-9]" "$VER/attestation.env"; then
     bad "the attestation carries no credential, path or amount" "$(grep -ciE "$TOKEN|/tmp/" "$VER/attestation.env")"
   else ok "the attestation carries no credential, path or amount"; fi
