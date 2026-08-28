@@ -92,7 +92,13 @@ intact() { # label
 
 # 1. a stale checkout — the exact failure that motivated this script
 mkco
-git -C "$CO" commit -q --allow-empty -m 'a later commit' 2>/dev/null
+# An explicit identity, like every other commit in this file. Without one this
+# `git commit` fails on a runner with no global git config, HEAD never moves,
+# and the case silently becomes "stage a checkout that IS at the named sha" —
+# which passes, and proves nothing. CI caught exactly that.
+git -C "$CO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'a later commit'
+[ "$(git -C "$CO" rev-parse HEAD)" != "$SHA" ] ||
+  { echo "the fixture did not move HEAD; this case would prove nothing" >&2; exit 1; }
 refuses 'a checkout at another sha is refused' 'not the' "$SHA"
 intact 'a stale-checkout refusal leaves the bundle alone'
 
@@ -109,26 +115,26 @@ mkco; printf 'x\n' >"$CO/deploy/stowaway.sh"
 refuses 'an untracked file is refused' 'local modifications'
 
 # 5. a file the manifest lists is missing from the revision
-mkco; rm -f "$CO/deploy/rehearsal-lib.sh"; git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'drop' 2>/dev/null
+mkco; rm -f "$CO/deploy/rehearsal-lib.sh"; git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'drop'
 SHA2=$(git -C "$CO" rev-parse HEAD)
 refuses 'a manifest file missing from the revision is refused' 'missing from this revision' "$SHA2"
 
 # 6. a manifest file replaced by a symlink
 mkco; rm -f "$CO/deploy/rehearsal-lib.sh"; ln -s /etc/hostname "$CO/deploy/rehearsal-lib.sh"
-git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'symlink' 2>/dev/null
+git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'symlink'
 SHA3=$(git -C "$CO" rev-parse HEAD)
 refuses 'a symlinked manifest file is refused' 'symlink' "$SHA3"
 
 # 7. a manifest file whose contents no longer hash to what the manifest says
 mkco; printf '\n# drift\n' >>"$CO/deploy/rehearsal-lib.sh"
-git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'drift' 2>/dev/null
+git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'drift'
 SHA4=$(git -C "$CO" rev-parse HEAD)
 refuses 'a modified manifest file is refused' 'do not match the manifest' "$SHA4"
 
 # 8. the installer was built against a different manifest
 mkco; sed -i 's/^MANIFEST_SHA256=.*/MANIFEST_SHA256=0000000000000000000000000000000000000000000000000000000000000000/' \
   "$CO/deploy/install-shikoo-task-runner.sh"
-git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'pin drift' 2>/dev/null
+git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'pin drift'
 SHA5=$(git -C "$CO" rev-parse HEAD)
 refuses 'an installer built against another manifest is refused' 'built against a different manifest' "$SHA5"
 
