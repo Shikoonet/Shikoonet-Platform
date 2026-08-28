@@ -64,6 +64,9 @@ SHA_PRHEAD='2222222222222222222222222222222222222222'
 SHA_OLDER='3333333333333333333333333333333333333333'
 SHA_OTHER='4444444444444444444444444444444444444444'
 OWNER='Isusami'
+# A canonical 64-hex digest. The fixtures used `sha256:abc`, which the digest
+# rule now rejects — and which never resembled what a registry returns.
+DIGEST='27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a'
 
 # ═════════════════════════════════════════════════════════════════════════
 # The fake GitHub
@@ -533,7 +536,7 @@ case "${1:-}" in
       '{{.Id}}')        printf 'img-deadbeef\n' ;;
       '{{.Image}}')     printf 'img-deadbeef\n' ;;
       *State.Status*)   printf 'running healthy\n' ;;
-      *RepoDigests*)    printf '%s\n' "${FAKE_REPO_DIGEST:-ghcr.io/x/y@sha256:abc}" ;;
+      *RepoDigests*)    printf '%s\n' "${FAKE_REPO_DIGEST:-ghcr.io/x/y@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a}" ;;
       *Ports*)          printf '\n' ;;
       *)                printf '\n' ;;
     esac
@@ -572,12 +575,12 @@ run_deploy() { # bot-flag
     FAKE_COOLIFY_URL='http://127.0.0.1:8000' \
     FAKE_PINS="$WORK/pins" FAKE_DEPLOYS="$WORK/deploys" FAKE_REPLACED="$WORK/replaced" \
     FAKE_LABEL_SHA="$SHA_MERGED" FAKE_BUILD_PACK="${FAKE_BUILD_PACK:-dockerimage}" \
-    FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:abc}" \
+    FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a}" \
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
-    bash "$DEPLOY" production "${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:abc" "$SHA_MERGED" \
+    bash "$DEPLOY" production "${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a" "$SHA_MERGED" \
     >"$DEPLOY_LOG" 2>&1
   local rc=$?
   set -e
@@ -797,7 +800,18 @@ try_over_ssh() { # image-ref
 # `try_over_ssh`'s definition for one commit, so every case exited 127 with
 # «command not found» and was recorded as a pass — a test that asserted
 # nothing while reading green.
-for bad_ref in 'ghcr.io/shikoonet/shikoonet-platform@sha256' 'ghcr.io/shikoonet/shikoonet-platform@md5:abc' ''; do
+# `@sha256:` followed by anything used to pass: the check was a glob on the
+# prefix, so «@sha256:abc» and «@sha256:» with nothing after it both read as
+# immutable digests. They would have reached the box, taken the deploy flock and
+# failed at `docker pull`.
+for bad_ref in \
+  'ghcr.io/shikoonet/shikoonet-platform@sha256' \
+  'ghcr.io/shikoonet/shikoonet-platform@md5:abc' \
+  'ghcr.io/shikoonet/shikoonet-platform@sha256:abc' \
+  'ghcr.io/shikoonet/shikoonet-platform@sha256:' \
+  "ghcr.io/shikoonet/shikoonet-platform@sha256:${DIGEST}00" \
+  "ghcr.io/shikoonet/shikoonet-platform@sha256:${DIGEST^^}" \
+  ''; do
   name="refuses the malformed reference '${bad_ref:-<empty>}'"
   if try_over_ssh "$bad_ref"; then
     bad "$name" 'it was accepted'

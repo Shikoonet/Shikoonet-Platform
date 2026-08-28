@@ -2,6 +2,12 @@ node_modules
 
 # Playwright MCP scratch output (screenshots, page snapshots)
 .playwright-mcp/
+
+# graphify's generated index and cache. Regenerated from the source it describes,
+# so committing it adds nothing and costs a great deal: 78 files and 168k lines
+# swept into one deploy commit by `git add -A`, one of them a cache whose hashes
+# gitleaks reads as secrets — which is how it was noticed.
+graphify-out/
 dist
 build
 coverage
