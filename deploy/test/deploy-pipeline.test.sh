@@ -1344,7 +1344,11 @@ try_verify() { # expected_run_id expected_head_sha
   return "$rc"
 }
 
-REAL_SHA=$(cd "$ROOT" && git rev-parse HEAD)
+# A well-formed sha that is deliberately NOT a real commit. The cross-checks
+# below run before the reachability check, so these cases never depend on what
+# `git rev-parse HEAD` happens to be — which on a CI runner is a PR merge commit
+# that is not on `main`, and locally changes the moment anything is committed.
+REAL_SHA=$SHA_MERGED
 
 mkman "$REAL_SHA" 4242
 if ! try_verify 9999 "$REAL_SHA" && grep -qF 'but it arrived from run' "$WORK/v2.log"; then
