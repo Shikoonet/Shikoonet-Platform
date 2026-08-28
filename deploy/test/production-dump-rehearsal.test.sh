@@ -139,8 +139,15 @@ has "$R" 'rollback has no floor under it' 'a failed restore stops the run'
 
 section 'old-image compatibility blocks the attestation'
 
-has "$R" 'CURRENT_PRODUCTION_IMAGE' 'the current production image is named by config'
-has "$R" 'using the LIVE one' 'the live image wins over the configured one'
+# The key is gone entirely. A value that is consulted and then silently loses
+# to live state makes a wrong config look successful.
+if grep -q 'CURRENT_PRODUCTION_IMAGE' "$R"; then
+  bad 'CURRENT_PRODUCTION_IMAGE was removed' 'it is still referenced'
+else
+  ok 'CURRENT_PRODUCTION_IMAGE was removed'
+fi
+has "$R" 'rehearsal_check_live_production' 'the old image comes from live state'
+has "$R" 'LIVE_IMAGES' 'the derived images are what compatibility is tested against'
 has "$R" 'OLD_APP_SCHEMA_COMPAT' 'compatibility is measured'
 has "$R" 'image rollback would be void' 'a failure explains what it costs'
 # It must be checked BEFORE the attestation is written.
@@ -210,6 +217,51 @@ if grep -qE 'gh api .*--header .*\$GH_TOKEN_VALUE|curl .*\$GH_TOKEN_VALUE' "$R";
   bad 'the GitHub token never appears in argv' 'it does'
 else
   ok 'the GitHub token never appears in argv'
+fi
+
+section 'no network during the rehearsal'
+
+has "$R" 'rehearsal_require_digest_ref' 'each image reference must be a digest'
+has "$R" 'rehearsal_require_local_images' 'each image must already be local'
+has "$R" 'it does not pull' 'the refusal says preload rather than pull'
+n_run=$(grep -c 'docker run' "$R" || true)
+n_never=$(grep -c 'pull=never' "$R" || true)
+if [ "$n_run" = "$n_never" ] && [ "$n_run" -gt 0 ]; then
+  ok "every docker run uses --pull=never (${n_run}/${n_run})"
+else
+  bad 'every docker run uses --pull=never' "${n_never} of ${n_run}"
+fi
+for forbidden in 'docker pull' 'docker build' 'docker manifest' 'buildx'; do
+  if grep -v '^[[:space:]]*#' "$R" | grep -qF "$forbidden"; then
+    bad "the rehearsal never calls ${forbidden}" 'it does'
+  else
+    ok "the rehearsal never calls ${forbidden}"
+  fi
+done
+# Images are validated before the dump or the backup is opened.
+img=$(grep -n 'rehearsal_require_local_images' "$R" | head -1 | cut -d: -f1)
+dump=$(grep -n 'sha256sum "$DUMP_PATH"' "$R" | head -1 | cut -d: -f1)
+bk=$(grep -n 'find "$PROD_BACKUP_DIR"' "$R" | head -1 | cut -d: -f1)
+if [ -n "$img" ] && [ -n "$dump" ] && [ "$img" -lt "$dump" ]; then
+  ok 'images are validated before the dump is opened'
+else
+  bad 'images are validated before the dump is opened' "img@${img:-?} dump@${dump:-?}"
+fi
+if [ -n "$img" ] && [ -n "$bk" ] && [ "$img" -lt "$bk" ]; then
+  ok 'images are validated before the backup is read'
+else
+  bad 'images are validated before the backup is read' "img@${img:-?} backup@${bk:-?}"
+fi
+
+section 'the D1 export has no default and no fallback'
+
+has "$R" 'rehearsal_validate_d1_export' 'the export is validated'
+has "$R" 'The repository fixture is refused' 'the fixture is refused by name'
+has "$R" 'no export is generated here' 'no cloud export is performed'
+if grep -v '^[[:space:]]*#' "$R" | grep -qE 'D1_EXPORT_DIR=\$\{D1_EXPORT_DIR:-'; then
+  bad 'D1_EXPORT_DIR has no default' 'a default is applied'
+else
+  ok 'D1_EXPORT_DIR has no default'
 fi
 
 section 'the grant is exactly one more command'

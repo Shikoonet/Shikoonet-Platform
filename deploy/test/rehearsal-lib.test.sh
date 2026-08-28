@@ -191,5 +191,160 @@ refuses 'a missing config is refused' 'does not exist' \
 refuses 'a directory is refused' 'not a regular file' \
   rehearsal_require_secure_file "$WORK" 600 'the config'
 
+
+# ── images ───────────────────────────────────────────────────────────────
+section 'images must be immutable, local, and never pulled'
+
+HEX=$(printf 'a%.0s' $(seq 64))
+accepts 'a digest reference is accepted' \
+  rehearsal_require_digest_ref "postgres@sha256:${HEX}" PG_IMAGE
+accepts 'a registry-qualified digest is accepted' \
+  rehearsal_require_digest_ref "ghcr.io/x/y@sha256:${HEX}" NODE_IMAGE
+
+# The mutation the policy exists for: a tag is a name for whatever was pushed
+# last, so the same rehearsal on two days is two different rehearsals.
+refuses 'a plain tag is refused' 'not an immutable digest' \
+  rehearsal_require_digest_ref 'postgres:16-alpine' PG_IMAGE
+refuses 'a tag plus digest-looking suffix is refused' 'not an immutable digest' \
+  rehearsal_require_digest_ref "postgres:16@sha256:${HEX}x" PG_IMAGE
+refuses 'an uppercase digest is refused' 'not an immutable digest' \
+  rehearsal_require_digest_ref "postgres@sha256:$(printf 'A%.0s' $(seq 64))" PG_IMAGE
+refuses 'a short digest is refused' 'not an immutable digest' \
+  rehearsal_require_digest_ref 'postgres@sha256:abc' PG_IMAGE
+refuses 'a multiline reference is refused' 'newline' \
+  rehearsal_require_digest_ref "postgres@sha256:${HEX}
+evil" PG_IMAGE
+refuses 'an empty reference is refused' 'not an immutable digest' \
+  rehearsal_require_digest_ref '' PG_IMAGE
+
+# Locality, checked with a fake docker so the test needs no images.
+FAKED="$WORK/bin"; mkdir -p "$FAKED"
+cat >"$FAKED/docker-present" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat >"$FAKED/docker-absent" <<'EOF'
+#!/bin/sh
+[ "$1" = image ] && exit 1
+exit 0
+EOF
+chmod +x "$FAKED/docker-present" "$FAKED/docker-absent"
+accepts 'present images pass the locality check' \
+  rehearsal_require_local_images "$FAKED/docker-present" "a@sha256:${HEX}"
+refuses 'an absent image is refused before anything is created' 'not present locally' \
+  rehearsal_require_local_images "$FAKED/docker-absent" "a@sha256:${HEX}"
+refuses 'the refusal names preloading rather than pulling' 'it will not pull' \
+  rehearsal_require_local_images "$FAKED/docker-absent" "a@sha256:${HEX}"
+
+# ── D1 export ────────────────────────────────────────────────────────────
+section 'the D1 export is required, real, and never the fixture'
+
+D1="$WORK/d1"; mkdir -p "$D1"
+mkd1() { # tables... -> writes plausible rows
+  rm -rf "$D1"; mkdir -p "$D1"
+  for t in "$@"; do
+    printf '[{"id":1,"email":"ops@shikoo.ir"},{"id":2,"email":"a@b.ir"}]' >"$D1/${t}.json"
+  done
+}
+TABLES='access_users,devices,device_credentials,settings'
+mkd1 access_users devices device_credentials settings
+accepts 'a complete real-looking export is accepted' rehearsal_validate_d1_export "$D1" "$TABLES"
+
+refuses 'an empty path is refused, with no default' 'no default' \
+  rehearsal_validate_d1_export '' "$TABLES"
+refuses 'a missing directory is refused' 'does not exist' \
+  rehearsal_validate_d1_export "$WORK/nope" "$TABLES"
+
+ln -sfn "$D1" "$WORK/d1link"
+refuses 'a symlinked export directory is refused' 'symlink' \
+  rehearsal_validate_d1_export "$WORK/d1link" "$TABLES"
+
+mkd1 access_users devices
+refuses 'an incomplete table set is refused' 'incomplete' \
+  rehearsal_validate_d1_export "$D1" "$TABLES"
+
+mkd1 access_users devices device_credentials settings
+: >"$D1/settings.json"
+refuses 'an empty table file is refused' 'empty' \
+  rehearsal_validate_d1_export "$D1" "$TABLES"
+
+mkd1 access_users devices device_credentials settings
+printf '{not json' >"$D1/devices.json"
+refuses 'malformed JSON is refused' 'not valid JSON' \
+  rehearsal_validate_d1_export "$D1" "$TABLES"
+
+mkd1 access_users devices device_credentials settings
+printf '[]' >"$D1/devices.json"
+refuses 'a table with no rows is refused' 'no rows' \
+  rehearsal_validate_d1_export "$D1" "$TABLES"
+
+# The substitution this policy exists to stop.
+mkd1 access_users devices device_credentials settings
+printf '[{"id":1,"email":"someone@example.com"}]' >"$D1/access_users.json"
+refuses 'a fixture signature is refused' 'fixture signature' \
+  rehearsal_validate_d1_export "$D1" "$TABLES"
+
+mkd1 access_users devices device_credentials settings
+printf '[{"id":1,"note":"synthetic sample"}]' >"$D1/settings.json"
+refuses 'a synthetic marker is refused' 'fixture signature' \
+  rehearsal_validate_d1_export "$D1" "$TABLES"
+
+mkd1 access_users devices device_credentials settings
+chmod 777 "$D1"
+refuses 'a world-writable export directory is refused' 'world-writable' \
+  rehearsal_validate_d1_export "$D1" "$TABLES"
+chmod 755 "$D1"
+
+# ── live production images ───────────────────────────────────────────────
+section 'the old image is derived from live state, never configured'
+
+IMG=sha256:$(printf 'b%.0s' $(seq 64))
+IMG2=sha256:$(printf 'c%.0s' $(seq 64))
+live() { printf '%s\n' "$@" >"$WORK/live.txt"; printf '%s' "$WORK/live.txt"; }
+WANT='shikoo-ingest,shikoo-dashboard,shikoo-bot'
+
+got=$(rehearsal_check_live_production "$(live \
+  "shikoo-ingest|production|c1|${IMG}|healthy" \
+  "shikoo-dashboard|production|c2|${IMG}|healthy" \
+  "shikoo-bot|production|c3|${IMG}|running")" "$WANT")
+case "$got" in *shikoo-ingest=${IMG}*) ok 'three healthy production containers resolve' ;;
+  *) bad 'three healthy production containers resolve' "got '${got}'" ;; esac
+
+refuses 'a staging container is refused' "not production" \
+  rehearsal_check_live_production "$(live \
+    "shikoo-ingest|dev-fleet|c1|${IMG}|healthy" \
+    "shikoo-dashboard|production|c2|${IMG}|healthy" \
+    "shikoo-bot|production|c3|${IMG}|healthy")" "$WANT"
+
+refuses 'a missing live container is refused' 'no live container for' \
+  rehearsal_check_live_production "$(live \
+    "shikoo-ingest|production|c1|${IMG}|healthy" \
+    "shikoo-dashboard|production|c2|${IMG}|healthy")" "$WANT"
+
+refuses 'two containers for one application is refused' 'expected exactly 1' \
+  rehearsal_check_live_production "$(live \
+    "shikoo-ingest|production|c1|${IMG}|healthy" \
+    "shikoo-ingest|production|c9|${IMG2}|healthy" \
+    "shikoo-dashboard|production|c2|${IMG}|healthy" \
+    "shikoo-bot|production|c3|${IMG}|healthy")" "$WANT"
+
+refuses 'a container with no image id is refused' 'not an immutable image id' \
+  rehearsal_check_live_production "$(live \
+    "shikoo-ingest|production|c1|ghcr.io/x/y:latest|healthy" \
+    "shikoo-dashboard|production|c2|${IMG}|healthy" \
+    "shikoo-bot|production|c3|${IMG}|healthy")" "$WANT"
+
+refuses 'an unhealthy container is refused' 'not healthy' \
+  rehearsal_check_live_production "$(live \
+    "shikoo-ingest|production|c1|${IMG}|unhealthy" \
+    "shikoo-dashboard|production|c2|${IMG}|healthy" \
+    "shikoo-bot|production|c3|${IMG}|healthy")" "$WANT"
+
+refuses 'a stopped application is refused' 'no running container' \
+  rehearsal_check_live_production "$(live \
+    "shikoo-ingest|production||${IMG}|healthy" \
+    "shikoo-dashboard|production|c2|${IMG}|healthy" \
+    "shikoo-bot|production|c3|${IMG}|healthy")" "$WANT"
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

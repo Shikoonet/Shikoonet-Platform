@@ -190,3 +190,146 @@ bad = [n for n in names if src[n] != dst[n]]
 print("mismatch:" + ",".join(bad) if bad else "match")
 PY
 }
+
+# ── images: immutable, local, never pulled ────────────────────────────────
+#
+# A tag is a name for whatever was pushed last. `postgres:16-alpine` on Tuesday
+# and on Thursday are two different rehearsals, and the one that matters is
+# whichever ran while nobody was watching. So every image is a digest, and the
+# digest must already be on the host: a Production rehearsal that reaches the
+# internet has made a release depend on a registry being up and on nobody
+# having moved a tag.
+rehearsal_require_digest_ref() { # ref name
+  local ref=$1 name=$2
+  case "$ref" in
+    *$'\n'*) echo "[image] ${name} contains a newline" >&2; return 1 ;;
+  esac
+  # repository@sha256:<64 lowercase hex>, whole string, nothing after.
+  if ! printf '%s' "$ref" | grep -qE '^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$'; then
+    echo "[image] ${name} is not an immutable digest reference: '${ref}'" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Present locally, checked before anything is created. `--pull=never` on the
+# run would fail too, but by then a container or a network already exists and
+# the failure arrives in the middle of the rehearsal rather than before it.
+rehearsal_require_local_images() { # docker-cmd ref...
+  local docker_cmd=$1
+  shift
+  local ref missing=0
+  for ref in "$@"; do
+    if ! $docker_cmd image inspect "$ref" >/dev/null 2>&1; then
+      echo "[image] ${ref} is not present locally" >&2
+      missing=$((missing + 1))
+    fi
+  done
+  if [ "$missing" -gt 0 ]; then
+    echo "[image] ${missing} image(s) absent. Preload them before the rehearsal; it will not pull." >&2
+    return 1
+  fi
+  return 0
+}
+
+# ── the D1 export ─────────────────────────────────────────────────────────
+#
+# Required, with no default and no fixture fallback. The repository's default
+# pointed into `legacy/hub-cloudflare/.production-backups/...`, and a rehearsal
+# that silently used a checked-in fixture would report 49/49 about data nobody
+# ships.
+#
+# The content-set identifier is computed for provenance and deliberately not
+# returned: it is derived from customer data, so it is compared internally and
+# never printed.
+rehearsal_validate_d1_export() { # dir expected-tables-csv
+  local dir=$1 expected=$2
+  [ -n "$dir" ] || { echo "[d1] D1_EXPORT_DIR is empty — it has no default" >&2; return 1; }
+  [ ! -L "$dir" ] || { echo "[d1] the export directory is a symlink — refusing" >&2; return 1; }
+  [ -d "$dir" ] || { echo "[d1] the export directory does not exist" >&2; return 1; }
+  case "$(stat -c '%a' "$dir")" in
+    *[2367]) echo "[d1] the export directory is group- or world-writable" >&2; return 1 ;;
+  esac
+  python3 - "$dir" "$expected" <<'PY'
+import json, os, sys, hashlib
+d, expected = sys.argv[1], [t for t in sys.argv[2].split(',') if t]
+missing, bad = [], []
+h = hashlib.sha256()
+for t in expected:
+    p = os.path.join(d, t + '.json')
+    if os.path.islink(p):
+        print(f"[d1] {t}.json is a symlink — refusing", file=sys.stderr); sys.exit(1)
+    if not os.path.isfile(p):
+        missing.append(t); continue
+    if os.path.getsize(p) == 0:
+        bad.append(t + ' (empty)'); continue
+    try:
+        data = json.load(open(p, encoding='utf-8'))
+    except Exception:
+        bad.append(t + ' (not valid JSON)'); continue
+    rows = data if isinstance(data, list) else data.get('results') or data.get('rows')
+    if not isinstance(rows, list) or not rows:
+        bad.append(t + ' (no rows)'); continue
+    # A fixture announces itself. Refusing these by name is cheaper than
+    # explaining later why the attestation covered invented data.
+    blob = json.dumps(rows[:5], sort_keys=True).lower()
+    for marker in ('fixture', 'example.com', 'test-only', 'synthetic', 'lorem ipsum', 'placeholder'):
+        if marker in blob:
+            print(f"[d1] {t}.json carries a fixture signature ({marker}) — refusing", file=sys.stderr)
+            sys.exit(1)
+    h.update(t.encode())
+    h.update(str(len(rows)).encode())
+if missing:
+    print("[d1] the export is incomplete; missing: " + ",".join(sorted(missing)), file=sys.stderr); sys.exit(1)
+if bad:
+    print("[d1] unusable table file(s): " + ",".join(sorted(bad)), file=sys.stderr); sys.exit(1)
+# Computed for provenance and never printed: it is derived from customer data.
+_ = h.hexdigest()
+PY
+}
+
+# ── the live production images ────────────────────────────────────────────
+#
+# Derived from what is actually serving, never from a config value. A key named
+# CURRENT_PRODUCTION_IMAGE that silently loses to live state makes a wrong
+# config look successful, which is the worst of both: it is consulted, it is
+# ignored, and nothing says so.
+#
+# Input is one line per application: name|environment|container|imageid|health
+# so this can be executed against fixtures instead of a live Docker.
+rehearsal_check_live_production() { # lines-file expected-names-csv
+  python3 - "$1" "$2" <<'PY'
+import sys, re
+rows = [l.rstrip('\n') for l in open(sys.argv[1]) if l.strip()]
+want = [n for n in sys.argv[2].split(',') if n]
+seen = {}
+for line in rows:
+    parts = line.split('|')
+    if len(parts) != 5:
+        print(f"[live] malformed application record", file=sys.stderr); sys.exit(1)
+    name, env, container, image, health = parts
+    if env != 'production':
+        print(f"[live] {name} is in environment '{env}', not production — refusing", file=sys.stderr)
+        sys.exit(1)
+    if not container:
+        print(f"[live] {name} has no running container", file=sys.stderr); sys.exit(1)
+    if health not in ('healthy', 'running'):
+        print(f"[live] {name} is '{health}', not healthy", file=sys.stderr); sys.exit(1)
+    if not re.fullmatch(r'sha256:[0-9a-f]{64}', image):
+        print(f"[live] {name} resolves to '{image}', which is not an immutable image id",
+              file=sys.stderr)
+        sys.exit(1)
+    seen.setdefault(name, []).append(image)
+missing = [n for n in want if n not in seen]
+if missing:
+    print("[live] no live container for: " + ",".join(missing), file=sys.stderr); sys.exit(1)
+extra = [n for n in seen if n not in want]
+if extra:
+    print("[live] unexpected application(s): " + ",".join(sorted(extra)), file=sys.stderr); sys.exit(1)
+for n, imgs in seen.items():
+    if len(imgs) != 1:
+        print(f"[live] {n} resolves to {len(imgs)} containers, expected exactly 1", file=sys.stderr)
+        sys.exit(1)
+print(",".join(f"{n}={seen[n][0]}" for n in want))
+PY
+}

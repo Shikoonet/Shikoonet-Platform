@@ -106,7 +106,7 @@ trap cleanup EXIT
 # readable" — the only check the first version made — does not notice that.
 rehearsal_require_secure_file "$CONF" 640 "the rehearsal config" ||
   die "the rehearsal config is not secured as required"
-REQUIRED_KEYS='MIRZABOT_DUMP D1_EXPORT_DIR REPO_DIR GITHUB_TOKEN PROD_BACKUP_DIR CURRENT_PRODUCTION_IMAGE PG_IMAGE MYSQL_IMAGE NODE_IMAGE'
+REQUIRED_KEYS='MIRZABOT_DUMP D1_EXPORT_DIR REPO_DIR GITHUB_TOKEN PROD_BACKUP_DIR PG_IMAGE MYSQL_IMAGE NODE_IMAGE'
 # shellcheck disable=SC2086
 rehearsal_parse_config "$CONF" $REQUIRED_KEYS ||
   die "the rehearsal config is malformed or incomplete"
@@ -122,22 +122,26 @@ PG_IMAGE=$(cfg PG_IMAGE)
 MYSQL_IMAGE=$(cfg MYSQL_IMAGE)
 NODE_IMAGE=$(cfg NODE_IMAGE)
 
-# Digest-pinned, all of them.
+# Digest-pinned, present locally, and never pulled.
 #
-# `postgres:16-alpine` and `mysql:8` are moving tags: the same rehearsal on two
-# days is two different rehearsals, and the one that matters is whichever ran
-# when nobody was looking. There are no defaults here for the same reason — a
-# default is a tag somebody did not choose.
-for pair in "PG_IMAGE=$PG_IMAGE" "MYSQL_IMAGE=$MYSQL_IMAGE" "NODE_IMAGE=$NODE_IMAGE"; do
-  name=${pair%%=*}
-  val=${pair#*=}
-  case "$val" in
-    *@sha256:????????????????????????????????????????????????????????????????) ;;
-    *) die "${name} must be pinned by digest (name@sha256:<64 hex>), not the moving tag '${val}'" ;;
-  esac
-done
+# A tag names whatever was pushed last: `postgres:16-alpine` on Tuesday and on
+# Thursday are two different rehearsals, and the one that matters is whichever
+# ran while nobody was watching. There are no defaults for the same reason — a
+# default is a tag nobody chose.
+#
+# Checked HERE, before the dump is opened, before the backup is read, and
+# before any container or network exists, so an absent image is a refusal
+# rather than a failure halfway through with resources already created.
+rehearsal_require_digest_ref "$PG_IMAGE" PG_IMAGE ||
+  die "PG_IMAGE must be an immutable digest reference"
+rehearsal_require_digest_ref "$MYSQL_IMAGE" MYSQL_IMAGE ||
+  die "MYSQL_IMAGE must be an immutable digest reference"
+rehearsal_require_digest_ref "$NODE_IMAGE" NODE_IMAGE ||
+  die "NODE_IMAGE must be an immutable digest reference"
+rehearsal_require_local_images docker "$PG_IMAGE" "$MYSQL_IMAGE" "$NODE_IMAGE" ||
+  die "preload the pinned images before the rehearsal; it does not pull"
+
 PROD_BACKUP_DIR=$(cfg PROD_BACKUP_DIR)
-OLD_IMAGE=$(cfg CURRENT_PRODUCTION_IMAGE)
 COOLIFY_DB_CONTAINER=${COOLIFY_DB_CONTAINER:-coolify-db}
 
 # ── 1. the dump, or one exact owner action ───────────────────────────────
@@ -161,6 +165,22 @@ say "   dump identified (sha256 recorded, path not logged)"
 if [ -z "$REPO_DIR" ] || [ ! -d "$REPO_DIR/.git" ]; then
   die "REPO_DIR in ${CONF} is not a git checkout"
 fi
+# The D1 export: required, real, and never the repository fixture.
+#
+# `loadConfig()` defaults this to a path inside `legacy/hub-cloudflare/`, so a
+# rehearsal that let the default stand would report 49/49 about a checked-in
+# fixture. There is no default here and no fallback.
+D1_TABLES=${D1_TABLES:-access_users,devices,device_credentials,settings}
+if ! rehearsal_validate_d1_export "$D1_EXPORT_DIR" "$D1_TABLES"; then
+  echo "[rehearsal] STOP: the production D1 export is missing or is not production data." >&2
+  echo "[rehearsal] Owner action, exactly one:" >&2
+  echo "[rehearsal]   place the real D1 export on this host, root-owned and not" >&2
+  echo "[rehearsal]   world-writable, then set D1_EXPORT_DIR=<path> in ${CONF}." >&2
+  echo "[rehearsal]   The repository fixture is refused; no export is generated here." >&2
+  exit 1
+fi
+say "   D1 export validated"
+
 [ -n "$GH_TOKEN_VALUE" ] || die "${CONF} has no GITHUB_TOKEN — release provenance cannot be cross-checked without it"
 
 # ── 2. what release is this, resolved rather than asserted ───────────────
@@ -283,7 +303,7 @@ NEWEST=$(find "$PROD_BACKUP_DIR" -maxdepth 1 -name '*.dmp' -type f -printf '%T@ 
   sort -rn | head -1 | cut -d' ' -f2-)
 [ -n "$NEWEST" ] || die "no production backup dump found to restore"
 
-docker run -d --name "$RESTORE_C" --network "$NET" -e POSTGRES_PASSWORD=rehearsal \
+docker run --pull=never -d --name "$RESTORE_C" --network "$NET" -e POSTGRES_PASSWORD=rehearsal \
   -e POSTGRES_DB=prodrestore "$PG_IMAGE" >/dev/null || die "could not start the restore target"
 CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $RESTORE_C"
 wait_pg "$RESTORE_C" || die "the restore target never became ready"
@@ -308,7 +328,7 @@ say "   pending range ${MIGRATION_RANGE} (production ledger had $(grep -c . "$AR
 
 # ── 6. the legacy source ─────────────────────────────────────────────────
 say "6. loading the legacy dump"
-docker run -d --name "$MYSQL_C" --network "$NET" \
+docker run --pull=never -d --name "$MYSQL_C" --network "$NET" \
   -e MYSQL_ALLOW_EMPTY_PASSWORD=1 -e MYSQL_DATABASE=mirzabot \
   "$MYSQL_IMAGE" >/dev/null || die "could not start the throwaway MySQL"
 CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $MYSQL_C"
@@ -325,7 +345,7 @@ say "   dump loaded (${SRC_ROWS} source users)"
 # and no rows passes every "each wallet equals its own entries" check by having
 # no wallets, and that is what the attestation would have certified.
 say "7. running the migrator"
-docker run -d --name "$DEST_C" --network "$NET" -e POSTGRES_PASSWORD=rehearsal \
+docker run --pull=never -d --name "$DEST_C" --network "$NET" -e POSTGRES_PASSWORD=rehearsal \
   -e POSTGRES_DB=shikoo "$PG_IMAGE" >/dev/null || die "could not start the migration destination"
 CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $DEST_C"
 wait_pg "$DEST_C" || die "the migration destination never became ready"
@@ -339,7 +359,7 @@ done
 # the first version exported — is read by nothing: `loadConfig()` wants
 # MYSQL_HOST/PORT/USER/PASSWORD/DATABASE and D1_EXPORT_DIR, so that run would
 # have connected to 127.0.0.1:3307 and measured a different database entirely.
-NODE_RUN=(docker run --rm --network "$NET"
+NODE_RUN=(docker run --pull=never --rm --network "$NET"
   -v "$REPO_DIR:/repo:ro" -v "$ART:/out"
   -v "$D1_EXPORT_DIR:/d1:ro"
   -w /repo
@@ -436,31 +456,46 @@ say "   pending range applied, invariants ${PROD_INV}/32"
 # No Telegram token is supplied and no poller is started: the bot is checked by
 # its schema gate alone, which is the part that touches the migrated tables.
 say "12. old-image compatibility"
-RUNNING_IMAGES=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At -c \
-  "select a.name from applications a join environments e on e.id=a.environment_id
-    where e.name='production';" 2>/dev/null | tr '\n' ' ')
-[ -n "$RUNNING_IMAGES" ] || die "could not enumerate the live production applications"
-[ -n "$OLD_IMAGE" ] || die "CURRENT_PRODUCTION_IMAGE is not set in ${CONF}"
-# Cross-checked against what is actually running, not taken on faith.
-ACTUAL=$(for n in $RUNNING_IMAGES; do
-    u=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At -c \
-      "select uuid from applications where name='${n}'" 2>/dev/null)
-    c=$(docker ps --filter "label=coolify.name=${u}" --format '{{.Names}}' | head -1)
-    [ -z "$c" ] || docker inspect -f '{{.Image}}' "$c"
-  done | sort -u | head -1)
-[ -n "$ACTUAL" ] || die "no live production container to read an image from"
-case "$OLD_IMAGE" in
-  *"${ACTUAL#sha256:}"*) ;;
-  "$ACTUAL") ;;
-  *) say "   NOTE: configured image and live image differ; using the LIVE one" ; OLD_IMAGE=$ACTUAL ;;
-esac
+# Derived from what is actually serving. There is no configured value to
+# disagree with any more: a key that is consulted and then silently loses to
+# live state makes a wrong config look successful, which is worse than not
+# having the key at all.
+LIVE_FACTS="$ART/live.txt"
+: >"$LIVE_FACTS"
+for app in shikoo-ingest shikoo-dashboard shikoo-bot; do
+  row=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At -F'|' -c \
+    "select a.name, e.name, a.uuid from applications a
+       join environments e on e.id = a.environment_id
+      where a.name = '${app}';" 2>/dev/null | head -1)
+  [ -n "$row" ] || die "no application named ${app} in Coolify"
+  a_name=${row%%|*}; rest=${row#*|}; a_env=${rest%%|*}; a_uuid=${rest#*|}
+  cid=$(docker ps --filter "label=coolify.name=${a_uuid}" --format '{{.Names}}' | head -1)
+  n_c=$(docker ps --filter "label=coolify.name=${a_uuid}" --format '{{.Names}}' | grep -c . || true)
+  [ "${n_c:-0}" -eq 1 ] || die "${app} resolves to ${n_c:-0} running containers, expected exactly 1"
+  img=$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null || true)
+  hlth=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}running{{end}}' "$cid" 2>/dev/null || true)
+  printf '%s|%s|%s|%s|%s\n' "$a_name" "$a_env" "$cid" "$img" "$hlth" >>"$LIVE_FACTS"
+done
+LIVE_IMAGES=$(rehearsal_check_live_production "$LIVE_FACTS" 'shikoo-ingest,shikoo-dashboard,shikoo-bot') ||
+  die "the live production applications could not be resolved to exactly one healthy container each"
+say "   live production images resolved by immutable id"
 
 OLD_APP_SCHEMA_COMPAT=pass
-for svc in ingest dashboard bot; do
-  docker run --rm --network "$NET" \
+for entry in $(printf '%s' "$LIVE_IMAGES" | tr ',' ' '); do
+  app=${entry%%=*}
+  img=${entry#*=}
+  case "$app" in
+    shikoo-ingest) svc=ingest ;;
+    shikoo-dashboard) svc=dashboard ;;
+    *) svc=bot ;;
+  esac
+  # The real service entrypoint's schema gate, against the migrated restore.
+  # No Telegram token is supplied and no poller is started: the bot is checked
+  # by the gate that touches the migrated tables and nothing else.
+  docker run --pull=never --rm --network "$NET" \
     -e ENV_NAME=production -e SERVICE="$svc" -e SCHEMA_GATE_ONLY=1 \
     -e DATABASE_URL="postgres://postgres:rehearsal@${RESTORE_C}:5432/prodrestore" \
-    --entrypoint /bin/sh "$OLD_IMAGE" -lc \
+    --entrypoint /bin/sh "$img" -lc \
     'node --import tsx -e "import(\"@shikoo/db\").then(async m=>{const {db,pool}=m.createPostgresD1();const s=await m.status(db);if(s.pending.length){console.error(\"pending\");process.exit(1)}await pool.end()})"' \
     >/dev/null 2>&1 || OLD_APP_SCHEMA_COMPAT=fail
 done
