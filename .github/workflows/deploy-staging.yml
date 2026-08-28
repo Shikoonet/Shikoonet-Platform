@@ -1,0 +1,196 @@
+# Green `main` → one image → the complete staging environment.
+#
+# ══════════════════════════════════════════════════════════════════════════
+# THIS WORKFLOW CANNOT REACH PRODUCTION
+# ══════════════════════════════════════════════════════════════════════════
+#
+# It has no `production` job and no production environment, so no repository
+# variable, no `if:` and no edit to a settings page can turn a merge into a
+# production deploy. Production lives in `promote-production.yml`, behind
+# `workflow_dispatch`, and reaching it requires a person.
+#
+# That is the structural half of a promise the previous design made with a
+# repository variable: `production` used to be a job gated on an exact-string
+# comparison against one, which meant re-creating that variable in a settings
+# page re-enabled automatic production deployment — no diff, no review. Deleting
+# the job removes the switch rather than leaving it off. The deploy test greps
+# both workflows for that variable's name, so it cannot come back even as prose.
+#
+# ── Why `workflow_run` and why three conditions ────────────────────────────
+#
+# `workflow_run` is the only trigger that can say "after CI passed", and it
+# runs with write scope, so it must refuse everything it did not mean:
+#
+#   conclusion == 'success'    cancelled and skipped are not passes
+#   event      == 'push'       a CI run FROM A PULL REQUEST must never deploy;
+#                              a fork PR's run completing is attacker-triggerable
+#   head_branch == 'main'      belt to the `branches:` filter
+#
+# and it builds `github.event.workflow_run.head_sha` explicitly — never a
+# default checkout, which on this trigger is the branch tip and may already be
+# a commit nothing has tested.
+
+name: Deploy Staging
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
+  DEPLOY_APPROVAL_MODE: solo
+  SOLO_DEPLOY_OWNER: Isusami
+
+jobs:
+  gate:
+    name: gate
+    if: >-
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      sha: ${{ github.event.workflow_run.head_sha }}
+      policy: ${{ steps.gate.outputs.policy }}
+      pr_number: ${{ steps.gate.outputs.pr_number }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The commit CI passed, explicitly. Never the default ref.
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - id: gate
+        name: approval provenance
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_APPROVAL_MODE: ${{ env.DEPLOY_APPROVAL_MODE }}
+          SOLO_DEPLOY_OWNER: ${{ env.SOLO_DEPLOY_OWNER }}
+        run: bash deploy/approval-gate.sh "${{ github.repository }}" "${{ github.event.workflow_run.head_sha }}"
+
+      - name: say which policy allowed this, in the run summary
+        run: |
+          set -Eeuo pipefail
+          {
+            echo "## Deployment approval"
+            echo
+            echo "- policy: **${{ steps.gate.outputs.policy }}**"
+            echo "- pull request: #${{ steps.gate.outputs.pr_number }}"
+            echo "- non-author human approvals: ${{ steps.gate.outputs.approvals }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  image:
+    name: image
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:sha-${{ needs.gate.outputs.sha }}
+          # `deploy.sh` reads this label back off the pulled image and refuses
+          # the deploy when it is not the commit it was asked for. It is the
+          # whole of what stops a digest built from another tree reaching an
+          # application record, so it is not decoration.
+          labels: org.opencontainers.image.revision=${{ needs.gate.outputs.sha }}
+          # No layer cache at all. See the header: a shared build cache is
+          # writable by pull request runs, which need no approval to start.
+          no-cache: true
+          provenance: false
+
+  staging:
+    name: staging
+    needs: [gate, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # The token this job hands to the server on stdin is what `docker pull`
+      # authenticates with. Without `packages: read` it logs in successfully and
+      # then cannot read a thing — «installation not allowed to Read
+      # organization package», on a digest this same workflow pushed a minute
+      # earlier. Granting the package access to the repository is NOT enough on
+      # its own: the job's token has to carry the scope too.
+      packages: read
+    environment: staging
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          # The staging bot stays OFF, and this is the one that must: staging
+          # shares the shop's Telegram token, and a second poller would take
+          # updates away from the bot real customers are talking to.
+          DEPLOY_BOT_ENABLED: 'false'
+          # Carried to the box so the deploy ledger records WHICH policy let
+          # this out — «solo-owner» is not the same fact as «team-approved».
+          DEPLOY_APPROVAL_POLICY: ${{ needs.gate.outputs.policy }}
+        run: bash deploy/over-ssh.sh staging
+
+      # The release manifest: what staging actually ran, and the evidence.
+      #
+      # It exists only because the deploy step above SUCCEEDED — `deploy.sh`
+      # migrates, deploys and smoke-tests before this line is reached — so the
+      # manifest's existence is itself the acceptance evidence, not a claim
+      # written alongside one.
+      #
+      # `digest` and `sha` are kept as their own files for the promotion path
+      # that reads them directly; the manifest is the richer record.
+      - name: write the release manifest
+        env:
+          MAIN_SHA: ${{ needs.gate.outputs.sha }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+          POLICY: ${{ needs.gate.outputs.policy }}
+          PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
+        run: bash deploy/write-release-manifest.sh out
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: staging-digest
+          path: out/
+          retention-days: 30

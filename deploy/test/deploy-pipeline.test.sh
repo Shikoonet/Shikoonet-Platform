@@ -27,8 +27,9 @@ ROOT=$(cd -- "$HERE/../.." && pwd)
 GATE="$ROOT/deploy/approval-gate.sh"
 DEPLOY="$ROOT/deploy/deploy.sh"
 OVER_SSH="$ROOT/deploy/over-ssh.sh"
-WORKFLOW="$ROOT/.github/workflows/deploy.yml"
-for f in "$GATE" "$DEPLOY" "$OVER_SSH" "$WORKFLOW"; do
+WORKFLOW="$ROOT/.github/workflows/deploy-staging.yml"
+PROMOTE_WF="$ROOT/.github/workflows/promote-production.yml"
+for f in "$GATE" "$DEPLOY" "$OVER_SSH" "$WORKFLOW" "$PROMOTE_WF"; do
   [ -r "$f" ] || {
     echo "cannot read $f" >&2
     exit 1
@@ -926,29 +927,11 @@ assert_wf 'only main can deploy' "workflow_run.head_branch == 'main'"
 # what these assertions are for — SC2016 is the expected reading, not a mistake.
 # shellcheck disable=SC2016
 assert_wf 'the built ref is the exact sha CI passed' 'ref: ${{ github.event.workflow_run.head_sha }}'
-assert_wf 'the deploy is serialised' 'group: deploy'
+assert_wf 'the staging deploy is serialised' 'group: deploy-staging'
 assert_wf 'a running deploy is never cancelled' 'cancel-in-progress: false'
-assert_wf 'production is compared to the exact string true' "vars.PRODUCTION_AUTO_DEPLOY == 'true'"
 assert_wf 'the staging bot is explicitly off' "DEPLOY_BOT_ENABLED: 'false'"
 
-# Exactly one job may start a bot, and it is the production one. Counted rather
-# than merely present: staging shares the shop's Telegram token, so a second
-# poller would take updates from the bot real customers are talking to, and the
-# way that mistake arrives is somebody copying the production block.
-if [ "$(grep -c "DEPLOY_BOT_ENABLED: 'false'" "$WORKFLOW")" = '1' ] &&
-  [ "$(grep -c "DEPLOY_BOT_ENABLED: 'true'" "$WORKFLOW")" = '2' ]; then
-  ok 'the bot ships with production and with a promotion, and with nothing else'
-else
-  bad 'the bot ships with production and with a promotion, and with nothing else' \
-    "$(grep -n DEPLOY_BOT_ENABLED "$WORKFLOW")"
-fi
 
-# The staging job specifically, by walking its block rather than the file.
-if awk '/^  staging:/,/^  production:/' "$WORKFLOW" | grep -qF "DEPLOY_BOT_ENABLED: 'true'"; then
-  bad 'staging never starts a bot' 'the staging job enables it'
-else
-  ok 'staging never starts a bot'
-fi
 refute_wf 'no cache is read from pull request runs' 'type=gha'
 
 # The gate must not be able to see a deployment secret, and everything that can
@@ -982,8 +965,12 @@ job_field() { awk -F'\t' -v j="$1" -v c="$2" '$1==j{print $c}' "$WORK/jobs.txt";
 # the job declares no permissions at all and silently inherits a workflow-level
 # block that has no packages scope. Granting the package to the repository does
 # NOT cover it; the token needs the scope too.
-for pulling in staging production promote; do
-  if awk -v j="  ${pulling}:" '$0 == j {f=1; next} /^  [a-z][a-z0-9_-]*:$/ {f=0} f' "$WORKFLOW" |
+for pulling in staging promote; do
+  case "$pulling" in
+    staging) wf=$WORKFLOW ;;
+    *) wf=$PROMOTE_WF ;;
+  esac
+  if awk -v j="  ${pulling}:" '$0 == j {f=1; next} /^  [a-z][a-z0-9_-]*:$/ {f=0} f' "$wf" |
     grep -qF 'packages: read'; then
     ok "the ${pulling} job may read the package it is told to deploy"
   else
@@ -1015,11 +1002,6 @@ else
   bad 'every job that can read a deployment secret depends on the gate' "not gated:$bad_ordering"
 fi
 
-if [ "$(job_field production 5)" = 'if' ]; then
-  ok 'the production job is behind an if, so it never enters its environment while off'
-else
-  bad 'the production job is behind an if, so it never enters its environment while off' 'no if: on production'
-fi
 
 # Digest, never a tag, as the thing deployed.
 if grep -E 'IMAGE_REF: .*@\$\{\{ (needs\.image\.outputs\.digest|steps\.read\.outputs\.digest) \}\}' "$WORKFLOW" >/dev/null &&
@@ -1029,82 +1011,203 @@ else
   bad 'staging, production and promote all deploy a digest and never a tag' "$(grep -n IMAGE_REF "$WORKFLOW")"
 fi
 
+# Staging deploys the digest this build produced; promotion deploys the digest
+# the manifest recorded. Neither can name a tag.
 # shellcheck disable=SC2016
-if [ "$(grep -c 'IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}' "$WORKFLOW")" = '2' ]; then
-  ok 'staging and production deploy the same digest from the same build'
+if grep -qF 'IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}' "$WORKFLOW" &&
+  grep -qF 'IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.promote-gate.outputs.digest }}' "$PROMOTE_WF"; then
+  ok 'staging and promotion both deploy an immutable digest'
 else
-  bad 'staging and production deploy the same digest from the same build' 'the two IMAGE_REFs differ'
+  bad 'staging and promotion both deploy an immutable digest' "$(grep -n IMAGE_REF "$WORKFLOW" "$PROMOTE_WF")"
 fi
 
-# shellcheck disable=SC2016
-if grep -qF 'run-id: ${{ inputs.staging_run_id }}' "$WORKFLOW" &&
-  ! awk '/^  promote:/,0' "$WORKFLOW" | grep -qF 'build-push-action'; then
-  ok 'promotion reads the digest staging passed and never rebuilds'
+
+section 'the release interface — a merge cannot reach production at all'
+
+# The strongest form of the guarantee, and the reason the job was DELETED
+# rather than left behind an `if:`. While `production` existed as a job gated on
+# a repository variable, re-creating that one variable re-enabled automatic
+# production deployment from a settings page, with no diff and no review.
+#
+# Now there is nothing to re-enable.
+if grep -qE '^  production:' "$WORKFLOW"; then
+  bad 'the staging workflow has no production job' 'a production job still exists in Deploy Staging'
 else
-  bad 'promotion reads the digest staging passed and never rebuilds' 'promote builds, or does not read the artifact'
+  ok 'the staging workflow has no production job'
 fi
 
-section 'deploy.yml — solo mode still cannot reach production on its own'
-
-assert_wf 'the approval mode is versioned in the workflow, not a settings toggle' \
-  'DEPLOY_APPROVAL_MODE: solo'
-assert_wf 'the allowlisted owner is versioned too' 'SOLO_DEPLOY_OWNER: Isusami'
-# These assert the literal text of the workflow, so the `${{ }}` and the `$VAR`
-# below are quoted exactly as they appear in it — SC2016 is the reading these
-# lines want, not a mistake.
-# shellcheck disable=SC2016
-assert_wf 'the gate is told which mode to apply' 'DEPLOY_APPROVAL_MODE: ${{ env.DEPLOY_APPROVAL_MODE }}'
-# shellcheck disable=SC2016
-assert_wf 'the policy reaches the box, so the ledger records which one shipped it' \
-  'DEPLOY_APPROVAL_POLICY: ${{ needs.gate.outputs.policy }}'
-
-# Solo mode changes WHO may ship, not WHERE it lands. Production is still
-# behind the same exact-string variable, which does not exist.
-assert_wf 'production is still behind the exact-string flag under solo mode' \
-  "vars.PRODUCTION_AUTO_DEPLOY == 'true'"
-if [ "$(job_field production 5)" = 'if' ]; then
-  ok 'the production job still never starts while the flag is absent'
+if grep -q 'PRODUCTION_AUTO_DEPLOY' "$WORKFLOW" "$PROMOTE_WF"; then
+  bad 'nothing depends on PRODUCTION_AUTO_DEPLOY any more' 'the variable is still referenced'
 else
-  bad 'the production job still never starts while the flag is absent' 'no if: on production'
+  ok 'nothing depends on PRODUCTION_AUTO_DEPLOY any more'
 fi
 
-section 'deploy.yml — promotion is deliberate, and only of a digest staging ran'
-
-assert_wf 'promotion demands the word PROMOTE' "!= 'PROMOTE'"
-# shellcheck disable=SC2016
-assert_wf 'promotion demands the owner, not merely a token holder' '"$ACTOR" != "$OWNER"'
-# shellcheck disable=SC2016
-assert_wf 'promotion reads the ledger artifact of a named run' 'run-id: ${{ inputs.staging_run_id }}'
-assert_wf 'promotion refuses anything that is not an immutable digest' \
-  "is not an immutable digest"
-
-# There is no digest input, which is the strongest form of «an arbitrary digest
-# cannot be promoted»: there is nowhere to type one. The digest comes from an
-# artifact that exists only because a staging deploy ran and smoke-tested.
-if awk '/^  workflow_dispatch:/,/^  [a-z]/' "$WORKFLOW" | grep -qE '^ +(digest|image|tag|sha):'; then
-  bad 'promotion accepts no digest, tag or sha as input' 'the dispatch takes one'
+if grep -qE '^\s+environment: production' "$WORKFLOW"; then
+  bad 'the staging workflow never enters the production environment' 'it names environment: production'
 else
-  ok 'promotion accepts no digest, tag or sha as input'
+  ok 'the staging workflow never enters the production environment'
 fi
 
-# The checks live in a job with no `environment:`, so an unauthorised actor is
-# refused before any job holding a production secret exists.
-if [ "$(job_field promote-gate 2)" = '-' ] && [ "$(job_field promote-gate 3)" = '-' ]; then
-  ok 'the promotion checks run before any production secret is in scope'
+if grep -q 'secrets.DEPLOY_' "$WORKFLOW" && ! grep -qE '^\s+environment: staging' "$WORKFLOW"; then
+  bad 'staging credentials come from the staging environment' 'deployment secrets with no environment'
 else
-  bad 'the promotion checks run before any production secret is in scope' \
-    "$(grep '^promote-gate' "$WORK/jobs.txt")"
+  ok 'staging credentials come from the staging environment'
 fi
-case "$(job_field promote 4)" in
-  *promote-gate*) ok 'the privileged promote job depends on those checks' ;;
-  *) bad 'the privileged promote job depends on those checks' 'promote does not need promote-gate' ;;
-esac
 
-if awk '/^  promote:/,0' "$WORKFLOW" | grep -qF 'build-push-action'; then
+section 'the release interface — production is reachable only by hand'
+
+assert_pwf() { # name substring
+  if grep -qF "$2" "$PROMOTE_WF"; then ok "$1"; else bad "$1" "promote-production.yml lacks: $2"; fi
+}
+
+assert_pwf 'the Actions UI shows a clear Promote Production entry' 'name: Promote Production'
+assert_pwf 'promotion is dispatch-only' 'workflow_dispatch:'
+assert_pwf 'the confirmation is a choice, not free text' 'type: choice'
+assert_pwf 'its default is not promotion' "default: 'no — cancel'"
+assert_pwf 'only the exact word PROMOTE continues' "!= 'PROMOTE'"
+# shellcheck disable=SC2016
+assert_pwf 'the actor must be the allowlisted owner' '"$ACTOR" != "$OWNER"'
+assert_pwf 'the manifest is verified before anything is deployed' 'verify-release-manifest.sh'
+assert_pwf 'the staging run is chosen, never a digest' 'pick-staging-run.sh'
+
+# Only `workflow_dispatch` may appear as a trigger. A `push` or `workflow_run`
+# line here would make production automatic again by the back door.
+if awk '/^on:/,/^permissions:/' "$PROMOTE_WF" | grep -qE '^\s+(push|workflow_run|schedule|repository_dispatch):'; then
+  bad 'no automatic trigger can reach production' 'promote-production.yml has an automatic trigger'
+else
+  ok 'no automatic trigger can reach production'
+fi
+
+# There must be no way to TYPE a digest. The provenance chain ends at the
+# paste buffer the moment such an input exists.
+if awk '/^  workflow_dispatch:/,/^permissions:/' "$PROMOTE_WF" | grep -qE '^\s+(digest|image|image_ref|tag|sha):'; then
+  bad 'promotion accepts no digest, image or tag as input' 'the dispatch takes one'
+else
+  ok 'promotion accepts no digest, image or tag as input'
+fi
+
+if awk '/^  promote:/,0' "$PROMOTE_WF" | grep -qF 'build-push-action'; then
   bad 'promotion never rebuilds the image' 'promote builds'
 else
   ok 'promotion never rebuilds the image'
 fi
+
+# The checks run in a job with NO environment, so an unauthorised promotion is
+# refused before any job holding a production secret exists.
+python3 - "$PROMOTE_WF" <<'PYEOF' >"$WORK/pjobs.txt"
+import re, sys
+text = open(sys.argv[1], encoding='utf-8').read()
+body = text.split('\njobs:\n', 1)[1]
+starts = [(m.start(), m.group(1)) for m in re.finditer(r'^  ([a-z][a-z0-9_-]*):$', body, re.M)]
+for i, (pos, name) in enumerate(starts):
+    end = starts[i + 1][0] if i + 1 < len(starts) else len(body)
+    blk = body[pos:end]
+    print('\t'.join([
+        name,
+        'env' if re.search(r'^    environment:', blk, re.M) else '-',
+        'secrets' if 'secrets.DEPLOY_' in blk else '-',
+        (re.search(r'^    needs: (.+)$', blk, re.M) or [None, '-'])[1].strip(),
+    ]))
+PYEOF
+pjob() { awk -F'\t' -v j="$1" -v c="$2" '$1==j{print $c}' "$WORK/pjobs.txt"; }
+
+if [ "$(pjob promote-gate 2)" = '-' ] && [ "$(pjob promote-gate 3)" = '-' ]; then
+  ok 'the promotion checks run before any production secret is in scope'
+else
+  bad 'the promotion checks run before any production secret is in scope' "$(cat "$WORK/pjobs.txt")"
+fi
+case "$(pjob promote 4)" in
+  *promote-gate*) ok 'the privileged promote job depends on those checks' ;;
+  *) bad 'the privileged promote job depends on those checks' 'promote does not need promote-gate' ;;
+esac
+
+section 'the release interface — the bot, and which environment starts one'
+
+# Exactly one workflow may start a bot, and it is the promotion. Staging shares
+# the shop's Telegram token, so a second poller would take updates from the bot
+# real customers are talking to.
+if grep -qF "DEPLOY_BOT_ENABLED: 'false'" "$WORKFLOW" && ! grep -qF "DEPLOY_BOT_ENABLED: 'true'" "$WORKFLOW"; then
+  ok 'staging never starts a bot'
+else
+  bad 'staging never starts a bot' "$(grep -n DEPLOY_BOT_ENABLED "$WORKFLOW")"
+fi
+if grep -qF "DEPLOY_BOT_ENABLED: 'true'" "$PROMOTE_WF"; then
+  ok 'production promotion carries the bot'
+else
+  bad 'production promotion carries the bot' 'promotion does not enable it'
+fi
+
+section 'the release manifest'
+
+MAN=$WORK/manifest
+rm -rf "$MAN"
+env MAIN_SHA="$SHA_MERGED" DIGEST="sha256:${DIGEST}" POLICY=solo-owner \
+  GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=4242 \
+  bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1
+
+if [ -s "$MAN/release-manifest.json" ] && [ -s "$MAN/manifest.sha256" ]; then
+  ok 'staging writes a release manifest with a checksum'
+else
+  bad 'staging writes a release manifest with a checksum' 'nothing written'
+fi
+
+verify_manifest() {
+  set +e
+  ( cd "$ROOT" && EXPECTED_REPO='Shikoonet/Shikoonet-Platform' \
+      bash deploy/verify-release-manifest.sh "$MAN" ) >"$WORK/verify.log" 2>&1
+  local rc=$?
+  set -e
+  return "$rc"
+}
+
+# The manifest names a commit that is not in this repository, so verification
+# must fail on reachability even though every field is well formed.
+if verify_manifest; then
+  bad 'a manifest naming a commit not on main is refused' 'it verified'
+else
+  if grep -qE 'not in this repository|not reachable from main' "$WORK/verify.log"; then
+    ok 'a manifest naming a commit not on main is refused'
+  else
+    bad 'a manifest naming a commit not on main is refused' "$(tail -1 "$WORK/verify.log")"
+  fi
+fi
+
+printf 'digest=sha256:abc\n' >>"$MAN/manifest.env"
+if verify_manifest; then
+  bad 'a manifest altered after staging wrote it is refused' 'it verified'
+else
+  if grep -qF 'checksum does not verify' "$WORK/verify.log"; then
+    ok 'a manifest altered after staging wrote it is refused'
+  else
+    bad 'a manifest altered after staging wrote it is refused' "$(tail -1 "$WORK/verify.log")"
+  fi
+fi
+
+rm -f "$MAN/manifest.sha256"
+if verify_manifest; then
+  bad 'a manifest with no checksum is refused' 'it verified'
+else
+  ok 'a manifest with no checksum is refused'
+fi
+
+rm -rf "$MAN"
+if verify_manifest; then
+  bad 'a missing manifest is refused, not treated as empty' 'it verified'
+else
+  ok 'a missing manifest is refused, not treated as empty'
+fi
+
+for bad_digest in 'sha256:abc' 'latest' "sha256:${DIGEST}
+extra"; do
+  rm -rf "$MAN"
+  if env MAIN_SHA="$SHA_MERGED" DIGEST="$bad_digest" \
+    bash "$ROOT/deploy/write-release-manifest.sh" "$MAN" >/dev/null 2>&1; then
+    bad "the manifest writer refuses '${bad_digest:0:18}'" 'it was written'
+  else
+    ok "the manifest writer refuses '${bad_digest:0:18}'"
+  fi
+done
+
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
