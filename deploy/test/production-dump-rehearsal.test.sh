@@ -52,7 +52,11 @@ section 'the release is resolved and cross-checked, not asserted'
 
 has "$R" 'repos/${REPO}/commits/main' 'main_sha is read from GitHub'
 has "$R" 'workflows/ci.yml/runs' 'the CI run is resolved from GitHub'
-has "$R" 'pick-staging-run.sh' 'the staging run uses the same picker Prepare uses'
+# `pick-staging-run.sh` is gh-based and gh is not installed on that host, so the
+# same criteria are applied against the API directly: deploy-staging.yml,
+# success, and this exact head sha.
+has "$R" 'workflows/deploy-staging.yml/runs' 'the staging run is resolved by workflow and status'
+has "$R" 'r.get("head_sha")==sys.argv[1]' 'it is matched to this exact commit'
 has "$R" 'verify-release-manifest.sh' 'the digest comes from a verified release manifest'
 has "$R" 'the manifest names CI run' 'the manifest and GitHub must agree on the CI run'
 # Hard-coding any of them would make the attestation describe a release chosen
@@ -77,15 +81,29 @@ else
   ok 'it never falls back to the synthetic fixture'
 fi
 has "$R" 'MIGRATE_PRODUCTION_DUMP=1' 'the dump-gated suites are actually enabled'
+# The contract loadConfig() actually reads. MIGRATE_MYSQL_URL is read by
+# nothing, so setting it pointed the suite at 127.0.0.1:3307 instead.
+has "$R" 'MYSQL_HOST=' 'the real MySQL config contract is used'
+has "$R" 'D1_EXPORT_DIR=/d1' 'the D1 export is supplied'
+# Comment lines excluded: the header records the mistake deliberately so a
+# future reader knows why the contract is spelled out.
+if grep -v '^[[:space:]]*#' "$R" | grep -q 'MIGRATE_MYSQL_URL'; then
+  bad 'MIGRATE_MYSQL_URL is not used in code' 'it is, and loadConfig ignores it'
+else
+  ok 'MIGRATE_MYSQL_URL is not used in code'
+fi
+has "$R" 'pnpm --filter @shikoo/migrate migrate' 'the real migrator is executed'
+has "$R" 'schema-only destination is not a rehearsal' 'a zero-row destination is refused'
+has "$R" 'rehearsal_pending_range' 'the range is derived from the restored ledger'
+has "$R" 'rehearsal_check_vitest' 'the suite exit code is judged'
+has "$R" 'on_signal' 'signals end the run'
+has "$R" 'mv -Tf' 'activation is an atomic rename'
+has "$R" 'flock -w 120 8' 'activation takes the release lock'
 
 section 'the thresholds are exact'
 
-has "$R" '[ "$DUMP_SKIPPED" = ' 'a skipped dump test is a failure'
-has "$R" 'were skipped — the dump was not actually exercised' 'skipping is named as not exercising the dump'
-has "$R" '[ "$DUMP_PASSED" = ' "49 is required exactly"
-has "$R" '/49 dump-gated tests passed' 'the message names the shortfall'
+has "$R" 'rehearsal_check_vitest "$ART/migrate-report.json"' '49/0-skipped is enforced by the library'
 has "$R" '[ "$INV_PASS" = ' '32 invariants are required exactly'
-has "$R" '/32 invariants passed' 'the invariant message names the shortfall'
 
 # A threshold expressed as >= would pass a suite that grew a test and lost one.
 if grep -qE '\-ge (49|32)|\-gt (48|31)' "$R"; then
@@ -96,16 +114,10 @@ fi
 
 section 'the financial comparison can actually fail'
 
-has "$R" 'balance_irr <> coalesce' 'it compares stored balance against its entries'
-has "$R" 'FIN_DRIFT' 'it counts disagreements'
+has "$R" 'rehearsal_compare_totals' 'it compares source aggregates against destination'
+has "$R" 'balance_irr <> coalesce' 'the internal wallet invariant is kept as well'
+has "$R" 'FIN_DRIFT' 'it keeps the internal wallet invariant too'
 has "$R" 'that is a stop, not a warning' 'a mismatch stops the run'
-# The first draft compared one query with itself, which is a check that cannot
-# fail and therefore is not one.
-if grep -q 'cannot fail and therefore is not one' "$R"; then
-  ok 'the self-comparing version is recorded as the mistake it was'
-else
-  bad 'the self-comparing version is recorded' 'the note is gone'
-fi
 
 section 'nothing production is written'
 
@@ -128,11 +140,12 @@ has "$R" 'rollback has no floor under it' 'a failed restore stops the run'
 section 'old-image compatibility blocks the attestation'
 
 has "$R" 'CURRENT_PRODUCTION_IMAGE' 'the current production image is named by config'
+has "$R" 'using the LIVE one' 'the live image wins over the configured one'
 has "$R" 'OLD_APP_SCHEMA_COMPAT' 'compatibility is measured'
 has "$R" 'image rollback would be void' 'a failure explains what it costs'
 # It must be checked BEFORE the attestation is written.
 compat=$(grep -n 'OLD_APP_SCHEMA_COMPAT" = ' "$R" | head -1 | cut -d: -f1)
-write=$(grep -n 'bash "$HERE/write-dump-attestation.sh"' "$R" | head -1 | cut -d: -f1)
+write=$(grep -n 'bash "\$HERE/write-dump-attestation.sh" "\$TMP_ATT"' "$R" | head -1 | cut -d: -f1)
 if [ -n "$compat" ] && [ -n "$write" ] && [ "$compat" -lt "$write" ]; then
   ok 'compatibility is required before the attestation is written'
 else
@@ -143,24 +156,41 @@ section 'the attestation is written last, atomically, and verified'
 
 # Every measurement gate must precede the write. Partial success is not
 # evidence, and an attestation is the one artifact that must never be optimistic.
-for gate in 'DUMP_SKIPPED' 'DUMP_PASSED' 'INV_PASS' 'FINANCIAL_TOTALS' 'RESTORE_RESULT' 'OLD_APP_SCHEMA_COMPAT'; do
-  g=$(grep -n "\[ \"\$${gate}\"" "$R" | head -1 | cut -d: -f1)
-  if [ -n "$g" ] && [ "$g" -lt "$write" ]; then
-    ok "${gate} is gated before the attestation is written"
+# Every measurement must be gated BEFORE the attestation is written. Partial
+# success is not evidence, and an attestation is the one artifact that must
+# never be optimistic. The counts themselves now live in the library, which has
+# its own executed tests; what is checked here is the ordering.
+for gate in 'the newest production backup did not restore' \
+            'pending migration range could not be derived' \
+            'production-dump suites did not pass as required' \
+            'invariants passed — all thirty-two have to' \
+            'empty or unmeasured destination is not a match' \
+            'financial totals disagree' \
+            'disagree with their own entries' \
+            'invariants on the migrated production copy' \
+            'cannot serve the migrated schema'; do
+  g=$(grep -n "$gate" "$R" | head -1 | cut -d: -f1)
+  if [ -n "$g" ] && [ -n "$write" ] && [ "$g" -lt "$write" ]; then
+    ok "gated before the attestation: ${gate:0:44}"
   else
-    bad "${gate} is gated before the attestation is written" "gate@${g:-?} write@${write}"
+    bad "gated before the attestation: ${gate:0:44}" "gate@${g:-missing} write@${write:-missing}"
   fi
 done
-has "$R" '.attestation.env.new' 'the attestation is staged before being moved into place'
-has "$R" 'still parses' 'the reason for atomicity is recorded'
+has "$R" 'VERSION_DIR' 'the attestation is built as a complete version first'
+has "$R" 'looks exactly like tampering' 'the reason pair-atomicity matters is recorded'
+has "$R" 'preserve' 'a failed run preserves the previous version'
 has "$R" '/var/lib/shikoo/production' 'it writes to the directory Prepare Production reads'
 has "$R" 'sha256sum -c --status attestation.sha256' 'the checksum is verified immediately'
 has "$R" 'verify-dump-attestation.sh' 'the verifier is run against the same release'
-has "$R" 'EXPECTED_STAGING_RUN_ID=' 'verification pins the staging run too'
+has "$R" 'EXPECTED_STAGING_RUN_ID' 'verification pins the staging run too'
 
 section 'it cleans up however it ends'
 
-has "$R" 'trap cleanup EXIT INT TERM' 'cleanup runs on exit, interrupt and terminate'
+has "$R" "trap 'on_signal INT 130' INT" 'INT is handled by a handler that exits'
+has "$R" "trap 'on_signal TERM 143' TERM" 'TERM is handled by a handler that exits'
+has "$R" 'trap cleanup EXIT' 'cleanup also runs on normal exit'
+has "$R" 'RESUMES after the interrupted command' 'the reason a bare trap was wrong is recorded'
+has "$R" 'CLEANED' 'cleanup is idempotent so the double fire is safe'
 has "$R" 'CLEANUP_CONTAINERS' 'containers are tracked for removal'
 has "$R" 'docker rm -f' 'containers are removed'
 has "$R" 'as it is created, not at the end' 'resources are registered as they are created'
