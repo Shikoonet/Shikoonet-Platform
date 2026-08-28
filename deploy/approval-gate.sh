@@ -11,7 +11,7 @@
 #
 # On GitHub Free a private repository gets no rulesets, no required reviews and
 # no required-reviewer environments. There is nothing between `git push origin
-# main` and a production deploy except this file. `deploy.yml` is now the only
+# main` and a production deploy except this file. `deploy-staging.yml` is the only
 # path that deploys, so the guarantees a branch protection rule would have
 # given have to be re-derived here, from the same API, at deploy time.
 #
