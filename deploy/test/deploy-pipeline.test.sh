@@ -665,20 +665,28 @@ unset FAKE_NO_ENV_NAME
 
 # The pre-flight runs before the migration, and the migration takes time. An
 # application edited in the Coolify UI during that window would move out from
-# under a check that already passed. The two application reads below are the
-# pre-flight's; the third is the one `roll_one` makes immediately before it
-# writes.
-FAKE_FLIP_AFTER=2
+# under a check that already passed.
+#
+# FOUR, because `assert_deployable` reads the application record twice — once
+# for `build_pack`, once for `docker_registry_image_name` — and the pre-flight
+# covers ingest and dashboard. Reads 1-4 are the pre-flight's and see the right
+# type; read 5 is the one `roll_one` makes immediately before it writes.
+#
+# The first version of this test used 2, which flipped the type DURING the
+# pre-flight. It passed, and proved the pre-flight works — not the re-check it
+# was written for. So the assertion below now requires the pre-flight to have
+# PASSED first: if that read count ever changes, this fails loudly instead of
+# quietly testing the wrong guard again.
+FAKE_FLIP_AFTER=4
+name='catches an application whose type changed after the pre-flight'
 if run_deploy false; then
-  bad 'catches an application whose type changed after the pre-flight' 'it deployed anyway'
+  bad "$name" 'it deployed anyway'
+elif grep -qF 'every application this deploy touches is set to deploy an image' "$DEPLOY_LOG" &&
+  grep -qF 'not a Docker Image application' "$DEPLOY_LOG" &&
+  ! grep -q '^uuid-ingest$' "$WORK/deploys"; then
+  ok "$name"
 else
-  if grep -qF 'not a Docker Image application' "$DEPLOY_LOG" &&
-    ! grep -q '^uuid-ingest$' "$WORK/deploys"; then
-    ok 'catches an application whose type changed after the pre-flight'
-  else
-    bad 'catches an application whose type changed after the pre-flight' \
-      "$(tail -2 "$DEPLOY_LOG")"
-  fi
+  bad "$name" "pre-flight did not pass first, or a deploy was queued: $(tail -2 "$DEPLOY_LOG")"
 fi
 unset FAKE_FLIP_AFTER
 
