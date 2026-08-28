@@ -165,10 +165,26 @@ has "$SIO" 'chmod 600' 'the credential files are 0600'
 has "$SIO" 'rm -f' 'the credential files are removed after use'
 has "$RUNNER" 'trap cleanup_all EXIT INT TERM' 'credentials are cleaned up on signal as well as exit'
 has "$RUNNER" 'tg_get_me' 'the runner uses the secret-safe telegram helper'
-has "$RUNNER" 'pg_system_identifier' 'the runner uses the secret-safe postgres helper'
+has "$RUNNER" 'pg_host_of' 'the runner classifies a database URL by parsing it'
+# It must not dial. There is no psql on the host and Coolify hostnames do not
+# resolve outside the container network, so a connecting version reports every
+# row unreachable — and classifying a row as production by connecting TO
+# production is the wrong way to learn you should not touch it.
+# Comment lines excluded: the header records the removed shape on purpose, so
+# a future reader knows what it used to do and why it could not work.
+if grep -v '^[[:space:]]*#' "$SIO" | grep -qE '\bpsql\b'; then
+  bad 'the database classifier opens no connection' 'it calls psql'
+else
+  ok 'the database classifier opens no connection'
+fi
 
 # Only the public half of each answer may be reported.
-has "$SIO" 'system_identifier' 'only the cluster identifier comes back from a database probe'
+has "$SIO" 'p.hostname' 'only the hostname is taken from a database URL'
+if grep -qE 'password|p\.username' "$SIO" | grep -v '^#'; then
+  bad 'the credential halves of the URL are discarded' 'they are read'
+else
+  ok 'the credential halves of the URL are discarded'
+fi
 if grep -A4 'tg_get_me' "$SIO" | grep -qE 'print\(.*token|echo .*token'; then
   bad 'the telegram helper never echoes the token' 'it does'
 else

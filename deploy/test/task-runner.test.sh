@@ -53,15 +53,35 @@ for f in "$RUNNER" "$ROOT/deploy/install-shikoo-task-runner.sh"; do
 done
 
 # And the manifest must describe the files that actually exist.
+# A manifest entry is either a script in deploy/ or a file at the repository
+# root (the migrations, which ship beside the scripts so the restore drill can
+# check the ledger and the invariants from an installed directory).
+src_of() { case "$1" in migrations/*) printf '%s/%s' "$ROOT" "$1" ;; *) printf '%s/deploy/%s' "$ROOT" "$1" ;; esac; }
+mismatch=0
 while read -r want name; do
   [ -n "$name" ] || continue
-  got=$(sha256sum "$ROOT/deploy/$name" 2>/dev/null | cut -d' ' -f1 || true)
-  if [ "$got" = "$want" ]; then
-    ok "manifest matches deploy/$name"
-  else
-    bad "manifest matches deploy/$name" "manifest ${want:0:12}, file ${got:0:12}"
-  fi
+  got=$(sha256sum "$(src_of "$name")" 2>/dev/null | cut -d' ' -f1 || true)
+  [ "$got" = "$want" ] || { mismatch=$((mismatch + 1)); printf '       drift: %s\n' "$name"; }
 done <"$MANIFEST"
+if [ "$mismatch" -eq 0 ]; then
+  ok "all $(grep -c . "$MANIFEST") manifest entries match their source files"
+else
+  bad "all manifest entries match their source files" "${mismatch} entr(y|ies) drifted"
+fi
+
+# The drill needs both the migration list and the invariants, so their absence
+# from the manifest would be a drill that silently checks nothing.
+if grep -q ' migrations/verify_invariants.sql$' "$MANIFEST"; then
+  ok 'the manifest ships verify_invariants.sql'
+else
+  bad 'the manifest ships verify_invariants.sql' 'it is absent'
+fi
+n=$(grep -c ' migrations/0' "$MANIFEST" || true)
+if [ "$n" -ge 37 ]; then
+  ok "the manifest ships all ${n} migrations"
+else
+  bad 'the manifest ships every migration' "only ${n} present"
+fi
 
 section 'the subcommand list is closed'
 

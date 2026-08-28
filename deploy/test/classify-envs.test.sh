@@ -28,8 +28,8 @@ bad() {
 section() { printf '\n%s\n' "$1"; }
 
 # The values that must never appear in the output, whatever else happens.
-SECRET_DB_STAGING='postgres://shikoo:SUPERSECRETPW@db-stg:5432/shikoo'
-SECRET_DB_PROD='postgres://shikoo:OTHERSECRETPW@db-prd:5432/shikoo'
+SECRET_DB_STAGING='postgres://shikoo:SUPERSECRETPW@bea6ac92holn5k6vjgopy2ai:5432/shikoo'
+SECRET_DB_PROD='postgres://shikoo:OTHERSECRETPW@qd2vduj7kv05sp9ejdrmclmu:5432/shikoo'
 SECRET_TOKEN_A='111111:AAAA-SECRET-TOKEN-AAAA'
 SECRET_TOKEN_B='222222:BBBB-SECRET-TOKEN-BBBB'
 
@@ -122,7 +122,7 @@ want() { # name  substring
 }
 
 # The whole point: which row is which, by id, in words a person can act on.
-want 'the staging DATABASE_URL row is named as staging' '7678322244250038305'
+want 'the staging DATABASE_URL row is named as staging' 'staging (host bea6ac92holn5k6vjgopy2ai)'
 want 'the production DATABASE_URL row is named as PRODUCTION' 'PRODUCTION'
 want 'the DATABASE_URL rows are identified by id' 'row 95'
 want 'both DATABASE_URL rows are classified' 'row 96'

@@ -100,11 +100,28 @@ PGUSER="${PGUSER:-postgres}"
 # one. Now both the invariants and the migration list are resolved relative to
 # this file, so the thing being checked and the thing checking it ship as one
 # unit. Override only if you have deliberately split them.
-# `CDPATH=` unset for the subshell only, so a developer's CDPATH cannot make
-# `cd ..` land somewhere else. Written as an env prefix to `cd` rather than as
-# a bare `CDPATH= cd`, which shellcheck reads as an assignment typo (SC1007).
-REPO_ROOT="${REPO_ROOT:-$(env CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)}"
-MIGRATIONS_DIR="${MIGRATIONS_DIR:-$REPO_ROOT/migrations}"
+# `env CDPATH='' cd ...` was here, and it cannot work: `env` execs a PROGRAM,
+# and `cd` is a shell builtin. The drill died with `env: 'cd': No such file or
+# directory` on its very first run — which also means it had never run before,
+# because that failure is immediate and unmissable.
+#
+# The subshell does the same job correctly: the assignment is scoped to it, so
+# a developer's CDPATH cannot make `cd ..` land somewhere else, and `cd` stays
+# the builtin it has to be.
+#
+# Two layouts have to work. In the repository this file is `deploy/`, with
+# migrations at `../migrations`. Installed, it is `/usr/local/lib/shikoo-step-e/`
+# with migrations shipped beside it. Both are checked rather than assumed,
+# because guessing wrong here fails as "ledger mismatch" — a wrong answer that
+# looks like a real finding.
+if [ -z "${MIGRATIONS_DIR:-}" ]; then
+  _here=$(CDPATH='' ; cd -- "$(dirname -- "$0")" && pwd)
+  if [ -d "$_here/migrations" ]; then
+    MIGRATIONS_DIR="$_here/migrations"
+  else
+    MIGRATIONS_DIR="$_here/../migrations"
+  fi
+fi
 INVARIANTS="${INVARIANTS:-$MIGRATIONS_DIR/verify_invariants.sql}"
 
 say() { printf '%s\n' "$*"; }
