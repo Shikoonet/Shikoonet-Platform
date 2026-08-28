@@ -27,6 +27,15 @@ each row is the `required()` / `optional()` / `PASSTHROUGH` list in the relevant
 Two rules follow from the current architecture and are worth stating before the
 table, because most miscategorisation comes from ignoring them:
 
+0. **Production is released by two dispatches, never one.** *(Added
+   2026-08-28.)* `Prepare Production` does everything reversible while
+   customers are still on the old applications; `Cutover Production` moves the
+   live domains and hands the bot over. Neither accepts a commit, digest,
+   image, ref or run id — the release is whatever the latest successful
+   `Deploy Staging` run for the current `main` produced. `COOLIFY_TOKEN` is
+   consumed only on the host, through the same read-as-text path `deploy.sh`
+   uses, and never reaches GitHub.
+
 1. **Deployment is driven by GitHub Actions.** *(Corrected 2026-08-28; this
    rule used to say the opposite.)* `deploy-staging.yml` builds one image and
    hands its digest to `deploy/deploy.sh` over SSH; `promote-production.yml`

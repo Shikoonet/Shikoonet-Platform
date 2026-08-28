@@ -15,6 +15,10 @@
 > direct push, a stale approval, a self-approval and an outstanding
 > CHANGES_REQUESTED. That was the whole objection, and it was answerable.
 >
+> Production is now released by two dispatches — `Prepare Production` and
+> `Cutover Production` — so that the reversible half of a release is seen
+> before the irreversible one rather than after it.
+>
 > **Read nothing below as current.** In particular the "Auto-deploy blast
 > radius" row describes a `deploy-staging` with no `if:` guard and a
 > `deploy-production` gated on `vars.PRODUCTION_AUTO_DEPLOY`; neither exists.
