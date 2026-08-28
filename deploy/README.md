@@ -136,7 +136,7 @@ there is nothing to configure in Coolify. Leave those fields empty.
 ## Green main → staging → production, at one immutable digest
 
 **This is the live path**, and it replaced the polling timer described in the
-next section. `.github/workflows/deploy.yml` fires on a successful CI run of
+next section. `.github/workflows/deploy-staging.yml` fires on a successful CI run of
 `main`, builds ONE image, pushes it to `ghcr.io/shikoonet/shikoonet-platform`,
 and hands the digest to `deploy/deploy.sh` over SSH — first to `staging`, then
 to `production`. Both environments run the identical bytes, and `deploy.sh`
@@ -151,7 +151,7 @@ runs is always what was reviewed.
 
 ### Two approval modes, and why the second one exists
 
-`DEPLOY_APPROVAL_MODE` in `.github/workflows/deploy.yml`. There is **no
+`DEPLOY_APPROVAL_MODE` in `.github/workflows/deploy-staging.yml`. There is **no
 default**: unset, empty or misspelled denies. Both tempting defaults are wrong —
 `team` turns a typo into a deploy that never runs, `solo` turns a typo into a
 deploy nobody reviewed.

@@ -685,8 +685,8 @@ say "no published ports"
 # ------------------------------------------------------------------ record
 trap - ERR
 mkdir -p "$(dirname "$STATE_FILE")"
-# The canonical spelling is `sha256:<hex>` — what a registry, `promote.yml`
-# and `rollback.yml` all speak. `sha256-<hex>` exists only because it is the
+# The canonical spelling is `sha256:<hex>` — what a registry, the promotion
+# workflow and every rollback all speak. `sha256-<hex>` exists only because it is the
 # spelling Coolify's tag field requires, and writing THAT into the history
 # meant a digest copied out of this file could never be promoted: promote
 # greps the history for `sha256:<hex>` and would never have found it.

@@ -1,11 +1,33 @@
 # Two deployment pipelines, and which one runs
 
+> **SUPERSEDED, 2026-08-28.** This document decided for PR #3 — the server-side
+> polling timer — on 2026-08-27, and that decision did not survive the week.
+> **GitHub Actions drives deployment now**, through `deploy-staging.yml` and
+> `promote-production.yml`. `deploy/autodeploy.sh` is retired, its
+> `shikoo-autodeploy.timer` is disabled on the host, and `deploy/README.md`
+> §"This is the live path" is the current description.
+>
+> The record is kept rather than deleted: the comparison below is still the
+> clearest statement of what each approach costs, and the reason the decision
+> flipped is visible in it. What changed is the row this document called the
+> deciding property — "PR #2 has no approval gate". It has one now:
+> `deploy/approval-gate.sh`, running in `owner-or-approved` mode, refusing a
+> direct push, a stale approval, a self-approval and an outstanding
+> CHANGES_REQUESTED. That was the whole objection, and it was answerable.
+>
+> **Read nothing below as current.** In particular the "Auto-deploy blast
+> radius" row describes a `deploy-staging` with no `if:` guard and a
+> `deploy-production` gated on `vars.PRODUCTION_AUTO_DEPLOY`; neither exists.
+> The production job was deleted rather than gated, precisely so that
+> re-creating that variable in a settings page could not re-enable automatic
+> production deployment.
+
 Two open pull requests each proposed a way to get a commit onto the staging
 host. They are not complementary — running both means two things deciding to
 deploy, which is the failure this document exists to prevent.
 
-**PR #3 (server-side `deploy/autodeploy.sh`) is the selected architecture.**
-Decided 2026-08-27.
+**PR #3 (server-side `deploy/autodeploy.sh`) was the selected architecture.**
+Decided 2026-08-27, superseded 2026-08-28.
 
 ## The comparison
 

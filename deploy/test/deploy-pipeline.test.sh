@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # The deploy path, driven against a fake GitHub, a fake Coolify and a fake
-# Docker — plus the assertions about `deploy.yml` that no script can make.
+# Docker — plus the assertions about `deploy-staging.yml` that no script can make.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # Why a shell test
@@ -1220,10 +1220,10 @@ section 'deploy.yml — trigger, gating and secret ordering'
 
 wf() { grep -qF "$1" "$WORKFLOW"; }
 assert_wf() { # name  substring
-  if wf "$2"; then ok "$1"; else bad "$1" "deploy.yml does not contain: $2"; fi
+  if wf "$2"; then ok "$1"; else bad "$1" "deploy-staging.yml does not contain: $2"; fi
 }
 refute_wf() { # name  substring
-  if wf "$2"; then bad "$1" "deploy.yml still contains: $2"; else ok "$1"; fi
+  if wf "$2"; then bad "$1" "deploy-staging.yml still contains: $2"; else ok "$1"; fi
 }
 
 assert_wf 'only a successful CI run triggers a deploy' "workflow_run.conclusion == 'success'"

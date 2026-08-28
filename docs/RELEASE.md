@@ -1,6 +1,6 @@
 # Releasing, and what «staging is ready» means
 
-Two workflows, one direction, and nothing that skips a step.
+One direction, and nothing that skips a step.
 
 ```
 merge to main ──▶ CI ──▶ Deploy Staging (automatic) ──▶ Promote Production (a person, on purpose)
@@ -11,6 +11,40 @@ merge to main ──▶ CI ──▶ Deploy Staging (automatic) ──▶ Promot
 `Promote Production` has no digest input at all: it downloads that artifact and
 promotes what staging actually ran. There is no path that rebuilds for
 production and no field anybody can type an image reference into.
+
+`Deploy Staging` can also be started by hand — Actions ▸ Deploy Staging ▸ Run
+workflow — for a redeploy after a Coolify variable was fixed, or to roll the bot
+out. **It takes no inputs at all.** It resolves `refs/heads/main` on the server,
+refuses unless CI already passed on that exact commit as a push to main, and
+then runs the same approval gate. This replaced pushing an empty commit purely
+to make `workflow_run` fire.
+
+## The order the owner actually acts in
+
+Everything else in this file is a step; this is the sequence they happen in.
+Nothing here is a phrase typed into a chat window — every gate is a workflow
+with a branch restriction, an actor check and an audit trail.
+
+1. Approve the release plan.
+2. **Conditionally** create a Staging BotFather bot — only if neither existing
+   `TELEGRAM_BOT_TOKEN` row is already a dedicated non-production bot (§2).
+3. Merge the frozen pull request, once its pre-merge requirements pass.
+4. Wait for post-merge CI and the automatic staging deployment of Dashboard and
+   Ingest. The bot stays off: `STAGING_BOT_ENABLED` does not exist yet.
+5. Enter the staging operator password at the hidden prompt (§1).
+6. Enable `STAGING_BOT_ENABLED`, after §2 has proved a dedicated identity.
+7. Run the no-input manual staging redeploy and verify the bot (§2).
+8. Perform the real handset → ingest → dashboard SMS acceptance (§3).
+9. Authorise and run the secure production-dump rehearsal, and record its
+   attestation for the merged sha and the exact digest staging accepted.
+10. Run **Prepare Production** — candidates, migration, temporary domains.
+    Customers are still on the old applications.
+11. Read the preparation evidence, then run **Cutover Production** — the only
+    step that moves live domains and the bot.
+
+Steps 10 and 11 are two separate dispatches on purpose. A production release
+has one irreversible step and several reversible ones, and putting them behind
+one button means the reversible ones are only ever seen in hindsight.
 
 The rest of this file is the part that is not automatic.
 
@@ -261,3 +295,44 @@ manifest is checksummed before a field of it is read, and cross-checked against
 the run it claims to come from.
 
 Production is not touched by anything else in this repository.
+
+### What promotion additionally requires
+
+A production-dump rehearsal, recorded as a checksummed attestation and
+verified before any credential is in scope. It binds the merged sha, the CI
+run, the Deploy Staging run, the exact digest, `49/49` dump suites, `32/32`
+invariants, the financial comparison, the restore result and duration, and
+whether the CURRENT production image still serves the migrated schema.
+
+That last field is what keeps image rollback valid. If it says `fail`, rolling
+back to the old image is not a recovery path and only a database restore is —
+which has to be known before the migration runs, not discovered after.
+
+The attestation cannot be produced before the merge: the digest it binds does
+not exist until staging has deployed. `deploy/write-dump-attestation.sh` writes
+it on the secure host; `deploy/verify-dump-attestation.sh` refuses a promotion
+whose attestation is missing, malformed, stale, or for a different release.
+
+The dump itself never leaves that host. `dump_id` is a sha256 and a date, and a
+value shaped like a path is refused by the writer.
+
+### Splitting promotion in two
+
+`Prepare Production` and `Cutover Production` replace the single promotion for
+a release that changes the schema. Preparation creates the candidates stopped,
+migrates, and proves the candidates on temporary domains while customers stay
+on the old applications; cutover moves the domains and hands the bot over.
+
+Between them, `deploy/write-preparation-manifest.sh` records what preparation
+observed and created — including which application currently answers on each
+live domain — and `deploy/verify-preparation-manifest.sh` re-checks all of it
+at cutover. Any drift aborts: a schema that moved, an unhealthy candidate, a
+domain somebody already repointed, native Auto Deploy switched back on, a bot
+lock count that is not exactly one, a vanished backup.
+
+**Not yet implemented:** the two workflows' on-box execution. Creating the
+Coolify candidate applications needs the Coolify API token, which is root-only
+on the deployment host, and a write-API payload shape that has not been
+verified against this Coolify version. The gates, both manifests and all of
+their refusals exist and are tested; the step that creates and moves
+applications does not, and is deliberately absent rather than guessed at.
