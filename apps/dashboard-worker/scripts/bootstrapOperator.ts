@@ -13,12 +13,23 @@
  * hiding of the password and the reading of `ENV_NAME` all live in
  * `operator.ts`; this file is what the tests can call. Nothing it returns
  * contains the password, the hash, a session token or a TOTP secret.
+ *
+ * It holds no SQL. Refusals and hashing happen here, the four statements they
+ * guard live in `@shikoo/db` and run in one transaction — so «does both halves
+ * or neither», which the paragraph above claims, is now true of the audit row
+ * as well as the account.
  */
 
+import { OPERATOR_ROLES, OperatorExistsError, upsertOperator } from '@shikoo/db';
 import type { D1Database } from '@shikoo/db';
 import { hashPassword, passwordProblem } from '@shikoo/domain';
 
-export const ROLES = ['ADMIN', 'REVIEWER', 'READ_ONLY'] as const;
+/**
+ * One list, and it is the database's. `access_users.role` has a CHECK on
+ * exactly these three; a copy here that drifted would turn a refusal this file
+ * could explain into a constraint violation nobody can read.
+ */
+export const ROLES = OPERATOR_ROLES;
 export type Role = (typeof ROLES)[number];
 
 /**
@@ -129,84 +140,36 @@ export async function bootstrapOperator(
 ): Promise<BootstrapResult> {
   const { email, role } = check(input);
 
-  const existing = await db
-    .prepare(`SELECT id, role FROM access_users WHERE email = ?1`)
-    .bind(email)
-    .first<{ id: string; role: string }>();
+  // Hashed here, before the transaction opens, because scrypt takes real time
+  // and a connection held across it is a connection doing nothing. It is the
+  // same call the login path verifies against — a second implementation would
+  // be a second thing to get wrong.
+  const passwordHash = await hashPassword(input.password);
 
-  if (existing && input.update !== true) {
-    throw new BootstrapError(
-      `${email} already exists — re-run with --update to change its password and role`,
-      'exists',
-    );
+  try {
+    const result = await upsertOperator(db, {
+      email,
+      role,
+      passwordHash,
+      allowUpdate: input.update === true,
+      actor: input.actor ?? null,
+      reason: `operator bootstrap on ${input.envName}`,
+    });
+    return {
+      outcome: result.outcome,
+      email,
+      role,
+      revokedSessions: result.revokedSessions,
+    };
+  } catch (err) {
+    // The one database refusal this file can say something useful about. Every
+    // other failure is a real fault and travels untouched.
+    if (err instanceof OperatorExistsError) {
+      throw new BootstrapError(
+        `${email} already exists — re-run with --update to change its password and role`,
+        'exists',
+      );
+    }
+    throw err;
   }
-
-  // Hashed once, here, so neither branch below can be written to store a
-  // plaintext by accident. `hashPassword` is the same call the login path
-  // verifies against — a second implementation would be a second thing to get
-  // wrong.
-  const hash = await hashPassword(input.password);
-  const id = existing?.id ?? crypto.randomUUID();
-  const now = Date.now();
-
-  if (existing) {
-    await db
-      .prepare(
-        `UPDATE access_users
-            SET role = ?2, active = 1, password_hash = ?3, password_updated_at = now(),
-                failed_attempts = 0, locked_until = NULL, updated_at = ?4
-          WHERE id = ?1`,
-      )
-      .bind(id, role, hash, now)
-      .run();
-  } else {
-    await db
-      .prepare(
-        `INSERT INTO access_users
-           (id, email, role, active, created_at, updated_at, password_hash, password_updated_at)
-         VALUES (?1, ?2, ?3, 1, ?4, ?4, ?5, now())`,
-      )
-      .bind(id, email, role, now, hash)
-      .run();
-  }
-
-  // Every session that existed belonged to whoever knew the previous password.
-  const killed = await db
-    .prepare(
-      `UPDATE operator_sessions SET revoked_at = now()
-        WHERE access_user_id = ?1 AND revoked_at IS NULL`,
-    )
-    .bind(id)
-    .run();
-
-  // `audit_logs`, not `app_events`: this is what an operator did, and the table
-  // has an append-only trigger on it. `SYSTEM` because the actor held a shell
-  // rather than a session — there was no session to hold yet.
-  //
-  // `after_json` names the account and its role and stops there. A password
-  // field, even null, is a field somebody later fills in.
-  await db
-    .prepare(
-      `INSERT INTO audit_logs
-         (id, actor_email, actor_role, action, entity_type, entity_id,
-          after_json, reason, created_at)
-       VALUES (?1, ?2, 'SYSTEM', ?3, 'access_user', ?4, ?5, ?6, ?7)`,
-    )
-    .bind(
-      crypto.randomUUID(),
-      input.actor ?? null,
-      existing ? 'operator.bootstrap.updated' : 'operator.bootstrap.created',
-      id,
-      JSON.stringify({ email, role, active: 1 }),
-      `operator bootstrap on ${input.envName}`,
-      now,
-    )
-    .run();
-
-  return {
-    outcome: existing ? 'updated' : 'created',
-    email,
-    role,
-    revokedSessions: killed.meta.changes,
-  };
 }
