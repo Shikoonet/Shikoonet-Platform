@@ -29,6 +29,25 @@
 # and it builds `github.event.workflow_run.head_sha` explicitly — never a
 # default checkout, which on this trigger is the branch tip and may already be
 # a commit nothing has tested.
+#
+# ── Why the manual trigger takes NO inputs ─────────────────────────────────
+#
+# `workflow_dispatch` exists so that redeploying current `main` — after a
+# Coolify variable was fixed, or to roll the bot out — does not require an
+# empty commit pushed purely to make `workflow_run` fire. That worked, and it
+# wrote a lie into the history of a repository whose entire deployment story is
+# provenance.
+#
+# It accepts no sha, no digest, no image, no ref and no run id. An input naming
+# the artifact would hand the answer to whoever pressed the button, and every
+# guard downstream exists to prove that what ships is what was reviewed. The
+# workflow resolves `refs/heads/main` on the server, `require-ci-run.sh` refuses
+# it unless CI already passed on that exact sha as a push to main, and the same
+# `approval-gate.sh` then runs unchanged — including its branch-race re-read,
+# which is what refuses a sha that stopped being main while this was thinking.
+#
+# The deploy test asserts the absence of those inputs textually, so adding one
+# back is a red build rather than a review someone skimmed.
 
 name: Deploy Staging
 
@@ -37,6 +56,9 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
+  # Deliberately empty. See the header: no sha, no digest, no image, no ref,
+  # no run id. Adding `inputs:` here is what the deploy test greps for.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -57,10 +79,11 @@ jobs:
   gate:
     name: gate
     if: >-
-      github.event_name == 'workflow_run'
-      && github.event.workflow_run.conclusion == 'success'
-      && github.event.workflow_run.event == 'push'
-      && github.event.workflow_run.head_branch == 'main'
+      (github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && github.event.workflow_run.head_branch == 'main')
+      || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -68,15 +91,57 @@ jobs:
       actions: read
       pull-requests: read
     outputs:
-      sha: ${{ github.event.workflow_run.head_sha }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      ci_run_id: ${{ steps.resolve.outputs.ci_run_id }}
       policy: ${{ steps.gate.outputs.policy }}
       pr_number: ${{ steps.gate.outputs.pr_number }}
     steps:
+      # A dispatch from any branch but main is refused before a checkout, a
+      # token or an API call. `workflow_dispatch` offers a branch picker and
+      # there is no setting that removes it, so this is the only place the
+      # restriction can live.
+      - name: a manual redeploy runs from main or not at all
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -Eeuo pipefail
+          REF='${{ github.ref }}'
+          if [ "$REF" != 'refs/heads/main' ]; then
+            echo "::error::Deploy Staging runs from refs/heads/main; this dispatch came from «${REF}»"
+            exit 1
+          fi
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # The commit CI passed, explicitly. Never the default ref.
-          ref: ${{ github.event.workflow_run.head_sha }}
+          #
+          # On a dispatch the event carries no sha, so `main` is checked out
+          # whole — full history, because the sha is resolved from the ref
+          # below rather than taken from anything the dispatcher typed.
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.event.workflow_run.head_sha }}
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && 0 || 1 }}
           persist-credentials: false
+
+      # The sha, decided here and nowhere else.
+      - id: resolve
+        name: resolve the commit to deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
+            # From the ref, not from an input. `git rev-parse` on the checkout
+            # this workflow just made, so there is no field a dispatcher can
+            # fill in that reaches this line.
+            SHA=$(git rev-parse refs/heads/main)
+            echo "sha=${SHA}" >>"$GITHUB_OUTPUT"
+            # And it only counts if CI already passed on it, as a push, on
+            # main — the fact `workflow_run` supplies for free on the
+            # automatic path and that a dispatch has to go and ask for.
+            bash deploy/require-ci-run.sh "${{ github.repository }}" "$SHA"
+          else
+            echo "sha=${{ github.event.workflow_run.head_sha }}" >>"$GITHUB_OUTPUT"
+            echo "ci_run_id=${{ github.event.workflow_run.id }}" >>"$GITHUB_OUTPUT"
+          fi
 
       - id: gate
         name: approval provenance
@@ -84,7 +149,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPLOY_APPROVAL_MODE: ${{ env.DEPLOY_APPROVAL_MODE }}
           SOLO_DEPLOY_OWNER: ${{ env.SOLO_DEPLOY_OWNER }}
-        run: bash deploy/approval-gate.sh "${{ github.repository }}" "${{ github.event.workflow_run.head_sha }}"
+        run: bash deploy/approval-gate.sh "${{ github.repository }}" "${{ steps.resolve.outputs.sha }}"
 
       - name: say which policy allowed this, in the run summary
         run: |
@@ -203,6 +268,11 @@ jobs:
           DIGEST: ${{ needs.image.outputs.digest }}
           POLICY: ${{ needs.gate.outputs.policy }}
           PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
+          # The CI run that actually gated this deploy — the `workflow_run`
+          # that triggered it, or the run `require-ci-run.sh` found for a
+          # manual redeploy. Not this workflow's own id, which is what the
+          # field used to fall back to and therefore never recorded.
+          CI_RUN_ID: ${{ needs.gate.outputs.ci_run_id }}
         run: bash deploy/write-release-manifest.sh out
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
