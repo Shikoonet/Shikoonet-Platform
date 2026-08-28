@@ -333,3 +333,112 @@ for n, imgs in seen.items():
 print(",".join(f"{n}={seen[n][0]}" for n in want))
 PY
 }
+
+# An exact remote, not a substring.
+#
+# `case "$r" in *Shikoonet/Shikoonet-Platform*)` also matches
+# `https://evil.example/x/Shikoonet/Shikoonet-Platform-backdoor`. Identity
+# comparisons do not get to be fuzzy.
+rehearsal_require_known_remote() { # url
+  local r=$1
+  case "$r" in
+    https://github.com/Shikoonet/Shikoonet-Platform \
+    | https://github.com/Shikoonet/Shikoonet-Platform.git \
+    | git@github.com:Shikoonet/Shikoonet-Platform \
+    | git@github.com:Shikoonet/Shikoonet-Platform.git \
+    | ssh://git@github.com/Shikoonet/Shikoonet-Platform \
+    | ssh://git@github.com/Shikoonet/Shikoonet-Platform.git)
+      return 0 ;;
+  esac
+  echo "[repo] origin '${r}' is not an exact known remote for this repository" >&2
+  return 1
+}
+
+# ── GitHub, with the status actually looked at ────────────────────────────
+#
+# `curl -K cfg "$url"` returns a body and nothing else, so a 401 or a 404 comes
+# back as JSON that the next step parses as if it had succeeded. The empty
+# result then surfaces as "no successful Deploy Staging run" — a sentence about
+# the release when the truth was about the token.
+#
+# The status is set in the CALLER's shell because this is invoked as a plain
+# command, never as `$(...)`. That is the same bug the Coolify client had, and
+# it is not being rebuilt here.
+# Read by every caller of `gh_request`, which shellcheck cannot see from
+# inside this file alone.
+# shellcheck disable=SC2034
+GH_BODY=''
+# shellcheck disable=SC2034
+GH_STATUS=000
+gh_request() { # curl-config url
+  local cfg=$1 url=$2 out
+  GH_BODY=''
+  GH_STATUS=000
+  out=$(curl -K "$cfg" -sS -w '%{http_code}' "$url" 2>/dev/null) || return 1
+  [ ${#out} -ge 3 ] || return 1
+  # shellcheck disable=SC2034
+  GH_STATUS=${out: -3}
+  # shellcheck disable=SC2034
+  GH_BODY=${out:0:${#out}-3}
+  return 0
+}
+
+# Turns a status into a decision, so every caller refuses the same way.
+gh_classify() { # status label
+  case "$1" in
+    2??) return 0 ;;
+    000) echo "[github] ${2}: nothing answered — transport failure" >&2; return 1 ;;
+    401) echo "[github] ${2}: authentication failed (401) — the token is wrong or expired" >&2; return 1 ;;
+    403) echo "[github] ${2}: forbidden (403) — the token lacks the scope, or is rate limited" >&2; return 1 ;;
+    404) echo "[github] ${2}: not found (404) — the resource does not exist for this token" >&2; return 1 ;;
+    5??) echo "[github] ${2}: GitHub returned ${1} — refusing rather than retrying blindly" >&2; return 1 ;;
+    *)   echo "[github] ${2}: unexpected status ${1}" >&2; return 1 ;;
+  esac
+}
+
+# ── production resources, by exact identity ───────────────────────────────
+#
+# Selecting by the name `production` or `shikoo-ingest` is selecting by a label
+# somebody can change. The uuids are the identity, and the configured set must
+# agree with what Coolify reports exactly — not as a subset, not as a substring.
+rehearsal_check_app_uuids() { # observed-file expected-csv
+  python3 - "$1" "$2" <<'PY'
+import re, sys
+obs = {}
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line: continue
+    parts = line.split('|')
+    if len(parts) != 2:
+        print("[uuid] malformed observation", file=sys.stderr); sys.exit(1)
+    name, uuid = parts
+    if not re.fullmatch(r'[a-z0-9]{20,32}', uuid):
+        print(f"[uuid] {name} has uuid '{uuid}', which is not a Coolify uuid", file=sys.stderr)
+        sys.exit(1)
+    if name in obs:
+        print(f"[uuid] {name} matched more than one application", file=sys.stderr); sys.exit(1)
+    obs[name] = uuid
+want = dict(p.split('=') for p in sys.argv[2].split(',') if p)
+if set(obs) != set(want):
+    print("[uuid] application set differs: observed " + ",".join(sorted(obs))
+          + " expected " + ",".join(sorted(want)), file=sys.stderr)
+    sys.exit(1)
+for n in sorted(want):
+    if obs[n] != want[n]:
+        print(f"[uuid] {n} is {obs[n]} in Coolify, expected {want[n]}", file=sys.stderr)
+        sys.exit(1)
+print("ok")
+PY
+}
+
+# The backup path must BE the resource's directory, not merely contain its uuid
+# somewhere. `/tmp/evil-<uuid>-staging` contains it too.
+rehearsal_backup_dir_belongs() { # dir db-uuid
+  local dir=$1 uuid=$2 base
+  base=$(basename "$dir")
+  case "$base" in
+    *"-${uuid}") return 0 ;;
+  esac
+  echo "[backup] '${base}' is not the backup directory of database ${uuid}" >&2
+  return 1
+}

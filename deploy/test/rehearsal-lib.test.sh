@@ -346,5 +346,98 @@ refuses 'a stopped application is refused' 'no running container' \
     "shikoo-dashboard|production|c2|${IMG}|healthy" \
     "shikoo-bot|production|c3|${IMG}|healthy")" "$WANT"
 
+
+# ── GitHub status awareness ──────────────────────────────────────────────
+section 'a GitHub error is never a successful call'
+
+GHBIN="$WORK/ghbin"; mkdir -p "$GHBIN"
+mkcurl() { # status body
+  cat >"$GHBIN/curl" <<EOF
+#!/bin/sh
+[ "$1" = TRANSPORT ] && exit 7
+printf '%s%s' '$2' '$1'
+EOF
+  chmod +x "$GHBIN/curl"
+  printf '%s' "$GHBIN/curl"
+}
+gh_probe() { # status body -> "rc|status"
+  mkcurl "$1" "$2" >/dev/null
+  PATH="$GHBIN:$PATH" bash -c '
+    . "$1/deploy/rehearsal-lib.sh"
+    set +e
+    gh_request /dev/null https://api.github.com/x
+    rc=$?
+    printf "%s|%s" "$rc" "$GH_STATUS"
+  ' _ "$ROOT"
+}
+for spec in '200|{"sha":"x"}|0|200' '401|{"message":"Bad credentials"}|0|401' \
+            '403|{"message":"forbidden"}|0|403' '404|{"message":"Not Found"}|0|404' \
+            '500|{"message":"oops"}|0|500'; do
+  st=$(printf '%s' "$spec" | cut -d'|' -f1); body=$(printf '%s' "$spec" | cut -d'|' -f2)
+  wrc=$(printf '%s' "$spec" | cut -d'|' -f3); wst=$(printf '%s' "$spec" | cut -d'|' -f4)
+  got=$(gh_probe "$st" "$body")
+  if [ "$got" = "${wrc}|${wst}" ]; then ok "HTTP ${st} is reported as ${st}"; else
+    bad "HTTP ${st} is reported as ${st}" "got '${got}'"
+  fi
+done
+got=$(gh_probe TRANSPORT '')
+case "$got" in 1\|000) ok 'a transport failure is rc=1 with status 000' ;;
+  *) bad 'a transport failure is rc=1 with status 000' "got '${got}'" ;; esac
+
+# The classifier must refuse everything that is not 2xx, and say which.
+for spec in '200|0' '204|0' '401|1' '403|1' '404|1' '500|1' '000|1' '302|1'; do
+  st=${spec%%|*}; want=${spec##*|}
+  set +e; out=$(gh_classify "$st" 'the call' 2>&1); rc=$?; set -e
+  if [ "$rc" = "$want" ]; then ok "gh_classify ${st} -> rc ${want}"; else
+    bad "gh_classify ${st} -> rc ${want}" "rc=${rc} ${out}"
+  fi
+done
+set +e; out=$(gh_classify 401 'reading main' 2>&1); set -e
+case "$out" in *"token is wrong or expired"*) ok 'a 401 names the token, not the release' ;;
+  *) bad 'a 401 names the token, not the release' "got '${out}'" ;; esac
+
+# ── exact identity ───────────────────────────────────────────────────────
+section 'production resources are matched by exact identity'
+
+U1=d9ulbwkdjpvg2ajalecruxzh; U2=huneuqvzyw0cjd4u0f7s37cf; U3=3xetld1oi3x7viq8cr8is0ls
+obs() { printf '%s\n' "$@" >"$WORK/obs.txt"; printf '%s' "$WORK/obs.txt"; }
+EXPECT="shikoo-ingest=${U1},shikoo-dashboard=${U2},shikoo-bot=${U3}"
+
+accepts 'matching uuids are accepted' rehearsal_check_app_uuids \
+  "$(obs "shikoo-ingest|${U1}" "shikoo-dashboard|${U2}" "shikoo-bot|${U3}")" "$EXPECT"
+refuses 'a swapped uuid is refused' 'expected' rehearsal_check_app_uuids \
+  "$(obs "shikoo-ingest|${U2}" "shikoo-dashboard|${U2}" "shikoo-bot|${U3}")" "$EXPECT"
+refuses 'a missing application is refused' 'application set differs' rehearsal_check_app_uuids \
+  "$(obs "shikoo-ingest|${U1}" "shikoo-dashboard|${U2}")" "$EXPECT"
+refuses 'an extra application is refused' 'application set differs' rehearsal_check_app_uuids \
+  "$(obs "shikoo-ingest|${U1}" "shikoo-dashboard|${U2}" "shikoo-bot|${U3}" "shikoo-dev-bot|${U1}")" "$EXPECT"
+refuses 'a non-uuid is refused' 'not a Coolify uuid' rehearsal_check_app_uuids \
+  "$(obs "shikoo-ingest|../etc" "shikoo-dashboard|${U2}" "shikoo-bot|${U3}")" "$EXPECT"
+
+section 'the backup directory must BE the resource directory'
+
+accepts 'the canonical backup directory is accepted' \
+  rehearsal_backup_dir_belongs "/data/coolify/backups/databases/team/shikoo-postgres-${U1}" "$U1"
+refuses 'a directory merely containing the uuid is refused' 'is not the backup directory' \
+  rehearsal_backup_dir_belongs "/tmp/evil-${U1}-staging" "$U1"
+refuses 'an unrelated directory is refused' 'is not the backup directory' \
+  rehearsal_backup_dir_belongs "/data/backups/other-resource" "$U1"
+
+section 'the repository remote is an exact allowlist'
+
+for good in https://github.com/Shikoonet/Shikoonet-Platform \
+            https://github.com/Shikoonet/Shikoonet-Platform.git \
+            git@github.com:Shikoonet/Shikoonet-Platform.git; do
+  accepts "an exact remote is accepted (${good##*/})" rehearsal_require_known_remote "$good"
+done
+# The substring test this replaces would have accepted every one of these.
+for bad_r in https://evil.example/x/Shikoonet/Shikoonet-Platform-backdoor \
+             https://github.com/Shikoonet/Shikoonet-Platform-evil \
+             https://github.com/Evil/Shikoonet/Shikoonet-Platform \
+             '' ; do
+  refuses "a lookalike remote is refused (${bad_r:-empty})" 'not an exact known remote' \
+    rehearsal_require_known_remote "$bad_r"
+done
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

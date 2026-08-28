@@ -836,6 +836,13 @@ jobs:
       - name: rehearsal guards — executed, not grepped
         run: bash deploy/test/rehearsal-lib.test.sh
 
+      # The D1 table set is generated from the migrator's own source. This
+      # regenerates and compares, so adding a table without updating the
+      # manifest is a red build rather than a quietly widened acceptance — the
+      # first version named four tables out of twenty-three.
+      - name: D1 contract — the manifest matches the migrator
+        run: bash deploy/test/d1-contract.test.sh
+
       - name: production-dump rehearsal — fail-closed, exact thresholds, cleanup
         run: bash deploy/test/production-dump-rehearsal.test.sh
 
