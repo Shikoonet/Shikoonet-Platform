@@ -41,8 +41,11 @@ on:
 permissions:
   contents: read
 
+# ONE group, shared with `promote-production.yml` — see the note there. A
+# staging deploy and a promotion must never overlap: they write and read the
+# same ledger and take the same flock on the box.
 concurrency:
-  group: deploy-staging
+  group: shikoo-deploy
   cancel-in-progress: false
 
 env:
