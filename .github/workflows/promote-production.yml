@@ -1,0 +1,166 @@
+# The one way production changes: a person, on purpose.
+#
+# ══════════════════════════════════════════════════════════════════════════
+# THERE IS NO AUTOMATIC PATH INTO THIS FILE
+# ══════════════════════════════════════════════════════════════════════════
+#
+# `workflow_dispatch` and nothing else. No `push`, no `workflow_run`, no
+# schedule, and no repository variable that could grow one. `deploy-staging.yml`
+# cannot reach production because it contains no production job at all — the
+# switch was removed rather than switched off.
+#
+# ── What must be true before a single production byte moves ────────────────
+#
+#   · the actor is the allowlisted owner
+#   · `confirm` is exactly PROMOTE — a choice whose default is «no»
+#   · a staging run SUCCEEDED and left a release manifest
+#   · that manifest verifies against its own checksum
+#   · its digest is an immutable `sha256:` + 64 lowercase hex
+#   · its sha is reachable from the current `main`
+#
+# ── Why there is no digest input ───────────────────────────────────────────
+#
+# The digest is read from the artifact of a named staging run, which exists
+# only because that deploy migrated, deployed and smoke-tested. Offering a
+# digest field would make «what shipped» a thing somebody types, and the whole
+# provenance chain would end at the paste buffer.
+
+name: Promote Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Promote the staging-tested digest to PRODUCTION?'
+        required: true
+        type: choice
+        default: 'no — cancel'
+        options:
+          - 'no — cancel'
+          - PROMOTE
+      staging_run_id:
+        description: 'Deploy Staging run id (leave empty to use the latest successful run for current main)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Never two promotions, and never a promotion while one is running. Not
+# cancellable: `deploy.sh` holds a flock on the box and killing the client does
+# not release the process behind it.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
+  SOLO_DEPLOY_OWNER: Isusami
+
+jobs:
+  promote-gate:
+    name: promote-gate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      digest: ${{ steps.read.outputs.digest }}
+      sha: ${{ steps.read.outputs.sha }}
+    steps:
+      - name: the two things a person must get right
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ env.SOLO_DEPLOY_OWNER }}
+        run: |
+          set -Eeuo pipefail
+          # Typed in full, and compared exactly. A dispatch form remembers its
+          # last input, so a promotion is otherwise two clicks from anybody who
+          # opened the page — and this one restarts the bot and the panel for
+          # real customers.
+          if [ "$CONFIRM" != 'PROMOTE' ]; then
+            echo "::error::type PROMOTE to confirm; got «${CONFIRM}»"
+            exit 1
+          fi
+          # The same person the gate allows to ship unreviewed. Production is
+          # the half of solo mode that is NOT automatic, so the actor is checked
+          # here rather than inferred from whoever holds a token.
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::only @${OWNER} may promote to production; this run was started by @${ACTOR}"
+            exit 1
+          fi
+          echo "confirmed by @${ACTOR}"
+
+      # The ledger. This artifact exists only because a staging deploy RAN and
+      # SUCCEEDED — `deploy.sh` smoke-tests before the job reaches the upload —
+      # so its existence is the proof, and there is no digest input for anybody
+      # to type. An arbitrary tag, sha or digest cannot be promoted because
+      # there is nowhere to put one.
+      # Which staging run. Named explicitly, or the latest one that SUCCEEDED
+      # for the commit `main` currently points at — never «the most recent run»,
+      # which could be a failure or a different commit.
+      - id: pick
+        name: choose the staging run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIVEN: ${{ inputs.staging_run_id }}
+        run: bash deploy/pick-staging-run.sh "${{ github.repository }}"
+
+      # Full history: the manifest's commit has to be checked for reachability
+      # from `main`, and a shallow clone cannot answer that.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: staging-digest
+          path: out
+          run-id: ${{ steps.pick.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: read
+        name: verify the manifest and read what staging ran
+        env:
+          EXPECTED_REPO: ${{ github.repository }}
+        run: bash deploy/verify-release-manifest.sh out
+
+  promote:
+    name: promote
+    needs: promote-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The commit that digest was built from, so the `deploy.sh` that runs
+          # is the one reviewed on it — not whatever main is now.
+          ref: ${{ needs.promote-gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The SAME digest staging ran. Nothing is rebuilt here.
+          IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ needs.promote-gate.outputs.digest }}
+          SHA: ${{ needs.promote-gate.outputs.sha }}
+          # A promotion IS a production deploy, so it carries the bot too —
+          # otherwise promoting would quietly leave the bot a version behind
+          # and the two production paths would disagree about what «deployed»
+          # means.
+          DEPLOY_BOT_ENABLED: 'true'
+          DEPLOY_APPROVAL_POLICY: promoted-by-hand
+        run: bash deploy/over-ssh.sh production
