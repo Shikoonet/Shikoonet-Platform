@@ -58,6 +58,35 @@ case "$POLICY" in
   *) fail "manifest approval_policy is '${POLICY:-none}' — staging did not record an approved policy" ;;
 esac
 
+# The manifest must describe the run it arrived from.
+#
+# Both values are REQUIRED. They used to be optional — each comparison sat
+# inside `if [ -n "${VAR:-}" ]` — which meant a future edit that stopped passing
+# one would silently delete that cross-check and promote anyway, with nothing
+# failing and nothing said. An absent guard has to be louder than a failing one,
+# not quieter.
+#
+# Validated whole-string before either is compared, so a value carrying a
+# newline cannot pass on the strength of one of its lines, and an uppercase or
+# malformed sha is refused as itself rather than as a mismatch.
+[ -n "${EXPECTED_RUN_ID:-}" ] ||
+  fail "EXPECTED_RUN_ID is not set — the verifier cannot confirm which staging run this manifest came from"
+[[ $EXPECTED_RUN_ID =~ ^[0-9]{1,20}$ ]] ||
+  fail "EXPECTED_RUN_ID '${EXPECTED_RUN_ID}' is not a run id"
+
+[ -n "${EXPECTED_RUN_HEAD_SHA:-}" ] ||
+  fail "EXPECTED_RUN_HEAD_SHA is not set — the verifier cannot confirm which commit staging deployed"
+[[ $EXPECTED_RUN_HEAD_SHA =~ ^[0-9a-f]{40}$ ]] ||
+  fail "EXPECTED_RUN_HEAD_SHA '${EXPECTED_RUN_HEAD_SHA}' is not 40 lowercase hex characters"
+
+# Unconditional from here. There is no path that skips either comparison.
+MANIFEST_RUN=$(field staging_run_id)
+[ "$MANIFEST_RUN" = "$EXPECTED_RUN_ID" ] ||
+  fail "manifest was written by staging run ${MANIFEST_RUN:-unknown}, but it arrived from run ${EXPECTED_RUN_ID}"
+
+[ "$SHA" = "$EXPECTED_RUN_HEAD_SHA" ] ||
+  fail "manifest is for commit ${SHA:0:12}, but the staging run deployed ${EXPECTED_RUN_HEAD_SHA:0:12}"
+
 # The commit must still be on `main`. A manifest for a commit that was reverted,
 # or that only ever lived on a branch, is not a thing to put in front of
 # customers however green its staging run was.
