@@ -830,6 +830,12 @@ jobs:
       # matters about the replacement is that it cannot write an attestation on
       # anything less than a complete pass, and leaves nothing behind when it
       # fails.
+      # The executable half. The textual suite proves the script CONTAINS
+      # things; these call the real guards with real inputs, which is what the
+      # review findings were actually about.
+      - name: rehearsal guards — executed, not grepped
+        run: bash deploy/test/rehearsal-lib.test.sh
+
       - name: production-dump rehearsal — fail-closed, exact thresholds, cleanup
         run: bash deploy/test/production-dump-rehearsal.test.sh
 

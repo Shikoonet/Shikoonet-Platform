@@ -49,7 +49,7 @@ LOCKFILE=/var/lock/shikoo-task-runner.lock
 STATE_DIR=/var/lib/shikoo
 
 # The hash of the manifest that lists every script this may run.
-MANIFEST_SHA256=0150b23cb41f5601e5c003b6afe1f770ab07ca026f21e33886baa9249daf7767
+MANIFEST_SHA256=d6c73cda91a0e02b71759baabd25152ef9b358caf978bf9713172cb7f1de03d6
 
 die() { echo "shikoo-task-runner: $*" >&2; exit 1; }
 note() {
@@ -194,8 +194,12 @@ case "$1" in
   verify-evidence)
     verify_bundle
     echo "evidence:"
+    # All four, independently. An earlier edit replaced the staging
+    # restore-drill line with the production one, which silently dropped the
+    # evidence that staging's backups had ever been proven restorable.
     checksum_or_absent "$STATE_DIR/coolify-contract.env"
     checksum_or_absent "$STATE_DIR/step-e-evidence.env"
+    checksum_or_absent "$STATE_DIR/restore-attestation.env"
     checksum_or_absent "$STATE_DIR/production/attestation/attestation.env"
     note "verify-evidence run"
     ;;
@@ -204,8 +208,12 @@ case "$1" in
     echo "bundle:   verified against MANIFEST ($(grep -c . "$LIB/MANIFEST") script(s)), root-owned"
     echo "sudoers:  $([ -f "$SUDOERS" ] && echo present || echo absent)"
     echo "evidence:"
+    # All four, independently. An earlier edit replaced the staging
+    # restore-drill line with the production one, which silently dropped the
+    # evidence that staging's backups had ever been proven restorable.
     checksum_or_absent "$STATE_DIR/coolify-contract.env"
     checksum_or_absent "$STATE_DIR/step-e-evidence.env"
+    checksum_or_absent "$STATE_DIR/restore-attestation.env"
     checksum_or_absent "$STATE_DIR/production/attestation/attestation.env"
     ;;
   revoke-access)
