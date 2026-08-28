@@ -83,7 +83,12 @@ cfg() { # key -> value, read as text, never sourced
 [ -r "$CONF" ] || die "cannot read $CONF"
 COOLIFY_URL=$(cfg COOLIFY_URL)
 COOLIFY_TOKEN=$(cfg COOLIFY_TOKEN)
-[ -n "$COOLIFY_URL" ] && [ -n "$COOLIFY_TOKEN" ] || die "$CONF has no COOLIFY_URL/COOLIFY_TOKEN"
+# Spelled as an `if` rather than `A && B || C`: shellcheck reads that as a
+# possible if-then-else mistake (SC2015), and it is right to — `C` runs when
+# `A` is true and `B` is false. Same correction ca14816 made in the gate.
+if [ -z "$COOLIFY_URL" ] || [ -z "$COOLIFY_TOKEN" ]; then
+  die "$CONF has no COOLIFY_URL/COOLIFY_TOKEN"
+fi
 
 # Token to curl through a config file on stdin — never argv, which every
 # process on the host can read.
