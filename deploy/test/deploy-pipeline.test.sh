@@ -587,7 +587,7 @@ run_deploy_ref() { # image-ref
     >"$DEPLOY_LOG" 2>&1
   local rc=$?
   set -e
-  return $rc
+  return "$rc"
 }
 
 run_deploy() { # bot-flag
