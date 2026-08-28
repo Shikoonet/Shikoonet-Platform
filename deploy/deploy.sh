@@ -457,6 +457,22 @@ wait_healthy() { # uuid name old_cid want_image_id
 }
 
 roll_one() { # uuid name tag sha
+  # Asked again, immediately before the write.
+  #
+  # The pre-flight above runs before the migration, and the migration takes
+  # time. A person editing an application in the Coolify UI during that window
+  # would move it out from under a check that already passed, and the deploy
+  # would then hand a tag to something that rebuilds from git. One GET per
+  # application closes all of the window this script can see.
+  #
+  # What it does NOT do is serialise against the Coolify UI. There is no lock,
+  # advisory or otherwise, that a shell script can take against a human with a
+  # browser — Coolify exposes no such primitive — so this narrows the race
+  # rather than removing it. `assert_running_digest` after the deploy is the
+  # backstop: whatever happened in between, the container has to be running the
+  # bytes this run pulled.
+  assert_deployable "$1" "$2"
+
   local old_cid want ref
   old_cid=$(container_for "$1")
   # The image must be here to have an ID to compare against. It already is for

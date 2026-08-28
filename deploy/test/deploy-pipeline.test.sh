@@ -141,8 +141,15 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
           printf '%s\n' "$uuid" >>"$FAKE_REPLACED"
           printf '{"ok":true}' ;;
         GET:/applications/*)
+          pack=${FAKE_BUILD_PACK:-dockerimage}
+          # Somebody editing the application in the Coolify UI midway through a
+          # deploy: the type is right for the first N reads and wrong after.
+          if [ -n "${FAKE_FLIP_AFTER:-}" ]; then
+            printf 'x\n' >>"$FAKE_APP_READS"
+            [ "$(wc -l <"$FAKE_APP_READS")" -gt "$FAKE_FLIP_AFTER" ] && pack=dockerfile
+          fi
           printf '{"uuid":"x","build_pack":"%s","docker_registry_image_name":"%s"}' \
-            "${FAKE_BUILD_PACK:-dockerimage}" "${FAKE_APP_IMAGE:-ghcr.io/x/y}" ;;
+            "$pack" "${FAKE_APP_IMAGE:-ghcr.io/x/y}" ;;
         *) printf '{"message":"no coolify route"}' >&2; exit 22 ;;
       esac
       exit 0 ;;
@@ -542,6 +549,7 @@ run_deploy() { # bot-flag
   : >"$WORK/pins"
   : >"$WORK/deploys"
   : >"$WORK/replaced"
+  : >"$WORK/appreads"
   set +e
   env \
     FAKE_COOLIFY_URL='http://127.0.0.1:8000' \
@@ -549,6 +557,7 @@ run_deploy() { # bot-flag
     FAKE_LABEL_SHA="$SHA_MERGED" FAKE_BUILD_PACK="${FAKE_BUILD_PACK:-dockerimage}" \
     FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-ghcr.io/x/y@sha256:abc}" \
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
+    FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
     bash "$DEPLOY" production "ghcr.io/x/y@sha256:abc" "$SHA_MERGED" \
@@ -654,6 +663,25 @@ else
 fi
 unset FAKE_NO_ENV_NAME
 
+# The pre-flight runs before the migration, and the migration takes time. An
+# application edited in the Coolify UI during that window would move out from
+# under a check that already passed. The two application reads below are the
+# pre-flight's; the third is the one `roll_one` makes immediately before it
+# writes.
+FAKE_FLIP_AFTER=2
+if run_deploy false; then
+  bad 'catches an application whose type changed after the pre-flight' 'it deployed anyway'
+else
+  if grep -qF 'not a Docker Image application' "$DEPLOY_LOG" &&
+    ! grep -q '^uuid-ingest$' "$WORK/deploys"; then
+    ok 'catches an application whose type changed after the pre-flight'
+  else
+    bad 'catches an application whose type changed after the pre-flight' \
+      "$(tail -2 "$DEPLOY_LOG")"
+  fi
+fi
+unset FAKE_FLIP_AFTER
+
 section 'deploy.sh — the container must carry the digest that was deployed'
 
 # Healthy is not the same as correct. This is the one failure nothing else on
@@ -710,17 +738,6 @@ wait "$HOLDER" 2>/dev/null || true
 
 section 'over-ssh.sh — only a digest is deployable'
 
-# A malformed digest, and no digest at all. Refused before an SSH session is
-# opened and before the deploy flock is taken, so a bad promotion input never
-# reaches the box.
-for bad_ref in 'ghcr.io/shikoonet/shikoonet-platform@sha256' 'ghcr.io/shikoonet/shikoonet-platform@md5:abc' ''; do
-  if try_over_ssh "$bad_ref"; then
-    bad "refuses the malformed reference '${bad_ref:-<empty>}'" 'it was accepted'
-  else
-    ok "refuses the malformed reference '${bad_ref:-<empty>}'"
-  fi
-done
-
 try_over_ssh() { # image-ref
   set +e
   env DEPLOY_SSH_KEY=k DEPLOY_KNOWN_HOSTS=h DEPLOY_HOST=h DEPLOY_USER=u \
@@ -730,6 +747,25 @@ try_over_ssh() { # image-ref
   set -e
   return $rc
 }
+# A malformed digest, and no reference at all. Refused before an SSH session is
+# opened and before the deploy flock is taken, so a bad promotion input never
+# reaches the box.
+#
+# The REASON is asserted, not merely the exit code. This loop sat above
+# `try_over_ssh`'s definition for one commit, so every case exited 127 with
+# «command not found» and was recorded as a pass — a test that asserted
+# nothing while reading green.
+for bad_ref in 'ghcr.io/shikoonet/shikoonet-platform@sha256' 'ghcr.io/shikoonet/shikoonet-platform@md5:abc' ''; do
+  name="refuses the malformed reference '${bad_ref:-<empty>}'"
+  if try_over_ssh "$bad_ref"; then
+    bad "$name" 'it was accepted'
+  elif grep -qF 'not an immutable digest' "$WORK/ssh.log"; then
+    ok "$name"
+  else
+    bad "$name" "refused, but not as a bad digest: $(tail -1 "$WORK/ssh.log")"
+  fi
+done
+
 if try_over_ssh 'ghcr.io/shikoonet/shikoonet-platform:latest'; then
   bad 'refuses a mutable tag as deployment input' 'it accepted :latest'
 else
