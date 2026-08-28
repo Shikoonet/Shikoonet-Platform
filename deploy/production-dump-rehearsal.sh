@@ -170,7 +170,15 @@ fi
 # `loadConfig()` defaults this to a path inside `legacy/hub-cloudflare/`, so a
 # rehearsal that let the default stand would report 49/49 about a checked-in
 # fixture. There is no default here and no fallback.
-D1_TABLES=${D1_TABLES:-access_users,devices,device_credentials,settings}
+# The set comes from the committed contract, generated from the migrator's own
+# source, and NOT from the environment. An overridable list is a check the
+# caller can switch off, and the first version's four tables were a fifth of
+# the real twenty-three — so nineteen could have been missing and it passed.
+D1_MANIFEST="$HERE/d1-tables.manifest"
+rehearsal_require_secure_file "$D1_MANIFEST" 644 "the D1 table contract" ||
+  die "the D1 table contract is not secured as required"
+D1_TABLES=$(tr '\n' ',' <"$D1_MANIFEST" | sed 's/,$//')
+[ -n "$D1_TABLES" ] || die "the D1 table contract is empty"
 if ! rehearsal_validate_d1_export "$D1_EXPORT_DIR" "$D1_TABLES"; then
   echo "[rehearsal] STOP: the production D1 export is missing or is not production data." >&2
   echo "[rehearsal] Owner action, exactly one:" >&2
@@ -203,18 +211,26 @@ umask 077
 chmod 600 "$GH_DIR/gh"
 unset GH_TOKEN_VALUE
 
-gh_api() { # path -> body on stdout
-  curl -K "$GH_DIR/gh" "https://api.github.com/$1" 2>/dev/null
+# Status-aware. The previous version returned only a body, so a 401 or 404 was
+# parsed as if it had succeeded and surfaced later as a sentence about the
+# release when the truth was about the token.
+gh_api() { # path label -> body on stdout, refuses on any non-2xx
+  gh_request "$GH_DIR/gh" "https://api.github.com/$1" || {
+    gh_classify 000 "$2"
+    return 1
+  }
+  gh_classify "$GH_STATUS" "$2" || return 1
+  printf '%s' "$GH_BODY"
 }
 
-MAIN_SHA=$(gh_api "repos/${REPO}/commits/main" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha") or "")') ||
+MAIN_SHA=$(gh_api "repos/${REPO}/commits/main" "reading the head of main" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha") or "")') ||
   die "could not read the head of main"
 [[ $MAIN_SHA =~ ^[0-9a-f]{40}$ ]] || die "main head is not a commit sha"
 say "   main_sha=${MAIN_SHA}"
 
 # The same picker Prepare Production uses, so the run this attests to is the
 # run that would be promoted — not a different one that happens to be green.
-STAGING_RUN_ID=$(gh_api "repos/${REPO}/actions/workflows/deploy-staging.yml/runs?per_page=50&status=success" |
+STAGING_RUN_ID=$(gh_api "repos/${REPO}/actions/workflows/deploy-staging.yml/runs?per_page=50&status=success" "listing Deploy Staging runs" |
     python3 -c 'import json,sys
 d=json.load(sys.stdin).get("workflow_runs") or []
 m=[r for r in d if r.get("head_sha")==sys.argv[1]]
@@ -222,7 +238,7 @@ print(sorted(m,key=lambda r:r.get("run_started_at") or "")[-1]["id"] if m else "
 [ -n "$STAGING_RUN_ID" ] || die "no successful Deploy Staging run for ${MAIN_SHA:0:12} — staging has not accepted this release"
 say "   staging_run_id=${STAGING_RUN_ID}"
 
-CI_RUN_ID=$(gh_api "repos/${REPO}/actions/workflows/ci.yml/runs?per_page=100&head_sha=${MAIN_SHA}" |
+CI_RUN_ID=$(gh_api "repos/${REPO}/actions/workflows/ci.yml/runs?per_page=100&head_sha=${MAIN_SHA}" "listing CI runs" |
   python3 -c 'import json,sys
 d=json.load(sys.stdin).get("workflow_runs") or []
 m=[r for r in d if r.get("event")=="push" and r.get("status")=="completed"
@@ -233,14 +249,15 @@ say "   ci_run_id=${CI_RUN_ID}"
 
 # The digest comes from the manifest staging wrote, verified rather than read.
 ART=$(mktemp -d); CLEANUP_DIRS="$CLEANUP_DIRS $ART"
-ART_URL=$(gh_api "repos/${REPO}/actions/runs/${STAGING_RUN_ID}/artifacts" |
+ART_URL=$(gh_api "repos/${REPO}/actions/runs/${STAGING_RUN_ID}/artifacts" "listing staging artifacts" |
   python3 -c 'import json,sys
 d=json.load(sys.stdin).get("artifacts") or []
 m=[a for a in d if a.get("name")=="staging-digest" and not a.get("expired")]
 print(m[0]["archive_download_url"] if m else "")')
 [ -n "$ART_URL" ] || die "run ${STAGING_RUN_ID} has no staging-digest artifact"
-curl -K "$GH_DIR/gh" -L -o "$ART/a.zip" "$ART_URL" ||
-  die "could not download the staging-digest artifact"
+DL_STATUS=$(curl -K "$GH_DIR/gh" -L -o "$ART/a.zip" -w '%{http_code}' "$ART_URL" 2>/dev/null || echo 000)
+gh_classify "$DL_STATUS" "downloading the staging-digest artifact" ||
+  die "the staging-digest artifact could not be downloaded"
 ( cd "$ART" && python3 -c 'import zipfile,sys; zipfile.ZipFile("a.zip").extractall(".")' ) ||
   die "the staging-digest artifact did not unpack"
 EXPECTED_REPO="$REPO" EXPECTED_RUN_ID="$STAGING_RUN_ID" EXPECTED_RUN_HEAD_SHA="$MAIN_SHA" \
@@ -255,13 +272,25 @@ say "   digest=${DIGEST}"
 
 # ── 3. the repository, verified rather than trusted ──────────────────────
 say "3. verifying the checkout"
-rehearsal_require_secure_file "$REPO_DIR/.git/HEAD" 644 "the checkout's git dir" >/dev/null 2>&1 || true
+# `… || true` was here, which made this a security check that could not fail.
+# An assertion that always passes is worse than no assertion: it reads like
+# coverage.
+rehearsal_require_secure_file "$REPO_DIR/.git/HEAD" 644 "the checkout's git HEAD" ||
+  die "the checkout's git metadata is not secured as required"
+
+# An exact allowlist. `*Shikoonet/Shikoonet-Platform*` also matches
+# `https://evil.example/x/Shikoonet/Shikoonet-Platform-backdoor`, which is the
+# whole problem with substring tests on identity.
 REMOTE=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)
-case "$REMOTE" in *Shikoonet/Shikoonet-Platform*) ;; *) die "REPO_DIR does not point at this repository" ;; esac
+rehearsal_require_known_remote "$REMOTE" ||
+  die "REPO_DIR's origin is not an exact known remote for this repository"
 [ "$(git -C "$REPO_DIR" rev-parse HEAD)" = "$MAIN_SHA" ] ||
   die "REPO_DIR is not at the release commit — code from an arbitrary checkout is not what this attests to"
+# `--porcelain` already lists untracked files as `??`, so this covers both
+# modifications and additions. An untracked file in the checkout is code that
+# is not in the release.
 [ -z "$(git -C "$REPO_DIR" status --porcelain)" ] ||
-  die "REPO_DIR has local modifications; the rehearsal runs the release, not a working copy"
+  die "REPO_DIR has local modifications or untracked files; the rehearsal runs the release, not a working copy"
 [ -f "$REPO_DIR/pnpm-lock.yaml" ] || die "REPO_DIR has no committed lockfile"
 say "   checkout is ${MAIN_SHA:0:12}, clean, correct remote"
 
@@ -295,13 +324,22 @@ BACKUP_OK=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -A
      join standalone_postgresqls p on p.id = b.database_id
     where p.uuid = '${PROD_DB_UUID}' and b.enabled;" 2>/dev/null || echo 0)
 [ "${BACKUP_OK:-0}" -ge 1 ] || die "production has no enabled scheduled backup to rehearse from"
-case "$PROD_BACKUP_DIR" in
-  *"$PROD_DB_UUID"*) ;;
-  *) die "PROD_BACKUP_DIR does not belong to the production database resource" ;;
-esac
+# Not a substring test: `/tmp/evil-<uuid>-staging` contains the uuid too.
+rehearsal_backup_dir_belongs "$PROD_BACKUP_DIR" "$PROD_DB_UUID" ||
+  die "PROD_BACKUP_DIR is not the backup directory of the production database"
+
 NEWEST=$(find "$PROD_BACKUP_DIR" -maxdepth 1 -name '*.dmp' -type f -printf '%T@ %p\n' 2>/dev/null |
   sort -rn | head -1 | cut -d' ' -f2-)
 [ -n "$NEWEST" ] || die "no production backup dump found to restore"
+# The selected dump itself, not just the directory it sits in.
+[ ! -L "$NEWEST" ] || die "the selected backup is a symlink — refusing"
+[ -f "$NEWEST" ] || die "the selected backup is not a regular file"
+case "$(stat -c '%a' "$NEWEST")" in
+  *[2367]) die "the selected backup is group- or world-writable" ;;
+esac
+# And the dump the legacy half reads.
+[ ! -L "$DUMP_PATH" ] || die "the Mirzabot dump is a symlink — refusing"
+[ -f "$DUMP_PATH" ] || die "the Mirzabot dump is not a regular file"
 
 docker run --pull=never -d --name "$RESTORE_C" --network "$NET" -e POSTGRES_PASSWORD=rehearsal \
   -e POSTGRES_DB=prodrestore "$PG_IMAGE" >/dev/null || die "could not start the restore target"
@@ -460,22 +498,49 @@ say "12. old-image compatibility"
 # disagree with any more: a key that is consulted and then silently loses to
 # live state makes a wrong config look successful, which is worse than not
 # having the key at all.
+# The uuids come from the root-controlled deployment config — the same file
+# `deploy.sh` reads — and are then required to agree with Coolify exactly. A
+# name is a label somebody can change; the uuid is the identity.
+DEPLOY_CONF=${DEPLOY_CONF:-/etc/shikoo/production/deploy.env}
+rehearsal_require_secure_file "$DEPLOY_CONF" 640 "the production deploy config" ||
+  die "the production deploy config is not secured as required"
+dcfg() { sed -n "s/^$1=//p" "$DEPLOY_CONF" | head -n1; }
+EXP_INGEST=$(dcfg APP_INGEST); EXP_DASHBOARD=$(dcfg APP_DASHBOARD); EXP_BOT=$(dcfg APP_BOT)
+for pair in "APP_INGEST=$EXP_INGEST" "APP_DASHBOARD=$EXP_DASHBOARD" "APP_BOT=$EXP_BOT"; do
+  v=${pair#*=}
+  printf '%s' "$v" | grep -qE '^[a-z0-9]{20,32}$' ||
+    die "${pair%%=*} in ${DEPLOY_CONF} is not a Coolify uuid"
+done
+
+# Observed uuids must match the configured ones exactly, as a set.
+OBSERVED="$ART/observed-uuids.txt"
+: >"$OBSERVED"
+for app in shikoo-ingest shikoo-dashboard shikoo-bot; do
+  u=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At -c \
+    "select a.uuid from applications a join environments e on e.id = a.environment_id
+      where a.name = '${app}' and e.name = 'production';" 2>/dev/null)
+  n=$(printf '%s\n' "$u" | grep -c . || true)
+  [ "${n:-0}" -eq 1 ] || die "${app} matched ${n:-0} production applications, expected exactly 1"
+  printf '%s|%s\n' "$app" "$u" >>"$OBSERVED"
+done
+rehearsal_check_app_uuids "$OBSERVED" \
+  "shikoo-ingest=${EXP_INGEST},shikoo-dashboard=${EXP_DASHBOARD},shikoo-bot=${EXP_BOT}" >/dev/null ||
+  die "the live production application uuids do not match the deployment config exactly"
+say "   application uuids agree with ${DEPLOY_CONF}"
+
 LIVE_FACTS="$ART/live.txt"
 : >"$LIVE_FACTS"
-for app in shikoo-ingest shikoo-dashboard shikoo-bot; do
-  row=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At -F'|' -c \
-    "select a.name, e.name, a.uuid from applications a
-       join environments e on e.id = a.environment_id
-      where a.name = '${app}';" 2>/dev/null | head -1)
-  [ -n "$row" ] || die "no application named ${app} in Coolify"
-  a_name=${row%%|*}; rest=${row#*|}; a_env=${rest%%|*}; a_uuid=${rest#*|}
+while IFS='|' read -r app a_uuid; do
+  [ -n "$app" ] || continue
+  a_name=$app
+  a_env=production
   cid=$(docker ps --filter "label=coolify.name=${a_uuid}" --format '{{.Names}}' | head -1)
   n_c=$(docker ps --filter "label=coolify.name=${a_uuid}" --format '{{.Names}}' | grep -c . || true)
   [ "${n_c:-0}" -eq 1 ] || die "${app} resolves to ${n_c:-0} running containers, expected exactly 1"
   img=$(docker inspect -f '{{.Image}}' "$cid" 2>/dev/null || true)
   hlth=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}running{{end}}' "$cid" 2>/dev/null || true)
   printf '%s|%s|%s|%s|%s\n' "$a_name" "$a_env" "$cid" "$img" "$hlth" >>"$LIVE_FACTS"
-done
+done <"$OBSERVED"
 LIVE_IMAGES=$(rehearsal_check_live_production "$LIVE_FACTS" 'shikoo-ingest,shikoo-dashboard,shikoo-bot') ||
   die "the live production applications could not be resolved to exactly one healthy container each"
 say "   live production images resolved by immutable id"
