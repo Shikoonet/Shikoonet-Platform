@@ -175,8 +175,11 @@ jobs:
           # token. Telegram hands each update to one getUpdates caller, so a
           # staging bot holding the production token silently takes messages
           # away from the bot customers are talking to. Before setting this,
-          # confirm the staging application's TELEGRAM_BOT_TOKEN is a bot of its
-          # own — `docs/RELEASE.md` says how to confirm it without reading it.
+          # the staging application's TELEGRAM_BOT_TOKEN has to be a bot of its
+          # own. Nothing can check that from outside without reading a token, so
+          # it is the owner's judgement until the bot boots — after which it has
+          # written its own @username down and the two databases can be
+          # compared. `docs/RELEASE.md` §2 is the procedure.
           #
           # Anything but the exact string `true` is off, in `deploy.sh` as well.
           DEPLOY_BOT_ENABLED: ${{ vars.STAGING_BOT_ENABLED == 'true' && 'true' || 'false' }}
