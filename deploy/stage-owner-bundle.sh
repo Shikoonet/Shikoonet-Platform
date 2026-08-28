@@ -151,6 +151,12 @@ chmod 0644 "$TMP_INST"
 } >"$TMP_PROV"
 chmod 0644 "$TMP_PROV"
 
+# The swap is not interruptible. `on_signal` removes $TMP and exits, and between
+# moving the old bundle aside and moving the new one in there is a window where
+# doing that would leave NO staging directory — the opposite of what the header
+# of this script promises. Blocking both signals across those two renames means
+# the sequence completes or never starts.
+trap '' INT TERM
 if [ -e "$STAGING" ]; then
   OLD="${STAGING}.old.$$"
   mv -T "$STAGING" "$OLD"
@@ -167,6 +173,8 @@ fi
 TMP=''
 mv -Tf "$TMP_INST" "$INST_OUT"
 mv -Tf "$TMP_PROV" "$PROV_OUT"
+trap 'on_signal INT 130' INT
+trap 'on_signal TERM 143' TERM
 
 say "staging directory replaced: ${STAGING}"
 say "installer: ${INST_OUT}"

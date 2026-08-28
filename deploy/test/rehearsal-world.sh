@@ -90,7 +90,13 @@ APP_BOT=$FAKE_UUID_BOT
 DCONF
   chmod 640 "$w/etc/deploy.env"
   : >"$w/lock/release.lock"; chmod 660 "$w/lock/release.lock"
+  find "$w" -type d -exec chmod 755 {} + 2>/dev/null
 
+  # This working tree has umask 002, so every directory here is created 775 —
+  # group-writable, which the secure-file guards refuse and are right to. A
+  # real secure host has 755. The fixture is corrected to match the host, not
+  # the guard relaxed to accept the fixture.
+  chmod 755 "$w" "$w"/{etc,state,repo,d1,backups,art,bin,lock,tmp}
   cp "$HERE/fake/docker" "$HERE/fake/curl" "$w/bin/"
   # The script under test, so a mutation is applied to a copy and never to the
   # repository's own file.

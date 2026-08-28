@@ -48,7 +48,7 @@ BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
 # The one hard-coded value. Everything else is derived from the manifest it
 # pins, and a CI test asserts this still equals
 # sha256sum deploy/shikoo-task-runner.manifest.
-MANIFEST_SHA256=489a916f4d4f1440838133198dabc18ff39c0c1da19565a8141cfdd6a8955249
+MANIFEST_SHA256=b7898092e0b2102c32f9e65cc39a29f9a4b32c8bdc24aeb88cd2bd60ed0b6444
 
 say() { echo "[install] $*"; }
 die() { echo "[install] FAILED: $*" >&2; exit 1; }
@@ -181,7 +181,18 @@ RELEASE_LOCK=/var/lock/shikoo-deploy-production.lock
 if [ -e "$RELEASE_LOCK" ] && [ "$(stat -c '%u' "$RELEASE_LOCK")" != '0' ]; then
   fail_back "$RELEASE_LOCK already exists and is not owned by root — someone else created it first"
 fi
-install -o root -g "$RUN_AS" -m 0660 /dev/null "$RELEASE_LOCK"
+# Adopted, never replaced. `install ... /dev/null "$RELEASE_LOCK"` writes a NEW
+# inode at that path every time. If a rehearsal or a Prepare run is holding
+# flock on the old inode, it keeps holding it — while everything that opens the
+# path afterwards locks a different file. The mutual exclusion disappears with
+# no error anywhere. So the file is created only if it is absent, and the
+# ownership and mode are then set on whatever is there.
+if [ ! -e "$RELEASE_LOCK" ]; then
+  install -o root -g "$RUN_AS" -m 0660 /dev/null "$RELEASE_LOCK"
+else
+  chown root:"$RUN_AS" "$RELEASE_LOCK"
+  chmod 0660 "$RELEASE_LOCK"
+fi
 [ "$(stat -c '%U:%G:%a' "$RELEASE_LOCK")" = "root:$RUN_AS:660" ] ||
   fail_back "$RELEASE_LOCK is not root:$RUN_AS 0660 after installation"
 say "release lock $RELEASE_LOCK is root:$RUN_AS 0660"

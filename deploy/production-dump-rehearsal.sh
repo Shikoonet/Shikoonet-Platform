@@ -365,9 +365,8 @@ NEWEST=$(find "$PROD_BACKUP_DIR" -maxdepth 1 -name '*.dmp' -type f -printf '%T@ 
 # The selected dump itself, not just the directory it sits in.
 [ ! -L "$NEWEST" ] || die "the selected backup is a symlink — refusing"
 [ -f "$NEWEST" ] || die "the selected backup is not a regular file"
-case "$(stat -c '%a' "$NEWEST")" in
-  *[2367]) die "the selected backup is group- or world-writable" ;;
-esac
+rehearsal_refuse_if_writable "$NEWEST" "the selected production backup" ||
+  die "the selected backup is group- or world-writable"
 # And the dump the legacy half reads.
 [ ! -L "$DUMP_PATH" ] || die "the Mirzabot dump is a symlink — refusing"
 [ -f "$DUMP_PATH" ] || die "the Mirzabot dump is not a regular file"
