@@ -774,6 +774,89 @@ jobs:
       - name: deploy pipeline — gate, bot switch, digest promotion
         run: bash deploy/test/deploy-pipeline.test.sh
 
+      # The duplicate-variable classifier decrypts a DATABASE_URL and a bot
+      # token in order to say which row is which. Most of this suite is the
+      # negative half — the sentinel secrets must appear nowhere in its output
+      # — because a tool that reads secrets to describe them is one careless
+      # printf away from putting a production URL in a CI log.
+      # The client every Coolify caller shares. The regression it encodes: the
+      # status used to be set inside `$(...)`, so callers always read 0 and a
+      # verified 200 reported «the token was refused (HTTP 0)». The mutation
+      # cases exist because the fix is one convenience wrapper away from being
+      # undone.
+      - name: coolify api client — the status survives the call
+        run: bash deploy/test/coolify-api.test.sh
+
+      # Two live-contract mismatches this repository found by measuring instead
+      # of trusting: `is_auto_deploy_enabled: false` is accepted and DISCARDED
+      # at create time for Docker Image applications, and DELETE is
+      # asynchronous. Both looked correct until something checked.
+      - name: coolify app contract — hardening is verified, deletion is awaited
+        run: bash deploy/test/coolify-app.test.sh
+
+      # The drill's defaults named a container that does not exist on the host,
+      # so a backup verifier would have died on its first command — never
+      # having run, with nothing saying the backups were unverified.
+      - name: restore drill — it resolves its target instead of assuming one
+        run: bash deploy/test/restore-drill.test.sh
+
+      # The Step-E runner deletes rows from a live Coolify. The cases that
+      # matter are the refusals, and the sharpest is the bot one: the id named
+      # as the intended staging identity is what PRODUCTION polls with, so it
+      # is pinned as a disqualifier rather than a target.
+      - name: step-e runner — the four ways it must refuse
+        run: bash deploy/test/step-e.test.sh
+
+      # Against the response this Coolify actually returns: 20 fields, `uuid`
+      # present, numeric `id` absent, both `value` and `real_value`. The
+      # absence of `id` is what killed the first run, before it mutated
+      # anything.
+      - name: step-e runner — the live API row shape
+        run: bash deploy/test/step-e-live-shape.test.sh
+
+      # The task runner is the only thing that will run as root on the
+      # deployment host, so its source belongs in the pull request that
+      # introduces it. An earlier draft shipped it as 117 KB of base64 with a
+      # self-checksum — which proves internal consistency, not that anybody
+      # reviewed what is inside.
+      - name: task runner — eight subcommands, no wildcard, no interpreter
+        run: bash deploy/test/task-runner.test.sh
+
+      - name: task runner installer — its refusals, exercised
+        run: bash deploy/test/task-runner-installer.test.sh
+
+      - name: coolify duplicate classifier — it reads secrets and prints none
+        run: bash deploy/test/classify-envs.test.sh
+
+      # The production-dump attestation, as a control rather than a document.
+      # The question this suite asks is not «can one be written» but «can a
+      # promotion proceed without one that verifies», so most of it is
+      # refusals: missing, malformed, mismatched and stale, each by its own
+      # message.
+      - name: production-dump attestation — missing, stale and mismatched all block
+        run: bash deploy/test/attestation.test.sh
+
+      # The two-dispatch production release leaves a deliberate gap so a person
+      # can read the evidence. This suite is about what happens in that gap:
+      # every fact preparation recorded is re-observed at cutover, and an
+      # observation that was never gathered is refused rather than assumed.
+      - name: production preparation — drift between prepare and cutover blocks
+        run: bash deploy/test/preparation.test.sh
+
+      # "Create three Docker Image applications" is correct exactly once. The
+      # interesting run is the SECOND one, which must create nothing and keep
+      # the same three uuids — otherwise every release leaves three more
+      # near-identically named applications behind it.
+      - name: production candidates — a second release creates zero applications
+        run: bash deploy/test/candidates.test.sh
+
+      # actionlint proves these two files are valid. It cannot prove that only
+      # one of them moves a customer domain, or that neither accepts a field
+      # naming what to ship — properties of what the files mean, and exactly
+      # the ones whose loss would be invisible in review.
+      - name: production dispatches — owner-only, main-only, and naming nothing
+        run: bash deploy/test/production-workflows.test.sh
+
   # -----------------------------------------------------------------------
   # Secret detection.
   #

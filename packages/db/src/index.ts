@@ -33,6 +33,17 @@ import type {
 
 export { DialectError, toPostgres, parameterCount } from './dialect.js';
 export {
+  OPERATOR_ROLES,
+  OperatorExistsError,
+  countLiveSessions,
+  deleteOperatorByEmail,
+  insertOperatorWithHash,
+  upsertOperator,
+  type OperatorRole,
+  type OperatorUpsert,
+  type OperatorUpsertResult,
+} from './operators.js';
+export {
   SCHEMA_LOCK_ID,
   baseline,
   looksAlreadyMigrated,

@@ -27,9 +27,25 @@ each row is the `required()` / `optional()` / `PASSTHROUGH` list in the relevant
 Two rules follow from the current architecture and are worth stating before the
 table, because most miscategorisation comes from ignoring them:
 
-1. **Deployment is server-side.** `deploy/autodeploy.sh` on the Coolify host is
-   the only thing that deploys. GitHub Actions therefore needs no Coolify token,
-   no SSH key and no deploy webhook. Adding one is exposure without a consumer.
+0. **Production is released by two dispatches, never one.** *(Added
+   2026-08-28.)* `Prepare Production` does everything reversible while
+   customers are still on the old applications; `Cutover Production` moves the
+   live domains and hands the bot over. Neither accepts a commit, digest,
+   image, ref or run id — the release is whatever the latest successful
+   `Deploy Staging` run for the current `main` produced. `COOLIFY_TOKEN` is
+   consumed only on the host, through the same read-as-text path `deploy.sh`
+   uses, and never reaches GitHub.
+
+1. **Deployment is driven by GitHub Actions.** *(Corrected 2026-08-28; this
+   rule used to say the opposite.)* `deploy-staging.yml` builds one image and
+   hands its digest to `deploy/deploy.sh` over SSH; `promote-production.yml`
+   promotes that same digest by hand. The five `DEPLOY_*` environment secrets
+   therefore DO have a consumer on `main` — `deploy/over-ssh.sh` — and the
+   `staging` and `production` GitHub Environments are load-bearing rather than
+   vestigial. `deploy/autodeploy.sh` is retired and its timer is disabled on the
+   host. Coolify still needs no inbound webhook: native Auto Deploy and preview
+   deployments are off on every application, and `deploy/deploy.sh` now asserts
+   that on every deploy rather than trusting it.
 2. **A runtime secret is not a build argument.** Coolify passes every variable
    marked build-time to `docker build` as `--build-arg`, and BuildKit records
    `ARG NAME=value` in the image's layer history. Anything sensitive must be
@@ -169,7 +185,7 @@ permission is `read` and which cannot approve pull requests.
 | --- | --- | --- | --- |
 | `GITHUB_TOKEN` | automatic | GitHub (automatic) | PRESENT — never create by hand |
 | `PRODUCTION_AUTO_DEPLOY` | *nothing on `main` or this branch* | GitHub Variable | **UNUSED** |
-| `DEPLOY_HOST` `DEPLOY_PORT` `DEPLOY_USER` `DEPLOY_SSH_KEY` `DEPLOY_KNOWN_HOSTS` | *no workflow on `main`*; consumed only by `deploy.yml` / `promote.yml` / `rollback.yml` on the unmerged `dev` branch | GitHub Environment Secrets (`staging`, `production`) | **WRONG_LOCATION under server-side deployment — NEEDS_OWNER_ACTION (§7)** |
+| `DEPLOY_HOST` `DEPLOY_PORT` `DEPLOY_USER` `DEPLOY_SSH_KEY` `DEPLOY_KNOWN_HOSTS` | consumed on `main` by `deploy/over-ssh.sh`, from `deploy-staging.yml` and `promote-production.yml` | GitHub Environment Secrets (`staging`, `production`) | **CORRECT — this is where they belong** *(corrected 2026-08-28)* |
 
 GitHub Environments `staging` and `production` exist with **no protection
 rules**. Under server-side deployment they should not exist at all; they are
@@ -261,7 +277,8 @@ should be granted.
    just re-flagging.
 6. ~~`PANEL_TEST_PANEL` / `PANEL_TEST_PANEL_URL` are still build-time~~ — fixed
    2026-08-27; both are runtime-only now.
-7. **`PRODUCTION_AUTO_DEPLOY` and the five `DEPLOY_*` environment secrets have
-   no consumer on `main`.** Whether they are removed depends on which
-   deployment architecture wins — PR #2 (Actions-driven) or PR #3
-   (server-side). Do not delete until that is decided.
+7. **Resolved, 2026-08-28.** The Actions-driven architecture won, so the five
+   `DEPLOY_*` environment secrets have a consumer and stay where they are.
+   `PRODUCTION_AUTO_DEPLOY` has no consumer and cannot regain one: the
+   production job was deleted rather than gated on it, and a deploy test greps
+   both workflows for the name so it cannot come back even as prose.

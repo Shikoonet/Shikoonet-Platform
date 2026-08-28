@@ -2,6 +2,7 @@
  * Operator accounts, from a terminal.
  *
  *   corepack pnpm --filter @shikoo/dashboard operator list
+ *   corepack pnpm --filter @shikoo/dashboard operator bootstrap sam@example.com ADMIN
  *   corepack pnpm --filter @shikoo/dashboard operator create sam@example.com ADMIN
  *   corepack pnpm --filter @shikoo/dashboard operator set-password sam@example.com
  *   corepack pnpm --filter @shikoo/dashboard operator enroll-totp sam@example.com
@@ -23,6 +24,7 @@
 import { createInterface } from 'node:readline';
 import { stdin, stdout } from 'node:process';
 import { createPostgresD1 } from '@shikoo/db';
+import { BootstrapError, bootstrapOperator, ROLES } from './bootstrapOperator.js';
 import {
   generateSecret,
   hashPassword,
@@ -30,8 +32,6 @@ import {
   passwordProblem,
   verifyTotp,
 } from '@shikoo/domain';
-
-const ROLES = ['ADMIN', 'REVIEWER', 'READ_ONLY'];
 
 /**
  * One interface for the whole run.
@@ -161,14 +161,63 @@ async function main(): Promise<number> {
 
     if (!command || !email) {
       console.error(
-        'usage: operator <list|create|set-password|enroll-totp|disable-totp|unlock> [email] [role]',
+        'usage: operator <list|bootstrap|create|set-password|enroll-totp|disable-totp|unlock> [email] [role] [--update] [--env NAME]',
       );
       return 2;
     }
 
+    if (command === 'bootstrap') {
+      // Both halves of «make the first account» in one run: the row and the
+      // password it needs to be worth anything. See `bootstrapOperator.ts` for
+      // why it is one step here and two in `create` + `set-password`.
+      //
+      // `--env` takes a value, so the role cannot be «the first argument that
+      // is not a flag» — that finds `staging` when the role is left to default.
+      const rest = process.argv.slice(4);
+      let role: string | undefined;
+      let expectEnv: string | undefined;
+      let update = false;
+      for (let i = 0; i < rest.length; i += 1) {
+        const arg = rest[i] as string;
+        if (arg === '--update') update = true;
+        else if (arg === '--env') {
+          expectEnv = rest[i + 1];
+          i += 1;
+        } else if (role === undefined) role = arg;
+        else {
+          console.error(`unexpected argument ${JSON.stringify(arg)}`);
+          return 2;
+        }
+      }
+
+      const password = await askHidden(`password for ${email}: `);
+      if ((await askHidden('again: ')) !== password) {
+        console.error('the two did not match. Nothing was changed.');
+        return 1;
+      }
+      const result = await bootstrapOperator(db, {
+        envName: process.env['ENV_NAME'],
+        expectEnv,
+        email,
+        role,
+        password,
+        update,
+        // Who ran it, for the audit row. Not an identity claim — nothing here
+        // authenticates it — which is why the row's actor_role is SYSTEM.
+        actor: process.env['SUDO_USER'] ?? process.env['USER'],
+      });
+      console.log(
+        `${result.outcome} ${result.email} as ${result.role}` +
+          (result.revokedSessions > 0
+            ? `. ${result.revokedSessions} existing session(s) revoked.`
+            : '.'),
+      );
+      return 0;
+    }
+
     if (command === 'create') {
       const role = (process.argv[4] ?? 'ADMIN').toUpperCase();
-      if (!ROLES.includes(role)) {
+      if (!(ROLES as readonly string[]).includes(role)) {
         console.error(`role must be one of ${ROLES.join(', ')}`);
         return 2;
       }
@@ -292,6 +341,8 @@ main().then(
   (code) => process.exit(code),
   (error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exit(2);
+    // A refusal is a 1 — the operator did something wrong and can fix it. A 2
+    // is this script being called wrongly. `deploy` scripts branch on these.
+    process.exit(error instanceof BootstrapError ? 1 : 2);
   },
 );

@@ -1,0 +1,31 @@
+# The complete grant. Nothing here is a pattern.
+#
+# Installed by deploy/install-shikoo-task-runner.sh as
+# /etc/sudoers.d/90-shikoo-task-runner, mode 0440, root:root.
+# Removed by: sudo -n /usr/local/sbin/shikoo-task-runner revoke-access
+#
+# Every line is one complete command. There is deliberately:
+#
+#   no NOPASSWD: ALL          — that is the grant this exists to avoid
+#   no ALL command target     — same
+#   no * wildcard             — an argument the caller chooses is an argument
+#                               the caller can choose badly
+#   no interpreter            — naming bash or sh plus a path would make
+#                               anybody who can write that path root
+#   no SETENV                 — the caller must not choose the environment of
+#                               something running as root
+#   no optional arguments     — each invocation is spelled out in full
+#
+# The target binary is root-owned 0755 and re-verifies every script it runs
+# against a hash manifest before each run, so writing to it is not a path in
+# either direction.
+Defaults!/usr/local/sbin/shikoo-task-runner env_reset
+Defaults!/usr/local/sbin/shikoo-task-runner secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner step-e-dry-run
+hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner step-e-apply
+hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner backup-dry-run
+hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner backup-apply
+hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner restore-drill-staging
+hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner verify-evidence
+hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner status
+hessamx ALL=(root) NOPASSWD: /usr/local/sbin/shikoo-task-runner revoke-access
