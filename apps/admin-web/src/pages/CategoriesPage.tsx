@@ -28,8 +28,15 @@
  */
 
 import { useEffect, useState } from 'react';
-import { api, ApiError, type ButtonStyle, type CategoryRow } from '../api.js';
-import { count } from '../format.js';
+import { MAX_CATALOG_ROWS } from '@shikoo/contracts';
+import {
+  api,
+  ApiError,
+  type ButtonStyle,
+  type CategoryRow,
+  type ServiceRow,
+} from '../api.js';
+import { count, STATUS_FA } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 import { LayoutEditor } from './LayoutEditor.js';
 import { BadgeField, badgeValue } from './BadgeField.js';
@@ -51,6 +58,7 @@ export function CategoriesPage() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<number | null>(null);
   const [arranging, setArranging] = useState(false);
+  const [arrangingTiers, setArrangingTiers] = useState<number | null>(null);
 
   async function load() {
     setLoading(true);
@@ -236,6 +244,9 @@ export function CategoriesPage() {
                   </div>
                 </div>
               )}
+              {arrangingTiers === r.id && (
+                <ArrangeTiers category={r} onSaved={() => void load()} />
+              )}
               <div className="cat-card__actions">
                 <button
                   type="button"
@@ -247,6 +258,24 @@ export function CategoriesPage() {
                 </button>
                 <button type="button" className="btn btn-sm" onClick={() => toggle(r)} {...w}>
                   {r.active ? 'خاموش کن' : 'روشن کن'}
+                </button>
+                {/* The screen THIS category opens, which is a different screen
+                    from the one the header arranges. One service is not a
+                    choice — the bot skips straight past it to the prices — so
+                    there is nothing to arrange until there are two. */}
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={r.productsCount < 2}
+                  title={
+                    r.productsCount < 2
+                      ? 'با یک سرویس، ربات این صفحه را رد می‌کند'
+                      : `چیدمان سرویس‌های «${r.name}» در ربات`
+                  }
+                  onClick={() => setArrangingTiers(arrangingTiers === r.id ? null : r.id)}
+                  {...w}
+                >
+                  {arrangingTiers === r.id ? 'بستن چیدمان' : 'چیدمان سرویس‌ها'}
                 </button>
                 {/* Drawn only when it can succeed. The route and the foreign key
                     both refuse a category holding products, and a button that
@@ -281,19 +310,70 @@ export function CategoriesPage() {
 }
 
 /**
- * Arranging a category's PRICES used to live here, and it moved to «سرویس‌ها»
- * on 2026-08-27.
+ * Arranging a category's PRICES used to live here, and moved to «سرویس‌ها» on
+ * 2026-08-27, because the screen it edited had stopped existing: a category
+ * lists SERVICES, and prices are one step further in. Arranging a whole
+ * category put two configs from two services on «the same row» of a screen
+ * where they never appear together.
  *
- * The reason is that the screen it edited stopped existing. A category screen
- * lists the SERVICES inside it — پلاتینیوم, طلایی, معمولی — and the prices are
- * one step further in, on each service's own screen. Arranging a whole category
- * put two configs from two services on «the same row» of a screen where they
- * never appear together. The editor now sits on the service, where the row it
- * draws is the row the customer gets.
+ * What arranges from this page now is two screens, and they are easy to
+ * confuse — so they are named after what the customer pressed to get there:
  *
- * What is still arranged from THIS page is the category list itself — the
- * shop's first screen — through the «چیدمان در ربات» button in the header.
+ *   header «چیدمان در ربات»  → the category list, what «خرید اشتراک» opens
+ *   card   «چیدمان سرویس‌ها»  → THIS category's tiers, what pressing it opens
+ *
+ * The second is the one below, and it is new on 2026-08-28: until `products`
+ * had a `row_index` (0037) the tier screen was the only catalogue keyboard that
+ * could not be arranged, and on the live shop four tiers came out as four rows
+ * of one between two screens that both put two buttons on a line.
  */
+
+/**
+ * The tier screen of one category.
+ *
+ * Fetches on open rather than with the page: an operator arranges one category
+ * at a time, and the card list would otherwise pull every service in the shop
+ * to draw counts it already has.
+ */
+function ArrangeTiers({ category, onSaved }: { category: CategoryRow; onSaved: () => void }) {
+  const [services, setServices] = useState<ServiceRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .catalog({ categoryId: category.id, pageSize: MAX_CATALOG_ROWS })
+      .then((r) => live && setServices(r.items))
+      .catch((e: unknown) => live && setErr(message(e)));
+    return () => {
+      live = false;
+    };
+  }, [category.id]);
+
+  if (err !== null) return <div className="alert alert-error">{err}</div>;
+  if (services === null) return <p className="muted">…</p>;
+
+  return (
+    <LayoutEditor
+      scope={`category:${category.id}`}
+      screenText={`یکی از گزینه‌های «${category.name}» را انتخاب کنید.`}
+      items={services.map((s) => ({
+        id: s.id,
+        label: s.name,
+        // What a customer would meet behind this button, and why they might
+        // not: the editor draws every service, including the ones the shop is
+        // not offering. Said in configs because that is the unit the next
+        // screen is measured in.
+        hint:
+          s.status === 'ACTIVE'
+            ? `${count(s.configs.length)} کانفیگ`
+            : `${count(s.configs.length)} کانفیگ · ${STATUS_FA[s.status] ?? s.status}`,
+        rowIndex: s.rowIndex,
+      }))}
+      onSaved={onSaved}
+    />
+  );
+}
 
 /** The same card, with its two editable fields swapped in where they are read. */
 function EditCard({

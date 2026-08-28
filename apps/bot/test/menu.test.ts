@@ -73,8 +73,8 @@ describe('every button we draw', () => {
     menu.mainMenu(CUSTOMER),
     menu.mainMenu(RESELLER),
     menu.productMenu([
-      { productId: 1, name: 'یک', providerName: 'پ' },
-      { productId: 999_999_999, name: 'دو', providerName: 'پ' },
+      { productId: 1, name: 'یک', providerName: 'پ', rowIndex: null },
+      { productId: 999_999_999, name: 'دو', providerName: 'پ', rowIndex: null },
     ]),
     menu.planMenu([PLAN]),
     menu.planMenu([]),
@@ -123,6 +123,7 @@ describe('every button we draw', () => {
 const SERVICE: CatalogProduct = {
   productId: 7,
   name: 'پلاتینیوم',
+  rowIndex: null,
   providerName: '🥇 سرویس VIP',
 };
 

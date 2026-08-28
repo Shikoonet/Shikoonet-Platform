@@ -178,6 +178,8 @@ export interface ServiceRow {
   oncePerUser: boolean;
   /** null when this service does not choose, and the panel's default applies. */
   groupIds: number[] | null;
+  /** Which row of its category's tier screen this service sits on. */
+  rowIndex: number | null;
   panel: PanelRef | null;
   configs: ConfigRow[];
 }
@@ -326,7 +328,14 @@ export interface LayoutItem {
  * stopped existing: a category lists its SERVICES, and the prices live one step
  * further in, on the service's own screen.
  */
-export type LayoutScope = 'categories' | `service:${number}`;
+/**
+ * Which bot screen an arrangement is for.
+ *
+ * Three, and the first two are easy to confuse: `categories` is the screen
+ * «خرید اشتراک» opens, `category:<id>` is the screen ONE category opens — its
+ * tiers — and `service:<id>` is the screen one tier opens, its prices.
+ */
+export type LayoutScope = 'categories' | `category:${number}` | `service:${number}`;
 
 export interface StockRow {
   id: number;
@@ -964,12 +973,13 @@ export const api = {
     pageSize: number;
   }) {
     const qs = new URLSearchParams({
-      page: String(params.page),
+      page: String(params.page ?? 1),
       pageSize: String(params.pageSize),
     });
     if (params.q) qs.set('q', params.q);
     if (params.status) qs.set('status', params.status);
     if (params.providerId) qs.set('providerId', String(params.providerId));
+    if (params.categoryId) qs.set('categoryId', String(params.categoryId));
     if (params.categoryId) qs.set('categoryId', String(params.categoryId));
     if (params.resellersOnly !== undefined) qs.set('resellersOnly', String(params.resellersOnly));
     if (params.sellable !== undefined) qs.set('sellable', String(params.sellable));
@@ -991,7 +1001,8 @@ export const api = {
     q?: string;
     status?: string;
     providerId?: number;
-    page: number;
+    categoryId?: number;
+    page?: number;
     pageSize: number;
   }) {
     const qs = new URLSearchParams({
