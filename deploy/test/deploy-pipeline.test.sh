@@ -125,13 +125,23 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
             exit 22
           fi
           # Coolify 4.3.11 has no `dockerimage` case in BuildPackTypes, so any
-          # PATCH carrying that field is a 422. The fake refuses it the same way
-          # so the script cannot start sending it again without a red test.
-          case "$body" in
-            *build_pack*)
-              printf '{"message":"Validation failed.","errors":{"build_pack":["The selected build pack is invalid."]}}' >&2
-              exit 22 ;;
-          esac
+          # PATCH carrying that MEMBER is a 422. The fake refuses it the same
+          # way, so the script cannot start sending it again without a red test.
+          #
+          # Parsed, not grepped. A `case "$body" in *build_pack*)` glob would
+          # also fire on an image name or tag that merely contains the words —
+          # rejecting a request Coolify would accept, and proving nothing about
+          # what the PATCH actually sent. Coolify validates a member; so does
+          # this.
+          if printf '%s' "$body" | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+sys.exit(0 if isinstance(d, dict) and "build_pack" in d else 1)'; then
+            printf '{"message":"Validation failed.","errors":{"build_pack":["The selected build pack is invalid."]}}' >&2
+            exit 22
+          fi
           printf '%s\n' "${path#/applications/}" >>"$FAKE_PINS"
           printf '{"ok":true}' ;;
         POST:/deploy*)
@@ -545,6 +555,13 @@ DB_CONTAINER=fake-db
 CONF
 
 DEPLOY_LOG="$WORK/deploy.log"
+
+# The same deploy, with a different image repository — so the PATCH body carries
+# a value containing «build_pack» while sending no such member.
+run_deploy_image() { # image-name
+  IMAGE_UNDER_TEST="$1" run_deploy false
+}
+
 run_deploy() { # bot-flag
   : >"$WORK/pins"
   : >"$WORK/deploys"
@@ -555,12 +572,12 @@ run_deploy() { # bot-flag
     FAKE_COOLIFY_URL='http://127.0.0.1:8000' \
     FAKE_PINS="$WORK/pins" FAKE_DEPLOYS="$WORK/deploys" FAKE_REPLACED="$WORK/replaced" \
     FAKE_LABEL_SHA="$SHA_MERGED" FAKE_BUILD_PACK="${FAKE_BUILD_PACK:-dockerimage}" \
-    FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-ghcr.io/x/y@sha256:abc}" \
+    FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:abc}" \
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
-    bash "$DEPLOY" production "ghcr.io/x/y@sha256:abc" "$SHA_MERGED" \
+    bash "$DEPLOY" production "${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:abc" "$SHA_MERGED" \
     >"$DEPLOY_LOG" 2>&1
   local rc=$?
   set -e
@@ -605,6 +622,23 @@ if run_deploy true && grep -q '^uuid-bot$' "$WORK/deploys"; then
 else
   bad "the bot deploys for the exact string 'true'" "$(tail -3 "$DEPLOY_LOG")"
 fi
+
+section 'the fake Coolify refuses a build_pack MEMBER, not the words'
+
+# The fake's refusal is what proves `deploy.sh` stopped sending the unsupported
+# field. If it fired on any body merely CONTAINING the words, it would also
+# reject requests Coolify accepts — and a green suite would prove nothing about
+# what was actually sent.
+#
+# So: an image repository whose name contains the words must still deploy.
+FAKE_APP_IMAGE='ghcr.io/x/build_pack-tools'
+if IMAGE_NAME_OVERRIDE=1 run_deploy_image 'ghcr.io/x/build_pack-tools'; then
+  ok 'a payload whose values merely contain «build_pack» is still accepted'
+else
+  bad 'a payload whose values merely contain «build_pack» is still accepted' \
+    "$(tail -2 "$DEPLOY_LOG")"
+fi
+unset FAKE_APP_IMAGE
 
 section 'deploy.sh — an application that would rebuild instead of pulling'
 
