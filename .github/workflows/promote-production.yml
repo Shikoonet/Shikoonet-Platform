@@ -49,8 +49,15 @@ permissions:
 # Never two promotions, and never a promotion while one is running. Not
 # cancellable: `deploy.sh` holds a flock on the box and killing the client does
 # not release the process behind it.
+# ONE group, shared with `deploy-staging.yml`.
+#
+# A promotion reads the digest a staging run recorded and then migrates the
+# production database. A staging deploy running at the same moment is writing
+# the very ledger the promotion is reading, and both take the same flock on the
+# box. Serialising them is not tidiness — it is the difference between reading a
+# finished record and reading one mid-write.
 concurrency:
-  group: deploy-production
+  group: shikoo-deploy
   cancel-in-progress: false
 
 env:
@@ -70,6 +77,23 @@ jobs:
       digest: ${{ steps.read.outputs.digest }}
       sha: ${{ steps.read.outputs.sha }}
     steps:
+      # Before the repository, before the artifact, before any credential.
+      #
+      # A `workflow_dispatch` can be started from any ref the actor can push,
+      # and the workflow file on THAT ref is what runs. Allowing a branch would
+      # let somebody run a promotion whose own guards they had just rewritten.
+      # Refusing here keeps that from reaching `environment: production`.
+      - name: only main may promote
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -Eeuo pipefail
+          if [ "$REF" != 'refs/heads/main' ]; then
+            echo "::error::promotion may only be run from refs/heads/main; this run is on ${REF}"
+            exit 1
+          fi
+          echo "dispatch ref is main"
+
       - name: the two things a person must get right
         env:
           CONFIRM: ${{ inputs.confirm }}
@@ -102,19 +126,33 @@ jobs:
       # Which staging run. Named explicitly, or the latest one that SUCCEEDED
       # for the commit `main` currently points at — never «the most recent run»,
       # which could be a failure or a different commit.
+      # The checkout comes FIRST, and it names `main` explicitly.
+      #
+      # `pick-staging-run.sh` is a repository script, and it used to run one
+      # step earlier — before any checkout, so before the file it invokes
+      # existed. Beyond being broken, that is the wrong order in principle: a
+      # repository script must be fetched from a known ref before it is run,
+      # never inherited from whatever a runner happens to have.
+      #
+      # `ref: main` and not the dispatch ref: the manifest's commit is checked
+      # for reachability from `main`, and that answer must come from `main` as
+      # the server has it. `fetch-depth: 0` because a shallow clone cannot
+      # answer reachability at all.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Which staging run. Named explicitly, or the latest one that SUCCEEDED
+      # for the commit `main` currently points at — and verified either way
+      # against the API before anything downstream trusts it.
       - id: pick
-        name: choose the staging run
+        name: choose and verify the staging run
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GIVEN: ${{ inputs.staging_run_id }}
         run: bash deploy/pick-staging-run.sh "${{ github.repository }}"
-
-      # Full history: the manifest's commit has to be checked for reachability
-      # from `main`, and a shallow clone cannot answer that.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          fetch-depth: 0
-          persist-credentials: false
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -127,6 +165,8 @@ jobs:
         name: verify the manifest and read what staging ran
         env:
           EXPECTED_REPO: ${{ github.repository }}
+          EXPECTED_RUN_ID: ${{ steps.pick.outputs.run_id }}
+          EXPECTED_RUN_HEAD_SHA: ${{ steps.pick.outputs.head_sha }}
         run: bash deploy/verify-release-manifest.sh out
 
   promote:
