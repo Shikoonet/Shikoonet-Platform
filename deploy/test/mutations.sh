@@ -210,6 +210,7 @@ mut "$G" 's|if span > CAPTURE_WINDOW_MAX:|if False:|'                "$DT" "side
 mut "$G" 's|window = math.ceil(span)|window = int(span)|'            "$DT" "sidecar: round the window down instead of up"
 mut "$G" 's|if dump_mtime < max(mtimes):|if False:|'                 "$DT" "sidecar: seal a dump older than the export"
 mut "$G" 's|if coherence != "pass":|if False:|'                      "$DT" "sidecar: seal an incoherent bundle"
+mut "$G" 's|            if not ref:|            if False:|'          "$DT" "sidecar: accept a prefix-only order reference"
 mut "$G" 's|os.chmod(_TMP_PATH, 0o640)|pass|'                        "$DT" "sidecar: leave the published mode to umask"
 mut "$G" 's|if open(_TMP_PATH, encoding="utf-8").read() != text:|if False:|' "$DT" "sidecar: publish without re-reading"
 mut "$G" 's|    _cleanup()  # the only cleanup on the refusal path|    pass|' "$DT" "sidecar: refuse without cleaning up"
