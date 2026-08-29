@@ -167,14 +167,24 @@ read -r HELD <"$W/held"
 
 # A concurrent reader while the publisher holds the lock: it must block, not
 # read through the swap. Its answer, whenever it arrives, must be complete.
+rm -f "$W/reader.rc" "$W/prep.rc"
 ( att_read "$ATT" >"$W/reader.out" 2>"$W/reader.err"; echo $? >"$W/reader.rc" ) & RD=$!
-if kill -0 "$RD" 2>/dev/null; then ok "a concurrent reader waits for the publisher's lock"
-else bad "a concurrent reader waits for the publisher's lock" "it did not block"; fi
+# Not `kill -0`: the reader is not reaped until the wait below, and `kill -0`
+# succeeds for a zombie — so a reader that had already finished satisfied this
+# assertion. The absence of its result file is the thing that actually shows
+# it has not completed.
+sleep 0.3
+if [ ! -e "$W/reader.rc" ]; then ok "a concurrent reader has not completed while the publisher holds the lock"
+else bad "a concurrent reader has not completed while the publisher holds the lock" "it finished with rc=$(cat "$W/reader.rc")"; fi
 
 # A concurrent Prepare-style verification attempt, same protocol.
 ( att_read "$ATT" >"$W/prep.out" 2>&1; echo $? >"$W/prep.rc" ) & PR=$!
 
-echo go >"$W/go"
+# Only when the publisher actually opened the go end. It writes `failed` and
+# exits without opening it when the lock cannot be taken, and this write would
+# then block forever on a FIFO with no reader — hanging the suite instead of
+# reporting the failure.
+if [ "$HELD" = held ]; then echo go >"$W/go"; fi
 wait "$PUB"; wait "$RD" 2>/dev/null; wait "$PR" 2>/dev/null
 
 if [ "$(cat "$W/reader.rc")" = 0 ] && [ "$(cat "$W/reader.out")" = "$V7" ]; then
@@ -215,7 +225,7 @@ if ( ATT_LOCK_WAIT=1 att_lock_exclusive ) 2>/dev/null; then
 else
   ok "a second publisher cannot hold the lock at the same time"
 fi
-echo go >"$W/go2"
+if [ "$HELD" = held ]; then echo go >"$W/go2"; fi
 wait "$HOLD"
 # And once released, both succeed.
 if att_lock_shared; then att_unlock; ok "the lock is released, not leaked"
@@ -317,7 +327,7 @@ elif grep -q 'release lock could not be taken' "$W/v5"; then
 else
   bad "verification cannot proceed while a publisher holds the lock" "$(head -1 "$W/v5")"
 fi
-echo go >"$W/go3"
+if [ "$HELD" = held ]; then echo go >"$W/go3"; fi
 wait "$VHOLD"
 if env EXPECTED_SHA="$VSHA" EXPECTED_DIGEST="$VDIG" bash "$VERIFY" "$VATT" >/dev/null 2>&1; then
   ok "verification succeeds once the publisher releases"

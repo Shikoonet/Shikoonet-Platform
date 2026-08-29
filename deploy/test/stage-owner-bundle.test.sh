@@ -33,6 +33,16 @@ mkco() {
   git -C "$CO" checkout -q HEAD -- . 2>/dev/null || true
   git -C "$CO" clean -qfdx 2>/dev/null || true
   SHA=$(git -C "$CO" rev-parse HEAD)
+  publish   # the commit has to be one origin/main carries
+}
+
+# The stager requires the SHA to be reachable from `refs/remotes/origin/main`,
+# because a local `origin` URL is configuration anyone can set while a
+# remote-tracking ref exists only because a fetch produced one. In these
+# fixtures the "remote" is this repository itself, so origin/main is pointed at
+# whatever the fixture just committed — modelling a commit the remote published.
+publish() {
+  git -C "$CO" update-ref refs/remotes/origin/main "$(git -C "$CO" rev-parse HEAD)"
 }
 run() { bash "$STAGE" "$CO" "${1:-$SHA}" "$DEST" >"$W/out" 2>"$W/err"; }
 refuses() { # label want
@@ -101,6 +111,7 @@ mkco
 # and the case silently becomes "stage a checkout that IS at the named sha" —
 # which passes, and proves nothing. CI caught exactly that.
 git -C "$CO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'a later commit'
+publish
 [ "$(git -C "$CO" rev-parse HEAD)" != "$SHA" ] ||
   { echo "the fixture did not move HEAD; this case would prove nothing" >&2; exit 1; }
 refuses 'a checkout at another sha is refused' 'not the' "$SHA"
@@ -120,18 +131,21 @@ refuses 'an untracked file is refused' 'local modifications'
 
 # 5. a file the manifest lists is missing from the revision
 mkco; rm -f "$CO/deploy/rehearsal-lib.sh"; git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'drop'
+publish
 SHA2=$(git -C "$CO" rev-parse HEAD)
 refuses 'a manifest file missing from the revision is refused' 'missing from this revision' "$SHA2"
 
 # 6. a manifest file replaced by a symlink
 mkco; rm -f "$CO/deploy/rehearsal-lib.sh"; ln -s /etc/hostname "$CO/deploy/rehearsal-lib.sh"
 git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'symlink'
+publish
 SHA3=$(git -C "$CO" rev-parse HEAD)
 refuses 'a symlinked manifest file is refused' 'symlink' "$SHA3"
 
 # 7. a manifest file whose contents no longer hash to what the manifest says
 mkco; printf '\n# drift\n' >>"$CO/deploy/rehearsal-lib.sh"
 git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'drift'
+publish
 SHA4=$(git -C "$CO" rev-parse HEAD)
 refuses 'a modified manifest file is refused' 'do not match the manifest' "$SHA4"
 
@@ -139,6 +153,7 @@ refuses 'a modified manifest file is refused' 'do not match the manifest' "$SHA4
 mkco; sed -i 's/^MANIFEST_SHA256=.*/MANIFEST_SHA256=0000000000000000000000000000000000000000000000000000000000000000/' \
   "$CO/deploy/install-shikoo-task-runner.sh"
 git -C "$CO" -c user.email=t@t -c user.name=t commit -qam 'pin drift'
+publish
 SHA5=$(git -C "$CO" rev-parse HEAD)
 refuses 'an installer built against another manifest is refused' 'built against a different manifest' "$SHA5"
 
@@ -152,6 +167,18 @@ mkco
 refuses 'a sha that is not 40 hex characters is refused' 'not 40 lowercase hex' 'deadbeef'
 
 intact 'after every refusal the previous bundle is still the one in place'
+
+# A checkout whose origin URL is right but whose commit the remote never
+# published — an unrelated repository with `origin` pointed at the allowlist.
+mkco
+git -C "$CO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'never published'
+UNPUB=$(git -C "$CO" rev-parse HEAD)
+# deliberately NOT published: origin/main stays where it was
+refuses 'a commit the remote never published is refused' 'not reachable from origin/main' "$UNPUB"
+
+mkco
+git -C "$CO" update-ref -d refs/remotes/origin/main
+refuses 'a checkout with no origin/main tracking ref is refused' 'no origin/main remote-tracking ref' "$SHA"
 
 section 'an interrupted restage replaces nothing'
 

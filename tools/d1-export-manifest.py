@@ -211,8 +211,22 @@ def main():
             data = json.load(open(claims, encoding="utf-8"))
         except Exception:
             refuse("payment_claims.json is not valid JSON")
-        rows = data if isinstance(data, list) else (data.get("results") or data.get("rows") or [])
-        for row in rows if isinstance(rows, list) else []:
+        # A shape this does not understand must be refused, not read as "no
+        # claims". `data.get(...) or []` mapped an unsupported envelope to an
+        # empty list, and the bundle then recorded coherence_checked=0 and
+        # coherence=pass having inspected nothing. A scalar root raised
+        # AttributeError instead of saying what was wrong.
+        if isinstance(data, list):
+            rows = data
+        elif isinstance(data, dict):
+            rows = data.get("results", data.get("rows"))
+            if rows is None:
+                refuse("payment_claims.json is an object with neither 'results' nor 'rows'")
+            if not isinstance(rows, list):
+                refuse("payment_claims.json's 'results'/'rows' is not a list")
+        else:
+            refuse("payment_claims.json is neither a list nor an object")
+        for row in rows:
             if not isinstance(row, dict):
                 continue
             if (row.get("source_system") or "").upper() != "MIRZABOT":

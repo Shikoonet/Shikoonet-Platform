@@ -11,7 +11,7 @@ set -uo pipefail
 HERE=$(CDPATH='' ; cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH='' ; cd -- "$HERE/../.." && pwd)
 GEN="$ROOT/tools/d1-export-manifest.py"
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIPPED=0
 ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s\n     %s\n' "$1" "${2-}"; }
 section() { printf '\n%s\n' "$1"; }
@@ -206,18 +206,25 @@ fi
 rm -rf "$D1/d1-export.manifest"
 
 # A write failure: the export directory is read-only, so the temporary file
-# cannot be created. The previous sidecar must be byte-identical afterwards.
+# cannot be created. Root ignores the mode, so this proves nothing there and is
+# reported as skipped rather than counted as a pass.
 build; cp "$W/good.manifest" "$D1/d1-export.manifest"; chmod 640 "$D1/d1-export.manifest"
 BEFORE=$(sha256sum "$D1/d1-export.manifest" | cut -d' ' -f1)
-chmod 500 "$D1"
-run >/dev/null 2>&1
-RC=$?
-chmod 755 "$D1"
-if [ "$RC" -ne 0 ]; then ok 'a write failure is reported'; else bad 'a write failure is reported' 'it reported success'; fi
-if [ "$(sha256sum "$D1/d1-export.manifest" | cut -d' ' -f1)" = "$BEFORE" ]; then
-  ok 'a write failure leaves the previous sidecar byte-identical'
+if [ "$(id -u)" -eq 0 ]; then
+  SKIPPED=$((SKIPPED + 2))
+  printf '  SKIP a write failure is reported (running as root: mode 500 does not stop root)\n'
+  printf '  SKIP a write failure leaves the previous sidecar byte-identical (same reason)\n'
 else
-  bad 'a write failure leaves the previous sidecar byte-identical' 'it changed'
+  chmod 500 "$D1"
+  run >/dev/null 2>&1
+  RC=$?
+  chmod 755 "$D1"
+  if [ "$RC" -ne 0 ]; then ok 'a write failure is reported'; else bad 'a write failure is reported' 'it reported success'; fi
+  if [ "$(sha256sum "$D1/d1-export.manifest" | cut -d' ' -f1)" = "$BEFORE" ]; then
+    ok 'a write failure leaves the previous sidecar byte-identical'
+  else
+    bad 'a write failure leaves the previous sidecar byte-identical' 'it changed'
+  fi
 fi
 
 # The write-back verification, exercised by injecting the fault it exists for.
@@ -402,5 +409,9 @@ else
     "$(diff <(strip_timing "$W/good.manifest") <(strip_timing "$D1/d1-export.manifest") | head -3)"
 fi
 
-printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+if [ "$SKIPPED" -gt 0 ]; then
+  printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIPPED"
+else
+  printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+fi
 [ "$FAIL" -eq 0 ]
