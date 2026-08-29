@@ -262,6 +262,17 @@ describe('every write route, asked directly', () => {
     // integers nothing points at, in one transaction, ADMIN-only, and it reads
     // the scope’s real membership out of Postgres so a post addressed to one
     // category cannot reorder another’s.
-    expect(writeRoutes().length).toBe(128);
+    //
+    // 129 on 2026-08-29: «POST /bot/token», which connects the Telegram bot.
+    // ADMIN-only, and the narrowest reason of any route in this file: it does
+    // not change what the shop sells or what it charges — it changes WHO
+    // answers every customer. A REVIEWER reviewing a payment has no business
+    // near it, and the same request also decides what the receipt fetch can
+    // read, since `getFile` is authenticated per bot.
+    //
+    // What makes it unusual is that the guard is not only the role. Nothing is
+    // written until Telegram itself confirms the token belongs to a bot, so an
+    // ADMIN cannot store a typo either — see `bot-connect.test.ts`.
+    expect(writeRoutes().length).toBe(129);
   });
 });

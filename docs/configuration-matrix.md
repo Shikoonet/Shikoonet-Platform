@@ -105,9 +105,9 @@ Set in each Coolify application. **All sensitive rows must be runtime-only.**
 | --- | --- | --- | --- | --- | --- |
 | `SERVICE` | selects the entry point in `deploy/entrypoint.sh`. No default by design | no | yes | build+runtime (harmless) | PRESENT |
 | `DATABASE_URL` | Postgres | **yes** | yes | runtime-only | PRESENT |
-| `TELEGRAM_BOT_TOKEN` | the bot identity it long-polls with | **yes** | yes | runtime-only | PRESENT |
+| `TELEGRAM_BOT_TOKEN` | the bot identity it long-polls with | **yes** | **fallback only** — the dashboard's «پیکربندی › ربات» stores it in `bot_credentials` and that row wins. Still required on a service with no row | runtime-only | PRESENT |
 | `ENV_NAME` | decides the login bypass, Origin-less writes, cookie flags. `parseEnvName` **throws** rather than defaulting | no | **yes** | runtime-only | PRESENT — `staging`, created 2026-08-27. Its absence is why the bot could not boot |
-| `PANEL_SECRET_KEY` | provisioning panel credential | **yes** | when provisioning | runtime-only | PRESENT |
+| `PANEL_SECRET_KEY` | seals the provisioning panel credential **and the bot token** | **yes** | when provisioning, or whenever a bot is connected from the dashboard | runtime-only | PRESENT |
 | `PANEL_TEST_PANEL` `PANEL_TEST_PANEL_URL` | practice-panel target | **yes** (holds credentials) | practice only | runtime-only | PRESENT — moved off build-time 2026-08-27 |
 | `WIRE_TEST_PANEL_ON_HOST` | guard for `scripts/wire-test-panel.ts` | no | practice only | build+runtime | PRESENT |
 | `ALERT_CHAT_ID` | where alerts go | no | optional | build+runtime | PRESENT |
@@ -147,8 +147,8 @@ rows in `device_credentials`. Nothing to store here.
 | `ENV_NAME` | environment guards | no | yes | runtime-only | PRESENT — `staging` |
 | `HOST` `PORT` | listener (8788) | no | yes | build+runtime | PRESENT |
 | `INGEST_URL` | the ingest service — the only edge between the two | no | yes | build+runtime | PRESENT |
-| `TELEGRAM_BOT_TOKEN` | sends operator messages | **yes** | yes | runtime-only | PRESENT |
-| `PANEL_SECRET_KEY` | provisioning panel credential | **yes** | when provisioning | runtime-only | PRESENT |
+| `TELEGRAM_BOT_TOKEN` | sends operator messages and fetches receipts | **yes** | **fallback only** — same resolution as the bot (`resolveBotToken`) | runtime-only | PRESENT |
+| `PANEL_SECRET_KEY` | seals the provisioning panel credential **and the bot token** | **yes** | when provisioning, or whenever a bot is connected from the dashboard | runtime-only | PRESENT |
 | `TRUSTED_PROXY_IP_HEADER` | client IP header | no | behind a proxy | build+runtime | PRESENT |
 | `ALLOWED_ORIGINS` | CORS / Origin allow-list | no | optional | runtime | not set |
 | `ENABLE_PURCHASE_TYPE` `DEV_BLOCK_DEVICE_ADMIN` | feature flags | no | optional | runtime | not set |

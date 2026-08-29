@@ -26,7 +26,13 @@
  * same nonce twice under one key loses confidentiality outright.
  */
 
-import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+  timingSafeEqual,
+} from 'node:crypto';
 
 /** GCM's standard nonce width. Not a preference — 96 bits is what the mode is built around. */
 const NONCE_BYTES = 12;
@@ -50,7 +56,9 @@ export class SecretKeyMissing extends Error {
  * would only add a second thing to get wrong. Checked on every call rather than
  * cached, so rotating the variable takes a restart and not a redeploy.
  */
-export function panelSecretKey(env: { PANEL_SECRET_KEY?: string } = process.env): Buffer {
+export function panelSecretKey(
+  env: { PANEL_SECRET_KEY?: string | undefined } = process.env,
+): Buffer {
   const raw = env.PANEL_SECRET_KEY?.trim();
   if (raw === undefined || raw === '') {
     throw new SecretKeyMissing('is not set — generate one with `openssl rand -hex 32`');
@@ -63,6 +71,18 @@ export function panelSecretKey(env: { PANEL_SECRET_KEY?: string } = process.env)
   const key = Buffer.from(raw, 'hex');
   if (key.length !== KEY_BYTES) throw new SecretKeyMissing('did not decode to 32 bytes');
   return key;
+}
+
+/**
+ * A stable name for a key, so a row can say which one sealed it.
+ *
+ * The key's own SHA-256, truncated. Never the key, and never reversible into
+ * it. It lived in `panelRoutes.ts` while there was one caller; the bot token
+ * is the second, and two copies of "how a key is named" is how a rotation
+ * comes to believe it has re-sealed everything.
+ */
+export function keyId(key: Buffer): string {
+  return createHash('sha256').update(key).digest('hex').slice(0, 12);
 }
 
 /**
@@ -80,21 +100,27 @@ export function seal(plaintext: string, key: Buffer): string {
 }
 
 export class SecretUnreadable extends Error {
-  constructor(reason: string) {
-    super(`stored panel credential could not be read: ${reason}`);
+  /**
+   * `what` names the thing, because the operator reading this is debugging one
+   * specific broken thing and «stored panel credential» sent them hunting the
+   * wrong one the first time a second caller appeared.
+   */
+  constructor(reason: string, what = 'stored panel credential') {
+    super(`${what} could not be read: ${reason}`);
     this.name = 'SecretUnreadable';
   }
 }
 
 /** Opens what `seal` produced. Throws rather than returning null: a credential that will not open is not the same as no credential, and the two must not take the same path. */
-export function open(sealed: string, key: Buffer): string {
+export function open(sealed: string, key: Buffer, what?: string): string {
   let raw: Buffer;
   try {
     raw = Buffer.from(sealed, 'base64');
   } catch {
-    throw new SecretUnreadable('not base64');
+    throw new SecretUnreadable('not base64', what);
   }
-  if (raw.length <= NONCE_BYTES + TAG_BYTES) throw new SecretUnreadable('too short to be sealed');
+  if (raw.length <= NONCE_BYTES + TAG_BYTES)
+    throw new SecretUnreadable('too short to be sealed', what);
   const nonce = raw.subarray(0, NONCE_BYTES);
   const tag = raw.subarray(raw.length - TAG_BYTES);
   const body = raw.subarray(NONCE_BYTES, raw.length - TAG_BYTES);
@@ -106,7 +132,7 @@ export function open(sealed: string, key: Buffer): string {
     // GCM's own authentication failing. Deliberately not distinguished from a
     // wrong key: telling an attacker which of the two it was is the whole
     // reason authenticated modes do not answer that question.
-    throw new SecretUnreadable('authentication failed — wrong key, or the row was altered');
+    throw new SecretUnreadable('authentication failed — wrong key, or the row was altered', what);
   }
 }
 
