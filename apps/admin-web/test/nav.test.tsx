@@ -82,6 +82,11 @@ describe('navigation', () => {
       'expenses',
       'dashboard',
       'customers',
+      // «آمار فروشگاه», 2026-08-29. The eighteen figures the PHP bot draws
+      // under «آمار کلی ربات», of which the dashboard home had five and none
+      // of its seven periods. Distinct from «آمار مالی» in the پول group:
+      // that one counts bank transactions, this one counts the shop's trade.
+      'stats',
       // «ارسال گروهی» — the two actions that reach every customer at once, and
       // the last two of the bot admin panel's twelve permissions to get a web
       // screen. See `bot-subset.test.ts`.
