@@ -155,6 +155,26 @@ refuses 'a dump older than the newest D1 file is refused' 'older than the newest
 build; printf 'INSERT INTO invoice VALUES (1,"ORD-0000",1);\n' >"$DUMP"; chmod 640 "$DUMP"
 refuses 'a dump missing a referenced order is refused' 'absent from this dump'
 
+# The bare prefix with no order after it. `mirzabot:test:` is permitted by the
+# schema and strips to an empty string, whose boundary regex matches ordinary
+# dump text at any non-identifier position — so the bundle would have recorded
+# coherence=pass having looked for nothing at all.
+build
+printf '[{"id":1,"source_system":"MIRZABOT","external_order_id":"mirzabot:test:"}]' >"$D1/payment_claims.json"
+chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
+refuses 'a prefix-only order reference is refused' 'names nothing to look for'
+
+build
+printf '[{"id":1,"source_system":"MIRZABOT","external_order_id":""}]' >"$D1/payment_claims.json"
+chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
+refuses 'an empty order reference is refused' 'carries no external_order_id'
+
+# The prefixed form still works when it actually names an order.
+build
+printf '[{"id":1,"source_system":"MIRZABOT","external_order_id":"mirzabot:test:ORD-7001"}]' >"$D1/payment_claims.json"
+chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
+if run; then ok 'a prefixed reference naming a real order is accepted'; else bad 'a prefixed reference naming a real order is accepted' "$(head -1 "$W/err")"; fi
+
 section 'publication is atomic, and a failure leaves the previous sidecar alone'
 
 build

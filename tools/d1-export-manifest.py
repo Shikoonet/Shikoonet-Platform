@@ -218,9 +218,23 @@ def main():
             if (row.get("source_system") or "").upper() != "MIRZABOT":
                 continue
             ext = row.get("external_order_id")
-            if isinstance(ext, str) and ext:
-                # `mirzabot:test:<id>` is the prefixed form the hub writes.
-                refs.add(re.sub(r"^mirzabot:test:", "", ext))
+            if not isinstance(ext, str) or not ext:
+                refuse(
+                    "a MIRZABOT claim in the D1 export carries no external_order_id — "
+                    "the coherence check cannot be performed against this bundle"
+                )
+            # `mirzabot:test:<id>` is the prefixed form the hub writes. The
+            # schema permits the bare prefix with nothing after it, and
+            # stripping that leaves an empty string — whose boundary regex
+            # matches ordinary dump text at any non-identifier position. The
+            # bundle would then record coherence=pass having checked nothing.
+            ref = re.sub(r"^mirzabot:test:", "", ext)
+            if not ref:
+                refuse(
+                    "a MIRZABOT claim's external_order_id is the bare prefix with no "
+                    "order after it — it names nothing to look for in the dump"
+                )
+            refs.add(ref)
 
     missing = 0
     if refs:
