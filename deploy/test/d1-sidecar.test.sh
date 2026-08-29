@@ -164,6 +164,15 @@ printf '[{"id":1,"source_system":"MIRZABOT","external_order_id":"mirzabot:test:"
 chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
 refuses 'a prefix-only order reference is refused' 'names nothing to look for'
 
+# A lone surrogate, which `json.load` will hand back and `errors="ignore"` used
+# to drop — turning `ORD-\ud800` into `ORD-`, a SHORTER reference whose
+# boundary match is weaker. That is the same shape as the prefix-only bug, so
+# it is refused rather than reshaped.
+build
+printf '[{"id":1,"source_system":"MIRZABOT","external_order_id":"ORD-\\ud800"}]' >"$D1/payment_claims.json"
+chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
+refuses 'a non-UTF-8 order reference is refused' 'not valid UTF-8'
+
 build
 printf '[{"id":1,"source_system":"MIRZABOT","external_order_id":""}]' >"$D1/payment_claims.json"
 chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
