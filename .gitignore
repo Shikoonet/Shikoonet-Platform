@@ -70,3 +70,4 @@ deploy/**/*.env
 # the numbers that ARE committed live in `.github/ci-baseline.json`.
 vitest-report.json
 playwright-report.json
+.tmp-imports/

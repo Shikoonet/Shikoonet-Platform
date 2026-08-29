@@ -56,13 +56,17 @@ async function main(): Promise<number> {
         if (!safe && !force) return 1;
         if (!safe) report.warn('--force: proceeding despite blockers');
         const domains = selectedDomains();
-        await migrate(cfg, my, pgc, { commit: !dryRun, ...(domains ? { domains } : {}) });
-        // A dry run has already rolled back, so there is nothing on the target
-        // to compare against and `verify` would report every total as missing.
-        if (dryRun) {
-          report.warn('dry run: rolled back, so verification was not run');
-          return 0;
-        }
+        // A dry run verifies INSIDE its own transaction, while the rows still
+        // exist. Verifying afterwards is impossible -- they are gone -- and not
+        // verifying at all is worse than it sounds: a run that resolves every
+        // owner to null throws nothing, writes the parents, skips the children
+        // and reports ok on every line.
+        const result = await migrate(cfg, my, pgc, {
+          commit: !dryRun,
+          ...(domains ? { domains } : {}),
+          ...(dryRun ? { beforeSettle: () => verify(cfg, my, pgc, domains) } : {}),
+        });
+        if (dryRun) return result.verified ? 0 : 1;
         return (await verify(cfg, my, pgc, domains)) ? 0 : 1;
       }
 

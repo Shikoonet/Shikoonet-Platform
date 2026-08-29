@@ -47,11 +47,182 @@ async function pgScalar(client: pg.Client, sql: string): Promise<bigint> {
  * none. Scoping is what keeps "we did not import this" from reading as "the
  * money is wrong".
  */
+/**
+ * The target-side query behind each check, named.
+ *
+ * Extracted so a baseline can be taken with the SAME SQL before an import
+ * runs. Two copies of these strings would drift, and the drift would show up
+ * as a money difference nobody could explain.
+ */
+const TARGET_SQL: Record<string, string> = {
+  'wallet balances (IRR)': 'SELECT COALESCE(SUM(balance_irr),0) FROM wallets',
+  'wallet ledger sum (IRR)': 'SELECT COALESCE(SUM(amount_irr),0) FROM wallet_entries',
+  'all payments (IRR)': 'SELECT COALESCE(SUM(amount_irr),0) FROM payments',
+  'settled payments (IRR)':
+    "SELECT COALESCE(SUM(amount_irr),0) FROM payments WHERE status='PAID'",
+  'subscription value (IRR)': 'SELECT COALESCE(SUM(price_irr),0) FROM subscriptions',
+  'wheel prizes (IRR)': 'SELECT COALESCE(SUM(amount_irr),0) FROM wheel_spins',
+  'revenue adjustments (IRR)': 'SELECT COALESCE(SUM(amount_irr),0) FROM revenue_adjustments',
+  'add-on orders (IRR)': 'SELECT COALESCE(SUM(total_irr),0) FROM orders',
+};
+
+// [domain, label, source count, target count, allowance count?, allowance reason?]
+const COUNT_PAIRS: [Domain, string, string, string, string?, string?][] = [
+  ['core', 'users', 'SELECT COUNT(*) FROM `user`', 'SELECT COUNT(*) FROM users'],
+  ['core', 'wallets', 'SELECT COUNT(*) FROM `user`', 'SELECT COUNT(*) FROM wallets'],
+  ['sales', 'subscriptions', 'SELECT COUNT(*) FROM invoice', 'SELECT COUNT(*) FROM subscriptions'],
+  ['sales', 'payments', 'SELECT COUNT(*) FROM Payment_report', 'SELECT COUNT(*) FROM payments'],
+  [
+    'config',
+    'card leases',
+    'SELECT COUNT(*) FROM card_assignment_leases',
+    'SELECT COUNT(*) FROM card_leases',
+  ],
+  // Scoped to migrated rows. The catalog is the one area where a developer
+  // legitimately seeds fixture rows into the same tables (packages/seed's
+  // seedCatalog, so the bot has something to sell offline), and a bare
+  // COUNT(*) then reports a migration failure that is really six fixture
+  // products. `legacy_id` is exactly "this row came from MySQL".
+  [
+    'catalog',
+    'products',
+    'SELECT COUNT(*) FROM product',
+    'SELECT COUNT(*) FROM products WHERE legacy_id IS NOT NULL',
+  ],
+  [
+    'catalog',
+    'product plans',
+    'SELECT COUNT(*) FROM product',
+    'SELECT COUNT(*) FROM product_plans WHERE legacy_id IS NOT NULL',
+  ],
+  [
+    'catalog',
+    'providers',
+    'SELECT COUNT(*) FROM marzban_panel',
+    'SELECT COUNT(*) FROM provisioning_providers WHERE legacy_id IS NOT NULL',
+  ],
+  // Neither legacy table has a unique code, so 18 rows are duplicates that
+  // collapse into their winning code. The allowance is computed, not assumed.
+  [
+    'discounts',
+    'discount codes',
+    'SELECT (SELECT COUNT(*) FROM Discount)+(SELECT COUNT(*) FROM DiscountSell)',
+    'SELECT COUNT(*) FROM discount_codes',
+    `SELECT (SELECT COUNT(*) FROM Discount) + (SELECT COUNT(*) FROM DiscountSell)
+           - (SELECT COUNT(*) FROM (
+               SELECT code COLLATE utf8mb4_bin AS c FROM Discount WHERE code IS NOT NULL
+                UNION
+               SELECT codeDiscount COLLATE utf8mb4_bin FROM DiscountSell
+                WHERE codeDiscount IS NOT NULL) u)`,
+  ],
+  [
+    'discounts',
+    'redemptions',
+    'SELECT COUNT(*) FROM Giftcodeconsumed',
+    'SELECT COUNT(*) FROM discount_redemptions',
+  ],
+  [
+    'config',
+    'revenue adjustments',
+    'SELECT COUNT(*) FROM revenue_adjustment_log',
+    'SELECT COUNT(*) FROM revenue_adjustments',
+  ],
+  [
+    'history',
+    'support tickets',
+    'SELECT COUNT(*) FROM support_message',
+    'SELECT COUNT(*) FROM support_tickets',
+  ],
+  [
+    'history',
+    'wheel spins',
+    'SELECT COUNT(*) FROM wheel_list',
+    'SELECT COUNT(*) FROM wheel_spins',
+    `SELECT COUNT(*) FROM wheel_list w LEFT JOIN user u ON u.id=w.id_user WHERE u.id IS NULL`,
+  ],
+  [
+    'config',
+    'reseller requests',
+    'SELECT COUNT(*) FROM Requestagent',
+    'SELECT COUNT(*) FROM reseller_requests',
+    `SELECT COUNT(*) FROM Requestagent r LEFT JOIN user u ON u.id=r.id WHERE u.id IS NULL`,
+  ],
+  [
+    'sales',
+    'add-on orders',
+    'SELECT COUNT(*) FROM service_other',
+    'SELECT COUNT(*) FROM orders',
+    `SELECT COUNT(*) FROM service_other s LEFT JOIN user u ON u.id=s.id_user WHERE u.id IS NULL`,
+  ],
+  // The two legacy `tinyint(1)` flags, counted on both sides.
+  //
+  // These are here because of what happened without them. `migrate.ts` read
+  // `r.roll_Status !== '0'` — a number compared against a string, true for
+  // every row — and all 963 customers who never accepted the shop's rules
+  // arrived as having accepted them. Row counts matched, every money total
+  // matched, and the only thing that changed was which side of a gate 963
+  // people stood on. Nothing in this file looked at it.
+  //
+  // A count on each side is the cheapest thing that would have failed: 963
+  // against 0 is not a rounding difference. Any future flag of this shape gets
+  // a line here rather than trust.
+  [
+    'core',
+    'customers who have not accepted the rules',
+    'SELECT COUNT(*) FROM `user` WHERE roll_Status = 0',
+    'SELECT COUNT(*) FROM users WHERE rules_accepted = false',
+  ],
+  [
+    'core',
+    'referral bonuses already claimed',
+    'SELECT COUNT(*) FROM reagent_report WHERE get_gift = 1',
+    'SELECT COUNT(*) FROM users WHERE referral_bonus_claimed = true',
+    // A claimed bonus whose referrer or referred customer is gone never
+    // reaches a row to set the flag on, exactly like the wheel spins above.
+    `SELECT COUNT(*) FROM reagent_report r
+       LEFT JOIN user c ON c.id = r.user_id
+       LEFT JOIN user p ON p.id = r.reagent
+      WHERE r.get_gift = 1 AND (c.id IS NULL OR p.id IS NULL)`,
+  ],
+];
+
+/** The count half of the baseline, taken from the same array `verify` reads. */
+const TARGET_COUNT_SQL: Record<string, string> = Object.fromEntries(
+  COUNT_PAIRS.map(([, name, , tgtSql]) => [name, tgtSql]),
+);
+
+/**
+ * What the target already held, per check name.
+ *
+ * `verify` compares whole-table totals, which is exactly right for a cutover
+ * into an empty database and wrong for every other case. The panel's import is
+ * a merge -- it is idempotent and may be re-run -- so on a database that
+ * already holds anything, every total would read as off by whatever was there.
+ *
+ * Taking this before the steps run and subtracting it makes the comparison
+ * about what THIS import moved. Called with no baseline, `verify` behaves
+ * exactly as it did.
+ */
+export type Baseline = Record<string, bigint>;
+
+export async function targetBaseline(pgc: pg.Client): Promise<Baseline> {
+  const out: Baseline = {};
+  for (const [name, sql] of Object.entries(TARGET_SQL)) out[name] = await pgScalar(pgc, sql);
+  // Counts share the namespace under a prefix, because a check name like
+  // «payments» exists on both sides of the report and they are different
+  // numbers.
+  for (const [name, sql] of Object.entries(TARGET_COUNT_SQL)) {
+    out[`count:${name}`] = await pgScalar(pgc, sql);
+  }
+  return out;
+}
+
 export async function verify(
   _cfg: Config,
   my: Connection,
   pgc: pg.Client,
   domains: Iterable<Domain> = DOMAINS,
+  baseline: Baseline = {},
 ): Promise<boolean> {
   const money: Check[] = [];
   const counts: Check[] = [];
@@ -66,20 +237,20 @@ export async function verify(
   if (want('core')) money.push({
     name: 'wallet balances (IRR)',
     source: (await scalar(my, 'SELECT SUM(Balance) FROM `user`')) * 10n,
-    target: await pgScalar(pgc, 'SELECT COALESCE(SUM(balance_irr),0) FROM wallets'),
+    target: (await pgScalar(pgc, TARGET_SQL['wallet balances (IRR)']!)) - (baseline['wallet balances (IRR)'] ?? 0n),
   });
 
   // The ledger must reproduce the balance it derived, or the trigger is wrong.
   if (want('core')) money.push({
     name: 'wallet ledger sum (IRR)',
     source: (await scalar(my, 'SELECT SUM(Balance) FROM `user`')) * 10n,
-    target: await pgScalar(pgc, 'SELECT COALESCE(SUM(amount_irr),0) FROM wallet_entries'),
+    target: (await pgScalar(pgc, TARGET_SQL['wallet ledger sum (IRR)']!)) - (baseline['wallet ledger sum (IRR)'] ?? 0n),
   });
 
   if (want('sales')) money.push({
     name: 'all payments (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price AS SIGNED)) FROM Payment_report')) * 10n,
-    target: await pgScalar(pgc, 'SELECT COALESCE(SUM(amount_irr),0) FROM payments'),
+    target: (await pgScalar(pgc, TARGET_SQL['all payments (IRR)']!)) - (baseline['all payments (IRR)'] ?? 0n),
   });
 
   if (want('sales')) money.push({
@@ -89,22 +260,19 @@ export async function verify(
         my,
         "SELECT SUM(CAST(price AS SIGNED)) FROM Payment_report WHERE payment_Status='paid'",
       )) * 10n,
-    target: await pgScalar(
-      pgc,
-      "SELECT COALESCE(SUM(amount_irr),0) FROM payments WHERE status='PAID'",
-    ),
+    target: (await pgScalar(pgc, TARGET_SQL['settled payments (IRR)']!)) - (baseline['settled payments (IRR)'] ?? 0n),
   });
 
   if (want('sales')) money.push({
     name: 'subscription value (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price_product AS SIGNED)) FROM invoice')) * 10n,
-    target: await pgScalar(pgc, 'SELECT COALESCE(SUM(price_irr),0) FROM subscriptions'),
+    target: (await pgScalar(pgc, TARGET_SQL['subscription value (IRR)']!)) - (baseline['subscription value (IRR)'] ?? 0n),
   });
 
   if (want('history')) money.push({
     name: 'wheel prizes (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price AS SIGNED)) FROM wheel_list')) * 10n,
-    target: await pgScalar(pgc, 'SELECT COALESCE(SUM(amount_irr),0) FROM wheel_spins'),
+    target: (await pgScalar(pgc, TARGET_SQL['wheel prizes (IRR)']!)) - (baseline['wheel prizes (IRR)'] ?? 0n),
     allowance: {
       rows:
         (await scalar(
@@ -126,13 +294,13 @@ export async function verify(
   if (want('config')) money.push({
     name: 'revenue adjustments (IRR)',
     source: (await scalar(my, 'SELECT revenue_adjustment FROM setting LIMIT 1')) * 10n,
-    target: await pgScalar(pgc, 'SELECT COALESCE(SUM(amount_irr),0) FROM revenue_adjustments'),
+    target: (await pgScalar(pgc, TARGET_SQL['revenue adjustments (IRR)']!)) - (baseline['revenue adjustments (IRR)'] ?? 0n),
   });
 
   if (want('sales')) money.push({
     name: 'add-on orders (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price AS SIGNED)) FROM service_other')) * 10n,
-    target: await pgScalar(pgc, 'SELECT COALESCE(SUM(total_irr),0) FROM orders'),
+    target: (await pgScalar(pgc, TARGET_SQL['add-on orders (IRR)']!)) - (baseline['add-on orders (IRR)'] ?? 0n),
     allowance: {
       rows:
         (await scalar(
@@ -163,132 +331,14 @@ export async function verify(
   report.title('row counts');
   // =========================================================================
 
-  // [domain, label, source count, target count, allowance count?, allowance reason?]
-  const pairs: [Domain, string, string, string, string?, string?][] = [
-    ['core', 'users', 'SELECT COUNT(*) FROM `user`', 'SELECT COUNT(*) FROM users'],
-    ['core', 'wallets', 'SELECT COUNT(*) FROM `user`', 'SELECT COUNT(*) FROM wallets'],
-    ['sales', 'subscriptions', 'SELECT COUNT(*) FROM invoice', 'SELECT COUNT(*) FROM subscriptions'],
-    ['sales', 'payments', 'SELECT COUNT(*) FROM Payment_report', 'SELECT COUNT(*) FROM payments'],
-    [
-      'config',
-      'card leases',
-      'SELECT COUNT(*) FROM card_assignment_leases',
-      'SELECT COUNT(*) FROM card_leases',
-    ],
-    // Scoped to migrated rows. The catalog is the one area where a developer
-    // legitimately seeds fixture rows into the same tables (packages/seed's
-    // seedCatalog, so the bot has something to sell offline), and a bare
-    // COUNT(*) then reports a migration failure that is really six fixture
-    // products. `legacy_id` is exactly "this row came from MySQL".
-    [
-      'catalog',
-      'products',
-      'SELECT COUNT(*) FROM product',
-      'SELECT COUNT(*) FROM products WHERE legacy_id IS NOT NULL',
-    ],
-    [
-      'catalog',
-      'product plans',
-      'SELECT COUNT(*) FROM product',
-      'SELECT COUNT(*) FROM product_plans WHERE legacy_id IS NOT NULL',
-    ],
-    [
-      'catalog',
-      'providers',
-      'SELECT COUNT(*) FROM marzban_panel',
-      'SELECT COUNT(*) FROM provisioning_providers WHERE legacy_id IS NOT NULL',
-    ],
-    // Neither legacy table has a unique code, so 18 rows are duplicates that
-    // collapse into their winning code. The allowance is computed, not assumed.
-    [
-      'discounts',
-      'discount codes',
-      'SELECT (SELECT COUNT(*) FROM Discount)+(SELECT COUNT(*) FROM DiscountSell)',
-      'SELECT COUNT(*) FROM discount_codes',
-      `SELECT (SELECT COUNT(*) FROM Discount) + (SELECT COUNT(*) FROM DiscountSell)
-             - (SELECT COUNT(*) FROM (
-                 SELECT code COLLATE utf8mb4_bin AS c FROM Discount WHERE code IS NOT NULL
-                  UNION
-                 SELECT codeDiscount COLLATE utf8mb4_bin FROM DiscountSell
-                  WHERE codeDiscount IS NOT NULL) u)`,
-    ],
-    [
-      'discounts',
-      'redemptions',
-      'SELECT COUNT(*) FROM Giftcodeconsumed',
-      'SELECT COUNT(*) FROM discount_redemptions',
-    ],
-    [
-      'config',
-      'revenue adjustments',
-      'SELECT COUNT(*) FROM revenue_adjustment_log',
-      'SELECT COUNT(*) FROM revenue_adjustments',
-    ],
-    [
-      'history',
-      'support tickets',
-      'SELECT COUNT(*) FROM support_message',
-      'SELECT COUNT(*) FROM support_tickets',
-    ],
-    [
-      'history',
-      'wheel spins',
-      'SELECT COUNT(*) FROM wheel_list',
-      'SELECT COUNT(*) FROM wheel_spins',
-      `SELECT COUNT(*) FROM wheel_list w LEFT JOIN user u ON u.id=w.id_user WHERE u.id IS NULL`,
-    ],
-    [
-      'config',
-      'reseller requests',
-      'SELECT COUNT(*) FROM Requestagent',
-      'SELECT COUNT(*) FROM reseller_requests',
-      `SELECT COUNT(*) FROM Requestagent r LEFT JOIN user u ON u.id=r.id WHERE u.id IS NULL`,
-    ],
-    [
-      'sales',
-      'add-on orders',
-      'SELECT COUNT(*) FROM service_other',
-      'SELECT COUNT(*) FROM orders',
-      `SELECT COUNT(*) FROM service_other s LEFT JOIN user u ON u.id=s.id_user WHERE u.id IS NULL`,
-    ],
-    // The two legacy `tinyint(1)` flags, counted on both sides.
-    //
-    // These are here because of what happened without them. `migrate.ts` read
-    // `r.roll_Status !== '0'` — a number compared against a string, true for
-    // every row — and all 963 customers who never accepted the shop's rules
-    // arrived as having accepted them. Row counts matched, every money total
-    // matched, and the only thing that changed was which side of a gate 963
-    // people stood on. Nothing in this file looked at it.
-    //
-    // A count on each side is the cheapest thing that would have failed: 963
-    // against 0 is not a rounding difference. Any future flag of this shape gets
-    // a line here rather than trust.
-    [
-      'core',
-      'customers who have not accepted the rules',
-      'SELECT COUNT(*) FROM `user` WHERE roll_Status = 0',
-      'SELECT COUNT(*) FROM users WHERE rules_accepted = false',
-    ],
-    [
-      'core',
-      'referral bonuses already claimed',
-      'SELECT COUNT(*) FROM reagent_report WHERE get_gift = 1',
-      'SELECT COUNT(*) FROM users WHERE referral_bonus_claimed = true',
-      // A claimed bonus whose referrer or referred customer is gone never
-      // reaches a row to set the flag on, exactly like the wheel spins above.
-      `SELECT COUNT(*) FROM reagent_report r
-         LEFT JOIN user c ON c.id = r.user_id
-         LEFT JOIN user p ON p.id = r.reagent
-        WHERE r.get_gift = 1 AND (c.id IS NULL OR p.id IS NULL)`,
-    ],
-  ];
+  const pairs = COUNT_PAIRS;
 
   for (const [domain, name, srcSql, tgtSql, allowSql, allowReason] of pairs) {
     if (!want(domain)) continue;
     const check: Check = {
       name,
       source: await scalar(my, srcSql),
-      target: await pgScalar(pgc, tgtSql),
+      target: (await pgScalar(pgc, tgtSql)) - (baseline[`count:${name}`] ?? 0n),
       ...(allowSql
         ? {
             allowance: {

@@ -4,10 +4,31 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createConnection, type Connection } from 'mysql2/promise';
 import pg from 'pg';
 
-// A bigint column must not silently become a float. node-postgres returns
-// int8 as a string by default; make that explicit so nobody "fixes" it later.
-pg.types.setTypeParser(20, (v) => v); // int8 -> string
-pg.types.setTypeParser(1700, (v) => v); // numeric -> string
+// A bigint column must not silently become a float. node-postgres returns int8
+// as a string by default; this makes that explicit so nobody "fixes" it later.
+//
+// WHY THIS IS PER-CLIENT AND NOT `pg.types.setTypeParser`.
+//
+// It used to be the global call, which was harmless while the only thing that
+// imported this file was the CLI. The moment the dashboard imported it to run
+// an import, the two settings collided: `packages/db` installs int8 -> number
+// process-wide and says so in its own comment, this installed int8 -> string,
+// and whichever module loaded last won for EVERY query in the process. Money is
+// bigint, so the dashboard began reading `amount_irr` as a string; 86 tests
+// failed at once, which is the only reason it was not shipped.
+//
+// A parser attached to the client keeps the migration's reading of its own
+// connection without touching anybody else's.
+const AS_TEXT = (v: string): string => v;
+const INT8 = 20;
+const NUMERIC = 1700;
+
+const migrationTypes = {
+  getTypeParser(oid: number, format?: unknown): unknown {
+    if (oid === INT8 || oid === NUMERIC) return AS_TEXT;
+    return (pg.types.getTypeParser as (o: number, f?: unknown) => unknown)(oid, format);
+  },
+};
 
 export interface Config {
   mysql: { host: string; port: number; user: string; password: string; database: string };
@@ -94,7 +115,7 @@ export async function connectMysql(cfg: Config): Promise<Connection> {
 }
 
 export async function connectPostgres(cfg: Config): Promise<pg.Client> {
-  const client = new pg.Client(cfg.postgres);
+  const client = new pg.Client({ ...cfg.postgres, types: migrationTypes as never });
   await client.connect();
   return client;
 }
