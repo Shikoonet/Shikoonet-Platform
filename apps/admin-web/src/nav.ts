@@ -44,6 +44,7 @@ export type PageId =
   | 'content'
   | 'access'
   | 'events'
+  | 'import'
   | 'bot'
   | 'settings';
 
@@ -92,6 +93,7 @@ export const NAV: NavGroup[] = [
       { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket' },
       { id: 'access', label: 'دسترسی‌ها', icon: 'users' },
       { id: 'events', label: 'رویدادها', icon: 'list' },
+      { id: 'import', label: 'ایمپورت میرزابات', icon: 'server' },
     ],
   },
   {
@@ -150,7 +152,7 @@ export const NAV: NavGroup[] = [
  * route refuses them anyway (`eventRoutes.ts`), so offering the section would
  * be offering a door that answers 403.
  */
-export const ADMIN_ONLY: ReadonlySet<PageId> = new Set<PageId>(['events']);
+export const ADMIN_ONLY: ReadonlySet<PageId> = new Set<PageId>(['events', 'import']);
 
 export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'dashboard',

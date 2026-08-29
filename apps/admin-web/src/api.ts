@@ -958,6 +958,43 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body;
 }
 
+export interface ImportDumpFile {
+  name: string;
+  bytes: number;
+  modifiedAt: string;
+}
+
+export type ImportDomain =
+  | 'core'
+  | 'catalog'
+  | 'sales'
+  | 'discounts'
+  | 'config'
+  | 'history'
+  | 'hub';
+
+export type ImportMode = 'PREFLIGHT' | 'DRY_RUN' | 'APPLY';
+
+export interface ImportReportLine {
+  level: 'title' | 'step' | 'ok' | 'warn' | 'fail' | 'detail' | 'count';
+  text: string;
+}
+
+export interface ImportRun {
+  id: string;
+  mode: ImportMode;
+  status: 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  dump_path: string;
+  dump_bytes: number | null;
+  domains: ImportDomain[];
+  report?: ImportReportLine[];
+  samples?: Record<string, Record<string, unknown>[]>;
+  error: string | null;
+  started_by: string;
+  started_at: string;
+  finished_at: string | null;
+}
+
 export const api = {
   me() {
     return req<{ ok: boolean } & Me>('/me');
@@ -1772,4 +1809,26 @@ export const api = {
     if (range === 'between' && to) q.set('to', to);
     return req<ShopStatsResponse>(`/stats?${q.toString()}`);
   },
+
+  importFiles() {
+    return req<{ ok: boolean; dir: string; items: ImportDumpFile[] }>('/import/files');
+  },
+
+  importRuns() {
+    return req<{ ok: boolean; items: ImportRun[] }>('/import/runs');
+  },
+
+  importRun(id: string) {
+    return req<{ ok: boolean; run: ImportRun }>(`/import/runs/${encodeURIComponent(id)}`);
+  },
+
+  /** `mode` picks the endpoint; the body is the same for all three. */
+  startImport(mode: ImportMode, body: { file: string; domains: ImportDomain[] }) {
+    const path = mode === 'PREFLIGHT' ? 'preflight' : mode === 'DRY_RUN' ? 'dry-run' : 'apply';
+    return req<{ ok: boolean; id: string }>(`/import/${path}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
 };

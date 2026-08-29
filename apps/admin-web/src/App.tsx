@@ -32,6 +32,7 @@ import { useRoute } from './route.js';
 import { LoginPage } from './LoginPage.js';
 import { PasswordCard } from './PasswordCard.js';
 import { AccessPage } from './pages/AccessPage.js';
+import { ImportPage } from './pages/ImportPage.js';
 import { EventsPage } from './pages/EventsPage.js';
 import { Icon } from './icons.js';
 import { HubSection } from './hub/HubSection.js';
@@ -140,6 +141,8 @@ function Body({
       return <AccessPage role={role} />;
     case 'events':
       return <EventsPage />;
+    case 'import':
+      return <ImportPage />;
   }
 }
 
