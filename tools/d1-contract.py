@@ -30,7 +30,7 @@ block = src[start:src.index('\n];', start)]
 # opening line and reported `id` as a table.
 depth = 0
 pending_entry = False
-for tok in re.finditer(r"\[|\]|'([a-z_]+)'", block):
+for tok in re.finditer(r"\[|\]|'([a-z0-9_]+)'", block):
     t = tok.group(0)
     if t == '[':
         depth += 1
@@ -50,7 +50,7 @@ pre = (root / 'packages/migrate/src/preflight.ts').read_text(encoding='utf-8')
 pstart = pre.index('d1Counts.set(table')
 pblock = pre[max(0, pstart - 2000):pstart]
 loop = pblock[pblock.rindex('for (const table of ['):]
-for name in re.findall(r"'([a-z_]+)'", loop):
+for name in re.findall(r"'([a-z0-9_]+)'", loop):
     tables.add(name)
 
 # `payment_cards` is read directly rather than through either list.

@@ -33,7 +33,16 @@ fi
 [[ $WANT_SHA =~ ^[0-9a-f]{40}$ ]] || die "the expected sha is not 40 lowercase hex characters"
 
 TMP=''
-cleanup() { [ -z "$TMP" ] || rm -rf "$TMP"; }
+TMP_INST=''
+TMP_PROV=''
+# All three, on every path. `cleanup` removed only $TMP, so an exit anywhere
+# after the installer and provenance temporaries were written left
+# `install-shikoo-task-runner.sh.new.<pid>` beside the real one.
+cleanup() {
+  [ -z "$TMP" ] || rm -rf "$TMP"
+  [ -z "$TMP_INST" ] || rm -f "$TMP_INST"
+  [ -z "$TMP_PROV" ] || rm -f "$TMP_PROV"
+}
 on_signal() { # signame code
   echo "[stage] received $1 — the existing staging directory is untouched" >&2
   cleanup
@@ -189,8 +198,8 @@ else
   mv -T "$TMP" "$STAGING"
 fi
 TMP=''
-mv -Tf "$TMP_INST" "$INST_OUT"
-mv -Tf "$TMP_PROV" "$PROV_OUT"
+mv -Tf "$TMP_INST" "$INST_OUT"; TMP_INST=''
+mv -Tf "$TMP_PROV" "$PROV_OUT"; TMP_PROV=''
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 

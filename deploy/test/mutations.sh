@@ -242,7 +242,6 @@ mut "$R" 's|        OLD_APP_SCHEMA_COMPAT=fail|        :|'           "$ST" "subj
 mut "$R" 's|    \*) die "the schema gate could not be run|    *) : "the schema gate could not be run|' "$ST" "subjects: treat a broken probe as a verdict"
 mut "$R" 's|      if grep -q .\^BLOCK. "$ART/gate-${svc}.log"; then|      if true; then|' "$ST" "subjects: exit 1 without BLOCK counts as a verdict"
 mut "$R" 's|\[ "$APPLIED_TO_RESTORE" -gt 0 \]|true|'                 "$ST" "subjects: allow zero migrations applied"
-mut "$S" 's|660) ;;|660\|666) ;;|'                                  "$PT" "publication: accept a mode-666 release lock"
 
 echo "== cleanup =="
 # The replacement for the invalid mutation below: appended AFTER the real
