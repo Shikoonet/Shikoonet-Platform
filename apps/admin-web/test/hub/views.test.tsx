@@ -152,9 +152,9 @@ describe('DevicesView', () => {
   beforeEach(() => sessionStorage.clear());
   afterEach(() => vi.restoreAllMocks());
 
-  it('renders device cards on mobile', async () => {
+  function matchMediaAt(narrow: boolean) {
     window.matchMedia = vi.fn().mockImplementation((q: string) => ({
-      matches: q.includes('max-width: 639'),
+      matches: narrow ? q.includes('max-width: 639') : !q.includes('max-width: 639'),
       media: q,
       onchange: null,
       addEventListener: () => undefined,
@@ -163,6 +163,9 @@ describe('DevicesView', () => {
       removeListener: () => undefined,
       dispatchEvent: () => false,
     }));
+  }
+
+  function oneDevice() {
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -184,47 +187,22 @@ describe('DevicesView', () => {
         { status: 200 },
       ),
     );
-    const cache = createCache();
-    render(<DevicesView cache={cache} />);
+  }
+
+  // These were two tests pinning two layouts: cards when narrow, a nine-column
+  // `table.data-table` when wide. The wide one is gone deliberately — at panel
+  // width those nine columns gave the name about fifty pixels and broke both
+  // «Staging Device» and the action buttons mid-word. One layout now, and the
+  // test says so at both widths rather than asserting the split it replaced.
+  it.each([
+    ['narrow', true],
+    ['wide', false],
+  ])('renders device cards at %s width, and never a table', async (_label, narrow) => {
+    matchMediaAt(narrow as boolean);
+    oneDevice();
+    render(<DevicesView cache={createCache()} />);
     await waitFor(() => screen.getByText('Poyan'));
     expect(document.querySelector('ul.card-list')).toBeTruthy();
-  });
-
-  it('renders table on desktop', async () => {
-    window.matchMedia = vi.fn().mockImplementation((q: string) => ({
-      matches: !q.includes('max-width: 639'),
-      media: q,
-      onchange: null,
-      addEventListener: () => undefined,
-      removeEventListener: () => undefined,
-      addListener: () => undefined,
-      removeListener: () => undefined,
-      dispatchEvent: () => false,
-    }));
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          ok: true,
-          items: [
-            {
-              id: 'd1',
-              device_code: 'poyan-01',
-              display_name: 'Poyan',
-              active: 1,
-              last_seen_at: 1700000000,
-              last_success_at: 1700000000,
-              last_auth_failure_at: null,
-              created_at: 1690000000,
-              updated_at: 1700000000,
-            },
-          ],
-        }),
-        { status: 200 },
-      ),
-    );
-    const cache = createCache();
-    render(<DevicesView cache={cache} />);
-    await waitFor(() => screen.getByText('Poyan'));
-    expect(document.querySelector('table.data-table')).toBeTruthy();
+    expect(document.querySelector('table.data-table')).toBeNull();
   });
 });

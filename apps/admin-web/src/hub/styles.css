@@ -3754,3 +3754,280 @@
   color: var(--text-secondary);
   white-space: nowrap;
 }
+
+/* ===========================================================================
+ * Devices — the cards, and the one-time key screen
+ *
+ * Two things were missing rather than wrong.
+ *
+ * `connectionStateLabel` computes a tone — good / warn / idle / bad / muted —
+ * and writes it into `status-${tone}`. This sheet defined `.status-accepted`
+ * and `.status-rejected` and nothing else, so every one of those classes
+ * resolved to the bare `.status-pill` blue. A device shouting «احراز هویت
+ * ناموفق» and one saying «متصل» were painted identically, and the code that
+ * carefully distinguished them had no way to say so on screen.
+ *
+ * The one-time setup screen was worse off: `.token-block`, `.token-text`,
+ * `.code-scrollable` and `.instructions` had no rules at all. The single most
+ * important string this panel ever shows — an API key that exists for one
+ * render and never again — was a bare `<code>` in the flow of the page, and
+ * the JSON body was a `<pre>` with no scroll container, which widens the modal
+ * to the length of its longest line.
+ * ======================================================================== */
+
+.devices__lede {
+  margin: -0.5rem 0 1rem;
+  max-width: 68ch;
+}
+
+/* A device is a card, at every width. See the header of `DevicesView`. */
+.device-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.device-card {
+  display: flex;
+  flex-direction: column;
+  /* The stripe `.hub-card` draws, coloured by what the timestamps say. */
+  border-inline-start-color: var(--device-tone, var(--accent));
+}
+
+.device-card.status-good {
+  --device-tone: var(--success);
+}
+.device-card.status-warn {
+  --device-tone: var(--warning);
+}
+.device-card.status-bad {
+  --device-tone: var(--danger);
+}
+.device-card.status-idle {
+  --device-tone: var(--info);
+}
+.device-card.status-muted {
+  --device-tone: var(--border-mid);
+}
+
+.device-card.dim {
+  opacity: 0.62;
+}
+
+.device-card__head {
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.device-card__head strong {
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+/* The device code is a URL-safe identifier, often a 36-character uuid. It is
+   reference material, not a headline — small, dim, and allowed to wrap. */
+.device-card__code {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+  margin-bottom: 0.35rem;
+}
+
+/* The token PREFIX, rendered as a prefix.
+   `{prefix}…` is Latin text ending in an ellipsis, dropped into an RTL
+   paragraph. Bidi then places the neutral «…» to the LEFT of the Latin run, so
+   `d12f…` — the first four characters of the key — appeared on screen as
+   `…d12f` and read as its last four. Isolating the run puts the ellipsis back
+   where the DOM puts it. Nothing about the text changes, only its direction. */
+.device-card .masked {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* What to do about this particular phone. A button label names an action; it
+   cannot say why this device needs it. */
+.device-card__next {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border-inline-start: 3px solid var(--device-tone, var(--accent));
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+/* `auto-fit` with a floor wide enough for the longest label. The old table
+   gave these a fixed narrow column and «غیرفعال‌کردن» broke mid-word.
+   Two columns, fixed, rather than `auto-fit`. Measured at three viewports:
+   a card in a three-across grid is about 270px inside its padding, which fits
+   two comfortable tracks and never three — so `auto-fit` produced two anyway
+   and left the third button orphaned in the corner of its own row, which reads
+   as a mistake. Saying two out loud and letting an odd last button span the
+   full width makes the same three buttons look deliberate. */
+.device-card__actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: auto;
+  padding-top: 0.6rem;
+}
+
+/* The odd one out gets the whole row instead of half of it. */
+.device-card__actions > button:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
+.device-card__actions button {
+  white-space: nowrap;
+  min-height: 36px;
+}
+
+.devices__retired {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+}
+
+.devices__retired > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  padding: 0.35rem 0;
+}
+
+.devices__retired > ul {
+  margin-top: 0.75rem;
+}
+
+/* --- Status pill tones ---------------------------------------------------
+ * Declared for every tone `connectionStateLabel` can return. A tone with no
+ * rule here is a state the operator cannot see, which is how «احراز هویت
+ * ناموفق» came to look exactly like «متصل».
+ * ---------------------------------------------------------------------- */
+.status-pill.status-good {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.status-pill.status-warn {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.status-pill.status-bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.status-pill.status-idle {
+  background: var(--info-soft);
+  color: var(--info);
+}
+.status-pill.status-muted {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+/* --- The one-time key screen -------------------------------------------- */
+
+.device-setup {
+  max-width: 640px;
+}
+
+/* The key, alone, before anything the operator could look up later. */
+.token-block {
+  margin: 0.75rem 0 1rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  background: var(--warning-soft);
+}
+
+.token-block > .toolbar {
+  margin-bottom: 0.5rem;
+}
+
+.token-text {
+  display: block;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  line-height: 1.7;
+  /* A 64-character key must wrap inside the box rather than widen the modal. */
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  user-select: all;
+}
+
+.device-setup__key-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+.device-setup__key-actions button {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.device-setup__facts dd {
+  overflow-wrap: anywhere;
+}
+
+.device-setup__url {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+/* A JSON body is one long line. Without this the `<pre>` sets the modal's
+   width to its longest line and the dialog runs off the screen. */
+.code-scrollable {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-overlay);
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  /* Left-to-right: this is JSON, and RTL reorders its punctuation. */
+  direction: ltr;
+  text-align: left;
+}
+
+.instructions {
+  margin: 0.5rem 0;
+  padding-inline-start: 1.25rem;
+  line-height: 2;
+  font-size: 0.9rem;
+}
+
+.instructions code {
+  direction: ltr;
+  display: inline-block;
+}
+
+.devices .sort-dropdown {
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.devices .sort-dropdown select {
+  width: auto;
+  max-width: 20rem;
+}
+
+/* The merge block is a sequence, not a form of side-by-side fields.
+   `.form` becomes two columns at 640px and up, which put the «انتقال سابقه،
+   بعد حذف» heading beside its own select instead of above it, and would have
+   put the conflict warning beside the thing it warns about. */
+.device-move > * {
+  grid-column: 1 / -1;
+}
+
+.device-move h4 {
+  margin: 0.5rem 0 0;
+}

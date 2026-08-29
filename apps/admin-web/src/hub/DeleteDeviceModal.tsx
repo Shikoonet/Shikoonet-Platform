@@ -1,17 +1,31 @@
 /**
- * Permanent-delete confirmation for an inactive device.
+ * Permanent-delete for a switched-off device — including the ones that used to
+ * be undeletable.
  *
- * Two-step gate:
- *   1. Fetch the delete-preview; show reference counts + blocking reasons.
- *   2. User must type the device display name OR code exactly to enable
- *      the destructive Confirm button.
+ * The server refuses to delete a device that still owns bank SMS, financial
+ * accounts or transactions, and that refusal is right: `raw_sms_events` is
+ * `ON DELETE RESTRICT` and the transaction candidates built from those events
+ * cascade off them. Deleting would destroy money evidence to tidy a screen.
  *
- * On success, the parent (DevicesView) clears state, invalidates affected
- * query keys, and shows a success notification.
+ * But this modal used to say only «این دستگاه سابقه دارد» and stop, which meant
+ * a device that had ever relayed one SMS could never be removed. On staging on
+ * 2026-08-29 that was seven of eight rows, holding six hundred synthetic
+ * messages between them, permanently.
  *
- * ADMIN-only endpoint; a non-admin caller sees a 403 here.
+ * So the dead end has a door now: pick another device, move the history onto
+ * it, and delete. `POST /devices/:id/move-references` does both in one
+ * transaction. The only thing that can stop it is the ingest's own per-device
+ * de-duplication index — a message the target already holds byte for byte
+ * cannot land there twice — and that is counted and named rather than resolved
+ * by quietly dropping a row.
+ *
+ * Two-step gate throughout: the preview says what will happen, and the
+ * destructive button stays disabled until the operator types the device's name
+ * or code exactly.
+ *
+ * ADMIN-only endpoints; a non-admin caller sees a 403 here.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { count } from '../format.js';
 import type { DeviceListItem } from './api.js';
 import { api } from './api.js';
@@ -29,18 +43,35 @@ interface PreviewResponse {
   blockingReasons: string[];
 }
 
+interface MovePreview {
+  moves: { rawSmsEvents: number; financialAccounts: number; transactions: number };
+  duplicateSmsOnTarget: number;
+  canMove: boolean;
+  canDeleteSourceAfterwards: boolean;
+}
+
 export interface DeleteDeviceModalProps {
   device: DeviceListItem;
+  /** Every device, so the history has somewhere to go. */
+  devices?: DeviceListItem[];
   onClose: () => void;
   onDeleted: (deletedId: string) => void;
 }
 
-export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceModalProps) {
+export function DeleteDeviceModal({
+  device,
+  devices = [],
+  onClose,
+  onDeleted,
+}: DeleteDeviceModalProps) {
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [targetId, setTargetId] = useState('');
+  const [movePreview, setMovePreview] = useState<MovePreview | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,25 +97,66 @@ export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceMo
   }, [onClose]);
 
   const refs = preview?.references;
-  const blocked = !preview || !preview.canDelete;
+  const inUse = preview?.blockingReasons.includes('device_in_use') ?? false;
+  const mustBeInactive = preview?.blockingReasons.includes('device_must_be_inactive') ?? false;
+
+  /** Anything but this device. A switched-off target is fine — it still holds rows. */
+  const targets = useMemo(() => devices.filter((d) => d.id !== device.id), [devices, device.id]);
+
+  // The move preview follows the picker, so the counts on screen always belong
+  // to the target actually selected.
+  useEffect(() => {
+    if (!targetId) {
+      setMovePreview(null);
+      setMoveError(null);
+      return;
+    }
+    let cancelled = false;
+    setMoveError(null);
+    api
+      .moveDevicePreview(device.id, targetId)
+      .then((r) => {
+        if (!cancelled) setMovePreview(r);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setMovePreview(null);
+          setMoveError(String(e));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [device.id, targetId]);
+
   const reasonText: Record<string, string> = {
-    device_must_be_inactive: 'دستگاه هنوز فعال است — اول غیرفعالش کن.',
+    device_must_be_inactive: 'دستگاه هنوز روشن است — اول خاموشش کن.',
     device_in_use:
-      'این دستگاه سابقهٔ پیامک، حساب مالی یا تراکنش دارد. این‌ها هیچ‌وقت آبشاری حذف نمی‌شوند.',
+      'این دستگاه سابقهٔ پیامک، حساب مالی یا تراکنش دارد. این‌ها هیچ‌وقت حذف نمی‌شوند — برای برداشتن دستگاه باید اول سابقه‌اش به یک دستگاه دیگر منتقل شود.',
   };
-  // Accept either display name OR device code so the user has a short,
-  // easy-to-type confirmation phrase for a phone with a long display name.
+
+  // Either the name or the code, so a phone with a long Persian display name
+  // still has a short thing to type.
   const matchesTyped =
     typed.trim() === preview?.device.displayName.trim() ||
     typed.trim() === preview?.device.deviceCode;
-  const canSubmit = !!preview && preview.canDelete && matchesTyped && !busy;
+
+  // Two routes to the same end, and each has its own precondition.
+  const plainDeleteReady = !!preview && preview.canDelete;
+  const moveDeleteReady =
+    !!preview && inUse && !mustBeInactive && !!movePreview && movePreview.canMove;
+  const canSubmit = (plainDeleteReady || moveDeleteReady) && matchesTyped && !busy;
 
   async function confirm() {
-    if (!preview) return;
+    if (!preview || !canSubmit) return;
     setBusy(true);
     setErr(null);
     try {
-      await api.deleteDevice(device.id);
+      if (plainDeleteReady) {
+        await api.deleteDevice(device.id);
+      } else {
+        await api.moveDeviceReferences(device.id, { targetDeviceId: targetId, deleteSource: true });
+      }
       onDeleted(device.id);
     } catch (e) {
       setErr(String(e));
@@ -116,8 +188,8 @@ export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceMo
           دیتابیس حذف می‌کند. <strong>برگشت‌پذیر نیست.</strong>
         </p>
         <p className="muted small">
-          سابقهٔ پیامک، حساب‌های مالی و تراکنش‌ها هیچ‌وقت آبشاری حذف نمی‌شوند. فقط ردیف دستگاه و
-          توکن‌های مربوط به آن برداشته می‌شوند.
+          سابقهٔ پیامک، حساب‌های مالی و تراکنش‌ها هیچ‌وقت حذف نمی‌شوند — یا سرِ جایشان می‌مانند یا
+          به دستگاه دیگری منتقل می‌شوند. فقط ردیف دستگاه و کلیدهای مربوط به آن برداشته می‌شوند.
         </p>
         {loadError && <div className="error">{loadError}</div>}
         {preview && (
@@ -128,7 +200,7 @@ export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceMo
               <dd>{count(refs?.rawSmsEvents ?? 0)}</dd>
               <dt>حساب‌های مالی</dt>
               <dd>{count(refs?.financialAccounts ?? 0)}</dd>
-              <dt>توکن‌ها</dt>
+              <dt>کلیدها</dt>
               <dd>{count(refs?.credentials ?? 0)}</dd>
               <dt>تراکنش‌ها</dt>
               <dd>{count(refs?.transactions ?? 0)}</dd>
@@ -142,12 +214,60 @@ export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceMo
             )}
           </>
         )}
-        {preview?.canDelete && (
+
+        {/* The way through. Offered only when history is the thing in the way —
+            a device that is merely still switched on needs the switch, not a
+            merge, and showing both at once would suggest the merge fixes it. */}
+        {inUse && !mustBeInactive && (
+          <div className="form device-move" data-testid="device-move">
+            <h4>انتقال سابقه، بعد حذف</h4>
+            <label>
+              <span>سابقه به کدام دستگاه منتقل شود؟</span>
+              <select
+                value={targetId}
+                onChange={(e) => setTargetId(e.target.value)}
+                data-testid="device-move-target"
+              >
+                <option value="">— انتخاب کن —</option>
+                {targets.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.display_name} ({d.device_code}){d.active ? '' : ' — خاموش'}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {targets.length === 0 && (
+              <p className="muted small">
+                دستگاه دیگری وجود ندارد که سابقه به آن منتقل شود. اول یک دستگاه بساز.
+              </p>
+            )}
+            {moveError && <div className="error">{moveError}</div>}
+            {movePreview && (
+              <>
+                <p className="muted small" data-testid="device-move-summary">
+                  {count(movePreview.moves.rawSmsEvents)} پیامک،{' '}
+                  {count(movePreview.moves.financialAccounts)} حساب مالی و{' '}
+                  {count(movePreview.moves.transactions)} تراکنش منتقل می‌شوند، بعد این دستگاه حذف
+                  می‌شود.
+                </p>
+                {!movePreview.canMove && (
+                  <div className="warn-banner" data-testid="device-move-conflict">
+                    {count(movePreview.duplicateSmsOnTarget)} پیامک از این دستگاه، عیناً روی دستگاه
+                    مقصد هم هست. ورودی پیامک برای هر دستگاه تکراری‌ها را رد می‌کند، پس این‌ها
+                    نمی‌توانند آن‌جا بنشینند و انتقال انجام نمی‌شود. یک مقصد دیگر انتخاب کن.
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {(plainDeleteReady || moveDeleteReady) && (
           <div className="form">
             <label>
               <span>
-                برای تایید <code>{preview.device.displayName}</code> یا{' '}
-                <code>{preview.device.deviceCode}</code> را بنویس:
+                برای تایید <code>{preview!.device.displayName}</code> یا{' '}
+                <code>{preview!.device.deviceCode}</code> را بنویس:
               </span>
               <input
                 type="text"
@@ -171,14 +291,16 @@ export function DeleteDeviceModal({ device, onClose, onDeleted }: DeleteDeviceMo
             disabled={!canSubmit}
             onClick={confirm}
             title={
-              blocked
-                ? 'دستگاه در وضعیت فعلی‌اش حذف‌شدنی نیست.'
-                : !matchesTyped
-                  ? 'برای تایید، نام یا کد دستگاه را دقیقاً بنویس.'
-                  : 'این دستگاه برای همیشه حذف شود'
+              mustBeInactive
+                ? 'اول دستگاه را خاموش کن.'
+                : inUse && !moveDeleteReady
+                  ? 'یک دستگاه مقصد برای انتقال سابقه انتخاب کن.'
+                  : !matchesTyped
+                    ? 'برای تایید، نام یا کد دستگاه را دقیقاً بنویس.'
+                    : 'این دستگاه برای همیشه حذف شود'
             }
           >
-            {busy ? 'در حال حذف…' : 'حذف همیشگی'}
+            {busy ? 'در حال حذف…' : moveDeleteReady ? 'انتقال سابقه و حذف همیشگی' : 'حذف همیشگی'}
           </button>
         </div>
       </div>
