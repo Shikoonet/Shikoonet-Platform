@@ -22,8 +22,15 @@ SHA = os.environ["FAKE_MAIN_SHA"]
 DIGEST = os.environ["FAKE_DIGEST"]
 STATUS = os.environ.get("FAKE_GH_STATUS", "200")
 
+# The FULL argv, not just the URL's last segment.
+#
+# `rehearsal-cleanup.test.sh` greps this log for the token and says "if the
+# token were in argv anywhere, it would be in this log". With only a path
+# segment recorded that claim was false: a `-H "Authorization: bearer <token>"`
+# argument would never have reached the log, and the credential-leak assertion
+# would have passed with the token sitting in argv.
 with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as fh:
-    fh.write(f"curl||{url.split('?')[0].split('/')[-1]}|{STATUS}\n")
+    fh.write("curl||" + " ".join(argv).replace("\n", " ") + "|" + STATUS + "\n")
 
 if outfile:
     import hashlib

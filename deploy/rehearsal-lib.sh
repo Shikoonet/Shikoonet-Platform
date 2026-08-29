@@ -305,7 +305,11 @@ rehearsal_validate_d1_export() { # dir expected-tables-csv mysql-dump
     return 1
   fi
   rehearsal_refuse_if_writable "$dir/d1-export.manifest" "d1-export.manifest" || return 1
-  python3 - "$dir" "$expected" "$dump" "${REHEARSAL_CAPTURE_WINDOW_MAX:-3600}" <<'PY'
+  # 3600, literally. This was `${REHEARSAL_CAPTURE_WINDOW_MAX:-3600}`, which
+  # handed the bound straight back to whoever sets the environment — the exact
+  # weakness the comment below describes, reintroduced one line above it. The
+  # table set is not caller-overridable and neither is this.
+  python3 - "$dir" "$expected" "$dump" 3600 <<'PY'
 import hashlib, os, sys
 
 d, expected, dump = sys.argv[1], [t for t in sys.argv[2].split(',') if t], sys.argv[3]
@@ -394,7 +398,7 @@ if sha256_file(dump) != want_dump:
 # another field of the same header lets a sidecar declaring
 # `capture_window_max=999999` authorise its own arbitrarily wide window; the
 # header is unauthenticated data from the artifact under validation.
-CONSUMER_WINDOW_MAX = int(sys.argv[4]) if len(sys.argv) > 4 else 3600
+CONSUMER_WINDOW_MAX = int(sys.argv[4])
 try:
     window = int(header.get('capture_window_seconds', '-1'))
     declared_max = int(header.get('capture_window_max', '-1'))

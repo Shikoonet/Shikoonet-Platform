@@ -99,7 +99,10 @@ check_clean() { # world label
     else
       bad "$label: $(echo "$c" | cut -d- -f3) removed exactly once" "removed $n time(s)"
     fi
-  done < <(grep -o 'shikoo-rehearsal-[a-z]*-[0-9-]*' "$w/log" 2>/dev/null | sort -u)
+  # Containers only. Now that argv is logged, `shikoo-rehearsal-net-…` appears
+  # in it too, and a network is removed by `network rm`, not `rm` — so a
+  # wildcard here invented a container that was never removed.
+  done < <(grep -oE 'shikoo-rehearsal-(restore|mysql|dest)-[0-9-]*' "$w/log" 2>/dev/null | sort -u)
   n=$(grep -c '^network|||rm' "$w/log" 2>/dev/null) || n=0
   if [ "$n" = 1 ]; then ok "$label: the rehearsal network is removed exactly once"; else bad "$label: the rehearsal network is removed exactly once" "removed $n time(s)"; fi
 }
@@ -131,14 +134,24 @@ if grep -qF "$TOKEN" "$W/log"; then
 else ok "the token never appears in a child process's arguments"; fi
 
 # The throwaway credential is offered only to containers this run created.
-BADHOST=0
+# At least one URI must have been observed, or this proves nothing: a log with
+# no connection string at all left BADHOST at 0 and reported a pass.
+BADHOST=0; SEEN=0
 while IFS= read -r line; do
+  SEEN=$((SEEN + 1))
   case "$line" in
     *shikoo-rehearsal-*) ;;
     *) BADHOST=1 ;;
   esac
 done < <(grep -oE 'postgres://postgres:rehearsal@[^:]*' "$W/log" 2>/dev/null || true)
-if [ "$BADHOST" = 0 ]; then ok "the throwaway password is only ever presented to this run's own containers"; else bad "the throwaway password is only ever presented to this run's own containers" ""; fi
+if [ "$SEEN" -eq 0 ]; then
+  bad "the throwaway password is only ever presented to this run's own containers" \
+    "no connection URI was recorded at all — the check had nothing to inspect"
+elif [ "$BADHOST" = 0 ]; then
+  ok "the throwaway password is only ever presented to this run's own containers (${SEEN} observed)"
+else
+  bad "the throwaway password is only ever presented to this run's own containers" "a foreign host appeared"
+fi
 # And it is never presented to the production database or to Coolify's.
 if grep -E '^(query|migration|invariants)\|(coolify-db|live-)' "$W/log" | grep -q 'rehearsal'; then
   bad "the throwaway password never reaches production" "found a production target"
