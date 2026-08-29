@@ -73,6 +73,24 @@ beforeEach(async () => {
   await baseEnv.DB.prepare('DELETE FROM import_runs').run();
 });
 
+describe('importing the migration does not change the process', () => {
+  /**
+   * `packages/migrate` reads int8 as a string; `packages/db` reads it as a
+   * number. Both used to say so with `pg.types.setTypeParser`, which is
+   * PROCESS-GLOBAL, so whichever module loaded last decided it for every query
+   * in the dashboard -- and money is bigint. Merely importing this route file
+   * turned `amount_irr` into a string and broke 86 tests at once.
+   *
+   * The migration now attaches its parser to its own client. This asserts the
+   * consequence rather than the mechanism: whatever the import package does to
+   * read its own connection, the dashboard still reads a bigint as a number.
+   */
+  it('still reads a bigint as a number', async () => {
+    const row = await baseEnv.DB.prepare('SELECT 1::bigint AS n').first<{ n: unknown }>();
+    expect(typeof row?.n).toBe('number');
+  });
+});
+
 describe('naming the dump', () => {
   it('takes a bare file name', () => {
     expect(resolveDump('/data/imports', 'dump.sql')).toContain('dump.sql');

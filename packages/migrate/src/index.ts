@@ -31,4 +31,4 @@ export {
   type StepResult,
 } from './migrate.js';
 export { preflight, summarise, type Finding } from './preflight.js';
-export { verify, type Check } from './verify.js';
+export { verify, targetBaseline, type Baseline, type Check } from './verify.js';

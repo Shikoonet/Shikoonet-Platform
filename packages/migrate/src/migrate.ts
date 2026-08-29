@@ -177,10 +177,24 @@ async function migrateUsers(ctx: Ctx): Promise<number> {
     { conflict: '(telegram_id)' },
   );
 
-  const { rows: idMap } = await ctx.pg.query<{ id: string; telegram_id: string }>(
+  const { rows: idMap } = await ctx.pg.query<{ id: string | number; telegram_id: string | number }>(
     'SELECT id, telegram_id FROM users',
   );
-  for (const m of idMap) ctx.userId.set(m.telegram_id, m.id);
+  // `String(...)` on both, and it is not defensive noise.
+  //
+  // `telegram_id` and `id` are bigint, and node-postgres decides whether an
+  // int8 arrives as a string or a number through `pg.types.setTypeParser` --
+  // which is PROCESS-GLOBAL. `db.ts` here asks for strings; `packages/db` asks
+  // for numbers, and says in its own comment that the setting is global. In the
+  // CLI only the first runs, so this worked. Inside the dashboard both are
+  // loaded and the other one wins, so the map was keyed by numbers while
+  // `user()` looked up strings: every lookup missed, and the import wrote 11,241
+  // users and then skipped all 5,131 subscriptions, 236 orders, 179 referrals
+  // and 93 redemptions as «user deleted» -- with every step reporting ok.
+  //
+  // Coercing here fixes it wherever the migration is called from, instead of
+  // depending on which module was imported first.
+  for (const m of idMap) ctx.userId.set(String(m.telegram_id), String(m.id));
   return written;
 }
 
@@ -1752,6 +1766,18 @@ export interface MigrateOptions {
    * reviewer can see what a mapping actually produced.
    */
   samples?: number;
+  /**
+   * Runs after the last step and BEFORE the commit or rollback, and its answer
+   * becomes `verified`.
+   *
+   * This is what makes a dry run worth trusting. Without it a dry run could
+   * only report that no step threw -- and a migration that silently resolves
+   * every owner to null does not throw, it writes the parents and skips the
+   * children, reporting `ok` on every line. Running `verify` inside the
+   * transaction compares the two sides while the rows still exist, so the
+   * money and the counts are checked on a run that is about to be discarded.
+   */
+  beforeSettle?: () => Promise<boolean>;
 }
 
 export interface StepResult {
@@ -1763,6 +1789,8 @@ export interface StepResult {
 
 export interface MigrateResult {
   committed: boolean;
+  /** `beforeSettle`'s answer, or true when no check was supplied. */
+  verified: boolean;
   domains: Domain[];
   steps: StepResult[];
   skipped: [what: string, n: number][];
@@ -1799,6 +1827,7 @@ export async function migrate(
   const domains = DOMAINS.filter((d) => wanted.has(d));
   const steps: StepResult[] = [];
   const samples: Record<string, Record<string, unknown>[]> = {};
+  let verified = true;
 
   report.title(commit ? 'migrating' : 'migrating (dry run - will roll back)');
   report.step(`domains: ${domains.join(', ')}`);
@@ -1822,6 +1851,8 @@ export async function migrate(
         samples[table] = rows as Record<string, unknown>[];
       }
     }
+    if (opts.beforeSettle) verified = await opts.beforeSettle();
+
     // The rollback is deliberate and reported, so a dry run can never be read
     // as a completed import.
     await pgc.query(commit ? 'COMMIT' : 'ROLLBACK');
@@ -1838,5 +1869,5 @@ export async function migrate(
     for (const [what, n] of skipped) report.warn(`${n} ${what}`);
   }
 
-  return { committed: commit, domains, steps, skipped, samples };
+  return { committed: commit, verified, domains, steps, skipped, samples };
 }

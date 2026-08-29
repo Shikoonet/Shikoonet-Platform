@@ -51,6 +51,7 @@ import {
   preflight,
   summarise,
   verify,
+  targetBaseline,
   DOMAINS,
   PANEL_DEFAULT_DOMAINS,
   type Domain,
@@ -195,15 +196,29 @@ async function runImport(
       return { ok: true, report: lines, samples: {}, error: null, dump };
     }
 
+    // What the target already held, taken before a single row is written.
+    //
+    // `verify` compares whole-table totals, which is right for a cutover into
+    // an empty database and wrong for the merge this panel performs: on a
+    // database holding anything at all, every total would read as off by
+    // whatever was already there. Subtracting the baseline makes the check
+    // about what THIS import moved.
+    const baseline = await targetBaseline(pgc);
+
     const result = await migrate(cfg, my, pgc, {
       commit: mode === 'APPLY',
       domains,
       samples: 5,
+      // A dry run verifies inside its own transaction, while the rows still
+      // exist. This is the whole reason a dry run means anything: a run that
+      // resolves every owner to null throws nothing and reports ok on every
+      // line, and only the counts and the money catch it.
+      ...(mode === 'DRY_RUN'
+        ? { beforeSettle: () => verify(cfg, my!, pgc!, domains, baseline) }
+        : {}),
     });
-    // A dry run has already rolled back, so there is nothing on the target to
-    // compare against and every total would read as missing. The constraints
-    // were the test; `verify` belongs to the run that kept its rows.
-    const ok = mode === 'APPLY' ? await verify(cfg, my, pgc, domains) : true;
+    const ok =
+      mode === 'APPLY' ? await verify(cfg, my, pgc, domains, baseline) : result.verified;
     return {
       ok,
       report: lines,
