@@ -385,6 +385,36 @@ FAKE_VITEST_RC=1 run_rehearsal "$SW"
 if [ "$(find "$SW/state/attestation/versions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)" = 0 ]; then ok "an ordinary failure leaves no unactivated version directory"; else bad "an ordinary failure leaves no unactivated version directory" ""; fi
 if [ ! -e "$SW/state/attestation/current" ]; then ok "an ordinary failure activates nothing"; else bad "an ordinary failure activates nothing" ""; fi
 
+# A failure AFTER the version directory exists, which is the only case that can
+# actually leave one behind. `FAKE_VITEST_RC=1` above stops at step 8, long
+# before publication, so that assertion is vacuous on its own.
+#
+# A lock the store refuses fails `att_publish` — after the version directory has
+# been built, written and verified against the release. That is the window.
+SW2="$W/stale2"; FAKE_LOCK_MODE=666 build_world "$SW2"
+FAKE_LOCK_MODE=666 run_rehearsal "$SW2" || true
+if grep -q 'mode 666' "$SW2/out"; then
+  ok "publication refuses a lock the store will not accept"
+else
+  bad "publication refuses a lock the store will not accept" "$(grep -iE 'STOP:|\[att\]' "$SW2/out" | head -1)"
+fi
+if grep -q 'publishing the attestation' "$SW2/out"; then
+  ok "the run reached publication, so a version directory had been built"
+else
+  bad "the run reached publication, so a version directory had been built" "it failed earlier"
+fi
+LEFT=$(find "$SW2/state/attestation/versions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+if [ "$LEFT" = 0 ]; then
+  ok "a failure during publication leaves no unactivated version directory"
+else
+  bad "a failure during publication leaves no unactivated version directory" "${LEFT} left behind"
+fi
+if [ ! -e "$SW2/state/attestation/current" ] && [ ! -L "$SW2/state/attestation/current" ]; then
+  ok "a failure during publication activates nothing"
+else
+  bad "a failure during publication activates nothing" "a pointer exists"
+fi
+
 echo
 printf 'publication: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -20,7 +20,12 @@
 # The guards are checked by breaking the script, one break at a time, and
 # requiring a non-zero exit with the right reason — not by asserting that a
 # line of source exists.
-set -uo pipefail
+# `-Ee` like the other suites. Every deliberate non-zero here — a rehearsal
+# expected to refuse, a `wait` on a signalled child — is already captured into
+# a variable, so errexit changes nothing except that an unexpected setup or
+# cleanup failure now stops instead of running assertions against half-built
+# fixture state.
+set -Eeuo pipefail
 
 HERE=$(CDPATH='' ; cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH='' ; cd -- "$HERE/../.." && pwd)
@@ -80,23 +85,23 @@ DEST_C=$(grep -oE 'shikoo-rehearsal-dest-[0-9]+-[0-9]+' "$W/log" | head -1)
 if [ -n "$RESTORE_C" ] && [ -n "$DEST_C" ] && [ "$RESTORE_C" != "$DEST_C" ]; then ok "the two subjects are distinct containers"; else bad "the two subjects are distinct containers" "restore=$RESTORE_C dest=$DEST_C"; fi
 
 # Exactly three migrations reached the restored production copy...
-n=$(grep -c "^migration|$RESTORE_C|prodrestore|" "$W/log")
+n=$(grep -c "^migration|$RESTORE_C|prodrestore|" "$W/log" || true)
 if [ "$n" = 3 ]; then ok "the pending range (3) was applied to the production restore"; else bad "the pending range (3) was applied to the production restore" "saw $n"; fi
 
 # ...and the legacy destination was built by the migrator, not by this loop.
-n=$(grep -c "^migrator|$DEST_C|" "$W/log")
+n=$(grep -c "^migrator|$DEST_C|" "$W/log" || true)
 if [ "$n" = 1 ]; then ok "the legacy destination was built by the real migrator"; else bad "the legacy destination was built by the real migrator" "saw $n"; fi
 
 # Invariants ran against BOTH, separately — one run each, never the same twice.
-n=$(grep -c "^invariants|$RESTORE_C|" "$W/log")
+n=$(grep -c "^invariants|$RESTORE_C|" "$W/log" || true)
 if [ "$n" = 1 ]; then ok "invariants ran against the migrated production restore"; else bad "invariants ran against the migrated production restore" "saw $n"; fi
-n=$(grep -c "^invariants|$DEST_C|" "$W/log")
+n=$(grep -c "^invariants|$DEST_C|" "$W/log" || true)
 if [ "$n" = 1 ]; then ok "invariants ran against the legacy destination"; else bad "invariants ran against the legacy destination" "saw $n"; fi
 
 # Old images were tested against the production restore, never the destination.
-n=$(grep -c "^old-image-gate|$RESTORE_C|prodrestore|" "$W/log")
+n=$(grep -c "^old-image-gate|$RESTORE_C|prodrestore|" "$W/log" || true)
 if [ "$n" = 3 ]; then ok "all three old images were tested against the production restore"; else bad "all three old images were tested against the production restore" "saw $n"; fi
-n=$(grep -c "^old-image-gate|$DEST_C|" "$W/log")
+n=$(grep -c "^old-image-gate|$DEST_C|" "$W/log" || true)
 if [ "$n" = 0 ]; then ok "no old-image check touched the legacy destination"; else bad "no old-image check touched the legacy destination" "saw $n"; fi
 
 # The suites ran against the legacy destination, which is their subject.
@@ -144,7 +149,8 @@ refuses() { # label sed-expr reason-regex [extra-env]
     bad "$label" "the mutation did not apply — not counted as killed"; return
   fi
   mw="$WORKROOT/mut-$RANDOM"; build_world "$mw" "$m"
-  run_rehearsal "$mw"; rc=$?
+  rc=0
+  run_rehearsal "$mw" || rc=$?
   if [ "$rc" -eq 0 ]; then
     bad "$label" "the rehearsal SUCCEEDED with the guard removed"
   elif grep -qiE "$want" "$mw/out"; then
@@ -208,7 +214,8 @@ refuses "refuses when the production-restore half is skipped" \
 # betrays that it is not the database step 5 measured. Without the marker the
 # run completes and attests to a migration of the wrong data.
 MW="$WORKROOT/drift"; build_world "$MW"
-FAKE_LEDGER_DRIFT=1 run_rehearsal "$MW"; DRC=$?
+DRC=0
+FAKE_LEDGER_DRIFT=1 run_rehearsal "$MW" || DRC=$?
 if [ "$DRC" -eq 0 ]; then
   bad "refuses when the subject's ledger does not match the restored production copy" "it succeeded"
 elif grep -q 'this is not that database' "$MW/out"; then
@@ -229,7 +236,8 @@ fi
 # OLD_APP_SCHEMA_COMPAT=fail. A broken probe read as "the old code cannot serve
 # the migrated schema" — the most alarming possible verdict, from a bug.
 GW="$WORKROOT/gate-blocked"; build_world "$GW"
-FAKE_GATE_RC=1 run_rehearsal "$GW"; GRC=$?
+GRC=0
+FAKE_GATE_RC=1 run_rehearsal "$GW" || GRC=$?
 if [ "$GRC" -eq 0 ]; then
   bad "a blocked schema gate stops the rehearsal" "it succeeded"
 elif grep -q 'cannot serve the migrated schema' "$GW/out"; then
@@ -243,7 +251,8 @@ fi
 # old_app_schema_compat=fail would report a broken connection as "the current
 # production image cannot serve the migrated schema".
 GWS="$WORKROOT/gate-silent"; build_world "$GWS"
-FAKE_GATE_RC=1 FAKE_GATE_SILENT=1 run_rehearsal "$GWS"; GSRC=$?
+GSRC=0
+FAKE_GATE_RC=1 FAKE_GATE_SILENT=1 run_rehearsal "$GWS" || GSRC=$?
 if [ "$GSRC" -eq 0 ]; then
   bad "exit 1 without a BLOCK reason is not a compatibility verdict" "it succeeded"
 elif grep -q 'without a BLOCK reason' "$GWS/out"; then
@@ -254,7 +263,8 @@ fi
 rm -rf "$GWS"
 
 GW2="$WORKROOT/gate-broken"; build_world "$GW2"
-FAKE_GATE_RC=127 run_rehearsal "$GW2"; GRC2=$?
+GRC2=0
+FAKE_GATE_RC=127 run_rehearsal "$GW2" || GRC2=$?
 if [ "$GRC2" -eq 0 ]; then
   bad "a probe that cannot run is not reported as incompatibility" "it succeeded"
 elif grep -q 'broken probe, not a compatibility result' "$GW2/out"; then

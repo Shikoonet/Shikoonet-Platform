@@ -218,6 +218,7 @@ mut "$G" 's|window = math.ceil(span)|window = int(span)|'            "$DT" "side
 mut "$G" 's|if dump_mtime < max(mtimes):|if False:|'                 "$DT" "sidecar: seal a dump older than the export"
 mut "$G" 's|if coherence != "pass":|if False:|'                      "$DT" "sidecar: seal an incoherent bundle"
 mut "$G" 's|            if not ref:|            if False:|'          "$DT" "sidecar: accept a prefix-only order reference"
+mut "$G" 's|                needle = ref.encode("utf-8")|                needle = ref.encode("utf-8", "ignore")|' "$DT" "sidecar: silently reshape a non-UTF-8 reference"
 mut "$G" 's|            refuse("payment_claims.json is neither a list nor an object")|            rows = []|' "$DT" "sidecar: accept an unknown payment_claims shape"
 mut "$G" 's|os.chmod(_TMP_PATH, 0o640)|pass|'                        "$DT" "sidecar: leave the published mode to umask"
 mut "$G" 's|if open(_TMP_PATH, encoding="utf-8").read() != text:|if False:|' "$DT" "sidecar: publish without re-reading"
@@ -241,6 +242,7 @@ mut "$R" 's|        OLD_APP_SCHEMA_COMPAT=fail|        :|'           "$ST" "subj
 mut "$R" 's|    \*) die "the schema gate could not be run|    *) : "the schema gate could not be run|' "$ST" "subjects: treat a broken probe as a verdict"
 mut "$R" 's|      if grep -q .\^BLOCK. "$ART/gate-${svc}.log"; then|      if true; then|' "$ST" "subjects: exit 1 without BLOCK counts as a verdict"
 mut "$R" 's|\[ "$APPLIED_TO_RESTORE" -gt 0 \]|true|'                 "$ST" "subjects: allow zero migrations applied"
+mut "$S" 's|660) ;;|660\|666) ;;|'                                  "$PT" "publication: accept a mode-666 release lock"
 
 echo "== cleanup =="
 # The replacement for the invalid mutation below: appended AFTER the real

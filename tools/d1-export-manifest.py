@@ -259,10 +259,19 @@ def main():
         # bounded by something that is not part of an identifier.
         blob = open(dump_path, "rb").read()
         for ref in refs:
+            # Strictly. `json.load` can produce a lone surrogate from an
+            # escaped value, and `errors="ignore"` dropped it — leaving a
+            # shorter reference whose boundary regex can match unrelated dump
+            # content, and coherence=pass recorded on that basis.
+            try:
+                needle = ref.encode("utf-8")
+            except UnicodeEncodeError:
+                refuse(
+                    "a Mirzabot order reference in the D1 export is not valid UTF-8 — "
+                    "it cannot be searched for and must not be silently reshaped"
+                )
             pattern = (
-                rb"(?<![A-Za-z0-9_-])"
-                + re.escape(ref.encode("utf-8", "ignore"))
-                + rb"(?![A-Za-z0-9_-])"
+                rb"(?<![A-Za-z0-9_-])" + re.escape(needle) + rb"(?![A-Za-z0-9_-])"
             )
             if not re.search(pattern, blob):
                 missing += 1
