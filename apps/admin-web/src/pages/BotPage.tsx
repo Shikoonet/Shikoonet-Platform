@@ -27,11 +27,19 @@ import { useEffect, useState } from 'react';
 import { api, ApiError, type BotConnection } from '../api.js';
 import { useAdminWriteProps } from '../role.js';
 
-function message(e: unknown): string {
+export function message(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.code === 'forbidden') return 'وصل‌کردن ربات فقط با نقش «مدیر» ممکن است.';
     if (e.code === 'secret_key_missing')
-      return 'کلید رمزنگاری روی این سرور تنظیم نشده، پس توکن جایی برای ذخیره‌شدن ندارد.';
+      // THREE faults share this one code — the variable is unset, it is not
+      // hex, or it is not 64 characters — and only `detail` says which.
+      // Collapsing them into «تنظیم نشده» sends an operator to set a variable
+      // that is already set, and the screen keeps saying the same thing while
+      // they do it. `detail` names the variable and the exact fault, so it is
+      // carried through rather than thrown away. It is English because
+      // `SecretKeyMissing` writes it for whoever edits the service, and a
+      // translation here would be a second place to keep in step.
+      return `توکن جایی برای ذخیره‌شدن ندارد — ${e.detail ?? 'PANEL_SECRET_KEY روی این سرور تنظیم نشده است'}`;
     // `bad_shape`, `rejected_by_telegram` and `telegram_unreachable` each send
     // their own Persian sentence; `detail` is what zod produced for anything
     // that never reached them.
