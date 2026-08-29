@@ -1,0 +1,36 @@
+{
+  "name": "@hub/ingest-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint --max-warnings 0 .",
+    "build": "wrangler deploy --dry-run --outdir=dist",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:dev": "wrangler deploy -c wrangler.dev.toml",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local --remote=false",
+    "db:migrate:dev": "wrangler d1 migrations apply DB --remote -c wrangler.dev.toml",
+    "db:migrate:prod": "wrangler d1 migrations apply DB --remote",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote"
+  },
+  "dependencies": {
+    "@hub/contracts": "workspace:*",
+    "@hub/database": "workspace:*",
+    "@hub/domain": "workspace:*",
+    "@hub/seed": "workspace:*",
+    "@hub/sms-parser": "workspace:*",
+    "hono": "4.6.7",
+    "zod": "3.23.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.5.34",
+    "@cloudflare/workers-types": "4.20241112.0",
+    "typescript": "5.6.3",
+    "vitest": "2.1.4",
+    "wrangler": "4.106.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@hub/seed",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "seed:dev": "node --experimental-strip-types src/run.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint --max-warnings 0 ."
+  },
+  "dependencies": {
+    "@hub/contracts": "workspace:*",
+    "@hub/database": "workspace:*",
+    "@hub/domain": "workspace:*",
+    "@hub/sms-parser": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20241112.0",
+    "typescript": "5.6.3"
+  }
+}

@@ -25,10 +25,18 @@ sim/.env.local
 legacy/mirzabot-php/db/
 *.sql.gz
 
-# Reference copies of the two systems being replaced. Each keeps its OWN git
-# history (hub-cloudflare still tracks its GitHub remote), so they are not
-# vendored into this repo. Deleted in phase 5 once the strangler completes.
-legacy/
+# `legacy/` IS tracked, from 2026-08-29 — Sam's decision. It is the behaviour
+# reference for the rewrite, and a reference nobody else can read is not one.
+#
+# Each of the four sub-directories used to carry its own `.git`, which git would
+# have recorded as an unusable gitlink — a folder that renders empty on GitHub.
+# Those histories were copied to `.notes/legacy-git/`, verified byte-for-byte and
+# by HEAD, and only then removed. `.notes/legacy-git/README.md` has each one's
+# HEAD, branch and remote.
+#
+# Two things inside it stay out, and the rules are above and below this line:
+# `legacy/mirzabot-php/db/` (real customer payments) and any `graphify-out/`.
+legacy/hub-cloudflare/graphify-out/
 
 # The real bank receipt Sam supplied on 2026-08-24 for the layout test.
 #
