@@ -217,8 +217,12 @@ sys.exit(0 if isinstance(d, dict) and "build_pack" in d else 1)'; then
             printf 'x\n' >>"$FAKE_APP_READS"
             [ "$(wc -l <"$FAKE_APP_READS")" -gt "$FAKE_FLIP_AFTER" ] && pack=dockerfile
           fi
-          printf '{"uuid":"x","build_pack":"%s","docker_registry_image_name":"%s"}' \
-            "$pack" "${FAKE_APP_IMAGE:-ghcr.io/x/y}" ;;
+          # `fqdn` is the ingest's public domain, and the deploy builds the
+          # dashboard's INGEST_URL out of it. Empty is a real state — an
+          # application Coolify does not route — and has to be answerable here,
+          # so the refusal can be tested rather than reasoned about.
+          printf '{"uuid":"x","build_pack":"%s","docker_registry_image_name":"%s","fqdn":"%s"}' \
+            "$pack" "${FAKE_APP_IMAGE:-ghcr.io/x/y}" "${FAKE_INGEST_FQDN-https://sms.example.test}" ;;
         *) printf '{"message":"no coolify route"}' >&2; exit 22 ;;
       esac
       exit 0 ;;
@@ -893,6 +897,7 @@ run_deploy() { # bot-flag
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
     FAKE_DUPLICATE_ENVS="${FAKE_DUPLICATE_ENVS:-}" FAKE_MALFORMED_ENVS="${FAKE_MALFORMED_ENVS:-}" \
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads"     FAKE_ENV_ROWS="${FAKE_ENV_ROWS:-}" FAKE_ENV_PATCH_FAILS="${FAKE_ENV_PATCH_FAILS:-}" \
+    FAKE_INGEST_FQDN="${FAKE_INGEST_FQDN-https://sms.example.test}" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
     bash "$DEPLOY" production "${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a" "$SHA_MERGED" \
@@ -1145,6 +1150,82 @@ else
   bad 'the deploy after it is not refused for a variable it wrote itself'     "$(tail -3 "$DEPLOY_LOG")"
 fi
 unset FAKE_ENV_ROWS
+
+section 'deploy.sh — the address a phone is given comes from the ingest itself'
+
+# `INGEST_URL` is what the dashboard prints into an SMS-relay configuration.
+# Without it, «افزودن دستگاه» and both credential routes answer 503 before they
+# read the request body — no device can be registered and no API key issued.
+# Staging ran that way and nothing said so: it deployed green, every check
+# passed, and the first screen of the whole bank-SMS chain was dead.
+#
+# The store is switched on and PATCH made to fail, so the writes go through the
+# create path and are observable — which also puts the duplicate-row cleanup
+# under this key rather than only under APP_VERSION.
+FAKE_ENV_ROWS="$WORK/ingestrows"
+: >"$FAKE_ENV_ROWS"
+FAKE_ENV_PATCH_FAILS=1
+FAKE_INGEST_FQDN='https://sms.example.test'
+
+name='writes INGEST_URL on the dashboard, built from the ingest application domain'
+if run_deploy false; then
+  total=$(grep -c '|INGEST_URL|' "$FAKE_ENV_ROWS" || true)
+  right=$(grep -c '^uuid-dashboard|.*|INGEST_URL|https://sms.example.test/api/v1/sms$' "$FAKE_ENV_ROWS" || true)
+  # One row, on the dashboard, holding the ingest's own domain plus the path.
+  # The total matters as much as the match: Coolify creates a spare on every
+  # POST, and a version that wrote the right value and left the twin behind
+  # would make the NEXT deploy refuse with «defined more than once».
+  if [ "$total" = 1 ] && [ "$right" = 1 ]; then
+    ok "$name"
+  else
+    bad "$name" "total=$total right=$right: $(cat "$FAKE_ENV_ROWS")"
+  fi
+else
+  bad "$name" "$(tail -3 "$DEPLOY_LOG")"
+fi
+
+# Coolify bakes an application's variables in at container start, so writing
+# this after the dashboard rolled would set it correctly and leave the running
+# process without it — indistinguishable, from the screen, from never writing
+# it. Asserted on line order in the log rather than on the fact of the write.
+name='writes it before the dashboard container is replaced'
+wrote=$(grep -n 'INGEST_URL = ' "$DEPLOY_LOG" | head -1 | cut -d: -f1)
+rolled=$(grep -n 'dashboard: running the exact digest' "$DEPLOY_LOG" | head -1 | cut -d: -f1)
+if [ -n "$wrote" ] && [ -n "$rolled" ] && [ "$wrote" -lt "$rolled" ]; then
+  ok "$name"
+else
+  bad "$name" "wrote=$wrote rolled=$rolled"
+fi
+
+# The same shape `ingestUrl()` builds in the worker: appended unless already
+# carried. A domain configured with the full path must not become `…/sms/api/v1/sms`.
+: >"$FAKE_ENV_ROWS"
+FAKE_INGEST_FQDN='https://sms.example.test/api/v1/sms/'
+name='does not double the path when the domain already carries it'
+if run_deploy false &&
+  grep -q '|INGEST_URL|https://sms.example.test/api/v1/sms$' "$FAKE_ENV_ROWS"; then
+  ok "$name"
+else
+  bad "$name" "$(grep '|INGEST_URL|' "$FAKE_ENV_ROWS" || echo none)"
+fi
+
+unset FAKE_ENV_PATCH_FAILS
+unset FAKE_ENV_ROWS
+
+# An ingest Coolify does not route has no address a phone could post to. There
+# is nothing to print, and inventing one is exactly the bug that deleting
+# `DEFAULT_INGEST_URL` from the worker fixed — it went on naming a Cloudflare
+# hostname that had stopped being ours.
+FAKE_INGEST_FQDN=''
+name='refuses when the ingest has no domain, and deploys nothing'
+if run_deploy false; then
+  bad "$name" 'it deployed anyway'
+elif grep -qF 'has no domain in Coolify' "$DEPLOY_LOG" && [ ! -s "$WORK/deploys" ]; then
+  ok "$name"
+else
+  bad "$name" "queued=$(cat "$WORK/deploys"): $(tail -2 "$DEPLOY_LOG")"
+fi
+unset FAKE_INGEST_FQDN
 
 # The pre-flight runs before the migration, and the migration takes time. An
 # application edited in the Coolify UI during that window would move out from
