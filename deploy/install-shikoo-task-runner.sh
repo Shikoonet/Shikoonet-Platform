@@ -48,7 +48,7 @@ BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
 # The one hard-coded value. Everything else is derived from the manifest it
 # pins, and a CI test asserts this still equals
 # sha256sum deploy/shikoo-task-runner.manifest.
-MANIFEST_SHA256=b99079854999ce4b889a4045df38c360c57e39a5fb16fabddeecdd076f220ce6
+MANIFEST_SHA256=8cb873baa767c0e67f162ee2488f9e8db39f8ba69c07b9ec3388f49f6f90cafc
 
 say() { echo "[install] $*"; }
 die() { echo "[install] FAILED: $*" >&2; exit 1; }

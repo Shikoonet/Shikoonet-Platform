@@ -129,7 +129,9 @@ if python3 - "$ROOT" <<'PY'
 import re, sys
 src = open(sys.argv[1] + "/tools/d1-contract.py").read()
 pats = re.findall(r"'\(\[[a-z0-9_\-]*\]\+\)'", src)
-sys.exit(0 if all("0-9" in p for p in pats) else 1)
+# `all()` is True for an empty sequence: if the literals are rewritten so this
+# matches nothing, the assertion would pass having inspected no pattern.
+sys.exit(0 if pats and all("0-9" in p for p in pats) else 1)
 PY
 then
   ok 'every table-name pattern admits digits'
