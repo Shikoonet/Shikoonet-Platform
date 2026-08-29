@@ -819,7 +819,7 @@ jobs:
       # introduces it. An earlier draft shipped it as 117 KB of base64 with a
       # self-checksum — which proves internal consistency, not that anybody
       # reviewed what is inside.
-      - name: task runner — eight subcommands, no wildcard, no interpreter
+      - name: task runner — nine subcommands, no wildcard, no interpreter
         run: bash deploy/test/task-runner.test.sh
 
       - name: task runner installer — its refusals, exercised

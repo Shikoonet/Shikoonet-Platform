@@ -49,7 +49,7 @@ LOCKFILE=/var/lock/shikoo-task-runner.lock
 STATE_DIR=/var/lib/shikoo
 
 # The hash of the manifest that lists every script this may run.
-MANIFEST_SHA256=98a1735d332ee656d4c5f45a2285d04455c0f04ae111004684cdca558a62fc23
+MANIFEST_SHA256=87098b15d30b3db5e6175c474c64f636efe622605bdd838608c5cb36645a828b
 
 die() { echo "shikoo-task-runner: $*" >&2; exit 1; }
 note() {

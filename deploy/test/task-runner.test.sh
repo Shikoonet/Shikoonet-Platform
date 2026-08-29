@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016  # assertions are literal strings searched for in
 # another file; expansion is exactly what must not happen to them.
-# The task runner: eight subcommands, and nothing else.
+# The task runner: nine subcommands, and nothing else.
 #
 # This is the only thing hessamx will be able to run as root, so the properties
 # that matter are the ones a reviewer would otherwise have to take on trust:
@@ -92,7 +92,7 @@ for c in step-e-dry-run step-e-apply backup-dry-run backup-apply \
   has "$SUDOERS" "shikoo-task-runner $c" "sudoers grants ${c}"
 done
 
-# Exactly eight grants, and exactly eight case arms plus the catch-all.
+# Exactly nine grants, and exactly nine case arms plus the catch-all.
 n=$(grep -c '^hessamx ALL=(root) NOPASSWD:' "$SUDOERS" || true)
 if [ "$n" = '9' ]; then ok 'sudoers grants exactly nine commands'; else
   bad 'sudoers grants exactly nine commands' "found ${n}"

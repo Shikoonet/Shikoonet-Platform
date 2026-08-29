@@ -89,7 +89,11 @@ APP_DASHBOARD=$FAKE_UUID_DASHBOARD
 APP_BOT=$FAKE_UUID_BOT
 DCONF
   chmod 640 "$w/etc/deploy.env"
-  : >"$w/lock/release.lock"; chmod 660 "$w/lock/release.lock"
+  : >"$w/lock/release.lock"
+  # FAKE_BAD_LOCK makes att_require_lock_file refuse, which fails publication
+  # AFTER the version directory has been built and verified — the only window
+  # in which an unactivated version can be left behind.
+  chmod "${FAKE_LOCK_MODE:-660}" "$w/lock/release.lock"
   find "$w" -type d -exec chmod 755 {} + 2>/dev/null
 
   # This working tree has umask 002, so every directory here is created 775 —

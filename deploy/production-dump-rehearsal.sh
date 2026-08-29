@@ -355,12 +355,17 @@ BACKUP_OK=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -A
 # bypassable by `/tmp/evil-<uuid>`; a canonical comparison against the location
 # Coolify itself reports is not.
 BACKUP_ROOT=${BACKUP_ROOT:-/data/coolify/backups/databases}
-DERIVED_BACKUP_DIR=$(find "$BACKUP_ROOT" -maxdepth 2 -type d -name "*-${PROD_DB_UUID}" 2>/dev/null | head -1)
+# `|| true`: this script runs with errexit and pipefail, and `find` exits
+# non-zero when the root cannot be read. `2>/dev/null` hides the reason,
+# pipefail carries the status through `head`, and `set -e` ends the run at this
+# assignment — so the operator saw no STOP line and no owner action at all. The
+# refusal below is what should speak.
+DERIVED_BACKUP_DIR=$(find "$BACKUP_ROOT" -maxdepth 2 -type d -name "*-${PROD_DB_UUID}" 2>/dev/null | head -1 || true)
 rehearsal_canonical_dir_is "$PROD_BACKUP_DIR" "$DERIVED_BACKUP_DIR" "the production backup directory" ||
   die "PROD_BACKUP_DIR is not the production database's backup directory"
 
 NEWEST=$(find "$PROD_BACKUP_DIR" -maxdepth 1 -name '*.dmp' -type f -printf '%T@ %p\n' 2>/dev/null |
-  sort -rn | head -1 | cut -d' ' -f2-)
+  sort -rn | head -1 | cut -d' ' -f2- || true)
 [ -n "$NEWEST" ] || die "no production backup dump found to restore"
 # The selected dump itself, not just the directory it sits in.
 [ ! -L "$NEWEST" ] || die "the selected backup is a symlink — refusing"
