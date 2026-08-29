@@ -188,7 +188,10 @@ else
     "named_ok=${NAMED_OK} daemon_runs=${DAEMONS}"
 fi
 # The only production thing it touches is the newest backup, read-only.
-if grep -qE 'psql .*(qd2vduj7|production).*-c *"(insert|update|delete|alter|drop)' "$R"; then
+# Case-insensitive, and both the `-c` and `--command` spellings with either
+# quote. The narrow form matched only lowercase SQL after a double-quoted `-c`,
+# so `--command 'INSERT ...'` would have been reported as proven absent.
+if grep -qiE "psql[^|]*(qd2vduj7|production)[^|]*(-c|--command) *[\"'](insert|update|delete|alter|drop|truncate)" "$R"; then
   bad 'it opens no writable connection to production' 'a write appears'
 else
   ok 'it opens no writable connection to production'
@@ -267,11 +270,24 @@ section 'it prints nothing it should not'
 
 has "$R" 'path not logged' 'the dump path is never printed'
 has "$R" 'amounts not logged' 'financial amounts are never printed'
-if grep -qE 'echo .*\$(DUMP_PATH|GH_TOKEN_VALUE|DATABASE_URL)|say .*\$(DUMP_PATH|GH_TOKEN_VALUE)' "$R"; then
-  bad 'no credential or path reaches output' 'one does'
+# Every output command, and the braced form. `echo`/`say` alone missed
+# `printf "%s" "${DUMP_PATH}"` entirely.
+#
+# Exactly one line legitimately writes the token: the `printf` that builds the
+# curl config, inside a block redirected to a 0600 file. It is excluded by its
+# full text and then asserted separately, so a SECOND occurrence — or that one
+# losing its redirect — still fails.
+CFG_LINE='printf '"'"'header = "Authorization: Bearer %s"\n'"'"' "$GH_TOKEN_VALUE"'
+if grep -vF "$CFG_LINE" "$R" |
+   grep -qE '(echo|printf|say|cat|tee)[^|]*\$\{?(DUMP_PATH|GH_TOKEN_VALUE|DATABASE_URL)\}?'; then
+  bad 'no credential or path reaches output' "$(grep -vF "$CFG_LINE" "$R" | grep -nE '(echo|printf|say|cat|tee)[^|]*\$\{?(DUMP_PATH|GH_TOKEN_VALUE|DATABASE_URL)\}?' | head -1)"
 else
   ok 'no credential or path reaches output'
 fi
+# And that one line writes into a 0600 file rather than to a terminal.
+has "$R" 'chmod 600 "$GH_DIR/gh"' 'the curl config the token goes into is 0600'
+has "$R" '} >"$GH_DIR/gh"' 'the token is written by redirect into that file, not printed'
+has "$R" 'unset GH_TOKEN_VALUE' 'the token leaves the shell once the config is written'
 # The token must not become an argument either.
 if grep -qE 'gh api .*--header .*\$GH_TOKEN_VALUE|curl .*\$GH_TOKEN_VALUE' "$R"; then
   bad 'the GitHub token never appears in argv' 'it does'

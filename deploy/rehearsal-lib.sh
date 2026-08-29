@@ -269,7 +269,10 @@ rehearsal_require_local_images() { # docker-cmd ref...
   shift
   local ref missing=0
   for ref in "$@"; do
-    if ! $docker_cmd image inspect "$ref" >/dev/null 2>&1; then
+    # Quoted: an unquoted expansion is split on whitespace and globbed, so a
+    # docker path containing a space resolves to the wrong command and the
+    # locality check reports every image as absent.
+    if ! "$docker_cmd" image inspect "$ref" >/dev/null 2>&1; then
       echo "[image] ${ref} is not present locally" >&2
       missing=$((missing + 1))
     fi
@@ -642,7 +645,11 @@ rehearsal_require_host_deps() { # probe_dir
   if ! command -v curl >/dev/null 2>&1; then
     note "curl is not installed"
   else
-    out=$(curl --version 2>/dev/null | head -1)
+    # `|| true`: the caller runs under errexit and pipefail, so a curl that
+    # exits non-zero would end the rehearsal HERE — with no diagnostic about
+    # which tool is wrong, which is the failure this whole function exists to
+    # prevent. The refusal below is what should speak.
+    out=$(curl --version 2>/dev/null | head -1 || true)
     case "$out" in
       *' '*) ;;
       *) note "curl does not report a version" ;;
@@ -656,7 +663,7 @@ rehearsal_require_host_deps() { # probe_dir
   if ! command -v sha256sum >/dev/null 2>&1; then
     note "sha256sum is not installed"
   else
-    out=$(printf 'abc' | sha256sum | cut -d' ' -f1)
+    out=$(printf 'abc' | sha256sum | cut -d' ' -f1 || true)
     [ "$out" = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' ] ||
       note "sha256sum does not produce the known digest of 'abc'"
   fi
