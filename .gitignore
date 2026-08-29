@@ -70,4 +70,8 @@ deploy/**/*.env
 # the numbers that ARE committed live in `.github/ci-baseline.json`.
 vitest-report.json
 playwright-report.json
+
+# Mirzabot dumps staged for «ایمپورت». Real customer money and Telegram ids, and
+# the file carries plaintext panel passwords -- the same reason `legacy/**/db/`
+# is ignored. On the server this is `IMPORT_DIR` and lives outside the repo.
 .tmp-imports/
