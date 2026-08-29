@@ -1,0 +1,29 @@
+{
+  "name": "payment-reconciliation-hub",
+  "private": true,
+  "version": "0.2.0-dev.1",
+  "description": "Payment Reconciliation Hub — Cloudflare Workers + D1.",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "typecheck": "pnpm -r --parallel typecheck",
+    "test": "pnpm -r --parallel test",
+    "build": "pnpm -r --parallel build",
+    "lint": "pnpm -r --parallel lint",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json,yaml,sql}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,md,json,yaml,sql}\"",
+    "release:dev": "bash scripts/release.sh dev",
+    "release:prod": "bash scripts/release.sh prod",
+    "reparse:sms": "tsx scripts/reparse-bank-sms.ts",
+    "inject:staging-sms": "tsx scripts/inject-staging-test-sms.ts"
+  },
+  "devDependencies": {
+    "@hub/sms-parser": "workspace:^",
+    "eslint": "^9.13.0",
+    "globals": "^15.11.0",
+    "prettier": "3.3.3",
+    "tsx": "^4.23.7",
+    "typescript": "5.6.3",
+    "typescript-eslint": "^8.10.0",
+    "vitest": "2.1.4"
+  }
+}

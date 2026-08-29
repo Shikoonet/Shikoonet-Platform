@@ -1,0 +1,37 @@
+name = "ingest-worker"
+main = "src/index.ts"
+compatibility_date = "2026-08-04"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "payment-hub-staging"
+database_id = "ef773a7a-a163-4298-b256-43e093e8b781"
+migrations_dir = "../../migrations"
+
+[vars]
+ENV_NAME = "production"
+INGEST_MAX_BODY_BYTES = "8192"
+LOG_SMS_BODY = "false"
+MIRZABOT_INTEGRATION_ENABLED = "true"
+AUTO_MATCH_ENABLED = "true"
+AUTO_FULFILLMENT_ENABLED = "true"
+MIRZABOT_INTEGRATION_ID = "mirzabot-prod"
+
+[[ratelimits]]
+name = "DEVICE_LIMIT"
+namespace_id = "1001"
+
+[ratelimits.simple]
+limit = 100
+period = 60
+
+[[ratelimits]]
+name = "IP_LIMIT"
+namespace_id = "1002"
+
+[ratelimits.simple]
+limit = 300
+period = 60
+
+[triggers]
+crons = ["*/5 * * * *"]
