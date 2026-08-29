@@ -123,11 +123,44 @@ esac
 # Required by `owner-or-approved` as well as `solo`: without it, the merged-by
 # assertion that both modes rely on has nothing to compare against, and an
 # empty comparison would pass.
-SOLO_OWNER=${SOLO_DEPLOY_OWNER:-}
-if [ "$MODE" != 'team' ] && [ -z "$SOLO_OWNER" ]; then
-  echo "[gate] DENIED: ${MODE} mode needs SOLO_DEPLOY_OWNER — refusing to let anyone ship unreviewed" >&2
+# One name or several. `DEPLOY_OWNERS` is a comma-separated list of the people
+# trusted to ship their own work; `SOLO_DEPLOY_OWNER` remains accepted as the
+# single-name spelling so an older workflow keeps working unchanged.
+#
+# A list rather than a name because a two-person team cannot satisfy "approved
+# by somebody other than the author" without the other person being the owner —
+# so every contributor PR needed the owner twice, to review and to merge. Naming
+# the second maintainer here says the quiet part out loud: they may ship
+# unreviewed, exactly as the first one may.
+DEPLOY_OWNERS_RAW=${DEPLOY_OWNERS:-${SOLO_DEPLOY_OWNER:-}}
+if [ "$MODE" != 'team' ] && [ -z "$DEPLOY_OWNERS_RAW" ]; then
+  echo "[gate] DENIED: ${MODE} mode needs DEPLOY_OWNERS (or SOLO_DEPLOY_OWNER) — refusing to let anyone ship unreviewed" >&2
   exit 1
 fi
+
+# Exact match on a whole element, never a substring.
+#
+# `case "$list" in *"$who"*)` would let @Isusami2 satisfy a list naming
+# @Isusami, and an empty `$who` would match every list there is. Both are
+# refused: the login must equal one comma-separated element with nothing left
+# over, and an empty login matches nothing.
+is_owner() { # login
+  local who=$1 rest=${DEPLOY_OWNERS_RAW} item
+  [ -n "$who" ] || return 1
+  while [ -n "$rest" ]; do
+    item=${rest%%,*}
+    if [ "$item" = "$rest" ]; then rest=''; else rest=${rest#*,}; fi
+    # tolerate spaces around a comma, refuse an empty element
+    item=$(printf '%s' "$item" | tr -d '[:space:]')
+    [ -n "$item" ] || continue
+    [ "$item" != "$who" ] || return 0
+  done
+  return 1
+}
+
+# For the refusals that name who may ship, so a denied contributor is told the
+# actual list rather than "the owner".
+OWNERS_DISPLAY=$(printf '%s' "$DEPLOY_OWNERS_RAW" | tr -d '[:space:]' | sed 's/,/, @/g')
 
 say() { echo "[gate] $*"; }
 deny() {
@@ -276,8 +309,8 @@ require_merged_by_owner() {
     deny "could not parse PR #${PR_NUMBER}"
   [ -n "$MERGED_BY" ] ||
     deny "PR #${PR_NUMBER} reports nobody as its merger — failing closed"
-  [ "$MERGED_BY" = "$SOLO_OWNER" ] ||
-    deny "PR #${PR_NUMBER} was merged by @${MERGED_BY}, not @${SOLO_OWNER}"
+  is_owner "$MERGED_BY" ||
+    deny "PR #${PR_NUMBER} was merged by @${MERGED_BY}, who is not among the deploy owners (@${OWNERS_DISPLAY})"
 }
 
 # The owner's half. No approval is required and none is invented: `approvals`
@@ -285,7 +318,7 @@ require_merged_by_owner() {
 ship_as_owner() {
   require_merged_by_owner
   POLICY='solo-owner'
-  say "solo-owner policy: @${SOLO_OWNER} wrote and merged PR #${PR_NUMBER}; no human review was required or claimed"
+  say "solo-owner policy: @${PR_AUTHOR} wrote PR #${PR_NUMBER} and @${MERGED_BY} merged it, both deploy owners; no human review was required or claimed"
 }
 
 # The reviewed half. `approvals` was already computed to exclude the author and
@@ -305,8 +338,8 @@ case "$MODE" in
   solo)
     # What replaces the review is a narrower question — was this the one person
     # allowed to ship their own work, at both ends of the pull request.
-    [ "$PR_AUTHOR" = "$SOLO_OWNER" ] ||
-      deny "solo mode allows only @${SOLO_OWNER} to ship unreviewed; PR #${PR_NUMBER} was written by @${PR_AUTHOR}"
+    is_owner "$PR_AUTHOR" ||
+      deny "solo mode allows only the deploy owners (@${OWNERS_DISPLAY}) to ship unreviewed; PR #${PR_NUMBER} was written by @${PR_AUTHOR}"
     ship_as_owner
     ;;
   owner-or-approved)
@@ -317,13 +350,13 @@ case "$MODE" in
     # PR could not ship however it was reviewed — no approval, no merger, no
     # amount of green rescued it. Here the same PR falls to the approved
     # branch instead of falling off the end.
-    if [ "$PR_AUTHOR" = "$SOLO_OWNER" ]; then
+    if is_owner "$PR_AUTHOR"; then
       ship_as_owner
     else
       ship_as_approved
       # Reviewed is not sufficient on its own: the owner still merged it.
       require_merged_by_owner
-      say "owner-or-approved: PR #${PR_NUMBER} by @${PR_AUTHOR} was approved on its final head and merged by @${SOLO_OWNER}"
+      say "owner-or-approved: PR #${PR_NUMBER} by @${PR_AUTHOR} was approved on its final head and merged by @${MERGED_BY}"
     fi
     ;;
 esac
@@ -402,7 +435,7 @@ say "${BRANCH} is still at ${SHA:0:12}"
 if [ "$POLICY" = 'team-approved' ]; then
   say "PASS [policy=team-approved] — PR #${PR_NUMBER}, ${approvals} human approval(s) other than @${PR_AUTHOR}, quality gate green, branch unmoved"
 else
-  say "PASS [policy=solo-owner] — PR #${PR_NUMBER} written and merged by @${SOLO_OWNER}, NOT reviewed by anyone else, quality gate green on the final head and on the merge commit, branch unmoved"
+  say "PASS [policy=solo-owner] — PR #${PR_NUMBER} written by @${PR_AUTHOR} and merged by @${MERGED_BY}, both deploy owners, NOT reviewed by anyone else, quality gate green on the final head and on the merge commit, branch unmoved"
 fi
 
 # Machine-readable, so the workflow can put this in a step summary and hand the
