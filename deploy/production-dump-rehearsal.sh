@@ -636,7 +636,7 @@ OBSERVED="$ART/observed-uuids.txt"
 for app in shikoo-ingest shikoo-dashboard shikoo-bot; do
   u=$(docker exec -i "$COOLIFY_DB_CONTAINER" psql -U coolify -d coolify -At -c \
     "select a.uuid from applications a join environments e on e.id = a.environment_id
-      where a.name = '${app}' and e.name = 'production';" 2>/dev/null)
+      where a.name = '${app}' and e.name = 'production';" 2>/dev/null || true)
   n=$(printf '%s\n' "$u" | grep -c . || true)
   [ "${n:-0}" -eq 1 ] || die "${app} matched ${n:-0} production applications, expected exactly 1"
   printf '%s|%s\n' "$app" "$u" >>"$OBSERVED"
