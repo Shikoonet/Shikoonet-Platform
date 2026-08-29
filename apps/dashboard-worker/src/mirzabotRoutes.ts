@@ -703,6 +703,35 @@ export function registerMirzabotRoutes(
     // would block a correct card on our own stale data.
     const prefixes = await loadPrefixes(c.env.DB);
     const detectedBank = identifyBank(digits, prefixes);
+
+    // An account with no bank of its own learns it here, from the issuer of the
+    // card just mapped to it.
+    //
+    // Three of the eight banks the shop receives from — Resalat, Maskan, Mehr —
+    // never put their name in the SMS, so the parser reports `bank: UNKNOWN`
+    // and every screen that shows a bank reads `financial_accounts.bank_name`
+    // instead. Those rows would stay blank forever.
+    //
+    // Guessing from the ACCOUNT number was measured against the shop's own 26
+    // accounts and got 15 right, 1 wrong, 10 don't-know — the wrong one a
+    // five-digit Melli account matching a thirteen-digit Shahr one on four
+    // leading characters. A card BIN is a real registry rather than a shape, and
+    // `bank_card_prefixes` is already in the panel for the operator to correct.
+    //
+    // FILL only, never correct: `''` and `'UNKNOWN'` are the two ways this
+    // column says «nobody has told us», and the `WHERE` treats both as empty.
+    // A name a person typed outranks an issuer table that may be stale — the
+    // same judgement the Luhn check makes two lines above.
+    if (detectedBank) {
+      await c.env.DB.prepare(
+        `UPDATE financial_accounts
+            SET bank_name = ?2, updated_at = ?3
+          WHERE id = ?1 AND (bank_name = '' OR bank_name = 'UNKNOWN')`,
+      )
+        .bind(accountId, detectedBank, now)
+        .run();
+    }
+
     return c.json({
       ok: true,
       id,
@@ -716,25 +745,59 @@ export function registerMirzabotRoutes(
   });
 
   /**
-   * How often this card is shown, relative to the others.
+   * Editing one card: how often it is shown, whether it is shown at all, and
+   * what it is called.
    *
-   * Weight only, on purpose: the rotation cursor is rotation's own state and an
-   * admin editing it by hand would be editing the queue position of every other
-   * card at the same time.
+   * `rotation_cursor` is deliberately NOT here. It is rotation's own state, and
+   * an admin setting it by hand would be editing the queue position of every
+   * other card at the same time.
+   *
+   * Every field is optional and at least one is required. A PATCH that asks for
+   * nothing is a 400 rather than a no-op, because the alternative is an audit
+   * row recording that nothing happened.
    */
-  const CardWeightBody = z.object({ displayWeight: z.number().int().min(1).max(20) }).strict();
+  const CardEditBody = z
+    .object({
+      displayWeight: z.number().int().min(1).max(20).optional(),
+      status: z.enum(['ACTIVE', 'DISABLED']).optional(),
+      label: z.string().max(120).nullable().optional(),
+    })
+    .strict()
+    .refine((b) => b.displayWeight !== undefined || b.status !== undefined || b.label !== undefined);
   app.patch('/api/v1/payment-cards/:id', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
-    const parsed = CardWeightBody.safeParse(await c.req.json().catch(() => null));
+    const parsed = CardEditBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const cardId = c.req.param('id');
     const before = await c.env.DB.prepare(
-      `SELECT id, card_digits, display_weight FROM payment_cards WHERE id = ?1`,
+      `SELECT id, card_digits, display_weight, status, label
+         FROM payment_cards WHERE id = ?1`,
     )
       .bind(cardId)
-      .first<{ id: string; card_digits: string; display_weight: number }>();
+      .first<{
+        id: string;
+        card_digits: string;
+        display_weight: number;
+        status: string;
+        label: string | null;
+      }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const after = {
+      displayWeight: parsed.data.displayWeight ?? before.display_weight,
+      status: parsed.data.status ?? before.status,
+      label: parsed.data.label !== undefined ? parsed.data.label : before.label,
+    };
+    // Coming back into service is the same event as being added, and it needs
+    // the same seed. The cursor is a clock that only moves forward: a card
+    // parked at 4,000,000 while its peers climbed to 40,000,000 would take
+    // EVERY checkout until it caught up — the behaviour the head admin asked us
+    // to remove on 2026-08-13, arriving through a door that did not exist then.
+    // Only on the way IN: seeding on the way out would move the queue for an
+    // act that should not, and seeding an already-ACTIVE card would reshuffle
+    // it every time a UI saved the row unchanged.
+    const rejoining = before.status === 'DISABLED' && after.status === 'ACTIVE' ? 1 : 0;
 
     const now = Date.now();
     await c.env.DB.batch([
@@ -742,22 +805,51 @@ export function registerMirzabotRoutes(
         `INSERT INTO audit_logs
            (id, actor_email, actor_role, action, entity_type, entity_id,
             before_json, after_json, reason, request_id, created_at)
-         VALUES (?1, ?2, ?3, 'payment_card.weight_changed', 'PAYMENT_CARD', ?4, ?5, ?6, NULL, NULL, ?7)`,
+         VALUES (?1, ?2, ?3, 'payment_card.updated', 'PAYMENT_CARD', ?4, ?5, ?6, NULL, NULL, ?7)`,
       ).bind(
         crypto.randomUUID(),
         ident.email,
         ident.role,
         cardId,
-        JSON.stringify({ displayWeight: before.display_weight }),
-        JSON.stringify({ displayWeight: parsed.data.displayWeight }),
+        JSON.stringify({
+          displayWeight: before.display_weight,
+          status: before.status,
+          label: before.label,
+        }),
+        JSON.stringify(after),
         now,
       ),
-      c.env.DB.prepare(`UPDATE payment_cards SET display_weight = ?2 WHERE id = ?1`).bind(
+      // Only the columns the body named. Writing all three from the row read a
+      // moment ago is a read-modify-write, and two saves in flight then revert
+      // each other — which the panel produces by design, because the label
+      // saves on blur and blur is what happens on the way to pressing a button.
+      //
+      // `label` cannot use COALESCE: null is a real value there, meaning «no
+      // label», so a separate flag says whether it was asked for at all.
+      //
+      // `id <> ?1` rather than relying on the row still reading DISABLED inside
+      // its own UPDATE: the snapshot rule is right, but a guard a reader can see
+      // is worth more than one they have to derive.
+      c.env.DB.prepare(
+        `UPDATE payment_cards
+            SET display_weight = COALESCE(?2, display_weight),
+                status = COALESCE(?3, status),
+                label = CASE WHEN ?4 = 1 THEN ?5 ELSE label END,
+                rotation_cursor = CASE WHEN ?6 = 1
+                  THEN COALESCE((SELECT MAX(rotation_cursor) FROM payment_cards
+                                  WHERE status = 'ACTIVE' AND id <> ?1), rotation_cursor)
+                  ELSE rotation_cursor END
+          WHERE id = ?1`,
+      ).bind(
         cardId,
-        parsed.data.displayWeight,
+        parsed.data.displayWeight ?? null,
+        parsed.data.status ?? null,
+        parsed.data.label !== undefined ? 1 : 0,
+        parsed.data.label ?? null,
+        rejoining,
       ),
     ]);
-    return c.json({ ok: true, id: cardId, display_weight: parsed.data.displayWeight });
+    return c.json({ ok: true, id: cardId, ...after });
   });
 
   app.delete('/api/v1/payment-cards/:id', async (c) => {
