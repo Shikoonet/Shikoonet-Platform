@@ -195,7 +195,10 @@ for _ in $(seq 1 400); do
   tr '\0' ' ' <"/proc/$job/cmdline" 2>/dev/null | grep -q 'deploy/stage-owner-bundle.sh' && break
   sleep 0.02
 done
-kill -INT "$job" 2>/dev/null
+# `|| true`: if the stager already finished, `kill` returns non-zero and
+# errexit would end the suite before `wait` could report. Completing before the
+# signal lands is an accepted outcome of this case.
+kill -INT "$job" 2>/dev/null || true
 RC=0
 wait "$job" || RC=$?
 case "$RC" in

@@ -401,7 +401,22 @@ MIGRATION_RANGE=$(rehearsal_pending_range "$ART/applied.txt" "$REPO_DIR/migratio
 # judge how many migrations were applied. Deriving that number again later from
 # the range itself would be circular: a wrong range would agree with itself.
 PROD_LEDGER_BEFORE=$(grep -c . "$ART/applied.txt" || true)
-PENDING_COUNT=$(find "$REPO_DIR/migrations" -maxdepth 1 -name '[0-9][0-9][0-9][0-9]_*.sql' -type f | wc -l)
+# ONE glob, derived once and reused. This counted
+# `[0-9][0-9][0-9][0-9]_*.sql` while MIG_LIST below used `0*.sql`, and the two
+# results are compared against each other in step 11. A file matching one and
+# not the other — `0038-add-index.sql` matches only the second — would make the
+# applied count and the pending count disagree about a migration that exists,
+# and the run would refuse for a reason that named neither.
+MIG_GLOB='[0-9][0-9][0-9][0-9]_*.sql'
+MIG_LIST=$(find "$REPO_DIR/migrations" -maxdepth 1 -name "$MIG_GLOB" -type f | sort)
+[ -n "$MIG_LIST" ] || die "no migrations matched ${MIG_GLOB} in ${REPO_DIR}/migrations"
+# Anything ending in .sql that this glob does NOT capture is a migration this
+# release would silently skip, so it is a refusal rather than a rounding error.
+STRAY=$(find "$REPO_DIR/migrations" -maxdepth 1 -name '*.sql' -type f -printf '%f\n' |
+  grep -vE '^[0-9]{4}_.*\.sql$' | grep -vxF 'verify_invariants.sql' || true)
+[ -z "$STRAY" ] ||
+  die "migrations/ holds .sql file(s) the migration glob does not match: $(printf '%s' "$STRAY" | tr '\n' ' ')"
+PENDING_COUNT=$(printf '%s\n' "$MIG_LIST" | grep -c . || true)
 PENDING_COUNT=$((PENDING_COUNT - PROD_LEDGER_BEFORE))
 [ "$PENDING_COUNT" -gt 0 ] ||
   die "the restored production ledger is already at or beyond the repository's migrations — there is nothing to rehearse"
@@ -430,7 +445,6 @@ CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $DEST_C"
 docker run --pull=never -d --name "$DEST_C" --network "$NET" -e POSTGRES_PASSWORD=rehearsal \
   -e POSTGRES_DB=shikoo "$PG_IMAGE" >/dev/null || die "could not start the migration destination"
 wait_pg "$DEST_C" || die "the migration destination never became ready"
-MIG_LIST=$(find "$REPO_DIR/migrations" -maxdepth 1 -name '0*.sql' -type f | sort)
 for f in $MIG_LIST; do
   docker exec -i "$DEST_C" psql -U postgres -d shikoo -v ON_ERROR_STOP=1 -q <"$f" ||
     die "migration $(basename "$f") failed"

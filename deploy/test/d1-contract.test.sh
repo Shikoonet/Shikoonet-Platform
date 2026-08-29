@@ -114,5 +114,28 @@ else
   bad 'the sidecar generator pins this exact table manifest' "pin ${PIN:0:12} vs file ${ACTUAL:0:12}"
 fi
 
+# A floor. The regeneration test compares the generated list against the
+# committed manifest, so a pattern change that silently drops tables would be
+# caught only if someone regenerated the manifest — at which point both sides
+# agree on a shorter list. The count is asserted independently.
+N=$(python3 "$ROOT/tools/d1-contract.py" | grep -c .)
+if [ "$N" -ge 23 ]; then
+  ok "the generator derives at least 23 tables (${N})"
+else
+  bad "the generator derives at least 23 tables" "only ${N} — a pattern change may be dropping tables silently"
+fi
+# And a name with a digit in it must survive extraction.
+if python3 - "$ROOT" <<'PY'
+import re, sys
+src = open(sys.argv[1] + "/tools/d1-contract.py").read()
+pats = re.findall(r"'\(\[[a-z0-9_\-]*\]\+\)'", src)
+sys.exit(0 if all("0-9" in p for p in pats) else 1)
+PY
+then
+  ok 'every table-name pattern admits digits'
+else
+  bad 'every table-name pattern admits digits' 'a pattern would drop raw_sms_events_v2'
+fi
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

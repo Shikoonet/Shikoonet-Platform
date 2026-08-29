@@ -267,7 +267,17 @@ VSHA=$(printf '%040d' 5 | tr '0' 'e')
 VDIG="sha256:$(printf '%064d' 5 | tr '0' 'e')"
 VATT="$W/vatt"; mkdir -p "$VATT/versions"
 VV="$VATT/versions/v1"; mkdir -p "$VV"
-env MAIN_SHA="$VSHA" DIGEST="$VDIG" CI_RUN_ID=1 STAGING_RUN_ID=2   DUMP_ID="sha256:$(printf 'a%.0s' $(seq 64)) 2026-08-28"   MIGRATION_RANGE='0035..0037' DUMP_SUITES='49/49' INVARIANTS='32/32'   FINANCIAL_TOTALS=match RESTORE_RESULT=pass RESTORE_SECONDS=1   OLD_APP_SCHEMA_COMPAT=pass LEGACY_IMPORT=pass PROD_RESTORE_MIGRATED=pass   PROD_INVARIANTS='32/32' PROD_MIGRATION_RANGE='0035..0037'   OLD_APP_SCHEMA_SUBJECT=production-restore   D1_EXPORT_ID="sha256:$(printf 'b%.0s' $(seq 64))"   GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform'   bash "$ROOT/deploy/write-dump-attestation.sh" "$VV" >/dev/null 2>&1
+env MAIN_SHA="$VSHA" DIGEST="$VDIG" CI_RUN_ID=1 STAGING_RUN_ID=2   DUMP_ID="sha256:$(printf 'a%.0s' $(seq 64)) 2026-08-28"   MIGRATION_RANGE='0035..0037' DUMP_SUITES='49/49' INVARIANTS='32/32'   FINANCIAL_TOTALS=match RESTORE_RESULT=pass RESTORE_SECONDS=1   OLD_APP_SCHEMA_COMPAT=pass LEGACY_IMPORT=pass PROD_RESTORE_MIGRATED=pass   PROD_INVARIANTS='32/32' PROD_MIGRATION_RANGE='0035..0037'   OLD_APP_SCHEMA_SUBJECT=production-restore   D1_EXPORT_ID="sha256:$(printf 'b%.0s' $(seq 64))"   GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform'   bash "$ROOT/deploy/write-dump-attestation.sh" "$VV" >/dev/null 2>"$W/vwrite.err" || {
+    bad "the attestation writer produced a version to publish" "$(head -1 "$W/vwrite.err")"
+    # Without this the four assertions below would still report ok — they would
+    # pass because `current` is not a pointer, not because anything was refused.
+    printf 'the writer refused; the published-path cases below cannot run\n' >&2
+  }
+if [ -f "$VV/attestation.env" ]; then
+  ok "the attestation writer produced a version to publish"
+else
+  bad "the attestation writer produced a version to publish" "no attestation.env"
+fi
 
 # Not yet published: the promotion path must refuse rather than read it.
 if env EXPECTED_SHA="$VSHA" EXPECTED_DIGEST="$VDIG" bash "$VERIFY" "$VATT" >"$W/v1" 2>&1; then
