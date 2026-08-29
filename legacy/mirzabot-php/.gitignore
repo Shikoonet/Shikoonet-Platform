@@ -1,0 +1,22 @@
+# Runtime logs — huge and full of customer PII
+error_log
+log.txt
+*.log
+
+# Per-user bot state (Telegram user IDs and payment state)
+/data/
+
+# Generated QR codes
+integration/reconciliation/*.png
+
+# Secrets — production bot token, DB password, HMAC keys.
+# config.php is deliberately NOT cloned from the server.
+/config.php
+integration/reconciliation/local.php
+/.env
+
+# DB backups + production dumps (real customer payment data)
+cronbot/dbbackups/
+/db/
+*.sql
+*.sql.gz

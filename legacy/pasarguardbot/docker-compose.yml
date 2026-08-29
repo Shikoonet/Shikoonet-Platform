@@ -1,0 +1,85 @@
+services:
+  redis:
+    image: redis:8-alpine
+    container_name: pasarguardbot-redis
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6161:6379"
+    volumes:
+      - ${PASARGUARDBOT_CONFIG_DIR:-.}/data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks:
+      - pasarguardbot
+
+  mariadb:
+    image: mariadb:12
+    container_name: pasarguardbot-mariadb
+    restart: unless-stopped
+    env_file:
+      - ${PASARGUARDBOT_CONFIG_DIR:-.}/.env
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+    ports:
+      - "127.0.0.1:6162:3306"
+    volumes:
+      - ${PASARGUARDBOT_CONFIG_DIR:-.}/data/mariadb:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mariadb-admin ping -h 127.0.0.1 -u root --password=$$MARIADB_ROOT_PASSWORD --silent",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - pasarguardbot
+
+  phpmyadmin:
+    image: phpmyadmin:5-apache
+    container_name: pasarguardbot-phpmyadmin
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      PMA_HOST: mariadb
+      PMA_PORT: 3306
+      UPLOAD_LIMIT: 256M
+    ports:
+      - "6163:80"
+    networks:
+      - pasarguardbot
+
+  bot:
+    image: ghcr.io/amirkenzo/pasarguardbot:${PASARGUARDBOT_IMAGE_TAG:-latest}
+    pull_policy: always
+    container_name: pasarguardbot
+    restart: unless-stopped
+    env_file:
+      - ${PASARGUARDBOT_CONFIG_DIR:-.}/.env
+    volumes:
+      - ${PASARGUARDBOT_CONFIG_DIR:-.}/.env:/app/.env:ro
+      - ${PASARGUARDBOT_CONFIG_DIR:-.}/logs:/app/logs
+      - ${PASARGUARDBOT_CONFIG_DIR:-.}/sessions:/app/sessions
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${FASTAPI_PORT:-6160}:${FASTAPI_PORT:-6160}"
+    networks:
+      - pasarguardbot
+
+networks:
+  pasarguardbot:
+    name: pasarguardbot

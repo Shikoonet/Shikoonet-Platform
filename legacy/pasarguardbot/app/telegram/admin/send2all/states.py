@@ -1,0 +1,36 @@
+"""State constants for admin send2all."""
+
+PANEL_STEP = "panel"
+SEND2ALL_STEP = "Send2all"
+FORWARD2ALL_STEP = "Forward2all"
+SENDING_IN_PROGRESS_STEP = "SendingInProgress"
+BROADCAST_CONFIRM_STEP = "BroadcastConfirm"
+BROADCAST_SETTINGS_STEP = "BroadcastSettings"
+
+SEND_TO_ALL_FILTER_STEPS = frozenset(
+    {
+        SEND2ALL_STEP,
+        SENDING_IN_PROGRESS_STEP,
+        FORWARD2ALL_STEP,
+        PANEL_STEP,
+        BROADCAST_CONFIRM_STEP,
+        BROADCAST_SETTINGS_STEP,
+    }
+)
+
+ALBUM_COLLECT_STEPS = frozenset({SEND2ALL_STEP, FORWARD2ALL_STEP})
+
+CANCEL_BACK_STEPS = frozenset(
+    {
+        SEND2ALL_STEP,
+        FORWARD2ALL_STEP,
+        BROADCAST_CONFIRM_STEP,
+        BROADCAST_SETTINGS_STEP,
+    }
+)
+
+MESSAGE_COLLECT_STEPS = frozenset({SEND2ALL_STEP, FORWARD2ALL_STEP})
+
+BACK_TO_PANEL_MESSAGE = "🔙 بازگشت به پنل"
+SEND_BROADCAST_MESSAGE = "📮 ارسال همگانی"
+FORWARD_BROADCAST_MESSAGE = "📥 فوروارد همگانی"

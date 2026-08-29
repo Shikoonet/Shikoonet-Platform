@@ -1,0 +1,51 @@
+# DEV twin of ingest-worker. Binds to payment-hub-dev — never production data.
+# Deploy with: pnpm --filter @hub/ingest-worker deploy:dev
+#              (or `pnpm release:dev` from the repo root)
+#
+# Secrets are per-worker and are NOT inherited from ingest-worker. Set them with:
+#   pnpm exec wrangler secret put MIRZABOT_INTEGRATION_HMAC_SECRET -c wrangler.dev.toml
+# Use a freshly generated secret — never copy the production one.
+name = "ingest-worker-dev"
+main = "src/index.ts"
+compatibility_date = "2026-08-04"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "payment-hub-dev"
+database_id = "9f8834f0-4736-4622-aa33-22f61a4e8618"
+migrations_dir = "../../migrations"
+
+[vars]
+ENV_NAME = "dev"
+INGEST_MAX_BODY_BYTES = "8192"
+LOG_SMS_BODY = "false"
+MIRZABOT_INTEGRATION_ENABLED = "true"
+AUTO_MATCH_ENABLED = "true"
+# Dev must never fire the fulfillment webhook — that would provision real VPN
+# service in Mirzabot off the back of a test SMS.
+AUTO_FULFILLMENT_ENABLED = "false"
+# Matches the dev Mirzabot host convention (it2 / @bottestshikoonetbot).
+MIRZABOT_INTEGRATION_ID = "mirzabot-test"
+
+# Separate namespaces from production's 1001/1002.
+[[ratelimits]]
+name = "DEVICE_LIMIT"
+namespace_id = "2001"
+
+[ratelimits.simple]
+limit = 100
+period = 60
+
+[[ratelimits]]
+name = "IP_LIMIT"
+namespace_id = "2002"
+
+[ratelimits.simple]
+limit = 300
+period = 60
+
+# Kept so the Mirzabot WAIT-expiry path can be exercised in dev. Safe: it only
+# writes to payment-hub-dev, and AUTO_FULFILLMENT_ENABLED is false.
+[triggers]
+crons = ["*/5 * * * *"]

@@ -1,0 +1,1 @@
+"""User reseller module."""

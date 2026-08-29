@@ -1,0 +1,121 @@
+{
+    "synced_at": 1786126689,
+    "integration_id": "mirzabot-prod",
+    "cards": [
+        {
+            "card_digits": "6221061244863090",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "6280231388812074",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "6362141143396308",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5022291621285129",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5041721085364173",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5041721253334545",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5041721253423504",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5047061152764250",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5047061153142274",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5047061674560137",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5047061674687526",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5047061674698903",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5047061674737313",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5054161706217613",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5054161706246463",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5054161706277062",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5054161706277781",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "5054161706294513",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "6037997551001473",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "6063731296783369",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "6063731299477159",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "6219861045069290",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        },
+        {
+            "card_digits": "6221061240280018",
+            "financial_account_id": "bot-active",
+            "account_status": "ACTIVE"
+        }
+    ]
+}
