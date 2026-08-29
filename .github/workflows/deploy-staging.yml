@@ -73,7 +73,19 @@ concurrency:
 env:
   IMAGE_NAME: ghcr.io/shikoonet/shikoonet-platform
   DEPLOY_APPROVAL_MODE: owner-or-approved
-  SOLO_DEPLOY_OWNER: Isusami
+  # The people trusted to ship their own work to STAGING without a human
+  # review. Production is NOT widened by this: each production workflow sets
+  # its own SOLO_DEPLOY_OWNER and compares github.actor against it directly,
+  # so promotion remains one person. See deploy/README.md.
+  #
+  # (Those workflow filenames are deliberately not written here: a test asserts
+  # this file never names them, so that staging can never grow a reference to
+  # the production path.)
+  #
+  # A list because a two-person team cannot satisfy "approved by somebody other
+  # than the author" without that somebody being the owner — so every
+  # contributor PR needed the owner twice, once to review and once to merge.
+  DEPLOY_OWNERS: Isusami,arshiajacki
 
 jobs:
   gate:
@@ -148,7 +160,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPLOY_APPROVAL_MODE: ${{ env.DEPLOY_APPROVAL_MODE }}
-          SOLO_DEPLOY_OWNER: ${{ env.SOLO_DEPLOY_OWNER }}
+          DEPLOY_OWNERS: ${{ env.DEPLOY_OWNERS }}
         run: bash deploy/approval-gate.sh "${{ github.repository }}" "${{ steps.resolve.outputs.sha }}"
 
       - name: say which policy allowed this, in the run summary

@@ -233,7 +233,7 @@ GATE_OWNER=''
 run_gate() { # -> exit code, output in $GATE_LOG
   set +e
   env GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_API='https://api.github.com' \
-    DEPLOY_APPROVAL_MODE="$GATE_MODE" SOLO_DEPLOY_OWNER="$GATE_OWNER" \
+    DEPLOY_APPROVAL_MODE="$GATE_MODE" DEPLOY_OWNERS="$GATE_OWNER" \
     bash "$GATE" 'Shikoonet/Shikoonet-Platform' "$SHA_MERGED" >"$GATE_LOG" 2>&1
   local rc=$?
   set -e
@@ -371,7 +371,7 @@ GATE_MODE='team'
 
 solo_happy
 GATE_OWNER=''
-denies 'refuses solo mode with nobody allowlisted' 'needs SOLO_DEPLOY_OWNER'
+denies 'refuses solo mode with nobody allowlisted' 'needs DEPLOY_OWNERS'
 
 section 'team mode — unchanged, and still needs somebody else to have looked'
 
@@ -423,7 +423,7 @@ scenario "/pulls/7" 200 "$(merged_by_json "$OWNER")"
 scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
 scenario "/actions/runs/9001/jobs" 200 "$(jobs_json success)"
 scenario "/commits/main" 200 "$(commit_json "$SHA_MERGED")"
-denies 'refuses a pull request the owner did not write' 'allows only @Isusami to ship unreviewed'
+denies 'refuses a pull request the owner did not write' 'allows only the deploy owners'
 
 solo_happy '[]' 'someone-else'
 denies 'refuses a pull request the owner did not merge' 'merged by @someone-else'
@@ -587,11 +587,11 @@ denies 'an outstanding CHANGES_REQUESTED blocks a reviewed contributor PR' \
 # not that shipping it was intended.
 owner_or_approved_contributor '' 'someone-else'
 denies 'a reviewed contributor PR merged by somebody else is refused' \
-  'not @'
+  'not among the deploy owners'
 
 # The owner half keeps its own merged-by assertion.
 owner_or_approved_owner '[]' 'someone-else'
-denies 'the owner half still refuses a PR merged by somebody else' 'not @'
+denies 'the owner half still refuses a PR merged by somebody else' 'not among the deploy owners'
 
 # The Quality Gate is asked on the merge commit in this mode too — the approval
 # was given on the final head, and the merge commit is a different tree.
@@ -626,7 +626,108 @@ unset FAKE_CURL_DIES
 # merged-by comparison has nothing to compare against and would pass empty.
 owner_or_approved_contributor
 GATE_OWNER=''
-denies 'refuses owner-or-approved mode with nobody allowlisted' 'needs SOLO_DEPLOY_OWNER'
+denies 'refuses owner-or-approved mode with nobody allowlisted' 'needs DEPLOY_OWNERS'
+GATE_OWNER="$OWNER"
+
+# ── a second deploy owner ────────────────────────────────────────────────
+#
+# The reason this exists: "approved by somebody other than the author" cannot
+# be satisfied by a two-person team without that somebody being the owner, so
+# every contributor PR needed the owner twice — once to review, once to merge.
+# Naming a second maintainer in DEPLOY_OWNERS lets them ship their own work
+# exactly as the first one does, and these tests pin both halves of that: what
+# it now allows, and what it still must not.
+section 'a second deploy owner ships their own work, and nobody else does'
+
+PEERS="Isusami,arshiajacki"
+
+# The new capability: the second owner wrote it AND merged it, with no review.
+reset_scenarios
+GATE_MODE='owner-or-approved'
+GATE_OWNER="$PEERS"
+scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged arshiajacki "$SHA_PRHEAD")"
+scenario "/pulls/7/reviews" 200 '[]'
+scenario "/pulls/7" 200 "$(merged_by_json arshiajacki)"
+scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+scenario "/actions/runs/9001/jobs" 200 "$(jobs_json success)"
+scenario "/actions/runs?head_sha=${SHA_MERGED}" 200 "$(runs_json 9002)"
+scenario "/actions/runs/9002/jobs" 200 "$(jobs_json success)"
+scenario "/commits/main" 200 "$(commit_json "$SHA_MERGED")"
+if run_gate && grep -qF 'policy=solo-owner' "$GATE_LOG"; then
+  ok 'the second owner ships their own unreviewed PR, recorded as solo-owner'
+else
+  bad 'the second owner ships their own unreviewed PR, recorded as solo-owner' \
+    "$(tail -3 "$GATE_LOG" | tr '\n' ' ')"
+fi
+
+# The first owner is unaffected by the list.
+reset_scenarios
+GATE_MODE='owner-or-approved'
+GATE_OWNER="$PEERS"
+scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged "$OWNER" "$SHA_PRHEAD")"
+scenario "/pulls/7/reviews" 200 '[]'
+scenario "/pulls/7" 200 "$(merged_by_json "$OWNER")"
+scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+scenario "/actions/runs/9001/jobs" 200 "$(jobs_json success)"
+scenario "/actions/runs?head_sha=${SHA_MERGED}" 200 "$(runs_json 9002)"
+scenario "/actions/runs/9002/jobs" 200 "$(jobs_json success)"
+scenario "/commits/main" 200 "$(commit_json "$SHA_MERGED")"
+if run_gate; then ok 'the first owner still ships alongside the second'
+else bad 'the first owner still ships alongside the second' "$(tail -2 "$GATE_LOG" | tr '\n' ' ')"; fi
+
+# The boundary. A login that merely LOOKS like an owner is not one: exact
+# match on a whole comma-separated element, never a substring, or @Isusami2
+# would inherit @Isusami's authority.
+peer_case() { # author merged-by
+  reset_scenarios
+  GATE_MODE='owner-or-approved'
+  GATE_OWNER="$PEERS"
+  scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged "$1" "$SHA_PRHEAD")"
+  scenario "/pulls/7/reviews" 200 '[]'
+  scenario "/pulls/7" 200 "$(merged_by_json "$2")"
+  scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+  scenario "/actions/runs/9001/jobs" 200 "$(jobs_json success)"
+  scenario "/actions/runs?head_sha=${SHA_MERGED}" 200 "$(runs_json 9002)"
+  scenario "/actions/runs/9002/jobs" 200 "$(jobs_json success)"
+  scenario "/commits/main" 200 "$(commit_json "$SHA_MERGED")"
+}
+
+peer_case Isusami2 Isusami2
+denies 'a login that only prefixes an owner is not an owner' 'no current APPROVED review'
+
+peer_case arshia arshia
+denies 'a login that is a prefix of an owner is not an owner' 'no current APPROVED review'
+
+peer_case arshiajacki someone-else
+denies 'a second owner cannot have their PR merged by a stranger' 'not among the deploy owners'
+
+peer_case outsider outsider
+denies 'a non-owner still cannot ship unreviewed' 'no current APPROVED review'
+
+# Whitespace around a comma is tolerated; an empty element grants nothing.
+reset_scenarios
+GATE_MODE='owner-or-approved'
+GATE_OWNER="Isusami, arshiajacki"
+scenario "/commits/${SHA_MERGED}/pulls" 200 "$(pr_json merged arshiajacki "$SHA_PRHEAD")"
+scenario "/pulls/7/reviews" 200 '[]'
+scenario "/pulls/7" 200 "$(merged_by_json arshiajacki)"
+scenario "/actions/runs?head_sha=${SHA_PRHEAD}" 200 "$(runs_json 9001)"
+scenario "/actions/runs/9001/jobs" 200 "$(jobs_json success)"
+scenario "/actions/runs?head_sha=${SHA_MERGED}" 200 "$(runs_json 9002)"
+scenario "/actions/runs/9002/jobs" 200 "$(jobs_json success)"
+scenario "/commits/main" 200 "$(commit_json "$SHA_MERGED")"
+if run_gate; then ok 'a space after the comma still names the second owner'
+else bad 'a space after the comma still names the second owner' "$(tail -2 "$GATE_LOG" | tr '\n' ' ')"; fi
+
+# An empty author never reaches is_owner: the PR shape check refuses first,
+# which is the stronger of the two refusals.
+peer_case '' ''
+denies 'an empty author is refused before ownership is even asked' 'without an author'
+
+# An empty MERGER does reach the ownership question, and must not match.
+peer_case arshiajacki ''
+denies 'an empty merger matches no element of the list' 'reports nobody'
+
 GATE_OWNER="$OWNER"
 GATE_MODE='team'
 
