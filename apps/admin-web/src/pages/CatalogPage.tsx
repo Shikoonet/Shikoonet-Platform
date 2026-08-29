@@ -190,6 +190,11 @@ export function CatalogPage() {
       // Nor is a route that has no groups to list. `manual` answers 404 here,
       // once per render, for a service that is working perfectly.
       if (!row.panel.hasGroups) continue;
+      // Nor a panel with nowhere to send the request or nothing to log in with.
+      // The delivery column now says so outright, and the request could only
+      // hang until it timed out — which is what the practice panel did on
+      // 2026-08-29, eight seconds per row.
+      if (!row.panel.baseUrl || !row.panel.hasCredential) continue;
       asked.current.add(id);
       api
         .panelGroups(id)
@@ -417,6 +422,11 @@ function GroupCell({ service, data }: { service: ServiceRow; data: PanelGroups |
   if (service.panel === null) return <span className="muted">—</span>;
   // A delivery route with no groups is not a panel that failed to name any.
   if (!service.panel.hasGroups) return <span className="muted">—</span>;
+  // Nor is a panel we never asked. Without this the cell sits on «…» forever,
+  // because the fetch above deliberately skips these and no answer is coming.
+  if (!service.panel.baseUrl || !service.panel.hasCredential) {
+    return <span className="muted">—</span>;
+  }
   if (data === undefined) return <span className="muted">…</span>;
   if (data === null) return <span className="muted">پنل جواب نداد</span>;
 
@@ -485,6 +495,37 @@ function DeliveryCell({
    */
   if (!service.panel.hasGroups) {
     return <span className="badge">تحویل دستی</span>;
+  }
+  /*
+   * An ACTIVE panel that cannot be reached or cannot log in.
+   *
+   * «مدیریت پنل‌ها» has said «آدرس و رمز ندارد» about exactly this since it was
+   * written; this column could not see either fact, so it walked past the panel
+   * and reported the next thing it could measure — «گروه ۳ روی پنل نیست»,
+   * which sends an operator to the groups screen to fix an address. On
+   * 2026-08-29 that was four rows of five.
+   *
+   * The two are named separately rather than merged into one «تنظیم نشده»: the
+   * fix for a missing address is not the fix for a missing password, and a
+   * screen that collapses distinct causes is a screen that has to be guessed
+   * past. Same reason `secret_key_missing` now carries its detail.
+   */
+  if (!service.panel.baseUrl || !service.panel.hasCredential) {
+    const missing =
+      !service.panel.baseUrl && !service.panel.hasCredential
+        ? 'آدرس و رمز ندارد'
+        : !service.panel.baseUrl
+          ? 'آدرس ندارد'
+          : 'رمز ندارد';
+    return (
+      <div className="tone-orange">
+        <strong>فروخته نمی‌شود</strong>
+        <div className="muted">
+          پنل «{service.panel.name}» {missing} — تا آن درست نشود، گروه‌ها فرقی
+          نمی‌کنند.
+        </div>
+      </div>
+    );
   }
   if (data === undefined) return <span className="muted">…</span>;
   // The panel is on and still did not answer — a different thing from «no
