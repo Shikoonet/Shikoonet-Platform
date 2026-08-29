@@ -21,10 +21,11 @@
  * rendered.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DeviceName } from '../../src/hub/DeviceName.js';
 import { TodayView } from '../../src/hub/TodayView.js';
 import { createCache } from '../../src/hub/query.js';
+import { QK } from '../../src/hub/queries.js';
 
 const POYAN_DEVICE_ID = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789';
 
@@ -266,31 +267,56 @@ describe('Today — mobile card device row', () => {
 // ---------------------------------------------------------------------------
 
 describe('Today sort state survives polling', () => {
-  it('keeps Device A–Z sort after a background refetch', async () => {
+  /*
+   * This used to invalidate a cache nobody was rendering.
+   *
+   * `render(<TodayView cache={createCache()} />)` did not keep the cache it
+   * made, and the line below built a SECOND one — through a ternary whose two
+   * branches were identical — and invalidated that. No refetch ever happened.
+   * With a `setTimeout(50)` in the middle, the test read the same rows twice
+   * and called the second read «after the refetch».
+   *
+   * So its only live assertion was «one click sorts ascending», which the test
+   * directly above already proves, and which depends on sort state left in
+   * `sessionStorage` by that very test. That is the assertion that went red in
+   * CI on 2026-08-29 while passing twelve times locally: the same code, the
+   * same test, green on a re-run.
+   *
+   * Now the rendered cache is the invalidated one, the wait is for the second
+   * fetch rather than for the clock, and the assertion is the invariant this
+   * test is named after — the order does not change — rather than a direction
+   * it has to guess at.
+   */
+  it('keeps the Device sort after a background refetch', async () => {
     wideMatchMedia();
     const items = [
       todayItem({ id: 'a', displayName: 'Alice Phone', deviceCode: 'alice-01' }),
       todayItem({ id: 'b', displayName: 'Bob Phone', deviceCode: 'bob-01' }),
     ];
-    globalThis.fetch = vi.fn().mockResolvedValue(todayResponse(items));
-    render(<TodayView cache={createCache()} />);
+    const fetchMock = vi.fn().mockResolvedValue(todayResponse(items));
+    globalThis.fetch = fetchMock;
+    const cache = createCache();
+    render(<TodayView cache={cache} />);
     const deviceHeader = await screen.findByText('دستگاه');
     fireEvent.click(deviceHeader);
-    let tbody = document.querySelector('tbody')!;
-    let rows = Array.from(tbody.querySelectorAll('tr'));
-    expect(rows[0]!.textContent).toContain('Alice Phone');
-    expect(rows[1]!.textContent).toContain('Bob Phone');
-    // Trigger a manual refetch.
-    const cache = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.instances.length
-      ? (await import('../../src/hub/query.js')).createCache()
-      : (await import('../../src/hub/query.js')).createCache();
-    cache.invalidate((await import('../../src/hub/queries.js')).QK.today);
-    await new Promise((r) => setTimeout(r, 50));
-    // Sort state must persist after the refetch.
-    tbody = document.querySelector('tbody')!;
-    rows = Array.from(tbody.querySelectorAll('tr'));
-    expect(rows[0]!.textContent).toContain('Alice Phone');
-    expect(rows[1]!.textContent).toContain('Bob Phone');
+
+    const order = () =>
+      Array.from(document.querySelector('tbody')!.querySelectorAll('tr')).map((r) =>
+        r.textContent!.includes('Alice Phone') ? 'Alice' : 'Bob',
+      );
+    // Whichever way the click sorted — both directions are asserted by the
+    // test above, and asserting one here made this depend on state that test
+    // leaves behind.
+    const before = order();
+    expect(before).toHaveLength(2);
+    expect(new Set(before).size).toBe(2);
+
+    const callsBefore = fetchMock.mock.calls.length;
+    cache.invalidate(QK.today);
+    // Waiting for the refetch itself, not for a number of milliseconds. The
+    // old wall-clock sleep would have passed even if the request never went.
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBefore));
+    await waitFor(() => expect(order()).toEqual(before));
   });
 });
 
