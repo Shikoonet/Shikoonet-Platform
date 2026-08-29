@@ -767,7 +767,7 @@ interface PaymentCardRow {
   luhn_ok: boolean;
 }
 
-function PaymentCardsPanel({
+export function PaymentCardsPanel({
   accountId,
   onChanged,
 }: {
@@ -792,21 +792,39 @@ function PaymentCardsPanel({
     setCards(j.items);
   }
 
-  async function setWeight(id: string, displayWeight: number) {
-    setBusy(true);
+  /**
+   * One PATCH for every field of a card. The route takes weight, status and
+   * label together or singly, so three controls do not need three functions.
+   *
+   * `quiet` leaves the panel's `busy` flag alone. The label saves on blur, and
+   * blur is what happens on the way to pressing a button — so a label save that
+   * disabled the row would eat the very click that caused it. That is not a
+   * theory: it happened while walking this screen on 2026-08-29, and it fails
+   * silently, which is the worst way for it to fail. It is safe because the
+   * route writes only the fields the body names, so two saves in flight cannot
+   * revert each other.
+   */
+  async function edit(
+    id: string,
+    change: { displayWeight?: number; status?: 'ACTIVE' | 'DISABLED'; label?: string | null },
+    what: string,
+    quiet = false,
+  ) {
+    if (!quiet) setBusy(true);
     setErr(null);
     try {
       const r = await fetch(`/api/v1/payment-cards/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ displayWeight }),
+        body: JSON.stringify(change),
       });
-      if (!r.ok) throw new Error(`تغییر وزن ناموفق بود (${r.status})`);
+      if (!r.ok) throw new Error(`${what} ناموفق بود (${r.status})`);
       await load();
+      onChanged?.();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      if (!quiet) setBusy(false);
     }
   }
 
@@ -862,10 +880,10 @@ function PaymentCardsPanel({
   return (
     <div className="payment-cards-panel">
       <h4>کارت‌های پرداخت ربات</h4>
-      <p className="muted">
-        شماره‌کارت‌هایی که به مشتری نشان داده می‌شود را به این حساب مالی نگاشت کن. فقط خودِ کارت ۱۶
-        رقمی را بنویس، نه نام حساب.
-      </p>
+      {/* «فقط خودِ کارت ۱۶ رقمی را بنویس، نه نام حساب» used to live here. The
+          field itself now says so, and a caption repeating its own label is one
+          more line to read past. */}
+      <p className="muted">کارت‌هایی که ربات هنگام پرداخت به مشتری نشان می‌دهد.</p>
       {err && <div className="error">{err}</div>}
       {moveOffer && (
         <div className="info">
@@ -876,63 +894,142 @@ function PaymentCardsPanel({
         </div>
       )}
       <ul className="payment-cards-list">
-        {cards.length === 0 && <li className="muted">هنوز کارتی به این حساب نگاشت نشده.</li>}
-        {cards.map((c) => (
-          <li key={c.id}>
-            <span className="payment-cards-list__id">
-              <IdentifierText value={c.display} />
-              {c.label ? ` (${c.label})` : ''}
-              {c.bank_name && <span className="badge">{c.bank_name}</span>}
-              {/* A card number that fails its own check digit cannot exist. One
-                  such row is live in production and quietly broke claim-to-account
-                  resolution for a whole bank until a human counted the digits. */}
-              {!c.luhn_ok && <span className="badge badge-block">رقم کنترلی نادرست</span>}
-              {c.status !== 'ACTIVE' && <span className="badge">{c.status}</span>}
-            </span>
-            <span className="payment-cards-list__actions">
-              <label>
-                نمایش{' '}
-                <select
-                  value={c.display_weight}
-                  disabled={busy}
-                  onChange={(e) => void setWeight(c.id, Number(e.target.value))}
-                >
-                  {Array.from({ length: 20 }, (_, i) => i + 1).map((w) => (
-                    <option key={w} value={w}>
-                      {w === 1 ? 'معمولی (۱×)' : `${count(w)}× بیشتر`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="btn-sm danger"
-                disabled={busy}
-                onClick={() => removeCard(c.id)}
-                {...w}
-              >
-                حذف
-              </button>
-            </span>
+        {cards.length === 0 && (
+          <li className="payment-cards-list__empty">
+            هیچ کارتی به این حساب نگاشته نشده، پس ربات برای این حساب چیزی به مشتری نشان نمی‌دهد.
+            شمارهٔ کارت را پایین بنویس.
           </li>
-        ))}
+        )}
+        {cards.map((c) => {
+          const on = c.status === 'ACTIVE';
+          return (
+            <li key={c.id} className={on ? undefined : 'is-off'}>
+              {/* Line one is the card's identity and its one state. The state
+                  badge is drawn in BOTH directions on purpose: while «خاموش» was
+                  the only badge, a live card said nothing at all and the two
+                  states looked identical at a glance. */}
+              <div className="payment-card__identity">
+                <span className={`badge ${on ? 'badge-active' : 'badge-block'}`}>
+                  {on ? 'در گردش' : 'خاموش'}
+                </span>
+                <IdentifierText value={c.display} />
+                {c.bank_name && <span className="badge">{c.bank_name}</span>}
+                {/* A card number that fails its own check digit cannot exist. One
+                    such row is live in production and quietly broke claim-to-account
+                    resolution for a whole bank until a human counted the digits. */}
+                {!c.luhn_ok && <span className="badge badge-warning">رقم کنترلی نادرست</span>}
+              </div>
+
+              <div className="payment-card__controls">
+                <label className="payment-card__field">
+                  <span className="form-label">نام دلخواه</span>
+                  <input
+                    placeholder="مثلاً «کارت پویان»"
+                    defaultValue={c.label ?? ''}
+                    // On blur rather than on every keystroke: each save writes an
+                    // audit row, and one row per letter typed is not a history.
+                    onBlur={(e) => {
+                      const next = e.target.value.trim();
+                      if (next !== (c.label ?? '')) {
+                        void edit(c.id, { label: next || null }, 'تغییر برچسب', true);
+                      }
+                    }}
+                    {...w}
+                  />
+                </label>
+                <label className="payment-card__field">
+                  <span className="form-label">سهم از نمایش</span>
+                  <select
+                    value={c.display_weight}
+                    disabled={busy || !on}
+                    onChange={(e) =>
+                      void edit(c.id, { displayWeight: Number(e.target.value) }, 'تغییر وزن')
+                    }
+                  >
+                    {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
+                      <option key={n} value={n}>
+                        {n === 1 ? 'معمولی (۱×)' : `${count(n)}× بیشتر`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="payment-card__actions">
+                  {/* Off, not deleted. A disabled card keeps its history and its
+                      digits; a deleted one takes the row that received the money
+                      with it, and the digits are UNIQUE so it cannot simply be
+                      re-added. So the reversible act is the ordinary button and
+                      the irreversible one is quiet until you reach for it —
+                      before this, «حذف» was a filled red block and the loudest
+                      thing on the screen. */}
+                  <button
+                    type="button"
+                    className="btn-sm"
+                    disabled={busy}
+                    onClick={() =>
+                      void edit(
+                        c.id,
+                        { status: on ? 'DISABLED' : 'ACTIVE' },
+                        on ? 'خاموش کردن' : 'روشن کردن',
+                      )
+                    }
+                    {...w}
+                  >
+                    {on ? 'خاموش کن' : 'روشن کن'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-sm payment-card__remove"
+                    disabled={busy}
+                    onClick={() => removeCard(c.id)}
+                    {...w}
+                  >
+                    حذف
+                  </button>
+                </div>
+              </div>
+            </li>
+          );
+        })}
       </ul>
-      <p className="muted">
-        چرخش، کارتی را می‌دهد که بیش از همه عقب افتاده است. وزن ۳ یعنی این کارت سه برابر یک کارت
-        معمولی بالا می‌آید — اما هیچ‌وقت تنها کارتِ نشان‌داده‌شده نمی‌شود. برای کارتی که تازه اضافه
-        شده وزن را بالا ببر تا شمار تراکنش‌هایش در صفحهٔ «آمار مالی» به بقیه برسد، بعد به ۱ برگردان.
-      </p>
-      <div className="row toolbar">
-        <input
-          placeholder="5047-0616-7456-0137"
-          value={newCard}
-          onChange={(e) => setNewCard(e.target.value)}
-        />
-        <input
-          placeholder="برچسب (اختیاری)"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-        />
+      {/* Two paragraphs of standing prose used to sit between the list and the
+          form, and an admin scanning for the «افزودن کارت» button read past
+          both of them every time. Neither is needed to act — they answer a
+          question, so they wait behind one. `<details>` rather than a component:
+          the browser has this. */}
+      <details className="payment-cards-help">
+        <summary>چرخش کارت‌ها چطور کار می‌کند؟</summary>
+        <p>
+          ربات همیشه کارتی را می‌دهد که بیش از همه عقب افتاده است. «سهم از نمایش ۳×» یعنی این کارت
+          سه برابر یک کارت معمولی بالا می‌آید — ولی هیچ‌وقت تنها کارت نمی‌شود. برای کارتی که تازه
+          اضافه شده سهم را بالا ببر تا شمار تراکنش‌هایش در «آمار مالی» به بقیه برسد، بعد به ۱
+          برگردان.
+        </p>
+        <p>
+          کارت خاموش هرگز به مشتری نشان داده نمی‌شود، ولی تاریخچه و پرداخت‌هایش سر جایشان می‌مانند.
+          برای کارتی که موقتاً از رده خارج می‌شود «خاموش کن» را بزن، نه «حذف». کارتی که دوباره روشن
+          شود هم‌تراز با بقیه به صف برمی‌گردد، نه اول صف.
+        </p>
+      </details>
+
+      <div className="payment-cards-add">
+        <h5>افزودن کارت</h5>
+        <label className="payment-card__field">
+          <span className="form-label">شمارهٔ کارت ۱۶ رقمی</span>
+          <input
+            placeholder="5047-0616-7456-0137"
+            value={newCard}
+            onChange={(e) => setNewCard(e.target.value)}
+          />
+        </label>
+        <label className="payment-card__field">
+          <span className="form-label">نام دلخواه (اختیاری)</span>
+          <input
+            placeholder="مثلاً «کارت پویان»"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+          />
+        </label>
         <button
           type="button"
           className="primary"

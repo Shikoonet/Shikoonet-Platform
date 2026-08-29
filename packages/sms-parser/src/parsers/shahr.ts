@@ -7,12 +7,19 @@
  *   واریز به: <account-number>
  *   مبلغ: <amount> ریال
  *   موجودی: <balance> ریال
- *   <JY>/<MM>/<DD> <HH>:<mm>:<ss>     full Jalali date
+ *   <JY>/<M(M)>/<D(D)> <HH>:<mm>[:<ss>]   full Jalali date; the bank sends
+ *                                         single-digit months and days, and
+ *                                         sometimes omits the seconds
  *
  * Direction: CREDIT (explicit "واریز" phrase).
  *
- * Date format is the FULL Jalali 4-digit year — no fallback needed since the
- * message supplies the year directly.
+ * The date is read AFTER the amount and the account, and it cannot veto them.
+ * This paragraph used to say «no fallback needed since the message supplies the
+ * year directly», which was true about the year and wrong about everything
+ * else: the pattern demanded a two-digit day, the bank sent `1405/06/7`, and a
+ * real 3,990,000 IRR deposit came back UNKNOWN with no amount at all. An
+ * unreadable date now costs `BANK_TIME_FALLBACK_TO_SMS_TIMESTAMP` and nothing
+ * more.
  *
  * classification: BANK_TRANSACTION.
  */
@@ -50,25 +57,39 @@ export const shahrCreditParser = {
       return unsupportedWarn('amount/balance malformed', 'shahr_amount_malformed');
     }
 
-    // Full Jalali date: "1405/05/14 08:22:17"
-    const dtMatch = text.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})/);
-    if (!dtMatch) {
-      return unsupportedWarn('date/time malformed', 'shahr_datetime_malformed');
-    }
-    const jy = Number.parseInt(dtMatch[1]!, 10);
-    const jm = Number.parseInt(dtMatch[2]!, 10);
-    const jd = Number.parseInt(dtMatch[3]!, 10);
-    const hh = Number.parseInt(dtMatch[4]!, 10);
-    const mi = Number.parseInt(dtMatch[5]!, 10);
-    const ss = Number.parseInt(dtMatch[6]!, 10);
+    // Full Jalali date: "1405/05/14 08:22:17", and the shapes the bank also
+    // sends: a single-digit month or day (`1405/06/7`), and no seconds.
+    //
+    // The month and day were `\d{2}` exactly. On 2026-08-29 the shop forwarded
+    // a real 3,990,000 IRR deposit written `1405/06/7`, and one missing zero
+    // took the whole message: the amount and the account are read three lines
+    // above this, and a date that did not match threw all of it away.
+    const dtMatch = text.match(/(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
 
     let bankTimestamp: number;
     const warnings: string[] = [];
-    try {
-      bankTimestamp = jalaliToGregorianEpochMs(jy, jm, jd, hh, mi, ss);
-    } catch {
+    // A date this parser cannot read is a warning, not a lost payment. The
+    // fallback already existed for a Jalali conversion that throws; an
+    // unrecognised layout is the same kind of problem and gets the same answer.
+    // Nothing downstream matches on this value — `ingest` records the phone's
+    // own timestamp — so the cost of being wrong here is an evidence field,
+    // and the cost of rejecting is a customer who paid and was not credited.
+    if (!dtMatch) {
       bankTimestamp = input.timestamp;
       warnings.push('BANK_TIME_FALLBACK_TO_SMS_TIMESTAMP');
+    } else {
+      const jy = Number.parseInt(dtMatch[1]!, 10);
+      const jm = Number.parseInt(dtMatch[2]!, 10);
+      const jd = Number.parseInt(dtMatch[3]!, 10);
+      const hh = Number.parseInt(dtMatch[4]!, 10);
+      const mi = Number.parseInt(dtMatch[5]!, 10);
+      const ss = dtMatch[6] ? Number.parseInt(dtMatch[6], 10) : 0;
+      try {
+        bankTimestamp = jalaliToGregorianEpochMs(jy, jm, jd, hh, mi, ss);
+      } catch {
+        bankTimestamp = input.timestamp;
+        warnings.push('BANK_TIME_FALLBACK_TO_SMS_TIMESTAMP');
+      }
     }
 
     const detectedIdentifiers = [
@@ -91,7 +112,11 @@ export const shahrCreditParser = {
         directionSource: 'explicit_credit_phrase',
         amountRaw,
         balanceRaw,
-        dateRaw: dtMatch[0]!,
+        // Nullable since the parse stopped depending on the date: the `!` here
+        // was safe only while a missing date returned early, and threw the
+        // moment that changed. Evidence records what was read, including
+        // nothing.
+        dateRaw: dtMatch?.[0] ?? null,
         bankTimestamp,
         detectedIdentifiers,
         warnings,

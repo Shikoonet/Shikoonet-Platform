@@ -7,6 +7,7 @@ import { gardeshgariCreditParser } from './gardeshgari.js';
 import { shahrCreditParser } from './shahr.js';
 import { samanCreditParser } from './saman.js';
 import { melliTransferParser } from './melli.js';
+import { mellatCreditParser } from './mellat.js';
 import { accountTransferSignedParser } from './account-transfer.js';
 import { internetTransferSignedParser } from './internet-transfer.js';
 import { compactSignedParser } from './compact.js';
@@ -29,6 +30,12 @@ const ORDER: SmsParser[] = [
   samanCreditParser,
   melliTransferParser,
   gardeshgariCreditParser,
+  // Mellat sits with the named banks and, like them, before every generic
+  // parser. It has to: `generic-credit` takes the first number it sees, and in
+  // a Mellat body that is the ACCOUNT — a 1,000,000 IRR deposit was being
+  // recorded as 4,436,995,648. Moving this line below the generic parsers
+  // restores that bug exactly.
+  mellatCreditParser,
   // Internet-account transfer parser (compact 4-line): "انتقال اینترنت"
   // header line that combines keyword + signed amount in one line, plus
   // حساب: / مانده: / MMDD-HH:mm. Must run BEFORE the 5-line
