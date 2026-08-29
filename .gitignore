@@ -38,6 +38,13 @@ legacy/mirzabot-php/db/
 # `legacy/mirzabot-php/db/` (real customer payments) and any `graphify-out/`.
 legacy/hub-cloudflare/graphify-out/
 
+# The D1 export of the Cloudflare production database — `device_credentials`,
+# `payment_claims`, receipts. `legacy/hub-cloudflare/.gitignore` already excludes
+# it, and that file is now tracked, which means one careless edit to it would put
+# real customer data in the index. Stated here too, where the rest of the
+# never-commit rules live, so removing one is not enough.
+legacy/hub-cloudflare/.production-backups/
+
 # The real bank receipt Sam supplied on 2026-08-24 for the layout test.
 #
 # It carries a customer's name, both card numbers and the bank reference, and a

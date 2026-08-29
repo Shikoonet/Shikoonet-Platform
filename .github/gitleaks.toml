@@ -53,6 +53,46 @@ regexes = [
   # value never reaches a log line, so it is printed into the test and
   # grepped for in the output. Sixteen random bytes generated for the test.
   '''a3f1c09b7e4d2a685f0c1b9d3e7a4c62''',
+
+  # ── The four `legacy/` findings, 2026-08-29 ──────────────────────────────
+  #
+  # The comment at the top of this file predicted these: it says allow-listing
+  # `^legacy/` would only matter "if somebody un-ignored it, which is the bad
+  # case". Somebody did — `legacy/` is tracked from today. So the prediction is
+  # honoured the way it asked to be: four EXACT values, each read in its file,
+  # each with the reason written down. The path stays scanned.
+  #
+  # Everything genuinely secret in there is still excluded and still scanned:
+  # `legacy/mirzabot-php/db/` (customer payments) and
+  # `legacy/hub-cloudflare/.production-backups/` (a D1 export whose
+  # `device_credentials.json` and `payment_claims.json` gitleaks does flag) are
+  # both out of the index, and the rules keeping them out are in `.gitignore`.
+
+  # legacy/hub-cloudflare/apps/dashboard-worker/wrangler.{toml,dev.toml}
+  # The Cloudflare Access **Application Audience tag**. It is the `aud` claim
+  # an Access JWT must carry, printed in Cloudflare's own dashboard beside the
+  # non-secret application settings, and it authenticates nobody on its own —
+  # the signing key never leaves Cloudflare. Sits next to `ACCESS_ISSUER`,
+  # which is a public team hostname.
+  '''8bda4644140bc95d75f6e6d42755a5dcb600c5ba971638ee19dcba5b0f5cf0ae''',
+
+  # legacy/mirzabot-php/api/documents.txt — seven `curl` examples
+  # The literal placeholder in the legacy bot's own API documentation:
+  # `-H 'Token: your-token-here'`. It says what it is.
+  '''your-token-here''',
+
+  # legacy/pasarguardbot/app/db/models/panels.py:25
+  # Not a value — a **keyword argument name**. The line is a SQLAlchemy column
+  # declaration, `mapped_column(String(20), default="password",
+  # insert_default="password")`, and the rule matched the argument that
+  # precedes it. There is no secret on the line at all.
+  '''insert_default=''',
+
+  # legacy/pasarguardbot/app/telegram/user/balance/messages.py:679
+  # The **USDT-TRC20 contract address** on Tron, built into a `tron:` payment
+  # URI. A published, world-readable constant — the same 34 characters appear
+  # in every wallet that supports the token.
+  '''TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t''',
 ]
 
 # Deliberately empty. Every path in this repository is scanned.
