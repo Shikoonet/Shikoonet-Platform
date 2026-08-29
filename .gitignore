@@ -45,6 +45,16 @@ legacy/hub-cloudflare/graphify-out/
 # never-commit rules live, so removing one is not enough.
 legacy/hub-cloudflare/.production-backups/
 
+# And the one I did not look for. `.deploy-backups/` holds two 1.4 MB SQLite
+# dumps of the payment hub taken before two 2026-08-07 deploys — `payment_claims`,
+# `payment_cards`, `financial_accounts`, `raw_sms_events`, `device_credentials`,
+# `access_users`, `audit_logs`. gitleaks does not flag a `.sql` dump, and checking
+# only the backup directory I already knew about is how it reached `main`.
+#
+# The rule is the whole directory, not `*.sql`: the next thing dropped in there
+# will not be a `.sql` either.
+legacy/hub-cloudflare/.deploy-backups/
+
 # The real bank receipt Sam supplied on 2026-08-24 for the layout test.
 #
 # It carries a customer's name, both card numbers and the bank reference, and a
