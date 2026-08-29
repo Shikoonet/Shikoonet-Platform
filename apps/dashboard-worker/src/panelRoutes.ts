@@ -682,6 +682,21 @@ function shape(r: PanelRow) {
  * derived renewal answers and drops the object — the hysteria shared secret in
  * `config.proxies` is why nothing here may hand the row back whole.
  */
+/**
+ * «Does this panel have a credential at all?»
+ *
+ * Exported because «سرویس‌ها» has to ask the same question: a panel that is
+ * ACTIVE with no address or no password delivers nothing, and until 2026-08-29
+ * that screen could not see either fact, so it skipped past the panel and
+ * complained about groups instead. Two spellings of this would drift, and the
+ * screen that drifted would be the one telling an operator where to look.
+ *
+ * `secret_ref` is the pre-2026 environment-variable form; `provider_secrets` is
+ * the sealed one. Either counts.
+ */
+export const PANEL_HAS_SECRET = `(pr.secret_ref IS NOT NULL
+            OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id))`;
+
 const SELECT_PANEL = `
   SELECT pr.id, pr.code, pr.name, pr.kind, pr.status, pr.base_url,
          pr.capacity, pr.sort_order,
@@ -691,9 +706,7 @@ const SELECT_PANEL = `
          -- which is the one thing this column exists to warn about.
          -- (No backticks in a SQL comment inside a template literal — they
          -- close the string. Second time today.)
-         (pr.secret_ref IS NOT NULL
-            OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id))
-           AS has_secret_ref,
+         ${PANEL_HAS_SECRET} AS has_secret_ref,
          (SELECT COUNT(*) FROM products p WHERE p.provider_id = pr.id) AS product_count,
          (SELECT COUNT(*) FROM product_plans pl
             JOIN products p2 ON p2.id = pl.product_id

@@ -40,6 +40,7 @@ import {
 } from '@shikoo/contracts';
 import { isAutomated } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
+import { PANEL_HAS_SECRET } from './panelRoutes.js';
 import { faNum } from './fa.js';
 
 const PAGE_SIZE_MAX = 100;
@@ -366,6 +367,8 @@ interface PlanRow {
   provider_name: string | null;
   provider_code: string | null;
   provider_status: string | null;
+  provider_base_url?: string | null;
+  provider_has_secret?: boolean | null;
   provider_kind: string | null;
   provider_capacity: number | null;
   provider_live: number | null;
@@ -471,6 +474,8 @@ interface ServiceRow {
   provider_name: string | null;
   provider_code: string | null;
   provider_status: string | null;
+  provider_base_url?: string | null;
+  provider_has_secret?: boolean | null;
   provider_kind: string | null;
   provider_capacity: number | null;
   provider_live: number | null;
@@ -559,6 +564,16 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
            * would drift, and this one already decides which adapter runs.
            */
           hasGroups: isAutomated(r.provider_kind ?? ''),
+          /*
+           * The two facts «مدیریت پنل‌ها» has always had and this row never did.
+           *
+           * The address itself rather than a boolean: an operator reading «پنل
+           * آدرس ندارد» on one screen and a different word on another stops
+           * believing either. `manual` has neither and needs neither — it is
+           * excluded before these are read, by `hasGroups`.
+           */
+          baseUrl: r.provider_base_url ?? null,
+          hasCredential: Boolean(r.provider_has_secret),
           // Null is unlimited; see the note in `shape()` on the flat route.
           capacity: r.provider_capacity === null ? null : Number(r.provider_capacity),
           liveSubscriptions: Number(r.provider_live ?? 0),
@@ -995,6 +1010,13 @@ export function registerProductRoutes(
               pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
               pr.status AS provider_status, pr.sort_order AS provider_sort_order,
               pr.kind AS provider_kind,
+              -- «فروخته نمی‌شود» has three causes and this screen could see only
+              -- one of them. A panel switched off, yes — but also a panel that
+              -- is ACTIVE with no address, and one with no credential. Without
+              -- these two columns the delivery cell walked past the panel and
+              -- reported the next thing it could measure, which was groups.
+              pr.base_url AS provider_base_url,
+              ${PANEL_HAS_SECRET} AS provider_has_secret,
               ${PANEL_CEILING},
               cat.name AS category_name
          FROM products p
