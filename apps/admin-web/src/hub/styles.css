@@ -154,18 +154,40 @@
  * and looked identical to every neighbour. Thirty-odd buttons carry it; they
  * are the ones that were meant to stand out all along.
  *
- * The 44px minimum stays. It is a touch target, not decoration.
+ * The 44px minimum stays — but only where a finger is doing the pointing.
+ *
+ * It was unconditional, and it is the reason every screen in this panel reads
+ * as a wall of buttons: an accounts row carries four of them, 48px tall and
+ * 44px wide at minimum, forty rows down the page. The minimum is a TOUCH
+ * target; on a mouse it buys nothing and costs the density that makes a table
+ * readable. So the browser is asked which kind of pointer it has rather than
+ * being told, and the accessibility guarantee survives untouched on the device
+ * that needs it.
  */
 :where(.hub) button {
   background: var(--surface-2);
   color: var(--text-main);
   border: 1px solid var(--border-mid);
-  padding: 0.55rem 0.95rem;
+  padding: 0.4rem 0.75rem;
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-weight: 500;
-  min-height: 44px;
-  min-width: 44px;
+  font-size: 0.875rem;
+  /* Not the body's. The page sets a generous line-height for Persian prose —
+     1.9 — and a button inheriting it was 26.6px of line box inside a 41px
+     control, which is most of why these read as oversized. A label is one line;
+     it does not need leading. */
+  line-height: 1.4;
+  min-height: 32px;
+}
+
+/* A finger has no hover and no pixel precision, so it gets the full target. */
+@media (pointer: coarse) {
+  :where(.hub) button {
+    padding: 0.55rem 0.95rem;
+    min-height: 44px;
+    min-width: 44px;
+  }
 }
 
 :where(.hub) button:hover:not(:disabled) {
@@ -3305,17 +3327,34 @@
   gap: var(--space-sm);
 }
 
+/* A card is a record, not a strip of controls.
+   The old row put the number, an unlabelled text box, two badges, a select and
+   two buttons on one line and let them wrap wherever they landed; on a real
+   account it read as a pile. Now line one is what the card IS and line two is
+   what you can do to it, and the two are separated by a rule rather than by
+   luck. */
 .payment-cards-list > li {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface-2);
   min-width: 0;
 }
 
-.payment-cards-list__id,
-.payment-cards-list__actions {
+/* A card that is off should read as off from across the room, not only from
+   its badge. */
+.payment-cards-list > li.is-off {
+  opacity: 0.72;
+}
+
+.payment-cards-list__empty {
+  color: var(--text-muted);
+}
+
+.payment-card__identity {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -3323,13 +3362,95 @@
   min-width: 0;
 }
 
-.payment-cards-list__actions label {
-  display: inline-flex;
+/* The number is the card's name. Everything beside it is an annotation, so it
+   gets the size and they keep theirs. */
+.payment-card__identity code {
+  font-size: 1.05em;
+  letter-spacing: 0.02em;
+}
+
+.payment-card__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding-block-start: var(--space-sm);
+  border-block-start: 1px solid var(--border-soft);
+}
+
+.payment-card__field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 11rem;
+}
+
+.payment-card__field .form-label {
+  margin-block-end: 3px;
+}
+
+.payment-card__field input,
+.payment-card__field select {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Pushed to the end of the row so the fields read first: you decide what the
+   card is before you decide whether it runs. */
+.payment-card__actions {
+  display: flex;
   align-items: center;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
+  margin-inline-start: auto;
+}
+
+/* Quiet until you reach for it. Deleting a card takes the row that received the
+   money with it and the digits are UNIQUE, so it cannot simply be re-added —
+   that is a last resort, and it should not be the loudest thing on the panel.
+   The red in this list belongs to the «خاموش» badge, which is information. */
+.payment-card__remove {
+  background: transparent;
+  border-color: transparent;
   color: var(--text-muted);
-  font-size: 0.85em;
-  white-space: nowrap;
+}
+
+.payment-card__remove:hover:not(:disabled),
+.payment-card__remove:focus-visible {
+  background: var(--danger-soft);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: var(--danger);
+}
+
+/* The two paragraphs that used to sit between the list and the form. They
+   answer a question, so they wait behind one. */
+.payment-cards-help > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.9em;
+  padding-block: var(--space-xs);
+}
+
+.payment-cards-help p {
+  color: var(--text-muted);
+  font-size: 0.9em;
+  margin-block: var(--space-xs);
+}
+
+.payment-cards-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-sm);
+  margin-block-start: var(--space-md);
+  padding-block-start: var(--space-sm);
+  border-block-start: 1px solid var(--border-soft);
+}
+
+/* Its own line: the heading names the group, the fields sit under it. */
+.payment-cards-add > h5 {
+  flex-basis: 100%;
+  margin: 0;
 }
 
 /*
