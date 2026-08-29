@@ -69,18 +69,42 @@ test.afterAll(async () => {
   await withDb((d) => d.prepare(`DELETE FROM devices WHERE id = ?1`).bind(DEVICE_ID).run());
 });
 
-/** The row carrying our hostile identifier. */
+/**
+ * The card carrying our hostile identifier.
+ *
+ * This was `.data-table tbody tr`. The devices screen has no table any more —
+ * nine columns at panel width gave the name about fifty pixels and shredded
+ * «Staging Device» and the action buttons alike — so one card layout serves
+ * every width, and the identifier lives in `.device-card__code`.
+ */
 function row(page: Page) {
-  return page.locator('.data-table tbody tr', { hasText: 'zz-e2e-layout' }).first();
+  return page.locator('.device-card', { hasText: 'zz-e2e-layout' }).first();
 }
+
+/*
+ * What this test STOPPED covering, said out loud.
+ *
+ * Its old selector was `.data-table td > code`, and that CSS rule — `nowrap`,
+ * so the token joins the table's min-content width and the wrapper scrolls
+ * instead of the column squeezing — is still in the sheet. This was its only
+ * test. The rule now reaches exactly one place: `TodayView`'s
+ * `<code class="parser-id">`, holding strings like `mellat-credit-v1`, which is
+ * short enough that no column can shred it however narrow it gets.
+ *
+ * So nothing was silently left unguarded — the failure mode moved out from
+ * under that rule with the markup. If a long identifier is ever put back into a
+ * `.data-table` cell, this note is the one that says it needs a test of its
+ * own, and that `break-word` will not be enough: the measurement on 2026-08-24
+ * took the row from 32 lines to 13.6, not to 1.
+ */
 
 /**
  * The identifier itself — not the row around it.
  *
  * The first draft measured the ROW and was wrong in a way worth recording,
- * because it read as a passing-looking failure. A device row legitimately
- * stacks three action buttons («چرخش توکن», «ابطال توکن», «غیرفعال‌کردن»), so
- * it is thirteen lines tall on a perfectly healthy build. The number never
+ * because it read as a passing-looking failure. A device card legitimately
+ * stacks three action buttons («چرخش کلید», «ابطال کلید», «خاموش‌کردن»), so
+ * it is many lines tall on a perfectly healthy build. The number never
  * moved when the CSS was fixed — identical to fifteen decimal places — which is
  * the tell: the quantity under test was not the quantity being changed.
  *
@@ -88,7 +112,7 @@ function row(page: Page) {
  * thing, and it would have been just as green with `break-all` back in place.
  */
 function identifier(page: Page) {
-  return row(page).locator('code', { hasText: LONG_CODE }).first();
+  return row(page).locator('.device-card__code', { hasText: LONG_CODE }).first();
 }
 
 /**
@@ -96,9 +120,16 @@ function identifier(page: Page) {
  *
  * Pixels would make this a snapshot of today's font stack. What the bug did was
  * turn one line into thirty-two, so the question worth asking is how many lines
- * tall the identifier renders — and any answer above one means the column was
- * squeezed and the token was shredded to fit. Measured against the element's
- * own computed `line-height` so a font change moves both sides together.
+ * tall the identifier renders. Measured against the element's own computed
+ * `line-height` so a font change moves both sides together.
+ *
+ * The ceiling moved from 2 to 3 when the table became cards, and the reason
+ * matters: inside a table cell any wrap at all meant the column had been
+ * squeezed, so 2 was the honest bound. A card is a fixed ~300px box and a long
+ * code wrapping onto a second line there is correct behaviour, not damage. What
+ * is still caught is the actual regression — `break-all` put this at
+ * thirty-two — and 3 refuses that by a wide margin while letting an honest wrap
+ * through.
  */
 async function identifierLines(page: Page): Promise<number> {
   return identifier(page).evaluate((el) => {
@@ -115,46 +146,40 @@ test('a long identifier does not turn a table row into a column of letters', asy
   await page.goto('/admin/devices');
   await expect(identifier(page)).toBeVisible();
 
-  // Thirty-two characters at one per line is what the screenshot showed. Two is
-  // the honest ceiling for an identifier that must not be shredded: one line,
-  // with a line of slack for sub-pixel rounding.
-  expect(await identifierLines(page)).toBeLessThan(2);
+  // Thirty-two characters at one per line is what the screenshot showed.
+  expect(await identifierLines(page)).toBeLessThan(3);
 });
 
 test('the same row survives a phone-width viewport, and the page does not scroll sideways', async ({
   page,
 }) => {
-  // 800px, not 375px: below 640 this screen swaps the table for a card list
-  // (`useMediaQuery('(max-width: 639px)')`, DevicesView.tsx:143), and a test
-  // that asserts about a table which is not on the page is a test that cannot
-  // fail. 800 is the narrowest width that still renders the real thing, and it
-  // is narrow enough to force the wrapper to scroll.
+  // 375px now, not 800px. The old comment explained that below 640 the screen
+  // swapped its table for cards, so a table assertion at phone width was a test
+  // that could not fail — true then, and the reason 800 was chosen. There is
+  // one layout at every width now, so the narrowest real viewport is the
+  // honest one to press.
   //
-  // Both failure modes are asserted at once, because the two fixes pull against
-  // each other: a `min-width` on the table is exactly what could push the whole
-  // document wide again if the wrapper ever stopped scrolling — which is the
-  // 997px-on-a-phone regression the `contain: layout` comment records.
-  await page.setViewportSize({ width: 800, height: 800 });
+  // The horizontal-scroll assertion goes with the wrapper it was about: a
+  // `.data-table-wrapper` existed to let a too-wide table scroll INSIDE itself
+  // rather than widening the document. A grid of cards has nothing to scroll,
+  // and asserting that something scrolls when nothing should is how a test
+  // starts demanding the bug back. What the pair was really protecting — the
+  // document itself never scrolling sideways — is kept, and it is the half a
+  // user actually feels.
+  await page.setViewportSize({ width: 375, height: 800 });
   await page.goto('/admin/devices');
   await expect(identifier(page)).toBeVisible();
 
-  expect(await identifierLines(page)).toBeLessThan(2);
+  expect(await identifierLines(page)).toBeLessThan(3);
 
-  // The table is allowed to overflow — inside its wrapper. The document is not.
   const bodyOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   );
   expect(bodyOverflow).toBeLessThanOrEqual(1);
-
-  const scrolls = await page
-    .locator('.data-table-wrapper')
-    .first()
-    .evaluate((el) => el.scrollWidth > el.clientWidth);
-  expect(scrolls).toBe(true);
 });
 
 test('the «مرجع» column of the bot-verified table stays one line', async ({ page }) => {
-  // The device screen above covers `.data-table td > code`. This covers the
+  // The device screen above covers `.device-card__code`. This covers the
   // OTHER pairing — `.txn-table .identifier-text code` — which is the one in
   // Sam's screenshot, where «مرجع» came down the page a letter at a time.
   // Two selectors, two rules, two tests, and the first mutation run is why:

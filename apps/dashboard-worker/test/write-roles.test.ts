@@ -273,6 +273,28 @@ describe('every write route, asked directly', () => {
     // What makes it unusual is that the guard is not only the role. Nothing is
     // written until Telegram itself confirms the token belongs to a bot, so an
     // ADMIN cannot store a typo either — see `bot-connect.test.ts`.
-    expect(writeRoutes().length).toBe(129);
+    //
+    // 130 on 2026-08-29: «POST /devices/:idOrCode/move-references». It moves a
+    // device's raw SMS and financial accounts onto another device and, when
+    // asked, deletes the source in the same transaction.
+    //
+    // It exists because the refusal it replaces was absolute. DELETE on a
+    // device is guarded by `raw_sms_events.device_id NOT NULL ... ON DELETE
+    // RESTRICT`, and the transaction candidates built from those events cascade
+    // off them — so a device that had relayed one bank SMS could never be
+    // removed, and eight smoke-test devices sat on staging holding six hundred
+    // synthetic messages with no way to clear them.
+    //
+    // ADMIN-only, for the reason every route in this file is: it decides where
+    // bank evidence lives. Three things about the guard are deliberate and each
+    // has a test in `device-move-references.test.ts`. It never deletes a row to
+    // make room — a `UNIQUE (device_id, body_sha256)` collision is the ingest's
+    // own de-duplication, and the losing row would take its transaction
+    // candidate with it, so a collision refuses the whole move and says how
+    // many. The inactive check runs BEFORE the move, so a source that cannot be
+    // deleted is not left emptied by a request that then refused. And the
+    // unique violation is caught as well as counted, because the count is a
+    // read and a concurrent ingest can land a matching body in between.
+    expect(writeRoutes().length).toBe(130);
   });
 });
