@@ -99,6 +99,48 @@ Paths, not variables, but part of the same surface:
 
 Set in each Coolify application. **All sensitive rows must be runtime-only.**
 
+### Which applications this section audits — read this before trusting a `PRESENT`
+
+There are **two complete fleets** on the box, and until 2026-08-29 this section
+described only one of them. The three headings below are the `production`
+fleet. `Deploy Staging` does not deploy them; it deploys a second, image-based
+fleet that has no rows here at all:
+
+| Fleet | Applications | `ENV_NAME` | Dashboard | Database | Built from |
+| --- | --- | --- | --- | --- | --- |
+| production | `shikoo-bot` `shikoo-dashboard` `shikoo-ingest` | `production` | `shikoo.chopon.uk` | `qd2vduj…` | Dockerfile |
+| staging | `shikoo-dev-bot` `shikoo-dev-dashboard` `shikoo-dev-ingest` | `staging` | `shikoo-dev.chopon.uk` | `bea6ac9…` | `ghcr.io` image |
+
+So a `PRESENT` in the tables below is a statement about the production fleet
+**only**, and it was read as a statement about both. `PANEL_SECRET_KEY` is the
+case that proved it: `PRESENT` on both production rows, and absent from every
+staging application, which is why the first attempt to connect a bot from
+`shikoo-dev.chopon.uk` was refused with `secret_key_missing`. The refusal was
+correct — there was nowhere safe to put the token — but the row above said the
+key was there.
+
+**The rule that follows: a `PRESENT` here is evidence only for the application
+it names.** When adding a value, say which fleet you measured. Measured
+2026-08-29 by reading `/api/v1/applications/{uuid}/envs` for all six:
+
+| Application | State |
+| --- | --- |
+| `shikoo-dev-dashboard` | `APP_VERSION` `DATABASE_URL` `ENV_NAME` `SERVICE` — **no `PANEL_SECRET_KEY`**, no `TELEGRAM_BOT_TOKEN` |
+| `shikoo-dev-bot` | `DATABASE_URL` `ENV_NAME` `SERVICE` `TELEGRAM_BOT_TOKEN` — **no `PANEL_SECRET_KEY`** |
+| `shikoo-dev-ingest` | running; not audited here yet |
+
+Two more facts from the same reading, both of which look like faults and are
+not:
+
+- **`shikoo-dev-bot` has never been deployed.** Its image tag is still the
+  literal `none-until-first-deploy`, and there is no container. `deploy.sh`
+  skips it unless the repository variable `STAGING_BOT_ENABLED` is exactly
+  `true`, and that variable does not exist. The guard is deliberate: Telegram
+  hands each update to one `getUpdates` caller, so a staging bot holding the
+  token a customer-facing bot is using would silently take messages from it.
+- **`shikoo-bot` carries `ENV_NAME` twice**, both `production`. Harmless while
+  they agree, and nothing says which wins when they stop agreeing.
+
 ### `shikoo-bot`
 
 | Name | Purpose | Sensitive | Required | Build/runtime | Status |
