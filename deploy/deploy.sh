@@ -469,8 +469,13 @@ set_image() { # uuid tag
 #
 # Update first, create if it is not there yet — the variable does not exist on
 # an application that has only ever been a git build.
-set_version() { # uuid sha
-  local body="{\"key\":\"APP_VERSION\",\"value\":\"$2\",\"is_preview\":false}"
+#
+# Written once and used for two keys. `APP_VERSION` was the first; `INGEST_URL`
+# is the second, and generalising was cheaper than a second copy of the
+# duplicate-row dance below — the part that is easy to get wrong and expensive
+# when it is.
+set_app_env() { # uuid key value
+  local body="{\"key\":\"$2\",\"value\":\"$3\",\"is_preview\":false}"
   api PATCH "/applications/$1/envs" "$body" >/dev/null 2>&1 && return 0
   api POST "/applications/$1/envs" "$body" >/dev/null
 
@@ -494,29 +499,78 @@ set_version() { # uuid sha
   # other check passes.
   local rows doomed uuid
   rows=$(api GET "/applications/$1/envs") ||
-    die "$1: APP_VERSION was written but the variables could not be read back, so the duplicate row Coolify leaves behind is neither confirmed nor removed"
+    die "$1: $2 was written but the variables could not be read back, so the duplicate row Coolify leaves behind is neither confirmed nor removed"
   doomed=$(printf '%s' "$rows" | python3 -c 'import json,sys
-want = sys.argv[1]
+key, want = sys.argv[1], sys.argv[2]
 rows = json.load(sys.stdin)
 if not isinstance(rows, list):
     raise SystemExit(1)
-mine = [r for r in rows if isinstance(r, dict) and r.get("key") == "APP_VERSION" and r.get("uuid")]
+mine = [r for r in rows if isinstance(r, dict) and r.get("key") == key and r.get("uuid")]
 keep = next((r for r in mine if r.get("value") == want), None)
 if keep is None:
     raise SystemExit(1)
-print("\n".join(r["uuid"] for r in mine if r["uuid"] != keep["uuid"]))' "$2") ||
-    die "$1: APP_VERSION was written but no variable holding $2 came back from Coolify"
+print("\n".join(r["uuid"] for r in mine if r["uuid"] != keep["uuid"]))' "$2" "$3") ||
+    die "$1: $2 was written but no variable holding it came back from Coolify"
   # A here-document rather than `printf | while read`: a pipeline runs its
   # right-hand side in a subshell, where `die` would exit the subshell and let
   # the deploy carry on past a failure it just announced.
   while IFS= read -r uuid; do
     [ -n "$uuid" ] || continue
     api DELETE "/applications/$1/envs/$uuid" >/dev/null ||
-      die "$1: could not delete the spare APP_VERSION row Coolify created — the next deploy will refuse until it is removed by hand"
-    say "removed the spare APP_VERSION row Coolify created alongside the one that was asked for"
+      die "$1: could not delete the spare $2 row Coolify created — the next deploy will refuse until it is removed by hand"
+    say "removed the spare $2 row Coolify created alongside the one that was asked for"
   done <<EOF
 $doomed
 EOF
+}
+
+set_version() { # uuid sha
+  set_app_env "$1" APP_VERSION "$2"
+}
+
+# The address the dashboard prints into a phone's SMS-relay configuration.
+#
+# `INGEST_URL` is what «افزودن دستگاه» and both credential routes hand back, and
+# without it all three answer 503 `ingest_url_not_configured` — so no device can
+# be registered and no API key issued at all. On 2026-08-29 the staging
+# dashboard had never been given one: the box deployed green, every check
+# passed, and the first screen of the whole bank-SMS chain was dead. Production
+# had it only because somebody typed it in once, which is the same accident
+# waiting to happen to the next environment.
+#
+# It is READ OFF THE INGEST APPLICATION rather than configured a second time.
+# Coolify already knows that service's public address — it is the domain the
+# proxy routes to — so asking is self-maintaining and cannot drift from where
+# the ingest actually answers. `DEFAULT_INGEST_URL` used to be a constant in the
+# worker and was deleted for exactly the failure a constant invites: it went on
+# naming a Cloudflare hostname that had stopped being ours, and would have
+# pointed a phone at somebody else's server. This cannot, because the only value
+# it can produce is the one the ingest is served on.
+#
+# A missing domain is a refusal, not a guess. An ingest with no `fqdn` is not
+# reachable from a phone at all, so there is no address to print, and inventing
+# one recreates the bug that constant was deleted for.
+ensure_ingest_url() {
+  local fqdn url
+  fqdn=$(app_field "$APP_INGEST" fqdn)
+  # Coolify stores several domains as a comma-separated list, routing the first.
+  # A trailing slash would produce `…//api/v1/sms`.
+  fqdn=${fqdn%%,*}
+  fqdn=${fqdn%/}
+  [ -n "$fqdn" ] ||
+    die "the ingest application has no domain in Coolify, so there is no address to print into a phone's configuration. Give it an FQDN, or set INGEST_URL on the dashboard by hand."
+  case "$fqdn" in
+    https://* | http://*) ;;
+    *) die "the ingest application's domain in Coolify is '$fqdn', which is not an http(s) URL — refusing to build a phone configuration from it" ;;
+  esac
+  # The same shape `ingestUrl()` builds in the worker: the path is appended
+  # unless the domain already carries it.
+  case "$fqdn" in
+    */api/v1/sms) url=$fqdn ;;
+    *) url="$fqdn/api/v1/sms" ;;
+  esac
+  set_app_env "$APP_DASHBOARD" INGEST_URL "$url"
+  say "dashboard INGEST_URL = $url (from the ingest application's own domain)"
 }
 
 # Containers are found by Coolify's own label, never by name: a container name
@@ -658,6 +712,13 @@ assert_running_digest() { # uuid name
   esac
   say "$2: running the exact digest this deploy pulled"
 }
+
+# Before the dashboard's replacement container is asked for, because Coolify
+# bakes an application's variables in at container start. Writing this after the
+# roll would set it correctly and leave the running process without it until
+# somebody deployed again — which is indistinguishable, from the screen, from
+# not having written it at all.
+ensure_ingest_url
 
 roll_one "$APP_INGEST" ingest "$COOLIFY_TAG" "$EXPECTED_SHA"
 assert_running_digest "$APP_INGEST" ingest
