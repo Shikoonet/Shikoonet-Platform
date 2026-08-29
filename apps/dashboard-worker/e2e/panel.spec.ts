@@ -40,11 +40,13 @@ test('every section in the sidebar opens under one session', async ({ page }) =>
   // would still pass on whatever was left.
   //
   // Twenty-four until 2026-08-27, when «محصولات» and «دسته‌بندی‌ها» joined it.
+  // Twenty-seven on 2026-08-29: «آمار فروشگاه», the shop's own trade in the
+  // calendar its admin reads.
   // Worth stating why this is bumped by hand rather than read off `NAV`: a
   // count derived from the module that draws the sidebar agrees with itself no
   // matter what it draws, which is the failure `CLAUDE.md` rule 6 is about. The
   // outside truth here is that a person decided there are twenty-six sections.
-  expect(labels.length).toBe(26);
+  expect(labels.length).toBe(27);
 
   for (const label of labels) {
     const name = label.trim();
