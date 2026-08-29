@@ -1,6 +1,6 @@
 /** Connections, batched inserts, and the console reporting both commands share. */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createConnection, type Connection } from 'mysql2/promise';
 import pg from 'pg';
 
@@ -52,6 +52,35 @@ export function loadConfig(): Config {
   };
 }
 
+/**
+ * The same Config, but from explicit values rather than the environment.
+ *
+ * `loadConfig()` stays the only path the CLI uses, so a cutover on a terminal
+ * still cannot guess its destination. This exists for the dashboard, which
+ * already knows which dump and which database it was asked about, and would
+ * otherwise have to mutate `process.env` — a global, in a process serving other
+ * requests.
+ */
+export function configFrom(overrides: {
+  mysql: Partial<Config['mysql']> & { database: string };
+  postgres: { connectionString: string };
+  d1ExportDir?: string;
+}): Config {
+  return {
+    mysql: {
+      host: overrides.mysql.host ?? '127.0.0.1',
+      port: overrides.mysql.port ?? 3306,
+      user: overrides.mysql.user ?? 'root',
+      password: overrides.mysql.password ?? '',
+      database: overrides.mysql.database,
+    },
+    postgres: overrides.postgres,
+    // Empty string, not a guess: `d1Table` reads it as "no export present" and
+    // the hub steps stand down instead of failing the whole transaction.
+    d1ExportDir: overrides.d1ExportDir ?? '',
+  };
+}
+
 export async function connectMysql(cfg: Config): Promise<Connection> {
   return createConnection({
     ...cfg.mysql,
@@ -81,7 +110,13 @@ export async function mysqlRows<T = Record<string, unknown>>(
 
 /** Reads one table out of the `wrangler d1 export` JSON layout. */
 export function d1Table<T = Record<string, unknown>>(cfg: Config, table: string): T[] {
+  // No export directory configured, or no file for this table, means the D1
+  // side simply was not supplied. That is a legitimate MySQL-only import, so it
+  // reads as zero rows. Before this, `readFileSync` threw ENOENT from inside
+  // the migration transaction and rolled back every other step with it.
+  if (cfg.d1ExportDir === '') return [];
   const path = `${cfg.d1ExportDir}/${table}.json`;
+  if (!existsSync(path)) return [];
   const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
   if (!Array.isArray(parsed) || parsed.length === 0) return [];
   const first = parsed[0] as { results?: unknown };
@@ -163,14 +198,44 @@ const GREEN = '[32m';
 const YELLOW = '[33m';
 const RESET = '[0m';
 
+/** One reported line, kept without ANSI so it can be rendered anywhere. */
+export interface ReportLine {
+  level: 'title' | 'step' | 'ok' | 'warn' | 'fail' | 'detail' | 'count';
+  text: string;
+}
+
+/**
+ * Where the report goes in addition to the console.
+ *
+ * Console output is unchanged - the CLI must keep printing exactly what it
+ * printed before, because that output is how a cutover is read. The sink is an
+ * extra copy for callers that have to show the same run in a browser.
+ */
+let sink: ReportLine[] | null = null;
+
+export function captureReport(into: ReportLine[]): () => void {
+  const previous = sink;
+  sink = into;
+  return () => {
+    sink = previous;
+  };
+}
+
+function emit(level: ReportLine['level'], text: string, printed: string): void {
+  if (sink !== null) sink.push({ level, text });
+  console.log(printed);
+}
+
 export const report = {
-  title: (s: string) => console.log(`\n${BOLD}${s}${RESET}`),
-  step: (s: string) => console.log(`  ${s}`),
-  ok: (s: string) => console.log(`  ${GREEN}ok${RESET}    ${s}`),
-  warn: (s: string) => console.log(`  ${YELLOW}warn${RESET}  ${s}`),
-  fail: (s: string) => console.log(`  ${RED}FAIL${RESET}  ${s}`),
-  detail: (s: string) => console.log(`        ${DIM}${s}${RESET}`),
-  count: (label: string, n: number | string) => console.log(`  ${String(n).padStart(7)}  ${label}`),
+  title: (s: string) => emit('title', s, `
+${BOLD}${s}${RESET}`),
+  step: (s: string) => emit('step', s, `  ${s}`),
+  ok: (s: string) => emit('ok', s, `  ${GREEN}ok${RESET}    ${s}`),
+  warn: (s: string) => emit('warn', s, `  ${YELLOW}warn${RESET}  ${s}`),
+  fail: (s: string) => emit('fail', s, `  ${RED}FAIL${RESET}  ${s}`),
+  detail: (s: string) => emit('detail', s, `        ${DIM}${s}${RESET}`),
+  count: (label: string, n: number | string) =>
+    emit('count', `${String(n).padStart(7)}  ${label}`, `  ${String(n).padStart(7)}  ${label}`),
 };
 
 export function fmt(n: bigint | number | string): string {

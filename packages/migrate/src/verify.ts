@@ -13,6 +13,7 @@
 import type { Connection } from 'mysql2/promise';
 import type pg from 'pg';
 import { fmt, mysqlRows, report, type Config } from './db.js';
+import { DOMAINS, type Domain } from './migrate.js';
 
 export interface Check {
   name: string;
@@ -38,34 +39,50 @@ async function pgScalar(client: pg.Client, sql: string): Promise<bigint> {
   return BigInt(v ?? 0);
 }
 
-export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Promise<boolean> {
+/**
+ * Verifies only the domains that were actually imported.
+ *
+ * A check for a domain nobody asked for is not a passing check, it is a
+ * failing one: `wheel_list` holds 1,677 rows and `wheel_spins` would hold
+ * none. Scoping is what keeps "we did not import this" from reading as "the
+ * money is wrong".
+ */
+export async function verify(
+  _cfg: Config,
+  my: Connection,
+  pgc: pg.Client,
+  domains: Iterable<Domain> = DOMAINS,
+): Promise<boolean> {
   const money: Check[] = [];
   const counts: Check[] = [];
+  const selected = new Set<Domain>([...domains, 'core']);
+  const want = (d: Domain): boolean => selected.has(d);
+  report.step(`verifying domains: ${[...selected].join(', ')}`);
 
   // =========================================================================
   report.title('money — exact equality required');
   // =========================================================================
 
-  money.push({
+  if (want('core')) money.push({
     name: 'wallet balances (IRR)',
     source: (await scalar(my, 'SELECT SUM(Balance) FROM `user`')) * 10n,
     target: await pgScalar(pgc, 'SELECT COALESCE(SUM(balance_irr),0) FROM wallets'),
   });
 
   // The ledger must reproduce the balance it derived, or the trigger is wrong.
-  money.push({
+  if (want('core')) money.push({
     name: 'wallet ledger sum (IRR)',
     source: (await scalar(my, 'SELECT SUM(Balance) FROM `user`')) * 10n,
     target: await pgScalar(pgc, 'SELECT COALESCE(SUM(amount_irr),0) FROM wallet_entries'),
   });
 
-  money.push({
+  if (want('sales')) money.push({
     name: 'all payments (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price AS SIGNED)) FROM Payment_report')) * 10n,
     target: await pgScalar(pgc, 'SELECT COALESCE(SUM(amount_irr),0) FROM payments'),
   });
 
-  money.push({
+  if (want('sales')) money.push({
     name: 'settled payments (IRR)',
     source:
       (await scalar(
@@ -78,13 +95,13 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
     ),
   });
 
-  money.push({
+  if (want('sales')) money.push({
     name: 'subscription value (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price_product AS SIGNED)) FROM invoice')) * 10n,
     target: await pgScalar(pgc, 'SELECT COALESCE(SUM(price_irr),0) FROM subscriptions'),
   });
 
-  money.push({
+  if (want('history')) money.push({
     name: 'wheel prizes (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price AS SIGNED)) FROM wheel_list')) * 10n,
     target: await pgScalar(pgc, 'SELECT COALESCE(SUM(amount_irr),0) FROM wheel_spins'),
@@ -106,13 +123,13 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
   // identical, every other total stays identical, and the books move by twice
   // the deductions. That is the exact failure the importer's dead `subtract`
   // branch was one keystroke away from causing.
-  money.push({
+  if (want('config')) money.push({
     name: 'revenue adjustments (IRR)',
     source: (await scalar(my, 'SELECT revenue_adjustment FROM setting LIMIT 1')) * 10n,
     target: await pgScalar(pgc, 'SELECT COALESCE(SUM(amount_irr),0) FROM revenue_adjustments'),
   });
 
-  money.push({
+  if (want('sales')) money.push({
     name: 'add-on orders (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price AS SIGNED)) FROM service_other')) * 10n,
     target: await pgScalar(pgc, 'SELECT COALESCE(SUM(total_irr),0) FROM orders'),
@@ -146,13 +163,14 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
   report.title('row counts');
   // =========================================================================
 
-  // [label, source count, target count, allowance count?, allowance reason?]
-  const pairs: [string, string, string, string?, string?][] = [
-    ['users', 'SELECT COUNT(*) FROM `user`', 'SELECT COUNT(*) FROM users'],
-    ['wallets', 'SELECT COUNT(*) FROM `user`', 'SELECT COUNT(*) FROM wallets'],
-    ['subscriptions', 'SELECT COUNT(*) FROM invoice', 'SELECT COUNT(*) FROM subscriptions'],
-    ['payments', 'SELECT COUNT(*) FROM Payment_report', 'SELECT COUNT(*) FROM payments'],
+  // [domain, label, source count, target count, allowance count?, allowance reason?]
+  const pairs: [Domain, string, string, string, string?, string?][] = [
+    ['core', 'users', 'SELECT COUNT(*) FROM `user`', 'SELECT COUNT(*) FROM users'],
+    ['core', 'wallets', 'SELECT COUNT(*) FROM `user`', 'SELECT COUNT(*) FROM wallets'],
+    ['sales', 'subscriptions', 'SELECT COUNT(*) FROM invoice', 'SELECT COUNT(*) FROM subscriptions'],
+    ['sales', 'payments', 'SELECT COUNT(*) FROM Payment_report', 'SELECT COUNT(*) FROM payments'],
     [
+      'config',
       'card leases',
       'SELECT COUNT(*) FROM card_assignment_leases',
       'SELECT COUNT(*) FROM card_leases',
@@ -163,16 +181,19 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
     // COUNT(*) then reports a migration failure that is really six fixture
     // products. `legacy_id` is exactly "this row came from MySQL".
     [
+      'catalog',
       'products',
       'SELECT COUNT(*) FROM product',
       'SELECT COUNT(*) FROM products WHERE legacy_id IS NOT NULL',
     ],
     [
+      'catalog',
       'product plans',
       'SELECT COUNT(*) FROM product',
       'SELECT COUNT(*) FROM product_plans WHERE legacy_id IS NOT NULL',
     ],
     [
+      'catalog',
       'providers',
       'SELECT COUNT(*) FROM marzban_panel',
       'SELECT COUNT(*) FROM provisioning_providers WHERE legacy_id IS NOT NULL',
@@ -180,6 +201,7 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
     // Neither legacy table has a unique code, so 18 rows are duplicates that
     // collapse into their winning code. The allowance is computed, not assumed.
     [
+      'discounts',
       'discount codes',
       'SELECT (SELECT COUNT(*) FROM Discount)+(SELECT COUNT(*) FROM DiscountSell)',
       'SELECT COUNT(*) FROM discount_codes',
@@ -191,33 +213,39 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
                   WHERE codeDiscount IS NOT NULL) u)`,
     ],
     [
+      'discounts',
       'redemptions',
       'SELECT COUNT(*) FROM Giftcodeconsumed',
       'SELECT COUNT(*) FROM discount_redemptions',
     ],
     [
+      'config',
       'revenue adjustments',
       'SELECT COUNT(*) FROM revenue_adjustment_log',
       'SELECT COUNT(*) FROM revenue_adjustments',
     ],
     [
+      'history',
       'support tickets',
       'SELECT COUNT(*) FROM support_message',
       'SELECT COUNT(*) FROM support_tickets',
     ],
     [
+      'history',
       'wheel spins',
       'SELECT COUNT(*) FROM wheel_list',
       'SELECT COUNT(*) FROM wheel_spins',
       `SELECT COUNT(*) FROM wheel_list w LEFT JOIN user u ON u.id=w.id_user WHERE u.id IS NULL`,
     ],
     [
+      'config',
       'reseller requests',
       'SELECT COUNT(*) FROM Requestagent',
       'SELECT COUNT(*) FROM reseller_requests',
       `SELECT COUNT(*) FROM Requestagent r LEFT JOIN user u ON u.id=r.id WHERE u.id IS NULL`,
     ],
     [
+      'sales',
       'add-on orders',
       'SELECT COUNT(*) FROM service_other',
       'SELECT COUNT(*) FROM orders',
@@ -236,11 +264,13 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
     // against 0 is not a rounding difference. Any future flag of this shape gets
     // a line here rather than trust.
     [
+      'core',
       'customers who have not accepted the rules',
       'SELECT COUNT(*) FROM `user` WHERE roll_Status = 0',
       'SELECT COUNT(*) FROM users WHERE rules_accepted = false',
     ],
     [
+      'core',
       'referral bonuses already claimed',
       'SELECT COUNT(*) FROM reagent_report WHERE get_gift = 1',
       'SELECT COUNT(*) FROM users WHERE referral_bonus_claimed = true',
@@ -253,7 +283,8 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
     ],
   ];
 
-  for (const [name, srcSql, tgtSql, allowSql, allowReason] of pairs) {
+  for (const [domain, name, srcSql, tgtSql, allowSql, allowReason] of pairs) {
+    if (!want(domain)) continue;
     const check: Check = {
       name,
       source: await scalar(my, srcSql),
@@ -287,7 +318,7 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
   // =========================================================================
   report.title('payment hub (D1)');
   // =========================================================================
-  for (const table of [
+  for (const table of want('hub') ? [
     'devices',
     'financial_accounts',
     'raw_sms_events',
@@ -296,7 +327,7 @@ export async function verify(_cfg: Config, my: Connection, pgc: pg.Client): Prom
     'reconciliation_matches',
     'payment_cards',
     'audit_logs',
-  ]) {
+  ] : []) {
     const n = await pgScalar(pgc, `SELECT COUNT(*) FROM ${table}`);
     report.count(table, n.toString());
   }
