@@ -1,0 +1,22 @@
+name = "dashboard-worker"
+main = "src/index.ts"
+compatibility_date = "2026-08-04"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "payment-hub-staging"
+database_id = "ef773a7a-a163-4298-b256-43e093e8b781"
+migrations_dir = "../../migrations"
+
+[assets]
+directory = "../dashboard-web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[vars]
+ENV_NAME = "production"
+ACCESS_AUD ="8bda4644140bc95d75f6e6d42755a5dcb600c5ba971638ee19dcba5b0f5cf0ae"
+ACCESS_ISSUER = "https://samsalpak.cloudflareaccess.com"
+ACCESS_TEAM_DOMAIN = "https://samsalpak.cloudflareaccess.com"

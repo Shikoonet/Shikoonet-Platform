@@ -1,0 +1,1 @@
+"""Admin plans module package."""

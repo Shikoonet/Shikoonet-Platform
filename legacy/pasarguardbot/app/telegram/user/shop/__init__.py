@@ -1,0 +1,1 @@
+"""User shop package."""

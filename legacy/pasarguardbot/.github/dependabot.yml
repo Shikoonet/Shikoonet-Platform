@@ -1,0 +1,32 @@
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "bun"
+    directory: "/docs"
+    target-branch: "dev"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    ignore:
+      - dependency-name: "fumadocs-ui"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5

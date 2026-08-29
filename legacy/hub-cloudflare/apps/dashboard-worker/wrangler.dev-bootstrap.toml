@@ -1,0 +1,11 @@
+# Migration runner for the dev D1 only. No [assets] block, so `wrangler d1
+# migrations apply` works without ../dashboard-web/dist having been built.
+name = "dashboard-worker-dev-bootstrap"
+main = "src/index.ts"
+compatibility_date = "2026-08-04"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "payment-hub-dev"
+database_id = "9f8834f0-4736-4622-aa33-22f61a4e8618"
+migrations_dir = "../../migrations"

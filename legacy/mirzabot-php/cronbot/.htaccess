@@ -1,0 +1,12 @@
+<Files "*.txt">
+    Require all denied
+</Files>
+<Files "*.json">
+    Require all denied
+</Files>
+<Files "*.sql">
+    Require all denied
+</Files>
+<Files "*.zip">
+    Require all denied
+</Files>

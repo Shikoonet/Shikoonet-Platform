@@ -1,0 +1,41 @@
+# DEV dashboard. Deploy with: pnpm --filter @hub/dashboard-worker deploy:dev
+# (or `pnpm release:dev` from the repo root, which also builds the SPA first).
+name = "dashboard-worker-dev"
+main = "src/index.ts"
+compatibility_date = "2026-08-04"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "payment-hub-dev"
+database_id = "9f8834f0-4736-4622-aa33-22f61a4e8618"
+# Single shared lineage with production. Dev runs ahead; production catches up
+# at release time. Apply via wrangler.dev-bootstrap.toml, not this file.
+migrations_dir = "../../migrations"
+
+[assets]
+directory = "../dashboard-web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[vars]
+# Drives the DEV badge in the dashboard header. Dev and production share one
+# Cloudflare Access policy and one SPA bundle, so this is the only visual tell.
+ENV_NAME = "dev"
+# Feature flag — enables purchase_type / operation_type fields in /api/v1/payments.
+# Production has no DB column yet, so this MUST be false there until
+# migrations/0015_purchase_type.sql has been applied to production.
+ENABLE_PURCHASE_TYPE = "true"
+# Was "true" while dev had no ingest worker of its own: creating a device here
+# would have handed a real phone a config pointing at the production ingest URL.
+# ingest-worker-dev now exists, so device creation in dev is self-contained and
+# end-to-end testing needs it. Flip back to "true" to lock dev down again.
+DEV_BLOCK_DEVICE_ADMIN = "false"
+INGEST_URL = "https://ingest-worker-dev.samsos.workers.dev/api/v1/sms"
+# Disable bot-to-mirzabot fulfillment callbacks (DEV dashboard never tells
+# Mirzabot anything; we only mirror existing .done files).
+# Access (same as prod; Cloudflare Access JWT validates who's allowed in).
+ACCESS_AUD = "8bda4644140bc95d75f6e6d42755a5dcb600c5ba971638ee19dcba5b0f5cf0ae"
+ACCESS_ISSUER = "https://samsalpak.cloudflareaccess.com"
+ACCESS_TEAM_DOMAIN = "https://samsalpak.cloudflareaccess.com"
