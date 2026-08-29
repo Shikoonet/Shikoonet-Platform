@@ -1082,12 +1082,26 @@ export const api = {
     pageSize: number;
   }) {
     const qs = new URLSearchParams({
-      page: String(params.page),
+      // `?? 1` and not `String(params.page)`: `page` is optional on this
+      // method, and `String(undefined)` is the STRING "undefined", which the
+      // server coerces to NaN and answers `invalid_query`. The tier-layout
+      // editor is the one caller that omits it, so the category screen showed
+      // a bare error code where the arrangement should have been. `products()`
+      // right above already carries this `?? 1` — it was patched at one call
+      // site instead of at the shape that allowed it.
+      page: String(params.page ?? 1),
       pageSize: String(params.pageSize),
     });
     if (params.q) qs.set('q', params.q);
     if (params.status) qs.set('status', params.status);
     if (params.providerId) qs.set('providerId', String(params.providerId));
+    // Declared in the type above since this method was written, and never put
+    // on the wire. The route reads it, so the request was not rejected — it
+    // answered with the WHOLE catalogue. «چیدمان سرویس‌های این دسته‌بندی» was
+    // therefore arranging every service in the shop, and nothing said so. The
+    // `invalid_query` beside it was the loud half of the same call; this was
+    // the quiet half, and the quiet half is the one that would have shipped.
+    if (params.categoryId) qs.set('categoryId', String(params.categoryId));
     return req<{
       ok: boolean;
       total: number;
