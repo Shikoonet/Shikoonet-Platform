@@ -127,15 +127,44 @@ were leftover local state, and CI never saw them.
 Every change follows this and nothing skips a step:
 
 ```
-branch → PR (opened FIRST, draft) → work → CI green
-      → Sam approves the merge → merge to `main`
+branch → PR (opened FIRST) → work → CI green
+      → an APPROVED review from a human who is not the author
+      → @Isusami merges to `main`
       → `Deploy Staging` fires by itself → shikoo-dev.chopon.uk
       → `Promote Production` — a MANUAL dispatch, only when we mean to show it
 ```
 
 - **The PR comes first, not last.** Open it as soon as the branch has one
-  commit, as a draft, so the work is visible while it happens rather than
-  arriving finished.
+  commit so the work is visible while it happens rather than arriving
+  finished. **Not as a draft** — the token here cannot mark a PR ready for
+  review (`markPullRequestReadyForReview` answers FORBIDDEN), so a draft is a
+  PR only a human can unblock.
+
+### A merge is not enough — the deploy gate asks two more questions
+
+Learned the hard way on 2026-08-29: PR #25 merged, CI went green, and
+`Deploy Staging` **refused in eleven seconds**. `main` moved and staging did
+not — a divergence whose only symptom is one failed workflow run.
+
+`deploy/approval-gate.sh` runs in `owner-or-approved` mode with
+`SOLO_DEPLOY_OWNER=Isusami`. For a PR written by anyone else — `arshiajacki`
+included — BOTH of these must be true:
+
+1. **An APPROVED review from a human other than the author**, sitting on the
+   PR's **FINAL head commit**. Push one more commit after the approval and it
+   is stale; the gate recomputes against the new head. Self-approvals and bot
+   reviews are excluded before the count is taken.
+2. **`Isusami` must be the one who clicks Merge.** «Reviewed is not sufficient
+   on its own» is the script's own comment: a PR that is approved and then
+   merged by its author still fails.
+
+So «Sam approves the merge» is not the gate. The gate is: somebody else
+approves the PR on GitHub, and the owner merges it. Report it that way rather
+than announcing a merge as if it shipped — until `Deploy Staging` is green,
+nothing reached staging.
+
+Any `CHANGES_REQUESTED` review outranks all of it: somebody having looked and
+said no beats any policy about who may ship.
 - **Pushing your own feature branch is routine.** It reaches nobody.
 - **Merging to `main` is not.** It is the step that reaches staging and starts
   the road to customers, so it needs Sam's word and the five-part report first:
