@@ -65,7 +65,7 @@ test('every section opens without a failed request, a thrown render or an error 
 
   const labels = (await page.locator('.sidebar-link').allInnerTexts()).map((l) => l.trim());
   // Twenty-four until «محصولات» and «دسته‌بندی‌ها» landed on 2026-08-27.
-  expect(labels.length).toBe(26);
+  expect(labels.length).toBe(27);
 
   for (const label of labels) {
     section = label;
