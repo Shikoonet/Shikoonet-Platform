@@ -471,8 +471,52 @@ set_image() { # uuid tag
 # an application that has only ever been a git build.
 set_version() { # uuid sha
   local body="{\"key\":\"APP_VERSION\",\"value\":\"$2\",\"is_preview\":false}"
-  api PATCH "/applications/$1/envs" "$body" >/dev/null 2>&1 ||
-    api POST "/applications/$1/envs" "$body" >/dev/null
+  api PATCH "/applications/$1/envs" "$body" >/dev/null 2>&1 && return 0
+  api POST "/applications/$1/envs" "$body" >/dev/null
+
+  # One POST, two rows. Measured against the live panel on 2026-08-29 with a
+  # throwaway key: the response named one uuid, and the application then listed
+  # that row AND a second one holding the same value. It is why `shikoo-bot`
+  # has carried `ENV_NAME` twice since the day it was created, and why the
+  # deploy after the one that first wrote `APP_VERSION` refused with
+  # «APP_VERSION defined more than once» — the create path planted the mine
+  # that `assert_deployable` then stepped on, one deploy later.
+  #
+  # So the create path clears up after itself, and ONLY after itself. Every row
+  # it removes carries the key it just wrote, seconds ago, from one value. A
+  # duplicate of any other key is still a refusal, because there the question
+  # of which copy was meant is a real one and this script cannot answer it.
+  #
+  # Which row survives is chosen by VALUE, not by position. Keeping whichever
+  # row is listed first would, on the day a PATCH fails against an application
+  # that already holds an older sha, keep the older sha and delete the one this
+  # deploy just wrote — pinning `/version` to the previous release while every
+  # other check passes.
+  local rows doomed uuid
+  rows=$(api GET "/applications/$1/envs") ||
+    die "$1: APP_VERSION was written but the variables could not be read back, so the duplicate row Coolify leaves behind is neither confirmed nor removed"
+  doomed=$(printf '%s' "$rows" | python3 -c 'import json,sys
+want = sys.argv[1]
+rows = json.load(sys.stdin)
+if not isinstance(rows, list):
+    raise SystemExit(1)
+mine = [r for r in rows if isinstance(r, dict) and r.get("key") == "APP_VERSION" and r.get("uuid")]
+keep = next((r for r in mine if r.get("value") == want), None)
+if keep is None:
+    raise SystemExit(1)
+print("\n".join(r["uuid"] for r in mine if r["uuid"] != keep["uuid"]))' "$2") ||
+    die "$1: APP_VERSION was written but no variable holding $2 came back from Coolify"
+  # A here-document rather than `printf | while read`: a pipeline runs its
+  # right-hand side in a subshell, where `die` would exit the subshell and let
+  # the deploy carry on past a failure it just announced.
+  while IFS= read -r uuid; do
+    [ -n "$uuid" ] || continue
+    api DELETE "/applications/$1/envs/$uuid" >/dev/null ||
+      die "$1: could not delete the spare APP_VERSION row Coolify created — the next deploy will refuse until it is removed by hand"
+    say "removed the spare APP_VERSION row Coolify created alongside the one that was asked for"
+  done <<EOF
+$doomed
+EOF
 }
 
 # Containers are found by Coolify's own label, never by name: a container name
