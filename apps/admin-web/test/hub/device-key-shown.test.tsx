@@ -224,3 +224,28 @@ describe('switched-off devices leave the working area', () => {
     expect((retired as HTMLDetailsElement).open).toBe(false);
   });
 });
+
+describe('a refusal an operator cannot act on', () => {
+  it('says what INGEST_URL is and where it belongs, instead of printing the code', async () => {
+    const fetchMock = mockFetch({
+      'GET /api/v1/devices': () => json({ ok: true, items: [NO_KEY_DEVICE] }),
+      'POST /api/v1/devices/d-fresh/credentials': () =>
+        new Response(
+          JSON.stringify({ ok: false, error: 'ingest_url_not_configured' }),
+          { status: 503, headers: { 'content-type': 'application/json' } },
+        ),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<DevicesView cache={createCache()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'ساخت کلید' }));
+
+    // The sentence names the variable and says the fix is not on this screen.
+    // Without it the operator reads `Error: 503: ingest_url_not_configured`,
+    // which is the fault and not one thing to do about it.
+    await screen.findByText(/INGEST_URL/);
+    expect(screen.getByText(/سمت دیپلوی است/)).toBeTruthy();
+    // And no key modal, because no key was issued.
+    expect(screen.queryByTestId('token-text')).toBeNull();
+  });
+});

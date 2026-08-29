@@ -130,6 +130,27 @@ export function nextStepFor(d: DeviceListItem): string | null {
   return null;
 }
 
+/**
+ * The one server refusal on this screen that an operator can do nothing about,
+ * said in a sentence instead of a code.
+ *
+ * `INGEST_URL` is the address printed into a phone's SMS-relay configuration.
+ * Without it `POST /devices` and both credential routes answer 503 before they
+ * read the request body — so no device can be registered and no key can be
+ * issued at all. On 2026-08-29 the staging dashboard had never been given one:
+ * it deployed green, every check passed, and the first screen of the whole
+ * bank-SMS chain was dead. What reached the screen was
+ * `Error: 503: ingest_url_not_configured`, which names the fault and not one
+ * thing to do about it.
+ */
+export function explainDeviceError(e: unknown): string {
+  const msg = String(e);
+  if (msg.includes('ingest_url_not_configured')) {
+    return 'این داشبورد نشانی سرویس دریافت پیامک را ندارد، پس نمی‌تواند پیکربندی گوشی را بسازد. تا وقتی متغیر INGEST_URL روی همین اپ تنظیم نشود، نه دستگاهی ساخته می‌شود و نه کلیدی صادر. این تنظیم سمت دیپلوی است، نه چیزی که از این صفحه درست شود.';
+  }
+  return msg;
+}
+
 export function DevicesView({ cache }: DevicesViewProps) {
   const w = useWriteProps();
   const { data, status, error } = cache.useQuery<{ ok: boolean; items: DeviceListItem[] }>(
@@ -199,7 +220,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
       cache.invalidate(...forMutation(mutation));
       if (said) setRowDone(said);
     } catch (e) {
-      setRowError(String(e));
+      setRowError(explainDeviceError(e));
     } finally {
       setBusyId(null);
     }
@@ -223,7 +244,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
       cache.invalidate(...forMutation(mutation));
       setSetup({ payload: r, origin });
     } catch (e) {
-      setRowError(String(e));
+      setRowError(explainDeviceError(e));
     } finally {
       setBusyId(null);
     }
@@ -617,7 +638,7 @@ function CreateDeviceModal({
       if (msg.includes('409') || msg.includes('duplicate_device_code')) {
         setSubmitError('این کد دستگاه قبلاً گرفته شده. یکی دیگر انتخاب کن.');
       } else {
-        setSubmitError(msg);
+        setSubmitError(explainDeviceError(e));
       }
     } finally {
       setSubmitting(false);
