@@ -1110,6 +1110,227 @@ app.delete('/api/v1/devices/:idOrCode', async (c) => {
   });
 });
 
+/**
+ * Moving a device's history to another device, so the first one can go.
+ *
+ * DELETE refuses a device that carried anything, and that refusal is correct:
+ * `raw_sms_events.device_id` is `NOT NULL ... ON DELETE RESTRICT`, and
+ * `transaction_candidates` hangs off those events by `ON DELETE CASCADE`. A
+ * delete that cascaded would take bank evidence and the money records built
+ * from it, to tidy a screen.
+ *
+ * But «it can never be deleted» is not an answer either — eight smoke-test
+ * devices sat on staging on 2026-08-29 holding six hundred synthetic SMS
+ * between them, permanently, because nothing could ever clear them.
+ *
+ * So the history moves rather than dies, exactly as
+ * `accounts/:id/move-references` already does for a merged account: re-point
+ * the rows, then the device row is free to go. Nothing is destroyed and the
+ * audit says where everything went.
+ *
+ * Two things this deliberately does NOT do:
+ *
+ *   - It does not touch `transaction_candidates`. They reach a device only
+ *     through `raw_sms_event_id`, so re-pointing the events carries them along.
+ *     A second UPDATE here would be a second source of truth for one fact.
+ *   - It does not resolve a `UNIQUE (device_id, body_sha256)` collision by
+ *     dropping a row. That index is the ingest's per-device de-duplication, and
+ *     the losing row would take its transaction candidate with it. A collision
+ *     is reported and the move refuses; the operator picks another target.
+ */
+const MoveDeviceReferencesBody = z
+  .object({ targetDeviceId: z.string().min(1), deleteSource: z.boolean().optional() })
+  .strict();
+
+/** How many of the source's events already exist, byte for byte, on the target. */
+async function countDeviceSmsCollisions(
+  db: DB,
+  sourceId: string,
+  targetId: string,
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n
+         FROM raw_sms_events s
+        WHERE s.device_id = ?1
+          AND EXISTS (
+                SELECT 1 FROM raw_sms_events t
+                 WHERE t.device_id = ?2 AND t.body_sha256 = s.body_sha256)`,
+    )
+    .bind(sourceId, targetId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/**
+ * GET /api/v1/devices/:idOrCode/move-preview?target=<idOrCode>
+ *
+ * What a move would carry, and what would stop it. Always 200 with a body once
+ * both devices resolve, so the dashboard renders an answer rather than a code.
+ */
+app.get('/api/v1/devices/:idOrCode/move-preview', async (c) => {
+  const ident = c.get('identity');
+  if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+  c.header('Cache-Control', 'private, no-store');
+  const source = await findDeviceByIdOrCode(c.env.DB, c.req.param('idOrCode'));
+  if (!source) return c.json({ ok: false, error: 'device_not_found' }, 404);
+  const targetParam = c.req.query('target') ?? '';
+  const target = targetParam ? await findDeviceByIdOrCode(c.env.DB, targetParam) : null;
+  if (!target) return c.json({ ok: false, error: 'target_not_found' }, 404);
+  if (target.id === source.id) return c.json({ ok: false, error: 'same_device' }, 400);
+
+  const [refs, collisions] = await Promise.all([
+    loadDeviceDeleteReferences(c.env.DB, source.id),
+    countDeviceSmsCollisions(c.env.DB, source.id, target.id),
+  ]);
+  return c.json({
+    ok: true,
+    source: { id: source.id, deviceCode: source.device_code, displayName: source.display_name },
+    target: { id: target.id, deviceCode: target.device_code, displayName: target.display_name },
+    moves: {
+      rawSmsEvents: refs.rawSmsEvents,
+      financialAccounts: refs.financialAccounts,
+      transactions: refs.transactions,
+    },
+    duplicateSmsOnTarget: collisions,
+    canMove: collisions === 0,
+    // Deleting afterwards needs what DELETE needs. Said here so the dashboard
+    // can offer the checkbox truthfully rather than after a 409.
+    canDeleteSourceAfterwards: source.active === 0,
+  });
+});
+
+/**
+ * POST /api/v1/devices/:idOrCode/move-references
+ *
+ * ADMIN-only. One `batch()`, which is a real transaction here: either every
+ * row moves and the source goes, or nothing happened.
+ */
+app.post('/api/v1/devices/:idOrCode/move-references', async (c) => {
+  const ident = c.get('identity');
+  if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+  c.header('Cache-Control', 'private, no-store');
+  const parsed = MoveDeviceReferencesBody.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+
+  const source = await findDeviceByIdOrCode(c.env.DB, c.req.param('idOrCode'));
+  if (!source) return c.json({ ok: false, error: 'device_not_found' }, 404);
+  const target = await findDeviceByIdOrCode(c.env.DB, parsed.data.targetDeviceId);
+  if (!target) return c.json({ ok: false, error: 'target_not_found' }, 404);
+  if (target.id === source.id) return c.json({ ok: false, error: 'same_device' }, 400);
+
+  const deleteSource = parsed.data.deleteSource === true;
+  // Checked before the move, not after: a source that cannot be deleted would
+  // otherwise be emptied by a request that then refused, and the operator would
+  // be left working out that half of it happened.
+  if (deleteSource && source.active === 1) {
+    return c.json({ ok: false, error: 'device_must_be_inactive' }, 409);
+  }
+
+  const refs = await loadDeviceDeleteReferences(c.env.DB, source.id);
+  const collisions = await countDeviceSmsCollisions(c.env.DB, source.id, target.id);
+  if (collisions > 0) {
+    return c.json(
+      {
+        ok: false,
+        error: 'duplicate_sms_on_target',
+        duplicateSmsOnTarget: collisions,
+        target: { id: target.id, deviceCode: target.device_code },
+      },
+      409,
+    );
+  }
+
+  const now = Date.now();
+  const stmts = [
+    c.env.DB.prepare(`UPDATE raw_sms_events SET device_id = ?2 WHERE device_id = ?1`).bind(
+      source.id,
+      target.id,
+    ),
+    c.env.DB.prepare(
+      `UPDATE financial_accounts SET device_id = ?2, updated_at = ?3 WHERE device_id = ?1`,
+    ).bind(source.id, target.id, now),
+    c.env.DB.prepare(SQL.insertAudit).bind(
+      crypto.randomUUID(),
+      ident.email,
+      ident.role,
+      'device.references_moved',
+      'DEVICE',
+      source.id,
+      JSON.stringify({
+        deviceId: source.id,
+        deviceCode: source.device_code,
+        rawSmsEvents: refs.rawSmsEvents,
+        financialAccounts: refs.financialAccounts,
+        transactions: refs.transactions,
+      }),
+      JSON.stringify({
+        targetDeviceId: target.id,
+        targetDeviceCode: target.device_code,
+        deleteSource,
+      }),
+      null,
+      c.req.header('cf-ray') ?? null,
+      now,
+    ),
+  ];
+
+  if (deleteSource) {
+    stmts.push(
+      c.env.DB.prepare(`DELETE FROM device_credentials WHERE device_id = ?1`).bind(source.id),
+      c.env.DB.prepare(`DELETE FROM devices WHERE id = ?1`).bind(source.id),
+      c.env.DB.prepare(SQL.insertAudit).bind(
+        crypto.randomUUID(),
+        ident.email,
+        ident.role,
+        'device.deleted',
+        'DEVICE',
+        source.id,
+        JSON.stringify({
+          deviceId: source.id,
+          deviceCode: source.device_code,
+          displayName: source.display_name,
+          active: false,
+        }),
+        JSON.stringify({
+          deviceId: source.id,
+          deviceCode: source.device_code,
+          displayName: source.display_name,
+          deletedCredentialCount: refs.credentials,
+          referencesMovedTo: target.device_code,
+        }),
+        null,
+        c.req.header('cf-ray') ?? null,
+        now,
+      ),
+    );
+  }
+
+  try {
+    await c.env.DB.batch(stmts);
+  } catch (e) {
+    // The collision count above is a read, and a concurrent ingest can land a
+    // matching body between that read and this write. The index is what
+    // actually decides; this turns its error into the answer the preview gives
+    // rather than a 500.
+    if (isUniqueViolation(e)) {
+      return c.json({ ok: false, error: 'duplicate_sms_on_target' }, 409);
+    }
+    throw e;
+  }
+
+  return c.json({
+    ok: true,
+    moved: {
+      rawSmsEvents: refs.rawSmsEvents,
+      financialAccounts: refs.financialAccounts,
+      transactions: refs.transactions,
+    },
+    target: { id: target.id, deviceCode: target.device_code },
+    deletedSource: deleteSource,
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Matches workspace — Suggested / Unmatched / Reviewed
 // ---------------------------------------------------------------------------
