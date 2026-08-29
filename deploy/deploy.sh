@@ -148,7 +148,15 @@ APP_INGEST=$(cfg APP_INGEST)
 APP_DASHBOARD=$(cfg APP_DASHBOARD)
 APP_BOT=$(cfg APP_BOT)
 DB_CONTAINER=$(cfg DB_CONTAINER)
-PGUSER=$(cfg PGUSER); PGUSER=${PGUSER:-postgres}
+# The superuser is READ OFF THE CONTAINER when the config does not name it,
+# because the container is the thing that knows. `postgres` is right only when
+# the image was started with its default user, and this box's staging Postgres
+# was started as `shikoo`. Guessing it cost a red deploy on 2026-08-29: the one
+# query that uses this died with «role "postgres" does not exist», nobody saw
+# the error, and a bot that was polling normally was reported as never started.
+PGUSER=$(cfg PGUSER)
+[ -n "$PGUSER" ] || PGUSER=$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER 2>/dev/null || true)
+PGUSER=${PGUSER:-postgres}
 for required in COOLIFY_URL COOLIFY_TOKEN APP_INGEST APP_DASHBOARD APP_BOT DB_CONTAINER; do
   [ -n "$(eval "printf '%s' \"\$$required\"")" ] || die "$CONF must set $required"
 done
@@ -661,8 +669,14 @@ summary "smoke=ok"
 # the honest count is zero, and failing on that would be failing on the thing
 # that was asked for.
 if [ "$BOT_ENABLED" = 1 ]; then
+  # `2>/dev/null || echo ""` used to sit on the end of this. It turned «the
+  # question could not be asked» into «the answer is zero» — opposite facts:
+  # one is a broken check, the other is a shop with no bot. The error text now
+  # reaches the log and a failed query dies with its own message, so the two
+  # can never be confused again.
   HOLDERS=$(docker exec "$DB_CONTAINER" psql -U "$PGUSER" -tA -c \
-    "SELECT count(DISTINCT pid) FROM pg_locks WHERE locktype='advisory' AND granted AND classid=1399324672" 2>/dev/null || echo "")
+    "SELECT count(DISTINCT pid) FROM pg_locks WHERE locktype='advisory' AND granted AND classid=1399324672") \
+    || die "could not ask $DB_CONTAINER for the poller lock count as user '$PGUSER' — the count below was never taken"
   [ "$HOLDERS" = "1" ] || die "expected exactly 1 bot poller lock holder, found ${HOLDERS:-none}"
   say "bot singleton: exactly one poller holds the lock"
   summary "bot_singleton=1 poller"
