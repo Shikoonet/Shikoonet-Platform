@@ -35,7 +35,8 @@
 import type { Hono } from 'hono';
 import type { D1Database } from '@shikoo/database';
 import { MIRZABOT_SOURCE, RECEIPT_FILE_ID, receiptRef } from '@shikoo/contracts';
-import { createLogger } from '@shikoo/domain';
+import type { EnvName } from '@shikoo/contracts';
+import { createLogger, resolveBotToken } from '@shikoo/domain';
 
 const log = createLogger('dashboard');
 
@@ -68,7 +69,7 @@ function contentTypeFor(filePath: string): string | null {
 
 export function registerReceiptRoutes(
   app: Hono<{
-    Bindings: { DB: D1Database; TELEGRAM_BOT_TOKEN?: string };
+    Bindings: { DB: D1Database; ENV_NAME?: EnvName; TELEGRAM_BOT_TOKEN?: string };
     Variables: { identity: Ident };
   }>,
 ) {
@@ -110,7 +111,20 @@ export function registerReceiptRoutes(
       return c.json({ ok: false, error: 'bad_handle' }, 422);
     }
 
-    const token = c.env.TELEGRAM_BOT_TOKEN?.trim();
+    // The same resolution the bot boots with, rather than this worker's own
+    // variable. Before this, an operator who connected a different bot from the
+    // panel got a working shop and receipts that 404 for ever — `getFile` is
+    // authenticated per bot, so the OLD token cannot read the NEW bot's files
+    // and nothing would have said why.
+    let token: string | undefined;
+    try {
+      token = (await resolveBotToken(c.env.DB, c.env.ENV_NAME ?? 'local', c.env))?.token;
+    } catch (err) {
+      // A stored row that will not open. Distinguished from "not set" because
+      // the fix is a different one: the key, not the token.
+      log.warn('receipt.token_unreadable', { claimId }, err);
+      return c.json({ ok: false, error: 'bot_token_unreadable' }, 503);
+    }
     if (!token) {
       // Said plainly rather than as a 500. This is a deployment that has not
       // been given the token yet, and an operator staring at a broken image
@@ -119,7 +133,9 @@ export function registerReceiptRoutes(
         {
           ok: false,
           error: 'no_bot_token',
-          message: 'TELEGRAM_BOT_TOKEN is not set on this worker, so receipts cannot be fetched.',
+          message:
+            'هیچ رباتی وصل نیست، پس رسید خوانده نمی‌شود. از «پیکربندی › ربات تلگرام» یک ربات وصل کن ' +
+            '(یا TELEGRAM_BOT_TOKEN را روی این سرویس بگذار).',
         },
         503,
       );

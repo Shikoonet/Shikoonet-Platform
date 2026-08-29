@@ -49,6 +49,7 @@ import { ExpensesPage } from './pages/ExpensesPage.js';
 import { DiscountsPage } from './pages/DiscountsPage.js';
 import { OrdersPage, SubscriptionsPage, TransactionsPage } from './pages/LedgerPages.js';
 import { SettingsPage, RequestsPage } from './pages/SettingsPage.js';
+import { BotPage } from './pages/BotPage.js';
 import { BotTextsPage, KeyboardPage } from './pages/BotContentPages.js';
 import './theme.css';
 // Second, and the order is load-bearing: `styles.css` scopes everything it can
@@ -122,6 +123,8 @@ function Body({
       return <TransactionsPage />;
     case 'requests':
       return <RequestsPage />;
+    case 'bot':
+      return <BotPage />;
     case 'settings':
       return <SettingsPage />;
     case 'texts':

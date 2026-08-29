@@ -43,6 +43,7 @@ export type PageId =
   | 'content'
   | 'access'
   | 'events'
+  | 'bot'
   | 'settings';
 
 export interface NavItem {
@@ -107,6 +108,15 @@ export const NAV: NavGroup[] = [
   {
     label: 'پیکربندی',
     items: [
+      // First in its group, and above the bot's own wording, because it is the
+      // question that comes before every other one here: an admin editing
+      // «متن‌های ربات» is editing the text of a bot, and until this screen
+      // existed nothing in the panel said which bot that was.
+      // «ربات تلگرام», not «ربات»: the shorter label is a substring of
+      // «متن‌های ربات» below it, and `nav.test.tsx` refuses that — correctly.
+      // A sidebar where one entry's name is contained in another's is one an
+      // operator has to read twice, which is the same rule as «سرویس‌ها».
+      { id: 'bot', label: 'ربات تلگرام', icon: 'settings' },
       { id: 'texts', label: 'متن‌های ربات', icon: 'text' },
       { id: 'keyboard', label: 'چیدمان کیبورد', icon: 'keyboard' },
       { id: 'content', label: 'آموزش، برنامه‌ها و کانال‌ها', icon: 'text' },
@@ -169,6 +179,10 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   // Reading what the shop tells its customers is shop operation, not customer
   // data — the same line «متن‌های ربات» sits on.
   'content',
+  // Which bot the shop is. The token is not on the page and the write is
+  // ADMIN-only in the route; what a reviewer sees is a bot's username, which
+  // is public the moment anyone opens the shop.
+  'bot',
   'settings',
 ]);
 

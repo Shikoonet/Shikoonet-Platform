@@ -48,6 +48,7 @@ import type { D1Database } from '@shikoo/database';
 import { audit, type Ident } from './adminAudit.js';
 import {
   adapterFor,
+  keyId,
   open,
   panelSecretKey,
   renewAllowed,
@@ -56,18 +57,8 @@ import {
   splitCredential,
 } from '@shikoo/domain';
 import type { ProviderContext, ProvisioningAdapter } from '@shikoo/domain';
-import { createHash } from 'node:crypto';
 import { faNum } from './fa.js';
 
-/**
- * A short fingerprint of the key that sealed a row, so a future rotation can
- * tell what it has already re-sealed. Of the KEY, never of the secret: a
- * fingerprint of the plaintext would let anyone holding the table confirm a
- * guessed password.
- */
-function keyId(key: Buffer): string {
-  return createHash('sha256').update(key).digest('hex').slice(0, 12);
-}
 
 const PanelPatch = z
   .object({
