@@ -26,6 +26,9 @@ const NOW_MS = Date.UTC(2026, 7, 29, 8, 0, 0);
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** `NOW_MS - 61 days`, in Tehran. See the fixture note for why it is that far back. */
+const RENEWAL_ONLY_DAY = '?range=day&day=2026-06-29';
+
 /** Everything this file writes is prefixed so the purge can find it all. */
 const PREFIX = 'zz-stats-';
 
@@ -157,13 +160,24 @@ async function purge(): Promise<void> {
  *   bob    today 07:30   WALLET_TOPUP     300,000   ← never a sale, never a buyer
  *   cid    yesterday     NEW_PURCHASE   2,000,000
  *   dee    62 days ago   NEW_PURCHASE   9,000,000   ← only «آمار کل» sees this
- *   eve    2 days ago    RENEWAL          700,000   ← renewal with no sale beside it
+ *   eve    61 days ago   RENEWAL          700,000   ← renewal with no sale beside it
  * ```
  *
- * `eve` exists for one reason: 27 August holds a renewal and no purchase, which
- * is the shape that made «۱ buyer, ۰ average» appear on the live screen. Without
- * a window like it, counting renewers as buyers passes every other assertion
- * here — which it did, until this row was added.
+ * `eve` exists for one reason: her day holds a renewal and no purchase, which is
+ * the shape that made «۱ buyer, ۰ average» appear on the live screen. Without a
+ * window like it, counting renewers as buyers passes every other assertion here
+ * — which it did, until this row was added.
+ *
+ * **Why 61 days and not 2.** That day is named by calendar date, and the one
+ * assertion below that cannot be expressed as a delta — a ratio has no
+ * baseline to subtract — reads the window's absolute figure. So the day has to
+ * be one nothing else can write into. `pnpm seed:sim` runs before this suite
+ * and places its rows at offsets from the **real** clock, not from `NOW_MS`:
+ * its 3,000,000 purchase sits at `now − 71h`, which on 2026-08-29 crossed
+ * Tehran midnight at 19:30 UTC and landed inside the day this test used to
+ * name. Green all afternoon, red from 19:37 onwards, on a commit that changed
+ * one line of a README. The seed reaches 30 days back at most; 61 is past it,
+ * and 62 is taken by `dee`.
  */
 beforeAll(async () => {
   await applySchema();
@@ -198,7 +212,7 @@ beforeAll(async () => {
     '?range=1h',
     '?range=month',
     '?range=day&day=2026-08-28',
-    '?range=day&day=2026-08-27',
+    RENEWAL_ONLY_DAY,
   ]) {
     before.set(q, await report(q));
   }
@@ -218,7 +232,7 @@ beforeAll(async () => {
   await order(dee, 'NEW_PURCHASE', 9_000_000, NOW_MS - 62 * DAY_MS, 'o6');
 
   const eve = await user('eve', NOW_MS - 40 * DAY_MS);
-  await order(eve, 'RENEWAL', 700_000, NOW_MS - 2 * DAY_MS, 'o7');
+  await order(eve, 'RENEWAL', 700_000, NOW_MS - 61 * DAY_MS, 'o7');
 
   await payment(ann, 'CARD_TO_CARD', 1_000_000, NOW_MS - 5 * HOUR_MS, 'p1');
   await payment(bob, 'CARD_TO_CARD', 500_000, NOW_MS - 6 * HOUR_MS, 'p2');
@@ -297,10 +311,10 @@ describe('the ratios are computed from the same window', () => {
     // holds a purchase, so the hour-shaped check is the renewal-only one.
     // 27 August is the case: one renewal, no purchase. A renewer counted as a
     // buyer makes this window report somebody who bought nothing.
-    const renewalOnly = await report('?range=day&day=2026-08-27');
-    expect(await delta('?range=day&day=2026-08-27', 'renewalsCount')).toBe(1);
-    expect(await delta('?range=day&day=2026-08-27', 'salesCount')).toBe(0);
-    expect(await delta('?range=day&day=2026-08-27', 'buyers')).toBe(0);
+    const renewalOnly = await report(RENEWAL_ONLY_DAY);
+    expect(await delta(RENEWAL_ONLY_DAY, 'renewalsCount')).toBe(1);
+    expect(await delta(RENEWAL_ONLY_DAY, 'salesCount')).toBe(0);
+    expect(await delta(RENEWAL_ONLY_DAY, 'buyers')).toBe(0);
     expect(renewalOnly.avgPerBuyerIrr).toBe(0);
 
     for (const range of ['all', 'today', 'yesterday', '1h', 'month']) {
