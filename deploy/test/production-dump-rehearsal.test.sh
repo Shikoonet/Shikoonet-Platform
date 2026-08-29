@@ -170,10 +170,20 @@ has "$R" 'that is a stop, not a warning' 'a mismatch stops the run'
 section 'nothing production is written'
 
 has "$R" 'throwaway' 'it works in throwaway containers'
-if grep -qE 'docker run .*(--name "\$MYSQL_C"|--name "\$PG_C"|--name "\$RESTORE_C")' "$R"; then
-  ok 'every database it creates is one of its own'
+# Each name required, and every `docker run -d` accounted for. The alternation
+# that was here was satisfied by finding any ONE of them — and it named `$PG_C`,
+# which this script does not define, so a fourth unnamed daemon container would
+# have passed unnoticed.
+NAMED_OK=1
+for c in MYSQL_C DEST_C RESTORE_C; do
+  grep -qF -- "--name \"\$${c}\"" "$R" || NAMED_OK=0
+done
+DAEMONS=$(grep -cE 'docker run [^|]*-d ' "$R" || true)
+if [ "$NAMED_OK" = 1 ] && [ "$DAEMONS" = 3 ]; then
+  ok 'every database it creates is one of its own (three, each named)'
 else
-  bad 'every database it creates is one of its own' 'a container is unaccounted for'
+  bad 'every database it creates is one of its own (three, each named)' \
+    "named_ok=${NAMED_OK} daemon_runs=${DAEMONS}"
 fi
 # The only production thing it touches is the newest backup, read-only.
 if grep -qE 'psql .*(qd2vduj7|production).*-c *"(insert|update|delete|alter|drop)' "$R"; then

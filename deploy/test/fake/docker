@@ -19,6 +19,16 @@ LOG = os.environ["FAKE_LOG"]
 STATE = os.environ["FAKE_STATE"]
 argv = sys.argv[1:]
 
+# The full argv, once per invocation, before anything is dispatched.
+#
+# Without this the credential assertions in rehearsal-cleanup.test.sh had
+# nothing to inspect: the per-verb lines below record a container and a
+# database, never the `-e DATABASE_URL=...` the check is looking for. The
+# assertion "the throwaway password is only ever presented to this run's own
+# containers" was reading an empty set and reporting a pass.
+with open(LOG, "a", encoding="utf-8") as _fh:
+    _fh.write("argv|||" + " ".join(argv).replace("\n", " ") + "\n")
+
 
 def log(verb, container="", db="", detail=""):
     with open(LOG, "a", encoding="utf-8") as fh:

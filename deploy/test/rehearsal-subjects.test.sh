@@ -69,8 +69,12 @@ else
   bad "the full rehearsal completes" "$(tail -5 "$W/out")"
 fi
 
-RESTORE_C=$(grep -o 'shikoo-rehearsal-restore-[^|]*' "$W/log" | head -1)
-DEST_C=$(grep -o 'shikoo-rehearsal-dest-[^|]*' "$W/log" | head -1)
+# Anchored to the name's own character set, not "everything up to the next
+# pipe". The fake now logs full argv, where a container name is followed by
+# more arguments rather than a delimiter, so `[^|]*` swallowed the rest of the
+# line and every subsequent grep for that name matched nothing.
+RESTORE_C=$(grep -oE 'shikoo-rehearsal-restore-[0-9]+-[0-9]+' "$W/log" | head -1)
+DEST_C=$(grep -oE 'shikoo-rehearsal-dest-[0-9]+-[0-9]+' "$W/log" | head -1)
 
 # Both halves ran, against different databases.
 if [ -n "$RESTORE_C" ] && [ -n "$DEST_C" ] && [ "$RESTORE_C" != "$DEST_C" ]; then ok "the two subjects are distinct containers"; else bad "the two subjects are distinct containers" "restore=$RESTORE_C dest=$DEST_C"; fi

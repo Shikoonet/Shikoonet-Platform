@@ -336,7 +336,7 @@ whose attestation is missing, malformed, stale, or for a different release.
 
 **Resolving it.** There is one pointer and one immutable version directory:
 
-```
+```text
 /var/lib/shikoo/production/attestation/current -> versions/<sha>-<UTC stamp>/
 ```
 
@@ -411,7 +411,7 @@ lock count that is not exactly one, a vanished backup.
 
 0. **Restage the owner bundle from the merged SHA.** Not optional, and first:
 
-   ```
+   ```sh
    git -C ~/shikoo-checkout fetch origin main && git -C ~/shikoo-checkout checkout -q <merged-sha>
    bash ~/shikoo-checkout/deploy/stage-owner-bundle.sh ~/shikoo-checkout <merged-sha>
    ```

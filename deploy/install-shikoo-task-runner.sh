@@ -48,7 +48,7 @@ BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
 # The one hard-coded value. Everything else is derived from the manifest it
 # pins, and a CI test asserts this still equals
 # sha256sum deploy/shikoo-task-runner.manifest.
-MANIFEST_SHA256=800a945c977536043d68dbf5a355abec4c6f992e72f4bc4e8b894464d19797dd
+MANIFEST_SHA256=216885db8f5517858119e1629cdddfc955eb120424544b5420439e8ed5658266
 
 say() { echo "[install] $*"; }
 die() { echo "[install] FAILED: $*" >&2; exit 1; }
@@ -181,18 +181,35 @@ RELEASE_LOCK=/var/lock/shikoo-deploy-production.lock
 if [ -e "$RELEASE_LOCK" ] && [ "$(stat -c '%u' "$RELEASE_LOCK")" != '0' ]; then
   fail_back "$RELEASE_LOCK already exists and is not owned by root — someone else created it first"
 fi
-# Adopted, never replaced. `install ... /dev/null "$RELEASE_LOCK"` writes a NEW
-# inode at that path every time. If a rehearsal or a Prepare run is holding
-# flock on the old inode, it keeps holding it — while everything that opens the
-# path afterwards locks a different file. The mutual exclusion disappears with
-# no error anywhere. So the file is created only if it is absent, and the
-# ownership and mode are then set on whatever is there.
-if [ ! -e "$RELEASE_LOCK" ]; then
-  install -o root -g "$RUN_AS" -m 0660 /dev/null "$RELEASE_LOCK"
-else
-  chown root:"$RUN_AS" "$RELEASE_LOCK"
-  chmod 0660 "$RELEASE_LOCK"
+# Adopted, never replaced — and created atomically when it is absent.
+#
+# `install ... /dev/null "$RELEASE_LOCK"` writes a NEW inode at that path every
+# time, and GNU install unlinks the destination first by design. If a rehearsal
+# or a Prepare run is holding flock on the old inode it keeps holding it, while
+# everything that opens the path afterwards locks a different file: the mutual
+# exclusion disappears with no error anywhere.
+#
+# `if [ ! -e ] ... install` fixed that but introduced two of its own. The test
+# and the create are separate steps, so two installs can both see it absent;
+# and `-e` follows symlinks, so a symlink planted at that path would take the
+# `else` branch and chown/chmod its TARGET. `set -C` makes the create fail if
+# anything already exists at the path — one syscall, O_EXCL — and the symlink
+# case is refused above rather than followed.
+if [ -L "$RELEASE_LOCK" ]; then
+  fail_back "$RELEASE_LOCK is a symlink — refusing to adopt or replace it"
 fi
+if ( set -C; : >"$RELEASE_LOCK" ) 2>/dev/null; then
+  say "created $RELEASE_LOCK"
+else
+  # It already existed. Adopt it only if it is a regular file — never a
+  # symlink, a directory, or a device.
+  if [ ! -f "$RELEASE_LOCK" ] || [ -L "$RELEASE_LOCK" ]; then
+    fail_back "$RELEASE_LOCK exists and is not a regular file"
+  fi
+  say "adopting the existing $RELEASE_LOCK (a holder's flock stays valid)"
+fi
+chown root:"$RUN_AS" "$RELEASE_LOCK"
+chmod 0660 "$RELEASE_LOCK"
 [ "$(stat -c '%U:%G:%a' "$RELEASE_LOCK")" = "root:$RUN_AS:660" ] ||
   fail_back "$RELEASE_LOCK is not root:$RUN_AS 0660 after installation"
 say "release lock $RELEASE_LOCK is root:$RUN_AS 0660"

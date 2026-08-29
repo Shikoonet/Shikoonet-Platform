@@ -88,7 +88,11 @@ fi
 section 'the set is not caller-controlled'
 
 R="$ROOT/deploy/production-dump-rehearsal.sh"
-if grep -v '^[[:space:]]*#' "$R" | grep -qE 'D1_TABLES=\$\{D1_TABLES'; then
+# One command, not the tail of a pipeline: under `pipefail` the status of
+# `grep -v ... | grep -q ...` is non-zero whenever EITHER stage fails, so a
+# first stage that matched nothing would report "no override present" for the
+# wrong reason.
+if grep -E '^[^#]*D1_TABLES=\$\{D1_TABLES' "$R" >/dev/null; then
   bad 'the table set cannot be overridden by the environment' 'an override is present'
 else
   ok 'the table set cannot be overridden by the environment'

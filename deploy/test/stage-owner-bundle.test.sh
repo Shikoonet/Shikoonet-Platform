@@ -7,7 +7,11 @@
 # stale bundle, because a manifest and its files are perfectly consistent with
 # each other no matter which commit they came from. Provenance has to come from
 # the checkout, and the checkout has to be verified.
-set -uo pipefail
+# `-Ee` like the other two suites in this cohort. Without errexit a failure in
+# `mkco` was silent — the clone's stderr is discarded and nothing checked its
+# status — so the suite ran on against an incomplete checkout and reported
+# refusals for the wrong reason.
+set -Eeuo pipefail
 
 HERE=$(CDPATH='' ; cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH='' ; cd -- "$HERE/../.." && pwd)
@@ -152,11 +156,21 @@ intact 'after every refusal the previous bundle is still the one in place'
 section 'an interrupted restage replaces nothing'
 
 mkco
-( trap - INT TERM; bash "$STAGE" "$CO" "$SHA" "$DEST" >/dev/null 2>&1; echo $? >"$W/rc" ) & job=$!
-for _ in $(seq 1 400); do pgrep -f 'stage-owner-bundle.sh' >/dev/null && break; sleep 0.02; done
-pkill -INT -f 'stage-owner-bundle.sh' 2>/dev/null
-wait "$job" 2>/dev/null
-RC=$(cat "$W/rc" 2>/dev/null || echo missing)
+# `exec`, so $! is the stager itself and the signal goes to a PID this test
+# owns. `pkill -f 'stage-owner-bundle.sh'` matched THIS FILE's own command line
+# as well — the suite was signalling itself, which errexit then surfaced as an
+# exit of 130 with no failing assertion to explain it.
+( trap - INT TERM; exec bash "$STAGE" "$CO" "$SHA" "$DEST" >/dev/null 2>&1 ) & job=$!
+# Wait until the subshell has actually exec'd the stager. Signalling before
+# that kills the wrapper instead, and the stager never runs — so the case would
+# assert about a directory nothing had touched.
+for _ in $(seq 1 400); do
+  tr '\0' ' ' <"/proc/$job/cmdline" 2>/dev/null | grep -q 'deploy/stage-owner-bundle.sh' && break
+  sleep 0.02
+done
+kill -INT "$job" 2>/dev/null
+RC=0
+wait "$job" || RC=$?
 case "$RC" in
   130) ok 'an interrupted restage exits 130' ;;
   0)   ok 'the restage completed before the signal landed (nothing was left half-replaced)' ;;
