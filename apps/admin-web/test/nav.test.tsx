@@ -116,6 +116,9 @@ describe('navigation', () => {
       // panel could neither show nor change, and «تنظیمات» cannot hold it:
       // `SECRET_KEY_PATTERN` matches `token` and refuses the read and the write.
       'bot',
+      // «ایمپورت میرزابات» — the legacy MySQL dump, brought in from the panel
+      // rather than from a terminal nobody doing a cutover has.
+      'import',
     ];
     expect([...ALL].sort()).toEqual([...implemented].sort());
   });
