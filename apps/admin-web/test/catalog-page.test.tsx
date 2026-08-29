@@ -15,14 +15,20 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
 import { CatalogPage } from '../src/pages/CatalogPage.js';
-import type { PanelGroups, ServiceRow } from '../src/api.js';
+import type { PanelGroups, PanelRef, ServiceRow } from '../src/api.js';
 
-const PANEL = {
+const PANEL: PanelRef = {
   id: 3,
   name: 'پنل تست',
   code: 'test-panel',
   status: 'ACTIVE',
   hasGroups: true,
+  // A panel that can actually be reached and logged in to. Both are required
+  // on the type on purpose: a fixture that omits them is a screen that never
+  // meets the panel this shop has, which is how «گروه ۳ روی پنل نیست» came to
+  // be shown for a panel with no address.
+  baseUrl: 'https://panel.example:9443',
+  hasCredential: true,
   capacity: null,
   liveSubscriptions: 0,
 };
@@ -238,3 +244,71 @@ describe('a delivery route that has no groups', () => {
     expect(panelGroups).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The screen Sam was looking at on 2026-08-29.
+ *
+ * The staging PasarGuard panel is switched ON and has no `base_url` and no
+ * credential — a state «مدیریت پنل‌ها» has always drawn correctly («آدرس و رمز
+ * ندارد») and this screen could not see at all, because the service row did not
+ * carry either fact. So it walked past the panel and reported the next thing it
+ * could measure: «گروه ۳ روی پنل نیست». Four rows of five said that, and every
+ * one of them sent an operator to the groups screen to fix an address.
+ *
+ * The fixture is that panel, not an invented one: ACTIVE, `baseUrl: null`,
+ * `hasCredential: false`, and services whose group ids the panel has never
+ * heard of — because it has never been asked anything.
+ */
+describe('an ACTIVE panel with nowhere to send a request', () => {
+  const UNREACHABLE = { ...PANEL, baseUrl: null, hasCredential: false };
+  const ROWS = SERVICES.map((s) => ({ ...s, panel: UNREACHABLE }));
+
+  beforeEach(() => {
+    catalog.mockImplementation(async () => ({
+      ok: true, total: ROWS.length, page: 1, pageSize: 25, items: ROWS, panels: [UNREACHABLE],
+    }));
+  });
+
+  it('names the panel and what it is missing, not the groups', async () => {
+    draw();
+    await waitFor(() => expect(screen.getByText('svc-8')).toBeTruthy());
+
+    expect(screen.getAllByText('فروخته نمی‌شود').length).toBe(ROWS.length);
+    expect(screen.getAllByText(/آدرس و رمز ندارد/).length).toBe(ROWS.length);
+    // The sentence that was there before, and the screen it sent people to.
+    expect(screen.queryByText(/روی پنل نیست/)).toBeNull();
+    expect(screen.queryByText('هر خریدی از این سرویس شکست می‌خورد.')).toBeNull();
+  });
+
+  it('says which one is missing when only one is', async () => {
+    const NO_PASSWORD = { ...PANEL, baseUrl: 'https://panel.example:9443', hasCredential: false };
+    catalog.mockImplementation(async () => ({
+      ok: true, total: 1, page: 1, pageSize: 25,
+      items: [{ ...SERVICES[0]!, panel: NO_PASSWORD }], panels: [NO_PASSWORD],
+    }));
+    draw();
+    await waitFor(() => expect(screen.getByText('svc-8')).toBeTruthy());
+
+    expect(screen.getByText(/رمز ندارد/)).toBeTruthy();
+    // Not the both-missing sentence: the fix for one is not the fix for the other.
+    expect(screen.queryByText(/آدرس و رمز ندارد/)).toBeNull();
+  });
+
+  it('leaves the group column at «—», not at a spinner waiting for nothing', async () => {
+    draw();
+    await waitFor(() => expect(screen.getByText('svc-8')).toBeTruthy());
+    // The request is deliberately never sent, so `data` never arrives. Without
+    // its own guard the group cell sits on «…» for as long as the screen is
+    // open, which reads as «still loading» and never resolves.
+    expect(screen.queryByText('…')).toBeNull();
+  });
+
+  it('does not send a request that can only time out', async () => {
+    draw();
+    await waitFor(() => expect(screen.getByText('svc-8')).toBeTruthy());
+    // One doomed request per panel per render is what the practice box cost:
+    // eight seconds each, and the answer could never arrive.
+    expect(panelGroups).not.toHaveBeenCalled();
+  });
+});
+

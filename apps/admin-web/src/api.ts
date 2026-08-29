@@ -204,6 +204,15 @@ export interface PanelRef {
    * adapter, so no screen has to keep its own list of which kinds have groups.
    */
   hasGroups: boolean;
+  /**
+   * Where the panel is, and whether it has a password — the two facts «مدیریت
+   * پنل‌ها» has always shown and this row did not carry, so «سرویس‌ها» could
+   * not tell «the panel cannot deliver» from «the groups are wrong» and always
+   * said the second. Null address and no credential are normal for `manual`,
+   * which is why `hasGroups` is asked first.
+   */
+  baseUrl: string | null;
+  hasCredential: boolean;
   capacity: number | null;
   liveSubscriptions: number;
 }
