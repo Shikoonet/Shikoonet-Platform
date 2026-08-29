@@ -59,14 +59,19 @@ Run one slice at a time. A slice is a shippable behavior, not a file.
    verifier's actual output. Still red after that round → **stop and ask Sam.**
    There is no third guess.
 7. **Update the graph.** `graphify update .`
-8. **Report.** Five parts, per `CLAUDE.md`: commits with SHAs, `git diff --stat`,
-   what is being withheld as private, which tests went green with the date and
-   the environment, and the proposed PR text. Then wait.
+8. **Report, then merge — not before.** Five parts, per `CLAUDE.md`: commits
+   with SHAs, `git diff --stat`, what is being withheld as private, which tests
+   went green with the date and the environment, and the PR text. Then wait.
+   The report gates the MERGE, which is the step that reaches staging; the
+   branch and its draft PR should already exist from step 1.
 
 ## Hard stops
 
-- **No push, no PR, without Sam's explicit approval.** Not "I'll prepare it" —
-  stop and ask.
+- **A slice starts with a branch and a draft PR, and ends at a merge Sam
+  approved.** Sam's standing rule, 2026-08-29 — the full pipeline is in
+  `agent-ground-rules`. Pushing a feature branch is routine; merging to `main`
+  is not, and `Promote Production` is a manual dispatch that is never yours.
+  Not "I'll prepare the merge" — stop and ask.
 - **The live bot server is read-only.** Its bugs belong in `BUGS-FOR-ADMIN.md`,
   not in a fix.
 - **The money guarantees stay in the database.** If a specialist proposes moving

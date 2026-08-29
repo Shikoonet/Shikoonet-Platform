@@ -63,19 +63,22 @@ const WITHHELD = [
 ];
 
 /**
- * What is left of twenty-seven once those nine are gone.
+ * What is left of twenty-eight once those nine are gone.
  *
  * Fifteen of twenty-four until 2026-08-27. «محصولات» and «دسته‌بندی‌ها» are both
  * in `READABLE_BY_READER`, so both new sections raise this count rather than the
  * withheld list — a reader may see what the shop sells and how it is arranged,
  * and every write on those screens already answers 403 for this role.
  *
- * Eighteen on 2026-08-29. «ربات تلگرام» is readable too, and deliberately: the
- * page holds no token — the server has no field that could carry one — and what
- * it names is a bot's username, which is public the moment anybody opens the
- * shop. The write behind it is ADMIN-only and `write-roles.test.ts` counts it.
+ * Nineteen on 2026-08-29, and both of the day's new sections are readable.
+ * «آمار فروشگاه» because every field on it is an aggregate and none of them
+ * names a customer, which is the line `mayRead` draws. «ربات تلگرام» because
+ * the page holds no token — the server has no field that could carry one —
+ * and what it names is a bot's username, which is public the moment anybody
+ * opens the shop. The write behind that one is ADMIN-only and
+ * `write-roles.test.ts` counts it separately.
  */
-const OFFERED_TO_A_READER = 18;
+const OFFERED_TO_A_READER = 19;
 
 async function signInAsReader(page: Page): Promise<void> {
   await page.goto(`${BASE}/admin/`);
@@ -85,7 +88,7 @@ async function signInAsReader(page: Page): Promise<void> {
   await expect(page.locator('.sidebar-link.active')).toBeVisible();
 }
 
-test('a reader is offered eighteen sections of twenty-seven, and the count is read off the screen', async ({
+test('a reader is offered nineteen sections of twenty-eight, and the count is read off the screen', async ({
   page,
 }) => {
   await signInAsReader(page);

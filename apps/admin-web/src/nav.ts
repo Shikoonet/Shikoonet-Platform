@@ -25,6 +25,7 @@ export type HubPageId = 'payments' | 'statistics' | 'today' | 'accounts' | 'bank
 export type PageId =
   | HubPageId
   | 'dashboard'
+  | 'stats'
   | 'customers'
   | 'bulk'
   | 'orders'
@@ -63,6 +64,10 @@ export const NAV: NavGroup[] = [
     items: [
       { id: 'dashboard', label: 'داشبورد', icon: 'home' },
       { id: 'customers', label: 'کاربران', icon: 'users' },
+      // «آمار مالی» in the پول group is the bank side. This one is the shop's
+      // own trade, which is why the two labels name their subject rather than
+      // both being «آمار».
+      { id: 'stats', label: 'آمار فروشگاه', icon: 'grid' },
       { id: 'bulk', label: 'ارسال گروهی', icon: 'send' },
       { id: 'orders', label: 'سفارشات', icon: 'receipt' },
       { id: 'catalog', label: 'سرویس‌ها', icon: 'grid' },
@@ -149,6 +154,8 @@ export const ADMIN_ONLY: ReadonlySet<PageId> = new Set<PageId>(['events']);
 
 export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'dashboard',
+  // Every figure on it is an aggregate — nothing there names a customer.
+  'stats',
   // All six finance screens. Not an oversight and not generosity: reviewing
   // payments is the entire reason the READ_ONLY role exists, and `mayRead`
   // withholds nothing on these paths — its list is `/api/v1/admin/*` only, and
