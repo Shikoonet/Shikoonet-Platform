@@ -174,12 +174,31 @@ Both modes still refuse a direct push, an unmerged PR, an ambiguous PR
 association, an outstanding `CHANGES_REQUESTED`, a red `Required Quality Gate`,
 a moved `main`, and any API error.
 
-`DEPLOY_APPROVAL_MODE` and `SOLO_DEPLOY_OWNER` live in the workflow file rather
+`DEPLOY_APPROVAL_MODE` and `DEPLOY_OWNERS` live in the workflow file rather
 than in a repository variable **on purpose**: a variable can be changed in the
 settings UI, silently, with no diff and no review. Who may ship unreviewed code
-is exactly the decision that must not be changeable that way. Set the mode back
-to `team` the day a second regular reviewer joins — nothing else changes, and
-the team path stays tested.
+is exactly the decision that must not be changeable that way.
+
+`DEPLOY_OWNERS` is a comma-separated list, and `SOLO_DEPLOY_OWNER` is still
+accepted as the single-name spelling. It is a list because "approved by a human
+other than the author" cannot be satisfied by a two-person team without that
+human being the owner — so every contributor pull request needed the owner
+twice, once to review it and once to merge it. Naming a second maintainer says
+the quiet part out loud: **they may ship their own work unreviewed, exactly as
+the first one may.** The audit line still reads `policy=solo-owner` and still
+names who wrote and who merged.
+
+Membership is an exact match on a whole element. `@Isusami2` does not inherit
+`@Isusami`'s authority, a prefix does not match, and an empty login matches
+nothing — `deploy/test/deploy-pipeline.test.sh` pins all three.
+
+**This widens Staging only.** `prepare-production.yml`, `cutover-production.yml`
+and `promote-production.yml` each set their own `SOLO_DEPLOY_OWNER` and compare
+`github.actor` against it directly, so Production promotion remains one person.
+
+Set the mode back to `team` the day there are enough reviewers for "somebody
+other than the author" to mean somebody who is not an owner — nothing else
+changes, and the team path stays tested.
 
 Which policy shipped a given release is recorded on the box, as a fourth field
 in `/var/lib/shikoo/<env>/deployed`.
