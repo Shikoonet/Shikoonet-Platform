@@ -23,6 +23,8 @@ const LIVE: PanelRef = {
   code: 'live',
   status: 'ACTIVE',
   hasGroups: true,
+  baseUrl: 'https://panel.example:9443',
+  hasCredential: true,
   capacity: null,
   liveSubscriptions: 0,
 };
