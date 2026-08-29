@@ -170,6 +170,27 @@ chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
 refuses 'an empty order reference is refused' 'carries no external_order_id'
 
 # The prefixed form still works when it actually names an order.
+# Shapes the generator does not understand. `data.get(...) or []` mapped every
+# one of these to "no claims", and the bundle recorded coherence_checked=0 with
+# coherence=pass having inspected nothing.
+build
+printf '"a bare string"' >"$D1/payment_claims.json"; chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
+refuses 'a scalar payment_claims.json is refused' 'neither a list nor an object'
+
+build
+printf '{"data":[]}' >"$D1/payment_claims.json"; chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
+refuses 'an object with no results or rows is refused' "neither 'results' nor 'rows'"
+
+build
+printf '{"results":"not-a-list"}' >"$D1/payment_claims.json"; chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
+refuses 'a non-list results field is refused' 'is not a list'
+
+# The envelope form the hub does emit still works.
+build
+printf '{"results":[{"id":1,"source_system":"MIRZABOT","external_order_id":"ORD-7001"}]}' >"$D1/payment_claims.json"
+chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
+if run; then ok 'a results-envelope payment_claims.json is accepted'; else bad 'a results-envelope payment_claims.json is accepted' "$(head -1 "$W/err")"; fi
+
 build
 printf '[{"id":1,"source_system":"MIRZABOT","external_order_id":"mirzabot:test:ORD-7001"}]' >"$D1/payment_claims.json"
 chmod 640 "$D1/payment_claims.json"; touch "$DUMP"
