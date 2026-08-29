@@ -756,12 +756,28 @@ MAIN_SHA="$MAIN_SHA" DIGEST="$DIGEST" CI_RUN_ID="$CI_RUN_ID" STAGING_RUN_ID="$ST
 # that must not survive a failure or a signal, and an activated one is the
 # release evidence and must survive everything.
 say "14. publishing the attestation"
+# 0750 root:shikoo-deploy, explicitly.
+#
+# `umask 077` is set earlier so the curl config holding the token is created
+# 0600, and it is still in force here — so root would create these directories
+# 0700. `prepare-production.sh` runs as shikoo-deploy and would then be unable
+# to traverse them to resolve `current` or read the 0640 files inside, which is
+# the entire published read path. The mode is set on the directories rather
+# than left to whatever umask happens to be active.
+ATT_GROUP=${ATT_LOCK_GROUP:-shikoo-deploy}
 mkdir -p "$ATTEST_DIR/versions"
+chgrp "$ATT_GROUP" "$ATTEST_DIR" "$ATTEST_DIR/versions" 2>/dev/null ||
+  die "could not set group ${ATT_GROUP} on the attestation directories"
+chmod 0750 "$ATTEST_DIR" "$ATTEST_DIR/versions"
 VERSION_DIR="$ATTEST_DIR/versions/${MAIN_SHA}-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$VERSION_DIR"
 CLEANUP_DIRS="$CLEANUP_DIRS $VERSION_DIR"
 mv -f "$TMP_ATT/attestation.env" "$VERSION_DIR/attestation.env"
 mv -f "$TMP_ATT/attestation.sha256" "$VERSION_DIR/attestation.sha256"
+chgrp "$ATT_GROUP" "$VERSION_DIR" 2>/dev/null ||
+  die "could not set group ${ATT_GROUP} on the new version directory"
+chmod 0750 "$VERSION_DIR"
+chgrp "$ATT_GROUP" "$VERSION_DIR/attestation.env" "$VERSION_DIR/attestation.sha256" 2>/dev/null || true
 chmod 0640 "$VERSION_DIR/attestation.env" "$VERSION_DIR/attestation.sha256"
 
 # The promotion gate's own verifier, run against the new version BEFORE it is

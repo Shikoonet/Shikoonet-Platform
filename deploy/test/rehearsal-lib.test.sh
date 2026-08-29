@@ -182,8 +182,15 @@ OWNED="$WORK/owned.env"
 # of this asserted "not root", which the parent-directory message also contains
 # — so removing the file-owner check entirely still passed, for the wrong
 # reason. A mutation test caught it.
-refuses 'a non-root-owned config is refused, by its own owner check' 'is owned by' \
-  rehearsal_require_secure_file "$OWNED" 600 'the config'
+# As root this file IS root-owned, so the guard correctly accepts it and there
+# is nothing to refuse. Reported as a skip rather than counted either way.
+if [ "$(id -u)" -eq 0 ]; then
+  SKIPPED=$((SKIPPED + 1))
+  printf '  SKIP a non-root-owned config is refused (this suite is running as root)\n'
+else
+  refuses 'a non-root-owned config is refused, by its own owner check' 'is owned by' \
+    rehearsal_require_secure_file "$OWNED" 600 'the config'
+fi
 ln -sf "$OWNED" "$WORK/link.env"
 refuses 'a symlinked config is refused' 'symlink' \
   rehearsal_require_secure_file "$WORK/link.env" 600 'the config'
