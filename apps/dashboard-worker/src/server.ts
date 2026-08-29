@@ -63,6 +63,10 @@ const PASSTHROUGH = [
   // The bot's token, for `GET /payment-claims/:id/receipt`. Absent, that one
   // route answers 503 with a sentence and everything else is unaffected.
   'TELEGRAM_BOT_TOKEN',
+  // Where dumps land, and the scratch MySQL they are loaded into. Absent, the
+  // import screen says it is not configured instead of listing nothing.
+  'IMPORT_DIR',
+  'IMPORT_MYSQL_URL',
 ] as const satisfies readonly (keyof Env)[];
 
 export function buildEnv(db: Env['DB']): Env {

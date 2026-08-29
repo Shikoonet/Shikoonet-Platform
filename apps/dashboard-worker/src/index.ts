@@ -53,6 +53,7 @@ import { registerProductRoutes } from './productRoutes.js';
 import { registerPanelRoutes } from './panelRoutes.js';
 import { registerDiscountRoutes } from './discountRoutes.js';
 import { registerSalesRoutes } from './salesRoutes.js';
+import { registerImportRoutes } from './importRoutes.js';
 import { registerSettingsRoutes } from './settingsRoutes.js';
 import { registerAdminAccessRoutes } from './adminAccessRoutes.js';
 import { registerBotContentRoutes } from './botContentRoutes.js';
@@ -153,6 +154,22 @@ export interface Env {
    * See `receiptRoutes.ts` — it is never logged and never leaves the server.
    */
   TELEGRAM_BOT_TOKEN?: string;
+  /**
+   * Where Mirzabot dumps are placed on the server, over SCP.
+   *
+   * Unset, «ایمپورت» answers 503 with a sentence rather than showing an empty
+   * list, because "no dumps here" and "this panel was never wired for imports"
+   * are different things to an admin mid-cutover.
+   */
+  IMPORT_DIR?: string;
+  /**
+   * `mysql://user:pass@host:port` for the scratch MySQL a dump is loaded into.
+   *
+   * Holds a credential, like `TELEGRAM_BOT_TOKEN` above, and is never rendered
+   * or logged. It is not the platform's database: it is a throwaway server the
+   * legacy copy is read from, and `loadDump` drops its database on every run.
+   */
+  IMPORT_MYSQL_URL?: string;
 }
 
 type DB = D1Database;
@@ -4786,6 +4803,7 @@ registerPanelRoutes(app);
 registerDiscountRoutes(app);
 registerSalesRoutes(app);
 registerSettingsRoutes(app);
+registerImportRoutes(app);
 registerAdminAccessRoutes(app);
 registerBotContentRoutes(app);
 registerContentRoutes(app);
