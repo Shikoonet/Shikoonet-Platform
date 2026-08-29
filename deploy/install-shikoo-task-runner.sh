@@ -48,7 +48,7 @@ BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
 # The one hard-coded value. Everything else is derived from the manifest it
 # pins, and a CI test asserts this still equals
 # sha256sum deploy/shikoo-task-runner.manifest.
-MANIFEST_SHA256=0ce8d5d7bd65048edaa5daabaf1fd9aca1ebc0eeb37a1679fa1feca375f92528
+MANIFEST_SHA256=8cb873baa767c0e67f162ee2488f9e8db39f8ba69c07b9ec3388f49f6f90cafc
 
 say() { echo "[install] $*"; }
 die() { echo "[install] FAILED: $*" >&2; exit 1; }
@@ -68,17 +68,19 @@ actual=$(sha256sum "$STAGE/MANIFEST" | cut -d' ' -f1)
 say "manifest verified"
 
 # The allowlist IS the manifest, plus the three files that are this mechanism.
-ALLOWED=$( { awk '{print $2}' "$STAGE/MANIFEST"; printf 'MANIFEST\nshikoo-task-runner\nshikoo-task-runner.sudoers\n'; } | sort )
+# `LC_ALL=C` on both sides: this host's collation makes `sort` and `comm`
+# disagree about ordering, and comm then rejects input sort produced.
+ALLOWED=$( { awk '{print $2}' "$STAGE/MANIFEST"; printf 'MANIFEST\nshikoo-task-runner\nshikoo-task-runner.sudoers\n'; } | LC_ALL=C sort )
 
 # Extra staged files are refused rather than ignored. Something unexpected in
 # the directory a root install copies from is a question, not a rounding error.
 # Symlinks are LISTED, not skipped, so the per-file check below names one as a
 # symlink instead of reporting it as a missing file. A refusal that describes
 # the wrong problem sends the reader to the wrong place.
-staged=$(find "$STAGE" \( -type f -o -type l \) -printf '%P\n' | sort)
-extra=$(comm -23 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
+staged=$(find "$STAGE" \( -type f -o -type l \) -printf '%P\n' | LC_ALL=C sort)
+extra=$(LC_ALL=C comm -23 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
 [ -z "$extra" ] || die "unexpected file(s) in $STAGE: $(printf '%s' "$extra" | tr '\n' ' ')"
-missing=$(comm -13 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
+missing=$(LC_ALL=C comm -13 <(printf '%s\n' "$staged") <(printf '%s\n' "$ALLOWED"))
 [ -z "$missing" ] || die "missing file(s) in $STAGE: $(printf '%s' "$missing" | tr '\n' ' ')"
 
 check_staged() { # name
@@ -161,6 +163,65 @@ while IFS= read -r f; do
   case "$(stat -c '%a' "$f")" in 644 | 755) ;; *) fail_back "$f has mode $(stat -c '%a' "$f")" ;; esac
 done < <(find "$LIB" -type f; printf '%s\n' "$BIN")
 say "installed files are root:root and not writable by $GRANTEE or $RUN_AS"
+
+# ── the release lock ─────────────────────────────────────────────────────
+#
+# Created here, by root, so that neither side has to create it later. That
+# matters more than it looks: /var/lock is a symlink to /run/lock, mode 1777,
+# so whoever gets there first owns the file. If the rehearsal or Prepare
+# created it on demand, an unprivileged local account could create it first
+# and then hold it — every release would wait on a lock owned by someone else.
+#
+# root:shikoo-deploy 0660 is the whole grant. It lets the root rehearsal take
+# it exclusively to swap the pointer, and the shikoo-deploy Prepare path take
+# it shared to read through the pointer, with no additional sudo rule and no
+# world-writable file anywhere in the protocol.
+RELEASE_LOCK=/var/lock/shikoo-deploy-production.lock
+[ ! -L "$RELEASE_LOCK" ] || fail_back "$RELEASE_LOCK is a symlink — refusing to adopt it"
+if [ -e "$RELEASE_LOCK" ] && [ "$(stat -c '%u' "$RELEASE_LOCK")" != '0' ]; then
+  fail_back "$RELEASE_LOCK already exists and is not owned by root — someone else created it first"
+fi
+# Adopted, never replaced — and created atomically when it is absent.
+#
+# `install ... /dev/null "$RELEASE_LOCK"` writes a NEW inode at that path every
+# time, and GNU install unlinks the destination first by design. If a rehearsal
+# or a Prepare run is holding flock on the old inode it keeps holding it, while
+# everything that opens the path afterwards locks a different file: the mutual
+# exclusion disappears with no error anywhere.
+#
+# `if [ ! -e ] ... install` fixed that but introduced two of its own. The test
+# and the create are separate steps, so two installs can both see it absent;
+# and `-e` follows symlinks, so a symlink planted at that path would take the
+# `else` branch and chown/chmod its TARGET. `set -C` makes the create fail if
+# anything already exists at the path — one syscall, O_EXCL — and the symlink
+# case is refused above rather than followed.
+if [ -L "$RELEASE_LOCK" ]; then
+  fail_back "$RELEASE_LOCK is a symlink — refusing to adopt or replace it"
+fi
+if ( set -C; : >"$RELEASE_LOCK" ) 2>/dev/null; then
+  say "created $RELEASE_LOCK"
+else
+  # It already existed. Adopt it only if it is a regular file — never a
+  # symlink, a directory, or a device — AND only if it was already root's.
+  #
+  # A local account can create and flock a regular file in the window between
+  # the symlink check and this create. Adopting it would chown their file to
+  # root while they keep the lock, and every task-runner command afterwards
+  # would block at `flock -n` until root noticed and repaired it. Ownership is
+  # therefore checked BEFORE chown, not asserted after it.
+  if [ ! -f "$RELEASE_LOCK" ] || [ -L "$RELEASE_LOCK" ]; then
+    fail_back "$RELEASE_LOCK exists and is not a regular file"
+  fi
+  lock_owner=$(stat -c '%u' "$RELEASE_LOCK")
+  [ "$lock_owner" = '0' ] ||
+    fail_back "$RELEASE_LOCK already exists and is owned by uid ${lock_owner}, not root — someone else created it; remove it by hand once you know no release holds it"
+  say "adopting the existing root-owned $RELEASE_LOCK (a holder's flock stays valid)"
+fi
+chown root:"$RUN_AS" "$RELEASE_LOCK"
+chmod 0660 "$RELEASE_LOCK"
+[ "$(stat -c '%U:%G:%a' "$RELEASE_LOCK")" = "root:$RUN_AS:660" ] ||
+  fail_back "$RELEASE_LOCK is not root:$RUN_AS 0660 after installation"
+say "release lock $RELEASE_LOCK is root:$RUN_AS 0660"
 
 # ── sudoers ──────────────────────────────────────────────────────────────
 TMP_SUDO=$(mktemp)

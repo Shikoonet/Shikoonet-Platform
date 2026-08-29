@@ -33,6 +33,9 @@ mkatt() { # [override=value ...] -> writes $WORK/att
     DUMP_ID="$DUMP_ID" MIGRATION_RANGE='0035..0037' DUMP_SUITES='49/49' \
     INVARIANTS='32/32' FINANCIAL_TOTALS=match RESTORE_RESULT=pass \
     RESTORE_SECONDS=412 OLD_APP_SCHEMA_COMPAT=pass \
+    LEGACY_IMPORT=pass PROD_RESTORE_MIGRATED=pass PROD_INVARIANTS='32/32' \
+    PROD_MIGRATION_RANGE='0035..0037' OLD_APP_SCHEMA_SUBJECT=production-restore \
+    D1_EXPORT_ID="sha256:$(printf 'b%.0s' $(seq 64))" \
     GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' \
     "$@" bash "$WRITE" "$WORK/att" >/dev/null 2>&1
 }
@@ -40,7 +43,12 @@ mkatt() { # [override=value ...] -> writes $WORK/att
 LOG="$WORK/verify.log"
 verify() { # [env assignments...] -> rc, output in $LOG
   set +e
-  env EXPECTED_SHA="$SHA" EXPECTED_DIGEST="$DIGEST" "$@" \
+  # These cases are about FIELD validation, so they use the verifier's
+  # pre-publication branch: a version directory that is not reachable through
+  # any `current` pointer. The published path — resolution through the pointer,
+  # under the shared lock, held for the whole read — is exercised as root in
+  # attestation-publication.test.sh, where a real lock exists.
+  env ATTESTATION_UNPUBLISHED=1 EXPECTED_SHA="$SHA" EXPECTED_DIGEST="$DIGEST" "$@" \
     bash "$VERIFY" "$WORK/att" >"$LOG" 2>&1
   local rc=$?
   set -e
@@ -62,7 +70,10 @@ section 'the attestation writer refuses to record a rehearsal that did not pass'
 
 for spec in 'DUMP_SUITES=48/49' 'DUMP_SUITES=49/50' 'DUMP_SUITES=passed' \
   'INVARIANTS=31/32' 'FINANCIAL_TOTALS=mismatched' 'RESTORE_RESULT=passed' \
-  'OLD_APP_SCHEMA_COMPAT=yes' 'MIGRATION_RANGE=0035-0037' 'RESTORE_SECONDS=a lot'; do
+  'OLD_APP_SCHEMA_COMPAT=yes' 'MIGRATION_RANGE=0035-0037' 'RESTORE_SECONDS=a lot' \
+  'LEGACY_IMPORT=skipped' 'PROD_RESTORE_MIGRATED=skipped' 'PROD_INVARIANTS=31/32' \
+  'PROD_MIGRATION_RANGE=0035-0037' 'OLD_APP_SCHEMA_SUBJECT=legacy-destination' \
+  'D1_EXPORT_ID=unknown'; do
   if mkatt "$spec"; then
     bad "the writer refuses ${spec}" 'it was written'
   else

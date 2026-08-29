@@ -819,11 +819,71 @@ jobs:
       # introduces it. An earlier draft shipped it as 117 KB of base64 with a
       # self-checksum — which proves internal consistency, not that anybody
       # reviewed what is inside.
-      - name: task runner — eight subcommands, no wildcard, no interpreter
+      - name: task runner — nine subcommands, no wildcard, no interpreter
         run: bash deploy/test/task-runner.test.sh
 
       - name: task runner installer — its refusals, exercised
         run: bash deploy/test/task-runner-installer.test.sh
+
+      # Prepare Production stopped at P0 because no attestation existed. The
+      # gate was right; the thing that produces the evidence was missing. What
+      # matters about the replacement is that it cannot write an attestation on
+      # anything less than a complete pass, and leaves nothing behind when it
+      # fails.
+      # The executable half. The textual suite proves the script CONTAINS
+      # things; these call the real guards with real inputs, which is what the
+      # review findings were actually about.
+      - name: rehearsal guards — executed, not grepped
+        run: bash deploy/test/rehearsal-lib.test.sh
+
+      # The D1 table set is generated from the migrator's own source. This
+      # regenerates and compares, so adding a table without updating the
+      # manifest is a red build rather than a quietly widened acceptance — the
+      # first version named four tables out of twenty-three.
+      - name: D1 contract — the manifest matches the migrator
+        run: bash deploy/test/d1-contract.test.sh
+
+      - name: production-dump rehearsal — fail-closed, exact thresholds, cleanup
+        run: bash deploy/test/production-dump-rehearsal.test.sh
+
+      # The rehearsal has two subjects — a legacy MySQL+D1 import, and
+      # production's own restored data brought forward over the pending range —
+      # and the failure that matters is measuring one and reporting it as the
+      # other. This drives the whole orchestration against a docker that
+      # records which container received every operation, then breaks the
+      # script six ways and requires each to be refused. Reading the source
+      # cannot answer this; a command that names the right container is not a
+      # command that reached it.
+      - name: rehearsal subjects — the two halves are not interchangeable
+        run: bash deploy/test/rehearsal-subjects.test.sh
+
+      # One pointer, one immutable version directory, one lock protocol. These
+      # are cross-process and use FIFOs rather than sleeps, so "a reader
+      # arrived mid-swap" is arranged rather than hoped for — including the
+      # case that actually breaks `mv -T`, a non-empty directory in its way.
+      - name: attestation publication — no reader ever sees a mixed pair
+        run: bash deploy/test/attestation-publication.test.sh
+
+      # What it leaves behind and what it says out loud, on success, on
+      # ordinary failure, on INT and on TERM.
+      - name: rehearsal cleanup — every resource, every ending, exactly once
+        run: bash deploy/test/rehearsal-cleanup.test.sh
+
+      # The sidecar generator is the privileged half of D1 provenance: it runs
+      # on the secure host beside the dump and writes the file the promotion
+      # gate later believes. Its own refusals, its atomic publication, and what
+      # it prints are all part of the contract — the consumer's tests cannot
+      # stand in for them.
+      - name: D1 sidecar generator — its refusals, its publication, its silence
+        run: bash deploy/test/d1-sidecar.test.sh
+
+      # Twice in this work the owner staging directory held files from an
+      # earlier revision, followed by an instruction to run `sha256sum -c
+      # MANIFEST` inside it — a check a stale bundle passes perfectly, because
+      # a manifest and its files agree with each other whatever commit they
+      # came from. Provenance comes from a verified checkout or not at all.
+      - name: owner bundle restaging — provenance, or a refusal
+        run: bash deploy/test/stage-owner-bundle.test.sh
 
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh

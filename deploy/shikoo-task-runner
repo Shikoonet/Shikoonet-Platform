@@ -49,7 +49,7 @@ LOCKFILE=/var/lock/shikoo-task-runner.lock
 STATE_DIR=/var/lib/shikoo
 
 # The hash of the manifest that lists every script this may run.
-MANIFEST_SHA256=0ce8d5d7bd65048edaa5daabaf1fd9aca1ebc0eeb37a1679fa1feca375f92528
+MANIFEST_SHA256=8cb873baa767c0e67f162ee2488f9e8db39f8ba69c07b9ec3388f49f6f90cafc
 
 die() { echo "shikoo-task-runner: $*" >&2; exit 1; }
 note() {
@@ -127,6 +127,26 @@ as_deploy() { # script [fixed-arg]
   fi
 }
 
+# The production attestation is resolved through its `current` pointer, never
+# by naming a file in the flat directory. That flat pair no longer exists: it
+# was a second copy of the same fact, published after the pointer swap in two
+# separate renames, so a reader could catch a new .env beside an old .sha256.
+# There is one version directory and one pointer to it.
+attestation_or_absent() { # attest_dir
+  local dir=$1 cur
+  # shellcheck source=deploy/attestation-store.sh
+  . "$LIB/attestation-store.sh"
+  if ! cur=$(att_read "$dir" 2>/dev/null); then
+    if [ -e "$dir/current" ] || [ -L "$dir/current" ]; then
+      echo "  MISMATCH $dir/current"
+    else
+      echo "  absent   $dir/current"
+    fi
+    return 0
+  fi
+  echo "  ok       $dir/current -> $(basename "$cur")"
+}
+
 checksum_or_absent() { # file
   local dir base
   dir=$(dirname "$1")
@@ -161,6 +181,23 @@ case "$1" in
   step-e-apply)    run_task step-e-apply    step-e-runner.sh --apply ;;
   backup-dry-run)  run_task backup-dry-run  ensure-staging-backup.sh ;;
   backup-apply)    run_task backup-apply    ensure-staging-backup.sh --apply ;;
+  production-dump-rehearsal)
+    # Root, and no arguments. Every value it needs is read from a root-owned
+    # config or resolved from GitHub — the release it attests to is discovered,
+    # never chosen by whoever typed the command. An attestation whose subject
+    # the caller picks attests to whatever the caller wanted.
+    #
+    # It runs as root because it drives throwaway containers and reads the
+    # production backup directory. It never opens a writable connection to the
+    # live production database.
+    verify_bundle
+    take_lock
+    note "production-dump-rehearsal starting"
+    rc=0
+    /bin/bash "$LIB/production-dump-rehearsal.sh" || rc=$?
+    note "production-dump-rehearsal finished rc=$rc"
+    exit "$rc"
+    ;;
   restore-drill-staging)
     # Root, and the literal word 'staging'. There is deliberately no production
     # form of this subcommand: the drill restores into a throwaway database and
@@ -177,9 +214,13 @@ case "$1" in
   verify-evidence)
     verify_bundle
     echo "evidence:"
+    # All four, independently. An earlier edit replaced the staging
+    # restore-drill line with the production one, which silently dropped the
+    # evidence that staging's backups had ever been proven restorable.
     checksum_or_absent "$STATE_DIR/coolify-contract.env"
     checksum_or_absent "$STATE_DIR/step-e-evidence.env"
     checksum_or_absent "$STATE_DIR/restore-attestation.env"
+    attestation_or_absent "$STATE_DIR/production/attestation"
     note "verify-evidence run"
     ;;
   status)
@@ -187,9 +228,13 @@ case "$1" in
     echo "bundle:   verified against MANIFEST ($(grep -c . "$LIB/MANIFEST") script(s)), root-owned"
     echo "sudoers:  $([ -f "$SUDOERS" ] && echo present || echo absent)"
     echo "evidence:"
+    # All four, independently. An earlier edit replaced the staging
+    # restore-drill line with the production one, which silently dropped the
+    # evidence that staging's backups had ever been proven restorable.
     checksum_or_absent "$STATE_DIR/coolify-contract.env"
     checksum_or_absent "$STATE_DIR/step-e-evidence.env"
     checksum_or_absent "$STATE_DIR/restore-attestation.env"
+    attestation_or_absent "$STATE_DIR/production/attestation"
     ;;
   revoke-access)
     # Removes the grant, not the work. Evidence, backups and application data
@@ -208,6 +253,6 @@ case "$1" in
     echo "the bundle under $LIB is untouched"
     ;;
   *)
-    die "unknown subcommand '$1'. Valid: step-e-dry-run step-e-apply backup-dry-run backup-apply restore-drill-staging verify-evidence status revoke-access"
+    die "unknown subcommand '$1'. Valid: step-e-dry-run step-e-apply backup-dry-run backup-apply production-dump-rehearsal restore-drill-staging verify-evidence status revoke-access"
     ;;
 esac

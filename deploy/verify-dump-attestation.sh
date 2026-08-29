@@ -35,6 +35,41 @@ fail() {
   exit 1
 }
 
+# Resolved through the pointer, never by naming a version directory, and held
+# under the shared lock for the WHOLE read — not merely for the checksum.
+#
+# Two things were wrong before. `att_read` released the lock and returned a
+# path, so every field was read unlocked: the version directory is immutable,
+# but nothing stopped it being removed between the resolution and the reads.
+# And `prepare-production.sh` resolved the pointer itself and passed the
+# resulting directory here, which took the standalone branch below — so the
+# promotion gate's own verification ran with no lock at all, on a version
+# chosen by its caller rather than by `current`.
+#
+# There is one published path now: the caller names the attestation ROOT and
+# this resolves it. The standalone branch survives only for the rehearsal's
+# pre-publication self-check, where by definition nothing is current yet, and
+# it has to be asked for by name.
+HERE_V=$(CDPATH='' ; cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=deploy/attestation-store.sh
+. "$HERE_V/attestation-store.sh"
+
+if [ "${ATTESTATION_UNPUBLISHED:-0}" = '1' ]; then
+  # The rehearsal checking a version directory it has built and not yet
+  # activated. There is no pointer to resolve and nothing for a reader to
+  # race, because this directory is not reachable through `current`.
+  [ ! -e "$DIR/current" ] ||
+    fail "ATTESTATION_UNPUBLISHED was set for a directory that has a current pointer"
+else
+  # No pointer pre-check here: `att_resolve` below makes exactly the same test
+  # and refuses with the same sentence, so a check in both places is one rule
+  # written twice — and a mutation removing either is invisible.
+  att_lock_shared || fail "the production release lock could not be taken for reading"
+  # Released however this exits, including every `fail` below.
+  trap 'att_unlock' EXIT
+  DIR=$(att_resolve "$DIR") || fail "the current attestation could not be resolved"
+fi
+
 [ -r "$DIR/attestation.env" ] ||
   fail "no attestation.env — no production-dump rehearsal has been recorded for this release. Run the rehearsal on the secure host first; promotion does not proceed without one."
 [ -r "$DIR/attestation.sha256" ] ||
@@ -105,6 +140,30 @@ RESTORE=$(field restore_result)
 COMPAT=$(field old_app_schema_compat)
 [ "$COMPAT" = 'pass' ] ||
   fail "the rehearsal reports old_app_schema_compat=${COMPAT:-none} — if the current production image cannot serve the migrated schema then image rollback is void and only a restore can recover this release"
+
+# The two subjects, enforced separately.
+#
+# `invariants=32/32` alone was satisfiable by a run that measured the legacy
+# import twice and never migrated the production restore at all — the very
+# thing this rehearsal exists to prove. Each subject now carries its own
+# verdict and every one is required, so half a rehearsal cannot be promoted on.
+LEGACY=$(field legacy_import)
+[ "$LEGACY" = 'pass' ] ||
+  fail "the rehearsal reports legacy_import=${LEGACY:-none} — the MySQL+D1 import half did not pass"
+PRESTORE=$(field prod_restore_migrated)
+[ "$PRESTORE" = 'pass' ] ||
+  fail "the rehearsal reports prod_restore_migrated=${PRESTORE:-none} — the restored production copy was never brought forward over the pending range, so nothing here describes what promotion will do to production"
+PINV=$(field prod_invariants)
+[ "$PINV" = '32/32' ] ||
+  fail "the rehearsal reports prod_invariants=${PINV:-none} — the thirty-two have to hold on the MIGRATED PRODUCTION RESTORE, not only on the freshly built legacy destination"
+PRANGE=$(field prod_migration_range)
+[[ $PRANGE =~ ^[0-9]{4}\.\.[0-9]{4}$ ]] ||
+  fail "attestation prod_migration_range is not NNNN..NNNN"
+[ "$PRANGE" = "$(field migration_range)" ] ||
+  fail "the range applied to the production restore (${PRANGE}) is not the range this release migrates ($(field migration_range))"
+SUBJ=$(field old_app_schema_subject)
+[ "$SUBJ" = 'production-restore' ] ||
+  fail "old-image compatibility was measured against '${SUBJ:-none}' — proving the old image works on a database the NEW code just built says nothing about whether it can serve production's own data after migration"
 
 DUMP_ID=$(field dump_id)
 [[ $DUMP_ID =~ ^sha256:[0-9a-f]{64}\ [0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||

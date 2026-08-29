@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""A docker that remembers which database it was talking to.
+
+The point of this fake is not to stand in for docker. It is to make the
+question "which subject received this operation" answerable after the fact,
+which is the only way to tell a rehearsal that migrated the restored
+production copy from one that migrated the legacy destination twice and
+reported the second as the first.
+
+Every invocation is appended to $FAKE_LOG as `verb|container|database|detail`.
+Each container carries its own schema_migrations ledger in $FAKE_STATE, so the
+two subjects are distinguishable by something the script can actually observe
+rather than by their names alone.
+"""
+import os
+import sys
+
+LOG = os.environ["FAKE_LOG"]
+STATE = os.environ["FAKE_STATE"]
+argv = sys.argv[1:]
+
+# The full argv, once per invocation, before anything is dispatched.
+#
+# Without this the credential assertions in rehearsal-cleanup.test.sh had
+# nothing to inspect: the per-verb lines below record a container and a
+# database, never the `-e DATABASE_URL=...` the check is looking for. The
+# assertion "the throwaway password is only ever presented to this run's own
+# containers" was reading an empty set and reporting a pass.
+with open(LOG, "a", encoding="utf-8") as _fh:
+    _fh.write("argv|||" + " ".join(argv).replace("\n", " ") + "\n")
+
+
+def log(verb, container="", db="", detail=""):
+    with open(LOG, "a", encoding="utf-8") as fh:
+        fh.write(f"{verb}|{container}|{db}|{detail}\n")
+
+
+def ledger_path(c):
+    return os.path.join(STATE, "ledger." + c)
+
+
+def ledger(c):
+    try:
+        return int(open(ledger_path(c), encoding="utf-8").read().strip())
+    except Exception:
+        return 0
+
+
+def set_ledger(c, n):
+    with open(ledger_path(c), "w", encoding="utf-8") as fh:
+        fh.write(str(n))
+
+
+def out(s):
+    sys.stdout.write(s if s.endswith("\n") or not s else s + "\n")
+
+
+def val(flag, default=None):
+    return os.environ.get(flag, default)
+
+
+verb = argv[0] if argv else ""
+
+# ── image / network / lifecycle ───────────────────────────────────────────
+if verb == "image" or (verb == "inspect" and "--type" in argv and "image" in argv):
+    log("image-inspect", detail=" ".join(argv[-2:]))
+    out("sha256:" + "a" * 64)
+    sys.exit(0)
+
+if verb == "network":
+    log("network", detail=argv[1] if len(argv) > 1 else "")
+    sys.exit(0)
+
+if verb == "rm":
+    log("rm", container=argv[-1])
+    sys.exit(0)
+
+if verb == "version":
+    out("28.0.0")
+    sys.exit(0)
+
+# ── ps / inspect: the live production applications ────────────────────────
+if verb == "ps":
+    uuid = ""
+    for i, a in enumerate(argv):
+        if a == "--filter" and i + 1 < len(argv) and "coolify.name=" in argv[i + 1]:
+            uuid = argv[i + 1].split("=", 1)[1]
+    log("ps", detail=uuid)
+    if uuid:
+        out("live-" + uuid)
+    sys.exit(0)
+
+if verb == "inspect":
+    target = argv[-1]
+    fmt = ""
+    for i, a in enumerate(argv):
+        if a == "-f" and i + 1 < len(argv):
+            fmt = argv[i + 1]
+    log("inspect", container=target, detail=fmt)
+    if "Health" in fmt:
+        out("healthy")
+    else:
+        out("sha256:" + "b" * 64)
+    sys.exit(0)
+
+# ── run ───────────────────────────────────────────────────────────────────
+if verb == "run":
+    name = ""
+    for i, a in enumerate(argv):
+        if a == "--name" and i + 1 < len(argv):
+            name = argv[i + 1]
+    joined = " ".join(argv)
+    env = {}
+    for i, a in enumerate(argv):
+        if a == "-e" and i + 1 < len(argv):
+            k, _, v = argv[i + 1].partition("=")
+            env[k] = v
+
+    if name:
+        # A long-lived subject. The restore target begins life holding what
+        # production has applied; a freshly built destination begins empty.
+        set_ledger(name, int(os.environ.get("FAKE_PROD_LEDGER", "34")) if "restore" in name else 0)
+        log("run-daemon", container=name)
+        out("container-" + name)
+        sys.exit(0)
+
+    # A one-shot: the migrator, the suites, or an old image's schema gate.
+    dburl = env.get("DATABASE_URL", "")
+    subject = ""
+    dbname = ""
+    if "@" in dburl:
+        hostpart = dburl.split("@", 1)[1]
+        subject = hostpart.split(":", 1)[0]
+        dbname = hostpart.rsplit("/", 1)[-1]
+
+    if "vitest" in joined:
+        log("suites", container=subject, db=dbname)
+        report = None
+        for i, a in enumerate(argv):
+            if a == "-v" and i + 1 < len(argv) and ":/out" in argv[i + 1]:
+                report = argv[i + 1].split(":", 1)[0] + "/migrate-report.json"
+        if report:
+            # Ten dump-gated files carrying 49 passing assertions between them,
+            # which is the shape rehearsal_check_vitest actually inspects.
+            import json as _json
+            files = []
+            for i in range(10):
+                n = 5 if i < 9 else 4
+                files.append({
+                    "name": f"/repo/packages/migrate/test/t{i}.mysql.test.ts",
+                    "status": "passed",
+                    "assertionResults": [{"status": "passed"} for _ in range(n)],
+                })
+            with open(report, "w", encoding="utf-8") as fh:
+                _json.dump({"testResults": files, "success": True}, fh)
+        sys.exit(int(os.environ.get("FAKE_VITEST_RC", "0")))
+
+    if "schemaCli.ts gate" in joined:
+        log("old-image-gate", container=subject, db=dbname, detail=env.get("SERVICE", ""))
+        rc = int(os.environ.get("FAKE_GATE_RC", "0"))
+        # A blocking gate prints BLOCK; a rejected main() exits 1 silently.
+        if rc == 1 and os.environ.get("FAKE_GATE_SILENT") != "1":
+            sys.stdout.write("BLOCK schema is behind this image\n")
+        sys.exit(rc)
+
+    if "migrate" in joined:
+        # The migrator builds the destination from nothing: its ledger ends at
+        # the repository's full count, which is what makes it distinguishable
+        # from a restored production database for the rest of the run.
+        if subject:
+            set_ledger(subject, int(os.environ.get("FAKE_FULL_LEDGER", "37")))
+        log("migrator", container=subject, db=dbname)
+        sys.exit(0)
+
+    log("run-other", container=subject)
+    sys.exit(0)
+
+# ── exec ──────────────────────────────────────────────────────────────────
+if verb == "exec":
+    rest = [a for a in argv[1:] if a != "-i"]
+    container = rest[0] if rest else ""
+    tool = rest[1] if len(rest) > 1 else ""
+    dbname = ""
+    sql = ""
+    for i, a in enumerate(rest):
+        if a == "-d" and i + 1 < len(rest):
+            dbname = rest[i + 1]
+        # psql combines short flags: the drift query uses `-tAc`, so matching
+        # only the exact "-c" left its SQL unread and the answer empty.
+        if a.startswith("-") and a.endswith("c") and not a.startswith("--") and i + 1 < len(rest):
+            sql = rest[i + 1]
+
+    # Readiness probes never carry stdin. Falling through to the reader below
+    # made this fake block forever on a pipe nobody was going to write to.
+    if tool in ("pg_isready", "mysqladmin"):
+        sys.exit(0)
+
+    if tool == "pg_restore":
+        sys.stdin.read()
+        log("restore", container=container, db=dbname or "prodrestore")
+        sys.exit(int(os.environ.get("FAKE_RESTORE_RC", "0")))
+
+    if tool == "mysql":
+        expr = ""
+        for i, a in enumerate(rest):
+            if a == "-e" and i + 1 < len(rest):
+                expr = rest[i + 1]
+        if not expr:
+            # the dump being loaded
+            sys.stdin.read()
+            log("dump-load", container=container, db="mirzabot")
+            sys.exit(0)
+        log("mysql", container=container, db="mirzabot", detail=" ".join(expr.split())[:60])
+        if "count(*)" in expr:
+            out("1234")
+        else:
+            out("wallet_balance=1000\nledger_sum=1000\norder_total=5000")
+        sys.exit(0)
+
+    stdin_data = ""
+    if not sql and tool == "psql":
+        try:
+            stdin_data = sys.stdin.read()
+        except Exception:
+            stdin_data = ""
+
+    # psql
+    if stdin_data:
+        low = stdin_data.lower()
+        if "verify_invariants" in low or "invariant" in low:
+            log("invariants", container=container, db=dbname)
+            sys.stdout.write("".join(f"PASS {i}\n" for i in range(32)))
+            sys.exit(0)
+        # A migration file. This is the operation whose subject matters most.
+        log("migration", container=container, db=dbname, detail=str(len(stdin_data)))
+        set_ledger(container, ledger(container) + 1)
+        sys.exit(0)
+
+    log("query", container=container, db=dbname, detail=" ".join(sql.split())[:80])
+
+    # Order matters: the backup-count query joins standalone_postgresqls too,
+    # so the narrower match has to be tested first or it is never reached.
+    if "scheduled_database_backups" in sql:
+        out("1")
+        sys.exit(0)
+    if "standalone_postgresqls" in sql:
+        out(os.environ["FAKE_PROD_DB_UUID"] if "'production'" in sql else os.environ["FAKE_STAGING_DB_UUID"])
+        sys.exit(0)
+    if "from applications" in sql.lower():
+        for app in ("shikoo-ingest", "shikoo-dashboard", "shikoo-bot"):
+            if app in sql:
+                out(os.environ["FAKE_UUID_" + app.split("-")[1].upper()])
+                sys.exit(0)
+        sys.exit(0)
+    if "select name from schema_migrations" in sql:
+        n = ledger(container)
+        out("".join(f"{i:04d}_m.sql\n" for i in range(1, n + 1)))
+        sys.exit(0)
+    if "count(*) from schema_migrations" in sql:
+        # FAKE_LEDGER_DRIFT simulates the subject silently being a different
+        # database than the one step 5 measured: same name, different ledger.
+        # Nothing in the container's identity changes, which is the point —
+        # only the marker can tell.
+        if os.environ.get("FAKE_LEDGER_DRIFT") == "1":
+            out(os.environ.get("FAKE_FULL_LEDGER", "37"))
+            sys.exit(0)
+        out(str(ledger(container)))
+        sys.exit(0)
+    if "count(*) from users" in sql:
+        out("1234")
+        sys.exit(0)
+    if "wallets w" in sql or "balance_irr <>" in sql:
+        out("0")
+        sys.exit(0)
+    if "sum(balance_irr)" in sql:
+        out("wallet_balance=1000")
+        sys.exit(0)
+    if "sum(amount_irr)" in sql:
+        out("ledger_sum=1000")
+        sys.exit(0)
+    if "sum(total_irr)" in sql:
+        out("order_total=5000")
+        sys.exit(0)
+    out("")
+    sys.exit(0)
+
+log("unknown", detail=" ".join(argv[:3]))
+sys.exit(0)
