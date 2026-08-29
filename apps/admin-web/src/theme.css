@@ -1412,3 +1412,76 @@ button.cat-card--new:hover {
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* ── Jalali date fields, «آمار فروشگاه» ─────────────────────────────────────
+   Day, month, year — the order a Persian speaker says a date in. The page is
+   RTL, so the first element in the DOM is the rightmost on screen: the DOM
+   order below IS the reading order, and reversing it would put the year under
+   the reader's thumb.
+
+   Three bare selects in a flex row looked like a form somebody forgot to
+   finish, which is what Sam saw. They get a labelled shell so «از» and «تا»
+   read as one control each rather than as six loose dropdowns. */
+.datefield {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.datefield__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding-inline-start: 2px;
+}
+.datefield__row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.datefield__row:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* `width: auto` because `.form-control` is 100% by default, which collapsed all
+   three to a sliver inside a flex row. */
+.datefield__row select.form-control {
+  width: auto;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+.datefield__row select.form-control:focus {
+  outline: none;
+  box-shadow: none;
+}
+/* The day is the narrowest and the month the widest — «اردیبهشت» is eight
+   characters and «۱» is one. Sizing them apart stops the row jumping when the
+   month changes. */
+.datefield__row select[data-part='day'] { min-width: 4.2rem; }
+.datefield__row select[data-part='month'] { min-width: 7.5rem; }
+.datefield__row select[data-part='year'] { min-width: 5.5rem; }
+
+/* The «آمار فروشگاه» control bar: periods on one line, dates on the next.
+   Both children are full-width flex rows, so the date fields start from the
+   right edge like everything else on an RTL page instead of being pushed left
+   by whatever space the buttons left over. */
+.statsbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+.statsbar__ranges,
+.statsbar__dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.statsbar__dates {
+  gap: 16px;
+}

@@ -18,6 +18,8 @@ export * from './mirzabotVerify.js';
 export * from './reassignMirzabotTransaction.js';
 export * from './revertMirzabotManualVerification.js';
 export * from './historyRange.js';
+export * from './statsRange.js';
+export * from './shopReport.js';
 export * from './incomeEligibility.js';
 export * from './classifyResellerTransaction.js';
 export * from './declineIncomeTransaction.js';

@@ -337,6 +337,60 @@ export interface LayoutItem {
  */
 export type LayoutScope = 'categories' | `category:${number}` | `service:${number}`;
 
+/**
+ * The seven windows the «آمار فروشگاه» screen offers.
+ *
+ * Deliberately not `HistoryRange` — that one belongs to the finance screens and
+ * carries `2d`/`3d`/`7d`/`30d`, which this screen does not offer. The reasoning
+ * for keeping them apart is in `packages/domain/src/statsRange.ts`.
+ */
+export type StatsRange =
+  | 'all'
+  | '1h'
+  | 'today'
+  | 'yesterday'
+  | 'month'
+  | 'prev_month'
+  | 'day'
+  | 'between';
+
+export interface ShopStatsResponse {
+  ok: boolean;
+  range: StatsRange;
+  /** The window measured. `null` on both means «everything». */
+  startMs: number | null;
+  endMs: number | null;
+
+  /** Flows — these move with the range. */
+  newCustomers: number;
+  buyers: number;
+  salesCount: number;
+  salesIrr: number;
+  renewalsCount: number;
+  renewalsIrr: number;
+  topupsIrr: number;
+  conversionPercent: number;
+  avgPerBuyerIrr: number;
+  renewalSharePercent: number;
+  projectedMonthlyIrr: number;
+  projectionDays: number;
+
+  /** Stocks — always «now», whatever the range says. */
+  customersTotal: number;
+  activeSubscriptions: number;
+  activeSubscriptionsIrr: number;
+  walletHeldIrr: number;
+  walletOwedToShopIrr: number;
+  walletDebtors: number;
+  resellers: number;
+  panels: number;
+  claimsWaiting: number;
+
+  gateways: Array<{ method: string; count: number; irr: number }>;
+  /** Figures the legacy screen has and this one will not invent. */
+  notMeasured: Array<{ label: string; reason: string }>;
+}
+
 export interface StockRow {
   id: number;
   planId: number;
@@ -1647,5 +1701,19 @@ export const api = {
         createdAt: string;
       }>;
     }>('/overview');
+  },
+
+  /**
+   * The «آمار فروشگاه» screen.
+   *
+   * `day` is only read when `range` is `'day'`; sending it otherwise is
+   * harmless and the server ignores it, so the page does not have to remember
+   * to clear the date picker when the operator moves back to a period button.
+   */
+  stats(range: StatsRange, day?: string, to?: string) {
+    const q = new URLSearchParams({ range });
+    if ((range === 'day' || range === 'between') && day) q.set('day', day);
+    if (range === 'between' && to) q.set('to', to);
+    return req<ShopStatsResponse>(`/stats?${q.toString()}`);
   },
 };
