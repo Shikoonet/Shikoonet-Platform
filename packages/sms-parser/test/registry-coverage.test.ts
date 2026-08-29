@@ -128,6 +128,17 @@ const FIXTURES: readonly Fixture[] = [
     expect: { classification: 'BANK_TRANSACTION', direction: 'CREDIT', amountIrr: 2_450_000 },
   },
   {
+    parserId: 'mellat-credit-v1',
+    label: 'Mellat credit',
+    // The account is the first number in the body, and reading it as the amount
+    // is exactly what `generic-credit` did before this parser existed. The
+    // fixture keeps the two numbers far apart so a regression is unmistakable.
+    body: ['حساب4436995648', 'واریز', '1,000,000', 'مانده 56,773,273', '05/06/07-10:18'].join(
+      '\n',
+    ),
+    expect: { classification: 'BANK_TRANSACTION', direction: 'CREDIT', amountIrr: 1_000_000 },
+  },
+  {
     parserId: 'melli-transfer-v1',
     label: 'Melli transfer',
     body: [
@@ -259,7 +270,8 @@ describe('every registered parser has a fixture', () => {
     // The completeness test above derives from `REGISTRY` and was never
     // wrong. This one exists so the number itself has somewhere to live that
     // is checked, rather than being recounted by hand into a document.
-    expect(REGISTRY.length).toBe(14);
+    // Fifteen since 2026-08-29: `mellat-credit-v1` joined the named banks.
+    expect(REGISTRY.length).toBe(15);
 
     // And the ids in order, so a reordering — which changes which parser wins
     // a body both could claim — is a visible diff rather than a silent one.
@@ -270,6 +282,7 @@ describe('every registered parser has a fixture', () => {
       'saman-credit-v1',
       'melli-transfer-v1',
       'gardeshgari-credit-v1',
+      'mellat-credit-v1',
       'internet-transfer-signed-v1',
       'account-transfer-signed-v1',
       'parsian-signed-v1',
