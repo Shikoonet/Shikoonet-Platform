@@ -11,6 +11,7 @@ import {
   createLogger,
   createPostgresEventSink,
   parseAlertChatId,
+  resolveBotToken,
   setEventSink,
 } from '@shikoo/domain';
 import { beat } from './heartbeat.js';
@@ -18,6 +19,7 @@ import { run } from './poll.js';
 import { acquirePollerLock } from './singleton.js';
 import { createTelegramApi, TELEGRAM_API_BASE } from './telegram.js';
 import { disableCustomEmoji, setReportChatIdFallback } from './settings.js';
+import { watchBotToken } from './tokenWatch.js';
 
 /** Module level, so the two handlers below the entry point log the same way. */
 const log = createLogger('bot');
@@ -64,7 +66,22 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
     }),
   );
 
-  const token = required('TELEGRAM_BOT_TOKEN');
+  // The dashboard's row first, this process's environment second. One
+  // resolution for the poller, the receipt fetch and anything that comes
+  // later — see `botToken.ts` for why that is a rule and not a convenience.
+  //
+  // `required()` is deliberately not used any more: "no token" is now a state
+  // an operator can be IN and get out of, so the message names both places it
+  // could come from rather than only the variable.
+  const resolved = await resolveBotToken(db, envName);
+  if (resolved === null) {
+    throw new Error(
+      'no bot token: connect a bot from the dashboard (پیکربندی › ربات تلگرام), ' +
+        'or set TELEGRAM_BOT_TOKEN on this service',
+    );
+  }
+  const token = resolved.token;
+  log.info('boot.token_source', { source: resolved.source });
 
   // Before a single `getUpdates`. Telegram allows one poller per token and
   // Coolify starts the new container before stopping the old, so every deploy
@@ -151,10 +168,24 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
     onCycle: beat,
   });
 
+  // An operator who connects a different bot from the dashboard has changed
+  // this process's identity, and there is no way to apply that in place: the
+  // poller lock in `singleton.ts` is keyed on the token, so the old one has to
+  // be released before the new one can be taken. Exiting and letting the
+  // container come back does exactly that, in the order it has to happen.
+  const stopWatching = watchBotToken(db, envName, token, () => {
+    log.warn('bot.token_changed', { consequence: 'exiting so the container restarts on the new bot' });
+    // Abrupt on purpose, and safe because of how `poll.ts` is built: the
+    // offset is never persisted, so Telegram replays whatever was not
+    // acknowledged to the process that comes back.
+    process.exit(0);
+  });
+
   log.info('boot.polling', { envName });
 
   return {
     async stop() {
+      stopWatching();
       controller.abort();
       await finished;
       // Released before the pool closes, so the next container can start

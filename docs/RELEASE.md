@@ -159,7 +159,19 @@ establish them:
    handle as of 2026-08-28 is `Test_Shikoo_bot`; staging must not be that.
 
    This is also the first thing to check after the rollout, and it is item 13
-   of the checklist below for that reason.
+   of the checklist below for that reason. Since 2026-08-29 the panel answers
+   the same question without a psql: «پیکربندی › ربات» draws the connected bot
+   beside the `@username` the running process actually reported, and says which
+   of the two sources the token came from.
+
+   **The token no longer has to come from this variable.** `bot_credentials`
+   holds it, sealed, when an operator connects a bot from the dashboard, and
+   that row wins over the variable. Two things keep this rule intact rather
+   than weakening it: the row records the `ENV_NAME` that wrote it and a
+   process running as anything else refuses it and falls back to its own
+   variable, so a database copied from production cannot make staging poll the
+   shop's bot; and the ciphertext needs `PANEL_SECRET_KEY`, which is per
+   application. The variable stays required on any service that has no row.
 
 2. **No variable is defined twice on the application.** Coolify accepts a
    variable that is already there instead of replacing it, and a form submitted
