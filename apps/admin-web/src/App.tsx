@@ -37,6 +37,7 @@ import { Icon } from './icons.js';
 import { HubSection } from './hub/HubSection.js';
 import { createCache } from './hub/query.js';
 import { DashboardPage } from './pages/DashboardPage.js';
+import { StatsPage } from './pages/StatsPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
 import { BulkPage } from './pages/BulkPage.js';
 import { CatalogPage } from './pages/CatalogPage.js';
@@ -97,6 +98,8 @@ function Body({
   switch (page) {
     case 'dashboard':
       return <DashboardPage onGo={go} />;
+    case 'stats':
+      return <StatsPage />;
     case 'customers':
       return <CustomersPage />;
     case 'bulk':
