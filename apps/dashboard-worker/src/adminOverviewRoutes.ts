@@ -15,7 +15,7 @@
 
 import type { Hono } from 'hono';
 import type { D1Database } from '@shikoo/database';
-import { shopStats } from '@shikoo/domain';
+import { parseStatsDay, parseStatsRange, shopReport, shopStats } from '@shikoo/domain';
 
 type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
 
@@ -129,6 +129,53 @@ export function registerAdminOverviewRoutes(
         status: r.status,
         createdAt: r.created_at,
       })),
+    });
+  });
+
+  /**
+   * The «آمار» screen — the shop's figures over a chosen window.
+   *
+   * Not role-guarded beyond the session, like `/overview` above. Every field it
+   * returns is an aggregate; nothing here names a customer, so it stays on the
+   * readable side of the `READ_ONLY` boundary — which is «shop operations» in
+   * one hand and «its customers' personal data» in the other, not «numbers» and
+   * «no numbers».
+   *
+   * An unknown `range` becomes `all` rather than a 400. This is a screen with
+   * eight buttons on it: the only way to send something else is a hand-typed
+   * URL, and answering that with the widest honest window is better than an
+   * error page. `day` is read for `range=day` and as the opening edge of
+   * `range=between`; `to` closes that one. A malformed date falls back to today
+   * inside `statsRangeBounds` rather than throwing.
+   */
+  app.get('/api/v1/admin/stats', async (c) => {
+    const range = parseStatsRange(c.req.query('range'));
+    const day = parseStatsDay(c.req.query('day') ?? c.req.query('from'));
+    const to = parseStatsDay(c.req.query('to'));
+    const report = await shopReport(c.env.DB, range, Date.now(), day, to);
+
+    return c.json({
+      ok: true,
+      ...report,
+      /**
+       * The three figures the legacy screen has and this one will not compute,
+       * sent as data rather than hardcoded in the page.
+       *
+       * The screen renders each as a struck-through row with its reason. A
+       * missing number that says why it is missing is the whole point; a `0`
+       * would be indistinguishable from «none in this window», which is exactly
+       * the kind of silence that costs this project weeks.
+       */
+      notMeasured: [
+        {
+          label: 'نمایندگان نوع N و N2',
+          reason: 'این‌جا نمایندگی یک وضعیت است، نه دو نوع — ستون `is_reseller` یک بله/خیر است.',
+        },
+        {
+          label: 'اکانت‌های تست',
+          reason: 'ربات قدیمی آن‌ها را از روی نامِ محصول («تست») می‌شمارد؛ ما سرویس تست را مدل نکرده‌ایم.',
+        },
+      ],
     });
   });
 }
