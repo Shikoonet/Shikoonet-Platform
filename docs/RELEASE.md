@@ -368,7 +368,7 @@ value shaped like a path is refused by the writer.
 ### What the sidecar proves, and what it does not
 
 `tools/d1-export-manifest.py` establishes **bundle binding**: one named MySQL
-dump and one complete 23-table D1 export were sealed together, and neither has
+dump and one complete D1 export were sealed together, and neither has
 changed since. A modified file, a file swapped in from another export, a
 missing file, an extra file and a substituted dump are all detected.
 

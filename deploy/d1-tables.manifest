@@ -3,6 +3,9 @@ account_assignment_preview_items
 account_assignment_previews
 audit_logs
 comments
+dashboard_notification_state
+dashboard_payment_event_reads
+dashboard_transaction_reads
 device_credentials
 devices
 financial_account_identifiers

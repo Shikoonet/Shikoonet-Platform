@@ -208,7 +208,7 @@ if ! D1_EXPORT_ID=$(rehearsal_validate_d1_export "$D1_EXPORT_DIR" "$D1_TABLES" "
   echo "[rehearsal] its authenticity from the shape of the rows." >&2
   exit 1
 fi
-say "   D1 bundle verified: 23 tables sealed with this dump, capture window and cross-source coherence within contract"
+say "   D1 bundle verified: the full table set sealed with this dump, capture window and cross-source coherence within contract"
 
 [ -n "$GH_TOKEN_VALUE" ] || die "${CONF} has no GITHUB_TOKEN — release provenance cannot be cross-checked without it"
 

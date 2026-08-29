@@ -5,7 +5,7 @@ WHAT THIS PROVES, AND WHAT IT DOES NOT
 ======================================
 
 It proves **bundle binding**: that one named MySQL dump and one complete
-23-table D1 export were sealed together, and that neither has changed since.
+complete D1 export were sealed together, and that neither has changed since.
 A modified file, a file swapped in from another export, a missing file, an
 extra file and a substituted dump are all detected, because every artifact is
 covered by a digest and the digests are covered by the sidecar's own checksum.
@@ -64,11 +64,11 @@ CAPTURE_WINDOW_MAX = 3600
 
 # deploy/d1-tables.manifest, pinned. The table set is generated from the
 # migrator's own source by tools/d1-contract.py, and a sidecar written against
-# some other list would cover the wrong 23 tables. Pinning the digest here
+# some other list would cover the wrong tables. Pinning the digest here
 # means the generator refuses a manifest that is not the reviewed one;
 # deploy/test/d1-contract.test.sh fails the build if this pin and the tracked
 # file ever drift apart.
-TABLES_MANIFEST_SHA256 = "c1e7da80e3033a8c78c4c365c42bbca002a87daebd08ca32ff6bb7a848c55a27"
+TABLES_MANIFEST_SHA256 = "ca3f60e365793a3746ba97b53316e9c06246fd59fb050f8d2962c964e3ed1f0f"
 
 # Written by the publication path; removed by the signal handlers.
 _TMP_PATH = None
