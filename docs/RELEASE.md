@@ -412,8 +412,11 @@ lock count that is not exactly one, a vanished backup.
 0. **Restage the owner bundle from the merged SHA.** Not optional, and first:
 
    ```sh
-   git -C ~/shikoo-checkout fetch origin main && git -C ~/shikoo-checkout checkout -q <merged-sha>
-   bash ~/shikoo-checkout/deploy/stage-owner-bundle.sh ~/shikoo-checkout <merged-sha>
+   MERGED_SHA=...   # the 40-hex merge commit on main
+
+   git -C ~/shikoo-checkout fetch origin main
+   git -C ~/shikoo-checkout checkout -q "$MERGED_SHA"
+   bash ~/shikoo-checkout/deploy/stage-owner-bundle.sh ~/shikoo-checkout "$MERGED_SHA"
    ```
 
    `stage-owner-bundle.sh` verifies the remote, the SHA and a clean tree, copies
