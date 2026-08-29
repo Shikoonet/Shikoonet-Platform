@@ -494,6 +494,28 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
     'note',
   ];
 
+  // `products.category_id` became NOT NULL in 0032, and this importer was never
+  // taught about it: every run since has died here on the first product. 0032
+  // backfilled the rows that existed at the time and created «سرویس‌ها» to hold
+  // them, but a one-time INSERT in a migration says nothing about rows that
+  // arrive afterwards -- and a freshly seeded database does not even have that
+  // category any more.
+  //
+  // The legacy `category` table is empty (0 rows on the production dump), so
+  // there is no real mapping to preserve. Landing every imported product in the
+  // same category 0032 chose keeps its guarantee true rather than reintroducing
+  // the uncategorised-product state it went out of its way to make
+  // unrepresentable. The admin can split them up afterwards in the panel.
+  await ctx.pg.query(
+    `INSERT INTO product_categories (name, sort_order) VALUES ('سرویس‌ها', 0)
+     ON CONFLICT (name) DO NOTHING`,
+  );
+  const { rows: defaultCategory } = await ctx.pg.query<{ id: string }>(
+    `SELECT id FROM product_categories WHERE name = 'سرویس‌ها'`,
+  );
+  const categoryId = defaultCategory[0]?.id;
+  if (categoryId === undefined) throw new Error('default product category could not be created');
+
   const written = await insertBatch(
     ctx.pg,
     'products',
@@ -502,6 +524,7 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
       'code',
       'name',
       'kind',
+      'category_id',
       'provider_id',
       'status',
       'description',
@@ -514,6 +537,7 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
       r.code_product ?? `product-${r.id}`,
       r.name_product ?? `product-${r.id}`,
       'vpn',
+      categoryId,
       providerFor(r.Location),
       'ACTIVE',
       r.note || null,
@@ -1007,7 +1031,11 @@ async function migrateCardLeases(ctx: Ctx): Promise<number> {
   );
 }
 
-async function migrateOps(ctx: Ctx): Promise<number> {
+// `migrateOps` used to be one step covering support, content, promos and
+// shop bookkeeping. They are split because they belong to different import
+// domains: an operator who imports the shop's configuration is not thereby
+// asking for three years of ticket history.
+async function migrateSupport(ctx: Ctx): Promise<number> {
   let n = 0;
 
   n += await insertBatch(
@@ -1106,6 +1134,12 @@ async function migrateOps(ctx: Ctx): Promise<number> {
     }
   }
 
+  return n;
+}
+
+async function migrateContent(ctx: Ctx): Promise<number> {
+  let n = 0;
+
   n += await insertBatch(
     ctx.pg,
     'help_articles',
@@ -1143,6 +1177,12 @@ async function migrateOps(ctx: Ctx): Promise<number> {
     { conflict: '(chat_ref)' },
   );
 
+  return n;
+}
+
+async function migratePromos(ctx: Ctx): Promise<number> {
+  let n = 0;
+
   n += await insertBatch(
     ctx.pg,
     'wheel_spins',
@@ -1165,6 +1205,12 @@ async function migrateOps(ctx: Ctx): Promise<number> {
     }),
     { conflict: '(legacy_id)' },
   );
+
+  return n;
+}
+
+async function migrateShopOps(ctx: Ctx): Promise<number> {
+  let n = 0;
 
   n += await insertBatch(
     ctx.pg,
@@ -1630,48 +1676,167 @@ async function migrateCards(ctx: Ctx): Promise<number> {
 
 // ===========================================================================
 
-const STEPS: [name: string, run: (ctx: Ctx) => Promise<number>][] = [
-  ['users', migrateUsers],
-  ['referrals', migrateReferrals],
-  ['wallets', migrateWallets],
-  ['settings', migrateSettings],
-  ['admins', migrateAdmins],
-  ['providers', migrateProviders],
-  ['products + plans', migrateProducts],
-  ['discounts', migrateDiscounts],
-  ['subscriptions', migrateSubscriptions],
-  ['payments', migratePayments],
-  ['orders (service_other)', migrateServiceOrders],
-  ['payment hub (D1)', migrateHub],
-  ['bank cards (merged)', migrateCards],
-  ['card leases', migrateCardLeases],
-  ['support, content, promos', migrateOps],
+/**
+ * Which part of the shop a step belongs to.
+ *
+ * `core` is not optional: every other domain has a foreign key into `users`,
+ * and a wallet balance without its owner is not a smaller import, it is a
+ * broken one.
+ */
+export type Domain = 'core' | 'catalog' | 'sales' | 'discounts' | 'config' | 'history' | 'hub';
+
+export const DOMAINS: readonly Domain[] = [
+  'core',
+  'catalog',
+  'sales',
+  'discounts',
+  'config',
+  'history',
+  'hub',
 ];
 
-export async function migrate(cfg: Config, my: Connection, pgc: pg.Client): Promise<void> {
-  const ctx: Ctx = { cfg, my, pg: pgc, userId: new Map(), skipped: new Map() };
+/**
+ * What the dashboard offers by default.
+ *
+ * Not the library default. `migrate()` and `verify()` still run every domain
+ * unless told otherwise, so the CLI, the rehearsal script and the existing
+ * tests behave exactly as they did. Narrowing is something a caller asks for.
+ */
+export const PANEL_DEFAULT_DOMAINS: readonly Domain[] = [
+  'core',
+  'catalog',
+  'sales',
+  'discounts',
+  'config',
+];
 
-  report.title('migrating');
+const STEPS: [name: string, domain: Domain, run: (ctx: Ctx) => Promise<number>][] = [
+  ['users', 'core', migrateUsers],
+  ['referrals', 'core', migrateReferrals],
+  ['wallets', 'core', migrateWallets],
+  ['settings', 'config', migrateSettings],
+  ['admins', 'config', migrateAdmins],
+  ['providers', 'catalog', migrateProviders],
+  ['products + plans', 'catalog', migrateProducts],
+  ['discounts', 'discounts', migrateDiscounts],
+  ['subscriptions', 'sales', migrateSubscriptions],
+  ['payments', 'sales', migratePayments],
+  ['orders (service_other)', 'sales', migrateServiceOrders],
+  ['payment hub (D1)', 'hub', migrateHub],
+  // Cards belong to the hub, not to shop configuration: the merge needs a
+  // `financial_account_id`, and only the D1 export carries one. Tagged 'config'
+  // it produced a foreign key violation the moment somebody imported the shop
+  // without the hub export beside the dump.
+  ['bank cards (merged)', 'hub', migrateCards],
+  ['card leases', 'config', migrateCardLeases],
+  ['support tickets', 'history', migrateSupport],
+  ['help, apps, channels', 'config', migrateContent],
+  ['wheel spins', 'history', migratePromos],
+  ['reseller requests, revenue', 'config', migrateShopOps],
+];
+
+export interface MigrateOptions {
+  /**
+   * `false` rolls the whole thing back instead of committing.
+   *
+   * Every step already runs inside one transaction, so a dry run is the real
+   * migration measured against the real constraints - every partial unique
+   * index, every CHECK - and then discarded. A scratch schema would test a
+   * copy of the rules rather than the rules.
+   */
+  commit?: boolean;
+  /** Domains to run. Defaults to every domain; `core` is always included. */
+  domains?: Iterable<Domain>;
+  /**
+   * Rows to read back from each step's table before the transaction ends, so a
+   * reviewer can see what a mapping actually produced.
+   */
+  samples?: number;
+}
+
+export interface StepResult {
+  name: string;
+  domain: Domain;
+  written: number;
+  ms: number;
+}
+
+export interface MigrateResult {
+  committed: boolean;
+  domains: Domain[];
+  steps: StepResult[];
+  skipped: [what: string, n: number][];
+  /** Table name -> a few rows as they landed. Empty unless `samples` was set. */
+  samples: Record<string, Record<string, unknown>[]>;
+}
+
+/** The table a step's samples come from, where a useful one exists. */
+const SAMPLE_TABLE: Record<string, string> = {
+  users: 'users',
+  wallets: 'wallet_entries',
+  settings: 'settings',
+  providers: 'provisioning_providers',
+  'products + plans': 'product_plans',
+  discounts: 'discount_codes',
+  subscriptions: 'subscriptions',
+  payments: 'payments',
+  'orders (service_other)': 'orders',
+  'bank cards (merged)': 'payment_cards',
+  'card leases': 'card_leases',
+};
+
+export async function migrate(
+  cfg: Config,
+  my: Connection,
+  pgc: pg.Client,
+  opts: MigrateOptions = {},
+): Promise<MigrateResult> {
+  const ctx: Ctx = { cfg, my, pg: pgc, userId: new Map(), skipped: new Map() };
+  const commit = opts.commit !== false;
+  // `core` is not negotiable: it owns `users`, and `ctx.userId` - the map every
+  // later step resolves its owner through - is built by the users step.
+  const wanted = new Set<Domain>([...(opts.domains ?? DOMAINS), 'core']);
+  const domains = DOMAINS.filter((d) => wanted.has(d));
+  const steps: StepResult[] = [];
+  const samples: Record<string, Record<string, unknown>[]> = {};
+
+  report.title(commit ? 'migrating' : 'migrating (dry run - will roll back)');
+  report.step(`domains: ${domains.join(', ')}`);
   await pgc.query('BEGIN');
   try {
-    for (const [name, run] of STEPS) {
+    for (const [name, domain, run] of STEPS) {
+      if (!wanted.has(domain)) {
+        report.step(`${name.padEnd(26)} skipped - domain '${domain}' not selected`);
+        continue;
+      }
       const started = Date.now();
       const written = await run(ctx);
       const ms = Date.now() - started;
       const note = written === 0 ? 'already present' : `${written} row(s) written`;
       report.ok(`${name.padEnd(26)} ${note}  ${String(ms).padStart(5)}ms`);
+      steps.push({ name, domain, written, ms });
+
+      const table = SAMPLE_TABLE[name];
+      if (opts.samples && table !== undefined) {
+        const { rows } = await pgc.query(`SELECT * FROM ${table} LIMIT $1`, [opts.samples]);
+        samples[table] = rows as Record<string, unknown>[];
+      }
     }
-    await pgc.query('COMMIT');
+    // The rollback is deliberate and reported, so a dry run can never be read
+    // as a completed import.
+    await pgc.query(commit ? 'COMMIT' : 'ROLLBACK');
+    if (!commit) report.warn('dry run - rolled back, nothing was written');
   } catch (err) {
     await pgc.query('ROLLBACK');
-    report.fail('rolled back — nothing was written');
+    report.fail('rolled back - nothing was written');
     throw err;
   }
 
-  if (ctx.skipped.size > 0) {
+  const skipped = [...ctx.skipped].sort((a, b) => b[1] - a[1]);
+  if (skipped.length > 0) {
     report.title('skipped (parent row no longer exists)');
-    for (const [what, n] of [...ctx.skipped].sort((a, b) => b[1] - a[1])) {
-      report.warn(`${n} ${what}`);
-    }
+    for (const [what, n] of skipped) report.warn(`${n} ${what}`);
   }
+
+  return { committed: commit, domains, steps, skipped, samples };
 }
