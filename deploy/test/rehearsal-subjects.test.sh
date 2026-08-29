@@ -78,8 +78,11 @@ fi
 # pipe". The fake now logs full argv, where a container name is followed by
 # more arguments rather than a delimiter, so `[^|]*` swallowed the rest of the
 # line and every subsequent grep for that name matched nothing.
-RESTORE_C=$(grep -oE 'shikoo-rehearsal-restore-[0-9]+-[0-9]+' "$W/log" | head -1)
-DEST_C=$(grep -oE 'shikoo-rehearsal-dest-[0-9]+-[0-9]+' "$W/log" | head -1)
+# `|| true`: with no match `grep` exits 1, pipefail carries it, and errexit
+# would end the suite here — at the very line whose assertion below exists to
+# report "the two subjects are distinct containers" as a FAIL.
+RESTORE_C=$(grep -oE 'shikoo-rehearsal-restore-[0-9]+-[0-9]+' "$W/log" | head -1 || true)
+DEST_C=$(grep -oE 'shikoo-rehearsal-dest-[0-9]+-[0-9]+' "$W/log" | head -1 || true)
 
 # Both halves ran, against different databases.
 if [ -n "$RESTORE_C" ] && [ -n "$DEST_C" ] && [ "$RESTORE_C" != "$DEST_C" ]; then ok "the two subjects are distinct containers"; else bad "the two subjects are distinct containers" "restore=$RESTORE_C dest=$DEST_C"; fi

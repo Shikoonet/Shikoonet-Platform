@@ -45,6 +45,18 @@ for tok in re.finditer(r"\[|\]|'([a-z0-9_]+)'", block):
         tables.add(tok.group(1))
         pending_entry = False
 
+# Explicit `copyD1` calls outside the D1_TABLES loop. `migrateHub` reads
+# dashboard_notification_state, dashboard_transaction_reads and
+# dashboard_payment_event_reads through their own calls, and the bracket-depth
+# walk above cannot see them because they are arguments, not array entries.
+# Omitting them made the contract 23 tables where the migrator reads 26 — so a
+# COMPLETE export would have been refused as holding unexpected files, and a
+# rehearsal that matched the contract would have been missing three tables of
+# data. That is the same failure the first version of this file had, in the
+# opposite direction.
+for call in re.finditer(r"copyD1\(\s*ctx,\s*'([a-z0-9_]+)'", src):
+    tables.add(call.group(1))
+
 # preflight counts a further set that migrate.ts does not copy directly.
 pre = (root / 'packages/migrate/src/preflight.ts').read_text(encoding='utf-8')
 pstart = pre.index('d1Counts.set(table')

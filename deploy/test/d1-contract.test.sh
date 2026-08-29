@@ -119,10 +119,10 @@ fi
 # caught only if someone regenerated the manifest — at which point both sides
 # agree on a shorter list. The count is asserted independently.
 N=$(python3 "$ROOT/tools/d1-contract.py" | grep -c .)
-if [ "$N" -ge 23 ]; then
-  ok "the generator derives at least 23 tables (${N})"
+if [ "$N" -ge 26 ]; then
+  ok "the generator derives at least 26 tables (${N})"
 else
-  bad "the generator derives at least 23 tables" "only ${N} — a pattern change may be dropping tables silently"
+  bad "the generator derives at least 26 tables" "only ${N} — a pattern change may be dropping tables silently"
 fi
 # And a name with a digit in it must survive extraction.
 if python3 - "$ROOT" <<'PY'
@@ -136,6 +136,19 @@ then
 else
   bad 'every table-name pattern admits digits' 'a pattern would drop raw_sms_events_v2'
 fi
+
+# The three tables `migrateHub` reads through explicit `copyD1` calls outside
+# `D1_TABLES`. The bracket-depth walk cannot see them — they are arguments, not
+# array entries — and omitting them made the contract 23 where the migrator
+# reads 26. A complete export would then have been refused as holding
+# unexpected files.
+for t in dashboard_notification_state dashboard_transaction_reads dashboard_payment_event_reads; do
+  if grep -qxF "$t" "$ROOT/deploy/d1-tables.manifest"; then
+    ok "the contract covers ${t}"
+  else
+    bad "the contract covers ${t}" 'the migrator reads it and the contract does not name it'
+  fi
+done
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
