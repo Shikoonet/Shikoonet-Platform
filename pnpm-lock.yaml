@@ -137,6 +137,9 @@ importers:
       '@shikoo/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@shikoo/migrate':
+        specifier: workspace:*
+        version: link:../../packages/migrate
       '@shikoo/sms-parser':
         specifier: workspace:*
         version: link:../../packages/sms-parser

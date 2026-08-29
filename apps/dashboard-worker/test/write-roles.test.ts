@@ -295,6 +295,9 @@ describe('every write route, asked directly', () => {
     // deleted is not left emptied by a request that then refused. And the
     // unique violation is caught as well as counted, because the count is a
     // read and a concurrent ingest can land a matching body in between.
-    expect(writeRoutes().length).toBe(130);
+    // 130 -> 133: «ایمپورت» adds preflight, dry-run and apply. All three are
+    // ADMIN-only, which the three assertions above already prove; this number
+    // is the separate promise that nobody added a fourth without saying so.
+    expect(writeRoutes().length).toBe(133);
   });
 });
