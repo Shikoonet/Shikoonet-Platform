@@ -687,8 +687,18 @@ for entry in $(printf '%s' "$LIVE_IMAGES" | tr ',' ' '); do
   set -e
   case "$GATE_RC" in
     0) ;;
-    1) OLD_APP_SCHEMA_COMPAT=fail
-       say "   ${app}: the gate blocked — $(grep -m1 '^BLOCK' "$ART/gate-${svc}.log" || echo 'see the gate log')" ;;
+    1)
+      # Exit 1 alone is not a verdict. `schemaCli.ts` prints `BLOCK …` on its
+      # blocking path, but a rejected `main()` — a connection failure, an
+      # unreadable schema — also exits 1 with nothing printed. Recording that
+      # as `old_app_schema_compat=fail` would report a broken connection as
+      # "the current production image cannot serve the migrated schema".
+      if grep -q '^BLOCK' "$ART/gate-${svc}.log"; then
+        OLD_APP_SCHEMA_COMPAT=fail
+        say "   ${app}: the gate blocked — $(grep -m1 '^BLOCK' "$ART/gate-${svc}.log")"
+      else
+        die "the schema gate inside ${app}'s image exited 1 without a BLOCK reason — that is the probe failing, not a compatibility result"
+      fi ;;
     # Anything else is the probe failing, not a verdict about the schema, and
     # must not be recorded as one.
     *) die "the schema gate could not be run inside ${app}'s image (exit ${GATE_RC}) — this is a broken probe, not a compatibility result" ;;

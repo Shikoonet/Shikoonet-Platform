@@ -238,6 +238,21 @@ else
   bad "a blocked schema gate stops the rehearsal" "$(grep -i 'STOP:' "$GW/out" | head -1)"
 fi
 
+# Exit 1 with nothing printed is a rejected `main()` — a connection failure, an
+# unreadable schema — not a blocking gate. Recording it as
+# old_app_schema_compat=fail would report a broken connection as "the current
+# production image cannot serve the migrated schema".
+GWS="$WORKROOT/gate-silent"; build_world "$GWS"
+FAKE_GATE_RC=1 FAKE_GATE_SILENT=1 run_rehearsal "$GWS"; GSRC=$?
+if [ "$GSRC" -eq 0 ]; then
+  bad "exit 1 without a BLOCK reason is not a compatibility verdict" "it succeeded"
+elif grep -q 'without a BLOCK reason' "$GWS/out"; then
+  ok "exit 1 without a BLOCK reason is not a compatibility verdict"
+else
+  bad "exit 1 without a BLOCK reason is not a compatibility verdict" "$(grep -i 'STOP:' "$GWS/out" | head -1)"
+fi
+rm -rf "$GWS"
+
 GW2="$WORKROOT/gate-broken"; build_world "$GW2"
 FAKE_GATE_RC=127 run_rehearsal "$GW2"; GRC2=$?
 if [ "$GRC2" -eq 0 ]; then

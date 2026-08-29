@@ -25,7 +25,12 @@
 # Every single-quoted string below is a sed expression whose `$name` has to
 # reach sed unexpanded. That is the entire content of this file.
 # shellcheck disable=SC2016
-set -uo pipefail
+# `-Ee`: this edits tracked deploy scripts in place. Without errexit, a failed
+# `cp` left no backup while `cmp` reported a difference — so the run proceeded
+# as if the mutation had applied, with nothing to restore from — and a failed
+# `mv` in `restore` left a tracked deploy script mutated while the run still
+# reported success.
+set -Eeuo pipefail
 
 HERE=$(CDPATH='' ; cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH='' ; cd -- "$HERE/../.." && pwd)
@@ -99,12 +104,14 @@ trap 'on_signal TERM 143' TERM
 trap restore_all EXIT
 
 apply() { # file expr -> 0 if the source changed
-  cp "$1" "$1.orig"
-  sed -i "$2" "$1"
-  if cmp -s "$1" "$1.orig"; then mv "$1.orig" "$1"; return 1; fi
+  cp "$1" "$1.orig" || { echo "[mutations] could not back up $1" >&2; exit 1; }
+  sed -i "$2" "$1" || { mv -f "$1.orig" "$1"; echo "[mutations] sed failed on $1" >&2; exit 1; }
+  if cmp -s "$1" "$1.orig"; then mv -f "$1.orig" "$1"; return 1; fi
   return 0
 }
-restore() { mv "$1.orig" "$1"; }
+restore() {
+  mv -f "$1.orig" "$1" || { echo "[mutations] COULD NOT RESTORE $1 — the tree is left mutated" >&2; exit 1; }
+}
 
 mut() { # file expr suite label
   local f=$1 expr=$2 suite=$3 label=$4
@@ -211,6 +218,7 @@ mut "$G" 's|window = math.ceil(span)|window = int(span)|'            "$DT" "side
 mut "$G" 's|if dump_mtime < max(mtimes):|if False:|'                 "$DT" "sidecar: seal a dump older than the export"
 mut "$G" 's|if coherence != "pass":|if False:|'                      "$DT" "sidecar: seal an incoherent bundle"
 mut "$G" 's|            if not ref:|            if False:|'          "$DT" "sidecar: accept a prefix-only order reference"
+mut "$G" 's|            refuse("payment_claims.json is neither a list nor an object")|            rows = []|' "$DT" "sidecar: accept an unknown payment_claims shape"
 mut "$G" 's|os.chmod(_TMP_PATH, 0o640)|pass|'                        "$DT" "sidecar: leave the published mode to umask"
 mut "$G" 's|if open(_TMP_PATH, encoding="utf-8").read() != text:|if False:|' "$DT" "sidecar: publish without re-reading"
 mut "$G" 's|    _cleanup()  # the only cleanup on the refusal path|    pass|' "$DT" "sidecar: refuse without cleaning up"
@@ -219,6 +227,8 @@ echo "== owner bundle restaging =="
 mut "$B" 's|\[ "$HEAD_SHA" = "$WANT_SHA" \]|true|'  "$BT" "restage: accept a checkout at any sha"
 mut "$B" 's|\*) die "the checkout.s origin is not a known remote for this repository" ;;|*) : ;;|' "$BT" "restage: accept any remote"
 mut "$B" 's|\[ -z "$(git -C "$CHECKOUT" status --porcelain)" \]|true|' "$BT" "restage: accept a dirty tree"
+mut "$B" 's|git -C "$CHECKOUT" merge-base --is-ancestor "$WANT_SHA" refs/remotes/origin/main|true|' "$BT" "restage: accept an unpublished commit"
+mut "$B" 's|git -C "$CHECKOUT" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null|true|' "$BT" "restage: accept a checkout with no tracking ref"
 mut "$B" 's|\[ ! -L "$src" \]|true|'                "$BT" "restage: accept a symlinked file"
 mut "$B" 's|( cd "$TMP" \&\& sha256sum -c --status MANIFEST )|true|' "$BT" "restage: skip the hash check"
 mut "$B" 's|\[ "$PIN" = "$ACTUAL" \]|true|'         "$BT" "restage: accept a mismatched installer"
@@ -229,6 +239,7 @@ mut "$R" 's|\[ "$LEDGER_NOW" = "$PROD_LEDGER_BEFORE" \]|true|'       "$ST" "subj
 mut "$R" 's|\[ "$OLD_APP_TARGET" != "$DEST_C" \]|true|'              "$ST" "subjects: old image against the destination"
 mut "$R" 's|    1) OLD_APP_SCHEMA_COMPAT=fail|    1) :|'             "$ST" "subjects: ignore a blocked schema gate"
 mut "$R" 's|    \*) die "the schema gate could not be run|    *) : "the schema gate could not be run|' "$ST" "subjects: treat a broken probe as a verdict"
+mut "$R" 's|      if grep -q .\^BLOCK. "$ART/gate-${svc}.log"; then|      if true; then|' "$ST" "subjects: exit 1 without BLOCK counts as a verdict"
 mut "$R" 's|\[ "$APPLIED_TO_RESTORE" -gt 0 \]|true|'                 "$ST" "subjects: allow zero migrations applied"
 
 echo "== cleanup =="

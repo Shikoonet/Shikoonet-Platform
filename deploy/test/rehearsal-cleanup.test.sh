@@ -153,9 +153,34 @@ else
   bad "the throwaway password is only ever presented to this run's own containers" "a foreign host appeared"
 fi
 # And it is never presented to the production database or to Coolify's.
-if grep -E '^(query|migration|invariants)\|(coolify-db|live-)' "$W/log" | grep -q 'rehearsal'; then
-  bad "the throwaway password never reaches production" "found a production target"
-else ok "the throwaway password never reaches production"; fi
+#
+# What was here grepped `^(query|migration|invariants)\|(coolify-db|live-)`
+# — verb lines whose fields are a container, a database and some SQL. A
+# password could not appear on those lines at all, so the first stage matched
+# nothing, the second read empty input, and the else branch reported a pass.
+# Even on a match, `grep -q 'rehearsal'` was testing for the container-name
+# substring rather than for the credential.
+#
+# The argv lines are where a credential would actually be, so that is what is
+# searched: every invocation carrying the throwaway password, checked for a
+# production target.
+PRODHIT=0
+while IFS= read -r line; do
+  case "$line" in
+    *coolify-db*|*live-*) PRODHIT=$((PRODHIT + 1)) ;;
+  esac
+done < <(grep -F 'postgres:rehearsal@' "$W/log" 2>/dev/null || true)
+if [ "$PRODHIT" -eq 0 ]; then
+  ok "the throwaway password never reaches production or Coolify"
+else
+  bad "the throwaway password never reaches production or Coolify" "${PRODHIT} invocation(s) named a production target"
+fi
+# And the converse: nothing aimed at a production target carries it.
+if grep -F 'argv|' "$W/log" | grep -E 'coolify-db|live-' | grep -q 'rehearsal@'; then
+  bad "no production-targeted invocation carries the throwaway credential" "one does"
+else
+  ok "no production-targeted invocation carries the throwaway credential"
+fi
 
 # ── the attestation and the fixtures are clean too ───────────────────────
 # `readlink -f` prints a path whose final component does not exist, so `-n

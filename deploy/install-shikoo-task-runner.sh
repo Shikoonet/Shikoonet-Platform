@@ -48,7 +48,7 @@ BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
 # The one hard-coded value. Everything else is derived from the manifest it
 # pins, and a CI test asserts this still equals
 # sha256sum deploy/shikoo-task-runner.manifest.
-MANIFEST_SHA256=216885db8f5517858119e1629cdddfc955eb120424544b5420439e8ed5658266
+MANIFEST_SHA256=98a1735d332ee656d4c5f45a2285d04455c0f04ae111004684cdca558a62fc23
 
 say() { echo "[install] $*"; }
 die() { echo "[install] FAILED: $*" >&2; exit 1; }
@@ -202,11 +202,20 @@ if ( set -C; : >"$RELEASE_LOCK" ) 2>/dev/null; then
   say "created $RELEASE_LOCK"
 else
   # It already existed. Adopt it only if it is a regular file — never a
-  # symlink, a directory, or a device.
+  # symlink, a directory, or a device — AND only if it was already root's.
+  #
+  # A local account can create and flock a regular file in the window between
+  # the symlink check and this create. Adopting it would chown their file to
+  # root while they keep the lock, and every task-runner command afterwards
+  # would block at `flock -n` until root noticed and repaired it. Ownership is
+  # therefore checked BEFORE chown, not asserted after it.
   if [ ! -f "$RELEASE_LOCK" ] || [ -L "$RELEASE_LOCK" ]; then
     fail_back "$RELEASE_LOCK exists and is not a regular file"
   fi
-  say "adopting the existing $RELEASE_LOCK (a holder's flock stays valid)"
+  lock_owner=$(stat -c '%u' "$RELEASE_LOCK")
+  [ "$lock_owner" = '0' ] ||
+    fail_back "$RELEASE_LOCK already exists and is owned by uid ${lock_owner}, not root — someone else created it; remove it by hand once you know no release holds it"
+  say "adopting the existing root-owned $RELEASE_LOCK (a holder's flock stays valid)"
 fi
 chown root:"$RUN_AS" "$RELEASE_LOCK"
 chmod 0660 "$RELEASE_LOCK"

@@ -66,6 +66,24 @@ HEAD_SHA=$(git -C "$CHECKOUT" rev-parse HEAD)
 [ -z "$(git -C "$CHECKOUT" status --porcelain)" ] ||
   die "the checkout has local modifications or untracked files"
 
+# And the commit has to be one the remote actually published.
+#
+# The remote allowlist above reads `git remote get-url origin`, which is local
+# configuration anyone with the checkout can set. On its own it proves nothing:
+# an unrelated repository with `origin` pointed at the right URL passes it. The
+# binding that does mean something is the remote-tracking ref — it exists only
+# because a fetch from that remote produced it — so the commit must be
+# reachable from `origin/main`.
+#
+# This is not cryptographic verification. It establishes that the SHA came from
+# the configured remote's main branch, not that the remote is authentic; that
+# would need signed commits or an authenticated mirror, and is an owner-side
+# decision this script cannot make for itself.
+git -C "$CHECKOUT" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null ||
+  die "the checkout has no origin/main remote-tracking ref — fetch from the remote before staging"
+git -C "$CHECKOUT" merge-base --is-ancestor "$WANT_SHA" refs/remotes/origin/main ||
+  die "${WANT_SHA:0:12} is not reachable from origin/main in this checkout — it is not a commit the remote published"
+
 say "checkout verified at ${WANT_SHA:0:12}, clean, correct remote"
 
 # ── 2. the manifest decides what is copied ───────────────────────────────

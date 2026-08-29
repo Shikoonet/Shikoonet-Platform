@@ -74,14 +74,16 @@ has "$R" 'rehearsal_require_host_deps' 'the host dependency contract runs'
 # Ordering is the point of the contract. A missing tool discovered halfway
 # through has already caused the config to be read, the dump to be opened and a
 # temp directory holding customer data to exist.
-deps=$(grep -n 'rehearsal_require_host_deps "$DEP_PROBE"' "$R" | head -1 | cut -d: -f1)
+deps=$(grep -n 'rehearsal_require_host_deps "$DEP_PROBE"' "$R" | head -1 | cut -d: -f1 || true)
 for later in 'rehearsal_require_secure_file "$CONF"' \
              'DUMP_PATH=$(cfg MIRZABOT_DUMP)' \
              'rehearsal_validate_d1_export' \
              'find "$PROD_BACKUP_DIR"' \
              'docker network create' \
              'VERSION_DIR='; do
-  l=$(grep -nF "$later" "$R" | head -1 | cut -d: -f1)
+  # `|| true`: this suite runs with errexit and pipefail, so an absent string
+  # ended the script at this line instead of reporting the FAIL below.
+  l=$(grep -nF "$later" "$R" | head -1 | cut -d: -f1 || true)
   if [ -n "$deps" ] && [ -n "$l" ] && [ "$deps" -lt "$l" ]; then
     ok "the host contract precedes: ${later:0:40}"
   else
@@ -209,8 +211,8 @@ has "$R" 'LIVE_IMAGES' 'the derived images are what compatibility is tested agai
 has "$R" 'OLD_APP_SCHEMA_COMPAT' 'compatibility is measured'
 has "$R" 'image rollback would be void' 'a failure explains what it costs'
 # It must be checked BEFORE the attestation is written.
-compat=$(grep -n 'OLD_APP_SCHEMA_COMPAT" = ' "$R" | head -1 | cut -d: -f1)
-write=$(grep -n 'bash "\$HERE/write-dump-attestation.sh" "\$TMP_ATT"' "$R" | head -1 | cut -d: -f1)
+compat=$(grep -n 'OLD_APP_SCHEMA_COMPAT" = ' "$R" | head -1 | cut -d: -f1 || true)
+write=$(grep -n 'bash "\$HERE/write-dump-attestation.sh" "\$TMP_ATT"' "$R" | head -1 | cut -d: -f1 || true)
 if [ -n "$compat" ] && [ -n "$write" ] && [ "$compat" -lt "$write" ]; then
   ok 'compatibility is required before the attestation is written'
 else
@@ -234,7 +236,7 @@ for gate in 'the newest production backup did not restore' \
             'disagree with their own entries' \
             'invariants on the migrated production copy' \
             'cannot serve the migrated schema'; do
-  g=$(grep -n "$gate" "$R" | head -1 | cut -d: -f1)
+  g=$(grep -n "$gate" "$R" | head -1 | cut -d: -f1 || true)
   if [ -n "$g" ] && [ -n "$write" ] && [ "$g" -lt "$write" ]; then
     ok "gated before the attestation: ${gate:0:44}"
   else
@@ -297,9 +299,9 @@ for forbidden in 'docker pull' 'docker build' 'docker manifest' 'buildx'; do
   fi
 done
 # Images are validated before the dump or the backup is opened.
-img=$(grep -n 'rehearsal_require_local_images' "$R" | head -1 | cut -d: -f1)
-dump=$(grep -n 'sha256sum "$DUMP_PATH"' "$R" | head -1 | cut -d: -f1)
-bk=$(grep -n 'find "$PROD_BACKUP_DIR"' "$R" | head -1 | cut -d: -f1)
+img=$(grep -n 'rehearsal_require_local_images' "$R" | head -1 | cut -d: -f1 || true)
+dump=$(grep -n 'sha256sum "$DUMP_PATH"' "$R" | head -1 | cut -d: -f1 || true)
+bk=$(grep -n 'find "$PROD_BACKUP_DIR"' "$R" | head -1 | cut -d: -f1 || true)
 if [ -n "$img" ] && [ -n "$dump" ] && [ "$img" -lt "$dump" ]; then
   ok 'images are validated before the dump is opened'
 else

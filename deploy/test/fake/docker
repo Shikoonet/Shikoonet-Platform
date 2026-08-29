@@ -157,7 +157,11 @@ if verb == "run":
 
     if "schemaCli.ts gate" in joined:
         log("old-image-gate", container=subject, db=dbname, detail=env.get("SERVICE", ""))
-        sys.exit(int(os.environ.get("FAKE_GATE_RC", "0")))
+        rc = int(os.environ.get("FAKE_GATE_RC", "0"))
+        # A blocking gate prints BLOCK; a rejected main() exits 1 silently.
+        if rc == 1 and os.environ.get("FAKE_GATE_SILENT") != "1":
+            sys.stdout.write("BLOCK schema is behind this image\n")
+        sys.exit(rc)
 
     if "migrate" in joined:
         # The migrator builds the destination from nothing: its ledger ends at
