@@ -300,9 +300,30 @@ Production is not touched by anything else in this repository.
 
 A production-dump rehearsal, recorded as a checksummed attestation and
 verified before any credential is in scope. It binds the merged sha, the CI
-run, the Deploy Staging run, the exact digest, `49/49` dump suites, `32/32`
-invariants, the financial comparison, the restore result and duration, and
-whether the CURRENT production image still serves the migrated schema.
+run, the Deploy Staging run, the exact digest, the identity of the D1 export,
+`49/49` dump suites, the financial comparison, the restore result and
+duration, and whether the CURRENT production image still serves the migrated
+schema.
+
+The rehearsal has **two subjects**, and the attestation records a verdict for
+each of them separately:
+
+| Field | Subject |
+|---|---|
+| `legacy_import` | the MySQL + D1 dataset imported into a fresh destination |
+| `invariants` | the thirty-two, measured on that legacy destination |
+| `dump_suites` | the forty-nine dump-gated suites, against that destination |
+| `financial_totals` | source aggregates compared against that destination |
+| `prod_restore_migrated`, `prod_migration_range` | production's own restored data, brought forward over the pending range only |
+| `prod_invariants` | the thirty-two, measured on the migrated production restore |
+| `old_app_schema_compat`, `old_app_schema_subject` | today's live images, against the migrated production restore |
+
+They are separate because one `invariants=32/32` line could have come from
+either, so a run that measured the legacy import twice — and never migrated
+the restored production copy at all — produced an attestation indistinguishable
+from a correct one. `old_app_schema_subject` must read `production-restore`:
+proving the old image works against a database the new code just built says
+nothing about whether it can serve production's data after migration.
 
 That last field is what keeps image rollback valid. If it says `fail`, rolling
 back to the old image is not a recovery path and only a database restore is —
@@ -313,8 +334,62 @@ not exist until staging has deployed. `deploy/write-dump-attestation.sh` writes
 it on the secure host; `deploy/verify-dump-attestation.sh` refuses a promotion
 whose attestation is missing, malformed, stale, or for a different release.
 
+**Resolving it.** There is one pointer and one immutable version directory:
+
+```text
+/var/lib/shikoo/production/attestation/current -> versions/<sha>-<UTC stamp>/
+```
+
+Every consumer — `prepare-production.sh`, `verify-dump-attestation.sh`, the
+task runner's `status` and `verify-evidence` — resolves through `current` and
+reads nothing beside it. The flat `attestation.env`/`attestation.sha256` pair
+that used to sit in that directory is gone: it was a second copy of the same
+fact, published after the pointer swap in two separate renames, so a reader
+arriving between them saw a new `.env` beside an old `.sha256`. Read it by
+hand with `readlink -f`, never by naming a version directory.
+
+Publication order is fixed, and nothing fallible follows the swap:
+
+1. build the version directory
+2. verify its checksum, its release values, and that the promotion gate's own
+   verifier accepts it
+3. take `/var/lock/shikoo-deploy-production.lock` exclusively
+4. rename `current` onto the new version — one inode operation
+5. release
+
+The lock is created by the installer as `root:shikoo-deploy 0660`, and both the
+root rehearsal and the `shikoo-deploy` Prepare path validate its ownership
+before using it. `/var/lock` is world-writable, so a lock file that is not
+exactly that is refused rather than adopted.
+
 The dump itself never leaves that host. `dump_id` is a sha256 and a date, and a
 value shaped like a path is refused by the writer.
+
+### What the sidecar proves, and what it does not
+
+`tools/d1-export-manifest.py` establishes **bundle binding**: one named MySQL
+dump and one complete D1 export were sealed together, and neither has
+changed since. A modified file, a file swapped in from another export, a
+missing file, an extra file and a substituted dump are all detected.
+
+It does **not** prove the two were read from one transactionally consistent
+moment, and nothing at this layer could: D1 is a Cloudflare service and
+Mirzabot's MySQL is a different machine, so there is no cross-database snapshot
+to take. An earlier version of this document called it a snapshot proof. That
+was an overclaim of exactly the kind that matters, because the promotion gate
+would have believed a stronger fact than anyone had established.
+
+What stands in its place is a **bounded-consistency contract**, recorded by the
+generator and enforced by the rehearsal before anything is opened:
+
+| Rule | Why |
+|---|---|
+| **capture window** — every artifact written within `capture_window_max` (3600s) of every other | bounds how far the two sources can have drifted. It rests on file mtimes, so it guards against the ordinary mistake — yesterday's export beside today's dump — not against someone who already has root on the secure host |
+| **capture order** — the dump is no older than the newest D1 file | with MySQL captured last it is the superset, so every order D1 has a claim for is in the dump. The other way round, D1 can reference orders the dump has never heard of and the migration would invent them |
+| **cross-source coherence** — every Mirzabot order reference carried by D1's `payment_claims` appears in the dump | catches an export paired with an unrelated dump even when both are fresh. A presence test over the dump text, so it needs no knowledge of Mirzabot's schema |
+
+The sidecar records verdicts and counts only — never a reference, a value, a
+path, or a timestamp of customer activity.
 
 ### Splitting promotion in two
 
@@ -334,15 +409,45 @@ lock count that is not exactly one, a vanished backup.
 
 **A normal release, once production is on Docker Image applications:**
 
+0. **Restage the owner bundle from the merged SHA.** Not optional, and first:
+
+   ```sh
+   MERGED_SHA=...   # the 40-hex merge commit on main
+
+   git -C ~/shikoo-checkout fetch origin main
+   git -C ~/shikoo-checkout checkout -q "$MERGED_SHA"
+   bash ~/shikoo-checkout/deploy/stage-owner-bundle.sh ~/shikoo-checkout "$MERGED_SHA"
+   ```
+
+   `stage-owner-bundle.sh` verifies the remote, the SHA and a clean tree, copies
+   only what the tracked runner manifest lists, refuses a missing, extra,
+   modified or symlinked file, verifies every hash in a temporary directory,
+   and replaces `~/shikoo-owner-step-e` atomically. It stages the installer
+   beside the bundle from that same revision and writes
+   `~/shikoo-owner-step-e.provenance` recording which SHA it came from.
+
+   This exists because twice in this work that directory held files from an
+   earlier revision and the instruction that followed was `sha256sum -c
+   MANIFEST` — a check a stale bundle passes perfectly, because a manifest and
+   its files agree with each other whatever commit they came from. Never run
+   that check in a directory whose provenance was not established first.
+
 1. Merge the pull request. Nothing else is needed for staging — CI runs, and
    `Deploy Staging` deploys the merge commit automatically.
 2. Read the staging acceptance checklist (§4).
-3. Run the dump rehearsal on the secure host and record its attestation.
-4. **Actions ▸ Prepare Production ▸ Run workflow**, branch `main`,
+3. Produce the D1 export's provenance sidecar in the same operation that
+   produces the export:
+   `tools/d1-export-manifest.py <export-dir> <mirzabot-dump> deploy/d1-tables.manifest`
+   The rehearsal refuses an export without it, and does not infer authenticity
+   from the shape of the rows. Capture the MySQL dump **last** — the contract
+   requires it to be no older than the newest D1 file (§ *What the sidecar
+   proves*).
+4. Run the dump rehearsal on the secure host and record its attestation.
+5. **Actions ▸ Prepare Production ▸ Run workflow**, branch `main`,
    `confirm: PREPARE`. Nothing customers can see changes. It ends with
    `READY FOR CUTOVER` and a summary of everything it observed.
-5. Read that summary. This is the step the two-dispatch split exists for.
-6. **Actions ▸ Cutover Production ▸ Run workflow**, branch `main`,
+6. Read that summary. This is the step the two-dispatch split exists for.
+7. **Actions ▸ Cutover Production ▸ Run workflow**, branch `main`,
    `confirm: CUTOVER`. The live domains move and the bot is handed over.
 
 Both refuse a branch other than `main`, an actor other than the owner, and a

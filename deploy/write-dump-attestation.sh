@@ -52,6 +52,12 @@ mkdir -p "$OUT_DIR"
 : "${RESTORE_RESULT:?RESTORE_RESULT is required: pass or fail}"
 : "${RESTORE_SECONDS:?RESTORE_SECONDS is required}"
 : "${OLD_APP_SCHEMA_COMPAT:?OLD_APP_SCHEMA_COMPAT is required: pass or fail}"
+: "${LEGACY_IMPORT:?LEGACY_IMPORT is required: the MySQL+D1 import verdict, pass or fail}"
+: "${PROD_RESTORE_MIGRATED:?PROD_RESTORE_MIGRATED is required: the migrated production restore verdict}"
+: "${PROD_INVARIANTS:?PROD_INVARIANTS is required, e.g. 32/32, measured on the production restore}"
+: "${PROD_MIGRATION_RANGE:?PROD_MIGRATION_RANGE is required: the pending range applied to the restore}"
+: "${OLD_APP_SCHEMA_SUBJECT:?OLD_APP_SCHEMA_SUBJECT is required: which database the old images were tested against}"
+: "${D1_EXPORT_ID:?D1_EXPORT_ID is required: the provenance identity of the D1 export}"
 
 refuse() {
   echo "refusing: $*" >&2
@@ -79,6 +85,33 @@ case "$FINANCIAL_TOTALS" in match | mismatch) ;; *) refuse "FINANCIAL_TOTALS mus
 case "$RESTORE_RESULT" in pass | fail) ;; *) refuse "RESTORE_RESULT must be 'pass' or 'fail'" ;; esac
 case "$OLD_APP_SCHEMA_COMPAT" in pass | fail) ;; *) refuse "OLD_APP_SCHEMA_COMPAT must be 'pass' or 'fail'" ;; esac
 
+# The rehearsal has two subjects and they are not interchangeable: a legacy
+# MySQL+D1 import into a fresh destination, and a restored copy of production
+# brought forward over the pending range. One `invariants=32/32` line could
+# have come from either, so a run that measured the same database twice — and
+# never touched the production restore at all — produced an attestation
+# indistinguishable from a correct one.
+#
+# Each subject therefore records its own verdict, and every one of them is
+# required. There is no combined field left to be satisfied by half the work.
+# A hash over the export's own manifest — a hash of hashes, so it names the
+# export without carrying any customer value. The identifier this replaces was
+# computed and then thrown away, which meant the export's identity was never
+# actually bound to anything.
+[[ $D1_EXPORT_ID =~ ^sha256:[0-9a-f]{64}$ ]] ||
+  refuse "D1_EXPORT_ID is not sha256: plus 64 lowercase hex"
+case "$LEGACY_IMPORT" in pass | fail) ;; *) refuse "LEGACY_IMPORT must be 'pass' or 'fail'" ;; esac
+case "$PROD_RESTORE_MIGRATED" in pass | fail) ;; *) refuse "PROD_RESTORE_MIGRATED must be 'pass' or 'fail'" ;; esac
+[ "$PROD_INVARIANTS" = '32/32' ] ||
+  refuse "PROD_INVARIANTS is '${PROD_INVARIANTS}' — the migrated production restore has its own thirty-two"
+[[ $PROD_MIGRATION_RANGE =~ ^[0-9]{4}\.\.[0-9]{4}$ ]] ||
+  refuse "PROD_MIGRATION_RANGE is not NNNN..NNNN"
+# The subject of the old-image check is recorded, not assumed. Running it
+# against the legacy destination proves the new code works on a database the
+# new code just built, which is not the question rollback safety asks.
+[ "$OLD_APP_SCHEMA_SUBJECT" = 'production-restore' ] ||
+  refuse "OLD_APP_SCHEMA_SUBJECT must be 'production-restore' — the legacy destination is not the subject of this check"
+
 IMAGE_NAME=${IMAGE_NAME:-ghcr.io/shikoonet/shikoonet-platform}
 IMAGE_REF="${IMAGE_NAME}@${DIGEST}"
 
@@ -96,11 +129,17 @@ IMAGE_REF="${IMAGE_NAME}@${DIGEST}"
   printf 'migration_range=%s\n' "$MIGRATION_RANGE"
   printf 'dump_suites=%s\n' "$DUMP_SUITES"
   printf 'invariants=%s\n' "$INVARIANTS"
+  printf 'd1_export_id=%s\n' "$D1_EXPORT_ID"
+  printf 'legacy_import=%s\n' "$LEGACY_IMPORT"
+  printf 'prod_restore_migrated=%s\n' "$PROD_RESTORE_MIGRATED"
+  printf 'prod_migration_range=%s\n' "$PROD_MIGRATION_RANGE"
+  printf 'prod_invariants=%s\n' "$PROD_INVARIANTS"
   printf 'financial_totals=%s\n' "$FINANCIAL_TOTALS"
   printf 'financial_aggregates=%s\n' "${FINANCIAL_AGGREGATES:-wallet_balance,ledger_sum,order_total}"
   printf 'restore_result=%s\n' "$RESTORE_RESULT"
   printf 'restore_seconds=%s\n' "$RESTORE_SECONDS"
   printf 'old_app_schema_compat=%s\n' "$OLD_APP_SCHEMA_COMPAT"
+  printf 'old_app_schema_subject=%s\n' "$OLD_APP_SCHEMA_SUBJECT"
   printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >"$OUT_DIR/attestation.env"
 

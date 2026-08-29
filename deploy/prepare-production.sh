@@ -40,6 +40,12 @@ CONF=${CONF:-/etc/shikoo/$ENV_ARG/deploy.env}
 STATE=${STATE:-/var/lib/shikoo/$ENV_ARG}
 BACKUP_DIR=${BACKUP_DIR:-$STATE/backups}
 ATTESTATION=${ATTESTATION:-$STATE/attestation}
+# The comment here used to say this path took the production release lock. It
+# did not — there was no flock anywhere in this script, so Prepare could read
+# `current` in the middle of the rehearsal's swap. Both sides now use one
+# protocol from one file, and this is the side that actually acquires it.
+# shellcheck source=deploy/attestation-store.sh
+. "$HERE/attestation-store.sh"
 
 say() { echo "[prepare] $*"; }
 die() {
@@ -59,6 +65,11 @@ die() {
 # migration, a Coolify write or a ledger line, which is what the ordering was
 # for.
 say "P0. the production-dump rehearsal covers this release"
+# The ROOT is passed, not a version directory. Resolving the pointer here and
+# handing the result to the verifier looked tidier and was worse: the verifier
+# then had a directory chosen by its caller, took its standalone branch, and
+# checked the whole attestation with no lock held. One resolution, inside the
+# verifier, under the shared lock, for the whole read.
 EXPECTED_SHA="$SHA_ARG" EXPECTED_DIGEST="$DIGEST_ARG" \
   EXPECTED_STAGING_RUN_ID="$STAGING_RUN" \
   bash "$HERE/verify-dump-attestation.sh" "$ATTESTATION" ||
