@@ -840,6 +840,28 @@ export interface ResellerRequestRow {
  * the texts in `@shikoo/contracts`, and a second list in this file would be the
  * one that goes stale the first time a screen is added.
  */
+/**
+ * Which bot the shop is. Never the token — the server does not send it, and
+ * there is no field here that could hold it.
+ */
+export interface BotConnection {
+  /** `dashboard` when a row set here is in force, `environment` when the service is still on its variable, `none` when nothing is. */
+  source: 'dashboard' | 'environment' | 'none';
+  envName: string;
+  connected: {
+    botId: number;
+    username: string | null;
+    firstName: string | null;
+    envName: string;
+    keyId: string;
+    setBy: string | null;
+    updatedAt: string;
+  } | null;
+  /** What the bot that is actually RUNNING said about itself at its last boot. */
+  liveUsername: string | null;
+  appliesAfter: string;
+}
+
 export interface BotScreen {
   id: string;
   label: string;
@@ -1299,6 +1321,17 @@ export const api = {
 
   deleteRequiredChannel(id: number) {
     return req<{ ok: boolean }>(`/required-channels/${id}`, { method: 'DELETE' });
+  },
+
+  botConnection() {
+    return req<{ ok: boolean } & BotConnection>('/bot');
+  },
+
+  setBotToken(token: string) {
+    return req<{
+      ok: boolean;
+      connected: { botId: number; username: string | null; firstName: string | null };
+    }>('/bot/token', { method: 'POST', body: JSON.stringify({ token }) });
   },
 
   helpArticles() {

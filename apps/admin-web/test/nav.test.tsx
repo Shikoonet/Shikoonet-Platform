@@ -111,6 +111,11 @@ describe('navigation', () => {
       // «رویدادها» — `app_events`, which migration 0030 filled from
       // 2026-08-22 and only `psql` could read.
       'events',
+      // «ربات», 2026-08-29 — which bot the shop is. The token used to live only
+      // in the process environment, so this was the one operational fact the
+      // panel could neither show nor change, and «تنظیمات» cannot hold it:
+      // `SECRET_KEY_PATTERN` matches `token` and refuses the read and the write.
+      'bot',
     ];
     expect([...ALL].sort()).toEqual([...implemented].sort());
   });
