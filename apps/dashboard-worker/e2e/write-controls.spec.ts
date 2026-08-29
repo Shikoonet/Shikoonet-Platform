@@ -81,9 +81,16 @@ const WRITE_VERBS = [
   'پذیرش',
   'غیرفعال‌کردن',
   'فعال‌کردن',
+  // The devices screen says «خاموش» where the rest of the panel says
+  // «غیرفعال»: there, «غیرفعال» already meant a second thing — whether the
+  // phone is being heard from — and one word for two states is what made that
+  // screen unreadable. A verb missing from this list is a control a reader
+  // could press with nothing to catch it, so both wordings are swept.
+  'خاموش‌کردن',
+  'روشن‌کردن دوباره',
   'بازگشت به پیش‌فرض',
-  'چرخش توکن',
-  'ابطال توکن',
+  'چرخش کلید',
+  'ابطال کلید',
   'تخصیص',
   'علامت‌زدن',
   'اجرای دوبارهٔ تخصیص',

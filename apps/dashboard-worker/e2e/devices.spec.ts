@@ -15,6 +15,13 @@
  *
  * Both directions are asserted, and against the API rather than the row: a
  * dialog nobody can decline is decoration.
+ *
+ * The rows these walk are `.device-card`, not `tbody tr`. The nine-column table
+ * is gone — at panel width it gave the name column about fifty pixels and broke
+ * both «Staging Device» and its own buttons mid-word — and one card layout
+ * serves every width now. The button is «ابطال کلید» for the same reason the
+ * card says «خاموش» rather than «غیرفعال»: this screen had one word doing two
+ * jobs.
  */
 
 import { expect, test } from '@playwright/test';
@@ -50,8 +57,8 @@ test('revoking a device token asks first, and declining changes nothing', async 
     void d.dismiss();
   });
 
-  const row = page.locator(`tbody tr:has-text("${target!.display_name}")`);
-  await row.getByRole('button', { name: 'ابطال توکن' }).click();
+  const row = page.locator(`.device-card:has-text("${target!.display_name}")`).first();
+  await row.getByRole('button', { name: 'ابطال کلید' }).click();
   await expect.poll(() => asked.length).toBe(1);
 
   // The question names the phone and what stops, rather than «مطمئنید؟». The
@@ -73,8 +80,8 @@ test('an accepted revoke takes the token and says what stopped', async ({ page }
   expect(target).toBeTruthy();
 
   page.on('dialog', (d) => void d.accept());
-  const row = page.locator(`tbody tr:has-text("${target!.display_name}")`);
-  await row.getByRole('button', { name: 'ابطال توکن' }).click();
+  const row = page.locator(`.device-card:has-text("${target!.display_name}")`).first();
+  await row.getByRole('button', { name: 'ابطال کلید' }).click();
 
   // Said out loud. This view had a channel for failure and none for success,
   // so a press that worked and a press that did nothing looked identical.
@@ -96,9 +103,9 @@ test('the token itself is never printed in full', async ({ page }) => {
   // "helpful" change from widening the prefix into the whole secret.
   for (const d of withToken) {
     expect(d.credential!.token_prefix.length).toBeLessThanOrEqual(8);
-    await expect(page.locator(`tbody tr:has-text("${d.display_name}")`)).toContainText(
-      `${d.credential!.token_prefix}…`,
-    );
+    await expect(
+      page.locator(`.device-card:has-text("${d.display_name}")`).first(),
+    ).toContainText(`${d.credential!.token_prefix}…`);
   }
 
   // And the count in the heading is the count of rows, in the panel's digits.

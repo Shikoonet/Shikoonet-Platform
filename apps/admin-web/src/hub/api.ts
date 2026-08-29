@@ -437,6 +437,40 @@ export const api = {
       };
       deletedCredentialCount: number;
     }>(`/api/v1/devices/${encodeURIComponent(idOrCode)}`, { method: 'DELETE' }),
+  /**
+   * What moving this device's history onto another one would carry, and what
+   * would stop it. `duplicateSmsOnTarget` is the one that stops it: the ingest
+   * de-duplicates per device (`UNIQUE (device_id, body_sha256)`), so a body the
+   * target already holds cannot arrive there a second time.
+   */
+  moveDevicePreview: (idOrCode: string, targetIdOrCode: string) =>
+    req<{
+      ok: boolean;
+      source: { id: string; deviceCode: string; displayName: string };
+      target: { id: string; deviceCode: string; displayName: string };
+      moves: { rawSmsEvents: number; financialAccounts: number; transactions: number };
+      duplicateSmsOnTarget: number;
+      canMove: boolean;
+      canDeleteSourceAfterwards: boolean;
+    }>(
+      `/api/v1/devices/${encodeURIComponent(idOrCode)}/move-preview?target=${encodeURIComponent(
+        targetIdOrCode,
+      )}`,
+      { method: 'GET' },
+    ),
+  moveDeviceReferences: (
+    idOrCode: string,
+    body: { targetDeviceId: string; deleteSource?: boolean },
+  ) =>
+    req<{
+      ok: boolean;
+      moved: { rawSmsEvents: number; financialAccounts: number; transactions: number };
+      target: { id: string; deviceCode: string };
+      deletedSource: boolean;
+    }>(`/api/v1/devices/${encodeURIComponent(idOrCode)}/move-references`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   accounts: () => req<{ ok: boolean; items: AccountListItem[] }>('/api/v1/accounts'),
   accountTotals: (range: 'today' | 'last_7_days' | 'last_30_days' | 'all_time' = 'all_time') =>
     req<AccountTotalsPayload>(`/api/v1/accounts/totals?range=${range}`),
