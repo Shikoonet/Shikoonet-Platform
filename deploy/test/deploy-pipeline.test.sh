@@ -116,7 +116,19 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
       done
       case "$method:$path" in
         GET:/applications/*/envs)
-          if [ "${FAKE_MALFORMED_ENVS:-}" = 'json' ]; then
+          app=${path#/applications/}
+          app=${app%%/*}
+          if [ -n "${FAKE_ENV_ROWS:-}" ] && grep -q "^$app|" "$FAKE_ENV_ROWS" 2>/dev/null; then
+            # A store, not a fixture: what this application has been asked to
+            # create, minus what it has been asked to delete. Nothing else can
+            # show that the SECOND deploy is the one that used to refuse.
+            printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"},{"key":"ENV_NAME","value":"production"}'
+            while IFS='|' read -r a u k v; do
+              [ "$a" = "$app" ] || continue
+              printf ',{"uuid":"%s","key":"%s","value":"%s"}' "$u" "$k" "$v"
+            done <"$FAKE_ENV_ROWS"
+            printf ']'
+          elif [ "${FAKE_MALFORMED_ENVS:-}" = 'json' ]; then
             printf '{not-json'
           elif [ "${FAKE_MALFORMED_ENVS:-}" = 'object' ]; then
             printf '{"key":"ENV_NAME","value":"production"}'
@@ -130,8 +142,42 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
           else
             printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"},{"key":"ENV_NAME","value":"production"}]'
           fi ;;
-        PATCH:/applications/*/envs | POST:/applications/*/envs)
+        PATCH:/applications/*/envs)
+          # The 404 a PATCH gets on an application that has never held the
+          # variable — the only way the create path is ever reached.
+          if [ "${FAKE_ENV_PATCH_FAILS:-}" = '1' ]; then
+            printf '{"message":"Environment variable not found."}' >&2
+            exit 22
+          fi
           printf '{"ok":true}' ;;
+        POST:/applications/*/envs)
+          if [ -n "${FAKE_ENV_ROWS:-}" ]; then
+            app=${path#/applications/}
+            app=${app%%/*}
+            kv=$(printf '%s' "$body" | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+print("%s	%s" % (d["key"], d["value"]))')
+            k=${kv%%$'	'*}
+            v=${kv#*$'	'}
+            n=$(($(wc -l <"$FAKE_ENV_ROWS") + 1))
+            # ONE post, TWO rows. Measured against the live Coolify panel on
+            # 2026-08-29 with a throwaway key: the response named one uuid and
+            # the application then listed that row and a second one holding the
+            # same value.
+            printf '%s|row%da|%s|%s
+%s|row%db|%s|%s
+'               "$app" "$n" "$k" "$v" "$app" "$n" "$k" "$v" >>"$FAKE_ENV_ROWS"
+            printf '{"uuid":"row%da"}' "$n"
+          else
+            printf '{"ok":true}'
+          fi ;;
+        DELETE:/applications/*/envs/*)
+          if [ -n "${FAKE_ENV_ROWS:-}" ]; then
+            gone=${path##*/}
+            grep -v "|$gone|" "$FAKE_ENV_ROWS" >"$FAKE_ENV_ROWS.keep" || true
+            mv "$FAKE_ENV_ROWS.keep" "$FAKE_ENV_ROWS"
+          fi
+          printf '{"message":"Environment variable deleted."}' ;;
         PATCH:/applications/*)
           if [ "${FAKE_COOLIFY_REFUSES:-}" = '1' ]; then
             printf '{"message":"Validation failed."}' >&2
@@ -846,7 +892,7 @@ run_deploy() { # bot-flag
     FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a}" \
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
     FAKE_DUPLICATE_ENVS="${FAKE_DUPLICATE_ENVS:-}" FAKE_MALFORMED_ENVS="${FAKE_MALFORMED_ENVS:-}" \
-    FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads" \
+    FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads"     FAKE_ENV_ROWS="${FAKE_ENV_ROWS:-}" FAKE_ENV_PATCH_FAILS="${FAKE_ENV_PATCH_FAILS:-}" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
     bash "$DEPLOY" production "${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a" "$SHA_MERGED" \
@@ -1049,6 +1095,56 @@ else
   bad 'names every duplicated variable, not just the first' "$(tail -2 "$DEPLOY_LOG")"
 fi
 unset FAKE_DUPLICATE_ENVS
+
+# ═════════════════════════════════════════════════════════════════════════
+# The spare row Coolify creates alongside the one that was asked for
+# ═════════════════════════════════════════════════════════════════════════
+#
+# Two deploys, because one cannot show this. On 2026-08-29 deploy 1 wrote
+# `APP_VERSION` for the first time and passed; Coolify stored the value twice;
+# deploy 2 refused with «APP_VERSION defined more than once» before it touched
+# anything, and the staging environment sat behind `main` until a row was
+# deleted by hand. The refusal was right — nothing in a deploy reads a value,
+# so nothing in a deploy can tell which copy was meant — which is why the fix
+# belongs in the create path and not in the check.
+section 'the spare row Coolify creates alongside the one that was asked for'
+
+FAKE_ENV_ROWS="$WORK/envrows"
+: >"$FAKE_ENV_ROWS"
+FAKE_ENV_PATCH_FAILS=1
+
+if run_deploy true; then
+  ok 'the deploy that creates APP_VERSION still succeeds'
+else
+  bad 'the deploy that creates APP_VERSION still succeeds' "$(tail -3 "$DEPLOY_LOG")"
+fi
+
+if grep -qF 'removed the spare APP_VERSION row' "$DEPLOY_LOG"; then
+  ok 'the create path says out loud which row it removed'
+else
+  bad 'the create path says out loud which row it removed' "$(tail -3 "$DEPLOY_LOG")"
+fi
+
+# Three applications are rolled, so three rows survive — and each one holds
+# THIS deploy's sha. Counting only the total would pass on a version that kept
+# a stale row and deleted the one it had just written.
+kept=$(grep -c "|APP_VERSION|" "$FAKE_ENV_ROWS" || true)
+right=$(grep -c "|APP_VERSION|$SHA_MERGED\$" "$FAKE_ENV_ROWS" || true)
+if [ "$kept" = 3 ] && [ "$right" = 3 ]; then
+  ok 'one APP_VERSION row per application, holding the sha that was deployed'
+else
+  bad 'one APP_VERSION row per application, holding the sha that was deployed'     "kept=$kept right=$right: $(cat "$FAKE_ENV_ROWS")"
+fi
+
+# The assertion the whole section exists for. The store is carried over, the
+# PATCH now finds a row, and this is the deploy that used to refuse.
+unset FAKE_ENV_PATCH_FAILS
+if run_deploy true && ! grep -qF 'defined more than once' "$DEPLOY_LOG"; then
+  ok 'the deploy after it is not refused for a variable it wrote itself'
+else
+  bad 'the deploy after it is not refused for a variable it wrote itself'     "$(tail -3 "$DEPLOY_LOG")"
+fi
+unset FAKE_ENV_ROWS
 
 # The pre-flight runs before the migration, and the migration takes time. An
 # application edited in the Coolify UI during that window would move out from
