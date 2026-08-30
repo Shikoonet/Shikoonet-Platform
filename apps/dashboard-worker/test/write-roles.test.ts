@@ -298,6 +298,12 @@ describe('every write route, asked directly', () => {
     // 130 -> 133: «ایمپورت» adds preflight, dry-run and apply. All three are
     // ADMIN-only, which the three assertions above already prove; this number
     // is the separate promise that nobody added a fourth without saying so.
-    expect(writeRoutes().length).toBe(133);
+    //
+    // 133 -> 136: «هزینه‌ها» becomes a ledger. Four writes arrive — PATCH on a
+    // row, POST on its void, and POST/PATCH on the categories — and one
+    // leaves: DELETE on a row is gone. A deleted line made `verify.ts`'s row
+    // count red for ever with nothing saying why, and voiding says the same
+    // thing to the panel without lying to the importer.
+    expect(writeRoutes().length).toBe(136);
   });
 });

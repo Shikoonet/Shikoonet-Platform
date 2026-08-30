@@ -150,8 +150,17 @@ export function d1Table<T = Record<string, unknown>>(cfg: Config, table: string)
 
 export interface Column {
   name: string;
-  /** Wraps the bound parameter, e.g. to convert a legacy timestamp. */
-  expr?: (placeholder: string) => string;
+  /**
+   * Wraps the bound parameter, e.g. to convert a legacy timestamp.
+   *
+   * `siblings` is every placeholder in the same row, in column order, for the
+   * one case a column's value is not enough on its own: `revenue_adjustments.kind`
+   * is decided by `expense_kind_of(note, amount_irr)`, a Postgres function the
+   * migration's own backfill also calls, so that «what is a fake receipt» has
+   * one definition rather than one per language. Reading a sibling by index is
+   * the price of not writing that rule twice.
+   */
+  expr?: (placeholder: string, siblings: readonly string[]) => string;
 }
 
 export interface InsertOptions {
@@ -190,11 +199,16 @@ export async function insertBatch(
       if (row.length !== columns.length) {
         throw new Error(`${table}: row has ${row.length} values for ${columns.length} columns`);
       }
-      const placeholders = row.map((value, i) => {
+      // Bind every value first, so an expression can name a sibling's
+      // placeholder. Two passes rather than one: an expression cannot be
+      // written until the placeholder it refers to exists.
+      const bound = row.map((value) => {
         params.push(value);
-        const ph = `$${params.length}`;
+        return `$${params.length}`;
+      });
+      const placeholders = bound.map((ph, i) => {
         const col = columns[i];
-        return col?.expr ? col.expr(ph) : ph;
+        return col?.expr ? col.expr(ph, bound) : ph;
       });
       return `(${placeholders.join(', ')})`;
     });

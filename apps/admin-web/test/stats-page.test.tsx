@@ -72,12 +72,18 @@ const stats = vi.fn(async (range: StatsRange, _day?: string, _to?: string): Prom
 /**
  * The books, from the route that owns them.
  *
- * Expenses are negative, exactly as `revenue_adjustments` stores them and as
- * «هزینه‌ها و تعدیل‌ها» renders them. The figures are production's: 219 rows
- * netting −697,371,750 Toman, which is the number that made «درآمد کل» negative
- * before the importer started writing an order per invoice.
+ * These are the production figures, and they are the point of the whole
+ * split: 219 rows netting −697,371,750 Toman, of which the screen used to
+ * report −792 million as «هزینه‌ها» (35.8 million of it fake receipts the shop
+ * never spent) and +94.6 million as «برگشتی و اعتبار» (all of it reseller
+ * income). Every amount is stored signed, so the three add to the net.
  */
-const LIFE = { expensesIrr: -7_012_000_000, creditsIrr: 38_282_500, netIrr: -6_973_717_500 };
+const LIFE = {
+  expensesIrr: -7_545_397_500,
+  revenueFixIrr: -293_120_000,
+  manualIncomeIrr: 864_800_000,
+  netIrr: -6_973_717_500,
+};
 const revenueAdjustments = vi.fn(async (_p?: unknown) => ({
   ok: true,
   total: 219,
@@ -85,7 +91,9 @@ const revenueAdjustments = vi.fn(async (_p?: unknown) => ({
   pageSize: 1,
   items: [],
   totals: LIFE,
+  lifetime: LIFE,
   rangeTotals: null,
+  byCategory: [],
 }));
 
 const WALLETS = [

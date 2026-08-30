@@ -1364,10 +1364,50 @@ async function migrateShopOps(ctx: Ctx): Promise<number> {
     { conflict: '(legacy_id)' },
   );
 
+  /**
+   * `kind` and `spent_on` are decided by Postgres, not here.
+   *
+   * `0040_expense_ledger.sql` made both NOT NULL and created
+   * `expense_kind_of(note, amount)` to fill the first — the same function its
+   * own backfill used on the 219 production rows. Calling it from SQL rather
+   * than reimplementing the rule in TypeScript is the whole point: two copies
+   * of «what is a fake receipt» would drift the first time a keyword was
+   * added, and nothing would say which one the screen was using.
+   *
+   * `note` is bound twice, once as the column and once as the classifier's
+   * argument, because `insertBatch` binds per column. `spent_on` is the Tehran
+   * day of the legacy timestamp, which is the best-known spend date for a
+   * historical row and exactly what the backfill wrote.
+   */
   n += await insertBatch(
     ctx.pg,
     'revenue_adjustments',
-    cols(['legacy_id', 'amount_irr', 'note', 'created_by', ['created_at', ts.tehran.expr]]),
+    cols([
+      'legacy_id',
+      'amount_irr',
+      'note',
+      'created_by',
+      ['created_at', ts.tehran.expr],
+      // Each of these binds its own value and reads one sibling. The note and
+      // the timestamp are bound a second time rather than referenced through
+      // their siblings' placeholders, because a placeholder that appears in no
+      // expression has no type Postgres can infer — «could not determine data
+      // type of parameter $6», which is what the first version of this did.
+      ['kind', (p, row) => `expense_kind_of(${p}, ${row[1]!}::bigint)`],
+      ['spent_on', (p) => `(${ts.tehran.expr(p)})::date`],
+      // The purpose, resolved from the name the function returns rather than
+      // from an id, so the classifier has no dependency on a sequence and
+      // works the same against a fresh database. NULL for a note it cannot
+      // read, and NULL for anything that is not spending — the screen shows
+      // those under «دسته‌بندی‌نشده» for a person to decide.
+      [
+        'category_id',
+        (p, row) =>
+          `(SELECT ec.id FROM expense_categories ec
+              WHERE ec.name = expense_category_of(${p})
+                AND expense_kind_of(${p}, ${row[1]!}::bigint) = 'EXPENSE')`,
+      ],
+    ]),
     (await mysqlRows<Row>(ctx.my, 'SELECT * FROM revenue_adjustment_log')).map((r) => {
       // `amount` is already signed, and `type` is a label rather than the sign.
       //
@@ -1390,6 +1430,12 @@ async function migrateShopOps(ctx: Ctx): Promise<number> {
         r.note ?? '',
         r.created_by || null,
         t.tehranString(r.created_at, 'revenue_adjustment_log.created_at'),
+        // The note and the timestamp again, for the three derived columns
+        // above. Bound rather than referenced through their siblings, because
+        // a placeholder no expression names has no type Postgres can infer.
+        r.note ?? '',
+        t.tehranString(r.created_at, 'revenue_adjustment_log.created_at'),
+        r.note ?? '',
       ];
     }),
     { conflict: '(legacy_id)' },
