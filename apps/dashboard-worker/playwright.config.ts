@@ -202,6 +202,22 @@ export default defineConfig({
         // against the working directory. `import.meta.url` is a file: URL, whose
         // pathname on Windows carries a leading slash before the drive letter.
         ADMIN_DIST: spaPath('../admin-web/dist'),
+        /**
+         * Where the import screen looks for dump files.
+         *
+         * Set HERE rather than left to `sim/.env.local`, which is git-ignored
+         * and therefore different on every machine: without it that route
+         * answers 503 and `sections.spec.ts` — which asserts every section
+         * opens with no failed request and no error box — is red for a reason
+         * that has nothing to do with the code under test. A suite whose result
+         * depends on an untracked file is a suite nobody can read.
+         *
+         * The directory need not contain anything. The screen listing zero
+         * files is a working screen; the screen saying «IMPORT_DIR روی سرور
+         * تنظیم نشده است» is not. An existing path is used so nothing has to be
+         * created or cleaned up.
+         */
+        IMPORT_DIR: process.env.IMPORT_DIR ?? spaPath('.'),
       },
     },
     {
