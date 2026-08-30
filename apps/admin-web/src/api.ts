@@ -446,24 +446,62 @@ export interface StockBody {
 }
 
 /**
- * One line of the shop's own books. `amountIrr` is SIGNED — negative is a cost —
- * because that is how the row is stored and how the legacy log stored it too.
- * There is no `type` field to disagree with the sign.
+ * What a line of the shop's books IS.
+ *
+ * The sign alone said «which way» and never «what», and a screen built on it
+ * reported 35.8 million Toman of fake receipts as money the shop had spent.
+ */
+export type LedgerKind = 'EXPENSE' | 'REVENUE_FIX' | 'MANUAL_INCOME';
+
+export const LEDGER_KIND_FA: Record<LedgerKind, string> = {
+  EXPENSE: 'هزینه',
+  REVENUE_FIX: 'اصلاح درآمد',
+  MANUAL_INCOME: 'درآمد دستی',
+};
+
+/**
+ * One line of the shop's own books. `amountIrr` is SIGNED — negative is money
+ * out — because that is how the row is stored and how the legacy log stored it
+ * too. `kind` says what the row means; the sign only says which direction.
  */
 export interface RevenueAdjustmentRow {
   id: number;
   amountIrr: number;
   note: string;
+  kind: LedgerKind;
+  categoryId: number | null;
+  categoryName: string | null;
+  /** The day the money moved, Gregorian on the wire. Not when it was typed. */
+  spentOn: string;
   createdBy: string | null;
   createdAt: string;
+  voidedAt: string | null;
+  voidedBy: string | null;
+  voidReason: string | null;
+  /** From `audit_logs`, not a cached column — two records of one fact drift. */
+  editCount: number;
+  lastEditedAt: number | null;
+  lastEditedBy: string | null;
 }
 
-/** Over the whole ledger, never over the page. */
 export interface RevenueTotals {
-  /** Negative or zero. */
+  /** Negative or zero — what the shop actually spent. */
   expensesIrr: number;
-  creditsIrr: number;
+  /** Corrections to income: a fake receipt, a duplicate charge. Either sign. */
+  revenueFixIrr: number;
+  /** Sales recorded by hand, mostly reseller top-ups. Positive. */
+  manualIncomeIrr: number;
+  /** The three above, added. */
   netIrr: number;
+}
+
+export interface ExpenseCategory {
+  id: number;
+  name: string;
+  active: boolean;
+  sortOrder: number;
+  /** So «غیرفعال کردن» can say what it costs before it is pressed. */
+  rowCount: number;
 }
 
 export interface RevenueAdjustmentPage {
@@ -472,13 +510,78 @@ export interface RevenueAdjustmentPage {
   page: number;
   pageSize: number;
   items: RevenueAdjustmentRow[];
+  /** Over the current filter — the same rows the table is showing. */
   totals: RevenueTotals;
+  /** Over the whole ledger, whatever the filter says. The shop's position. */
+  lifetime: RevenueTotals;
   /**
-   * The same three figures over the window «آمار فروشگاه» is showing, or null
-   * when no `range` was asked for or the range is unbounded («آمار کل»), in
-   * which case `totals` above already is the answer.
+   * The same figures over the window «آمار فروشگاه» is showing, or null when no
+   * `range` was asked for or the range is unbounded («آمار کل»), in which case
+   * `lifetime` is the answer.
    */
   rangeTotals: (RevenueTotals & { startMs: number; endMs: number }) | null;
+  /** «تفکیک» — what the spending went on. Expenses only. */
+  byCategory: Array<{
+    categoryId: number | null;
+    name: string | null;
+    count: number;
+    irr: number;
+  }>;
+}
+
+/**
+ * One view of the ledger, shared by the list and the export.
+ *
+ * A single type because the export's whole reason to exist is that it carries
+ * the SAME rows the table is showing. Two shapes here would be two ways to say
+ * «advertising in Mordad» and one of them would eventually mean something else.
+ */
+export interface LedgerFilter {
+  kind?: LedgerKind | '';
+  categoryId?: number | '';
+  uncategorised?: boolean;
+  /** Gregorian `YYYY-MM-DD`, on `spent_on`. The screen picks them in Jalali. */
+  from?: string;
+  to?: string;
+  q?: string;
+  voided?: 'hide' | 'show' | 'only';
+  /**
+   * Only «آمار فروشگاه» sends these, for the window it is showing.
+   *
+   * Named apart from `from`/`to` above, and sent as `rangeDay`/`rangeTo`,
+   * because those two already mean this filter's own spend-date bounds. One
+   * name for two windows is how a screen filters by one and totals by the
+   * other.
+   */
+  range?: StatsRange;
+  rangeDay?: string;
+  rangeTo?: string;
+}
+
+export function ledgerQuery(f: LedgerFilter): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (f.kind) qs.set('kind', f.kind);
+  if (f.uncategorised) qs.set('uncategorised', 'true');
+  else if (f.categoryId) qs.set('categoryId', String(f.categoryId));
+  if (f.from) qs.set('from', f.from);
+  if (f.to) qs.set('to', f.to);
+  if (f.q) qs.set('q', f.q);
+  if (f.voided && f.voided !== 'hide') qs.set('voided', f.voided);
+  if (f.range) qs.set('range', f.range);
+  if (f.rangeDay) qs.set('rangeDay', f.rangeDay);
+  if (f.rangeTo) qs.set('rangeTo', f.rangeTo);
+  return qs;
+}
+
+/** One thing that was done to a ledger row, out of the append-only audit log. */
+export interface LedgerHistoryEntry {
+  action: string;
+  actor: string;
+  at: number;
+  /** Only the fields that changed, with the same keys on both sides. */
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  reason: string | null;
 }
 
 /**
@@ -1282,31 +1385,37 @@ export const api = {
     return req<{ ok: boolean }>(`/stock/${id}`, { method: 'DELETE' });
   },
 
-  revenueAdjustments(params: {
-    direction?: string;
-    page: number;
-    pageSize: number;
-    range?: StatsRange;
-    day?: string;
-    to?: string;
-  }) {
-    const qs = new URLSearchParams({
-      page: String(params.page),
-      pageSize: String(params.pageSize),
-    });
-    if (params.direction) qs.set('direction', params.direction);
-    // Only «آمار فروشگاه» sends these; «هزینه‌ها» wants the lifetime
-    // figures and asks for no window at all.
-    if (params.range) qs.set('range', params.range);
-    if (params.day) qs.set('day', params.day);
-    if (params.to) qs.set('to', params.to);
+  revenueAdjustments(params: LedgerFilter & { page: number; pageSize: number }) {
+    const qs = ledgerQuery(params);
+    qs.set('page', String(params.page));
+    qs.set('pageSize', String(params.pageSize));
     return req<RevenueAdjustmentPage>(`/revenue-adjustments?${qs.toString()}`);
   },
 
-  /** A positive amount and a direction — never a signed amount. */
+  /**
+   * The URL of the export, for an `<a href>` rather than a fetch.
+   *
+   * A download has to be a navigation: fetching it into memory and building a
+   * blob would put the whole filtered ledger through JavaScript to produce the
+   * bytes the server already produced.
+   */
+  revenueAdjustmentsCsvUrl(params: LedgerFilter) {
+    return `${BASE}/revenue-adjustments/export.csv?${ledgerQuery(params).toString()}`;
+  },
+
+  /**
+   * A positive amount and a kind — never a signed amount.
+   *
+   * `kind` has no default on the server on purpose: a body that does not say
+   * what a line is gets a 400 rather than a guess, because the guess would be
+   * invisible and this is money.
+   */
   addRevenueAdjustment(body: {
     amountToman: number;
-    direction: 'expense' | 'credit';
+    kind: LedgerKind;
+    direction?: 'expense' | 'credit';
+    categoryId?: number | null;
+    spentOn?: string;
     note: string;
   }) {
     return req<{ ok: boolean; id: number; amountIrr: number }>('/revenue-adjustments', {
@@ -1315,8 +1424,59 @@ export const api = {
     });
   },
 
-  deleteRevenueAdjustment(id: number) {
-    return req<{ ok: boolean }>(`/revenue-adjustments/${id}`, { method: 'DELETE' });
+  editRevenueAdjustment(
+    id: number,
+    body: {
+      amountToman?: number;
+      kind?: LedgerKind;
+      direction?: 'expense' | 'credit';
+      categoryId?: number | null;
+      spentOn?: string;
+      note?: string;
+      reason?: string;
+    },
+  ) {
+    return req<{ ok: boolean; changed: boolean }>(`/revenue-adjustments/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /**
+   * Voiding, which replaced deleting.
+   *
+   * The row stays and leaves every total. A reason is required — it is the
+   * whole difference between a line that is gone and a line that is explained.
+   */
+  voidRevenueAdjustment(id: number, reason: string) {
+    return req<{ ok: boolean }>(`/revenue-adjustments/${id}/void`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+  },
+
+  revenueAdjustmentHistory(id: number) {
+    return req<{ ok: boolean; items: LedgerHistoryEntry[] }>(
+      `/revenue-adjustments/${id}/history`,
+    );
+  },
+
+  expenseCategories() {
+    return req<{ ok: boolean; items: ExpenseCategory[] }>('/revenue-adjustments/categories');
+  },
+
+  addExpenseCategory(body: { name: string; sortOrder?: number }) {
+    return req<{ ok: boolean; id: number }>('/revenue-adjustments/categories', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  editExpenseCategory(id: number, body: { name?: string; active?: boolean; sortOrder?: number }) {
+    return req<{ ok: boolean }>(`/revenue-adjustments/categories/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
   },
 
   setDiscount(id: number, body: { percent: number }) {

@@ -18,14 +18,8 @@
  */
 
 import { useEffect, useState } from 'react';
-import {
-  JALALI_MONTHS,
-  formatJalali,
-  jalaliMonthLength,
-  jalaliToIsoDate,
-  toJalali,
-  type JalaliDate,
-} from '@shikoo/contracts';
+import { formatJalali, jalaliToIsoDate, toJalali, type JalaliDate } from '@shikoo/contracts';
+import { DateField } from '../DateField.js';
 import {
   api,
   type CustomerListItem,
@@ -140,10 +134,10 @@ export function StatsPage() {
         pageSize: 1,
         range,
         ...(range === 'between'
-          ? { day: jalaliToIsoDate(jFrom), to: jalaliToIsoDate(jTo) }
-          : { day }),
+          ? { rangeDay: jalaliToIsoDate(jFrom), rangeTo: jalaliToIsoDate(jTo) }
+          : { rangeDay: day }),
       })
-      .then((r) => alive && setLedger({ window: r.rangeTotals, life: r.totals }))
+      .then((r) => alive && setLedger({ window: r.rangeTotals, life: r.lifetime }))
       .catch(() => alive && setLedger(null));
 
     // Not ranged: a wallet balance is what is in it now, and «بیشترین موجودی
@@ -236,8 +230,9 @@ export function StatsPage() {
                 // response, so the two can never be a window and a lifetime
                 // subtracted from one another.
                 const books = ledger.window ?? ledger.life;
-                // `expensesIrr` is negative, as it is stored and as «هزینه‌ها و
-                // تعدیل‌ها» shows it. Adding is the subtraction.
+                // Every figure below is stored signed, so the net is a sum and
+                // not a subtraction. `earnedIrr` is the orders; the three from
+                // the ledger are what an admin did to that figure by hand.
                 const net = data.earnedIrr + books.netIrr;
                 return (
                   <div className="stats-grid">
@@ -253,20 +248,33 @@ export function StatsPage() {
                       icon="receipt"
                       value={tomanCompact(books.expensesIrr)}
                       label="هزینه‌ها"
-                      foot="از دفتر «هزینه‌ها»"
+                      foot="تبلیغات، سرور، تسویه — از دفتر «هزینه‌ها»"
+                    />
+                    {/* This card said «برگشتی و اعتبار» until 2026-08-30 and
+                        showed every positive row, which on the production data
+                        was the shop's hand-recorded reseller income — labelled
+                        as returns. The two are now separate cards because they
+                        are opposite things. */}
+                    <Stat
+                      tone="tone-orange"
+                      icon="receipt"
+                      value={tomanCompact(books.revenueFixIrr)}
+                      label="اصلاح درآمد"
+                      foot="فیش فیک، عدم واریزی، تکراری"
                     />
                     <Stat
                       tone="tone-blue"
-                      icon="receipt"
-                      value={tomanCompact(books.creditsIrr)}
-                      label="برگشتی و اعتبار"
+                      icon="money"
+                      value={tomanCompact(books.manualIncomeIrr)}
+                      label="درآمد دستی"
+                      foot="فروش ریسلری که دستی ثبت شده"
                     />
                     <Stat
                       tone={net < 0 ? 'tone-orange' : 'tone-green'}
                       icon="bars"
                       value={tomanCompact(net)}
                       label="مانده"
-                      foot={`${toman(data.earnedIrr)} منهای هزینه‌ها`}
+                      foot={`${toman(data.earnedIrr)} به‌علاوهٔ دفتر`}
                     />
                   </div>
                 );
@@ -526,94 +534,6 @@ export function StatsPage() {
  * the one every boundary on this page was computed in.
  */
 const fa = (ms: number) => formatJalali(ms, true);
-
-/**
- * One Jalali date: day, month, year.
- *
- * Three selects rather than a calendar widget, and rather than the browser's
- * `<input type="date">` — that one renders a Gregorian picker whatever the page
- * language is, so choosing «۷ شهریور» meant hunting for 29 August. Selects need
- * no dependency, work on a phone, and cannot offer a date that does not exist:
- * the day list is the month's real length, asked of the calendar rather than
- * assumed.
- *
- * **The DOM order is the reading order.** The page is RTL, so day first in the
- * markup puts day furthest right — ۷ | شهریور | ۱۴۰۵, the order the date is
- * spoken in Persian. Writing year-first put the year under the reader's thumb
- * and read backwards.
- */
-function DateField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: JalaliDate;
-  onChange: (d: JalaliDate) => void;
-}) {
-  const today = toJalali(Date.now());
-  const years = [today.year - 3, today.year - 2, today.year - 1, today.year];
-  const length = jalaliMonthLength(value.year, value.month);
-
-  /**
-   * Clamped, because 31 Farvardin exists and 31 Mehr does not.
-   *
-   * Without this, picking 31 Farvardin and then switching to Mehr asks for a
-   * date the calendar has no answer for, and `jalaliToEpochMs` throws rather
-   * than guessing — correctly, but on a screen the operator is looking at.
-   */
-  const move = (next: Partial<JalaliDate>) => {
-    const merged = { ...value, ...next };
-    onChange({ ...merged, day: Math.min(merged.day, jalaliMonthLength(merged.year, merged.month)) });
-  };
-
-  return (
-    <div className="datefield">
-      <span className="datefield__label">{label}</span>
-      <div className="datefield__row">
-        <select
-          className="form-control"
-          data-part="day"
-          aria-label={`روز ${label}`}
-          value={value.day}
-          onChange={(e) => move({ day: Number(e.target.value) })}
-        >
-          {Array.from({ length }, (_, i) => i + 1).map((d) => (
-            <option key={d} value={d}>
-              {d.toLocaleString('fa-IR')}
-            </option>
-          ))}
-        </select>
-        <select
-          className="form-control"
-          data-part="month"
-          aria-label={`ماه ${label}`}
-          value={value.month}
-          onChange={(e) => move({ month: Number(e.target.value) })}
-        >
-          {JALALI_MONTHS.map((name, i) => (
-            <option key={name} value={i + 1}>
-              {name}
-            </option>
-          ))}
-        </select>
-        <select
-          className="form-control"
-          data-part="year"
-          aria-label={`سال ${label}`}
-          value={value.year}
-          onChange={(e) => move({ year: Number(e.target.value) })}
-        >
-          {years.map((y) => (
-            <option key={y} value={y}>
-              {y.toLocaleString('fa-IR', { useGrouping: false })}
-            </option>
-          ))}
-        </select>
-      </div>
-    </div>
-  );
-}
 
 function Section({
   title,
