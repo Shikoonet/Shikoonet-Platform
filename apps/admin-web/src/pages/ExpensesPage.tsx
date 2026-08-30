@@ -25,6 +25,19 @@
  * That hazard is real, and it is answered by naming both rather than by
  * refusing one.
  *
+ * ## A bill in euro, and a bill that comes back
+ *
+ * «هزینه یک ماهه سرور آلمان» is billed in euro and billed again in thirty days,
+ * so it needed both. A row can name the currency it arrived in and the rate on
+ * the day, and the Toman figure is derived from those two on the server — the
+ * form never sends an amount for a foreign bill, so what is on the screen and
+ * what is in the books cannot be two roundings of one invoice.
+ *
+ * A recurring cost is a template with a due date and no cron behind it. The
+ * banner at the top says what is owed and «ثبت» posts one instalment; if nobody
+ * presses it the number on the banner grows, which is a visible failure rather
+ * than a silent book.
+ *
  * ## Nothing is deleted
  *
  * A row is voided: it stays, greys out, and leaves every total. That is what
@@ -33,17 +46,28 @@
  * importer's own check red for ever with nothing on any screen saying why.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { jalaliToIsoDate, toJalali, type JalaliDate } from '@shikoo/contracts';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  jalaliPeriodLabel,
+  jalaliToIsoDate,
+  nextJalaliDue,
+  toJalali,
+  type JalaliDate,
+} from '@shikoo/contracts';
 import { DateField } from '../DateField.js';
 import {
   api,
   ApiError,
+  CURRENCY_FA,
+  FOREIGN_CURRENCIES,
   LEDGER_KIND_FA,
+  type Currency,
   type ExpenseCategory,
+  type ExpenseRecurrence,
   type LedgerFilter,
   type LedgerHistoryEntry,
   type LedgerKind,
+  type LedgerMoney,
   type RevenueAdjustmentRow,
   type RevenueTotals,
 } from '../api.js';
@@ -66,7 +90,31 @@ const ZERO: RevenueTotals = {
   revenueFixIrr: 0,
   manualIncomeIrr: 0,
   netIrr: 0,
+  expensesCount: 0,
+  revenueFixCount: 0,
+  manualIncomeCount: 0,
+  netCount: 0,
 };
+
+/**
+ * What each column is added up from, in the words an admin would use.
+ *
+ * The card showed four figures under four bare nouns and Sam asked the obvious
+ * question: «معلوم نیست از کجا میاد اطلاعاتش». «اصلاح درآمد» is the one that
+ * needs it most — nobody guesses that it means fake receipts and duplicate
+ * charges, and it is the column whose misreading cost 35.8 million Toman of
+ * imaginary spending on the screen this page replaced.
+ */
+const COLUMN_FA: {
+  key: 'expenses' | 'revenueFix' | 'manualIncome' | 'net';
+  title: string;
+  what: string;
+}[] = [
+  { key: 'expenses', title: 'هزینه', what: 'پولی که فروشگاه خرج کرده' },
+  { key: 'revenueFix', title: 'اصلاح درآمد', what: 'فیش فیک، عدم واریزی، تکراری' },
+  { key: 'manualIncome', title: 'درآمد دستی', what: 'فروشی که دستی ثبت شده' },
+  { key: 'net', title: 'خالص', what: 'جمع سه ستون قبل' },
+];
 
 const KINDS: LedgerKind[] = ['EXPENSE', 'REVENUE_FIX', 'MANUAL_INCOME'];
 
@@ -83,7 +131,16 @@ const FIELD_FA: Record<string, string> = {
   kind: 'نوع',
   category_id: 'دسته',
   spent_on: 'تاریخ هزینه',
+  currency: 'ارز',
+  original_amount: 'مبلغ ارزی',
+  fx_rate_irr: 'نرخ ارز',
 };
+
+/** Digits only, so a pasted «۱٬۲۰۰٬۰۰۰» or «1,200,000» is still a number. */
+const digits = (v: string) => Number(v.replace(/[^\d]/g, ''));
+
+/** The same, but a decimal point survives — a foreign invoice says 35.5. */
+const decimal = (v: string) => Number(v.replace(/[^\d.]/g, ''));
 
 /**
  * Who wrote a row, in words.
@@ -106,6 +163,7 @@ export function ExpensesPage() {
     { categoryId: number | null; name: string | null; count: number; irr: number }[]
   >([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
+  const [recurrences, setRecurrences] = useState<ExpenseRecurrence[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [err, setErr] = useState<string | null>(null);
@@ -124,6 +182,8 @@ export function ExpensesPage() {
   const [jTo, setJTo] = useState<JalaliDate>(() => toJalali(Date.now()));
 
   const [editing, setEditing] = useState<RevenueAdjustmentRow | 'new' | null>(null);
+  const [posting, setPosting] = useState<ExpenseRecurrence | null>(null);
+  const [managing, setManaging] = useState<'categories' | 'recurrences' | null>(null);
   const [voidingRow, setVoidingRow] = useState<RevenueAdjustmentRow | null>(null);
   const [historyOf, setHistoryOf] = useState<number | null>(null);
 
@@ -159,13 +219,24 @@ export function ExpensesPage() {
     void load();
   }, [page, filter]);
 
+  // Both lists are the same fetch-once shape and fail the same way: a REVIEWER
+  // can read the ledger but not manage it, and an empty list means the form
+  // offers nothing rather than that the screen is broken.
+  async function loadLists() {
+    await Promise.all([
+      api
+        .expenseCategories()
+        .then((r) => setCategories(r.items))
+        .catch(() => setCategories([])),
+      api
+        .expenseRecurrences()
+        .then((r) => setRecurrences(r.items))
+        .catch(() => setRecurrences([])),
+    ]);
+  }
+
   useEffect(() => {
-    api
-      .expenseCategories()
-      .then((r) => setCategories(r.items))
-      // A REVIEWER can read the ledger but not manage it; an empty list means
-      // the form offers no category, not that the screen is broken.
-      .catch(() => setCategories([]));
+    void loadLists();
   }, []);
 
   // Any filter change starts at page one: staying on page 4 of a narrower
@@ -174,6 +245,35 @@ export function ExpensesPage() {
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const activeCategories = categories.filter((c) => c.active);
+
+  /**
+   * Every form opens HERE, under the page head, and takes the focus with it.
+   *
+   * They used to render at the bottom of the component, which is where React
+   * put them and not where anybody was looking: pressing «ثبت ردیف تازه» at the
+   * top of the page opened a form below two summary cards, a breakdown, a filter
+   * bar and fifty rows, with nothing on screen saying anything had happened.
+   * Sam's words: «دکمه ثبت ردیف تازه میره آخر صفحه یک بخش رو باز میکنه که باید
+   * کلی اسکرول کنی».
+   *
+   * One slot rather than three, because «ویرایش» is pressed from a row far down
+   * the table and «ثبت» from the banner at the top — a form rendered next to
+   * its own button would be in a different place each time.
+   *
+   * `scrollIntoView` AND focus, not just the move: the scroll is for the person
+   * looking at it and the focus is for the person who is not. Both are optional
+   * calls — happy-dom implements neither, and a test environment is not a reason
+   * for the panel to throw.
+   */
+  const formRef = useRef<HTMLDivElement>(null);
+  const formOpen = editing !== null || posting !== null || voidingRow !== null;
+  useEffect(() => {
+    if (!formOpen) return;
+    const panel = formRef.current;
+    const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    panel?.scrollIntoView?.({ behavior: still ? 'auto' : 'smooth', block: 'start' });
+    panel?.focus?.({ preventScroll: true });
+  }, [formOpen]);
 
   return (
     <>
@@ -189,6 +289,20 @@ export function ExpensesPage() {
           <a className="btn" href={api.revenueAdjustmentsCsvUrl(filter)} download="expenses.csv">
             خروجی CSV
           </a>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setManaging(managing === 'recurrences' ? null : 'recurrences')}
+          >
+            هزینه‌های تکرارشونده
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setManaging(managing === 'categories' ? null : 'categories')}
+          >
+            دسته‌ها
+          </button>
           <button type="button" className="btn btn-primary" onClick={() => setEditing('new')}>
             ثبت ردیف تازه
           </button>
@@ -198,7 +312,89 @@ export function ExpensesPage() {
       {err && <div className="alert alert-error">{err}</div>}
       {done && <div className="alert alert-info">{done}</div>}
 
-      <Totals inFilter={totals} lifetime={lifetime} />
+      {/* The forms, at the top. See `formRef` above for why they are not
+          rendered where they are used. `tabIndex` so the focus move lands
+          somewhere; it is not otherwise reachable by tab, which is correct — it
+          is a container, and the fields inside it are the stops. */}
+      <div ref={formRef} tabIndex={-1} className="scroll-target" style={{ outline: 'none' }}>
+        {editing && (
+          <EntryForm
+            row={editing === 'new' ? null : editing}
+            categories={activeCategories}
+            onClose={() => setEditing(null)}
+            onSaved={async (msg) => {
+              setEditing(null);
+              setDone(msg);
+              await load();
+            }}
+            onError={setErr}
+          />
+        )}
+
+        {posting && (
+          <EntryForm
+            row={null}
+            recurrence={posting}
+            categories={activeCategories}
+            onClose={() => setPosting(null)}
+            onSaved={async (msg) => {
+              setPosting(null);
+              setDone(msg);
+              await Promise.all([load(), loadLists()]);
+            }}
+            onError={setErr}
+          />
+        )}
+
+        {voidingRow && (
+          <VoidForm
+            row={voidingRow}
+            onClose={() => setVoidingRow(null)}
+            onDone={async (msg) => {
+              setVoidingRow(null);
+              setDone(msg);
+              await load();
+            }}
+            onError={setErr}
+          />
+        )}
+      </div>
+
+      {/* Above the totals, because it is the only thing on this page that is
+          asking for something rather than reporting it. */}
+      <DueBanner items={recurrences.filter((r) => r.due)} onPost={setPosting} />
+
+      {managing === 'recurrences' && (
+        <Recurrences
+          items={recurrences}
+          categories={activeCategories}
+          onPost={setPosting}
+          onChanged={async (msg) => {
+            setDone(msg);
+            await loadLists();
+          }}
+          onError={setErr}
+        />
+      )}
+
+      {managing === 'categories' && (
+        <Categories
+          items={categories}
+          onChanged={async (msg) => {
+            setDone(msg);
+            await loadLists();
+          }}
+          onError={setErr}
+        />
+      )}
+
+      <Totals
+        inFilter={totals}
+        lifetime={lifetime}
+        // «باطل‌شده‌ها: پنهان» is the default, not a filter — counting it would
+        // tell an admin they had narrowed something when they had not.
+        filtered={Boolean(kind || categoryId || uncategorised || q || dated || voided !== 'hide')}
+      />
 
       {byCategory.length > 0 && (
         <Breakdown
@@ -367,32 +563,6 @@ export function ExpensesPage() {
         )}
       </div>
 
-      {editing && (
-        <EntryForm
-          row={editing === 'new' ? null : editing}
-          categories={activeCategories}
-          onClose={() => setEditing(null)}
-          onSaved={async (msg) => {
-            setEditing(null);
-            setDone(msg);
-            await load();
-          }}
-          onError={setErr}
-        />
-      )}
-
-      {voidingRow && (
-        <VoidForm
-          row={voidingRow}
-          onClose={() => setVoidingRow(null)}
-          onDone={async (msg) => {
-            setVoidingRow(null);
-            setDone(msg);
-            await load();
-          }}
-          onError={setErr}
-        />
-      )}
     </>
   );
 }
@@ -406,18 +576,44 @@ export function ExpensesPage() {
  * figure that sometimes means one and sometimes the other is the
  * misunderstanding this page exists to end.
  */
-function Totals({ inFilter, lifetime }: { inFilter: RevenueTotals; lifetime: RevenueTotals }) {
-  const line = (label: string, t: RevenueTotals) => (
-    <tr>
-      <td>{label}</td>
-      <td>{toman(t.expensesIrr)}</td>
-      <td>{toman(t.revenueFixIrr)}</td>
-      <td>{toman(t.manualIncomeIrr)}</td>
-      <td>
-        <span className={t.netIrr < 0 ? 'badge badge-block' : 'badge badge-active'}>
-          {toman(t.netIrr)}
-        </span>
+function Totals({
+  inFilter,
+  lifetime,
+  filtered,
+}: {
+  inFilter: RevenueTotals;
+  lifetime: RevenueTotals;
+  /** Whether anything is actually narrowing the view. See the note below. */
+  filtered: boolean;
+}) {
+  const cell = (t: RevenueTotals, key: (typeof COLUMN_FA)[number]['key']) => {
+    const irr = t[`${key}Irr`];
+    const n = t[`${key}Count`];
+    return (
+      <td key={key}>
+        {key === 'net' ? (
+          <span className={irr < 0 ? 'badge badge-block' : 'badge badge-active'}>{toman(irr)}</span>
+        ) : (
+          toman(irr)
+        )}
+        {/* The denominator. A total with no row count cannot be checked against
+            anything; with one, «۵۶ ردیف» is a filter away from being read. */}
+        <div className="muted" style={{ fontSize: 11 }}>
+          از {count(n)} ردیف
+        </div>
       </td>
+    );
+  };
+
+  const line = (label: string, hint: string, t: RevenueTotals) => (
+    <tr>
+      <td>
+        {label}
+        <div className="muted" style={{ fontSize: 11 }}>
+          {hint}
+        </div>
+      </td>
+      {COLUMN_FA.map((c) => cell(t, c.key))}
     </tr>
   );
 
@@ -428,21 +624,38 @@ function Totals({ inFilter, lifetime }: { inFilter: RevenueTotals; lifetime: Rev
           <thead>
             <tr>
               <th />
-              <th>هزینه</th>
-              <th>اصلاح درآمد</th>
-              <th>درآمد دستی</th>
-              <th>خالص</th>
+              {COLUMN_FA.map((c) => (
+                <th key={c.key}>
+                  {c.title}
+                  {/* What the column counts, under its name. Four bare nouns is
+                      what made this card unreadable. */}
+                  <div className="muted" style={{ fontSize: 11, fontWeight: 400 }}>
+                    {c.what}
+                  </div>
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {line('در این فیلتر', inFilter)}
-            {line('کل دفتر', lifetime)}
+            {line(
+              'در این فیلتر',
+              filtered ? 'فقط ردیف‌های جدول پایین' : 'فیلتری فعال نیست',
+              inFilter,
+            )}
+            {line('کل دفتر', 'همهٔ ردیف‌ها، بدون توجه به فیلتر', lifetime)}
           </tbody>
         </table>
       </div>
       <p className="muted" style={{ marginBottom: 0 }}>
-        هیچ‌کدام ذخیره نمی‌شوند: هر بار از روی همین ردیف‌ها جمع می‌شوند، دقیقاً مثل
-        موجودی کیف پول. ردیف‌های باطل‌شده در هیچ‌کدام نیستند.
+        {/* Said explicitly, because two identical rows read as a bug rather than
+            as an answer. On an unfiltered page they SHOULD be equal, and a card
+            that does not say so is a card that looks like it is repeating
+            itself. */}
+        {filtered
+          ? 'سطر اول همان ردیف‌هایی است که پایین می‌بینی؛ سطر دوم کل دفتر.'
+          : 'فیلتری فعال نیست، پس دو سطر عمداً یکی‌اند. با فیلتر، سطر اول حرکت می‌کند و سطر دوم نه.'}{' '}
+        هیچ‌کدام ذخیره نمی‌شوند: هر بار از روی همین ردیف‌ها جمع می‌شوند، دقیقاً مثل موجودی کیف
+        پول. ردیف‌های باطل‌شده در هیچ‌کدام نیستند.
       </p>
     </div>
   );
@@ -549,6 +762,13 @@ function Row({
           <span className={row.amountIrr < 0 ? 'badge badge-block' : 'badge badge-active'}>
             {toman(row.amountIrr)}
           </span>
+          {/* What the invoice said, under what it came to. Testing `currency`
+              alone is enough: the schema keeps all three together or none. */}
+          {row.currency !== 'IRR' && (
+            <div className="muted" style={{ fontSize: 11 }}>
+              {count(row.originalAmount)} {CURRENCY_FA[row.currency]} × {toman(row.fxRateIrr)}
+            </div>
+          )}
         </td>
         <td title={actor.title}>{actor.text}</td>
         <td>
@@ -625,47 +845,590 @@ function History({ id }: { id: number }) {
 }
 
 /**
- * The one form, for a new row and for an edit.
+ * What is owed, at the top of the page.
  *
- * «نوع» is three radios rather than a select because it is the field that
- * decides the sign, and a select showing one of three options hides the choice
- * that matters most on a screen about money.
+ * This is the whole of «هزینهٔ تکرارشونده» that an admin has to look at on an
+ * ordinary day: it says nothing when nothing is due, and when something is it
+ * asks for one press. Nothing posts itself — a job writing a line into the
+ * books that nobody typed, at an amount that may have changed, is a correction
+ * screen waiting to be needed.
+ *
+ * A template nobody presses stays here and the list grows, which is a visible
+ * failure. The alternative failure — a silent book that looks right — is the
+ * one this page exists to prevent.
  */
-function EntryForm({
+function DueBanner({
+  items,
+  onPost,
+}: {
+  items: ExpenseRecurrence[];
+  onPost: (r: ExpenseRecurrence) => void;
+}) {
+  if (items.length === 0) return null;
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <div className="card__title">سررسید هزینه‌های تکرارشونده</div>
+        <div className="muted">{count(items.length)} مورد آمادهٔ ثبت</div>
+      </div>
+      <div className="table-wrap">
+        <table className="app-table">
+          <tbody>
+            {items.map((r) => (
+              <tr key={r.id}>
+                <td>
+                  <strong>{r.label}</strong>
+                  {r.note && (
+                    <div className="muted" style={{ fontSize: 11 }}>
+                      {r.note}
+                    </div>
+                  )}
+                </td>
+                <td>{r.categoryName ?? '—'}</td>
+                <td>{toman(-r.amountIrr)}</td>
+                <td>سررسید {dateOnly(`${r.nextDueOn}T12:00:00Z`)}</td>
+                <td style={{ textAlign: 'end' }}>
+                  <button type="button" className="btn btn-primary" onClick={() => onPost(r)}>
+                    ثبت
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The templates themselves — adding one, changing one, archiving one.
+ *
+ * Behind a toggle rather than on the page, because on almost every visit the
+ * answer to «هزینه‌های تکرارشونده» is the banner above and nothing else.
+ */
+function Recurrences({
+  items,
+  categories,
+  onPost,
+  onChanged,
+  onError,
+}: {
+  items: ExpenseRecurrence[];
+  categories: ExpenseCategory[];
+  onPost: (r: ExpenseRecurrence) => void;
+  onChanged: (msg: string) => void | Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState<ExpenseRecurrence | 'new' | null>(null);
+
+  async function setActive(r: ExpenseRecurrence, active: boolean) {
+    try {
+      await api.editExpenseRecurrence(r.id, { active });
+      await onChanged(active ? 'دوباره فعال شد.' : 'بایگانی شد — ردیف‌های ثبت‌شده سر جایشان‌اند.');
+    } catch (e) {
+      onError(message(e));
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <div className="card__title">هزینه‌های تکرارشونده</div>
+        <button type="button" className="btn" onClick={() => setEditing('new')}>
+          الگوی تازه
+        </button>
+      </div>
+
+      {editing && (
+        <RecurrenceForm
+          row={editing === 'new' ? null : editing}
+          categories={categories}
+          onClose={() => setEditing(null)}
+          onSaved={async (msg) => {
+            setEditing(null);
+            await onChanged(msg);
+          }}
+          onError={onError}
+        />
+      )}
+
+      <div className="table-wrap">
+        <table className="app-table">
+          <thead>
+            <tr>
+              <th>عنوان</th>
+              <th>دسته</th>
+              <th>مبلغ</th>
+              <th>دوره</th>
+              <th>سررسید بعدی</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {items.length === 0 && (
+              <tr>
+                <td className="empty" colSpan={6}>
+                  هنوز هزینهٔ تکرارشونده‌ای تعریف نشده. مثلاً «سرور آلمان»، ماهانه.
+                </td>
+              </tr>
+            )}
+            {items.map((r) => (
+              <tr key={r.id} style={r.active ? undefined : { opacity: 0.55 }}>
+                <td>
+                  {r.label}
+                  {!r.active && <span className="muted"> (بایگانی)</span>}
+                </td>
+                <td>{r.categoryName ?? '—'}</td>
+                <td>{toman(-r.amountIrr)}</td>
+                <td>{r.period === 'MONTHLY' ? 'ماهانه' : 'سالانه'}</td>
+                <td>
+                  {dateOnly(`${r.nextDueOn}T12:00:00Z`)}
+                  {r.due && <span className="badge badge-block"> سررسید شده</span>}
+                </td>
+                <td>
+                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                    {r.active && (
+                      <button type="button" className="btn" onClick={() => onPost(r)}>
+                        ثبت
+                      </button>
+                    )}
+                    <button type="button" className="btn" onClick={() => setEditing(r)}>
+                      ویرایش
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void setActive(r, !r.active)}
+                    >
+                      {r.active ? 'بایگانی' : 'فعال کن'}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A template, added or changed.
+ *
+ * The amount is asked in Toman with no currency field, and that is deliberate:
+ * what recurs about a German server is that it arrives every month, not that it
+ * costs the same. The euro amount and that day's rate are asked when the
+ * instalment is posted — the fact that changes monthly is asked for monthly,
+ * and the template never holds a rate that is stale by definition.
+ */
+function RecurrenceForm({
   row,
   categories,
   onClose,
   onSaved,
   onError,
 }: {
-  row: RevenueAdjustmentRow | null;
+  row: ExpenseRecurrence | null;
   categories: ExpenseCategory[];
   onClose: () => void;
   onSaved: (msg: string) => void | Promise<void>;
   onError: (msg: string) => void;
 }) {
-  const [kind, setKind] = useState<LedgerKind>(row?.kind ?? 'EXPENSE');
-  const [amount, setAmount] = useState(row ? String(Math.abs(row.amountIrr) / 10) : '');
+  const [label, setLabel] = useState(row?.label ?? '');
+  const [amount, setAmount] = useState(row ? String(row.amountIrr / 10) : '');
+  const [period, setPeriod] = useState<'MONTHLY' | 'YEARLY'>(row?.period ?? 'MONTHLY');
+  const [categoryId, setCategoryId] = useState<number | ''>(row?.categoryId ?? '');
+  const [note, setNote] = useState(row?.note ?? '');
+  const [jDate, setJDate] = useState<JalaliDate>(() =>
+    toJalali(row ? Date.parse(`${row.nextDueOn}T12:00:00Z`) : Date.now()),
+  );
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    const amountToman = digits(amount);
+    if (!label.trim()) {
+      onError('عنوان لازم است.');
+      return;
+    }
+    if (!Number.isInteger(amountToman) || amountToman <= 0) {
+      onError('مبلغ درست نیست.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const body = {
+        label: label.trim(),
+        amountToman,
+        period,
+        categoryId: categoryId === '' ? null : categoryId,
+        nextDueOn: jalaliToIsoDate(jDate),
+        note: note.trim(),
+      };
+      if (row) {
+        await api.editExpenseRecurrence(row.id, body);
+        await onSaved('الگو به‌روز شد.');
+      } else {
+        await api.addExpenseRecurrence(body);
+        await onSaved('الگو ساخته شد — از سررسیدش در بالای همین صفحه یادآوری می‌شود.');
+      }
+    } catch (e) {
+      onError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginBlockEnd: 16 }}>
+      <div className="filters">
+        <div>
+          <label className="form-label" htmlFor="rec-label">
+            عنوان
+          </label>
+          <input
+            id="rec-label"
+            className="form-control"
+            value={label}
+            placeholder="مثلاً سرور آلمان"
+            onChange={(e) => setLabel(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <label className="form-label" htmlFor="rec-amount">
+            مبلغ معمول (تومان)
+          </label>
+          <input
+            id="rec-amount"
+            className="form-control"
+            inputMode="numeric"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <label className="form-label" htmlFor="rec-period">
+            دوره
+          </label>
+          <select
+            id="rec-period"
+            className="form-control"
+            value={period}
+            onChange={(e) => setPeriod(e.target.value as 'MONTHLY' | 'YEARLY')}
+          >
+            <option value="MONTHLY">ماهانه</option>
+            <option value="YEARLY">سالانه</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="form-label" htmlFor="rec-category">
+            دسته
+          </label>
+          <select
+            id="rec-category"
+            className="form-control"
+            value={String(categoryId)}
+            onChange={(e) => setCategoryId(e.target.value === '' ? '' : Number(e.target.value))}
+          >
+            <option value="">— انتخاب نشده —</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <DateField label="سررسید بعدی" value={jDate} onChange={setJDate} />
+      </div>
+
+      <div style={{ marginBlockStart: 12 }}>
+        <label className="form-label" htmlFor="rec-note">
+          یادداشت (اختیاری)
+        </label>
+        <input
+          id="rec-note"
+          className="form-control"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy}
+          onClick={() => void submit()}
+        >
+          {row ? 'ذخیره' : 'بساز'}
+        </button>
+        <button type="button" className="btn" onClick={onClose}>
+          انصراف
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The categories, managed from the screen that uses them.
+ *
+ * There is no delete, and the reason is on the row: `rowCount` says how many
+ * expenses point at it. The foreign key is `RESTRICT`, so a category with
+ * spending against it cannot go anyway, and one without is a row nobody is
+ * paying to keep. «بایگانی» takes it out of the form and leaves every past
+ * expense still able to say what it was for.
+ */
+function Categories({
+  items,
+  onChanged,
+  onError,
+}: {
+  items: ExpenseCategory[];
+  onChanged: (msg: string) => void | Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [fresh, setFresh] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function run(work: () => Promise<unknown>, msg: string) {
+    setBusy(true);
+    try {
+      await work();
+      await onChanged(msg);
+    } catch (e) {
+      onError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <div className="card__title">دسته‌های هزینه</div>
+        <div className="muted">تفکیک «چه چیزی خرج شد» از همین فهرست می‌آید</div>
+      </div>
+
+      <div className="table-wrap">
+        <table className="app-table">
+          <thead>
+            <tr>
+              <th>نام</th>
+              <th>ترتیب</th>
+              <th>ردیف‌ها</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((c) => (
+              <CategoryRow
+                key={c.id}
+                row={c}
+                busy={busy}
+                onSave={(body, msg) => void run(() => api.editExpenseCategory(c.id, body), msg)}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginBlockStart: 12, alignItems: 'flex-end' }}>
+        <div style={{ flex: 1 }}>
+          <label className="form-label" htmlFor="cat-new">
+            دستهٔ تازه
+          </label>
+          <input
+            id="cat-new"
+            className="form-control"
+            value={fresh}
+            placeholder="مثلاً بیمه و مالیات"
+            onChange={(e) => setFresh(e.target.value)}
+          />
+        </div>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || fresh.trim().length === 0}
+          onClick={() =>
+            void run(async () => {
+              await api.addExpenseCategory({ name: fresh.trim() });
+              setFresh('');
+            }, 'دسته اضافه شد.')
+          }
+        >
+          اضافه کن
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One category, with its own draft.
+ *
+ * Local state per row rather than one draft on the panel: two half-typed
+ * renames at once is a real thing an admin does, and a single shared draft
+ * would put one of them on the wrong row.
+ */
+function CategoryRow({
+  row,
+  busy,
+  onSave,
+}: {
+  row: ExpenseCategory;
+  busy: boolean;
+  onSave: (body: { name?: string; active?: boolean; sortOrder?: number }, msg: string) => void;
+}) {
+  const [name, setName] = useState(row.name);
+  const [sortOrder, setSortOrder] = useState(String(row.sortOrder));
+
+  const changed = name.trim() !== row.name || digits(sortOrder) !== row.sortOrder;
+
+  return (
+    <tr style={row.active ? undefined : { opacity: 0.55 }}>
+      <td>
+        <input
+          className="form-control"
+          aria-label={`نام دستهٔ ${row.name}`}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </td>
+      <td style={{ width: 90 }}>
+        <input
+          className="form-control"
+          aria-label={`ترتیب دستهٔ ${row.name}`}
+          inputMode="numeric"
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value)}
+        />
+      </td>
+      {/* What archiving would cost, before it is pressed. */}
+      <td>{count(row.rowCount)}</td>
+      <td>
+        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy || !changed || name.trim().length === 0}
+            onClick={() => onSave({ name: name.trim(), sortOrder: digits(sortOrder) }, 'ذخیره شد.')}
+          >
+            ذخیره
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() =>
+              onSave(
+                { active: !row.active },
+                row.active ? 'بایگانی شد — ردیف‌های قبلی سر جایشان‌اند.' : 'دوباره فعال شد.',
+              )
+            }
+          >
+            {row.active ? 'بایگانی' : 'فعال کن'}
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * The one form: a new row, an edit, and one instalment of a recurring cost.
+ *
+ * «نوع» is three radios rather than a select because it is the field that
+ * decides the sign, and a select showing one of three options hides the choice
+ * that matters most on a screen about money.
+ *
+ * The third mode is here rather than in a form of its own so that the currency
+ * fields exist ONCE. A euro amount, a rate, and the rounding between them are
+ * the fiddliest thing on this page, and a second copy for recurring bills —
+ * which are the ones most likely to be in euro — would be the copy that got it
+ * wrong. What the mode changes is the endpoint and which fields the template
+ * already answers.
+ */
+function EntryForm({
+  row,
+  recurrence = null,
+  categories,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  row: RevenueAdjustmentRow | null;
+  /** Posting one instalment of this template, rather than typing a free row. */
+  recurrence?: ExpenseRecurrence | null;
+  categories: ExpenseCategory[];
+  onClose: () => void;
+  onSaved: (msg: string) => void | Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  // A recurring cost is always spending, and its category is the template's.
+  const [kind, setKind] = useState<LedgerKind>(recurrence ? 'EXPENSE' : (row?.kind ?? 'EXPENSE'));
+  const [currency, setCurrency] = useState<Currency>(row?.currency ?? 'IRR');
+  const [amount, setAmount] = useState(
+    row
+      ? String(Math.abs(row.amountIrr) / 10)
+      : recurrence
+        ? String(recurrence.amountIrr / 10)
+        : '',
+  );
+  const [foreign, setForeign] = useState(row?.originalAmount == null ? '' : String(row.originalAmount));
+  const [rate, setRate] = useState(row?.fxRateIrr == null ? '' : String(row.fxRateIrr / 10));
   const [direction, setDirection] = useState<'expense' | 'credit'>(
     row && row.amountIrr > 0 ? 'credit' : 'expense',
   );
   const [categoryId, setCategoryId] = useState<number | ''>(row?.categoryId ?? '');
-  const [note, setNote] = useState(row?.note ?? '');
+  // The default the server would produce if this were sent empty, shown so it
+  // can be edited rather than only accepted. `jalaliPeriodLabel` is the shared
+  // one, so the two cannot word it differently.
+  const [note, setNote] = useState(
+    row?.note ?? (recurrence ? `${recurrence.label} — ${jalaliPeriodLabel(recurrence.nextDueOn)}` : ''),
+  );
   const [reason, setReason] = useState('');
   // Noon UTC, so parsing a date-only string cannot land on the previous day in
   // Tehran the way midnight would.
   const [jDate, setJDate] = useState<JalaliDate>(() =>
-    toJalali(row ? Date.parse(`${row.spentOn}T12:00:00Z`) : Date.now()),
+    toJalali(
+      row
+        ? Date.parse(`${row.spentOn}T12:00:00Z`)
+        : recurrence
+          ? Date.parse(`${recurrence.nextDueOn}T12:00:00Z`)
+          : Date.now(),
+    ),
   );
   const [busy, setBusy] = useState(false);
 
-  const amountToman = Number(amount.replace(/[^\d]/g, ''));
+  const originalAmount = decimal(foreign);
+  const fxRateToman = digits(rate);
+  /**
+   * The Toman figure, derived the same way the server derives it.
+   *
+   * A preview only — the request carries the invoice and the rate, never this,
+   * so the figure the books get is produced once on the server. If this line
+   * and `magnitudeIrr` ever disagreed the screen would be wrong and the ledger
+   * would still be right, which is the correct way round.
+   */
+  const amountToman =
+    currency === 'IRR' ? digits(amount) : Math.round(originalAmount * fxRateToman);
   const previewIrr =
     kind === 'EXPENSE' || (kind === 'REVENUE_FIX' && direction === 'expense')
       ? -amountToman * 10
       : amountToman * 10;
 
   async function submit() {
+    if (currency !== 'IRR' && !(originalAmount > 0 && fxRateToman > 0)) {
+      onError('برای ارز خارجی هم مبلغ ارزی لازم است هم نرخ روز.');
+      return;
+    }
     if (!Number.isInteger(amountToman) || amountToman <= 0) {
       onError('مبلغ درست نیست.');
       return;
@@ -676,12 +1439,32 @@ function EntryForm({
     }
     setBusy(true);
     try {
+      // One of the two shapes the server accepts, never both. For a foreign
+      // bill no Toman figure is sent at all.
+      const money: LedgerMoney =
+        currency === 'IRR'
+          ? { amountToman }
+          : { currency, originalAmount, fxRateToman };
+      const spentOn = jalaliToIsoDate(jDate);
+
+      if (recurrence) {
+        const res = await api.postExpenseRecurrence(recurrence.id, {
+          ...money,
+          spentOn,
+          note: note.trim(),
+        });
+        await onSaved(
+          `ثبت شد — سررسید بعدی ${dateOnly(`${res.nextDueOn}T12:00:00Z`)}.`,
+        );
+        return;
+      }
+
       const body = {
-        amountToman,
+        ...money,
         kind,
         direction,
         categoryId: kind === 'EXPENSE' ? (categoryId === '' ? null : categoryId) : null,
-        spentOn: jalaliToIsoDate(jDate),
+        spentOn,
         note: note.trim(),
       };
       if (row) {
@@ -704,26 +1487,41 @@ function EntryForm({
   return (
     <div className="card" style={{ marginBlockStart: 16 }}>
       <div className="card__head">
-        <div className="card__title">{row ? 'ویرایش ردیف' : 'ثبت ردیف تازه'}</div>
+        <div className="card__title">
+          {recurrence ? `ثبت قسط — ${recurrence.label}` : row ? 'ویرایش ردیف' : 'ثبت ردیف تازه'}
+        </div>
       </div>
 
+      {recurrence && (
+        <p className="muted">
+          هزینهٔ {recurrence.period === 'MONTHLY' ? 'ماهانه' : 'سالانه'}
+          {recurrence.categoryName ? ` · ${recurrence.categoryName}` : ''} · سررسید{' '}
+          {dateOnly(`${recurrence.nextDueOn}T12:00:00Z`)}. بعد از ثبت، سررسید بعدی{' '}
+          {dateOnly(`${nextJalaliDue(recurrence.nextDueOn, recurrence.period)}T12:00:00Z`)} می‌شود.
+        </p>
+      )}
+
       <div className="filters">
-        <div>
-          <span className="form-label">نوع</span>
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            {KINDS.map((k) => (
-              <label key={k}>
-                <input
-                  type="radio"
-                  name="entry-kind"
-                  checked={kind === k}
-                  onChange={() => setKind(k)}
-                />{' '}
-                {LEDGER_KIND_FA[k]}
-              </label>
-            ))}
+        {/* The template already answers «what kind» and «what for»; asking
+            again would be a field with one possible answer. */}
+        {!recurrence && (
+          <div>
+            <span className="form-label">نوع</span>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {KINDS.map((k) => (
+                <label key={k}>
+                  <input
+                    type="radio"
+                    name="entry-kind"
+                    checked={kind === k}
+                    onChange={() => setKind(k)}
+                  />{' '}
+                  {LEDGER_KIND_FA[k]}
+                </label>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {kind === 'REVENUE_FIX' && (
           <div>
@@ -743,19 +1541,68 @@ function EntryForm({
         )}
 
         <div>
-          <label className="form-label" htmlFor="entry-amount">
-            مبلغ (تومان)
+          <label className="form-label" htmlFor="entry-currency">
+            ارز
           </label>
-          <input
-            id="entry-amount"
+          <select
+            id="entry-currency"
             className="form-control"
-            inputMode="numeric"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-          />
+            value={currency}
+            onChange={(e) => setCurrency(e.target.value as Currency)}
+          >
+            <option value="IRR">{CURRENCY_FA.IRR}</option>
+            {FOREIGN_CURRENCIES.map((cur) => (
+              <option key={cur} value={cur}>
+                {CURRENCY_FA[cur]}
+              </option>
+            ))}
+          </select>
         </div>
 
-        {kind === 'EXPENSE' && (
+        {currency === 'IRR' ? (
+          <div>
+            <label className="form-label" htmlFor="entry-amount">
+              مبلغ (تومان)
+            </label>
+            <input
+              id="entry-amount"
+              className="form-control"
+              inputMode="numeric"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
+          </div>
+        ) : (
+          <>
+            <div>
+              <label className="form-label" htmlFor="entry-foreign">
+                مبلغ فاکتور ({CURRENCY_FA[currency]})
+              </label>
+              <input
+                id="entry-foreign"
+                className="form-control"
+                inputMode="decimal"
+                placeholder="مثلاً ۳۵٫۵"
+                value={foreign}
+                onChange={(e) => setForeign(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="form-label" htmlFor="entry-rate">
+                نرخ روز (تومان برای هر {CURRENCY_FA[currency]})
+              </label>
+              <input
+                id="entry-rate"
+                className="form-control"
+                inputMode="numeric"
+                value={rate}
+                onChange={(e) => setRate(e.target.value)}
+              />
+            </div>
+          </>
+        )}
+
+        {kind === 'EXPENSE' && !recurrence && (
           <div>
             <label className="form-label" htmlFor="entry-category">
               دسته
@@ -807,9 +1654,16 @@ function EntryForm({
       )}
 
       {/* The sign, before it is committed. The client never sends one, so this
-          is the only place an operator sees which way the row will move. */}
+          is the only place an operator sees which way the row will move — and
+          for a foreign bill it is also the only place the multiplication is
+          visible before it is done. */}
       {amountToman > 0 && (
         <p className="muted" style={{ marginBlockStart: 12 }}>
+          {currency !== 'IRR' && (
+            <>
+              {count(originalAmount)} {CURRENCY_FA[currency]} × {count(fxRateToman)} تومان —{' '}
+            </>
+          )}
           در دفتر ثبت می‌شود: <strong>{toman(previewIrr)}</strong>
         </p>
       )}
@@ -821,7 +1675,7 @@ function EntryForm({
           disabled={busy}
           onClick={() => void submit()}
         >
-          {row ? 'ذخیره' : 'ثبت'}
+          {recurrence ? 'ثبت قسط' : row ? 'ذخیره' : 'ثبت'}
         </button>
         <button type="button" className="btn" onClick={onClose}>
           انصراف

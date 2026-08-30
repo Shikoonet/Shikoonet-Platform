@@ -460,6 +460,23 @@ export const LEDGER_KIND_FA: Record<LedgerKind, string> = {
 };
 
 /**
+ * What a bill arrived in. `IRR` means the row is what it has always been — a
+ * Toman figure with no invoice behind it — and the other three carry the
+ * original amount and the rate it was bought at.
+ */
+export type Currency = 'IRR' | 'EUR' | 'USD' | 'TON';
+
+export const CURRENCY_FA: Record<Currency, string> = {
+  IRR: 'تومان',
+  EUR: 'یورو',
+  USD: 'دلار',
+  TON: 'تون',
+};
+
+/** Every currency but the one the books are kept in. */
+export const FOREIGN_CURRENCIES: Currency[] = ['EUR', 'USD', 'TON'];
+
+/**
  * One line of the shop's own books. `amountIrr` is SIGNED — negative is money
  * out — because that is how the row is stored and how the legacy log stored it
  * too. `kind` says what the row means; the sign only says which direction.
@@ -473,6 +490,20 @@ export interface RevenueAdjustmentRow {
   categoryName: string | null;
   /** The day the money moved, Gregorian on the wire. Not when it was typed. */
   spentOn: string;
+  /**
+   * The invoice behind the figure, when there was one. `originalAmount` and
+   * `fxRateIrr` are both null exactly when `currency` is `IRR` — the schema
+   * guarantees they travel together, so testing one is enough.
+   *
+   * `amountIrr` above is still the only figure anything adds up. These three
+   * are the receipt: what the bill said, and what a unit cost on the day.
+   */
+  currency: Currency;
+  originalAmount: number | null;
+  /** Rial per unit. Divide by ten to show the Toman an admin typed. */
+  fxRateIrr: number | null;
+  /** The template this was posted from, if it was posted rather than typed. */
+  recurrenceId: number | null;
   createdBy: string | null;
   createdAt: string;
   voidedAt: string | null;
@@ -493,6 +524,17 @@ export interface RevenueTotals {
   manualIncomeIrr: number;
   /** The three above, added. */
   netIrr: number;
+  /**
+   * How many rows each figure was added up from.
+   *
+   * Sent because a total with no denominator cannot be checked: «−۷۵۴ میلیون»
+   * is unverifiable, «−۷۵۴ میلیون از ۵۶ ردیف» can be clicked through to the
+   * fifty-six.
+   */
+  expensesCount: number;
+  revenueFixCount: number;
+  manualIncomeCount: number;
+  netCount: number;
 }
 
 export interface ExpenseCategory {
@@ -502,6 +544,31 @@ export interface ExpenseCategory {
   sortOrder: number;
   /** So «غیرفعال کردن» can say what it costs before it is pressed. */
   rowCount: number;
+}
+
+/**
+ * A cost that comes back — «هزینه یک ماهه سرور آلمان» and its next due date.
+ *
+ * `amountIrr` is a positive magnitude and a DEFAULT, not a total: nothing adds
+ * this column up, and posting an instalment replaces it with what was actually
+ * paid so a euro bill's Toman figure tracks the rate instead of going stale.
+ *
+ * There is no cron. `due` is answered by Postgres in Tehran and the screen shows
+ * a button; a template nobody presses stays due and the number on the banner
+ * grows, which is the right way for this to fail.
+ */
+export interface ExpenseRecurrence {
+  id: number;
+  label: string;
+  categoryId: number | null;
+  categoryName: string | null;
+  amountIrr: number;
+  period: 'MONTHLY' | 'YEARLY';
+  /** Gregorian on the wire; the screen picks and shows it in Jalali. */
+  nextDueOn: string;
+  active: boolean;
+  note: string;
+  due: boolean;
 }
 
 export interface RevenueAdjustmentPage {
@@ -572,6 +639,25 @@ export function ledgerQuery(f: LedgerFilter): URLSearchParams {
   if (f.rangeTo) qs.set('rangeTo', f.rangeTo);
   return qs;
 }
+
+/**
+ * How much, said one of the two ways the server accepts.
+ *
+ * Never both: a Toman figure sent beside a rate would be two answers to one
+ * question and the server refuses it with a 400. The multiplication for a
+ * foreign bill happens on the server, so the amount in the books is the one the
+ * invoice and the rate produce — not a second rounding done in a browser.
+ */
+export type LedgerMoney =
+  | { amountToman: number; currency?: 'IRR'; originalAmount?: never; fxRateToman?: never }
+  | {
+      amountToman?: never;
+      currency: Exclude<Currency, 'IRR'>;
+      /** What the invoice said: 35.5 for €35.50. */
+      originalAmount: number;
+      /** Toman for ONE unit, on the day the money left. */
+      fxRateToman: number;
+    };
 
 /** One thing that was done to a ledger row, out of the append-only audit log. */
 export interface LedgerHistoryEntry {
@@ -1410,8 +1496,7 @@ export const api = {
    * what a line is gets a 400 rather than a guess, because the guess would be
    * invisible and this is money.
    */
-  addRevenueAdjustment(body: {
-    amountToman: number;
+  addRevenueAdjustment(body: LedgerMoney & {
     kind: LedgerKind;
     direction?: 'expense' | 'credit';
     categoryId?: number | null;
@@ -1426,8 +1511,7 @@ export const api = {
 
   editRevenueAdjustment(
     id: number,
-    body: {
-      amountToman?: number;
+    body: Partial<LedgerMoney> & {
       kind?: LedgerKind;
       direction?: 'expense' | 'credit';
       categoryId?: number | null;
@@ -1477,6 +1561,57 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     });
+  },
+
+  expenseRecurrences() {
+    return req<{ ok: boolean; items: ExpenseRecurrence[] }>('/revenue-adjustments/recurrences');
+  },
+
+  addExpenseRecurrence(body: {
+    label: string;
+    categoryId?: number | null;
+    amountToman: number;
+    period?: 'MONTHLY' | 'YEARLY';
+    nextDueOn: string;
+    note?: string;
+  }) {
+    return req<{ ok: boolean; id: number }>('/revenue-adjustments/recurrences', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  editExpenseRecurrence(
+    id: number,
+    body: {
+      label?: string;
+      categoryId?: number | null;
+      amountToman?: number;
+      period?: 'MONTHLY' | 'YEARLY';
+      nextDueOn?: string;
+      note?: string;
+      active?: boolean;
+    },
+  ) {
+    return req<{ ok: boolean }>(`/revenue-adjustments/recurrences/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /**
+   * Post one instalment: the ledger row and the advance, in one transaction on
+   * the server. Everything is optional — the template answers it all, and this
+   * body is only for the month that was different.
+   */
+  postExpenseRecurrence(
+    id: number,
+    body: Partial<LedgerMoney> & { spentOn?: string; note?: string } = {},
+  ) {
+    return req<{ ok: boolean; id: number; nextDueOn: string }>(
+      `/revenue-adjustments/recurrences/${id}/post`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
   },
 
   setDiscount(id: number, body: { percent: number }) {
