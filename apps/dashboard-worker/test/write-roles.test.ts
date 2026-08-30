@@ -304,6 +304,9 @@ describe('every write route, asked directly', () => {
     // leaves: DELETE on a row is gone. A deleted line made `verify.ts`'s row
     // count red for ever with nothing saying why, and voiding says the same
     // thing to the panel without lying to the importer.
-    expect(writeRoutes().length).toBe(136);
+    // 136 -> 139: recurring costs. A template can be created and edited, and
+    // «ثبت» posts one instalment — the third is a write because it puts a row
+    // in the books, not because it changes the template.
+    expect(writeRoutes().length).toBe(139);
   });
 });
