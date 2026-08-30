@@ -18,7 +18,7 @@
  * is why the case matters at all.
  */
 
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { createPostgresD1 } from '@shikoo/db';
 
 const NOTE = 'e2e — ردیف آزمایشی هزینه';
@@ -54,16 +54,37 @@ const fa = new Intl.NumberFormat('fa-IR');
  */
 const asToman = (irr: number) => `${fa.format(Math.trunc(Math.abs(irr) / 10))} تومان`;
 
+/**
+ * The same figure as a ROW renders it, which is not the same string.
+ *
+ * A row prints `toman()` straight from `Intl`, so a negative carries the
+ * invisible left-to-right mark `Intl` inserts and a positive carries no plus at
+ * all. Building the expectation the way the summary does — bare `−`, absolute
+ * value — produced a string differing from the screen by one character nobody
+ * can see, and asserting a `+` that the panel has never printed. Both were in
+ * this file, unrun, until 2026-08-30.
+ */
+const rowToman = (irr: number) => `${fa.format(Math.trunc(irr / 10))} تومان`;
+
 test.beforeAll(async () => {
   await withDb(async (d) => {
     await d.prepare(`DELETE FROM revenue_adjustments WHERE note LIKE 'e2e — %'`).run();
+    // Rows first: `recurrence_id` points this way, so a template with an
+    // instalment against it is one the RESTRICT will not let go.
+    await d.prepare(`DELETE FROM expense_recurrences WHERE label LIKE 'e2e — %'`).run();
     for (const irr of [...SEEDED_IRR, CREDIT_IRR]) {
       await d
         .prepare(
+          // `?1::bigint` in BOTH places, and the cast is not decoration. Used
+          // once as a value and once inside a comparison, Postgres deduces two
+          // types for the same parameter and refuses the statement outright —
+          // «inconsistent types deduced for parameter $1». This seed was
+          // written on 2026-08-30 and could not run until the cast was added,
+          // which is what CLAUDE.md means about a test nobody has executed.
           `INSERT INTO revenue_adjustments
              (amount_irr, note, created_by, created_at, kind, spent_on)
-           VALUES (?1, ?2, 'e2e@shikoo.local', now(),
-                   CASE WHEN ?1 < 0 THEN 'EXPENSE' ELSE 'MANUAL_INCOME' END,
+           VALUES (?1::bigint, ?2, 'e2e@shikoo.local', now(),
+                   CASE WHEN ?1::bigint < 0 THEN 'EXPENSE' ELSE 'MANUAL_INCOME' END,
                    (now() AT TIME ZONE 'Asia/Tehran')::date)`,
         )
         .bind(irr, NOTE)
@@ -87,10 +108,17 @@ async function ledger() {
   return withDb(async (d) => {
     const row = await d
       .prepare(
-        `SELECT COALESCE(SUM(-amount_irr) FILTER (WHERE amount_irr < 0), 0)::bigint AS spent,
-                COALESCE(SUM(amount_irr)  FILTER (WHERE amount_irr > 0), 0)::bigint AS earned,
-                COALESCE(SUM(amount_irr), 0)::bigint                               AS net,
-                count(*)::int                                                      AS rows
+        // BY KIND, NOT BY SIGN, and the difference is the whole reason 0040
+        // exists. `amount_irr < 0` counts a fake receipt as money the shop
+        // spent, which is exactly the 35.8 million Toman error this screen was
+        // rebuilt to stop reporting. These filters ask the same question the
+        // panel's «هزینه» and «درآمد دستی» columns ask; asking a different one
+        // and calling the difference a failure is how a green suite gets
+        // ignored.
+        `SELECT COALESCE(SUM(-amount_irr) FILTER (WHERE kind = 'EXPENSE'), 0)::bigint       AS spent,
+                COALESCE(SUM(amount_irr)  FILTER (WHERE kind = 'MANUAL_INCOME'), 0)::bigint AS earned,
+                COALESCE(SUM(amount_irr), 0)::bigint                                        AS net,
+                count(*)::int                                                               AS rows
            FROM shop_books`,
       )
       .first<{ spent: number; earned: number; net: number; rows: number }>();
@@ -102,6 +130,19 @@ async function ledger() {
     };
   });
 }
+
+/**
+ * The cards, by what they say rather than by where they are.
+ *
+ * These were `.card` first and `#main-content table` nth(1) until a banner for
+ * a due recurring cost appeared above them, and four tests went red at once
+ * without a single thing on the screen being wrong. A locator that counts is a
+ * locator that fails the next time anything is added — and it fails in a way
+ * that reads like a broken feature.
+ */
+const totalsCard = (page: Page) => page.locator('.card', { hasText: 'کل دفتر' });
+const ledgerTable = (page: Page) =>
+  page.locator('.app-table').filter({ has: page.locator('th', { hasText: 'ثبت‌کننده' }) });
 
 test('the totals are summed in Rial and converted once, not the other way round', async ({
   page,
@@ -117,7 +158,7 @@ test('the totals are summed in Rial and converted once, not the other way round'
   await page.goto('/admin/expenses');
   await expect(page.locator('.sidebar-link.active')).toHaveText('هزینه‌ها');
 
-  const summary = page.locator('#main-content table').first();
+  const summary = totalsCard(page);
   await expect(summary).toContainText(asToman(l.spent));
   await expect(summary).toContainText(asToman(l.earned));
   // Sign and magnitude asserted together: a net that lost its minus reads as a
@@ -127,13 +168,23 @@ test('the totals are summed in Rial and converted once, not the other way round'
 
 test('a row records who wrote it, and the amount keeps its direction', async ({ page }) => {
   await page.goto('/admin/expenses');
-  const list = page.locator('#main-content table').nth(1);
+  const list = ledgerTable(page);
 
-  // An expense is negative on the screen and a credit is positive. They sit in
-  // the same column, and a reader who cannot tell them apart at a glance is
-  // reading a ledger that says nothing.
-  await expect(list).toContainText(`−${fa.format(199_999)} تومان`);
-  await expect(list).toContainText(`+${fa.format(400_000)} تومان`);
+  // An expense is negative on the screen and a credit is not. They sit in the
+  // same column, and a reader who cannot tell them apart at a glance is reading
+  // a ledger that says nothing — so both are asserted, together.
+  await expect(list).toContainText(rowToman(-1_999_995));
+  await expect(list).toContainText(rowToman(CREDIT_IRR));
+  // And the sign is not the only signal: the two carry different badges. Found
+  // through the row that holds each figure, never through `.first()` — the list
+  // is ordered by spend date and `.first()` asserted whichever row happened to
+  // sort highest.
+  await expect(
+    list.locator('tr', { hasText: rowToman(-1_999_995) }).first().locator('.badge-block'),
+  ).toBeVisible();
+  await expect(
+    list.locator('tr', { hasText: rowToman(CREDIT_IRR) }).first().locator('.badge-active'),
+  ).toBeVisible();
   await expect(list).toContainText('e2e@shikoo.local');
 });
 
@@ -219,6 +270,81 @@ test('filtering to a category makes the headline that category\'s own total', as
   await firstCategory.click();
 
   // The first row of the totals table is «در این فیلتر».
-  const inFilter = page.locator('.card').first().locator('tbody tr').first();
+  const inFilter = totalsCard(page).locator('tbody tr').first();
   await expect(inFilter).toContainText(categoryAmount);
+});
+
+
+/**
+ * «هزینه یک ماهه سرور آلمان» — the case Sam named, end to end.
+ *
+ * Two things nothing else in this suite can prove, because both are about what
+ * an operator sees rather than what a route returns:
+ *
+ *   * the form says what the multiplication comes to BEFORE it is committed,
+ *     which is the only moment a wrong rate is cheap to notice; and
+ *   * pressing «ثبت» once moves the ledger AND the due date, so the banner that
+ *     was asking for something stops asking.
+ *
+ * The euro amount is not a round number on purpose: €35.50 × 1,200,000 T is
+ * 42,600,000 T, and a rate applied to a rounded amount would give a different
+ * one.
+ */
+test('a euro bill, posted from the banner, moves the ledger and the due date', async ({ page }) => {
+  const before = await ledger();
+
+  await page.goto('/admin/expenses');
+  await page.getByRole('button', { name: 'هزینه‌های تکرارشونده' }).click();
+  await page.getByRole('button', { name: 'الگوی تازه' }).click();
+
+  await page.locator('#rec-label').fill('e2e — سرور آلمان');
+  await page.locator('#rec-amount').fill('1200000');
+  // Due today, so the banner has something to ask for.
+  await page.getByRole('button', { name: 'بساز' }).click();
+  await expect(page.locator('#main-content')).toContainText('الگو ساخته شد');
+
+  // The banner is the only thing on the page that asks rather than reports.
+  const banner = page.locator('.card', { hasText: 'سررسید هزینه‌های تکرارشونده' });
+  const mine = banner.locator('tr', { hasText: 'e2e — سرور آلمان' });
+  await expect(mine).toBeVisible();
+  // Scoped to this row and not to the banner: a second template due on the same
+  // day would make a banner-wide «ثبت» ambiguous, and the failure would look
+  // like a missing button rather than two of them.
+  await mine.getByRole('button', { name: 'ثبت' }).click();
+
+  const form = page.locator('.card', { hasText: 'ثبت قسط' });
+  // What pressing this will do to the due date, said before it is pressed.
+  await expect(form).toContainText('بعد از ثبت، سررسید بعدی');
+
+  await form.locator('#entry-currency').selectOption('EUR');
+  await form.locator('#entry-foreign').fill('35.5');
+  await form.locator('#entry-rate').fill('1200000');
+
+  // The arithmetic, visible before it is committed. The browser sends neither
+  // of these numbers as an amount — the server multiplies — so this line is the
+  // one place a rate typed with an extra zero is cheap to catch.
+  await expect(form).toContainText(`${fa.format(35.5)} یورو`);
+  await expect(form).toContainText(asToman(-426_000_000));
+
+  await form.getByRole('button', { name: 'ثبت قسط' }).click();
+  await expect(page.locator('#main-content')).toContainText('سررسید بعدی');
+
+  // The row is in the books, at the euro figure...
+  const after = await ledger();
+  expect(after.rows).toBe(before.rows + 1);
+  expect(after.net).toBe(before.net - 426_000_000);
+
+  // ...and the banner has stopped asking, which is the half a POST test cannot
+  // see. If the advance and the insert were not one transaction, this is where
+  // it would show: a row in the ledger and a bill still due.
+  await expect(banner.locator('tr', { hasText: 'e2e — سرور آلمان' })).toHaveCount(0);
+
+  // The invoice is kept beside the figure it produced, so next month's bill can
+  // be compared with this one rather than only with its Toman total.
+  // In the LEDGER table specifically: the template list is still open above it
+  // and carries the same label, so an unscoped match finds the template — which
+  // has no invoice on it and never will.
+  const row = ledgerTable(page).locator('tbody tr', { hasText: 'e2e — سرور آلمان' }).first();
+  await expect(row).toContainText(rowToman(-426_000_000));
+  await expect(row).toContainText('یورو');
 });

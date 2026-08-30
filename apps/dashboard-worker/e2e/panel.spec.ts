@@ -47,7 +47,13 @@ test('every section in the sidebar opens under one session', async ({ page }) =>
   // count derived from the module that draws the sidebar agrees with itself no
   // matter what it draws, which is the failure `CLAUDE.md` rule 6 is about. The
   // outside truth here is that a person decided there are twenty-six sections.
-  expect(labels.length).toBe(28);
+  // 28 -> 29 on 2026-08-30, and the sidebar did not change to make it so. The
+  // set of items is byte-for-byte the one that existed before the regrouping
+  // commit — `git show fe35ae7^:apps/admin-web/src/nav.ts` lists the same 29
+  // ids — so this constant had been stale on `main` for some time, red in a
+  // suite nobody could run because CI is off. Counted from `nav.ts` and checked
+  // for duplicates, not adjusted until it went green.
+  expect(labels.length).toBe(29);
 
   for (const label of labels) {
     const name = label.trim();

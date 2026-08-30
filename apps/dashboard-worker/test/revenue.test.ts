@@ -24,9 +24,21 @@
  * **Nothing is deleted.** Voiding leaves the row in the table and takes it out
  * of every total, which is what lets `verify.ts` keep counting it against the
  * legacy log while the panel stops counting it as money.
+ *
+ * **A foreign bill is derived, not sent.** The client posts the invoice and the
+ * rate and never a Rial figure, so the amount in the books is produced once. The
+ * assertion for that is not that the route returned the number this file
+ * expected — it is that **Postgres, multiplying the two stored columns itself,
+ * gets the same answer**. A test that repeated the JavaScript would agree with
+ * the bug.
+ *
+ * **A recurring cost posts one instalment and advances one period, together.**
+ * The two halves are in one transaction, so the assertions are always about
+ * both: the row that appeared AND where the template moved to.
  */
 
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
+import { nextJalaliDue } from '@shikoo/contracts';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
 
@@ -89,7 +101,12 @@ const rowById = (id: number) =>
  * accident on the first run.
  */
 async function purge(): Promise<void> {
+  // Rows first: `recurrence_id` points the other way, so a template with an
+  // instalment against it is a template this cannot remove.
   await baseEnv.DB.prepare(`DELETE FROM revenue_adjustments WHERE note LIKE ?1`)
+    .bind(`${PREFIX}%`)
+    .run();
+  await baseEnv.DB.prepare(`DELETE FROM expense_recurrences WHERE label LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();
 }
@@ -102,6 +119,9 @@ async function purge(): Promise<void> {
  */
 async function emptyLedger(): Promise<void> {
   await baseEnv.DB.prepare(`DELETE FROM revenue_adjustments`).run();
+  await baseEnv.DB.prepare(`DELETE FROM expense_recurrences WHERE label LIKE ?1`)
+    .bind(`${PREFIX}%`)
+    .run();
 }
 
 beforeAll(async () => {
@@ -119,6 +139,26 @@ beforeAll(async () => {
       .bind(crypto.randomUUID(), email, role, now)
       .run();
   }
+});
+
+/**
+ * The categories come from `0040`, not from here, and three tests below join on
+ * them by name.
+ *
+ * Asserted rather than assumed because `packages/seed` truncates every table it
+ * is not told to keep, and `expense_categories` was not on that list until
+ * 2026-08-30 — so a `seed:sim` emptied it and those three failed with «Cannot
+ * read properties of null», which names neither the table nor the cause. One
+ * sentence here is worth more than three of those.
+ */
+beforeAll(async () => {
+  const row = await baseEnv.DB.prepare(
+    `SELECT count(*)::int AS n FROM expense_categories`,
+  ).first<{ n: number }>();
+  expect(
+    Number(row?.n),
+    'expense_categories is empty — `packages/seed` KEEP must include it',
+  ).toBeGreaterThan(0);
 });
 
 beforeEach(emptyLedger);
@@ -747,8 +787,313 @@ describe('reading the ledger', () => {
   it.each([
     '/api/v1/admin/revenue-adjustments/export.csv',
     '/api/v1/admin/revenue-adjustments/categories',
+    '/api/v1/admin/revenue-adjustments/recurrences',
     '/api/v1/admin/revenue-adjustments/1/history',
   ])('withholds %s from a READ_ONLY operator too', async (path) => {
     expect((await get(path, READER)).status).toBe(403);
+  });
+});
+
+
+/**
+ * A bill that arrived in a currency the shop does not keep its books in.
+ *
+ * «هزینه یک ماهه سرور آلمان» is the case, and it is billed in euro.
+ */
+describe('a foreign bill', () => {
+  const RATE_TOMAN = 1_200_000;
+
+  const euro = (originalAmount: number, label: string, extra: object = {}) =>
+    post('/api/v1/admin/revenue-adjustments', {
+      kind: 'EXPENSE',
+      currency: 'EUR',
+      originalAmount,
+      fxRateToman: RATE_TOMAN,
+      note: `${PREFIX}${label}`,
+      ...extra,
+    });
+
+  it('derives the Toman figure on the server, from the invoice and the rate', async () => {
+    const res = await euro(35.5, 'hetzner');
+    expect(res.status).toBe(200);
+    // €35.50 × 1,200,000 T = 42,600,000 T = 426,000,000 IRR, negative because
+    // it is spending. The client sent no amount at all.
+    expect(((await res.json()) as { amountIrr: number }).amountIrr).toBe(-426_000_000);
+  });
+
+  /**
+   * The check that is not this file agreeing with itself.
+   *
+   * `magnitudeIrr` multiplies in JavaScript. Here Postgres multiplies the two
+   * columns it actually stored and the answer has to be the same one, so a
+   * rounding that drifted — or a rate written in the wrong unit — is red rather
+   * than invisible. Rule 6: measure against something outside the code.
+   */
+  it('agrees with the arithmetic Postgres does on the stored columns', async () => {
+    for (const amount of [35.5, 0.5, 1, 999.999, 12.345678]) {
+      await euro(amount, `fx-${amount}`);
+    }
+
+    const bad = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM revenue_adjustments
+        WHERE currency <> 'IRR'
+          AND abs(amount_irr) <> round(original_amount * fx_rate_irr / 10) * 10`,
+    ).first<{ n: number }>();
+    expect(Number(bad?.n)).toBe(0);
+
+    // And the columns hold the invoice, not a re-derivation of it.
+    const row = await baseEnv.DB.prepare(
+      `SELECT currency, original_amount, fx_rate_irr FROM revenue_adjustments
+        WHERE note = ?1`,
+    )
+      .bind(`${PREFIX}fx-35.5`)
+      .first<{ currency: string; original_amount: string | number; fx_rate_irr: string | number }>();
+    expect(row?.currency).toBe('EUR');
+    expect(Number(row?.original_amount)).toBe(35.5);
+    // Rial per unit, so ten times the Toman rate that was typed.
+    expect(Number(row?.fx_rate_irr)).toBe(RATE_TOMAN * 10);
+  });
+
+  /**
+   * Half an amount, or two of them, is a 400.
+   *
+   * A row carrying a Toman figure AND a rate would be two answers to one
+   * question, and the one that reached the books would be invisible. A rate
+   * with no invoice re-prices a row against an amount nobody restated.
+   */
+  it.each([
+    ['both shapes at once', { amountToman: 1_000, currency: 'EUR', originalAmount: 1, fxRateToman: 1 }],
+    ['a rate with no invoice', { currency: 'EUR', fxRateToman: RATE_TOMAN }],
+    ['an invoice with no rate', { currency: 'EUR', originalAmount: 35.5 }],
+    ['a foreign currency and a Toman figure', { currency: 'USD', amountToman: 1_000 }],
+    ['a rate under IRR', { amountToman: 1_000, fxRateToman: RATE_TOMAN }],
+  ])('refuses %s', async (_name, money) => {
+    const res = await post('/api/v1/admin/revenue-adjustments', {
+      kind: 'EXPENSE',
+      note: `${PREFIX}bad`,
+      ...money,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('applies the fat-finger ceiling to the DERIVED amount', async () => {
+    // Each field is inside its own limit; their product is not. This is the
+    // slip a foreign bill adds — a rate typed with an extra zero — and it
+    // passes every check made on the fields themselves.
+    const res = await euro(1_000_000, 'huge');
+    expect(res.status).toBe(400);
+  });
+
+  it('is an ordinary expense in every total, whatever it was paid in', async () => {
+    await euro(10, 'in-totals');
+    const body = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+      totals: { expensesIrr: number; netIrr: number };
+    };
+    expect(body.totals.expensesIrr).toBe(-120_000_000);
+    expect(body.totals.netIrr).toBe(-120_000_000);
+  });
+
+  it('carries the invoice into the export beside the figure it produced', async () => {
+    await euro(35.5, 'csv-fx');
+    const res = await get('/api/v1/admin/revenue-adjustments/export.csv');
+    const text = await res.text();
+    expect(text).toContain('"ارز","مبلغ ارزی","نرخ (تومان)"');
+    expect(text).toContain('"EUR","35.5","1200000"');
+  });
+
+  it('records the currency columns in the history when an edit changes them', async () => {
+    const id = ((await (await euro(35.5, 'edit-fx')).json()) as { id: number }).id;
+
+    // Back to Toman: the three columns must clear together, or the row keeps a
+    // rate that explains nothing.
+    await patch(`/api/v1/admin/revenue-adjustments/${id}`, {
+      currency: 'IRR',
+      amountToman: 500_000,
+    });
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT amount_irr, currency, original_amount, fx_rate_irr
+         FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{
+        amount_irr: string | number;
+        currency: string;
+        original_amount: number | null;
+        fx_rate_irr: number | null;
+      }>();
+    expect(Number(row?.amount_irr)).toBe(-5_000_000);
+    expect(row?.currency).toBe('IRR');
+    expect(row?.original_amount).toBeNull();
+    expect(row?.fx_rate_irr).toBeNull();
+
+    const history = (await (
+      await get(`/api/v1/admin/revenue-adjustments/${id}/history`)
+    ).json()) as { items: { action: string; before: Record<string, unknown> | null }[] };
+    const edit = history.items.find((h) => h.action === 'revenue_adjustment.edited');
+    expect(edit?.before?.['currency']).toBe('EUR');
+    expect(edit?.before?.['original_amount']).toBe(35.5);
+  });
+});
+
+/**
+ * A cost that comes back — the template, the banner and the press.
+ *
+ * There is no cron. Everything here is what an admin does with one button, and
+ * the assertions are about the pair the transaction holds together: the row
+ * that appeared, and where the template moved to.
+ */
+describe('a recurring cost', () => {
+  const RECURRENCES = '/api/v1/admin/revenue-adjustments/recurrences';
+
+  /** Yesterday in Tehran, so a template made with it is already owed. */
+  const overdue = (daysBack = 1) =>
+    new Date(Date.now() - daysBack * 86_400_000).toISOString().slice(0, 10);
+
+  async function template(extra: object = {}) {
+    const res = await post(RECURRENCES, {
+      label: `${PREFIX}german-server`,
+      amountToman: 1_200_000,
+      nextDueOn: overdue(),
+      ...extra,
+    });
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { id: number }).id;
+  }
+
+  const list = async () =>
+    ((await (await get(RECURRENCES)).json()) as {
+      items: {
+        id: number;
+        label: string;
+        amountIrr: number;
+        nextDueOn: string;
+        due: boolean;
+        active: boolean;
+      }[];
+    }).items;
+
+  const postOne = (id: number, body: object = {}) => post(`${RECURRENCES}/${id}/post`, body);
+
+  it('is owed once its due date has arrived, decided in Tehran', async () => {
+    const id = await template();
+    const mine = (await list()).find((r) => r.id === id);
+    expect(mine?.due).toBe(true);
+
+    // And not before. The date is compared by Postgres in Tehran, so a laptop
+    // in another timezone cannot make a bill look due a day early.
+    const later = await template({
+      label: `${PREFIX}not-yet`,
+      nextDueOn: overdue(-30),
+    });
+    expect((await list()).find((r) => r.id === later)?.due).toBe(false);
+  });
+
+  it('posts the row and advances the template in one press', async () => {
+    const id = await template();
+    const before = (await list()).find((r) => r.id === id)!;
+
+    const res = await postOne(id);
+    expect(res.status).toBe(200);
+    const posted = (await res.json()) as { id: number; nextDueOn: string };
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT amount_irr, note, kind, recurrence_id, spent_on::text AS spent_on
+         FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(posted.id)
+      .first<{
+        amount_irr: string | number;
+        note: string;
+        kind: string;
+        recurrence_id: number | null;
+        spent_on: string;
+      }>();
+
+    expect(row?.kind).toBe('EXPENSE');
+    expect(Number(row?.amount_irr)).toBe(-12_000_000);
+    expect(Number(row?.recurrence_id)).toBe(id);
+    // The day the bill was FOR, not today: a September bill posted in October
+    // belongs to September in every report.
+    expect(row?.spent_on).toBe(before.nextDueOn);
+    // Named by its period, so twelve instalments are twelve readable lines.
+    expect(row?.note).toContain(`${PREFIX}german-server — `);
+
+    // ...and the template moved, in the same transaction.
+    expect(posted.nextDueOn).toBe(nextJalaliDue(before.nextDueOn, 'MONTHLY'));
+    expect((await list()).find((r) => r.id === id)?.nextDueOn).toBe(posted.nextDueOn);
+  });
+
+  it('advances one period at a time when it is months overdue', async () => {
+    // Three missed months are three rows an admin posts one at a time. A single
+    // catch-up jump would lose two lines nobody could reconstruct.
+    const id = await template({ nextDueOn: overdue(95) });
+    const start = (await list()).find((r) => r.id === id)!.nextDueOn;
+
+    await postOne(id);
+    const after = (await list()).find((r) => r.id === id)!;
+    expect(after.nextDueOn).toBe(nextJalaliDue(start, 'MONTHLY'));
+    // Still owed, and the banner keeps saying so until every month is in.
+    expect(after.due).toBe(true);
+  });
+
+  it('takes a euro invoice for the month, and keeps it as the next default', async () => {
+    const id = await template();
+    const res = await postOne(id, {
+      currency: 'EUR',
+      originalAmount: 35.5,
+      fxRateToman: 1_200_000,
+    });
+    const posted = (await res.json()) as { id: number };
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT amount_irr, currency, original_amount FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(posted.id)
+      .first<{ amount_irr: string | number; currency: string; original_amount: number }>();
+    expect(Number(row?.amount_irr)).toBe(-426_000_000);
+    expect(row?.currency).toBe('EUR');
+
+    // The template now defaults to what was actually paid. For a euro bill the
+    // Toman figure moves every month, so the last real one beats the one typed
+    // when the template was made — and nothing adds this column up.
+    expect((await list()).find((r) => r.id === id)?.amountIrr).toBe(426_000_000);
+  });
+
+  it('takes the category from the template, so the breakdown is not left blank', async () => {
+    const cat = await baseEnv.DB.prepare(
+      `SELECT id FROM expense_categories WHERE name = 'سرور و زیرساخت'`,
+    ).first<{ id: number }>();
+
+    const id = await template({ categoryId: Number(cat!.id) });
+    const posted = (await (await postOne(id)).json()) as { id: number };
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT category_id FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(posted.id)
+      .first<{ category_id: number }>();
+    expect(Number(row?.category_id)).toBe(Number(cat!.id));
+  });
+
+  it('refuses to post an archived template, and says the state refused it', async () => {
+    const id = await template();
+    await patch(`${RECURRENCES}/${id}`, { active: false });
+
+    const res = await postOne(id);
+    // 409, not 400: the request was well formed and the state refused it.
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe('inactive');
+    // An archived template is never due, whatever its date says.
+    expect((await list()).find((r) => r.id === id)?.due).toBe(false);
+  });
+
+  it('is written only by an ADMIN', async () => {
+    const id = await template();
+    for (const email of [REVIEWER, READER]) {
+      expect((await post(RECURRENCES, { label: 'x', amountToman: 1, nextDueOn: overdue() }, email)).status)
+        .toBe(403);
+      expect((await post(`${RECURRENCES}/${id}/post`, {}, email)).status).toBe(403);
+    }
   });
 });

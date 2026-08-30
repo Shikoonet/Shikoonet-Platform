@@ -55,11 +55,33 @@
  * after into `audit_logs`, which is append-only — so «who changed this, from
  * what, when» is answerable for every row, which is what Sam asked for and what
  * the old delete could never give.
+ *
+ * ## A bill in euro, and a bill that comes back
+ *
+ * Both halves of «هزینه یک ماهه سرور آلمان», the case Sam actually named.
+ *
+ * **The currency is the receipt, not the amount.** `amount_irr` stays the only
+ * figure anything adds up; `currency`, `original_amount` and `fx_rate_irr`
+ * record what the invoice said and what the rate was on the day the money left.
+ * The rate is stored rather than looked up because an expense is worth what it
+ * cost on the day, and a report that re-values last month's server bill at
+ * today's rate is a book that moves when nobody touched it. The multiplication
+ * happens once, in `magnitudeIrr`, and the client never sends a Rial figure at
+ * all — so the amount on the screen and the amount in the books cannot be two
+ * different roundings of the same invoice.
+ *
+ * **A recurrence is a template with a due date, and there is no cron.** The
+ * panel shows what is owed and an admin presses «ثبت»; posting writes the
+ * ledger row and advances `next_due_on` in ONE transaction, so a template can
+ * never be advanced past a month it did not post. Three missed months stay
+ * three separate presses, which is what an accountant would want and what a job
+ * catching up silently would not give.
  */
 
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
+import { jalaliPeriodLabel, nextJalaliDue } from '@shikoo/contracts';
 import { parseStatsDay, parseStatsRange, statsRangeBounds } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
@@ -81,6 +103,22 @@ const EXPORT_MAX = 5_000;
 const KIND = z.enum(['EXPENSE', 'REVENUE_FIX', 'MANUAL_INCOME']);
 type Kind = z.infer<typeof KIND>;
 
+/**
+ * The currencies a bill may arrive in — the three Sam named, plus the one the
+ * books are kept in.
+ *
+ * A closed list rather than a table. There is no rate feed and no third party
+ * asking for an ISO code; a currency the shop has never paid in is a row in a
+ * settings screen nobody opens. The database says the same thing in
+ * `revenue_adjustments_currency`, so adding one is a migration and a line here
+ * and cannot be half done.
+ */
+const CURRENCY = z.enum(['IRR', 'EUR', 'USD', 'TON']);
+type Currency = z.infer<typeof CURRENCY>;
+
+const PERIOD = z.enum(['MONTHLY', 'YEARLY']);
+type Period = z.infer<typeof PERIOD>;
+
 /** A Gregorian day on the wire; the screen picks it in Jalali. */
 const ISO_DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
 
@@ -93,23 +131,105 @@ const ISO_DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
  * `revenue_adjustments_kind_sign`, so a disagreement here is a 500 rather than
  * a wrong row.
  */
-function signedIrr(kind: Kind, amountToman: number, direction: 'expense' | 'credit'): number {
-  const magnitude = amountToman * IRR_PER_TOMAN;
+function signedIrr(kind: Kind, magnitude: number, direction: 'expense' | 'credit'): number {
   if (kind === 'EXPENSE') return -magnitude;
   if (kind === 'MANUAL_INCOME') return magnitude;
   return direction === 'expense' ? -magnitude : magnitude;
 }
 
+/**
+ * How much, in Rial, however the caller chose to say it.
+ *
+ * The three money fields are spread into every body that takes an amount —
+ * the POST, the PATCH and the recurrence post — so all three are checked by the
+ * same functions below and cannot drift apart.
+ */
+const MONEY_FIELDS = {
+  /** Only for `currency: 'IRR'` — a foreign bill states its own amount instead. */
+  amountToman: z.number().int().positive().max(MAX_ADJUSTMENT_TOMAN).optional(),
+  currency: CURRENCY.optional(),
+  /** What the invoice said: 35.5 for €35.50. Fractional, unlike everything else. */
+  originalAmount: z.number().positive().max(1_000_000_000).optional(),
+  /** Toman for ONE unit on the day. Asked in Toman like every other field here. */
+  fxRateToman: z.number().positive().max(MAX_ADJUSTMENT_TOMAN).optional(),
+};
+
+interface MoneyIn {
+  amountToman?: number | undefined;
+  currency?: Currency | undefined;
+  originalAmount?: number | undefined;
+  fxRateToman?: number | undefined;
+}
+
+/** Whether the caller said anything about money at all. */
+function moneyTouched(b: MoneyIn): boolean {
+  return (
+    b.amountToman !== undefined ||
+    b.currency !== undefined ||
+    b.originalAmount !== undefined ||
+    b.fxRateToman !== undefined
+  );
+}
+
+/**
+ * Exactly one complete amount — never both shapes, never half of one.
+ *
+ * A foreign row that arrived with a rate and no original amount, or with a
+ * Toman figure *and* a rate that disagreed with it, would be a line whose
+ * figure cannot be explained by the invoice beside it. That is the whole
+ * failure this ledger exists to stop, so it is a 400 and not a preference.
+ * `revenue_adjustments_fx_complete` says the same thing in the schema.
+ */
+function moneyComplete(b: MoneyIn): boolean {
+  return b.currency !== undefined && b.currency !== 'IRR'
+    ? b.originalAmount !== undefined && b.fxRateToman !== undefined && b.amountToman === undefined
+    : b.amountToman !== undefined && b.originalAmount === undefined && b.fxRateToman === undefined;
+}
+
+/**
+ * The magnitude in Rial. One multiplication, one rounding, one place.
+ *
+ * Rounded to the whole **Toman** and then multiplied, not rounded to the Rial:
+ * every figure an admin reads on this panel is Toman, and a bill that came out
+ * as 426,000,000.5 Rial would print as a fraction of a Toman. The Rial is the
+ * storage unit; the Toman is the unit the shop counts in.
+ */
+function magnitudeIrr(b: MoneyIn): number {
+  return b.currency !== undefined && b.currency !== 'IRR'
+    ? Math.round(b.originalAmount! * b.fxRateToman!) * IRR_PER_TOMAN
+    : b.amountToman! * IRR_PER_TOMAN;
+}
+
+/** What goes in the three columns — NULL together, or set together. */
+function fxColumns(b: MoneyIn) {
+  const foreign = b.currency !== undefined && b.currency !== 'IRR';
+  return {
+    currency: foreign ? b.currency! : 'IRR',
+    original_amount: foreign ? b.originalAmount! : null,
+    // Rial per unit, because every stored figure here is Rial. The wire carries
+    // Toman; this is the same × 10 the amount itself gets.
+    fx_rate_irr: foreign ? b.fxRateToman! * IRR_PER_TOMAN : null,
+  };
+}
+
+
 const AdjustmentBody = z
   .object({
     /**
-     * A positive magnitude, in Toman, exactly as the legacy form takes it
+     * How much, and in what.
+     *
+     * `amountToman` is a positive magnitude exactly as the legacy form takes it
      * (`panel/settings.php:12` refuses zero and negatives). The direction is a
      * separate field so that "how much" and "which way" cannot be confused by a
      * stray minus sign, and so a cost typed as `-50000` under `deduct` cannot
      * quietly become a credit.
+     *
+     * A foreign bill sends `currency`, `originalAmount` and `fxRateToman`
+     * instead and no Toman figure at all — the server does the multiplication,
+     * so the amount in the books is the one the invoice and the rate produce
+     * and not a second rounding done in a browser.
      */
-    amountToman: z.number().int().positive().max(MAX_ADJUSTMENT_TOMAN),
+    ...MONEY_FIELDS,
     /**
      * Required, with no default, and that is worth a sentence.
      *
@@ -130,7 +250,11 @@ const AdjustmentBody = z
     // one thing nobody can reconstruct later.
     note: z.string().trim().min(1).max(500),
   })
-  .strict();
+  .strict()
+  .refine(
+    moneyComplete,
+    'give either amountToman, or currency with originalAmount and fxRateToman',
+  );
 
 /**
  * An edit.
@@ -141,7 +265,7 @@ const AdjustmentBody = z
  */
 const EditBody = z
   .object({
-    amountToman: z.number().int().positive().max(MAX_ADJUSTMENT_TOMAN).optional(),
+    ...MONEY_FIELDS,
     kind: KIND.optional(),
     direction: z.enum(['expense', 'credit']).optional(),
     categoryId: z.number().int().positive().nullable().optional(),
@@ -154,6 +278,12 @@ const EditBody = z
   .refine(
     (b) => Object.keys(b).some((k) => k !== 'reason' && k !== 'direction'),
     'nothing to change',
+  )
+  // An amount is changed whole or not at all. Sending `fxRateToman` alone would
+  // otherwise re-price a row against an invoice amount nobody restated.
+  .refine(
+    (b) => !moneyTouched(b) || moneyComplete(b),
+    'an amount is changed whole: amountToman, or currency with originalAmount and fxRateToman',
   );
 
 const VoidBody = z
@@ -185,6 +315,56 @@ const CategoryBody = z
   })
   .strict();
 
+/**
+ * A recurring cost — the template, not the row it posts.
+ *
+ * `amountToman` and no currency, deliberately. What recurs about «سرور آلمان»
+ * is that it arrives every month, not that it costs the same; the rate moves
+ * and so does the Toman figure. The template carries the most recent figure as
+ * a default and the posting form is where a euro amount and that day's rate are
+ * given — so the fact that changes monthly is asked for monthly, and the
+ * template does not hold a rate that is stale by definition.
+ */
+const RecurrenceBody = z
+  .object({
+    label: z.string().trim().min(1).max(120),
+    categoryId: z.number().int().positive().nullable().optional(),
+    amountToman: z.number().int().positive().max(MAX_ADJUSTMENT_TOMAN),
+    period: PERIOD.default('MONTHLY'),
+    nextDueOn: ISO_DAY,
+    note: z.string().trim().max(500).default(''),
+  })
+  .strict();
+
+const RecurrencePatch = z
+  .object({
+    label: z.string().trim().min(1).max(120).optional(),
+    categoryId: z.number().int().positive().nullable().optional(),
+    amountToman: z.number().int().positive().max(MAX_ADJUSTMENT_TOMAN).optional(),
+    period: PERIOD.optional(),
+    nextDueOn: ISO_DAY.optional(),
+    note: z.string().trim().max(500).optional(),
+    active: z.boolean().optional(),
+  })
+  .strict()
+  .refine((b) => Object.keys(b).length > 0, 'nothing to change');
+
+/**
+ * Posting one instalment. Every field optional: the template already answers
+ * all of them, and this body is only for the month that was different.
+ */
+const RecurrencePostBody = z
+  .object({
+    ...MONEY_FIELDS,
+    spentOn: ISO_DAY.optional(),
+    note: z.string().trim().min(1).max(500).optional(),
+  })
+  .strict()
+  .refine(
+    (b) => !moneyTouched(b) || moneyComplete(b),
+    'an amount is given whole: amountToman, or currency with originalAmount and fxRateToman',
+  );
+
 const CategoryPatch = z
   .object({
     name: z.string().trim().min(1).max(60).optional(),
@@ -202,6 +382,10 @@ interface AdjustmentRow {
   category_id: number | null;
   category_name: string | null;
   spent_on: string;
+  currency: Currency;
+  original_amount: string | number | null;
+  fx_rate_irr: string | number | null;
+  recurrence_id: number | null;
   created_by: string | null;
   created_at: string;
   voided_at: string | null;
@@ -221,6 +405,16 @@ function shape(r: AdjustmentRow) {
     categoryId: r.category_id === null ? null : Number(r.category_id),
     categoryName: r.category_name,
     spentOn: r.spent_on,
+    currency: r.currency,
+    /**
+     * The invoice, beside the figure it produced. Both null for a Toman row —
+     * `revenue_adjustments_fx_complete` guarantees they travel together, so the
+     * screen can test one and trust the other.
+     */
+    originalAmount: r.original_amount === null ? null : Number(r.original_amount),
+    /** Rial per unit, as stored. The screen divides by ten to show Toman. */
+    fxRateIrr: r.fx_rate_irr === null ? null : Number(r.fx_rate_irr),
+    recurrenceId: r.recurrence_id === null ? null : Number(r.recurrence_id),
     createdBy: r.created_by,
     createdAt: r.created_at,
     voidedAt: r.voided_at,
@@ -269,18 +463,34 @@ function ledgerWhere(q: z.infer<typeof AdjustmentQuery>): { sql: string; binds: 
   return { sql: where.length ? `WHERE ${where.join(' AND ')}` : '', binds };
 }
 
-/** The three kinds and the net, over whatever the filter selected. */
+/**
+ * The three kinds and the net, over whatever the filter selected.
+ *
+ * The COUNTS travel with the sums, and they are not decoration. Sam's second
+ * look at this card was «معلوم نیست از کجا میاد اطلاعاتش» — four figures with
+ * nothing saying what they were added up from. «−۷۵۴٬۵۳۹٬۷۵۰ تومان» answers
+ * «how much» and never «out of how many rows», and one number that cannot be
+ * traced back to a set of rows is a number nobody checks twice.
+ */
 const TOTALS_SQL = `
   COALESCE(SUM(ra.amount_irr) FILTER (WHERE ra.kind = 'EXPENSE'), 0)       AS expenses_irr,
   COALESCE(SUM(ra.amount_irr) FILTER (WHERE ra.kind = 'REVENUE_FIX'), 0)   AS revenue_fix_irr,
   COALESCE(SUM(ra.amount_irr) FILTER (WHERE ra.kind = 'MANUAL_INCOME'), 0) AS manual_income_irr,
-  COALESCE(SUM(ra.amount_irr), 0)                                          AS net_irr`;
+  COALESCE(SUM(ra.amount_irr), 0)                                          AS net_irr,
+  count(*) FILTER (WHERE ra.kind = 'EXPENSE')::int                         AS expenses_n,
+  count(*) FILTER (WHERE ra.kind = 'REVENUE_FIX')::int                     AS revenue_fix_n,
+  count(*) FILTER (WHERE ra.kind = 'MANUAL_INCOME')::int                   AS manual_income_n,
+  count(*)::int                                                            AS net_n`;
 
 type TotalsRow = {
   expenses_irr: string | number;
   revenue_fix_irr: string | number;
   manual_income_irr: string | number;
   net_irr: string | number;
+  expenses_n: number;
+  revenue_fix_n: number;
+  manual_income_n: number;
+  net_n: number;
 };
 
 const totals = (r: TotalsRow | null) => ({
@@ -288,6 +498,10 @@ const totals = (r: TotalsRow | null) => ({
   revenueFixIrr: Number(r?.revenue_fix_irr ?? 0),
   manualIncomeIrr: Number(r?.manual_income_irr ?? 0),
   netIrr: Number(r?.net_irr ?? 0),
+  expensesCount: Number(r?.expenses_n ?? 0),
+  revenueFixCount: Number(r?.revenue_fix_n ?? 0),
+  manualIncomeCount: Number(r?.manual_income_n ?? 0),
+  netCount: Number(r?.net_n ?? 0),
 });
 
 /**
@@ -311,6 +525,7 @@ const EDIT_HISTORY_JOIN = `
 const SELECT_COLUMNS = `
   ra.id, ra.amount_irr, ra.note, ra.kind, ra.category_id, ec.name AS category_name,
   ra.spent_on::text AS spent_on, ra.created_by, ra.created_at,
+  ra.currency, ra.original_amount, ra.fx_rate_irr, ra.recurrence_id,
   ra.voided_at, ra.voided_by, ra.void_reason,
   edits.n AS edit_count,
   -- Epoch milliseconds, because that is what audit_logs.created_at is: the
@@ -439,6 +654,275 @@ export function registerRevenueRoutes(
   // against it cannot go anyway, and one without them is a row nobody is paying
   // to keep. `active = false` takes it out of the form and leaves every past
   // expense still saying what it was for.
+
+  // --- recurring costs ----------------------------------------------------
+  //
+  // Registered before `/:id` for the same reason `/categories` is, and nested
+  // under `/revenue-adjustments` for the same reason too: `access.ts` withholds
+  // that prefix from a READ_ONLY operator, and a top-level path would be open
+  // until somebody remembered to add it. That is not hypothetical — it is
+  // exactly how the CSV export escaped the list.
+
+  app.get('/api/v1/admin/revenue-adjustments/recurrences', async (c) => {
+    const rows = await c.env.DB.prepare(
+      `SELECT er.id, er.label, er.category_id, ec.name AS category_name,
+              er.amount_irr, er.period, er.next_due_on::text AS next_due_on,
+              er.active, er.note,
+              -- Answered by Postgres in Tehran, not by the browser's clock. A
+              -- laptop in another timezone would otherwise show a bill as due a
+              -- day early, and «due» is the whole reason this screen exists.
+              (er.next_due_on <= (now() AT TIME ZONE 'Asia/Tehran')::date) AS due
+         FROM expense_recurrences er
+         LEFT JOIN expense_categories ec ON ec.id = er.category_id
+        ORDER BY er.active DESC, er.next_due_on ASC, er.id ASC`,
+    ).all<{
+      id: number;
+      label: string;
+      category_id: number | null;
+      category_name: string | null;
+      amount_irr: string | number;
+      period: Period;
+      next_due_on: string;
+      active: boolean;
+      note: string;
+      due: boolean;
+    }>();
+
+    return c.json({
+      ok: true,
+      items: (rows.results ?? []).map((r) => ({
+        id: Number(r.id),
+        label: r.label,
+        categoryId: r.category_id === null ? null : Number(r.category_id),
+        categoryName: r.category_name,
+        amountIrr: Number(r.amount_irr),
+        period: r.period,
+        nextDueOn: r.next_due_on,
+        active: r.active,
+        note: r.note,
+        /** Owed today or earlier, in Tehran. An inactive template is never due. */
+        due: r.active && r.due,
+      })),
+    });
+  });
+
+  app.post('/api/v1/admin/revenue-adjustments/recurrences', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const body = RecurrenceBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+    }
+
+    const row = await c.env.DB.prepare(
+      `INSERT INTO expense_recurrences
+         (label, category_id, amount_irr, period, next_due_on, note, created_by)
+       VALUES (?1, ?2, ?3, ?4, ?5::date, ?6, ?7) RETURNING id`,
+    )
+      .bind(
+        body.data.label,
+        body.data.categoryId ?? null,
+        // A positive magnitude, like the form takes. The sign is applied when a
+        // row is posted, in `signedIrr`, and nowhere else — the same rule the
+        // rest of this file keeps, and the reason the CHECK on this column is
+        // `> 0`.
+        body.data.amountToman * IRR_PER_TOMAN,
+        body.data.period,
+        body.data.nextDueOn,
+        body.data.note,
+        ident.email,
+      )
+      .first<{ id: number }>();
+    if (!row) return c.json({ ok: false, error: 'insert_failed' }, 500);
+
+    await audit(c.env.DB, ident, 'expense_recurrence.added', 'EXPENSE_RECURRENCE', String(row.id),
+      null, { label: body.data.label, next_due_on: body.data.nextDueOn }, null);
+    return c.json({ ok: true, id: Number(row.id) });
+  });
+
+  app.patch('/api/v1/admin/revenue-adjustments/recurrences/:id', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const body = RecurrencePatch.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+    }
+
+    const before = await c.env.DB.prepare(
+      `SELECT label, category_id, amount_irr, period, next_due_on::text AS next_due_on,
+              note, active
+         FROM expense_recurrences WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{
+        label: string;
+        category_id: number | null;
+        amount_irr: string | number;
+        period: Period;
+        next_due_on: string;
+        note: string;
+        active: boolean;
+      }>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const next = {
+      label: body.data.label ?? before.label,
+      category_id:
+        body.data.categoryId !== undefined
+          ? body.data.categoryId
+          : before.category_id === null
+            ? null
+            : Number(before.category_id),
+      amount_irr:
+        body.data.amountToman !== undefined
+          ? body.data.amountToman * IRR_PER_TOMAN
+          : Number(before.amount_irr),
+      period: body.data.period ?? before.period,
+      next_due_on: body.data.nextDueOn ?? before.next_due_on,
+      note: body.data.note ?? before.note,
+      active: body.data.active ?? before.active,
+    };
+
+    await c.env.DB.prepare(
+      `UPDATE expense_recurrences
+          SET label = ?2, category_id = ?3, amount_irr = ?4, period = ?5,
+              next_due_on = ?6::date, note = ?7, active = ?8
+        WHERE id = ?1`,
+    )
+      .bind(id, next.label, next.category_id, next.amount_irr, next.period,
+        next.next_due_on, next.note, next.active)
+      .run();
+
+    await audit(c.env.DB, ident, 'expense_recurrence.edited', 'EXPENSE_RECURRENCE', String(id),
+      { ...before, amount_irr: Number(before.amount_irr) }, next, null);
+    return c.json({ ok: true });
+  });
+
+  /**
+   * Posting one instalment: the ledger row and the advance, together.
+   *
+   * ONE TRANSACTION, and that is the whole design. The two halves are «the
+   * money left» and «it is not owed again until next month», and either one
+   * without the other is a book that is wrong in a way nobody would notice: an
+   * advance with no row silently loses a month's cost, and a row with no advance
+   * gets posted twice by the next person who looks at the banner.
+   *
+   * `FOR UPDATE` for the same reason the void route puts its guard in the
+   * statement — two admins pressing «ثبت» on the same due bill would otherwise
+   * both read the same `next_due_on` and both post it.
+   *
+   * There is no cron and no catch-up. If a template is three months overdue,
+   * this posts the oldest month and leaves it due again — three presses for
+   * three months, each with its own row, its own date and its own amount.
+   */
+  app.post('/api/v1/admin/revenue-adjustments/recurrences/:id/post', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const body = RecurrencePostBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message }, 400);
+    }
+    const given = body.data;
+
+    const result = await c.env.DB.withSession(async (tx) => {
+      const tpl = await tx
+        .prepare(
+          `SELECT label, category_id, amount_irr, period,
+                  next_due_on::text AS next_due_on, active
+             FROM expense_recurrences WHERE id = ?1 FOR UPDATE`,
+        )
+        .bind(id)
+        .first<{
+          label: string;
+          category_id: number | null;
+          amount_irr: string | number;
+          period: Period;
+          next_due_on: string;
+          active: boolean;
+        }>();
+      if (!tpl) return { status: 404 as const, error: 'not_found' };
+      // Archived. 409 rather than 400: the request was well formed and the
+      // state refused it, the same distinction the edit route makes.
+      if (!tpl.active) return { status: 409 as const, error: 'inactive' };
+
+      const magnitude = moneyTouched(given) ? magnitudeIrr(given) : Number(tpl.amount_irr);
+      if (magnitude > MAX_ADJUSTMENT_TOMAN * IRR_PER_TOMAN) {
+        return { status: 400 as const, error: 'amount_too_large' };
+      }
+      const fx = moneyTouched(given)
+        ? fxColumns(given)
+        : { currency: 'IRR', original_amount: null, fx_rate_irr: null };
+
+      // The date the bill was FOR, not today. That is the point of `spent_on`
+      // being its own column: a September bill posted in October belongs to
+      // September in every report.
+      const spentOn = given.spentOn ?? tpl.next_due_on;
+      const note = given.note ?? `${tpl.label} — ${jalaliPeriodLabel(spentOn)}`;
+
+      const row = await tx
+        .prepare(
+          `INSERT INTO revenue_adjustments
+             (amount_irr, note, created_by, created_at, kind, category_id, spent_on,
+              recurrence_id, currency, original_amount, fx_rate_irr)
+           VALUES (?1, ?2, ?3, now(), 'EXPENSE', ?4, ?5::date, ?6, ?7, ?8, ?9)
+           RETURNING id`,
+        )
+        .bind(
+          signedIrr('EXPENSE', magnitude, 'expense'),
+          note,
+          ident.email,
+          tpl.category_id,
+          spentOn,
+          id,
+          fx.currency,
+          fx.original_amount,
+          fx.fx_rate_irr,
+        )
+        .first<{ id: number }>();
+      if (!row) return { status: 500 as const, error: 'insert_failed' };
+
+      const advanced = nextJalaliDue(tpl.next_due_on, tpl.period);
+      // The template keeps the amount that was actually posted. For a euro bill
+      // the Toman figure moves every month, so the last real one is a better
+      // default than the one typed when the template was created — and it is a
+      // default, not a total: nothing adds this column up.
+      await tx
+        .prepare(`UPDATE expense_recurrences SET next_due_on = ?2::date, amount_irr = ?3 WHERE id = ?1`)
+        .bind(id, advanced, magnitude)
+        .run();
+
+      // Two rows, because there are two things to answer later: «where did this
+      // ledger line come from» and «why is this template due in Aban». The
+      // ledger row's own history panel reads the first.
+      await audit(tx, ident, 'revenue_adjustment.added', 'REVENUE_ADJUSTMENT', String(row.id),
+        null,
+        { amount_irr: signedIrr('EXPENSE', magnitude, 'expense'), note, kind: 'EXPENSE',
+          recurrence_id: id },
+        null);
+      await audit(tx, ident, 'expense_recurrence.posted', 'EXPENSE_RECURRENCE', String(id),
+        { next_due_on: tpl.next_due_on, amount_irr: Number(tpl.amount_irr) },
+        { next_due_on: advanced, amount_irr: magnitude, posted_row: Number(row.id) },
+        null);
+
+      return { status: 200 as const, id: Number(row.id), nextDueOn: advanced };
+    });
+
+    if (result.status !== 200) return c.json({ ok: false, error: result.error }, result.status);
+    return c.json({ ok: true, id: result.id, nextDueOn: result.nextDueOn });
+  });
+
+  // There is no DELETE here either. A template that posted rows is what those
+  // rows point at through `recurrence_id`; `active = false` archives it and
+  // leaves every posted instalment still able to say where it came from.
 
   // --- the ledger ---------------------------------------------------------
 
@@ -589,7 +1073,20 @@ export function registerRevenueRoutes(
       .bind(...f.binds)
       .all<AdjustmentRow>();
 
-    const header = ['تاریخ', 'نوع', 'دسته', 'شرح', 'مبلغ (تومان)', 'ثبت‌کننده', 'وضعیت'];
+    const header = [
+      'تاریخ',
+      'نوع',
+      'دسته',
+      'شرح',
+      'مبلغ (تومان)',
+      // The invoice, so a euro bill can be checked against the paperwork it came
+      // from rather than only against the Toman figure it produced.
+      'ارز',
+      'مبلغ ارزی',
+      'نرخ (تومان)',
+      'ثبت‌کننده',
+      'وضعیت',
+    ];
     const body = (rows.results ?? []).map(shape).map((r) =>
       [
         r.spentOn,
@@ -599,6 +1096,9 @@ export function registerRevenueRoutes(
         // Toman, because every other figure an admin reads is Toman and a file
         // that silently switched unit is the one mistake this export can make.
         r.amountIrr / IRR_PER_TOMAN,
+        r.currency === 'IRR' ? '' : r.currency,
+        r.originalAmount ?? '',
+        r.fxRateIrr === null ? '' : r.fxRateIrr / IRR_PER_TOMAN,
         r.createdBy ?? '',
         r.voidedAt ? `باطل — ${r.voidReason ?? ''}` : '',
       ]
@@ -665,16 +1165,29 @@ export function registerRevenueRoutes(
       );
     }
 
-    // The one place the sign is applied. `amountToman` is validated positive, so
-    // an expense is negative here and nowhere else — no caller downstream ever
-    // has to decide, and no second reading of `direction` can disagree.
-    const amountIrr = signedIrr(body.data.kind, body.data.amountToman, body.data.direction);
+    // The magnitude, whichever way the caller said it — a Toman figure, or an
+    // invoice and the rate it was bought at. One multiplication, in one place.
+    const magnitude = magnitudeIrr(body.data);
+    // The fat-finger ceiling applies to the DERIVED amount too. A rate typed
+    // with an extra zero is exactly the slip a foreign bill adds, and it would
+    // pass every check on the fields themselves.
+    if (magnitude > MAX_ADJUSTMENT_TOMAN * IRR_PER_TOMAN) {
+      return c.json({ ok: false, error: 'invalid_body', detail: 'amount too large' }, 400);
+    }
+    const fx = fxColumns(body.data);
+
+    // The one place the sign is applied. The magnitude is positive, so an
+    // expense is negative here and nowhere else — no caller downstream ever has
+    // to decide, and no second reading of `direction` can disagree.
+    const amountIrr = signedIrr(body.data.kind, magnitude, body.data.direction);
 
     const row = await c.env.DB.prepare(
       `INSERT INTO revenue_adjustments
-         (amount_irr, note, created_by, created_at, kind, category_id, spent_on)
+         (amount_irr, note, created_by, created_at, kind, category_id, spent_on,
+          currency, original_amount, fx_rate_irr)
        VALUES (?1, ?2, ?3, now(), ?4, ?5,
-               COALESCE(?6::date, (now() AT TIME ZONE 'Asia/Tehran')::date))
+               COALESCE(?6::date, (now() AT TIME ZONE 'Asia/Tehran')::date),
+               ?7, ?8, ?9)
        RETURNING id`,
     )
       .bind(
@@ -686,6 +1199,9 @@ export function registerRevenueRoutes(
         // be a field nobody fills and a filter nobody trusts.
         body.data.kind === 'EXPENSE' ? (body.data.categoryId ?? null) : null,
         body.data.spentOn ?? null,
+        fx.currency,
+        fx.original_amount,
+        fx.fx_rate_irr,
       )
       .first<{ id: number }>();
     if (!row) return c.json({ ok: false, error: 'insert_failed' }, 500);
@@ -734,7 +1250,8 @@ export function registerRevenueRoutes(
       const result = await c.env.DB.withSession(async (tx) => {
         const before = await tx
           .prepare(
-            `SELECT amount_irr, note, kind, category_id, spent_on::text AS spent_on, voided_at
+            `SELECT amount_irr, note, kind, category_id, spent_on::text AS spent_on,
+                    currency, original_amount, fx_rate_irr, voided_at
                FROM revenue_adjustments WHERE id = ?1 FOR UPDATE`,
           )
           .bind(id)
@@ -744,6 +1261,9 @@ export function registerRevenueRoutes(
             kind: Kind;
             category_id: number | null;
             spent_on: string;
+            currency: Currency;
+            original_amount: string | number | null;
+            fx_rate_irr: string | number | null;
             voided_at: string | null;
           }>();
         if (!before) return { status: 404 as const, error: 'not_found' };
@@ -751,40 +1271,62 @@ export function registerRevenueRoutes(
         // request was well formed and the state refused it.
         if (before.voided_at) return { status: 409 as const, error: 'already_voided' };
 
-        const kind = patch.kind ?? before.kind;
-        const amountIrr =
-          patch.amountToman !== undefined
-            ? signedIrr(
-                kind,
-                patch.amountToman,
-                patch.direction ?? (Number(before.amount_irr) < 0 ? 'expense' : 'credit'),
-              )
-            : // The magnitude is unchanged but the kind may not be, and a kind
-              // decides a sign. Re-applying it keeps EXPENSE → MANUAL_INCOME
-              // from leaving a negative row under a kind the CHECK forbids.
-              signedIrr(
-                kind,
-                Math.abs(Number(before.amount_irr)) / IRR_PER_TOMAN,
-                Number(before.amount_irr) < 0 ? 'expense' : 'credit',
-              );
+        // Normalised once, so the diff below compares numbers with numbers.
+        // `int8` and `numeric` come back as numbers through `packages/db`, but a
+        // diff that depended on that would report a phantom change the day the
+        // adapter handed back a string.
+        const prev = {
+          amount_irr: Number(before.amount_irr),
+          note: before.note,
+          kind: before.kind,
+          category_id: before.category_id === null ? null : Number(before.category_id),
+          spent_on: before.spent_on,
+          currency: before.currency,
+          original_amount:
+            before.original_amount === null ? null : Number(before.original_amount),
+          fx_rate_irr: before.fx_rate_irr === null ? null : Number(before.fx_rate_irr),
+        };
+
+        const kind = patch.kind ?? prev.kind;
+        // The magnitude is unchanged unless the caller restated it whole, but
+        // the KIND may have changed and a kind decides a sign. Re-applying it
+        // keeps EXPENSE → MANUAL_INCOME from leaving a negative row under a kind
+        // the CHECK forbids.
+        const magnitude = moneyTouched(patch) ? magnitudeIrr(patch) : Math.abs(prev.amount_irr);
+        if (magnitude > MAX_ADJUSTMENT_TOMAN * IRR_PER_TOMAN) {
+          return { status: 400 as const, error: 'amount_too_large' };
+        }
+        const fx = moneyTouched(patch)
+          ? fxColumns(patch)
+          : {
+              currency: prev.currency,
+              original_amount: prev.original_amount,
+              fx_rate_irr: prev.fx_rate_irr,
+            };
+        const amountIrr = signedIrr(
+          kind,
+          magnitude,
+          patch.direction ?? (prev.amount_irr < 0 ? 'expense' : 'credit'),
+        );
 
         const next = {
           amount_irr: amountIrr,
-          note: patch.note ?? before.note,
+          note: patch.note ?? prev.note,
           kind,
           category_id:
             kind === 'EXPENSE'
               ? patch.categoryId !== undefined
                 ? patch.categoryId
-                : before.category_id
+                : prev.category_id
               : null,
-          spent_on: patch.spentOn ?? before.spent_on,
+          spent_on: patch.spentOn ?? prev.spent_on,
+          ...fx,
         };
 
         const was: Record<string, unknown> = {};
         const now: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(next)) {
-          const previous = key === 'amount_irr' ? Number(before.amount_irr) : (before as never)[key];
+          const previous = (prev as Record<string, unknown>)[key];
           if (previous !== value) {
             was[key] = previous;
             now[key] = value;
@@ -798,10 +1340,21 @@ export function registerRevenueRoutes(
         await tx
           .prepare(
             `UPDATE revenue_adjustments
-                SET amount_irr = ?2, note = ?3, kind = ?4, category_id = ?5, spent_on = ?6::date
+                SET amount_irr = ?2, note = ?3, kind = ?4, category_id = ?5, spent_on = ?6::date,
+                    currency = ?7, original_amount = ?8, fx_rate_irr = ?9
               WHERE id = ?1`,
           )
-          .bind(id, next.amount_irr, next.note, next.kind, next.category_id, next.spent_on)
+          .bind(
+            id,
+            next.amount_irr,
+            next.note,
+            next.kind,
+            next.category_id,
+            next.spent_on,
+            next.currency,
+            next.original_amount,
+            next.fx_rate_irr,
+          )
           .run();
 
         await audit(tx, ident, 'revenue_adjustment.edited', 'REVENUE_ADJUSTMENT', String(id),
