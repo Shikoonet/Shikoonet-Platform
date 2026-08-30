@@ -19,7 +19,7 @@ import { App } from '../src/App.js';
 const ALL: PageId[] = NAV.flatMap((g) => g.items.map((i) => i.id));
 
 describe('navigation', () => {
-  it('has no duplicate ids across the three groups', () => {
+  it('has no duplicate ids across the groups', () => {
     expect(new Set(ALL).size).toBe(ALL.length);
   });
 
@@ -39,15 +39,39 @@ describe('navigation', () => {
     expect(labels.filter((l) => l === 'سرویس‌ها')).toHaveLength(1);
   });
 
-  it('keeps the groups and their order from the panel this replaces', () => {
-    // «پول» is the payment hub, which was its own build at `/` until
-    // 2026-08-16. Sam placed it third after seeing the merged sidebar; the
-    // other three keep the order they had in `panel/header.php`.
-    expect(NAV.map((g) => g.label)).toEqual(['منوی اصلی', 'مدیریت', 'پول', 'پیکربندی']);
-    expect(NAV[2]!.items[0]!.id).toBe('payments');
-    // داشبورد first and کاربران second is the order an admin's hand already
-    // knows; reordering it is a decision, not a refactor.
-    expect(NAV[0]!.items.slice(0, 2).map((i) => i.id)).toEqual(['dashboard', 'customers']);
+  it('groups by the job, so nothing is split across two groups', () => {
+    // Until 2026-08-30 the groups were inherited from `panel/header.php`
+    // («منوی اصلی · مدیریت · پول · پیکربندی») so muscle memory would survive
+    // the move. It cost a real thing: Sam went looking for the expense ledger
+    // and could not find it, because «هزینه‌ها» was the tenth of eleven items
+    // in «منوی اصلی» while the rest of the money lived in «پول».
+    expect(NAV.map((g) => g.label)).toEqual([
+      'گزارش‌ها',
+      'مشتری و فروش',
+      'کاتالوگ',
+      'پول',
+      'ربات',
+      'سیستم',
+    ]);
+
+    // The assertion that is actually about the complaint, and the reason this
+    // test is written as a subject-to-group map rather than as a list of
+    // positions: a screen moving WITHIN its group is a taste change, and a
+    // screen leaving its group is the regression. Written this way, only the
+    // second one goes red.
+    const groupOf = (id: PageId) => NAV.find((g) => g.items.some((i) => i.id === id))!.label;
+    for (const id of ['payments', 'today', 'transactions', 'expenses', 'accounts', 'banks', 'devices'] as const) {
+      expect(groupOf(id), `${id} belongs with the money`).toBe('پول');
+    }
+    for (const id of ['panels', 'catalog', 'products', 'categories', 'discounts', 'stock'] as const) {
+      expect(groupOf(id), `${id} belongs with the catalogue`).toBe('کاتالوگ');
+    }
+    // The two «آمار» screens name different subjects and must be read side by
+    // side, or the second one reads as a duplicate of the first.
+    expect(groupOf('stats')).toBe(groupOf('statistics'));
+
+    // داشبورد still opens the panel.
+    expect(NAV[0]!.items[0]!.id).toBe('dashboard');
   });
 
   it('labels every section', () => {
