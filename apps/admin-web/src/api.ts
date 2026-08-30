@@ -1295,7 +1295,7 @@ export const api = {
       pageSize: String(params.pageSize),
     });
     if (params.direction) qs.set('direction', params.direction);
-    // Only «آمار فروشگاه» sends these; «هزینه‌ها و تعدیل‌ها» wants the lifetime
+    // Only «آمار فروشگاه» sends these; «هزینه‌ها» wants the lifetime
     // figures and asks for no window at all.
     if (params.range) qs.set('range', params.range);
     if (params.day) qs.set('day', params.day);

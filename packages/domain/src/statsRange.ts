@@ -35,10 +35,15 @@
  * and the one thing worse than no month button is one that is right for four
  * years.
  *
- * Because this differs from the legacy on purpose, the screen labels it
- * «ماه شمسی» rather than «ماه» — an admin comparing the two bots during the
- * cutover must be able to see why the numbers differ instead of filing it as
- * a bug.
+ * The screen labels this «ماه جاری». It read «ماه شمسی» until 2026-08-30, to
+ * warn an admin comparing the two bots during the cutover that this window is
+ * not the legacy's Gregorian one. Sam asked for the change and the reason had
+ * expired anyway: nobody reads the two screens side by side any more, and the
+ * label was answering a question about our implementation («which calendar?»)
+ * where the operator was asking one about their shop («this month or last?»).
+ * The window itself is unchanged — still the Jalali month, still read from
+ * `Intl`. If a side-by-side comparison is ever needed again, the thing to
+ * restore is a note on the screen, not a calendar name in a button.
  */
 
 import { toJalali } from '@shikoo/contracts';

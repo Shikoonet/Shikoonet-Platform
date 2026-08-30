@@ -106,7 +106,7 @@ test('the totals are summed in Rial and converted once, not the other way round'
   expect(sourceSide).not.toBe(perRow);
 
   await page.goto('/admin/expenses');
-  await expect(page.locator('.sidebar-link.active')).toHaveText('هزینه‌ها و تعدیل‌ها');
+  await expect(page.locator('.sidebar-link.active')).toHaveText('هزینه‌ها');
 
   const summary = page.locator('#main-content table').first();
   await expect(summary).toContainText(asToman(l.spent));

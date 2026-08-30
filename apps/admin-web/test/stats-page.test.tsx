@@ -133,8 +133,8 @@ describe('the seven windows', () => {
       'یک ساعت اخیر',
       'امروز',
       'دیروز',
-      'ماه شمسی',
-      'ماه قبل',
+      'ماه جاری',
+      'ماه گذشته',
       'تاریخ مشخص',
     ]) {
       expect(screen.getByRole('button', { name: label })).toBeTruthy();
@@ -378,7 +378,7 @@ describe('the books', () => {
     // same window the stats route is.
     draw();
     await screen.findByText('تعداد فروش');
-    fireEvent.click(screen.getByRole('button', { name: 'ماه شمسی' }));
+    fireEvent.click(screen.getByRole('button', { name: 'ماه جاری' }));
 
     await waitFor(() =>
       expect(revenueAdjustments).toHaveBeenCalledWith(

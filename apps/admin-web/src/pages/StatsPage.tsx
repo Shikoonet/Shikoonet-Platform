@@ -45,8 +45,8 @@ const RANGES: Array<{ id: StatsRange; label: string }> = [
   { id: '1h', label: 'یک ساعت اخیر' },
   { id: 'today', label: 'امروز' },
   { id: 'yesterday', label: 'دیروز' },
-  { id: 'month', label: 'ماه شمسی' },
-  { id: 'prev_month', label: 'ماه قبل' },
+  { id: 'month', label: 'ماه جاری' },
+  { id: 'prev_month', label: 'ماه گذشته' },
   { id: 'day', label: 'تاریخ مشخص' },
   { id: 'between', label: 'بازهٔ دلخواه' },
 ];
@@ -253,7 +253,7 @@ export function StatsPage() {
                       icon="receipt"
                       value={tomanCompact(books.expensesIrr)}
                       label="هزینه‌ها"
-                      foot="از «هزینه‌ها و تعدیل‌ها»"
+                      foot="از دفتر «هزینه‌ها»"
                     />
                     <Stat
                       tone="tone-blue"
