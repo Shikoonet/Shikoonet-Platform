@@ -377,6 +377,10 @@ export interface ShopStatsResponse {
   salesIrr: number;
   renewalsCount: number;
   renewalsIrr: number;
+  addonsCount: number;
+  addonsIrr: number;
+  /** Sales + renewals + add-ons. Not top-ups — that is money moved, not earned. */
+  earnedIrr: number;
   topupsIrr: number;
   conversionPercent: number;
   avgPerBuyerIrr: number;
@@ -469,6 +473,12 @@ export interface RevenueAdjustmentPage {
   pageSize: number;
   items: RevenueAdjustmentRow[];
   totals: RevenueTotals;
+  /**
+   * The same three figures over the window «آمار فروشگاه» is showing, or null
+   * when no `range` was asked for or the range is unbounded («آمار کل»), in
+   * which case `totals` above already is the answer.
+   */
+  rangeTotals: (RevenueTotals & { startMs: number; endMs: number }) | null;
 }
 
 /**
@@ -1052,13 +1062,20 @@ export const api = {
     return req<{ ok: boolean }>(`/bot-admins/${id}`, { method: 'DELETE' });
   },
 
-  customers(params: { q?: string; status?: string; page: number; pageSize: number }) {
+  customers(params: {
+    q?: string;
+    status?: string;
+    page: number;
+    pageSize: number;
+    sort?: 'recent' | 'balance' | 'debt';
+  }) {
     const qs = new URLSearchParams({
       page: String(params.page),
       pageSize: String(params.pageSize),
     });
     if (params.q) qs.set('q', params.q);
     if (params.status) qs.set('status', params.status);
+    if (params.sort && params.sort !== 'recent') qs.set('sort', params.sort);
     return req<CustomerListPage>(`/customers?${qs.toString()}`);
   },
 
@@ -1265,12 +1282,24 @@ export const api = {
     return req<{ ok: boolean }>(`/stock/${id}`, { method: 'DELETE' });
   },
 
-  revenueAdjustments(params: { direction?: string; page: number; pageSize: number }) {
+  revenueAdjustments(params: {
+    direction?: string;
+    page: number;
+    pageSize: number;
+    range?: StatsRange;
+    day?: string;
+    to?: string;
+  }) {
     const qs = new URLSearchParams({
       page: String(params.page),
       pageSize: String(params.pageSize),
     });
     if (params.direction) qs.set('direction', params.direction);
+    // Only «آمار فروشگاه» sends these; «هزینه‌ها و تعدیل‌ها» wants the lifetime
+    // figures and asks for no window at all.
+    if (params.range) qs.set('range', params.range);
+    if (params.day) qs.set('day', params.day);
+    if (params.to) qs.set('to', params.to);
     return req<RevenueAdjustmentPage>(`/revenue-adjustments?${qs.toString()}`);
   },
 

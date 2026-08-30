@@ -33,6 +33,10 @@ const BASE: ShopStatsResponse = {
   salesIrr: 3_508_678_650,
   renewalsCount: 480,
   renewalsIrr: 825_450_000,
+  addonsCount: 37,
+  addonsIrr: 34_160_000,
+  // The three above it, and written as the sum so a reader can see that it is.
+  earnedIrr: 3_508_678_650 + 825_450_000 + 34_160_000,
   topupsIrr: 120_000_000,
   conversionPercent: 30.73,
   avgPerBuyerIrr: 1_701_850,
@@ -65,9 +69,44 @@ const stats = vi.fn(async (range: StatsRange, _day?: string, _to?: string): Prom
   ...(range === '1h' ? { salesCount: 0, salesIrr: 0, startMs: 1, endMs: 2 } : {}),
 }));
 
+/**
+ * The books, from the route that owns them.
+ *
+ * Expenses are negative, exactly as `revenue_adjustments` stores them and as
+ * «هزینه‌ها و تعدیل‌ها» renders them. The figures are production's: 219 rows
+ * netting −697,371,750 Toman, which is the number that made «درآمد کل» negative
+ * before the importer started writing an order per invoice.
+ */
+const LIFE = { expensesIrr: -7_012_000_000, creditsIrr: 38_282_500, netIrr: -6_973_717_500 };
+const revenueAdjustments = vi.fn(async (_p?: unknown) => ({
+  ok: true,
+  total: 219,
+  page: 1,
+  pageSize: 1,
+  items: [],
+  totals: LIFE,
+  rangeTotals: null,
+}));
+
+const WALLETS = [
+  { id: 9, telegramId: 314985971, username: 'poyan_b', balanceIrr: 41_000_000 },
+  { id: 4, telegramId: 200100300, username: null, balanceIrr: 12_500_000 },
+];
+const customers = vi.fn(async (_p?: unknown) => ({ ok: true, total: 2, page: 1, pageSize: 10, items: WALLETS }));
+
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
-  return { ...actual, api: { stats: (r: StatsRange, d?: string, t?: string) => stats(r, d, t) } };
+  return {
+    ...actual,
+    api: {
+      // Every one of these is wrapped rather than passed by reference: the
+      // factory is hoisted above the `const`s, so naming one directly reads it
+      // before it exists.
+      stats: (r: StatsRange, d?: string, t?: string) => stats(r, d, t),
+      revenueAdjustments: (p: unknown) => revenueAdjustments(p),
+      customers: (p: unknown) => customers(p),
+    },
+  };
 });
 
 const draw = () =>
@@ -77,7 +116,11 @@ const draw = () =>
     </RoleProvider>,
   );
 
-beforeEach(() => stats.mockClear());
+beforeEach(() => {
+  stats.mockClear();
+  revenueAdjustments.mockClear();
+  customers.mockClear();
+});
 afterEach(() => vi.restoreAllMocks());
 
 describe('the seven windows', () => {
@@ -265,9 +308,9 @@ describe('stocks are not drawn as if the period changed them', () => {
     stats.mockResolvedValueOnce(withDebt);
     draw();
 
-    const stocks = (await screen.findByText('هم‌اکنون')).closest('.card')!;
-    expect(stocks.textContent).toContain('۱٬۱۰۰٬۰۰۰ تومان بدهی');
-    expect(stocks.textContent).not.toContain('ریال');
+    const wallets = (await screen.findByText('کیف پول مشتریان')).closest('.card')!;
+    expect(wallets.textContent).toContain('۱٬۱۰۰٬۰۰۰ تومان');
+    expect(wallets.textContent).not.toContain('ریال');
   });
 
   it('keeps the wallet out of the period section', async () => {
@@ -275,12 +318,104 @@ describe('stocks are not drawn as if the period changed them', () => {
     await screen.findByText('تعداد فروش');
 
     const flows = screen.getByText('در این بازه').closest('.card')!;
+    const wallets = screen.getByText('کیف پول مشتریان').closest('.card')!;
     const stocks = screen.getByText('هم‌اکنون').closest('.card')!;
 
-    expect(flows.textContent).not.toContain('موجودی کل کاربران');
-    expect(stocks.textContent).toContain('موجودی کل کاربران');
+    expect(flows.textContent).not.toContain('جمع اعتبار مشتریان');
+    expect(wallets.textContent).toContain('جمع اعتبار مشتریان');
+    // The heading has to keep saying the period does not move it, now that the
+    // figure lives under its own title rather than under «هم‌اکنون».
+    expect(wallets.textContent).toContain('نه در بازهٔ انتخابی');
     expect(stocks.textContent).toContain('پنل‌ها');
     expect(stocks.textContent).toContain('نمایندگان');
+  });
+});
+
+/**
+ * The three questions Sam asked on 2026-08-30, in his words: «نمی‌دونم هزینه‌ها
+ * چیه، درآمد چیه، مانده چقدره، چقدر پول داخل کیف پول مردم هست، کی بیشترین مقدار
+ * رو داره». Every assertion below is one of them.
+ */
+describe('the books', () => {
+  it('states revenue, costs and the difference before breaking any of them up', async () => {
+    draw();
+    const books = (await screen.findByText('دفتر فروشگاه')).closest('.card')!;
+    for (const label of ['درآمد', 'هزینه‌ها', 'مانده']) {
+      expect(books.textContent).toContain(label);
+    }
+  });
+
+  /**
+   * The arithmetic, asserted rather than trusted.
+   *
+   * 436.83 million Toman earned against 697.37 million of net adjustments is
+   * **minus** 260.54 million. `expensesIrr` is stored negative, so the code
+   * adds — and getting that backwards produces 1,134 million, a plausible
+   * healthy figure with the wrong sign on two thirds of it. In a compacted
+   * «میلیارد» that is invisible, which is why the wrong answer is named here
+   * as well as the right one.
+   */
+  it('subtracts the costs instead of adding them', async () => {
+    draw();
+    const card = (await screen.findByText('مانده')).closest('.stat-card')!;
+    expect(card.textContent).toContain('۲۶۰٫۵ میلیون ت');
+    expect(card.textContent).not.toContain('میلیارد');
+  });
+
+  it('leaves wallet top-ups out of revenue, and says why on the screen', async () => {
+    draw();
+    const books = (await screen.findByText('دفتر فروشگاه')).closest('.card')!;
+    // 350.87 + 82.55 + 3.42 = 436.83 crore Toman. The 12 million of top-ups is
+    // not in it: counting money the customer has not spent yet reports it once
+    // arriving and again when it buys something.
+    expect(books.textContent).toContain('۴۳۶٫۸ میلیون ت');
+    expect(books.textContent).toContain('دو بار می‌شمارد');
+  });
+
+  it('measures costs over the window it measures revenue over', async () => {
+    // A month of revenue against a lifetime of costs is the arithmetic that had
+    // the panel reporting «درآمد کل: −۶۱۶ میلیون». The route is asked for the
+    // same window the stats route is.
+    draw();
+    await screen.findByText('تعداد فروش');
+    fireEvent.click(screen.getByRole('button', { name: 'ماه شمسی' }));
+
+    await waitFor(() =>
+      expect(revenueAdjustments).toHaveBeenCalledWith(
+        expect.objectContaining({ range: 'month' }),
+      ),
+    );
+  });
+
+  it('tells a reader why the books are missing rather than showing an error', async () => {
+    revenueAdjustments.mockRejectedValueOnce(new Error('forbidden'));
+    draw();
+    const books = (await screen.findByText('دفتر فروشگاه')).closest('.card')!;
+    await waitFor(() => expect(books.textContent).toContain('دسترسی'));
+    expect(screen.queryByText(/^forbidden$/)).toBeNull();
+  });
+});
+
+describe('who holds the money', () => {
+  it('lists the biggest wallets, largest first, asked of the server in that order', async () => {
+    draw();
+    await screen.findByText('کیف پول مشتریان');
+    await waitFor(() =>
+      expect(customers).toHaveBeenCalledWith(expect.objectContaining({ sort: 'balance' })),
+    );
+
+    const wallets = screen.getByText('کیف پول مشتریان').closest('.card')!;
+    expect(wallets.textContent).toContain('@poyan_b');
+    expect(wallets.textContent).toContain('۴٬۱۰۰٬۰۰۰ تومان');
+  });
+
+  it('shows the Telegram id for the customers who have no username', async () => {
+    // 2,924 legacy rows store the literal 'NOT_USERNAME' and the import drops
+    // it, so a dash in the name column is the common case rather than the odd
+    // one — the id beside it is the only identifier that always exists.
+    draw();
+    const wallets = (await screen.findByText('کیف پول مشتریان')).closest('.card')!;
+    await waitFor(() => expect(wallets.textContent).toContain('200100300'));
   });
 
   it('still shows the live services after a period with no sales at all', async () => {

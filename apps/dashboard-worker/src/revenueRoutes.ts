@@ -43,6 +43,7 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
+import { parseStatsDay, parseStatsRange, statsRangeBounds } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 /**
@@ -138,6 +139,60 @@ export function registerRevenueRoutes(
       net_irr: string | number;
     }>();
 
+    /**
+     * The same three figures over a window, for «آمار فروشگاه».
+     *
+     * That screen puts «هزینه‌ها» beside «درآمد» under one set of period
+     * buttons, so the two have to be measured over the same window or the
+     * subtraction between them is meaningless — a month's revenue against a
+     * lifetime of costs is exactly the arithmetic that had the panel showing
+     * «درآمد کل: −۶۱۶ میلیون».
+     *
+     * Bounds come from `statsRangeBounds`, the same function the stats route
+     * uses, rather than from a second reading of the query string. Absent or
+     * unbounded («آمار کل»), this is null and the caller shows the lifetime
+     * totals above instead of a window that means nothing.
+     */
+    const rangeParam = c.req.query('range');
+    let rangeTotals: {
+      startMs: number;
+      endMs: number;
+      expensesIrr: number;
+      creditsIrr: number;
+      netIrr: number;
+    } | null = null;
+    if (rangeParam) {
+      const bounds = statsRangeBounds(
+        parseStatsRange(rangeParam),
+        Date.now(),
+        parseStatsDay(c.req.query('day') ?? c.req.query('from')),
+        parseStatsDay(c.req.query('to')),
+      );
+      if (bounds.start !== null && bounds.end !== null) {
+        const win = await c.env.DB.prepare(
+          `SELECT COALESCE(SUM(amount_irr) FILTER (WHERE amount_irr < 0), 0) AS expenses_irr,
+                  COALESCE(SUM(amount_irr) FILTER (WHERE amount_irr > 0), 0) AS credits_irr,
+                  COALESCE(SUM(amount_irr), 0) AS net_irr
+             FROM revenue_adjustments
+            WHERE created_at >= to_timestamp(?1 / 1000.0)
+              AND created_at <  to_timestamp(?2 / 1000.0)`,
+        )
+          .bind(bounds.start, bounds.end)
+          .first<{
+            expenses_irr: string | number;
+            credits_irr: string | number;
+            net_irr: string | number;
+          }>();
+        rangeTotals = {
+          startMs: bounds.start,
+          endMs: bounds.end,
+          expensesIrr: Number(win?.expenses_irr ?? 0),
+          creditsIrr: Number(win?.credits_irr ?? 0),
+          netIrr: Number(win?.net_irr ?? 0),
+        };
+      }
+    }
+
     return c.json({
       ok: true,
       total: total?.n ?? 0,
@@ -149,6 +204,7 @@ export function registerRevenueRoutes(
         creditsIrr: Number(sums?.credits_irr ?? 0),
         netIrr: Number(sums?.net_irr ?? 0),
       },
+      rangeTotals,
     });
   });
 

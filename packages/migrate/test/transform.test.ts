@@ -100,6 +100,46 @@ describe('status mapping', () => {
     expect(t.subscriptionStatus('disabledn')).toBe('DISABLED');
   });
 
+  describe('an invoice read as a sale', () => {
+    /**
+     * A service that was later switched off was still bought. Reading these as
+     * anything but COMPLETED is how «درآمد کل» loses most of the shop's money —
+     * `disabled` alone is 241 of the 7,889 invoices in the production dump.
+     */
+    it('counts every delivered service as a completed sale', () => {
+      for (const legacy of ['active', 'send_on_hold', 'disabled', 'disabledn',
+        'disablebyadmin', 'removeTime', 'removevolume', 'removebyuser']) {
+        expect(t.invoiceOrderStatus(legacy)).toBe('COMPLETED');
+      }
+    });
+
+    /**
+     * This is the assertion that is not about accounting.
+     *
+     * `AWAITING_PAYMENT` is the literal reading of `unpaid`, and it is the one
+     * value this function must never return: `expireUnpaidOrders` sweeps every
+     * AWAITING_PAYMENT order past its `expires_at` and, in the same
+     * transaction, messages the customer on Telegram. Every unpaid row in the
+     * dump is long past its day, so the first worker tick after an import
+     * would send 1,886 expiry notices about carts abandoned in a bot we do not
+     * run. Nothing else in the suite would go red if this changed.
+     */
+    it('never leaves an imported invoice waiting to be paid', () => {
+      expect(t.invoiceOrderStatus('unpaid')).toBe('EXPIRED');
+    });
+
+    it('keeps a failed provisioning failed', () => {
+      expect(t.invoiceOrderStatus('Unsuccessful')).toBe('FAILED');
+    });
+
+    it('refuses a status it has not been taught', () => {
+      // Inherited from `subscriptionStatus` rather than re-declared, so a new
+      // legacy spelling cannot become a silent COMPLETED here while stopping
+      // the migration one column over.
+      expect(() => t.invoiceOrderStatus('paid_maybe')).toThrow(t.TransformError);
+    });
+  });
+
   it('stops the migration on an unmapped value instead of guessing', () => {
     expect(() => t.paymentStatus('something_new')).toThrow(t.TransformError);
     expect(() => t.subscriptionStatus('')).toThrow(t.TransformError);

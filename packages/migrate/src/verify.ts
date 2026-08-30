@@ -63,7 +63,14 @@ const TARGET_SQL: Record<string, string> = {
   'subscription value (IRR)': 'SELECT COALESCE(SUM(price_irr),0) FROM subscriptions',
   'wheel prizes (IRR)': 'SELECT COALESCE(SUM(amount_irr),0) FROM wheel_spins',
   'revenue adjustments (IRR)': 'SELECT COALESCE(SUM(amount_irr),0) FROM revenue_adjustments',
-  'add-on orders (IRR)': 'SELECT COALESCE(SUM(total_irr),0) FROM orders',
+  // Both order totals are scoped by which legacy table they came from. A bare
+  // `SUM(total_irr) FROM orders` was correct only while `service_other` was the
+  // one thing that wrote this table; the day invoices started landing here too
+  // it would have read every purchase as an add-on and passed anyway.
+  'purchase orders (IRR)':
+    "SELECT COALESCE(SUM(total_irr),0) FROM orders WHERE legacy_ref LIKE 'invoice:%'",
+  'add-on orders (IRR)':
+    "SELECT COALESCE(SUM(total_irr),0) FROM orders WHERE legacy_ref LIKE 'service_other:%'",
 };
 
 // [domain, label, source count, target count, allowance count?, allowance reason?]
@@ -71,6 +78,15 @@ const COUNT_PAIRS: [Domain, string, string, string, string?, string?][] = [
   ['core', 'users', 'SELECT COUNT(*) FROM `user`', 'SELECT COUNT(*) FROM users'],
   ['core', 'wallets', 'SELECT COUNT(*) FROM `user`', 'SELECT COUNT(*) FROM wallets'],
   ['sales', 'subscriptions', 'SELECT COUNT(*) FROM invoice', 'SELECT COUNT(*) FROM subscriptions'],
+  // The same source as the row above, and that is the point: one invoice is one
+  // sale and one service, and a difference between these two lines is a
+  // purchase that reached the customer's account without reaching the books.
+  [
+    'sales',
+    'purchase orders',
+    'SELECT COUNT(*) FROM invoice',
+    "SELECT COUNT(*) FROM orders WHERE legacy_ref LIKE 'invoice:%'",
+  ],
   ['sales', 'payments', 'SELECT COUNT(*) FROM Payment_report', 'SELECT COUNT(*) FROM payments'],
   [
     'config',
@@ -151,7 +167,7 @@ const COUNT_PAIRS: [Domain, string, string, string, string?, string?][] = [
     'sales',
     'add-on orders',
     'SELECT COUNT(*) FROM service_other',
-    'SELECT COUNT(*) FROM orders',
+    "SELECT COUNT(*) FROM orders WHERE legacy_ref LIKE 'service_other:%'",
     `SELECT COUNT(*) FROM service_other s LEFT JOIN user u ON u.id=s.id_user WHERE u.id IS NULL`,
   ],
   // The two legacy `tinyint(1)` flags, counted on both sides.
@@ -267,6 +283,17 @@ export async function verify(
     name: 'subscription value (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price_product AS SIGNED)) FROM invoice')) * 10n,
     target: (await pgScalar(pgc, TARGET_SQL['subscription value (IRR)']!)) - (baseline['subscription value (IRR)'] ?? 0n),
+  });
+
+  // Deliberately the same source expression as the line above. The sale and the
+  // service are two rows written from one invoice, so the two totals must be
+  // the same number — and for six weeks the second one was zero while the first
+  // was right, which is how a shop with 869 million Toman of sales showed a
+  // «درآمد کل» of minus 616 million.
+  if (want('sales')) money.push({
+    name: 'purchase orders (IRR)',
+    source: (await scalar(my, 'SELECT SUM(CAST(price_product AS SIGNED)) FROM invoice')) * 10n,
+    target: (await pgScalar(pgc, TARGET_SQL['purchase orders (IRR)']!)) - (baseline['purchase orders (IRR)'] ?? 0n),
   });
 
   if (want('history')) money.push({
