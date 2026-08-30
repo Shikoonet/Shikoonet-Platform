@@ -75,3 +75,10 @@ playwright-report.json
 # the file carries plaintext panel passwords -- the same reason `legacy/**/db/`
 # is ignored. On the server this is `IMPORT_DIR` and lives outside the repo.
 .tmp-imports/
+
+# And a dump dropped straight in the repo root, which is how one actually
+# arrived: `backup_2026-08-29.sql`, 9 MB of real customers, sitting untracked
+# where one `git add -A` would publish it. The root screenshots that went out
+# once already are the same mistake with a different extension.
+backup_*.sql
+*.sql.gz
