@@ -63,7 +63,27 @@ export interface ShopReport {
   salesIrr: number;
   renewalsCount: number;
   renewalsIrr: number;
+  /**
+   * Extra volume and extra days, sold against a service the customer already
+   * has. Small — 37 orders on the production dump — and the third term of
+   * «درآمد», so leaving it out is what made the screen's own figures fail to
+   * add up to the total printed beside them.
+   */
+  addonsCount: number;
+  addonsIrr: number;
   topupsIrr: number;
+  /**
+   * The three above, together: what the shop earned in this window.
+   *
+   * Summed here rather than in the page, so the panel, the bot and the nightly
+   * report cannot each decide for themselves whether an add-on counts.
+   *
+   * `WALLET_TOPUP` is deliberately outside it. A top-up is the customer moving
+   * their own money into the shop's hands and nothing has been sold yet;
+   * counting it here reports every Rial twice, once arriving and again when it
+   * is spent. It keeps its own field for the same reason it always had one.
+   */
+  earnedIrr: number;
 
   /* ---- ratios derived from the flows above ---- */
   conversionPercent: number;
@@ -170,6 +190,13 @@ export async function shopReport(
            COALESCE(sum(o.total_irr) FILTER (WHERE o.kind = 'NEW_PURCHASE'), 0) AS sales_irr,
            count(*) FILTER (WHERE o.kind = 'RENEWAL')::int                    AS renewals_count,
            COALESCE(sum(o.total_irr) FILTER (WHERE o.kind = 'RENEWAL'), 0)      AS renewals_irr,
+           count(*) FILTER (WHERE o.kind IN ('ADD_VOLUME','ADD_TIME'))::int   AS addons_count,
+           COALESCE(sum(o.total_irr) FILTER (
+             WHERE o.kind IN ('ADD_VOLUME','ADD_TIME')), 0)                     AS addons_irr,
+           -- Everything sold, which is every kind except the two that sell
+           -- nothing: a top-up is money moved, and a TRANSFER is always zero.
+           COALESCE(sum(o.total_irr) FILTER (
+             WHERE o.kind NOT IN ('WALLET_TOPUP','TRANSFER')), 0)               AS earned_irr,
            COALESCE(sum(o.total_irr) FILTER (WHERE o.kind = 'WALLET_TOPUP'), 0) AS topups_irr,
            count(DISTINCT o.user_id) FILTER (
              WHERE o.kind = 'NEW_PURCHASE'
@@ -186,6 +213,9 @@ export async function shopReport(
         sales_irr: string | number;
         renewals_count: number;
         renewals_irr: string | number;
+        addons_count: number;
+        addons_irr: string | number;
+        earned_irr: string | number;
         topups_irr: string | number;
         buyers: number;
         first_ms: string | number | null;
@@ -260,6 +290,9 @@ export async function shopReport(
     salesIrr,
     renewalsCount: flows?.renewals_count ?? 0,
     renewalsIrr,
+    addonsCount: flows?.addons_count ?? 0,
+    addonsIrr: Number(flows?.addons_irr ?? 0),
+    earnedIrr: Number(flows?.earned_irr ?? 0),
     topupsIrr: Number(flows?.topups_irr ?? 0),
 
     conversionPercent: pct(buyers, newCustomers),

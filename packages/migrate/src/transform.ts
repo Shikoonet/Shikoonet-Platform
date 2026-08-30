@@ -229,6 +229,25 @@ export const SUBSCRIPTION_STATUS = {
 } as const;
 export const subscriptionStatus = strictMap(SUBSCRIPTION_STATUS, 'invoice.Status');
 
+/**
+ * The same legacy status read as the state of the **sale**, not of the service.
+ *
+ * Derived from `subscriptionStatus` rather than from a second table of legacy
+ * strings, so the two can never learn about a status separately — a spelling
+ * added to one is added to both. A service that was later disabled, removed or
+ * put on hold was still bought and paid for; only `unpaid` and `Unsuccessful`
+ * mean no money changed hands.
+ *
+ * `unpaid` becomes EXPIRED rather than AWAITING_PAYMENT, and the step that
+ * calls this says why. The short version is 1,886 Telegram messages.
+ */
+export function invoiceOrderStatus(value: unknown): 'COMPLETED' | 'EXPIRED' | 'FAILED' {
+  const status = subscriptionStatus(value);
+  if (status === 'PENDING_PAYMENT') return 'EXPIRED';
+  if (status === 'FAILED') return 'FAILED';
+  return 'COMPLETED';
+}
+
 export const ORDER_KIND = {
   extend_user: 'RENEWAL',
   // Carries {"volume_value": "10", ...} — extra gigabytes, not extra seats.

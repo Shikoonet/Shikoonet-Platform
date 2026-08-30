@@ -827,6 +827,102 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
   return n;
 }
 
+/** The legacy invoice window: unpaid after a day and the bot stops waiting. */
+const INVOICE_TTL_S = 24 * 60 * 60;
+
+/**
+ * A legacy `invoice` is a purchase, so it becomes an order as well as a service.
+ *
+ * Until 2026-08-30 it became only a `subscriptions` row. That is not a smaller
+ * version of the truth, it is a different one: in this schema an **order** is
+ * the record that a sale happened and a **subscription** is the thing handed
+ * over. The bot writes both for every purchase, and `subscriptions.order_id`
+ * exists to tie them together.
+ *
+ * Every screen that answers «how much did we sell» reads `orders`: the panel's
+ * home screen, «آمار فروشگاه», the bot's own «آمار», and the nightly report. So
+ * an import that wrote 7,889 subscriptions and no orders left all four of them
+ * reporting that the shop had made **five** sales — the five that predate the
+ * import — while 869 million Toman of real ones sat in a table none of them
+ * reads. On Sam's dump the symptom reached the screen as a «درآمد کل» of
+ * **−۶۱۶ میلیون تومان**: the 697 million of negative `revenue_adjustments`
+ * counted in full against sales that counted not at all (issue #45).
+ *
+ * ## An unpaid invoice arrives EXPIRED, and that is not a rounding of it
+ *
+ * `AWAITING_PAYMENT` is the literal translation of `unpaid`, and writing it
+ * would message 1,886 real customers. `expireUnpaidOrders`
+ * (`apps/bot/src/expire.ts`) takes every AWAITING_PAYMENT order past its
+ * `expires_at`, marks it EXPIRED, and — in the same transaction, deliberately —
+ * tells the customer on Telegram. Every unpaid row in the dump is already past
+ * its day, so the first worker tick after an import would send 1,886 «فاکتور
+ * شما منقضی شد» notices about carts abandoned in a bot we do not run.
+ *
+ * The state is therefore written directly, with `expires_at` recording when the
+ * legacy window actually closed. Nothing is lost: an invoice a customer is
+ * still completing is being completed on the old bot, which is the system of
+ * record for it until the cutover.
+ *
+ * The mapping is flat on purpose — quantity one, no discount. The legacy stores
+ * the price the customer paid and does not keep the list price it came from, so
+ * a `discount_irr` here would be a number we invented.
+ */
+async function migrateInvoiceOrders(ctx: Ctx): Promise<number> {
+  const rows = await mysqlRows<Row>(ctx.my, 'SELECT * FROM invoice');
+  return insertBatch(
+    ctx.pg,
+    'orders',
+    cols([
+      'legacy_ref',
+      'public_id',
+      'user_id',
+      'kind',
+      'quantity',
+      'unit_price_irr',
+      'discount_irr',
+      'total_irr',
+      'status',
+      ['created_at', ts.epochS.expr],
+      ['expires_at', ts.epochS.expr],
+      ['completed_at', ts.epochS.expr],
+    ]),
+    rows.flatMap((r) => {
+      const u = user(ctx, r.id_user);
+      if (!u) {
+        skip(ctx, 'orders: user deleted');
+        return [];
+      }
+      const sold = t.epochSeconds(r.time_sell, 'invoice.time_sell');
+      if (!sold) {
+        // `orders.created_at` is NOT NULL and there is nothing honest to put in
+        // it. Counted rather than back-filled with the import's own clock,
+        // which would date a two-year-old sale to this morning.
+        skip(ctx, 'orders: invoice has no sale time');
+        return [];
+      }
+      const status = t.invoiceOrderStatus(r.Status);
+      const amount = t.tomanToIrr(r.price_product).toString();
+      return [
+        [
+          `invoice:${r.id_invoice}`,
+          `inv-${r.id_invoice}`,
+          u,
+          'NEW_PURCHASE',
+          1,
+          amount,
+          0,
+          amount,
+          status,
+          sold,
+          status === 'EXPIRED' ? String(Number(sold) + INVOICE_TTL_S) : null,
+          status === 'COMPLETED' ? sold : null,
+        ],
+      ];
+    }),
+    { conflict: '(legacy_ref)' },
+  );
+}
+
 async function migrateSubscriptions(ctx: Ctx): Promise<number> {
   const rows = await mysqlRows<Row>(ctx.my, 'SELECT * FROM invoice');
   const { rows: providers } = await ctx.pg.query<{ id: string; name: string }>(
@@ -851,7 +947,7 @@ async function migrateSubscriptions(ctx: Ctx): Promise<number> {
     'Status',
   ];
 
-  return insertBatch(
+  const written = await insertBatch(
     ctx.pg,
     'subscriptions',
     cols([
@@ -905,6 +1001,22 @@ async function migrateSubscriptions(ctx: Ctx): Promise<number> {
     }),
     { conflict: '(public_id)' },
   );
+
+  // The two halves of one purchase, joined the way the bot leaves them.
+  //
+  // Done as a statement rather than by threading an id map through the insert,
+  // because the join is provable from the schema alone: `subscriptions.public_id`
+  // IS the legacy invoice id, and `orders.legacy_ref` is built from the same
+  // column one step earlier. `IS NULL` keeps a re-run from touching a link the
+  // bot itself made.
+  await ctx.pg.query(
+    `UPDATE subscriptions s SET order_id = o.id
+       FROM orders o
+      WHERE o.legacy_ref = 'invoice:' || s.public_id
+        AND s.order_id IS NULL`,
+  );
+
+  return written;
 }
 
 async function migratePayments(ctx: Ctx): Promise<number> {
@@ -1733,6 +1845,8 @@ const STEPS: [name: string, domain: Domain, run: (ctx: Ctx) => Promise<number>][
   ['providers', 'catalog', migrateProviders],
   ['products + plans', 'catalog', migrateProducts],
   ['discounts', 'discounts', migrateDiscounts],
+  // Before subscriptions, because the subscriptions step links itself to these.
+  ['orders (invoices)', 'sales', migrateInvoiceOrders],
   ['subscriptions', 'sales', migrateSubscriptions],
   ['payments', 'sales', migratePayments],
   ['orders (service_other)', 'sales', migrateServiceOrders],
