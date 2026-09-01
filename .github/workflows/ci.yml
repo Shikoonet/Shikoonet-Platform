@@ -289,12 +289,12 @@ jobs:
           ASSOCIATION: ${{ steps.provenance.outputs.association }}
         run: |
           set -Eeuo pipefail
-          if [ -f /tmp/changed.txt ]; then
-            CHANGED_FILES=$(cat /tmp/changed.txt)
-          else
-            CHANGED_FILES=UNKNOWN
-          fi
-          export CHANGED_FILES
+          # Through a FILE, never the environment. Linux caps one environment
+          # string at 128 KB, and PR #39 changed 3,000 files — 217 KB. Passing
+          # that list in `CHANGED_FILES` fails with «Argument list too long»
+          # before `ci-plan.sh` runs a single line, so a large pull request
+          # could not be classified at all. It failed closed, but it failed.
+          export CHANGED_FILES_FILE=/tmp/changed.txt
           bash tools/ci-plan.sh | tee /tmp/plan.txt
           grep -E '^(static|unit|db|e2e|deploy_suites|image|mode)=' /tmp/plan.txt >>"$GITHUB_OUTPUT"
 

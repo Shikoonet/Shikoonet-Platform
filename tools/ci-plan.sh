@@ -110,6 +110,14 @@
 #   CHANGED_FILES  newline-separated paths, or the literal string UNKNOWN when
 #                  the diff could not be established (API failure, truncation,
 #                  a pull request larger than one page of files)
+#   CHANGED_FILES_FILE
+#                  a path to read that list from instead, and what `ci.yml`
+#                  actually passes. Linux caps a single environment string at
+#                  128 KB (MAX_ARG_STRLEN), and PR #39 changed 3,000 files —
+#                  a 217 KB list. Handing that to `bash` through the
+#                  environment fails with «Argument list too long» before this
+#                  script's first line runs, so the file wins when both are
+#                  set. Measured against that pull request's real file list.
 #   PROVEN         push only: 'true' when ci-main-provenance.sh proved the tree
 #   ASSOCIATION    push only: 'none' when GitHub answered and NO merged pull
 #                  request claims the sha — a direct push
@@ -118,6 +126,17 @@ set -Eeuo pipefail
 
 EVENT=${EVENT:-}
 IS_DRAFT=${IS_DRAFT:-false}
+
+# The file wins when it is set, because a big pull request cannot be passed in
+# the environment at all — see CHANGED_FILES_FILE above. An unreadable file is
+# UNKNOWN, which runs everything: the one rule, applied to its own input.
+if [ -n "${CHANGED_FILES_FILE:-}" ]; then
+  if [ -r "$CHANGED_FILES_FILE" ]; then
+    CHANGED_FILES=$(cat "$CHANGED_FILES_FILE")
+  else
+    CHANGED_FILES=UNKNOWN
+  fi
+fi
 CHANGED_FILES=${CHANGED_FILES:-UNKNOWN}
 PROVEN=${PROVEN:-false}
 ASSOCIATION=${ASSOCIATION:-unknown}
