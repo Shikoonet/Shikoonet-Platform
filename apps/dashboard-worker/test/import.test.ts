@@ -14,7 +14,7 @@
  * any test that believes the report.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -357,6 +357,36 @@ describe('putting a dump there from the browser', () => {
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ error: 'import_dir_unset' });
+  });
+
+  /**
+   * Two uploads of one name, which is not exotic: it is what «refresh the dump»
+   * looks like when two people do it at once, and it is how a retry after a
+   * stalled connection can overlap the request it was retrying.
+   *
+   * Without the exclusive create both streams open the same `<name>.part`,
+   * interleave, and the second rename puts the mixture where a dump belongs —
+   * a file that is valid enough to load and wrong enough to import. CodeRabbit
+   * raised it on PR #48.
+   *
+   * The `.part` is planted directly rather than raced, because a race that
+   * usually passes is not a test. What is asserted is the consequence that
+   * matters: the refusal, and that the other upload's file was NOT deleted on
+   * the way out.
+   */
+  it('refuses a second upload of the same name, and does not touch the first', async () => {
+    const part = join(importDir, 'contested.sql.part');
+    writeFileSync(part, 'first upload, still going');
+
+    const res = await upload('contested.sql', 'second upload\n', envAs(ADMIN));
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'upload_in_progress' });
+    // The loser must not tidy up after the winner: removing this would leave
+    // the other request writing to an unlinked inode with nothing to rename.
+    expect(readFileSync(part, 'utf8')).toBe('first upload, still going');
+    expect(existsSync(join(importDir, 'contested.sql'))).toBe(false);
+    rmSync(part, { force: true });
   });
 
   it('refuses while an import is in flight', async () => {

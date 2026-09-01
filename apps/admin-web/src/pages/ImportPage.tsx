@@ -82,6 +82,7 @@ function message(e: unknown): string {
     }
     if (e.code === 'import_dir_unreadable') return 'پوشهٔ ایمپورت روی سرور خوانده نشد.';
     if (e.code === 'import_already_running') return 'یک ایمپورت در حال اجراست؛ تا پایانش صبر کن.';
+    if (e.code === 'upload_in_progress') return 'همین فایل الان در حال آپلود است؛ تا پایانش صبر کن.';
     if (e.code === 'dry_run_required') {
       return 'اول یک اجرای آزمایشی موفق روی همین فایل لازم است.';
     }
@@ -427,6 +428,15 @@ export function ImportPage() {
 
   const running = active?.status === 'RUNNING';
   /**
+   * Nothing may be started while a file is on its way up.
+   *
+   * Not a safety guarantee — the server has those, and the one that matters is
+   * that a run re-checks the digest of what it actually loaded. This is about
+   * not offering a person a button whose result depends on which of two
+   * requests lands first.
+   */
+  const uploading = uploadPct !== null;
+  /**
    * «اعمال» only becomes real once a dry run has proven THIS import.
    *
    * The same rule the worker enforces, minus the half a browser cannot check.
@@ -480,7 +490,7 @@ export function ImportPage() {
           type="file"
           accept=".sql,.sql.gz"
           className="form-control"
-          disabled={running || uploadPct !== null}
+          disabled={running || uploading || busy}
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) void upload(f);
@@ -546,7 +556,7 @@ export function ImportPage() {
           <button
             className="btn"
             onClick={() => void start('PREFLIGHT')}
-            disabled={busy || running || !file}
+            disabled={busy || running || uploading || !file}
             {...w}
           >
             بررسی
@@ -554,7 +564,7 @@ export function ImportPage() {
           <button
             className="btn"
             onClick={() => void start('DRY_RUN')}
-            disabled={busy || running || !file}
+            disabled={busy || running || uploading || !file}
             {...w}
           >
             اجرای آزمایشی
@@ -564,7 +574,7 @@ export function ImportPage() {
               <button
                 className="btn btn-danger"
                 onClick={() => void start('APPLY')}
-                disabled={busy || running}
+                disabled={busy || running || uploading}
                 {...w}
               >
                 بله، بنویس
@@ -577,7 +587,7 @@ export function ImportPage() {
             <button
               className="btn btn-danger"
               onClick={() => setConfirming(true)}
-              disabled={busy || running || !file || !proven}
+              disabled={busy || running || uploading || !file || !proven}
               title={
                 proven
                   ? undefined

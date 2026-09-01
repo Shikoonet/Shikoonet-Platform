@@ -209,6 +209,29 @@ async function runImport(
   mysqlUrl: string,
   postgresUrl: string,
   /**
+   * The dump this run was AUTHORISED to import, or null for a run that needs no
+   * authorisation.
+   *
+   * The APPLY gate hashes the file, finds a dry run that proved those bytes,
+   * and then hands the request on. Between those two moments the file can
+   * change — an upload, an SCP, a second admin — and the gate would have proved
+   * a dump that is no longer the one about to be loaded. CodeRabbit found this
+   * on PR #48 and asked for a lock shared by the upload route and the run
+   * route.
+   *
+   * This is stronger than that lock and smaller than it. A reservation can only
+   * exclude the writers that agree to take it, and the dump directory has a
+   * writer that never will: `scp`, which is how every dump arrived before the
+   * panel could upload one and how they will keep arriving. So the check is not
+   * «did anybody else hold the door», it is «are these the bytes I was allowed
+   * to import», asked of the file that was actually read, after it was read.
+   * Nothing can pass that by winning a race.
+   *
+   * Passed through to `loadDump`, which owns the one definition of dump
+   * identity and refuses before a byte reaches the scratch database.
+   */
+  expectSha: string | null,
+  /**
    * Where the report accumulates.
    *
    * Owned by the caller rather than created here, which is the whole of the
@@ -230,7 +253,9 @@ async function runImport(
   let my: Awaited<ReturnType<typeof connectMysql>> | null = null;
   let pgc: Awaited<ReturnType<typeof connectPostgres>> | null = null;
   try {
-    const loaded = await loadDump(cfg, dumpPath);
+    // The digest the gate approved goes with it: `loadDump` refuses the file
+    // before anything reaches MySQL if the bytes are not the ones proven.
+    const loaded = await loadDump(cfg, dumpPath, expectSha ?? undefined);
     const dump = { sha256: loaded.sha256, bytes: loaded.bytes };
     my = await connectMysql(cfg);
     pgc = await connectPostgres(cfg);
@@ -353,6 +378,9 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
        * an operator presses APPLY. That is the price of the promise this gate
        * makes, and it is paid on the one request that must not be cheap.
        */
+      // Carried to the run, which re-checks it against the bytes it actually
+      // loaded. See `runImport`'s `expectSha`.
+      let provenSha: string | null = null;
       if (mode === 'APPLY') {
         let sha: string;
         try {
@@ -360,6 +388,7 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
         } catch {
           return c.json({ ok: false, error: 'invalid_file' }, 400);
         }
+        provenSha = sha;
 
         const proven = await c.env.DB.prepare(
           `SELECT id FROM import_runs
@@ -457,7 +486,15 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
         }, PROGRESS_FLUSH_MS);
 
         try {
-          const outcome = await runImport(mode, dumpPath, domains, mysqlUrl, postgresUrl, lines);
+          const outcome = await runImport(
+            mode,
+            dumpPath,
+            domains,
+            mysqlUrl,
+            postgresUrl,
+            provenSha,
+            lines,
+          );
           clearInterval(flush);
           await c.env.DB.prepare(
             `UPDATE import_runs
@@ -591,9 +628,17 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
     let bytes = 0;
     let tooBig = false;
     try {
+      // `wx` — create, and fail if it is already there.
+      //
+      // Two uploads of the same name would otherwise both open `<name>.part`,
+      // interleave their bytes into one file, and the second rename would put
+      // the mixture where a dump belongs. The exclusive create makes that
+      // unrepresentable rather than unlikely: the loser gets EEXIST from the
+      // filesystem, which is one atomic operation and needs no lock of ours.
+      //
       // 0600: the file holds panel passwords and gateway keys in plaintext, and
       // the default umask would have let every account on the box read them.
-      const out = createWriteStream(part, { mode: 0o600 });
+      const out = createWriteStream(part, { flags: 'wx', mode: 0o600 });
       const counted = Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]).map(
         (chunk: Buffer) => {
           bytes += chunk.length;
@@ -608,7 +653,22 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
       if (bytes === 0) throw new Error('empty');
       renameSync(part, target);
     } catch (err) {
-      rmSync(part, { force: true });
+      // EEXIST means another upload of this name owns the .part right now, so
+      // it is emphatically NOT ours to delete — removing it would hand the
+      // other request a stream writing to an unlinked inode and leave nothing
+      // to rename.
+      const busy = (err as NodeJS.ErrnoException).code === 'EEXIST';
+      if (!busy) rmSync(part, { force: true });
+      if (busy) {
+        return c.json(
+          {
+            ok: false,
+            error: 'upload_in_progress',
+            detail: 'همین فایل الان در حال آپلود است؛ تا پایانش صبر کن.',
+          },
+          409,
+        );
+      }
       if (tooBig) {
         return c.json(
           {
