@@ -85,7 +85,9 @@ function message(e: unknown): string {
     if (e.code === 'dry_run_required') {
       return 'اول یک اجرای آزمایشی موفق روی همین فایل لازم است.';
     }
-    if (e.code === 'invalid_file') return 'این فایل قابل ایمپورت نیست.';
+    // The route's own words when it has them: «پسوند .sql یا .sql.gz» tells the
+    // admin what to do next, and 'این فایل قابل ایمپورت نیست' does not.
+    if (e.code === 'invalid_file') return e.detail ?? 'این فایل قابل ایمپورت نیست.';
     // nginx answers 413 itself, with HTML and no `error` field, so this is the
     // one message that has to name a server setting: nothing in the deploy
     // raises `client_max_body_size` and the default is 1 مگابایت.
