@@ -307,6 +307,13 @@ describe('every write route, asked directly', () => {
     // 136 -> 139: recurring costs. A template can be created and edited, and
     // «ثبت» posts one instalment — the third is a write because it puts a row
     // in the books, not because it changes the template.
-    expect(writeRoutes().length).toBe(139);
+    // 139 -> 140: «POST /import/upload». The dump used to arrive over SCP and
+    // the panel only listed it; it can be uploaded now, at Sam's instruction on
+    // 2026-09-01. ADMIN-only like the three run modes beside it, and for a
+    // sharper reason than any of them: this is the one route in the product
+    // that writes an arbitrary file to the server's filesystem. The role is the
+    // first of three guards — `resolveDump` decides the name and `MAX_DUMP_BYTES`
+    // decides how much of it, both asserted in `import.test.ts`.
+    expect(writeRoutes().length).toBe(140);
   });
 });
