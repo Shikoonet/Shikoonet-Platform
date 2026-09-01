@@ -843,6 +843,22 @@ Three lines in that config are load-bearing and none is obvious:
   `new URL(origin).host` on both sides and `URL.host` keeps the port. `$host`
   strips it, and every state-changing request then answers
   `cross_origin_forbidden`.
+- **`client_max_body_size`, since 2026-09-01** — the panel uploads the Mirzabot
+  dump through this proxy («ایمپورت میرزابات» › فایل). nginx defaults to **1 MB**
+  and answers anything larger with a 413 whose body is HTML, so the dashboard
+  never sees the request and the browser has no JSON error to show. The
+  2026-08-11 production dump is 5.84 MB and `MAX_DUMP_BYTES` caps a dump at
+  48 MB, so this is the number that has to be there:
+
+  ```nginx
+  # in the dashboard server block, beside the proxy_set_header lines
+  client_max_body_size 48m;
+  ```
+
+  Nothing in this repository can set it — the config lives on the server. The
+  panel says so in words when it sees a 413 rather than printing a status code,
+  which is the most a client can do about a wall it is on the wrong side of.
+
 - **the upstream in a variable, with `resolver 127.0.0.11`** — `proxy_pass` with
   a literal name resolves once at startup, and every deploy gives the app a new
   container and a new IP.
