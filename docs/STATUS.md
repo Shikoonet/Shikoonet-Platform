@@ -187,9 +187,18 @@ pnpm --filter @shikoo/bot start:local
 در فهرست دیده نمی‌شود.
 
 دو متغیر لازم است: `IMPORT_DIR` و `IMPORT_MYSQL_URL` (یک MySQL یک‌بارمصرف که `loadDump`
-دیتابیسش را هر بار drop و دوباره می‌سازد). **هیچ‌کدام را `deploy.sh` ست نمی‌کند** — تا وقتی
-دستی در Coolify گذاشته نشوند، صفحه ۵۰۳ می‌دهد. و روی nginx جلویی `client_max_body_size 48m`
-لازم است وگرنه هر آپلود با ۴۱۳ می‌میرد (`deploy/README.md` › «The edge»).
+دیتابیسش را هر بار drop و دوباره می‌سازد). **هیچ‌کدام را `deploy.sh` ست نمی‌کند.** روی
+`shikoo-dev` دستی گذاشته شدند (۲۰۲۶-۰۹-۰۱): `IMPORT_DIR=/data/imports` با یک persistent
+storage از `/home/hessamx/shikoo-imports`، و یک MySQL یک‌بارمصرف به اسم `shikoo-import-mysql`
+روی شبکهٔ `coolify`. روی پروداکشن هنوز هیچ‌کدام نیست.
+
+دو تلهٔ سرور که وقت گرفتند: `custom_docker_run_options` با `-v` **بی‌صدا اعمال نمی‌شود** —
+persistent storage باید از `POST /api/v1/applications/<uuid>/storages` با
+`"type":"persistent"` ساخته شود؛ و هر `POST` روی `/envs` **دو ردیف** می‌سازد که دیپلوی بعدی
+را با «defined more than once» رد می‌کند.
+
+لبهٔ این سرور **Traefik** است نه nginx، پس `client_max_body_size` این‌جا موضوعیت ندارد —
+آن یادداشت در `deploy/README.md` مال جعبهٔ قبلی است.
 
 **گزارش حین اجرا نوشته می‌شود، نه فقط در پایان.** هر ۱٫۵ ثانیه `import_runs.report` به‌روز
 می‌شود و پولِ یک‌ثانیه‌ای مرورگر همان را نشان می‌دهد؛ به‌علاوهٔ عنوان تب و یک Notification روی

@@ -389,6 +389,30 @@ describe('putting a dump there from the browser', () => {
     rmSync(part, { force: true });
   });
 
+  /**
+   * A directory that `IMPORT_DIR` names and nothing created.
+   *
+   * The staging box was in exactly this state on 2026-09-01: the variable set,
+   * the path absent, and the panel answering a 503 whose only cure was a second
+   * ops step nobody had written down. Asserted through the LIST route, because
+   * that is the one an admin meets first.
+   */
+  it('creates the directory rather than refusing because it is missing', async () => {
+    const fresh = join(importDir, 'not-made-yet');
+    expect(existsSync(fresh)).toBe(false);
+
+    const res = await app.request(
+      '/api/v1/admin/import/files',
+      {},
+      { ...baseEnv, TEST_ACCESS_USER: ADMIN, IMPORT_DIR: fresh },
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, items: [] });
+    expect(existsSync(fresh)).toBe(true);
+    rmSync(fresh, { recursive: true, force: true });
+  });
+
   it('refuses while an import is in flight', async () => {
     await baseEnv.DB.prepare(
       `INSERT INTO import_runs (id, mode, status, dump_path, domains, started_by)
