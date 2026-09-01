@@ -22,7 +22,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
 import { ExpensesPage } from '../src/pages/ExpensesPage.js';
 import type { ExpenseCategory, ExpenseRecurrence, RevenueAdjustmentRow } from '../src/api.js';
@@ -31,6 +31,15 @@ const CATEGORIES: ExpenseCategory[] = [
   { id: 3, name: 'سرور و زیرساخت', active: true, sortOrder: 30, rowCount: 11 },
   { id: 1, name: 'تبلیغات', active: true, sortOrder: 10, rowCount: 22 },
 ];
+
+/**
+ * A row whose Rial figure is NOT a multiple of ten.
+ *
+ * The old panel wrote whatever it wrote and the importer carries it, so this is
+ * an ordinary imported row rather than a contrived one — `expenses.spec.ts`
+ * seeds the same −1,999,995 for the same reason.
+ */
+const ODD_IRR = -1_999_995;
 
 const ROWS: RevenueAdjustmentRow[] = [
   {
@@ -53,6 +62,29 @@ const ROWS: RevenueAdjustmentRow[] = [
     originalAmount: null,
     fxRateIrr: null,
     recurrenceId: null,
+  },
+  {
+    ...{
+      id: 502,
+      amountIrr: ODD_IRR,
+      note: 'ردیف واردشده با رقم فرد',
+      kind: 'EXPENSE' as const,
+      categoryId: null,
+      categoryName: null,
+      spentOn: '2026-08-21',
+      createdBy: '7137494513',
+      createdAt: '2026-08-21T09:00:00Z',
+      voidedAt: null,
+      voidedBy: null,
+      voidReason: null,
+      editCount: 0,
+      lastEditedAt: null,
+      lastEditedBy: null,
+      currency: 'IRR' as const,
+      originalAmount: null,
+      fxRateIrr: null,
+      recurrenceId: null,
+    },
   },
 ];
 
@@ -83,6 +115,10 @@ const revenueAdjustments = vi.fn(async (_p?: unknown) => ({
 const expenseCategories = vi.fn(async () => ({ ok: true, items: CATEGORIES }));
 const RECURRENCES: ExpenseRecurrence[] = [];
 const expenseRecurrences = vi.fn(async () => ({ ok: true, items: RECURRENCES }));
+const editRevenueAdjustment = vi.fn(async (_id: number, _body: unknown) => ({
+  ok: true,
+  changed: true,
+}));
 
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
@@ -95,6 +131,7 @@ vi.mock('../src/api.js', async () => {
       expenseCategories: () => expenseCategories(),
       expenseRecurrences: () => expenseRecurrences(),
       revenueAdjustmentsCsvUrl: () => '/api/v1/admin/revenue-adjustments/export.csv',
+      editRevenueAdjustment: (id: number, body: unknown) => editRevenueAdjustment(id, body),
     },
   };
 });
@@ -110,6 +147,7 @@ beforeEach(() => {
   revenueAdjustments.mockClear();
   expenseCategories.mockClear();
   expenseRecurrences.mockClear();
+  editRevenueAdjustment.mockClear();
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -133,7 +171,10 @@ describe('where a form opens', () => {
     draw();
     await screen.findByText('شارژ آروان');
 
-    fireEvent.click(screen.getByRole('button', { name: 'ویرایش' }));
+    // Scoped to one row: the fixture holds two, and «کدام ردیف» is not what
+    // this test is about.
+    const row = screen.getByText('شارژ آروان').closest('tr')!;
+    fireEvent.click(within(row).getByRole('button', { name: 'ویرایش' }));
     const form = await screen.findByText('ویرایش ردیف', { selector: '.card__title' });
 
     // Pressed from a row far down the table, and it still arrives at the top.
@@ -191,5 +232,74 @@ describe('where the totals come from', () => {
     expect(revenueAdjustments).toHaveBeenLastCalledWith(
       expect.objectContaining({ kind: 'EXPENSE' }),
     );
+  });
+});
+
+
+/**
+ * An imported row whose Rial amount is not a multiple of ten.
+ *
+ * CodeRabbit found this on PR #42 and it was real. The form divided IRR by ten
+ * for display, giving «199999.5», and the parser then deleted every non-digit
+ * — including the point — so an operator who opened the form to fix a
+ * description and pressed «ذخیره» wrote 1,999,995 Toman: **ten times the
+ * amount**, past a validator that saw a perfectly good integer.
+ *
+ * The fix is not a round on load, which would rewrite the row by up to nine
+ * Rial every time somebody looked at it. It is that an amount nobody restated
+ * is never sent at all.
+ */
+describe('an amount the operator did not touch', () => {
+  const openEditor = async (note: string) => {
+    draw();
+    await screen.findByText(note);
+    const row = screen.getByText(note).closest('tr')!;
+    fireEvent.click(within(row).getByRole('button', { name: 'ویرایش' }));
+    return screen.findByText('ویرایش ردیف', { selector: '.card__title' });
+  };
+
+  it('shows the exact Toman figure, fraction and all', async () => {
+    await openEditor('ردیف واردشده با رقم فرد');
+    // Not «۲۰۰٬۰۰۰» and not «199999»: what the row actually holds.
+    expect((screen.getByLabelText('مبلغ (تومان)') as HTMLInputElement).value).toBe('199999.5');
+  });
+
+  it('sends no amount at all when only the description changed', async () => {
+    await openEditor('ردیف واردشده با رقم فرد');
+
+    fireEvent.change(screen.getByLabelText('شرح'), { target: { value: 'شرح تازه' } });
+    fireEvent.click(screen.getByRole('button', { name: 'ذخیره' }));
+
+    await waitFor(() => expect(editRevenueAdjustment).toHaveBeenCalled());
+    const [, body] = editRevenueAdjustment.mock.calls[0]!;
+    expect((body as { note: string }).note).toBe('شرح تازه');
+    // The whole fix in one assertion. With `amountToman` present the route
+    // treats it as a restatement, and −1,999,995 becomes −19,999,950.
+    expect(body).not.toHaveProperty('amountToman');
+    expect(body).not.toHaveProperty('currency');
+  });
+
+  it('does send the amount once somebody restates it', async () => {
+    await openEditor('ردیف واردشده با رقم فرد');
+
+    fireEvent.change(screen.getByLabelText('مبلغ (تومان)'), { target: { value: '250000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'ذخیره' }));
+
+    await waitFor(() => expect(editRevenueAdjustment).toHaveBeenCalled());
+    const [, body] = editRevenueAdjustment.mock.calls[0]!;
+    expect((body as { amountToman: number }).amountToman).toBe(250_000);
+  });
+
+  it('refuses to save a restated amount that is still fractional', async () => {
+    await openEditor('ردیف واردشده با رقم فرد');
+
+    // Typing a digit onto the fraction restates it — and «1999999.5» Toman is
+    // not a figure this ledger can hold, so it is refused rather than silently
+    // multiplied.
+    fireEvent.change(screen.getByLabelText('مبلغ (تومان)'), { target: { value: '199999.7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'ذخیره' }));
+
+    await waitFor(() => expect(screen.getByText(/رقم اعشاری/)).toBeTruthy());
+    expect(editRevenueAdjustment).not.toHaveBeenCalled();
   });
 });

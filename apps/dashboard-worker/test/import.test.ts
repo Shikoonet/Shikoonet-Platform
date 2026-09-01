@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
+import { dumpSha256 } from '@shikoo/migrate';
 import { resolveDump, listDumps } from '../src/importRoutes.js';
 
 const ADMIN = 'admin-import@example.com';
@@ -176,6 +177,103 @@ describe('refusing before anything runs', () => {
     );
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toBe('dry_run_required');
+  });
+});
+
+/**
+ * What the APPLY gate actually promises.
+ *
+ * «A dry run of this file passed» was the whole check until 2026-09-01, and
+ * CodeRabbit found two ordinary cutover moves that walked through it on PR #42.
+ * Neither is an attack — both are what an operator does on the day:
+ *
+ *   * refresh the dump by copying a newer file over the same name, and
+ *   * dry-run one part of the migration, then tick another box before applying.
+ *
+ * The proving row is written directly here rather than by running a dry run: a
+ * real one needs a MySQL, and what is under test is the GATE, not the
+ * migration. The values written are the ones a real run records — the SHA of the
+ * decompressed SQL, and the normalised domain array.
+ */
+describe('what the APPLY gate proves', () => {
+  const MYSQL = { IMPORT_MYSQL_URL: 'mysql://root:x@127.0.0.1:3307' };
+  const FILE = 'gate-target.sql';
+
+  /** A successful dry run, as the row a real one would have left. */
+  async function provingRun(sha: string, domains: string[]) {
+    await baseEnv.DB.prepare(
+      `INSERT INTO import_runs
+         (id, mode, status, dump_path, domains, started_by, started_at, finished_at, dump_sha256)
+       VALUES (?1, 'DRY_RUN', 'SUCCEEDED', ?2, ?3::jsonb, ?4, now(), now(), ?5)`,
+    )
+      .bind(crypto.randomUUID(), join(importDir, FILE), JSON.stringify(domains), ADMIN, sha)
+      .run();
+  }
+
+  const apply = (domains?: string[]) =>
+    post(
+      '/api/v1/admin/import/apply',
+      domains ? { file: FILE, domains } : { file: FILE },
+      envAs(ADMIN, MYSQL),
+    );
+
+  const write = (sql: string) => {
+    writeFileSync(join(importDir, FILE), sql);
+    return dumpSha256(join(importDir, FILE));
+  };
+
+  it('accepts an APPLY whose file and domains were both proven', async () => {
+    const sha = write('CREATE TABLE gate (a int);');
+    await provingRun(sha, ['core', 'catalog']);
+
+    // Past the gate. It stops at the MySQL that is not there, which is a
+    // different failure and the one that proves the gate let it through.
+    const res = await apply(['core', 'catalog']);
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts an APPLY narrower than the dry run that proved it', async () => {
+    const sha = write('CREATE TABLE gate (a int);');
+    await provingRun(sha, ['core', 'catalog', 'sales']);
+
+    // Proving MORE than you apply is the useful direction: everything being
+    // applied was exercised.
+    expect((await apply(['core'])).status).toBe(200);
+  });
+
+  it('refuses an APPLY of a domain the dry run never exercised', async () => {
+    const sha = write('CREATE TABLE gate (a int);');
+    await provingRun(sha, ['catalog']);
+
+    // The transforms for `sales` have never run against this dump, and this
+    // APPLY commits for real. Before the fix this was a 200.
+    const res = await apply(['catalog', 'sales']);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe('dry_run_required');
+  });
+
+  it('refuses an APPLY after the file under the same name changed', async () => {
+    const sha = write('CREATE TABLE gate (a int);');
+    await provingRun(sha, ['core']);
+
+    // The normal way a dump is refreshed during a cutover: same name, new
+    // contents. The proof belongs to the file that is gone.
+    const fresh = write('CREATE TABLE gate (a int, b int);');
+    expect(fresh).not.toBe(sha);
+
+    const res = await apply(['core']);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe('dry_run_required');
+  });
+
+  it('does not care in which order the domains were written', async () => {
+    const sha = write('CREATE TABLE gate (a int);');
+    await provingRun(sha, ['catalog', 'core']);
+
+    // `['core','catalog']` and `['catalog','core']` are one import. The route
+    // sorts before storing and before comparing, so neither reads as a
+    // different proof from the other.
+    expect((await apply(['core', 'catalog'])).status).toBe(200);
   });
 });
 

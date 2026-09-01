@@ -81,11 +81,27 @@ const COUNT_PAIRS: [Domain, string, string, string, string?, string?][] = [
   // The same source as the row above, and that is the point: one invoice is one
   // sale and one service, and a difference between these two lines is a
   // purchase that reached the customer's account without reaching the books.
+  // The two invoices `migrateInvoiceOrders` refuses to turn into an order, so a
+  // legitimate skip does not read as a lost sale. Its sibling `add-on orders`
+  // has carried the deleted-user half since it was written; this line did not,
+  // and CodeRabbit caught the inconsistency on PR #42.
+  //
+  // Zero on the 2026-08-11 dump — measured, not assumed — so nothing here moves
+  // today. It matters the first time a customer is deleted, which is exactly
+  // why `wheel spins`, `reseller requests` and `add-on orders` all needed it.
+  //
+  // `time_sell` empty is the second half: `orders.created_at` is NOT NULL and
+  // an invoice with no sale time has nothing honest to put in it. NULL and ''
+  // only — any other unparseable value throws rather than skipping, so widening
+  // this predicate would excuse a failure the import is supposed to raise.
   [
     'sales',
     'purchase orders',
     'SELECT COUNT(*) FROM invoice',
     "SELECT COUNT(*) FROM orders WHERE legacy_ref LIKE 'invoice:%'",
+    `SELECT COUNT(*) FROM invoice i LEFT JOIN user u ON u.id = i.id_user
+      WHERE u.id IS NULL OR i.time_sell IS NULL OR i.time_sell = ''`,
+    'invoices with a deleted user or no sale time',
   ],
   ['sales', 'payments', 'SELECT COUNT(*) FROM Payment_report', 'SELECT COUNT(*) FROM payments'],
   [
@@ -294,6 +310,20 @@ export async function verify(
     name: 'purchase orders (IRR)',
     source: (await scalar(my, 'SELECT SUM(CAST(price_product AS SIGNED)) FROM invoice')) * 10n,
     target: (await pgScalar(pgc, TARGET_SQL['purchase orders (IRR)']!)) - (baseline['purchase orders (IRR)'] ?? 0n),
+    // The money side of the same two skips. Without it, the day one invoice is
+    // skipped this check reports the shop as having lost that sale on import —
+    // and `verify.ts` compares to the Rial, so it would be a hard red on a
+    // correct migration.
+    allowance: {
+      rows:
+        (await scalar(
+          my,
+          `SELECT COALESCE(SUM(CAST(i.price_product AS SIGNED)),0) FROM invoice i
+           LEFT JOIN user u ON u.id = i.id_user
+           WHERE u.id IS NULL OR i.time_sell IS NULL OR i.time_sell = ''`,
+        )) * 10n,
+      reason: 'invoices with a deleted user or no sale time',
+    },
   });
 
   if (want('history')) money.push({

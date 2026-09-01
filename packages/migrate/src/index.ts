@@ -20,7 +20,7 @@ export {
   type Config,
   type ReportLine,
 } from './db.js';
-export { loadDump, type LoadedDump } from './load.js';
+export { dumpSha256, loadDump, readDump, type LoadedDump } from './load.js';
 export {
   migrate,
   DOMAINS,

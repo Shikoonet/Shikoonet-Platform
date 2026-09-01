@@ -136,11 +136,34 @@ const FIELD_FA: Record<string, string> = {
   fx_rate_irr: 'نرخ ارز',
 };
 
-/** Digits only, so a pasted «۱٬۲۰۰٬۰۰۰» or «1,200,000» is still a number. */
+/**
+ * Digits only, so a pasted «۱٬۲۰۰٬۰۰۰» or «1,200,000» is still a number.
+ *
+ * ONLY FOR FIELDS THAT CANNOT CARRY A FRACTION. Stripping a decimal point does
+ * not round, it shifts: «199999.5» becomes 1999995, which is ten times the
+ * amount. That was a live bug on the edit form until 2026-09-01 — see
+ * `tomanField` below.
+ */
 const digits = (v: string) => Number(v.replace(/[^\d]/g, ''));
 
 /** The same, but a decimal point survives — a foreign invoice says 35.5. */
 const decimal = (v: string) => Number(v.replace(/[^\d.]/g, ''));
+
+/**
+ * A Toman amount typed into a box, which may legitimately have a fraction.
+ *
+ * A legacy row is stored in Rial and need not be a multiple of ten — the
+ * import carries whatever the old panel wrote, and `expenses.spec.ts` seeds
+ * −1,999,995 for exactly this reason. Divided for display that is «199999.5»,
+ * and a parser that deletes the point reads it as 1,999,995 Toman: **ten times
+ * the amount, on a form the operator never touched.**
+ *
+ * Separators are stripped, the point is kept, and the caller decides what to do
+ * with a fraction. Nothing here rounds — rounding on load would quietly rewrite
+ * a row by up to nine Rial every time somebody opened it to fix a typo in the
+ * description.
+ */
+const tomanField = (v: string) => Number(v.replace(/[^\d.]/g, ''));
 
 /**
  * Who wrote a row, in words.
@@ -1374,15 +1397,26 @@ function EntryForm({
   // A recurring cost is always spending, and its category is the template's.
   const [kind, setKind] = useState<LedgerKind>(recurrence ? 'EXPENSE' : (row?.kind ?? 'EXPENSE'));
   const [currency, setCurrency] = useState<Currency>(row?.currency ?? 'IRR');
-  const [amount, setAmount] = useState(
-    row
-      ? String(Math.abs(row.amountIrr) / 10)
-      : recurrence
-        ? String(recurrence.amountIrr / 10)
-        : '',
-  );
-  const [foreign, setForeign] = useState(row?.originalAmount == null ? '' : String(row.originalAmount));
-  const [rate, setRate] = useState(row?.fxRateIrr == null ? '' : String(row.fxRateIrr / 10));
+  /**
+   * The amount as it stands, exactly — fraction and all.
+   *
+   * Not rounded on load. A row imported from the old panel can hold a Rial
+   * figure that is not a multiple of ten, and rounding here would rewrite it by
+   * up to nine Rial the first time anybody opened the form to fix a
+   * description. What stops the round-trip from moving money is `moneyTouched`
+   * below, not a round.
+   */
+  const initialAmount = row
+    ? String(Math.abs(row.amountIrr) / 10)
+    : recurrence
+      ? String(recurrence.amountIrr / 10)
+      : '';
+  const initialForeign = row?.originalAmount == null ? '' : String(row.originalAmount);
+  const initialRate = row?.fxRateIrr == null ? '' : String(row.fxRateIrr / 10);
+
+  const [amount, setAmount] = useState(initialAmount);
+  const [foreign, setForeign] = useState(initialForeign);
+  const [rate, setRate] = useState(initialRate);
   const [direction, setDirection] = useState<'expense' | 'credit'>(
     row && row.amountIrr > 0 ? 'credit' : 'expense',
   );
@@ -1410,6 +1444,23 @@ function EntryForm({
   const originalAmount = decimal(foreign);
   const fxRateToman = digits(rate);
   /**
+   * Whether the operator restated the amount, rather than merely opened the form.
+   *
+   * This is what makes an odd Rial figure safe. An edit that changes only the
+   * description sends NO money fields at all, and the route keeps the magnitude
+   * it already had — so −1,999,995 stays −1,999,995 instead of being rounded
+   * into −2,000,000 or, worse, multiplied by ten.
+   *
+   * Compared as strings on purpose: the question is «did somebody type in this
+   * box», and a numeric comparison would call «۱٬۹۹۹٬۹۹۵» and «1999995» a
+   * change when the operator did nothing.
+   */
+  const moneyTouched =
+    currency !== (row?.currency ?? 'IRR') ||
+    amount !== initialAmount ||
+    foreign !== initialForeign ||
+    rate !== initialRate;
+  /**
    * The Toman figure, derived the same way the server derives it.
    *
    * A preview only — the request carries the invoice and the rate, never this,
@@ -1418,7 +1469,7 @@ function EntryForm({
    * would still be right, which is the correct way round.
    */
   const amountToman =
-    currency === 'IRR' ? digits(amount) : Math.round(originalAmount * fxRateToman);
+    currency === 'IRR' ? tomanField(amount) : Math.round(originalAmount * fxRateToman);
   const previewIrr =
     kind === 'EXPENSE' || (kind === 'REVENUE_FIX' && direction === 'expense')
       ? -amountToman * 10
@@ -1429,8 +1480,15 @@ function EntryForm({
       onError('برای ارز خارجی هم مبلغ ارزی لازم است هم نرخ روز.');
       return;
     }
-    if (!Number.isInteger(amountToman) || amountToman <= 0) {
-      onError('مبلغ درست نیست.');
+    // Checked only when it is going to be SENT. An untouched form carrying an
+    // imported row's fraction is not an error — it is the reason nothing is
+    // sent.
+    if ((moneyTouched || !row) && (!Number.isInteger(amountToman) || amountToman <= 0)) {
+      onError(
+        Number.isInteger(amountToman)
+          ? 'مبلغ درست نیست.'
+          : 'مبلغ باید عدد درست باشد — این ردیف رقم اعشاری دارد و باید کامل بازنویسی شود.',
+      );
       return;
     }
     if (!note.trim()) {
@@ -1459,8 +1517,7 @@ function EntryForm({
         return;
       }
 
-      const body = {
-        ...money,
+      const rest = {
         kind,
         direction,
         categoryId: kind === 'EXPENSE' ? (categoryId === '' ? null : categoryId) : null,
@@ -1469,12 +1526,16 @@ function EntryForm({
       };
       if (row) {
         const res = await api.editRevenueAdjustment(row.id, {
-          ...body,
+          ...rest,
+          // The money goes ONLY if somebody restated it. `EditBody` reads any
+          // money field as a whole restatement, so sending an untouched amount
+          // is exactly how an imported row's odd Rial figure would be rewritten.
+          ...(moneyTouched ? money : {}),
           ...(reason.trim() ? { reason: reason.trim() } : {}),
         });
         await onSaved(res.changed ? 'ویرایش شد — و در تاریخچه ماند.' : 'چیزی عوض نشده بود.');
       } else {
-        await api.addRevenueAdjustment(body);
+        await api.addRevenueAdjustment({ ...rest, ...money });
         await onSaved('ثبت شد.');
       }
     } catch (e) {
