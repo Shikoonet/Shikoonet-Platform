@@ -574,7 +574,13 @@ export function ImportPage() {
               <button
                 className="btn btn-danger"
                 onClick={() => void start('APPLY')}
-                disabled={busy || running || uploading}
+                // `proven` again, not just on the button that opened this.
+                // The picker stays live while the confirmation is showing, so a
+                // file chosen after «اعمال نهایی» was pressed could leave a
+                // «بله، بنویس» armed for an import no dry run has proved. The
+                // server refuses it either way; an enabled button that cannot
+                // work is still a lie.
+                disabled={busy || running || uploading || !proven}
                 {...w}
               >
                 بله، بنویس
