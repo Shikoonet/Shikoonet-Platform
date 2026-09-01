@@ -219,6 +219,54 @@ expect 'admin-web and bot together' "$out" e2e true
 out=$(plan pull_request false $'apps/admin-web/src/a.tsx\npackages/contracts/src/x.ts')
 expect_everything 'one shared package among app work' "$out"
 
+section 'H2. a pull request too big to pass in the environment'
+#
+# Linux caps ONE environment string at 128 KB (MAX_ARG_STRLEN). PR #39 changed
+# 3,000 files — a 217 KB list — and passing that in `CHANGED_FILES` made `bash`
+# fail with «Argument list too long» before `ci-plan.sh` ran a single line. It
+# failed closed, but the pull request could not be classified at all, so
+# `ci.yml` hands over a PATH and this is the case that pins it.
+BIG="$WORK/big-changed.txt"
+: >"$BIG"
+for i in $(seq 1 3000); do
+  printf 'apps/dashboard-worker/src/some/quite/deeply/nested/generated/module-%s.ts\n' "$i" >>"$BIG"
+done
+big_bytes=$(wc -c <"$BIG")
+if [ "$big_bytes" -gt 131072 ]; then
+  ok "the probe list is ${big_bytes} bytes — past the 128 KB environment limit"
+else
+  bad 'the probe list must exceed 128 KB to prove anything' "${big_bytes} bytes"
+fi
+
+out=$(EVENT=pull_request IS_DRAFT=false CHANGED_FILES_FILE="$BIG" bash "$PLAN") || out=''
+if [ -n "$out" ]; then
+  ok 'a 3,000-file pull request is classified rather than refused'
+  expect 'a 3,000-file dashboard-worker change' "$out" mode apps
+  expect 'a 3,000-file dashboard-worker change' "$out" db true
+else
+  bad 'a 3,000-file pull request must still classify' 'the script produced nothing'
+fi
+
+# And the same list through the environment still breaks, which is WHY the file
+# exists. If this ever starts working the file path is no longer load-bearing,
+# and somebody should know before deleting it.
+if CHANGED_FILES=$(cat "$BIG") EVENT=pull_request IS_DRAFT=false bash "$PLAN" >/dev/null 2>&1; then
+  ok 'note: the environment now takes this list too (limit raised?)'
+else
+  ok 'the same list through the environment still fails — the file path is load-bearing'
+fi
+
+# An unreadable file is UNKNOWN, which runs everything: the one rule, applied
+# to the selector's own input.
+out=$(EVENT=pull_request IS_DRAFT=false CHANGED_FILES_FILE="$WORK/does-not-exist" bash "$PLAN")
+expect_everything 'an unreadable changed-file list' "$out"
+expect 'an unreadable changed-file list' "$out" mode full
+
+# The file wins over the environment, so a stale env var cannot mask it.
+out=$(EVENT=pull_request IS_DRAFT=false CHANGED_FILES='docs/README.md' \
+  CHANGED_FILES_FILE=<(printf 'packages/domain/src/money.ts\n') bash "$PLAN")
+expect_everything 'the file wins over a stale CHANGED_FILES' "$out"
+
 section 'I. selection must be capable of saying no'
 # If every branch selected everything, sections H would pass for the wrong
 # reason and this file would be proving nothing.
