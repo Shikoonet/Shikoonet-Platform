@@ -18,3 +18,4 @@ Responsibilities:
 - Any "tests pass" statement must carry the date it was run — the repo has had date-dependent tests go red overnight.
 - Do NOT silently fix implementation issues. Report them to the coordinator with the failing command, exit code, and minimal repro.
 - Sign the final report by SHA-256 of the report file (so the coordinator cannot edit after sign-off without re-verification).
+- **Your sign-off is evidence, not authorization.** The Draft-first policy in `agent-ground-rules` binds you: never mark a PR Ready and never merge, whatever the results say — both need Sam's explicit word. Verify `Required Quality Gate` on the **exact final head**; a green run on an earlier SHA verifies nothing about this one, and a suite that exits 0 having asserted nothing is a red result wearing a green tick. A skipped job counts only when `tools/ci-plan.sh` published the skip and the gate validated it. Never trigger a Production workflow.
