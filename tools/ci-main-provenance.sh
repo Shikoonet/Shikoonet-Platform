@@ -92,20 +92,52 @@ API=${GITHUB_API:-https://api.github.com}
 BRANCH=${BRANCH:-main}
 REQUIRED_JOB=${REQUIRED_JOB:-Required Quality Gate}
 
-# The suites whose green is what «the complete suite passed» actually means.
-# A Fast-mode run has every one of these `skipped`, which is exactly what this
-# list exists to refuse. NOT included: `deploy-suites`, which is legitimately
-# path-gated away on an `apps/`-only change, and `image`, which is a `main`
-# job and never runs on a pull request.
-REQUIRED_SUITES=${REQUIRED_SUITES:-'["unit","db-shard (hub)","db-shard (services)","migrations","e2e","static"]'}
+# The jobs whose green is what «the complete gate passed» actually means.
+#
+# Since 2026-09-01 the gate SELECTS: a pull request confined to `apps/` runs
+# only the executors that own a suite which could observe it. So this list can
+# no longer be a constant — a bot-only pull request legitimately never runs
+# `integration-e2e`, and demanding it would make every selected run unprovable.
+#
+# It is therefore RE-DERIVED, below, from two things a contributor cannot
+# write: GitHub's own list of the files the pull request changed, and THIS
+# checkout's copy of `tools/ci-plan.sh` — which is `main`'s copy, because this
+# script only ever runs on a `main` checkout. The plan the branch published is
+# never read.
+#
+# That is safe because of condition 6: any pull request that touched `.github/`,
+# `tools/ci-*` or the baseline is refused outright, so a branch cannot change
+# how selection works and then be believed. And it is computed with
+# IS_DRAFT=false, so a run that was green only because it was a DRAFT still
+# fails here — the fail-open this file was corrected for on PR #47.
+# Normally EMPTY, and re-derived below from GitHub's own file list and this
+# checkout's own copy of `tools/ci-plan.sh`. Settable only so the test suite can
+# pin it; nothing in CI sets it.
+REQUIRED_SUITES=${REQUIRED_SUITES:-}
+PLAN_SCRIPT=${PLAN_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-plan.sh}
 
 # Every exit from here on goes through this. `proven` defaults to false and is
 # set to true on exactly one line, at the very bottom.
 PROVEN=false
+
+# WHY the answer is what it is, and it is consulted for exactly one purpose:
+# `none` — GitHub answered, and NO merged pull request claims this sha — is a
+# direct push, which `deploy/approval-gate.sh` condition 1 already refuses to
+# deploy. `tools/ci-plan.sh` turns that one value into a cheap blocked verdict
+# instead of a complete suite nothing could ever ship.
+#
+# It starts at `unknown` and is set to `none` on exactly ONE line, reached only
+# when the API returned 200 AND jq counted zero. Every other outcome — a
+# timeout, a 500, an unparseable body, two claimants, or any later step — leaves
+# it `unknown`, and `unknown` runs the complete fallback. A blocked verdict is
+# cheaper than the suite, so `unknown` is the safe direction and the only
+# default.
+ASSOCIATION=unknown
 finish() {
-  echo "[provenance] proven=${PROVEN}"
+  echo "[provenance] proven=${PROVEN} association=${ASSOCIATION}"
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     printf 'proven=%s\n' "$PROVEN" >>"$GITHUB_OUTPUT"
+    printf 'association=%s\n' "$ASSOCIATION" >>"$GITHUB_OUTPUT"
   fi
   exit 0
 }
@@ -159,6 +191,13 @@ matches=$(printf '%s' "$gh_body" | jq -c --arg sha "$SHA" --arg base "$BRANCH" '
   end') || no 'could not parse the pull request list'
 
 count=$(printf '%s' "$matches" | jq -r 'length') || no 'could not count the matching pull requests'
+# Zero claimants, from an API call that succeeded and a body that parsed: a
+# direct push. Two or more is an ambiguous association, which is NOT a direct
+# push and stays `unknown` — somebody merged something, and which PR vouches
+# for this tree has no reviewable answer.
+if [ "$count" = '0' ]; then
+  ASSOCIATION=none
+fi
 [ "$count" = '1' ] ||
   no "${SHA:0:12} is claimed by ${count} merged pull request(s) into ${BRANCH}, not exactly one"
 
@@ -169,6 +208,56 @@ if [ -z "$PR_NUMBER" ] || [ -z "$PR_HEAD" ]; then
 fi
 [[ $PR_HEAD =~ ^[0-9a-f]{40}$ ]] || no "PR #${PR_NUMBER} reported a malformed head sha"
 say "PR #${PR_NUMBER}, final head ${PR_HEAD:0:12}"
+
+# ─────────────── 1b. which executors SHOULD have run on this pull request
+if [ -z "$REQUIRED_SUITES" ]; then
+  gh "/pulls/${PR_NUMBER}/files?per_page=100" ||
+    no "could not list the files PR #${PR_NUMBER} changed"
+
+  file_count=$(printf '%s' "$gh_body" | jq -r 'if type == "array" then length else -1 end') ||
+    no 'could not parse the changed-file list'
+  if [ "$file_count" -lt 0 ]; then
+    no 'the changed-file list did not come back as an array'
+  fi
+
+  # One page, and one page only. A pull request with 100 files might have 101,
+  # and a truncated list would classify as something smaller than the truth.
+  # `UNKNOWN` is what `ci-plan.sh` turns into «run everything», which is the
+  # direction this has to fall in.
+  if [ "$file_count" -ge 100 ]; then
+    say "PR #${PR_NUMBER} changed ${file_count}+ files — more than one page, classifying as UNKNOWN"
+    PR_FILES=UNKNOWN
+  else
+    PR_FILES=$(printf '%s' "$gh_body" | jq -r '.[].filename') ||
+      no 'could not read the changed-file names'
+    [ -n "$PR_FILES" ] || PR_FILES=UNKNOWN
+  fi
+
+  [ -r "$PLAN_SCRIPT" ] || no "cannot read the plan script at ${PLAN_SCRIPT}"
+  plan_out=$(EVENT=pull_request IS_DRAFT=false CHANGED_FILES="$PR_FILES" bash "$PLAN_SCRIPT") ||
+    no 'the plan script would not run'
+
+  plan_field() { printf '%s\n' "$plan_out" | awk -F= -v k="$1" '$1 == k { print $2 }'; }
+  want_db=$(plan_field db)
+  want_e2e=$(plan_field e2e)
+  want_deploy=$(plan_field deploy_suites)
+
+  # `checks` is not conditional: every pull request runs it, so it is always
+  # required. The two integration executors are required exactly when the plan
+  # says their contents were selected. An unreadable field is empty, which is
+  # not 'false', so it is treated as required — the fail-closed direction.
+  suites='["checks"]'
+  if [ "$want_db" != 'false' ]; then
+    suites=$(printf '%s' "$suites" | jq -c '. + ["integration-db"]') ||
+      no 'could not build the required-suite list'
+  fi
+  if [ "$want_e2e" != 'false' ] || [ "$want_deploy" != 'false' ]; then
+    suites=$(printf '%s' "$suites" | jq -c '. + ["integration-e2e"]') ||
+      no 'could not build the required-suite list'
+  fi
+  REQUIRED_SUITES=$suites
+  say "PR #${PR_NUMBER} required: $(printf '%s' "$REQUIRED_SUITES" | jq -r 'join(", ")')"
+fi
 
 # ──────────────────────── 2. the gate passed on that head, as a pull_request
 #
