@@ -105,6 +105,27 @@ field() { # output  key
 
 printf '\nthe app map against the workspace dependency graph\n'
 
+# Captured into a variable BEFORE the loop, and checked, because bash discards
+# the exit status of a command substitution used as a redirection word: feeding
+# the loop straight from `$(closure)` swallowed a `node` failure whole.
+# `set -Eeuo pipefail` does not see it, the loop then iterates zero times, and
+# this file exited 0 having asserted nothing — a green tick over a check that
+# never ran, which is the one thing this repository's CI exists to refuse.
+#
+# Confirmed by stubbing `node` to exit 1: the old shape printed «2 passed, 0
+# failed» and exited 0, losing all sixteen graph assertions. Section D below
+# executes that same stub and requires a non-zero exit.
+if ! CLOSURE=$(closure); then
+  bad 'the dependency closure' 'the generator exited non-zero — node failed, or the workspace could not be read'
+  printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+if [ -z "${CLOSURE//[[:space:]]/}" ]; then
+  bad 'the dependency closure' 'the generator produced no rows — there is nothing to check the app map against'
+  printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+
 # Which plan output has to be `true` for each executor to run at all.
 flag_for() { # executor
   case "$1" in
@@ -141,7 +162,7 @@ while read -r app executors; do
         "${flag}=${got}, but a suite in «${executor}» depends on ${app}"
     fi
   done
-done <<<"$(closure)"
+done <<<"$CLOSURE"
 
 # ───────────────────────────────────────── the two edges that are not vitest
 #
@@ -159,7 +180,28 @@ done
 #
 # A suite whose `shard` is a name no plan output steers would be a suite that
 # can never be required — invisible, and green by omission.
+#
+# Its own generator and its own variable — nothing is reused from the closure
+# above, so neither loop can ever run against the other's rows.
+baseline_shards() {
+  node -e '
+const b = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+for (const [d, s] of Object.entries(b.suites)) console.log(d, s.shard);
+' "$ROOT/.github/ci-baseline.json"
+}
+
 printf '\nevery baseline suite belongs to an executor the plan can steer\n'
+if ! SHARDS=$(baseline_shards); then
+  bad 'the baseline shard listing' 'the generator exited non-zero — node failed, or ci-baseline.json could not be parsed'
+  printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+if [ -z "${SHARDS//[[:space:]]/}" ]; then
+  bad 'the baseline shard listing' 'the generator produced no rows — the baseline names no suites'
+  printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+
 while read -r dir executor; do
   [ -n "$dir" ] || continue
   if [ "$(flag_for "$executor")" = 'UNMAPPED' ]; then
@@ -167,10 +209,69 @@ while read -r dir executor; do
   else
     ok "${dir} → ${executor}"
   fi
-done <<<"$(node -e '
-const b = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-for (const [d, s] of Object.entries(b.suites)) console.log(d, s.shard);
-' "$ROOT/.github/ci-baseline.json")"
+done <<<"$SHARDS"
+
+# ────────────────────────── D. this file cannot pass without having checked
+#
+# The check on the check. Every assertion above lives inside a `while` loop fed
+# by a generator, and a generator that dies produces no rows — so the loops run
+# zero times and every `ok` and every `bad` simply never happens. Nothing about
+# that is visible in an exit code.
+#
+# So the counts are asserted, and the two failure modes are EXECUTED: a `node`
+# that exits non-zero, and a generator that succeeds with empty output. Both
+# must make a child run of this file exit non-zero.
+#
+# `SUITE_MAP_CHILD` stops the child runs from recursing into this section.
+printf '\nthe file cannot report success without having checked\n'
+
+EXPECTED_MIN=16
+if [ "$PASS" -ge "$EXPECTED_MIN" ]; then
+  ok "${PASS} assertions actually ran (at least ${EXPECTED_MIN} expected)"
+else
+  bad 'too few assertions ran' \
+    "only ${PASS} — the loops were fed fewer rows than the workspace has, so this file checked almost nothing"
+  FAIL=$((FAIL + 1))
+fi
+
+if [ -n "${SUITE_MAP_CHILD:-}" ]; then
+  printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+  [ "$FAIL" -eq 0 ] || exit 1
+  exit 0
+fi
+
+STUB=$(mktemp -d)
+trap 'rm -rf "$STUB"' EXIT
+
+# 1. node exits non-zero → this file must exit non-zero.
+printf '#!/bin/sh\nexit 1\n' >"$STUB/node"
+chmod +x "$STUB/node"
+if SUITE_MAP_CHILD=1 PATH="$STUB:$PATH" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; then
+  bad 'a broken node must fail this suite' \
+    'it exited 0 — the vacuous pass is back: the loops ran zero times and nothing was asserted'
+else
+  ok 'a node that exits non-zero makes this suite exit non-zero'
+fi
+
+# 2. the generator succeeds but prints nothing → still non-zero.
+printf '#!/bin/sh\nexit 0\n' >"$STUB/node"
+chmod +x "$STUB/node"
+if SUITE_MAP_CHILD=1 PATH="$STUB:$PATH" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; then
+  bad 'an empty closure must fail this suite' \
+    'it exited 0 — a generator that produced no rows was accepted as agreement'
+else
+  ok 'a generator that succeeds with no output makes this suite exit non-zero'
+fi
+
+# 3. and the refusal says WHY, so the log is actionable rather than just red.
+printf '#!/bin/sh\nexit 1\n' >"$STUB/node"
+chmod +x "$STUB/node"
+child_out=$(SUITE_MAP_CHILD=1 PATH="$STUB:$PATH" bash "${BASH_SOURCE[0]}" 2>&1 || true)
+if printf '%s' "$child_out" | grep -q 'the generator exited non-zero'; then
+  ok 'the refusal names the cause'
+else
+  bad 'the refusal must name the cause' "child said: $(printf '%s' "$child_out" | tail -2)"
+fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
