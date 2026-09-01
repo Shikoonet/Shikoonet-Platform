@@ -38,14 +38,57 @@ export interface LoadedDump {
   tables: number;
 }
 
-function readDump(path: string): Buffer {
+/**
+ * The dump as SQL bytes, bounded on the way out as well as on the way in.
+ *
+ * `loadDump` checks `statSync().size`, which for a `.gz` is the COMPRESSED
+ * size — and a 5 MB dump of repetitive SQL expands to hundreds of megabytes.
+ * Without a bound here that whole payload is allocated, converted to a UTF-8
+ * string and handed to MySQL as one packet, so the limit that exists to keep
+ * this loader inside `max_allowed_packet` was enforced against the wrong
+ * number. Found by CodeRabbit on PR #42.
+ *
+ * `maxOutputLength` makes zlib stop rather than us measure afterwards: checking
+ * `.length` after `gunzipSync` would mean the allocation has already happened,
+ * which is the failure being prevented.
+ */
+export function readDump(path: string): Buffer {
   const raw = readFileSync(path);
   if (!path.endsWith('.gz')) return raw;
   // gzip magic, checked rather than trusted to the extension.
   if (raw[0] !== 0x1f || raw[1] !== 0x8b) {
     throw new Error(`${path} ends in .gz but is not gzip data`);
   }
-  return gunzipSync(raw);
+  try {
+    return gunzipSync(raw, { maxOutputLength: MAX_DUMP_BYTES });
+  } catch (err) {
+    // zlib says «Cannot create a Buffer larger than…», which names neither the
+    // file nor what to do. The instruction is the same one the size check gives.
+    if ((err as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new Error(
+        `${path} expands to more than the ${MAX_DUMP_BYTES} bytes this loader accepts. ` +
+          'Raise max_allowed_packet on the scratch MySQL and MAX_DUMP_BYTES together.',
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * The identity of a dump: the SHA-256 of its **decompressed SQL**.
+ *
+ * Exported, and used by `loadDump` below, so there is exactly one definition of
+ * «which dump is this». `apps/dashboard-worker` gates an APPLY on a dry run of
+ * the same dump having succeeded, and it can only do that if it computes the
+ * identity the same way the run recorded it. Two implementations of this hash
+ * would drift the first time one of them decompressed and the other did not,
+ * and the symptom would be a gate that silently stopped gating.
+ *
+ * The SQL and not the file bytes: a dump recompressed at a different level is
+ * the same dump, and a `.sql` and its `.sql.gz` are the same dump too.
+ */
+export function dumpSha256(path: string): string {
+  return createHash('sha256').update(readDump(path).toString('utf8')).digest('hex');
 }
 
 /**
@@ -105,6 +148,8 @@ export async function loadDump(cfg: Config, dumpPath: string): Promise<LoadedDum
     return {
       database,
       bytes: size,
+      // The same expression `dumpSha256` uses, over the same bytes — `sql` is
+      // what `readDump` returned. Kept inline rather than re-reading the file.
       sha256: createHash('sha256').update(sql).digest('hex'),
       tables,
     };

@@ -53,6 +53,7 @@ import {
   verify,
   targetBaseline,
   DOMAINS,
+  dumpSha256,
   PANEL_DEFAULT_DOMAINS,
   type Domain,
   type ReportLine,
@@ -245,7 +246,10 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
 
       const parsed = RunBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
-      const domains = [...(parsed.data.domains ?? PANEL_DEFAULT_DOMAINS)];
+    // Sorted and deduplicated, because this set is not only run — it is
+    // STORED and later COMPARED. `['sales','catalog']` and `['catalog','sales']`
+    // are the same import and must not read as two different proofs.
+    const domains = [...new Set(parsed.data.domains ?? PANEL_DEFAULT_DOMAINS)].sort();
 
       const dir = c.env.IMPORT_DIR ?? process.env['IMPORT_DIR'];
       const mysqlUrl = c.env.IMPORT_MYSQL_URL ?? process.env['IMPORT_MYSQL_URL'];
@@ -269,24 +273,62 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
         return c.json({ ok: false, error: 'invalid_file' }, 400);
       }
 
-      // An APPLY is gated on a dry run of the same file having passed. That is
-      // not ceremony: the dry run IS the real migration measured against the
-      // real constraints, so this is the difference between "we think this
-      // imports" and "this imported, and we threw the result away".
+      /**
+       * An APPLY is gated on a dry run that actually proves THIS import.
+       *
+       * The gate is not ceremony: a dry run IS the real migration measured
+       * against the real constraints, so it is the difference between «we think
+       * this imports» and «this imported, and we threw the result away».
+       *
+       * It matched on `dump_path` and nothing else until 2026-09-01, and
+       * CodeRabbit found both ways through it on PR #42. Both are ordinary
+       * cutover moves, not attacks:
+       *
+       *   * **A refreshed file.** `dump_path` is a name inside `IMPORT_DIR`, not
+       *     content. Copying a newer dump over the same name is how a dump is
+       *     refreshed, and the APPLY then committed a file no dry run had ever
+       *     read. Now the gate compares `dump_sha256` — the identity the run
+       *     itself recorded, computed here by the same `dumpSha256` the loader
+       *     uses, so the two cannot drift.
+       *
+       *   * **A widened scope.** A dry run of `catalog` unlocked an APPLY of
+       *     `sales`, whose transforms had never been exercised. `domains @> …`
+       *     is jsonb containment: every domain being applied must appear in the
+       *     domains that were proven. A dry run of more than you apply still
+       *     counts, which is the useful direction.
+       *
+       * Hashing the file costs one read of at most `MAX_DUMP_BYTES`, once, when
+       * an operator presses APPLY. That is the price of the promise this gate
+       * makes, and it is paid on the one request that must not be cheap.
+       */
       if (mode === 'APPLY') {
+        let sha: string;
+        try {
+          sha = dumpSha256(dumpPath);
+        } catch {
+          return c.json({ ok: false, error: 'invalid_file' }, 400);
+        }
+
         const proven = await c.env.DB.prepare(
           `SELECT id FROM import_runs
-            WHERE mode = 'DRY_RUN' AND status = 'SUCCEEDED' AND dump_path = ?1
+            WHERE mode = 'DRY_RUN' AND status = 'SUCCEEDED'
+              AND dump_sha256 = ?1
+              AND domains @> ?2::jsonb
             ORDER BY started_at DESC LIMIT 1`,
         )
-          .bind(dumpPath)
+          .bind(sha, JSON.stringify(domains))
           .first<{ id: string }>();
         if (!proven) {
+          // One message for both misses on purpose. Telling an operator which
+          // half failed would mean saying «that file changed» or «you widened
+          // the scope», and the answer to either is the same single action.
           return c.json(
             {
               ok: false,
               error: 'dry_run_required',
-              detail: 'اول یک اجرای آزمایشی موفق روی همین فایل لازم است.',
+              detail:
+                'اول یک اجرای آزمایشی موفق روی همین فایل و همین بخش‌ها لازم است. ' +
+                'اگر فایل عوض شده یا بخش تازه‌ای اضافه کرده‌ای، اجرای آزمایشی باید دوباره انجام شود.',
             },
             409,
           );

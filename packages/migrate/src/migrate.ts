@@ -1959,18 +1959,71 @@ export interface MigrateResult {
 }
 
 /** The table a step's samples come from, where a useful one exists. */
-const SAMPLE_TABLE: Record<string, string> = {
-  users: 'users',
-  wallets: 'wallet_entries',
-  settings: 'settings',
-  providers: 'provisioning_providers',
-  'products + plans': 'product_plans',
-  discounts: 'discount_codes',
-  subscriptions: 'subscriptions',
-  payments: 'payments',
-  'orders (service_other)': 'orders',
-  'bank cards (merged)': 'payment_cards',
-  'card leases': 'card_leases',
+/**
+ * The table a step's samples come from, and the columns that may be shown.
+ *
+ * THE COLUMN LIST IS AN ALLOWLIST, AND IT IS NOT DECORATION. These rows do not
+ * stay in a terminal: `importRoutes.ts` writes `result.samples` into
+ * `import_runs.samples` as JSON, where it is kept and rendered in the admin
+ * panel. `SELECT *` therefore copied, into a durable table and onto a screen,
+ * exactly the data `CLAUDE.md` puts first on the list that never leaves this
+ * machine — «پرداخت، آی‌دی تلگرام و کارت مشتری واقعی»:
+ *
+ *   users          phone, username, telegram_id, legacy_attrs
+ *   payment_cards  card_digits, holder_name
+ *   card_leases    card_number, card_name, telegram_user_id
+ *   payments       assigned_card_number, assigned_card_name, legacy_telegram_id
+ *   subscriptions  remote_username, remote_ref — panel credentials
+ *   settings       value — which is where the bot token lives
+ *   providers      base_url, secret_ref, config — panel passwords
+ *
+ * Found by CodeRabbit on PR #42, which named `users`; reading the schemas found
+ * six more tables with the same problem, and the card numbers were the worst of
+ * them.
+ *
+ * A SAMPLE EXISTS TO SHOW SHAPE, NOT PEOPLE. What a reviewer checks after an
+ * import is «did the rows land, with sane statuses and amounts» — every column
+ * below answers that, and none of them names a customer. Adding a column here
+ * is a decision about what may be stored and displayed, so make it deliberately.
+ */
+export const SAMPLE_TABLE: Record<string, { table: string; columns: string }> = {
+  users: { table: 'users', columns: 'id, status, lang, is_reseller, discount_percent, registered_at' },
+  wallets: { table: 'wallet_entries', columns: 'id, amount_irr, kind, created_at' },
+  // `value` withheld: this is where the bot token and the panel secrets live.
+  settings: { table: 'settings', columns: 'scope, key, updated_at' },
+  providers: {
+    table: 'provisioning_providers',
+    columns: 'id, code, name, kind, status, capacity, sort_order',
+  },
+  'products + plans': {
+    table: 'product_plans',
+    columns: 'id, product_id, name, price_irr, duration_days, volume_gb, user_limit, status',
+  },
+  discounts: {
+    table: 'discount_codes',
+    columns: 'id, kind, amount_irr, percent, max_uses, first_purchase_only, resellers_only',
+  },
+  subscriptions: {
+    table: 'subscriptions',
+    columns:
+      'id, plan_name_at_sale, price_irr, volume_gb, duration_days, status, purchased_at, expires_at',
+  },
+  payments: {
+    table: 'payments',
+    columns: 'id, amount_irr, method, status, operation_type, created_at',
+  },
+  'orders (service_other)': {
+    table: 'orders',
+    columns: 'id, kind, quantity, unit_price_irr, discount_irr, total_irr, status, created_at',
+  },
+  'bank cards (merged)': {
+    table: 'payment_cards',
+    columns: 'id, financial_account_id, label, status, created_at',
+  },
+  'card leases': {
+    table: 'card_leases',
+    columns: 'id, status, assigned_at, expires_at, completed_at, released_at',
+  },
 };
 
 export async function migrate(
@@ -2005,10 +2058,16 @@ export async function migrate(
       report.ok(`${name.padEnd(26)} ${note}  ${String(ms).padStart(5)}ms`);
       steps.push({ name, domain, written, ms });
 
-      const table = SAMPLE_TABLE[name];
-      if (opts.samples && table !== undefined) {
-        const { rows } = await pgc.query(`SELECT * FROM ${table} LIMIT $1`, [opts.samples]);
-        samples[table] = rows as Record<string, unknown>[];
+      const sample = SAMPLE_TABLE[name];
+      if (opts.samples && sample !== undefined) {
+        // The allowlist, never `*`. See `SAMPLE_TABLE` — these rows are stored
+        // and rendered, so the projection is the only thing standing between an
+        // import report and a customer's card number.
+        const { rows } = await pgc.query(
+          `SELECT ${sample.columns} FROM ${sample.table} LIMIT $1`,
+          [opts.samples],
+        );
+        samples[sample.table] = rows as Record<string, unknown>[];
       }
     }
     if (opts.beforeSettle) verified = await opts.beforeSettle();

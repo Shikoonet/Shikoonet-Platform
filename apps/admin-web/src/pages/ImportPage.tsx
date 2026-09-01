@@ -258,13 +258,28 @@ export function ImportPage() {
   }
 
   const running = active?.status === 'RUNNING';
-  /** «اعمال» only becomes real once a dry run of this exact file has passed. */
+  /**
+   * «اعمال» only becomes real once a dry run has proven THIS import.
+   *
+   * The same rule the worker enforces, minus the half a browser cannot check.
+   * It used to ask only «has any dry run of this file succeeded», which let a
+   * dry run of `catalog` unlock an apply of `sales` — transforms that had never
+   * been exercised, committing for real. Every selected domain must appear in
+   * the domains that were actually proven.
+   *
+   * **This is a hint, not the gate.** The worker also compares the dump's
+   * SHA-256, so a file replaced under the same name is refused there with a 409
+   * that says so. The list does not carry that hash and a check written here
+   * would be a second opinion the server never asked for — the browser cannot
+   * know what is on disk now.
+   */
   const proven = runs.some(
     (r) =>
       r.mode === 'DRY_RUN' &&
       r.status === 'SUCCEEDED' &&
       dir !== null &&
-      r.dump_path.endsWith(file),
+      r.dump_path.endsWith(file) &&
+      domains.every((d) => r.domains.includes(d)),
   );
 
   return (
@@ -366,7 +381,11 @@ export function ImportPage() {
               className="btn btn-danger"
               onClick={() => setConfirming(true)}
               disabled={busy || running || !file || !proven}
-              title={proven ? undefined : 'اول یک اجرای آزمایشی موفق روی همین فایل لازم است'}
+              title={
+                proven
+                  ? undefined
+                  : 'اول یک اجرای آزمایشی موفق روی همین فایل و همین بخش‌ها لازم است'
+              }
               {...w}
             >
               اعمال نهایی
