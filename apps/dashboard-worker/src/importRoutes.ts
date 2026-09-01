@@ -67,7 +67,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { createWriteStream, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { createWriteStream, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -155,6 +155,28 @@ export function resolveDump(dir: string, name: string): string {
     throw new Error('resolved path escapes the import directory');
   }
   return full;
+}
+
+/**
+ * The import directory, made to exist.
+ *
+ * `IMPORT_DIR` names a path; nothing guarantees anything is there. On the
+ * staging box on 2026-09-01 the variable was set and the directory was not, and
+ * the panel answered «پوشهٔ ایمپورت خوانده نشد» — a 503 whose only cure was a
+ * second, undocumented ops step. Creating it is one syscall and turns a
+ * two-step setup into one.
+ *
+ * 0700 because of what lands here: a dump carries `password_panel`,
+ * `admin.password` and roughly ten gateway keys in plaintext. `recursive`
+ * makes it a no-op when the directory is already there, which is the normal
+ * case and the one a persistent volume produces.
+ *
+ * It does NOT create a missing MOUNT. If the volume is gone this makes a plain
+ * directory inside the container, uploads work, and they vanish with the next
+ * deploy — the same as any other unmounted path, and better than refusing.
+ */
+function ensureImportDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
 export function listDumps(dir: string): DumpFile[] {
@@ -588,6 +610,19 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
       );
     }
 
+    // Separately from the name check below, because the two failures need
+    // different answers: a directory that cannot be made is the server's
+    // problem, and «this file cannot be imported» would send the operator
+    // looking at their own filename.
+    try {
+      ensureImportDir(dir);
+    } catch {
+      return c.json(
+        { ok: false, error: 'import_dir_unreadable', detail: 'پوشهٔ ایمپورت روی سرور ساخته نشد.' },
+        503,
+      );
+    }
+
     let target: string;
     try {
       target = resolveDump(dir, c.req.query('name') ?? '');
@@ -717,6 +752,7 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
       );
     }
     try {
+      ensureImportDir(dir);
       return c.json({ ok: true, dir, items: listDumps(dir) });
     } catch {
       return c.json(
