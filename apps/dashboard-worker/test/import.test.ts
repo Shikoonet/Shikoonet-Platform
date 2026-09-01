@@ -74,7 +74,14 @@ beforeAll(async () => {
       .run();
   }
 
-  importDir = mkdtempSync(join(tmpdir(), 'shikoo-import-'));
+  // Nested one level deeper than the temp directory on purpose. The traversal
+  // tests assert that nothing appeared in the PARENT, and a parent shared with
+  // every other process on the machine makes that assertion about the machine.
+  // It also makes it sticky: proving the guard by removing it really does write
+  // `escaped.sql` up there, and a stray left behind then fails the suite for
+  // every run afterwards. This way the parent belongs to this file alone.
+  importDir = join(mkdtempSync(join(tmpdir(), 'shikoo-import-')), 'imports');
+  mkdirSync(importDir, { recursive: true });
   writeFileSync(join(importDir, 'mirzabot-tiny.sql'), 'CREATE TABLE t (a int);\n');
   writeFileSync(join(importDir, 'notes.txt'), 'not a dump');
   mkdirSync(join(importDir, 'a-directory.sql'), { recursive: true });
