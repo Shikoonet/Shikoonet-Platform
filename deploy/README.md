@@ -683,6 +683,56 @@ Coolify's own access to the private repository is **not** touched by any of this
 and must not be: it still needs to fetch the code it is told to build.
 
 
+## Which application am I about to change?
+
+Six applications live on the Tehran box and their uuids say nothing about which
+is which. On 2026-09-01 `.notes/deploy.env` carried the PRODUCTION dashboard
+uuid under the name `IR_APP_DASHBOARD`, and a session that read it as staging
+set two variables on production and triggered a deploy of it. The schema gate
+below is the only reason that was a non-event: the new image refused to start
+against a database five migrations behind, and Coolify rolled back.
+
+| uuid | application | domain | environment |
+| --- | --- | --- | --- |
+| `huneuqvzyw0cjd4u0f7s37cf` | shikoo-dashboard | shikoo.chopon.uk | **production** |
+| `d9ulbwkdjpvg2ajalecruxzh` | shikoo-ingest | sms.chopon.uk | **production** |
+| `3xetld1oi3x7viq8cr8is0ls` | shikoo-bot | — | **production** |
+| `3scafhzf40ucpgvoqbms2217` | shikoo-dev-dashboard | shikoo-dev.chopon.uk | staging |
+| `gnzneyowrzjdpb0ci04td1qc` | shikoo-dev-ingest | sms-dev.chopon.uk | staging |
+| `icmjwronjw3ltx0gdrtmyfve` | shikoo-dev-bot | — | staging |
+
+A table in a file goes stale, so treat the one above as a hint and the server
+as the answer. Coolify listens on `localhost:8000` only, so ask from the box:
+
+```bash
+curl -H "Authorization: Bearer $IR_COOLIFY_TOKEN" http://localhost:8000/api/v1/applications \
+  | python3 -c 'import sys,json;[print(a["uuid"],a.get("name"),a.get("fqdn")) for a in json.load(sys.stdin)]'
+```
+
+Two Postgres containers on that box both hold a database called `shikoo` with
+the same tables — one for each stack — so the same warning applies to a
+container name in a notes file. Ask the application, not the file:
+
+```bash
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' <container> | grep DATABASE_URL
+```
+
+### Three Coolify 4.3.14 API facts worth not rediscovering
+
+- **`custom_docker_run_options` with `-v` is accepted and silently ignored.** A
+  persistent volume is a separate resource:
+  `POST /api/v1/applications/<uuid>/storages` with
+  `{"type":"persistent","name":…,"mount_path":…,"host_path":…}`. `type` takes
+  only `persistent` or `file`; anything else answers «The selected type is
+  invalid» without naming what is valid. Same silent-drop family as
+  `--network-alias`, which the edge section already warns about.
+- **`POST /applications/<uuid>/envs` writes TWO rows**, which makes the *next*
+  deploy refuse with «defined more than once». `set_app_env` in `deploy.sh`
+  PATCHes first and cleans up after the create path for exactly this reason —
+  anything hand-rolled has to do the same.
+- **`/api/v1/deploy` is a POST now** (a GET answers «This endpoint has changed to a POST request»), and there is no endpoint to cancel a deployment once it
+  is queued. `DELETE /deployments/<uuid>` answers 404.
+
 ## Schema, before anything else
 
 On 2026-08-17 the dashboard was deployed carrying the operator-login code while
