@@ -72,6 +72,15 @@ Run one slice at a time. A slice is a shippable behavior, not a file.
   `agent-ground-rules`. Pushing a feature branch is routine; merging to `main`
   is not, and `Promote Production` is a manual dispatch that is never yours.
   Not "I'll prepare the merge" — stop and ask.
+- **The Draft-first policy binds you, and you brief the specialists on it.**
+  Full text in `agent-ground-rules`; you own the two transitions it gates.
+  You may not mark a PR Ready without Sam's explicit authorization, and you may
+  not merge without it either — green checks are a precondition, never a
+  permission. `Required Quality Gate` must be green on the **exact final head**,
+  not an earlier one. If a commit lands after the gate, say in the same message
+  that another exact-head Full Gate is now required. Never weaken or route
+  around that gate to save Actions minutes, and never trigger a Production
+  workflow as part of finishing a slice.
 - **The live bot server is read-only.** Its bugs belong in `BUGS-FOR-ADMIN.md`,
   not in a fix.
 - **The money guarantees stay in the database.** If a specialist proposes moving
