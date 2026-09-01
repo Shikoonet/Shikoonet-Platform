@@ -5,57 +5,98 @@ name: CI
 # `Required Quality Gate` is the ONE check a ruleset should require. Everything
 # above it is diagnostic — those names say *why*; this one says *whether*.
 #
-# ## The shape, and why it changed on 2026-08-27
+# ═════════════════════════════════════════════════════════════════════════════
+# The shape, and why it changed on 2026-09-01
 #
-# It used to be six jobs, one of which — `gate` — did almost everything in a
-# straight line: apply migrations, prove the invariants, run the entire test
-# suite for all ten packages one package at a time, re-run three of them for
-# coverage, then build the Docker image and poke at it. Measured over the five
-# most recent successful runs it took a median of 5m18s while every other job
-# finished inside 3m15s, so the whole pipeline was as slow as its slowest
-# straight line and five runners sat idle waiting for it.
+# It used to run ten jobs and twenty-one billed minutes on every event there
+# is: a draft push, a README typo, a ready-for-review push and the merge that
+# followed all cost exactly the same. Measured over 2026-08-01→09-01 that was
+# 274 CI runs — 142 `pull_request`, 131 `push` to main — against a GitHub Free
+# organisation's 2,000 private-repository minutes a month. Roughly 5,750
+# minutes of demand against a 2,000-minute allowance.
 #
-# Nothing in that line NEEDED to be in one job. It was in one job because the
-# packages share a Postgres, and one job is the cheapest way to have one
-# Postgres. Give each shard its own Postgres and the constraint disappears:
+# The measured cost of one complete run, median of fourteen:
 #
-#   unit          contracts, sms-parser, admin-web — no database at all
-#   db-shard hub       dashboard-worker, db, seed        own Postgres
-#   db-shard services  bot, ingest-worker, domain        own Postgres
-#   migrations    clean database → migrations → invariants → migrate suite,
-#                 then the image checks, which need a database and nothing else
-#   e2e           own Postgres, seed:sim, the browser walk
+#   lint 103s(2)  arch 18s(1)  unit 54s(1)  db-hub 124s(3)  db-services 119s(2)
+#   migrations 104s(2)  e2e 181s(4)  workflows-lint 195s(4)  secrets 11s(1)
+#   gate 16s(1)                     → 925s of compute, 21 BILLED minutes
 #
-# The shards are balanced on MEASURED runtime taken from run 33105968752's own
-# log, not on package count:
+# The bracketed number is what GitHub charges: every job is rounded UP to the
+# minute, so ten jobs cost at least ten minutes however fast they are, and the
+# run billed 21 minutes for 15.4 minutes of work. `arch`, `secrets` and the
+# aggregator together were three billed minutes for forty-five seconds.
 #
-#   dashboard 67.4s  db  4.9s  seed 1.7s   → hub       74.0s
-#   bot       42.8s  ingest 17.2s  domain 12.7s → services  72.7s
+# Three things came out of that, and nothing else changed:
 #
-# ## What is NOT parallel, and must not become parallel
+#   A. A draft pull request runs `plan`, `static` and the gate. 3 jobs,
+#      5 billed minutes instead of 10 and 21.
+#   B. A ready pull request runs the complete suite. 9 jobs, 21 minutes — or
+#      8 and 17 when the change is confined to `apps/` and documentation, the
+#      only case where the deploy suites can be proven irrelevant.
+#      The final gate is NOT materially cheaper than it was, and this file does
+#      not pretend otherwise: the 2026-08-27 restructure already took the fat
+#      out of it, and what is left is six jobs that each genuinely need their
+#      own service container, plus GitHub's per-job minute rounding.
+#   C. A push to main whose tree PROVABLY already passed the complete suite
+#      runs the proof and the image verification. 3 jobs, 4 minutes.
+#
+# The saving is in A and C, and C is where the money is: `push` to main was
+# 131 of those 274 runs — 48% of the bill — re-testing trees that had just
+# been tested.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# What was consolidated, and what was NOT
+#
+# `lint`, `arch`, `secrets` and the actionlint/shellcheck half of the old
+# `workflows-lint` are now one job, `static`. They shared a checkout, a Node
+# setup and a `pnpm install`, and between them they were four billed minutes
+# for about two and a half minutes of work. One job, one install, ~3 minutes.
+#
+# The other half of `workflows-lint` — the 22 bash suites over `deploy/` — is
+# now `deploy-suites`, and it is the ONE thing this workflow selects by path.
+# Those suites read `deploy/`, `.github/workflows/` and the migrator's source,
+# and nothing else, so a pull request touching none of those cannot change
+# their result. `tools/ci-plan.sh` decides, on a deliberately over-wide list.
+#
+# The image checks are now `tools/ci-image-checks.sh`, called from two places:
+# `migrations` on a pull request, and the `image` job on a push to main. They
+# were briefly a job of their own on both paths; that was measured and undone,
+# because a separate job cost two billed minutes per pull request and saved
+# nothing — `migrations` is 104s with them and 64s without, and both round up
+# to the same two minutes. On `main` the separate job is the whole point: it is
+# how a proven run verifies the artifact without the migration rehearsal.
+#
+# NOT consolidated, and must not be: `unit`, the two `db-shard`s, `migrations`
+# and `e2e`. Each needs its own service container, and merging any two of them
+# would put two suites on one Postgres — see below.
+#
+# NOT selected, at all: every vitest suite, both database shards, the migration
+# rehearsal and the browser walk. On a ready pull request they all run, always.
+# Selecting them by dependency graph would mean teaching `ci-verify-gate.ts`
+# which suites were deliberately absent, and a verifier that accepts an absence
+# is a verifier that can be talked into accepting the wrong one.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# What is NOT parallel, and must not become parallel
+#
+# Each shard gets its OWN Postgres — not its own database on a shared server,
+# its own container on its own runner VM, reachable only from that VM's
+# loopback. The first step of every shard prints the server's
+# `system_identifier`, generated at initdb time: two different values in one
+# run is the proof, in the log, that these are two different instances.
 #
 # `--workspace-concurrency=1` is still passed inside every shard, and every
 # database-backed package still carries `fileParallelism: false`. The packages
 # in one shard share that shard's single database and TRUNCATE between files.
-# Sharding made the SHARDS safe to run at once by giving each one its own
-# Postgres; it changed nothing about what is safe *inside* one. See the header
-# of `tools/ci-run-tests.sh`.
+# Sharding made the SHARDS safe to run at once; it changed nothing about what
+# is safe *inside* one. See the header of `tools/ci-run-tests.sh`.
 #
 # Playwright likewise keeps `workers: 1`: its specs write shop-wide rows and
 # assert on them, so two workers would be two admins editing one setting.
 #
-# ## Two duplicated units of work that are now done once
-#
-#   - the three coverage-gated packages used to run twice, once inside
-#     `pnpm test` and again under `pnpm coverage`. They now run once, with
-#     `--coverage`, in whichever shard owns them. The floors are unchanged and
-#     are enforced twice: by vitest in the shard, and again by
-#     `tools/ci-verify-gate.ts` in the aggregator against the merged summaries.
-#   - `apps/dashboard-worker`'s `e2e` script rebuilds the admin SPA, which the
-#     `e2e` job had already built in its own step. The job now calls
-#     `playwright test` directly, after the build it does itself.
-#
-# ## The aggregator no longer trusts a green matrix
+# ═════════════════════════════════════════════════════════════════════════════
+# The aggregator does not trust a green matrix, and now does not trust a
+# skipped job either
 #
 # A shard whose filter matched nothing exits 0. A matrix trimmed from two
 # entries to one leaves nothing behind to notice. So every test job uploads a
@@ -64,27 +105,61 @@ name: CI
 # no skip count up, every coverage summary present and clearing its floor, the
 # Playwright report complete, the migration and invariant counts intact.
 #
+# Selection adds a second way to be green for the wrong reason, so the gate
+# now re-derives what SHOULD have run from `plan`'s published outputs and
+# requires each job to match it EXACTLY: a job the plan said to run must be
+# `success`, and a job the plan said to skip must be `skipped`. Not
+# `success`, not `failure`, not `cancelled` — skipped. A job that ran when the
+# plan said it would not is as much a mismatch as one that did not run when it
+# should have, and both are red. This is the line that stops a selected-away
+# suite from hiding behind a green umbrella.
+#
+# ═════════════════════════════════════════════════════════════════════════════
 # Triggers:
-#   - pull_request (opened, synchronize, reopened, ready_for_review)
-#   - merge_group, so it survives GitHub Merge Queue
-#   - workflow_dispatch, for re-runs on demand
-#   - push to main, so a direct push does not silently miss the gate
+#   - pull_request (opened, synchronize, reopened, ready_for_review,
+#     converted_to_draft). `ready_for_review` is what promotes a pull request
+#     from Fast Feedback to the complete gate; `converted_to_draft` is what
+#     demotes it again, and is present so that the demotion cancels the
+#     in-flight full run rather than leaving it to finish and bill for it.
+#   - merge_group, so it survives GitHub Merge Queue. Always the full suite.
+#   - workflow_dispatch, for re-runs on demand. Always the full suite.
+#   - push to main, so a direct push does not silently miss the gate. A direct
+#     push is not the result of a merged pull request, so the provenance proof
+#     refuses it and the complete suite runs — and `approval-gate.sh` refuses
+#     to deploy it regardless.
 #
 # Concurrency:
 #   - one running workflow per PR (or per ref for direct pushes). The group is
 #     keyed on the PR number for pull_request and on the ref otherwise, so the
 #     two namespaces are disjoint and a PR run can never cancel a `main` run or
 #     a deployment.
-#   - `cancel-in-progress` is true ONLY for pull_request.
+#   - `cancel-in-progress` is true ONLY for pull_request. A `main` validation
+#     feeds Deploy Staging, and cancelling one mid-flight would strand it.
 #
 # Permissions:
 #   - default `contents: read` at the workflow level
-#   - per-job overrides only where strictly necessary
+#   - per-job overrides only where strictly necessary. `plan` is the only job
+#     that reads anything beyond the tree, and it reads only — no job in this
+#     file can write to the repository, and none holds a deployment secret.
+#   - the trigger is `pull_request`, never `pull_request_target`, so a fork's
+#     code never runs with a writable token or a secret in scope.
 #
 # Branch protection:
-#   - cannot be enforced on this repo today. The stable aggregator is what a
-#     future ruleset should require. Until then, a green aggregator is the
-#     closest thing to a gate.
+#   - cannot be enforced on this repo today: `GET /rulesets` and
+#     `GET /branches/main/protection` both answer 403 «Upgrade to GitHub Pro».
+#     That also rules out a merge queue. The stable aggregator is what a future
+#     ruleset should require. Until then the real enforcement is
+#     `deploy/approval-gate.sh`, which refuses to deploy any commit whose
+#     «Required Quality Gate» did not succeed.
+#
+#     A pull request merged while still a DRAFT is therefore not blocked at
+#     merge. What stops it reaching staging untested is
+#     `tools/ci-main-provenance.sh`: a draft's green gate sits over a run in
+#     which every suite skipped, the proof requires those suites to have
+#     SUCCEEDED, so it refuses, and `main` runs the complete suite before
+#     Deploy Staging can consume anything. Named explicitly because the first
+#     version of that script checked only the gate's own conclusion, which a
+#     Fast run satisfies — CodeRabbit caught it on PR #47.
 #
 # CodeRabbit:
 #   - reviewer at the App level, configured by `.coderabbit.yaml`, comments
@@ -93,7 +168,7 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group:
   push:
     branches: [main]
@@ -107,70 +182,352 @@ permissions:
   contents: read
 
 jobs:
-  # -----------------------------------------------------------------------
-  # Fast static checks. Four independent jobs, all starting at t=0, none of
-  # them a dependency of anything expensive — a slow linter must never be the
-  # reason a test shard has not started.
-  # -----------------------------------------------------------------------
-  lint:
-    name: lint
+  # =======================================================================
+  # Which jobs this event actually needs.
+  #
+  # One cheap job — checkout, a shell script, no `pnpm install` — whose
+  # outputs are the `if:` of every job below it and the expectation the
+  # aggregator checks against. It is a billed minute, and it buys the
+  # eighteen that A, B and C skip.
+  #
+  # Two different questions, by event:
+  #
+  #   pull_request / merge_group / workflow_dispatch
+  #       `tools/ci-plan.sh` — draft state and changed paths. Every branch
+  #       that cannot prove a path is safe to skip runs everything.
+  #
+  #   push to main
+  #       `tools/ci-main-provenance.sh` — has the complete suite already
+  #       passed on this EXACT tree? Only a proof skips the suite; every
+  #       failure, including every way of failing to get an answer, runs it.
+  # =======================================================================
+  plan:
+    name: plan
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      # Reading only, and only these two. `actions: read` is for the run and
+      # job lists the provenance proof consults; `pull-requests: read` is for
+      # the merged-PR association and the changed-file list. No job in this
+      # workflow has `write` to anything.
+      actions: read
+      pull-requests: read
+    outputs:
+      static: ${{ steps.decide.outputs.static }}
+      heavy: ${{ steps.decide.outputs.heavy }}
+      deploy_suites: ${{ steps.decide.outputs.deploy_suites }}
+      image: ${{ steps.decide.outputs.image }}
+      mode: ${{ steps.decide.outputs.mode }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm lint
 
-  # -----------------------------------------------------------------------
-  # Architectural boundaries the codebase has chosen. Eight rules:
+      # Only on a push to main. The proof reads GitHub's own record of what
+      # ran and git's own record of what is here — never an artifact, never a
+      # job output, nothing a contributor can write.
+      - id: provenance
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash tools/ci-main-provenance.sh "${{ github.repository }}" "${{ github.sha }}"
+
+      # The changed-file list, for the pull_request path only.
+      #
+      # From the API rather than a diff, so the job needs no deep fetch. Any
+      # failure — a rate limit, a 500, a pull request bigger than the pages
+      # requested — leaves the file holding the literal `UNKNOWN`, and
+      # `ci-plan.sh` runs everything when it reads that.
+      - id: changed
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          if ! gh api --paginate "repos/${REPO}/pulls/${PR}/files" \
+              --jq '.[].filename' >/tmp/changed.txt 2>/tmp/changed.err; then
+            echo 'could not list the changed files:'
+            cat /tmp/changed.err
+            printf 'UNKNOWN\n' >/tmp/changed.txt
+          fi
+          echo "changed files: $(grep -c . /tmp/changed.txt || printf '0')"
+          sed 's/^/  /' /tmp/changed.txt
+
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+          PROVEN: ${{ steps.provenance.outputs.proven }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ "$EVENT" = 'push' ]; then
+            # `main`. The suite runs unless the tree is proven, and `image`
+            # runs either way: the deployable artifact is verified on every
+            # commit that Deploy Staging could consume, proven or not.
+            if [ "$PROVEN" = 'true' ]; then
+              run_all=false
+              mode=main-proven
+            else
+              run_all=true
+              mode=main-full
+            fi
+            {
+              printf 'static=%s\n' "$run_all"
+              printf 'heavy=%s\n' "$run_all"
+              printf 'deploy_suites=%s\n' "$run_all"
+              printf 'image=true\n'
+              printf 'mode=%s\n' "$mode"
+            } | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -f /tmp/changed.txt ]; then
+            CHANGED_FILES=$(cat /tmp/changed.txt)
+          else
+            CHANGED_FILES=UNKNOWN
+          fi
+          export CHANGED_FILES
+          bash tools/ci-plan.sh | tee /tmp/plan.txt
+
+          # `image` is a `main` job and nothing else. On a pull request the
+          # same three checks run INSIDE `migrations`, which already has a
+          # Postgres and a docker — measured, splitting them into a job of
+          # their own cost two billed minutes per pull request and saved
+          # nothing, because 104s and 64s round up to the same two minutes.
+          grep -E '^(static|heavy|deploy_suites|mode)=' /tmp/plan.txt >>"$GITHUB_OUTPUT"
+          printf 'image=false\n' >>"$GITHUB_OUTPUT"
+
+      - name: Say what this run will do
+        env:
+          MODE: ${{ steps.decide.outputs.mode }}
+          STATIC: ${{ steps.decide.outputs.static }}
+          HEAVY: ${{ steps.decide.outputs.heavy }}
+          DEPLOY: ${{ steps.decide.outputs.deploy_suites }}
+          IMAGE: ${{ steps.decide.outputs.image }}
+        run: |
+          set -Eeuo pipefail
+          {
+            echo "## CI plan — \`${MODE}\`"
+            echo
+            echo "| job | runs |"
+            echo "| --- | --- |"
+            echo "| static (typecheck, lint, arch, secrets, actionlint) | ${STATIC} |"
+            echo "| unit, db-shard ×2, migrations, e2e | ${HEAVY} |"
+            echo "| deploy-suites | ${DEPLOY} |"
+            echo "| image | ${IMAGE} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # =======================================================================
+  # Fast Feedback, and the static half of the final gate. One job, because
+  # these four used to be four and shared everything but their last step.
   #
-  #   1. `packages/domain` takes I/O by injection only — no `node:fs`,
-  #      `node:net`, `node:http`, `child_process`, `pg`, `@shikoo/db`.
-  #      `node:crypto` is allowed: it is the seal and the TOTP, not I/O.
-  #   2. `packages/contracts` is pure — it reaches the browser bundle.
-  #   3. `packages/database` holds SQL as constants, never executes one.
-  #   4. No package imports an application.
-  #   5. The SPA never imports the database layer.
-  #   6. SQL does not grow in the SPA or in contracts.
-  #   7. Cloudflare Workers/D1/Wrangler cannot be reintroduced.
-  #   8. `legacy/` is never imported into production code.
+  #   typecheck + eslint          was `lint`        103s
+  #   architectural boundaries    was `arch`         18s
+  #   gitleaks + the deny-list    was `secrets`      11s
+  #   actionlint + shellcheck     was `workflows-lint`, first ~20s of it
   #
-  # AST-based, through the TypeScript compiler API — see the header of
-  # `tools/architecture-boundaries.ts` for why a grep could not do this and
-  # for the two false positives that shaped the SQL rule.
-  # -----------------------------------------------------------------------
-  arch:
-    name: arch
+  # Four billed minutes for about two and a half minutes of work, three of
+  # those minutes being runner startup and `pnpm install` done four times.
+  #
+  # The three script checks run BEFORE the Node setup, because none of them
+  # needs `node_modules` and a workflow with a syntax error should say so
+  # without waiting for an install it is about to invalidate.
+  #
+  # Exit codes are accumulated across typecheck, lint and arch rather than
+  # stopping at the first — a branch that broke all three takes one round
+  # trip to find out instead of three, which is the property the old separate
+  # jobs had for free and which consolidating would otherwise have cost.
+  # =======================================================================
+  static:
+    name: static
+    needs: plan
+    if: needs.plan.outputs.static == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          # The commit-range gitleaks scan needs both sides of the range.
+          fetch-depth: 0
+
+      # -------------------------------------------------------------- CI files
+      #
+      # `actionlint` reads workflow YAML with the semantics GitHub itself
+      # applies at run time, and — with shellcheck on PATH, which
+      # `ubuntu-latest` has — ALSO runs shellcheck over every `run:` block.
+      # No `ignore:`: every shellcheck finding is either fixed or carries a
+      # `# shellcheck disable=SCxxxx` at the exact line, with the reason.
+      - name: shellcheck is present (actionlint uses it for `run:` blocks)
+        run: shellcheck --version
+
+      - name: actionlint (pinned commit SHA, with the human-readable version)
+        uses: rhysd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106  # v1.7.7
+
+      - name: shellcheck every shipped script
+        # -x follows `source`d files; -S style is the strictest level that
+        # still only reports things worth changing.
+        run: |
+          set -Eeuo pipefail
+          find deploy tools -name '*.sh' -type f -print0 2>/dev/null \
+            | xargs -0 --no-run-if-empty shellcheck --external-sources --severity=style
+
+      # ------------------------------------------------------------- secrets
+      #
+      # The CLI and not `gitleaks/gitleaks-action`: that action requires
+      # `GITLEAKS_LICENSE` for any ORGANISATION-owned repository, so it exits
+      # with «missing GITLEAKS_LICENSE» on every run here — a required check
+      # that can never pass, which is worse than no check at all. The CLI is
+      # MIT-licensed with no such gate.
+      #
+      # The release archive is pinned by version AND verified by sha256 before
+      # it is unpacked. A pinned version alone trusts that the tag was not
+      # re-cut; the checksum is what makes the download immutable.
+      - name: Install gitleaks (pinned release, sha256-verified)
+        run: |
+          set -Eeuo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" "$url"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xzf "$archive" gitleaks
+          ./gitleaks version
+
+      # Two scans, because they answer different questions.
+      #   `gitleaks dir` — every tracked file as it stands. Catches a secret an
+      #                    earlier commit introduced and this PR merely moves.
+      #   `gitleaks git` — the commit range this PR adds. Catches a secret that
+      #                    was added and then deleted within the PR, which the
+      #                    working-tree scan cannot see.
+      # Both use `.github/gitleaks.toml`, whose allow-list names exact
+      # synthetic values and excludes no directory at all.
+      - name: Scan the working tree
+        run: |
+          set -Eeuo pipefail
+          ./gitleaks dir . \
+            --config .github/gitleaks.toml \
+            --redact \
+            --no-banner \
+            --exit-code 1
+
+      - name: Scan the commits this pull request adds
+        # Only meaningful on a pull_request; a push to main has no range to
+        # compare against and the working-tree scan above already covers it.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -Eeuo pipefail
+          ./gitleaks git . \
+            --config .github/gitleaks.toml \
+            --log-opts "${BASE_SHA}..${HEAD_SHA}" \
+            --redact \
+            --no-banner \
+            --exit-code 1
+
+      - name: Project-specific deny-list
+        # Paths and substrings gitleaks has no rule for, but which this project
+        # knows are wrong. Not secrets in themselves — a file NAME that should
+        # never be committed, and a host address that should never be pasted.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ -n "${BASE_REF}" ]; then
+            range="origin/${BASE_REF}...HEAD"
+          else
+            # push / merge_group / workflow_dispatch: compare against the
+            # parent commit, so the check still says something on a direct
+            # push instead of silently passing.
+            range="HEAD~1...HEAD"
+          fi
+          echo "range: ${range}"
+
+          denied=0
+
+          # Paths that must never appear in a commit.
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            case "$path" in
+              .notes|.notes/*)
+                echo "DENY: ${path} — .notes/ holds the work machine's tokens"
+                denied=$((denied + 1))
+                ;;
+              legacy/mirzabot-php/db|legacy/mirzabot-php/db/*)
+                echo "DENY: ${path} — the production dump is git-ignored on purpose"
+                denied=$((denied + 1))
+                ;;
+              sim/.env.local)
+                echo "DENY: ${path} — holds the test bot token; git-ignored on purpose"
+                denied=$((denied + 1))
+                ;;
+            esac
+          done <<< "$(git diff --name-only "$range" || true)"
+
+          # Substrings that must never appear in ADDED lines. Restricted to
+          # additions (`^+`) so that a commit which REMOVES one of these is
+          # not punished for the removal.
+          if git diff "$range" | grep -E '^\+' | grep -qE '164\.132\.198\.184'; then
+            echo 'DENY: an added line names the practice server by address'
+            denied=$((denied + 1))
+          fi
+
+          if [ "$denied" -gt 0 ]; then
+            echo "::error::${denied} deny-list violation(s)"
+            exit 1
+          fi
+          echo 'deny-list: clean'
+
+      # ---------------------------------------------------- the TypeScript half
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Architectural boundary check
+
+      - name: typecheck, lint, and the architectural boundaries
+        # The eight rules `tools/architecture-boundaries.ts` enforces:
+        #   1. `packages/domain` takes I/O by injection only — no `node:fs`,
+        #      `node:net`, `node:http`, `child_process`, `pg`, `@shikoo/db`.
+        #      `node:crypto` is allowed: it is the seal and the TOTP, not I/O.
+        #   2. `packages/contracts` is pure — it reaches the browser bundle.
+        #   3. `packages/database` holds SQL as constants, never executes one.
+        #   4. No package imports an application.
+        #   5. The SPA never imports the database layer.
+        #   6. SQL does not grow in the SPA or in contracts.
+        #   7. Cloudflare Workers/D1/Wrangler cannot be reintroduced.
+        #   8. `legacy/` is never imported into production code.
+        #
         # AST-based, through the TypeScript compiler API that is already a
-        # devDependency. `tsx` is a real runtime dependency of every app, so
-        # this needs no build step. Reports EVERY violation in one run rather
-        # than exiting on the first, so a branch that broke four boundaries
-        # takes one round trip to find out instead of four.
-        run: pnpm exec tsx tools/architecture-boundaries.ts
+        # devDependency — see the header of that file for why a grep could not
+        # do this. `tsx` is a real runtime dependency of every app, so it needs
+        # no build step.
+        #
+        # Worst exit code wins, and all three always run. Same shape, and the
+        # same reason, as `tools/ci-run-tests.sh`.
+        run: |
+          set -Eeuo pipefail
+          worst=0
+          echo '::group::typecheck'; pnpm typecheck || worst=$?; echo '::endgroup::'
+          echo '::group::lint';      pnpm lint      || worst=$?; echo '::endgroup::'
+          echo '::group::arch'
+          pnpm exec tsx tools/architecture-boundaries.ts || worst=$?
+          echo '::endgroup::'
+          exit "$worst"
 
-  # -----------------------------------------------------------------------
+  # =======================================================================
   # The suites that touch no database, no network and no shared process
   # state, so they need no service container and no serial rule between them.
   #
   # Isolation is a property of the packages, not an assumption:
-  #   - `packages/contracts` is pure by architecture rule 2, which `arch`
+  #   - `packages/contracts` is pure by architecture rule 2, which `static`
   #     enforces on every run — it reaches the browser bundle.
   #   - `packages/sms-parser` is a string parser over fixtures.
   #   - `apps/admin-web` runs in happy-dom, in-process, with no server.
@@ -179,11 +536,12 @@ jobs:
   # all do, which is exactly what puts them in a db-shard instead.
   #
   # `contracts` and `sms-parser` run under `--coverage` here because their
-  # floors live in `vitest.coverage.ts`. That replaces their half of the old
-  # separate `pnpm coverage` step rather than adding to it.
-  # -----------------------------------------------------------------------
+  # floors live in `vitest.coverage.ts`.
+  # =======================================================================
   unit:
     name: unit
+    needs: plan
+    if: needs.plan.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -222,27 +580,28 @@ jobs:
             packages/*/vitest-report.json
             apps/*/vitest-report.json
             packages/*/coverage/coverage-summary.json
-          retention-days: 7
+          # The aggregator downloads these within minutes of them being
+          # written and nothing else ever reads them. Three days is enough to
+          # look at a failure the morning after.
+          retention-days: 3
           if-no-files-found: error
 
-  # -----------------------------------------------------------------------
+  # =======================================================================
   # The database-backed suites, in two shards balanced on measured runtime.
   #
   # EACH SHARD GETS ITS OWN POSTGRES. Not its own database on a shared server
   # — its own container, on its own runner VM, reachable only from that VM's
   # loopback. Two shards cannot see each other's data because they cannot
-  # reach each other's network namespace at all. The first step of every shard
-  # prints the server's `system_identifier`, which is generated at initdb
-  # time: two different values in one run is the proof, in the log, that these
-  # are two different Postgres instances and not one shared one.
+  # reach each other's network namespace at all.
   #
-  # Inside a shard nothing changed: `--workspace-concurrency=1` keeps the
-  # packages serial with each other, and `fileParallelism: false` keeps each
-  # package's files serial with themselves. Both are still required — the
-  # packages in a shard share that shard's one database and truncate it.
-  # -----------------------------------------------------------------------
+  # Balanced on MEASURED runtime, not on package count:
+  #   dashboard 67.4s  db  4.9s  seed 1.7s   → hub       74.0s
+  #   bot       42.8s  ingest 17.2s  domain 12.7s → services  72.7s
+  # =======================================================================
   db-shard:
     name: db-shard (${{ matrix.shard }})
+    needs: plan
+    if: needs.plan.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -331,10 +690,10 @@ jobs:
             packages/*/vitest-report.json
             apps/*/vitest-report.json
             packages/*/coverage/coverage-summary.json
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: error
 
-  # -----------------------------------------------------------------------
+  # =======================================================================
   # The clean-database gate: every migration in order, from nothing.
   #
   # This job never reuses another job's database. It starts with an empty
@@ -342,13 +701,17 @@ jobs:
   # current, proves the money invariants and COUNTS them, then runs the
   # migration suite against the synthetic legacy source.
   #
-  # The image checks live here rather than in a job of their own because they
-  # need a Postgres and nothing else, and this job already has one that has
-  # finished being interesting by the time they run. A separate job would be a
-  # second container pull and a second billed minute for 40 seconds of work.
-  # -----------------------------------------------------------------------
+  # The image checks used to live here, because they needed a Postgres and
+  # this job already had one. They are now the `image` job: they need a
+  # Postgres and a docker and NOTHING ELSE — no `pnpm install`, no
+  # node_modules, no migrations — and separating them is what lets a proven
+  # `main` run verify the deployable artifact without also paying for the
+  # migration rehearsal. It takes ~40s off this job on every pull request.
+  # =======================================================================
   migrations:
     name: migrations
+    needs: plan
+    if: needs.plan.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -458,6 +821,15 @@ jobs:
       - name: The migration suite
         run: bash tools/ci-run-tests.sh '@shikoo/migrate' ''
 
+      # The only checks that measure the ARTIFACT rather than the source, and
+      # they live here because this job already has the Postgres and the docker
+      # they need. See the header of `tools/ci-image-checks.sh` for the two
+      # production failures they exist for, and for why they are a script
+      # rather than three copies of the same steps: the `image` job on `main`
+      # runs the identical three.
+      - name: The image, measured rather than described
+        run: bash tools/ci-image-checks.sh
+
       - name: Publish the migration and invariant counts
         run: |
           set -Eeuo pipefail
@@ -470,44 +842,6 @@ jobs:
             echo "| invariants proved  | ${INVARIANTS_PROVED} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # The only gate that measures the artifact rather than the source.
-      #
-      # On 2026-08-16 every check above was green, the image built and pushed,
-      # and not one container could start: `deploy/entrypoint.sh` was committed
-      # 100644 and `COPY` carries the source mode, so `runc` refused the
-      # entrypoint with «permission denied». Nothing that reads TypeScript can
-      # see that, and the first thing that did was a production deploy.
-      - name: The image reaches its entrypoint
-        run: |
-          docker build -t shikoo-ci .
-          out=$(docker run --rm shikoo-ci 2>&1 || true)
-          echo "$out"
-          echo "$out" | grep -q 'SERVICE is required'
-
-      # What is in the artifact, not what the manifests say is in it.
-      #
-      # `runtime` was `FROM build` until 2026-08-22, so the image three
-      # public-facing services run from carried vitest, playwright, eslint and
-      # typescript — 29 of its 290 packages — along with every test file in the
-      # repository. Nothing ran them, which is why it went unnoticed for months:
-      # `pnpm audit --prod` reads manifests and reported zero the whole time,
-      # while a scanner reads layers.
-      - name: The production image carries no test runner and no tests
-        run: |
-          dev=$(docker run --rm --entrypoint sh shikoo-ci -c 'ls node_modules/.pnpm | grep -ciE "^(vitest|@vitest|playwright|@playwright|eslint|typescript|@typescript-eslint)@" || true')
-          ours=$(docker run --rm --entrypoint sh shikoo-ci -c 'find /app/apps /app/packages \( -name "*.test.ts" -o -name "*.spec.ts" \) | wc -l')
-          echo "dev-tooling packages: $dev   our test files: $ours"
-          [ "$dev" = "0" ] && [ "$ours" = "0" ]
-
-      # The gate, measured on the artifact rather than on the source.
-      - name: A container refuses to start on a schema it does not match
-        run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c 'CREATE DATABASE behind_by_everything'
-          behind="${DATABASE_URL%/*}/behind_by_everything"
-          out=$(docker run --rm --network host -e SERVICE=bot -e DATABASE_URL="$behind" shikoo-ci 2>&1 || true)
-          echo "$out"
-          echo "$out" | grep -q 'refusing to start'
-
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -516,10 +850,55 @@ jobs:
           path: |
             packages/*/vitest-report.json
             out/schema-counts.json
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: error
 
-  # -----------------------------------------------------------------------
+  # =======================================================================
+  # The deployable artifact, on `main` and only on `main`.
+  #
+  # The same three checks a pull request runs inside `migrations` — one script,
+  # `tools/ci-image-checks.sh`, so there is one copy of them rather than two.
+  #
+  # It runs on EVERY push to main, proven or not, and that is not redundant
+  # with the pull request having run them on the identical tree. A docker build
+  # is the one thing here that is not hermetic: `FROM` resolves against a
+  # registry and `apt` against a mirror, so the same tree can produce a
+  # different image today than it did yesterday. This is the check that sees
+  # that, on the exact commit Deploy Staging is about to build for real.
+  #
+  # It is NOT on the pull request path as a job of its own. That was measured:
+  # a separate `image` job cost two billed minutes per pull request and saved
+  # nothing, because `migrations` is 104s with these checks and 64s without,
+  # and both round up to the same two minutes.
+  #
+  # No `pnpm install`, no node_modules, no migrations: a Postgres and a docker.
+  # The database is an EMPTY one — the schema-mismatch check makes its own.
+  # =======================================================================
+  image:
+    name: image
+    needs: plan
+    if: needs.plan.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: shikoo_test
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ['5432:5432']
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/shikoo_test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: The image, measured rather than described
+        run: bash tools/ci-image-checks.sh
+
+  # =======================================================================
   # The browser walk against a real server and a real SPA. The unit suite has
   # covered the dashboard-worker routes for months; this one proves the SPA
   # itself wires to them, with the cookies, the redirects and the keyboard the
@@ -528,7 +907,7 @@ jobs:
   # Needs the schema applied and the simulation seeded (`seed:sim`), because
   # global-setup.ts grants a role to the operator the browser signs in as — the
   # failure on an empty database is a flat 403 on every page, which reads as a
-  # broken panel rather than as a missing fixture. See `memory/e2e-needs-sim-seed`.
+  # broken panel rather than as a missing fixture.
   #
   # Still ONE job, and still `workers: 1`. Splitting it into two isolated shards
   # was not estimated, it was RUN — `playwright --shard=i/2`, each shard with its
@@ -541,14 +920,12 @@ jobs:
   # It works, and the aggregator merged both reports and counted the full 104
   # scenarios. It is simply the wrong side of the runner-minute budget: 32s of
   # wall time for a billed minute, because 77s of the job's 176s is fixed setup
-  # that sharding duplicates rather than divides, and +17.6% over the old
-  # workflow breaches the 15% ceiling this change was held to.
-  #
-  # If that ceiling is ever raised, this is the first thing to spend it on and
-  # it is one `strategy.matrix` away.
-  # -----------------------------------------------------------------------
+  # that sharding duplicates rather than divides.
+  # =======================================================================
   e2e:
     name: e2e
+    needs: plan
+    if: needs.plan.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -566,9 +943,6 @@ jobs:
       # `seed:sim` refuses anything that is not `local` or `test`; the panel
       # server refuses to start without it. Named once here so both agree.
       ENV_NAME: test
-      # `playwright.config.ts` reads sim/.env.local; the global setup and the
-      # panel server both consult it for TEST_ACCESS_USER. The file is created
-      # below, on this runner, with the same DATABASE_URL the service carries.
       CI: 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -659,7 +1033,8 @@ jobs:
           # Scoped to this workflow's own runs and invalidated by the version
           # alone: the directory holds vendor browser binaries keyed by that
           # version and nothing this repository produces, so no branch can put
-          # anything of its own into it.
+          # anything of its own into it. Deleting it costs a download and
+          # changes no result.
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install Playwright browsers
         run: pnpm --filter @shikoo/dashboard exec playwright install --with-deps chromium
@@ -710,7 +1085,7 @@ jobs:
         with:
           name: reports-e2e
           path: apps/dashboard-worker/playwright-report.json
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: error
 
       # Always, including on cancellation. The file is git-ignored, so it can
@@ -720,70 +1095,46 @@ jobs:
         if: always()
         run: rm -f sim/.env.local
 
-  # -----------------------------------------------------------------------
-  # The CI files themselves, and every shell script this repo ships.
+  # =======================================================================
+  # The 22 bash suites over `deploy/`. The only thing this workflow selects
+  # by path, and the reason it is safe to:
   #
-  # `actionlint` reads workflow YAML with the semantics GitHub itself applies
-  # at run time, and — with shellcheck on PATH, which `ubuntu-latest` has —
-  # ALSO runs shellcheck over every `run:` block. The previous version passed
-  # `ignore: SC`, which switched all of that off. Every shellcheck finding is
-  # now either fixed or carries a `# shellcheck disable=SCxxxx` at the exact
-  # line, with the reason beside it.
+  # These suites need no database and no node_modules — they are bash, `jq`
+  # and `curl`, all three on the runner already — and every file they read
+  # lives under `deploy/`, `.github/workflows/`, or `packages/migrate`'s
+  # source (which `d1-contract.test.sh` regenerates the table manifest from).
+  # A pull request that touches none of those cannot change what they assert.
   #
-  # `deploy/*.sh` and `tools/*.sh` are linted separately: those run as root on
-  # a box holding customer money, and they are the scripts most worth a linter.
-  # -----------------------------------------------------------------------
-  workflows-lint:
-    name: workflows-lint
+  # `tools/ci-plan.sh` decides, on a list that is a deliberate SUPERSET of
+  # that read-surface — it also names the lockfile, the workspace file,
+  # `tools/`, `migrations/`, `sim/` and the Dockerfile, because those are the
+  # paths that must force the complete suite whatever else is true.
+  # =======================================================================
+  deploy-suites:
+    name: deploy-suites
+    needs: plan
+    if: needs.plan.outputs.deploy_suites == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
-      - name: shellcheck is present (actionlint uses it for `run:` blocks)
-        run: shellcheck --version
-
-      - name: actionlint (pinned commit SHA, with the human-readable version)
-        # The SHA pins the exact code shipped; the comment tells a human which
-        # release that SHA corresponds to without re-deriving it.
-        #
-        # No `ignore:` — see the block comment above.
-        uses: rhysd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106  # v1.7.7
-
-      - name: shellcheck every shipped script
-        run: |
-          set -Eeuo pipefail
-          # -x follows `source`d files; -S style is the strictest level that
-          # still only reports things worth changing.
-          find deploy tools -name '*.sh' -type f -print0 2>/dev/null \
-            | xargs -0 --no-run-if-empty shellcheck --external-sources --severity=style
-
       # The deploy trigger, against a fake GitHub and a fake Coolify.
-      #
-      # It lives here rather than in a test job because it needs no database and
-      # no node_modules — it is bash, `jq` and `curl`, all three on the runner
-      # already. Thirteen cases; each one fails if the guard it names is
-      # removed, which was verified by removing each of them in turn.
+      # Thirteen cases; each one fails if the guard it names is removed, which
+      # was verified by removing each of them in turn.
       - name: autodeploy — exact-SHA behaviour
         run: bash deploy/test/autodeploy.test.sh
 
       # The live deploy path: the approval gate, the bot switch, the deploy
-      # lock, and the assertions about `deploy.yml` that actionlint cannot
-      # make — «a CI run from a pull request cannot deploy» is a property of
-      # the file's meaning, not of its syntax.
+      # lock, and the assertions about `deploy-staging.yml` that actionlint
+      # cannot make — «a CI run from a pull request cannot deploy» is a
+      # property of the file's meaning, not of its syntax.
       - name: deploy pipeline — gate, bot switch, digest promotion
         run: bash deploy/test/deploy-pipeline.test.sh
 
-      # The duplicate-variable classifier decrypts a DATABASE_URL and a bot
-      # token in order to say which row is which. Most of this suite is the
-      # negative half — the sentinel secrets must appear nowhere in its output
-      # — because a tool that reads secrets to describe them is one careless
-      # printf away from putting a production URL in a CI log.
       # The client every Coolify caller shares. The regression it encodes: the
       # status used to be set inside `$(...)`, so callers always read 0 and a
-      # verified 200 reported «the token was refused (HTTP 0)». The mutation
-      # cases exist because the fix is one convenience wrapper away from being
-      # undone.
+      # verified 200 reported «the token was refused (HTTP 0)».
       - name: coolify api client — the status survives the call
         run: bash deploy/test/coolify-api.test.sh
 
@@ -825,14 +1176,9 @@ jobs:
       - name: task runner installer — its refusals, exercised
         run: bash deploy/test/task-runner-installer.test.sh
 
-      # Prepare Production stopped at P0 because no attestation existed. The
-      # gate was right; the thing that produces the evidence was missing. What
-      # matters about the replacement is that it cannot write an attestation on
-      # anything less than a complete pass, and leaves nothing behind when it
-      # fails.
-      # The executable half. The textual suite proves the script CONTAINS
-      # things; these call the real guards with real inputs, which is what the
-      # review findings were actually about.
+      # The executable half of the rehearsal guards. The textual suite proves
+      # the script CONTAINS things; these call the real guards with real
+      # inputs, which is what the review findings were actually about.
       - name: rehearsal guards — executed, not grepped
         run: bash deploy/test/rehearsal-lib.test.sh
 
@@ -851,9 +1197,7 @@ jobs:
       # and the failure that matters is measuring one and reporting it as the
       # other. This drives the whole orchestration against a docker that
       # records which container received every operation, then breaks the
-      # script six ways and requires each to be refused. Reading the source
-      # cannot answer this; a command that names the right container is not a
-      # command that reached it.
+      # script six ways and requires each to be refused.
       - name: rehearsal subjects — the two halves are not interchangeable
         run: bash deploy/test/rehearsal-subjects.test.sh
 
@@ -872,8 +1216,7 @@ jobs:
       # The sidecar generator is the privileged half of D1 provenance: it runs
       # on the secure host beside the dump and writes the file the promotion
       # gate later believes. Its own refusals, its atomic publication, and what
-      # it prints are all part of the contract — the consumer's tests cannot
-      # stand in for them.
+      # it prints are all part of the contract.
       - name: D1 sidecar generator — its refusals, its publication, its silence
         run: bash deploy/test/d1-sidecar.test.sh
 
@@ -885,6 +1228,11 @@ jobs:
       - name: owner bundle restaging — provenance, or a refusal
         run: bash deploy/test/stage-owner-bundle.test.sh
 
+      # The duplicate-variable classifier decrypts a DATABASE_URL and a bot
+      # token in order to say which row is which. Most of this suite is the
+      # negative half — the sentinel secrets must appear nowhere in its output
+      # — because a tool that reads secrets to describe them is one careless
+      # printf away from putting a production URL in a CI log.
       - name: coolify duplicate classifier — it reads secrets and prints none
         run: bash deploy/test/classify-envs.test.sh
 
@@ -917,231 +1265,185 @@ jobs:
       - name: production dispatches — owner-only, main-only, and naming nothing
         run: bash deploy/test/production-workflows.test.sh
 
-  # -----------------------------------------------------------------------
-  # Secret detection.
-  #
-  # ## Why the CLI and not `gitleaks/gitleaks-action`
-  #
-  # gitleaks-action v2 requires `GITLEAKS_LICENSE` for any repository owned by
-  # an ORGANISATION. This repository is `Shikoonet/Shikoonet-Platform`, so the
-  # action exits with «missing GITLEAKS_LICENSE» on every run — a required
-  # check that can never pass, which is worse than no check at all. The CLI is
-  # MIT-licensed with no such gate.
-  #
-  # The release archive is pinned by version AND verified by sha256 before it
-  # is unpacked. A pinned version alone trusts that the tag was not re-cut;
-  # the checksum is what makes the download immutable.
-  #
-  # ## Two scans, because they answer different questions
-  #
-  #   `gitleaks dir`   — every tracked file as it stands. Catches a secret that
-  #                      an earlier commit introduced and this PR merely moves.
-  #   `gitleaks git`   — the commit range this PR adds. Catches a secret that
-  #                      was added and then deleted within the PR, which the
-  #                      working-tree scan cannot see.
-  #
-  # Both use `.github/gitleaks.toml`, whose allow-list names exact synthetic
-  # values and excludes no directory at all.
-  # -----------------------------------------------------------------------
-  secrets:
-    name: secrets
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      GITLEAKS_VERSION: 8.30.1
-      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-        with:
-          # The commit-range scan needs both sides of the range.
-          fetch-depth: 0
+      # The plan and the provenance proof: this workflow's own selection logic.
+      # It lives in this job rather than in `static` because it is a bash suite
+      # like every other one here, and because `ci-plan.sh` naming a path is
+      # exactly the kind of claim that has to be executed rather than read.
+      - name: ci plan and main provenance — the selector, and its refusals
+        run: bash tools/test/ci-plan.test.sh
 
-      - name: Install gitleaks (pinned release, sha256-verified)
-        run: |
-          set -Eeuo pipefail
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
-          curl --fail --silent --show-error --location --retry 3 --output "$archive" "$url"
-          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict -
-          tar -xzf "$archive" gitleaks
-          ./gitleaks version
-
-      - name: Scan the working tree
-        run: |
-          set -Eeuo pipefail
-          ./gitleaks dir . \
-            --config .github/gitleaks.toml \
-            --redact \
-            --no-banner \
-            --exit-code 1
-
-      - name: Scan the commits this pull request adds
-        # Only meaningful on a pull_request; a push to main has no range to
-        # compare against and the working-tree scan above already covers it.
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -Eeuo pipefail
-          ./gitleaks git . \
-            --config .github/gitleaks.toml \
-            --log-opts "${BASE_SHA}..${HEAD_SHA}" \
-            --redact \
-            --no-banner \
-            --exit-code 1
-
-      - name: Project-specific deny-list
-        # Paths and substrings gitleaks has no rule for, but which this project
-        # knows are wrong. Not secrets in themselves — a file NAME that should
-        # never be committed, and a host address that should never be pasted.
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -Eeuo pipefail
-
-          if [ -n "${BASE_REF}" ]; then
-            range="origin/${BASE_REF}...HEAD"
-          else
-            # push / merge_group / workflow_dispatch: compare against the
-            # parent commit, so the check still says something on a direct
-            # push instead of silently passing.
-            range="HEAD~1...HEAD"
-          fi
-          echo "range: ${range}"
-
-          denied=0
-
-          # Paths that must never appear in a commit.
-          while IFS= read -r path; do
-            [ -n "$path" ] || continue
-            case "$path" in
-              .notes|.notes/*)
-                echo "DENY: ${path} — .notes/ holds the work machine's tokens"
-                denied=$((denied + 1))
-                ;;
-              legacy/mirzabot-php/db|legacy/mirzabot-php/db/*)
-                echo "DENY: ${path} — the production dump is git-ignored on purpose"
-                denied=$((denied + 1))
-                ;;
-              sim/.env.local)
-                echo "DENY: ${path} — holds the test bot token; git-ignored on purpose"
-                denied=$((denied + 1))
-                ;;
-            esac
-          done <<< "$(git diff --name-only "$range" || true)"
-
-          # Substrings that must never appear in ADDED lines. Restricted to
-          # additions (`^+`) so that a commit which REMOVES one of these is
-          # not punished for the removal.
-          if git diff "$range" | grep -E '^\+' | grep -qE '164\.132\.198\.184'; then
-            echo 'DENY: an added line names the practice server by address'
-            denied=$((denied + 1))
-          fi
-
-          if [ "$denied" -gt 0 ]; then
-            echo "::error::${denied} deny-list violation(s)"
-            exit 1
-          fi
-          echo 'deny-list: clean'
-
-  # -----------------------------------------------------------------------
+  # =======================================================================
   # Stable final aggregator.
   #
-  # Reports PASS only when every required job passed AND every required job
-  # left behind the evidence that it ran what it claims. Runs `if: always()`
-  # so a cancelled earlier job still produces an explicit verdict — the
-  # ruleset, when it exists, sees one check, not a forest of pending ones.
+  # Reports PASS only when every required job did EXACTLY what the plan said
+  # it would, AND every job that ran left behind the evidence that it ran what
+  # it claims. Runs `if: always()` so a cancelled earlier job still produces an
+  # explicit verdict — the ruleset, when it exists, sees one check, not a
+  # forest of pending ones.
   #
-  # Two halves, and the second is why this job grew:
+  # Three halves, and the third is why this job grew again:
   #
-  #   1. Job results. `success` is the only acceptable value. `skipped` is
-  #      treated as failure on purpose: a skipped required check is what
-  #      `pull_request_target`-style attacks and missing-path-filter bugs look
-  #      like. For the `db-shard` matrix, `needs.db-shard.result` is already
-  #      the aggregate — one red shard makes it `failure`.
+  #   1. Job results, against the PLAN. `success` is required for every job the
+  #      plan said to run. `skipped` — exactly `skipped`, not `success` and not
+  #      `failure` — is required for every job the plan said not to. A job that
+  #      ran when the plan said it would not is as much a mismatch as one that
+  #      did not run when it should have, because both mean the `if:` and the
+  #      published plan disagree, and the plan is what this check believes.
   #
   #   2. Evidence. A green matrix proves nothing about a shard that never ran:
   #      a filter matching no package exits 0, and a matrix trimmed to one
   #      entry leaves nothing to notice. `tools/ci-verify-gate.ts` reads what
   #      every shard uploaded and checks it against `.github/ci-baseline.json`.
-  #      A missing report is a failure, not a warning.
-  # -----------------------------------------------------------------------
+  #      A missing report is a failure, not a warning. It runs whenever the
+  #      heavy suites ran, and is skipped — loudly, in the summary — when they
+  #      did not, because there is nothing to verify and pretending otherwise
+  #      is the umbrella this gate exists to refuse.
+  #
+  #   3. `plan` itself must have succeeded. If it did not, nothing below it can
+  #      be trusted to have made a decision at all, and every downstream `if:`
+  #      evaluated against an empty string.
+  # =======================================================================
   Required-Quality-Gate:
     name: Required Quality Gate
     runs-on: ubuntu-latest
-    needs: [lint, arch, unit, db-shard, migrations, e2e, workflows-lint, secrets]
+    needs: [plan, static, unit, db-shard, migrations, image, e2e, deploy-suites]
     if: always()
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
 
+      - name: Every job did exactly what the plan said
+        env:
+          PLAN: ${{ needs.plan.result }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          WANT_STATIC: ${{ needs.plan.outputs.static }}
+          WANT_HEAVY: ${{ needs.plan.outputs.heavy }}
+          WANT_DEPLOY: ${{ needs.plan.outputs.deploy_suites }}
+          WANT_IMAGE: ${{ needs.plan.outputs.image }}
+          STATIC: ${{ needs.static.result }}
+          UNIT: ${{ needs.unit.result }}
+          DB: ${{ needs.db-shard.result }}
+          MIGRATIONS: ${{ needs.migrations.result }}
+          IMAGE: ${{ needs.image.result }}
+          E2E: ${{ needs.e2e.result }}
+          DEPLOYS: ${{ needs.deploy-suites.result }}
+        run: |
+          set -Eeuo pipefail
+
+          bad=0
+          : >/tmp/rows.md
+
+          # A job the plan said to run must be `success`. A job the plan said
+          # NOT to run must be `skipped` — nothing else, in either direction.
+          check() { # label  wanted(true|false)  result
+            local label=$1 want=$2 got=$3 verdict
+            if [ "$want" = 'true' ]; then
+              if [ "$got" = 'success' ]; then verdict='ok'; else
+                verdict='WRONG'
+                echo "::error::${label}: the plan said run, the job reported '${got}'"
+                bad=$((bad + 1))
+              fi
+            else
+              if [ "$got" = 'skipped' ]; then verdict='ok (planned skip)'; else
+                verdict='WRONG'
+                echo "::error::${label}: the plan said skip, the job reported '${got}'"
+                bad=$((bad + 1))
+              fi
+            fi
+            printf '| %s | %s | %s | %s |\n' "$label" "$want" "$got" "$verdict" >>/tmp/rows.md
+          }
+
+          if [ "$PLAN" != 'success' ]; then
+            echo "::error::plan reported '${PLAN}' — no decision was published, so nothing below it can be believed"
+            bad=$((bad + 1))
+          fi
+
+          # An empty output means `plan` never published one. Treated as
+          # «should have run» so a job that was skipped against an empty plan
+          # is a mismatch and the gate is red — the fail-closed direction.
+          check 'static'        "${WANT_STATIC:-true}" "$STATIC"
+          check 'unit'          "${WANT_HEAVY:-true}"  "$UNIT"
+          check 'db-shard'      "${WANT_HEAVY:-true}"  "$DB"
+          check 'migrations'    "${WANT_HEAVY:-true}"  "$MIGRATIONS"
+          check 'e2e'           "${WANT_HEAVY:-true}"  "$E2E"
+          check 'image'         "${WANT_IMAGE:-true}"  "$IMAGE"
+          check 'deploy-suites' "${WANT_DEPLOY:-true}" "$DEPLOYS"
+
+          {
+            echo "## Required Quality Gate — plan \`${MODE:-unknown}\`"
+            echo
+            echo "| job | planned | result | |"
+            echo "| --- | --- | --- | --- |"
+            cat /tmp/rows.md
+            echo
+            echo "Commit: ${GITHUB_SHA}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          [ "$bad" -eq 0 ]
+
+      # `reports-*` only. The Playwright failure artifact carries traces of
+      # rendered pages and is megabytes; nothing here reads it.
+      #
+      # Only when the heavy suites ran — there is no report to download
+      # otherwise, and `download-artifact` fails on a pattern that matches
+      # nothing, which would be the right verdict for the wrong reason.
       - name: Collect every shard's report
-        # `reports-*` only. The Playwright failure artifact carries traces of
-        # rendered pages and is megabytes; nothing here reads it.
-        #
-        # No `continue-on-error`: if not one shard uploaded a report, this step
-        # fails and the gate is red, which is the correct verdict. When SOME
-        # shards uploaded, the download succeeds and the verify step below is
-        # what names the missing ones.
+        if: needs.plan.outputs.heavy == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           path: ci-reports
           pattern: 'reports-*'
 
-      - name: Every required job succeeded
-        id: results
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v4.4.0
+        if: needs.plan.outputs.heavy == 'true'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        if: needs.plan.outputs.heavy == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        if: needs.plan.outputs.heavy == 'true'
+
+      - name: Every suite that ran left the evidence that it ran
+        # Not conditional on the results step above: when a shard fails, its
+        # report still names which tests failed, and printing that beside the
+        # red job result is worth more than a second «a job failed».
+        if: always() && needs.plan.outputs.heavy == 'true'
+        run: pnpm exec tsx tools/ci-verify-gate.ts ci-reports
+
+      - name: Say why the baseline was not checked
+        # Said out loud rather than silently omitted. A run that verified no
+        # test counts should say so on its own summary, so «green» is never
+        # mistaken for «the suite passed» when the suite did not run.
+        if: needs.plan.outputs.heavy != 'true'
         env:
-          LINT: ${{ needs.lint.result }}
-          ARCH: ${{ needs.arch.result }}
-          UNIT: ${{ needs.unit.result }}
-          DB: ${{ needs.db-shard.result }}
-          MIGRATIONS: ${{ needs.migrations.result }}
-          E2E: ${{ needs.e2e.result }}
-          WF: ${{ needs.workflows-lint.result }}
-          SECRETS: ${{ needs.secrets.result }}
+          MODE: ${{ needs.plan.outputs.mode }}
         run: |
           set -Eeuo pipefail
           {
-            echo "## Required Quality Gate"
             echo
-            echo "| Job | Result |"
-            echo "| --- | --- |"
-            echo "| lint            | ${LINT} |"
-            echo "| arch            | ${ARCH} |"
-            echo "| unit            | ${UNIT} |"
-            echo "| db-shard (all)  | ${DB} |"
-            echo "| migrations      | ${MIGRATIONS} |"
-            echo "| e2e             | ${E2E} |"
-            echo "| workflows-lint  | ${WF} |"
-            echo "| secrets         | ${SECRETS} |"
+            echo "### The test baseline was NOT checked on this run"
             echo
-            echo "Commit: ${GITHUB_SHA}"
+            case "$MODE" in
+              main-proven)
+                echo "\`main\`, and \`tools/ci-main-provenance.sh\` proved this tree already"
+                echo "passed the complete suite as a pull request. The image was rebuilt and"
+                echo "re-verified; no test was re-run, because none could reach a new answer."
+                ;;
+              fast)
+                echo "Draft pull request — fast feedback only. Mark it Ready for Review to run"
+                echo "the complete gate. A draft merged anyway does NOT reach staging on this"
+                echo "green: \`tools/ci-main-provenance.sh\` requires the suites themselves to have"
+                echo "succeeded, not just this check, so \`main\` runs the complete suite instead."
+                ;;
+              docs)
+                echo "Every changed path is documentation. No suite could observe the change."
+                ;;
+              *)
+                echo "Mode \`${MODE:-unknown}\`."
+                ;;
+            esac
           } >> "$GITHUB_STEP_SUMMARY"
-          bad=0
-          for r in "${LINT}" "${ARCH}" "${UNIT}" "${DB}" "${MIGRATIONS}" "${E2E}" "${WF}" "${SECRETS}"; do
-            if [ "$r" != "success" ]; then
-              echo "::error::Required Quality Gate: a required job reported '${r}'"
-              bad=$((bad + 1))
-            fi
-          done
-          echo "bad=${bad}" >> "$GITHUB_OUTPUT"
-          [ "$bad" -eq 0 ]
-
-      - name: Every required job left the evidence that it ran
-        # `always()` and NOT conditional on the step above: when a shard fails,
-        # its report still names which tests failed, and printing that beside
-        # the red job result is worth more than a second «a job failed».
-        if: always()
-        run: pnpm exec tsx tools/ci-verify-gate.ts ci-reports
 
       - name: Verdict
         run: |
