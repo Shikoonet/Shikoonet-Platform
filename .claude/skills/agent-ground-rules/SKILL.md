@@ -220,22 +220,45 @@ Learned the hard way on 2026-08-29: PR #25 merged, CI went green, and
 `Deploy Staging` **refused in eleven seconds**. `main` moved and staging did
 not — a divergence whose only symptom is one failed workflow run.
 
-`deploy/approval-gate.sh` runs in `owner-or-approved` mode with
-`SOLO_DEPLOY_OWNER=Isusami`. For a PR written by anyone else — `arshiajacki`
-included — BOTH of these must be true:
+`deploy/approval-gate.sh` runs in `owner-or-approved` mode. **The owners are
+written in the workflow, not in a secret**, and staging and production do NOT
+have the same list:
 
-1. **An APPROVED review from a human other than the author**, sitting on the
-   PR's **FINAL head commit**. Push one more commit after the approval and it
-   is stale; the gate recomputes against the new head. Self-approvals and bot
-   reviews are excluded before the count is taken.
-2. **`Isusami` must be the one who clicks Merge.** «Reviewed is not sufficient
-   on its own» is the script's own comment: a PR that is approved and then
-   merged by its author still fails.
+| | owners | where |
+| --- | --- | --- |
+| Staging | `Isusami,arshiajacki` | `deploy-staging.yml` → `DEPLOY_OWNERS` |
+| Production | `Isusami` alone | each production workflow's `SOLO_DEPLOY_OWNER` |
 
-So «Sam approves the merge» is not the gate. The gate is: somebody else
-approves the PR on GitHub, and the owner merges it. Report it that way rather
-than announcing a merge as if it shipped — until `Deploy Staging` is green,
-nothing reached staging.
+`approval-gate.sh` reads `DEPLOY_OWNERS` first and falls back to
+`SOLO_DEPLOY_OWNER` only as the legacy single-name form. Before relying on any
+of this, ask the workflow rather than this file:
+
+```bash
+grep DEPLOY_OWNERS .github/workflows/deploy-staging.yml
+```
+
+Which branch the gate takes is decided by **who wrote the PR**:
+
+- **A PR written by an owner** → `ship_as_owner`. No review is required and
+  none is invented; the only condition is that **an owner also clicks Merge**.
+  The log records `policy=solo-owner` and says out loud that nobody read it.
+- **A PR written by anyone else** → `ship_as_approved` **plus** a merge by an
+  owner. That means an APPROVED review from a human who is not the author,
+  sitting on the **FINAL head commit** — push one more commit after the
+  approval and it is stale, because the gate recomputes against the new head,
+  and self-approvals and bot reviews are excluded before the count is taken.
+
+So «Sam approves the merge» is not the gate. Report what actually happened
+rather than announcing a merge as if it shipped — until `Deploy Staging` is
+green, nothing reached staging.
+
+> **This paragraph was wrong from 2026-08-29 to 2026-09-02 and nothing caught
+> it.** It said `SOLO_DEPLOY_OWNER=Isusami` and that `arshiajacki` needed a
+> review, months after commit `559e7e3` added the second staging owner. A
+> written rule that drifts from the workflow is worse than no rule, because it
+> is believed. That is why the `grep` above is in this file: the workflow is
+> the source of truth, and this table is a convenience that can go stale
+> again.
 
 Any `CHANGES_REQUESTED` review outranks all of it: somebody having looked and
 said no beats any policy about who may ship.
