@@ -209,6 +209,54 @@ consume anything.
 **Prefer a pull request to a direct push to `main`.** A direct push cannot be
 deployed and is no longer tested, so it buys nothing but an untested `main`.
 
+### Draft-first — the lifecycle every contributor follows
+
+The measured difference is the whole reason this section exists: a draft pull
+request costs **4 billed minutes**, a Ready one costs **16**. Under the August
+2026 workload, iterating in draft and marking Ready once projects to roughly
+**1,854 minutes a month**; marking Ready on every push projects to **2,805**,
+which is over the allowance.
+
+```
+Draft PR
+→ development pushes and local checks
+→ owner authorizes Ready
+→ one exact-head Full Gate
+→ owner authorizes merge
+→ main verification
+→ automatic Staging deployment
+→ Production only through a separate manual approval
+```
+
+1. **Open every pull request as a draft** — `gh pr create --draft`. Iterate
+   there; pushing your own branch is routine and reaches nobody.
+2. **Do not toggle Draft/Ready repeatedly.** Each Ready transition buys a
+   complete gate.
+3. **Mark Ready exactly once**, when the work is finished, local validation has
+   passed, the branch is clean, no further commits are planned, and the owner
+   has authorized it. Ready is not a way to ask for feedback — ask in words.
+4. **Any commit pushed after the Full Gate needs a new gate on the new exact
+   head.** Say so in the same message you announce the push.
+5. **Never merge unless `Required Quality Gate` is green on the exact final
+   head**, and never merge without the owner's explicit word. Green is a
+   precondition, never a permission.
+6. **Before merging, check all five:** the remote head equals the approved SHA;
+   the gate run belongs to that SHA; the run succeeded; `main` has not moved in
+   a way that invalidates the tested tree; and no unresolved Critical or High
+   correctness or security finding remains.
+7. **Do not create empty commits or meaningless changes to trigger CI**, and do
+   not weaken a required test, floor, coverage threshold, schema check or
+   security check to save minutes.
+8. **Bundle minor documentation and cleanup with the next genuine related
+   change** rather than spending a gate on a pull request of its own.
+9. **Production stays manual.** `Prepare`, `Promote` and `Cutover Production`
+   each need their own separate authorization.
+
+Agents working in this repository are bound by the same lifecycle, in
+`.claude/skills/agent-ground-rules/SKILL.md`, which adds one rule a human does
+not need: an agent may never mark a pull request Ready and may never merge it
+without the owner saying so explicitly, whatever the checks report.
+
 ---
 
 ## Rollback
