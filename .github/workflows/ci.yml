@@ -150,8 +150,16 @@ name: CI
 #     That also rules out a merge queue. The stable aggregator is what a future
 #     ruleset should require. Until then the real enforcement is
 #     `deploy/approval-gate.sh`, which refuses to deploy any commit whose
-#     «Required Quality Gate» did not succeed — so a pull request merged while
-#     still a draft is not blocked at merge, it is blocked at deploy.
+#     «Required Quality Gate» did not succeed.
+#
+#     A pull request merged while still a DRAFT is therefore not blocked at
+#     merge. What stops it reaching staging untested is
+#     `tools/ci-main-provenance.sh`: a draft's green gate sits over a run in
+#     which every suite skipped, the proof requires those suites to have
+#     SUCCEEDED, so it refuses, and `main` runs the complete suite before
+#     Deploy Staging can consume anything. Named explicitly because the first
+#     version of that script checked only the gate's own conclusion, which a
+#     Fast run satisfies — CodeRabbit caught it on PR #47.
 #
 # CodeRabbit:
 #   - reviewer at the App level, configured by `.coderabbit.yaml`, comments
@@ -1424,8 +1432,9 @@ jobs:
                 ;;
               fast)
                 echo "Draft pull request — fast feedback only. Mark it Ready for Review to run"
-                echo "the complete gate. A draft that is merged anyway is refused at deploy time"
-                echo "by \`deploy/approval-gate.sh\`, which requires this check on the merge commit."
+                echo "the complete gate. A draft merged anyway does NOT reach staging on this"
+                echo "green: \`tools/ci-main-provenance.sh\` requires the suites themselves to have"
+                echo "succeeded, not just this check, so \`main\` runs the complete suite instead."
                 ;;
               docs)
                 echo "Every changed path is documentation. No suite could observe the change."
