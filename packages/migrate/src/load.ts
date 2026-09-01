@@ -27,7 +27,13 @@ import { mysqlRows, report, type Config } from './db.js';
  * If dumps ever outgrow this, raise `max_allowed_packet` on the scratch server
  * and this limit with it; do not add a splitter.
  */
-const MAX_DUMP_BYTES = 48 * 1024 * 1024;
+/**
+ * Exported since 2026-09-01, because the panel now accepts an upload and the
+ * request has to be refused at the same number the loader would refuse it at.
+ * A second constant in `importRoutes.ts` would let a 60 MB file be accepted,
+ * written to disk, and only then rejected by the step after.
+ */
+export const MAX_DUMP_BYTES = 48 * 1024 * 1024;
 
 export interface LoadedDump {
   /** The scratch database the dump now lives in. */
