@@ -60,7 +60,26 @@ const ListQuery = z.object({
   status: z.enum(['ACTIVE', 'BLOCKED']).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(25),
+  /**
+   * «کی بیشترین پول را در کیف پولش دارد» — Sam, 2026-08-30.
+   *
+   * A closed set rather than a column name from the query string, so this can
+   * never become an injection point, and only two entries because those are
+   * the two orderings anything asks for. `balance` sorts by credit **and** by
+   * debt: the deepest reseller is a page away rather than behind a filter
+   * nobody would think to apply, which is the same reason `shopStats` keeps
+   * the two wallet totals apart instead of netting them.
+   */
+  sort: z.enum(['recent', 'balance', 'debt']).default('recent'),
 });
+
+const ORDER_BY: Record<'recent' | 'balance' | 'debt', string> = {
+  recent: 'u.id DESC',
+  // NULLS LAST, because a customer with no wallet row has a zero balance and
+  // not the largest one — Postgres sorts NULL highest under DESC by default.
+  balance: 'w.balance_irr DESC NULLS LAST, u.id DESC',
+  debt: 'w.balance_irr ASC NULLS LAST, u.id DESC',
+};
 
 const AdjustBody = z
   .object({
@@ -127,9 +146,10 @@ export function registerCustomerRoutes(
       status: c.req.query('status') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
+      sort: c.req.query('sort') || undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, status, page, pageSize } = parsed.data;
+    const { q, status, page, pageSize, sort } = parsed.data;
 
     // Built by hand rather than by string concatenation of values: the
     // Postgres adapter closes parameter gaps, so the numbering has to stay
@@ -172,7 +192,7 @@ export function registerCustomerRoutes(
          FROM users u
          LEFT JOIN wallets w ON w.user_id = u.id
          ${whereSql}
-        ORDER BY u.id DESC
+        ORDER BY ${ORDER_BY[sort]}
         LIMIT ?${limitParam} OFFSET ?${params.length}`,
     )
       .bind(...params)

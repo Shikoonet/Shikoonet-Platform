@@ -1,10 +1,32 @@
 /**
- * The panel's navigation, grouped the way the admin already knows it.
+ * The panel's navigation, grouped by the job rather than by where a screen
+ * came from.
  *
- * The three groups and their order come from the panel this replaces
- * (`panel/header.php`): منوی اصلی for the day-to-day lists, مدیریت for the
- * things that decide what can be sold, پیکربندی for the bot's own text and
- * layout. Keeping the order means an admin's muscle memory survives the move.
+ * ## Why this was regrouped on 2026-08-30
+ *
+ * Until today the groups were «منوی اصلی · مدیریت · پول · پیکربندی», inherited
+ * from `panel/header.php` so that muscle memory would survive the move. That
+ * reason expired: the panel now has screens the legacy never had, and the
+ * inheritance had turned «منوی اصلی» into eleven items covering four unrelated
+ * jobs while splitting every subject in two.
+ *
+ * It cost something real. Sam went looking for the expense ledger, did not find
+ * it, and asked where it was — it was the tenth of those eleven, under a name
+ * that starts with the word he was looking for. Five money screens sat in two
+ * different groups; six catalogue screens sat in two different groups; the two
+ * reporting screens sat in two different groups.
+ *
+ * So the rule here is now one sentence: **a group is one job, and nothing that
+ * belongs to that job lives anywhere else.** «هزینه‌ها» is beside «تراکنش‌ها»
+ * under «پول», «دسته‌بندی‌ها» is beside «محصولات» under «کاتالوگ», and the two
+ * «آمار» screens are beside each other under «گزارش‌ها» — which is also the only
+ * arrangement that makes their two names read as a pair rather than as a
+ * duplicate.
+ *
+ * `nav.test.tsx` used to pin the old four names and their order. That test was
+ * recording the decision above, not guarding an invariant, so it records this
+ * one now. What it still guards — and must keep guarding — is that no label is
+ * a substring of another.
  *
  * There was a `built: false` flag here and a «به‌زودی» badge beside the sections
  * that carried it. Both are gone because no section carries it any more —
@@ -44,6 +66,7 @@ export type PageId =
   | 'content'
   | 'access'
   | 'events'
+  | 'import'
   | 'bot'
   | 'settings';
 
@@ -60,58 +83,65 @@ export interface NavGroup {
 
 export const NAV: NavGroup[] = [
   {
-    label: 'منوی اصلی',
+    // First, because it is the question every other screen is an answer to.
+    // The two «آمار» screens are here together on purpose: one is the shop's
+    // own trade and the other is the bank side, and side by side their names
+    // read as a division of labour instead of as the same word twice.
+    label: 'گزارش‌ها',
     items: [
       { id: 'dashboard', label: 'داشبورد', icon: 'home' },
-      { id: 'customers', label: 'کاربران', icon: 'users' },
-      // «آمار مالی» in the پول group is the bank side. This one is the shop's
-      // own trade, which is why the two labels name their subject rather than
-      // both being «آمار».
       { id: 'stats', label: 'آمار فروشگاه', icon: 'grid' },
-      { id: 'bulk', label: 'ارسال گروهی', icon: 'send' },
-      { id: 'orders', label: 'سفارشات', icon: 'receipt' },
-      { id: 'catalog', label: 'سرویس‌ها', icon: 'grid' },
-      // «محصولات» sits under «سرویس‌ها» because that is the order the work
-      // happens in: a service decides the panel and the tier once, and then a
-      // product is a price on it. The panel being replaced has only the second
-      // screen, which is why building a service there means editing a row and
-      // hoping the copy-paste was right.
-      { id: 'products', label: 'محصولات', icon: 'package' },
-      { id: 'subscriptions', label: 'اشتراک‌های مشتری', icon: 'package' },
-      { id: 'transactions', label: 'تراکنش‌ها', icon: 'wallet' },
-      { id: 'expenses', label: 'هزینه‌ها و تعدیل‌ها', icon: 'wallet' },
-      { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list' },
+      { id: 'statistics', label: 'آمار مالی', icon: 'bars' },
     ],
   },
   {
-    label: 'مدیریت',
+    // A customer and what they bought. «سفارشات» sits between the person and
+    // the service because that is the order it happens in: someone orders, the
+    // order becomes a subscription.
+    label: 'مشتری و فروش',
+    items: [
+      { id: 'customers', label: 'کاربران', icon: 'users' },
+      { id: 'orders', label: 'سفارشات', icon: 'receipt' },
+      { id: 'subscriptions', label: 'اشتراک‌های مشتری', icon: 'package' },
+      { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list' },
+      { id: 'bulk', label: 'ارسال گروهی', icon: 'send' },
+    ],
+  },
+  {
+    // What can be sold, in the order the work happens in: a panel decides where
+    // a service lives, a service decides the tier, and a product is a price on
+    // it. «دسته‌بندی‌ها» and «قفسهٔ انبار» were two groups away from «محصولات»
+    // until today, which is how you edit a product and then hunt for the
+    // category it belongs to.
+    label: 'کاتالوگ',
     items: [
       { id: 'panels', label: 'مدیریت پنل‌ها', icon: 'server' },
+      { id: 'catalog', label: 'سرویس‌ها', icon: 'grid' },
+      { id: 'products', label: 'محصولات', icon: 'package' },
       { id: 'categories', label: 'دسته‌بندی‌ها', icon: 'grid' },
-      { id: 'stock', label: 'قفسهٔ انبار', icon: 'package' },
       { id: 'discounts', label: 'کدهای تخفیف', icon: 'ticket' },
-      { id: 'access', label: 'دسترسی‌ها', icon: 'users' },
-      { id: 'events', label: 'رویدادها', icon: 'list' },
+      { id: 'stock', label: 'قفسهٔ انبار', icon: 'package' },
     ],
   },
   {
-    // The payment hub, which until 2026-08-16 was a separate build behind a
-    // separate Cloudflare Access application at `/`. Third, in the position Sam
-    // put it after seeing the merged sidebar — the two groups above are what
-    // the shop's admin opens the panel for, and this is the one an operator
-    // sits in rather than visits.
+    // Every screen where money is looked at, in one place — which is what Sam
+    // could not find. «پرداخت‌ها» stays first: it is the one an operator sits
+    // in rather than visits.
     label: 'پول',
     items: [
       { id: 'payments', label: 'پرداخت‌ها', icon: 'money' },
-      { id: 'statistics', label: 'آمار مالی', icon: 'grid' },
       { id: 'today', label: 'امروز', icon: 'receipt' },
+      { id: 'transactions', label: 'تراکنش‌ها', icon: 'wallet' },
+      // «هزینه‌ها», not «هزینه‌ها و تعدیل‌ها»: the ledger now names each row's
+      // kind in a column of its own, so the title no longer has to list them.
+      { id: 'expenses', label: 'هزینه‌ها', icon: 'wallet' },
       { id: 'accounts', label: 'حساب‌ها', icon: 'wallet' },
       { id: 'banks', label: 'بانک‌ها', icon: 'list' },
       { id: 'devices', label: 'دستگاه‌ها', icon: 'server' },
     ],
   },
   {
-    label: 'پیکربندی',
+    label: 'ربات',
     items: [
       // First in its group, and above the bot's own wording, because it is the
       // question that comes before every other one here: an admin editing
@@ -125,7 +155,17 @@ export const NAV: NavGroup[] = [
       { id: 'texts', label: 'متن‌های ربات', icon: 'text' },
       { id: 'keyboard', label: 'چیدمان کیبورد', icon: 'keyboard' },
       { id: 'content', label: 'آموزش، برنامه‌ها و کانال‌ها', icon: 'text' },
+    ],
+  },
+  {
+    // Last, and the only group whose screens are about the panel itself rather
+    // than about the shop.
+    label: 'سیستم',
+    items: [
       { id: 'settings', label: 'تنظیمات', icon: 'settings' },
+      { id: 'access', label: 'دسترسی‌ها', icon: 'users' },
+      { id: 'events', label: 'رویدادها', icon: 'list' },
+      { id: 'import', label: 'ایمپورت میرزابات', icon: 'server' },
     ],
   },
 ];
@@ -150,7 +190,7 @@ export const NAV: NavGroup[] = [
  * route refuses them anyway (`eventRoutes.ts`), so offering the section would
  * be offering a door that answers 403.
  */
-export const ADMIN_ONLY: ReadonlySet<PageId> = new Set<PageId>(['events']);
+export const ADMIN_ONLY: ReadonlySet<PageId> = new Set<PageId>(['events', 'import']);
 
 export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   'dashboard',
@@ -178,7 +218,7 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   // ADMIN, so reading this page is safe for a reviewer.
   'stock',
   'discounts',
-  // «هزینه‌ها و تعدیل‌ها» is deliberately absent. It is not customer data, which
+  // «هزینه‌ها» is deliberately absent. It is not customer data, which
   // is the usual reason to withhold a page — it is the shop's own costs, and
   // what the shop spends is not part of reviewing a payment.
   'texts',

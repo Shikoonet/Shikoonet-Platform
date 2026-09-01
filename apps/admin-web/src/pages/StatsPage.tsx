@@ -18,17 +18,20 @@
  */
 
 import { useEffect, useState } from 'react';
+import { formatJalali, jalaliToIsoDate, toJalali, type JalaliDate } from '@shikoo/contracts';
+import { DateField } from '../DateField.js';
 import {
-  JALALI_MONTHS,
-  formatJalali,
-  jalaliMonthLength,
-  jalaliToIsoDate,
-  toJalali,
-  type JalaliDate,
-} from '@shikoo/contracts';
-import { api, type ShopStatsResponse, type StatsRange } from '../api.js';
+  api,
+  type CustomerListItem,
+  type RevenueTotals,
+  type ShopStatsResponse,
+  type StatsRange,
+} from '../api.js';
 import { Icon } from '../icons.js';
 import { count, toman, tomanCompact } from '../format.js';
+
+/** How many wallets «بیشترین موجودی» lists. A glance, not a report. */
+const TOP_WALLETS = 10;
 
 /** The seven buttons, in the order the legacy screen lists them. */
 const RANGES: Array<{ id: StatsRange; label: string }> = [
@@ -36,8 +39,8 @@ const RANGES: Array<{ id: StatsRange; label: string }> = [
   { id: '1h', label: 'یک ساعت اخیر' },
   { id: 'today', label: 'امروز' },
   { id: 'yesterday', label: 'دیروز' },
-  { id: 'month', label: 'ماه شمسی' },
-  { id: 'prev_month', label: 'ماه قبل' },
+  { id: 'month', label: 'ماه جاری' },
+  { id: 'prev_month', label: 'ماه گذشته' },
   { id: 'day', label: 'تاریخ مشخص' },
   { id: 'between', label: 'بازهٔ دلخواه' },
 ];
@@ -90,6 +93,23 @@ export function StatsPage() {
   const [data, setData] = useState<ShopStatsResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * The books and the wallets, from the two routes that already own them.
+   *
+   * They are separate requests rather than more fields on `/stats` because the
+   * boundary in `access.ts` is a path: `/revenue-adjustments` and `/customers`
+   * are both closed to a READ_ONLY operator, and the aggregate `/stats` is
+   * open to anyone signed in. Folding what the shop spends and who holds the
+   * most credit into the open route would hand a reader exactly the two things
+   * that list was written to keep from them.
+   *
+   * `null` therefore means «not shown to you», and the section says so rather
+   * than rendering an error — a reader has not done anything wrong.
+   */
+  const [ledger, setLedger] = useState<{ window: RevenueTotals | null; life: RevenueTotals } | null>(
+    null,
+  );
+  const [topWallets, setTopWallets] = useState<CustomerListItem[] | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -104,6 +124,30 @@ export function StatsPage() {
       .then((d) => alive && setData(d))
       .catch((e: unknown) => alive && setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => alive && setBusy(false));
+
+    api
+      .revenueAdjustments({
+        page: 1,
+        // One row, because only the totals are wanted here. `pageSize: 0` is
+        // refused by the route's own schema, and asking for fifty rows to throw
+        // them away is fifty rows of somebody's spending over the wire.
+        pageSize: 1,
+        range,
+        ...(range === 'between'
+          ? { rangeDay: jalaliToIsoDate(jFrom), rangeTo: jalaliToIsoDate(jTo) }
+          : { rangeDay: day }),
+      })
+      .then((r) => alive && setLedger({ window: r.rangeTotals, life: r.lifetime }))
+      .catch(() => alive && setLedger(null));
+
+    // Not ranged: a wallet balance is what is in it now, and «بیشترین موجودی
+    // در مهر» is not a question the ledger can answer — an entry is dated but
+    // a balance is not.
+    api
+      .customers({ page: 1, pageSize: TOP_WALLETS, sort: 'balance' })
+      .then((r) => alive && setTopWallets(r.items))
+      .catch(() => alive && setTopWallets(null));
+
     return () => {
       alive = false;
     };
@@ -159,6 +203,90 @@ export function StatsPage() {
 
       {data && (
         <div style={{ opacity: busy ? 0.55 : 1, transition: 'opacity .15s' }}>
+          {/*
+            First on the page, because it is the first question anybody opens
+            this screen to ask. Everything below it is a part of one of these
+            three figures, which is why they are stated before they are broken
+            up: «درآمد چیه؟ هزینه‌ها چیه؟ مانده چقدره؟» — Sam, 2026-08-30.
+          */}
+          <Section
+            title="دفتر فروشگاه"
+            sub={
+              ledger === null
+                ? 'برای دیدن این بخش دسترسی بالاتری لازم است'
+                : ledger.window === null
+                  ? 'از ابتدا تا همین لحظه'
+                  : `${fa(data.startMs!)} تا ${fa(data.endMs! - 1)}`
+            }
+          >
+            {ledger === null ? (
+              <p className="muted">
+                هزینه‌ها بخشی از دفتر فروشگاه‌اند و برای نقش «فقط خواندن» نمایش داده نمی‌شوند.
+              </p>
+            ) : (
+              (() => {
+                // The lifetime figures when the range is «آمار کل», which has no
+                // bounds to filter on. Both come from the same route in the same
+                // response, so the two can never be a window and a lifetime
+                // subtracted from one another.
+                const books = ledger.window ?? ledger.life;
+                // Every figure below is stored signed, so the net is a sum and
+                // not a subtraction. `earnedIrr` is the orders; the three from
+                // the ledger are what an admin did to that figure by hand.
+                const net = data.earnedIrr + books.netIrr;
+                return (
+                  <div className="stats-grid">
+                    <Stat
+                      tone="tone-green"
+                      icon="money"
+                      value={tomanCompact(data.earnedIrr)}
+                      label="درآمد"
+                      foot="فروش + تمدید + افزودنی، فقط سفارش‌های تکمیل‌شده"
+                    />
+                    <Stat
+                      tone="tone-orange"
+                      icon="receipt"
+                      value={tomanCompact(books.expensesIrr)}
+                      label="هزینه‌ها"
+                      foot="تبلیغات، سرور، تسویه — از دفتر «هزینه‌ها»"
+                    />
+                    {/* This card said «برگشتی و اعتبار» until 2026-08-30 and
+                        showed every positive row, which on the production data
+                        was the shop's hand-recorded reseller income — labelled
+                        as returns. The two are now separate cards because they
+                        are opposite things. */}
+                    <Stat
+                      tone="tone-orange"
+                      icon="receipt"
+                      value={tomanCompact(books.revenueFixIrr)}
+                      label="اصلاح درآمد"
+                      foot="فیش فیک، عدم واریزی، تکراری"
+                    />
+                    <Stat
+                      tone="tone-blue"
+                      icon="money"
+                      value={tomanCompact(books.manualIncomeIrr)}
+                      label="درآمد دستی"
+                      foot="فروش ریسلری که دستی ثبت شده"
+                    />
+                    <Stat
+                      tone={net < 0 ? 'tone-orange' : 'tone-green'}
+                      icon="bars"
+                      value={tomanCompact(net)}
+                      label="مانده"
+                      foot={`${toman(data.earnedIrr)} به‌علاوهٔ دفتر`}
+                    />
+                  </div>
+                );
+              })()
+            )}
+            <p className="muted" style={{ marginBottom: 0, marginTop: 12, lineHeight: 1.9 }}>
+              شارژ کیف پول در «درآمد» نیست: پولی که مشتری به کیف پولش می‌ریزد هنوز چیزی
+              نخریده، و شمردنش این‌جا یک ریال را دو بار می‌شمارد — یک بار موقع واریز و یک
+              بار موقع خرید.
+            </p>
+          </Section>
+
           <Section
             title="در این بازه"
             sub={
@@ -187,6 +315,20 @@ export function StatsPage() {
                 value={tomanCompact(data.renewalsIrr)}
                 label="جمع تمدید"
                 foot={exact(data.renewalsIrr)}
+              />
+              <Stat
+                tone="tone-blue"
+                icon="package"
+                value={count(data.addonsCount)}
+                label="تعداد افزودنی"
+                foot="حجم و زمان اضافه روی سرویس موجود"
+              />
+              <Stat
+                tone="tone-blue"
+                icon="money"
+                value={tomanCompact(data.addonsIrr)}
+                label="جمع افزودنی"
+                foot={exact(data.addonsIrr)}
               />
               <Stat
                 tone="tone-orange"
@@ -255,17 +397,10 @@ export function StatsPage() {
                 value={tomanCompact(data.activeSubscriptionsIrr)}
                 label="ارزش سرویس‌های فعال"
               />
-              <Stat
-                tone="tone-orange"
-                icon="wallet"
-                value={tomanCompact(data.walletHeldIrr)}
-                label="موجودی کل کاربران"
-                foot={
-                  data.walletDebtors > 0
-                    ? `${toman(data.walletOwedToShopIrr)} بدهی از ${count(data.walletDebtors)} کیف پول`
-                    : 'هیچ کیف پولی زیر صفر نیست'
-                }
-              />
+              {/* The wallet used to be an eighth card here. It moved to its own
+                  section below, where the total sits beside the people it is
+                  owed to — one figure in one place, still under a heading that
+                  says the period does not change it. */}
               <Stat tone="tone-blue" icon="users" value={count(data.resellers)} label="نمایندگان" />
               <Stat tone="tone-blue" icon="server" value={count(data.panels)} label="پنل‌ها" />
               <Stat
@@ -275,6 +410,76 @@ export function StatsPage() {
                 label="پرداخت در انتظار بررسی"
               />
             </div>
+          </Section>
+
+          {/*
+            «چقدر پول داخل کیف پول مردم هست؟ کی بیشترین مقدار رو داره؟» — the
+            total was already on this page, buried among six other «هم‌اکنون»
+            cards with nothing to say who it belongs to. A liability of 25
+            million Toman spread over 484 people and a single reseller 5.9
+            million under are different situations, and only the list tells
+            them apart.
+          */}
+          <Section
+            title="کیف پول مشتریان"
+            sub="بدهی فروشگاه به مشتری‌ها — موجودی هم‌اکنون، نه در بازهٔ انتخابی"
+          >
+            <div className="stats-grid" style={{ marginBottom: 16 }}>
+              <Stat
+                tone="tone-orange"
+                icon="wallet"
+                value={tomanCompact(data.walletHeldIrr)}
+                label="جمع اعتبار مشتریان"
+                foot={exact(data.walletHeldIrr)}
+              />
+              <Stat
+                tone={data.walletDebtors > 0 ? 'tone-orange' : 'tone-green'}
+                icon="wallet"
+                value={tomanCompact(data.walletOwedToShopIrr)}
+                label="بدهی مشتریان به فروشگاه"
+                foot={
+                  data.walletDebtors > 0
+                    ? // The exact figure, not just the count. This line said
+                      // «۱۱٬۰۰۰٬۰۰۰ ریال» once, on a panel where nothing else
+                      // is Rial — a tenfold misread hiding in a footnote.
+                      `${toman(data.walletOwedToShopIrr)} در ${count(data.walletDebtors)} کیف پول`
+                    : 'هیچ کیف پولی زیر صفر نیست'
+                }
+              />
+            </div>
+
+            {topWallets === null ? (
+              <p className="muted">
+                نام مشتری‌ها برای نقش «فقط خواندن» نمایش داده نمی‌شود؛ جمع بالا در دسترس است.
+              </p>
+            ) : topWallets.length === 0 ? (
+              <p className="muted">هنوز هیچ کیف پولی موجودی ندارد.</p>
+            ) : (
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>مشتری</th>
+                      <th>شناسهٔ تلگرام</th>
+                      <th>موجودی</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {topWallets.map((w) => (
+                      <tr key={w.id}>
+                        {/* A customer with no Telegram username is the common
+                            case here — 2,924 rows store the literal
+                            'NOT_USERNAME' and the import drops it — so the id
+                            beside it is the identifier that always exists. */}
+                        <td>{w.username ? `@${w.username}` : '—'}</td>
+                        <td>{String(w.telegramId)}</td>
+                        <td>{toman(w.balanceIrr)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Section>
 
           <Section title="درگاه‌های پرداخت" sub="پرداخت‌های موفق در همین بازه">
@@ -329,94 +534,6 @@ export function StatsPage() {
  * the one every boundary on this page was computed in.
  */
 const fa = (ms: number) => formatJalali(ms, true);
-
-/**
- * One Jalali date: day, month, year.
- *
- * Three selects rather than a calendar widget, and rather than the browser's
- * `<input type="date">` — that one renders a Gregorian picker whatever the page
- * language is, so choosing «۷ شهریور» meant hunting for 29 August. Selects need
- * no dependency, work on a phone, and cannot offer a date that does not exist:
- * the day list is the month's real length, asked of the calendar rather than
- * assumed.
- *
- * **The DOM order is the reading order.** The page is RTL, so day first in the
- * markup puts day furthest right — ۷ | شهریور | ۱۴۰۵, the order the date is
- * spoken in Persian. Writing year-first put the year under the reader's thumb
- * and read backwards.
- */
-function DateField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: JalaliDate;
-  onChange: (d: JalaliDate) => void;
-}) {
-  const today = toJalali(Date.now());
-  const years = [today.year - 3, today.year - 2, today.year - 1, today.year];
-  const length = jalaliMonthLength(value.year, value.month);
-
-  /**
-   * Clamped, because 31 Farvardin exists and 31 Mehr does not.
-   *
-   * Without this, picking 31 Farvardin and then switching to Mehr asks for a
-   * date the calendar has no answer for, and `jalaliToEpochMs` throws rather
-   * than guessing — correctly, but on a screen the operator is looking at.
-   */
-  const move = (next: Partial<JalaliDate>) => {
-    const merged = { ...value, ...next };
-    onChange({ ...merged, day: Math.min(merged.day, jalaliMonthLength(merged.year, merged.month)) });
-  };
-
-  return (
-    <div className="datefield">
-      <span className="datefield__label">{label}</span>
-      <div className="datefield__row">
-        <select
-          className="form-control"
-          data-part="day"
-          aria-label={`روز ${label}`}
-          value={value.day}
-          onChange={(e) => move({ day: Number(e.target.value) })}
-        >
-          {Array.from({ length }, (_, i) => i + 1).map((d) => (
-            <option key={d} value={d}>
-              {d.toLocaleString('fa-IR')}
-            </option>
-          ))}
-        </select>
-        <select
-          className="form-control"
-          data-part="month"
-          aria-label={`ماه ${label}`}
-          value={value.month}
-          onChange={(e) => move({ month: Number(e.target.value) })}
-        >
-          {JALALI_MONTHS.map((name, i) => (
-            <option key={name} value={i + 1}>
-              {name}
-            </option>
-          ))}
-        </select>
-        <select
-          className="form-control"
-          data-part="year"
-          aria-label={`سال ${label}`}
-          value={value.year}
-          onChange={(e) => move({ year: Number(e.target.value) })}
-        >
-          {years.map((y) => (
-            <option key={y} value={y}>
-              {y.toLocaleString('fa-IR', { useGrouping: false })}
-            </option>
-          ))}
-        </select>
-      </div>
-    </div>
-  );
-}
 
 function Section({
   title,

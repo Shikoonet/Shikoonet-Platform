@@ -19,6 +19,7 @@
     "@shikoo/database": "workspace:*",
     "@shikoo/db": "workspace:*",
     "@shikoo/domain": "workspace:*",
+    "@shikoo/migrate": "workspace:*",
     "@shikoo/sms-parser": "workspace:*",
     "hono": "4.13.3",
     "tsx": "^4.23.7",

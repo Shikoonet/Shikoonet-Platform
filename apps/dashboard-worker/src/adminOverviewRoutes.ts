@@ -51,8 +51,13 @@ export function registerAdminOverviewRoutes(
      * dropped it would show a revenue figure 309 million higher than the one the
      * admin reads today, on the first morning after the cutover.
      */
+    // `shop_books` and not the table: a voided row is one an admin has taken
+    // off the books on purpose, and it must not keep moving this figure. The
+    // view is where that rule lives, so no reader has to remember it —
+    // `verify.ts` deliberately reads the table instead, because it is asking
+    // whether the import landed every Rial rather than what the books say.
     const adjustment = await db
-      .prepare(`SELECT COALESCE(SUM(amount_irr), 0) AS net FROM revenue_adjustments`)
+      .prepare(`SELECT COALESCE(SUM(amount_irr), 0) AS net FROM shop_books`)
       .first<{ net: string | number }>();
 
     const recentCustomers = await db

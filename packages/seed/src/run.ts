@@ -32,8 +32,20 @@ import { seedShop } from './shop.js';
  * reported all 21 migrations pending on a database that had every one of them —
  * a ledger that lies is worse than no ledger, because the whole point is being
  * able to trust it without reading the tables.
+ *
+ * `expense_categories` is `bank_card_prefixes` again: seven names inserted by
+ * `0040` and edited by admins on the expenses screen afterwards. It was not
+ * here until 2026-08-30, so every `seed:sim` since `0040` landed left the
+ * expense screen with no categories at all — no breakdown, no picker, and a
+ * «تفکیک» that answered nothing. Re-seeding the names here instead would be two
+ * definitions of the same list and would throw away an admin's own additions.
  */
-const KEEP = new Set(['schema_meta', 'bank_card_prefixes', 'schema_migrations']);
+const KEEP = new Set([
+  'schema_meta',
+  'bank_card_prefixes',
+  'schema_migrations',
+  'expense_categories',
+]);
 
 /**
  * This truncates every table it is pointed at, so it may only ever be pointed

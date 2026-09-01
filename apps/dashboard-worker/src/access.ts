@@ -66,6 +66,11 @@ const PERSONAL_DATA_PREFIXES = [
   // entry is what keeps «رویدادها» out of a reader's sidebar in the first
   // place.
   '/api/v1/admin/events',
+  // Importing the legacy shop is the owner's job, and a run's report names the
+  // dump on disk and carries sample rows out of `users` and `payments`. Every
+  // route under it checks ADMIN again; this entry is what keeps «ایمپورت» out
+  // of a reader's sidebar to begin with.
+  '/api/v1/admin/import',
 ];
 
 /**

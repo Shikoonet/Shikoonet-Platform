@@ -377,6 +377,10 @@ export interface ShopStatsResponse {
   salesIrr: number;
   renewalsCount: number;
   renewalsIrr: number;
+  addonsCount: number;
+  addonsIrr: number;
+  /** Sales + renewals + add-ons. Not top-ups — that is money moved, not earned. */
+  earnedIrr: number;
   topupsIrr: number;
   conversionPercent: number;
   avgPerBuyerIrr: number;
@@ -442,24 +446,129 @@ export interface StockBody {
 }
 
 /**
- * One line of the shop's own books. `amountIrr` is SIGNED — negative is a cost —
- * because that is how the row is stored and how the legacy log stored it too.
- * There is no `type` field to disagree with the sign.
+ * What a line of the shop's books IS.
+ *
+ * The sign alone said «which way» and never «what», and a screen built on it
+ * reported 35.8 million Toman of fake receipts as money the shop had spent.
+ */
+export type LedgerKind = 'EXPENSE' | 'REVENUE_FIX' | 'MANUAL_INCOME';
+
+export const LEDGER_KIND_FA: Record<LedgerKind, string> = {
+  EXPENSE: 'هزینه',
+  REVENUE_FIX: 'اصلاح درآمد',
+  MANUAL_INCOME: 'درآمد دستی',
+};
+
+/**
+ * What a bill arrived in. `IRR` means the row is what it has always been — a
+ * Toman figure with no invoice behind it — and the other three carry the
+ * original amount and the rate it was bought at.
+ */
+export type Currency = 'IRR' | 'EUR' | 'USD' | 'TON';
+
+export const CURRENCY_FA: Record<Currency, string> = {
+  IRR: 'تومان',
+  EUR: 'یورو',
+  USD: 'دلار',
+  TON: 'تون',
+};
+
+/** Every currency but the one the books are kept in. */
+export const FOREIGN_CURRENCIES: Currency[] = ['EUR', 'USD', 'TON'];
+
+/**
+ * One line of the shop's own books. `amountIrr` is SIGNED — negative is money
+ * out — because that is how the row is stored and how the legacy log stored it
+ * too. `kind` says what the row means; the sign only says which direction.
  */
 export interface RevenueAdjustmentRow {
   id: number;
   amountIrr: number;
   note: string;
+  kind: LedgerKind;
+  categoryId: number | null;
+  categoryName: string | null;
+  /** The day the money moved, Gregorian on the wire. Not when it was typed. */
+  spentOn: string;
+  /**
+   * The invoice behind the figure, when there was one. `originalAmount` and
+   * `fxRateIrr` are both null exactly when `currency` is `IRR` — the schema
+   * guarantees they travel together, so testing one is enough.
+   *
+   * `amountIrr` above is still the only figure anything adds up. These three
+   * are the receipt: what the bill said, and what a unit cost on the day.
+   */
+  currency: Currency;
+  originalAmount: number | null;
+  /** Rial per unit. Divide by ten to show the Toman an admin typed. */
+  fxRateIrr: number | null;
+  /** The template this was posted from, if it was posted rather than typed. */
+  recurrenceId: number | null;
   createdBy: string | null;
   createdAt: string;
+  voidedAt: string | null;
+  voidedBy: string | null;
+  voidReason: string | null;
+  /** From `audit_logs`, not a cached column — two records of one fact drift. */
+  editCount: number;
+  lastEditedAt: number | null;
+  lastEditedBy: string | null;
 }
 
-/** Over the whole ledger, never over the page. */
 export interface RevenueTotals {
-  /** Negative or zero. */
+  /** Negative or zero — what the shop actually spent. */
   expensesIrr: number;
-  creditsIrr: number;
+  /** Corrections to income: a fake receipt, a duplicate charge. Either sign. */
+  revenueFixIrr: number;
+  /** Sales recorded by hand, mostly reseller top-ups. Positive. */
+  manualIncomeIrr: number;
+  /** The three above, added. */
   netIrr: number;
+  /**
+   * How many rows each figure was added up from.
+   *
+   * Sent because a total with no denominator cannot be checked: «−۷۵۴ میلیون»
+   * is unverifiable, «−۷۵۴ میلیون از ۵۶ ردیف» can be clicked through to the
+   * fifty-six.
+   */
+  expensesCount: number;
+  revenueFixCount: number;
+  manualIncomeCount: number;
+  netCount: number;
+}
+
+export interface ExpenseCategory {
+  id: number;
+  name: string;
+  active: boolean;
+  sortOrder: number;
+  /** So «غیرفعال کردن» can say what it costs before it is pressed. */
+  rowCount: number;
+}
+
+/**
+ * A cost that comes back — «هزینه یک ماهه سرور آلمان» and its next due date.
+ *
+ * `amountIrr` is a positive magnitude and a DEFAULT, not a total: nothing adds
+ * this column up, and posting an instalment replaces it with what was actually
+ * paid so a euro bill's Toman figure tracks the rate instead of going stale.
+ *
+ * There is no cron. `due` is answered by Postgres in Tehran and the screen shows
+ * a button; a template nobody presses stays due and the number on the banner
+ * grows, which is the right way for this to fail.
+ */
+export interface ExpenseRecurrence {
+  id: number;
+  label: string;
+  categoryId: number | null;
+  categoryName: string | null;
+  amountIrr: number;
+  period: 'MONTHLY' | 'YEARLY';
+  /** Gregorian on the wire; the screen picks and shows it in Jalali. */
+  nextDueOn: string;
+  active: boolean;
+  note: string;
+  due: boolean;
 }
 
 export interface RevenueAdjustmentPage {
@@ -468,7 +577,97 @@ export interface RevenueAdjustmentPage {
   page: number;
   pageSize: number;
   items: RevenueAdjustmentRow[];
+  /** Over the current filter — the same rows the table is showing. */
   totals: RevenueTotals;
+  /** Over the whole ledger, whatever the filter says. The shop's position. */
+  lifetime: RevenueTotals;
+  /**
+   * The same figures over the window «آمار فروشگاه» is showing, or null when no
+   * `range` was asked for or the range is unbounded («آمار کل»), in which case
+   * `lifetime` is the answer.
+   */
+  rangeTotals: (RevenueTotals & { startMs: number; endMs: number }) | null;
+  /** «تفکیک» — what the spending went on. Expenses only. */
+  byCategory: Array<{
+    categoryId: number | null;
+    name: string | null;
+    count: number;
+    irr: number;
+  }>;
+}
+
+/**
+ * One view of the ledger, shared by the list and the export.
+ *
+ * A single type because the export's whole reason to exist is that it carries
+ * the SAME rows the table is showing. Two shapes here would be two ways to say
+ * «advertising in Mordad» and one of them would eventually mean something else.
+ */
+export interface LedgerFilter {
+  kind?: LedgerKind | '';
+  categoryId?: number | '';
+  uncategorised?: boolean;
+  /** Gregorian `YYYY-MM-DD`, on `spent_on`. The screen picks them in Jalali. */
+  from?: string;
+  to?: string;
+  q?: string;
+  voided?: 'hide' | 'show' | 'only';
+  /**
+   * Only «آمار فروشگاه» sends these, for the window it is showing.
+   *
+   * Named apart from `from`/`to` above, and sent as `rangeDay`/`rangeTo`,
+   * because those two already mean this filter's own spend-date bounds. One
+   * name for two windows is how a screen filters by one and totals by the
+   * other.
+   */
+  range?: StatsRange;
+  rangeDay?: string;
+  rangeTo?: string;
+}
+
+export function ledgerQuery(f: LedgerFilter): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (f.kind) qs.set('kind', f.kind);
+  if (f.uncategorised) qs.set('uncategorised', 'true');
+  else if (f.categoryId) qs.set('categoryId', String(f.categoryId));
+  if (f.from) qs.set('from', f.from);
+  if (f.to) qs.set('to', f.to);
+  if (f.q) qs.set('q', f.q);
+  if (f.voided && f.voided !== 'hide') qs.set('voided', f.voided);
+  if (f.range) qs.set('range', f.range);
+  if (f.rangeDay) qs.set('rangeDay', f.rangeDay);
+  if (f.rangeTo) qs.set('rangeTo', f.rangeTo);
+  return qs;
+}
+
+/**
+ * How much, said one of the two ways the server accepts.
+ *
+ * Never both: a Toman figure sent beside a rate would be two answers to one
+ * question and the server refuses it with a 400. The multiplication for a
+ * foreign bill happens on the server, so the amount in the books is the one the
+ * invoice and the rate produce — not a second rounding done in a browser.
+ */
+export type LedgerMoney =
+  | { amountToman: number; currency?: 'IRR'; originalAmount?: never; fxRateToman?: never }
+  | {
+      amountToman?: never;
+      currency: Exclude<Currency, 'IRR'>;
+      /** What the invoice said: 35.5 for €35.50. */
+      originalAmount: number;
+      /** Toman for ONE unit, on the day the money left. */
+      fxRateToman: number;
+    };
+
+/** One thing that was done to a ledger row, out of the append-only audit log. */
+export interface LedgerHistoryEntry {
+  action: string;
+  actor: string;
+  at: number;
+  /** Only the fields that changed, with the same keys on both sides. */
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  reason: string | null;
 }
 
 /**
@@ -958,6 +1157,43 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body;
 }
 
+export interface ImportDumpFile {
+  name: string;
+  bytes: number;
+  modifiedAt: string;
+}
+
+export type ImportDomain =
+  | 'core'
+  | 'catalog'
+  | 'sales'
+  | 'discounts'
+  | 'config'
+  | 'history'
+  | 'hub';
+
+export type ImportMode = 'PREFLIGHT' | 'DRY_RUN' | 'APPLY';
+
+export interface ImportReportLine {
+  level: 'title' | 'step' | 'ok' | 'warn' | 'fail' | 'detail' | 'count';
+  text: string;
+}
+
+export interface ImportRun {
+  id: string;
+  mode: ImportMode;
+  status: 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  dump_path: string;
+  dump_bytes: number | null;
+  domains: ImportDomain[];
+  report?: ImportReportLine[];
+  samples?: Record<string, Record<string, unknown>[]>;
+  error: string | null;
+  started_by: string;
+  started_at: string;
+  finished_at: string | null;
+}
+
 export const api = {
   me() {
     return req<{ ok: boolean } & Me>('/me');
@@ -1015,13 +1251,20 @@ export const api = {
     return req<{ ok: boolean }>(`/bot-admins/${id}`, { method: 'DELETE' });
   },
 
-  customers(params: { q?: string; status?: string; page: number; pageSize: number }) {
+  customers(params: {
+    q?: string;
+    status?: string;
+    page: number;
+    pageSize: number;
+    sort?: 'recent' | 'balance' | 'debt';
+  }) {
     const qs = new URLSearchParams({
       page: String(params.page),
       pageSize: String(params.pageSize),
     });
     if (params.q) qs.set('q', params.q);
     if (params.status) qs.set('status', params.status);
+    if (params.sort && params.sort !== 'recent') qs.set('sort', params.sort);
     return req<CustomerListPage>(`/customers?${qs.toString()}`);
   },
 
@@ -1228,19 +1471,36 @@ export const api = {
     return req<{ ok: boolean }>(`/stock/${id}`, { method: 'DELETE' });
   },
 
-  revenueAdjustments(params: { direction?: string; page: number; pageSize: number }) {
-    const qs = new URLSearchParams({
-      page: String(params.page),
-      pageSize: String(params.pageSize),
-    });
-    if (params.direction) qs.set('direction', params.direction);
+  revenueAdjustments(params: LedgerFilter & { page: number; pageSize: number }) {
+    const qs = ledgerQuery(params);
+    qs.set('page', String(params.page));
+    qs.set('pageSize', String(params.pageSize));
     return req<RevenueAdjustmentPage>(`/revenue-adjustments?${qs.toString()}`);
   },
 
-  /** A positive amount and a direction — never a signed amount. */
-  addRevenueAdjustment(body: {
-    amountToman: number;
-    direction: 'expense' | 'credit';
+  /**
+   * The URL of the export, for an `<a href>` rather than a fetch.
+   *
+   * A download has to be a navigation: fetching it into memory and building a
+   * blob would put the whole filtered ledger through JavaScript to produce the
+   * bytes the server already produced.
+   */
+  revenueAdjustmentsCsvUrl(params: LedgerFilter) {
+    return `${BASE}/revenue-adjustments/export.csv?${ledgerQuery(params).toString()}`;
+  },
+
+  /**
+   * A positive amount and a kind — never a signed amount.
+   *
+   * `kind` has no default on the server on purpose: a body that does not say
+   * what a line is gets a 400 rather than a guess, because the guess would be
+   * invisible and this is money.
+   */
+  addRevenueAdjustment(body: LedgerMoney & {
+    kind: LedgerKind;
+    direction?: 'expense' | 'credit';
+    categoryId?: number | null;
+    spentOn?: string;
     note: string;
   }) {
     return req<{ ok: boolean; id: number; amountIrr: number }>('/revenue-adjustments', {
@@ -1249,8 +1509,109 @@ export const api = {
     });
   },
 
-  deleteRevenueAdjustment(id: number) {
-    return req<{ ok: boolean }>(`/revenue-adjustments/${id}`, { method: 'DELETE' });
+  editRevenueAdjustment(
+    id: number,
+    body: Partial<LedgerMoney> & {
+      kind?: LedgerKind;
+      direction?: 'expense' | 'credit';
+      categoryId?: number | null;
+      spentOn?: string;
+      note?: string;
+      reason?: string;
+    },
+  ) {
+    return req<{ ok: boolean; changed: boolean }>(`/revenue-adjustments/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /**
+   * Voiding, which replaced deleting.
+   *
+   * The row stays and leaves every total. A reason is required — it is the
+   * whole difference between a line that is gone and a line that is explained.
+   */
+  voidRevenueAdjustment(id: number, reason: string) {
+    return req<{ ok: boolean }>(`/revenue-adjustments/${id}/void`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+  },
+
+  revenueAdjustmentHistory(id: number) {
+    return req<{ ok: boolean; items: LedgerHistoryEntry[] }>(
+      `/revenue-adjustments/${id}/history`,
+    );
+  },
+
+  expenseCategories() {
+    return req<{ ok: boolean; items: ExpenseCategory[] }>('/revenue-adjustments/categories');
+  },
+
+  addExpenseCategory(body: { name: string; sortOrder?: number }) {
+    return req<{ ok: boolean; id: number }>('/revenue-adjustments/categories', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  editExpenseCategory(id: number, body: { name?: string; active?: boolean; sortOrder?: number }) {
+    return req<{ ok: boolean }>(`/revenue-adjustments/categories/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+
+  expenseRecurrences() {
+    return req<{ ok: boolean; items: ExpenseRecurrence[] }>('/revenue-adjustments/recurrences');
+  },
+
+  addExpenseRecurrence(body: {
+    label: string;
+    categoryId?: number | null;
+    amountToman: number;
+    period?: 'MONTHLY' | 'YEARLY';
+    nextDueOn: string;
+    note?: string;
+  }) {
+    return req<{ ok: boolean; id: number }>('/revenue-adjustments/recurrences', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  editExpenseRecurrence(
+    id: number,
+    body: {
+      label?: string;
+      categoryId?: number | null;
+      amountToman?: number;
+      period?: 'MONTHLY' | 'YEARLY';
+      nextDueOn?: string;
+      note?: string;
+      active?: boolean;
+    },
+  ) {
+    return req<{ ok: boolean }>(`/revenue-adjustments/recurrences/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /**
+   * Post one instalment: the ledger row and the advance, in one transaction on
+   * the server. Everything is optional — the template answers it all, and this
+   * body is only for the month that was different.
+   */
+  postExpenseRecurrence(
+    id: number,
+    body: Partial<LedgerMoney> & { spentOn?: string; note?: string } = {},
+  ) {
+    return req<{ ok: boolean; id: number; nextDueOn: string }>(
+      `/revenue-adjustments/recurrences/${id}/post`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
   },
 
   setDiscount(id: number, body: { percent: number }) {
@@ -1772,4 +2133,26 @@ export const api = {
     if (range === 'between' && to) q.set('to', to);
     return req<ShopStatsResponse>(`/stats?${q.toString()}`);
   },
+
+  importFiles() {
+    return req<{ ok: boolean; dir: string; items: ImportDumpFile[] }>('/import/files');
+  },
+
+  importRuns() {
+    return req<{ ok: boolean; items: ImportRun[] }>('/import/runs');
+  },
+
+  importRun(id: string) {
+    return req<{ ok: boolean; run: ImportRun }>(`/import/runs/${encodeURIComponent(id)}`);
+  },
+
+  /** `mode` picks the endpoint; the body is the same for all three. */
+  startImport(mode: ImportMode, body: { file: string; domains: ImportDomain[] }) {
+    const path = mode === 'PREFLIGHT' ? 'preflight' : mode === 'DRY_RUN' ? 'dry-run' : 'apply';
+    return req<{ ok: boolean; id: string }>(`/import/${path}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
 };
