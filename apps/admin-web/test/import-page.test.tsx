@@ -143,6 +143,37 @@ describe('putting a dump there from the browser', () => {
 
     await waitFor(() => expect(seen).toBe(0.5));
   });
+
+  it('offers no run button while a file is still going up', async () => {
+    // The server's guarantees do not depend on this — a run re-checks the
+    // digest of what it actually loaded. What this prevents is offering a
+    // person a button whose outcome depends on which of two requests lands
+    // first. CodeRabbit raised it on PR #48.
+    let release: (v: { name: string }) => void = () => undefined;
+    uploadDump.mockImplementationOnce(
+      () => new Promise<{ name: string }>((resolve) => (release = resolve)),
+    );
+    draw();
+    await screen.findByRole('option', { name: /mirzabot-prod\.sql/ });
+
+    fireEvent.change(picker(), { target: { files: [dump()] } });
+
+    for (const name of ['بررسی', 'اجرای آزمایشی', 'اعمال نهایی']) {
+      // `.disabled`, not a jest-dom matcher: this suite does not load them.
+      await waitFor(() =>
+        expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true),
+      );
+    }
+    // The picker too: a second file chosen mid-upload would race the first.
+    expect(picker().disabled).toBe(true);
+
+    release({ name: 'mirzabot-prod.sql' });
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'بررسی' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+  });
 });
 
 describe('saying what the import is doing', () => {

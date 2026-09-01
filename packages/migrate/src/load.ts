@@ -106,7 +106,34 @@ export function dumpSha256(path: string): string {
  * existed. The scratch database is never the platform's own -- it holds the
  * legacy copy being read.
  */
-export async function loadDump(cfg: Config, dumpPath: string): Promise<LoadedDump> {
+export async function loadDump(
+  cfg: Config,
+  dumpPath: string,
+  /**
+   * The digest the caller was AUTHORISED to load, if it has one.
+   *
+   * The panel gates an APPLY on a dry run of the same dump having succeeded: it
+   * hashes the file, finds the run that proved those bytes, and starts the
+   * import. Between the hash and this function the file can change — an upload,
+   * an `scp`, a second admin — and the gate would then have proved a dump that
+   * is not the one about to be read.
+   *
+   * CodeRabbit found that on PR #48 and asked for a reservation shared by the
+   * upload route and the run route. This is smaller and it holds against more:
+   * a reservation can only exclude writers that agree to take it, and this
+   * directory has one that never will — `scp` is how every dump arrived before
+   * the panel could upload one. So the question is not «did anybody else hold
+   * the door», it is «are these the bytes I was allowed to read», asked of the
+   * file that was actually read.
+   *
+   * Checked HERE rather than in the route because this is where the one
+   * definition of dump identity lives, and checked before a single byte reaches
+   * MySQL: the scratch database is dropped further down, and dropping it on
+   * behalf of a file nobody approved would destroy the evidence of the run that
+   * did pass.
+   */
+  expectSha?: string,
+): Promise<LoadedDump> {
   const size = statSync(dumpPath).size;
   if (size > MAX_DUMP_BYTES) {
     throw new Error(
@@ -116,6 +143,17 @@ export async function loadDump(cfg: Config, dumpPath: string): Promise<LoadedDum
   }
 
   const sql = readDump(dumpPath).toString('utf8');
+
+  if (expectSha !== undefined) {
+    const actual = createHash('sha256').update(sql).digest('hex');
+    if (actual !== expectSha) {
+      throw new Error(
+        `${dumpPath} is not the file that was approved: expected sha256 ${expectSha}, ` +
+          `found ${actual}. It changed after the check. Run a dry run again on the file as it is now.`,
+      );
+    }
+  }
+
   const database = cfg.mysql.database;
   if (!/^[A-Za-z0-9_]+$/.test(database)) {
     throw new Error(`refusing to use ${JSON.stringify(database)} as a database name`);
