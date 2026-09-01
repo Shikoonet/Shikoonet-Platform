@@ -41,7 +41,9 @@ async function post(path: string, body: unknown, env: Record<string, unknown>) {
   );
 }
 
-async function upload(name: string, body: BodyInit, env: Record<string, unknown>) {
+// `string`, not `BodyInit`: this package does not include the DOM lib, and the
+// one streamed body in this file calls `app.request` directly anyway.
+async function upload(name: string, body: string, env: Record<string, unknown>) {
   return app.request(
     `/api/v1/admin/import/upload?name=${encodeURIComponent(name)}`,
     { method: 'POST', body },
