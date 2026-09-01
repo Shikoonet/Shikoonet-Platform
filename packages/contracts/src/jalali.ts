@@ -138,6 +138,49 @@ export function jalaliMonthLength(year: number, month: number): number {
   return Math.round((next - start) / DAY_MS);
 }
 
+const YEAR_FA = new Intl.NumberFormat('fa-IR', { useGrouping: false });
+
+/**
+ * A Jalali date one billing period on, as `YYYY-MM-DD`.
+ *
+ * `jalaliMonthLength` rather than `+ 1 month` in SQL or `+ 30 days` anywhere:
+ * Jalali months are 29 to 31 days on a 33-year leap cycle, so a bill due
+ * 31 Mordad has no 31st to land on in Aban, and Postgres would answer with a
+ * Gregorian month regardless. The day is clamped to the last of the target
+ * month, which is what every billing system does with the same problem.
+ *
+ * Advances by exactly ONE period, even from a date months in the past. A
+ * template three months overdue is three separate charges an operator posts one
+ * at a time — collapsing them into one advance would lose two rows nobody could
+ * reconstruct.
+ */
+export function nextJalaliDue(isoDay: string, period: 'MONTHLY' | 'YEARLY'): string {
+  // Midday, so a date-only string cannot slip into the previous day in Tehran.
+  const at = toJalali(Date.parse(`${isoDay}T12:00:00Z`));
+  const year = period === 'YEARLY' ? at.year + 1 : at.month === 12 ? at.year + 1 : at.year;
+  const month = period === 'YEARLY' ? at.month : at.month === 12 ? 1 : at.month + 1;
+  return jalaliToIsoDate({ year, month, day: Math.min(at.day, jalaliMonthLength(year, month)) });
+}
+
+/**
+ * Which Jalali month a day falls in, named — «شهریور 1405».
+ *
+ * Shared rather than written twice because the panel prefills a recurring
+ * charge's description with it and the server produces the same string when the
+ * panel sends none. Two copies of that rule would drift the first time one of
+ * them was reworded, and the drift would show up as two differently-named rows
+ * for the same monthly bill.
+ *
+ * Persian digits, ungrouped. This was Latin until it was read on the screen
+ * next to «۱۴۰۵/۰۶/۰۱» and looked like a bug — every other number on that panel
+ * is Persian, including the one an operator would copy in order to search for
+ * this row. Grouping is off because «۱٬۴۰۵» is not a year.
+ */
+export function jalaliPeriodLabel(isoDay: string): string {
+  const at = toJalali(Date.parse(`${isoDay}T12:00:00Z`));
+  return `${JALALI_MONTHS[at.month - 1]} ${YEAR_FA.format(at.year)}`;
+}
+
 /**
  * A Jalali date for display, from an instant.
  *

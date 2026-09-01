@@ -18,8 +18,10 @@ import {
   JALALI_MONTHS,
   formatJalali,
   jalaliMonthLength,
+  jalaliPeriodLabel,
   jalaliToEpochMs,
   jalaliToIsoDate,
+  nextJalaliDue,
   toJalali,
 } from '../src/jalali.js';
 
@@ -103,6 +105,70 @@ describe('month lengths come from the calendar, not from a rule', () => {
     expect(JALALI_MONTHS).toHaveLength(12);
     expect(JALALI_MONTHS[0]).toBe('فروردین');
     expect(JALALI_MONTHS[11]).toBe('اسفند');
+  });
+});
+
+/**
+ * Billing periods, which is the whole reason a recurring expense can say when
+ * it is next owed.
+ *
+ * Checked by converting the answer BACK through `Intl` rather than against
+ * dates written here: an expectation like «2026-10-22» would be this file
+ * agreeing with itself about a Gregorian conversion, which is the shape of
+ * self-consistent test CLAUDE.md rule 6 is about. What is asserted is the
+ * calendar property — same day-of-month one month on, or the last day of that
+ * month when there is no such day.
+ */
+describe('the next billing date', () => {
+  /** The Jalali date an ISO day lands on, asked of Intl and not of us. */
+  const jalaliOf = (iso: string) => toJalali(Date.parse(`${iso}T12:00:00Z`));
+
+  it('keeps the day of the month, one Jalali month on', () => {
+    // Every day of a whole year, so a month with 29, 30 or 31 days is covered
+    // without anybody having to remember which is which.
+    for (let month = 1; month <= 12; month++) {
+      for (let day = 1; day <= jalaliMonthLength(1405, month); day++) {
+        const from = jalaliToIsoDate({ year: 1405, month, day });
+        const to = jalaliOf(nextJalaliDue(from, 'MONTHLY'));
+
+        const expectedYear = month === 12 ? 1406 : 1405;
+        const expectedMonth = month === 12 ? 1 : month + 1;
+        expect(to.year).toBe(expectedYear);
+        expect(to.month).toBe(expectedMonth);
+        // The same day, unless that month is too short to have one.
+        expect(to.day).toBe(Math.min(day, jalaliMonthLength(expectedYear, expectedMonth)));
+      }
+    }
+  });
+
+  it('clamps to the last day when the next month is shorter', () => {
+    // Shahrivar has 31 days and Mehr has 30, so 31 Shahrivar has nowhere to
+    // land. `+ interval '1 month'` in Postgres would answer with a Gregorian
+    // month here and be wrong twice over.
+    expect(jalaliMonthLength(1405, 6)).toBe(31);
+    expect(jalaliMonthLength(1405, 7)).toBe(30);
+
+    const from = jalaliToIsoDate({ year: 1405, month: 6, day: 31 });
+    expect(jalaliOf(nextJalaliDue(from, 'MONTHLY'))).toEqual({ year: 1405, month: 7, day: 30 });
+  });
+
+  it('advances a year for a yearly period, landing on the same Jalali day', () => {
+    const from = jalaliToIsoDate({ year: 1405, month: 6, day: 8 });
+    expect(jalaliOf(nextJalaliDue(from, 'YEARLY'))).toEqual({ year: 1406, month: 6, day: 8 });
+  });
+
+  it('advances exactly one period from a date already in the past', () => {
+    // A template three months overdue is three charges, posted one at a time.
+    // Catching up in a single jump would lose two rows nobody could rebuild.
+    const from = jalaliToIsoDate({ year: 1405, month: 3, day: 10 });
+    expect(jalaliOf(nextJalaliDue(from, 'MONTHLY'))).toEqual({ year: 1405, month: 4, day: 10 });
+  });
+
+  it('names the month a day falls in, for the note on a posted instalment', () => {
+    expect(jalaliPeriodLabel(jalaliToIsoDate({ year: 1405, month: 6, day: 8 }))).toBe('شهریور ۱۴۰۵');
+    expect(jalaliPeriodLabel(jalaliToIsoDate({ year: 1405, month: 12, day: 1 }))).toBe('اسفند ۱۴۰۵');
+    // Ungrouped: «۱٬۴۰۵» is not a year, and `fa-IR` groups by default.
+    expect(jalaliPeriodLabel(jalaliToIsoDate({ year: 1405, month: 1, day: 1 }))).not.toContain('٬');
   });
 });
 

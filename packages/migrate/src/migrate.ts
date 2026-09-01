@@ -177,10 +177,24 @@ async function migrateUsers(ctx: Ctx): Promise<number> {
     { conflict: '(telegram_id)' },
   );
 
-  const { rows: idMap } = await ctx.pg.query<{ id: string; telegram_id: string }>(
+  const { rows: idMap } = await ctx.pg.query<{ id: string | number; telegram_id: string | number }>(
     'SELECT id, telegram_id FROM users',
   );
-  for (const m of idMap) ctx.userId.set(m.telegram_id, m.id);
+  // `String(...)` on both, and it is not defensive noise.
+  //
+  // `telegram_id` and `id` are bigint, and node-postgres decides whether an
+  // int8 arrives as a string or a number through `pg.types.setTypeParser` --
+  // which is PROCESS-GLOBAL. `db.ts` here asks for strings; `packages/db` asks
+  // for numbers, and says in its own comment that the setting is global. In the
+  // CLI only the first runs, so this worked. Inside the dashboard both are
+  // loaded and the other one wins, so the map was keyed by numbers while
+  // `user()` looked up strings: every lookup missed, and the import wrote 11,241
+  // users and then skipped all 5,131 subscriptions, 236 orders, 179 referrals
+  // and 93 redemptions as «user deleted» -- with every step reporting ok.
+  //
+  // Coercing here fixes it wherever the migration is called from, instead of
+  // depending on which module was imported first.
+  for (const m of idMap) ctx.userId.set(String(m.telegram_id), String(m.id));
   return written;
 }
 
@@ -494,6 +508,28 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
     'note',
   ];
 
+  // `products.category_id` became NOT NULL in 0032, and this importer was never
+  // taught about it: every run since has died here on the first product. 0032
+  // backfilled the rows that existed at the time and created «سرویس‌ها» to hold
+  // them, but a one-time INSERT in a migration says nothing about rows that
+  // arrive afterwards -- and a freshly seeded database does not even have that
+  // category any more.
+  //
+  // The legacy `category` table is empty (0 rows on the production dump), so
+  // there is no real mapping to preserve. Landing every imported product in the
+  // same category 0032 chose keeps its guarantee true rather than reintroducing
+  // the uncategorised-product state it went out of its way to make
+  // unrepresentable. The admin can split them up afterwards in the panel.
+  await ctx.pg.query(
+    `INSERT INTO product_categories (name, sort_order) VALUES ('سرویس‌ها', 0)
+     ON CONFLICT (name) DO NOTHING`,
+  );
+  const { rows: defaultCategory } = await ctx.pg.query<{ id: string }>(
+    `SELECT id FROM product_categories WHERE name = 'سرویس‌ها'`,
+  );
+  const categoryId = defaultCategory[0]?.id;
+  if (categoryId === undefined) throw new Error('default product category could not be created');
+
   const written = await insertBatch(
     ctx.pg,
     'products',
@@ -502,6 +538,7 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
       'code',
       'name',
       'kind',
+      'category_id',
       'provider_id',
       'status',
       'description',
@@ -514,6 +551,7 @@ async function migrateProducts(ctx: Ctx): Promise<number> {
       r.code_product ?? `product-${r.id}`,
       r.name_product ?? `product-${r.id}`,
       'vpn',
+      categoryId,
       providerFor(r.Location),
       'ACTIVE',
       r.note || null,
@@ -789,6 +827,102 @@ async function migrateDiscounts(ctx: Ctx): Promise<number> {
   return n;
 }
 
+/** The legacy invoice window: unpaid after a day and the bot stops waiting. */
+const INVOICE_TTL_S = 24 * 60 * 60;
+
+/**
+ * A legacy `invoice` is a purchase, so it becomes an order as well as a service.
+ *
+ * Until 2026-08-30 it became only a `subscriptions` row. That is not a smaller
+ * version of the truth, it is a different one: in this schema an **order** is
+ * the record that a sale happened and a **subscription** is the thing handed
+ * over. The bot writes both for every purchase, and `subscriptions.order_id`
+ * exists to tie them together.
+ *
+ * Every screen that answers «how much did we sell» reads `orders`: the panel's
+ * home screen, «آمار فروشگاه», the bot's own «آمار», and the nightly report. So
+ * an import that wrote 7,889 subscriptions and no orders left all four of them
+ * reporting that the shop had made **five** sales — the five that predate the
+ * import — while 869 million Toman of real ones sat in a table none of them
+ * reads. On Sam's dump the symptom reached the screen as a «درآمد کل» of
+ * **−۶۱۶ میلیون تومان**: the 697 million of negative `revenue_adjustments`
+ * counted in full against sales that counted not at all (issue #45).
+ *
+ * ## An unpaid invoice arrives EXPIRED, and that is not a rounding of it
+ *
+ * `AWAITING_PAYMENT` is the literal translation of `unpaid`, and writing it
+ * would message 1,886 real customers. `expireUnpaidOrders`
+ * (`apps/bot/src/expire.ts`) takes every AWAITING_PAYMENT order past its
+ * `expires_at`, marks it EXPIRED, and — in the same transaction, deliberately —
+ * tells the customer on Telegram. Every unpaid row in the dump is already past
+ * its day, so the first worker tick after an import would send 1,886 «فاکتور
+ * شما منقضی شد» notices about carts abandoned in a bot we do not run.
+ *
+ * The state is therefore written directly, with `expires_at` recording when the
+ * legacy window actually closed. Nothing is lost: an invoice a customer is
+ * still completing is being completed on the old bot, which is the system of
+ * record for it until the cutover.
+ *
+ * The mapping is flat on purpose — quantity one, no discount. The legacy stores
+ * the price the customer paid and does not keep the list price it came from, so
+ * a `discount_irr` here would be a number we invented.
+ */
+async function migrateInvoiceOrders(ctx: Ctx): Promise<number> {
+  const rows = await mysqlRows<Row>(ctx.my, 'SELECT * FROM invoice');
+  return insertBatch(
+    ctx.pg,
+    'orders',
+    cols([
+      'legacy_ref',
+      'public_id',
+      'user_id',
+      'kind',
+      'quantity',
+      'unit_price_irr',
+      'discount_irr',
+      'total_irr',
+      'status',
+      ['created_at', ts.epochS.expr],
+      ['expires_at', ts.epochS.expr],
+      ['completed_at', ts.epochS.expr],
+    ]),
+    rows.flatMap((r) => {
+      const u = user(ctx, r.id_user);
+      if (!u) {
+        skip(ctx, 'orders: user deleted');
+        return [];
+      }
+      const sold = t.epochSeconds(r.time_sell, 'invoice.time_sell');
+      if (!sold) {
+        // `orders.created_at` is NOT NULL and there is nothing honest to put in
+        // it. Counted rather than back-filled with the import's own clock,
+        // which would date a two-year-old sale to this morning.
+        skip(ctx, 'orders: invoice has no sale time');
+        return [];
+      }
+      const status = t.invoiceOrderStatus(r.Status);
+      const amount = t.tomanToIrr(r.price_product).toString();
+      return [
+        [
+          `invoice:${r.id_invoice}`,
+          `inv-${r.id_invoice}`,
+          u,
+          'NEW_PURCHASE',
+          1,
+          amount,
+          0,
+          amount,
+          status,
+          sold,
+          status === 'EXPIRED' ? String(Number(sold) + INVOICE_TTL_S) : null,
+          status === 'COMPLETED' ? sold : null,
+        ],
+      ];
+    }),
+    { conflict: '(legacy_ref)' },
+  );
+}
+
 async function migrateSubscriptions(ctx: Ctx): Promise<number> {
   const rows = await mysqlRows<Row>(ctx.my, 'SELECT * FROM invoice');
   const { rows: providers } = await ctx.pg.query<{ id: string; name: string }>(
@@ -813,7 +947,7 @@ async function migrateSubscriptions(ctx: Ctx): Promise<number> {
     'Status',
   ];
 
-  return insertBatch(
+  const written = await insertBatch(
     ctx.pg,
     'subscriptions',
     cols([
@@ -867,6 +1001,22 @@ async function migrateSubscriptions(ctx: Ctx): Promise<number> {
     }),
     { conflict: '(public_id)' },
   );
+
+  // The two halves of one purchase, joined the way the bot leaves them.
+  //
+  // Done as a statement rather than by threading an id map through the insert,
+  // because the join is provable from the schema alone: `subscriptions.public_id`
+  // IS the legacy invoice id, and `orders.legacy_ref` is built from the same
+  // column one step earlier. `IS NULL` keeps a re-run from touching a link the
+  // bot itself made.
+  await ctx.pg.query(
+    `UPDATE subscriptions s SET order_id = o.id
+       FROM orders o
+      WHERE o.legacy_ref = 'invoice:' || s.public_id
+        AND s.order_id IS NULL`,
+  );
+
+  return written;
 }
 
 async function migratePayments(ctx: Ctx): Promise<number> {
@@ -1007,7 +1157,11 @@ async function migrateCardLeases(ctx: Ctx): Promise<number> {
   );
 }
 
-async function migrateOps(ctx: Ctx): Promise<number> {
+// `migrateOps` used to be one step covering support, content, promos and
+// shop bookkeeping. They are split because they belong to different import
+// domains: an operator who imports the shop's configuration is not thereby
+// asking for three years of ticket history.
+async function migrateSupport(ctx: Ctx): Promise<number> {
   let n = 0;
 
   n += await insertBatch(
@@ -1106,6 +1260,12 @@ async function migrateOps(ctx: Ctx): Promise<number> {
     }
   }
 
+  return n;
+}
+
+async function migrateContent(ctx: Ctx): Promise<number> {
+  let n = 0;
+
   n += await insertBatch(
     ctx.pg,
     'help_articles',
@@ -1143,6 +1303,12 @@ async function migrateOps(ctx: Ctx): Promise<number> {
     { conflict: '(chat_ref)' },
   );
 
+  return n;
+}
+
+async function migratePromos(ctx: Ctx): Promise<number> {
+  let n = 0;
+
   n += await insertBatch(
     ctx.pg,
     'wheel_spins',
@@ -1165,6 +1331,12 @@ async function migrateOps(ctx: Ctx): Promise<number> {
     }),
     { conflict: '(legacy_id)' },
   );
+
+  return n;
+}
+
+async function migrateShopOps(ctx: Ctx): Promise<number> {
+  let n = 0;
 
   n += await insertBatch(
     ctx.pg,
@@ -1192,10 +1364,50 @@ async function migrateOps(ctx: Ctx): Promise<number> {
     { conflict: '(legacy_id)' },
   );
 
+  /**
+   * `kind` and `spent_on` are decided by Postgres, not here.
+   *
+   * `0040_expense_ledger.sql` made both NOT NULL and created
+   * `expense_kind_of(note, amount)` to fill the first — the same function its
+   * own backfill used on the 219 production rows. Calling it from SQL rather
+   * than reimplementing the rule in TypeScript is the whole point: two copies
+   * of «what is a fake receipt» would drift the first time a keyword was
+   * added, and nothing would say which one the screen was using.
+   *
+   * `note` is bound twice, once as the column and once as the classifier's
+   * argument, because `insertBatch` binds per column. `spent_on` is the Tehran
+   * day of the legacy timestamp, which is the best-known spend date for a
+   * historical row and exactly what the backfill wrote.
+   */
   n += await insertBatch(
     ctx.pg,
     'revenue_adjustments',
-    cols(['legacy_id', 'amount_irr', 'note', 'created_by', ['created_at', ts.tehran.expr]]),
+    cols([
+      'legacy_id',
+      'amount_irr',
+      'note',
+      'created_by',
+      ['created_at', ts.tehran.expr],
+      // Each of these binds its own value and reads one sibling. The note and
+      // the timestamp are bound a second time rather than referenced through
+      // their siblings' placeholders, because a placeholder that appears in no
+      // expression has no type Postgres can infer — «could not determine data
+      // type of parameter $6», which is what the first version of this did.
+      ['kind', (p, row) => `expense_kind_of(${p}, ${row[1]!}::bigint)`],
+      ['spent_on', (p) => `(${ts.tehran.expr(p)})::date`],
+      // The purpose, resolved from the name the function returns rather than
+      // from an id, so the classifier has no dependency on a sequence and
+      // works the same against a fresh database. NULL for a note it cannot
+      // read, and NULL for anything that is not spending — the screen shows
+      // those under «دسته‌بندی‌نشده» for a person to decide.
+      [
+        'category_id',
+        (p, row) =>
+          `(SELECT ec.id FROM expense_categories ec
+              WHERE ec.name = expense_category_of(${p})
+                AND expense_kind_of(${p}, ${row[1]!}::bigint) = 'EXPENSE')`,
+      ],
+    ]),
     (await mysqlRows<Row>(ctx.my, 'SELECT * FROM revenue_adjustment_log')).map((r) => {
       // `amount` is already signed, and `type` is a label rather than the sign.
       //
@@ -1218,6 +1430,12 @@ async function migrateOps(ctx: Ctx): Promise<number> {
         r.note ?? '',
         r.created_by || null,
         t.tehranString(r.created_at, 'revenue_adjustment_log.created_at'),
+        // The note and the timestamp again, for the three derived columns
+        // above. Bound rather than referenced through their siblings, because
+        // a placeholder no expression names has no type Postgres can infer.
+        r.note ?? '',
+        t.tehranString(r.created_at, 'revenue_adjustment_log.created_at'),
+        r.note ?? '',
       ];
     }),
     { conflict: '(legacy_id)' },
@@ -1630,48 +1848,245 @@ async function migrateCards(ctx: Ctx): Promise<number> {
 
 // ===========================================================================
 
-const STEPS: [name: string, run: (ctx: Ctx) => Promise<number>][] = [
-  ['users', migrateUsers],
-  ['referrals', migrateReferrals],
-  ['wallets', migrateWallets],
-  ['settings', migrateSettings],
-  ['admins', migrateAdmins],
-  ['providers', migrateProviders],
-  ['products + plans', migrateProducts],
-  ['discounts', migrateDiscounts],
-  ['subscriptions', migrateSubscriptions],
-  ['payments', migratePayments],
-  ['orders (service_other)', migrateServiceOrders],
-  ['payment hub (D1)', migrateHub],
-  ['bank cards (merged)', migrateCards],
-  ['card leases', migrateCardLeases],
-  ['support, content, promos', migrateOps],
+/**
+ * Which part of the shop a step belongs to.
+ *
+ * `core` is not optional: every other domain has a foreign key into `users`,
+ * and a wallet balance without its owner is not a smaller import, it is a
+ * broken one.
+ */
+export type Domain = 'core' | 'catalog' | 'sales' | 'discounts' | 'config' | 'history' | 'hub';
+
+export const DOMAINS: readonly Domain[] = [
+  'core',
+  'catalog',
+  'sales',
+  'discounts',
+  'config',
+  'history',
+  'hub',
 ];
 
-export async function migrate(cfg: Config, my: Connection, pgc: pg.Client): Promise<void> {
-  const ctx: Ctx = { cfg, my, pg: pgc, userId: new Map(), skipped: new Map() };
+/**
+ * What the dashboard offers by default.
+ *
+ * Not the library default. `migrate()` and `verify()` still run every domain
+ * unless told otherwise, so the CLI, the rehearsal script and the existing
+ * tests behave exactly as they did. Narrowing is something a caller asks for.
+ */
+export const PANEL_DEFAULT_DOMAINS: readonly Domain[] = [
+  'core',
+  'catalog',
+  'sales',
+  'discounts',
+  'config',
+];
 
-  report.title('migrating');
+const STEPS: [name: string, domain: Domain, run: (ctx: Ctx) => Promise<number>][] = [
+  ['users', 'core', migrateUsers],
+  ['referrals', 'core', migrateReferrals],
+  ['wallets', 'core', migrateWallets],
+  ['settings', 'config', migrateSettings],
+  ['admins', 'config', migrateAdmins],
+  ['providers', 'catalog', migrateProviders],
+  ['products + plans', 'catalog', migrateProducts],
+  ['discounts', 'discounts', migrateDiscounts],
+  // Before subscriptions, because the subscriptions step links itself to these.
+  ['orders (invoices)', 'sales', migrateInvoiceOrders],
+  ['subscriptions', 'sales', migrateSubscriptions],
+  ['payments', 'sales', migratePayments],
+  ['orders (service_other)', 'sales', migrateServiceOrders],
+  ['payment hub (D1)', 'hub', migrateHub],
+  // Cards belong to the hub, not to shop configuration: the merge needs a
+  // `financial_account_id`, and only the D1 export carries one. Tagged 'config'
+  // it produced a foreign key violation the moment somebody imported the shop
+  // without the hub export beside the dump.
+  ['bank cards (merged)', 'hub', migrateCards],
+  ['card leases', 'config', migrateCardLeases],
+  ['support tickets', 'history', migrateSupport],
+  ['help, apps, channels', 'config', migrateContent],
+  ['wheel spins', 'history', migratePromos],
+  ['reseller requests, revenue', 'config', migrateShopOps],
+];
+
+export interface MigrateOptions {
+  /**
+   * `false` rolls the whole thing back instead of committing.
+   *
+   * Every step already runs inside one transaction, so a dry run is the real
+   * migration measured against the real constraints - every partial unique
+   * index, every CHECK - and then discarded. A scratch schema would test a
+   * copy of the rules rather than the rules.
+   */
+  commit?: boolean;
+  /** Domains to run. Defaults to every domain; `core` is always included. */
+  domains?: Iterable<Domain>;
+  /**
+   * Rows to read back from each step's table before the transaction ends, so a
+   * reviewer can see what a mapping actually produced.
+   */
+  samples?: number;
+  /**
+   * Runs after the last step and BEFORE the commit or rollback, and its answer
+   * becomes `verified`.
+   *
+   * This is what makes a dry run worth trusting. Without it a dry run could
+   * only report that no step threw -- and a migration that silently resolves
+   * every owner to null does not throw, it writes the parents and skips the
+   * children, reporting `ok` on every line. Running `verify` inside the
+   * transaction compares the two sides while the rows still exist, so the
+   * money and the counts are checked on a run that is about to be discarded.
+   */
+  beforeSettle?: () => Promise<boolean>;
+}
+
+export interface StepResult {
+  name: string;
+  domain: Domain;
+  written: number;
+  ms: number;
+}
+
+export interface MigrateResult {
+  committed: boolean;
+  /** `beforeSettle`'s answer, or true when no check was supplied. */
+  verified: boolean;
+  domains: Domain[];
+  steps: StepResult[];
+  skipped: [what: string, n: number][];
+  /** Table name -> a few rows as they landed. Empty unless `samples` was set. */
+  samples: Record<string, Record<string, unknown>[]>;
+}
+
+/** The table a step's samples come from, where a useful one exists. */
+/**
+ * The table a step's samples come from, and the columns that may be shown.
+ *
+ * THE COLUMN LIST IS AN ALLOWLIST, AND IT IS NOT DECORATION. These rows do not
+ * stay in a terminal: `importRoutes.ts` writes `result.samples` into
+ * `import_runs.samples` as JSON, where it is kept and rendered in the admin
+ * panel. `SELECT *` therefore copied, into a durable table and onto a screen,
+ * exactly the data `CLAUDE.md` puts first on the list that never leaves this
+ * machine — «پرداخت، آی‌دی تلگرام و کارت مشتری واقعی»:
+ *
+ *   users          phone, username, telegram_id, legacy_attrs
+ *   payment_cards  card_digits, holder_name
+ *   card_leases    card_number, card_name, telegram_user_id
+ *   payments       assigned_card_number, assigned_card_name, legacy_telegram_id
+ *   subscriptions  remote_username, remote_ref — panel credentials
+ *   settings       value — which is where the bot token lives
+ *   providers      base_url, secret_ref, config — panel passwords
+ *
+ * Found by CodeRabbit on PR #42, which named `users`; reading the schemas found
+ * six more tables with the same problem, and the card numbers were the worst of
+ * them.
+ *
+ * A SAMPLE EXISTS TO SHOW SHAPE, NOT PEOPLE. What a reviewer checks after an
+ * import is «did the rows land, with sane statuses and amounts» — every column
+ * below answers that, and none of them names a customer. Adding a column here
+ * is a decision about what may be stored and displayed, so make it deliberately.
+ */
+export const SAMPLE_TABLE: Record<string, { table: string; columns: string }> = {
+  users: { table: 'users', columns: 'id, status, lang, is_reseller, discount_percent, registered_at' },
+  wallets: { table: 'wallet_entries', columns: 'id, amount_irr, kind, created_at' },
+  // `value` withheld: this is where the bot token and the panel secrets live.
+  settings: { table: 'settings', columns: 'scope, key, updated_at' },
+  providers: {
+    table: 'provisioning_providers',
+    columns: 'id, code, name, kind, status, capacity, sort_order',
+  },
+  'products + plans': {
+    table: 'product_plans',
+    columns: 'id, product_id, name, price_irr, duration_days, volume_gb, user_limit, status',
+  },
+  discounts: {
+    table: 'discount_codes',
+    columns: 'id, kind, amount_irr, percent, max_uses, first_purchase_only, resellers_only',
+  },
+  subscriptions: {
+    table: 'subscriptions',
+    columns:
+      'id, plan_name_at_sale, price_irr, volume_gb, duration_days, status, purchased_at, expires_at',
+  },
+  payments: {
+    table: 'payments',
+    columns: 'id, amount_irr, method, status, operation_type, created_at',
+  },
+  'orders (service_other)': {
+    table: 'orders',
+    columns: 'id, kind, quantity, unit_price_irr, discount_irr, total_irr, status, created_at',
+  },
+  'bank cards (merged)': {
+    table: 'payment_cards',
+    columns: 'id, financial_account_id, label, status, created_at',
+  },
+  'card leases': {
+    table: 'card_leases',
+    columns: 'id, status, assigned_at, expires_at, completed_at, released_at',
+  },
+};
+
+export async function migrate(
+  cfg: Config,
+  my: Connection,
+  pgc: pg.Client,
+  opts: MigrateOptions = {},
+): Promise<MigrateResult> {
+  const ctx: Ctx = { cfg, my, pg: pgc, userId: new Map(), skipped: new Map() };
+  const commit = opts.commit !== false;
+  // `core` is not negotiable: it owns `users`, and `ctx.userId` - the map every
+  // later step resolves its owner through - is built by the users step.
+  const wanted = new Set<Domain>([...(opts.domains ?? DOMAINS), 'core']);
+  const domains = DOMAINS.filter((d) => wanted.has(d));
+  const steps: StepResult[] = [];
+  const samples: Record<string, Record<string, unknown>[]> = {};
+  let verified = true;
+
+  report.title(commit ? 'migrating' : 'migrating (dry run - will roll back)');
+  report.step(`domains: ${domains.join(', ')}`);
   await pgc.query('BEGIN');
   try {
-    for (const [name, run] of STEPS) {
+    for (const [name, domain, run] of STEPS) {
+      if (!wanted.has(domain)) {
+        report.step(`${name.padEnd(26)} skipped - domain '${domain}' not selected`);
+        continue;
+      }
       const started = Date.now();
       const written = await run(ctx);
       const ms = Date.now() - started;
       const note = written === 0 ? 'already present' : `${written} row(s) written`;
       report.ok(`${name.padEnd(26)} ${note}  ${String(ms).padStart(5)}ms`);
+      steps.push({ name, domain, written, ms });
+
+      const sample = SAMPLE_TABLE[name];
+      if (opts.samples && sample !== undefined) {
+        // The allowlist, never `*`. See `SAMPLE_TABLE` — these rows are stored
+        // and rendered, so the projection is the only thing standing between an
+        // import report and a customer's card number.
+        const { rows } = await pgc.query(
+          `SELECT ${sample.columns} FROM ${sample.table} LIMIT $1`,
+          [opts.samples],
+        );
+        samples[sample.table] = rows as Record<string, unknown>[];
+      }
     }
-    await pgc.query('COMMIT');
+    if (opts.beforeSettle) verified = await opts.beforeSettle();
+
+    // The rollback is deliberate and reported, so a dry run can never be read
+    // as a completed import.
+    await pgc.query(commit ? 'COMMIT' : 'ROLLBACK');
+    if (!commit) report.warn('dry run - rolled back, nothing was written');
   } catch (err) {
     await pgc.query('ROLLBACK');
-    report.fail('rolled back — nothing was written');
+    report.fail('rolled back - nothing was written');
     throw err;
   }
 
-  if (ctx.skipped.size > 0) {
+  const skipped = [...ctx.skipped].sort((a, b) => b[1] - a[1]);
+  if (skipped.length > 0) {
     report.title('skipped (parent row no longer exists)');
-    for (const [what, n] of [...ctx.skipped].sort((a, b) => b[1] - a[1])) {
-      report.warn(`${n} ${what}`);
-    }
+    for (const [what, n] of skipped) report.warn(`${n} ${what}`);
   }
+
+  return { committed: commit, verified, domains, steps, skipped, samples };
 }

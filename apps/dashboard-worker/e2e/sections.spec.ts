@@ -65,7 +65,13 @@ test('every section opens without a failed request, a thrown render or an error 
 
   const labels = (await page.locator('.sidebar-link').allInnerTexts()).map((l) => l.trim());
   // Twenty-four until «محصولات» and «دسته‌بندی‌ها» landed on 2026-08-27.
-  expect(labels.length).toBe(28);
+  // 28 -> 29 on 2026-08-30, and the sidebar did not change to make it so. The
+  // set of items is byte-for-byte the one that existed before the regrouping
+  // commit — `git show fe35ae7^:apps/admin-web/src/nav.ts` lists the same 29
+  // ids — so this constant had been stale on `main` for some time, red in a
+  // suite nobody could run because CI is off. Counted from `nav.ts` and checked
+  // for duplicates, not adjusted until it went green.
+  expect(labels.length).toBe(29);
 
   for (const label of labels) {
     section = label;

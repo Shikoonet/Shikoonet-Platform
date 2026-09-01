@@ -254,6 +254,19 @@ body {
 
 /* ---------- main ---------- */
 
+/*
+ * Something a script scrolls to, so it does not land under the fixed header.
+ *
+ * `.app-header` is `position: fixed` and 64px tall, so `scrollIntoView` with
+ * `block: 'start'` puts an element's top at viewport top and therefore its
+ * first 64 pixels behind the header — on the expenses screen that was the whole
+ * title row of the form that had just opened. `scroll-margin` is the property
+ * for exactly this and costs nothing when nothing is scrolling.
+ */
+.scroll-target {
+  scroll-margin-block-start: calc(var(--header-h) + 12px);
+}
+
 #main-content {
   margin-block-start: calc(var(--header-h) + 12px);
   margin-inline-start: var(--sidebar-w);

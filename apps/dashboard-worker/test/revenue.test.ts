@@ -1,5 +1,5 @@
 /**
- * هزینه‌ها و تعدیل‌ها, from the panel.
+ * هزینه‌ها, from the panel.
  *
  * `revenue_adjustments` has been in the schema since 0005 and imported ever
  * since, and nothing had ever read or written a row of it. The assertions here
@@ -13,11 +13,32 @@
  * **The total is derived.** The legacy panel keeps a second copy in
  * `setting.revenue_adjustment` and holds the two together with a transaction on
  * every insert and delete. We sum the rows, so there is nothing to drift — and
- * the test for that is that a delete moves the total without anything else
+ * the test for that is that voiding a row moves the total without anything else
  * being written.
+ *
+ * **A row is labelled, not only signed.** Since 2026-08-30 a line says what it
+ * IS — هزینه, اصلاح درآمد, درآمد دستی — because a sign answers «which way» and
+ * never «what», and the screen built on the sign alone reported 35.8 million
+ * Toman of fake receipts as money the shop had spent.
+ *
+ * **Nothing is deleted.** Voiding leaves the row in the table and takes it out
+ * of every total, which is what lets `verify.ts` keep counting it against the
+ * legacy log while the panel stops counting it as money.
+ *
+ * **A foreign bill is derived, not sent.** The client posts the invoice and the
+ * rate and never a Rial figure, so the amount in the books is produced once. The
+ * assertion for that is not that the route returned the number this file
+ * expected — it is that **Postgres, multiplying the two stored columns itself,
+ * gets the same answer**. A test that repeated the JavaScript would agree with
+ * the bug.
+ *
+ * **A recurring cost posts one instalment and advances one period, together.**
+ * The two halves are in one transaction, so the assertions are always about
+ * both: the row that appeared AND where the template moved to.
  */
 
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
+import { nextJalaliDue } from '@shikoo/contracts';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
 
@@ -38,17 +59,34 @@ const post = (path: string, body: unknown, email = ADMIN) =>
     envAs(email),
   );
 
-const del = (path: string, email = ADMIN) => app.request(path, { method: 'DELETE' }, envAs(email));
-
 const get = (path: string, email = ADMIN) => app.request(path, {}, envAs(email));
 
-function add(amountToman: number, direction: 'expense' | 'credit', label: string) {
+const patch = (path: string, body: unknown, email = ADMIN) =>
+  app.request(
+    path,
+    { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+    envAs(email),
+  );
+
+type Kind = 'EXPENSE' | 'REVENUE_FIX' | 'MANUAL_INCOME';
+
+function add(amountToman: number, kind: Kind, label: string, extra: object = {}) {
   return post('/api/v1/admin/revenue-adjustments', {
     amountToman,
-    direction,
+    kind,
     note: `${PREFIX}${label}`,
+    ...extra,
   });
 }
+
+/** The id of a row this file just wrote, for the tests that need one. */
+async function addId(amountToman: number, kind: Kind, label: string, extra: object = {}) {
+  const res = await add(amountToman, kind, label, extra);
+  return ((await res.json()) as { id: number }).id;
+}
+
+const voidRow = (id: number, reason = 'اشتباه ثبت شده بود', email = ADMIN) =>
+  post(`/api/v1/admin/revenue-adjustments/${id}/void`, { reason }, email);
 
 const rowById = (id: number) =>
   baseEnv.DB.prepare(`SELECT amount_irr, note, created_by FROM revenue_adjustments WHERE id = ?1`)
@@ -63,7 +101,12 @@ const rowById = (id: number) =>
  * accident on the first run.
  */
 async function purge(): Promise<void> {
+  // Rows first: `recurrence_id` points the other way, so a template with an
+  // instalment against it is a template this cannot remove.
   await baseEnv.DB.prepare(`DELETE FROM revenue_adjustments WHERE note LIKE ?1`)
+    .bind(`${PREFIX}%`)
+    .run();
+  await baseEnv.DB.prepare(`DELETE FROM expense_recurrences WHERE label LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();
 }
@@ -76,6 +119,9 @@ async function purge(): Promise<void> {
  */
 async function emptyLedger(): Promise<void> {
   await baseEnv.DB.prepare(`DELETE FROM revenue_adjustments`).run();
+  await baseEnv.DB.prepare(`DELETE FROM expense_recurrences WHERE label LIKE ?1`)
+    .bind(`${PREFIX}%`)
+    .run();
 }
 
 beforeAll(async () => {
@@ -95,6 +141,26 @@ beforeAll(async () => {
   }
 });
 
+/**
+ * The categories come from `0040`, not from here, and three tests below join on
+ * them by name.
+ *
+ * Asserted rather than assumed because `packages/seed` truncates every table it
+ * is not told to keep, and `expense_categories` was not on that list until
+ * 2026-08-30 — so a `seed:sim` emptied it and those three failed with «Cannot
+ * read properties of null», which names neither the table nor the cause. One
+ * sentence here is worth more than three of those.
+ */
+beforeAll(async () => {
+  const row = await baseEnv.DB.prepare(
+    `SELECT count(*)::int AS n FROM expense_categories`,
+  ).first<{ n: number }>();
+  expect(
+    Number(row?.n),
+    'expense_categories is empty — `packages/seed` KEEP must include it',
+  ).toBeGreaterThan(0);
+});
+
 beforeEach(emptyLedger);
 afterAll(purge);
 
@@ -102,7 +168,7 @@ describe('writing a line', () => {
   it('stores a cost as a negative amount, from a positive one', async () => {
     // The whole design in one assertion. The client never sends a sign; if it
     // did, «−۵۰٬۰۰۰ هزینه» would be a credit and nothing would say so.
-    const res = await add(50_000, 'expense', 'server');
+    const res = await add(50_000, 'EXPENSE', 'server');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; id: number; amountIrr: number };
     expect(body.ok).toBe(true);
@@ -113,24 +179,93 @@ describe('writing a line', () => {
     expect(row?.created_by).toBe(ADMIN);
   });
 
-  it('stores a credit as a positive one', async () => {
-    const res = await add(50_000, 'credit', 'refund');
+  it('stores a hand-recorded sale as a positive one', async () => {
+    const res = await add(50_000, 'MANUAL_INCOME', 'reseller');
     const body = (await res.json()) as { id: number; amountIrr: number };
     expect(body.amountIrr).toBe(500_000);
     expect(Number((await rowById(body.id))?.amount_irr)).toBe(500_000);
   });
 
+  /**
+   * A correction is the only kind that takes a direction, and it needs one.
+   *
+   * A clawback for a fake receipt is negative; reversing an over-deduction is
+   * positive. Both correct the same figure, so the kind cannot decide the sign
+   * on its own the way the other two can.
+   */
+  it('lets a correction go either way, on the direction it was given', async () => {
+    const back = (await (
+      await add(50_000, 'REVENUE_FIX', 'fake-receipt', { direction: 'expense' })
+    ).json()) as { amountIrr: number };
+    expect(back.amountIrr).toBe(-500_000);
+
+    const forward = (await (
+      await add(50_000, 'REVENUE_FIX', 'over-deducted', { direction: 'credit' })
+    ).json()) as { amountIrr: number };
+    expect(forward.amountIrr).toBe(500_000);
+  });
+
+  /**
+   * A kind is required, with no default, and this is why.
+   *
+   * The old body took `{ amountToman, direction }` and nothing else. Defaulting
+   * `kind` to EXPENSE would have read a caller's `direction: 'credit'` as a
+   * cost and forced the sign negative — a credit silently becoming an expense,
+   * with a 200 and no complaint anywhere. On a money route «you did not say
+   * what this is» has to be a 400.
+   */
+  it('refuses a line that does not say what kind it is', async () => {
+    const res = await post('/api/v1/admin/revenue-adjustments', {
+      amountToman: 50_000,
+      direction: 'credit',
+      note: `${PREFIX}kindless`,
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('converts Toman to IRR exactly once', async () => {
     // The project's one conversion, and the one place a factor of ten hides.
-    const res = await add(1, 'credit', 'one-toman');
+    const res = await add(1, 'MANUAL_INCOME', 'one-toman');
     const body = (await res.json()) as { amountIrr: number };
     expect(body.amountIrr).toBe(10);
+  });
+
+  /**
+   * The two dates a row carries, and why they are two.
+   *
+   * «هزینه یک ماهه سرور آلمان» typed today for last month belongs in last
+   * month's total. `created_at` is when somebody typed it and never moves;
+   * `spent_on` is when the money left and is what every filter and every
+   * window on this screen measures.
+   */
+  it('records when the money left, separately from when it was typed', async () => {
+    const id = await addId(50_000, 'EXPENSE', 'german-server', { spentOn: '2026-07-15' });
+    const row = await baseEnv.DB.prepare(
+      `SELECT spent_on::text AS spent_on,
+              (created_at AT TIME ZONE 'Asia/Tehran')::date::text AS typed_on
+         FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ spent_on: string; typed_on: string }>();
+    expect(row?.spent_on).toBe('2026-07-15');
+    expect(row?.typed_on).not.toBe('2026-07-15');
+  });
+
+  it('defaults the spend date to today in Tehran, not to the server clock', async () => {
+    const id = await addId(50_000, 'EXPENSE', 'undated');
+    const row = await baseEnv.DB.prepare(
+      `SELECT spent_on = (now() AT TIME ZONE 'Asia/Tehran')::date AS ok
+         FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ ok: boolean }>();
+    expect(row?.ok).toBe(true);
   });
 
   it('refuses a signed amount rather than guessing what was meant', async () => {
     const res = await post('/api/v1/admin/revenue-adjustments', {
       amountToman: -50_000,
-      direction: 'expense',
+      kind: 'EXPENSE',
       note: `${PREFIX}signed`,
     });
     expect(res.status).toBe(400);
@@ -139,7 +274,7 @@ describe('writing a line', () => {
   it('refuses zero', async () => {
     const res = await post('/api/v1/admin/revenue-adjustments', {
       amountToman: 0,
-      direction: 'expense',
+      kind: 'EXPENSE',
       note: `${PREFIX}zero`,
     });
     expect(res.status).toBe(400);
@@ -151,7 +286,7 @@ describe('writing a line', () => {
     for (const note of ['', '   ']) {
       const res = await post('/api/v1/admin/revenue-adjustments', {
         amountToman: 50_000,
-        direction: 'expense',
+        kind: 'EXPENSE',
         note,
       });
       expect(res.status, JSON.stringify(note)).toBe(400);
@@ -161,7 +296,7 @@ describe('writing a line', () => {
   it('refuses an amount that can only be a slipped digit', async () => {
     const res = await post('/api/v1/admin/revenue-adjustments', {
       amountToman: 10_000_000_001,
-      direction: 'expense',
+      kind: 'EXPENSE',
       note: `${PREFIX}fat-finger`,
     });
     expect(res.status).toBe(400);
@@ -170,7 +305,7 @@ describe('writing a line', () => {
   it('is closed to anyone but an ADMIN', async () => {
     const res = await post(
       '/api/v1/admin/revenue-adjustments',
-      { amountToman: 50_000, direction: 'expense', note: `${PREFIX}reviewer` },
+      { amountToman: 50_000, kind: 'EXPENSE', note: `${PREFIX}reviewer` },
       REVIEWER,
     );
     expect(res.status).toBe(403);
@@ -181,7 +316,7 @@ describe('writing a line', () => {
   });
 
   it('writes what it did to the audit log', async () => {
-    const res = await add(50_000, 'expense', 'audited');
+    const res = await add(50_000, 'EXPENSE', 'audited');
     const { id } = (await res.json()) as { id: number };
     const log = await baseEnv.DB.prepare(
       `SELECT action, after_json FROM audit_logs
@@ -194,27 +329,42 @@ describe('writing a line', () => {
 });
 
 describe('the totals', () => {
-  it('separate what was spent from what came back', async () => {
-    // A net figure alone hides both halves: the same «−۳۰۰٬۰۰۰» is a quiet month
-    // and a big month with bigger costs, and the admin cannot tell which.
-    await add(100_000, 'expense', 'a');
-    await add(200_000, 'expense', 'b');
-    await add(50_000, 'credit', 'c');
+  it('separate the three kinds instead of netting them', async () => {
+    // The whole complaint, in one assertion. A single «-300,000» is a quiet
+    // month and a big month with bigger costs, and the admin cannot tell which
+    // - but worse, the version of this screen that only knew signs reported
+    // 35.8 million Toman of fake receipts as money the shop had spent, and
+    // labelled its reseller income «برگشتی و اعتبار».
+    await add(100_000, 'EXPENSE', 'a');
+    await add(200_000, 'EXPENSE', 'b');
+    await add(50_000, 'REVENUE_FIX', 'c', { direction: 'expense' });
+    await add(80_000, 'MANUAL_INCOME', 'd');
 
     const body = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
       total: number;
-      totals: { expensesIrr: number; creditsIrr: number; netIrr: number };
+      totals: {
+        expensesIrr: number;
+        revenueFixIrr: number;
+        manualIncomeIrr: number;
+        netIrr: number;
+      };
     };
-    expect(body.total).toBe(3);
+    expect(body.total).toBe(4);
     expect(body.totals.expensesIrr).toBe(-3_000_000);
-    expect(body.totals.creditsIrr).toBe(500_000);
-    expect(body.totals.netIrr).toBe(-2_500_000);
+    expect(body.totals.revenueFixIrr).toBe(-500_000);
+    expect(body.totals.manualIncomeIrr).toBe(800_000);
+    // And the three still add back to the one figure the shop's net is built
+    // from. This is the property that let the migration relabel 219 production
+    // rows without moving a Rial, and `verify.ts` depends on it.
+    expect(
+      body.totals.expensesIrr + body.totals.revenueFixIrr + body.totals.manualIncomeIrr,
+    ).toBe(body.totals.netIrr);
   });
 
-  it('cover the whole ledger, not the page being looked at', async () => {
+  it('cover the whole filter, not the page being looked at', async () => {
     // A running total that changed when you turned the page would be worse than
     // no total at all.
-    for (let i = 0; i < 5; i++) await add(10_000, 'expense', `page-${i}`);
+    for (let i = 0; i < 5; i++) await add(10_000, 'EXPENSE', `page-${i}`);
 
     const body = (await (
       await get('/api/v1/admin/revenue-adjustments?page=1&pageSize=2')
@@ -223,39 +373,87 @@ describe('the totals', () => {
     expect(body.totals.netIrr).toBe(-500_000);
   });
 
-  it('ignore the filter, so narrowing the list does not rewrite the books', async () => {
-    // Deliberate, and the opposite is the plausible reading: the three numbers
-    // are the shop's position, not a description of the rows on screen.
-    // Filtering to «هزینه» and watching «مجموع بستانکاری‌ها» drop to zero would
-    // read as the credits having gone somewhere.
-    await add(100_000, 'expense', 'w-a');
-    await add(50_000, 'credit', 'w-b');
+  /**
+   * The totals follow the filter, and `lifetime` does not. Both are returned.
+   *
+   * This reverses a deliberate decision, so it is worth saying why. The old
+   * behaviour was totals over the whole ledger whatever the filter, on the
+   * grounds that filtering to «هزینه» and watching the credits fall to zero
+   * would read as the credits having gone somewhere. That is a real hazard, and
+   * it is answered by naming the two figures rather than by picking one: Sam
+   * asked to filter and to see what each category cost, and a headline that
+   * refuses to move when you narrow the table cannot answer that at all.
+   *
+   * So the screen shows both, and this asserts both - the filtered figure is
+   * the arithmetic of the rows on screen, and the lifetime figure is the shop's
+   * position and never moves.
+   */
+  it('follow the filter, while the lifetime figure stays the shop position', async () => {
+    await add(100_000, 'EXPENSE', 'w-a');
+    await add(50_000, 'MANUAL_INCOME', 'w-b');
 
-    const body = (await (
-      await get('/api/v1/admin/revenue-adjustments?direction=expense')
-    ).json()) as {
+    const body = (await (await get('/api/v1/admin/revenue-adjustments?kind=EXPENSE')).json()) as {
       items: unknown[];
-      totals: { expensesIrr: number; creditsIrr: number; netIrr: number };
+      totals: { expensesIrr: number; manualIncomeIrr: number; netIrr: number };
+      lifetime: { expensesIrr: number; manualIncomeIrr: number; netIrr: number };
     };
     expect(body.items).toHaveLength(1);
-    expect(body.totals.creditsIrr).toBe(500_000);
-    expect(body.totals.netIrr).toBe(-500_000);
+    // The rows on screen, added up.
+    expect(body.totals.expensesIrr).toBe(-1_000_000);
+    expect(body.totals.manualIncomeIrr).toBe(0);
+    // The books, unmoved by looking at them through a filter.
+    expect(body.lifetime.manualIncomeIrr).toBe(500_000);
+    expect(body.lifetime.netIrr).toBe(-500_000);
   });
 
-  it('are derived, so a delete moves them with nothing else written', async () => {
+  /**
+   * «تفکیک» - the breakdown that did not exist anywhere.
+   *
+   * Neither this schema nor Mirzabot's had a category, so «what was the money
+   * spent on» had no answer at all. The filtered total and the sum of this
+   * breakdown are the same arithmetic, which is what makes the screen checkable
+   * by the person reading it.
+   */
+  it('break spending down by category, and the parts add to the whole', async () => {
+    const cat = await baseEnv.DB.prepare(
+      `SELECT id FROM expense_categories WHERE name = 'تبلیغات'`,
+    ).first<{ id: number }>();
+
+    await add(100_000, 'EXPENSE', 'ads-1', { categoryId: Number(cat!.id) });
+    await add(300_000, 'EXPENSE', 'ads-2', { categoryId: Number(cat!.id) });
+    await add(70_000, 'EXPENSE', 'uncategorised');
+
+    const body = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+      totals: { expensesIrr: number };
+      byCategory: { categoryId: number | null; name: string | null; count: number; irr: number }[];
+    };
+
+    const ads = body.byCategory.find((b) => b.name === 'تبلیغات');
+    expect(ads?.count).toBe(2);
+    expect(ads?.irr).toBe(-4_000_000);
+
+    // The rows the classifier could not label are their own line, not folded
+    // into «سایر» - «I have not looked at this yet» and «I looked, and it is
+    // other» are different states.
+    const none = body.byCategory.find((b) => b.categoryId === null);
+    expect(none?.irr).toBe(-700_000);
+
+    expect(body.byCategory.reduce((sum, b) => sum + b.irr, 0)).toBe(body.totals.expensesIrr);
+  });
+
+  it('are derived, so voiding a row moves them with nothing else written', async () => {
     // The legacy panel keeps `setting.revenue_adjustment` alongside the log and
     // rewrites it inside a transaction on every insert and delete. Two things
     // that must agree is one thing that can be wrong; this asserts there is only
     // ever one.
-    const res = await add(100_000, 'expense', 'derived');
-    const { id } = (await res.json()) as { id: number };
+    const id = await addId(100_000, 'EXPENSE', 'derived');
 
     const before = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
       totals: { netIrr: number };
     };
     expect(before.totals.netIrr).toBe(-1_000_000);
 
-    expect((await del(`/api/v1/admin/revenue-adjustments/${id}`)).status).toBe(200);
+    expect((await voidRow(id)).status).toBe(200);
 
     const after = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
       total: number;
@@ -266,64 +464,273 @@ describe('the totals', () => {
   });
 });
 
-describe('removing a line', () => {
-  it('keeps what it removed, in a table that cannot be deleted from', async () => {
-    // Deletion is real here, unlike `wallet_entries`, because this is the
-    // admin's own note about the shop's own books. What it must not do is erase
-    // the fact that the line existed.
-    const res = await add(75_000, 'expense', 'removed');
-    const { id } = (await res.json()) as { id: number };
-    await del(`/api/v1/admin/revenue-adjustments/${id}`);
+describe('editing a line', () => {
+  /**
+   * The history is the feature, not the edit.
+   *
+   * Sam asked for editing and for «who did it, what was it». An edit with no
+   * record is exactly what «the books get messed up» means: the figure moves
+   * and nothing anywhere says it used to be different. `audit_logs` is
+   * append-only in Postgres, so the record cannot be edited by the person
+   * editing the row.
+   */
+  it('records what changed, from what, by whom - and only what changed', async () => {
+    const id = await addId(100_000, 'EXPENSE', 'edit-me');
+
+    const res = await patch(`/api/v1/admin/revenue-adjustments/${id}`, {
+      amountToman: 120_000,
+      reason: 'فاکتور درست‌تر رسید',
+    });
+    expect(res.status).toBe(200);
+    expect(Number((await rowById(id))?.amount_irr)).toBe(-1_200_000);
 
     const log = await baseEnv.DB.prepare(
-      `SELECT action, before_json FROM audit_logs
+      `SELECT actor_email, before_json, after_json, reason FROM audit_logs
         WHERE entity_type = 'REVENUE_ADJUSTMENT' AND entity_id = ?1
-          AND action = 'revenue_adjustment.deleted'`,
+          AND action = 'revenue_adjustment.edited'`,
     )
       .bind(String(id))
-      .first<{ action: string; before_json: unknown }>();
-    expect(log?.action).toBe('revenue_adjustment.deleted');
-    const before =
-      typeof log?.before_json === 'string'
-        ? (JSON.parse(log.before_json) as { amount_irr: number; note: string })
-        : (log?.before_json as { amount_irr: number; note: string });
-    // The amount AND the note. Either one alone leaves a history nobody can read.
-    expect(Number(before.amount_irr)).toBe(-750_000);
-    expect(before.note).toBe(`${PREFIX}removed`);
+      .first<{ actor_email: string; before_json: string; after_json: string; reason: string }>();
+
+    const before = JSON.parse(log!.before_json) as Record<string, unknown>;
+    const after = JSON.parse(log!.after_json) as Record<string, unknown>;
+    expect(log!.actor_email).toBe(ADMIN);
+    expect(log!.reason).toBe('فاکتور درست‌تر رسید');
+    expect(before['amount_irr']).toBe(-1_000_000);
+    expect(after['amount_irr']).toBe(-1_200_000);
+    // Only the field that moved, and the same keys on both sides - a diff where
+    // ten of twelve keys are identical is a diff nobody reads, and matching key
+    // sets let the screen render it by zipping them.
+    expect(Object.keys(before)).toEqual(['amount_irr']);
+    expect(Object.keys(after)).toEqual(['amount_irr']);
+  });
+
+  /**
+   * Changing the kind changes the sign, once.
+   *
+   * A row moving from «هزینه» to «درآمد دستی» has to cross zero, and the
+   * magnitude must survive it exactly. Getting this wrong is invisible: the
+   * screen shows a plausible number of the wrong sign.
+   */
+  it('flips the sign when the kind changes, keeping the magnitude exact', async () => {
+    const id = await addId(37_500, 'EXPENSE', 'was-a-cost');
+    expect(Number((await rowById(id))?.amount_irr)).toBe(-375_000);
+
+    const res = await patch(`/api/v1/admin/revenue-adjustments/${id}`, { kind: 'MANUAL_INCOME' });
+    expect(res.status).toBe(200);
+    expect(Number((await rowById(id))?.amount_irr)).toBe(375_000);
+  });
+
+  it('writes nothing when nothing changed', async () => {
+    const id = await addId(50_000, 'EXPENSE', 'unchanged');
+    const res = await patch(`/api/v1/admin/revenue-adjustments/${id}`, { amountToman: 50_000 });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { changed: boolean }).toMatchObject({ changed: false });
+
+    const n = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM audit_logs
+        WHERE entity_type = 'REVENUE_ADJUSTMENT' AND entity_id = ?1
+          AND action = 'revenue_adjustment.edited'`,
+    )
+      .bind(String(id))
+      .first<{ n: number }>();
+    expect(n?.n).toBe(0);
+  });
+
+  it('refuses to edit a voided row, and says which of the two it is', async () => {
+    const id = await addId(50_000, 'EXPENSE', 'voided-then-edited');
+    await voidRow(id);
+    // 409 and not 400: the request was well formed, the state refused it.
+    const voided = await patch(`/api/v1/admin/revenue-adjustments/${id}`, { amountToman: 1 });
+    expect(voided.status).toBe(409);
+    const missing = await patch('/api/v1/admin/revenue-adjustments/99999999', { amountToman: 1 });
+    expect(missing.status).toBe(404);
   });
 
   it('is closed to anyone but an ADMIN', async () => {
-    const res = await add(50_000, 'expense', 'guarded');
-    const { id } = (await res.json()) as { id: number };
+    const id = await addId(50_000, 'EXPENSE', 'edit-guarded');
+    const res = await patch(
+      `/api/v1/admin/revenue-adjustments/${id}`,
+      { amountToman: 1 },
+      REVIEWER,
+    );
+    expect(res.status).toBe(403);
+    expect(Number((await rowById(id))?.amount_irr)).toBe(-500_000);
+  });
+});
 
-    expect((await del(`/api/v1/admin/revenue-adjustments/${id}`, REVIEWER)).status).toBe(403);
-    expect(await rowById(id)).not.toBeNull();
+describe('voiding a line', () => {
+  /**
+   * Voiding replaces deleting, and it fixes a bug nobody had noticed.
+   *
+   * `verify.ts` compares `COUNT(*) FROM revenue_adjustment_log` against
+   * `COUNT(*) FROM revenue_adjustments`, so one admin deleting one line made
+   * the migration's own check red for ever with nothing saying why. A voided
+   * row stays in the table for that check and leaves `shop_books` for the
+   * panel.
+   */
+  it('leaves the books and stays in the table', async () => {
+    const id = await addId(75_000, 'EXPENSE', 'voided');
+    expect((await voidRow(id, 'دو بار ثبت شده بود')).status).toBe(200);
+
+    // Gone from what the panel adds up...
+    const books = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM shop_books WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ n: number }>();
+    expect(books?.n).toBe(0);
+
+    // ...and still there for the importer's check, with its reason attached.
+    const row = await baseEnv.DB.prepare(
+      `SELECT amount_irr, voided_by, void_reason FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ amount_irr: string | number; voided_by: string; void_reason: string }>();
+    expect(Number(row?.amount_irr)).toBe(-750_000);
+    expect(row?.voided_by).toBe(ADMIN);
+    expect(row?.void_reason).toBe('دو بار ثبت شده بود');
   });
 
-  it('answers 404 for a row that is already gone', async () => {
-    const res = await add(50_000, 'expense', 'twice');
-    const { id } = (await res.json()) as { id: number };
-    expect((await del(`/api/v1/admin/revenue-adjustments/${id}`)).status).toBe(200);
-    expect((await del(`/api/v1/admin/revenue-adjustments/${id}`)).status).toBe(404);
+  it('keeps the whole row in a table that cannot be deleted from', async () => {
+    const id = await addId(75_000, 'EXPENSE', 'void-audited');
+    await voidRow(id);
+
+    const log = await baseEnv.DB.prepare(
+      `SELECT before_json FROM audit_logs
+        WHERE entity_type = 'REVENUE_ADJUSTMENT' AND entity_id = ?1
+          AND action = 'revenue_adjustment.voided'`,
+    )
+      .bind(String(id))
+      .first<{ before_json: string }>();
+    const before = JSON.parse(log!.before_json) as { amount_irr: number; note: string };
+    // The amount AND the note. Either one alone leaves a history nobody can read.
+    expect(Number(before.amount_irr)).toBe(-750_000);
+    expect(before.note).toBe(`${PREFIX}void-audited`);
+  });
+
+  it('demands a reason, because that is the point of not deleting', async () => {
+    const id = await addId(50_000, 'EXPENSE', 'no-reason');
+    const res = await post(`/api/v1/admin/revenue-adjustments/${id}/void`, { reason: '' });
+    expect(res.status).toBe(400);
+  });
+
+  it('is closed to anyone but an ADMIN', async () => {
+    const id = await addId(50_000, 'EXPENSE', 'void-guarded');
+    expect((await voidRow(id, 'nope', REVIEWER)).status).toBe(403);
+    const row = await baseEnv.DB.prepare(`SELECT voided_at FROM revenue_adjustments WHERE id = ?1`)
+      .bind(id)
+      .first<{ voided_at: string | null }>();
+    expect(row?.voided_at).toBeNull();
+  });
+
+  it('tells a second void apart from a row that never existed', async () => {
+    const id = await addId(50_000, 'EXPENSE', 'twice');
+    expect((await voidRow(id)).status).toBe(200);
+    expect((await voidRow(id)).status).toBe(409);
+    expect((await voidRow(99_999_999)).status).toBe(404);
   });
 });
 
 describe('reading the ledger', () => {
-  it('filters by direction using the sign, because that is where it lives', async () => {
-    await add(100_000, 'expense', 'f-a');
-    await add(50_000, 'credit', 'f-b');
+  it('filters by kind, by category, and by the day the money left', async () => {
+    const cat = await baseEnv.DB.prepare(
+      `SELECT id FROM expense_categories WHERE name = 'سرور و زیرساخت'`,
+    ).first<{ id: number }>();
 
-    const expenses = (await (
-      await get('/api/v1/admin/revenue-adjustments?direction=expense')
-    ).json()) as { items: { amountIrr: number }[] };
-    expect(expenses.items).toHaveLength(1);
-    expect(expenses.items[0]!.amountIrr).toBeLessThan(0);
+    await add(100_000, 'EXPENSE', 'f-server', {
+      categoryId: Number(cat!.id),
+      spentOn: '2026-07-10',
+    });
+    await add(50_000, 'MANUAL_INCOME', 'f-sale', { spentOn: '2026-08-10' });
 
-    const credits = (await (
-      await get('/api/v1/admin/revenue-adjustments?direction=credit')
-    ).json()) as { items: { amountIrr: number }[] };
-    expect(credits.items).toHaveLength(1);
-    expect(credits.items[0]!.amountIrr).toBeGreaterThan(0);
+    const one = async (query: string) =>
+      (
+        (await (await get(`/api/v1/admin/revenue-adjustments?${query}`)).json()) as {
+          items: { note: string }[];
+        }
+      ).items;
+
+    expect(await one('kind=EXPENSE')).toHaveLength(1);
+    expect(await one(`categoryId=${Number(cat!.id)}`)).toHaveLength(1);
+    // The window is on `spent_on`, so a row typed today for July answers to July.
+    expect(await one('from=2026-07-01&to=2026-07-31')).toHaveLength(1);
+    expect(await one('q=f-server')).toHaveLength(1);
+    expect(await one('uncategorised=true')).toHaveLength(0);
+  });
+
+  it('hides voided rows by default and can be asked for them', async () => {
+    const id = await addId(50_000, 'EXPENSE', 'v-filter');
+    await voidRow(id);
+
+    const count = async (query: string) =>
+      (
+        (await (await get(`/api/v1/admin/revenue-adjustments?${query}`)).json()) as {
+          items: unknown[];
+        }
+      ).items.length;
+
+    expect(await count('')).toBe(0);
+    expect(await count('voided=show')).toBe(1);
+    expect(await count('voided=only')).toBe(1);
+  });
+
+  it('carries the edit history onto the row, without a query per row', async () => {
+    const id = await addId(50_000, 'EXPENSE', 'edited-badge');
+    await patch(`/api/v1/admin/revenue-adjustments/${id}`, { amountToman: 60_000 });
+    await patch(`/api/v1/admin/revenue-adjustments/${id}`, { note: `${PREFIX}renamed` });
+
+    const body = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+      items: { id: number; editCount: number; lastEditedBy: string | null }[];
+    };
+    const row = body.items.find((i) => i.id === id);
+    expect(row?.editCount).toBe(2);
+    expect(row?.lastEditedBy).toBe(ADMIN);
+  });
+
+  it('answers what was done to one row, in order', async () => {
+    const id = await addId(50_000, 'EXPENSE', 'history');
+    await patch(`/api/v1/admin/revenue-adjustments/${id}`, { amountToman: 60_000 });
+    await voidRow(id, 'اشتباه بود');
+
+    const body = (await (
+      await get(`/api/v1/admin/revenue-adjustments/${id}/history`)
+    ).json()) as { items: { action: string; reason: string | null }[] };
+
+    expect(body.items.map((i) => i.action)).toEqual([
+      'revenue_adjustment.added',
+      'revenue_adjustment.edited',
+      'revenue_adjustment.voided',
+    ]);
+    expect(body.items[2]!.reason).toBe('اشتباه بود');
+  });
+
+  it('exports the filtered set as a file Excel can read', async () => {
+    await add(100_000, 'EXPENSE', 'csv-a');
+    await add(50_000, 'MANUAL_INCOME', 'csv-b');
+
+    const res = await get('/api/v1/admin/revenue-adjustments/export.csv?kind=EXPENSE');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/csv');
+
+    /**
+     * The BOM, asserted on the BYTES.
+     *
+     * Without it Excel reads a UTF-8 file as the local codepage and every
+     * Persian note becomes mojibake. It cannot be asserted through
+     * `res.text()`: `TextDecoder` strips a leading BOM by specification, so
+     * that assertion reads false whether or not the bytes are right \u2014 it
+     * failed here first, against a response that was already correct.
+     */
+    const bytes = new Uint8Array(await res.clone().arrayBuffer());
+    expect([bytes[0], bytes[1], bytes[2]]).toEqual([0xef, 0xbb, 0xbf]);
+
+    const text = await res.text();
+    // The filter applied, and the note round-tripped.
+    expect(text).toContain(`${PREFIX}csv-a`);
+    expect(text).not.toContain(`${PREFIX}csv-b`);
+    // Toman, like every other figure an admin reads on this panel.
+    expect(text).toContain('-100000');
   });
 
   it('reaches the dashboard beside the revenue, not folded into it', async () => {
@@ -335,7 +742,7 @@ describe('reading the ledger', () => {
     // Beside, not inside: `shopStats.revenueIrr` is the bot's «آمار» screen as
     // well, and it means completed sales on both. The legacy panel splits it
     // the same way (`panel/index.php:28`).
-    await add(100_000, 'expense', 'overview');
+    await add(100_000, 'EXPENSE', 'overview');
 
     const body = (await (await get('/api/v1/admin/overview')).json()) as {
       revenueIrr: number;
@@ -350,7 +757,7 @@ describe('reading the ledger', () => {
   });
 
   it('is readable by a REVIEWER, who has to reconcile against it', async () => {
-    await add(50_000, 'expense', 'reviewer-read');
+    await add(50_000, 'EXPENSE', 'reviewer-read');
     expect((await get('/api/v1/admin/revenue-adjustments', REVIEWER)).status).toBe(200);
   });
 
@@ -360,7 +767,333 @@ describe('reading the ledger', () => {
     // What the shop spends is not personal data — the usual reason a path is
     // withheld — but it is the same answer as «دسترسی‌ها», which is on that list
     // for exactly this reason.
-    await add(50_000, 'expense', 'reader');
+    await add(50_000, 'EXPENSE', 'reader');
     expect((await get('/api/v1/admin/revenue-adjustments', READER)).status).toBe(403);
+  });
+
+  /**
+   * Every path under this screen, not only the one the list uses.
+   *
+   * This test exists because the export was written at
+   * `/api/v1/admin/revenue-adjustments.csv` and that answered 200 to a
+   * READ_ONLY operator. `mayRead` matches a prefix as `path === p ||
+   * path.startsWith(p + '/')`, so a sibling ending in `.csv` matched neither
+   * and handed a reader the whole of the shop's spending as a file — the one
+   * thing that list is there to withhold. A suffix is not a child.
+   *
+   * Asserted per path rather than once, so the next route added beside these
+   * has somewhere obvious to be added and a red test if it is not.
+   */
+  it.each([
+    '/api/v1/admin/revenue-adjustments/export.csv',
+    '/api/v1/admin/revenue-adjustments/categories',
+    '/api/v1/admin/revenue-adjustments/recurrences',
+    '/api/v1/admin/revenue-adjustments/1/history',
+  ])('withholds %s from a READ_ONLY operator too', async (path) => {
+    expect((await get(path, READER)).status).toBe(403);
+  });
+});
+
+
+/**
+ * A bill that arrived in a currency the shop does not keep its books in.
+ *
+ * «هزینه یک ماهه سرور آلمان» is the case, and it is billed in euro.
+ */
+describe('a foreign bill', () => {
+  const RATE_TOMAN = 1_200_000;
+
+  const euro = (originalAmount: number, label: string, extra: object = {}) =>
+    post('/api/v1/admin/revenue-adjustments', {
+      kind: 'EXPENSE',
+      currency: 'EUR',
+      originalAmount,
+      fxRateToman: RATE_TOMAN,
+      note: `${PREFIX}${label}`,
+      ...extra,
+    });
+
+  it('derives the Toman figure on the server, from the invoice and the rate', async () => {
+    const res = await euro(35.5, 'hetzner');
+    expect(res.status).toBe(200);
+    // €35.50 × 1,200,000 T = 42,600,000 T = 426,000,000 IRR, negative because
+    // it is spending. The client sent no amount at all.
+    expect(((await res.json()) as { amountIrr: number }).amountIrr).toBe(-426_000_000);
+  });
+
+  /**
+   * The check that is not this file agreeing with itself.
+   *
+   * `magnitudeIrr` multiplies in JavaScript. Here Postgres multiplies the two
+   * columns it actually stored and the answer has to be the same one, so a
+   * rounding that drifted — or a rate written in the wrong unit — is red rather
+   * than invisible. Rule 6: measure against something outside the code.
+   */
+  it('agrees with the arithmetic Postgres does on the stored columns', async () => {
+    for (const amount of [35.5, 0.5, 1, 999.999, 12.345678]) {
+      await euro(amount, `fx-${amount}`);
+    }
+
+    const bad = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM revenue_adjustments
+        WHERE currency <> 'IRR'
+          AND abs(amount_irr) <> round(original_amount * fx_rate_irr / 10) * 10`,
+    ).first<{ n: number }>();
+    expect(Number(bad?.n)).toBe(0);
+
+    // And the columns hold the invoice, not a re-derivation of it.
+    const row = await baseEnv.DB.prepare(
+      `SELECT currency, original_amount, fx_rate_irr FROM revenue_adjustments
+        WHERE note = ?1`,
+    )
+      .bind(`${PREFIX}fx-35.5`)
+      .first<{ currency: string; original_amount: string | number; fx_rate_irr: string | number }>();
+    expect(row?.currency).toBe('EUR');
+    expect(Number(row?.original_amount)).toBe(35.5);
+    // Rial per unit, so ten times the Toman rate that was typed.
+    expect(Number(row?.fx_rate_irr)).toBe(RATE_TOMAN * 10);
+  });
+
+  /**
+   * Half an amount, or two of them, is a 400.
+   *
+   * A row carrying a Toman figure AND a rate would be two answers to one
+   * question, and the one that reached the books would be invisible. A rate
+   * with no invoice re-prices a row against an amount nobody restated.
+   */
+  it.each([
+    ['both shapes at once', { amountToman: 1_000, currency: 'EUR', originalAmount: 1, fxRateToman: 1 }],
+    ['a rate with no invoice', { currency: 'EUR', fxRateToman: RATE_TOMAN }],
+    ['an invoice with no rate', { currency: 'EUR', originalAmount: 35.5 }],
+    ['a foreign currency and a Toman figure', { currency: 'USD', amountToman: 1_000 }],
+    ['a rate under IRR', { amountToman: 1_000, fxRateToman: RATE_TOMAN }],
+  ])('refuses %s', async (_name, money) => {
+    const res = await post('/api/v1/admin/revenue-adjustments', {
+      kind: 'EXPENSE',
+      note: `${PREFIX}bad`,
+      ...money,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('applies the fat-finger ceiling to the DERIVED amount', async () => {
+    // Each field is inside its own limit; their product is not. This is the
+    // slip a foreign bill adds — a rate typed with an extra zero — and it
+    // passes every check made on the fields themselves.
+    const res = await euro(1_000_000, 'huge');
+    expect(res.status).toBe(400);
+  });
+
+  it('is an ordinary expense in every total, whatever it was paid in', async () => {
+    await euro(10, 'in-totals');
+    const body = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+      totals: { expensesIrr: number; netIrr: number };
+    };
+    expect(body.totals.expensesIrr).toBe(-120_000_000);
+    expect(body.totals.netIrr).toBe(-120_000_000);
+  });
+
+  it('carries the invoice into the export beside the figure it produced', async () => {
+    await euro(35.5, 'csv-fx');
+    const res = await get('/api/v1/admin/revenue-adjustments/export.csv');
+    const text = await res.text();
+    expect(text).toContain('"ارز","مبلغ ارزی","نرخ (تومان)"');
+    expect(text).toContain('"EUR","35.5","1200000"');
+  });
+
+  it('records the currency columns in the history when an edit changes them', async () => {
+    const id = ((await (await euro(35.5, 'edit-fx')).json()) as { id: number }).id;
+
+    // Back to Toman: the three columns must clear together, or the row keeps a
+    // rate that explains nothing.
+    await patch(`/api/v1/admin/revenue-adjustments/${id}`, {
+      currency: 'IRR',
+      amountToman: 500_000,
+    });
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT amount_irr, currency, original_amount, fx_rate_irr
+         FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{
+        amount_irr: string | number;
+        currency: string;
+        original_amount: number | null;
+        fx_rate_irr: number | null;
+      }>();
+    expect(Number(row?.amount_irr)).toBe(-5_000_000);
+    expect(row?.currency).toBe('IRR');
+    expect(row?.original_amount).toBeNull();
+    expect(row?.fx_rate_irr).toBeNull();
+
+    const history = (await (
+      await get(`/api/v1/admin/revenue-adjustments/${id}/history`)
+    ).json()) as { items: { action: string; before: Record<string, unknown> | null }[] };
+    const edit = history.items.find((h) => h.action === 'revenue_adjustment.edited');
+    expect(edit?.before?.['currency']).toBe('EUR');
+    expect(edit?.before?.['original_amount']).toBe(35.5);
+  });
+});
+
+/**
+ * A cost that comes back — the template, the banner and the press.
+ *
+ * There is no cron. Everything here is what an admin does with one button, and
+ * the assertions are about the pair the transaction holds together: the row
+ * that appeared, and where the template moved to.
+ */
+describe('a recurring cost', () => {
+  const RECURRENCES = '/api/v1/admin/revenue-adjustments/recurrences';
+
+  /** Yesterday in Tehran, so a template made with it is already owed. */
+  const overdue = (daysBack = 1) =>
+    new Date(Date.now() - daysBack * 86_400_000).toISOString().slice(0, 10);
+
+  async function template(extra: object = {}) {
+    const res = await post(RECURRENCES, {
+      label: `${PREFIX}german-server`,
+      amountToman: 1_200_000,
+      nextDueOn: overdue(),
+      ...extra,
+    });
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { id: number }).id;
+  }
+
+  const list = async () =>
+    ((await (await get(RECURRENCES)).json()) as {
+      items: {
+        id: number;
+        label: string;
+        amountIrr: number;
+        nextDueOn: string;
+        due: boolean;
+        active: boolean;
+      }[];
+    }).items;
+
+  const postOne = (id: number, body: object = {}) => post(`${RECURRENCES}/${id}/post`, body);
+
+  it('is owed once its due date has arrived, decided in Tehran', async () => {
+    const id = await template();
+    const mine = (await list()).find((r) => r.id === id);
+    expect(mine?.due).toBe(true);
+
+    // And not before. The date is compared by Postgres in Tehran, so a laptop
+    // in another timezone cannot make a bill look due a day early.
+    const later = await template({
+      label: `${PREFIX}not-yet`,
+      nextDueOn: overdue(-30),
+    });
+    expect((await list()).find((r) => r.id === later)?.due).toBe(false);
+  });
+
+  it('posts the row and advances the template in one press', async () => {
+    const id = await template();
+    const before = (await list()).find((r) => r.id === id)!;
+
+    const res = await postOne(id);
+    expect(res.status).toBe(200);
+    const posted = (await res.json()) as { id: number; nextDueOn: string };
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT amount_irr, note, kind, recurrence_id, spent_on::text AS spent_on
+         FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(posted.id)
+      .first<{
+        amount_irr: string | number;
+        note: string;
+        kind: string;
+        recurrence_id: number | null;
+        spent_on: string;
+      }>();
+
+    expect(row?.kind).toBe('EXPENSE');
+    expect(Number(row?.amount_irr)).toBe(-12_000_000);
+    expect(Number(row?.recurrence_id)).toBe(id);
+    // The day the bill was FOR, not today: a September bill posted in October
+    // belongs to September in every report.
+    expect(row?.spent_on).toBe(before.nextDueOn);
+    // Named by its period, so twelve instalments are twelve readable lines.
+    expect(row?.note).toContain(`${PREFIX}german-server — `);
+
+    // ...and the template moved, in the same transaction.
+    expect(posted.nextDueOn).toBe(nextJalaliDue(before.nextDueOn, 'MONTHLY'));
+    expect((await list()).find((r) => r.id === id)?.nextDueOn).toBe(posted.nextDueOn);
+  });
+
+  it('advances one period at a time when it is months overdue', async () => {
+    // Three missed months are three rows an admin posts one at a time. A single
+    // catch-up jump would lose two lines nobody could reconstruct.
+    const id = await template({ nextDueOn: overdue(95) });
+    const start = (await list()).find((r) => r.id === id)!.nextDueOn;
+
+    await postOne(id);
+    const after = (await list()).find((r) => r.id === id)!;
+    expect(after.nextDueOn).toBe(nextJalaliDue(start, 'MONTHLY'));
+    // Still owed, and the banner keeps saying so until every month is in.
+    expect(after.due).toBe(true);
+  });
+
+  it('takes a euro invoice for the month, and keeps it as the next default', async () => {
+    const id = await template();
+    const res = await postOne(id, {
+      currency: 'EUR',
+      originalAmount: 35.5,
+      fxRateToman: 1_200_000,
+    });
+    const posted = (await res.json()) as { id: number };
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT amount_irr, currency, original_amount FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(posted.id)
+      .first<{ amount_irr: string | number; currency: string; original_amount: number }>();
+    expect(Number(row?.amount_irr)).toBe(-426_000_000);
+    expect(row?.currency).toBe('EUR');
+
+    // The template now defaults to what was actually paid. For a euro bill the
+    // Toman figure moves every month, so the last real one beats the one typed
+    // when the template was made — and nothing adds this column up.
+    expect((await list()).find((r) => r.id === id)?.amountIrr).toBe(426_000_000);
+  });
+
+  it('takes the category from the template, so the breakdown is not left blank', async () => {
+    const cat = await baseEnv.DB.prepare(
+      `SELECT id FROM expense_categories WHERE name = 'سرور و زیرساخت'`,
+    ).first<{ id: number }>();
+
+    const id = await template({ categoryId: Number(cat!.id) });
+    const posted = (await (await postOne(id)).json()) as { id: number };
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT category_id FROM revenue_adjustments WHERE id = ?1`,
+    )
+      .bind(posted.id)
+      .first<{ category_id: number }>();
+    expect(Number(row?.category_id)).toBe(Number(cat!.id));
+  });
+
+  it('refuses to post an archived template, and says the state refused it', async () => {
+    const id = await template();
+    await patch(`${RECURRENCES}/${id}`, { active: false });
+
+    const res = await postOne(id);
+    // 409, not 400: the request was well formed and the state refused it.
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe('inactive');
+    // An archived template is never due, whatever its date says.
+    expect((await list()).find((r) => r.id === id)?.due).toBe(false);
+  });
+
+  it('is written only by an ADMIN', async () => {
+    const id = await template();
+    for (const email of [REVIEWER, READER]) {
+      expect((await post(RECURRENCES, { label: 'x', amountToman: 1, nextDueOn: overdue() }, email)).status)
+        .toBe(403);
+      expect((await post(`${RECURRENCES}/${id}/post`, {}, email)).status).toBe(403);
+    }
   });
 });
