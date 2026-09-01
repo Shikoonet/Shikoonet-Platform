@@ -54,6 +54,39 @@ const baseline: Baseline = JSON.parse(
   readFileSync(new URL('../.github/ci-baseline.json', import.meta.url), 'utf8'),
 ) as Baseline;
 
+/**
+ * What the plan said this run would do.
+ *
+ * Since 2026-09-01 the gate SELECTS: a pull request confined to `apps/` runs
+ * only the executors that own a suite which could observe it. So «every
+ * baseline suite reported» is no longer the right question — it would fail
+ * every selected run.
+ *
+ * The right question is «exactly the suites the plan named, and no others».
+ * A suite the plan said to run and did not is missing; a suite the plan said
+ * to skip and which reported anyway is ALSO a failure, because it means the
+ * job conditions and the published plan disagree and the plan is what the rest
+ * of this file believes. Neither direction is tolerated.
+ *
+ * Read fail-closed: anything that is not the exact string 'false' — an unset
+ * variable, an empty one, a typo — means «it ran», which requires MORE
+ * evidence, never less.
+ */
+const planSaidNo = (name: string): boolean => process.env[name] === 'false';
+const ranChecksUnit = !planSaidNo('PLAN_UNIT');
+const ranDb = !planSaidNo('PLAN_DB');
+const ranE2e = !planSaidNo('PLAN_E2E');
+
+/** Which executor owns a suite, and whether the plan said that executor ran. */
+const executorRan = (shard: string): boolean => {
+  if (shard === 'checks') return ranChecksUnit;
+  if (shard === 'integration-db') return ranDb;
+  // A shard name this file does not know cannot be shown to have been planned
+  // away, so it is required. `tools/test/ci-suite-map.test.sh` fails on one of
+  // these before it can ever reach here.
+  return true;
+};
+
 const failures: string[] = [];
 const summary: string[] = [];
 
@@ -134,12 +167,31 @@ for (const path of findAll(ROOT, 'vitest-report.json')) {
 
 let discovered = 0;
 let skippedTotal = 0;
+const expectedCount = Object.values(baseline.suites).filter((s) => executorRan(s.shard)).length;
 
 summary.push('| Suite | Shard | Tests | Baseline | Skipped | Baseline |');
 summary.push('| --- | --- | --- | --- | --- | --- |');
 
 for (const [dir, want] of Object.entries(baseline.suites)) {
   const got = seen.get(dir);
+  const expected = executorRan(want.shard);
+
+  if (!expected) {
+    // The plan selected this suite away. It must then be ABSENT — a report
+    // from a suite the plan said would not run means the `if:` on the job and
+    // the plan disagree, and that is red in the same way a missing one is.
+    if (got !== undefined) {
+      fail(
+        `${want.name} (${dir}) reported ${got.total} tests, but the plan said ` +
+          `executor \`${want.shard}\` would not run — the job condition and the plan disagree`,
+      );
+      summary.push(`| ${want.name} | ${want.shard} | **UNEXPECTED** | ${want.total} | — | — |`);
+    } else {
+      summary.push(`| ${want.name} | ${want.shard} | _planned skip_ | ${want.total} | — | — |`);
+    }
+    continue;
+  }
+
   if (got === undefined) {
     fail(`${want.name} (${dir}) produced no test report — shard \`${want.shard}\` did not run it`);
     summary.push(`| ${want.name} | ${want.shard} | **MISSING** | ${want.total} | — | ${want.skipped} |`);
@@ -174,6 +226,11 @@ summary.push('| --- | --- | --- | --- |');
 
 for (const dir of baseline.coverage) {
   const name = baseline.suites[dir]?.name ?? dir;
+  const shard = baseline.suites[dir]?.shard;
+  if (shard !== undefined && !executorRan(shard)) {
+    summary.push(`| ${name} | _planned skip_ | | |`);
+    continue;
+  }
   const floor = COVERAGE_FLOORS[name];
   if (floor === undefined) {
     fail(`${name}: named as coverage-gated in the baseline but has no floor in vitest.coverage.ts`);
@@ -217,7 +274,14 @@ for (const dir of baseline.coverage) {
 // 3. Playwright — the browser walk is complete, not merely green.
 // ---------------------------------------------------------------------------
 const pw = findAll(ROOT, 'playwright-report.json');
-if (pw.length === 0) {
+if (!ranE2e) {
+  if (pw.length > 0) {
+    fail('a Playwright report was uploaded, but the plan said the browser walk would not run');
+  } else {
+    summary.push('');
+    summary.push('Playwright: _planned skip_ — no changed path can reach the SPA or the panel.');
+  }
+} else if (pw.length === 0) {
   fail('no Playwright report was uploaded — the browser walk cannot be shown to have run');
 } else {
   let scenarios = 0;
@@ -256,7 +320,14 @@ if (pw.length === 0) {
 // 4. Schema — the counts the migration job measured against an empty database.
 // ---------------------------------------------------------------------------
 const schemaFound = findAll(ROOT, 'schema-counts.json');
-if (schemaFound.length === 0) {
+if (!ranDb) {
+  if (schemaFound.length > 0) {
+    fail('migration counts were published, but the plan said `integration-db` would not run');
+  } else {
+    summary.push('');
+    summary.push('Schema: _planned skip_ — no changed path can reach a migration or an invariant.');
+  }
+} else if (schemaFound.length === 0) {
   fail('the migration job published no migration/invariant counts');
 } else {
   try {
@@ -284,7 +355,8 @@ if (schemaFound.length === 0) {
 summary.push('');
 summary.push(
   `**${discovered}** tests discovered, **${skippedTotal}** skipped, across ` +
-    `${seen.size}/${Object.keys(baseline.suites).length} suites.`,
+    `${seen.size}/${expectedCount} expected suites ` +
+    `(${Object.keys(baseline.suites).length} exist; plan: unit=${ranChecksUnit} db=${ranDb} e2e=${ranE2e}).`,
 );
 
 console.log(summary.join('\n'));

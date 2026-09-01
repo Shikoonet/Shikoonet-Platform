@@ -1,6 +1,9 @@
 {
   "_comment": [
-    "Floors for `tools/ci-verify-gate.ts`, which the Required Quality Gate runs after every shard has reported.",
+    "Floors for `tools/ci-verify-gate.ts`, which the Required Quality Gate runs after every executor has reported.",
+    "`shard` names the JOB that runs the suite, and both ci-plan.sh and ci-suite-map.test.sh read it: `checks` for",
+    "the three suites that need no database, `integration-db` for everything that does. A value here that no plan",
+    "output steers is a suite that could never be required, and `ci-suite-map.test.sh` fails on it.",
     "Measured on main (19d9c88) and confirmed against run 33114090903, which is what these numbers came from.",
     "admin-web was first written down as 290 — that was measured on feat/copy-telegram-id, which adds four tests this",
     "branch does not have. The gate caught the difference on its first complete run, which is the behaviour it exists for.",
@@ -11,19 +14,19 @@
     "untracked, so it is absent on every runner and those cases skip there too."
   ],
   "suites": {
-    "packages/contracts": { "name": "@shikoo/contracts", "shard": "unit", "total": 16, "skipped": 0 },
-    "packages/sms-parser": { "name": "@shikoo/sms-parser", "shard": "unit", "total": 229, "skipped": 0 },
-    "apps/admin-web": { "name": "@shikoo/admin-web", "shard": "unit", "total": 286, "skipped": 0 },
+    "packages/contracts": { "name": "@shikoo/contracts", "shard": "checks", "total": 16, "skipped": 0 },
+    "packages/sms-parser": { "name": "@shikoo/sms-parser", "shard": "checks", "total": 229, "skipped": 0 },
+    "apps/admin-web": { "name": "@shikoo/admin-web", "shard": "checks", "total": 286, "skipped": 0 },
 
-    "apps/dashboard-worker": { "name": "@shikoo/dashboard", "shard": "db:hub", "total": 719, "skipped": 0 },
-    "packages/db": { "name": "@shikoo/db", "shard": "db:hub", "total": 85, "skipped": 2 },
-    "packages/seed": { "name": "@shikoo/seed", "shard": "db:hub", "total": 15, "skipped": 0 },
+    "apps/dashboard-worker": { "name": "@shikoo/dashboard", "shard": "integration-db", "total": 719, "skipped": 0 },
+    "packages/db": { "name": "@shikoo/db", "shard": "integration-db", "total": 85, "skipped": 2 },
+    "packages/seed": { "name": "@shikoo/seed", "shard": "integration-db", "total": 15, "skipped": 0 },
 
-    "apps/bot": { "name": "@shikoo/bot", "shard": "db:services", "total": 642, "skipped": 1 },
-    "apps/ingest-worker": { "name": "@shikoo/ingest", "shard": "db:services", "total": 178, "skipped": 0 },
-    "packages/domain": { "name": "@shikoo/domain", "shard": "db:services", "total": 335, "skipped": 0 },
+    "apps/bot": { "name": "@shikoo/bot", "shard": "integration-db", "total": 642, "skipped": 1 },
+    "apps/ingest-worker": { "name": "@shikoo/ingest", "shard": "integration-db", "total": 178, "skipped": 0 },
+    "packages/domain": { "name": "@shikoo/domain", "shard": "integration-db", "total": 335, "skipped": 0 },
 
-    "packages/migrate": { "name": "@shikoo/migrate", "shard": "migrations", "total": 117, "skipped": 49 }
+    "packages/migrate": { "name": "@shikoo/migrate", "shard": "integration-db", "total": 117, "skipped": 49 }
   },
   "coverage": ["packages/contracts", "packages/sms-parser", "packages/domain"],
   "playwright": { "scenarios": 104 },
