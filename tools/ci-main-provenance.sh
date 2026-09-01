@@ -96,7 +96,12 @@ no() {
 }
 say() { echo "[provenance] $*"; }
 
-[ -n "$REPO" ] && [ -n "$SHA" ] || no 'usage: ci-main-provenance.sh <owner/repo> <sha>'
+# Spelled as an `if` rather than `A && B || C`, which shellcheck reads as a
+# possible if-then-else mistake (SC2015) — the same correction `approval-gate.sh`
+# carries, for the same reason.
+if [ -z "$REPO" ] || [ -z "$SHA" ]; then
+  no 'usage: ci-main-provenance.sh <owner/repo> <sha>'
+fi
 [[ $SHA =~ ^[0-9a-f]{40}$ ]] || no "'${SHA}' is not a full 40-character commit sha"
 [ -n "${GITHUB_TOKEN:-}" ] || no 'no GITHUB_TOKEN'
 
@@ -139,7 +144,9 @@ count=$(printf '%s' "$matches" | jq -r 'length') || no 'could not count the matc
 
 PR_NUMBER=$(printf '%s' "$matches" | jq -r '.[0].number // empty')
 PR_HEAD=$(printf '%s' "$matches" | jq -r '.[0].head.sha // empty')
-[ -n "$PR_NUMBER" ] && [ -n "$PR_HEAD" ] || no 'the merged PR came back without a number or a head sha'
+if [ -z "$PR_NUMBER" ] || [ -z "$PR_HEAD" ]; then
+  no 'the merged PR came back without a number or a head sha'
+fi
 [[ $PR_HEAD =~ ^[0-9a-f]{40}$ ]] || no "PR #${PR_NUMBER} reported a malformed head sha"
 say "PR #${PR_NUMBER}, final head ${PR_HEAD:0:12}"
 
@@ -174,7 +181,9 @@ MAIN_TREE=$(printf '%s' "$gh_body" | jq -r '.commit.tree.sha // empty') ||
   no "could not parse ${SHA:0:12}"
 PARENT1=$(printf '%s' "$gh_body" | jq -r '.parents[0].sha // empty') ||
   no "could not read the first parent of ${SHA:0:12}"
-[ -n "$MAIN_TREE" ] && [ -n "$PARENT1" ] || no "${SHA:0:12} came back without a tree or a parent"
+if [ -z "$MAIN_TREE" ] || [ -z "$PARENT1" ]; then
+  no "${SHA:0:12} came back without a tree or a parent"
+fi
 
 LOCAL_TREE=$(git rev-parse 'HEAD^{tree}' 2>/dev/null) ||
   no 'could not read the tree of the local checkout'
