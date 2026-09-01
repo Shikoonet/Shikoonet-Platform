@@ -14,13 +14,13 @@
  * any test that believes the report.
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { app } from '../src/index.js';
-import { dumpSha256 } from '@shikoo/migrate';
+import { dumpSha256, MAX_DUMP_BYTES } from '@shikoo/migrate';
 import { resolveDump, listDumps } from '../src/importRoutes.js';
 
 const ADMIN = 'admin-import@example.com';
@@ -37,6 +37,14 @@ async function post(path: string, body: unknown, env: Record<string, unknown>) {
   return app.request(
     path,
     { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+    env,
+  );
+}
+
+async function upload(name: string, body: BodyInit, env: Record<string, unknown>) {
+  return app.request(
+    `/api/v1/admin/import/upload?name=${encodeURIComponent(name)}`,
+    { method: 'POST', body },
     env,
   );
 }
@@ -274,6 +282,121 @@ describe('what the APPLY gate proves', () => {
     // sorts before storing and before comparing, so neither reads as a
     // different proof from the other.
     expect((await apply(['core', 'catalog'])).status).toBe(200);
+  });
+});
+
+/**
+ * Uploading, which used to be the one thing this route would not do.
+ *
+ * The interesting assertions are about the DIRECTORY, not the response. A route
+ * that answers `ok` while having written `../../etc/cron.d/x` has passed every
+ * test that reads its own reply, and the whole reason `resolveDump` exists is
+ * that a name arriving over the network is not a name until it has been checked.
+ */
+describe('putting a dump there from the browser', () => {
+  it('writes the bytes, and the list then offers them', async () => {
+    const res = await upload('uploaded.sql', 'CREATE TABLE up (a int);\n', envAs(ADMIN));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, name: 'uploaded.sql' });
+
+    // The file on disk, not the answer about it.
+    expect(readFileSync(join(importDir, 'uploaded.sql'), 'utf8')).toBe(
+      'CREATE TABLE up (a int);\n',
+    );
+    expect(listDumps(importDir).map((f) => f.name)).toContain('uploaded.sql');
+  });
+
+  it('leaves no .part behind, so a half upload is never offered', async () => {
+    await upload('tidy.sql', 'SELECT 1;\n', envAs(ADMIN));
+    expect(existsSync(join(importDir, 'tidy.sql.part'))).toBe(false);
+  });
+
+  it('replaces a file of the same name', async () => {
+    await upload('twice.sql', 'SELECT 1;\n', envAs(ADMIN));
+    await upload('twice.sql', 'SELECT 2;\n', envAs(ADMIN));
+    expect(readFileSync(join(importDir, 'twice.sql'), 'utf8')).toBe('SELECT 2;\n');
+  });
+
+  it.each([REVIEWER, READER])('refuses %s', async (email) => {
+    const res = await upload('sneaky.sql', 'SELECT 1;\n', envAs(email));
+    expect([403, 404]).toContain(res.status);
+    expect(existsSync(join(importDir, 'sneaky.sql'))).toBe(false);
+  });
+
+  // The same list `resolveDump` is tested against directly, asserted again
+  // through the route: the check is only worth having if it is actually wired
+  // to the handler that writes to disk.
+  it.each([
+    ['../escaped.sql', 'parent traversal'],
+    ['sub/dir/nested.sql', 'nested path'],
+    ['notes.txt', 'not a dump'],
+    ['', 'no name at all'],
+  ])('refuses %s (%s) and writes nothing', async (name) => {
+    const before = listDumps(importDir).length;
+    const res = await upload(name, 'SELECT 1;\n', envAs(ADMIN));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'invalid_file' });
+    expect(listDumps(importDir).length).toBe(before);
+    expect(existsSync(join(importDir, '..', 'escaped.sql'))).toBe(false);
+  });
+
+  it('says so when the server was never configured for imports', async () => {
+    const res = await upload('nowhere.sql', 'SELECT 1;\n', {
+      ...baseEnv,
+      TEST_ACCESS_USER: ADMIN,
+      IMPORT_DIR: undefined,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: 'import_dir_unset' });
+  });
+
+  it('refuses while an import is in flight', async () => {
+    await baseEnv.DB.prepare(
+      `INSERT INTO import_runs (id, mode, status, dump_path, domains, started_by)
+       VALUES (?1, 'APPLY', 'RUNNING', ?2, '[]'::jsonb, ?3)`,
+    )
+      .bind(crypto.randomUUID(), join(importDir, 'mirzabot-tiny.sql'), ADMIN)
+      .run();
+
+    const res = await upload('during.sql', 'SELECT 1;\n', envAs(ADMIN));
+    expect(res.status).toBe(409);
+    expect(existsSync(join(importDir, 'during.sql'))).toBe(false);
+  });
+
+  /**
+   * The cap, proved by exceeding it.
+   *
+   * Streamed in one-megabyte pieces rather than built as one buffer, because
+   * the assertion is that the WRITE stops — a test that could only pass by
+   * holding the whole oversized body in memory would be testing the opposite
+   * thing. `content-length` is never consulted; this body does not carry a
+   * usable one.
+   */
+  it('stops writing past the size the loader would refuse anyway', async () => {
+    const mb = Buffer.alloc(1024 * 1024, 0x2d); // '-', a SQL comment line
+    let sent = 0;
+    const body = new ReadableStream({
+      pull(controller) {
+        if (sent >= MAX_DUMP_BYTES + 1024 * 1024) {
+          controller.close();
+          return;
+        }
+        sent += mb.length;
+        controller.enqueue(new Uint8Array(mb));
+      },
+    });
+
+    const res = await app.request(
+      '/api/v1/admin/import/upload?name=huge.sql',
+      // `duplex` is required by undici for a streamed request body and is not
+      // in the DOM types Node borrows here.
+      { method: 'POST', body, duplex: 'half' } as RequestInit,
+      envAs(ADMIN),
+    );
+    expect(res.status).toBe(413);
+    expect(await res.json()).toMatchObject({ error: 'dump_too_large' });
+    expect(existsSync(join(importDir, 'huge.sql'))).toBe(false);
+    expect(existsSync(join(importDir, 'huge.sql.part'))).toBe(false);
   });
 });
 
