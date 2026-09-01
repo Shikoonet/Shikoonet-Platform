@@ -27,9 +27,22 @@
 #      endpoint, that `deploy/approval-gate.sh` already asks at deploy time.
 #
 #   2. «Required Quality Gate» completed successfully on that pull request's
-#      final head, in a run whose event was `pull_request`. A `push` run on the
-#      same sha does not count: this is asking about the run that validated the
-#      BRANCH, not one that validated something else.
+#      final head, in a run whose event was `pull_request`, AND that run
+#      actually ran the complete suite.
+#
+#      The second half is not redundant, and leaving it out was a fail-open.
+#      A DRAFT pull request produces a green «Required Quality Gate» over a
+#      run in which `unit`, both `db-shard`s, `migrations` and `e2e` were all
+#      skipped — that is the entire point of Fast mode. Merging such a PR
+#      while it is still a draft would then satisfy the gate check here, and
+#      `main` would skip the suite too, and Deploy Staging would ship a tree
+#      whose tests had never run anywhere.
+#
+#      So the required suites are named and each one must have COMPLETED
+#      SUCCESSFULLY in that same run. `deploy-suites` and `image` are
+#      deliberately NOT in the list: the first is legitimately path-gated away
+#      on a change confined to `apps/`, and the second never runs on a pull
+#      request at all.
 #
 #   3. The tree GitHub reports for `$SHA` is the tree we actually checked out.
 #      Local `git rev-parse HEAD^{tree}` against the API's answer, so every
@@ -78,6 +91,13 @@ SHA=${2:-}
 API=${GITHUB_API:-https://api.github.com}
 BRANCH=${BRANCH:-main}
 REQUIRED_JOB=${REQUIRED_JOB:-Required Quality Gate}
+
+# The suites whose green is what «the complete suite passed» actually means.
+# A Fast-mode run has every one of these `skipped`, which is exactly what this
+# list exists to refuse. NOT included: `deploy-suites`, which is legitimately
+# path-gated away on an `apps/`-only change, and `image`, which is a `main`
+# job and never runs on a pull request.
+REQUIRED_SUITES=${REQUIRED_SUITES:-'["unit","db-shard (hub)","db-shard (services)","migrations","e2e","static"]'}
 
 # Every exit from here on goes through this. `proven` defaults to false and is
 # set to true on exactly one line, at the very bottom.
@@ -164,16 +184,30 @@ ids=$(printf '%s' "$gh_body" | jq -r '
 [ -n "$ids" ] || no "no successful pull_request run on the PR head ${PR_HEAD:0:12}"
 
 gate_ok=false
+missing_report=''
 for id in $ids; do
   gh "/actions/runs/${id}/jobs?per_page=100" || no "could not read the jobs of run ${id}"
-  if printf '%s' "$gh_body" | jq -e --arg n "$REQUIRED_JOB" \
-    'any(.jobs[]?; .name == $n and .status == "completed" and .conclusion == "success")' >/dev/null; then
+
+  # The successful job names in this run, once, then two questions against it:
+  # was the gate green, and did every required suite actually run and pass.
+  missing=$(printf '%s' "$gh_body" | jq -r --arg n "$REQUIRED_JOB" --argjson want "$REQUIRED_SUITES" '
+    [ .jobs[]? | select(.status == "completed" and .conclusion == "success") | .name ] as $ok
+    | (if ($ok | index($n)) == null then [$n] else [] end) + ($want - $ok)
+    | join(", ")
+  ') || no "could not read the job list of run ${id}"
+
+  if [ -z "$missing" ]; then
     gate_ok=true
-    say "«${REQUIRED_JOB}» succeeded on the PR head in run ${id}"
+    say "«${REQUIRED_JOB}» and every required suite succeeded on the PR head in run ${id}"
     break
   fi
+  missing_report="run ${id} did not have: ${missing}"
 done
-[ "$gate_ok" = 'true' ] || no "«${REQUIRED_JOB}» did not succeed on the PR head ${PR_HEAD:0:12}"
+if [ "$gate_ok" != 'true' ]; then
+  # Named rather than summarised, because «a draft was merged» and «a suite
+  # went red» are different problems and the log should say which.
+  no "the PR head ${PR_HEAD:0:12} has no run in which the gate AND the complete suite passed — ${missing_report}"
+fi
 
 # ─────────────────────── 3. the API is describing the commit we checked out
 gh "/commits/${SHA}" || no "could not read ${SHA:0:12}"

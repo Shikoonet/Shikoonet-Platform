@@ -12,7 +12,7 @@
 # every path the brief requires to force the complete suite, whether it does —
 # including each of them buried in a change that is otherwise pure
 # documentation, which is the shape a misclassification would actually take.
-# `ci-main-provenance.sh` is broken eleven ways and must answer `proven=false`
+# `ci-main-provenance.sh` is broken fourteen ways and must answer `proven=false`
 # to all of them, and the whole log of every one of those runs is searched for
 # `proven=true` afterwards, so a future refactor cannot leave the string
 # somewhere that a caller would read.
@@ -226,6 +226,38 @@ scenario() { # url-fragment  status  body
   printf '%s\t%s\t%s\n' "$1" "$2" "$WORK/body.$n" >>"$SCEN"
 }
 
+# A FULL pull_request run: the gate green, and every suite the provenance proof
+# requires actually completed. `deploy-suites` is deliberately absent from the
+# required list, so it is present here as `skipped` to prove that a path-gated
+# skip does not by itself refuse the proof.
+full_run_jobs() {
+  printf '{"jobs":['
+  printf '{"name":"Required Quality Gate","status":"completed","conclusion":"success"},'
+  printf '{"name":"deploy-suites","status":"completed","conclusion":"skipped"},'
+  local first=1 j
+  for j in 'unit' 'db-shard (hub)' 'db-shard (services)' 'migrations' 'e2e' 'static'; do
+    [ $first -eq 1 ] || printf ','
+    first=0
+    printf '{"name":"%s","status":"completed","conclusion":"success"}' "$j"
+  done
+  printf ']}'
+}
+
+# A FAST-mode run: exactly what a DRAFT pull request leaves behind — a green
+# «Required Quality Gate» over a run in which every expensive suite skipped.
+fast_run_jobs() {
+  printf '{"jobs":['
+  printf '{"name":"Required Quality Gate","status":"completed","conclusion":"success"},'
+  printf '{"name":"static","status":"completed","conclusion":"success"},'
+  local first=1 j
+  for j in 'unit' 'db-shard (hub)' 'db-shard (services)' 'migrations' 'e2e' 'deploy-suites'; do
+    [ $first -eq 1 ] || printf ','
+    first=0
+    printf '{"name":"%s","status":"completed","conclusion":"skipped"}' "$j"
+  done
+  printf ']}'
+}
+
 # Order matters: `/commits/<sha>/pulls` contains `/commits/<sha>`, so the more
 # specific fragment has to be registered first or the general one swallows it.
 happy() {
@@ -234,8 +266,7 @@ happy() {
     "$(printf '[{"number":7,"merged_at":"2026-09-01T10:00:00Z","base":{"ref":"main"},"merge_commit_sha":"%s","head":{"sha":"%s"}}]' "$SHA_MAIN" "$SHA_HEAD")"
   scenario "/actions/runs?head_sha=${SHA_HEAD}" 200 \
     '{"workflow_runs":[{"id":9001,"event":"pull_request","conclusion":"success"}]}'
-  scenario "/actions/runs/9001/jobs" 200 \
-    '{"jobs":[{"name":"Required Quality Gate","status":"completed","conclusion":"success"}]}'
+  scenario "/actions/runs/9001/jobs" 200 "$(full_run_jobs)"
   scenario "/commits/${SHA_MAIN}" 200 \
     "$(printf '{"commit":{"tree":{"sha":"%s"}},"parents":[{"sha":"%s"}]}' "$LOCAL_TREE" "$SHA_P1")"
   scenario "/commits/${SHA_HEAD}" 200 \
@@ -330,7 +361,7 @@ printf '{"jobs":[{"name":"Required Quality Gate","status":"completed","conclusio
 cat "$SCEN" >>"$WORK/tmp.tsv"
 mv "$WORK/tmp.tsv" "$SCEN"
 try
-denies 'a red Required Quality Gate on the head is not proven' 'did not succeed on the PR head'
+denies 'a red Required Quality Gate on the head is not proven' 'complete suite passed'
 
 # 5. the gate is absent from the run entirely
 happy
@@ -339,7 +370,38 @@ printf '{"jobs":[{"name":"lint","status":"completed","conclusion":"success"}]}' 
 cat "$SCEN" >>"$WORK/tmp.tsv"
 mv "$WORK/tmp.tsv" "$SCEN"
 try
-denies 'a run without the gate job at all is not proven' 'did not succeed on the PR head'
+denies 'a run without the gate job at all is not proven' 'complete suite passed'
+
+# 5b. THE DRAFT HOLE. A green gate over a Fast-mode run must not be proof.
+#
+# This is the case CodeRabbit caught on PR #47 and the reason `REQUIRED_SUITES`
+# exists. Without it: merge a still-draft pull request, its head carries a
+# perfectly green «Required Quality Gate» from a run that skipped every suite,
+# `main` believes it, skips the suite too, and Deploy Staging ships a tree
+# whose tests never ran anywhere.
+happy
+printf '%s\t%s\t%s\n' "/actions/runs/9001/jobs" 200 "$WORK/fastjobs" >"$WORK/tmp.tsv"
+fast_run_jobs >"$WORK/fastjobs"
+cat "$SCEN" >>"$WORK/tmp.tsv"
+mv "$WORK/tmp.tsv" "$SCEN"
+try
+denies 'a green gate over a DRAFT fast run is not proof the suite ran' 'complete suite passed'
+
+# 5c. and it must name what was missing, so the log says WHY
+if grep -q 'unit' "$LOG" && grep -q 'e2e' "$LOG"; then
+  ok 'the refusal names the suites that did not run'
+else
+  bad 'the refusal names the suites that did not run' "$(grep 'NOT PROVEN' "$LOG")"
+fi
+
+# 5d. one red suite in an otherwise complete run is also refused
+happy
+printf '%s\t%s\t%s\n' "/actions/runs/9001/jobs" 200 "$WORK/rede2e" >"$WORK/tmp.tsv"
+full_run_jobs | sed 's/{"name":"e2e","status":"completed","conclusion":"success"}/{"name":"e2e","status":"completed","conclusion":"failure"}/' >"$WORK/rede2e"
+cat "$SCEN" >>"$WORK/tmp.tsv"
+mv "$WORK/tmp.tsv" "$SCEN"
+try
+denies 'a red e2e in an otherwise complete run is not proven' 'complete suite passed'
 
 # 6. the only green run on the head was a `push`, not a `pull_request`
 happy
