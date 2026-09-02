@@ -73,8 +73,8 @@ describe('every button we draw', () => {
     menu.mainMenu(CUSTOMER),
     menu.mainMenu(RESELLER),
     menu.productMenu([
-      { productId: 1, name: 'یک', providerName: 'پ', rowIndex: null },
-      { productId: 999_999_999, name: 'دو', providerName: 'پ', rowIndex: null },
+      { productId: 1, name: 'یک', providerName: 'پ', badge: null, buttonStyle: null, rowIndex: null },
+      { productId: 999_999_999, name: 'دو', providerName: 'پ', badge: '🆕', buttonStyle: 'primary', rowIndex: null },
     ]),
     menu.planMenu([PLAN]),
     menu.planMenu([]),
@@ -125,6 +125,11 @@ const SERVICE: CatalogProduct = {
   name: 'پلاتینیوم',
   rowIndex: null,
   providerName: '🥇 سرویس VIP',
+  // Null on both, because this service holds three configs — see the rule in
+  // `CatalogProduct.badge`. The badged case is asserted against Postgres in
+  // catalog.test.ts, where the «one config» decision is actually made.
+  badge: null,
+  buttonStyle: null,
 };
 
 describe('the service list', () => {

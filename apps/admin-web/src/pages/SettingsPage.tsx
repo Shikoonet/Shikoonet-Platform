@@ -468,9 +468,34 @@ function PlanLabelHelp({
         </div>
       ) : (
         draft.trim() !== '' && (
-          <div className="page-head__sub" style={{ marginBlockStart: 6 }}>
-            در ربات: <strong>{renderPlanLabel(draft, sample)}</strong>
-          </div>
+          <>
+            <div className="page-head__sub" style={{ marginBlockStart: 6 }}>
+              در ربات: <strong>{renderPlanLabel(draft, sample)}</strong>
+            </div>
+            {/*
+             * Said, not refused — and deliberately not routed through
+             * `checkPlanLabel`.
+             *
+             * Dropping `{badge}` is a choice a shop is allowed to make, so the
+             * server would be wrong to reject it. But it is a LOSSY choice with
+             * no other symptom anywhere: the نشان an operator types on every
+             * «محصولات» row simply stops being drawn, on every plan button at
+             * once, and neither screen says why. Three of the four presets
+             * above omit the token, so this is one click away from happening by
+             * accident.
+             *
+             * NOT gated on «does this shop have any badges». No endpoint
+             * answers that for `product_plans`, and a count-gated hint would go
+             * quiet exactly when it matters — a shop with no badges today adds
+             * one tomorrow from a different screen and never comes back here.
+             */}
+            {!draft.includes('{badge}') && (
+              <div className="page-head__sub" style={{ marginBlockStart: 6 }}>
+                بدون <span className="ltr">{'{badge}'}</span> نشانِ پلن‌ها روی دکمه‌ها نشان داده
+                نمی‌شود.
+              </div>
+            )}
+          </>
         )
       )}
     </div>

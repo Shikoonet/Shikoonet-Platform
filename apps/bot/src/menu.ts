@@ -489,11 +489,19 @@ export function productMenu(products: CatalogProduct[]): InlineKeyboard {
   return withChrome(
     groupIntoRows(products).map((row) =>
       row.map((product) => ({
-        text:
+        // Badged and coloured like the two screens either side of it. A service
+        // holding one config is that config — pressing this button opens the
+        // plan itself — so the badge and colour an operator typed onto it in
+        // «محصولات» belong here. `catalog.ts` is where the «one config» rule
+        // lives; this line only draws what it decided.
+        text: badged(
+          product.badge,
           (seen.get(product.name) ?? 0) > 1
             ? `${product.name} (${product.providerName})`
             : product.name,
+        ),
         callback_data: encode('prd', product.productId),
+        ...styled(product.buttonStyle),
       })),
     ),
     'products',
