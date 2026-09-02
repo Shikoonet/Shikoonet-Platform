@@ -314,6 +314,13 @@ describe('every write route, asked directly', () => {
     // that writes an arbitrary file to the server's filesystem. The role is the
     // first of three guards — `resolveDump` decides the name and `MAX_DUMP_BYTES`
     // decides how much of it, both asserted in `import.test.ts`.
-    expect(writeRoutes().length).toBe(140);
+    // 140 -> 142: fulfilment without evidence. «تحویل بدون تایید بانکی» on a
+    // claim, and the shop-wide Continuity switch. They are two routes and not
+    // one because they are two different decisions with two different blast
+    // radii: the first is a REVIEWER's call about one customer, the second is
+    // ADMIN-only because it suspends the requirement for evidence on everything
+    // that arrives next. Both write, so both are counted here; the role split
+    // itself is asserted in `continuity.test.ts`.
+    expect(writeRoutes().length).toBe(142);
   });
 });

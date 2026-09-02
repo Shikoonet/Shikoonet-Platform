@@ -11,6 +11,10 @@ import {
   type BankPrefix,
   verifyMirzabotClaim,
   verifyMirzabotClaimWithoutTransaction,
+  fulfilMirzabotClaimWithoutPayment,
+  readContinuityMode,
+  activateContinuityMode,
+  deactivateContinuityMode,
   reassignMirzabotTransaction,
   revertMirzabotManualVerification,
   reopenMirzabotManualVerification,
@@ -1844,4 +1848,169 @@ export function registerMirzabotRoutes(
 
     return c.json({ ok: true, items });
   });
+
+  /**
+   * Deliver a claim the bank has not confirmed.
+   *
+   * Available on any live claim in the review queue, not only on a suspect —
+   * that is the whole point of the change: an operator watching a customer wait
+   * should not have to wait for the claim to be flagged before they can act.
+   *
+   * REVIEWER and ADMIN, matching every other decision on a claim; only
+   * destructive catalogue work is ADMIN-only. READ_ONLY is refused here as
+   * everywhere, and `write-roles.test.ts` enumerates that from the router
+   * rather than trusting this comment.
+   *
+   * The reason is required by the route AND by the domain. Two guards for one
+   * rule because the column is nullable — it has to be, 350 rows predate it —
+   * so neither the schema nor a single call site can be the thing that refuses
+   * a fulfilment nobody explained.
+   */
+  const FulfilBody = z
+    .object({ reason: z.string().min(3).max(2000), confirmed: z.literal(true) })
+    .strict();
+
+  app.post('/api/v1/payment-claims/:claimId/fulfil-without-payment', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = FulfilBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+
+    const out = await fulfilMirzabotClaimWithoutPayment(c.env.DB as unknown as DomainD1Database, {
+      claimId: c.req.param('claimId'),
+      actorEmail: ident.email,
+      actorRole: ident.role,
+      reason: parsed.data.reason,
+      mode: 'MANUAL',
+      requestId: c.req.header('cf-ray') ?? null,
+    });
+    if (!out.ok) {
+      const status = out.error === 'CLAIM_NOT_FOUND' ? 404 : out.error === 'REASON_REQUIRED' ? 400 : 409;
+      return c.json({ ok: false, error: out.error.toLowerCase() }, status);
+    }
+    // 200 on a repeat, not 409. The caller asked for the claim to be fulfilled
+    // and it is; a retried request after a timeout is the commonest way to
+    // arrive here twice and it is not an error.
+    return c.json({ ok: true, claimId: out.claimId, mode: out.mode, already: out.already });
+  });
+
+  /** The queue of «delivered, still owed an explanation». One index scan. */
+  app.get('/api/v1/payment-claims/awaiting-reconciliation', async (c) => {
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, external_order_id, expected_amount_irr, fulfilment_mode,
+              fulfilled_at, fulfilled_by, fulfilment_reason, customer_reference
+         FROM payment_claims
+        WHERE fulfilled_at IS NOT NULL AND reconciled_at IS NULL
+        ORDER BY fulfilled_at DESC
+        LIMIT 200`,
+    ).all<{
+      id: string;
+      external_order_id: string;
+      expected_amount_irr: number;
+      fulfilment_mode: string | null;
+      fulfilled_at: number | null;
+      fulfilled_by: string | null;
+      fulfilment_reason: string | null;
+      customer_reference: string | null;
+    }>();
+    return c.json({
+      ok: true,
+      items: (results ?? []).map((r) => ({
+        claimId: r.id,
+        orderId: (r.external_order_id ?? '').replace(/^mirzabot:test:/, ''),
+        amountIrr: r.expected_amount_irr,
+        mode: r.fulfilment_mode,
+        fulfilledAt: r.fulfilled_at,
+        fulfilledBy: r.fulfilled_by,
+        reason: r.fulfilment_reason,
+        customerReference: r.customer_reference,
+      })),
+    });
+  });
+
+  /** What mode the shop is in. Every role may read it — the banner is for all of them. */
+  app.get('/api/v1/continuity-mode', async (c) => {
+    const state = await readContinuityMode(c.env.DB as unknown as DomainD1Database);
+    return c.json({ ok: true, ...state });
+  });
+
+  /**
+   * Turn the mode on or off. ADMIN only.
+   *
+   * Stricter than the per-claim fulfilment above, and deliberately so: that one
+   * is a decision about a single customer that a REVIEWER already makes all day,
+   * while this suspends the requirement for evidence shop-wide, for everything
+   * that arrives next. The blast radius is the difference, so the role is too.
+   */
+  const ContinuityBody = z
+    .discriminatedUnion('active', [
+      z.object({
+        active: z.literal(true),
+        reason: z.string().min(3).max(2000),
+        durationMs: z.number().int().positive(),
+        confirmed: z.literal(true),
+      }).strict(),
+      z.object({ active: z.literal(false) }).strict(),
+    ]);
+
+  app.post('/api/v1/continuity-mode', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = ContinuityBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+
+    const db = c.env.DB as unknown as DomainD1Database;
+    const before = await readContinuityMode(db);
+    const now = Date.now();
+
+    if (!parsed.data.active) {
+      const state = await deactivateContinuityMode(db, { actorEmail: ident.email });
+      await writeContinuityAudit(c, ident, 'continuity.deactivated', before, state, 'deactivated');
+      return c.json({ ok: true, ...state });
+    }
+
+    const out = await activateContinuityMode(db, {
+      actorEmail: ident.email,
+      reason: parsed.data.reason,
+      durationMs: parsed.data.durationMs,
+      confirmed: parsed.data.confirmed,
+      now,
+    });
+    if (!out.ok) return c.json({ ok: false, error: out.error.toLowerCase() }, 400);
+    await writeContinuityAudit(c, ident, 'continuity.activated', before, out.state, parsed.data.reason);
+    return c.json({ ok: true, ...out.state });
+  });
+}
+
+/**
+ * The mode change written to the append-only trail.
+ *
+ * Separate from the settings row on purpose: that row is the current answer and
+ * is overwritten, and «who turned off the requirement for evidence, and when»
+ * is exactly the question an incident review asks about a period that has
+ * already ended.
+ */
+async function writeContinuityAudit(
+  c: { env: { DB: D1Database }; req: { header(name: string): string | undefined } },
+  ident: { email: string; role: string },
+  action: string,
+  before: unknown,
+  after: unknown,
+  reason: string,
+): Promise<void> {
+  await c.env.DB.prepare(SQL.insertAudit)
+    .bind(
+      crypto.randomUUID(),
+      ident.email,
+      ident.role,
+      action,
+      'SETTING',
+      'pay:continuity_mode',
+      JSON.stringify(before),
+      JSON.stringify(after),
+      reason,
+      c.req.header('cf-ray') ?? null,
+      Date.now(),
+    )
+    .run();
 }

@@ -12,11 +12,16 @@ import {
   recordMirzabotSuspect,
   clearMirzabotSuspect,
   verifyMirzabotClaim,
+  readContinuityMode,
+  fulfilMirzabotClaimWithoutPayment,
   type MirzabotClaimCandidate,
   type MirzabotDecision,
   type MirzabotTxCandidate,
 } from '@shikoo/domain';
 import { deliverMirzabotVerifiedWebhook, flushWebhookDeliveries } from './webhook.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('mirzabot');
 
 export const MirzabotClaimBody = z
   .object({
@@ -45,6 +50,13 @@ export interface MirzabotClaimResult {
   duplicateEvent: boolean;
   suspectReason: string | null;
   autoVerified: boolean;
+  /**
+   * True only when THIS call delivered the claim under Continuity mode. A retry
+   * that found the work already done reports false: the caller uses this to
+   * decide what to tell the operator, and "we just sold something without
+   * evidence" must be said once.
+   */
+  continuityFulfilled: boolean;
   matchId?: string | undefined;
   transactionId?: string | undefined;
 }
@@ -350,6 +362,7 @@ export async function handleMirzabotClaim(
       duplicateEvent: true,
       suspectReason: null,
       autoVerified: false,
+      continuityFulfilled: false,
     };
   }
 
@@ -387,6 +400,8 @@ export async function handleMirzabotClaim(
   });
 
   let claimId: string;
+  /** Continuity fulfils claims it opened, never a backlog somebody already had. */
+  let isNewClaim = false;
   let replayOfTerminalClaim = false;
 
   if (existingClaim) {
@@ -419,6 +434,7 @@ export async function handleMirzabotClaim(
         .run();
     }
   } else {
+    isNewClaim = true;
     claimId = crypto.randomUUID();
     await db
       .prepare(
@@ -467,6 +483,7 @@ export async function handleMirzabotClaim(
       duplicateEvent: false,
       suspectReason: 'DUPLICATE_ORDER',
       autoVerified: false,
+      continuityFulfilled: false,
     };
   }
 
@@ -489,6 +506,46 @@ export async function handleMirzabotClaim(
       reason: 'UNMAPPED_CARD',
       metadata: { cardDigits: cardDigits ? `****${cardDigits.slice(-4)}` : null },
     });
+  }
+
+  /*
+   * Continuity mode: the shop chose to keep selling while the evidence channel
+   * is down.
+   *
+   * Three conditions, and each one is load-bearing:
+   *
+   *   - `isNewClaim` — the mode fulfils what it opened, never a backlog. A
+   *     switch that drains an existing queue is one nobody can predict the cost
+   *     of pressing, so turning it on delivers nothing retroactively.
+   *   - `!autoVerified` — the bank already answered. Continuity is for the case
+   *     where it cannot.
+   *   - the mode is read HERE, not passed in, because `readContinuityMode`
+   *     applies the expiry itself. A six-hour cap enforced by a cron is a cap
+   *     that fails open on the day the cron is down for the same reason the SMS
+   *     relay is.
+   *
+   * A failure to fulfil is logged and swallowed: the claim exists and is
+   * PENDING, which is the correct, safe state. Throwing here would fail the
+   * whole ingest of a payment that genuinely arrived.
+   */
+  let continuityFulfilled = false;
+  if (isNewClaim && !autoVerified) {
+    const mode = await readContinuityMode(db, now);
+    if (mode.mode === 'CONTINUITY') {
+      const out = await fulfilMirzabotClaimWithoutPayment(db, {
+        claimId,
+        actorEmail: mode.activatedBy ?? 'continuity',
+        actorRole: 'SYSTEM',
+        reason: mode.reason ?? 'continuity mode',
+        mode: 'CONTINUITY',
+        enqueueWebhook: opts.webhookEnv !== undefined,
+        now,
+      });
+      continuityFulfilled = out.ok && !out.already;
+      if (!out.ok) {
+        log.warn('continuity.fulfil_failed', { claimId, error: out.error });
+      }
+    }
   }
 
   // Report what was persisted rather than re-deriving it, so a decision that
@@ -515,6 +572,7 @@ export async function handleMirzabotClaim(
     duplicateEvent: false,
     suspectReason: persisted?.suspect_reason ?? null,
     autoVerified,
+    continuityFulfilled,
     matchId: persisted?.match_id ?? undefined,
     transactionId: persisted?.transaction_candidate_id ?? undefined,
   };

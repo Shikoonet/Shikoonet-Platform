@@ -123,40 +123,58 @@ export async function fulfilMirzabotClaimWithoutPayment(
   const now = args.now ?? Date.now();
   const eventId = fulfilmentEventId(claim.id);
 
+  /*
+   * One statement, not two, and that is the whole correctness argument.
+   *
+   * The first shape of this code ran the UPDATE and the audit INSERT as two
+   * statements in one batch and read `changes` afterwards. Both admins in a race
+   * therefore wrote an audit row: the loser's UPDATE matched nothing, but its
+   * INSERT had already run, and the transaction committed happily because
+   * nothing in it failed. `continuity.test.ts` found it by counting rows rather
+   * than trusting the return value — two audit entries for one delivery.
+   *
+   * A data-modifying CTE fixes it at the only place it can be fixed: the audit
+   * row is SELECTed *from* the UPDATE's own RETURNING, so it cannot exist for a
+   * claim this statement did not move. The loser inserts nothing and reports
+   * zero, in the same breath.
+   */
   const statements = [
     db
       .prepare(
-        `UPDATE payment_claims
-            SET status = 'FULFILLED_UNRECONCILED',
-                fulfilment_mode = ?2,
-                fulfilled_at = ?3,
-                fulfilled_by = ?4,
-                fulfilment_reason = ?5,
-                suspect_reason = NULL,
-                updated_at = ?3
-          WHERE id = ?1
-            AND status IN ('PENDING','MATCH_SUGGESTED')
-            AND fulfilled_at IS NULL`,
-      )
-      .bind(claim.id, args.mode, now, args.actorEmail, reason),
-    db
-      .prepare(
-        `INSERT INTO audit_logs
+        `WITH moved AS (
+           UPDATE payment_claims
+              SET status = 'FULFILLED_UNRECONCILED',
+                  fulfilment_mode = ?2,
+                  fulfilled_at = ?3,
+                  fulfilled_by = ?4,
+                  fulfilment_reason = ?5,
+                  suspect_reason = NULL,
+                  updated_at = ?3
+            WHERE id = ?1
+              AND status IN ('PENDING','MATCH_SUGGESTED')
+              AND fulfilled_at IS NULL
+            RETURNING id, ?6::text AS prev_status
+         )
+         INSERT INTO audit_logs
            (id, actor_email, actor_role, action, entity_type, entity_id,
             before_json, after_json, reason, request_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, 'CLAIM', ?5, ?6, ?7, ?8, ?9, ?10)`,
+         SELECT ?7, ?4, ?8, ?9, 'CLAIM', moved.id,
+                json_build_object('status', moved.prev_status)::text,
+                ?10, ?5, ?11, ?3
+           FROM moved`,
       )
       .bind(
-        crypto.randomUUID(),
+        claim.id,
+        args.mode,
+        now,
         args.actorEmail,
+        reason,
+        claim.status,
+        crypto.randomUUID(),
         args.actorRole,
         args.mode === 'CONTINUITY' ? 'claim.continuity_fulfilled' : 'claim.manual_fulfilled',
-        claim.id,
-        JSON.stringify({ status: claim.status }),
         JSON.stringify({ status: 'FULFILLED_UNRECONCILED', fulfilmentMode: args.mode }),
-        reason,
         args.requestId ?? null,
-        now,
       ),
   ];
 
@@ -177,20 +195,26 @@ export async function fulfilMirzabotClaimWithoutPayment(
     statements.push(
       db
         .prepare(
+          // Guarded twice, for two different races. `WHERE EXISTS` stops the
+          // loser of a manual-vs-matcher race from announcing a delivery that
+          // never happened; `ON CONFLICT` stops two winners of nothing at all
+          // from enqueuing the same notice twice.
           `INSERT INTO webhook_deliveries
              (id, event_type, payload_json, attempt_count, status, next_attempt_at)
-           VALUES (?1, 'PAYMENT_VERIFIED', ?2, 0, 'PENDING', ?3)
+           SELECT ?1, 'PAYMENT_VERIFIED', ?2, 0, 'PENDING', ?3
+            WHERE EXISTS (SELECT 1 FROM payment_claims
+                           WHERE id = ?4 AND fulfilled_at IS NOT NULL)
            ON CONFLICT (id) DO NOTHING`,
         )
-        .bind(eventId, JSON.stringify(payload), now),
+        .bind(eventId, JSON.stringify(payload), now, claim.id),
     );
   }
 
   const results = await db.batch(statements);
-  // `batch()` is one transaction, so this is the claim UPDATE's own row count —
-  // 1 means this call is the one that fulfilled it, 0 means somebody else got
-  // there between the read above and the write, and the audit row rolled back
-  // with it rather than recording a fulfilment that never happened.
+  // The audit INSERT's row count, which by construction is the UPDATE's: 1 means
+  // this call is the one that fulfilled the claim, 0 means somebody else got
+  // there between the read above and the write and this transaction wrote
+  // nothing at all.
   const changed = results[0]?.meta?.changes ?? 0;
   if (changed === 0) {
     const after = await read(db, args.claimId);
