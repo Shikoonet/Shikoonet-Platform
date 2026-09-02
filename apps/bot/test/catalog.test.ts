@@ -196,43 +196,53 @@ describe('what the shop shows a customer', () => {
   it('draws the one config’s badge and colour on the service that IS that config', async () => {
     const single = await productId('sim-vip-1m-20');
     const tiered = await productId('sim-vip-platinum');
-    await db
-      .prepare(
-        `UPDATE product_plans SET badge = ?1, button_style = ?2
-          WHERE product_id = ?3`,
-      )
-      .bind('🆕 نیو', 'success', single)
-      .run();
-    // Both configs of the tiered service badged, so «none» below can only be
-    // the one-config rule and not an empty column.
-    await db
-      .prepare(
-        `UPDATE product_plans SET badge = ?1, button_style = ?2
-          WHERE product_id = ?3`,
-      )
-      .bind('🔥 آف', 'danger', tiered)
-      .run();
+    // `finally`, because this suite shares one Postgres with every other
+    // package's and the catalogue is a fixture nothing re-seeds between files.
+    // A badge left behind by a FAILING run is the worst kind of leftover: the
+    // next file reads a styled row it never wrote, and `env.ts` already carries
+    // two notes about exactly this costing an hour each.
+    try {
+      await db
+        .prepare(
+          `UPDATE product_plans SET badge = ?1, button_style = ?2
+            WHERE product_id = ?3`,
+        )
+        .bind('🆕 نیو', 'success', single)
+        .run();
+      // Both configs of the tiered service badged, so «none» below can only be
+      // the one-config rule and not an empty column.
+      await db
+        .prepare(
+          `UPDATE product_plans SET badge = ?1, button_style = ?2
+            WHERE product_id = ?3`,
+        )
+        .bind('🔥 آف', 'danger', tiered)
+        .run();
 
-    const products = await productsForUser(db, customer);
-    const one = products.find((p) => p.productId === single);
-    expect([one?.badge, one?.buttonStyle]).toEqual(['🆕 نیو', 'success']);
+      const products = await productsForUser(db, customer);
+      const one = products.find((p) => p.productId === single);
+      expect([one?.badge, one?.buttonStyle]).toEqual(['🆕 نیو', 'success']);
 
-    // Three configs are three answers, so the tier button takes none of them —
-    // its badges belong one screen down, on the buttons they were typed for.
-    const many = products.find((p) => p.productId === tiered);
-    expect([many?.badge, many?.buttonStyle]).toEqual([null, null]);
+      // Three configs are three answers, so the tier button takes none of them —
+      // its badges belong one screen down, on the buttons they were typed for.
+      const many = products.find((p) => p.productId === tiered);
+      expect([many?.badge, many?.buttonStyle]).toEqual([null, null]);
 
-    // And it reaches the keyboard, `style` key and all.
-    expect(productMenu([one!])[0]![0]).toMatchObject({
-      text: expect.stringContaining('🆕 نیو'),
-      style: 'success',
-    });
-    expect(productMenu([many!])[0]![0]).not.toHaveProperty('style');
-
-    await db
-      .prepare(`UPDATE product_plans SET badge = NULL, button_style = NULL WHERE product_id = ANY($1)`)
-      .bind([single, tiered])
-      .run();
+      // And it reaches the keyboard, `style` key and all.
+      expect(productMenu([one!])[0]![0]).toMatchObject({
+        text: expect.stringContaining('🆕 نیو'),
+        style: 'success',
+      });
+      expect(productMenu([many!])[0]![0]).not.toHaveProperty('style');
+    } finally {
+      await db
+        .prepare(
+          `UPDATE product_plans SET badge = NULL, button_style = NULL
+            WHERE product_id = ANY($1)`,
+        )
+        .bind([single, tiered])
+        .run();
+    }
   });
 
   it('does not offer a disabled panel', async () => {
