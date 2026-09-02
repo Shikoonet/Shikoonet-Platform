@@ -418,6 +418,36 @@ export function stepToken(value: unknown): {
  * numbers was real. All 25 bot cards pass; 25 of 26 hub cards pass, and the one
  * failure was exactly the disputed number. See BUGS-FOR-ADMIN.md item 4.
  */
+/**
+ * A card number as it may be written down.
+ *
+ * THE PRE-FLIGHT REPORT IS NOT A TERMINAL ANY MORE. It was one when these lines
+ * were written: `preflight` printed to a console an operator was watching, and
+ * a full card number there was a string on a screen that scrolled away. Since
+ * PR #42 the panel runs the import — `importRoutes.ts` stores the captured
+ * report in `import_runs.report` and `ImportPage.tsx` renders it — so every
+ * pre-flight, dry run and apply was writing real customer PANs into Postgres
+ * and painting them on a screen. Found on staging on 2026-09-02, running a real
+ * backup through the panel: 34 of them, in one warn line. Issue #52.
+ *
+ * First six and last four, which is the split PCI DSS permits and the one that
+ * keeps the message useful: the first six name the issuing bank — the same
+ * digits `bank_prefixes` matches on — and the last four are what an operator
+ * compares against a row in the source. What is removed is the middle, which is
+ * the part that makes the rest a usable card number.
+ *
+ * `••••••` rather than `******`, because these strings end up beside Persian
+ * text and an asterisk run reads as emphasis in more renderers than it should.
+ *
+ * Anything that is not a plausible PAN is returned as-is: a short or malformed
+ * value is not card data, and hiding it would hide the very thing the reader
+ * needs in order to fix it.
+ */
+export function maskPan(digits: string): string {
+  if (!/^\d{12,19}$/.test(digits)) return digits;
+  return `${digits.slice(0, 6)}••••••${digits.slice(-4)}`;
+}
+
 export function isLuhnValid(digits: string): boolean {
   if (!/^\d{12,19}$/.test(digits)) return false;
   let sum = 0;
