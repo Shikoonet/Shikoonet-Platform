@@ -908,6 +908,38 @@ export interface PanelGroups {
   inherit: Array<{ id: number; name: string }>;
 }
 
+/**
+ * How the part of the panel account name BEFORE the order id is built.
+ *
+ * Legacy offers eight; five of them are random or counted and cannot be
+ * reproduced by a retry, so `remoteUsernameFor` carries only these three.
+ */
+export type PanelUsernameMode = 'TELEGRAM_ID' | 'PANEL_TEXT' | 'TELEGRAM_USERNAME';
+
+/**
+ * One price per customer tier, in TOMAN — `f` ordinary, `n` reseller, `n2`
+ * reseller second tier.
+ *
+ * Null is «not sold at this tier», and it has to stay distinguishable from
+ * zero: the shop already reads a zero price as not-for-sale, so a zero saved
+ * here would look set on the screen and be off in the bot. The route refuses
+ * zero for exactly that reason.
+ */
+export interface PanelTierPrices {
+  f: number | null;
+  n: number | null;
+  n2: number | null;
+}
+
+/** A customer this panel is hidden from. Named by OUR user id, shown by theirs. */
+export interface PanelHiddenUser {
+  userId: number;
+  telegramId: number;
+  username: string | null;
+  hiddenAt: string;
+  hiddenBy: string | null;
+}
+
 export interface PanelItem {
   id: number;
   code: string;
@@ -924,6 +956,23 @@ export interface PanelItem {
    */
   renewMode: 'ADD' | 'RESET';
   renewEnabled: boolean;
+  /*
+   * The rest of the panel's settings, derived on the server the same way and
+   * for the same reason — each is produced by the function the bot reads with,
+   * so the screen and the bot cannot come to disagree about them.
+   */
+  usernameMode: PanelUsernameMode;
+  usernameText: string | null;
+  /**
+   * `enabled` is false unless BOTH numbers are usable — that is the server's
+   * derivation, not a second rule here. A panel switched on with nothing to
+   * give answers a customer's tap with a failed provision.
+   */
+  trial: { enabled: boolean; volumeGb: number | null; durationHours: number | null };
+  extraVolumeTomanPerGb: PanelTierPrices;
+  extraTimeTomanPerDay: PanelTierPrices;
+  /** Where an ended account is moved. Empty means «leave it alone» — today's behaviour. */
+  downgradeGroupIds: number[];
   hasSecretRef: boolean;
   productCount: number;
   planCount: number;
@@ -1947,6 +1996,23 @@ export const api = {
        * what keeps a panel from getting stuck off after a bad ten minutes.
        */
       autoStatus?: boolean;
+      usernameMode?: PanelUsernameMode;
+      /** Trimmed, at most 32 characters. Null clears it back to the numeric id. */
+      usernameText?: string | null;
+      /**
+       * The three trial fields move together, and the route checks the RESULT
+       * of the merge rather than the patch — sending only the switch relies on
+       * numbers already stored, and sending only a number relies on a switch
+       * already on. Turning it on without both numbers is refused with a
+       * Persian `detail`.
+       */
+      trialEnabled?: boolean;
+      trialVolumeGb?: number | null;
+      trialDurationHours?: number | null;
+      /** All three tier keys required together; each a positive Toman integer or null. */
+      extraVolumeTomanPerGb?: PanelTierPrices;
+      extraTimeTomanPerDay?: PanelTierPrices;
+      downgradeGroupIds?: number[] | null;
     },
   ) {
     return req<{
@@ -1958,6 +2024,36 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(patch),
     });
+  },
+
+  /**
+   * The customers this panel is hidden from.
+   *
+   * A deny list and short by nature — all five production panels have it empty
+   * — so there is no paging and no search here.
+   */
+  panelHiddenUsers(id: number) {
+    return req<{ ok: boolean; users: PanelHiddenUser[] }>(`/panels/${id}/hidden-users`);
+  },
+
+  /**
+   * Hide it from one customer, named by their Telegram id.
+   *
+   * An id nobody has comes back 404 `user_not_found` rather than being stored:
+   * the row is a foreign key onto `users`, so it can only name somebody who has
+   * started the bot. Legacy stores the bare number, where a typo and a working
+   * block look identical.
+   */
+  addPanelHiddenUser(id: number, telegramId: number) {
+    return req<{ ok: boolean; userId: number; telegramId: number }>(`/panels/${id}/hidden-users`, {
+      method: 'POST',
+      body: JSON.stringify({ telegramId }),
+    });
+  },
+
+  /** Let them see it again — by OUR user id, which the list above hands out. */
+  removePanelHiddenUser(id: number, userId: number) {
+    return req<{ ok: boolean }>(`/panels/${id}/hidden-users/${userId}`, { method: 'DELETE' });
   },
 
   /**
