@@ -191,6 +191,47 @@ async function noticesFor(telegramId: number): Promise<{ text: string; dedupeKey
   return (results ?? []).map((r) => ({ text: r.body, dedupeKey: r.dedupe_key }));
 }
 
+/** A panel that already holds one account, and remembers every change asked of it. */
+function renewalPanel(username: string) {
+  const puts: string[] = [];
+  const account = { expire: null as string | null, data_limit: 0, note: '' };
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    if (url.endsWith('/api/admin/token')) {
+      return new Response(JSON.stringify({ access_token: 't' }), { status: 200 });
+    }
+    // Checked before the name is parsed: the reset path carries «/reset» after
+    // the username, so parsing first would look up «u_123/reset» and 404.
+    if (method === 'POST' && url.endsWith('/reset')) {
+      return new Response('{}', { status: 200 });
+    }
+    const name = decodeURIComponent((url.split('/api/user/')[1] ?? '').split('?')[0] ?? '');
+    if (method === 'GET' && url.includes('/api/user/')) {
+      return name === username
+        ? new Response(
+            JSON.stringify({ username, subscription_url: `/sub/${username}`, ...account }),
+            { status: 200 },
+          )
+        : new Response('{}', { status: 404 });
+    }
+    if (method === 'PUT' && url.includes('/api/user/')) {
+      if (name === username) puts.push(name);
+      return new Response(
+        JSON.stringify({ username: name, subscription_url: `/sub/${name}` }),
+        { status: 200 },
+      );
+    }
+    if (method === 'POST' && url.endsWith('/api/user')) {
+      return new Response(JSON.stringify({ username: 'other', subscription_url: '/sub/other' }), {
+        status: 200,
+      });
+    }
+    return new Response('{}', { status: 500 });
+  }) as unknown as typeof globalThis.fetch;
+  return { puts, fetchImpl };
+}
+
 const ACTOR = { actorEmail: 'sam@example.com', actorRole: 'ADMIN' };
 
 beforeAll(async () => {
@@ -336,6 +377,72 @@ describe('a preparation that failed for want of configuration', () => {
     expect((await orderRow(orderId))?.status).toBe('FAILED');
     expect(await countSubs(orderId)).toBe(0);
     expect(await countRetryAudits(publicId)).toBe(0);
+  });
+
+  it('retries a renewal without extending the service twice', async () => {
+    // The other half of «purchase and renewal»: a renewal resolves its panel
+    // from the ACCOUNT rather than the plan, so it fails and recovers through
+    // different code — and the thing that must not happen twice is not a second
+    // account but a second extension of the one that exists.
+    const { telegramId, publicId } = nextIds();
+    const userId = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+    await setCredentials(plan, false);
+    const provider = await db
+      .prepare(
+        `SELECT pr.provider_id AS id FROM product_plans pl
+           JOIN products pr ON pr.id = pl.product_id WHERE pl.id = ?1`,
+      )
+      .bind(plan)
+      .first<{ id: number }>();
+
+    const username = `u_${telegramId}`;
+    const sub = await db
+      .prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, provider_id, plan_name_at_sale, price_irr, remote_username,
+            subscription_url, volume_gb, status, purchased_at, expires_at, notify)
+         VALUES (?1, ?2, ?3, 'سرویس قدیمی', 1950000, ?4, ?5, 50, 'ACTIVE', now(),
+                 now() + interval '5 days', '{"time":true}'::jsonb)
+         RETURNING id`,
+      )
+      .bind(`sub-${publicId}`, userId, provider!.id, username, `https://renew.test/sub/${username}`)
+      .first<{ id: number }>();
+
+    const order = await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
+                             unit_price_irr, total_irr, status, target_subscription_id)
+         VALUES (?1, ?2, 'RENEWAL', ?3, 1, 1950000, 1950000, 'PAID', ?4)
+         RETURNING id`,
+      )
+      .bind(publicId, userId, plan, sub!.id)
+      .first<{ id: number }>();
+    await db
+      .prepare(
+        `INSERT INTO payments (public_id, user_id, order_id, amount_irr, method, status, created_at)
+         VALUES (?1, ?2, ?3, 1950000, 'CARD_TO_CARD', 'PAID', now())`,
+      )
+      .bind(`pay${publicId}`, userId, order!.id)
+      .run();
+
+    const panel = renewalPanel(username);
+    await provisionPaidOrders(db, panel.fetchImpl);
+    expect((await orderRow(order!.id))?.status).toBe('FAILED');
+    expect(panel.puts).toHaveLength(0);
+
+    await setCredentials(plan, true);
+    const out = await retryOrderProvisioning(db, { orderPublicId: publicId, ...ACTOR });
+    expect(out.outcome).toBe('QUEUED');
+
+    await provisionPaidOrders(db, panel.fetchImpl);
+    expect((await orderRow(order!.id))?.status).toBe('COMPLETED');
+    // Extended once, by the retry, and never by the attempt that failed.
+    expect(panel.puts).toHaveLength(1);
+
+    // A sweep after the fact must not extend it again.
+    await provisionPaidOrders(db, panel.fetchImpl);
+    expect(panel.puts).toHaveLength(1);
   });
 
   it('answers for an order number that does not exist', async () => {
