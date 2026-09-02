@@ -6,7 +6,8 @@ import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 import { BANK_INCOME_TX_WHERE } from './incomeEligibility.js';
 import {
   historyRangeBounds,
-  historyRangeDays,
+  jalaliMonthBounds,
+  jalaliMonthStart,
   tehranDayFromUtc,
   type HistoryRange,
 } from './historyRange.js';
@@ -41,6 +42,15 @@ export function previousHistoryRangeBounds(
   nowMs = Date.now(),
 ): { start: number | null; end: number | null } {
   if (range === 'all') return { start: null, end: null };
+  // A month compares against the month before it, not against «the same number
+  // of days, earlier». Subtracting the span would set 31-day Mordad against the
+  // 31 days ending on 1 Mordad -- a window straddling two months, under a label
+  // saying «previous period». Jalali months are 29 to 31 days, so the two are
+  // never the same window and are sometimes two days apart.
+  if (range === 'month') return jalaliMonthBounds(jalaliMonthStart(nowMs) - 1);
+  if (range === 'prev_month') {
+    return jalaliMonthBounds(jalaliMonthStart(jalaliMonthStart(nowMs) - 1) - 1);
+  }
   const current = historyRangeBounds(range, nowMs);
   const span = current.end! - current.start!;
   return { start: current.start! - span, end: current.start };
@@ -84,6 +94,9 @@ export function trendBucketKind(range: HistoryRange): TrendBucketKind {
       return 'day';
     case '7d':
     case '30d':
+    // A Jalali month buckets by day, like `30d`. By month would be one bar.
+    case 'month':
+    case 'prev_month':
       return 'day';
     case 'all':
       return 'month';
@@ -144,6 +157,3 @@ export function balanceFreshness(
   return nowMs - asOfMs <= BALANCE_STALE_MS ? 'fresh' : 'stale';
 }
 
-export function historyRangeSpanDays(range: HistoryRange): number | null {
-  return historyRangeDays(range);
-}

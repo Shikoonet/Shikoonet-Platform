@@ -2,7 +2,12 @@
  * Presentation layer for the payment review inbox.
  */
 
-import { AUTO_MATCH_MAX_TIME_DELTA_MS, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
+import {
+  AUTO_MATCH_MAX_TIME_DELTA_MS,
+  WAITING_TIMEOUT_MS,
+  type HistoryRange,
+  type HistoryRangePreset,
+} from '@shikoo/contracts';
 import { count } from '../format.js';
 
 /**
@@ -72,9 +77,12 @@ export type PaymentTab =
   | 'reseller'
   | 'all';
 
-export type HistoryRange = 'all' | 'today' | '2d' | '3d' | '7d' | '30d' | 'day';
-
-export type HistoryRangePreset = 'all' | '7d' | '30d' | 'day';
+// Both were declared here, by hand, because this app cannot import
+// `@shikoo/domain`. They live in `@shikoo/contracts` now -- which both sides do
+// depend on -- so the panel and the server can no longer drift apart about what
+// a `range` may be. Re-exported rather than replaced at the call sites: ten
+// files in this folder import them from here.
+export type { HistoryRange, HistoryRangePreset };
 
 export interface HistoryRangeState {
   preset: HistoryRangePreset;
@@ -87,6 +95,12 @@ export const HISTORY_RANGE_PRESETS: { value: HistoryRangePreset; label: string }
   { value: 'day', label: 'روز انتخاب‌شده' },
   { value: '7d', label: '۷ روز اخیر' },
   { value: '30d', label: '۳۰ روز اخیر' },
+  // The Jalali months, worded exactly as «آمار فروشگاه» words them
+  // (`StatsPage.tsx`). Same two words, same two windows: an operator who reads
+  // «ماه جاری» on one screen and «ماه شمسی» on the other has to work out
+  // whether they mean the same thing, and they do.
+  { value: 'month', label: 'ماه جاری' },
+  { value: 'prev_month', label: 'ماه گذشته' },
 ];
 
 /** @deprecated Use HISTORY_RANGE_PRESETS + HistoryDateNav */
