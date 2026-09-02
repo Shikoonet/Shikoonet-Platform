@@ -288,3 +288,22 @@ describe('json', () => {
     expect(t.json(null, [])).toEqual([]);
   });
 });
+
+describe('maskPan', () => {
+  it('keeps the issuer and the tail, and removes the middle', () => {
+    expect(t.maskPan('5022291621285129')).toBe('502229\u2022\u2022\u2022\u2022\u2022\u20225129');
+  });
+
+  it('leaves anything that is not a card number alone', () => {
+    // Hiding a malformed value would hide the very thing the reader has to fix.
+    for (const v of ['', '12345', 'not-a-card', '502229162128512X']) {
+      expect(t.maskPan(v)).toBe(v);
+    }
+  });
+
+  it('never returns something that still passes Luhn as a card', () => {
+    const masked = t.maskPan('5022291621285129');
+    expect(masked.replace(/\D/g, '')).not.toBe('5022291621285129');
+    expect(t.isLuhnValid(masked.replace(/\D/g, ''))).toBe(false);
+  });
+});
