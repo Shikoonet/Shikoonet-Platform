@@ -1186,6 +1186,10 @@ export interface ImportRun {
   dump_path: string;
   dump_bytes: number | null;
   domains: ImportDomain[];
+  /** Present when this run left rows that can still be taken back. */
+  undo_schema?: string | null;
+  undone_at?: string | null;
+  undone_by?: string | null;
   report?: ImportReportLine[];
   samples?: Record<string, Record<string, unknown>[]>;
   error: string | null;
@@ -2196,6 +2200,19 @@ export const api = {
       xhr.onabort = () => reject(new ApiError(0, 'aborted', null));
       xhr.send(file);
     });
+  },
+
+  /**
+   * Takes back exactly the rows one APPLY inserted.
+   *
+   * Not a restore, and the page says so where it is pressed: anything
+   * created after the import stays.
+   */
+  undoImport(id: string) {
+    return req<{ ok: boolean; total: number; removed: { table: string; rows: number }[] }>(
+      `/import/runs/${encodeURIComponent(id)}/undo`,
+      { method: 'POST' },
+    );
   },
 
   /** `mode` picks the endpoint; the body is the same for all three. */

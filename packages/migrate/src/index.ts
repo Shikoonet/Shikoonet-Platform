@@ -31,4 +31,12 @@ export {
   type StepResult,
 } from './migrate.js';
 export { preflight, summarise, type Finding } from './preflight.js';
+export {
+  applyUndo,
+  captureUndo,
+  dropUndo,
+  claimImportLock,
+  undoSchemaFor,
+  type UndoResult,
+} from './undo.js';
 export { verify, targetBaseline, type Baseline, type Check } from './verify.js';
