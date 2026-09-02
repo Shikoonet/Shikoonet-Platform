@@ -1205,6 +1205,40 @@ export const marzbanAdapter: ProvisioningAdapter = {
       const base = provider.baseUrl.replace(/\/+$/, '');
       const user = encodeURIComponent(action.username);
 
+      /*
+       * Read before write, and only for the one action that needs it.
+       *
+       * The panel is the only place that knows which groups this account is on:
+       * it may have been moved by hand, or sold before the plan carried groups.
+       * Reading it back from the PUT response would be too late - the response
+       * describes the account AFTER the move.
+       *
+       * A read that fails is not fatal. The caller stores whatever comes back
+       * and treats absence as «restore onto what the plan would give a new
+       * account», which is a worse answer than the truth and a much better one
+       * than refusing to downgrade at all.
+       */
+      let groupIdsBefore: number[] | undefined;
+      if (action.kind === 'SET_GROUPS') {
+        if (action.groupIds.length === 0) {
+          return {
+            ok: false,
+            reason: 'moving an account onto no groups at all would strip every inbound',
+            retryable: false,
+          };
+        }
+        const before = await getUser(provider, auth.token, action.username);
+        if (before.state === 'found') {
+          const ids = (before.user as { group_ids?: unknown }).group_ids;
+          if (Array.isArray(ids)) {
+            const numeric = ids
+              .map((v) => (typeof v === 'number' ? v : Number(v)))
+              .filter((v) => Number.isSafeInteger(v) && v > 0);
+            if (numeric.length > 0) groupIdsBefore = numeric;
+          }
+        }
+      }
+
       const res = await withTimeout((signal) =>
         action.kind === 'REVOKE_SUB'
           ? provider.fetch(`${base}/api/user/${user}/revoke_sub`, {
@@ -1219,7 +1253,15 @@ export const marzbanAdapter: ProvisioningAdapter = {
                 'content-type': 'application/json',
                 authorization: `Bearer ${auth.token}`,
               },
-              body: JSON.stringify({ status: action.enabled ? 'active' : 'disabled' }),
+              // A PARTIAL update, unlike `PUT /api/group/{id}`: the quota,
+              // expiry and proxy settings of the account are not resent and do
+              // not change. That is what makes a downgrade safe to run against
+              // a service somebody may renew an hour later.
+              body: JSON.stringify(
+                action.kind === 'SET_GROUPS'
+                  ? { group_ids: action.groupIds }
+                  : { status: action.enabled ? 'active' : 'disabled' },
+              ),
               signal,
             }),
       );
@@ -1248,6 +1290,7 @@ export const marzbanAdapter: ProvisioningAdapter = {
         // What the panel says it is now — not what we asked for. If it refused
         // quietly, this is where that shows.
         ...(status === null ? {} : { enabled: status === 'active' }),
+        ...(groupIdsBefore === undefined ? {} : { groupIdsBefore }),
       };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
