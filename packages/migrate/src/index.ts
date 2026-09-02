@@ -35,6 +35,7 @@ export {
   applyUndo,
   captureUndo,
   dropUndo,
+  claimImportLock,
   undoSchemaFor,
   type UndoResult,
 } from './undo.js';

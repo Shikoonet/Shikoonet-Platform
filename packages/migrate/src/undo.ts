@@ -84,26 +84,118 @@ async function keyedTables(pgc: pg.Client): Promise<Keyed[]> {
 const ident = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 
 /**
- * Records what this transaction has written so far, into `schema`.
+ * The one claim an import and an undo both have to hold.
+ *
+ * An import already refuses a second import: `idx_import_runs_one_active` is
+ * UNIQUE on `(true)` where the status is RUNNING, so the second INSERT loses
+ * in the statement rather than in a count somebody took a moment earlier.
+ * Nothing said the same about an undo, and an undo deletes from exactly the
+ * tables an import writes.
+ *
+ * Reading `status = 'RUNNING'` and then acting on the answer is the same
+ * check-then-act this repo has been bitten by twice; a new APPLY can insert
+ * its row in the gap. So both sides take a transaction-scoped advisory lock,
+ * which Postgres releases on COMMIT or ROLLBACK whatever happens to the
+ * process holding it.
+ *
+ * `try` and not the blocking form on purpose: an import that queued behind an
+ * undo would look hung to the operator, and «one is already running» is the
+ * truthful answer either way.
+ */
+export const IMPORT_LOCK_ID = 9_02_2026;
+
+/** Takes {@link IMPORT_LOCK_ID} for the caller's open transaction. */
+export async function claimImportLock(pgc: pg.Client): Promise<boolean> {
+  const { rows } = await pgc.query<{ ok: boolean }>(
+    'SELECT pg_try_advisory_xact_lock($1) AS ok',
+    [IMPORT_LOCK_ID],
+  );
+  return rows[0]?.ok === true;
+}
+
+/** Prefix for the key snapshot each table gets in `beginUndo`. */
+const BEFORE = 'before__';
+
+/**
+ * The keys that already existed, recorded before the migration writes anything.
+ *
+ * ## Why `xmin` alone is not enough, proved rather than reasoned
+ *
+ * `xmin` is the transaction that created the *tuple version*, and an UPDATE
+ * creates a new version. So a row that existed for a year and that this
+ * transaction merely touched answers `xmin = pg_current_xact_id()` exactly
+ * like one it inserted. On a scratch Postgres:
+ *
+ * ```
+ * INSERT INTO probe VALUES (1);          -- committed earlier
+ * BEGIN;
+ *   UPDATE probe SET note = 'touched';
+ *   SELECT count(*) FROM probe WHERE xmin = pg_current_xact_id()::xid;  -- 1
+ * ```
+ *
+ * The migration does exactly that in three places — `users.referred_by`,
+ * `payment_cards`, and the `subscriptions.order_id` link — so an undo that
+ * trusted `xmin` alone would DELETE a customer or a bank card that the import
+ * only edited. Reported by CodeRabbit on PR #57 and reproduced above before
+ * anything here changed.
+ *
+ * ## Why a snapshot here and `xmin` still at the end
+ *
+ * Neither half is sufficient on its own, and they fail in opposite directions:
+ *
+ *   * a snapshot diff alone would also claim rows some *other* transaction
+ *     inserted while the import ran — a customer's purchase, deleted by an
+ *     undo that never wrote it;
+ *   * `xmin` alone claims rows this transaction only updated.
+ *
+ * Together they mean: written by this transaction, AND not there before it.
+ * Which is the sentence the feature actually promises.
+ *
+ * Only primary keys are copied, so on the empty target a real cutover writes
+ * into this costs nothing, and on a re-import it is a few bigints per row.
+ */
+export async function beginUndo(pgc: pg.Client, schema: string): Promise<void> {
+  await pgc.query(`CREATE SCHEMA ${ident(schema)}`);
+  for (const { table, keys } of await keyedTables(pgc)) {
+    const before = BEFORE + table;
+    // Postgres truncates an identifier past 63 bytes silently, and two
+    // truncated names could collide onto one snapshot.
+    if (Buffer.byteLength(before) > 63) {
+      throw new Error(`table name too long to snapshot for undo: ${table}`);
+    }
+    await pgc.query(
+      `CREATE TABLE ${ident(schema)}.${ident(before)} AS
+         SELECT ${keys.map(ident).join(', ')} FROM public.${ident(table)}`,
+    );
+  }
+}
+
+/**
+ * Records what this transaction has INSERTED, into `schema`.
  *
  * Call it after the last step and BEFORE the commit, from inside the migration's
- * own transaction — `pg_current_xact_id()` is the whole mechanism, and outside
- * that transaction it answers about a different one. A dry run rolls the schema
- * back with everything else, which is correct: nothing was kept, so there is
- * nothing to take back.
+ * own transaction — `pg_current_xact_id()` is half the mechanism, and outside
+ * that transaction it answers about a different one. The other half is the
+ * snapshot `beginUndo` took at the start of the same transaction; see there for
+ * why either half alone is wrong. A dry run rolls the schema back with
+ * everything else, which is correct: nothing was kept, so there is nothing to
+ * take back.
  */
 export async function captureUndo(pgc: pg.Client, schema: string): Promise<number> {
-  await pgc.query(`CREATE SCHEMA ${ident(schema)}`);
   let tables = 0;
   let rows = 0;
   for (const { table, keys } of await keyedTables(pgc)) {
-    const cols = keys.map(ident).join(', ');
+    const cols = keys.map((k) => `cur.${ident(k)}`).join(', ');
+    const matches = keys.map((k) => `b.${ident(k)} = cur.${ident(k)}`).join(' AND ');
     // `WITH NO DATA` then `INSERT` would need the column types spelled out;
     // `AS SELECT` takes them from the source, which is the point.
     const made = await pgc.query(
       `CREATE TABLE ${ident(schema)}.${ident(table)} AS
-         SELECT ${cols} FROM public.${ident(table)}
-          WHERE xmin = pg_current_xact_id()::xid`,
+         SELECT ${cols} FROM public.${ident(table)} AS cur
+          WHERE cur.xmin = pg_current_xact_id()::xid
+            AND NOT EXISTS (
+                  SELECT 1 FROM ${ident(schema)}.${ident(BEFORE + table)} AS b
+                   WHERE ${matches})`,
     );
     if (made.rowCount === 0) {
       // An empty table would make the undo schema a list of every table in the
@@ -113,6 +205,12 @@ export async function captureUndo(pgc: pg.Client, schema: string): Promise<numbe
     }
     tables += 1;
     rows += made.rowCount ?? 0;
+  }
+  // The snapshots have served their purpose and are the bulk of the schema.
+  // Dropped here rather than at apply time so a recording kept for weeks is
+  // the size of what it can undo, not of the database it was taken from.
+  for (const { table } of await keyedTables(pgc)) {
+    await pgc.query(`DROP TABLE IF EXISTS ${ident(schema)}.${ident(BEFORE + table)}`);
   }
   report.step(`undo: ${rows} row(s) across ${tables} table(s) recorded in ${schema}`);
   return rows;
@@ -238,29 +336,42 @@ export async function applyUndo(pgc: pg.Client, schema: string): Promise<UndoRes
   }
 
   const removed: { table: string; rows: number }[] = [];
-  try {
-    for (const table of order) {
-      const keys = keyed.get(table);
-      if (keys === undefined) continue;
-      const cols = keys.map((k) => `public.${ident(table)}.${ident(k)}`).join(', ');
-      const undoCols = keys.map((k) => `u.${ident(k)}`).join(', ');
-      const res = await pgc.query(
-        `DELETE FROM public.${ident(table)}
-           USING ${ident(schema)}.${ident(table)} u
-          WHERE (${cols}) = (${undoCols})`,
-      );
-      const n = res.rowCount ?? 0;
-      if (n > 0) removed.push({ table, rows: n });
-    }
-  } finally {
-    for (const [table, trigger] of triggers) {
-      await pgc.query(`ALTER TABLE public.${ident(table)} ENABLE TRIGGER ${ident(trigger)}`);
-    }
+  // Deliberately NOT wrapped in try/finally.
+  //
+  // The documented failure of this whole feature is a foreign key refusing the
+  // delete, because something created after the import depends on an imported
+  // row — and the screen promises to name the table that refused. A refused
+  // DELETE aborts the transaction, and then EVERY later statement in it fails
+  // with `25P02 current transaction is aborted`. So a `finally` that re-enabled
+  // the triggers here would throw, and a throw from `finally` discards the
+  // exception in flight: the admin would read «current transaction is aborted»
+  // instead of the one fact they were promised. Reproduced on a scratch
+  // Postgres before this comment was written.
+  //
+  // Nothing is leaked by leaving them off on that path. DISABLE TRIGGER is DDL
+  // and DDL is transactional in Postgres, so the caller's ROLLBACK — which is
+  // the only thing that can follow an aborted transaction — puts every trigger
+  // back. The assertion below then covers the path that actually commits.
+  for (const table of order) {
+    const keys = keyed.get(table);
+    if (keys === undefined) continue;
+    const cols = keys.map((k) => `public.${ident(table)}.${ident(k)}`).join(', ');
+    const undoCols = keys.map((k) => `u.${ident(k)}`).join(', ');
+    const res = await pgc.query(
+      `DELETE FROM public.${ident(table)}
+         USING ${ident(schema)}.${ident(table)} u
+        WHERE (${cols}) = (${undoCols})`,
+    );
+    const n = res.rowCount ?? 0;
+    if (n > 0) removed.push({ table, rows: n });
   }
 
-  // Asserted, not assumed. A trigger left off is a rule silently repealed, and
-  // the `finally` above runs even on the path where the delete threw — this is
-  // the check that the repeal did not outlive the transaction.
+  for (const [table, trigger] of triggers) {
+    await pgc.query(`ALTER TABLE public.${ident(table)} ENABLE TRIGGER ${ident(trigger)}`);
+  }
+
+  // Asserted, not assumed. A trigger left off is a rule silently repealed, so
+  // this asks `pg_trigger` rather than trusting that the loop above ran.
   const stillOff = await pgc.query<{ tgname: string }>(
     `SELECT t.tgname FROM pg_trigger t
        JOIN pg_class c ON c.oid = t.tgrelid
