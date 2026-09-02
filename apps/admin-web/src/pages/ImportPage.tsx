@@ -89,6 +89,15 @@ function message(e: unknown): string {
     // The route's own words when it has them: «پسوند .sql یا .sql.gz» tells the
     // admin what to do next, and 'این فایل قابل ایمپورت نیست' does not.
     if (e.code === 'invalid_file') return e.detail ?? 'این فایل قابل ایمپورت نیست.';
+    if (e.code === 'nothing_to_undo' || e.code === 'already_undone') {
+      return e.detail ?? e.code;
+    }
+    // The detail is the database's own refusal — a foreign key naming the
+    // table that still depends on an imported row. Passed through rather
+    // than replaced: «برگرداندن نشد» tells nobody which row to look at.
+    if (e.code === 'undo_failed') {
+      return `برگرداندن انجام نشد: ${e.detail ?? 'دیتابیس قبول نکرد.'}`;
+    }
     // nginx answers 413 itself, with HTML and no `error` field, so this is the
     // one message that has to name a server setting: nothing in the deploy
     // raises `client_max_body_size` and the default is 1 مگابایت.
@@ -281,6 +290,8 @@ export function ImportPage() {
   const [confirming, setConfirming] = useState(false);
   /** 0…1 while a file is going up, `null` when none is. */
   const [uploadPct, setUploadPct] = useState<number | null>(null);
+  /** The run whose «بازگرداندن» is asking for confirmation. */
+  const [undoing, setUndoing] = useState<string | null>(null);
   /** The one-line «that worked» the page shows outside the report. */
   const [note, setNote] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -400,6 +411,29 @@ export function ImportPage() {
       // So picking the same file again fires `onChange`. Re-uploading after a
       // failure is the most likely next action and it would silently do nothing.
       if (picker.current) picker.current.value = '';
+    }
+  }
+
+  async function undo(id: string) {
+    setErr(null);
+    setNote(null);
+    setUndoing(null);
+    setBusy(true);
+    try {
+      const r = await api.undoImport(id);
+      const worst = [...r.removed].sort((a, b) => b.rows - a.rows).slice(0, 3);
+      setNote(
+        `${count(r.total)} ردیف برگردانده شد` +
+          (worst.length > 0
+            ? ` — ${worst.map((t) => `${count(t.rows)} ${t.table}`).join('، ')}`
+            : ''),
+      );
+      await loadRuns();
+      if (active?.id === id) setActive((await api.importRun(id)).run);
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -629,6 +663,12 @@ export function ImportPage() {
 
       <div className="card">
         <h3>اجراهای اخیر</h3>
+        <p className="muted">
+          «بازگرداندن» فقط ردیف‌هایی را که <em>همان اجرا</em> نوشته پاک می‌کند — نه یک
+          بازگردانی کامل. هر خرید، پرداخت یا تغییری که بعد از ایمپورت انجام شده سرِ جایش
+          می‌ماند. اگر چیزی که بعداً ساخته شده به یک ردیف واردشده وابسته باشد، کل کار
+          برمی‌گردد و می‌گوید کدام جدول جلویش را گرفت.
+        </p>
         {runs.length === 0 ? (
           <p className="muted">هنوز چیزی اجرا نشده است.</p>
         ) : (
@@ -641,6 +681,7 @@ export function ImportPage() {
                   <th>وضعیت</th>
                   <th>فایل</th>
                   <th>توسط</th>
+                  <th>برگرداندن</th>
                   <th />
                 </tr>
               </thead>
@@ -652,6 +693,39 @@ export function ImportPage() {
                     <td>{STATUS_FA[r.status]}</td>
                     <td className="ltr">{basename(r.dump_path)}</td>
                     <td className="ltr">{r.started_by}</td>
+                    <td>
+                      {/* Only an APPLY that kept rows can be taken back, and only
+                          once. Everything else says what it is rather than
+                          offering a button that would be refused. */}
+                      {r.undone_at ? (
+                        <span className="muted">برگردانده شد</span>
+                      ) : !r.undo_schema ? (
+                        <span className="muted">—</span>
+                      ) : undoing === r.id ? (
+                        <>
+                          <button
+                            className="btn btn-danger"
+                            onClick={() => void undo(r.id)}
+                            disabled={busy || running}
+                            {...w}
+                          >
+                            بله، برگردان
+                          </button>{' '}
+                          <button className="btn" onClick={() => setUndoing(null)}>
+                            انصراف
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="btn"
+                          onClick={() => setUndoing(r.id)}
+                          disabled={busy || running}
+                          {...w}
+                        >
+                          بازگرداندن
+                        </button>
+                      )}
+                    </td>
                     <td>
                       <button
                         className="btn"

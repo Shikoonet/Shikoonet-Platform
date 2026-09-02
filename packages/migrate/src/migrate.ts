@@ -16,6 +16,7 @@ import type pg from 'pg';
 import { correctCardDigits } from './corrections.js';
 import { d1Table, insertBatch, mysqlRows, report, type Column, type Config } from './db.js';
 import * as t from './transform.js';
+import { beginUndo, captureUndo, claimImportLock } from './undo.js';
 
 /**
  * One legacy row, in the types mysql2 actually hands back.
@@ -1938,6 +1939,17 @@ export interface MigrateOptions {
    * money and the counts are checked on a run that is about to be discarded.
    */
   beforeSettle?: () => Promise<boolean>;
+  /**
+   * Record what this run wrote, into a schema of this name, so it can be
+   * taken back later. See `undo.ts`.
+   *
+   * Captured inside the migration's own transaction and immediately before
+   * it settles, which is the only moment `pg_current_xact_id()` names the
+   * transaction that did the writing. A dry run discards it along with
+   * everything else, which is right: nothing was kept, so there is nothing
+   * to take back.
+   */
+  undoSchema?: string;
 }
 
 export interface StepResult {
@@ -1956,6 +1968,13 @@ export interface MigrateResult {
   skipped: [what: string, n: number][];
   /** Table name -> a few rows as they landed. Empty unless `samples` was set. */
   samples: Record<string, Record<string, unknown>[]>;
+  /**
+   * Rows the undo recording holds. 0 when no `undoSchema` was asked for, and
+   * also when one was asked for and the run turned out to write nothing — the
+   * caller must not keep a schema name for a recording that can take nothing
+   * back, or the panel offers a button the server is bound to refuse.
+   */
+  undoRows: number;
 }
 
 /** The table a step's samples come from, where a useful one exists. */
@@ -2044,7 +2063,17 @@ export async function migrate(
 
   report.title(commit ? 'migrating' : 'migrating (dry run - will roll back)');
   report.step(`domains: ${domains.join(', ')}`);
+  /** Rows `captureUndo` recorded; 0 means there is nothing to take back. */
+  let undoRows = 0;
   await pgc.query('BEGIN');
+  if (!(await claimImportLock(pgc))) {
+    await pgc.query('ROLLBACK');
+    throw new Error('another import or undo is already running');
+  }
+  // Before the first write, and in the same transaction: `captureUndo` at the
+  // end needs to know which keys were already there, or it cannot tell a row
+  // this run inserted from one it only updated. See `beginUndo`.
+  if (opts.undoSchema !== undefined) await beginUndo(pgc, opts.undoSchema);
   try {
     for (const [name, domain, run] of STEPS) {
       if (!wanted.has(domain)) {
@@ -2072,6 +2101,13 @@ export async function migrate(
     }
     if (opts.beforeSettle) verified = await opts.beforeSettle();
 
+    // Last, and still inside the transaction. After `beforeSettle` because a
+    // dry run's verify reads the rows this would otherwise have to work
+    // around, and before the settle because that is the whole mechanism.
+    if (opts.undoSchema !== undefined) {
+      undoRows = await captureUndo(pgc, opts.undoSchema);
+    }
+
     // The rollback is deliberate and reported, so a dry run can never be read
     // as a completed import.
     await pgc.query(commit ? 'COMMIT' : 'ROLLBACK');
@@ -2088,5 +2124,5 @@ export async function migrate(
     for (const [what, n] of skipped) report.warn(`${n} ${what}`);
   }
 
-  return { committed: commit, verified, domains, steps, skipped, samples };
+  return { committed: commit, verified, domains, steps, skipped, samples, undoRows };
 }
