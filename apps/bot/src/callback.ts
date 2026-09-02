@@ -36,6 +36,11 @@ export const CALLBACK_ACTIONS = [
   //        is allowed to do
   'menu', // back to the main menu
   'buy', // the shop's first screen — the category list
+  'tst', // [providerId] — the free trial. Without an id: the panels that
+  //        offer one, or straight to the only one that does. With an id:
+  //        take it on that panel. The id is re-checked against
+  //        `trialPanelsForUser`, which is scoped to the caller, so it names
+  //        a row only if that customer could already see it.
   'panel', // <providerId> — the services on one panel
   'cat', // <categoryId> — the priced rows inside one category. The shop's
   //        second screen, and the first one that carries prices.

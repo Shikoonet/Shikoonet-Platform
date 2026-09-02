@@ -177,6 +177,19 @@ export interface ShopSettings {
   warnDays: number;
   warnVolumeGb: number;
   /**
+   * How many free accounts one customer may ever take -
+   * `setting.limit_usertest_all`, which is 1 in production.
+   *
+   * Shop-wide, not per panel, because that is where legacy keeps it and
+   * because the thing being rationed is the customer rather than the panel:
+   * `users.test_quota_used` counts every trial they have taken anywhere. The
+   * per-panel settings say how BIG a trial is, not how many.
+   *
+   * Zero switches trials off everywhere, and is honoured: an admin who sets
+   * it to zero has said something clear.
+   */
+  trialQuotaPerUser: number;
+  /**
    * How many days a service may sit unused before the customer is nudged —
    * `setting.on_hold_day`.
    *
@@ -263,6 +276,7 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   topupMinIrr: 800_000,
   topupMaxIrr: 100_000_000,
   warnDays: 2,
+  trialQuotaPerUser: 1,
   warnVolumeGb: 1,
   onHoldDays: 1,
   requiresRules: false,
@@ -282,6 +296,20 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
  * never fires, and a negative one means the row is broken — neither is an
  * instruction to stop warning customers their service is about to end.
  */
+/**
+ * The trial allowance, where zero means «none» rather than «unset».
+ *
+ * Capped at 10 for the same reason every other limit here is capped: a
+ * mistyped row must not become an unbounded giveaway of accounts on a panel
+ * that costs real money to run.
+ */
+function trialQuota(value: number | null): number {
+  if (value === null || !Number.isSafeInteger(value) || value < 0) {
+    return DEFAULT_SHOP_SETTINGS.trialQuotaPerUser;
+  }
+  return Math.min(value, 10);
+}
+
 function wholeCount(value: number | null, fallback: number): number {
   return value !== null && Number.isSafeInteger(value) && value > 0 && value <= 365
     ? value
@@ -340,6 +368,7 @@ export const SHOP_SETTING_KEYS = [
   ['bot', 'daywarn'],
   ['bot', 'volumewarn'],
   ['bot', 'on_hold_day'],
+  ['bot', 'limit_usertest_all'],
   ['bot', 'roll_Status'],
   // Ours, not a migrated legacy column — there was nothing in the PHP schema
   // that composed a button label, which is the whole reason this exists.
@@ -549,6 +578,9 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       topupMinIrr: tomanLimit(num('minbalancecart'), DEFAULT_SHOP_SETTINGS.topupMinIrr),
       topupMaxIrr: tomanLimit(num('maxbalancecart'), DEFAULT_SHOP_SETTINGS.topupMaxIrr),
       warnDays: wholeCount(num('daywarn'), DEFAULT_SHOP_SETTINGS.warnDays),
+      // `wholeCount` refuses zero, and zero is a real answer here - it is how
+      // an admin turns trials off shop-wide - so this one is read on its own.
+      trialQuotaPerUser: trialQuota(num('limit_usertest_all')),
       warnVolumeGb: wholeCount(num('volumewarn'), DEFAULT_SHOP_SETTINGS.warnVolumeGb),
       onHoldDays: wholeCount(num('on_hold_day'), DEFAULT_SHOP_SETTINGS.onHoldDays),
       // On only for the exact word, like `customEmoji` and unlike the three
