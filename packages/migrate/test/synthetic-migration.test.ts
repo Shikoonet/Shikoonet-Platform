@@ -222,7 +222,11 @@ maybe('preflight, against the synthetic fixture', () => {
     // either a typo with a known correction or a BLOCKER; silence is neither.
     const card = findings.filter((f) => /card/i.test(f.check));
     expect(card.length).toBeGreaterThan(0);
-    expect(output).toContain('0000000000000001');
+    // Masked, since this commit. The assertion still has to name a specific
+    // card rather than settle for «some card failed» — that is the whole
+    // point of the check — but the first six and last four are enough to
+    // find the source row, and they are all an operator is owed.
+    expect(output).toContain('000000\u2022\u2022\u2022\u2022\u2022\u20220001');
   });
 
   it('finds the orphan payment and keeps its money in the total', () => {
