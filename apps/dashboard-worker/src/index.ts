@@ -3251,14 +3251,45 @@ app.post('/api/v1/match/reject', async (c) => {
   } catch {
     return c.json({ ok: false, error: 'illegal_transition' }, 409);
   }
+  /*
+   * The claim is asked too, and this is the half that was missing.
+   *
+   * `assertTransitionMatch` above answers about the MATCH, and the batch below
+   * then rewrites the CLAIM with `SQL.updateClaimStatus`, whose WHERE clause is
+   * `id = ?1` and nothing else. Every sibling route — suspects/reject,
+   * mark-fake, match/approve — asks `assertTransitionClaim` before writing a
+   * claim status. This one did not, so the state machine was enforced
+   * everywhere except the one place that wrote without a precondition.
+   *
+   * What that reached, once `FULFILLED_UNRECONCILED` existed: the matcher
+   * suggests a candidate, an operator decides not to wait and fulfils manually,
+   * and somebody clearing the stale suggestion out of the queue rewrites a
+   * DELIVERED order to REJECTED — `fulfilled_at` still set beside it, the
+   * customer still holding the product. `state.ts` gives that status one exit
+   * and this route was walking out of a wall.
+   *
+   * `if (claim)` rather than a 404: a match whose claim has gone is already
+   * handled by the batch writing nothing, and matching the shape used at
+   * `match/approve` keeps the two routes readable side by side.
+   */
+  const rejectedClaimStatus =
+    parsed.data.reason === 'FAKE_RECEIPT' ? ('FAKE_RECEIPT' as const) : ('REJECTED' as const);
+  const claimBefore = await c.env.DB.prepare(
+    `SELECT status FROM payment_claims WHERE id = ?1`,
+  )
+    .bind(match.payment_claim_id)
+    .first<{ status: import('@shikoo/contracts').ClaimStatus }>();
+  if (claimBefore) {
+    try {
+      assertTransitionClaim(claimBefore.status, rejectedClaimStatus);
+    } catch {
+      return c.json({ ok: false, error: 'illegal_claim_transition' }, 409);
+    }
+  }
   const now = Date.now();
   await c.env.DB.batch([
     c.env.DB.prepare(SQL.updateMatchStatus).bind(match.id, 'REJECTED', ident.email, now),
-    c.env.DB.prepare(SQL.updateClaimStatus).bind(
-      match.payment_claim_id,
-      parsed.data.reason === 'FAKE_RECEIPT' ? 'FAKE_RECEIPT' : 'REJECTED',
-      now,
-    ),
+    c.env.DB.prepare(SQL.updateClaimStatus).bind(match.payment_claim_id, rejectedClaimStatus, now),
   ]);
   await c.env.DB.prepare(SQL.insertAudit)
     .bind(
