@@ -105,6 +105,16 @@ export type ReviewState =
   | 'AUTO_VERIFIED'
   | 'NEEDS_REVIEW'
   | 'MANUALLY_VERIFIED'
+  /**
+   * Delivered, with no bank credit behind it yet.
+   *
+   * A state of its own rather than a shade of `WAITING`, which is where it
+   * landed before this line existed — and «در انتظار» beside an order the
+   * customer is already using is the panel telling an operator the opposite of
+   * what happened. It is equally not `MANUALLY_VERIFIED`: nothing has been
+   * verified.
+   */
+  | 'FULFILLED_UNRECONCILED'
   | 'WAITING'
   | 'NO_TRANSFER_FOUND'
   | 'REJECTED'
@@ -169,6 +179,7 @@ function deriveReviewState(
   if (claimStatus === 'VERIFIED') {
     return matchStatus === 'AUTO_VERIFIED' ? 'AUTO_VERIFIED' : 'MANUALLY_VERIFIED';
   }
+  if (claimStatus === 'FULFILLED_UNRECONCILED') return 'FULFILLED_UNRECONCILED';
   if (claimStatus === 'FAKE_RECEIPT') return 'FAKE';
   if (claimStatus === 'REJECTED') return 'REJECTED';
   if (claimStatus === 'EXPIRED') return 'EXPIRED';
@@ -218,6 +229,8 @@ function stateSql(state: ReviewState): string {
       // account on purpose whenever the card is not mapped yet. So for those,
       // the exit condition never fires and the timer alone hid them forever.
       return `${PENDING_CLAIM} AND c.suspect_reason IS NULL`;
+    case 'FULFILLED_UNRECONCILED':
+      return `c.status = 'FULFILLED_UNRECONCILED'`;
     case 'NO_TRANSFER_FOUND':
       return `${PENDING_CLAIM} AND c.suspect_reason IN ${NO_TRANSFER_REASONS}`;
     case 'REJECTED':
@@ -482,6 +495,7 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
     AUTO_VERIFIED: 0,
     NEEDS_REVIEW: 0,
     MANUALLY_VERIFIED: 0,
+    FULFILLED_UNRECONCILED: 0,
     WAITING: 0,
     NO_TRANSFER_FOUND: 0,
     REJECTED: 0,

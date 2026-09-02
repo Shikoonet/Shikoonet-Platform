@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { NotificationBell } from './NotificationBell.js';
 import type { Cache } from './query.js';
+import { ContinuityBanner } from './ContinuityBanner.js';
 
 type HeaderSlotName = 'center' | 'dateNav';
 
@@ -199,6 +200,7 @@ export function ShikoonetHeader({
           <div className="shikoonet-header__center">{center}</div>
 
           <div className="shikoonet-header__right">
+            <ContinuityBanner />
             <VersionBadge />
             {dateNav && <div className="shikoonet-header__date">{dateNav}</div>}
             <NotificationBell cache={cache} onNavigate={onNavigate} />

@@ -72,6 +72,7 @@ import {
   type ResellerItem,
   type AccountRefLike,
 } from './paymentReview.js';
+import { FulfilWithoutPaymentModal } from './FulfilWithoutPaymentModal.js';
 
 /**
  * Bank names are Persian and identifiers are Latin digits; without isolation the
@@ -160,6 +161,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [reopenTarget, setReopenTarget] = useState<PaymentItem | null>(null);
+  const [fulfilTarget, setFulfilTarget] = useState<PaymentItem | null>(null);
   const [locallyReadClaims, setLocallyReadClaims] = useState<Set<string>>(new Set());
   const [locallyReadIncome, setLocallyReadIncome] = useState<Set<string>>(new Set());
   const [markingReadAll, setMarkingReadAll] = useState(false);
@@ -382,6 +384,24 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   → بازگشت به صف
                 </button>
                 <h2 className="review-page__title">بررسی پرداخت</h2>
+                {/*
+                  Offered on every live claim, not only on a flagged suspect.
+                  The whole complaint this answers is that an operator watching a
+                  customer wait had to wait for the claim to be flagged before
+                  there was any button at all.
+                */}
+                {reviewing &&
+                  (reviewing.reviewState === 'NEEDS_REVIEW' ||
+                    reviewing.reviewState === 'WAITING' ||
+                    reviewing.reviewState === 'NO_TRANSFER_FOUND') && (
+                  <button
+                    type="button"
+                    className="btn btn-danger review-page__fulfil"
+                    onClick={() => setFulfilTarget(reviewing)}
+                  >
+                    تحویل بدون تایید بانکی
+                  </button>
+                )}
               </div>
 
               {error && <div className="alert alert-error">{error}</div>}
@@ -431,6 +451,21 @@ export function PaymentsView({ cache }: { cache: Cache }) {
           </div>
         </section>
 
+        {fulfilTarget && (
+          <FulfilWithoutPaymentModal
+            claimId={fulfilTarget.id}
+            orderId={fulfilTarget.orderId}
+            customer={paymentIdentityLine(fulfilTarget)}
+            expectedAmountToman={fulfilTarget.expectedAmountToman}
+            onClose={() => setFulfilTarget(null)}
+            onDone={(already) => {
+              setFulfilTarget(null);
+              setToast(already ? 'این سفارش قبلاً تحویل شده بود' : 'تحویل شد — در انتظار تطبیق');
+              setTimeout(() => setToast(null), 4000);
+              cache.refetch(queryKey, QK.suggested, QK.today);
+            }}
+          />
+        )}
         {reopenTarget && (
           <ReopenVerificationModal
             item={reopenTarget}
