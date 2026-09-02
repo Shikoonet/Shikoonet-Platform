@@ -352,6 +352,51 @@ describe('the read-only ledgers', () => {
     expect(body.items[0]!.planName).toBeNull();
   });
 
+  it('names an imported order from the service it sold', async () => {
+    // The shape every migrated purchase lands in: `plan_id` NULL, because
+    // legacy plan names are free text with the price inside and map to no
+    // catalogue row, and the name living on the subscription instead. Before
+    // the join below, all 8,909 imported orders showed a dash.
+    const { id: userId, telegramId } = await makeUser();
+    const orderPublicId = crypto.randomUUID();
+    await baseEnv.DB.prepare(
+      `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status, plan_id)
+       VALUES (?1, ?2, 'NEW_PURCHASE', 1190000, 1, 0, 1190000, 'COMPLETED', NULL)`,
+    )
+      .bind(orderPublicId, userId)
+      .run();
+    const order = await baseEnv.DB.prepare(`SELECT id FROM orders WHERE public_id = ?1`)
+      .bind(orderPublicId)
+      .first<{ id: number }>();
+    await baseEnv.DB.prepare(
+      `INSERT INTO subscriptions
+         (public_id, user_id, order_id, plan_name_at_sale, provider_name_at_sale, price_irr, status, purchased_at)
+       VALUES (?1, ?2, ?3, '1ماهه-20گیگ-119.000ت', 'سرویس تیتانیوم', 1190000, 'ACTIVE', now())`,
+    )
+      .bind(crypto.randomUUID(), userId, order!.id)
+      .run();
+
+    const res = await app.request(`/api/v1/admin/orders?q=${telegramId}`, {}, envAs(ADMIN));
+    const body = (await res.json()) as {
+      total: number;
+      items: Array<{ planName: string | null }>;
+    };
+    // One row, not two: `idx_subscriptions_one_per_order` is what makes the
+    // join safe, so the count is part of the claim.
+    expect(body.total).toBe(1);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]!.planName).toBe('1ماهه-20گیگ-119.000ت');
+
+    // The dashboard's «آخرین سفارشات» reads its own query, so the same claim
+    // has to be made against it or half the fix can regress unnoticed. Found
+    // by public id rather than by position: this list is not filtered by user.
+    const overview = (await (
+      await app.request('/api/v1/admin/overview', {}, envAs(ADMIN))
+    ).json()) as { recentOrders: Array<{ publicId: string; planName: string | null }> };
+    const mine = overview.recentOrders.find((o) => o.publicId === orderPublicId);
+    expect(mine?.planName).toBe('1ماهه-20گیگ-119.000ت');
+  });
+
   it('lists subscriptions under the names they carried at sale', async () => {
     const { id: userId, telegramId } = await makeUser();
     await baseEnv.DB.prepare(
