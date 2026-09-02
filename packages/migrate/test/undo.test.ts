@@ -140,7 +140,7 @@ describe('what a run is judged to have written', () => {
       `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
       [SCHEMA],
     );
-    // 71 tables exist; one was written to. A recording that listed them all
+    // 72 tables exist; one was written to. A recording that listed them all
     // would still "work" and would tell a reader nothing.
     expect(rows.map((r) => r.table_name)).toEqual(['users']);
   });

@@ -342,6 +342,13 @@ describe('every write route, asked directly', () => {
     // the whole schema at once, and it does it with the append-only trigger on
     // `wallet_entries` switched off for the length of one transaction.
     // `undo.ts` asserts the trigger back on before that transaction may commit.
-    expect(writeRoutes().length).toBe(145);
+    //
+    // +2, the two halves of «مخفی کردن پنل برای یک کاربر»: POST adds a customer
+    // to a panel's deny list, DELETE takes them off it. ADMIN-only, like every
+    // other panel write. They are two routes rather than one toggle because a
+    // deny list is a set and «add» and «remove» name different rows — legacy
+    // has two menu entries for exactly this and its removal only takes the
+    // FIRST match out, which is the bug a primary key here makes unwritable.
+    expect(writeRoutes().length).toBe(147);
   });
 });

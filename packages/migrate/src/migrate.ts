@@ -447,7 +447,7 @@ export const PROVIDER_COLUMNS = [
 
 async function migrateProviders(ctx: Ctx): Promise<number> {
   const rows = await mysqlRows<Row>(ctx.my, 'SELECT * FROM marzban_panel');
-  return insertBatch(
+  const inserted = await insertBatch(
     ctx.pg,
     'provisioning_providers',
     cols([
@@ -462,6 +462,85 @@ async function migrateProviders(ctx: Ctx): Promise<number> {
     ]),
     rows.map(providerRow),
     { conflict: '(legacy_id)' },
+  );
+  await moveHiddenUsers(ctx);
+  return inserted;
+}
+
+/**
+ * `marzban_panel.hide_user` out of `config` and into `provider_hidden_users`.
+ *
+ * Migration 0045 does this once for a database that is already imported. This
+ * does it for every import AFTER that one, and it is not the same thing: a
+ * reseller runs `packages/migrate` against their own Mirzabot database, and
+ * `legacyAttrs` carries `hide_user` into `config` again every single time. A
+ * key sitting there that nothing reads is a deny list that silently stopped
+ * working, on somebody else's shop, where nobody would think to look.
+ *
+ * Runs inside the migration's own transaction, after `users` — the whole point
+ * is resolving a Telegram id to a row, and the users step is two above this one
+ * in `STEPS`.
+ *
+ * AS MATERIALIZED is load-bearing: without it the planner may evaluate
+ * `tg::bigint` on rows the regex has not filtered, and one non-numeric entry
+ * would abort the import.
+ */
+async function moveHiddenUsers(ctx: Ctx): Promise<void> {
+  await ctx.pg.query(
+    `WITH hidden AS MATERIALIZED (
+       SELECT pr.id AS provider_id, t.tg AS tg
+         FROM provisioning_providers pr
+         CROSS JOIN LATERAL jsonb_array_elements_text(
+                CASE WHEN jsonb_typeof(pr.config -> 'hide_user') = 'array'
+                     THEN pr.config -> 'hide_user'
+                     ELSE '[]'::jsonb
+                END) AS t(tg)
+        WHERE t.tg ~ '^[0-9]{1,18}$'
+     )
+     INSERT INTO provider_hidden_users (provider_id, user_id, hidden_by)
+     SELECT h.provider_id, u.id, 'import'
+       FROM hidden h
+       JOIN users u ON u.telegram_id = h.tg::bigint
+     ON CONFLICT DO NOTHING`,
+  );
+  /*
+   * What could not be resolved, counted before the key that held it is gone.
+   *
+   * An entry naming somebody who has never started the bot has no `users` row
+   * to point at, so it cannot become a row here — and the UPDATE below then
+   * deletes the only record that it ever existed. Silently, which is the one
+   * thing this whole path was written to prevent: a reseller's deny list that
+   * stopped working on somebody else's shop, where nobody would look.
+   *
+   * So it goes in the import report, beside every other row the import chose
+   * not to write. The alternative CodeRabbit proposed — parking the remainder
+   * under a second config key — is a value nothing reads, which is the exact
+   * shape of the legacy settings this PR exists to stop repeating.
+   */
+  const { rows } = await ctx.pg.query<{ n: number }>(
+    `WITH hidden AS MATERIALIZED (
+       SELECT t.tg AS tg
+         FROM provisioning_providers pr
+         CROSS JOIN LATERAL jsonb_array_elements_text(
+                CASE WHEN jsonb_typeof(pr.config -> 'hide_user') = 'array'
+                     THEN pr.config -> 'hide_user'
+                     ELSE '[]'::jsonb
+                END) AS t(tg)
+        WHERE t.tg ~ '^[0-9]{1,18}$'
+     )
+     SELECT COUNT(*)::int AS n
+       FROM hidden h
+      WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.telegram_id = h.tg::bigint)`,
+  );
+  const unmatched = rows[0]?.n ?? 0;
+  if (unmatched > 0) {
+    skip(ctx, 'hidden panels: customer has never started the bot', unmatched);
+  }
+
+  await ctx.pg.query(
+    `UPDATE provisioning_providers
+        SET config = config - 'hide_user'
+      WHERE config ? 'hide_user'`,
   );
 }
 

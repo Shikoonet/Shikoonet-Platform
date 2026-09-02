@@ -83,6 +83,7 @@ export type ScreenId =
   | 'myServices'
   | 'serviceDetail'
   | 'addon'
+  | 'trial'
   | 'serviceActions'
   | 'renew'
   | 'wallet'
@@ -110,6 +111,7 @@ export const SCREENS: Record<ScreenId, string> = {
   myServices: 'سرویس‌های من',
   serviceDetail: 'جزئیات سرویس',
   addon: 'حجم و زمان اضافه',
+  trial: 'سرویس تست رایگان',
   serviceActions: 'تغییر لینک و روشن/خاموش',
   renew: 'تمدید سرویس',
   wallet: 'کیف پول',
@@ -227,6 +229,38 @@ export const TEXTS = {
     placeholders: [],
     screen: 'categories',
     hint: 'دسته‌ای که هیچ گزینهٔ فروختنی ندارد',
+  },
+
+  // --- سرویس تست ------------------------------------------------------------
+  TRIAL_CHOOSE_PANEL: {
+    default: '🎁 سرویس تست رایگان — کدام لوکیشن؟',
+    placeholders: [],
+    screen: 'trial',
+    hint: 'وقتی بیش از یک پنل سرویس تست می‌دهد. با یک پنل، این صفحه اصلاً نشان داده نمی‌شود',
+  },
+  TRIAL_NONE: {
+    default: 'در حال حاضر سرویس تستی فعال نیست.',
+    placeholders: [],
+    screen: 'trial',
+    hint: 'هیچ پنلی سرویس تست نمی‌دهد — یا خاموش است، یا حجم و زمانش تنظیم نشده',
+  },
+  TRIAL_USED: {
+    default: 'شما سرویس تست خود را قبلاً دریافت کرده‌اید.',
+    placeholders: [],
+    screen: 'trial',
+    hint: 'سهمیهٔ کاربر تمام شده — سهمیه در «تنظیمات» شمرده می‌شود، نه در پنل',
+  },
+  TRIAL_ON_THE_WAY: {
+    default: '🎁 سرویس تست شما در حال ساخته شدن است. تا لحظاتی دیگر همین‌جا می‌رسد.',
+    placeholders: [],
+    screen: 'trial',
+    hint: 'بلافاصله بعد از زدن دکمه — ساخت اکانت روی پنل چند ثانیه طول می‌کشد',
+  },
+  TRIAL_NOT_AVAILABLE: {
+    default: 'سرویس تست این لوکیشن دیگر فعال نیست. سهمیهٔ شما مصرف نشد.',
+    placeholders: [],
+    screen: 'trial',
+    hint: 'وقتی ادمین بین زدن دکمه و ساخته‌شدن اکانت، تست را خاموش کرده باشد',
   },
 
   // --- فهرست سرویس‌ها -------------------------------------------------------

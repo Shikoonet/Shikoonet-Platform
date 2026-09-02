@@ -32,6 +32,8 @@ import {
   plansOnPanel,
   productsForUser,
   purchasablePlan,
+  type TrialPanel,
+  trialPanelsForUser,
 } from './catalog.js';
 import {
   checkCode,
@@ -51,6 +53,7 @@ import {
   placeOrder,
   placeRenewalOrder,
   placeTopupOrder,
+  placeTrialOrder,
 } from './order.js';
 import { clientApps, helpArticle, helpArticles } from './content.js';
 import { blockForSpam, overSpamLimit } from './spam.js';
@@ -1082,6 +1085,30 @@ async function planScreen(
  * is a second place for the two to disagree about what the customer already
  * chose.
  */
+/**
+ * Taking the free account, once the panel is known.
+ *
+ * Nothing is drawn from the panel here and nothing is provisioned. The order
+ * is written PAID and the ordinary sweep delivers it, which is what keeps a
+ * trial on exactly the same path as a purchase — the same retry, the same
+ * stall reclaim, the same service screen at the end. A trial that provisioned
+ * inline would be a second delivery path, and the second one is always the one
+ * that is missing a fix.
+ *
+ * `null` back means the quota is spent. It cannot mean anything else: the
+ * panel was found in this customer's own list one line up.
+ */
+async function takeTrial(
+  tx: D1DatabaseSession,
+  user: Caller,
+  panel: TrialPanel,
+  screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+): Promise<HandleOutcome> {
+  const placed = await placeTrialOrder(tx, user.id, panel.providerId, SHOP.trialQuotaPerUser);
+  if (placed === null) return screen(menu.TRIAL_USED, menu.mainMenu(user));
+  return screen(menu.TRIAL_ON_THE_WAY, menu.mainMenu(user));
+}
+
 async function categoryScreen(
   tx: D1DatabaseSession,
   user: Caller,
@@ -1211,6 +1238,26 @@ async function handleCallback(
         return categoryScreen(tx, user, categories[0]!, screen);
       }
       return screen(menu.CHOOSE_CATEGORY, menu.categoryMenu(categories));
+    }
+
+    case 'tst': {
+      // The list is rebuilt on every tap rather than trusted from the one that
+      // drew the buttons, and that is what makes the id in `callback_data`
+      // safe to use: a panel this customer may not see is not in the list, so
+      // `find` answers undefined and they get the same «no trial» screen as
+      // somebody who never had one offered. The id never selects a row.
+      const panels = await trialPanelsForUser(tx, user.id);
+      if (panels.length === 0) return screen(menu.TRIAL_NONE, menu.mainMenu(user));
+      if (action.id === undefined) {
+        // A list of one is not a choice - the rule the category and plan lists
+        // already follow. Production has one panel that could offer a trial at
+        // a time, so this is the normal path rather than the corner.
+        if (panels.length === 1) return takeTrial(tx, user, panels[0]!, screen);
+        return screen(menu.TRIAL_CHOOSE_PANEL, menu.trialMenu(panels));
+      }
+      const panel = panels.find((p) => p.providerId === action.id);
+      if (panel === undefined) return screen(menu.TRIAL_NONE, menu.mainMenu(user));
+      return takeTrial(tx, user, panel, screen);
     }
 
     case 'cat': {

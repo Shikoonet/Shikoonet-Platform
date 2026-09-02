@@ -191,6 +191,10 @@ describe('the keyboard', () => {
       ['🏦 کیف پول + شارژ', '🛍 سرویس های من'],
       ['☎️ پشتیبانی', '📚 آموزش', '👥 زیر مجموعه گیری'],
       ['👨‍💻 درخواست نمایندگی'],
+      // Appended, never inserted — see the same list in `menu.test.ts` and the
+      // note beside `['tst', 4, 0]` in `botKeyboard.ts`. The four rows above
+      // are still `setting.keyboardmain` from the dump, in its order.
+      ['🎁 سرویس تست رایگان'],
     ]);
   });
 
