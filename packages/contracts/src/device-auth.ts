@@ -90,3 +90,41 @@ export function buildSmsRelayConfig(
     },
   };
 }
+
+/**
+ * The one rule for a device's human-readable name, used by BOTH
+ * `POST /api/v1/devices` (create) and `PATCH /api/v1/devices/:idOrCode`
+ * (rename), and by the dashboard form that feeds them.
+ *
+ * It lives here rather than in `dashboard-worker` because `admin-web` needs the
+ * same answer to decide whether «ذخیره» is pressable, and the alternative is
+ * two rules that agree until the day they don't — a create that accepts a name
+ * the rename refuses, or a button the server disagrees with.
+ *
+ * `\p{Cc}` only, plus the bidi overrides. NOT `\p{Cf}`: U+200C ZWNJ is a
+ * `Cf` character and is ordinary Persian orthography — «گوشی‌ها» contains one.
+ * Rejecting the category wholesale would refuse a correctly spelled Persian
+ * name, which is the opposite of what this is for. The bidi controls
+ * (U+202A–U+202E, U+2066–U+2069) are named individually because they can make
+ * a name render as a different name than the one stored.
+ *
+ * There is deliberately no uniqueness rule: `devices.device_code` is the unique
+ * one and `display_name` never has been. Two phones may both be «گوشی پویان».
+ */
+const DEVICE_NAME_CONTROL_RX = /[\p{Cc}\u202A-\u202E\u2066-\u2069]/u;
+
+/** Matches `devices.display_name text NOT NULL` and the create route's cap. */
+export const DEVICE_NAME_MAX_LENGTH = 200;
+
+export type DeviceNameError = 'required' | 'length' | 'control_characters';
+
+export function validateDeviceDisplayName(
+  raw: unknown,
+): { ok: true; name: string } | { ok: false; error: DeviceNameError } {
+  if (typeof raw !== 'string') return { ok: false, error: 'required' };
+  const name = raw.trim();
+  if (name.length === 0) return { ok: false, error: 'required' };
+  if (name.length > DEVICE_NAME_MAX_LENGTH) return { ok: false, error: 'length' };
+  if (DEVICE_NAME_CONTROL_RX.test(name)) return { ok: false, error: 'control_characters' };
+  return { ok: true, name };
+}

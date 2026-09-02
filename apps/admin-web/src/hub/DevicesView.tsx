@@ -26,6 +26,7 @@ import { api, type DeviceListItem } from './api.js';
 import { sortBy, type ColumnType } from './sort.js';
 import { useTableSortState } from './useTableSortState.js';
 import { DeleteDeviceModal } from './DeleteDeviceModal.js';
+import { RenameDeviceModal } from './RenameDeviceModal.js';
 import { DeviceSetupModal, type DeviceSetup, type SetupOrigin } from './DeviceSetupModal.js';
 
 interface DevicesViewProps {
@@ -169,6 +170,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteFor, setDeleteFor] = useState<DeviceListItem | null>(null);
+  const [renameFor, setRenameFor] = useState<DeviceListItem | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
   /** What the last press did. There was a channel for failure and none for success. */
@@ -309,6 +311,7 @@ export function DevicesView({ cache }: DevicesViewProps) {
         `«${d.display_name}» دوباره روشن شد.`,
       );
     },
+    onRename: () => setRenameFor(d),
     onDelete: () => setDeleteFor(d),
   });
 
@@ -371,6 +374,20 @@ export function DevicesView({ cache }: DevicesViewProps) {
           setup={setup.payload}
           origin={setup.origin}
           onClose={() => setSetup(null)}
+        />
+      )}
+      {renameFor && (
+        <RenameDeviceModal
+          device={renameFor}
+          onClose={() => setRenameFor(null)}
+          onRenamed={(displayName) => {
+            setNotice(`نام دستگاه به «${displayName}» تغییر کرد.`);
+            setRenameFor(null);
+            // The list is the only place this name lives on the client, so
+            // refetching it is what makes the new name appear here and on
+            // every other screen that reads it — no reload.
+            cache.invalidate(...forMutation('deviceUpdated'));
+          }}
         />
       )}
       {deleteFor && (
@@ -464,6 +481,7 @@ function DeviceCard({
   onDeactivate,
   onReactivate,
   onGenerate,
+  onRename,
   onDelete,
 }: {
   d: DeviceListItem;
@@ -473,6 +491,7 @@ function DeviceCard({
   onDeactivate: () => void;
   onReactivate: () => void;
   onGenerate: () => void;
+  onRename: () => void;
   onDelete: () => void;
 }) {
   const w = useWriteProps();
@@ -501,6 +520,16 @@ function DeviceCard({
       {next && <p className="device-card__next">{next}</p>}
 
       <div className="card-actions device-card__actions">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onRename}
+          data-testid="device-rename"
+          title="فقط نام نمایشی را عوض می‌کند — کلید، کد و سابقهٔ دستگاه دست‌نخورده می‌مانند"
+          {...w}
+        >
+          ویرایش نام
+        </button>
         {d.active && !d.credential && (
           <button
             type="button"

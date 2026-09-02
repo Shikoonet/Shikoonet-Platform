@@ -314,13 +314,21 @@ describe('every write route, asked directly', () => {
     // that writes an arbitrary file to the server's filesystem. The role is the
     // first of three guards — `resolveDump` decides the name and `MAX_DUMP_BYTES`
     // decides how much of it, both asserted in `import.test.ts`.
-    // 140 -> 142: fulfilment without evidence. «تحویل بدون تایید بانکی» on a
-    // claim, and the shop-wide Continuity switch. They are two routes and not
-    // one because they are two different decisions with two different blast
-    // radii: the first is a REVIEWER's call about one customer, the second is
-    // ADMIN-only because it suspends the requirement for evidence on everything
-    // that arrives next. Both write, so both are counted here; the role split
-    // itself is asserted in `continuity.test.ts`.
-    expect(writeRoutes().length).toBe(142);
+    // 140 -> 143, three routes from two features landing in one batch. Neither
+    // branch's number is right on its own, which is exactly what this assertion
+    // is for — it is the count that stops two green branches from producing an
+    // unguarded route between them.
+    //
+    // +2, fulfilment without evidence: «تحویل بدون تایید بانکی» on a claim, and
+    // the shop-wide Continuity switch. Two routes and not one because they are
+    // two decisions with two blast radii — the first is a REVIEWER's call about
+    // one customer, the second is ADMIN-only because it suspends the
+    // requirement for evidence on everything that arrives next. The role split
+    // is asserted in `continuity.test.ts`.
+    //
+    // +1, «ویرایش نام» on a device: PATCH on the display name only, REVIEWER
+    // and ADMIN like every other device write. It touches no credential and no
+    // id, asserted by mutation in `device-rename.test.ts`.
+    expect(writeRoutes().length).toBe(143);
   });
 });
