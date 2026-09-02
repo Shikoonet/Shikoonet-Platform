@@ -402,6 +402,22 @@ export const api = {
     req<{ ok: boolean }>(`/api/v1/devices/${encodeURIComponent(idOrCode)}/credentials/revoke`, {
       method: 'POST',
     }),
+  /** Renames a device. `display_name` only — see `PATCH /api/v1/devices`. */
+  renameDevice: (idOrCode: string, displayName: string) =>
+    req<{
+      ok: boolean;
+      unchanged?: boolean;
+      device: {
+        id: string;
+        deviceCode: string;
+        displayName: string;
+        description: string | null;
+        active: boolean;
+      };
+    }>(`/api/v1/devices/${encodeURIComponent(idOrCode)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ displayName }),
+    }),
   deactivateDevice: (idOrCode: string) =>
     req<{ ok: boolean; alreadyInactive?: boolean }>(
       `/api/v1/devices/${encodeURIComponent(idOrCode)}/deactivate`,

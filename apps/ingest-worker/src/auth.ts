@@ -33,16 +33,16 @@ export type DeviceAuthResult = DeviceAuthSuccess | DeviceAuthFailure;
 export { sha256Hex, timingSafeEqual };
 
 /**
- * Verify the device + API key, then bump last_seen_at and (optionally) refresh
- * display_name. Authentication is the only place we ever touch the device row
- * on a request — display_name is updated only when the caller-supplied name is
- * non-empty AND different from the stored value.
+ * Verify the device + API key, then bump last_seen_at.
+ *
+ * The body's `deviceName` is deliberately not a parameter: the dashboard owns
+ * `devices.display_name` and this used to overwrite it on every message. See
+ * the header of `devices.ts`.
  */
 export async function authenticateDevice(
   db: D1Database,
   deviceCode: string,
   apiKey: string,
-  deviceName?: string,
 ): Promise<DeviceAuthResult> {
   if (!deviceCode || !apiKey) return { ok: false, reason: 'unknown_device' };
   const device =
@@ -82,8 +82,8 @@ export async function authenticateDevice(
     return { ok: false, reason: 'invalid_key' };
   }
 
-  // Auth passed: bump last_seen_at + maybe rename.
-  await updateDeviceSeen(db, device.id, deviceName);
+  // Auth passed: bump last_seen_at.
+  await updateDeviceSeen(db, device.id);
 
   return { ok: true, device, credential };
 }
