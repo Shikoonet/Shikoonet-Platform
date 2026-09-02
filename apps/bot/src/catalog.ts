@@ -106,6 +106,25 @@ export interface CatalogProduct {
    */
   providerName: string;
   /**
+   * The badge of this service's ONE config, or null when it has several.
+   *
+   * `products` has no badge column and does not need one. A service holding a
+   * single purchasable config IS that config — `handleCategory` collapses right
+   * past the price screen for it and opens the plan directly — so this button
+   * is that plan's button, and it wears that plan's badge. A service holding
+   * three has three answers and therefore none: its badges appear one screen
+   * down, on the buttons they belong to.
+   *
+   * Without this the tier screen was the one catalogue screen that drew neither
+   * badge nor colour, and on a migrated shop it is the screen an operator
+   * actually looks at: every legacy row imported as one service with one config
+   * under it, so a badge typed on «محصولات» had no button to land on and the
+   * panel said nothing about why.
+   */
+  badge: string | null;
+  /** The same rule, for the colour. See `badge` above. */
+  buttonStyle: ButtonStyle | null;
+  /**
    * Which row of the tier screen this button sits on, or null for its own.
    *
    * `products.row_index`, added in 0037. Until then this was the one catalogue
@@ -153,7 +172,18 @@ export async function productsForUser(
       `SELECT p.id                AS product_id,
               p.name              AS name,
               pr.name             AS provider_name,
-              p.row_index         AS row_index
+              p.row_index         AS row_index,
+              -- The one config's badge and colour, and only when there is one.
+              --
+              -- COUNT(*) is the number of PURCHASABLE configs here, counted
+              -- under the same predicate and the same joins as
+              -- plansInProduct -- so this test is the very condition
+              -- handleCategory collapses on, not an approximation of it. In
+              -- that branch the group holds a single row, so MIN() is that
+              -- row's value; with more than one it is NULL and the button
+              -- draws exactly as it did before.
+              CASE WHEN COUNT(*) = 1 THEN MIN(pl.badge) END        AS badge,
+              CASE WHEN COUNT(*) = 1 THEN MIN(pl.button_style) END AS button_style
          FROM products p
          JOIN product_plans pl          ON pl.product_id = p.id
          JOIN provisioning_providers pr ON pr.id = p.provider_id
@@ -185,11 +215,15 @@ export async function productsForUser(
       name: string;
       provider_name: string;
       row_index: number | null;
+      badge: string | null;
+      button_style: ButtonStyle | null;
     }>();
   return rows.results.map((r) => ({
     productId: r.product_id,
     name: r.name,
     providerName: r.provider_name,
+    badge: r.badge,
+    buttonStyle: r.button_style,
     rowIndex: r.row_index,
   }));
 }
