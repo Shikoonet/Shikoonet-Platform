@@ -212,6 +212,19 @@ export async function captureUndo(pgc: pg.Client, schema: string): Promise<numbe
   for (const { table } of await keyedTables(pgc)) {
     await pgc.query(`DROP TABLE IF EXISTS ${ident(schema)}.${ident(BEFORE + table)}`);
   }
+  if (rows === 0) {
+    // A re-APPLY of the same dump inserts nothing, the migration being
+    // idempotent on the legacy keys. The schema was still created inside this
+    // transaction, and the caller is about to keep no name for it — so nothing
+    // would ever point at it and nothing could ever drop it. An orphan schema
+    // is the state 0044_import_undo.sql calls worse than the alternative,
+    // because the next reader cannot tell it from a recording still waiting to
+    // be used. Dropped here, beside the CREATE, rather than in a caller that
+    // could forget.
+    await dropUndo(pgc, schema);
+    report.step(`undo: this run inserted nothing; no recording kept`);
+    return 0;
+  }
   report.step(`undo: ${rows} row(s) across ${tables} table(s) recorded in ${schema}`);
   return rows;
 }

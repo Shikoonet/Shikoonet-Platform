@@ -212,6 +212,28 @@ describe('taking it back', () => {
     expect(rows[0]?.tgenabled).not.toBe('D');
   });
 
+  it('leaves no orphan schema when the run inserted nothing', async () => {
+    // The shape of a re-APPLY: the migration is idempotent on the legacy keys,
+    // so the second run writes nothing. The schema was still created inside the
+    // transaction, and no row will point at it — so it has to go, or it sits in
+    // Postgres forever looking like a recording somebody might still use.
+    await pgc.query('BEGIN');
+    const restore = quiet();
+    try {
+      await beginUndo(pgc, SCHEMA);
+      const rows = await captureUndo(pgc, SCHEMA);
+      expect(rows).toBe(0);
+    } finally {
+      restore();
+      await pgc.query('COMMIT');
+    }
+    const { rows } = await pgc.query<{ n: string }>(
+      'SELECT count(*) AS n FROM information_schema.schemata WHERE schema_name = $1',
+      [SCHEMA],
+    );
+    expect(Number(rows[0]!.n)).toBe(0);
+  });
+
   it('is a no-op on a recording that holds nothing', async () => {
     await pgc.query('BEGIN');
     const restore = quiet();
