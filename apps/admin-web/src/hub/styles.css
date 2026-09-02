@@ -4068,12 +4068,6 @@
   margin-inline-start: auto;
 }
 
-.alert-warning {
-  background: #78350f;
-  color: #fff;
-  padding: 0.6rem 0.8rem;
-  border-radius: 6px;
-}
 
 /* «تحویل‌شده، در انتظار تطبیق» — deliberately not the verified colour. */
 .status-pill--fulfilled_unreconciled {
