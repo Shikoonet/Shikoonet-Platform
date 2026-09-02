@@ -1,5 +1,6 @@
 export {
   tehranDayFromUtc,
+  tehranDayBoundsFromDate,
   parseHistoryRange,
   parseHistoryDay,
   historyRangeBounds,

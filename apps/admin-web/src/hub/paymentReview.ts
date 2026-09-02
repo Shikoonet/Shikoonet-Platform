@@ -268,6 +268,16 @@ export interface PaymentsResponse {
   tab: PaymentTab;
   range: HistoryRange;
   items: PaymentItem[] | IncomeItem[] | ResellerItem[] | DeclinedIncomeItem[];
+  /**
+   * How many rows the filters match, against how many this page holds.
+   *
+   * Optional because the income, declined and reseller tabs have their own
+   * loaders and are not paginated yet — reading `total` there would be reading
+   * `undefined`, and a pager drawn from `undefined` is a pager that lies.
+   */
+  page?: number;
+  pageSize?: number;
+  total?: number;
   counts: {
     needsReview: number;
     waiting: number;
