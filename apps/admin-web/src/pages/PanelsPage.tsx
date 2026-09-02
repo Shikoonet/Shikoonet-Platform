@@ -49,13 +49,20 @@
  * it — and until today the only way to set it was SQL by hand.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
 import { Icon } from '../icons.js';
 import { useAdminWriteProps } from '../role.js';
-import type { PanelGroupItem, PanelGroups, PanelHostItem, PanelTestResult } from '../api.js';
+import type {
+  PanelGroups,
+  PanelHiddenUser,
+  PanelHostItem,
+  PanelTestResult,
+  PanelTierPrices,
+  PanelUsernameMode,
+} from '../api.js';
 
 /**
  * `kind` is the adapter that fulfils an order.
@@ -538,6 +545,46 @@ function PanelHostsSection({ panel }: { panel: PanelItem }) {
 
 
 /**
+ * The panel's groups, asked for ONCE per modal.
+ *
+ * Two folds need this same list and they mean opposite things by it:
+ * «گروه‌های پنل» is what a purchase joins, «گروه اکانت غیرفعال» is where an
+ * ended one is moved. Two fetchers would be two requests to somebody else's
+ * panel per open, answering at different moments — so the one section that had
+ * this state now takes it as a prop instead of holding it.
+ */
+interface PanelGroupsState {
+  /** null while it has not answered yet. `data.available` null is «could not ask». */
+  data: PanelGroups | null;
+  err: string | null;
+  busy: boolean;
+  reload: () => void;
+}
+
+function usePanelGroups(panelId: number | null): PanelGroupsState {
+  const [data, setData] = useState<PanelGroups | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const reload = useCallback(() => {
+    if (panelId === null) return;
+    setBusy(true);
+    setErr(null);
+    void api
+      .panelGroups(panelId)
+      .then(setData)
+      .catch((e: unknown) => setErr(message(e)))
+      .finally(() => setBusy(false));
+  }, [panelId]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  return { data, err, busy, reload };
+}
+
+/**
  * گروه‌های پنل — the ticks that decide what a purchase joins.
  *
  * This section existed, was removed on 2026-08-24, and is back. The note that
@@ -560,44 +607,32 @@ function PanelHostsSection({ panel }: { panel: PanelItem }) {
  * migrated selection pointing at a group deleted from the panel, every order
  * failing and refunding in front of the customer — is armed again.
  */
-function PanelGroupsSection({ panel }: { panel: PanelItem }) {
+function PanelGroupsSection({ panel, groups }: { panel: PanelItem; groups: PanelGroupsState }) {
   const w = useAdminWriteProps();
-  const [available, setAvailable] = useState<PanelGroupItem[] | null>(null);
   const [selected, setSelected] = useState<number[]>([]);
   const [saved, setSaved] = useState<number[]>([]);
-  const [overrides, setOverrides] = useState<PanelGroups['plans']>([]);
-  const [inherit, setInherit] = useState<PanelGroups['inherit']>([]);
-  const [untestable, setUntestable] = useState(false);
-  const [reason, setReason] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  async function load() {
-    setBusy(true);
-    setErr(null);
-    try {
-      const d = await api.panelGroups(panel.id);
-      setAvailable(d.available);
-      setSelected(d.selected);
-      setSaved(d.selected);
-      setOverrides(d.plans);
-      setInherit(d.inherit);
-      setUntestable(d.untestable === true);
-      setReason(d.reason ?? null);
-    } catch (e) {
-      setErr(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const available = groups.data?.available ?? null;
+  const untestable = groups.data?.untestable === true;
+  const reason = groups.data?.reason ?? null;
+  const overrides = groups.data?.plans ?? [];
+  const inherit = groups.data?.inherit ?? [];
+  const busy = saving || groups.busy;
 
+  // What the server says is stored is where the ticks start — every time it is
+  // re-read, so «تازه‌سازی از پنل» throws away an unsaved selection the same way
+  // re-opening the modal does.
   useEffect(() => {
-    void load();
-  }, [panel.id]);
+    if (!groups.data) return;
+    setSelected(groups.data.selected);
+    setSaved(groups.data.selected);
+  }, [groups.data]);
 
   async function save() {
-    setBusy(true);
+    setSaving(true);
     setErr(null);
     setDone(null);
     try {
@@ -611,7 +646,7 @@ function PanelGroupsSection({ panel }: { panel: PanelItem }) {
     } catch (e) {
       setErr(message(e));
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
   }
 
@@ -641,7 +676,9 @@ function PanelGroupsSection({ panel }: { panel: PanelItem }) {
         می‌شود.
       </p>
 
-      {err && <div className="alert alert-error">{err}</div>}
+      {(groups.err ?? err) !== null && (
+        <div className="alert alert-error">{groups.err ?? err}</div>
+      )}
       {done && <div className="alert alert-ok">{done}</div>}
 
       {available === null ? (
@@ -724,7 +761,7 @@ function PanelGroupsSection({ panel }: { panel: PanelItem }) {
         >
           ذخیرهٔ گروه‌ها
         </button>
-        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void load()}>
+        <button type="button" className="btn btn-sm" disabled={busy} onClick={groups.reload}>
           تازه‌سازی از پنل
         </button>
       </div>
@@ -767,6 +804,229 @@ function PanelGroupsSection({ panel }: { panel: PanelItem }) {
 }
 
 /**
+ * ⚙️ گروه اکانت غیرفعال — where an ended account is moved instead of left alone.
+ *
+ * The same list and the same chips as «گروه‌های پنل», out of the same fetch.
+ * What differs is who writes it: this selection is part of the modal's form and
+ * goes out with the modal's own «ذخیره», because it is one field of the panel
+ * row rather than a list with a save of its own.
+ */
+function PanelDowngradeGroups({
+  groups,
+  value,
+  onChange,
+}: {
+  groups: PanelGroupsState;
+  value: number[];
+  onChange: (ids: number[]) => void;
+}) {
+  const w = useAdminWriteProps();
+  const available = groups.data?.available ?? null;
+  const reason = groups.data?.reason ?? null;
+
+  function toggle(id: number) {
+    onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id]);
+  }
+
+  // A ticked id the panel does not have, kept drawn for the same reason the
+  // section above keeps it: hiding it removes the only warning that every
+  // downgrade will fail against a group that is gone.
+  const missing =
+    available === null ? [] : value.filter((id) => available.every((g) => g.id !== id));
+
+  return (
+    <>
+      <p className="muted" style={{ marginBlockStart: 0 }}>
+        وقتی سرویس مشتری تمام می‌شود، اکانتش به این گروه‌ها منتقل می‌شود تا لینک اشتراکش همچنان
+        جواب بدهد. خالی یعنی دست‌نخورده بماند — رفتار امروز.
+      </p>
+
+      {available === null ? (
+        <div className="alert alert-warning">
+          گروه‌ها از پنل خوانده نشد{reason ? ` — ${reason}` : ''}. انتخاب ذخیره‌شده دست‌نخورده
+          می‌ماند.
+          {value.length > 0 && (
+            <div style={{ marginBlockStart: 6 }}>
+              الان این گروه‌ها انتخاب شده‌اند:{' '}
+              <b className="ltr">{value.map((id) => `#${id}`).join(' · ')}</b>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="pick-list">
+          {available.length === 0 && missing.length === 0 && (
+            <div className="empty">این پنل هیچ گروهی ندارد.</div>
+          )}
+          {available.map((g) => (
+            <label key={g.id} className={`pick ${value.includes(g.id) ? 'pick--on' : ''}`}>
+              <input
+                type="checkbox"
+                checked={value.includes(g.id)}
+                onChange={() => toggle(g.id)}
+                {...w}
+              />
+              <span>
+                <b>{g.name}</b> <span className="ltr muted">#{g.id}</span>
+                {typeof g.memberCount === 'number' && (
+                  <span className="muted"> · {count(g.memberCount)} کاربر</span>
+                )}
+              </span>
+            </label>
+          ))}
+          {missing.map((id) => (
+            <label key={`missing-${id}`} className="pick pick--on">
+              <input type="checkbox" checked onChange={() => toggle(id)} {...w} />
+              <span>
+                <b className="ltr">#{id}</b>{' '}
+                <span className="badge badge-block">این گروه روی پنل نیست</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      <p className="muted" style={{ marginBlockStart: 8 }}>
+        این انتخاب با دکمهٔ «ذخیره»ی پایینِ همین پنجره نوشته می‌شود.
+      </p>
+    </>
+  );
+}
+
+/**
+ * کاربرانی که این پنل را نمی‌بینند — legacy's `hide_user`, as a list.
+ *
+ * Mounted when the fold opens rather than with the modal: it is empty on all
+ * five production panels, so asking for it on every edit is a query nobody
+ * reads.
+ *
+ * The Telegram id is what the operator has in front of them — it is what they
+ * were given by whoever asked for the block — so it is what the box takes and
+ * what every row shows. Removing goes by OUR user id, which the list hands out.
+ */
+function PanelHiddenUsersSection({ panel }: { panel: PanelItem }) {
+  const w = useAdminWriteProps();
+  const [users, setUsers] = useState<PanelHiddenUser[] | null>(null);
+  const [telegramId, setTelegramId] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    try {
+      setUsers((await api.panelHiddenUsers(panel.id)).users);
+    } catch (e) {
+      setErr(message(e));
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [panel.id]);
+
+  async function add() {
+    // Parsed here rather than sent as a string: the route requires a number, so
+    // an empty or mistyped box would otherwise reach it as `NaN` and come back
+    // as a validation message in English about a field nobody typed.
+    const id = Number(telegramId.trim());
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      setErr('آیدی عددی تلگرام را وارد کنید — فقط رقم.');
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.addPanelHiddenUser(panel.id, id);
+      setTelegramId('');
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(userId: number) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.removePanelHiddenUser(panel.id, userId);
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <p className="muted" style={{ marginBlockStart: 0 }}>
+        این افراد این پنل و سرویس‌هایش را در فروشگاه نمی‌بینند — نه در فهرست، نه با باز‌کردن لینک
+        مستقیمش. برای بقیه هیچ چیز عوض نمی‌شود.
+      </p>
+
+      {err && <div className="alert alert-error">{err}</div>}
+
+      {users === null ? (
+        <div className="muted">در حال خواندن…</div>
+      ) : users.length === 0 ? (
+        <div className="empty">هیچ‌کس مستثنی نشده — همه این پنل را می‌بینند.</div>
+      ) : (
+        <div className="pick-list">
+          {users.map((u) => (
+            <div key={u.userId} className="pick">
+              <span className="grow">
+                <b className="ltr">{u.username === null ? u.telegramId : `@${u.username}`}</b>
+                {u.username !== null && <span className="ltr muted"> {u.telegramId}</span>}
+              </span>
+              <button
+                type="button"
+                className="btn btn-sm btn-danger"
+                disabled={busy}
+                onClick={() => void remove(u.userId)}
+                {...w}
+              >
+                حذف
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="filters" style={{ marginBlockStart: 10 }}>
+        <div className="grow">
+          <label className="form-label" htmlFor="panel-hide-id">
+            آیدی عددی تلگرام
+          </label>
+          <input
+            id="panel-hide-id"
+            className="form-control ltr"
+            type="text"
+            inputMode="numeric"
+            placeholder="123456789"
+            value={telegramId}
+            onChange={(e) => setTelegramId(e.target.value)}
+            {...w}
+          />
+        </div>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || telegramId.trim() === ''}
+          onClick={() => void add()}
+          {...w}
+        >
+          افزودن
+        </button>
+      </div>
+      <p className="muted" style={{ marginBlockStart: 4 }}>
+        فقط کسی که ربات را استارت کرده اضافه می‌شود. آیدیِ ناشناس رد می‌شود، چون یک اشتباه تایپی و
+        یک بلاکِ کارکن باید از هم قابل تشخیص باشند.
+      </p>
+    </>
+  );
+}
+
+/**
  * A section of the modal that starts closed.
  *
  * `<details>` rather than a `useState` toggle: it remembers nothing, needs no
@@ -776,14 +1036,26 @@ function PanelGroupsSection({ panel }: { panel: PanelItem }) {
 function Fold({
   title,
   open,
+  onOpen,
   children,
 }: {
   title: string;
   open?: boolean;
+  /**
+   * Fired the first time the fold is opened, for a section whose contents cost
+   * a request. Everything else in this modal loads with the modal, which is
+   * right for a list an operator always wants and wrong for a deny list that is
+   * empty on every panel the shop has.
+   */
+  onOpen?: () => void;
   children: ReactNode;
 }) {
   return (
-    <details open={open} style={{ marginBlockStart: 14 }}>
+    <details
+      open={open}
+      onToggle={(e) => e.currentTarget.open && onOpen?.()}
+      style={{ marginBlockStart: 14 }}
+    >
       <summary
         style={{ cursor: 'pointer', fontWeight: 700, padding: '8px 0', color: 'var(--accent)' }}
       >
@@ -793,6 +1065,65 @@ function Fold({
     </details>
   );
 }
+
+/** The three tier boxes as the operator types them. */
+interface TierText {
+  f: string;
+  n: string;
+  n2: string;
+}
+
+function tierText(p: PanelTierPrices | undefined): TierText {
+  return { f: numText(p?.f), n: numText(p?.n), n2: numText(p?.n2) };
+}
+
+function numText(v: number | null | undefined): string {
+  return v === null || v === undefined ? '' : String(v);
+}
+
+/**
+ * A number an operator types, where empty and zero are NOT the same thing.
+ *
+ * Empty is null — «not set», «not for sale» — and null is the only way to say
+ * it: the route refuses zero, because the bot already reads a zero price as
+ * not-for-sale, so a stored zero would look set on this screen and be off in
+ * the shop. Anything else unusable comes back as `'bad'` rather than as null,
+ * so a mistyped price is an error instead of silently becoming «فروخته نمی‌شود».
+ */
+function positiveOrNull(raw: string): number | null | 'bad' {
+  const t = raw.trim();
+  if (t === '') return null;
+  const n = Number(t);
+  return Number.isFinite(n) && n > 0 ? n : 'bad';
+}
+
+function positiveIntOrNull(raw: string): number | null | 'bad' {
+  const v = positiveOrNull(raw);
+  return typeof v === 'number' && !Number.isInteger(v) ? 'bad' : v;
+}
+
+/** All three tiers, or null if any box holds something unusable. */
+function tierValues(t: TierText): PanelTierPrices | null {
+  const f = positiveIntOrNull(t.f);
+  const n = positiveIntOrNull(t.n);
+  const n2 = positiveIntOrNull(t.n2);
+  if (f === 'bad' || n === 'bad' || n2 === 'bad') return null;
+  return { f, n, n2 };
+}
+
+function sameTiers(a: PanelTierPrices, b: PanelTierPrices): boolean {
+  return a.f === b.f && a.n === b.n && a.n2 === b.n2;
+}
+
+function sameIds(a: number[], b: number[]): boolean {
+  return a.length === b.length && a.every((id) => b.includes(id));
+}
+
+const TIERS: ReadonlyArray<{ key: keyof TierText; label: string }> = [
+  { key: 'f', label: 'مشتری عادی' },
+  { key: 'n', label: 'نماینده' },
+  { key: 'n2', label: 'نماینده سطح ۲' },
+];
 
 /**
  * افزودن / ویرایش پنل — one modal for both.
@@ -839,12 +1170,28 @@ function PanelModal({
     panel?.capacity === null || panel?.capacity === undefined ? '' : String(panel.capacity),
   );
   const [sortOrder, setSortOrder] = useState(String(panel?.sortOrder ?? 0));
+  const [usernameMode, setUsernameMode] = useState<PanelUsernameMode>(
+    panel?.usernameMode ?? 'TELEGRAM_ID',
+  );
+  const [usernameText, setUsernameText] = useState(panel?.usernameText ?? '');
+  const [trialEnabled, setTrialEnabled] = useState(panel?.trial.enabled ?? false);
+  const [trialVolume, setTrialVolume] = useState(numText(panel?.trial.volumeGb));
+  const [trialHours, setTrialHours] = useState(numText(panel?.trial.durationHours));
+  const [extraVolume, setExtraVolume] = useState<TierText>(tierText(panel?.extraVolumeTomanPerGb));
+  const [extraTime, setExtraTime] = useState<TierText>(tierText(panel?.extraTimeTomanPerDay));
+  const [downgradeGroupIds, setDowngradeGroupIds] = useState<number[]>(
+    panel?.downgradeGroupIds ?? [],
+  );
+  /** The deny list costs a request, so it is not asked for until somebody looks. */
+  const [hiddenOpened, setHiddenOpened] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
   const needsLogin = KINDS.find((k) => k.value === kind)?.login ?? true;
+  // One fetch for both group folds — see `usePanelGroups`.
+  const groups = usePanelGroups(panel !== null && needsLogin ? panel.id : null);
 
   async function save() {
     setBusy(true);
@@ -889,6 +1236,35 @@ function PanelModal({
         setErr('محدودیت ساخت اکانت باید عدد باشد — خالی یعنی بی‌نهایت.');
         return;
       }
+      const trialVolumeGb = positiveOrNull(trialVolume);
+      const trialDurationHours = positiveIntOrNull(trialHours);
+      if (trialVolumeGb === 'bad' || trialDurationHours === 'bad') {
+        setErr('حجم و زمان سرویس تست باید عددی بزرگ‌تر از صفر باشند — خالی یعنی تنظیم‌نشده.');
+        return;
+      }
+      const volumePrices = tierValues(extraVolume);
+      const timePrices = tierValues(extraTime);
+      if (volumePrices === null || timePrices === null) {
+        setErr('قیمت‌ها باید عدد صحیح بزرگ‌تر از صفر باشند — خالی یعنی فروخته نمی‌شود.');
+        return;
+      }
+      const panelText = usernameText.trim() === '' ? null : usernameText.trim();
+      /*
+       * The trial's three fields move together and the two price tables move
+       * whole. That is the shape the route validates in: it checks the RESULT
+       * of the merge, so sending only the switch leans on numbers already
+       * stored and sending only a number leans on a switch already on — and the
+       * `trial.enabled` this screen shows is DERIVED, false whenever a number is
+       * missing. Sending the trio is what makes the switch on screen the answer.
+       *
+       * Everything else is sent only when it differs from the row that came
+       * back, so an operator who opened the fold and closed it writes nothing.
+       */
+      const trialTouched =
+        trialEnabled !== panel.trial.enabled ||
+        trialVolumeGb !== panel.trial.volumeGb ||
+        trialDurationHours !== panel.trial.durationHours;
+
       const updated = await api.updatePanel(panel.id, {
         name: name.trim(),
         baseUrl: baseUrl.trim() === '' ? null : baseUrl.trim(),
@@ -897,6 +1273,16 @@ function PanelModal({
         renewMode,
         renewEnabled,
         ...(autoStatus ? { autoStatus: true } : {}),
+        ...(usernameMode === panel.usernameMode ? {} : { usernameMode }),
+        ...(panelText === panel.usernameText ? {} : { usernameText: panelText }),
+        ...(trialTouched ? { trialEnabled, trialVolumeGb, trialDurationHours } : {}),
+        ...(sameTiers(volumePrices, panel.extraVolumeTomanPerGb)
+          ? {}
+          : { extraVolumeTomanPerGb: volumePrices }),
+        ...(sameTiers(timePrices, panel.extraTimeTomanPerDay)
+          ? {}
+          : { extraTimeTomanPerDay: timePrices }),
+        ...(sameIds(downgradeGroupIds, panel.downgradeGroupIds) ? {} : { downgradeGroupIds }),
       });
       setNote(statusNote(updated.panel, updated.probe));
       setPassword('');
@@ -1151,16 +1537,185 @@ function PanelModal({
           groups view to show groups and nothing else — hosts are a different
           question about the same panel, and this screen is still the only place
           they can be managed at all.
+
+          The four folds added on 2026-09-02 are the panel settings the old bot
+          had and this screen did not. Three of them are plain form state and go
+          out with «ذخیره» below; the deny list has buttons of its own, because
+          each row there is one audited write rather than a field of the panel.
         */}
         {editing && needsLogin && (
           <>
-            <Fold title="گروه‌های پنل" open>
-              <PanelGroupsSection panel={panel} />
+            <Fold title="💡 روش ساخت نام کاربری">
+              <div className="filters">
+                <div className="grow">
+                  <label className="form-label" htmlFor="panel-username-mode">
+                    روش ساخت
+                  </label>
+                  <select
+                    id="panel-username-mode"
+                    className="form-control"
+                    value={usernameMode}
+                    onChange={(e) => setUsernameMode(e.target.value as PanelUsernameMode)}
+                    {...w}
+                  >
+                    <option value="TELEGRAM_ID">آیدی عددی کاربر</option>
+                    <option value="PANEL_TEXT">متن دلخواه این پنل</option>
+                    <option value="TELEGRAM_USERNAME">نام کاربری تلگرام</option>
+                  </select>
+                </div>
+                {usernameMode === 'PANEL_TEXT' && (
+                  <div className="grow">
+                    <label className="form-label" htmlFor="panel-username-text">
+                      متن دلخواه
+                    </label>
+                    <input
+                      id="panel-username-text"
+                      className="form-control ltr"
+                      type="text"
+                      maxLength={32}
+                      placeholder="shikoo"
+                      value={usernameText}
+                      onChange={(e) => setUsernameText(e.target.value)}
+                      {...w}
+                    />
+                  </div>
+                )}
+              </div>
+              <p className="muted" style={{ marginBlockStart: 4 }}>
+                نام اکانت روی پنل این شکلی می‌شود: <b>{'<پیشوند>_<شناسهٔ سفارش>'}</b>. پسوند همیشه
+                شناسهٔ سفارش است تا اگر ساخت نیمه‌کاره ماند، تلاش دوم همان اکانت را پیدا کند و اکانت
+                دوم نسازد.
+                {usernameMode === 'TELEGRAM_USERNAME' && (
+                  <> مشتری‌ای که نام کاربری تلگرام ندارد با آیدی عددی‌اش ساخته می‌شود.</>
+                )}
+              </p>
             </Fold>
-            <Fold title="هاست‌ها">
-              <PanelHostsSection panel={panel} />
+
+            <Fold title="🎁 سرویس تست">
+              <label className="pick">
+                <input
+                  type="checkbox"
+                  checked={trialEnabled}
+                  onChange={(e) => setTrialEnabled(e.target.checked)}
+                  {...w}
+                />
+                <span>
+                  <b>سرویس تست رایگان روی این پنل</b>
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    بدون هر دو عددِ پایین روشن نمی‌شود. پنلی که روشن باشد و چیزی برای دادن نداشته
+                    باشد، تپِ مشتری را با یک ساختِ ناموفق جواب می‌دهد.
+                  </div>
+                </span>
+              </label>
+              <div className="filters" style={{ marginBlockStart: 10 }}>
+                <div className="grow">
+                  <label className="form-label" htmlFor="panel-trial-volume">
+                    حجم (گیگابایت)
+                  </label>
+                  <input
+                    id="panel-trial-volume"
+                    className="form-control ltr"
+                    type="text"
+                    inputMode="decimal"
+                    value={trialVolume}
+                    onChange={(e) => setTrialVolume(e.target.value)}
+                    {...w}
+                  />
+                </div>
+                <div className="grow">
+                  <label className="form-label" htmlFor="panel-trial-hours">
+                    مدت (ساعت)
+                  </label>
+                  <input
+                    id="panel-trial-hours"
+                    className="form-control ltr"
+                    type="text"
+                    inputMode="numeric"
+                    value={trialHours}
+                    onChange={(e) => setTrialHours(e.target.value)}
+                    {...w}
+                  />
+                </div>
+              </div>
+              <p className="muted" style={{ marginBlockStart: 4 }}>
+                مدت به <b>ساعت</b> است، نه روز. اینکه هر مشتری چند بار سرویس تست بگیرد این‌جا تعیین
+                نمی‌شود — یک عدد برای کل فروشگاه است و در «تنظیمات» با کلید{' '}
+                <span className="ltr">limit_usertest_all</span> نگه داشته می‌شود.
+              </p>
+            </Fold>
+
+            <Fold title="➕ قیمت حجم و زمان اضافه">
+              <div className="form-label">قیمت هر گیگابایت اضافه</div>
+              <div className="filters">
+                {TIERS.map((t) => (
+                  <div className="grow" key={`vol-${t.key}`}>
+                    <label className="form-label" htmlFor={`panel-extra-vol-${t.key}`}>
+                      {t.label}
+                    </label>
+                    <input
+                      id={`panel-extra-vol-${t.key}`}
+                      className="form-control ltr"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="فروخته نمی‌شود"
+                      value={extraVolume[t.key]}
+                      onChange={(e) => setExtraVolume({ ...extraVolume, [t.key]: e.target.value })}
+                      {...w}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div className="form-label" style={{ marginBlockStart: 10 }}>
+                قیمت هر روز اضافه
+              </div>
+              <div className="filters">
+                {TIERS.map((t) => (
+                  <div className="grow" key={`time-${t.key}`}>
+                    <label className="form-label" htmlFor={`panel-extra-time-${t.key}`}>
+                      {t.label}
+                    </label>
+                    <input
+                      id={`panel-extra-time-${t.key}`}
+                      className="form-control ltr"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="فروخته نمی‌شود"
+                      value={extraTime[t.key]}
+                      onChange={(e) => setExtraTime({ ...extraTime, [t.key]: e.target.value })}
+                      {...w}
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="muted" style={{ marginBlockStart: 4 }}>
+                قیمت‌ها به تومان‌اند. خالی یعنی روی این پنل فروخته نمی‌شود.
+              </p>
+            </Fold>
+
+            <Fold title="گروه‌های پنل" open>
+              <PanelGroupsSection panel={panel} groups={groups} />
+            </Fold>
+            <Fold title="⚙️ گروه اکانت غیرفعال">
+              <PanelDowngradeGroups
+                groups={groups}
+                value={downgradeGroupIds}
+                onChange={setDowngradeGroupIds}
+              />
             </Fold>
           </>
+        )}
+
+        {editing && (
+          <Fold title="😶 کاربرانی که این پنل را نمی‌بینند" onOpen={() => setHiddenOpened(true)}>
+            {hiddenOpened && <PanelHiddenUsersSection panel={panel} />}
+          </Fold>
+        )}
+
+        {editing && needsLogin && (
+          <Fold title="هاست‌ها">
+            <PanelHostsSection panel={panel} />
+          </Fold>
         )}
 
         <div className="modal-actions">

@@ -57,8 +57,10 @@ interface Keyed {
  *
  * A table with no primary key is skipped and named, rather than guessed at:
  * without a key there is no way to say which row to take back, and `ctid`
- * moves under `VACUUM`. There are none today — all 71 have one — and this
- * exists so that the day somebody adds one, the undo says so instead of
+ * moves under `VACUUM`. There are none today — all 72 have one, and the key
+ * may be composite: `provider_hidden_users` is keyed on both its columns,
+ * which is why `keys` is a list and every caller loops over it. This exists so
+ * that the day somebody adds an unkeyed table, the undo says so instead of
  * silently covering less than it claims.
  */
 async function keyedTables(pgc: pg.Client): Promise<Keyed[]> {

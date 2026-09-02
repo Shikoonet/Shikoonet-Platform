@@ -306,7 +306,22 @@ export type AccountsResult =
  */
 export type AccountAction =
   | { kind: 'REVOKE_SUB'; username: string }
-  | { kind: 'SET_ENABLED'; username: string; enabled: boolean };
+  | { kind: 'SET_ENABLED'; username: string; enabled: boolean }
+  /**
+   * Put the account on exactly these groups.
+   *
+   * Used at both ends of «اینباند اکانت غیرفعال»: down onto the panel's
+   * downgrade groups when a service ends, and back onto what it was sold when
+   * it is renewed. A REPLACEMENT, never a merge, because the point of the
+   * downgrade is that the account stops carrying what it used to.
+   *
+   * The list may not be empty. PasarGuard reads `group_ids: []` as «belongs to
+   * no group», which strips every inbound - the subscription link resolves and
+   * returns nothing, which is exactly the failure `firstConfigured` was written
+   * to prevent on the create side. A panel with no downgrade groups configured
+   * must not be downgraded at all; that decision belongs to the caller.
+   */
+  | { kind: 'SET_GROUPS'; username: string; groupIds: number[] };
 
 export type AccountActionResult =
   | {
@@ -315,6 +330,16 @@ export type AccountActionResult =
       subscriptionUrl?: string | null;
       /** What the account's status is now, as the panel reports it. */
       enabled?: boolean;
+      /**
+       * What the account was on before SET_GROUPS moved it.
+       *
+       * Read from the panel immediately before the write, because the panel is
+       * the only place that knows: a service may have been moved by hand, or
+       * bought before the plan carried groups at all. Absent when the panel did
+       * not say - and the caller must survive that rather than storing an empty
+       * list, which would restore an account onto nothing.
+       */
+      groupIdsBefore?: number[];
     }
   | { ok: false; reason: string; retryable: boolean };
 

@@ -53,12 +53,48 @@ import {
   panelSecretKey,
   renewAllowed,
   renewModeFor,
+  downgradeGroupsFor,
+  trialFor,
+  usernameShapeFor,
   seal,
   splitCredential,
 } from '@shikoo/domain';
 import type { ProviderContext, ProvisioningAdapter } from '@shikoo/domain';
 import { faNum } from './fa.js';
 
+
+/**
+ * A price per customer tier, in Toman.
+ *
+ *   f    an ordinary customer
+ *   n    a reseller
+ *   n2   a reseller, second tier — measured empty in production (one customer
+ *        is `n`, none is `n2`) and kept because the column has three keys and
+ *        dropping one would silently zero it for whoever lands there.
+ *
+ * Zero is refused rather than stored: `tomanRate` already reads it as «not for
+ * sale», so a zero saved here would look set on the screen and be off in the
+ * shop. Null is the way to say that, and it says it in both places.
+ */
+const TierPrices = z
+  .object({
+    f: z.number().int().positive().max(100_000_000).nullable(),
+    n: z.number().int().positive().max(100_000_000).nullable(),
+    n2: z.number().int().positive().max(100_000_000).nullable(),
+  })
+  .strict();
+
+/**
+ * Whose panel to hide, named the way an admin has it.
+ *
+ * A Telegram id is a positive integer well inside the safe range — the largest
+ * in the production dump is ten digits. It is REQUIRED to be a number rather
+ * than a numeric string, so a form that sends an empty field is refused here
+ * instead of resolving to user zero.
+ */
+const HiddenUserSpec = z
+  .object({ telegramId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) })
+  .strict();
 
 const PanelPatch = z
   .object({
@@ -89,6 +125,44 @@ const PanelPatch = z
      * `status` is also sent: an explicit choice by a person outranks a probe.
      */
     autoStatus: z.boolean().optional(),
+    /**
+     * «روش ساخت نام کاربری». Three shapes, not legacy's eight, and the five
+     * that are missing are the random and counted ones — see `usernameShapeFor`
+     * for why a name a retry cannot reproduce is a second account nobody bills
+     * for. `MethodUsername`, a Persian UI label, stays as the read-only
+     * fallback and is never written from here.
+     */
+    usernameMode: z.enum(['TELEGRAM_ID', 'PANEL_TEXT', 'TELEGRAM_USERNAME']).optional(),
+    usernameText: z.string().trim().max(32).nullable().optional(),
+    /** «حجم و زمان اکانت تست». GB and HOURS — legacy stores MB and hours. */
+    trialEnabled: z.boolean().optional(),
+    trialVolumeGb: z.number().positive().max(10_000).nullable().optional(),
+    trialDurationHours: z.number().int().positive().max(8760).nullable().optional(),
+    /**
+     * «قیمت حجم و زمان اضافه», per customer tier, in TOMAN.
+     *
+     * Written straight into the legacy keys `priceextravolume` and
+     * `priceextratime` rather than into new ones, and that is the opposite of
+     * what `renew_mode` does above — deliberately. Those two exist because the
+     * legacy value is a Persian sentence nobody should build on. These are a
+     * plain `{f,n,n2}` price table that `extraPricingFor` already reads and the
+     * bot has been charging from for weeks; a new key would mean a fallback
+     * chain and two places a price could live.
+     *
+     * TOMAN, because that is what the column holds and what
+     * `extraPricingFor` multiplies by ten. Null clears a tier, which is how a
+     * shop says «not for sale at this tier».
+     */
+    extraVolumeTomanPerGb: TierPrices.optional(),
+    extraTimeTomanPerDay: TierPrices.optional(),
+    /**
+     * «اینباند اکانت غیرفعال» — the groups an ended service is moved onto.
+     *
+     * Group ids, not the `protocol*tag` legacy stores: every live panel is
+     * PasarGuard, where an account belongs to a group. Null or an empty list
+     * means «leave ended accounts alone», which is what happens today.
+     */
+    downgradeGroupIds: z.array(z.number().int().positive()).max(20).nullable().optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
@@ -665,6 +739,19 @@ function shape(r: PanelRow) {
      */
     renewMode: renewModeFor(r.config ?? {}),
     renewEnabled: renewAllowed(r.config ?? {}),
+    /*
+     * The rest of the panel's settings, DERIVED the same way and for the same
+     * reason: `config` itself is never handed to a browser, because
+     * `config.proxies` carries a hysteria shared secret. Each of these is one
+     * value the screen may show, produced by the function the bot reads with,
+     * so the screen and the bot cannot come to disagree.
+     */
+    usernameMode: usernameShapeFor(r.config ?? {}).mode,
+    usernameText: usernameShapeFor(r.config ?? {}).panelText,
+    trial: trialFor(r.config ?? {}),
+    extraVolumeTomanPerGb: tierPricesOf(r.config ?? {}, 'priceextravolume'),
+    extraTimeTomanPerDay: tierPricesOf(r.config ?? {}, 'priceextratime'),
+    downgradeGroupIds: downgradeGroupsFor(r.config ?? {}) ?? [],
     // Whether a credential is configured, never which one. An unconfigured
     // panel cannot provision, and that is worth seeing on the list.
     hasSecretRef: r.has_secret_ref,
@@ -672,6 +759,55 @@ function shape(r: PanelRow) {
     planCount: Number(r.plan_count),
     liveSubscriptions: Number(r.live_subscriptions),
   };
+}
+
+/**
+ * The same reduction `sanitiseUsernamePart` performs in the domain.
+ *
+ * Two copies of a rule is exactly what CLAUDE.md warns about, and this one
+ * earns its keep by being the smaller half: the domain's job is to survive
+ * anything stored, this one's is to refuse anything that would only survive by
+ * being ignored. If they ever disagree, this one is stricter and the failure
+ * is a save that is refused rather than a setting that does nothing.
+ */
+function sanitisedPanelText(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '')
+    .replace(/^[^a-z]+/, '')
+    .slice(0, 32);
+  return cleaned.length >= 3 ? cleaned : null;
+}
+
+/**
+ * The three tier prices as the form edits them: Toman, or null for «not sold».
+ *
+ * `extraPricingFor` reads one tier at a time and turns it into IRR, which is
+ * the right shape for charging somebody and the wrong one for a form that has
+ * to show all three. Both read the same key and neither invents a default: an
+ * unparseable column comes back as three nulls, which is what it means.
+ */
+function tierPricesOf(
+  config: Record<string, unknown>,
+  key: 'priceextravolume' | 'priceextratime',
+): { f: number | null; n: number | null; n2: number | null } {
+  const raw = config[key];
+  let table: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      table = JSON.parse(raw);
+    } catch {
+      table = null;
+    }
+  }
+  const read = (tier: 'f' | 'n' | 'n2'): number | null => {
+    if (table === null || typeof table !== 'object') return null;
+    const value = (table as Record<string, unknown>)[tier];
+    const toman = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(toman) && toman > 0 ? Math.round(toman) : null;
+  };
+  return { f: read('f'), n: read('n'), n2: read('n2') };
 }
 
 /**
@@ -1029,6 +1165,166 @@ export function registerPanelRoutes(
    * first invites an operator to "fix" configuration that was correct — which is
    * the exact shape of the group-42 miss this screen exists to prevent.
    */
+  /**
+   * «مخفی کردن پنل برای یک کاربر» — who does not see this panel in the shop.
+   *
+   * A deny list, and short by nature: legacy has it empty on all five
+   * production panels, so there is no paging here and no search. If one ever
+   * grows past a screenful, that is the day to add both.
+   *
+   * The Telegram id is shown because it is what an admin has in front of them
+   * — it is what they were given by whoever asked for the block, and it is what
+   * legacy's own prompt asks for («آیدی عددی کاربر را ... ارسال نمایید»).
+   */
+  app.get('/api/v1/admin/panels/:id/hidden-users', async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const { results } = await c.env.DB.prepare(
+      `SELECT h.user_id AS user_id, u.telegram_id AS telegram_id, u.username AS username,
+              h.hidden_at AS hidden_at, h.hidden_by AS hidden_by
+         FROM provider_hidden_users h
+         JOIN users u ON u.id = h.user_id
+        WHERE h.provider_id = ?1
+        ORDER BY h.hidden_at DESC, h.user_id`,
+    )
+      .bind(id)
+      .all<{
+        user_id: number;
+        telegram_id: number;
+        username: string | null;
+        hidden_at: string;
+        hidden_by: string | null;
+      }>();
+
+    return c.json({
+      ok: true,
+      users: (results ?? []).map((r) => ({
+        userId: Number(r.user_id),
+        telegramId: Number(r.telegram_id),
+        username: r.username,
+        hiddenAt: r.hidden_at,
+        hiddenBy: r.hidden_by,
+      })),
+    });
+  });
+
+  /**
+   * Hide the panel from one customer, named by their Telegram id.
+   *
+   * ## Why an unknown id is refused rather than stored
+   *
+   * Legacy stores the bare number, so it accepts an id belonging to nobody and
+   * an id with a typo in it identically — and both look exactly like a block
+   * that is working. Here the row is a foreign key, so it can only name
+   * somebody who has started the bot, and «this person has not started the bot»
+   * is said out loud instead of being stored as a block against nothing.
+   *
+   * The trade is that a customer cannot be blocked before they arrive. That has
+   * never been what this is for: the admin blocks somebody they have already
+   * had a problem with.
+   *
+   * ## Twice is not twice
+   *
+   * `ON CONFLICT DO NOTHING` against the primary key, which is where legacy's
+   * duplicate bug lives — `$hideuserid[] = $text` with no membership test, and
+   * a removal that only takes the first copy out.
+   */
+  app.post('/api/v1/admin/panels/:id/hidden-users', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const body = HiddenUserSpec.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    const panel = await c.env.DB.prepare(
+      'SELECT id, code, name FROM provisioning_providers WHERE id = ?1',
+    )
+      .bind(id)
+      .first<{ id: number; code: string; name: string }>();
+    if (!panel) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    const user = await c.env.DB.prepare(
+      'SELECT id, telegram_id FROM users WHERE telegram_id = ?1',
+    )
+      .bind(body.data.telegramId)
+      .first<{ id: number; telegram_id: number }>();
+    if (!user) {
+      return c.json(
+        {
+          ok: false,
+          error: 'user_not_found',
+          detail: 'کاربری با این آیدی عددی هنوز ربات را استارت نکرده است.',
+        },
+        404,
+      );
+    }
+
+    await c.env.DB.prepare(
+      `INSERT INTO provider_hidden_users (provider_id, user_id, hidden_by)
+       VALUES (?1, ?2, ?3)
+       ON CONFLICT (provider_id, user_id) DO NOTHING`,
+    )
+      .bind(id, user.id, ident.email)
+      .run();
+
+    await audit(
+      c.env.DB,
+      ident,
+      'panel.hidden_user_added',
+      'PROVISIONING_PROVIDER',
+      String(id),
+      null,
+      { panel: panel.code, user_id: user.id, telegram_id: Number(user.telegram_id) },
+      null,
+    );
+
+    return c.json({ ok: true, userId: user.id, telegramId: Number(user.telegram_id) });
+  });
+
+  /** Let them see it again. Named by OUR user id, which the list above hands out. */
+  app.delete('/api/v1/admin/panels/:id/hidden-users/:userId', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    const userId = Number(c.req.param('userId'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return c.json({ ok: false, error: 'invalid_id' }, 400);
+    }
+
+    const removed = await c.env.DB.prepare(
+      'DELETE FROM provider_hidden_users WHERE provider_id = ?1 AND user_id = ?2',
+    )
+      .bind(id, userId)
+      .run();
+    // Nothing removed is a 404 rather than a cheerful 200: legacy has three
+    // separate messages for this case and they exist because an admin who
+    // mistypes an id must not be told the block was lifted.
+    if (removed.meta.changes === 0) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    await audit(
+      c.env.DB,
+      ident,
+      'panel.hidden_user_removed',
+      'PROVISIONING_PROVIDER',
+      String(id),
+      { user_id: userId },
+      null,
+      null,
+    );
+
+    return c.json({ ok: true });
+  });
   app.get('/api/v1/admin/panels/:id/groups', async (c) => {
     const ident = c.get('identity');
     // A read, so REVIEWER and READ_ONLY are fine — but the reply names the
@@ -2062,6 +2358,72 @@ export function registerPanelRoutes(
     const configPatch: Record<string, unknown> = {};
     if (patch.renewMode !== undefined) configPatch['renew_mode'] = patch.renewMode;
     if (patch.renewEnabled !== undefined) configPatch['renew_enabled'] = patch.renewEnabled;
+    if (patch.usernameMode !== undefined) configPatch['username_mode'] = patch.usernameMode;
+    if (patch.usernameText !== undefined) configPatch['username_text'] = patch.usernameText;
+    if (patch.trialEnabled !== undefined) configPatch['trial_enabled'] = patch.trialEnabled;
+    if (patch.trialVolumeGb !== undefined) configPatch['trial_volume_gb'] = patch.trialVolumeGb;
+    if (patch.trialDurationHours !== undefined) {
+      configPatch['trial_duration_hours'] = patch.trialDurationHours;
+    }
+    if (patch.extraVolumeTomanPerGb !== undefined) {
+      configPatch['priceextravolume'] = patch.extraVolumeTomanPerGb;
+    }
+    if (patch.extraTimeTomanPerDay !== undefined) {
+      configPatch['priceextratime'] = patch.extraTimeTomanPerDay;
+    }
+    if (patch.downgradeGroupIds !== undefined) {
+      configPatch['downgrade_group_ids'] = patch.downgradeGroupIds ?? [];
+    }
+    /*
+     * The two settings that can be saved into doing nothing, refused.
+     *
+     * Checked against the RESULT — what `config` will hold after this merge —
+     * and not against the patch, because a form that sends only
+     * `trialEnabled: true` is relying on numbers that are already stored, and
+     * one that sends only a volume is relying on a switch that is already on.
+     * Reading the patch alone would refuse the first and wave through the
+     * second.
+     *
+     * Both readers are the ones the bot uses. `trialFor` answers
+     * `enabled: false` when either number is missing and `usernamePrefix` falls
+     * back to the Telegram id when the text is unusable — so without this the
+     * screen would save, say nothing, and behave as though the setting had
+     * never been touched. That is the exact shape of every legacy setting this
+     * project keeps finding switched on and inert.
+     */
+    const merged = { ...(before.config ?? {}), ...configPatch };
+    if (patch.usernameMode !== undefined || patch.usernameText !== undefined) {
+      const shape = usernameShapeFor(merged);
+      if (shape.mode === 'PANEL_TEXT' && sanitisedPanelText(shape.panelText) === null) {
+        return c.json(
+          {
+            ok: false,
+            error: 'invalid_body',
+            detail:
+              'برای «متن دلخواه پنل» باید یک متن حداقل ۳ حرفی بگذارید که با حرف انگلیسی شروع شود.',
+          },
+          400,
+        );
+      }
+    }
+    if (
+      patch.trialEnabled !== undefined ||
+      patch.trialVolumeGb !== undefined ||
+      patch.trialDurationHours !== undefined
+    ) {
+      const wanted = merged['trial_enabled'] === true;
+      if (wanted && !trialFor(merged).enabled) {
+        return c.json(
+          {
+            ok: false,
+            error: 'invalid_body',
+            detail: 'برای روشن‌کردن سرویس تست باید هم حجم و هم زمانش را بگذارید.',
+          },
+          400,
+        );
+      }
+    }
+
     if (Object.keys(configPatch).length > 0) {
       params.push(JSON.stringify(configPatch));
       sets.push(`config = COALESCE(config, '{}'::jsonb) || ?${params.length}::jsonb`);
