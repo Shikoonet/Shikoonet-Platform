@@ -299,20 +299,23 @@ export async function preflight(cfg: Config, my: Connection, pgc: pg.Client): Pr
   for (const c of [...badHub.map((c) => c.card_digits), ...badBot.map((c) => c.digits)]) {
     const fix = cardCorrectionFor(c);
     if (fix) {
-      report.warn(`${c} fails Luhn — a known correction rewrites it to ${fix.to}`);
+      report.warn(
+        `${t.maskPan(c)} fails Luhn — a known correction rewrites it to ${t.maskPan(fix.to)}`,
+      );
       report.detail(`${fix.reason} (${fix.reference})`);
       add(
         'NOTICE',
         'card correction',
-        `${fix.from} -> ${fix.to}: ${fix.reason} [${fix.reference}]`,
+        `${t.maskPan(fix.from)} -> ${t.maskPan(fix.to)}: ${fix.reason} [${fix.reference}]`,
       );
     } else {
-      report.fail(`card ${c} fails the Luhn check and has no recorded correction`);
+      report.fail(`card ${t.maskPan(c)} fails the Luhn check and has no recorded correction`);
       add(
         'BLOCKER',
         'invalid card',
-        `${c} is not a valid card number. Either fix it at the source or add a ` +
-          'reviewed entry to corrections.ts with the evidence for it.',
+        `${t.maskPan(c)} is not a valid card number. Either fix it at the source or add a ` +
+          'reviewed entry to corrections.ts with the evidence for it. The full number is ' +
+          'in `card_number.cardnumber` on the source; it is deliberately not repeated here.',
       );
     }
   }
@@ -323,7 +326,9 @@ export async function preflight(cfg: Config, my: Connection, pgc: pg.Client): Pr
   const hubOnly = [...hubSet].filter((d) => !botSet.has(d));
   report.step(`${[...botSet].filter((d) => hubSet.has(d)).length} cards match both systems`);
   if (botOnly.length > 0) {
-    report.warn(`${botOnly.length} card(s) only the bot knows: ${botOnly.join(', ')}`);
+    report.warn(
+      `${botOnly.length} card(s) only the bot knows: ${botOnly.map(t.maskPan).join(', ')}`,
+    );
     add(
       'NOTICE',
       'bot-only cards',
@@ -332,7 +337,9 @@ export async function preflight(cfg: Config, my: Connection, pgc: pg.Client): Pr
     );
   }
   if (hubOnly.length > 0) {
-    report.warn(`${hubOnly.length} card(s) only the hub knows: ${hubOnly.join(', ')}`);
+    report.warn(
+      `${hubOnly.length} card(s) only the hub knows: ${hubOnly.map(t.maskPan).join(', ')}`,
+    );
   }
 
   // -------------------------------------------------------------------------
