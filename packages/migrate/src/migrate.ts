@@ -16,6 +16,7 @@ import type pg from 'pg';
 import { correctCardDigits } from './corrections.js';
 import { d1Table, insertBatch, mysqlRows, report, type Column, type Config } from './db.js';
 import * as t from './transform.js';
+import { captureUndo } from './undo.js';
 
 /**
  * One legacy row, in the types mysql2 actually hands back.
@@ -1938,6 +1939,17 @@ export interface MigrateOptions {
    * money and the counts are checked on a run that is about to be discarded.
    */
   beforeSettle?: () => Promise<boolean>;
+  /**
+   * Record what this run wrote, into a schema of this name, so it can be
+   * taken back later. See `undo.ts`.
+   *
+   * Captured inside the migration's own transaction and immediately before
+   * it settles, which is the only moment `pg_current_xact_id()` names the
+   * transaction that did the writing. A dry run discards it along with
+   * everything else, which is right: nothing was kept, so there is nothing
+   * to take back.
+   */
+  undoSchema?: string;
 }
 
 export interface StepResult {
@@ -2071,6 +2083,11 @@ export async function migrate(
       }
     }
     if (opts.beforeSettle) verified = await opts.beforeSettle();
+
+    // Last, and still inside the transaction. After `beforeSettle` because a
+    // dry run's verify reads the rows this would otherwise have to work
+    // around, and before the settle because that is the whole mechanism.
+    if (opts.undoSchema !== undefined) await captureUndo(pgc, opts.undoSchema);
 
     // The rollback is deliberate and reported, so a dry run can never be read
     // as a completed import.

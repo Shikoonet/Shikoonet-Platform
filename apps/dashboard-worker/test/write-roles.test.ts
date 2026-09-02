@@ -314,10 +314,11 @@ describe('every write route, asked directly', () => {
     // that writes an arbitrary file to the server's filesystem. The role is the
     // first of three guards — `resolveDump` decides the name and `MAX_DUMP_BYTES`
     // decides how much of it, both asserted in `import.test.ts`.
-    // 140 -> 143, three routes from two features landing in one batch. Neither
-    // branch's number is right on its own, which is exactly what this assertion
-    // is for — it is the count that stops two green branches from producing an
-    // unguarded route between them.
+    // 140 -> 144, four routes from three features landing in one batch. No
+    // branch's number was right on its own, which is exactly what this
+    // assertion is for — it is the count that stops two green branches from
+    // producing an unguarded route between them. It caught this one: 143 and
+    // 141 were each correct against main and wrong against each other.
     //
     // +2, fulfilment without evidence: «تحویل بدون تایید بانکی» on a claim, and
     // the shop-wide Continuity switch. Two routes and not one because they are
@@ -329,6 +330,13 @@ describe('every write route, asked directly', () => {
     // +1, «ویرایش نام» on a device: PATCH on the display name only, REVIEWER
     // and ADMIN like every other device write. It touches no credential and no
     // id, asserted by mutation in `device-rename.test.ts`.
-    expect(writeRoutes().length).toBe(143);
+    //
+    // +1, «POST /import/runs/:id/undo». Sam asked for it on 2026-09-02 — a
+    // wrong backup has to be reversible. ADMIN-only for the obvious reason and
+    // one less obvious: it is the only route in the product that DELETES across
+    // the whole schema at once, and it does it with the append-only trigger on
+    // `wallet_entries` switched off for the length of one transaction.
+    // `undo.ts` asserts the trigger back on before that transaction may commit.
+    expect(writeRoutes().length).toBe(144);
   });
 });

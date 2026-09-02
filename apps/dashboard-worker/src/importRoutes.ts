@@ -85,6 +85,9 @@ import {
   summarise,
   verify,
   targetBaseline,
+  applyUndo,
+  dropUndo,
+  undoSchemaFor,
   DOMAINS,
   dumpSha256,
   MAX_DUMP_BYTES,
@@ -216,6 +219,8 @@ interface RunOutcome {
   samples: Record<string, unknown>;
   error: string | null;
   dump: { sha256: string; bytes: number } | null;
+  /** The schema holding this run's row keys, or null when nothing was kept. */
+  undoSchema: string | null;
 }
 
 /**
@@ -226,6 +231,8 @@ interface RunOutcome {
  */
 async function runImport(
   mode: Mode,
+  /** The `import_runs` row this belongs to; names the undo schema. */
+  runId: string,
   dumpPath: string,
   domains: Domain[],
   mysqlUrl: string,
@@ -290,10 +297,11 @@ async function runImport(
         samples: {},
         error: 'preflight reported a blocker; nothing was run',
         dump,
+        undoSchema: null,
       };
     }
     if (mode === 'PREFLIGHT') {
-      return { ok: true, report: lines, samples: {}, error: null, dump };
+      return { ok: true, report: lines, samples: {}, error: null, dump, undoSchema: null };
     }
 
     // What the target already held, taken before a single row is written.
@@ -305,10 +313,15 @@ async function runImport(
     // about what THIS import moved.
     const baseline = await targetBaseline(pgc);
 
+    // Only an APPLY leaves anything to take back. A dry run would record a
+    // schema and then roll it back with everything else, which is correct and
+    // also pointless; a pre-flight never reaches this call at all.
+    const undoSchema = mode === 'APPLY' ? undoSchemaFor(runId) : null;
     const result = await migrate(cfg, my, pgc, {
       commit: mode === 'APPLY',
       domains,
       samples: 5,
+      ...(undoSchema === null ? {} : { undoSchema }),
       // A dry run verifies inside its own transaction, while the rows still
       // exist. This is the whole reason a dry run means anything: a run that
       // resolves every owner to null throws nothing and reports ok on every
@@ -325,6 +338,11 @@ async function runImport(
       samples: result.samples,
       error: ok ? null : 'verification failed: the two sides do not agree',
       dump,
+      // Recorded even when the verify disagreed. For an APPLY the verify runs
+      // AFTER the commit, so the rows are already there — and a run that
+      // committed rows the two sides cannot agree about is precisely the one
+      // an operator most needs to be able to take back.
+      undoSchema,
     };
   } finally {
     release();
@@ -510,6 +528,7 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
         try {
           const outcome = await runImport(
             mode,
+            id,
             dumpPath,
             domains,
             mysqlUrl,
@@ -521,7 +540,8 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
           await c.env.DB.prepare(
             `UPDATE import_runs
                 SET status = ?2, finished_at = now(), report = ?3::jsonb,
-                    samples = ?4::jsonb, error = ?5, dump_sha256 = ?6, dump_bytes = ?7
+                    samples = ?4::jsonb, error = ?5, dump_sha256 = ?6, dump_bytes = ?7,
+                    undo_schema = ?8
               WHERE id = ?1`,
           )
             .bind(
@@ -532,6 +552,7 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
               outcome.error,
               outcome.dump?.sha256 ?? null,
               outcome.dump?.bytes ?? null,
+              outcome.undoSchema,
             )
             .run();
         } catch (err) {
@@ -762,11 +783,129 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
     }
   });
 
+  /**
+   * Takes back exactly the rows one APPLY inserted.
+   *
+   * ## Why this is not a restore
+   *
+   * Sam's choice on 2026-09-02, offered against «rewind the whole database»:
+   * only the rows this run wrote go. A purchase somebody made after the
+   * import survives it. `undo.ts` explains how the set is decided —
+   * `xmin = pg_current_xact_id()::xid`, asked inside the migration's own
+   * transaction, which is Postgres's own answer to «what did this transaction
+   * insert» and cannot drift from a list somebody has to maintain.
+   *
+   * ## One transaction, and the row is part of it
+   *
+   * The delete, the `undone_at` stamp and the DROP of the recording all
+   * settle together on the raw client. Split across two connections, a crash
+   * in between leaves either a row claiming an undo that did not happen or a
+   * schema nothing points at — and the second one is worse, because the next
+   * reader has no way to tell it from a recording still waiting to be used.
+   *
+   * ## What it refuses, and why each refusal is not paranoia
+   *
+   *   * **A run with no recording.** A pre-flight wrote nothing and a dry run
+   *     rolled its recording back; there is nothing to take.
+   *   * **A run already undone.** `undone_at` is the guard, checked in the
+   *     same statement that sets it, so two operators pressing at once cannot
+   *     both win.
+   *   * **While an import is running.** The other run is writing to the very
+   *     tables this deletes from, and the two would deadlock at best.
+   *
+   * A foreign key that refuses is NOT worked around. If something created
+   * later depends on an imported row, the whole undo rolls back and says so —
+   * which is the honest answer, and the one that keeps this from quietly
+   * becoming the restore it is not.
+   */
+  app.post('/api/v1/admin/import/runs/:id/undo', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const postgresUrl = process.env['DATABASE_URL'];
+    if (postgresUrl === undefined) {
+      return c.json({ ok: false, error: 'import_not_configured' }, 503);
+    }
+
+    const id = c.req.param('id');
+    const run = await c.env.DB.prepare(
+      `SELECT id, mode, undo_schema, undone_at FROM import_runs WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ id: string; mode: string; undo_schema: string | null; undone_at: string | null }>();
+    if (!run) return c.json({ ok: false, error: 'not_found' }, 404);
+    if (run.undo_schema === null) {
+      return c.json(
+        {
+          ok: false,
+          error: 'nothing_to_undo',
+          detail: 'این اجرا چیزی روی دیتابیس ننوشته، پس چیزی برای برگرداندن نیست.',
+        },
+        409,
+      );
+    }
+    if (run.undone_at !== null) {
+      return c.json(
+        { ok: false, error: 'already_undone', detail: 'این ایمپورت قبلاً برگردانده شده.' },
+        409,
+      );
+    }
+
+    const busy = await c.env.DB.prepare(
+      `SELECT id FROM import_runs WHERE status = 'RUNNING' LIMIT 1`,
+    ).first<{ id: string }>();
+    if (busy) {
+      return c.json(
+        {
+          ok: false,
+          error: 'import_already_running',
+          detail: 'یک ایمپورت در حال اجراست؛ تا پایانش صبر کن.',
+        },
+        409,
+      );
+    }
+
+    const pgc = await connectPostgres(
+      configFrom({
+        mysql: { database: SCRATCH_DATABASE },
+        postgres: { connectionString: postgresUrl },
+      }),
+    );
+    try {
+      await pgc.query('BEGIN');
+      const result = await applyUndo(pgc, run.undo_schema);
+      // `undone_at IS NULL` again, in the statement. The read above was a
+      // courtesy to the operator; this is the guard, and it is the difference
+      // between a check and a race this codebase has been bitten by before.
+      const stamped = await pgc.query(
+        `UPDATE import_runs SET undone_at = now(), undone_by = $2
+          WHERE id = $1 AND undone_at IS NULL`,
+        [id, ident.email],
+      );
+      if (stamped.rowCount !== 1) throw new Error('the run was undone by somebody else');
+      await dropUndo(pgc, run.undo_schema);
+      await pgc.query('COMMIT');
+
+      await audit(c.env.DB, ident, 'import.undo', 'IMPORT_RUN', id, null, {
+        removed: result.removed,
+        total: result.total,
+      }, null);
+
+      return c.json({ ok: true, removed: result.removed, total: result.total });
+    } catch (err) {
+      await pgc.query('ROLLBACK').catch(() => undefined);
+      const message = err instanceof Error ? err.message : String(err);
+      log.error('import.undo_failed', { runId: id, error: message });
+      return c.json({ ok: false, error: 'undo_failed', detail: message }, 409);
+    } finally {
+      await pgc.end().catch(() => undefined);
+    }
+  });
   app.get('/api/v1/admin/import/runs', async (c) => {
     if (c.get('identity').role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
     const rows = await c.env.DB.prepare(
       `SELECT id, mode, status, dump_path, dump_bytes, domains, error, started_by,
-              started_at, finished_at
+              started_at, finished_at, undo_schema, undone_at, undone_by
          FROM import_runs ORDER BY started_at DESC LIMIT 25`,
     ).all<Record<string, unknown>>();
     return c.json({ ok: true, items: rows.results ?? [] });
