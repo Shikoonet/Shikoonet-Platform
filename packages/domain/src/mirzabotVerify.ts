@@ -37,6 +37,16 @@ export type VerifyResult =
       claimId: string;
       expectedAmountIrr: number;
       externalOrderId: string;
+      /**
+       * True when this call attached evidence to a claim that had ALREADY been
+       * delivered — a manual or Continuity fulfilment finally meeting its bank
+       * credit. The money question is now closed, and nothing is owed to the
+       * customer, because they were served when the claim was fulfilled.
+       *
+       * Every caller that can deliver must branch on this. It is returned rather
+       * than inferred so a caller cannot forget to ask.
+       */
+      reconciled: boolean;
     }
   | { ok: false; error: VerifyFailure };
 
@@ -50,6 +60,7 @@ interface ClaimRow {
   suspect_reason: string | null;
   suspect_metadata_json: string;
   metadata_json: string;
+  fulfilled_at: number | null;
 }
 
 interface TxRow {
@@ -108,7 +119,8 @@ export async function verifyMirzabotClaim(
   const claim = await db
     .prepare(
       `SELECT id, status, source_system, external_order_id, expected_amount_irr,
-              target_financial_account_id, suspect_reason, suspect_metadata_json, metadata_json
+              target_financial_account_id, suspect_reason, suspect_metadata_json, metadata_json,
+              fulfilled_at
        FROM payment_claims WHERE id = ?1`,
     )
     .bind(args.claimId)
@@ -116,7 +128,16 @@ export async function verifyMirzabotClaim(
   if (!claim || claim.source_system !== MIRZABOT_SOURCE)
     return { ok: false, error: 'CLAIM_NOT_FOUND' };
   if (claim.status === 'VERIFIED') return { ok: false, error: 'CLAIM_ALREADY_VERIFIED' };
-  if (!ELIGIBLE_CLAIM_STATUSES.has(claim.status)) return { ok: false, error: 'CLAIM_NOT_ELIGIBLE' };
+  /**
+   * A claim delivered without evidence is still matchable — that is the entire
+   * point of `FULFILLED_UNRECONCILED`, and refusing it here would strand every
+   * Continuity row in the reconciliation queue for ever. What it must NOT do is
+   * deliver again, which is `reconciling` below.
+   */
+  const reconciling = claim.status === 'FULFILLED_UNRECONCILED' || claim.fulfilled_at !== null;
+  if (!ELIGIBLE_CLAIM_STATUSES.has(claim.status) && !reconciling) {
+    return { ok: false, error: 'CLAIM_NOT_ELIGIBLE' };
+  }
 
   const tx = await db
     .prepare(
@@ -169,7 +190,10 @@ export async function verifyMirzabotClaim(
   const reasons = args.mode === 'AUTO_VERIFIED' ? '["UNIQUE_EXACT_MATCH"]' : '["ADMIN_MANUAL"]';
   const reviewer = args.actorEmail ?? null;
   let mismatchReasons = '[]';
-  if (args.mode === 'ADMIN_APPROVED') {
+  // A revert snapshot restores the claim to what it was. It cannot describe a
+  // row that was already delivered, and reverting one would un-say a fulfilment
+  // the customer has already received — so reconciliation carries no snapshot.
+  if (args.mode === 'ADMIN_APPROVED' && !reconciling) {
     const snapshot: ManualVerificationRevertSnapshot = {
       claimStatus: claim.status as 'PENDING' | 'MATCH_SUGGESTED',
       suspectReason: claim.suspect_reason,
@@ -208,14 +232,30 @@ export async function verifyMirzabotClaim(
       .bind(tx.id, now),
     db
       .prepare(
+        // `reconciled_at` is stamped with COALESCE so a second reconciliation
+        // keeps the first one's timestamp: the moment the evidence arrived is a
+        // fact about the world, not about how many times this ran.
         `UPDATE payment_claims
-             SET status = 'VERIFIED', suspect_reason = NULL, updated_at = ?2
-           WHERE id = ?1 AND status IN ('PENDING','MATCH_SUGGESTED')`,
+             SET status = 'VERIFIED', suspect_reason = NULL, updated_at = ?2,
+                 reconciled_at = CASE WHEN fulfilled_at IS NOT NULL
+                                      THEN COALESCE(reconciled_at, ?2) ELSE reconciled_at END
+           WHERE id = ?1 AND status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED')`,
       )
       .bind(claim.id, now),
   ];
 
-  if (args.enqueueWebhook) {
+  /**
+   * The one line that keeps reconciliation from selling the order twice.
+   *
+   * The notice is keyed `verified-<claim>-<tx>`, and a claim fulfilled by
+   * Continuity was already announced as `fulfilled-<claim>` — a different
+   * primary key, so `webhook_deliveries` would happily accept both and the
+   * legacy bot would be asked to fulfil the same order a second time. The
+   * receiver would survive it (`DirectPayment` answers `already_fulfilled`),
+   * but relying on the far end to refuse a request we should never have sent is
+   * not a guarantee, it is a hope.
+   */
+  if (args.enqueueWebhook && !reconciling) {
     const eventId = verifiedEventId(claim.id, tx.id);
     const payload: MirzabotVerifiedWebhook = {
       eventId,
@@ -269,6 +309,7 @@ export async function verifyMirzabotClaim(
     claimId: claim.id,
     expectedAmountIrr: claim.expected_amount_irr,
     externalOrderId: claim.external_order_id,
+    reconciled: reconciling,
   };
 }
 

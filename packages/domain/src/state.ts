@@ -30,9 +30,38 @@ export function assertTransitionTransaction(from: TransactionStatus, to: Transac
   }
 }
 
+/**
+ * Claim lifecycle.
+ *
+ *   PENDING ─┬─► MATCH_SUGGESTED ─┬─► VERIFIED
+ *            │                    │
+ *            └────────────────────┴─► FULFILLED_UNRECONCILED ──► VERIFIED
+ *
+ * `FULFILLED_UNRECONCILED` is the only non-terminal state below `VERIFIED`, and
+ * it has exactly one exit. Delivery already happened when the claim entered it,
+ * so the move to `VERIFIED` is reconciliation — the bank finally agreeing — and
+ * must never be read as a reason to deliver again. It cannot be rejected or
+ * expired: the customer is holding the product, and pretending otherwise would
+ * let a later sweep withdraw a state the world has already seen.
+ */
 const CLAIM_TRANSITIONS: Record<ClaimStatus, readonly ClaimStatus[]> = {
-  PENDING: ['MATCH_SUGGESTED', 'VERIFIED', 'REJECTED', 'FAKE_RECEIPT', 'EXPIRED'],
-  MATCH_SUGGESTED: ['VERIFIED', 'REJECTED', 'FAKE_RECEIPT', 'PENDING', 'EXPIRED'],
+  PENDING: [
+    'MATCH_SUGGESTED',
+    'VERIFIED',
+    'FULFILLED_UNRECONCILED',
+    'REJECTED',
+    'FAKE_RECEIPT',
+    'EXPIRED',
+  ],
+  MATCH_SUGGESTED: [
+    'VERIFIED',
+    'FULFILLED_UNRECONCILED',
+    'REJECTED',
+    'FAKE_RECEIPT',
+    'PENDING',
+    'EXPIRED',
+  ],
+  FULFILLED_UNRECONCILED: ['VERIFIED'],
   VERIFIED: [], // terminal
   REJECTED: [], // terminal
   FAKE_RECEIPT: [], // terminal

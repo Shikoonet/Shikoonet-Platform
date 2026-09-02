@@ -30,6 +30,7 @@ import {
   sha256Hex,
   tokenPrefix,
   buildSmsRelayConfig,
+  validateDeviceDisplayName,
   INGEST_PATH,
   MIRZABOT_SOURCE,
   type EnvName,
@@ -505,10 +506,22 @@ function validateDeviceCode(raw: string): {
   return { ok: true, code };
 }
 
+/**
+ * The rename body. `.strict()` is the point of it: a caller who sends
+ * `deviceCode`, `active` or `apiKey` alongside the name is refused outright
+ * rather than quietly having the extra field ignored, so this endpoint cannot
+ * grow a second job by accident.
+ */
+const RenameDeviceBody = z.object({ displayName: z.string() }).strict();
+
 const CreateDeviceBody = z
   .object({
     deviceCode: z.string().min(3).max(64),
-    displayName: z.string().min(1).max(200),
+    // Length and emptiness are `validateDeviceDisplayName`'s to answer, for
+    // both this route and the rename — see the note on that function. Kept
+    // loose here so the caller is told which rule they broke rather than
+    // `invalid_body`.
+    displayName: z.string(),
     description: z.string().max(500).nullable().optional(),
   })
   .strict();
@@ -534,9 +547,11 @@ app.post('/api/v1/devices', async (c) => {
   if (!v.ok) {
     return c.json({ ok: false, error: 'invalid_device_code', reason: v.error }, 400);
   }
-  if (!parsed.data.displayName.trim()) {
-    return c.json({ ok: false, error: 'invalid_display_name' }, 400);
+  const nameCheck = validateDeviceDisplayName(parsed.data.displayName);
+  if (!nameCheck.ok) {
+    return c.json({ ok: false, error: 'invalid_display_name', reason: nameCheck.error }, 400);
   }
+  const displayName = nameCheck.name;
 
   const deviceId = crypto.randomUUID();
   const credentialId = crypto.randomUUID();
@@ -556,7 +571,7 @@ app.post('/api/v1/devices', async (c) => {
       ).bind(
         deviceId,
         v.code,
-        parsed.data.displayName.trim(),
+        displayName,
         parsed.data.description ?? null,
         now,
       ),
@@ -582,7 +597,7 @@ app.post('/api/v1/devices', async (c) => {
         null,
         JSON.stringify({
           deviceCode: v.code,
-          displayName: parsed.data.displayName.trim(),
+          displayName: displayName,
           credentialId,
           tokenPrefix: prefix,
         }),
@@ -605,7 +620,7 @@ app.post('/api/v1/devices', async (c) => {
     device: {
       id: deviceId,
       deviceCode: v.code,
-      displayName: parsed.data.displayName.trim(),
+      displayName: displayName,
       description: parsed.data.description ?? null,
       active: true,
     },
@@ -616,7 +631,7 @@ app.post('/api/v1/devices', async (c) => {
       status: 'ACTIVE',
       shownOnce: true,
     },
-    configuration: buildSmsRelayConfig(apiKey, v.code, parsed.data.displayName.trim(), relayUrl),
+    configuration: buildSmsRelayConfig(apiKey, v.code, displayName, relayUrl),
   });
 });
 
@@ -658,6 +673,79 @@ async function findDeviceByIdOrCode(
       }>()) ?? null;
   return row;
 }
+
+/**
+ * PATCH /api/v1/devices/:idOrCode
+ *
+ * Renames a device, and does nothing else.
+ *
+ * `display_name` is the only column this writes. It is metadata: the identity
+ * of a device is `devices.id`, its key is `device_credentials.token_hash`, and
+ * its address on the wire is `device_code` — the SMS-relay configuration on the
+ * phone is keyed by that code, not by the name, so a rename never reaches the
+ * handset and never interrupts `POST /api/v1/sms`. `device-rename.test.ts`
+ * asserts that rather than asserting the comment.
+ *
+ * `READ_ONLY` is refused, matching every other write on this panel; a REVIEWER
+ * may rename, because a REVIEWER may already rotate this device's key, and a
+ * role trusted with the key is not one to withhold the label from. Permanent
+ * delete is the only ADMIN-only device route and stays that way.
+ *
+ * Submitting the name it already has is a success with no write and no audit
+ * row: `audit_logs` is append-only and a log full of «X → X» is a log nobody
+ * reads.
+ */
+app.patch('/api/v1/devices/:idOrCode', async (c) => {
+  const ident = c.get('identity');
+  if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
+  const parsed = RenameDeviceBody.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+  const check = validateDeviceDisplayName(parsed.data.displayName);
+  if (!check.ok) {
+    return c.json({ ok: false, error: 'invalid_display_name', reason: check.error }, 400);
+  }
+
+  const device = await findDeviceByIdOrCode(c.env.DB, c.req.param('idOrCode'));
+  if (!device) return c.json({ ok: false, error: 'device_not_found' }, 404);
+
+  const sanitized = (displayName: string) => ({
+    id: device.id,
+    deviceCode: device.device_code,
+    displayName,
+    description: device.description,
+    active: device.active === 1,
+  });
+
+  if (check.name === device.display_name) {
+    return c.json({ ok: true, unchanged: true, device: sanitized(device.display_name) });
+  }
+
+  const now = Date.now();
+  // In the batch, not after it — the same lesson as the create route above. A
+  // rename that lands with no audit row is a rename nobody can account for.
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE devices SET display_name = ?2, updated_at = ?3 WHERE id = ?1`).bind(
+      device.id,
+      check.name,
+      now,
+    ),
+    c.env.DB.prepare(SQL.insertAudit).bind(
+      crypto.randomUUID(),
+      ident.email,
+      ident.role,
+      'device.name.updated',
+      'DEVICE',
+      device.id,
+      JSON.stringify({ deviceId: device.id, deviceCode: device.device_code, displayName: device.display_name }),
+      JSON.stringify({ deviceId: device.id, deviceCode: device.device_code, displayName: check.name }),
+      null,
+      c.req.header('cf-ray') ?? null,
+      now,
+    ),
+  ]);
+
+  return c.json({ ok: true, device: sanitized(check.name) });
+});
 
 /**
  * POST /api/v1/devices/:idOrCode/credentials
@@ -3163,14 +3251,45 @@ app.post('/api/v1/match/reject', async (c) => {
   } catch {
     return c.json({ ok: false, error: 'illegal_transition' }, 409);
   }
+  /*
+   * The claim is asked too, and this is the half that was missing.
+   *
+   * `assertTransitionMatch` above answers about the MATCH, and the batch below
+   * then rewrites the CLAIM with `SQL.updateClaimStatus`, whose WHERE clause is
+   * `id = ?1` and nothing else. Every sibling route — suspects/reject,
+   * mark-fake, match/approve — asks `assertTransitionClaim` before writing a
+   * claim status. This one did not, so the state machine was enforced
+   * everywhere except the one place that wrote without a precondition.
+   *
+   * What that reached, once `FULFILLED_UNRECONCILED` existed: the matcher
+   * suggests a candidate, an operator decides not to wait and fulfils manually,
+   * and somebody clearing the stale suggestion out of the queue rewrites a
+   * DELIVERED order to REJECTED — `fulfilled_at` still set beside it, the
+   * customer still holding the product. `state.ts` gives that status one exit
+   * and this route was walking out of a wall.
+   *
+   * `if (claim)` rather than a 404: a match whose claim has gone is already
+   * handled by the batch writing nothing, and matching the shape used at
+   * `match/approve` keeps the two routes readable side by side.
+   */
+  const rejectedClaimStatus =
+    parsed.data.reason === 'FAKE_RECEIPT' ? ('FAKE_RECEIPT' as const) : ('REJECTED' as const);
+  const claimBefore = await c.env.DB.prepare(
+    `SELECT status FROM payment_claims WHERE id = ?1`,
+  )
+    .bind(match.payment_claim_id)
+    .first<{ status: import('@shikoo/contracts').ClaimStatus }>();
+  if (claimBefore) {
+    try {
+      assertTransitionClaim(claimBefore.status, rejectedClaimStatus);
+    } catch {
+      return c.json({ ok: false, error: 'illegal_claim_transition' }, 409);
+    }
+  }
   const now = Date.now();
   await c.env.DB.batch([
     c.env.DB.prepare(SQL.updateMatchStatus).bind(match.id, 'REJECTED', ident.email, now),
-    c.env.DB.prepare(SQL.updateClaimStatus).bind(
-      match.payment_claim_id,
-      parsed.data.reason === 'FAKE_RECEIPT' ? 'FAKE_RECEIPT' : 'REJECTED',
-      now,
-    ),
+    c.env.DB.prepare(SQL.updateClaimStatus).bind(match.payment_claim_id, rejectedClaimStatus, now),
   ]);
   await c.env.DB.prepare(SQL.insertAudit)
     .bind(

@@ -44,6 +44,8 @@ export type ReviewState =
   | 'AUTO_VERIFIED'
   | 'NEEDS_REVIEW'
   | 'MANUALLY_VERIFIED'
+  /** Delivered without evidence — never to be drawn as a verified payment. */
+  | 'FULFILLED_UNRECONCILED'
   | 'WAITING'
   | 'NO_TRANSFER_FOUND'
   | 'REJECTED'
@@ -319,6 +321,10 @@ const STATE_LABEL: Record<ReviewState, string> = {
   AUTO_VERIFIED: 'تایید خودکار ربات',
   NEEDS_REVIEW: 'نیاز به بررسی',
   MANUALLY_VERIFIED: 'تایید دستی',
+  // Not «تایید», in any form. The customer has the product and the bank has
+  // said nothing; a label with the word «تایید» in it would be the panel
+  // claiming the one thing this state exists to deny.
+  FULFILLED_UNRECONCILED: 'تحویل‌شده، در انتظار تطبیق',
   WAITING: 'در انتظار',
   NO_TRANSFER_FOUND: 'واریزی پیدا نشد',
   REJECTED: 'رد شده',
@@ -334,6 +340,7 @@ export const ALL_TAB_STATES: ReviewState[] = [
   'AUTO_VERIFIED',
   'NEEDS_REVIEW',
   'MANUALLY_VERIFIED',
+  'FULFILLED_UNRECONCILED',
   'WAITING',
   'NO_TRANSFER_FOUND',
   'REJECTED',

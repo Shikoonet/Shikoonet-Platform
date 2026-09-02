@@ -110,7 +110,7 @@ export async function ingest(
   raw: IncomingSmsBody,
   options?: IngestOptions,
 ): Promise<IngestResult> {
-  const auth = await authenticateDevice(db, raw.deviceId, raw.apiKey, raw.deviceName);
+  const auth = await authenticateDevice(db, raw.deviceId, raw.apiKey);
   if (!auth.ok) {
     // generic 401 — do not log the raw apiKey
     return { ok: false, error: 'unauthorized', code: 'UNAUTHORIZED' };

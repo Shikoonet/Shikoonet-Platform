@@ -200,6 +200,34 @@ describe('serving a receipt', () => {
     expect(everything).not.toContain(GOOD_HANDLE);
   });
 
+  it('refuses a signed-out request, before it ever reaches the claim', async () => {
+    // The gate is one `app.use('*')` and «the one door» in admin-surface.test.ts
+    // already proves it for two other paths, so this is not re-testing the
+    // middleware — it pins THIS path to it. The route is the only one in the
+    // panel that holds the bot token and streams a customer's bank document,
+    // and the day somebody registers it above the gate, or moves the gate, the
+    // generic tests stay green and this one does not.
+    const { TEST_ACCESS_USER: _drop, ...rest } = envWith();
+    await seedClaim('r-signedout', GOOD_HANDLE);
+
+    const calls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      calls.push(String(input));
+      return new Response('{}', { status: 200 });
+    });
+
+    const res = await app.request(
+      '/api/v1/payment-claims/r-signedout/receipt',
+      {},
+      { ...rest, ENV_NAME: 'production' } as typeof baseEnv,
+    );
+
+    expect(res.status).toBe(401);
+    // 401 and nothing else: no getFile, so an unauthenticated caller cannot use
+    // this route to make the shop spend its token on a handle they guessed.
+    expect(calls).toEqual([]);
+  });
+
   it('lets a READ_ONLY operator look at the evidence', async () => {
     // Looking at the document is reading. A reviewer who may be told a payment
     // is suspected of being forged, and may not see the thing it turns on, is
