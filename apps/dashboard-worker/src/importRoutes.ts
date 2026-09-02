@@ -13,18 +13,49 @@
  * What was missing was a way to run it without a terminal, which is what an
  * admin doing a cutover has.
  *
- * ## The dump is not uploaded
+ * ## The dump arrives one of two ways, and both end in the same directory
  *
- * It is read from `IMPORT_DIR` on the server, put there over SCP. Three
- * problems disappear with that: nginx's 1 MB body limit and 60 s proxy
- * timeout, neither of which is configured in this repository; and a file
- * holding `marzban_panel.password_panel`, `admin.password` and roughly ten live
- * gateway keys in plaintext never crosses a browser.
+ * Every run reads from `IMPORT_DIR` on the server. A file gets there over SCP,
+ * or — since 2026-09-01, at Sam's explicit instruction — through
+ * `POST /import/upload` from the panel.
  *
- * The client names a FILE, never a path. `resolveDump` refuses anything with a
- * separator in it and then checks the resolved result is still inside the
- * directory, because a name is attacker-controlled input at a trust boundary
- * even when the attacker has to be a signed-in admin first.
+ * **The reasons upload was refused were real, and only one of them was ever
+ * about the code.** They are recorded here rather than deleted, because the
+ * next person to read this file deserves the trade rather than the verdict:
+ *
+ *   * *The dump carries plaintext secrets* — `marzban_panel.password_panel`,
+ *     `admin.password` and roughly ten `PaySetting` gateway keys. That has not
+ *     changed. What changed is who was being protected from what: the file is
+ *     already on the admin's own laptop, already crossed the internet once to
+ *     get there, and the browser leg is TLS to a host the same admin is already
+ *     authenticated against. It is written `0600` and never read back out.
+ *   * *nginx's 1 MB body limit* — a real wall, and the edge config lives on the
+ *     server rather than in this repository, so the code cannot fix it. See
+ *     `deploy/README.md` › «The edge»: `client_max_body_size` must be raised or
+ *     every upload dies at 413. A 413 has no JSON body, so the client says so
+ *     in words instead of showing `undefined`.
+ *   * *the 60 s proxy timeout* — the 2026-08-11 production dump is 5.84 MB and
+ *     `MAX_DUMP_BYTES` caps any dump at 48 MB. Neither is a minute of upload on
+ *     a usable link. No chunking, no resume, no session state: if dumps ever
+ *     grow past what one request can carry, that is when to write it.
+ *
+ * The client names a FILE, never a path — on upload exactly as on run.
+ * `resolveDump` refuses anything with a separator in it and then checks the
+ * resolved result is still inside the directory, because a name is
+ * attacker-controlled input at a trust boundary even when the attacker has to
+ * be a signed-in admin first.
+ *
+ * ## The report is written while the run is still going
+ *
+ * `captureReport` fills an array as the migration prints, and that array used
+ * to be handed to Postgres once, at the end. For the minutes an APPLY takes,
+ * the panel therefore had one word — «در حال اجرا» — and a spinner, which is
+ * indistinguishable from a hang at exactly the moment somebody is watching the
+ * riskiest button in the product. The array is now flushed into the row every
+ * `PROGRESS_FLUSH_MS`, and the poll the browser was already doing renders it.
+ *
+ * No socket, no stream, no queue: the storage and the poll both already
+ * existed, and this is one `setInterval` between them.
  *
  * ## Why the work is not in the request
  *
@@ -36,8 +67,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { readdirSync, statSync } from 'node:fs';
+import { createWriteStream, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, resolve, sep } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
@@ -54,6 +87,7 @@ import {
   targetBaseline,
   DOMAINS,
   dumpSha256,
+  MAX_DUMP_BYTES,
   PANEL_DEFAULT_DOMAINS,
   type Domain,
   type ReportLine,
@@ -77,6 +111,15 @@ const STALE_RUN_MS = 2 * 60 * 60 * 1000;
 
 /** The scratch database the dump is loaded into. Never the platform's own. */
 const SCRATCH_DATABASE = 'mirzabot_import';
+
+/**
+ * How often a run's report so far is written to its row.
+ *
+ * Paired with the browser's one-second poll, so a line appears within about two
+ * seconds of the step that printed it. Shorter would write more often than
+ * anybody reads; longer and the staircase stops feeling attached to the button.
+ */
+const PROGRESS_FLUSH_MS = 1500;
 
 const RunBody = z
   .object({
@@ -112,6 +155,28 @@ export function resolveDump(dir: string, name: string): string {
     throw new Error('resolved path escapes the import directory');
   }
   return full;
+}
+
+/**
+ * The import directory, made to exist.
+ *
+ * `IMPORT_DIR` names a path; nothing guarantees anything is there. On the
+ * staging box on 2026-09-01 the variable was set and the directory was not, and
+ * the panel answered «پوشهٔ ایمپورت خوانده نشد» — a 503 whose only cure was a
+ * second, undocumented ops step. Creating it is one syscall and turns a
+ * two-step setup into one.
+ *
+ * 0700 because of what lands here: a dump carries `password_panel`,
+ * `admin.password` and roughly ten gateway keys in plaintext. `recursive`
+ * makes it a no-op when the directory is already there, which is the normal
+ * case and the one a persistent volume produces.
+ *
+ * It does NOT create a missing MOUNT. If the volume is gone this makes a plain
+ * directory inside the container, uploads work, and they vanish with the next
+ * deploy — the same as any other unmounted path, and better than refusing.
+ */
+function ensureImportDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
 export function listDumps(dir: string): DumpFile[] {
@@ -165,8 +230,40 @@ async function runImport(
   domains: Domain[],
   mysqlUrl: string,
   postgresUrl: string,
+  /**
+   * The dump this run was AUTHORISED to import, or null for a run that needs no
+   * authorisation.
+   *
+   * The APPLY gate hashes the file, finds a dry run that proved those bytes,
+   * and then hands the request on. Between those two moments the file can
+   * change — an upload, an SCP, a second admin — and the gate would have proved
+   * a dump that is no longer the one about to be loaded. CodeRabbit found this
+   * on PR #48 and asked for a lock shared by the upload route and the run
+   * route.
+   *
+   * This is stronger than that lock and smaller than it. A reservation can only
+   * exclude the writers that agree to take it, and the dump directory has a
+   * writer that never will: `scp`, which is how every dump arrived before the
+   * panel could upload one and how they will keep arriving. So the check is not
+   * «did anybody else hold the door», it is «are these the bytes I was allowed
+   * to import», asked of the file that was actually read, after it was read.
+   * Nothing can pass that by winning a race.
+   *
+   * Passed through to `loadDump`, which owns the one definition of dump
+   * identity and refuses before a byte reaches the scratch database.
+   */
+  expectSha: string | null,
+  /**
+   * Where the report accumulates.
+   *
+   * Owned by the caller rather than created here, which is the whole of the
+   * live-progress feature: the caller can read the array while this function is
+   * still filling it. Passing it in beats a callback per line — `captureReport`
+   * already appends, and an array somebody else may read is a smaller thing to
+   * reason about than a stream of events.
+   */
+  lines: ReportLine[] = [],
 ): Promise<RunOutcome> {
-  const lines: ReportLine[] = [];
   const release = captureReport(lines);
   const cfg = configFrom({
     mysql: scratchMysql(mysqlUrl),
@@ -178,7 +275,9 @@ async function runImport(
   let my: Awaited<ReturnType<typeof connectMysql>> | null = null;
   let pgc: Awaited<ReturnType<typeof connectPostgres>> | null = null;
   try {
-    const loaded = await loadDump(cfg, dumpPath);
+    // The digest the gate approved goes with it: `loadDump` refuses the file
+    // before anything reaches MySQL if the bytes are not the ones proven.
+    const loaded = await loadDump(cfg, dumpPath, expectSha ?? undefined);
     const dump = { sha256: loaded.sha256, bytes: loaded.bytes };
     my = await connectMysql(cfg);
     pgc = await connectPostgres(cfg);
@@ -301,6 +400,9 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
        * an operator presses APPLY. That is the price of the promise this gate
        * makes, and it is paid on the one request that must not be cheap.
        */
+      // Carried to the run, which re-checks it against the bytes it actually
+      // loaded. See `runImport`'s `expectSha`.
+      let provenSha: string | null = null;
       if (mode === 'APPLY') {
         let sha: string;
         try {
@@ -308,6 +410,7 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
         } catch {
           return c.json({ ok: false, error: 'invalid_file' }, 400);
         }
+        provenSha = sha;
 
         const proven = await c.env.DB.prepare(
           `SELECT id FROM import_runs
@@ -381,8 +484,40 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
       // Deliberately not awaited: the run outlives this request. Every failure
       // path inside settles the row, so a RUNNING row always ends.
       void (async () => {
+        const lines: ReportLine[] = [];
+        /**
+         * Publishes the report so far, every `PROGRESS_FLUSH_MS`.
+         *
+         * `status = 'RUNNING'` in the WHERE clause is not decoration. The timer
+         * is cleared before the settling UPDATE below, but «cleared» only means
+         * no NEW tick starts — a tick already awaiting its write would land
+         * afterwards and overwrite the final report with a snapshot taken one
+         * line short. The predicate makes that write hit nothing.
+         *
+         * Failures are swallowed on purpose: this is a progress bar. A row that
+         * cannot take an interim report must not be the reason an import that
+         * is otherwise fine reports failure.
+         */
+        const flush = setInterval(() => {
+          void c.env.DB.prepare(
+            `UPDATE import_runs SET report = ?2::jsonb WHERE id = ?1 AND status = 'RUNNING'`,
+          )
+            .bind(id, JSON.stringify(lines))
+            .run()
+            .catch(() => undefined);
+        }, PROGRESS_FLUSH_MS);
+
         try {
-          const outcome = await runImport(mode, dumpPath, domains, mysqlUrl, postgresUrl);
+          const outcome = await runImport(
+            mode,
+            dumpPath,
+            domains,
+            mysqlUrl,
+            postgresUrl,
+            provenSha,
+            lines,
+          );
+          clearInterval(flush);
           await c.env.DB.prepare(
             `UPDATE import_runs
                 SET status = ?2, finished_at = now(), report = ?3::jsonb,
@@ -400,20 +535,210 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
             )
             .run();
         } catch (err) {
+          clearInterval(flush);
           const message = err instanceof Error ? err.message : String(err);
           log.error('import.failed', { runId: id, mode, error: message });
+          // The report goes in beside the error. A run that threw half way
+          // through has the more useful half of its output in `lines`, and
+          // losing it was why «چه چیزی شکست» used to mean reading the container
+          // log over SSH.
           await c.env.DB.prepare(
-            `UPDATE import_runs SET status='FAILED', finished_at=now(), error=?2 WHERE id=?1`,
+            `UPDATE import_runs
+                SET status='FAILED', finished_at=now(), error=?2, report=?3::jsonb
+              WHERE id=?1`,
           )
-            .bind(id, message)
+            .bind(id, message, JSON.stringify(lines))
             .run()
             .catch(() => undefined);
+        } finally {
+          clearInterval(flush);
         }
       })();
 
       return c.json({ ok: true, id, mode, domains });
     });
   }
+
+  /**
+   * Puts a dump into `IMPORT_DIR` from the browser.
+   *
+   * ## The body is the file, and nothing else
+   *
+   * Not `multipart/form-data`. Multipart exists to carry several fields at
+   * once, there is exactly one field here, and every parser for it either
+   * buffers the whole body in memory or pulls in a dependency. `fetch` and
+   * `XMLHttpRequest` both send a `File` as a raw body, so the name travels in
+   * the query string — where `resolveDump` already knows how to distrust it —
+   * and the bytes go straight from the socket to the disk.
+   *
+   * ## Written aside, then renamed
+   *
+   * A failed upload must not leave something that looks like a dump. The bytes
+   * land in `<name>.part`, and only a complete request renames it into place.
+   * `rename` inside one directory is atomic on every filesystem this runs on,
+   * so `listDumps` never sees a half-written file and a dry run can never read
+   * one. The `.part` suffix is also outside what `listDumps` will show and what
+   * `resolveDump` will accept, so a leftover from a dropped connection is inert
+   * rather than merely unlikely to be chosen.
+   *
+   * ## The cap is enforced here, not discovered later
+   *
+   * `MAX_DUMP_BYTES` is the loader's limit, imported rather than restated. It
+   * is counted as the stream arrives and the write is destroyed the moment it
+   * is passed, so an oversized upload costs the disk what it had written and
+   * not one byte more. Checking `content-length` instead would be checking a
+   * number the client chose.
+   *
+   * ## What overwriting means now
+   *
+   * Uploading over an existing name is allowed, because refreshing a dump is a
+   * normal cutover move. It is safe only because of what PR #42 changed: APPLY
+   * is gated on the dry run's `dump_sha256`, so replacing a file invalidates
+   * its own proof and the next APPLY is refused until a new dry run reads the
+   * new bytes. Before that gate this route would have been a way to swap the
+   * file out from under a passed dry run.
+   */
+  app.post('/api/v1/admin/import/upload', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const dir = c.env.IMPORT_DIR ?? process.env['IMPORT_DIR'];
+    if (dir === undefined) {
+      return c.json(
+        { ok: false, error: 'import_dir_unset', detail: 'IMPORT_DIR روی سرور تنظیم نشده است.' },
+        503,
+      );
+    }
+
+    // Separately from the name check below, because the two failures need
+    // different answers: a directory that cannot be made is the server's
+    // problem, and «this file cannot be imported» would send the operator
+    // looking at their own filename.
+    try {
+      ensureImportDir(dir);
+    } catch {
+      return c.json(
+        { ok: false, error: 'import_dir_unreadable', detail: 'پوشهٔ ایمپورت روی سرور ساخته نشد.' },
+        503,
+      );
+    }
+
+    let target: string;
+    try {
+      target = resolveDump(dir, c.req.query('name') ?? '');
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          error: 'invalid_file',
+          detail: 'نام فایل باید یک نام ساده با پسوند .sql یا .sql.gz باشد.',
+        },
+        400,
+      );
+    }
+
+    // A run in flight is reading the directory it is about to be handed a new
+    // file in. Refusing is a one-line guard; working out which file a running
+    // import holds open, on which platform, is not.
+    const running = await c.env.DB.prepare(
+      `SELECT id FROM import_runs WHERE status = 'RUNNING' LIMIT 1`,
+    ).first<{ id: string }>();
+    if (running) {
+      return c.json(
+        {
+          ok: false,
+          error: 'import_already_running',
+          detail: 'یک ایمپورت در حال اجراست؛ تا پایانش صبر کن.',
+        },
+        409,
+      );
+    }
+
+    const body = c.req.raw.body;
+    if (body === null) {
+      return c.json({ ok: false, error: 'empty_upload', detail: 'فایلی فرستاده نشد.' }, 400);
+    }
+
+    const part = `${target}.part`;
+    let bytes = 0;
+    let tooBig = false;
+    try {
+      // `wx` — create, and fail if it is already there.
+      //
+      // Two uploads of the same name would otherwise both open `<name>.part`,
+      // interleave their bytes into one file, and the second rename would put
+      // the mixture where a dump belongs. The exclusive create makes that
+      // unrepresentable rather than unlikely: the loser gets EEXIST from the
+      // filesystem, which is one atomic operation and needs no lock of ours.
+      //
+      // 0600: the file holds panel passwords and gateway keys in plaintext, and
+      // the default umask would have let every account on the box read them.
+      const out = createWriteStream(part, { flags: 'wx', mode: 0o600 });
+      const counted = Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]).map(
+        (chunk: Buffer) => {
+          bytes += chunk.length;
+          if (bytes > MAX_DUMP_BYTES) {
+            tooBig = true;
+            throw new Error('too large');
+          }
+          return chunk;
+        },
+      );
+      await pipeline(counted, out);
+      if (bytes === 0) throw new Error('empty');
+      renameSync(part, target);
+    } catch (err) {
+      // EEXIST means another upload of this name owns the .part right now, so
+      // it is emphatically NOT ours to delete — removing it would hand the
+      // other request a stream writing to an unlinked inode and leave nothing
+      // to rename.
+      const busy = (err as NodeJS.ErrnoException).code === 'EEXIST';
+      if (!busy) rmSync(part, { force: true });
+      if (busy) {
+        return c.json(
+          {
+            ok: false,
+            error: 'upload_in_progress',
+            detail: 'همین فایل الان در حال آپلود است؛ تا پایانش صبر کن.',
+          },
+          409,
+        );
+      }
+      if (tooBig) {
+        return c.json(
+          {
+            ok: false,
+            error: 'dump_too_large',
+            detail: `دامپ نباید از ${Math.floor(MAX_DUMP_BYTES / 1024 / 1024)} مگابایت بزرگ‌تر باشد.`,
+          },
+          413,
+        );
+      }
+      if (bytes === 0) {
+        return c.json({ ok: false, error: 'empty_upload', detail: 'فایلی فرستاده نشد.' }, 400);
+      }
+      // The message, never the bytes. Whatever went wrong here happened while
+      // holding plaintext panel passwords.
+      log.error('import.upload_failed', {
+        name: basename(target),
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return c.json(
+        { ok: false, error: 'upload_failed', detail: 'فایل روی سرور نوشته نشد.' },
+        500,
+      );
+    }
+
+    // The name and the size. Not the checksum: hashing here would read 48 MB
+    // back off the disk to tell an operator something the dry run tells them
+    // anyway, and it is the dry run's hash that gates anything.
+    await audit(c.env.DB, ident, 'import.upload', 'IMPORT_FILE', basename(target), null, {
+      file: basename(target),
+      bytes,
+    }, null);
+
+    return c.json({ ok: true, name: basename(target), bytes });
+  });
 
   // ADMIN for reads as well as writes: a run report is the whole shop's shape,
   // and `access.ts` keeps the same path out of a READ_ONLY sidebar.
@@ -427,6 +752,7 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
       );
     }
     try {
+      ensureImportDir(dir);
       return c.json({ ok: true, dir, items: listDumps(dir) });
     } catch {
       return c.json(

@@ -2146,6 +2146,58 @@ export const api = {
     return req<{ ok: boolean; run: ImportRun }>(`/import/runs/${encodeURIComponent(id)}`);
   },
 
+  /**
+   * Puts a dump on the server, reporting how much of it has gone.
+   *
+   * `XMLHttpRequest`, and it is the only one in this file. `fetch` cannot
+   * report upload progress — `ReadableStream` request bodies would, but they
+   * need HTTP/2 and `duplex: 'half'`, and they are unshipped in Safari. XHR has
+   * had `upload.onprogress` since before any of this existed. A progress bar
+   * that lies about a 6 MB file is worse than none, and this is the native way
+   * to make it honest.
+   *
+   * The body is the `File` itself, not a `FormData`. There is one field.
+   *
+   * Errors are mapped to `ApiError` by hand so the page can keep using
+   * `message()`. A 413 is the one that matters: nginx answers it with HTML, so
+   * there is no `error` field to read and the code is supplied here.
+   */
+  uploadDump(file: File, onProgress: (fraction: number) => void): Promise<{ name: string }> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${BASE}/import/upload?name=${encodeURIComponent(file.name)}`);
+      xhr.withCredentials = true;
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(e.loaded / e.total);
+      };
+      xhr.onload = () => {
+        const body = (() => {
+          try {
+            return JSON.parse(xhr.responseText) as { name?: string; error?: string; detail?: string };
+          } catch {
+            return null;
+          }
+        })();
+        if (xhr.status >= 200 && xhr.status < 300 && body?.name !== undefined) {
+          resolve({ name: body.name });
+          return;
+        }
+        reject(
+          new ApiError(
+            xhr.status,
+            body?.error ?? (xhr.status === 413 ? 'body_too_large' : String(xhr.status)),
+            body?.detail ?? null,
+          ),
+        );
+      };
+      // Both fire with status 0 and no body: a dropped connection and a
+      // cancelled request are the same event to this caller.
+      xhr.onerror = () => reject(new ApiError(0, 'network', null));
+      xhr.onabort = () => reject(new ApiError(0, 'aborted', null));
+      xhr.send(file);
+    });
+  },
+
   /** `mode` picks the endpoint; the body is the same for all three. */
   startImport(mode: ImportMode, body: { file: string; domains: ImportDomain[] }) {
     const path = mode === 'PREFLIGHT' ? 'preflight' : mode === 'DRY_RUN' ? 'dry-run' : 'apply';
