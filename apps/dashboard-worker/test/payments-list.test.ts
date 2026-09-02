@@ -649,6 +649,26 @@ describe('filtering the payments list by card and by customer', () => {
     expect((await ask('tab=all&range=all&telegramId=not-a-number')).total).toBe(1);
   });
 
+  /**
+   * `?claim=` answers with that one row whatever else is asked.
+   *
+   * The route returns early for a deep link precisely so that no filter can
+   * narrow away the row the caller named -- the alternative renders «این
+   * پرداخت در فهرست باز نیست», which reads as «somebody decided this» and is
+   * not what happened. Both new filters had to go inside that `else`, and
+   * putting either one outside it would be silent: the link still works for
+   * every claim the current filters happen to include.
+   */
+  it('a deep link ignores the filters, including the two added here', async () => {
+    await seedClaim('f-deep', {
+      status: 'VERIFIED',
+      cardDigits: CARD_B,
+      customerReference: '777',
+    });
+    const r = await ask('claim=f-deep&cardDigits=' + CARD_A + '&telegramId=999');
+    expect(r.items.map((i) => i.id)).toEqual(['f-deep']);
+  });
+
   it('combines the two filters rather than letting the later one win', async () => {
     await seedClaim('f-c1', { status: 'VERIFIED', cardDigits: CARD_A, customerReference: '5551' });
     await seedClaim('f-c2', { status: 'VERIFIED', cardDigits: CARD_A, customerReference: '5552' });
@@ -716,6 +736,52 @@ describe('the payments list is paginated rather than silently cut', () => {
 
     const seen = [...p1.items, ...p2.items, ...p3.items].map((i) => i.id);
     expect(new Set(seen).size).toBe(N);
+  });
+
+  /**
+   * Every row at the SAME instant, which the other pagination tests never do.
+   *
+   * They seed `now - i * 60_000`, so `effective_ts` is unique and the sort is
+   * total whether or not it has a tie-breaker — green, and silent about the
+   * one thing paging can get wrong. SQL leaves the order of tied rows
+   * undefined, so without `c.id` the database may answer page 1 and page 2
+   * with different orderings and a tied row lands on both pages or on
+   * neither. A batch of claims imported with one timestamp, or two customers
+   * paying in the same second, is all it takes.
+   *
+   * The assertion is on the SET across pages, not on any row's position:
+   * position is genuinely free to change, losing a row is not.
+   */
+  it('pages tied timestamps without dropping or repeating a row', async () => {
+    const SAME = Date.now();
+    for (let i = 0; i < 120; i++) {
+      await seedClaim(`tie-${String(i).padStart(3, '0')}`, {
+        status: 'VERIFIED',
+        paidClickedAt: SAME,
+      });
+    }
+
+    const pageOf = async (nth: number) => {
+      const r = await app.fetch(
+        new Request(`https://x/api/v1/payments?tab=all&range=all&pageSize=50&page=${nth}`),
+        envAs(),
+      );
+      return ((await r.json()) as { items: Array<{ id: string }> }).items.map((i) => i.id);
+    };
+
+    const tied = [...(await pageOf(1)), ...(await pageOf(2)), ...(await pageOf(3))].filter((id) =>
+      id.startsWith('tie-'),
+    );
+    // 120 tied rows sit inside 210 seeded ones; whichever of them the three
+    // pages reach, none may be reached twice.
+    expect(new Set(tied).size).toBe(tied.length);
+
+    // And every tied row is somewhere in the full walk — nothing falls between
+    // two pages.
+    const all: string[] = [];
+    for (let nth = 1; nth <= 7; nth++) all.push(...(await pageOf(nth)));
+    expect(all.filter((id) => id.startsWith('tie-')).length).toBe(120);
+    expect(new Set(all).size).toBe(all.length);
   });
 
   it('caps pageSize, because every row in the answer costs its own query', async () => {

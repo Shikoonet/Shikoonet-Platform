@@ -1247,7 +1247,16 @@ export function registerMirzabotRoutes(
               ${EFFECTIVE_TS} AS effective_ts
        ${claimsFrom}
        WHERE ${where.join(' AND ')}
-       ORDER BY effective_ts ${order}
+       -- c.id is not decoration: it is what makes OFFSET paging honest.
+       -- effective_ts ties freely -- two claims paid in the same second, or a
+       -- batch imported with one timestamp -- and SQL leaves the order of tied
+       -- rows undefined. Postgres is free to answer page 1 and page 2 with
+       -- different plans, and a tied row can then appear on both or on
+       -- neither. Under the old LIMIT 200, with no second page, this could not
+       -- be seen; the moment paging arrived it became a way to lose a payment.
+       -- Found by CodeRabbit on #70, against a test of mine that was silent on
+       -- it because every fixture row had a distinct timestamp.
+       ORDER BY effective_ts ${order}, c.id ${order}
        LIMIT ${limitBind} OFFSET ${offsetBind}`,
     )
       .bind(...binds)
