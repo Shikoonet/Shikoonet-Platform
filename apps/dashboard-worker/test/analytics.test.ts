@@ -80,7 +80,13 @@ async function seedTx(id: string, opts: { amount?: number; balance?: number; ts?
 async function seedClaim(
   id: string,
   txId: string,
-  opts: { matchStatus: 'AUTO_VERIFIED' | 'CONFIRMED'; reviewedAt: number; amount?: number },
+  opts: {
+    matchStatus: 'AUTO_VERIFIED' | 'CONFIRMED';
+    reviewedAt: number;
+    amount?: number;
+    /** The card the customer was told to pay into — `payment_claims.card_digits`. */
+    cardDigits?: string;
+  },
 ) {
   const now = Date.now();
   await baseEnv.DB.prepare(
@@ -88,9 +94,9 @@ async function seedClaim(
        (id, external_order_id, customer_reference, expected_amount_irr, target_financial_account_id,
         submitted_at, source_system, metadata_json, status, paid_clicked_at, receipt_submitted_at,
         suspect_reason, suspect_metadata_json, card_digits, created_at, updated_at)
-     VALUES (?1, ?2, 'u1', ?3, ?4, ?5, 'MIRZABOT', '{}', 'VERIFIED', ?5, ?5, NULL, '{}', '5678', ?5, ?5)`,
+     VALUES (?1, ?2, 'u1', ?3, ?4, ?5, 'MIRZABOT', '{}', 'VERIFIED', ?5, ?5, NULL, '{}', ?6, ?5, ?5)`,
   )
-    .bind(id, `ord-${id}`, opts.amount ?? AMOUNT, ACCOUNT, now)
+    .bind(id, `ord-${id}`, opts.amount ?? AMOUNT, ACCOUNT, now, opts.cardDigits ?? '5678')
     .run();
   await baseEnv.DB.prepare(
     `INSERT INTO reconciliation_matches
@@ -150,6 +156,52 @@ describe('GET /api/v1/analytics', () => {
 });
 
 describe('GET /api/v1/cards/analytics', () => {
+  /**
+   * Two cards on ONE account, and unequal takings between them.
+   *
+   * This is the shape the bug was invisible in. The query joined the claim to
+   * the card's *account* and grouped by the card, so every card of an account
+   * reported that account's total — an account figure printed once per card,
+   * under a card's name. On a single-card account the two readings agree, so a
+   * one-card fixture is silent about this rather than green.
+   *
+   * The claim knows which card it named: `payment_claims.card_digits` is
+   * snapshotted on every claim and joins UNIQUE-ly to `payment_cards`.
+   */
+  it('counts each card separately when one account holds two', async () => {
+    const CARD_A = '6037991111111111';
+    const CARD_B = '6037992222222222';
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
+       VALUES ('pc-a', ?1, ?2, ?3), ('pc-b', ?1, ?4, ?3)`,
+    )
+      .bind(ACCOUNT, CARD_A, Date.now(), CARD_B)
+      .run();
+
+    // Two paid into A, one into B.
+    for (const [n, card] of [
+      ['a1', CARD_A],
+      ['a2', CARD_A],
+      ['b1', CARD_B],
+    ] as const) {
+      await seedTx(`tx-${n}`, { ts: BASE });
+      await seedClaim(`c-${n}`, `tx-${n}`, {
+        matchStatus: 'AUTO_VERIFIED',
+        reviewedAt: BASE,
+        cardDigits: card,
+      });
+    }
+
+    const r = await app.fetch(new Request('https://x/api/v1/cards/analytics?range=all'), envAs());
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      items: Array<{ cardDigits: string; purchaseCount: number }>;
+    };
+    const byCard = new Map(body.items.map((i) => [i.cardDigits, i.purchaseCount]));
+    expect(byCard.get(CARD_A)).toBe(2);
+    expect(byCard.get(CARD_B)).toBe(1);
+  });
+
   it('groups auto-verified purchases by mapped card', async () => {
     await baseEnv.DB.prepare(
       `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
@@ -158,7 +210,11 @@ describe('GET /api/v1/cards/analytics', () => {
       .bind(ACCOUNT, Date.now())
       .run();
     await seedTx('tx-card', { ts: BASE });
-    await seedClaim('c-card', 'tx-card', { matchStatus: 'AUTO_VERIFIED', reviewedAt: BASE });
+    await seedClaim('c-card', 'tx-card', {
+      matchStatus: 'AUTO_VERIFIED',
+      reviewedAt: BASE,
+      cardDigits: '5054161706277613',
+    });
 
     const r = await app.fetch(new Request('https://x/api/v1/cards/analytics?range=all'), envAs());
     expect(r.status).toBe(200);

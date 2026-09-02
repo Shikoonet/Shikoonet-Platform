@@ -467,7 +467,14 @@ export async function loadCardAnalytics(
        FROM payment_cards pc
        JOIN financial_accounts fa ON fa.id = pc.financial_account_id
        LEFT JOIN payment_claims c
-         ON c.target_financial_account_id = fa.id
+         -- The CARD the claim named, not the card's account. Joining on the
+         -- account made every card of a multi-card account report that
+         -- account's total under its own name -- an account figure printed
+         -- once per card, and identical across the account's cards.
+         -- payment_claims.card_digits is snapshotted on every claim, is
+         -- indexed (idx_claim_card_digits), and joins UNIQUE-ly to
+         -- payment_cards.card_digits.
+         ON c.card_digits = pc.card_digits
         AND c.source_system = ${p(MIRZABOT_SOURCE)}
         AND c.status = 'VERIFIED'${rangeFilter}
        LEFT JOIN reconciliation_matches m
