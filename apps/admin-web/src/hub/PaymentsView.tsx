@@ -385,23 +385,14 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 </button>
                 <h2 className="review-page__title">بررسی پرداخت</h2>
                 {/*
-                  Offered on every live claim, not only on a flagged suspect.
-                  The whole complaint this answers is that an operator watching a
-                  customer wait had to wait for the claim to be flagged before
-                  there was any button at all.
+                  The fulfil action used to live here, in the page bar, and that
+                  is half of why «هیچ کاری نمی‌شود کرد» was the report. It moved
+                  into «تصمیم» — see `canFulfil` in `ReviewPanel` — because that
+                  section is where every other decision about a claim is taken,
+                  and for a `WAITING` claim it held one sentence and no control
+                  at all. A button in the title bar of a page whose body says
+                  «در انتظار واریز بانکی» is not an action an operator finds.
                 */}
-                {reviewing &&
-                  (reviewing.reviewState === 'NEEDS_REVIEW' ||
-                    reviewing.reviewState === 'WAITING' ||
-                    reviewing.reviewState === 'NO_TRANSFER_FOUND') && (
-                  <button
-                    type="button"
-                    className="btn btn-danger review-page__fulfil"
-                    onClick={() => setFulfilTarget(reviewing)}
-                  >
-                    تحویل بدون تایید بانکی
-                  </button>
-                )}
               </div>
 
               {error && <div className="alert alert-error">{error}</div>}
@@ -444,6 +435,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                     post(`/api/v1/suspects/${reviewing.id}/mark-fake`, { confirmed: true })
                   }
                   onReopen={() => setReopenTarget(reviewing)}
+                  onFulfil={() => setFulfilTarget(reviewing)}
                   onError={setError}
                 />
               )}
@@ -460,9 +452,24 @@ export function PaymentsView({ cache }: { cache: Cache }) {
             onClose={() => setFulfilTarget(null)}
             onDone={(already) => {
               setFulfilTarget(null);
-              setToast(already ? 'این سفارش قبلاً تحویل شده بود' : 'تحویل شد — در انتظار تطبیق');
-              setTimeout(() => setToast(null), 4000);
-              cache.refetch(queryKey, QK.suggested, QK.today);
+              setToast(
+                already
+                  ? 'این سفارش قبلاً تحویل شده بود — همچنان در انتظار تطبیق'
+                  : 'تحویل شد — پرداخت هنوز در انتظار تطبیق است',
+              );
+              setTimeout(() => setToast(null), 6000);
+              // The `?claim=` key too, and that is not belt-and-braces. A review
+              // opened from a link resolves through `needsFetch`, which is a
+              // DIFFERENT cache key from the queue's — so refetching the queue
+              // alone left the screen showing «در انتظار» after a delivery that
+              // had already happened, with the button still offering to do it
+              // again. See `reviewing` above.
+              cache.refetch(
+                queryKey,
+                QK.payments(`claim=${fulfilTarget.id}`),
+                QK.suggested,
+                QK.today,
+              );
             }}
           />
         )}
@@ -976,8 +983,49 @@ function emptyText(tab: PaymentTab): string {
  * button and sent nothing, which is a different conversation from a disputed
  * image.
  */
+/**
+ * Why the receipt did not draw, in the operator's own words.
+ *
+ * The comment above promised the screen would say «whether the receipt is gone
+ * or the panel is misconfigured» and the screen said neither — one sentence for
+ * every cause. So the operator who hit `bot_token_unreadable` on staging read
+ * «الان قابل نمایش نیست», opened the URL in a new tab to find out more, and got
+ * raw JSON. The server now answers with a class; this turns the class into a
+ * sentence. Unknown codes keep the old wording rather than printing a code.
+ */
+const RECEIPT_ERROR_TEXT: Record<string, string> = {
+  no_bot_token: 'هیچ رباتی وصل نیست، پس رسید خوانده نمی‌شود — از «ربات تلگرام» یکی وصل کن.',
+  secret_key_missing: 'این سرویس کلید باز کردن توکن ربات را ندارد — پیکربندی سرور ناقص است.',
+  bot_token_unreadable: 'توکن ذخیره‌شدهٔ ربات با کلید این سرویس باز نمی‌شود — کلید عوض شده است.',
+  telegram_unauthorized: 'تلگرام توکن ربات را نپذیرفت — ربات وصل‌شده عوض شده است.',
+  receipt_unavailable: 'این رسید دیگر در دسترس ربات نیست.',
+  receipt_unreachable: 'تلگرام جواب نداد. چند لحظه بعد دوباره امتحان کن.',
+  unsupported_type: 'نوع این فایل قابل نمایش نیست.',
+  bad_handle: 'شناسهٔ رسید معتبر نیست.',
+};
+
 function ReceiptSection({ item }: { item: PaymentItem }) {
   const [failed, setFailed] = useState(false);
+  const [why, setWhy] = useState<string | null>(null);
+
+  /**
+   * One extra request, and only after the image has already failed.
+   *
+   * `<img>` reports that it broke and nothing about why — the body is not
+   * reachable from an `onError`. Asking again costs a request on a path that
+   * has already gone wrong, which is the cheapest place to spend one.
+   */
+  async function explain() {
+    setFailed(true);
+    try {
+      const r = await fetch(`/api/v1/payment-claims/${item.id}/receipt`);
+      const body = (await r.json()) as { error?: string };
+      setWhy(body.error ? (RECEIPT_ERROR_TEXT[body.error] ?? null) : null);
+    } catch {
+      // The explanation is a nicety; failing to fetch it must not replace the
+      // message that is already on the screen.
+    }
+  }
 
   return (
     <section className="drawer-section">
@@ -989,7 +1037,7 @@ function ReceiptSection({ item }: { item: PaymentItem }) {
         // operator looking at a broken image should not have to guess whether
         // the receipt is gone or the panel is misconfigured.
         <p className="muted">
-          رسید ثبت شده، ولی الان قابل نمایش نیست.{' '}
+          {why ?? 'رسید ثبت شده، ولی الان قابل نمایش نیست.'}{' '}
           <a href={`/api/v1/payment-claims/${item.id}/receipt`} target="_blank" rel="noreferrer">
             تلاش دوباره
           </a>
@@ -1005,7 +1053,7 @@ function ReceiptSection({ item }: { item: PaymentItem }) {
             src={`/api/v1/payment-claims/${item.id}/receipt`}
             alt="رسید پرداخت مشتری"
             loading="lazy"
-            onError={() => setFailed(true)}
+            onError={() => void explain()}
           />
         </a>
       )}
@@ -1527,6 +1575,7 @@ function ReviewPanel({
   onRemove,
   onMarkFake,
   onReopen,
+  onFulfil,
   onError,
 }: {
   item: PaymentItem;
@@ -1543,6 +1592,8 @@ function ReviewPanel({
   onRemove: () => Promise<void>;
   onMarkFake: () => Promise<void>;
   onReopen: () => void;
+  /** Open «تأیید و تحویل دستی». The dialog and the request live in the parent. */
+  onFulfil: () => void;
   onError: (message: string) => void;
 }) {
   const w = useWriteProps();
@@ -1555,6 +1606,28 @@ function ReviewPanel({
   const [showReassign, setShowReassign] = useState(false);
   const [busy, setBusy] = useState(false);
   const actionable = item.reviewState === 'NEEDS_REVIEW' || item.reviewState === 'NO_TRANSFER_FOUND';
+  /**
+   * Deliverable by hand, right now — and deliberately a WIDER set than
+   * `actionable`.
+   *
+   * `actionable` asks «is there a bank transaction to decide about», which is
+   * the question the approve/reject controls answer. A `WAITING` claim has no
+   * transaction yet, so it is not `actionable`, and the whole «تصمیم» section
+   * collapsed to the sentence «در انتظار واریز بانکی» with no control beneath
+   * it. That is the state a customer sits in while an operator watches, and it
+   * was the one state the panel offered nothing for.
+   *
+   * The set matches the server's, which is `PENDING`/`MATCH_SUGGESTED` in
+   * `fulfilWithoutPayment.ts` — the three states above are exactly the ones
+   * `deriveReviewState` produces from those two. Nothing here consults
+   * Continuity mode: that switch decides what the INGEST does on its own to
+   * every new claim, and an operator deciding one claim in front of them is a
+   * different act that must not need a shop-wide switch thrown first.
+   */
+  const canFulfil =
+    item.reviewState === 'NEEDS_REVIEW' ||
+    item.reviewState === 'WAITING' ||
+    item.reviewState === 'NO_TRANSFER_FOUND';
   const canMarkFake = item.reviewState === 'NO_TRANSFER_FOUND';
   const isManuallyVerified = item.reviewState === 'MANUALLY_VERIFIED';
   const canReopen = isReopenEligible(item);
@@ -1697,6 +1770,23 @@ function ReviewPanel({
           )}{' '}
           {reasonText(item.suspectReason)}
         </p>
+
+        {canFulfil && (
+          <div className="payment-review__fulfil">
+            <p className="muted">
+              مشتری منتظر است و پیامک بانک نرسیده؟ همین سفارش را دستی تحویل بده — سراسری چیزی
+              روشن نمی‌شود.
+            </p>
+            <button
+              type="button"
+              className="btn btn-danger review-page__fulfil"
+              onClick={onFulfil}
+              {...w}
+            >
+              تأیید و تحویل دستی
+            </button>
+          </div>
+        )}
 
         {actionable && (
           <>

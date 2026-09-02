@@ -1,6 +1,12 @@
 /**
- * «تحویل بدون تایید بانکی» — the dialog in front of the one action in the panel
+ * «تأیید و تحویل دستی» — the dialog in front of the one action in the panel
  * that hands over product against a payment nobody has evidence for.
+ *
+ * Three things an operator has to be told before they press it, and they were
+ * not all here: the delivery happens NOW, the money is still owed an
+ * explanation afterwards, and this screen cannot take it back. The last one is
+ * the one that was missing — `payment_claims` has one exit from
+ * `FULFILLED_UNRECONCILED` and it is reconciliation, not a button.
  *
  * The reason field is required here and required again on the server. Two
  * guards for one rule, because `fulfilment_reason` is a nullable column — it has
@@ -37,16 +43,27 @@ export function FulfilWithoutPaymentModal({
       className="modal-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="تحویل بدون تایید بانکی"
+      aria-label="تأیید و تحویل دستی"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="modal-body">
-        <h3>بدون تایید بانکی تحویل شود؟</h3>
-        <p className="alert alert-warning">
-          هیچ تراکنش بانکی‌ای پشت این پرداخت نیست. سفارش تحویل می‌شود و در صف «تحویل‌شده، در
-          انتظار تطبیق» می‌ماند تا پیامک بانک برسد. این پرداخت <strong>در درآمد شمرده نمی‌شود</strong>{' '}
-          تا تطبیق انجام شود.
-        </p>
+        <h3>همین سفارش دستی تحویل شود؟</h3>
+        <div className="alert alert-warning">
+          هیچ تراکنش بانکی‌ای پشت این پرداخت نیست.
+          <ul>
+            <li>
+              سفارش <strong>همین حالا</strong> تحویل می‌شود.
+            </li>
+            <li>
+              پرداخت و رسید <strong>هنوز تطبیق نشده‌اند</strong> و در صف «تحویل‌شده، در انتظار
+              تطبیق» می‌مانند تا پیامک بانک برسد؛ تا آن موقع در درآمد شمرده نمی‌شود.
+            </li>
+            <li>
+              اگر دوباره بزنی چیزی دو بار تحویل نمی‌شود، ولی{' '}
+              <strong>از این صفحه برگشت‌پذیر نیست</strong>.
+            </li>
+          </ul>
+        </div>
         <dl className="payment-review__facts">
           <dt>مشتری</dt>
           <dd>{customer || '—'}</dd>
@@ -86,7 +103,7 @@ export function FulfilWithoutPaymentModal({
               }
             }}
           >
-            {busy ? '…' : 'تحویل بده'}
+            {busy ? '…' : 'تأیید و تحویل'}
           </button>
         </div>
       </div>

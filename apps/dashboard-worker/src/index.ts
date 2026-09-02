@@ -156,6 +156,23 @@ export interface Env {
    */
   TELEGRAM_BOT_TOKEN?: string;
   /**
+   * The key that opens a secret sealed into Postgres — the stored bot token
+   * here, panel credentials elsewhere.
+   *
+   * It is in this interface because `receiptRoutes.ts` hands `c.env` to
+   * `resolveBotToken`, which hands it to `panelSecretKey`. Every OTHER caller
+   * of `panelSecretKey` calls it with no argument and gets `process.env`, so
+   * this was the one path that read the key from an object which never carried
+   * it: sealing a token from «پیکربندی › ربات تلگرام» worked, and opening it
+   * to fetch a receipt answered `bot_token_unreadable` for ever. The variable
+   * was set on the service the whole time — `server.ts` simply did not copy it
+   * across, and an optional property makes that a silent `undefined` rather
+   * than a type error. Adding the name here is what puts it in `PASSTHROUGH`'s
+   * reach; `receipt.test.ts` builds its env through `buildEnv` for the same
+   * reason.
+   */
+  PANEL_SECRET_KEY?: string;
+  /**
    * Where Mirzabot dumps are placed on the server, over SCP.
    *
    * Unset, «ایمپورت» answers 503 with a sentence rather than showing an empty
