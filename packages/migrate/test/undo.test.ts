@@ -15,7 +15,7 @@
  * and the real one, and removed afterwards whether the test passed or not.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type pg from 'pg';
 import { connectPostgres, loadConfig, report } from '../src/db.js';
 import { applyUndo, captureUndo, dropUndo, undoSchemaFor } from '../src/undo.js';
@@ -27,6 +27,45 @@ const IMPORTED = 990_900_002;
 const SCHEMA = undoSchemaFor('11111111-2222-3333-4444-555555555555');
 
 let pgc: pg.Client;
+
+/**
+ * The same number `@shikoo/seed` refuses to wipe past, for the same reason:
+ * a connection string can be forged by a tunnel, eleven thousand customers
+ * cannot. Asked of the database, not of DATABASE_URL.
+ */
+const NOT_A_SIMULATION = 1_000;
+
+/**
+ * Why this file, and not the rest of the suite.
+ *
+ * Every other database test scopes its deletes to a telegram id range it
+ * owns. `applyUndo` does not: it deletes whatever the recording holds, from
+ * every table the recording names. That is exactly right in production and
+ * exactly wrong to point at a database somebody is working in.
+ *
+ * On 2026-09-02 I proved the `xmin` guard the way this repo asks — by
+ * removing it — with DATABASE_URL still on the simulation database. With
+ * `WHERE true` in its place the recording held every row in the database, and
+ * the next test deleted them: 8,303 orders, every discount code, every card
+ * lease, every audit row. The guard was proved. So was the absence of this
+ * one.
+ */
+beforeAll(async () => {
+  const c = await connectPostgres(loadConfig());
+  try {
+    const { rows } = await c.query<{ n: string }>('SELECT count(*) AS n FROM users');
+    const users = Number(rows[0]?.n ?? 0);
+    if (users >= NOT_A_SIMULATION) {
+      throw new Error(
+        `refusing to run undo tests: this database holds ${users} users, which is ` +
+          'not a scratch database. These tests delete whatever the recording holds. ' +
+          'Point DATABASE_URL at a disposable Postgres.',
+      );
+    }
+  } finally {
+    await c.end().catch(() => undefined);
+  }
+});
 
 /** `report` writes to stdout; these tests are about rows, not narration. */
 const quiet = () => {
