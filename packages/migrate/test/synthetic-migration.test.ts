@@ -112,6 +112,35 @@ afterAll(async () => {
 
 const maybe = ENABLED ? describe : describe.skip;
 
+/**
+ * The report is stored and rendered now, so it may not carry a card number.
+ *
+ * `preflight` was written for a terminal. Since PR #42 the panel runs the
+ * import: `importRoutes.ts` writes the captured report into
+ * `import_runs.report` and `ImportPage.tsx` paints it. On 2026-09-02 a real
+ * backup run through the panel put 34 full customer PANs into Postgres and
+ * onto a screen (issue #52).
+ *
+ * Asserted against the OUTPUT rather than against `maskPan`, because the bug
+ * was never in the masking — there was none — it was in what the report chose
+ * to interpolate. A test of the helper would have passed on the broken code.
+ */
+maybe('what the card section is allowed to say', () => {
+  it('never prints a whole card number', () => {
+    // The fixture holds `0000000000000000`, `0000000000000018` and a
+    // Luhn-invalid `0000000000000001`, so a regression has something to leak.
+    const runs = output.match(/\b\d{12,19}\b/g) ?? [];
+    expect(runs, `the report printed ${runs.join(', ')}`).toEqual([]);
+  });
+
+  it('still says enough to act on', () => {
+    // Masked, not removed. The first six name the issuing bank and the last
+    // four are what an operator matches against the source row — an operator
+    // told only «one card failed» cannot find it.
+    expect(output).toContain('000000\u2022\u2022\u2022\u2022\u2022\u20220001');
+  });
+});
+
 maybe('preflight, against the synthetic fixture', () => {
   it('runs to completion and returns findings', () => {
     // The floor. A preflight that threw would fail `beforeAll`, but one that
@@ -193,7 +222,11 @@ maybe('preflight, against the synthetic fixture', () => {
     // either a typo with a known correction or a BLOCKER; silence is neither.
     const card = findings.filter((f) => /card/i.test(f.check));
     expect(card.length).toBeGreaterThan(0);
-    expect(output).toContain('0000000000000001');
+    // Masked, since this commit. The assertion still has to name a specific
+    // card rather than settle for «some card failed» — that is the whole
+    // point of the check — but the first six and last four are enough to
+    // find the source row, and they are all an operator is owed.
+    expect(output).toContain('000000\u2022\u2022\u2022\u2022\u2022\u20220001');
   });
 
   it('finds the orphan payment and keeps its money in the total', () => {
