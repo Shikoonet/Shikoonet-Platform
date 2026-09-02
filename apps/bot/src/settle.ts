@@ -109,6 +109,17 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
     return 0;
   }
   const { commissionPercent } = shop;
+  /*
+   * `FULFILLED_UNRECONCILED` is swept alongside `VERIFIED` for the reason the
+   * status exists: the shop decided to deliver, so delivery must actually
+   * happen. It is the claim's evidence that is provisional, never the
+   * customer's product.
+   *
+   * Adding it cannot double-settle. The guard is `p.status <> 'PAID'` here plus
+   * the guarded UPDATE below, so when the claim is later reconciled and becomes
+   * `VERIFIED`, this sweep finds the payment already PAID and matches nothing.
+   * One claim, two statuses over its life, one settlement.
+   */
   const { results } = await db
     .prepare(
       `SELECT p.id            AS payment_id,
@@ -123,7 +134,7 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
          JOIN payments p ON ('shikoo:' || p.public_id) = c.external_order_id
          LEFT JOIN orders o ON o.id = p.order_id
          LEFT JOIN users  u ON u.id = p.user_id
-        WHERE c.status = 'VERIFIED'
+        WHERE c.status IN ('VERIFIED', 'FULFILLED_UNRECONCILED')
           AND p.status <> 'PAID'
         ORDER BY p.id
         LIMIT 100`,

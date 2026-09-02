@@ -51,6 +51,17 @@ export type ClaimStatus =
   | 'PENDING'
   | 'MATCH_SUGGESTED'
   | 'VERIFIED'
+  /**
+   * Delivered, and still owed an explanation.
+   *
+   * The customer has their account and the shop has not seen the money. Reached
+   * only by a manual approval or by Continuity mode — never by the matcher — and
+   * it is deliberately NOT a flag on `VERIFIED`: every revenue query in the app
+   * filters `status = 'VERIFIED'`, and a flag would have shipped revenue the
+   * bank never confirmed. It leaves for `VERIFIED` when a bank credit is matched
+   * to it afterwards, which is reconciliation, not a second sale.
+   */
+  | 'FULFILLED_UNRECONCILED'
   | 'REJECTED'
   | 'FAKE_RECEIPT'
   | 'EXPIRED';

@@ -402,6 +402,22 @@ export const api = {
     req<{ ok: boolean }>(`/api/v1/devices/${encodeURIComponent(idOrCode)}/credentials/revoke`, {
       method: 'POST',
     }),
+  /** Renames a device. `display_name` only — see `PATCH /api/v1/devices`. */
+  renameDevice: (idOrCode: string, displayName: string) =>
+    req<{
+      ok: boolean;
+      unchanged?: boolean;
+      device: {
+        id: string;
+        deviceCode: string;
+        displayName: string;
+        description: string | null;
+        active: boolean;
+      };
+    }>(`/api/v1/devices/${encodeURIComponent(idOrCode)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ displayName }),
+    }),
   deactivateDevice: (idOrCode: string) =>
     req<{ ok: boolean; alreadyInactive?: boolean }>(
       `/api/v1/devices/${encodeURIComponent(idOrCode)}/deactivate`,
@@ -919,6 +935,54 @@ export const api = {
       '/api/v1/transactions/restore-income/all',
       { method: 'POST' },
     ),
+  /**
+   * Deliver a claim the bank has not confirmed.
+   *
+   * `confirmed` is sent as a literal and not as a variable: the server requires
+   * it, so a screen that forgot to ask the operator also fails to send it. The
+   * dialog and the guard cannot drift apart.
+   */
+  fulfilWithoutPayment: (claimId: string, reason: string) =>
+    req<{ ok: boolean; claimId: string; mode: 'MANUAL' | 'CONTINUITY'; already: boolean }>(
+      `/api/v1/payment-claims/${encodeURIComponent(claimId)}/fulfil-without-payment`,
+      { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) },
+    ),
+
+  continuityMode: () =>
+    req<{
+      ok: boolean;
+      mode: 'NORMAL' | 'CONTINUITY';
+      expiresAt: number | null;
+      activatedAt: number | null;
+      activatedBy: string | null;
+      reason: string | null;
+      expired: boolean;
+    }>('/api/v1/continuity-mode'),
+
+  setContinuityMode: (body: { active: false } | { active: true; reason: string; durationMs: number }) =>
+    req<{ ok: boolean; mode: 'NORMAL' | 'CONTINUITY'; expiresAt: number | null }>(
+      '/api/v1/continuity-mode',
+      {
+        method: 'POST',
+        body: JSON.stringify(body.active ? { ...body, confirmed: true } : body),
+      },
+    ),
+
+  awaitingReconciliation: () =>
+    req<{
+      ok: boolean;
+      items: {
+        claimId: string;
+        orderId: string;
+        amountIrr: number;
+        mode: string | null;
+        fulfilledAt: number | null;
+        fulfilledBy: string | null;
+        reason: string | null;
+        customerReference: string | null;
+      }[];
+    }>('/api/v1/payment-claims/awaiting-reconciliation'),
+
   reopenManualVerification: (claimId: string, reason: string) =>
     req<{
       ok: boolean;

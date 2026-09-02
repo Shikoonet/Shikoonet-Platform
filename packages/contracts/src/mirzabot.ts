@@ -51,10 +51,19 @@ export interface MirzabotVerifiedWebhook {
   externalOrderId: string;
   mirzabotOrderId: string;
   claimId: string;
-  matchId: string;
-  transactionId: string;
+  /**
+   * Null when nothing was matched — a manual or Continuity fulfilment has no
+   * bank transaction by definition, which is the whole reason it exists.
+   *
+   * Safe to widen: the receiver is `integration/reconciliation/webhook.php` on
+   * the legacy bot, which reads `type`, `mirzabotOrderId` and `eventId` and
+   * nothing else. That bot is read-only until the shed is finished, so this
+   * shape is checked against it rather than agreed with it.
+   */
+  matchId: string | null;
+  transactionId: string | null;
   expectedAmountIrr: number;
-  matchedAmountIrr: number;
-  verificationMode: 'AUTO_VERIFIED' | 'ADMIN_APPROVED';
+  matchedAmountIrr: number | null;
+  verificationMode: 'AUTO_VERIFIED' | 'ADMIN_APPROVED' | 'MANUAL_FULFILMENT' | 'CONTINUITY';
   verifiedAt: number;
 }

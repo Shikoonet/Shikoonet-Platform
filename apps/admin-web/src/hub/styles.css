@@ -4031,3 +4031,46 @@
 .device-move h4 {
   margin: 0.5rem 0 0;
 }
+
+/*
+ * Continuity mode.
+ *
+ * Loud, not dismissible, and in the header where it is on every screen. The
+ * mode's failure is invisible everywhere else — the queue looks normal and so
+ * does the revenue figure — so this strip is the only thing standing between
+ * «we turned it on during an incident» and «we left it on for a week».
+ */
+.continuity-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
+  background: #7f1d1d;
+  color: #fff;
+  font-size: 0.85rem;
+}
+.continuity-banner strong {
+  white-space: nowrap;
+}
+.continuity-banner__by,
+.continuity-banner__reason {
+  opacity: 0.85;
+  font-size: 0.8rem;
+}
+.continuity-open {
+  font-size: 0.8rem;
+}
+
+/* The one action in the panel that gives product away against no evidence. */
+.review-page__fulfil {
+  margin-inline-start: auto;
+}
+
+
+/* «تحویل‌شده، در انتظار تطبیق» — deliberately not the verified colour. */
+.status-pill--fulfilled_unreconciled {
+  background: #78350f;
+  color: #fff;
+}

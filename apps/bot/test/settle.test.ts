@@ -59,6 +59,35 @@ async function buyAndClaim(
   };
 }
 
+/**
+ * What the panel does when an operator delivers without evidence, or Continuity
+ * does it for them: the claim moves to `FULFILLED_UNRECONCILED`, not `VERIFIED`.
+ */
+async function hubFulfilsWithoutPayment(paymentPublicId: string): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE payment_claims
+          SET status = 'FULFILLED_UNRECONCILED', fulfilment_mode = 'CONTINUITY',
+              fulfilled_at = ?2, fulfilled_by = 'op@example.com',
+              fulfilment_reason = 'relay down', updated_at = ?2
+        WHERE external_order_id = ?1`,
+    )
+    .bind(`shikoo:${paymentPublicId}`, Date.now())
+    .run();
+}
+
+/** The bank credit turning up later. Reconciliation, not a second sale. */
+async function hubReconciles(paymentPublicId: string): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE payment_claims
+          SET status = 'VERIFIED', reconciled_at = COALESCE(reconciled_at, ?2), updated_at = ?2
+        WHERE external_order_id = ?1`,
+    )
+    .bind(`shikoo:${paymentPublicId}`, Date.now())
+    .run();
+}
+
 /** What the hub does when a bank credit matches, reduced to its one effect. */
 async function hubVerifies(paymentPublicId: string): Promise<void> {
   await db
@@ -309,5 +338,72 @@ describe('settlement when the shop rules have never been read', () => {
       order: 'PAID',
       payment: 'PAID',
     });
+  });
+});
+
+describe('a claim delivered before the money was proven', () => {
+  it('is settled, because the shop decided to deliver and delivery must happen', async () => {
+    const f = await buyAndClaim('sim-vip-1m-50');
+    await hubFulfilsWithoutPayment(f.paymentPublicId);
+
+    const settled = await settleVerifiedPayments(db);
+    expect(settled).toBe(1);
+
+    const after = await statuses(f.orderId, f.paymentPublicId);
+    expect(after.payment).toBe('PAID');
+    expect(after.order).toBe('PAID');
+  });
+
+  it('is settled exactly once across fulfilment AND the later reconciliation', async () => {
+    const f = await buyAndClaim('sim-vip-1m-50');
+
+    await hubFulfilsWithoutPayment(f.paymentPublicId);
+    expect(await settleVerifiedPayments(db)).toBe(1);
+
+    // The bank credit arrives. The claim becomes VERIFIED — the same word the
+    // matcher writes — and the sweep sees it again. This is the exact moment a
+    // customer would be charged twice, or given a second subscription, if the
+    // guard were anywhere but the database.
+    await hubReconciles(f.paymentPublicId);
+    expect(await settleVerifiedPayments(db)).toBe(0);
+
+    // One message owed, not two: the customer is told once that their payment
+    // landed, whatever route it took to get there.
+    const owed = await db
+      .prepare(
+        `SELECT COUNT(*)::int AS n FROM bot_notifications WHERE dedupe_key LIKE ?1`,
+      )
+      .bind(`%${f.paymentPublicId}%`)
+      .first<{ n: number }>();
+    expect(owed?.n).toBe(1);
+  });
+
+  it('is settled once when two sweeps overlap on the same claim', async () => {
+    const f = await buyAndClaim('sim-vip-1m-50');
+    await hubFulfilsWithoutPayment(f.paymentPublicId);
+
+    // Sequential re-runs are already covered below, and they are covered by the
+    // SELECT alone — `p.status <> 'PAID'` excludes a settled payment before the
+    // inner guard is ever reached. Removing that inner guard therefore leaves
+    // every sequential test green, which is exactly why this one runs the sweep
+    // twice AT ONCE: two overlapping sweeps both select the row, and only the
+    // guarded UPDATE can decide between them.
+    const [a, b] = await Promise.all([settleVerifiedPayments(db), settleVerifiedPayments(db)]);
+    expect(a + b).toBe(1);
+
+    const after = await statuses(f.orderId, f.paymentPublicId);
+    expect(after.payment).toBe('PAID');
+    const owed = await db
+      .prepare(`SELECT COUNT(*)::int AS n FROM bot_notifications WHERE dedupe_key LIKE ?1`)
+      .bind(`%${f.paymentPublicId}%`)
+      .first<{ n: number }>();
+    expect(owed?.n).toBe(1);
+  });
+
+  it('is not settled twice if the sweep runs again before reconciliation', async () => {
+    const f = await buyAndClaim('sim-vip-1m-50');
+    await hubFulfilsWithoutPayment(f.paymentPublicId);
+    expect(await settleVerifiedPayments(db)).toBe(1);
+    expect(await settleVerifiedPayments(db)).toBe(0);
   });
 });
