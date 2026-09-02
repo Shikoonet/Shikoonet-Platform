@@ -23,6 +23,25 @@ import type { Ident } from './adminAudit.js';
 
 const PAGE_SIZE_MAX = 100;
 
+/**
+ * The delivery lifecycle, read off the two facts that decide it.
+ *
+ * Deliberately derived rather than stored. `orders.status` already *is* the
+ * durable delivery status — PAID is owed, PROVISIONING is being worked on,
+ * COMPLETED and FAILED are terminal — and the only thing it cannot say is
+ * whether a FAILED order is worth trying again. That is the refund: `fail()`
+ * returns wallet credit and leaves card-to-card money in the bank, so an order
+ * with a REFUND entry has been settled with the customer and one without has
+ * not. A second column holding the same answer is a second thing to keep true.
+ */
+export function deliveryStateOf(status: string, refunded: boolean): string {
+  if (status === 'COMPLETED') return 'DELIVERED';
+  if (status === 'PROVISIONING') return 'PROCESSING';
+  if (status === 'PAID') return 'PENDING';
+  if (status === 'FAILED') return refunded ? 'FAILED_TERMINAL' : 'FAILED_RETRYABLE';
+  return status;
+}
+
 const Paging = {
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(25),
@@ -159,6 +178,11 @@ export function registerSalesRoutes(
       `SELECT o.id, o.public_id, o.kind, o.status, o.quantity,
               o.unit_price_irr, o.discount_irr, o.total_irr,
               o.failure_reason, o.created_at, o.completed_at,
+              -- Whether a retry may still serve this customer. A refunded
+              -- order is terminal: the money is back, so delivering now
+              -- would be giving the service away.
+              EXISTS (SELECT 1 FROM wallet_entries w
+                       WHERE w.order_id = o.id AND w.kind = 'REFUND') AS refunded,
               u.id AS user_id, u.telegram_id, u.username,
               COALESCE(pl.name, s.plan_name_at_sale) AS plan_name
          ${from}
@@ -183,6 +207,7 @@ export function registerSalesRoutes(
         discount_irr: number;
         total_irr: number;
         failure_reason: string | null;
+        refunded: boolean;
         created_at: string;
         completed_at: string | null;
         user_id: number;
@@ -206,6 +231,11 @@ export function registerSalesRoutes(
         discountIrr: Number(r.discount_irr),
         totalIrr: Number(r.total_irr),
         failureReason: r.failure_reason,
+        // The delivery half of the order, named separately from `status`
+        // because the payment half is already decided and must not be
+        // re-read from it. FAILED_RETRYABLE is the only one that offers the
+        // operator a button; FAILED_TERMINAL says why there is none.
+        deliveryState: deliveryStateOf(r.status, r.refunded),
         createdAt: r.created_at,
         completedAt: r.completed_at,
         customer: { id: r.user_id, telegramId: r.telegram_id, username: r.username },
