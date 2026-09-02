@@ -718,13 +718,18 @@ describe('the payments list is paginated rather than silently cut', () => {
     expect(new Set(seen).size).toBe(N);
   });
 
-  it('caps pageSize so one request cannot ask for the whole shop', async () => {
+  it('caps pageSize, because every row in the answer costs its own query', async () => {
+    // `isPaymentEventUnread` runs once per claim, so the page size multiplies
+    // round trips. 200 is the cap as well as the default: a bigger page nobody
+    // asked for would only buy a slower request.
     const r = await app.fetch(
       new Request('https://x/api/v1/payments?tab=all&range=all&pageSize=100000'),
       envAs(),
     );
-    const body = (await r.json()) as { pageSize: number; items: unknown[] };
-    expect(body.pageSize).toBe(500);
-    expect(body.items.length).toBe(N);
+    const body = (await r.json()) as { pageSize: number; items: unknown[]; total: number };
+    expect(body.pageSize).toBe(200);
+    expect(body.items.length).toBe(200);
+    // And it still says how many there really are, which is the whole point.
+    expect(body.total).toBe(N);
   });
 });
