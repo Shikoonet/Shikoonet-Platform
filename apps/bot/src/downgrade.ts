@@ -46,7 +46,13 @@
  */
 
 import type { D1Database } from '@shikoo/database';
-import { adapterFor, createLogger, downgradeGroupsFor, type ProviderContext } from '@shikoo/domain';
+import {
+  adapterFor,
+  createLogger,
+  downgradeGroupsFor,
+  type AccountActionResult,
+  type ProviderContext,
+} from '@shikoo/domain';
 import { credentialsFor } from './provision.js';
 
 const log = createLogger('bot');
@@ -113,6 +119,21 @@ export async function downgradeExpired(
           AND s.remote_username IS NOT NULL
           AND s.expires_at IS NOT NULL
           AND s.expires_at < now()
+          -- The panel has somewhere to move the account TO, asked here and
+          -- not after the LIMIT.
+          --
+          -- This is the batch bug, not an optimisation. Every panel starts
+          -- with no downgrade group and all five in production still have
+          -- none, so the first fifty expired services would fill the batch,
+          -- be dropped one by one in TypeScript, and the sweep would return
+          -- «0 moved» for ever - while the one panel somebody HAD configured
+          -- sat behind them, never reached, on every pass.
+          --
+          -- downgradeGroupsFor still decides the value below. This is the
+          -- cheap half of the same question and it must not be the only half:
+          -- it cannot see that a list of [0, -1] is not a group list.
+          AND jsonb_typeof(pv.config -> 'downgrade_group_ids') = 'array'
+          AND jsonb_array_length(pv.config -> 'downgrade_group_ids') > 0
         ORDER BY s.expires_at
         LIMIT ?1`,
     )
@@ -130,20 +151,42 @@ export async function downgradeExpired(
     const adapter = adapterFor(row.provider_kind);
     if (!adapter.act) continue;
 
-    const provider: ProviderContext = {
-      id: row.provider_id,
-      code: row.provider_code,
-      name: row.provider_name,
-      baseUrl: row.provider_base_url,
-      credentials: credentialsFor(row.provider_secret_ref, row.provider_sealed),
-      config: row.provider_config ?? {},
-      fetch: fetchImpl,
-    };
-
-    const result = await adapter.act(
-      { kind: 'SET_GROUPS', username: row.remote_username, groupIds: groups },
-      provider,
-    );
+    /*
+     * One row's bad credential is one row's problem.
+     *
+     * `credentialsFor` THROWS on a sealed row it cannot open, and that is
+     * deliberate - `provision.ts` says why: answering «no credential» there
+     * would refund a paying customer over what is actually a wrong
+     * `PANEL_SECRET_KEY`. But here it ran outside any try, so a single panel
+     * with an unreadable secret aborted the whole sweep, and every other
+     * customer's ended service waited for that panel to be fixed.
+     *
+     * The adapter is inside the same block. It answers `{ok:false}` for
+     * everything it expects, so anything that throws out of it is something
+     * nobody predicted — which is the case that must not stop the batch.
+     */
+    let result: AccountActionResult;
+    try {
+      const provider: ProviderContext = {
+        id: row.provider_id,
+        code: row.provider_code,
+        name: row.provider_name,
+        baseUrl: row.provider_base_url,
+        credentials: credentialsFor(row.provider_secret_ref, row.provider_sealed),
+        config: row.provider_config ?? {},
+        fetch: fetchImpl,
+      };
+      result = await adapter.act(
+        { kind: 'SET_GROUPS', username: row.remote_username, groupIds: groups },
+        provider,
+      );
+    } catch (err) {
+      summary.failed++;
+      // The panel's code, never the credential or the reason it would not
+      // open — an error message about a secret is still about a secret.
+      log.error('downgrade.threw', { ref: row.provider_code }, err);
+      continue;
+    }
 
     if (!result.ok) {
       summary.failed++;

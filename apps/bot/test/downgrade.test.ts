@@ -68,6 +68,7 @@ function fakePanel(options: { groups?: number[]; refuse?: boolean } = {}) {
 
 beforeAll(async () => {
   process.env[`PANEL_${SECRET_REF}`] = 'admin:secret';
+
   userId = await makeCustomer(CUSTOMER);
   const made = await db
     .prepare(
@@ -81,8 +82,34 @@ beforeAll(async () => {
   panelId = made!.id;
 });
 
+/**
+ * Every fixture panel this file makes, not just the main one.
+ *
+ * A test that ends in a throw never reaches its own cleanup lines, and the row
+ * it left behind then fails the NEXT test — which is how removing the per-row
+ * try produced two red tests instead of one. The second was a cascade and said
+ * nothing about the guard. Cleaning up by prefix here makes each failure mean
+ * only itself.
+ */
 afterEach(async () => {
-  await db.prepare('DELETE FROM subscriptions WHERE provider_id = ?1').bind(panelId).run();
+  await db
+    .prepare(
+      `DELETE FROM subscriptions WHERE provider_id IN
+         (SELECT id FROM provisioning_providers WHERE code LIKE ?1)`,
+    )
+    .bind(`${PANEL_CODE}%`)
+    .run();
+  await db
+    .prepare(
+      `DELETE FROM provider_secrets WHERE provider_id IN
+         (SELECT id FROM provisioning_providers WHERE code LIKE ?1 AND code <> ?2)`,
+    )
+    .bind(`${PANEL_CODE}%`, PANEL_CODE)
+    .run();
+  await db
+    .prepare('DELETE FROM provisioning_providers WHERE code LIKE ?1 AND code <> ?2')
+    .bind(`${PANEL_CODE}%`, PANEL_CODE)
+    .run();
 });
 
 afterAll(async () => {
@@ -191,6 +218,125 @@ describe('downgradeExpired', () => {
     expect((await readMarker(id))?.downgraded_at).toBeNull();
   });
 
+  /**
+   * The batch bug, and why it needs a second panel to show at all.
+   *
+   * `BATCH` is 50. Fill it with expired services on a panel that has NO
+   * downgrade group, put one eligible service behind them, and the version
+   * that filtered in TypeScript after the LIMIT returns «0 moved» — for ever,
+   * on every pass, because the same fifty come back first each time.
+   *
+   * 60 rows rather than 51: the ordering is by `expires_at`, so the blockers
+   * are given older expiries and the eligible one the newest. A test that
+   * merely inserted more rows than the batch could pass by luck of ordering.
+   */
+  it('does not let unconfigured panels fill the batch', async () => {
+    await setGroups(null);
+    for (let i = 0; i < 60; i++) {
+      await giveService(`dg-blocker-${i}`, -48);
+    }
+
+    const other = await db
+      .prepare(
+        `INSERT INTO provisioning_providers (code, name, kind, status, base_url, secret_ref, config)
+         VALUES (?1, 'پنل تنزل دوم', 'pasarguard', 'ACTIVE', 'https://downgrade2.invalid', ?2,
+                 '{"downgrade_group_ids": [9]}'::jsonb)
+         ON CONFLICT (code) DO UPDATE SET status = 'ACTIVE'
+         RETURNING id`,
+      )
+      .bind(`${PANEL_CODE}-2`, SECRET_REF)
+      .first<{ id: number }>();
+
+    // Newest expiry of the lot, so it sorts LAST and only a query that has
+    // already dropped the sixty blockers can reach it.
+    await db
+      .prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
+            remote_username, status, purchased_at, expires_at)
+         VALUES ('dg-behind', ?1, ?2, 'سرویس پشت صف', 1000, 'acct', 'ACTIVE', now(),
+                 now() - make_interval(secs => 60))`,
+      )
+      .bind(userId, other!.id)
+      .run();
+
+    const { fetchImpl } = fakePanel();
+    const summary = await downgradeExpired(db, fetchImpl);
+    expect(summary.moved).toBe(1);
+
+    await db.prepare('DELETE FROM subscriptions WHERE provider_id = ?1').bind(other!.id).run();
+    await db.prepare('DELETE FROM provisioning_providers WHERE id = ?1').bind(other!.id).run();
+  });
+
+  /**
+   * A sealed credential that will not open, which is the only thing on this
+   * path that throws where nothing catches it.
+   *
+   * The FIRST version of this test threw from the fake `fetch` and passed with
+   * the guard removed — because `marzbanAdapter.act` has its own outer
+   * try/catch and turns any throw into `{ok:false, retryable:true}`. So it was
+   * green for the adapter's reason, not for this file's, and proved nothing.
+   *
+   * `credentialsFor` is outside that. It throws on a sealed row it cannot open
+   * — whether because `PANEL_SECRET_KEY` is absent or because the row will not
+   * authenticate; both land in the same catch, which is why this test sets no
+   * key of its own. It did once, and `fileParallelism: false` means one process
+   * for every file in this package, so a bogus key left in `process.env` turned
+   * five renewal tests red two files later.
+   * — `provision.ts` keeps it that way deliberately, because answering «no
+   * credential» there would refund a paying customer over a wrong
+   * `PANEL_SECRET_KEY`. Before the per-row try, one such row aborted the whole
+   * sweep and every other customer's ended service waited behind it.
+   */
+  it('keeps sweeping when one row cannot open its credential', async () => {
+    await setGroups([3]);
+    await giveService('dg-after-throw', -1);
+
+    // A second panel whose SEALED credential is garbage. Sealed, not the
+    // environment path: `credentialsFor` answers null for a missing env var
+    // and only throws for a sealed row, so this is the one shape that
+    // reproduces it.
+    const broken = await db
+      .prepare(
+        `INSERT INTO provisioning_providers (code, name, kind, status, base_url, config)
+         VALUES (?1, 'پنل با رمز خراب', 'pasarguard', 'ACTIVE', 'https://broken.invalid',
+                 '{"downgrade_group_ids": [5]}'::jsonb)
+         ON CONFLICT (code) DO UPDATE SET status = 'ACTIVE'
+         RETURNING id`,
+      )
+      .bind(`${PANEL_CODE}-broken`)
+      .first<{ id: number }>();
+    await db
+      .prepare(
+        `INSERT INTO provider_secrets (provider_id, sealed, key_id)
+         VALUES (?1, 'not-a-sealed-value', 'test')
+         ON CONFLICT (provider_id) DO UPDATE SET sealed = EXCLUDED.sealed`,
+      )
+      .bind(broken!.id)
+      .run();
+    // Oldest expiry, so it is swept FIRST and anything escaping it would
+    // reach the healthy row behind it.
+    await db
+      .prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
+            remote_username, status, purchased_at, expires_at)
+         VALUES ('dg-broken-secret', ?1, ?2, 'سرویس رمزخراب', 1000, 'acct', 'ACTIVE', now(),
+                 now() - make_interval(secs => 86400))`,
+      )
+      .bind(userId, broken!.id)
+      .run();
+
+    const { fetchImpl } = fakePanel();
+    const summary = await downgradeExpired(db, fetchImpl);
+    // One counted as failed, one still moved. Without the per-row try the
+    // whole call rejects and neither number exists.
+    expect(summary).toEqual({ moved: 1, failed: 1 });
+
+    await db.prepare('DELETE FROM subscriptions WHERE provider_id = ?1').bind(broken!.id).run();
+    await db.prepare('DELETE FROM provider_secrets WHERE provider_id = ?1').bind(broken!.id).run();
+    await db.prepare('DELETE FROM provisioning_providers WHERE id = ?1').bind(broken!.id).run();
+  });
   it('still marks the row when the panel would not say what the account was on', async () => {
     // Losing the «before» is survivable — the renewal path falls back to the
     // plan's own groups, which is what a fresh purchase would have produced.

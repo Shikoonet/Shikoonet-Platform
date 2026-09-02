@@ -503,6 +503,40 @@ async function moveHiddenUsers(ctx: Ctx): Promise<void> {
        JOIN users u ON u.telegram_id = h.tg::bigint
      ON CONFLICT DO NOTHING`,
   );
+  /*
+   * What could not be resolved, counted before the key that held it is gone.
+   *
+   * An entry naming somebody who has never started the bot has no `users` row
+   * to point at, so it cannot become a row here — and the UPDATE below then
+   * deletes the only record that it ever existed. Silently, which is the one
+   * thing this whole path was written to prevent: a reseller's deny list that
+   * stopped working on somebody else's shop, where nobody would look.
+   *
+   * So it goes in the import report, beside every other row the import chose
+   * not to write. The alternative CodeRabbit proposed — parking the remainder
+   * under a second config key — is a value nothing reads, which is the exact
+   * shape of the legacy settings this PR exists to stop repeating.
+   */
+  const { rows } = await ctx.pg.query<{ n: number }>(
+    `WITH hidden AS MATERIALIZED (
+       SELECT t.tg AS tg
+         FROM provisioning_providers pr
+         CROSS JOIN LATERAL jsonb_array_elements_text(
+                CASE WHEN jsonb_typeof(pr.config -> 'hide_user') = 'array'
+                     THEN pr.config -> 'hide_user'
+                     ELSE '[]'::jsonb
+                END) AS t(tg)
+        WHERE t.tg ~ '^[0-9]{1,18}$'
+     )
+     SELECT COUNT(*)::int AS n
+       FROM hidden h
+      WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.telegram_id = h.tg::bigint)`,
+  );
+  const unmatched = rows[0]?.n ?? 0;
+  if (unmatched > 0) {
+    skip(ctx, 'hidden panels: customer has never started the bot', unmatched);
+  }
+
   await ctx.pg.query(
     `UPDATE provisioning_providers
         SET config = config - 'hide_user'

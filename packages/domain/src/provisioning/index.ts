@@ -265,7 +265,14 @@ export function usernameShapeFor(
       : typeof legacy === 'string'
         ? (LEGACY_USERNAME_MODES[legacy] ?? 'TELEGRAM_ID')
         : 'TELEGRAM_ID';
-  const text = config['username_text'] ?? config['namecustom'];
+  // PRESENCE, not `??`.
+  //
+  // The route writes `username_text: null` when an admin clears the field,
+  // and `null ?? config['namecustom']` hands back the legacy value — which is
+  // the literal string `none` on two production panels. So clearing the text
+  // would have named every account on those panels `none_...`, which is the
+  // exact opposite of what clearing it means.
+  const text = has(config, 'username_text') ? config['username_text'] : config['namecustom'];
   return {
     mode,
     panelText: typeof text === 'string' ? text : null,
@@ -350,10 +357,19 @@ export function trialFor(config: Record<string, unknown>): TrialSettings {
   // Megabytes in the legacy column. 1024, not 1000: the PHP multiplies by
   // 1048576 to get bytes, so the panel is being told binary gigabytes.
   const legacyMb = positiveNumber(config['val_usertest']);
-  const volumeGb =
-    positiveNumber(config['trial_volume_gb']) ?? (legacyMb === null ? null : legacyMb / 1024);
-  const durationHours =
-    positiveNumber(config['trial_duration_hours']) ?? positiveNumber(config['time_usertest']);
+  // Presence again, for the reason spelled out in `usernameShapeFor`: an
+  // admin who clears the gigabytes is saying «this panel gives nothing», and
+  // `??` would answer with the megabytes underneath instead. `enabled` then
+  // stays true and a customer spends their one free account on a size nobody
+  // chose.
+  const volumeGb = has(config, 'trial_volume_gb')
+    ? positiveNumber(config['trial_volume_gb'])
+    : legacyMb === null
+      ? null
+      : legacyMb / 1024;
+  const durationHours = has(config, 'trial_duration_hours')
+    ? positiveNumber(config['trial_duration_hours'])
+    : positiveNumber(config['time_usertest']);
   return {
     enabled: on && volumeGb !== null && durationHours !== null,
     volumeGb,
@@ -388,6 +404,17 @@ export function downgradeGroupsFor(config: Record<string, unknown>): number[] | 
     .map((v) => (typeof v === 'number' ? v : Number(v)))
     .filter((v) => Number.isSafeInteger(v) && v > 0);
   return ids.length > 0 ? ids : null;
+}
+
+/**
+ * Whether the panel has an opinion about this key at all.
+ *
+ * `jsonb` keeps a stored `null` as a key that exists holding null, so this is
+ * the only way to tell «the admin cleared it» from «the admin never touched
+ * it». Every reader that has a legacy fallback needs it; `??` cannot.
+ */
+function has(config: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(config, key);
 }
 
 /** A setting that must be a number above zero, or nothing. */
