@@ -63,6 +63,11 @@ const PASSTHROUGH = [
   // The bot's token, for `GET /payment-claims/:id/receipt`. Absent, that one
   // route answers 503 with a sentence and everything else is unaffected.
   'TELEGRAM_BOT_TOKEN',
+  // Opens the bot token that «ربات تلگرام» sealed into `bot_credentials`.
+  // `botRoutes.ts` seals with `panelSecretKey()` — process.env — and the
+  // receipt route opens with `panelSecretKey(c.env)`, so leaving it out of this
+  // list meant a token could be stored and never read back.
+  'PANEL_SECRET_KEY',
   // Where dumps land, and the scratch MySQL they are loaded into. Absent, the
   // import screen says it is not configured instead of listing nothing.
   'IMPORT_DIR',

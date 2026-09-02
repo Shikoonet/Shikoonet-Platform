@@ -2768,7 +2768,8 @@
 }
 
 .payment-review__reassign,
-.payment-review__manual-anyway {
+.payment-review__manual-anyway,
+.payment-review__fulfil {
   width: 100%;
 }
 

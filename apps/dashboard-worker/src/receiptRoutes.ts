@@ -36,7 +36,7 @@ import type { Hono } from 'hono';
 import type { D1Database } from '@shikoo/database';
 import { MIRZABOT_SOURCE, RECEIPT_FILE_ID, receiptRef } from '@shikoo/contracts';
 import type { EnvName } from '@shikoo/contracts';
-import { createLogger, resolveBotToken } from '@shikoo/domain';
+import { createLogger, resolveBotToken, SecretKeyMissing } from '@shikoo/domain';
 
 const log = createLogger('dashboard');
 
@@ -120,10 +120,43 @@ export function registerReceiptRoutes(
     try {
       token = (await resolveBotToken(c.env.DB, c.env.ENV_NAME ?? 'local', c.env))?.token;
     } catch (err) {
-      // A stored row that will not open. Distinguished from "not set" because
-      // the fix is a different one: the key, not the token.
+      /*
+       * Two different faults arrived here as one word, and the word sent the
+       * wrong person looking.
+       *
+       * `bot_token_unreadable` was returned for both «this service has no
+       * PANEL_SECRET_KEY» and «the sealed row will not open under the key it
+       * has». The first is a service that was never given a variable; the
+       * second is a key that no longer matches what sealed the row — a
+       * rotation, or a restored dump. On staging it was always the first, and
+       * the message said «unreadable», so the search went to the row.
+       *
+       * `botRoutes.ts` already spells the first one `secret_key_missing` when
+       * it refuses to STORE a token. Answering with the same word when it
+       * cannot OPEN one is what lets an operator match the two screens.
+       */
+      if (err instanceof SecretKeyMissing) {
+        log.warn('receipt.secret_key_missing', { claimId, consequence: 'receipt not shown' });
+        return c.json(
+          {
+            ok: false,
+            error: 'secret_key_missing',
+            message:
+              'کلید PANEL_SECRET_KEY روی این سرویس تنظیم نشده، پس توکن ذخیره‌شدهٔ ربات باز نمی‌شود.',
+          },
+          503,
+        );
+      }
+      // A stored row that will not open under the key this service has.
       log.warn('receipt.token_unreadable', { claimId }, err);
-      return c.json({ ok: false, error: 'bot_token_unreadable' }, 503);
+      return c.json(
+        {
+          ok: false,
+          error: 'bot_token_unreadable',
+          message: 'توکن ذخیره‌شدهٔ ربات با کلید این سرویس باز نمی‌شود — کلید عوض شده است.',
+        },
+        503,
+      );
     }
     if (!token) {
       // Said plainly rather than as a 500. This is a deployment that has not
@@ -150,12 +183,44 @@ export function registerReceiptRoutes(
       });
       const parsed = (await meta.json()) as {
         ok?: boolean;
+        error_code?: number;
         result?: { file_path?: string };
       };
       if (!parsed.ok || !parsed.result?.file_path) {
-        // Telegram refused. The commonest cause is a handle that has aged out
-        // of a bot's reach after a token change; either way there is nothing to
-        // show and nothing we can do about it here.
+        /*
+         * «Telegram said no» is three different answers and they need three
+         * different actions, so they stop being one 404.
+         *
+         * `error_code` is the only part of the refusal read here. Telegram's
+         * `description` is an upstream string and never reaches the operator
+         * or the log: it is free-form, it has carried the request URL before,
+         * and that URL contains the bot token.
+         *
+         *   401 — the token is not this bot's any more. Nothing about the
+         *         claim is wrong; connecting a new bot is what fixes it, and
+         *         it must not read as «the customer's receipt is gone».
+         *   5xx — Telegram is having a bad day. A retry may well work.
+         *   otherwise — the file is genuinely out of this bot's reach, which
+         *         is what «receipt_unavailable» has always meant.
+         */
+        const code = typeof parsed.error_code === 'number' ? parsed.error_code : meta.status;
+        if (code === 401 || code === 403) {
+          log.warn('receipt.telegram_unauthorized', { claimId, code });
+          return c.json(
+            {
+              ok: false,
+              error: 'telegram_unauthorized',
+              message: 'تلگرام این توکن را نپذیرفت — ربات وصل‌شده عوض شده است.',
+            },
+            502,
+          );
+        }
+        if (code >= 500) {
+          log.warn('receipt.telegram_upstream', { claimId, code, will_retry: false });
+          return c.json({ ok: false, error: 'receipt_unreachable' }, 502);
+        }
+        // The commonest cause is a handle that has aged out of a bot's reach;
+        // either way there is nothing to show and nothing we can do here.
         log.warn('receipt.unavailable', { claimId, consequence: 'receipt not shown' });
         return c.json({ ok: false, error: 'receipt_unavailable' }, 404);
       }
@@ -173,9 +238,23 @@ export function registerReceiptRoutes(
       return c.json({ ok: false, error: 'unsupported_type' }, 415);
     }
 
-    const file = await fetch(`${TELEGRAM_API}/file/bot${token}/${filePath}`);
+    let file: Response;
+    try {
+      file = await fetch(`${TELEGRAM_API}/file/bot${token}/${filePath}`);
+    } catch (err) {
+      // `getFile` answered and the download did not. Same sentence as above and
+      // for the same reason: this is the network, not the claim. It used to be
+      // unguarded, so a dropped connection on the SECOND call left the route to
+      // throw and the panel to show a 500 with no explanation at all.
+      log.error('receipt.download_unreachable', { claimId, will_retry: false }, err);
+      return c.json({ ok: false, error: 'receipt_unreachable' }, 502);
+    }
     if (!file.ok || !file.body) {
       log.warn('receipt.download_failed', { claimId, status: file.status });
+      if (file.status === 401 || file.status === 403) {
+        return c.json({ ok: false, error: 'telegram_unauthorized' }, 502);
+      }
+      if (file.status >= 500) return c.json({ ok: false, error: 'receipt_unreachable' }, 502);
       return c.json({ ok: false, error: 'receipt_unavailable' }, 404);
     }
 
