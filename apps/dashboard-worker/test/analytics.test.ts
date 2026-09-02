@@ -2,7 +2,7 @@
  * Financial analytics: sales, balances, period comparison.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv } from './helpers/env.js';
 import { computePercentChange } from '@shikoo/domain';
 import { app } from '../src/index.js';
@@ -13,6 +13,18 @@ const EMAIL = 'admin@example.com';
 const ACCOUNT = 'acc-analytics';
 const BASE = 1_786_091_200_000;
 const AMOUNT = 2_000_000;
+/**
+ * The instant the rolling-window test pretends it is — 12:30 Tehran, so no
+ * boundary it uses sits near a Tehran midnight.
+ *
+ * Pinned rather than read live because two clocks are read otherwise: one when
+ * the fixtures are seeded and one inside the route, and a window edge falling
+ * between them flips a count. Today's margins are hours wide so it could not
+ * actually happen, but «the margin is comfortable» is the argument rule 5 of
+ * CLAUDE.md exists to refuse. The expectations stay offsets from this constant,
+ * so nothing here is tied to the date itself.
+ */
+const NOW_MS = 1_788_339_600_000;
 
 function envAs(email = EMAIL) {
   return { ...baseEnv, TEST_ACCESS_USER: email };
@@ -107,6 +119,12 @@ async function seedClaim(
     .bind(`m-${id}`, txId, id, opts.matchStatus, EMAIL, opts.reviewedAt, now)
     .run();
 }
+
+// The rolling-window test pins the clock; nothing else here mocks anything, so
+// restoring after every test keeps the spy from leaking into the next one.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('GET /api/v1/analytics', () => {
   it('counts auto and manual verified sales separately', async () => {
@@ -205,14 +223,15 @@ describe('GET /api/v1/cards/analytics', () => {
   /**
    * The six windows are rolling and are NOT scoped by the page's range.
    *
-   * Seeded relative to the real clock rather than to `BASE`: every assertion
-   * here is about an *offset*, so there is no fixed date to drift under and
-   * nothing to pin. The windows are hours wide and the suite runs in seconds.
+   * Every assertion is an *offset* from `NOW_MS`, which both the fixtures and
+   * the route read — so there is no date here to drift under, and no second
+   * clock to disagree with the first.
    */
   it('counts activity per rolling window, independent of the selected range', async () => {
     const CARD = '6037993333333333';
     const HOUR = 3_600_000;
-    const now = Date.now();
+    const now = NOW_MS;
+    vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
     await baseEnv.DB.prepare(
       `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
        VALUES ('pc-w', ?1, ?2, ?3)`,
