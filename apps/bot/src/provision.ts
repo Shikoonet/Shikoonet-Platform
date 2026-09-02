@@ -455,6 +455,25 @@ export async function provisionPaidOrders(
       }
       continue;
     }
+    // The terminal success event, read back after every transaction in
+    // `deliver` has committed.
+    //
+    // Not logged inside `complete()`, which is where it would be shorter: the
+    // renewal path credits cashback *after* `complete()` in the same
+    // transaction, so a failure there rolls the COMPLETED back and an event
+    // announced from inside would be a delivery that never happened. The
+    // repository already has that lesson written down twice — a message that
+    // has left cannot be recalled by a ROLLBACK.
+    //
+    // With `provision.failed` beside it, the two terminal outcomes of an
+    // attempt are both events an operator can find by the order number the
+    // customer was given.
+    const ended = await db
+      .prepare(`SELECT status FROM orders WHERE id = ?1`)
+      .bind(row.order_id)
+      .first<{ status: string }>();
+    if (ended?.status === 'COMPLETED') log.info('provision.delivered', { ref: row.order_public_id });
+
     if (note !== null && row.telegram_id !== null) {
       // Still enqueued just after `deliver` commits rather than inside its
       // transaction — `deliver` and `renew` reach a customer-visible message

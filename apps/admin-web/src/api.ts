@@ -981,6 +981,12 @@ export interface OrderRow {
   discountIrr: number;
   totalIrr: number;
   failureReason: string | null;
+  /**
+   * The delivery lifecycle, separate from `status` on purpose: the payment is
+   * already decided and a failed preparation must not be read as a failed
+   * payment. Only FAILED_RETRYABLE offers a retry.
+   */
+  deliveryState: string;
   createdAt: string;
   completedAt: string | null;
   customer: CustomerRef;
@@ -1141,8 +1147,16 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * `BASE` is prepended unless the caller already gave a whole path.
+ *
+ * Every route on this screen is an admin-surface one and passes «/orders»;
+ * retrying a delivery is the exception, because it is a payments action a
+ * REVIEWER must be able to take and therefore does not live under
+ * `/api/v1/admin/`. One branch here beats a second copy of the transport.
+ */
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, {
+  const r = await fetch(`${path.startsWith('/api/') ? '' : BASE}${path}`, {
     ...init,
     headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
     credentials: 'include',
@@ -1999,6 +2013,20 @@ export const api = {
     if (p.status) qs.set('status', p.status);
     if (p.kind) qs.set('kind', p.kind);
     return req<{ ok: boolean; total: number; items: OrderRow[] }>(`/orders?${qs.toString()}`);
+  },
+
+  /**
+   * Ask for the preparation to be tried again. Never re-approves the payment.
+   *
+   * `confirmed` is a literal, not a variable, for the same reason the payments
+   * hub sends it that way: the server requires it, so a screen that forgot to
+   * ask the operator also fails to send it.
+   */
+  retryProvisioning(publicId: string) {
+    return req<{ ok: boolean; outcome: string; orderPublicId: string }>(
+      `/api/v1/orders/${encodeURIComponent(publicId)}/retry-provisioning`,
+      { method: 'POST', body: JSON.stringify({ confirmed: true }) },
+    );
   },
 
   subscriptions(p: { q?: string; status?: string; page: number; pageSize: number }) {
