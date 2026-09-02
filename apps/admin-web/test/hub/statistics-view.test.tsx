@@ -100,6 +100,14 @@ beforeEach(() => {
           entity: 'card_number',
           metric: 'hub_auto_verified_purchases',
           note: 'diagnostic note',
+          windows: [
+            { key: 'h12', hours: 12, label: '۱۲ ساعت' },
+            { key: 'h24', hours: 24, label: '۲۴ ساعت' },
+            { key: 'd3', hours: 72, label: '۳ روز' },
+            { key: 'd7', hours: 168, label: '۷ روز' },
+            { key: 'd15', hours: 360, label: '۱۵ روز' },
+            { key: 'd30', hours: 720, label: '۳۰ روز' },
+          ],
           distribution: { min: 0, max: 5, gap: 5 },
           items: [
             {
@@ -111,6 +119,7 @@ beforeEach(() => {
               accountHint: '7613',
               accountStatus: 'ACTIVE',
               purchaseCount: 5,
+              activity: { h12: 1, h24: 2, d3: 3, d7: 4, d15: 5, d30: 5 },
               purchaseBarPercent: 100,
               hubEligible: true,
               exclusionReason: 'hub_active',
