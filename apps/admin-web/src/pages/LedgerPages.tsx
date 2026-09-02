@@ -27,6 +27,7 @@ import {
   type CustomerRef,
 } from '../api.js';
 import { count, dateTime, gigabytes, toman } from '../format.js';
+import { useWriteProps } from '../role.js';
 
 const PAGE_SIZE = 25;
 
@@ -134,7 +135,13 @@ function ListPage<T extends { id: number }>({
   filterLabel: string;
   filterOptions: Array<[string, string]>;
   head: ReactNode;
-  row: (item: T) => ReactNode;
+  /**
+   * `reload` is handed to the row rather than kept private, because the one
+   * action on these screens — retrying a failed preparation — changes the row
+   * it sits in and the screen would otherwise keep showing «ناموفق» after a
+   * successful retry.
+   */
+  row: (item: T, reload: () => void) => ReactNode;
   fetchPage: (p: {
     q?: string;
     filter?: string;
@@ -269,7 +276,7 @@ function ListPage<T extends { id: number }>({
                   </td>
                 </tr>
               )}
-              {rows.map((r) => row(r))}
+              {rows.map((r) => row(r, () => void load()))}
             </tbody>
           </table>
         </div>
@@ -296,6 +303,62 @@ function ListPage<T extends { id: number }>({
           </button>
         </div>
       </div>
+    </>
+  );
+}
+
+/**
+ * «تلاش مجدد برای آماده‌سازی» — the operator's way out of a failed delivery.
+ *
+ * Shown only for FAILED_RETRYABLE, which is a failed preparation whose money is
+ * still held. It never re-approves the payment: the button calls a route that
+ * moves the order back into the provisioning queue and nothing else, so the
+ * claim, the payment and the ledger are untouched by it.
+ *
+ * FAILED_TERMINAL gets a sentence instead of a button. The money went back to
+ * the customer, so delivering now would be giving the service away, and a
+ * disabled control with no explanation reads as a bug.
+ *
+ * Hidden entirely once the order is delivered — there is nothing to retry — and
+ * disabled for READ_ONLY by `useWriteProps`, which also says why.
+ */
+function RetryPreparation({ order, reload }: { order: OrderRow; reload: () => void }) {
+  const write = useWriteProps();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  if (order.deliveryState === 'FAILED_TERMINAL') {
+    return <div className="page-head__sub">مبلغ برگشت خورده — آماده‌سازی دوباره ممکن نیست.</div>;
+  }
+  if (order.deliveryState !== 'FAILED_RETRYABLE') return null;
+
+  async function run() {
+    if (
+      !window.confirm(
+        `آماده‌سازی سفارش ${order.publicId} دوباره تلاش شود؟\n` +
+          'پرداخت دوباره تایید نمی‌شود و مبلغی دوباره دریافت نمی‌گردد.',
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.retryProvisioning(order.publicId);
+      reload();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button type="button" className="btn btn-sm" disabled={busy} onClick={run} {...write}>
+        {busy ? '…' : 'تلاش مجدد برای آماده‌سازی'}
+      </button>
+      {err && <div className="page-head__sub">{err}</div>}
     </>
   );
 }
@@ -329,7 +392,7 @@ export function OrdersPage() {
           <th>زمان</th>
         </tr>
       }
-      row={(o) => (
+      row={(o, reload) => (
         <tr key={o.id}>
           {/* Whole, not `slice(0, 8)`. Every legacy invoice id is exactly eight
               characters — all 5,131 of them — so the truncation was invisible
@@ -345,7 +408,12 @@ export function OrdersPage() {
           <td>{o.discountIrr > 0 ? toman(o.discountIrr) : '—'}</td>
           <td>
             <span className={tone(o.status)}>{ORDER_STATUS_FA[o.status] ?? o.status}</span>
+            {/* The reason the last attempt failed, as the panel already showed
+                it: a category and a panel name, never a stack trace and never a
+                credential. The order number in the first column is the same
+                reference the customer was given. */}
             {o.failureReason && <div className="page-head__sub">{o.failureReason}</div>}
+            <RetryPreparation order={o} reload={reload} />
           </td>
           <td>{dateTime(o.createdAt)}</td>
         </tr>

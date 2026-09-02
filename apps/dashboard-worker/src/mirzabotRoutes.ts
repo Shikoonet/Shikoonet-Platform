@@ -12,6 +12,7 @@ import {
   verifyMirzabotClaim,
   verifyMirzabotClaimWithoutTransaction,
   fulfilMirzabotClaimWithoutPayment,
+  retryOrderProvisioning,
   readContinuityMode,
   activateContinuityMode,
   deactivateContinuityMode,
@@ -1906,6 +1907,51 @@ export function registerMirzabotRoutes(
     // and it is; a retried request after a timeout is the commonest way to
     // arrive here twice and it is not an error.
     return c.json({ ok: true, claimId: out.claimId, mode: out.mode, already: out.already });
+  });
+
+  /**
+   * «تلاش مجدد برای آماده‌سازی» — try the delivery again, without touching the payment.
+   *
+   * The payment decision is already made and stays made: nothing here reads or
+   * writes a claim, a payment or a ledger row. All this does is move the order
+   * from FAILED back to PAID so `provisionPaidOrders` picks it up on its next
+   * pass, which is the same path that delivers every other order and therefore
+   * the same exactly-once guarantees.
+   *
+   * On the payments surface rather than under `/api/v1/admin/`, deliberately.
+   * A REVIEWER is the role that approves the payment; leaving them unable to
+   * finish the job when the preparation fails would put the customer behind an
+   * ADMIN who may not be awake. `write-roles.test.ts` asserts both halves — 403
+   * for READ_ONLY, and reachable for a REVIEWER.
+   *
+   * `confirmed` is required for the same reason the fulfilment above requires
+   * it: this is a button that spends money on a panel, and a mis-click should
+   * not be enough.
+   */
+  const RetryBody = z.object({ confirmed: z.literal(true) }).strict();
+
+  app.post('/api/v1/orders/:publicId/retry-provisioning', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
+    const parsed = RetryBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+
+    const out = await retryOrderProvisioning(c.env.DB as unknown as DomainD1Database, {
+      orderPublicId: c.req.param('publicId'),
+      actorEmail: ident.email,
+      actorRole: ident.role,
+      requestId: c.req.header('cf-ray') ?? null,
+    });
+
+    if (out.outcome === 'NOT_FOUND') return c.json({ ok: false, error: 'order_not_found' }, 404);
+    // 409 for the one outcome an operator must not read as «it is on its way»:
+    // the money went back, so delivering now would be giving the service away.
+    if (out.outcome === 'REFUNDED')
+      return c.json({ ok: false, error: 'refunded', failureReason: out.failureReason }, 409);
+    // 200 for QUEUED, ALREADY_DELIVERED and IN_PROGRESS alike. All three mean
+    // «the customer is being served or has been», which is what was asked for,
+    // and a repeat click is the commonest way to arrive here twice.
+    return c.json({ ok: true, outcome: out.outcome, orderPublicId: out.orderPublicId });
   });
 
   /** The queue of «delivered, still owed an explanation». One index scan. */

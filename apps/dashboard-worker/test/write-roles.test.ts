@@ -163,6 +163,11 @@ describe('every write route, asked directly', () => {
       'POST /api/v1/match/reject',
       'POST /api/v1/suspects/:claimId/approve',
       'POST /api/v1/suspects/:claimId/reject',
+      // Retrying a failed preparation. On this list rather than the admin
+      // surface on purpose: the role that approves the payment is the one who
+      // must be able to finish the job when the panel call fails, or the
+      // customer waits for an ADMIN who may be asleep.
+      'POST /api/v1/orders/:publicId/retry-provisioning',
     ]) {
       const status = await statusFor(entry, REVIEWER);
       // Past the guard and into the body check — which is where an empty `{}`
@@ -337,6 +342,6 @@ describe('every write route, asked directly', () => {
     // the whole schema at once, and it does it with the append-only trigger on
     // `wallet_entries` switched off for the length of one transaction.
     // `undo.ts` asserts the trigger back on before that transaction may commit.
-    expect(writeRoutes().length).toBe(144);
+    expect(writeRoutes().length).toBe(145);
   });
 });
