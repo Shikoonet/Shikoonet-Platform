@@ -95,6 +95,33 @@ export function CardBalancingPanel({
                     )}
                   </span>
                 </div>
+                {/* Six rolling windows, side by side rather than behind a
+                    picker: whether a card is warming up or going quiet is a
+                    shape across them, and six clicks would ask an operator to
+                    hold that shape in their head. The labels come from the
+                    server with the numbers, so they cannot fall out of step. */}
+                {/* Guarded, and the guard is about blast radius rather than
+                    types: this strip is a diagnostic sitting inside a bigger
+                    view, and a server that stopped sending `windows` must not
+                    be able to take the purchase counts and the eligibility
+                    column down with it. Rendering nothing here still leaves
+                    the row readable. */}
+                <dl className="card-activity" aria-label={`تراکنش‌های ${item.cardMasked}`}>
+                  {(data.windows ?? []).map((w) => (
+                    <div key={w.key} className="card-activity__cell">
+                      <dt className="card-activity__label">{w.label}</dt>
+                      <dd
+                        className={
+                          item.activity[w.key] > 0
+                            ? 'card-activity__value'
+                            : 'card-activity__value card-activity__value--zero'
+                        }
+                      >
+                        {count(item.activity[w.key] ?? 0)}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
                 <div className="account-usage-row__bar-track" aria-hidden>
                   <div
                     className="account-usage-row__bar-fill"

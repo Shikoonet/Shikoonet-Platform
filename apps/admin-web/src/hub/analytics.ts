@@ -2,6 +2,7 @@
  * Financial analytics types shared by Payments and Accounts views.
  */
 
+import type { CardActivityCounts, CardActivityWindow } from '@shikoo/contracts';
 import type { HistoryRange } from './paymentReview.js';
 
 export type PercentChangeKind = 'all_time' | 'new' | 'no_baseline' | 'change';
@@ -100,6 +101,12 @@ export interface CardAnalyticsItem {
   purchaseBarPercent: number;
   hubEligible: boolean;
   exclusionReason: string;
+  /**
+   * Recent traffic per rolling window — NOT scoped by the page's range.
+   * The range answers «in this period»; these answer «right now», and mixing
+   * the two would put a «۳۰ روز» number under an «امروز» filter.
+   */
+  activity: CardActivityCounts;
 }
 
 export interface CardAnalyticsResponse {
@@ -108,6 +115,8 @@ export interface CardAnalyticsResponse {
   entity: 'card_number';
   metric: 'hub_auto_verified_purchases';
   note: string;
+  /** Header order and labels, from the server, so the two cannot drift. */
+  windows: readonly CardActivityWindow[];
   distribution: { min: number; max: number; gap: number };
   items: CardAnalyticsItem[];
 }

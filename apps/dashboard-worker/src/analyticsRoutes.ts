@@ -26,6 +26,11 @@ import {
   type PercentChange,
 } from '@shikoo/domain';
 import { loadFinancialSummary } from './paymentsHubRoutes.js';
+import {
+  CARD_ACTIVITY_WINDOWS,
+  type CardActivityCounts,
+  type CardActivityWindowKey,
+} from '@shikoo/contracts';
 
 type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
 
@@ -454,6 +459,18 @@ export async function loadCardAnalytics(
   };
   const rangeFilter = rangeSql(VERIFIED_AT, start, end, p);
 
+  // The six activity windows are deliberately NOT scoped by the page's range.
+  // They answer «is this card busy right now», and a «۳۰ روز» column that
+  // shrank to nothing because the operator picked «امروز» would be a number
+  // under a label it does not mean. So the range moves off the JOIN and into
+  // `purchase_count`'s own CASE, and each window brings its own cut-off.
+  const windowSql = CARD_ACTIVITY_WINDOWS.map(
+    (w) =>
+      `COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED'` +
+      ` AND ${VERIFIED_AT} >= ${p(now - w.hours * 3_600_000)}` +
+      ` THEN c.id END) AS w_${w.key}`,
+  ).join(', ');
+
   const rows = await db
     .prepare(
       `SELECT pc.card_digits,
@@ -463,7 +480,9 @@ export async function loadCardAnalytics(
               fa.owner_label,
               fa.account_hint,
               fa.status AS account_status,
-              COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED' THEN c.id END) AS purchase_count
+              COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED'${rangeFilter}
+                                  THEN c.id END) AS purchase_count,
+              ${windowSql}
        FROM payment_cards pc
        JOIN financial_accounts fa ON fa.id = pc.financial_account_id
        LEFT JOIN payment_claims c
@@ -476,7 +495,7 @@ export async function loadCardAnalytics(
          -- payment_cards.card_digits.
          ON c.card_digits = pc.card_digits
         AND c.source_system = ${p(MIRZABOT_SOURCE)}
-        AND c.status = 'VERIFIED'${rangeFilter}
+        AND c.status = 'VERIFIED'
        LEFT JOIN reconciliation_matches m
          ON m.payment_claim_id = c.id
         AND m.status = 'AUTO_VERIFIED'
@@ -498,7 +517,7 @@ export async function loadCardAnalytics(
       account_hint: string | null;
       account_status: string;
       purchase_count: number;
-    }>();
+    } & Record<`w_${CardActivityWindowKey}`, number>>();
 
   const items = (rows.results ?? []).map((r) => ({
     cardDigits: r.card_digits,
@@ -513,6 +532,10 @@ export async function loadCardAnalytics(
     accountHint: r.account_hint,
     accountStatus: r.account_status,
     purchaseCount: r.purchase_count,
+    // Numbers, not a nested query per card: one scan produces all six.
+    activity: Object.fromEntries(
+      CARD_ACTIVITY_WINDOWS.map((w) => [w.key, Number(r[`w_${w.key}`] ?? 0)]),
+    ) as CardActivityCounts,
     hubEligible: r.account_status === 'ACTIVE',
     exclusionReason:
       r.account_status === 'ACTIVE' ? 'hub_active' : `account_${r.account_status.toLowerCase()}`,
@@ -526,6 +549,9 @@ export async function loadCardAnalytics(
     range,
     entity: 'card_number' as const,
     metric: 'hub_auto_verified_purchases' as const,
+    // Sent rather than duplicated in the panel: the headers and the counts
+    // come from one list, so a seventh window cannot appear on one side only.
+    windows: CARD_ACTIVITY_WINDOWS,
     // Sent to the browser and rendered verbatim, so it is written in the
     // language the screen is in.
     note: 'خریدهای تاییدشده به تفکیک کارت نگاشت‌شده. توازن تخصیص کارت بر پایهٔ اجاره‌های تکمیل‌شدهٔ ربات است، نه این نمودار.',
