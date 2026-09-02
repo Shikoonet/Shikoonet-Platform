@@ -6,6 +6,7 @@ import {
   salesDistribution,
   trendBucketKind,
   trendBucketStart,
+  trendBucketLabel,
 } from '../src/financialAnalytics.js';
 import { historyRangeBounds } from '../src/historyRange.js';
 
@@ -42,5 +43,28 @@ describe('financialAnalytics', () => {
   it('salesDistribution flags uneven spread', () => {
     expect(salesDistribution([16, 17, 18]).uneven).toBe(false);
     expect(salesDistribution([5, 18]).uneven).toBe(true);
+  });
+});
+
+describe('a bucket label names the Tehran day, on any host', () => {
+  // Tehran midnight on 23 August 2026 is 20:30 UTC on the 22nd. Formatted in
+  // the host's zone that reads «Aug 22» -- one day early, on a money chart,
+  // rendered by a container that has no TZ set.
+  const TEHRAN_MIDNIGHT_23_AUG = Date.UTC(2026, 7, 22, 20, 30, 0);
+
+  it('is the day Tehran is on, not the day UTC is on', () => {
+    expect(new Date(TEHRAN_MIDNIGHT_23_AUG).toISOString().slice(0, 10)).toBe('2026-08-22');
+    expect(trendBucketLabel(TEHRAN_MIDNIGHT_23_AUG, '7d')).toBe('Aug 23');
+    expect(trendBucketLabel(TEHRAN_MIDNIGHT_23_AUG, 'month')).toBe('Aug 23');
+  });
+
+  it('reads the same whatever locale or zone the host is set to', () => {
+    // The locale is pinned as well as the zone: `undefined` meant the
+    // container's, so a base-image change could relabel a chart with nothing
+    // in the diff. Asserting an exact string is what makes this test bite on a
+    // Tehran laptop AND on a UTC runner -- the first version asserted the day
+    // number against `Intl` and would have passed on my machine either way.
+    expect(trendBucketLabel(Date.UTC(2026, 7, 22, 20, 30, 0), 'all')).toBe('Aug 2026');
+    expect(trendBucketLabel(Date.UTC(2026, 7, 22, 20, 30, 0), 'today')).toBe('Aug 23, 12 AM');
   });
 });
