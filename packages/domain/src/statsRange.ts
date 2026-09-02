@@ -46,8 +46,13 @@
  * restore is a note on the screen, not a calendar name in a button.
  */
 
-import { toJalali } from '@shikoo/contracts';
-import { tehranDayBoundsFromDate, tehranDayFromUtc, tehranDateStringFromMs } from './historyRange.js';
+import {
+  jalaliMonthBounds,
+  jalaliMonthStart,
+  tehranDayBoundsFromDate,
+  tehranDayFromUtc,
+  tehranDateStringFromMs,
+} from './historyRange.js';
 
 export type StatsRange =
   | 'all'
@@ -90,43 +95,11 @@ export function parseStatsDay(raw: string | null | undefined): string | null {
   return raw;
 }
 
-/**
- * The Jalali day-of-month for an instant, in Tehran.
- *
- * From `@shikoo/contracts`, which is also what the panel's date picker reads.
- * A month boundary the server computes one way and the screen labels another is
- * two calendars, and the disagreement would surface as an off-by-one day on a
- * money figure — the hardest kind to notice.
- */
-function jalaliDayOfMonth(epochMs: number): number {
-  return toJalali(epochMs).day;
-}
-
-/**
- * Tehran midnight on the first day of the Jalali month containing `epochMs`.
- *
- * Stepping back `day - 1` whole days from the *Tehran day start* — rather than
- * from the instant — is what makes this exact regardless of the time of day it
- * is called, and Jalali months are whole numbers of days so no month can be
- * missed by the walk.
- */
-function jalaliMonthStart(epochMs: number): number {
-  const dayStart = tehranDayFromUtc(epochMs).start;
-  return tehranDayFromUtc(dayStart - (jalaliDayOfMonth(dayStart) - 1) * DAY_MS).start;
-}
-
-/**
- * The Jalali month bounds containing `epochMs`, and the one before it.
- *
- * The next month's start is found by walking forward far enough to be certainly
- * inside the following month and then asking `Intl` where that month begins.
- * Jalali months run 29 to 31 days, so +32 days clears the longest one; nothing
- * here assumes a length.
- */
-function jalaliMonthBounds(epochMs: number): { start: number; end: number } {
-  const start = jalaliMonthStart(epochMs);
-  return { start, end: jalaliMonthStart(start + 32 * DAY_MS) };
-}
+// The Jalali month arithmetic moved to `historyRange.ts` when the money hub
+// grew the same button. It sits beside `tehranDayFromUtc`, which it is built
+// on, and this screen and that one now read the same month boundary — which is
+// the point: a month the two screens disagreed about would show up as two
+// different sales figures under the same Persian month name.
 
 export function statsRangeBounds(
   range: StatsRange,
