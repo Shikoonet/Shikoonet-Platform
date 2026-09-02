@@ -1,0 +1,205 @@
+/**
+ * `undo.ts` — taking back exactly the rows one transaction wrote.
+ *
+ * Against a real Postgres, because every claim this module makes is a claim
+ * about Postgres: `xmin`, primary keys read out of `pg_constraint`, foreign
+ * keys that refuse a delete, and the append-only trigger on `wallet_entries`.
+ * A stub would be asserting that this file agrees with itself.
+ *
+ * The tables used are the real ones. A fixture schema would have proved the
+ * algorithm against a shape nothing in production has — no self-referencing
+ * key on `users`, no `deny_mutation`, no cycle between `orders` and
+ * `subscriptions` — which is to say it would have proved nothing worth knowing.
+ *
+ * Everything here is scoped to one telegram id far outside both the seed range
+ * and the real one, and removed afterwards whether the test passed or not.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type pg from 'pg';
+import { connectPostgres, loadConfig, report } from '../src/db.js';
+import { applyUndo, captureUndo, dropUndo, undoSchemaFor } from '../src/undo.js';
+
+/** Outside the `9000000xx` seed block and outside any real Mirzabot id. */
+const KEEPER = 990_900_001;
+const IMPORTED = 990_900_002;
+
+const SCHEMA = undoSchemaFor('11111111-2222-3333-4444-555555555555');
+
+let pgc: pg.Client;
+
+/** `report` writes to stdout; these tests are about rows, not narration. */
+const quiet = () => {
+  const real = console.log;
+  console.log = () => undefined;
+  return () => {
+    console.log = real;
+  };
+};
+
+async function userIdFor(telegramId: number): Promise<number | null> {
+  const { rows } = await pgc.query<{ id: string }>('SELECT id FROM users WHERE telegram_id = $1', [
+    telegramId,
+  ]);
+  return rows[0] ? Number(rows[0].id) : null;
+}
+
+beforeEach(async () => {
+  pgc = await connectPostgres(loadConfig());
+  await dropUndo(pgc, SCHEMA);
+  await pgc.query('DELETE FROM wallet_entries WHERE user_id IN (SELECT id FROM users WHERE telegram_id = ANY($1))', [[KEEPER, IMPORTED]]).catch(() => undefined);
+  await pgc.query('DELETE FROM users WHERE telegram_id = ANY($1)', [[KEEPER, IMPORTED]]);
+
+  // The row that was already there. Committed on its own, so it carries a
+  // different `xmin` from the one the "import" below will run under — which is
+  // the entire mechanism under test.
+  await pgc.query(
+    `INSERT INTO users (telegram_id, status, registered_at) VALUES ($1, 'ACTIVE', now())`,
+    [KEEPER],
+  );
+});
+
+afterEach(async () => {
+  await dropUndo(pgc, SCHEMA).catch(() => undefined);
+  await pgc
+    .query('DELETE FROM wallet_entries WHERE user_id IN (SELECT id FROM users WHERE telegram_id = ANY($1))', [[KEEPER, IMPORTED]])
+    .catch(() => undefined);
+  await pgc.query('DELETE FROM users WHERE telegram_id = ANY($1)', [[KEEPER, IMPORTED]]).catch(() => undefined);
+  await pgc.end().catch(() => undefined);
+});
+
+/** One "import": a transaction that writes, records itself, and commits. */
+async function importOneUser(): Promise<void> {
+  const restore = quiet();
+  try {
+    await pgc.query('BEGIN');
+    await pgc.query(
+      `INSERT INTO users (telegram_id, status, registered_at) VALUES ($1, 'ACTIVE', now())`,
+      [IMPORTED],
+    );
+    await captureUndo(pgc, SCHEMA);
+    await pgc.query('COMMIT');
+  } finally {
+    restore();
+  }
+}
+
+describe('what a run is judged to have written', () => {
+  it('records the rows this transaction inserted and not the ones already there', async () => {
+    await importOneUser();
+
+    const { rows } = await pgc.query<{ id: string }>(`SELECT id FROM ${SCHEMA}.users`);
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]!.id)).toBe(await userIdFor(IMPORTED));
+  });
+
+  it('names only the tables that moved', async () => {
+    await importOneUser();
+
+    const { rows } = await pgc.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
+      [SCHEMA],
+    );
+    // 71 tables exist; one was written to. A recording that listed them all
+    // would still "work" and would tell a reader nothing.
+    expect(rows.map((r) => r.table_name)).toEqual(['users']);
+  });
+});
+
+describe('taking it back', () => {
+  it('removes what the run wrote and leaves what was already there', async () => {
+    await importOneUser();
+    expect(await userIdFor(IMPORTED)).not.toBeNull();
+
+    const restore = quiet();
+    try {
+      await pgc.query('BEGIN');
+      const result = await applyUndo(pgc, SCHEMA);
+      await pgc.query('COMMIT');
+      expect(result.total).toBe(1);
+      expect(result.removed).toEqual([{ table: 'users', rows: 1 }]);
+    } finally {
+      restore();
+    }
+
+    expect(await userIdFor(IMPORTED)).toBeNull();
+    // The whole reason Sam chose this over a restore.
+    expect(await userIdFor(KEEPER)).not.toBeNull();
+  });
+
+  it('leaves a row created AFTER the import alone', async () => {
+    await importOneUser();
+
+    // A purchase, a signup — anything that happened between the import and the
+    // regret. A snapshot diff would have called this "something the import
+    // added"; `xmin` does not.
+    await pgc.query(
+      `INSERT INTO users (telegram_id, status, registered_at) VALUES ($1, 'ACTIVE', now())`,
+      [KEEPER + 100],
+    );
+    try {
+      const restore = quiet();
+      try {
+        await pgc.query('BEGIN');
+        await applyUndo(pgc, SCHEMA);
+        await pgc.query('COMMIT');
+      } finally {
+        restore();
+      }
+      expect(await userIdFor(KEEPER + 100)).not.toBeNull();
+    } finally {
+      await pgc.query('DELETE FROM users WHERE telegram_id = $1', [KEEPER + 100]);
+    }
+  });
+
+  it('puts the append-only trigger back', async () => {
+    await importOneUser();
+
+    const restore = quiet();
+    try {
+      await pgc.query('BEGIN');
+      await applyUndo(pgc, SCHEMA);
+      await pgc.query('COMMIT');
+    } finally {
+      restore();
+    }
+
+    // Asserted from `pg_trigger`, not from the fact that nothing threw. A
+    // trigger left disabled is a rule silently repealed for every later writer.
+    const { rows } = await pgc.query<{ tgenabled: string }>(
+      `SELECT tgenabled FROM pg_trigger WHERE tgname = 'trg_wallet_entries_append_only'`,
+    );
+    expect(rows[0]?.tgenabled).not.toBe('D');
+  });
+
+  it('is a no-op on a recording that holds nothing', async () => {
+    await pgc.query('BEGIN');
+    const restore = quiet();
+    try {
+      await captureUndo(pgc, SCHEMA);
+    } finally {
+      restore();
+      await pgc.query('COMMIT');
+    }
+    const out = await applyUndo(pgc, SCHEMA);
+    expect(out).toEqual({ removed: [], total: 0 });
+  });
+});
+
+describe('the schema name', () => {
+  it('comes from the run id, so a row and a schema cannot disagree', () => {
+    expect(undoSchemaFor('a1b2c3d4-0000-1111-2222-333344445555')).toBe(
+      'import_undo_a1b2c3d4_0000_1111_2222_333344445555',
+    );
+  });
+
+  it('is a legal unquoted identifier and short enough for Postgres', () => {
+    const name = undoSchemaFor('a1b2c3d4-0000-1111-2222-333344445555');
+    expect(name).toMatch(/^[a-z_][a-z0-9_]*$/);
+    expect(name.length).toBeLessThanOrEqual(63);
+  });
+});
+
+// `report` is imported so the module's narration is exercised rather than
+// tree-shaken out of the type check; nothing here asserts on it.
+void report;
