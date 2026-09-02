@@ -86,6 +86,25 @@ describe('روش ساخت نام کاربری — the shapes a panel may give an
     );
   });
 
+  /**
+   * Clearing the text must not resurrect `namecustom`.
+   *
+   * The route stores `username_text: null` when an admin empties the field,
+   * and `??` reads a stored null as «unset» — so the legacy value came back,
+   * and on two production panels that value is the literal string `none`.
+   * Every account on them would have been named `none_...` by an admin who
+   * had just said they wanted no custom text at all.
+   */
+  it('treats a cleared text as cleared, not as absent', () => {
+    const cleared = { username_mode: 'PANEL_TEXT', username_text: null, namecustom: 'legacy' };
+    expect(remoteUsernameFor(7, 'inv-1', usernameShapeFor(cleared))).toBe('7_inv1');
+
+    // and the key being absent still finds the legacy one, which is the whole
+    // reason the fallback exists.
+    const untouched = { username_mode: 'PANEL_TEXT', namecustom: 'legacy' };
+    expect(remoteUsernameFor(7, 'inv-1', usernameShapeFor(untouched))).toBe('legacy_inv1');
+  });
+
   it('caps the prefix, which legacy does nowhere and the panel answers 422 about', () => {
     const long = 'a'.repeat(80);
     const name = remoteUsernameFor(7, 'inv-1', { mode: 'PANEL_TEXT', panelText: long });
@@ -133,6 +152,19 @@ describe('اکانت تست — the two numbers, in the units the PHP actually u
       time_usertest: '12',
     });
     expect(trial).toEqual({ enabled: true, volumeGb: 2, durationHours: 24 });
+  });
+
+  it('treats a cleared number as cleared, not as absent', () => {
+    // Same trap as the username text: an admin who empties the gigabytes is
+    // saying «nothing», and `??` answered with the megabytes underneath —
+    // leaving the trial on, at a size nobody chose.
+    const cleared = {
+      trial_enabled: true,
+      trial_volume_gb: null,
+      val_usertest: '1000',
+      time_usertest: '12',
+    };
+    expect(trialFor(cleared)).toEqual({ enabled: false, volumeGb: null, durationHours: 12 });
   });
 
   it('refuses to be on with a number missing, which legacy does not', () => {
