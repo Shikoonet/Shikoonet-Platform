@@ -19,7 +19,9 @@
  * unit suites do not. Run it deliberately with `pnpm e2e`.
  */
 
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { defineConfig } from '@playwright/test';
@@ -149,6 +151,23 @@ export const LOGIN_PORT = freePort(PORT + 1, 'E2E_LOGIN_PORT');
 
 const spaPath = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url));
 
+/**
+ * Where the import screen reads dumps, and now also writes them.
+ *
+ * It used to be `spaPath('.')` — this package's own directory — which was fine
+ * while the route only ever LISTED files. Since the panel can upload, that
+ * default would have written .sql files into the working tree, and a suite that
+ * leaves files in the repository is a suite that eventually commits one.
+ *
+ * Decided once and passed through the environment, for the same reason the
+ * ports are: a spec re-evaluates this file in its own process, and a second
+ * `mkdtemp` there would give the browser one directory and the assertions
+ * another.
+ */
+export const IMPORT_DIR: string =
+  process.env.IMPORT_DIR ?? mkdtempSync(join(tmpdir(), 'shikoo-e2e-import-'));
+process.env.IMPORT_DIR = IMPORT_DIR;
+
 export default defineConfig({
   testDir: './e2e',
   globalSetup: './e2e/global-setup.ts',
@@ -214,10 +233,12 @@ export default defineConfig({
          *
          * The directory need not contain anything. The screen listing zero
          * files is a working screen; the screen saying «IMPORT_DIR روی سرور
-         * تنظیم نشده است» is not. An existing path is used so nothing has to be
-         * created or cleaned up.
+         * تنظیم نشده است» is not.
+         *
+         * A temporary directory since 2026-09-01, when the route learned to
+         * write: see `IMPORT_DIR` above.
          */
-        IMPORT_DIR: process.env.IMPORT_DIR ?? spaPath('.'),
+        IMPORT_DIR,
       },
     },
     {

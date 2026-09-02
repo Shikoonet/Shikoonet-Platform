@@ -17,7 +17,8 @@ import { gzipSync } from 'node:zlib';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readDump } from '../src/load.js';
+import { dumpSha256, loadDump, readDump } from '../src/load.js';
+import { configFrom } from '../src/db.js';
 
 const dirs: string[] = [];
 const tmpFile = (name: string, bytes: Buffer) => {
@@ -60,5 +61,46 @@ describe('a compressed dump', () => {
   it('passes a plain .sql file through untouched', () => {
     const sql = Buffer.from('SELECT 1;', 'utf8');
     expect(readDump(tmpFile('plain.sql', sql))).toEqual(sql);
+  });
+});
+
+/**
+ * The digest a caller was authorised to load, checked against the file read.
+ *
+ * The panel gates an APPLY on a dry run of the same dump; between the hash and
+ * the load the file can change, and the gate would then have proved bytes that
+ * are not the ones about to be imported. CodeRabbit raised it on PR #48.
+ *
+ * No MySQL here on purpose, and that is the assertion as much as the throw is.
+ * The config below points at a port nothing listens on, so a refusal that
+ * arrived after the connection would fail with ECONNREFUSED instead — and the
+ * scratch database is DROPPED as the first thing that happens once connected,
+ * which for an unapproved file would destroy the evidence of the run that did
+ * pass.
+ */
+describe('loading only the bytes that were approved', () => {
+  const nowhere = configFrom({
+    mysql: { host: '127.0.0.1', port: 1, user: 'nobody', password: '', database: 'scratch' },
+    postgres: { connectionString: 'postgres://unused/unused' },
+  });
+
+  it('refuses a file whose digest is not the one proven, before any connection', async () => {
+    const path = tmpFile('changed.sql', Buffer.from('SELECT 1;', 'utf8'));
+    await expect(loadDump(nowhere, path, 'f'.repeat(64))).rejects.toThrow(
+      /is not the file that was approved/,
+    );
+  });
+
+  it('says both digests, because «it changed» is not actionable on its own', async () => {
+    const path = tmpFile('changed.sql', Buffer.from('SELECT 2;', 'utf8'));
+    const actual = dumpSha256(path);
+    await expect(loadDump(nowhere, path, 'a'.repeat(64))).rejects.toThrow(actual);
+  });
+
+  it('does not check when no digest was given', async () => {
+    const path = tmpFile('free.sql', Buffer.from('SELECT 3;', 'utf8'));
+    // Reaches MySQL and fails there — which is the proof that nothing earlier
+    // refused it. Every existing caller passes no digest and must be unchanged.
+    await expect(loadDump(nowhere, path)).rejects.toThrow(/ECONNREFUSED|connect/i);
   });
 });
