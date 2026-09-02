@@ -1,12 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { seedCatalog } from '@shikoo/seed';
 import { plansOnPanel, productsForUser, purchasablePlan } from '../src/catalog.js';
+import { productMenu } from '../src/menu.js';
 import { db } from './helpers/env.js';
 import {
   ensureCatalog,
   giveSubscription,
   makeCustomer,
   planId,
+  productId,
   providerId,
 } from './helpers/shop.js';
 
@@ -172,6 +174,75 @@ describe('what the shop shows a customer', () => {
     // be there, or that disambiguation has nothing to draw.
     const products = await productsForUser(db, customer);
     expect(products.every((p) => p.providerName.trim() !== '')).toBe(true);
+  });
+
+  /**
+   * The badge an operator types on «محصولات» reaches the button they typed it
+   * for — and the one they typed it for is on THIS screen.
+   *
+   * The panel writes `badge` and `button_style` onto `product_plans`, and every
+   * migrated row is one service holding one config, so the button a customer
+   * meets for it is the TIER button. Until 2026-09-02 this query selected
+   * neither column and `productMenu` drew neither, which is exactly what Sam
+   * reported: a colour and an emoji saved on ten of the eleven fixture services
+   * that no customer could ever see. The plan screen those two DID reach is
+   * drawn only for «پلاتینیوم» — everything else has one config and the bot
+   * collapses straight past it into the plan itself.
+   *
+   * Asserted through Postgres and not on a hand-built object, because the whole
+   * defect lived in the SELECT: a pure-function test of `productMenu` was green
+   * throughout.
+   */
+  it('draws the one config’s badge and colour on the service that IS that config', async () => {
+    const single = await productId('sim-vip-1m-20');
+    const tiered = await productId('sim-vip-platinum');
+    // `finally`, because this suite shares one Postgres with every other
+    // package's and the catalogue is a fixture nothing re-seeds between files.
+    // A badge left behind by a FAILING run is the worst kind of leftover: the
+    // next file reads a styled row it never wrote, and `env.ts` already carries
+    // two notes about exactly this costing an hour each.
+    try {
+      await db
+        .prepare(
+          `UPDATE product_plans SET badge = ?1, button_style = ?2
+            WHERE product_id = ?3`,
+        )
+        .bind('🆕 نیو', 'success', single)
+        .run();
+      // Both configs of the tiered service badged, so «none» below can only be
+      // the one-config rule and not an empty column.
+      await db
+        .prepare(
+          `UPDATE product_plans SET badge = ?1, button_style = ?2
+            WHERE product_id = ?3`,
+        )
+        .bind('🔥 آف', 'danger', tiered)
+        .run();
+
+      const products = await productsForUser(db, customer);
+      const one = products.find((p) => p.productId === single);
+      expect([one?.badge, one?.buttonStyle]).toEqual(['🆕 نیو', 'success']);
+
+      // Three configs are three answers, so the tier button takes none of them —
+      // its badges belong one screen down, on the buttons they were typed for.
+      const many = products.find((p) => p.productId === tiered);
+      expect([many?.badge, many?.buttonStyle]).toEqual([null, null]);
+
+      // And it reaches the keyboard, `style` key and all.
+      expect(productMenu([one!])[0]![0]).toMatchObject({
+        text: expect.stringContaining('🆕 نیو'),
+        style: 'success',
+      });
+      expect(productMenu([many!])[0]![0]).not.toHaveProperty('style');
+    } finally {
+      await db
+        .prepare(
+          `UPDATE product_plans SET badge = NULL, button_style = NULL
+            WHERE product_id = ANY($1)`,
+        )
+        .bind([single, tiered])
+        .run();
+    }
   });
 
   it('does not offer a disabled panel', async () => {
