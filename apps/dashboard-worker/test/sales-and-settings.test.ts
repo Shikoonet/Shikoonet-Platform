@@ -358,7 +358,10 @@ describe('the read-only ledgers', () => {
     // catalogue row, and the name living on the subscription instead. Before
     // the join below, all 8,909 imported orders showed a dash.
     const { id: userId, telegramId } = await makeUser();
-    const orderPublicId = crypto.randomUUID();
+    // Deterministic, so a failure names the same row twice running.
+    // `makeUser` has already advanced `seq`, and `purge` clears every
+    // order belonging to a user at or above TG_BASE before each test.
+    const orderPublicId = `zzsales-order-${seq}`;
     await baseEnv.DB.prepare(
       `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status, plan_id)
        VALUES (?1, ?2, 'NEW_PURCHASE', 1190000, 1, 0, 1190000, 'COMPLETED', NULL)`,
@@ -373,7 +376,7 @@ describe('the read-only ledgers', () => {
          (public_id, user_id, order_id, plan_name_at_sale, provider_name_at_sale, price_irr, status, purchased_at)
        VALUES (?1, ?2, ?3, '1ماهه-20گیگ-119.000ت', 'سرویس تیتانیوم', 1190000, 'ACTIVE', now())`,
     )
-      .bind(crypto.randomUUID(), userId, order!.id)
+      .bind(`zzsales-sub-${seq}`, userId, order!.id)
       .run();
 
     const res = await app.request(`/api/v1/admin/orders?q=${telegramId}`, {}, envAs(ADMIN));
