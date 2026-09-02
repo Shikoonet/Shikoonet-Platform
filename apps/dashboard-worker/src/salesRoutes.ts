@@ -160,9 +160,14 @@ export function registerSalesRoutes(
               o.unit_price_irr, o.discount_irr, o.total_irr,
               o.failure_reason, o.created_at, o.completed_at,
               u.id AS user_id, u.telegram_id, u.username,
-              pl.name AS plan_name
+              COALESCE(pl.name, s.plan_name_at_sale) AS plan_name
          ${from}
          LEFT JOIN product_plans pl ON pl.id = o.plan_id
+         -- Joined for the name only, and safe to join at all because
+         -- idx_subscriptions_one_per_order is UNIQUE on order_id: the schema,
+         -- not this query, is what stops a row multiplying. Kept outside the
+         -- shared FROM so the COUNT above still counts orders.
+         LEFT JOIN subscriptions s ON s.order_id = o.id
          ${whereSql}
         ORDER BY o.id DESC
         LIMIT ?${limitParam} OFFSET ?${params.length}`,
@@ -204,9 +209,21 @@ export function registerSalesRoutes(
         createdAt: r.created_at,
         completedAt: r.completed_at,
         customer: { id: r.user_id, telegramId: r.telegram_id, username: r.username },
-        // NULL after a plan is retired: `orders.plan_id` is ON DELETE SET NULL.
-        // The order still happened, so it is shown with the plan unknown rather
-        // than hidden.
+        // Two sources, in this order, because `plan_id` answers for one
+        // kind of order and not the other:
+        //
+        //   * `product_plans.name` — today's catalogue, for an order the
+        //     shop itself took. NULL once a plan is retired, since
+        //     `orders.plan_id` is ON DELETE SET NULL.
+        //   * `subscriptions.plan_name_at_sale` — the name the customer
+        //     actually bought under. This is the only one an imported
+        //     order has: legacy plan names are free text with the price
+        //     inside them, so the migration deliberately maps none of them
+        //     to a catalogue row and `plan_id` stays NULL on all 8,909.
+        //
+        // Still NULL for a renewal or add-on, which is right: `service_other`
+        // carries no product name in the legacy database either, and the
+        // «نوع» column already says what those orders are.
         planName: r.plan_name,
       })),
     });

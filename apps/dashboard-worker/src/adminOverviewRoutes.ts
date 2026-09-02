@@ -85,11 +85,17 @@ export function registerAdminOverviewRoutes(
 
     const recentOrders = await db
       .prepare(
-        `SELECT o.public_id, u.telegram_id, p.name AS plan_name,
+        // `plan_name_at_sale` is the fallback rather than an afterthought:
+        // an imported order has no `plan_id` at all, so without it every row
+        // on this list reads as a dash. Safe to join because
+        // `idx_subscriptions_one_per_order` is UNIQUE on `order_id`.
+        `SELECT o.public_id, u.telegram_id,
+                COALESCE(p.name, s.plan_name_at_sale) AS plan_name,
                 o.total_irr, o.status, o.created_at
            FROM orders o
            LEFT JOIN users u ON u.id = o.user_id
            LEFT JOIN product_plans p ON p.id = o.plan_id
+           LEFT JOIN subscriptions s ON s.order_id = o.id
           ORDER BY o.id DESC
           LIMIT ?1`,
       )
