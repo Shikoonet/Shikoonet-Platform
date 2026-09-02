@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import type { Cache } from './query.js';
 import { QK } from './queries.js';
 import { formatTomanFromIrr, formatTimeSeconds } from './format.js';
+import { count } from '../format.js';
 import { IdentifierText } from './IdentifierText.js';
 import { ClaimChangeAccount } from './ClaimChangeAccount.js';
 import { TransactionReassignPicker } from './TransactionReassignPicker.js';
@@ -106,9 +107,21 @@ interface Filters {
   reason: string;
   from: string;
   to: string;
+  /** Full digits of one of the shop's cards — «چقدر به این کارت ریخته شد». */
+  cardDigits: string;
+  /** A Telegram id — «این آی‌دی چند بار و به کدام کارت‌ها واریز داشته». */
+  telegramId: string;
 }
 
-const EMPTY_FILTERS: Filters = { status: '', accountId: '', reason: '', from: '', to: '' };
+const EMPTY_FILTERS: Filters = {
+  status: '',
+  accountId: '',
+  reason: '',
+  from: '',
+  to: '',
+  cardDigits: '',
+  telegramId: '',
+};
 
 function buildQuery(
   tab: PaymentTab,
@@ -131,8 +144,14 @@ function buildQuery(
     if (filters.status) qs.set('status', filters.status);
     if (filters.accountId) qs.set('accountId', filters.accountId);
     if (filters.reason) qs.set('reason', filters.reason);
-    if (filters.from) qs.set('from', String(Date.parse(`${filters.from}T00:00:00`)));
-    if (filters.to) qs.set('to', String(Date.parse(`${filters.to}T23:59:59`)));
+    // The DAY, not an instant. `Date.parse('2026-08-23T00:00:00')` has no zone,
+    // so it meant midnight wherever the operator was sitting — up to three and
+    // a half hours of claims off either edge of a money filter. The server
+    // resolves the Tehran day, which is the only place that is already right.
+    if (filters.from) qs.set('fromDay', filters.from);
+    if (filters.to) qs.set('toDay', filters.to);
+    if (filters.cardDigits) qs.set('cardDigits', filters.cardDigits);
+    if (filters.telegramId) qs.set('telegramId', filters.telegramId);
   }
   return qs.toString();
 }
@@ -148,6 +167,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const [tab, setTab] = useState<PaymentTab>(() => parsePaymentTabFromLocation());
   const isWide = useMediaQuery('(min-width: 1200px)');
   const [rangeState, setRangeState] = useState<HistoryRangeState>(defaultHistoryRangeState());
+  const [page, setPage] = useState(1);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   // DEV-only: filters specific to the Bot Auto Verified tab.
   const botAutoFilter = useBotAutoVerifiedFilter();
@@ -183,12 +203,25 @@ export function PaymentsView({ cache }: { cache: Cache }) {
     syncPaymentTabToLocation(next);
   }
 
-  const query = buildQuery(
+  const baseQuery = buildQuery(
     tab,
     rangeState,
     filters,
     tab === 'bot_auto_verified' ? botAutoFilter.toQueryParams() : undefined,
   );
+  /*
+   * Page 1 whenever anything else about the question changes.
+   *
+   * Keyed on the query string rather than reset inside each setter: the tab,
+   * the range, six filters and the bot-auto segmented control all change what
+   * is being asked, and a reset that has to be remembered in nine places is a
+   * reset that will be forgotten in one -- leaving an operator on «page 4» of
+   * a filter that now matches two rows, looking at an empty list.
+   */
+  useEffect(() => {
+    setPage(1);
+  }, [baseQuery]);
+  const query = page > 1 ? `${baseQuery}&page=${page}` : baseQuery;
   const queryKey = QK.payments(query);
   const analyticsQs = new URLSearchParams();
   appendHistoryRangeQuery(analyticsQs, rangeState);
@@ -830,6 +863,13 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 ))}
               </ul>
             )}
+
+            <ClaimPager
+              page={data?.page ?? 1}
+              pageSize={data?.pageSize}
+              total={data?.total}
+              onPage={setPage}
+            />
 
             {tab === 'bot_auto_verified' && claimItems.length > 0 && (
               <div className={`bot-verified-layout${isWide ? ' bot-verified-layout--wide' : ''}`}>
@@ -1486,6 +1526,64 @@ function AllRow({ item, onOpen }: { item: PaymentItem; onOpen: () => void }) {
   );
 }
 
+/**
+ * «۲۰۰ از ۵۱۰» — and the two buttons that reach the rest.
+ *
+ * Until 2026-09-03 the list ended in a hard `LIMIT 200` and said nothing. On a
+ * busy month the screen showed two hundred rows and the operator had no way to
+ * know the others existed: a payment they were looking for was simply absent,
+ * with no reason offered. The money figures were never wrong — `summary` and
+ * `counts` are their own aggregates over the whole range — so what was lost
+ * was a ROW, not a sum.
+ *
+ * Draws nothing when there is one page, and nothing at all when the tab does
+ * not report a total: the income, declined and reseller tabs have their own
+ * loaders and are not paginated, and a pager rendered from `undefined` would
+ * be a control that promises pages it cannot turn to.
+ */
+function ClaimPager({
+  page,
+  pageSize,
+  total,
+  onPage,
+}: {
+  page: number;
+  // `| undefined` explicitly, not just `?`: `exactOptionalPropertyTypes` is on,
+  // and these arrive as `data?.total` -- present and undefined, which is a
+  // different thing from absent and is exactly the state this must handle.
+  pageSize: number | undefined;
+  total: number | undefined;
+  onPage: (next: number) => void;
+}) {
+  if (total === undefined || pageSize === undefined || total <= pageSize) return null;
+  const pages = Math.ceil(total / pageSize);
+  const first = (page - 1) * pageSize + 1;
+  const last = Math.min(page * pageSize, total);
+  return (
+    <div className="claim-pager" aria-label="صفحه‌بندی پرداخت‌ها">
+      <button
+        type="button"
+        className="ghost"
+        disabled={page <= 1}
+        onClick={() => onPage(page - 1)}
+      >
+        قبلی
+      </button>
+      <span className="claim-pager__count">
+        {count(first)}–{count(last)} از {count(total)}
+      </span>
+      <button
+        type="button"
+        className="ghost"
+        disabled={page >= pages}
+        onClick={() => onPage(page + 1)}
+      >
+        بعدی
+      </button>
+    </div>
+  );
+}
+
 function AllFilters({
   cache,
   filters,
@@ -1502,6 +1600,15 @@ function AllFilters({
   }>(QK.accounts, {
     fetcher: async (signal) => {
       const r = await fetch('/api/v1/accounts', { signal });
+      if (!r.ok) throw new Error(`${r.status}`);
+      return r.json();
+    },
+  });
+  const { data: cards } = cache.useQuery<{
+    items: Array<{ cardDigits: string; cardMasked: string; displayName: string }>;
+  }>('cards-analytics-for-filter', {
+    fetcher: async (signal) => {
+      const r = await fetch('/api/v1/cards/analytics?range=all', { signal });
       if (!r.ok) throw new Error(`${r.status}`);
       return r.json();
     },
@@ -1543,11 +1650,32 @@ function AllFilters({
         </select>
       </label>
       <label>
+        کارت
+        <select value={filters.cardDigits} onChange={(e) => set({ cardDigits: e.target.value })}>
+          <option value="">همه</option>
+          {(cards?.items ?? []).map((c) => (
+            <option key={c.cardDigits} value={c.cardDigits}>
+              {c.cardMasked} · {c.displayName}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        آی‌دی تلگرام
+        <input
+          type="text"
+          inputMode="numeric"
+          placeholder="مثلاً ۱۲۳۴۵۶۷۸۹"
+          value={filters.telegramId}
+          onChange={(e) => set({ telegramId: e.target.value })}
+        />
+      </label>
+      <label>
         از
         <input type="date" value={filters.from} onChange={(e) => set({ from: e.target.value })} />
       </label>
       <label>
-        To
+        تا
         <input type="date" value={filters.to} onChange={(e) => set({ to: e.target.value })} />
       </label>
       <button type="button" className="ghost" onClick={() => onChange(EMPTY_FILTERS)}>

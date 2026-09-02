@@ -54,6 +54,10 @@ beforeEach(async () => {
 
 interface ClaimSeed {
   status?: string;
+  /** The card the customer was told to pay into. Defaults to `CARD`. */
+  cardDigits?: string;
+  /** `payment_claims.customer_reference` — the Telegram id. Defaults to `tg-42`. */
+  customerReference?: string;
   suspectReason?: string | null;
   paidClickedAt?: number;
   suspectMeta?: object;
@@ -73,7 +77,7 @@ async function seedClaim(id: string, seed: ClaimSeed = {}) {
        (id, external_order_id, customer_reference, expected_amount_irr, target_financial_account_id,
         submitted_at, source_system, metadata_json, status, paid_clicked_at, receipt_submitted_at,
         suspect_reason, suspect_metadata_json, card_digits, created_at, updated_at)
-     VALUES (?1, ?2, 'tg-42', ?3, ?4, ?5, 'MIRZABOT',
+     VALUES (?1, ?2, ?10, ?3, ?4, ?5, 'MIRZABOT',
              '{"telegramUserId":"42","telegramUsername":"ali"}', ?6, ?5, ?5, ?7, ?8, ?9, ?5, ?5)`,
   )
     .bind(
@@ -85,7 +89,8 @@ async function seedClaim(id: string, seed: ClaimSeed = {}) {
       seed.status ?? 'PENDING',
       seed.suspectReason ?? null,
       JSON.stringify(seed.suspectMeta ?? {}),
-      CARD,
+      seed.cardDigits ?? CARD,
+      seed.customerReference ?? 'tg-42',
     )
     .run();
   return { id, paid, now };
@@ -594,5 +599,132 @@ describe('one claim by id', () => {
 
     const body = await get('claim=no-such-claim');
     expect(body.items).toEqual([]);
+  });
+});
+
+describe('filtering the payments list by card and by customer', () => {
+  const CARD_A = '6104337712345678';
+  const CARD_B = '6104338898765432';
+
+  async function ask(qs: string) {
+    const r = await app.fetch(new Request(`https://x/api/v1/payments?${qs}`), envAs());
+    expect(r.status).toBe(200);
+    return (await r.json()) as {
+      items: Array<{ id: string }>;
+      page: number;
+      pageSize: number;
+      total: number;
+    };
+  }
+
+  it('narrows to one card, and the two cards do not bleed into each other', async () => {
+    await seedClaim('f-a1', { status: 'VERIFIED', cardDigits: CARD_A });
+    await seedClaim('f-a2', { status: 'VERIFIED', cardDigits: CARD_A });
+    await seedClaim('f-b1', { status: 'VERIFIED', cardDigits: CARD_B });
+
+    expect((await ask('tab=all&range=all')).total).toBe(3);
+    const a = await ask(`tab=all&range=all&cardDigits=${CARD_A}`);
+    expect(a.total).toBe(2);
+    expect(a.items.map((i) => i.id).sort()).toEqual(['f-a1', 'f-a2']);
+    expect((await ask(`tab=all&range=all&cardDigits=${CARD_B}`)).total).toBe(1);
+  });
+
+  it('narrows to one Telegram id', async () => {
+    await seedClaim('f-u1', { status: 'VERIFIED', customerReference: '900000001' });
+    await seedClaim('f-u2', { status: 'VERIFIED', customerReference: '900000001' });
+    await seedClaim('f-u3', { status: 'VERIFIED', customerReference: '900000002' });
+
+    const one = await ask('tab=all&range=all&telegramId=900000001');
+    expect(one.total).toBe(2);
+    expect(one.items.map((i) => i.id).sort()).toEqual(['f-u1', 'f-u2']);
+  });
+
+  it('answers a malformed filter with everything, not with an empty shop', async () => {
+    // A rejected value must not become `card_digits = 'abc'`, which would
+    // return nothing and read as «this card took no money» -- a sentence about
+    // the shop rather than about the input.
+    await seedClaim('f-x1', { status: 'VERIFIED', cardDigits: CARD_A });
+    expect((await ask('tab=all&range=all&cardDigits=abc')).total).toBe(1);
+    expect((await ask('tab=all&range=all&cardDigits=5678')).total).toBe(1);
+    expect((await ask('tab=all&range=all&telegramId=not-a-number')).total).toBe(1);
+  });
+
+  it('combines the two filters rather than letting the later one win', async () => {
+    await seedClaim('f-c1', { status: 'VERIFIED', cardDigits: CARD_A, customerReference: '5551' });
+    await seedClaim('f-c2', { status: 'VERIFIED', cardDigits: CARD_A, customerReference: '5552' });
+    await seedClaim('f-c3', { status: 'VERIFIED', cardDigits: CARD_B, customerReference: '5551' });
+
+    const both = await ask(`tab=all&range=all&cardDigits=${CARD_A}&telegramId=5551`);
+    expect(both.total).toBe(1);
+    expect(both.items[0]!.id).toBe('f-c1');
+  });
+});
+
+describe('the payments list is paginated rather than silently cut', () => {
+  /**
+   * 210 claims, because the old behaviour was a hard `LIMIT 200`.
+   *
+   * A fixture of three rows cannot see this at all -- the same reason rule 9
+   * of CLAUDE.md gives for the subquery LIMIT: below the ceiling every version
+   * of the code agrees, so a small fixture is silent, not green.
+   */
+  const N = 210;
+
+  beforeEach(async () => {
+    for (let i = 0; i < N; i++) {
+      await seedClaim(`pg-${String(i).padStart(3, '0')}`, {
+        status: 'VERIFIED',
+        paidClickedAt: Date.now() - i * 60_000,
+      });
+    }
+  });
+
+  it('reports how many there are, not how many it sent', async () => {
+    const r = await app.fetch(new Request('https://x/api/v1/payments?tab=all&range=all'), envAs());
+    const body = (await r.json()) as { items: unknown[]; total: number; pageSize: number };
+    expect(body.total).toBe(N);
+    // The default page is still 200, so an unchanged caller sees exactly what
+    // it saw before -- but now it is told there is more.
+    expect(body.items.length).toBe(200);
+    expect(body.pageSize).toBe(200);
+  });
+
+  it('page 2 continues where page 1 stopped, with no row lost or repeated', async () => {
+    const p1 = (await (
+      await app.fetch(
+        new Request('https://x/api/v1/payments?tab=all&range=all&pageSize=100&page=1'),
+        envAs(),
+      )
+    ).json()) as { items: Array<{ id: string }>; total: number };
+    const p2 = (await (
+      await app.fetch(
+        new Request('https://x/api/v1/payments?tab=all&range=all&pageSize=100&page=2'),
+        envAs(),
+      )
+    ).json()) as { items: Array<{ id: string }> };
+    const p3 = (await (
+      await app.fetch(
+        new Request('https://x/api/v1/payments?tab=all&range=all&pageSize=100&page=3'),
+        envAs(),
+      )
+    ).json()) as { items: Array<{ id: string }> };
+
+    expect(p1.total).toBe(N);
+    expect(p1.items.length).toBe(100);
+    expect(p2.items.length).toBe(100);
+    expect(p3.items.length).toBe(N - 200);
+
+    const seen = [...p1.items, ...p2.items, ...p3.items].map((i) => i.id);
+    expect(new Set(seen).size).toBe(N);
+  });
+
+  it('caps pageSize so one request cannot ask for the whole shop', async () => {
+    const r = await app.fetch(
+      new Request('https://x/api/v1/payments?tab=all&range=all&pageSize=100000'),
+      envAs(),
+    );
+    const body = (await r.json()) as { pageSize: number; items: unknown[] };
+    expect(body.pageSize).toBe(500);
+    expect(body.items.length).toBe(N);
   });
 });

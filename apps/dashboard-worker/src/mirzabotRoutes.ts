@@ -26,6 +26,7 @@ import {
 import { MIRZABOT_SOURCE, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
 import {
   tehranDayFromUtc,
+  tehranDayBoundsFromDate,
   parseHistoryRange,
   parseHistoryDay,
   tehranTodayDateString,
@@ -386,6 +387,52 @@ function numParam(raw: string | null): number | null {
   if (!raw) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * A card number from the query string, or null.
+ *
+ * Digits only and 12-19 long, which is the shape `payment_cards.card_digits`
+ * holds. Validated rather than passed through because this value reaches a
+ * bind slot on an indexed column: anything else is a typo, and answering a
+ * typo with «no claims» reads as «this card took no money», which is a
+ * sentence about the shop rather than about the input.
+ *
+ * A four-digit suffix is deliberately NOT accepted. The screen shows
+ * «****5678» so it is the obvious thing to type, but matching it means
+ * `right(card_digits, 4) = ...`, which `idx_claim_card_digits` cannot serve --
+ * a sequential scan of every claim, to save picking from a list of the shop's
+ * own cards.
+ */
+function cardDigitsParam(raw: string | null): string | null {
+  if (!raw) return null;
+  return /^\d{12,19}$/.test(raw) ? raw : null;
+}
+
+/**
+ * A Telegram id from the query string, or null.
+ *
+ * `payment_claims.customer_reference` is text and holds the id as digits.
+ * Telegram ids are 64-bit, so this is not parsed as a number -- above 2^53 a
+ * `Number()` round trip silently changes the last digits, and the claim it
+ * would then fail to find is a real customer's.
+ */
+function telegramIdParam(raw: string | null): string | null {
+  if (!raw) return null;
+  const v = raw.trim();
+  return /^\d{1,20}$/.test(v) ? v : null;
+}
+
+/** `page` and `pageSize`, clamped. `pageSize` was a hard 200 until 2026-09-03. */
+function pageParams(url: URL): { page: number; pageSize: number } {
+  const rawPage = Number(url.searchParams.get('page'));
+  const rawSize = Number(url.searchParams.get('pageSize'));
+  const page = Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1;
+  // 200 stays the default so an unchanged caller sees exactly what it saw
+  // before; the cap is what stops «pageSize=100000» being a way to ask the
+  // panel to render every claim in the shop.
+  const pageSize = Number.isInteger(rawSize) && rawSize > 0 ? Math.min(rawSize, 500) : 200;
+  return { page, pageSize };
 }
 
 function deltaSeconds(paidClickedAt: number | null, bankTimestamp: number | null): number | null {
@@ -989,8 +1036,30 @@ export function registerMirzabotRoutes(
     const claimId = claimIdParam && /^[A-Za-z0-9_-]{1,64}$/.test(claimIdParam) ? claimIdParam : null;
     const accountId = url.searchParams.get('accountId');
     const reason = url.searchParams.get('reason');
-    const from = numParam(url.searchParams.get('from'));
-    const to = numParam(url.searchParams.get('to'));
+    /*
+     * `from`/`to` are epoch milliseconds the BROWSER computed, and it computed
+     * them wrong: `Date.parse(day + 'T00:00:00')` carries no zone, so it means
+     * midnight wherever the operator happens to be sitting. Up to three and a
+     * half hours of claims off either edge, on a money screen.
+     *
+     * `fromDay`/`toDay` are the fix, and they carry the DAY rather than an
+     * instant: the server owns «which milliseconds Tehran calls that day»,
+     * which is the only place that knowledge is already right. The numeric
+     * pair is still read so saved links keep working -- those name an instant
+     * on purpose -- and the day pair wins when both are sent.
+     */
+    const fromDay = parseHistoryDay(url.searchParams.get('fromDay'));
+    const toDay = parseHistoryDay(url.searchParams.get('toDay'));
+    const from = fromDay
+      ? tehranDayBoundsFromDate(fromDay).start
+      : numParam(url.searchParams.get('from'));
+    // The END of the named day, so «تا ۷ آبان» includes the 7th. Its start
+    // would drop everything that happened on the last day asked for -- a
+    // figure slightly too small, which nobody queries.
+    const to = toDay ? tehranDayBoundsFromDate(toDay).end - 1 : numParam(url.searchParams.get('to'));
+    const cardDigits = cardDigitsParam(url.searchParams.get('cardDigits'));
+    const telegramId = telegramIdParam(url.searchParams.get('telegramId'));
+    const { page, pageSize } = pageParams(url);
     // DEV-only: purchase_type filter (only valid for bot_auto_verified tab).
     const purchaseTypeFilter = url.searchParams.get('purchaseType');
     const featureEnabled = c.env?.ENABLE_PURCHASE_TYPE === 'true';
@@ -1057,6 +1126,11 @@ export function registerMirzabotRoutes(
         }
       }
       if (accountId) where.push(`c.target_financial_account_id = ${p(accountId)}`);
+      // The card the customer was TOLD to pay into, snapshotted on the claim.
+      // Not the card's account: one account carries several cards, and «چقدر
+      // به این کارت ریخته شد» is a question about the card.
+      if (cardDigits) where.push(`c.card_digits = ${p(cardDigits)}`);
+      if (telegramId) where.push(`c.customer_reference = ${p(telegramId)}`);
       if (reason) where.push(`c.suspect_reason = ${p(reason)}`);
       if (from != null) where.push(`${EFFECTIVE_TS} >= ${p(from)}`);
       if (to != null) where.push(`${EFFECTIVE_TS} <= ${p(to)}`);
@@ -1091,6 +1165,48 @@ export function registerMirzabotRoutes(
     //   purchase_type='UNKNOWN'.
     const projectionExtras = featureEnabled ? 'c.purchase_type, c.operation_type,' : '';
 
+    /*
+     * How many rows the filters actually match — asked separately, because the
+     * page cannot count what it did not fetch.
+     *
+     * Until 2026-09-03 this query ended in a hard `LIMIT 200` and said nothing
+     * about it. On 510 claims the screen listed 200 and the operator had no
+     * way to know the other 310 existed: a payment they were looking for was
+     * simply not there, and the screen offered no reason. The money figures
+     * were never wrong -- `summary` and `counts` are their own aggregates over
+     * the whole range -- so this was a lost ROW, not a lost sum.
+     *
+     * Counted before the LIMIT/OFFSET binds are pushed, so it sees exactly the
+     * filters the page below sees and not one parameter more.
+     */
+    /*
+     * Written once and used twice, because the count has to see EXACTLY the
+     * joins the page sees. Counting over `payment_claims` alone was tried and
+     * is not a narrower count -- it is a 500: `stateSql` builds its predicates
+     * on `m.status`, so half the tabs reference an alias that is not there.
+     *
+     * `COUNT(*)` over this chain is honest because none of the joins can
+     * multiply a claim: `m` is matched on a scalar subquery that returns at
+     * most one id, and `t`, `rse` and `d` each join on their own primary key.
+     */
+    const claimsFrom = `
+       FROM payment_claims c
+       LEFT JOIN financial_accounts fa ON fa.id = c.target_financial_account_id
+       LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_ID})
+       LEFT JOIN transaction_candidates t ON t.id = m.transaction_candidate_id
+       LEFT JOIN raw_sms_events rse ON rse.id = t.raw_sms_event_id
+       LEFT JOIN devices d ON d.id = rse.device_id`;
+
+    const totalRow = await c.env.DB.prepare(
+      `SELECT COUNT(*)::int AS n ${claimsFrom} WHERE ${where.join(' AND ')}`,
+    )
+      .bind(...binds)
+      .first<{ n: number }>();
+    const total = totalRow?.n ?? 0;
+
+    const limitBind = p(pageSize);
+    const offsetBind = p((page - 1) * pageSize);
+
     const rows = await c.env.DB.prepare(
       `SELECT c.id, c.external_order_id, c.customer_reference, c.expected_amount_irr,
               c.target_financial_account_id, c.card_digits, c.paid_clicked_at,
@@ -1113,15 +1229,10 @@ export function registerMirzabotRoutes(
               d.id AS device_id, d.display_name AS device_display_name,
               d.device_code AS device_code,
               ${EFFECTIVE_TS} AS effective_ts
-       FROM payment_claims c
-       LEFT JOIN financial_accounts fa ON fa.id = c.target_financial_account_id
-       LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_ID})
-       LEFT JOIN transaction_candidates t ON t.id = m.transaction_candidate_id
-       LEFT JOIN raw_sms_events rse ON rse.id = t.raw_sms_event_id
-       LEFT JOIN devices d ON d.id = rse.device_id
+       ${claimsFrom}
        WHERE ${where.join(' AND ')}
        ORDER BY effective_ts ${order}
-       LIMIT 200`,
+       LIMIT ${limitBind} OFFSET ${offsetBind}`,
     )
       .bind(...binds)
       .all<ClaimRow>();
@@ -1252,6 +1363,12 @@ export function registerMirzabotRoutes(
       tab,
       range,
       items,
+      // What the filters match, against what this page holds. Sent on every
+      // response rather than only when it overflows: a screen that shows a
+      // pager sometimes is a screen whose absence of one means nothing.
+      page,
+      pageSize,
+      total,
       counts: counts.total,
       summary: financialSummary,
     });
