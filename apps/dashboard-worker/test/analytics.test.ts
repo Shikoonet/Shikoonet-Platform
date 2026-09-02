@@ -202,6 +202,56 @@ describe('GET /api/v1/cards/analytics', () => {
     expect(byCard.get(CARD_B)).toBe(1);
   });
 
+  /**
+   * The six windows are rolling and are NOT scoped by the page's range.
+   *
+   * Seeded relative to the real clock rather than to `BASE`: every assertion
+   * here is about an *offset*, so there is no fixed date to drift under and
+   * nothing to pin. The windows are hours wide and the suite runs in seconds.
+   */
+  it('counts activity per rolling window, independent of the selected range', async () => {
+    const CARD = '6037993333333333';
+    const HOUR = 3_600_000;
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
+       VALUES ('pc-w', ?1, ?2, ?3)`,
+    )
+      .bind(ACCOUNT, CARD, now)
+      .run();
+
+    // One an hour ago, one twenty hours ago, one ten days ago.
+    for (const [n, agoHours] of [
+      ['recent', 1],
+      ['yesterday', 20],
+      ['old', 24 * 10],
+    ] as const) {
+      await seedTx(`tx-w-${n}`, { ts: now - agoHours * HOUR });
+      await seedClaim(`c-w-${n}`, `tx-w-${n}`, {
+        matchStatus: 'AUTO_VERIFIED',
+        reviewedAt: now - agoHours * HOUR,
+        cardDigits: CARD,
+      });
+    }
+
+    // `range=today` on purpose: a range that excludes the older two must not
+    // shrink the windows, which answer a different question.
+    const r = await app.fetch(
+      new Request('https://x/api/v1/cards/analytics?range=today'),
+      envAs(),
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      windows: Array<{ key: string; label: string }>;
+      items: Array<{ cardDigits: string; activity: Record<string, number> }>;
+    };
+    expect(body.windows.map((w) => w.key)).toEqual(['h12', 'h24', 'd3', 'd7', 'd15', 'd30']);
+
+    const card = body.items.find((i) => i.cardDigits === CARD);
+    expect(card).toBeDefined();
+    expect(card!.activity).toEqual({ h12: 1, h24: 2, d3: 2, d7: 2, d15: 3, d30: 3 });
+  });
+
   it('groups auto-verified purchases by mapped card', async () => {
     await baseEnv.DB.prepare(
       `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
