@@ -36,6 +36,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
+import { trialFor } from '@shikoo/domain';
 
 import type { ButtonStyle } from './telegram.js';
 
@@ -55,6 +56,22 @@ const PURCHASABLE = `
   AND p.status  = 'ACTIVE'
   AND pl.status = 'ACTIVE'
   AND (p.resellers_only = false OR u.is_reseller)
+  /*
+   * «مخفی کردن پنل برای یک کاربر» - legacy marzban_panel.hide_user, now
+   * provider_hidden_users. A deny list: empty means everybody sees it.
+   *
+   * It belongs HERE rather than in the listing queries because three of the
+   * five callers of this predicate are not listings at all - they are the
+   * ones that answer «may this customer buy plan 41», asked with a number
+   * that arrived in a callback. Legacy puts the check in the keyboard
+   * builders instead (keyboard.php:616 and six more continues) and its
+   * single-panel shortcuts skip it entirely, answering «موقعیتی یافت نشد»
+   * from a separate branch. One clause cannot be forgotten in one place.
+   */
+  AND NOT EXISTS (
+        SELECT 1 FROM provider_hidden_users h
+         WHERE h.provider_id = pr.id AND h.user_id = u.id
+      )
   AND (
         p.once_per_user = false
      OR NOT EXISTS (
@@ -472,4 +489,68 @@ export async function purchasablePlan(
     .bind(userId, planId)
     .first<PlanRow>();
   return row ? toPlan(row) : null;
+}
+
+/**
+ * A panel that will hand this customer a free account, and what it hands out.
+ *
+ * Legacy asks the same question with
+ * `SELECT * FROM marzban_panel WHERE TestAccount = 'ONTestAccount'`
+ * (`keyboard.php:734`) and then filters the hidden ones out in PHP. Here the
+ * hidden ones never arrive, because the same `NOT EXISTS` that keeps a hidden
+ * panel out of the shop keeps it out of this list — a panel a customer may not
+ * buy from is not one they may take a free account on either.
+ *
+ * The trial settings themselves are read in TypeScript rather than in SQL,
+ * because `trialFor` is where the legacy fallbacks and the megabytes live and
+ * a second reading of them in a WHERE clause is exactly the pair that drifts.
+ * Five panels; the filter costs nothing.
+ */
+export interface TrialPanel {
+  providerId: number;
+  name: string;
+  volumeGb: number;
+  durationHours: number;
+}
+
+export async function trialPanelsForUser(db: Db, userId: number): Promise<TrialPanel[]> {
+  const rows = await db
+    .prepare(
+      // A panel with no address or no credential cannot create an account, and
+      // a trial that fails is worse than a button that was never drawn — the
+      // customer has spent their one free account on nothing. Both spellings of
+      // «has a credential» count, for the same reason panelRoutes counts both:
+      // panels wired before provider_secrets resolve through the environment.
+      `SELECT pr.id AS provider_id, pr.name AS name, pr.config AS config
+         FROM provisioning_providers pr
+         JOIN users u ON u.id = ?1
+        WHERE pr.status = 'ACTIVE'
+          AND pr.base_url IS NOT NULL
+          AND (
+                pr.secret_ref IS NOT NULL
+             OR EXISTS (SELECT 1 FROM provider_secrets ps WHERE ps.provider_id = pr.id)
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM provider_hidden_users h
+                 WHERE h.provider_id = pr.id AND h.user_id = u.id
+              )
+        ORDER BY pr.sort_order, pr.id`,
+    )
+    .bind(userId)
+    .all<{ provider_id: number; name: string; config: Record<string, unknown> | null }>();
+
+  const out: TrialPanel[] = [];
+  for (const row of rows.results ?? []) {
+    const trial = trialFor(row.config ?? {});
+    if (!trial.enabled) continue;
+    out.push({
+      providerId: row.provider_id,
+      name: row.name,
+      // `enabled` is only true when both are usable, which is what makes these
+      // two assertions true rather than hopeful.
+      volumeGb: trial.volumeGb!,
+      durationHours: trial.durationHours!,
+    });
+  }
+  return out;
 }

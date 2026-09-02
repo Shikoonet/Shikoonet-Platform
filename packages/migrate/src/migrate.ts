@@ -447,7 +447,7 @@ export const PROVIDER_COLUMNS = [
 
 async function migrateProviders(ctx: Ctx): Promise<number> {
   const rows = await mysqlRows<Row>(ctx.my, 'SELECT * FROM marzban_panel');
-  return insertBatch(
+  const inserted = await insertBatch(
     ctx.pg,
     'provisioning_providers',
     cols([
@@ -462,6 +462,51 @@ async function migrateProviders(ctx: Ctx): Promise<number> {
     ]),
     rows.map(providerRow),
     { conflict: '(legacy_id)' },
+  );
+  await moveHiddenUsers(ctx);
+  return inserted;
+}
+
+/**
+ * `marzban_panel.hide_user` out of `config` and into `provider_hidden_users`.
+ *
+ * Migration 0045 does this once for a database that is already imported. This
+ * does it for every import AFTER that one, and it is not the same thing: a
+ * reseller runs `packages/migrate` against their own Mirzabot database, and
+ * `legacyAttrs` carries `hide_user` into `config` again every single time. A
+ * key sitting there that nothing reads is a deny list that silently stopped
+ * working, on somebody else's shop, where nobody would think to look.
+ *
+ * Runs inside the migration's own transaction, after `users` — the whole point
+ * is resolving a Telegram id to a row, and the users step is two above this one
+ * in `STEPS`.
+ *
+ * AS MATERIALIZED is load-bearing: without it the planner may evaluate
+ * `tg::bigint` on rows the regex has not filtered, and one non-numeric entry
+ * would abort the import.
+ */
+async function moveHiddenUsers(ctx: Ctx): Promise<void> {
+  await ctx.pg.query(
+    `WITH hidden AS MATERIALIZED (
+       SELECT pr.id AS provider_id, t.tg AS tg
+         FROM provisioning_providers pr
+         CROSS JOIN LATERAL jsonb_array_elements_text(
+                CASE WHEN jsonb_typeof(pr.config -> 'hide_user') = 'array'
+                     THEN pr.config -> 'hide_user'
+                     ELSE '[]'::jsonb
+                END) AS t(tg)
+        WHERE t.tg ~ '^[0-9]{1,18}$'
+     )
+     INSERT INTO provider_hidden_users (provider_id, user_id, hidden_by)
+     SELECT h.provider_id, u.id, 'import'
+       FROM hidden h
+       JOIN users u ON u.telegram_id = h.tg::bigint
+     ON CONFLICT DO NOTHING`,
+  );
+  await ctx.pg.query(
+    `UPDATE provisioning_providers
+        SET config = config - 'hide_user'
+      WHERE config ? 'hide_user'`,
   );
 }
 

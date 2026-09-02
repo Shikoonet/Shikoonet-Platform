@@ -118,6 +118,11 @@ export const MENUS = {
     buttons: [
       { action: 'renew', label: '♻️ تمدید سرویس', hint: 'تمدید سرویس‌های موجود' },
       { action: 'buy', label: '🔐 خرید اشتراک', hint: 'خرید سرویس جدید' },
+      {
+        action: 'tst',
+        label: '🎁 سرویس تست رایگان',
+        hint: 'یک اکانت رایگان و کوتاه. حجم و زمانش را هر پنل خودش تعیین می‌کند و سهمیهٔ هر کاربر در «تنظیمات» است',
+      },
       { action: 'wal', label: '🏦 کیف پول + شارژ', hint: 'کیف پول و شارژ آن' },
       { action: 'mine', label: '🛍 سرویس های من', hint: 'فهرست سرویس‌های کاربر' },
       { action: 'sup', label: '☎️ پشتیبانی', hint: 'صفحهٔ پشتیبانی' },
@@ -153,6 +158,11 @@ export const MENUS = {
         required: true,
       },
     ],
+  },
+  trial: {
+    label: 'انتخاب لوکیشن سرویس تست',
+    hint: 'فقط وقتی بیش از یک پنل سرویس تست می‌دهد',
+    buttons: [BACK_TO_MENU],
   },
   categories: {
     label: 'فهرست دسته‌بندی‌ها',
@@ -457,9 +467,26 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
     ['hlp', 2, 1],
     ['ref', 2, 2],
     ['agr', 3, 0],
+    /*
+     * LAST, and not where a free account deserves to be.
+     *
+     * The four rows above are `setting.keyboardmain` from the production dump,
+     * in order, and `menu.test.ts` asserts them with a comment saying why:
+     * customers have this muscle memory and the replacement must not move
+     * their buttons. A new row anywhere else pushes «کیف پول» or «پشتیبانی»
+     * onto a different line for eleven thousand people who have not asked for
+     * anything to change.
+     *
+     * Appending costs nothing today either: every production panel is
+     * `OFFTestAccount`, so this button answers «سرویس تستی فعال نیست» until an
+     * admin turns one on — and the admin who turns it on can drag it to the
+     * top in «چیدمان کیبورد», which is the screen that exists for this.
+     */
+    ['tst', 4, 0],
   ],
   gateChannels: [['chk', 0, 0]],
   gateRules: [['acc', 0, 0]],
+  trial: [['menu', 0, 0]],
   categories: [['menu', 0, 0]],
   // Two buttons since 2026-08-27, when this became a screen the shop actually
   // draws again: it is now the SERVICE list inside a category, so «back» has a

@@ -33,7 +33,7 @@
  */
 
 import { encode } from './callback.js';
-import type { CatalogCategory, CatalogPlan, CatalogProduct } from './catalog.js';
+import type { CatalogCategory, CatalogPlan, CatalogProduct, TrialPanel } from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
 import {
@@ -106,6 +106,10 @@ export let CHOOSE_PRODUCT = DEFAULT_TEXTS.raw('CHOOSE_PRODUCT');
 export let PANEL_EMPTY = DEFAULT_TEXTS.raw('PANEL_EMPTY');
 export let PRODUCT_EMPTY = DEFAULT_TEXTS.raw('PRODUCT_EMPTY');
 export let SHOP_EMPTY = DEFAULT_TEXTS.raw('SHOP_EMPTY');
+export let TRIAL_CHOOSE_PANEL = DEFAULT_TEXTS.raw('TRIAL_CHOOSE_PANEL');
+export let TRIAL_NONE = DEFAULT_TEXTS.raw('TRIAL_NONE');
+export let TRIAL_USED = DEFAULT_TEXTS.raw('TRIAL_USED');
+export let TRIAL_ON_THE_WAY = DEFAULT_TEXTS.raw('TRIAL_ON_THE_WAY');
 export let PLAN_GONE = DEFAULT_TEXTS.raw('PLAN_GONE');
 export let NOT_REGISTERED = DEFAULT_TEXTS.raw('NOT_REGISTERED');
 /** For the few screens handle.ts builds a one-button keyboard for itself. */
@@ -228,6 +232,10 @@ export function applyContent(content: BotContent): void {
   PANEL_EMPTY = t.raw('PANEL_EMPTY');
   PRODUCT_EMPTY = t.raw('PRODUCT_EMPTY');
   SHOP_EMPTY = t.raw('SHOP_EMPTY');
+  TRIAL_CHOOSE_PANEL = t.raw('TRIAL_CHOOSE_PANEL');
+  TRIAL_NONE = t.raw('TRIAL_NONE');
+  TRIAL_USED = t.raw('TRIAL_USED');
+  TRIAL_ON_THE_WAY = t.raw('TRIAL_ON_THE_WAY');
   PLAN_GONE = t.raw('PLAN_GONE');
   NOT_REGISTERED = t.raw('NOT_REGISTERED');
   ASK_DISCOUNT_CODE = t.raw('ASK_DISCOUNT_CODE');
@@ -589,6 +597,68 @@ export function categoryMenu(categories: CatalogCategory[]): InlineKeyboard {
     ),
     'categories',
   );
+}
+
+/**
+ * The name a trial is sold under, and why it is a constant rather than a text.
+ *
+ * It is written into `subscriptions.plan_name_at_sale` at the moment of sale
+ * and read back from the row for ever after — «سرویس های من» is keyed off that
+ * column. An admin who renamed it in the texts table would rename nothing they
+ * had already sold and everything they sold next, so the list would carry two
+ * names for one thing with no way to tell they were the same.
+ */
+export const TRIAL_SERVICE_NAME = 'سرویس تست';
+
+/**
+ * The panels that will hand this customer a free account.
+ *
+ * The size is on the button, not on a screen behind it: «۲ گیگ / ۱۲ ساعت» is
+ * the entire difference between two panels' trials, so a customer choosing
+ * blind between two names would be choosing nothing.
+ */
+export function trialMenu(panels: TrialPanel[]): InlineKeyboard {
+  return withChrome(
+    panels.map((panel) => [
+      {
+        text: `${panel.name} — ${trialSize(panel)}`,
+        callback_data: encode('tst', panel.providerId),
+      },
+    ]),
+    'trial',
+  );
+}
+
+/**
+ * «۲ گیگ / ۱۲ ساعت», or in days once there are enough hours to be worth it.
+ *
+ * Hours, because that is the unit the setting is in and the unit a trial is
+ * usually measured in — legacy stores `time_usertest` in hours and then prints
+ * it into a `{day}` placeholder, which is how a 12-hour trial came to be
+ * described as «۱۲ روز» on the old bot's own screen.
+ */
+export function trialSize(panel: { volumeGb: number; durationHours: number }): string {
+  const hours = panel.durationHours;
+  const time =
+    hours >= 24 && hours % 24 === 0 ? `${round2(hours / 24)} روز` : `${round2(hours)} ساعت`;
+  return `${round2(panel.volumeGb)} گیگ / ${time}`;
+}
+
+/**
+ * Two decimals, and no trailing zeros.
+ *
+ * The legacy trial volume is megabytes, so a panel set to 1000 MB is 0.98 GB
+ * here and printing it as `0.9765625` would be true and useless. Rounding to a
+ * whole number instead would print «۱ گیگ» for a value that is not one, which
+ * is the same class of lie as the `{day}` placeholder above.
+ */
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/** The trial this panel no longer offers, said without blaming the customer. */
+export function trialNotAvailable(): string {
+  return TEXTS_NOW.raw('TRIAL_NOT_AVAILABLE');
 }
 
 /**

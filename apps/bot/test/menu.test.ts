@@ -47,12 +47,18 @@ describe('the main menu', () => {
   it('is the production layout', () => {
     // setting.keyboardmain on the 2026-08-11 dump, in order. Customers have this
     // muscle memory and the replacement must not move their buttons.
+    //
+    // The trial is APPENDED, and that is the whole reason it is last rather
+    // than beside «خرید اشتراک» where it belongs: a fifth row at the end moves
+    // nothing, and any other position moves «کیف پول» or «پشتیبانی» for every
+    // customer. The first four rows below are still the dump's, unchanged.
     const rows = menu.mainMenu(CUSTOMER).map((row) => row.map((b) => b.text));
     expect(rows).toEqual([
       ['♻️ تمدید سرویس', '🔐 خرید اشتراک'],
       ['🏦 کیف پول + شارژ', '🛍 سرویس های من'],
       ['☎️ پشتیبانی', '📚 آموزش', '👥 زیر مجموعه گیری'],
       ['👨‍💻 درخواست نمایندگی'],
+      ['🎁 سرویس تست رایگان'],
     ]);
   });
 

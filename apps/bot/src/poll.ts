@@ -17,6 +17,7 @@ import * as notify from './notify.js';
 import { settleVerifiedPayments } from './settle.js';
 import { provisionPaidOrders } from './provision.js';
 import { syncSubscriptions, SYNC_INTERVAL_MS } from './sync.js';
+import { downgradeExpired } from './downgrade.js';
 import { warnExpiringServices } from './warn.js';
 import { expireUnpaidOrders } from './expire.js';
 import {
@@ -564,6 +565,14 @@ export async function run(
       // After the sync, so a service is warned about the volume the panel
       // reports rather than the figure from ten minutes ago.
       await sweep('warning about services running out', () => warnExpiringServices(db));
+      // After the warning, and the order matters: a customer is told their
+      // service is running out BEFORE anything is done to it. It also does
+      // nothing at all until a panel is given downgrade groups, so on every
+      // shop that has not set one this is a single indexed read per cycle.
+      await sweep('downgrading ended services', async () => {
+        const { moved } = await downgradeExpired(db);
+        return moved;
+      });
       // Last, because it is the only sweep that closes something rather than
       // advancing it, and an order settled or delivered earlier in this same
       // cycle must have moved out of AWAITING_PAYMENT before this looks.

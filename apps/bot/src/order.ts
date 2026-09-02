@@ -178,6 +178,71 @@ export async function placeAddonOrder(
   );
 }
 
+/**
+ * The free account, and the counter that is the only thing rationing it.
+ *
+ * ## Why this does not go through `place`
+ *
+ * `place` refuses anything priced at zero, on purpose and for four reasons
+ * spelled out where it does it — all four are about a zero-priced order that
+ * somebody can still be ASKED to pay for. A trial is never asked: it is
+ * written PAID, it has no payment row, it has no wallet entry, and
+ * `orders_trial_is_free` in 0045 is the database saying the same thing.
+ *
+ * ## The quota is the UPDATE, not a SELECT before it
+ *
+ * Legacy reads `user.limit_usertest`, compares it in PHP, and writes the new
+ * value back (`index.php:3132`). Two taps in the same second both read the old
+ * number and both pass. Here the comparison IS the WHERE clause: Postgres takes
+ * the row lock, and the second statement sees the incremented value and matches
+ * nothing. No row back means the quota is spent.
+ *
+ * The counter moves BEFORE the order exists, so a failure between the two
+ * spends a trial nobody received. That is the safe direction and it is only
+ * reachable inside one transaction — the caller's — so in practice both land or
+ * neither does. Failing the other way would hand out unlimited free accounts to
+ * anybody who can make an insert fail.
+ *
+ * `providerId` is trusted here only because the caller took it from
+ * `trialPanelsForUser`, which is scoped to this customer. Nothing in this
+ * function may be handed a number straight out of `callback_data`.
+ */
+export async function placeTrialOrder(
+  tx: D1DatabaseSession,
+  userId: number,
+  providerId: number,
+  quotaPerUser: number,
+): Promise<PlaceResult> {
+  if (!Number.isSafeInteger(quotaPerUser) || quotaPerUser <= 0) return null;
+
+  const claimed = await tx
+    .prepare(
+      `UPDATE users
+          SET test_quota_used = test_quota_used + 1, updated_at = now()
+        WHERE id = ?1 AND test_quota_used < ?2
+        RETURNING test_quota_used`,
+    )
+    .bind(userId, quotaPerUser)
+    .first<{ test_quota_used: number }>();
+  if (!claimed) return null;
+
+  const row = await tx
+    .prepare(
+      // PAID with no payment behind it, which is the whole shape of a free
+      // fulfilment: the provisioning sweep reads PAID and does not ask how it
+      // got there. completed_at stays null until the sweep sets it.
+      `INSERT INTO orders
+         (public_id, user_id, kind, provider_id, quantity,
+          unit_price_irr, discount_irr, total_irr, status)
+       VALUES (?1, ?2, 'TRIAL', ?3, 1, 0, 0, 0, 'PAID')
+       RETURNING id, public_id, total_irr`,
+    )
+    .bind(newPublicId(), userId, providerId)
+    .first<{ id: number; public_id: string; total_irr: number }>();
+  if (!row) throw new Error('trial order insert returned no row');
+
+  return { id: row.id, publicId: row.public_id, totalIrr: 0, reused: false };
+}
 async function place(
   tx: D1DatabaseSession,
   userId: number,

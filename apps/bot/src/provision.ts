@@ -32,6 +32,8 @@ import {
   panelSecretKey,
   remoteUsernameFor,
   renewModeFor,
+  trialFor,
+  usernameShapeFor,
   splitCredential,
   type ProviderContext,
   type ProvisionRequest,
@@ -65,11 +67,14 @@ interface PendingOrder {
   quantity: number;
   user_id: number;
   telegram_id: number | null;
+  telegram_username: string | null;
   /** Which price column the add-on buttons on the delivery screen read from. */
   is_reseller: boolean;
   plan_id: number | null;
   target_subscription_id: number | null;
   target_username: string | null;
+  target_downgraded_at: string | null;
+  target_groups_before: unknown;
   target_name: string | null;
   target_volume_gb: number | null;
   target_expires_at: string | null;
@@ -334,6 +339,7 @@ export async function provisionPaidOrders(
               o.kind          AS order_kind,
               o.quantity      AS quantity,
               u.telegram_id   AS telegram_id,
+              u.username      AS telegram_username,
               u.is_reseller   AS is_reseller,
               o.plan_id       AS plan_id,
               o.total_irr     AS total_irr,
@@ -342,22 +348,29 @@ export async function provisionPaidOrders(
               s.plan_name_at_sale AS target_name,
               s.volume_gb     AS target_volume_gb,
               s.expires_at    AS target_expires_at,
+              s.downgraded_at AS target_downgraded_at,
+              s.groups_before_downgrade AS target_groups_before,
               pl.name         AS plan_name,
               pl.attrs        AS plan_attrs,
               pr.attrs        AS product_attrs,
               pl.volume_gb    AS volume_gb,
               pl.duration_days AS duration_days,
               pr.name         AS product_name,
-              COALESCE(spv.id, pv.id)                 AS provider_id,
-              COALESCE(spv.code, pv.code)             AS provider_code,
-              COALESCE(spv.name, pv.name)             AS provider_name,
-              COALESCE(spv.kind, pv.kind)             AS provider_kind,
-              COALESCE(spv.base_url, pv.base_url)     AS provider_base_url,
-              COALESCE(spv.secret_ref, pv.secret_ref) AS provider_secret_ref,
+              -- The order's OWN panel is last, and last is what makes it safe to
+              -- add: a trial is the only kind that sets orders.provider_id, and
+              -- for every other kind the column is NULL, so no existing row can
+              -- change which panel it resolves to.
+              COALESCE(spv.id, pv.id, opv.id)                     AS provider_id,
+              COALESCE(spv.code, pv.code, opv.code)               AS provider_code,
+              COALESCE(spv.name, pv.name, opv.name)               AS provider_name,
+              COALESCE(spv.kind, pv.kind, opv.kind)               AS provider_kind,
+              COALESCE(spv.base_url, pv.base_url, opv.base_url)   AS provider_base_url,
+              COALESCE(spv.secret_ref, pv.secret_ref, opv.secret_ref) AS provider_secret_ref,
               -- Same COALESCE as the ref beside it: a renewal resolves against
-              -- the ACCOUNT's panel, a new purchase against the plan's.
-              COALESCE(sps.sealed, ps.sealed) AS provider_sealed,
-              COALESCE(spv.config, pv.config)         AS provider_config
+              -- the ACCOUNT's panel, a new purchase against the plan's, a trial
+              -- against the one it named.
+              COALESCE(sps.sealed, ps.sealed, ops.sealed) AS provider_sealed,
+              COALESCE(spv.config, pv.config, opv.config)         AS provider_config
          FROM orders o
          JOIN users u              ON u.id = o.user_id
          LEFT JOIN product_plans pl ON pl.id = o.plan_id
@@ -368,6 +381,8 @@ export async function provisionPaidOrders(
                                    AND s.user_id = o.user_id
          LEFT JOIN provisioning_providers spv ON spv.id = s.provider_id
          LEFT JOIN provider_secrets sps ON sps.provider_id = spv.id
+         LEFT JOIN provisioning_providers opv ON opv.id = o.provider_id
+         LEFT JOIN provider_secrets ops ON ops.provider_id = opv.id
         WHERE
           -- A deposit is money in, not a thing out: it has no plan, so the
           -- plan_id IS NULL guard below would fail it and tell the customer
@@ -508,9 +523,33 @@ async function deliver(
     });
   }
 
+  /*
+   * A trial has no plan and can never be given one: its size is the PANEL's
+   * setting, and the panel is named by `orders.provider_id` rather than found
+   * through a plan. Everything after this is the ordinary purchase path.
+   *
+   * Re-read here rather than trusted from the moment the customer tapped,
+   * because those are two different transactions and an admin may have
+   * switched the trial off in between. Failing is right when that happens —
+   * nothing was charged, so there is nothing to refund, and handing out a
+   * free account on a panel whose trial was just withdrawn is the wrong way
+   * to be wrong.
+   */
+  const trial = row.order_kind === 'TRIAL' ? trialFor(row.provider_config ?? {}) : null;
+  if (trial !== null && !trial.enabled) {
+    // `fail` gives the quota back, which is what makes «سهمیهٔ شما مصرف نشد»
+    // in the message below a true sentence rather than a polite one.
+    await fail(db, row.order_id, 'this panel no longer offers a trial');
+    return say(menu.trialNotAvailable());
+  }
+
   // An order whose plan or provider was deleted out from under it. The money is
   // real, so this is a person's problem, not a silent drop.
-  if (row.plan_id === null || row.provider_id === null || row.provider_kind === null) {
+  if (
+    (row.plan_id === null && trial === null) ||
+    row.provider_id === null ||
+    row.provider_kind === null
+  ) {
     const refunded = await fail(db, row.order_id, 'the plan or its provider no longer exists');
     return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
@@ -519,15 +558,37 @@ async function deliver(
     return renew(db, row, fetchImpl, now);
   }
 
-  const durationDays = row.duration_days;
+  /*
+   * HOURS, not days, and that is why `duration_days` stays null on a trial.
+   *
+   * Legacy stores `time_usertest` in hours (`index.php:3063` adds `+N hours`)
+   * while rendering it into a `{day}` placeholder one line later. Rounding 12
+   * hours up to «1 روز» to fit an integer column would repeat exactly that
+   * lie on our own screen, so the expiry is computed from the hours and the
+   * day column is left empty. `expires_at` is what every screen reads.
+   */
+  const durationDays = trial === null ? row.duration_days : null;
+  const volumeGb = trial === null ? toNumber(row.volume_gb) : trial.volumeGb;
+  const expiresAt =
+    trial === null
+      ? durationDays === null
+        ? null
+        : new Date(now + durationDays * 86_400_000)
+      : new Date(now + trial.durationHours! * 3_600_000);
   const request: ProvisionRequest = {
-    username: remoteUsernameFor(row.telegram_id ?? row.user_id, row.order_public_id),
-    volumeGb: toNumber(row.volume_gb),
+    username: remoteUsernameFor(
+      row.telegram_id ?? row.user_id,
+      row.order_public_id,
+      // «روش ساخت نام کاربری». The suffix is still the order's public id in
+      // every mode, so every mode is still reproducible by a retry.
+      usernameShapeFor(row.provider_config ?? {}, row.telegram_username),
+    ),
+    volumeGb,
     durationDays,
     note: `shikoo ${row.order_public_id}`,
     providerConfig: row.provider_config ?? {},
     planAttrs: planAttrsFor(row),
-    expiresAt: durationDays === null ? null : new Date(now + durationDays * 86_400_000),
+    expiresAt,
   };
 
   const provider: ProviderContext = {
@@ -564,7 +625,6 @@ async function deliver(
     return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 
-  const expiresAt = request.expiresAt;
   await db.withSession(async (tx) => {
     // The guard is in the statement, not in a read before it. It used to be a
     // SELECT and a comment arguing that only one sweep can hold an order in
@@ -598,15 +658,17 @@ async function deliver(
           // «معمولی» are sizes and three services can hold the same size. The
           // customer's «سرویس های من» is keyed off this column, so without the
           // service on it two different levels list as the same line.
-          menu.soldAs(row.product_name ?? '', row.plan_name ?? ''),
+          trial === null
+            ? menu.soldAs(row.product_name ?? '', row.plan_name ?? '')
+            : menu.TRIAL_SERVICE_NAME,
           row.total_irr,
           JSON.stringify(result.remoteRef),
           result.remoteUsername,
           // Stored, not re-fetched. The customer will ask for this link again
           // days from now, from a screen that must not make a network call.
           result.subscriptionUrl,
-          toNumber(row.volume_gb),
-          row.duration_days,
+          volumeGb,
+          durationDays,
           expiresAt === null ? null : expiresAt.toISOString(),
         )
         .run();
@@ -670,6 +732,91 @@ async function recordPartialRenewal(
   } catch (err) {
     log.error('provision.half_applied', { ref: row.order_public_id }, err);
   }
+}
+
+/**
+ * Putting a downgraded account back on what it was sold.
+ *
+ * ## Why a renewal needs no call here and an add-on does
+ *
+ * `adapter.renew` is already handed `groupIds` for a renewal — that was built
+ * so renewing INTO a different tier moves the account onto the new tier's
+ * groups — so a renewal has already undone the downgrade by the time this
+ * runs, and all that is left is clearing the marker.
+ *
+ * An add-on is deliberately NOT given `groupIds`: it buys quota or days, not a
+ * tier, and sending them would move an account somebody had placed by hand.
+ * That exact carve-out is what leaves a downgraded service extended and still
+ * throttled, so the add-on path makes the one extra call.
+ *
+ * ## Which groups
+ *
+ * What the account was on before the downgrade, when that was captured. When
+ * it was not — the sweep moved the account and died before writing it down —
+ * the plan's own groups, which is exactly what a fresh purchase of the same
+ * plan would produce. Never an empty list: PasarGuard reads that as «no
+ * group», which strips every inbound.
+ *
+ * Best effort, and the marker is cleared either way. A customer who has just
+ * paid must not be told their renewal failed because the account is on the
+ * wrong groups; the next renewal sends them again, and `sync.ts` will keep
+ * showing the service as live in the meantime.
+ */
+async function restoreGroups(
+  db: D1Database,
+  row: PendingOrder,
+  fetchImpl: typeof globalThis.fetch,
+  viaPanel: boolean,
+): Promise<void> {
+  if (row.target_downgraded_at === null || row.target_subscription_id === null) return;
+
+  if (viaPanel && row.target_username !== null && row.provider_kind !== null) {
+    const stored = Array.isArray(row.target_groups_before)
+      ? row.target_groups_before
+          .map((v) => (typeof v === 'number' ? v : Number(v)))
+          .filter((v) => Number.isSafeInteger(v) && v > 0)
+      : [];
+    const fallback = groupIdsFor({
+      planAttrs: planAttrsFor(row),
+      providerConfig: row.provider_config ?? {},
+    });
+    const groupIds =
+      stored.length > 0
+        ? stored
+        : Array.isArray(fallback)
+          ? fallback.map((v) => Number(v)).filter((v) => Number.isSafeInteger(v) && v > 0)
+          : [];
+    const adapter = adapterFor(row.provider_kind);
+    if (adapter.act && groupIds.length > 0) {
+      const result = await adapter.act(
+        { kind: 'SET_GROUPS', username: row.target_username, groupIds },
+        {
+          id: row.provider_id!,
+          code: row.provider_code ?? String(row.provider_id),
+          name: row.provider_name ?? 'panel',
+          baseUrl: row.provider_base_url,
+          credentials: credentialsFor(row.provider_secret_ref, row.provider_sealed),
+          config: row.provider_config ?? {},
+          fetch: fetchImpl,
+        },
+      );
+      if (!result.ok) {
+        log.warn('downgrade.restore_refused', {
+          ref: row.order_public_id,
+          reason: result.reason,
+        });
+      }
+    }
+  }
+
+  await db
+    .prepare(
+      `UPDATE subscriptions
+          SET downgraded_at = NULL, groups_before_downgrade = NULL, updated_at = now()
+        WHERE id = ?1`,
+    )
+    .bind(row.target_subscription_id)
+    .run();
 }
 
 /**
@@ -818,6 +965,11 @@ async function renew(
     });
     return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
+
+  // The service is live again, so it must not still be sitting on the groups
+  // it was moved to when it ended. A renewal has already been sent the plan's
+  // groups by the adapter; an add-on has not, and needs the call.
+  await restoreGroups(db, row, fetchImpl, addon !== null);
 
   const expiresAt = result.expiresAt ?? null;
   if (addon !== null) {
@@ -982,6 +1134,34 @@ async function fail(db: D1Database, orderId: number, reason: string): Promise<nu
     // cannot both refund. The idempotency key would stop the second anyway; this
     // keeps the message honest as well as the ledger.
     if (ended.meta.changes === 0) return null;
+
+    /*
+     * A trial that failed gives the customer their free account back.
+     *
+     * `refundOrder` cannot do it: a trial has no payment behind it, so it
+     * finds nothing and answers null — correctly. What the customer actually
+     * spent is a number on their own row, and without this the shop keeps it
+     * for a service that never arrived.
+     *
+     * One statement, joined on the order, so it fires for a TRIAL and for
+     * nothing else — a branch here would be a second place to remember which
+     * kinds are free. In the same transaction as the status change, guarded by
+     * the same `changes === 0` check above, so two sweeps racing cannot both
+     * give it back.
+     *
+     * GREATEST(..., 0) because the counter is unsigned in meaning if not in
+     * type, and a negative one would hand out free accounts for ever.
+     */
+    await tx
+      .prepare(
+        `UPDATE users u
+            SET test_quota_used = GREATEST(u.test_quota_used - 1, 0), updated_at = now()
+           FROM orders o
+          WHERE o.id = ?1 AND o.user_id = u.id AND o.kind = 'TRIAL'`,
+      )
+      .bind(orderId)
+      .run();
+
     return refundOrder(tx, orderId);
   });
 }
