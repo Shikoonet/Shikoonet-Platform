@@ -87,6 +87,7 @@ import {
   targetBaseline,
   applyUndo,
   dropUndo,
+  claimImportLock,
   undoSchemaFor,
   DOMAINS,
   dumpSha256,
@@ -342,7 +343,12 @@ async function runImport(
       // AFTER the commit, so the rows are already there — and a run that
       // committed rows the two sides cannot agree about is precisely the one
       // an operator most needs to be able to take back.
-      undoSchema,
+      //
+      // But only when the recording holds something. A second APPLY of the same
+      // dump inserts nothing (the migration is idempotent on the legacy keys),
+      // and keeping a schema name for that empty recording would put a
+      // «بازگرداندن» button on the screen that the server is bound to refuse.
+      undoSchema: result.undoRows > 0 ? undoSchema : null,
     };
   } finally {
     release();
@@ -851,6 +857,10 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
       );
     }
 
+    // Read for the message, not for the decision. The decision is
+    // `claimImportLock` inside the transaction below: a new APPLY can insert
+    // its RUNNING row in the gap between this SELECT and the DELETEs, and then
+    // the two would be writing and deleting the same tables at once.
     const busy = await c.env.DB.prepare(
       `SELECT id FROM import_runs WHERE status = 'RUNNING' LIMIT 1`,
     ).first<{ id: string }>();
@@ -873,7 +883,34 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
     );
     try {
       await pgc.query('BEGIN');
+      // The actual guard, held for this transaction and released by Postgres
+      // on COMMIT or ROLLBACK however this ends. An import takes the same one.
+      if (!(await claimImportLock(pgc))) {
+        await pgc.query('ROLLBACK');
+        return c.json(
+          {
+            ok: false,
+            error: 'import_already_running',
+            detail: 'یک ایمپورت در حال اجراست؛ تا پایانش صبر کن.',
+          },
+          409,
+        );
+      }
       const result = await applyUndo(pgc, run.undo_schema);
+      // A recording that holds nothing must not be spent. Stamping it undone
+      // and dropping it would turn «this run wrote nothing» into «this run has
+      // been taken back», which is a different sentence and unrecoverable.
+      if (result.total === 0) {
+        await pgc.query('ROLLBACK');
+        return c.json(
+          {
+            ok: false,
+            error: 'nothing_to_undo',
+            detail: 'این اجرا چیزی روی دیتابیس ننوشته، پس چیزی برای برگرداندن نیست.',
+          },
+          409,
+        );
+      }
       // `undone_at IS NULL` again, in the statement. The read above was a
       // courtesy to the operator; this is the guard, and it is the difference
       // between a check and a race this codebase has been bitten by before.

@@ -18,7 +18,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type pg from 'pg';
 import { connectPostgres, loadConfig, report } from '../src/db.js';
-import { applyUndo, captureUndo, dropUndo, undoSchemaFor } from '../src/undo.js';
+import { applyUndo, beginUndo, captureUndo, dropUndo, undoSchemaFor } from '../src/undo.js';
 
 /** Outside the `9000000xx` seed block and outside any real Mirzabot id. */
 const KEEPER = 990_900_001;
@@ -112,6 +112,7 @@ async function importOneUser(): Promise<void> {
   const restore = quiet();
   try {
     await pgc.query('BEGIN');
+    await beginUndo(pgc, SCHEMA);
     await pgc.query(
       `INSERT INTO users (telegram_id, status, registered_at) VALUES ($1, 'ACTIVE', now())`,
       [IMPORTED],
@@ -215,6 +216,7 @@ describe('taking it back', () => {
     await pgc.query('BEGIN');
     const restore = quiet();
     try {
+      await beginUndo(pgc, SCHEMA);
       await captureUndo(pgc, SCHEMA);
     } finally {
       restore();
@@ -222,6 +224,68 @@ describe('taking it back', () => {
     }
     const out = await applyUndo(pgc, SCHEMA);
     expect(out).toEqual({ removed: [], total: 0 });
+  });
+});
+
+describe('a row the run only touched', () => {
+  /**
+   * The bug CodeRabbit found on PR #57, kept as a test because reasoning about
+   * it is what got it wrong the first time.
+   *
+   * `xmin` is the transaction that created the tuple *version*, and an UPDATE
+   * creates a new version — so a row that existed for a year and that the
+   * migration merely edited answers `xmin = pg_current_xact_id()` exactly like
+   * one it inserted. The migration does this in three places, one of them
+   * `users.referred_by`, which is what this reproduces.
+   *
+   * Deleting such a row would be worse than not undoing it: the customer was
+   * never imported, they were only pointed at a referrer.
+   */
+  it('is left alone, because the run edited it rather than writing it', async () => {
+    const referrer = await pgc.query<{ id: string }>(
+      'SELECT id FROM users WHERE telegram_id = $1',
+      [KEEPER],
+    );
+
+    const restore = quiet();
+    try {
+      await pgc.query('BEGIN');
+      await beginUndo(pgc, SCHEMA);
+      // What `migrateReferrals` does, on a customer who was already here.
+      await pgc.query('UPDATE users SET referral_bonus_claimed = true WHERE id = $1', [
+        referrer.rows[0]!.id,
+      ]);
+      await captureUndo(pgc, SCHEMA);
+      await pgc.query('COMMIT');
+    } finally {
+      restore();
+    }
+
+    // Recorded nothing at all: the only row that moved was one that was
+    // already there.
+    const { rows } = await pgc.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
+      [SCHEMA],
+    );
+    expect(rows).toHaveLength(0);
+
+    const out = await applyUndo(pgc, SCHEMA);
+    expect(out.total).toBe(0);
+    expect(await userIdFor(KEEPER)).not.toBeNull();
+  });
+
+  it('keeps the snapshots out of the kept recording', async () => {
+    // `beginUndo` copies every primary key in the database. If those tables
+    // survived the capture, a recording kept for weeks would be the size of
+    // the database rather than the size of what it can take back — and
+    // `applyUndo` reads the schema's table list to decide what to delete, so
+    // a leftover snapshot would also be read as rows to remove.
+    await importOneUser();
+    const { rows } = await pgc.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
+      [SCHEMA],
+    );
+    expect(rows.map((r) => r.table_name)).toEqual(['users']);
   });
 });
 

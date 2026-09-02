@@ -16,7 +16,7 @@ import type pg from 'pg';
 import { correctCardDigits } from './corrections.js';
 import { d1Table, insertBatch, mysqlRows, report, type Column, type Config } from './db.js';
 import * as t from './transform.js';
-import { captureUndo } from './undo.js';
+import { beginUndo, captureUndo, claimImportLock } from './undo.js';
 
 /**
  * One legacy row, in the types mysql2 actually hands back.
@@ -1968,6 +1968,13 @@ export interface MigrateResult {
   skipped: [what: string, n: number][];
   /** Table name -> a few rows as they landed. Empty unless `samples` was set. */
   samples: Record<string, Record<string, unknown>[]>;
+  /**
+   * Rows the undo recording holds. 0 when no `undoSchema` was asked for, and
+   * also when one was asked for and the run turned out to write nothing — the
+   * caller must not keep a schema name for a recording that can take nothing
+   * back, or the panel offers a button the server is bound to refuse.
+   */
+  undoRows: number;
 }
 
 /** The table a step's samples come from, where a useful one exists. */
@@ -2056,7 +2063,17 @@ export async function migrate(
 
   report.title(commit ? 'migrating' : 'migrating (dry run - will roll back)');
   report.step(`domains: ${domains.join(', ')}`);
+  /** Rows `captureUndo` recorded; 0 means there is nothing to take back. */
+  let undoRows = 0;
   await pgc.query('BEGIN');
+  if (!(await claimImportLock(pgc))) {
+    await pgc.query('ROLLBACK');
+    throw new Error('another import or undo is already running');
+  }
+  // Before the first write, and in the same transaction: `captureUndo` at the
+  // end needs to know which keys were already there, or it cannot tell a row
+  // this run inserted from one it only updated. See `beginUndo`.
+  if (opts.undoSchema !== undefined) await beginUndo(pgc, opts.undoSchema);
   try {
     for (const [name, domain, run] of STEPS) {
       if (!wanted.has(domain)) {
@@ -2087,7 +2104,9 @@ export async function migrate(
     // Last, and still inside the transaction. After `beforeSettle` because a
     // dry run's verify reads the rows this would otherwise have to work
     // around, and before the settle because that is the whole mechanism.
-    if (opts.undoSchema !== undefined) await captureUndo(pgc, opts.undoSchema);
+    if (opts.undoSchema !== undefined) {
+      undoRows = await captureUndo(pgc, opts.undoSchema);
+    }
 
     // The rollback is deliberate and reported, so a dry run can never be read
     // as a completed import.
@@ -2105,5 +2124,5 @@ export async function migrate(
     for (const [what, n] of skipped) report.warn(`${n} ${what}`);
   }
 
-  return { committed: commit, verified, domains, steps, skipped, samples };
+  return { committed: commit, verified, domains, steps, skipped, samples, undoRows };
 }
