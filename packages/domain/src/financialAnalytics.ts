@@ -121,16 +121,44 @@ export function trendBucketStart(verifiedAtMs: number, range: HistoryRange): num
   return d.getTime() + 3.5 * 60 * 60 * 1000;
 }
 
+/**
+ * The axis label for a bucket — Tehran, and the same on every host.
+ *
+ * Both halves of that were wrong, and this is called from the SERVER
+ * (`analyticsRoutes.ts`), so the container decided the answer.
+ *
+ * **The zone.** `trendBucketStart` returns Tehran day starts, and Tehran
+ * midnight is 20:30 UTC the day BEFORE. Formatted in the host's zone on a UTC
+ * container -- which is what our image is, nothing sets `TZ` -- the bucket
+ * beginning Tehran-midnight on 23 Mordad was labelled «Aug 22». Every daily
+ * bucket on the money trend chart named the wrong day, and had done since the
+ * chart was built; CodeRabbit caught it on #67 while reading the two month
+ * cases added here.
+ *
+ * **The locale.** `undefined` means the host's, so the same figures could be
+ * labelled differently after a base-image change, with nothing in the code
+ * recording that anything had moved. A label the server renders has to be the
+ * server's decision. `en-US` because that is what the container has been
+ * producing and this commit is fixing a date, not redesigning an axis --
+ * a Persian, Jalali axis is a real question and belongs to whoever asks it.
+ */
+const BUCKET_TZ = 'Asia/Tehran';
+
 export function trendBucketLabel(bucketStartMs: number, range: HistoryRange): string {
   const kind = trendBucketKind(range);
   const d = new Date(bucketStartMs);
   if (kind === 'hour') {
-    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit' });
+    return d.toLocaleString('en-US', {
+      timeZone: BUCKET_TZ,
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+    });
   }
   if (kind === 'day') {
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return d.toLocaleDateString('en-US', { timeZone: BUCKET_TZ, month: 'short', day: 'numeric' });
   }
-  return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+  return d.toLocaleDateString('en-US', { timeZone: BUCKET_TZ, month: 'short', year: 'numeric' });
 }
 
 export function salesDistribution(counts: number[]): {
