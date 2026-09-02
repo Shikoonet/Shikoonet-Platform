@@ -18,6 +18,7 @@ export * from './botKeyboard.js';
 export * from './planLabel.js';
 export * from './catalogLayout.js';
 export * from './jalali.js';
+export * from './cardActivity.js';
 export * from './sellable.js';
 export * from './configName.js';
 export * from './receipt.js';

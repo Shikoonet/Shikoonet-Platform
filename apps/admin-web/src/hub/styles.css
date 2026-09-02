@@ -4075,3 +4075,44 @@
   background: #78350f;
   color: #fff;
 }
+
+/*
+ * The six rolling windows on a card row.
+ *
+ * A fixed six-column grid rather than flex-wrap: the point of showing all six
+ * is comparing one card against the one above it, and columns that reflow at a
+ * different width per row destroy exactly that. On a narrow screen it scrolls
+ * sideways inside its own box rather than pushing the page.
+ */
+.card-activity {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(3.2rem, 1fr));
+  gap: 0.25rem 0.5rem;
+  margin: 0.45rem 0 0;
+  overflow-x: auto;
+}
+
+.card-activity__cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+}
+
+.card-activity__label {
+  font-size: 0.68rem;
+  color: var(--muted, #94a3b8);
+  white-space: nowrap;
+}
+
+.card-activity__value {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* A quiet window is still a reading, so it stays legible rather than hidden. */
+.card-activity__value--zero {
+  font-weight: 400;
+  opacity: 0.45;
+}
