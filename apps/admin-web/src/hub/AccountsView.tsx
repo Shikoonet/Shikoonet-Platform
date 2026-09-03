@@ -126,8 +126,16 @@ export function AccountsView({ cache }: AccountsViewProps) {
     // nothing at all.
     if (
       !window.confirm(
-        `«${name}» غیرفعال شود؟ از فهرست حساب‌ها بیرون می‌رود. ` +
-          `اگر فقط می‌خواهید موقتاً از «امروز» و تطبیق بیرون بماند، «بی‌صدا» همان کار را می‌کند و برگشتش یک کلیک است.`,
+        // What it actually does, checked against the routes on 2026-09-03.
+        // This used to promise «از فهرست حساب‌ها بیرون می‌رود», which is not
+        // true — the row stays right here. What it really does is take the
+        // account out of «آمار مالی», stop the bot handing out its cards, and
+        // drop it from the review queue, and that last one is why the old
+        // wording mattered: an operator looking for it there would not find it.
+        `«${name}» غیرفعال شود؟ از «آمار مالی» بیرون می‌رود، ربات دیگر کارت‌های آن را ` +
+          `به مشتری نمی‌دهد، و از صف بررسی هم برداشته می‌شود. در همین فهرست می‌ماند و ` +
+          `با «فعال‌کردن» برمی‌گردد.\n\n` +
+          `اگر فقط می‌خواهید موقتاً از «امروز» و تطبیق بیرون بماند، «بی‌صدا» همان کار را می‌کند.`,
       )
     ) {
       return;
@@ -832,9 +840,19 @@ interface PaymentCardRow {
 
 export function PaymentCardsPanel({
   accountId,
+  accountActive,
   onChanged,
 }: {
   accountId: string;
+  /**
+   * Whether the ACCOUNT these cards belong to is in service.
+   *
+   * Required, not optional-defaulting-to-true: a caller that forgets it would
+   * go back to the badge below claiming a card is «در گردش» when the bot will
+   * never hand it out, and a default of `true` is precisely the wrong way to
+   * guess.
+   */
+  accountActive: boolean;
   onChanged?: () => void;
 }) {
   const w = useWriteProps();
@@ -964,7 +982,12 @@ export function PaymentCardsPanel({
           </li>
         )}
         {cards.map((c) => {
-          const on = c.status === 'ACTIVE';
+          // Both switches, because the bot asks for both. `rotateCard` joins
+          // `financial_accounts` and requires the account to be live, so a card
+          // that is ACTIVE on an account that is not is a card nobody will ever
+          // be shown — and this badge is the only place that says so.
+          const on = c.status === 'ACTIVE' && accountActive;
+          const offBecauseAccount = c.status === 'ACTIVE' && !accountActive;
           return (
             <li key={c.id} className={on ? undefined : 'is-off'}>
               {/* Line one is the card's identity and its one state. The state
@@ -973,7 +996,10 @@ export function PaymentCardsPanel({
                   states looked identical at a glance. */}
               <div className="payment-card__identity">
                 <span className={`badge ${on ? 'badge-active' : 'badge-block'}`}>
-                  {on ? 'در گردش' : 'خاموش'}
+                  {/* Three states, not two. «خاموش» on a card somebody switched
+                      off is a sentence they can act on; «خاموش» on a card whose
+                      ACCOUNT is off sends them to the wrong switch. */}
+                  {on ? 'در گردش' : offBecauseAccount ? 'حساب خاموش است' : 'خاموش'}
                 </span>
                 <IdentifierText value={c.display} />
                 {c.bank_name && <span className="badge">{c.bank_name}</span>}
@@ -1198,6 +1224,7 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
       {account?.id && (
         <PaymentCardsPanel
           accountId={account.id}
+          accountActive={account.active !== 0}
           {...(onCardsChanged ? { onChanged: onCardsChanged } : {})}
         />
       )}
