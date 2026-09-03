@@ -45,7 +45,9 @@ function telegram(opts: { isForum?: boolean; topics?: (number | 'fail')[] } = {}
   const madeFor: string[] = [];
   let next = 100;
   const queue = [...(opts.topics ?? [])];
-  vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+  // `Parameters<typeof fetch>[0]`, not `RequestInfo`: this package's lib does
+  // not declare the DOM globals, and `tsc` catches that where vitest does not.
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith('/getMe')) {
       return Promise.resolve(
