@@ -31,6 +31,15 @@ import { productionDumpAbsent } from './helpers/productionDump.js';
 interface Loaded {
   /** How many customers hold each `roll_Status` value. */
   rollStatus: Record<string, number>;
+  /**
+   * How many customers hold each `agent` value — the reseller tier.
+   *
+   * `COLLATE utf8mb4_bin`, because MySQL's default collation is
+   * case-insensitive and would fold an `N` into `n`. That is CLAUDE.md rule 7
+   * exactly: a pre-flight that groups more loosely than the code it is
+   * checking reports a domain the migration will then choke on.
+   */
+  agent: Record<string, number>;
   total: number;
   /** Column names on the legacy `user` table. */
   columns: string[];
@@ -39,30 +48,55 @@ interface Loaded {
 
 async function load(): Promise<Loaded> {
   const cfg = loadConfig();
-  const empty = { rollStatus: {}, total: 0, columns: [] };
+  const empty = { rollStatus: {}, agent: {}, total: 0, columns: [] };
   // Before the connection, not after. `describe.skipIf` is evaluated during
   // collection, and a loader that connects first throws during collection —
   // which vitest reports as a FAILED FILE, not a skipped one. See
   // `helpers/productionDump.ts`.
   const dumpMissing = productionDumpAbsent();
   if (dumpMissing !== null) return { ...empty, unreachable: dumpMissing };
+  /*
+   * The catch below covers the CONNECTION only, and that boundary is the point.
+   *
+   * It used to wrap the queries too, so on a runner with the dump present a
+   * broken query — a renamed column, a collation MySQL refuses — came back as
+   * «simulation MySQL unreachable» and every assertion here skipped. «The
+   * database is not there» and «the check itself is broken» would have looked
+   * identical, and only one of them is safe to walk past. Found by CodeRabbit
+   * on PR #87.
+   */
+  let conn;
   try {
-    const conn = await createConnection({
+    conn = await createConnection({
       ...cfg.mysql,
       charset: 'utf8mb4',
       dateStrings: true,
       supportBigNumbers: true,
       bigNumberStrings: true,
     });
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    if (process.env['CI'] !== 'true') throw error;
+    console.warn(`[customer-columns.mysql] skipped: simulation MySQL unreachable — ${why}`);
+    return { ...empty, unreachable: why };
+  }
+
+  {
     try {
       const [rollRows] = await conn.query(
         `SELECT roll_Status AS k, COUNT(*) AS n FROM user GROUP BY roll_Status`,
+      );
+      const [agentRows] = await conn.query(
+        `SELECT agent COLLATE utf8mb4_bin AS k, COUNT(*) AS n FROM user GROUP BY k`,
       );
       const [totalRows] = await conn.query(`SELECT COUNT(*) AS n FROM user`);
       const [colRows] = await conn.query(`SHOW COLUMNS FROM user`);
       return {
         rollStatus: Object.fromEntries(
           (rollRows as { k: unknown; n: number }[]).map((r) => [String(r.k), Number(r.n)]),
+        ),
+        agent: Object.fromEntries(
+          (agentRows as { k: unknown; n: number }[]).map((r) => [String(r.k), Number(r.n)]),
         ),
         total: Number((totalRows as { n: number }[])[0]?.n ?? 0),
         columns: (colRows as { Field: string }[]).map((c) => c.Field),
@@ -71,15 +105,10 @@ async function load(): Promise<Loaded> {
     } finally {
       await conn.end();
     }
-  } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
-    if (process.env['CI'] !== 'true') throw error;
-    console.warn(`[customer-columns.mysql] skipped: simulation MySQL unreachable — ${why}`);
-    return { ...empty, unreachable: why };
   }
 }
 
-const { rollStatus, total, columns, unreachable } = await load();
+const { rollStatus, agent, total, columns, unreachable } = await load();
 
 /**
  * These assertions are about the REAL Mirzabot dataset — row counts, actual
@@ -136,5 +165,57 @@ describe.skipIf(unreachable !== null || dumpAbsent !== null)('roll_Status is a g
     // The column the warning sweep reads. It has nothing to be imported from
     // and must keep its own default; naming it here at all is the bug.
     expect(userCols).not.toContain("'notify_enabled'");
+  });
+});
+
+/**
+ * The reseller tier, and the two facts that decide whether it needs a re-import.
+ *
+ * `is_reseller` is a boolean and folds 'n' and 'n2' onto it; `agent` sits in the
+ * importer's `claimed` list, so it does not reach `legacy_attrs` either. Until
+ * 2026-09-04 the tier was therefore LOST at import, and the panel reads
+ * `COALESCE(u.reseller_tier, 'n')` — every reseller is level one whether or not
+ * that is true.
+ *
+ * Whether that silence cost anything is a question about the DATA, not the code,
+ * and the dump answers it: 11,240 customers on 'f', exactly one on 'n', and no
+ * 'n2' at all. So the fallback has been returning the right answer for the only
+ * reseller that exists, and a repair pass over existing rows would change
+ * nothing. The importer now carries the column for the day that stops being
+ * true — and this test is what notices that day.
+ */
+describe.skipIf(unreachable !== null || dumpAbsent !== null)('the reseller tier', () => {
+  it('has only the three values index.php:299 allows', () => {
+    // A fourth value would be a wrong price, silently: `isReseller` throws on
+    // it, so the migration stops — which is the design, and this says so before
+    // the migration has to.
+    expect(Object.keys(agent).every((v) => ['f', 'n', 'n2'].includes(v))).toBe(true);
+    expect(Object.values(agent).reduce((a, b) => a + b, 0)).toBe(total);
+  });
+
+  it('carries no second-tier reseller today — which is why no back-fill is owed', () => {
+    // The whole argument for not re-importing, written down so the next person
+    // does not have to re-derive it. If a dump ever DOES carry an 'n2', this
+    // goes red and the answer changes: those rows need the column filled, not
+    // the default.
+    expect(agent['n2'] ?? 0).toBe(0);
+    expect(agent['n'] ?? 0).toBeGreaterThan(0);
+  });
+
+  it('is written by the importer, into a column of its own', () => {
+    // The same source-text check `roll_Status` uses, and for the same reason:
+    // nothing else in this package can see the destination. A rename or a
+    // dropped column would otherwise pass every test here and lose the tier
+    // again, in silence.
+    const source = readFileSync(new URL('../src/migrate.ts', import.meta.url), 'utf8');
+    const userCols = source.slice(
+      source.indexOf("    'users',"),
+      source.indexOf("{ conflict: '(telegram_id)' }"),
+    );
+    expect(userCols).toContain("'reseller_tier'");
+    expect(source).toContain('t.resellerTier(r.agent)');
+    // And the boolean stays beside it. Seventeen call sites read `is_reseller`;
+    // the tier is a second column, not a replacement.
+    expect(userCols).toContain("'is_reseller'");
   });
 });
