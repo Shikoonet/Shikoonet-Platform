@@ -24,6 +24,8 @@ import {
   type D1Database as DomainD1Database,
 } from '@shikoo/domain';
 import { MIRZABOT_SOURCE, WAITING_TIMEOUT_MS } from '@shikoo/contracts';
+import { csvCell } from './revenueRoutes.js';
+import { audit } from './adminAudit.js';
 import {
   tehranDayFromUtc,
   tehranDayBoundsFromDate,
@@ -255,6 +257,51 @@ function stateSql(state: ReviewState): string {
   }
 }
 
+/**
+ * Every state a claim row can be in — and the only list the badge query, the
+ * «همه» tab's status filter and `stateSql` are allowed to read.
+ *
+ * It exists because those three had drifted apart twice, in both directions:
+ *
+ * - the badge's `CASE` had no arm for `FULFILLED_UNRECONCILED`, so that badge
+ *   read zero forever and its rows fell through `ELSE` into «در انتظار بررسی»,
+ *   whose own filter can never return them. Staging, 2026-09-03: the queue
+ *   promised 15 and listed 2, and the 13 underneath were delivered orders the
+ *   bank had never confirmed — the one gap that is money;
+ * - the status filter's allow-list was missing the same state, so choosing
+ *   «تحویل‌شده، در انتظار تطبیق» in the panel dropped the filter and showed
+ *   every claim, which reads as "there are no others".
+ *
+ * Both are the shape a hand-kept second copy always fails in: silently, and in
+ * the direction that looks like data rather than a bug. One array, read three
+ * times, cannot drift.
+ */
+const REVIEW_STATES: readonly ReviewState[] = [
+  'AUTO_VERIFIED',
+  'MANUALLY_VERIFIED',
+  'FULFILLED_UNRECONCILED',
+  'NO_TRANSFER_FOUND',
+  'NEEDS_REVIEW',
+  'WAITING',
+  'REJECTED',
+  'FAKE',
+  'EXPIRED',
+];
+
+/**
+ * The badge's projection, built from the same predicates the lists use.
+ *
+ * `ELSE NULL` rather than a catch-all bucket: a row whose status matches no
+ * state is a row no tab can show, and counting it under a tab that cannot list
+ * it is exactly what went wrong. It still reaches the «همه» badge, which counts
+ * rows rather than states, so nothing disappears — it just stops being counted
+ * as something it is not.
+ */
+const REVIEW_STATE_CASE = `CASE
+  ${REVIEW_STATES.map((s) => `WHEN ${stateSql(s)} THEN '${s}'`).join('\n  ')}
+  ELSE NULL
+END`;
+
 type ClaimRow = {
   id: string;
   external_order_id: string;
@@ -283,6 +330,15 @@ type ClaimRow = {
   device_id: string | null;
   device_display_name: string | null;
   device_code: string | null;
+  /**
+   * `true`, `false`, or `null` when the reference matches no user at all.
+   *
+   * The third case is real and is not «personal»: one production row carries
+   * «Poyan test payment» here, and there are claims whose customer never
+   * became a `users` row. A payment we cannot attribute is a thing worth
+   * seeing, not a thing to file under the commonest answer.
+   */
+  customer_is_reseller: boolean | null;
   effective_ts: number;
   // DEV-only: present when the worker is built with ENABLE_PURCHASE_TYPE=true
   // and the dev D1 has these columns. Production D1 doesn't have them and the
@@ -537,17 +593,7 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
   const rows = await db
     .prepare(
       `SELECT
-         CASE
-           WHEN c.status = 'VERIFIED' AND m.status = 'AUTO_VERIFIED' THEN 'AUTO_VERIFIED'
-           WHEN c.status = 'VERIFIED' THEN 'MANUALLY_VERIFIED'
-           WHEN c.status = 'FAKE_RECEIPT' THEN 'FAKE'
-           WHEN c.status = 'REJECTED' THEN 'REJECTED'
-           WHEN c.status = 'EXPIRED' THEN 'EXPIRED'
-           WHEN ${PENDING_CLAIM} AND c.suspect_reason IN ${NO_TRANSFER_REASONS} THEN 'NO_TRANSFER_FOUND'
-           WHEN ${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL THEN 'NEEDS_REVIEW'
-           WHEN ${PENDING_CLAIM} AND c.suspect_reason IS NULL THEN 'WAITING'
-           ELSE 'NEEDS_REVIEW'
-         END AS review_state,
+         ${REVIEW_STATE_CASE} AS review_state,
          COUNT(*) AS n,
          SUM(CASE WHEN ${EFFECTIVE_TS} BETWEEN ?2 AND ?3 THEN 1 ELSE 0 END) AS n_today
        FROM payment_claims c
@@ -564,7 +610,7 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
     // `packages/db` refuses a statement with a parameter nothing uses rather
     // than guessing — SQLite ignored those, Postgres cannot.
     .bind(MIRZABOT_SOURCE, dayStart, dayEnd)
-    .all<{ review_state: ReviewState; n: number; n_today: number }>();
+    .all<{ review_state: ReviewState | null; n: number; n_today: number }>();
 
   const total: Record<ReviewState, number> = {
     AUTO_VERIFIED: 0,
@@ -580,9 +626,11 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
   const today = { ...total };
   let all = 0;
   for (const r of rows.results ?? []) {
+    // `all` counts rows, so a state nobody can list still shows up there.
+    all += r.n;
+    if (r.review_state == null) continue;
     total[r.review_state] += r.n;
     today[r.review_state] += r.n_today ?? 0;
-    all += r.n;
   }
 
   const decidedToday =
@@ -999,8 +1047,30 @@ export function registerMirzabotRoutes(
     const counts = await loadCounts(c.env.DB, start, end, ident.email);
     const domainDb = c.env.DB as unknown as DomainD1Database;
 
+    /**
+     * The three tabs the claim list left behind.
+     *
+     * `LIMIT 200` and nothing else: on staging «واریزی‌ها» drew 200 rows under
+     * a badge saying 225, with no pager and no `total` (issue #82). Every one
+     * of these already runs a totals query over the SAME `WHERE`, so the true
+     * count was one field away the whole time — the page just never carried it.
+     *
+     * Same `page`/`pageSize` binds the claim list uses, so the pager the panel
+     * already renders needs nothing new to work here.
+     */
+    const { page: tabPage, pageSize: tabPageSize } = pageParams(url);
+    const tabOffset = (tabPage - 1) * tabPageSize;
+
     if (tab === 'income') {
-      const items = await loadIncomeItems(c.env.DB, range, now, day, 200, ident.email);
+      const items = await loadIncomeItems(
+        c.env.DB,
+        range,
+        now,
+        day,
+        tabPageSize,
+        ident.email,
+        tabOffset,
+      );
       const incomeTotals = await loadIncomeTotals(c.env.DB, range, now, day);
       return c.json({
         ok: true,
@@ -1008,13 +1078,23 @@ export function registerMirzabotRoutes(
         range,
         items,
         incomeTotals,
+        page: tabPage,
+        pageSize: tabPageSize,
+        total: incomeTotals.count,
         counts: counts.total,
         summary: financialSummary,
       });
     }
 
     if (tab === 'declined_income') {
-      const items = await loadDeclinedIncomeItems(c.env.DB, range, now, day);
+      const items = await loadDeclinedIncomeItems(
+        c.env.DB,
+        range,
+        now,
+        day,
+        tabPageSize,
+        tabOffset,
+      );
       const declinedTotals = await loadDeclinedIncomeTotals(c.env.DB, range, now, day);
       return c.json({
         ok: true,
@@ -1022,13 +1102,16 @@ export function registerMirzabotRoutes(
         range,
         items,
         declinedTotals,
+        page: tabPage,
+        pageSize: tabPageSize,
+        total: declinedTotals.count,
         counts: counts.total,
         summary: financialSummary,
       });
     }
 
     if (tab === 'reseller') {
-      const items = await loadResellerItems(c.env.DB, range, now, day);
+      const items = await loadResellerItems(c.env.DB, range, now, day, tabPageSize, tabOffset);
       const itemsWithNew = await Promise.all(
         items.map(async (item) => ({
           ...item,
@@ -1042,6 +1125,9 @@ export function registerMirzabotRoutes(
         range,
         items: itemsWithNew,
         resellerStats,
+        page: tabPage,
+        pageSize: tabPageSize,
+        total: resellerStats.payments,
         counts: counts.total,
         summary: financialSummary,
       });
@@ -1094,6 +1180,31 @@ export function registerMirzabotRoutes(
     const cardDigits = cardDigitsParam(url.searchParams.get('cardDigits'));
     const telegramId = telegramIdParam(url.searchParams.get('telegramId'));
     const { page, pageSize } = pageParams(url);
+
+    /*
+     * `?format=csv` rather than a `/payments/export.csv` beside it.
+     *
+     * A separate route means a second copy of thirteen filters, and an export
+     * that answers a different question from the screen it was taken from is
+     * worse than no export. Here it cannot drift: same handler, same WHERE,
+     * one extra branch at the end.
+     *
+     * It also sidesteps the trap `revenueRoutes.ts:1057` documents -- a
+     * sibling path ending in `.csv` matches neither arm of `mayRead`'s prefix
+     * test, and the whole of the shop's spending was once readable by a
+     * READ_ONLY operator that way. A query parameter has no path to get wrong.
+     *
+     * ADMIN only, and that IS stricter than the screen: `/api/v1/payments` is
+     * not in `PERSONAL_DATA_PREFIXES`, so a READ_ONLY operator may read the
+     * list. Reading a page and taking a file of every customer's Telegram id
+     * are different acts, and the second is the one that leaves the building.
+     */
+    const wantsCsv = url.searchParams.get('format') === 'csv';
+    if (wantsCsv && ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    // One request, one file. Above this the answer is truncated rather than
+    // wrong -- and the row count sits in the response, so the operator can see
+    // that it was.
+    const EXPORT_MAX = 5000;
     // DEV-only: purchase_type filter (only valid for bot_auto_verified tab).
     const purchaseTypeFilter = url.searchParams.get('purchaseType');
     const featureEnabled = c.env?.ENABLE_PURCHASE_TYPE === 'true';
@@ -1144,17 +1255,7 @@ export function registerMirzabotRoutes(
                   : null;
       if (tabState) where.push(stateSql(tabState));
       if (tab === 'all' && statusFilter) {
-        const allowed: ReviewState[] = [
-          'AUTO_VERIFIED',
-          'NEEDS_REVIEW',
-          'MANUALLY_VERIFIED',
-          'WAITING',
-          'NO_TRANSFER_FOUND',
-          'REJECTED',
-          'FAKE',
-          'EXPIRED',
-        ];
-        if (allowed.includes(statusFilter as ReviewState)) {
+        if (REVIEW_STATES.includes(statusFilter as ReviewState)) {
           const st = statusFilter as ReviewState;
           where.push(stateSql(st));
         }
@@ -1165,6 +1266,12 @@ export function registerMirzabotRoutes(
       // به این کارت ریخته شد» is a question about the card.
       if (cardDigits) where.push(`c.card_digits = ${p(cardDigits)}`);
       if (telegramId) where.push(`c.customer_reference = ${p(telegramId)}`);
+      // Three-state, and «unknown» is its own answer rather than «personal»:
+      // a claim whose reference matches no user is a real payment we cannot
+      // attribute, and filing it under «شخصی» would be inventing a fact.
+      const customerType = url.searchParams.get('customerType');
+      if (customerType === 'reseller') where.push(`cu.is_reseller = true`);
+      if (customerType === 'personal') where.push(`cu.is_reseller = false`);
       if (reason) where.push(`c.suspect_reason = ${p(reason)}`);
       if (from != null) where.push(`${EFFECTIVE_TS} >= ${p(from)}`);
       if (to != null) where.push(`${EFFECTIVE_TS} <= ${p(to)}`);
@@ -1229,7 +1336,20 @@ export function registerMirzabotRoutes(
        LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_ID})
        LEFT JOIN transaction_candidates t ON t.id = m.transaction_candidate_id
        LEFT JOIN raw_sms_events rse ON rse.id = t.raw_sms_event_id
-       LEFT JOIN devices d ON d.id = rse.device_id`;
+       LEFT JOIN devices d ON d.id = rse.device_id
+       -- «کدام پرداخت از یک مشتری شخصی است و کدام از یک نماینده» — Sam.
+       --
+       -- Cast the COLUMN to text, not the reference to bigint. It reads like
+       -- the slower choice and it is the only correct one: one production row
+       -- holds «Poyan test payment» in customer_reference, so
+       -- customer_reference::bigint errors on the whole query -- and a
+       -- guard beside it does not save you, because SQL does not promise to
+       -- evaluate the guard first.
+       --
+       -- The price is that users_telegram_id_key cannot serve this, so it is a
+       -- hash join over the users table. Measured rather than assumed; see the
+       -- commit message.
+       LEFT JOIN users cu ON cu.telegram_id::text = c.customer_reference`;
 
     const totalRow = await c.env.DB.prepare(
       `SELECT COUNT(*)::int AS n ${claimsFrom} WHERE ${where.join(' AND ')}`,
@@ -1238,8 +1358,8 @@ export function registerMirzabotRoutes(
       .first<{ n: number }>();
     const total = totalRow?.n ?? 0;
 
-    const limitBind = p(pageSize);
-    const offsetBind = p((page - 1) * pageSize);
+    const limitBind = p(wantsCsv ? EXPORT_MAX : pageSize);
+    const offsetBind = p(wantsCsv ? 0 : (page - 1) * pageSize);
 
     const rows = await c.env.DB.prepare(
       `SELECT c.id, c.external_order_id, c.customer_reference, c.expected_amount_irr,
@@ -1262,6 +1382,7 @@ export function registerMirzabotRoutes(
               t.bank_timestamp AS matched_tx_bank_timestamp,
               d.id AS device_id, d.display_name AS device_display_name,
               d.device_code AS device_code,
+              cu.is_reseller AS customer_is_reseller,
               ${EFFECTIVE_TS} AS effective_ts
        ${claimsFrom}
        WHERE ${where.join(' AND ')}
@@ -1279,6 +1400,67 @@ export function registerMirzabotRoutes(
     )
       .bind(...binds)
       .all<ClaimRow>();
+
+    /*
+     * The file is built HERE, from the raw rows, and returns before the mapper
+     * below. That mapper calls `isPaymentEventUnread` once per row -- an N+1 --
+     * to decide whether to draw an «unread» dot. A CSV has no dots, and paying
+     * five thousand round trips for a column nobody exports would turn a
+     * useful button into one nobody presses twice.
+     *
+     * The BOM is not decoration: without it Excel reads a UTF-8 file as the
+     * local codepage and every Persian column heading becomes mojibake. CRLF
+     * for the same reason. Both copied from `revenueRoutes.ts`, which learned
+     * it the hard way.
+     *
+     * Toman in the file, IRR in the database, one helper between them -- the
+     * same rule the screens follow. A spreadsheet of rials that the operator
+     * has to divide by ten is a spreadsheet that will be divided by ten wrong.
+     */
+    if (wantsCsv) {
+      const header = [
+        'شناسه',
+        'سفارش',
+        'آی‌دی تلگرام',
+        'مبلغ (تومان)',
+        'کارت',
+        'حساب',
+        'وضعیت',
+        'زمان',
+      ];
+      const body = (rows.results ?? []).map((row) =>
+        [
+          row.id,
+          row.external_order_id,
+          row.customer_reference,
+          Math.round((row.expected_amount_irr ?? 0) / 10),
+          // Masked, as it is in the JSON this file is built from. The rows go
+          // out as a file that leaves the panel entirely — the one place a
+          // full PAN would travel furthest and be noticed least.
+          row.card_digits ? maskCardDigits(row.card_digits) : '',
+          row.account_display ?? '',
+          row.match_status ?? row.status,
+          row.effective_ts ? new Date(row.effective_ts).toISOString() : '',
+        ]
+          .map(csvCell)
+          .join(','),
+      );
+      // Who took a file of customer identifiers, and how much of the shop
+      // it covered. A truncated export is recorded as truncated.
+      await audit(c.env.DB, ident, 'payments.export', 'PAYMENT_CLAIM', tab, null,
+        { rows: body.length, matched: total, truncated: total > body.length }, null);
+      // A real BOM character, not an escape: without it Excel reads a UTF-8
+      // file as the local codepage and every Persian heading is mojibake.
+      const BOM = '\ufeff';  // escaped, not the character: esbuild
+      // strips a literal U+FEFF as a byte-order mark during transform, and the
+      // file then reaches Excel without one -- caught by the test asserting
+      // charCodeAt(0), which read 34 (a quote) instead of 65279.
+      const CRLF = '\r\n';
+      return c.body(`${BOM}${[header.map(csvCell).join(','), ...body].join(CRLF)}${CRLF}`, 200, {
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': `attachment; filename="payments-${tab}.csv"`,
+      });
+    }
 
     const candidateFirstIds: string[] = [];
     for (const row of rows.results ?? []) {
@@ -1396,6 +1578,14 @@ export function registerMirzabotRoutes(
             metadataJson: row.metadata_json,
           }),
           fulfillmentState: state === 'MANUALLY_VERIFIED' ? ('UNKNOWN' as const) : undefined,
+          // 'PERSONAL' | 'RESELLER' | 'UNKNOWN' rather than a boolean, so the
+          // screen can say «نامشخص» instead of quietly drawing «شخصی».
+          customerType:
+            row.customer_is_reseller === null
+              ? ('UNKNOWN' as const)
+              : row.customer_is_reseller
+                ? ('RESELLER' as const)
+                : ('PERSONAL' as const),
           isNew: await isPaymentEventUnread(domainDb, ident.email, claimEventKey(row.id)),
         };
       }),

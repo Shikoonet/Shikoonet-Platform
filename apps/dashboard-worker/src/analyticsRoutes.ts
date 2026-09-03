@@ -489,6 +489,26 @@ export async function loadCardAnalytics(
               pc.status AS card_status,
               COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED'${rangeFilter}
                                   THEN c.id END) AS purchase_count,
+              -- «چقدر به کارت ملت رفت، و کدام کاربرها ریختند» -- Sam,
+              -- 2026-09-02. Summed here rather than in a route of its own:
+              -- this query already scans exactly the rows the question is
+              -- about, so a second endpoint would be a second scan and a
+              -- second place to keep in step with this one.
+              --
+              -- Deliberately a WIDER population than purchase_count beside it.
+              -- That column counts only AUTO_VERIFIED matches, because it
+              -- exists to judge whether card rotation is fair. Money does not
+              -- care who approved it: a claim an operator confirmed by hand
+              -- put the same rials on the same card. So these three agree with
+              -- each other and are counted over every settled claim naming the
+              -- card, and verified_count is here so the amount is never read
+              -- against a count that means something else.
+              COUNT(DISTINCT CASE WHEN c.id IS NOT NULL${rangeFilter}
+                                  THEN c.id END) AS verified_count,
+              COALESCE(SUM(CASE WHEN c.id IS NOT NULL${rangeFilter}
+                                THEN c.expected_amount_irr END), 0) AS takings_irr,
+              COUNT(DISTINCT CASE WHEN c.id IS NOT NULL${rangeFilter}
+                                  THEN c.customer_reference END) AS unique_customers,
               ${windowSql}
        FROM payment_cards pc
        JOIN financial_accounts fa ON fa.id = pc.financial_account_id
@@ -537,6 +557,9 @@ export async function loadCardAnalytics(
       account_active: number;
       card_status: string;
       purchase_count: number;
+      verified_count: number;
+      takings_irr: number;
+      unique_customers: number;
     } & Record<`w_${CardActivityWindowKey}`, number>>();
 
   const items = (rows.results ?? []).map((r) => ({
@@ -552,6 +575,12 @@ export async function loadCardAnalytics(
     accountHint: r.account_hint,
     accountStatus: r.account_status,
     purchaseCount: r.purchase_count,
+    // Money, and a count that matches it. `SUM` on the SQL side rather than a
+    // `reduce` in the browser: the browser only ever holds the rows it was
+    // sent, so a total assembled there is a total of one page.
+    verifiedCount: r.verified_count,
+    takingsIrr: Number(r.takings_irr ?? 0),
+    uniqueCustomers: r.unique_customers,
     // Numbers, not a nested query per card: one scan produces all six.
     activity: Object.fromEntries(
       CARD_ACTIVITY_WINDOWS.map((w) => [w.key, Number(r[`w_${w.key}`] ?? 0)]),
