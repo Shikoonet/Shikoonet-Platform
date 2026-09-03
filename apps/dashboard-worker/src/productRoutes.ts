@@ -38,6 +38,7 @@ import {
   checkCatalogLayout,
   type CatalogLayoutProblem,
 } from '@shikoo/contracts';
+import { checkNameEmoji } from './customEmojiNames.js';
 import { isAutomated } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 import { PANEL_HAS_SECRET } from './panelRoutes.js';
@@ -1583,6 +1584,11 @@ export function registerProductRoutes(
       );
     }
     const p = body.data;
+    // A name may carry a custom emoji from 2026-09-03, and this is the only
+    // place that can say no to a malformed one. Silently stripping it would
+    // make the shop's switch look broken rather than off.
+    const nameProblem = await checkNameEmoji(c.env.DB, p.name);
+    if (nameProblem) return c.json({ ok: false, error: 'invalid_body', detail: nameProblem }, 400);
 
     const row = await c.env.DB.prepare(
       `INSERT INTO products
@@ -1650,6 +1656,9 @@ export function registerProductRoutes(
         400,
       );
     }
+
+    const patchProblem = await checkNameEmoji(c.env.DB, body.data.name);
+    if (patchProblem) return c.json({ ok: false, error: 'invalid_body', detail: patchProblem }, 400);
 
     const SELECT_PRODUCT = `SELECT id, code, name, kind, provider_id, category_id, description,
                                    resellers_only, once_per_user, sort_order, status,

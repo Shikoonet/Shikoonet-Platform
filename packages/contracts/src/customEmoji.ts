@@ -136,3 +136,53 @@ export function toTelegramHtml(text: string): string {
 export function stripCustomEmoji(text: string): string {
   return text.replace(TAG, (_whole, _id: string, fallback: string) => fallback);
 }
+
+/**
+ * The same tag, anchored at the start of a label and matched once.
+ *
+ * Its own pattern rather than a reuse of `TAG`: that one is global, so it
+ * carries `lastIndex` between calls, and every reader of this file has to
+ * remember to reset it. This one cannot be stateful.
+ */
+const LEADING_TAG = /^\s*<tg-emoji\s+emoji-id="(\d{1,24})">([^<>]{1,16})<\/tg-emoji>\s*/;
+
+/** A label split into what Telegram draws and what it draws it WITH. */
+export interface EmojiLabel {
+  /** The button's `text`, with no markup left in it. */
+  text: string;
+  /** The button's `icon_custom_emoji_id`, or null when there is none. */
+  icon: string | null;
+}
+
+/**
+ * A button label, split into a plain label and one custom-emoji id.
+ *
+ * ## Why a button cannot do what a message does
+ *
+ * A message carries entities, so `<tg-emoji>` anywhere in it renders where it
+ * was written. A button's `text` is a plain string — Telegram parses no markup
+ * in it at all — and the custom emoji goes in a field of its own,
+ * `icon_custom_emoji_id`, which draws ONE emoji at the label's leading edge.
+ *
+ * So the shapes do not match, and this is where they are reconciled: the
+ * LEADING tag becomes the icon, and any tag further along becomes its own
+ * fallback glyph, because there is nowhere on a button for a second one to go.
+ * Left as markup it would reach the customer as the literal text
+ * `<tg-emoji emoji-id="…">🔥</tg-emoji>` on a button, which is the one outcome
+ * worth ruling out.
+ *
+ * ## A label that is ONLY an emoji keeps its glyph
+ *
+ * `icon` plus an empty `text` is a button with no label. Telegram refuses that,
+ * and refusing it here is not the answer either — the button is somebody's
+ * whole screen. So a label that reduces to nothing keeps the fallback glyph as
+ * its text and asks for no icon: the customer sees 🔥 rather than a shop that
+ * stopped answering. Same rule mirzabot's `splitCustomEmojiLabel` arrived at.
+ */
+export function splitCustomEmojiLabel(label: string): EmojiLabel {
+  const leading = LEADING_TAG.exec(label);
+  const icon = leading ? (leading[1] as string) : null;
+  const rest = stripCustomEmoji(leading ? label.slice(leading[0].length) : label);
+  if (rest.trim() === '') return { text: stripCustomEmoji(label).trim(), icon: null };
+  return { text: rest, icon };
+}
