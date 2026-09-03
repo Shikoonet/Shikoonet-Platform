@@ -422,6 +422,18 @@ interface Caller {
   id: number;
   status: string;
   is_reseller: boolean;
+  /**
+   * The reseller LEVEL, or null for an ordinary customer.
+   *
+   * Separate from `is_reseller` because the two answer different questions:
+   * the flag decides what this person may SEE (`products.resellers_only`), the
+   * level decides what they PAY. `tierFor` reads this one.
+   */
+  reseller_tier: string | null;
+  /**
+   * What `priceForUser` is fed — already the LEVEL's percentage when they are
+   * on one. See `DISCOUNT_PERCENT`: it is not the raw column.
+   */
   discount_percent: number;
   /**
    * Whether `admins` holds an active row for this Telegram id.
@@ -442,6 +454,51 @@ interface Caller {
 const IS_ADMIN = `EXISTS (SELECT 1 FROM admins a WHERE a.telegram_id = ?1 AND a.active) AS is_admin`;
 
 /**
+ * The percentage `priceForUser` is fed, in the one expression all three
+ * `Caller` loads share — written once here for the same reason `IS_ADMIN`
+ * above it is.
+ *
+ * The LEVEL wins outright. A reseller is priced by their tier and their own
+ * `discount_percent` is left untouched on the row, which is what they go back
+ * to the moment they stop being one. That is the whole reason this is a read
+ * and not a copy: `POST /customers/:id/discount` writes that column directly,
+ * and `migrate.ts` rewrites it from legacy `pricediscount` on every import run.
+ *
+ * `is_reseller` is asked FIRST and a NULL tier means level one — the same rule
+ * `tierFor` applies, written here in SQL because these two must agree. The flag
+ * is set in several places and any of them could omit a level; reading the flag
+ * first means such a row is priced as the reseller they are rather than as an
+ * ordinary customer. Clearing the flag ends tier pricing immediately, even if
+ * the column still holds a level.
+ *
+ * A scalar subquery rather than a LEFT JOIN because two of the three loads are
+ * `INSERT … RETURNING` and `UPDATE … RETURNING`, which cannot join. All three
+ * name the table `users` unaliased, so one string drops into all three.
+ *
+ * NO bind parameters, deliberately: the adapter closes parameter gaps, so a
+ * `?n` in here would renumber `IS_ADMIN`'s `?1` and silently ask whether the
+ * customer's username is an active admin.
+ *
+ * ## One of the three loads cannot be tested, and is written this way anyway
+ *
+ * `upsertUser`'s copy is dead weight for pricing today: its three callers end
+ * in the main menu or a receipt, and neither renders a price, so no assertion
+ * can tell the two expressions apart there. The other two are covered —
+ * `handleCallback`'s by `reseller-tier.test.ts` and `handleTypedAnswer`'s by
+ * the add-on case in `addon.test.ts`, both checked by removing this expression
+ * and watching them go red.
+ *
+ * It uses the constant regardless, because the alternative is a
+ * `Caller.discount_percent` that means the level's price from two producers and
+ * the personal one from the third. That trap springs on the day somebody puts a
+ * priced screen behind `/start`, and it springs silently.
+ */
+const DISCOUNT_PERCENT = `COALESCE(
+         (SELECT t.discount_percent FROM reseller_tiers t
+           WHERE users.is_reseller AND t.code = COALESCE(users.reseller_tier, 'n')),
+         users.discount_percent) AS discount_percent`;
+
+/**
  * The customer row for whoever sent this, created if it is their first message.
  *
  * Upsert rather than SELECT-then-INSERT: two messages cannot race into two rows
@@ -459,7 +516,7 @@ async function upsertUser(
          SET username = EXCLUDED.username,
              last_seen_at = now(),
              updated_at = now()
-       RETURNING id, status, is_reseller, discount_percent, ${IS_ADMIN}`,
+       RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
     )
     .bind(from.id, from.username ?? null)
     .first<Caller>();
@@ -637,7 +694,7 @@ async function handleTypedAnswer(
   if (!from) return IGNORED;
   const user = await tx
     .prepare(
-      `SELECT id, status, is_reseller, discount_percent, ${IS_ADMIN}
+      `SELECT id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}
          FROM users WHERE telegram_id = ?1`,
     )
     .bind(from.id)
@@ -1199,7 +1256,7 @@ async function handleCallback(
     .prepare(
       `UPDATE users SET last_seen_at = now(), updated_at = now()
         WHERE telegram_id = ?1
-        RETURNING id, status, is_reseller, discount_percent, ${IS_ADMIN}`,
+        RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
     )
     .bind(query.from.id)
     .first<Caller>();

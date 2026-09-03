@@ -70,6 +70,7 @@ interface PendingOrder {
   telegram_username: string | null;
   /** Which price column the add-on buttons on the delivery screen read from. */
   is_reseller: boolean;
+  reseller_tier: string | null;
   plan_id: number | null;
   target_subscription_id: number | null;
   target_username: string | null;
@@ -341,6 +342,7 @@ export async function provisionPaidOrders(
               u.telegram_id   AS telegram_id,
               u.username      AS telegram_username,
               u.is_reseller   AS is_reseller,
+              u.reseller_tier AS reseller_tier,
               o.plan_id       AS plan_id,
               o.total_irr     AS total_irr,
               o.target_subscription_id AS target_subscription_id,
