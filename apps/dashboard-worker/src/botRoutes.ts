@@ -395,7 +395,7 @@ export function registerBotRoutes(
           502,
         );
       }
-      // Upsert, not UPDATE. 0048 seeds these rows, but a bare UPDATE against a
+      // Upsert, not UPDATE. 0049 seeds these rows, but a bare UPDATE against a
       // row that is not there writes nothing and reports success — so the
       // topics would be made on Telegram and forgotten here, and the next run
       // would make ten more. The insert is what makes this route true rather

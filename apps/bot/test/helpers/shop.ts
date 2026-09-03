@@ -124,7 +124,7 @@ export interface CustomerOptions {
   discountPercent?: number;
   /**
    * The reseller LEVEL. Left null by default even when `reseller` is true,
-   * because that is the shape every row carried before 0046 and the shape the
+   * because that is the shape every row carried before 0047 and the shape the
    * request-approval route still writes — a fixture that always set it would
    * stop testing the case the shop actually has.
    */
@@ -134,7 +134,7 @@ export interface CustomerOptions {
 /**
  * Sets what a level costs, for a test that needs one.
  *
- * The two rows are seeded by 0046 and are shared state like every other row in
+ * The two rows are seeded by 0047 and are shared state like every other row in
  * the sim, so a test that changes one puts it back.
  */
 export async function setTierDiscount(code: 'n' | 'n2', percent: number): Promise<void> {

@@ -360,7 +360,7 @@ describe('every write route, asked directly', () => {
     // ADMIN-only for a reason the others are not: one number here moves the
     // price for EVERY reseller on that level at once, so it is the widest
     // money write in the product. There is no create and no delete — the ladder
-    // is two rows fixed by a CHECK in 0046.
+    // is two rows fixed by a CHECK in 0047.
     //
     // −2, «هاست‌ها». Sam said on 2026-09-03 that the shop does not need it, so
     // the fold, its component, its client methods and the POST and DELETE

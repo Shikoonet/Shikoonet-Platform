@@ -48,7 +48,7 @@ export function actionsFor(
 /**
  * Which price column this customer is charged from.
  *
- * The legacy `agent` field is three tiers, and until 0046 we carried one flag —
+ * The legacy `agent` field is three tiers, and until 0047 we carried one flag —
  * so this answered `n` or `f` and **`n2` was unreachable**. Every panel screen
  * has had a «نماینده سطح ۲» price box since the pricing fold was built, and no
  * customer could ever be charged from it.

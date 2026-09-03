@@ -1,4 +1,4 @@
--- 0047 — the name a customer chose for their own account.
+-- 0048 — the name a customer chose for their own account.
 --
 -- «روش ساخت نام کاربری» gained a mode on 2026-09-03 where the customer types
 -- the part before the order number. This is where that text lives.

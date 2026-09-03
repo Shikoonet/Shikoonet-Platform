@@ -146,7 +146,7 @@ describe('sendMessage into a forum topic', () => {
    * an order somebody has already paid for.
    *
    * Legacy strips the field on the same condition — `botapi.php:10` — which is
-   * why zero is the value both the importer and migration 0048 seed.
+   * why zero is the value both the importer and migration 0049 seed.
    */
   it('sends the field for a real topic', async () => {
     const { api, calls } = apiWith(() => ok({}));
