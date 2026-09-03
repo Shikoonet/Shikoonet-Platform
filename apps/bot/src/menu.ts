@@ -1957,6 +1957,69 @@ export function spamBlockedReport(telegramId: number): string {
   return TEXTS_NOW.render('SPAM_BLOCKED_REPORT', { telegramId: String(telegramId) });
 }
 
+/** «🛍 خرید تازه» — one delivered purchase, for the reports group. */
+export function purchaseReport(f: {
+  order: string;
+  customer: number | null;
+  service: string;
+  totalIrr: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_PURCHASE', {
+    order: f.order,
+    customer: f.customer === null ? '—' : String(f.customer),
+    service: f.service,
+    amount: formatToman(f.totalIrr),
+  });
+}
+
+/** «📌 گزارش خرید خدمات» — a renewal or an add-on on a service already sold. */
+export function serviceReport(f: {
+  kind: 'RENEWAL' | 'ADD_VOLUME' | 'ADD_TIME';
+  order: string;
+  customer: number | null;
+  service: string;
+}): string {
+  const t = TEXTS_NOW;
+  const kind =
+    f.kind === 'RENEWAL'
+      ? t.raw('REPORT_KIND_RENEWAL')
+      : f.kind === 'ADD_VOLUME'
+        ? t.raw('REPORT_KIND_ADD_VOLUME')
+        : t.raw('REPORT_KIND_ADD_TIME');
+  return t.render('REPORT_SERVICE', {
+    kind,
+    order: f.order,
+    customer: f.customer === null ? '—' : String(f.customer),
+    service: f.service,
+  });
+}
+
+/** «🔑 گزارش اکانت تست» — a free account handed out. */
+export function trialReport(f: {
+  order: string;
+  customer: number | null;
+  panel: string;
+}): string {
+  return TEXTS_NOW.render('REPORT_TRIAL', {
+    order: f.order,
+    customer: f.customer === null ? '—' : String(f.customer),
+    panel: f.panel,
+  });
+}
+
+/** «💰 گزارش مالی» — money in, at the moment it is settled. */
+export function paymentReport(f: {
+  payment: string;
+  customer: number | null;
+  amountIrr: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_PAYMENT', {
+    payment: f.payment,
+    customer: f.customer === null ? '—' : String(f.customer),
+    amount: formatToman(f.amountIrr),
+  });
+}
+
 /**
  * Tehran calendar date, from `Intl` rather than by adding 3.5 hours.
  *

@@ -46,6 +46,7 @@ import { actionsFor, tierFor } from './serviceActions.js';
 import { deliverFromStock } from './stock.js';
 import { creditRenewalCashback, refundOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
+import { report } from './reports.js';
 import { createLogger } from '@shikoo/domain';
 
 const log = createLogger('bot');
@@ -491,7 +492,49 @@ export async function provisionPaidOrders(
       .prepare(`SELECT status FROM orders WHERE id = ?1`)
       .bind(row.order_id)
       .first<{ status: string }>();
-    if (ended?.status === 'COMPLETED') log.info('provision.delivered', { ref: row.order_public_id });
+    if (ended?.status === 'COMPLETED') {
+      log.info('provision.delivered', { ref: row.order_public_id });
+      /*
+       * The reports group, in the topic for this kind of order.
+       *
+       * Read from the same `orders` status as the event above, so a report is
+       * never sent for a delivery that did not happen — and OUTSIDE `deliver`'s
+       * transactions, so a report that cannot be queued cannot roll a delivered
+       * service back. `enqueue` dedupes on the order's public id, so a sweep
+       * that runs twice produces one message.
+       */
+      const shop = await loadShopSettings(db);
+      const [kind, text] =
+        row.order_kind === 'TRIAL'
+          ? ([
+              'reporttest' as const,
+              menu.trialReport({
+                order: row.order_public_id,
+                customer: row.telegram_id,
+                panel: row.provider_name ?? String(row.provider_id ?? '—'),
+              }),
+            ] as const)
+          : row.order_kind === 'NEW_PURCHASE'
+            ? ([
+                'buyreport' as const,
+                menu.purchaseReport({
+                  order: row.order_public_id,
+                  customer: row.telegram_id,
+                  service: row.plan_name ?? row.product_name ?? '—',
+                  totalIrr: Number(row.total_irr),
+                }),
+              ] as const)
+            : ([
+                'otherservice' as const,
+                menu.serviceReport({
+                  kind: row.order_kind as 'RENEWAL' | 'ADD_VOLUME' | 'ADD_TIME',
+                  order: row.order_public_id,
+                  customer: row.telegram_id,
+                  service: row.target_name ?? row.plan_name ?? row.product_name ?? '—',
+                }),
+              ] as const);
+      await db.withSession((tx) => report(tx, shop, kind, row.order_public_id, text));
+    }
 
     if (note !== null && row.telegram_id !== null) {
       // Still enqueued just after `deliver` commits rather than inside its

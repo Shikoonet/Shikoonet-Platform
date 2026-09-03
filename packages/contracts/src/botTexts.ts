@@ -1682,6 +1682,57 @@ export const TEXTS = {
     hint: 'به کانال گزارش، با دکمهٔ باز کردن همان کاربر',
   },
 
+  /*
+   * The reports, one per topic. Editable like every other text the bot sends,
+   * because an operator who wants «فروش» instead of «خرید» in their own group
+   * should not need a deploy.
+   */
+  REPORT_PURCHASE: {
+    default:
+      '🛍 <b>خرید تازه</b>\nسفارش: <code>{order}</code>\nمشتری: <code>{customer}</code>\nسرویس: {service}\nمبلغ: {amount}',
+    placeholders: ['order', 'customer', 'service', 'amount'],
+    screen: 'warnings',
+    hint: 'به تاپیک «گزارش‌های خرید»، بعد از تحویل سرویس',
+  },
+  REPORT_SERVICE: {
+    default:
+      '📌 <b>{kind}</b>\nسفارش: <code>{order}</code>\nمشتری: <code>{customer}</code>\nسرویس: {service}',
+    placeholders: ['kind', 'order', 'customer', 'service'],
+    screen: 'warnings',
+    hint: 'به تاپیک «گزارش خرید خدمات» — تمدید و حجم و زمان اضافه',
+  },
+  REPORT_TRIAL: {
+    default: '🔑 <b>اکانت تست</b>\nسفارش: <code>{order}</code>\nمشتری: <code>{customer}</code>\nپنل: {panel}',
+    placeholders: ['order', 'customer', 'panel'],
+    screen: 'warnings',
+    hint: 'به تاپیک «گزارش اکانت تست»',
+  },
+  REPORT_PAYMENT: {
+    default:
+      '💰 <b>پرداخت تایید شد</b>\nفیش: <code>{payment}</code>\nمشتری: <code>{customer}</code>\nمبلغ: {amount}',
+    placeholders: ['payment', 'customer', 'amount'],
+    screen: 'warnings',
+    hint: 'به تاپیک «گزارش مالی»، وقتی پرداختی تسویه می‌شود',
+  },
+  REPORT_KIND_RENEWAL: {
+    default: 'تمدید سرویس',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'عنوان گزارش تمدید',
+  },
+  REPORT_KIND_ADD_VOLUME: {
+    default: 'حجم اضافه',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'عنوان گزارش حجم اضافه',
+  },
+  REPORT_KIND_ADD_TIME: {
+    default: 'زمان اضافه',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'عنوان گزارش زمان اضافه',
+  },
+
   PAGING_PREV: {
     default: '« قبلی',
     placeholders: [],

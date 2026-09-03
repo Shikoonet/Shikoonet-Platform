@@ -294,6 +294,7 @@ export async function handleUpdate(
         telegramId: from.id,
         updateId: update.update_id,
         reportChatId: SHOP.reportChatId,
+        reportThreadId: SHOP.reportTopics.otherreport,
       });
       // Told once, at the moment it happens. Every message after this one is
       // ignored in silence, which is what the per-handler checks already do.

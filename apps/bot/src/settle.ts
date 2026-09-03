@@ -19,6 +19,7 @@ import * as menu from './menu.js';
 import { enqueue } from './notify.js';
 import { payReferralCommission } from './referral.js';
 import { loadShopSettings } from './settings.js';
+import { report } from './reports.js';
 import { creditTopup } from './wallet.js';
 import { createLogger } from '@shikoo/domain';
 
@@ -232,6 +233,28 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
               : menu.walletToppedUp(credited),
         });
       }
+      /*
+       * «💰 گزارش مالی» — money in, in the same transaction that settles it.
+       *
+       * Inside, for the reason the customer's message above is inside: if this
+       * insert fails the payment is not marked paid either and the next sweep
+       * picks it up again, which is recoverable. A payment settled with no
+       * report is not — nothing would ever produce it a second time.
+       *
+       * Silent when no group is configured, which is every shop until somebody
+       * sets one.
+       */
+      await report(
+        tx,
+        await loadShopSettings(db),
+        'paymentreport',
+        row.payment_public_id,
+        menu.paymentReport({
+          payment: row.payment_public_id,
+          customer: row.telegram_id,
+          amountIrr: Number(row.order_total_irr ?? 0),
+        }),
+      );
       return true;
     });
 

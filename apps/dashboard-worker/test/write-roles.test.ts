@@ -368,6 +368,13 @@ describe('every write route, asked directly', () => {
     // Nothing in the bot ever called them, and the «هیچ اینباندش هاست ندارد»
     // warning in «گروه‌های پنل» survives because it is fed by the separate
     // `/inbounds` route, not by these.
-    expect(writeRoutes().length).toBe(147);
+    //
+    // +1, «POST /bot/report-group». Points the bot at a forum group and creates
+    // the ten report topics in it. ADMIN-only for the reason the token route
+    // beside it is: it decides where the shop's own reports — money, purchases,
+    // errors — are published, and «who may read those» is not a reviewer's
+    // decision. It writes `Channel_Report` LAST, so a half-finished run leaves
+    // the shop reporting exactly where it did before.
+    expect(writeRoutes().length).toBe(148);
   });
 });

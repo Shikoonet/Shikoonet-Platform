@@ -52,6 +52,18 @@ export interface PendingNotification {
   /** Buttons under the message. Absent for the plain one-line notices. */
   keyboard?: InlineKeyboard | null;
   /**
+   * A forum topic in the reports group, for a message that is a report.
+   *
+   * Decided by the PRODUCER and stored, not looked up when the message is
+   * sent: the producer is the only thing that knows which report this is, and a
+   * settings change between queueing and sending would otherwise move a message
+   * whose destination had already been decided.
+   *
+   * Absent, null, and zero all mean «no topic» — zero is legacy's own
+   * unconfigured sentinel and reaches Telegram as no field at all.
+   */
+  threadId?: number | null;
+  /**
    * A string to send as a QR image ahead of the text — in practice the
    * subscription link. The customer's next step after buying is to get the
    * config into an app on a phone, and a photo they point a camera at beats a
@@ -95,8 +107,9 @@ export function nextAttemptDelayMs(attempt: number): number {
 export async function enqueue(tx: D1DatabaseSession, note: PendingNotification): Promise<boolean> {
   const written = await tx
     .prepare(
-      `INSERT INTO bot_notifications (dedupe_key, chat_id, body, reply_markup, qr_payload)
-       VALUES (?1, ?2, ?3, ?4::jsonb, ?5)
+      `INSERT INTO bot_notifications
+         (dedupe_key, chat_id, body, reply_markup, qr_payload, message_thread_id)
+       VALUES (?1, ?2, ?3, ?4::jsonb, ?5, ?6)
        ON CONFLICT (dedupe_key) DO NOTHING`,
     )
     .bind(
@@ -107,6 +120,7 @@ export async function enqueue(tx: D1DatabaseSession, note: PendingNotification):
       // `sendMessage`'s to build, and only one file should know its shape.
       note.keyboard ? JSON.stringify(note.keyboard) : null,
       note.qrPayload ?? null,
+      note.threadId ?? null,
     )
     .run();
   return written.meta.changes > 0;
@@ -126,6 +140,7 @@ interface DueRow {
   reply_markup: InlineKeyboard | string | null;
   qr_payload: string | null;
   qr_sent_at: string | null;
+  message_thread_id: number | null;
 }
 
 /**
@@ -192,7 +207,7 @@ export async function flush(
                  next_attempt_at = ?1 + ?3
            WHERE id IN (SELECT id FROM due)
           RETURNING id, chat_id, body, attempt_count,
-                    reply_markup, qr_payload, qr_sent_at`,
+                    reply_markup, qr_payload, qr_sent_at, message_thread_id`,
       )
       .bind(now, limit, LEASE_MS)
       .all<DueRow>();
@@ -237,7 +252,7 @@ export async function flush(
           log.warn('notify.qr_failed', { ref: String(row.id), fallback: 'text only' }, err);
         }
       }
-      await api.sendMessage(row.chat_id, row.body, keyboardOf(row));
+      await api.sendMessage(row.chat_id, row.body, keyboardOf(row), row.message_thread_id);
       await settle(db, row.id, 'SENT', null, null);
       result.sent += 1;
       continue;

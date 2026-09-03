@@ -33,12 +33,31 @@ import {
   keyId,
   panelSecretKey,
   readBotCredential,
+  resolveBotToken,
   seal,
   type BotIdentity,
 } from '@shikoo/domain';
+import { REPORT_KINDS, REPORT_TOPIC_TITLES, reportTopicKey } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 
 const TELEGRAM_API = 'https://api.telegram.org';
+
+/** Only what Telegram sends back that this route reads. */
+interface TelegramReply {
+  ok?: boolean;
+  result?: { is_forum?: boolean; message_thread_id?: number };
+}
+
+const ReportGroupBody = z
+  .object({
+    /**
+     * A supergroup id — large and negative, which is the shape an operator
+     * pastes from Telegram. Bounded rather than pattern-matched: a private chat
+     * id would be positive and is refused by the forum check anyway.
+     */
+    chatId: z.number().int().max(-1),
+  })
+  .strict();
 
 const SetBody = z
   .object({
@@ -236,5 +255,185 @@ export function registerBotRoutes(
     );
 
     return c.json({ ok: true, connected: { ...identity, envName } });
+  });
+
+  /**
+   * «گروه گزارش‌ها» — point the bot at a forum group and make the ten topics.
+   *
+   * Sam, 2026-09-03: reports in topics, «مثل میرزا و فاکسیما». Both legacy bots
+   * do this from their own admin step (`mirzabot admin.php:2371-2513`) and this
+   * is the same sequence, in the same order, for the same reasons.
+   *
+   * ## Why the group is written LAST
+   *
+   * `Channel_Report` is what every producer reads to decide whether to send at
+   * all. Writing it before the topics exist would make the shop start reporting
+   * into a group whose topics are still zero — every report in General, which
+   * is exactly the state this route exists to leave behind. Written last, a run
+   * that fails half way leaves the shop reporting where it did before.
+   *
+   * ## Why a non-forum group is refused
+   *
+   * `createForumTopic` fails on an ordinary group, so without this check an
+   * operator would get ten identical Telegram errors and no sentence they could
+   * act on. Legacy refuses the same way and with the same words.
+   *
+   * ## A topic that already exists is kept
+   *
+   * A second run does not make a second «گزارش مالی». Only the kinds still at
+   * zero are created, which is also what makes this safe to re-run after a
+   * partial failure — and what lets a shop migrated from MySQL keep the topics
+   * it already had.
+   */
+  app.post('/api/v1/admin/bot/report-group', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const body = ReportGroupBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ ok: false, error: 'bad_body' }, 400);
+    const chatId = body.data.chatId;
+
+    /*
+     * `PANEL_SECRET_KEY` is passed through deliberately.
+     *
+     * `resolveBotToken`'s env argument REPLACES `process.env`, so handing it
+     * only the bot token leaves it unable to open the sealed row — and the
+     * symptom is «no bot is connected» on a shop that has one. That is exactly
+     * the confusion `botToken.ts` warns about two paragraphs above the
+     * function, and it cost this route one debugging round.
+     */
+    let resolved;
+    try {
+      resolved = await resolveBotToken(c.env.DB, c.env.ENV_NAME ?? 'local', {
+        TELEGRAM_BOT_TOKEN: c.env.TELEGRAM_BOT_TOKEN,
+        PANEL_SECRET_KEY: process.env['PANEL_SECRET_KEY'],
+      });
+    } catch (err) {
+      // A stored token that will not open is not a missing one. Saying «connect
+      // a bot first» would send an operator to re-paste a token that was
+      // already right, when the real answer is a wrong PANEL_SECRET_KEY.
+      return c.json(
+        { ok: false, error: 'bot_token_unreadable', detail: (err as Error).message },
+        503,
+      );
+    }
+    if (!resolved) {
+      return c.json(
+        { ok: false, error: 'no_bot', detail: 'اول باید رباتی به پنل وصل باشد.' },
+        409,
+      );
+    }
+    const call = async (method: string, payload: unknown): Promise<TelegramReply> => {
+      const res = await globalThis.fetch(`${TELEGRAM_API}/bot${resolved.token}/${method}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return (await res.json()) as TelegramReply;
+    };
+
+    let chat: TelegramReply;
+    try {
+      chat = await call('getChat', { chat_id: chatId });
+    } catch {
+      return c.json({ ok: false, error: 'telegram_unreachable' }, 502);
+    }
+    if (chat.ok !== true) {
+      return c.json(
+        {
+          ok: false,
+          error: 'chat_unreachable',
+          detail: 'ربات این گروه را نمی‌بیند — اول ربات را به گروه اضافه کنید و ادمینش کنید.',
+        },
+        422,
+      );
+    }
+    if (chat.result?.is_forum !== true) {
+      // Legacy's own sentence, because an operator who has seen it before
+      // should not have to learn a second wording for the same problem.
+      return c.json(
+        {
+          ok: false,
+          error: 'not_a_forum',
+          detail: 'گروه انتخاب‌شده در حالت انجمن نیست — اول قابلیت تاپیک گروه را روشن کنید.',
+        },
+        422,
+      );
+    }
+
+    const created: Record<string, number> = {};
+    for (const kind of REPORT_KINDS) {
+      const key = reportTopicKey(kind);
+      const existing = await c.env.DB.prepare(
+        `SELECT value FROM settings WHERE scope = 'bot' AND key = ?1`,
+      )
+        .bind(key)
+        .first<{ value: unknown }>();
+      const current = Number(existing?.value ?? 0);
+      if (Number.isSafeInteger(current) && current > 0) continue;
+
+      let made: TelegramReply;
+      try {
+        made = await call('createForumTopic', {
+          chat_id: chatId,
+          name: REPORT_TOPIC_TITLES[kind],
+        });
+      } catch {
+        return c.json({ ok: false, error: 'telegram_unreachable', created }, 502);
+      }
+      const threadId = made.result?.message_thread_id;
+      if (made.ok !== true || typeof threadId !== 'number') {
+        // Stops rather than carrying on, so what did NOT happen is one
+        // contiguous list rather than a scatter an operator has to diff.
+        return c.json(
+          {
+            ok: false,
+            error: 'topic_failed',
+            detail: `ساخت تاپیک «${REPORT_TOPIC_TITLES[kind]}» انجام نشد.`,
+            created,
+          },
+          502,
+        );
+      }
+      // Upsert, not UPDATE. 0048 seeds these rows, but a bare UPDATE against a
+      // row that is not there writes nothing and reports success — so the
+      // topics would be made on Telegram and forgotten here, and the next run
+      // would make ten more. The insert is what makes this route true rather
+      // than dependent on a migration having run.
+      await c.env.DB.prepare(
+        `INSERT INTO settings (scope, key, value, updated_by)
+         VALUES ('bot', ?1, ?2::jsonb, ?3)
+         ON CONFLICT (scope, key)
+           DO UPDATE SET value = EXCLUDED.value, updated_at = now(),
+                         updated_by = EXCLUDED.updated_by`,
+      )
+        .bind(key, JSON.stringify(threadId), ident.email)
+        .run();
+      created[kind] = threadId;
+    }
+
+    // Last, and only now: every topic this run was going to make exists.
+    await c.env.DB.prepare(
+      `INSERT INTO settings (scope, key, value, updated_by)
+       VALUES ('bot', 'Channel_Report', ?1::jsonb, ?2)
+       ON CONFLICT (scope, key)
+         DO UPDATE SET value = EXCLUDED.value, updated_at = now(),
+                       updated_by = EXCLUDED.updated_by`,
+    )
+      .bind(JSON.stringify(String(chatId)), ident.email)
+      .run();
+
+    await audit(
+      c.env.DB,
+      ident,
+      'bot.report_group_set',
+      'bot',
+      String(chatId),
+      null,
+      { chatId, created },
+      null,
+    );
+
+    return c.json({ ok: true, chatId, created });
   });
 }
