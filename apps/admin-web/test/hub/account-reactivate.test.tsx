@@ -133,6 +133,27 @@ describe('an account that has been switched off', () => {
     expect((await screen.findAllByText(/حساب خاموش/)).length).toBeGreaterThan(0);
   });
 
+  /**
+   * The «وضعیت» column, on staging, 2026-09-04: seven rows whose button said
+   * «فعال‌کردن» and whose status cell said «فعال». Both are true of different
+   * questions — `status` is the lifecycle (ACTIVE/PENDING/MUTED/DECLINED) and
+   * `active` is the switch — but «فعال» is the one word an operator reads to
+   * answer «is this account on?», and it was answering the other question.
+   *
+   * The card cell one column over already names this exact switch («حساب
+   * خاموش»). Same word here, so the two cells cannot be read against each
+   * other and disagree.
+   */
+  it('says the account is off in the column that claims to say so', async () => {
+    rows = [account({ id: 'acc-pill', display_name: 'حساب خاموش', active: 0, status: 'ACTIVE' })];
+
+    render(<AccountsView cache={createCache()} />);
+
+    await screen.findAllByRole('button', { name: 'فعال‌کردن' });
+    const pills = await screen.findAllByText(/خاموش/);
+    expect(pills.some((p) => p.className.includes('status-pill'))).toBe(true);
+  });
+
   it('names the card’s own switch when the account is fine', async () => {
     rows = [
       account({
