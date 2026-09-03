@@ -1362,6 +1362,12 @@ function PanelModal({
                     <option value="TELEGRAM_ID">آیدی عددی کاربر</option>
                     <option value="PANEL_TEXT">متن دلخواه این پنل</option>
                     <option value="TELEGRAM_USERNAME">نام کاربری تلگرام</option>
+                    {/* NOT «تصادفی». The name is a digest of the order number,
+                        so a retry reproduces it — a genuinely random one would
+                        make a second paid account. Labelling it random is how
+                        the next person undoes that. */}
+                    <option value="ORDER_ID">برگرفته از شمارهٔ سفارش</option>
+                    <option value="CUSTOMER_TEXT">نام دلخواه مشتری</option>
                   </select>
                 </div>
                 {usernameMode === 'PANEL_TEXT' && (
@@ -1388,6 +1394,24 @@ function PanelModal({
                 دوم نسازد.
                 {usernameMode === 'TELEGRAM_USERNAME' && (
                   <> مشتری‌ای که نام کاربری تلگرام ندارد با آیدی عددی‌اش ساخته می‌شود.</>
+                )}
+                {usernameMode === 'ORDER_ID' && (
+                  <>
+                    {' '}
+                    پیشوند از روی <b>شمارهٔ همان سفارش</b> ساخته می‌شود؛ نامفهوم به نظر می‌رسد ولی
+                    تصادفی نیست — آیدی عددی مشتری در نام اکانت دیده نمی‌شود و دو سرویسِ یک نفر هیچ
+                    شباهتی به هم ندارند.
+                  </>
+                )}
+                {usernameMode === 'CUSTOMER_TEXT' && (
+                  <>
+                    {' '}
+                    ربات هنگام خرید از مشتری یک نام می‌پرسد و همان پیشوند می‌شود —{' '}
+                    <b>شمارهٔ سفارش باز هم به انتهایش اضافه می‌شود</b>، پس مشتری‌ای که «reza»
+                    بنویسد اکانتی به نام <span className="ltr">reza_1a2b3c4d5e</span> می‌گیرد.
+                    نامی که پنل نپذیرد دوباره پرسیده می‌شود؛ سرویس تست پرسشی ندارد و مثل حالت بالا
+                    ساخته می‌شود.
+                  </>
                 )}
               </p>
             </Fold>

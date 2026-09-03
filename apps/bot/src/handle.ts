@@ -22,7 +22,13 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { extraBoundsFor, renewAllowed, renewModeFor } from '@shikoo/domain';
+import {
+  CUSTOMER_NAME_MAX,
+  extraBoundsFor,
+  renewAllowed,
+  renewModeFor,
+  sanitiseUsernamePart,
+} from '@shikoo/domain';
 import { actOnService } from './actions.js';
 import { decode, encode } from './callback.js';
 import type { CatalogCategory, CatalogPlan } from './catalog.js';
@@ -719,6 +725,7 @@ async function handleTypedAnswer(
   if (session.step === 'gift') return handleGiftCode(tx, message, user);
   if (session.step === 'topup') return handleTopupAmount(tx, message, user);
   if (session.step === 'agent') return handleResellerRequest(tx, message, user);
+  if (session.step === 'uname') return handleCustomerName(tx, message, user, session);
   return IGNORED;
 }
 
@@ -999,6 +1006,151 @@ async function heldRenewalCode(
 }
 
 /** The code a renewal screen should show as held, if any. */
+/**
+ * Placing the order and drawing the invoice — extracted so there is ONE way in.
+ *
+ * `case 'order'` reaches it from the button, and `handleCustomerName` reaches it
+ * again once the customer has typed a name. Two copies of this would be two
+ * places to forget the held discount code, which is the drift `planScreen`'s own
+ * comment warns about.
+ */
+async function placeOrderScreen(
+  tx: D1DatabaseSession,
+  user: Caller,
+  plan: CatalogPlan,
+  screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+): Promise<HandleOutcome> {
+  /*
+   * The one edge into an order, which is why the prompt is here and not beside
+   * the discount-code step it otherwise resembles.
+   *
+   * That step is OPTIONAL: `planDetailMenu` draws «خرید» beside «کد تخفیف», so
+   * a customer reaches `order` having never entered it. Mirroring its placement
+   * would place orders with no name on a panel configured to ask for one — the
+   * setting saved, reported, and inert, which is the failure `panelRoutes`
+   * refuses for PANEL_TEXT.
+   */
+  const chosenName =
+    plan.usernameMode === 'CUSTOMER_TEXT' ? await heldName(tx, user.id, plan.planId) : null;
+  if (plan.usernameMode === 'CUSTOMER_TEXT' && chosenName === null) {
+    await ask(tx, user.id, 'uname', { planId: plan.planId });
+    return screen(menu.ASK_ACCOUNT_NAME, menu.promptMenu(encode('plan', plan.planId)));
+  }
+
+  // The code is checked once more, here, in the transaction that writes the
+  // order and the redemption together. Two taps cannot both spend it: the
+  // second `redeem` writes no row, and the order is placed at full price.
+  const listed = priceForUser(plan.priceIrr, user.discount_percent);
+  const held = await heldCode(tx, user, plan, listed.totalIrr);
+  const placed = await placeOrder(
+    tx,
+    user.id,
+    plan,
+    user.discount_percent,
+    held?.discountIrr ?? 0,
+    chosenName,
+  );
+  // A total of zero is refused rather than written. The code is left
+  // unredeemed on purpose: nothing was bought with it.
+  if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.planDetailMenu(plan));
+  // Not cleared afterwards, deliberately: the held code is what lets a
+  // second tap re-price the same plan the same way and land back on the
+  // order that already exists. `/start` and «برداشتن کد» clear it.
+  if (held) await redeem(tx, held.code.id, user.id, placed.id, held.discountIrr);
+  const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
+  if (!checkout) {
+    return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
+  }
+  if (checkout.claimed) {
+    return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+  }
+  return screen(
+    menu.checkout(
+      placed.publicId,
+      plan,
+      placed.totalIrr,
+      checkout.cardDigits,
+      checkout.cardHolder,
+    ),
+    menu.checkoutMenu(
+      placed.id,
+      placed.totalIrr,
+      checkout.cardDigits,
+      { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
+      SHOP.showsCopyButtons,
+    ),
+  );
+}
+
+/**
+ * The name this customer has already given for this plan, or null.
+ *
+ * A copy of `heldRenewalName` in everything but the two names it reads, and for
+ * the same reason: the answer is held in the session between the moment it is
+ * typed and the moment the order is written.
+ *
+ * Scoped to the plan, so a name chosen for one service is not silently spent on
+ * another the customer opened afterwards.
+ */
+async function heldName(
+  tx: D1DatabaseSession,
+  userId: number,
+  planId: number,
+): Promise<string | null> {
+  const row = await tx
+    .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
+    .bind(userId)
+    .first<{ step: string | null; data: Record<string, unknown> | null }>();
+  if (row?.step !== 'uname:held') return null;
+  if (Number(row.data?.['planId']) !== planId) return null;
+  const typed = row.data?.['name'];
+  return typeof typed === 'string' ? typed : null;
+}
+
+/**
+ * «اسم اکانتت را بنویس» — the answer, in the middle of a purchase.
+ *
+ * Unusable input RE-ASKS and leaves the step open, which is
+ * `handleDiscountCode`'s own pattern. It matters more here than there:
+ * `sanitiseUsernamePart` strips everything outside `[a-z0-9_]`, so Persian
+ * reduces to nothing — and Persian is what most customers of a Persian shop
+ * will type first. Falling through to a default would be the panel setting
+ * doing nothing, one customer at a time.
+ *
+ * What is stored is the SANITISED string, so `orders.username_text` holds
+ * exactly what the panel will be asked for and no screen can promise a name the
+ * panel will not give.
+ */
+async function handleCustomerName(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  session: Session,
+): Promise<HandleOutcome> {
+  const planId = Number(session.data['planId']);
+  if (!Number.isSafeInteger(planId)) return IGNORED;
+
+  const screen = (text: string, keyboard?: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, ...(keyboard ? { keyboard } : {}) }],
+  });
+
+  // Re-checked rather than trusted from the moment the prompt was drawn: an
+  // admin may have hidden the plan in between, and this is the same check the
+  // button itself makes.
+  const plan = await purchasablePlan(tx, user.id, planId);
+  if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
+
+  const clean = sanitiseUsernamePart((message.text ?? '').slice(0, CUSTOMER_NAME_MAX));
+  if (clean === null) {
+    // The question stays open — the customer mistyped and can type again.
+    return screen(menu.ACCOUNT_NAME_REFUSED, menu.promptMenu(encode('plan', plan.planId)));
+  }
+
+  await ask(tx, user.id, 'uname:held', { planId, name: clean });
+  return placeOrderScreen(tx, user, plan, screen);
+}
+
 async function heldRenewalName(
   tx: D1DatabaseSession,
   userId: number,
@@ -1518,48 +1670,7 @@ async function handleCallback(
       // is not evidence that a button was ever offered for this plan.
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
-      // The code is checked once more, here, in the transaction that writes the
-      // order and the redemption together. Two taps cannot both spend it: the
-      // second `redeem` writes no row, and the order is placed at full price.
-      const listed = priceForUser(plan.priceIrr, user.discount_percent);
-      const held = await heldCode(tx, user, plan, listed.totalIrr);
-      const placed = await placeOrder(
-        tx,
-        user.id,
-        plan,
-        user.discount_percent,
-        held?.discountIrr ?? 0,
-      );
-      // A total of zero is refused rather than written. The code is left
-      // unredeemed on purpose: nothing was bought with it.
-      if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.planDetailMenu(plan));
-      // Not cleared afterwards, deliberately: the held code is what lets a
-      // second tap re-price the same plan the same way and land back on the
-      // order that already exists. `/start` and «برداشتن کد» clear it.
-      if (held) await redeem(tx, held.code.id, user.id, placed.id, held.discountIrr);
-      const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
-      if (!checkout) {
-        return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
-      }
-      if (checkout.claimed) {
-        return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
-      }
-      return screen(
-        menu.checkout(
-          placed.publicId,
-          plan,
-          placed.totalIrr,
-          checkout.cardDigits,
-          checkout.cardHolder,
-        ),
-        menu.checkoutMenu(
-          placed.id,
-          placed.totalIrr,
-          checkout.cardDigits,
-          { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
-          SHOP.showsCopyButtons,
-        ),
-      );
+      return placeOrderScreen(tx, user, plan, screen);
     }
 
     case 'mine': {

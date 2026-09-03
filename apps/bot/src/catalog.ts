@@ -357,6 +357,15 @@ export interface CatalogPlan {
   userLimit: number | null;
   providerId: number;
   providerName: string;
+  /**
+   * The panel's «روش ساخت نام کاربری», raw.
+   *
+   * Only one value changes anything here: `CUSTOMER_TEXT` means the buy path
+   * must ask the customer for a name before it writes an order. Everything else
+   * is decided later, by `usernameShapeFor` at provisioning time, and is none of
+   * this screen's business.
+   */
+  usernameMode: string | null;
   /** The category it is sold under. Decides where «بازگشت» lands. */
   categoryId: number;
   /**
@@ -405,6 +414,7 @@ interface PlanRow {
   row_index: number | null;
   siblings: number;
   tiers: number;
+  username_mode: string | null;
 }
 
 const PLAN_COLUMNS = `
@@ -420,6 +430,10 @@ const PLAN_COLUMNS = `
   pl.user_limit   AS user_limit,
   pr.id           AS provider_id,
   pr.name         AS provider_name,
+  -- Read here rather than in a second query because every plan lookup already
+  -- joins the panel, and the buy path needs to know BEFORE the order is placed
+  -- whether this panel asks the customer to name their account.
+  pr.config->>'username_mode' AS username_mode,
   p.category_id   AS category_id,
   pl.row_index    AS row_index,
   (SELECT COUNT(*)::int
@@ -457,6 +471,7 @@ function toPlan(row: PlanRow): CatalogPlan {
     rowIndex: row.row_index,
     siblings: row.siblings,
     tiers: row.tiers,
+    usernameMode: row.username_mode,
   };
 }
 

@@ -346,6 +346,30 @@ describe('مخفی کردن پنل برای یک کاربر', () => {
   });
 });
 
+describe('دو حالت تازهٔ نام کاربری', () => {
+  it('saves the customer-typed mode with no panel text, and does not ask for one', async () => {
+    // The PANEL_TEXT refusal must not be copied here: this mode's data arrives
+    // per order, so there is nothing that could be missing at save time.
+    const id = await makePanel('unamecust');
+    expect((await patch(id, { usernameMode: 'CUSTOMER_TEXT' })).status).toBe(200);
+    expect((await configOf(id))['username_mode']).toBe('CUSTOMER_TEXT');
+  });
+
+  it('saves the order-id mode', async () => {
+    const id = await makePanel('unameorder');
+    expect((await patch(id, { usernameMode: 'ORDER_ID' })).status).toBe(200);
+    expect((await configOf(id))['username_mode']).toBe('ORDER_ID');
+  });
+
+  it('refuses a mode the builder would not recognise', async () => {
+    // The schema's enum is `USERNAME_MODES`, the same list `usernameShapeFor`
+    // reads. A mode accepted here and unknown there would save, report success,
+    // and name every account after the Telegram id.
+    const id = await makePanel('unamebad');
+    expect((await patch(id, { usernameMode: 'RANDOM' })).status).toBe(400);
+  });
+});
+
 describe('حداقل خرید حجم و زمان', () => {
   it('saves a floor and reads it back through the function the bot enforces with', async () => {
     const id = await makePanel('min');

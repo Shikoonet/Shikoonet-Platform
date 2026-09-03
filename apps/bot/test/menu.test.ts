@@ -41,6 +41,7 @@ const PLAN: CatalogPlan = {
   rowIndex: null,
   siblings: 1,
   tiers: 1,
+  usernameMode: null,
 };
 
 describe('the main menu', () => {

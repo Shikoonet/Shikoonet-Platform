@@ -939,6 +939,20 @@ export const TEXTS = {
     screen: 'addon',
     hint: 'عددی بزرگ‌تر از سقف مجاز',
   },
+  ASK_ACCOUNT_NAME: {
+    default:
+      'یک نام برای اکانتت بنویس — با حرف انگلیسی شروع شود و دست‌کم ۳ حرف باشد.\n\nشمارهٔ سفارش هم به انتهایش اضافه می‌شود، مثل reza_1a2b3c4d5e.',
+    placeholders: [],
+    screen: 'planDetail',
+    hint: 'پنلی که اسم اکانت را از مشتری می‌پرسد',
+  },
+  ACCOUNT_NAME_REFUSED: {
+    default:
+      'این نام روی پنل ساخته نمی‌شود. فقط حروف انگلیسی و عدد، با حرف شروع شود و دست‌کم ۳ حرف باشد. دوباره بفرست.',
+    placeholders: [],
+    screen: 'planDetail',
+    hint: 'نامی که پنل نمی‌پذیرد',
+  },
   ADDON_TOO_LITTLE: {
     default: 'کمترین مقدار در هر خرید {min} است. عدد بزرگ‌تری بفرستید.',
     placeholders: ['min'],

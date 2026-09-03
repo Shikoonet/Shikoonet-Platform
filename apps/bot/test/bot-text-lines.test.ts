@@ -285,6 +285,7 @@ describe('the card-to-card note that names the «paid» button', () => {
     rowIndex: null,
     siblings: 1,
     tiers: 1,
+    usernameMode: null,
   };
   const invoice = (): string =>
     menu.checkout('ord0000001', PLAN, 1_950_000, '6037997512345678', null);

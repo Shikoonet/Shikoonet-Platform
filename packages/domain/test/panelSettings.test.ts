@@ -70,6 +70,73 @@ describe('روش ساخت نام کاربری — the shapes a panel may give an
     expect(remoteUsernameFor(55, order, { mode: 'PANEL_TEXT', panelText: 'Vip' })).toBe(byText);
   });
 
+  describe('the two modes added on 2026-09-03', () => {
+    const ORDER = 'inv-7b1f';
+    const TG = 369469521;
+
+    /**
+     * «برگرفته از شمارهٔ سفارش» — what Sam asked for as «random».
+     *
+     * Reproducible is the whole reason it is a digest rather than a random
+     * number, so that is the first assertion; the second is what it was asked
+     * for, which is that the customer's Telegram id is not in the name.
+     */
+    it('builds the same opaque name for one order, every time', () => {
+      const first = remoteUsernameFor(TG, ORDER, { mode: 'ORDER_ID' });
+      const again = remoteUsernameFor(TG, ORDER, { mode: 'ORDER_ID' });
+
+      expect(again).toBe(first);
+      expect(first).toMatch(/^[a-z][a-z0-9]{2,}_inv7b1f$/);
+      expect(first).not.toContain(String(TG));
+    });
+
+    it('gives one person’s two orders names that look nothing alike', () => {
+      // The complaint that started this: `<id>_<a>` and `<id>_<b>` differ only
+      // in the tail, and both carry the id.
+      const one = remoteUsernameFor(TG, 'inv-aaaa1111', { mode: 'ORDER_ID' });
+      const two = remoteUsernameFor(TG, 'inv-bbbb2222', { mode: 'ORDER_ID' });
+
+      expect(one.split('_')[0]).not.toBe(two.split('_')[0]);
+    });
+
+    it('puts the customer’s own text in front, and keeps the order number', () => {
+      expect(remoteUsernameFor(TG, ORDER, { mode: 'CUSTOMER_TEXT', customerText: 'reza' })).toBe(
+        'reza_inv7b1f',
+      );
+    });
+
+    /**
+     * The fallback, and the one it is deliberately NOT.
+     *
+     * A trial is never prompted — it has no steps — so it reaches this mode
+     * with no text. Falling back to the Telegram id would put on the phone the
+     * exact thing these two modes exist to keep off it, so it falls to the
+     * ORDER_ID digest instead.
+     */
+    it('falls to the opaque name, not the Telegram id, when no text was given', () => {
+      const none = remoteUsernameFor(TG, ORDER, { mode: 'CUSTOMER_TEXT', customerText: null });
+
+      expect(none).toBe(remoteUsernameFor(TG, ORDER, { mode: 'ORDER_ID' }));
+      expect(none).not.toContain(String(TG));
+    });
+
+    it('falls the same way for text the panel could never accept', () => {
+      // Persian sanitises to nothing — the common case for this shop, and the
+      // reason the bot asks again at the prompt rather than relying on this.
+      const persian = remoteUsernameFor(TG, ORDER, { mode: 'CUSTOMER_TEXT', customerText: 'رضا' });
+
+      expect(persian).toBe(remoteUsernameFor(TG, ORDER, { mode: 'ORDER_ID' }));
+    });
+
+    it('is chosen by config like every other mode', () => {
+      expect(usernameShapeFor({ username_mode: 'ORDER_ID' }).mode).toBe('ORDER_ID');
+      expect(usernameShapeFor({ username_mode: 'CUSTOMER_TEXT' }, null, 'reza')).toMatchObject({
+        mode: 'CUSTOMER_TEXT',
+        customerText: 'reza',
+      });
+    });
+  });
+
   it('falls back to the id rather than producing a name starting with an underscore', () => {
     // `none` is legacy's own default for `namecustom` and two production panels
     // carry it, so this is not a hypothetical input — but a THREE letter one, so
