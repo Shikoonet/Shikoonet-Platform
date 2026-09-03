@@ -939,6 +939,12 @@ export const TEXTS = {
     screen: 'addon',
     hint: 'عددی بزرگ‌تر از سقف مجاز',
   },
+  ADDON_TOO_LITTLE: {
+    default: 'کمترین مقدار در هر خرید {min} است. عدد بزرگ‌تری بفرستید.',
+    placeholders: ['min'],
+    screen: 'addon',
+    hint: 'عددی کوچک‌تر از حداقل مجاز این پنل',
+  },
   ADDON_QUANTITY_VOLUME: {
     default: '{quantity} گیگابایت حجم',
     placeholders: ['quantity'],
@@ -1114,6 +1120,12 @@ export const TEXTS = {
     placeholders: [],
     screen: 'renew',
     hint: 'پنلی که تمدید را از نو شروع می‌کند',
+  },
+  RENEW_MODE_ADD_VOLUME_RESET_TIME: {
+    default: 'با تمدید، زمان از نو شروع می‌شود و حجم تازه به حجم باقی‌مانده اضافه می‌گردد.',
+    placeholders: [],
+    screen: 'renew',
+    hint: 'پنلی که زمان را ریست می‌کند ولی حجم را نگه می‌دارد',
   },
   RENEW_CHOOSE_PLAN: {
     default: '🛍 پلن تمدید را انتخاب کنید:',

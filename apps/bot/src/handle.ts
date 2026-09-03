@@ -22,7 +22,7 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { renewAllowed, renewModeFor } from '@shikoo/domain';
+import { extraBoundsFor, renewAllowed, renewModeFor } from '@shikoo/domain';
 import { actOnService } from './actions.js';
 import { decode, encode } from './callback.js';
 import type { CatalogCategory, CatalogPlan } from './catalog.js';
@@ -663,7 +663,13 @@ async function handleStart(
   };
 }
 
-/** The largest add-on one purchase may be. */
+/**
+ * The largest add-on one purchase may be when the panel names no ceiling.
+ *
+ * A panel's own `maxvolume` / `maxtime` win over this — see `extraBoundsFor`.
+ * This is what a panel that has never had them set gets, and it is the bound
+ * the bot has always applied.
+ */
 export const ADDON_MAX = 1000;
 
 /**
@@ -786,7 +792,6 @@ async function handleAddonAmount(
   if (!/^[0-9]+$/.test(typed)) return reply(menu.ADDON_NOT_A_NUMBER);
   const quantity = Number(typed);
   if (quantity <= 0) return reply(menu.ADDON_NOT_A_NUMBER);
-  if (quantity > ADDON_MAX) return reply(menu.addonTooMuch(ADDON_MAX));
 
   const service = await subscriptionOnPanelForUser(tx, user.id, subscriptionId);
   if (!service) return reply(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
@@ -794,6 +799,19 @@ async function handleAddonAmount(
   const unit =
     kind === 'ADD_VOLUME' ? (actions?.volumeIrrPerGb ?? null) : (actions?.timeIrrPerDay ?? null);
   if (unit === null) return reply(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu());
+
+  // The bounds are the PANEL's, so they are checked after it is loaded and
+  // after «this panel does not sell that» above — otherwise a panel that sells
+  // no extra volume would answer «کمترین مقدار ۱۰ است» to somebody who cannot
+  // buy any amount at all.
+  //
+  // The range check used to sit above, on the typed digits alone, which is why
+  // this reads as a move rather than an addition.
+  const bounds = extraBoundsFor(service.provider_config ?? {});
+  const min = kind === 'ADD_VOLUME' ? bounds.minVolumeGb : bounds.minTimeDays;
+  const max = (kind === 'ADD_VOLUME' ? bounds.maxVolumeGb : bounds.maxTimeDays) ?? ADDON_MAX;
+  if (min !== null && quantity < min) return reply(menu.addonTooLittle(min));
+  if (quantity > max) return reply(menu.addonTooMuch(max));
 
   const placed = await placeAddonOrder(
     tx,

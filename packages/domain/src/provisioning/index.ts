@@ -70,10 +70,23 @@ export function isAutomated(kind: string): boolean {
  */
 const LEGACY_ADD_METHOD = 'اضافه شدن زمان و حجم به ماه بعد';
 
+/**
+ * The modes an admin may choose, in the spelling `renew_mode` holds.
+ *
+ * Exported so the route's `z.enum` is this list rather than a second copy of
+ * it: a mode accepted by the schema and unknown here saves, reports success,
+ * and silently renews as RESET.
+ */
+export const RENEW_MODES = ['RESET', 'ADD', 'ADD_VOLUME_RESET_TIME'] as const;
+
 export function renewModeFor(config: Record<string, unknown>): RenewMode {
   const explicit = config['renew_mode'];
-  if (typeof explicit === 'string' && explicit.toUpperCase() === 'ADD') return 'ADD';
-  if (typeof explicit === 'string' && explicit.toUpperCase() === 'RESET') return 'RESET';
+  if (typeof explicit === 'string') {
+    const upper = explicit.toUpperCase();
+    const known = RENEW_MODES.find((m) => m === upper);
+    if (known) return known;
+  }
+  // The legacy phrase, which only ever named two of the three.
   return config['Methodextend'] === LEGACY_ADD_METHOD ? 'ADD' : 'RESET';
 }
 
@@ -150,6 +163,84 @@ function tomanRate(raw: unknown, tier: CustomerTier): number | null {
   // customer types the gigabytes, so zero times anything is a giveaway.
   if (!Number.isFinite(toman) || toman <= 0) return null;
   return Math.round(toman) * 10;
+}
+
+/**
+ * The smallest and largest add-on a customer may buy on this panel.
+ *
+ * Sam, 2026-09-03: «حداقل داشته باشد. مثلاً کمتر از ۱۰ گیگ نشود». There was no
+ * minimum at all — `handleAddonAmount` refused zero and nothing else, so the
+ * floor was one gigabyte and one day.
+ *
+ * ## The numbers are already here
+ *
+ * Legacy `marzban_panel` carries `mainvolume` / `maxvolume` / `maintime` /
+ * `maxtime`, and the importer copied every one of them into `config` because
+ * none is in `PROVIDER_CLAIMED` (`packages/migrate/src/migrate.ts`). Nothing
+ * outside `legacy/` has ever read them — the same situation `priceextravolume`
+ * was in before the pricing fold was built. Legacy enforces them at
+ * `faoxima/api/handlers/ServiceExtraHandler.php:348-352`.
+ *
+ * ## One bound per panel, not one per tier
+ *
+ * The stored value is a `{f,n,n2}` table like the prices, and only the `f`
+ * entry is read. That is Sam's answer when asked — a minimum is about what is
+ * worth provisioning, not about who is buying — and it is why the shape here is
+ * two numbers rather than six. A later change that wants them per tier has the
+ * data waiting.
+ *
+ * ## Null means unbounded, and zero means unbounded too
+ *
+ * Legacy's own default is `if ($max <= 0) $max = 9999;`, and its minimum is
+ * `max(1, …)`. A panel that has never had these set carries nothing, and must
+ * behave exactly as it does today — so an unreadable, missing, zero or negative
+ * value is null here rather than a bound nobody chose.
+ */
+export interface ExtraBounds {
+  minVolumeGb: number | null;
+  maxVolumeGb: number | null;
+  minTimeDays: number | null;
+  maxTimeDays: number | null;
+}
+
+export function extraBoundsFor(config: Record<string, unknown>): ExtraBounds {
+  return {
+    minVolumeGb: wholeBound(config['mainvolume']),
+    maxVolumeGb: wholeBound(config['maxvolume']),
+    minTimeDays: wholeBound(config['maintime']),
+    maxTimeDays: wholeBound(config['maxtime']),
+  };
+}
+
+/**
+ * The `f` entry of a legacy `{f,n,n2}` table as a whole positive count, or null.
+ *
+ * Deliberately NOT `tomanRate`: that one multiplies by ten because it reads a
+ * price in toman. These are gigabytes and days, and a minimum of «10» that
+ * became 100 would refuse every purchase on the panel.
+ */
+function wholeBound(raw: unknown): number | null {
+  let table: unknown = null;
+  if (typeof raw === 'string') {
+    try {
+      table = JSON.parse(raw);
+    } catch {
+      // A bare number rather than a table — the shape an admin typing into the
+      // new boxes produces, and the shape some legacy rows carry.
+      const bare = Number(raw);
+      return Number.isFinite(bare) && bare > 0 ? Math.floor(bare) : null;
+    }
+  } else if (typeof raw === 'number') {
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
+  } else if (typeof raw === 'object' && raw !== null) {
+    table = raw;
+  }
+  if (table === null) return null;
+  if (typeof table === 'number') return table > 0 ? Math.floor(table) : null;
+  if (typeof table !== 'object') return null;
+  const value = (table as Record<string, unknown>)['f'];
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
 }
 
 /**

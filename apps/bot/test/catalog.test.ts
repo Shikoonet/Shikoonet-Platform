@@ -136,6 +136,46 @@ describe('what the shop shows a customer', () => {
     expect(codes).toContain('sim-shop');
   });
 
+  /**
+   * «فقط برای کسانی که هنوز خریدی نکرده‌اند» — a starter panel.
+   *
+   * Both halves are asserted against the SAME panel and the same moment,
+   * because a filter that hides a panel from everybody passes any test that
+   * only checks the customer who should not see it.
+   *
+   * `returning` owns a subscription; `customer` owns nothing. That is the
+   * distinction the clause makes — services owned, not orders placed — and it
+   * is the same sub-select `once_per_user` uses one line above it.
+   */
+  it('hides a newcomers-only panel from anybody who already owns a service', async () => {
+    await db
+      .prepare(
+        `UPDATE provisioning_providers SET config = config || '{"newcomers_only": true}'::jsonb
+          WHERE code = 'sim-gold'`,
+      )
+      .run();
+    try {
+      expect(await panelCodes(customer)).toContain('sim-gold');
+      expect(await panelCodes(returning)).not.toContain('sim-gold');
+      // And it has not taken the rest of the shop with it.
+      expect(await panelCodes(returning)).toContain('sim-vip');
+    } finally {
+      await db
+        .prepare(
+          `UPDATE provisioning_providers SET config = config - 'newcomers_only'
+            WHERE code = 'sim-gold'`,
+        )
+        .run();
+    }
+  });
+
+  it('leaves a panel that has never been ticked visible to everyone', async () => {
+    // The default. `IS DISTINCT FROM 'true'` rather than `= false`, because the
+    // key is absent on every panel that has never been edited and `NULL = 'x'`
+    // is unknown — which would have hidden every panel in the shop.
+    expect(await panelCodes(returning)).toContain('sim-gold');
+  });
+
   it('keeps the services in the order the shop arranged them', async () => {
     // Not alphabetical. Every migrated row carries sort_order 0, so ordering by
     // name reshuffles a menu customers already know: the live bot on 2026-08-12

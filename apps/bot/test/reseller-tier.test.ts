@@ -37,7 +37,7 @@ function press(updateId: number, telegramId: number, data: string): TelegramUpda
     callback_query: {
       id: `cq-${updateId}`,
       from: { id: telegramId, username: `tier${telegramId}` },
-      message: { message_id: 11, chat: { id: telegramId }, type: 'private' },
+      message: { message_id: 11, chat: { id: telegramId, type: 'private' } },
       data,
     },
   };

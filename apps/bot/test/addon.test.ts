@@ -272,6 +272,96 @@ describe('buying extra volume', () => {
     }
   });
 
+  /**
+   * «حداقل خرید» — Sam, 2026-09-03. There was no floor at all: the only bound
+   * was «greater than zero», so a customer could buy one gigabyte.
+   *
+   * The three cases are the whole rule, and the middle one is the reason the
+   * other two are not enough: a check written as `<=` instead of `<` refuses
+   * the minimum itself, which is the number the screen told the customer to
+   * send.
+   *
+   * The bounds are read from the PANEL, so they are set on it here — and the
+   * check has to run AFTER the panel is loaded, which is what moved it below
+   * the «this panel does not sell that» exit in `handleAddonAmount`.
+   */
+  it('refuses less than the panel’s minimum, and takes the minimum itself', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await makeService(userId);
+    await setPanelPricing({ ...PRICING, mainvolume: '10' });
+
+    try {
+      await handleUpdate(db, press(updateId, telegramId, `xv:${service}`));
+      const tooLittle = await handleUpdate(db, types(updateId + 1, telegramId, '9'));
+      expect(tooLittle.replies[0]?.text).toBe(menu.addonTooLittle(10));
+      expect(await lastOrder(userId)).toBeNull();
+
+      // At the minimum: allowed, and it is the same number the refusal named.
+      await handleUpdate(db, press(updateId + 2, telegramId, `xv:${service}`));
+      await handleUpdate(db, types(updateId + 3, telegramId, '10'));
+      expect(await lastOrder(userId)).toMatchObject({ quantity: 10 });
+    } finally {
+      await setPanelPricing({ ...PRICING, mainvolume: null });
+    }
+  });
+
+  it('still refuses more than the ceiling when the panel names none', async () => {
+    // `ADDON_MAX` stopped being the ceiling and became the FALLBACK ceiling. A
+    // panel with no `maxvolume` must behave exactly as it did before.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await makeService(userId);
+
+    await handleUpdate(db, press(updateId, telegramId, `xv:${service}`));
+    const out = await handleUpdate(db, types(updateId + 1, telegramId, '1001'));
+
+    expect(out.replies[0]?.text).toBe(menu.addonTooMuch(1000));
+    expect(await lastOrder(userId)).toBeNull();
+  });
+
+  it('lets the panel lower the ceiling below the built-in one', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await makeService(userId);
+    await setPanelPricing({ ...PRICING, maxvolume: '20' });
+
+    try {
+      await handleUpdate(db, press(updateId, telegramId, `xv:${service}`));
+      const out = await handleUpdate(db, types(updateId + 1, telegramId, '21'));
+      expect(out.replies[0]?.text).toBe(menu.addonTooMuch(20));
+      expect(await lastOrder(userId)).toBeNull();
+    } finally {
+      await setPanelPricing({ ...PRICING, maxvolume: null });
+    }
+  });
+
+  it('says «not sold here» rather than «the minimum is ten» when the price goes away', async () => {
+    // The order of the two checks, in the one case that can actually reach it:
+    // the prompt opened while the panel had a price, and an admin cleared the
+    // price before the customer typed. The answer must be «this is not sold
+    // here» — the check the minimum was deliberately placed BELOW.
+    //
+    // Pressing «حجم اضافه» on a panel with no price never gets this far; it is
+    // refused at the button, which is why this test opens the session first.
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const service = await makeService(userId);
+    await setPanelPricing({ ...PRICING, mainvolume: '10' });
+
+    try {
+      await handleUpdate(db, press(updateId, telegramId, `xv:${service}`));
+      await setPanelPricing({ priceextravolume: '{"f":null,"n":null,"n2":null}' });
+
+      const out = await handleUpdate(db, types(updateId + 1, telegramId, '3'));
+
+      expect(out.replies[0]?.text).toBe(menu.ACTION_UNSUPPORTED);
+      expect(await lastOrder(userId)).toBeNull();
+    } finally {
+      await setPanelPricing({ ...PRICING, mainvolume: null });
+    }
+  });
+
   it('adds the gigabytes without moving an expiry that does not exist', async () => {
     const { updateId, telegramId } = ids();
     const userId = await makeCustomer(telegramId);

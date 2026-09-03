@@ -889,28 +889,6 @@ export interface PanelInbounds {
 }
 
 /**
- * One host — the thing a subscription is actually built out of.
- *
- * The panel has no inbound endpoint (`POST /api/inbound` is 404), because an
- * inbound is part of its Xray core config. A host is what points at an inbound
- * and carries the address, and an inbound with no host delivers nothing. So
- * this is what «اینباند تازه» on the screen creates, and the screen says so.
- */
-export interface PanelHostItem {
-  id: number;
-  remark: string;
-  inboundTag: string;
-  addresses: string[];
-  disabled: boolean;
-}
-
-export interface PanelHosts {
-  ok: boolean;
-  hosts: PanelHostItem[] | null;
-  reason?: string;
-}
-
-/**
  * What a panel sends, what it has, and who ignores it.
  *
  * `available: null` means the panel could not be asked — NOT that it has no
@@ -986,7 +964,12 @@ export interface PanelItem {
    * a hysteria shared secret. `'ADD'` accumulates volume and time onto a
    * renewal, `'RESET'` starts both over.
    */
-  renewMode: 'ADD' | 'RESET';
+  renewMode: 'ADD' | 'RESET' | 'ADD_VOLUME_RESET_TIME';
+  /** «حداقل خرید» for add-ons. Null means no floor. */
+  extraVolumeMinGb: number | null;
+  extraTimeMinDays: number | null;
+  /** A starter panel: only customers who own nothing can see it. */
+  newcomersOnly: boolean;
   renewEnabled: boolean;
   /*
    * The rest of the panel's settings, derived on the server the same way and
@@ -1979,6 +1962,16 @@ export const api = {
     });
   },
 
+  /**
+   * The username a panel signs in with. Never the password — nothing can read
+   * one back, which is why the box on the screen means «خالی = بدون تغییر».
+   */
+  panelCredentialUsername(id: number) {
+    return req<{ ok: boolean; username: string | null; setBy: string | null; setAt: string | null }>(
+      `/panels/${id}/credential-username`,
+    );
+  },
+
   panelInbounds(id: number) {
     return req<PanelInbounds>(`/panels/${id}/inbounds`);
   },
@@ -2025,20 +2018,8 @@ export const api = {
     );
   },
 
-  panelHosts(id: number) {
-    return req<PanelHosts>(`/panels/${id}/hosts`);
-  },
 
-  createPanelHost(id: number, spec: { remark: string; inboundTag: string; addresses: string[] }) {
-    return req<{ ok: boolean; host: PanelHostItem }>(`/panels/${id}/hosts`, {
-      method: 'POST',
-      body: JSON.stringify(spec),
-    });
-  },
 
-  deletePanelHost(id: number, hostId: number) {
-    return req<{ ok: boolean }>(`/panels/${id}/hosts/${hostId}`, { method: 'DELETE' });
-  },
 
   updatePanel(
     id: number,
@@ -2048,7 +2029,10 @@ export const api = {
       capacity?: number | null;
       sortOrder?: number;
       baseUrl?: string | null;
-      renewMode?: 'ADD' | 'RESET';
+      renewMode?: 'ADD' | 'RESET' | 'ADD_VOLUME_RESET_TIME';
+      extraVolumeMinGb?: number | null;
+      extraTimeMinDays?: number | null;
+      newcomersOnly?: boolean;
       renewEnabled?: boolean;
       /**
        * Re-probe and let the answer set the status. Ignored when `status` is in

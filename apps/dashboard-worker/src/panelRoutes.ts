@@ -48,6 +48,8 @@ import type { D1Database } from '@shikoo/database';
 import { audit, type Ident } from './adminAudit.js';
 import {
   adapterFor,
+  extraBoundsFor,
+  RENEW_MODES,
   keyId,
   open,
   panelSecretKey,
@@ -117,7 +119,10 @@ const PanelPatch = z
      * here on", and until now nothing did. The Persian-phrase legacy keys stay
      * as the fallback and are never written from here.
      */
-    renewMode: z.enum(['ADD', 'RESET']).optional(),
+    // `RENEW_MODES` rather than a second copy of the list: a mode this schema
+    // accepts and `renewModeFor` does not know saves, reports success, and
+    // renews as RESET — the setting switched on and inert.
+    renewMode: z.enum(RENEW_MODES).optional(),
     renewEnabled: z.boolean().optional(),
     /**
      * Re-probe the panel and let the answer decide ACTIVE/DISABLED, the way
@@ -155,6 +160,30 @@ const PanelPatch = z
      */
     extraVolumeTomanPerGb: TierPrices.optional(),
     extraTimeTomanPerDay: TierPrices.optional(),
+    /**
+     * «حداقل خرید» — Sam, 2026-09-03. Gigabytes and days, one bound for the
+     * whole panel rather than one per tier.
+     *
+     * The legacy columns `mainvolume` / `maintime` are what these write, and
+     * the importer has been carrying them into `config` since day one with
+     * nothing reading them. `extraBoundsFor` reads only the `f` entry of the
+     * `{f,n,n2}` table they may already hold; a number written from here
+     * replaces the table, which is the shape that function also accepts.
+     *
+     * Null clears the bound. There is no maximum here on purpose — `maxvolume`
+     * and `maxtime` are read if a legacy row carries them, and the bot's own
+     * `ADDON_MAX` is the ceiling otherwise. Sam asked for a floor.
+     */
+    extraVolumeMinGb: z.number().int().positive().max(1_000_000).nullable().optional(),
+    extraTimeMinDays: z.number().int().positive().max(36_500).nullable().optional(),
+    /**
+     * «فقط برای کسانی که هنوز خرید نکرده‌اند» — a starter panel.
+     *
+     * Enforced in `PURCHASABLE` (`apps/bot/src/catalog.ts`), which is also what
+     * the RENEWAL list is built from — so a customer who bought here once
+     * cannot renew here. The screen says so; this is only where it is stored.
+     */
+    newcomersOnly: z.boolean().optional(),
     /**
      * «اینباند اکانت غیرفعال» — the groups an ended service is moved onto.
      *
@@ -658,25 +687,6 @@ const GroupSpec = z
   })
   .strict();
 
-/**
- * A host, as an operator asks for it.
- *
- * `addresses` may be empty — the panel accepts it and the host then resolves to
- * the panel's own address, which is the common case for a single-server shop.
- * Refusing it here would block the simplest thing somebody wants to do.
- */
-const HostSpec = z
-  .object({
-    remark: z.string().trim().min(1).max(120),
-    inboundTag: z.string().trim().min(1).max(200),
-    addresses: z
-      .array(z.string().trim().min(1).max(253))
-      .max(20)
-      .default([])
-      .transform((a) => [...new Set(a)]),
-  })
-  .strict();
-
 const PanelTest = z
   .object({
     baseUrl: z.string().trim().max(300).optional(),
@@ -751,6 +761,13 @@ function shape(r: PanelRow) {
     trial: trialFor(r.config ?? {}),
     extraVolumeTomanPerGb: tierPricesOf(r.config ?? {}, 'priceextravolume'),
     extraTimeTomanPerDay: tierPricesOf(r.config ?? {}, 'priceextratime'),
+    // Read through the same function the bot enforces with, so the box on the
+    // screen cannot say one thing while the customer is refused by another.
+    extraVolumeMinGb: extraBoundsFor(r.config ?? {}).minVolumeGb,
+    extraTimeMinDays: extraBoundsFor(r.config ?? {}).minTimeDays,
+    // `=== true`, not truthy: the catalogue compares the stored value to the
+    // string 'true', so anything else is off there and must read as off here.
+    newcomersOnly: (r.config ?? {})['newcomers_only'] === true,
     downgradeGroupIds: downgradeGroupsFor(r.config ?? {}) ?? [],
     // Whether a credential is configured, never which one. An unconfigured
     // panel cannot provision, and that is worth seeing on the list.
@@ -1176,6 +1193,69 @@ export function registerPanelRoutes(
    * — it is what they were given by whoever asked for the block, and it is what
    * legacy's own prompt asks for («آیدی عددی کاربر را ... ارسال نمایید»).
    */
+  /**
+   * The username this panel logs in with. Never the password.
+   *
+   * Sam, 2026-09-03: «موقع ساخت پنل یوزرنیم و پسورد می‌دهیم، می‌خواهم آن یوزرنیم
+   * دیده شود». Until now nothing handed any half of the credential back, so the
+   * box on the edit screen was always empty and an operator could not tell
+   * which account a panel was using without opening the panel itself.
+   *
+   * ## Why this is its own route and not a field on the list
+   *
+   * A credential half is not list data. `GET /panels` returns every panel in
+   * one response and is drawn on a screen an operator leaves open; this is
+   * fetched when one modal opens, for one panel, by an ADMIN. The blast radius
+   * of a mistake here is one row rather than all of them.
+   *
+   * ## What is deliberately NOT here
+   *
+   * The password. `credentialFor` unseals both halves and only the username
+   * leaves this function — the box on the screen keeps meaning «خالی = بدون
+   * تغییر», because there is still nothing that can read a stored password
+   * back. And `panelUsername` is on the redaction deny-list in
+   * `packages/domain/src/log.ts`, so it cannot reach `app_events` either.
+   *
+   * ADMIN only. A REVIEWER may read what a panel IS; who it signs in as is a
+   * credential, and the role that may change one is the role that may see it.
+   */
+  app.get('/api/v1/admin/panels/:id/credential-username', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const row = await c.env.DB.prepare(
+      `SELECT p.secret_ref, s.sealed, s.set_by, s.updated_at
+         FROM provisioning_providers p
+         LEFT JOIN provider_secrets s ON s.provider_id = p.id
+        WHERE p.id = ?1`,
+    )
+      .bind(id)
+      .first<{
+        secret_ref: string | null;
+        sealed: string | null;
+        set_by: string | null;
+        updated_at: string | null;
+      }>();
+    if (!row) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    // A sealed value that will not open throws inside `credentialFor`, on
+    // purpose — see its comment. Answering «no username» to a wrong
+    // PANEL_SECRET_KEY would send an operator to retype a password that was
+    // already right.
+    const credential = credentialFor(row);
+    return c.json({
+      ok: true,
+      username: credential?.username ?? null,
+      // Stored by `provider_secrets` since 0031 precisely so a screen could say
+      // «set by X», and no screen ever has.
+      setBy: row.set_by,
+      setAt: row.updated_at,
+    });
+  });
+
   app.get('/api/v1/admin/panels/:id/hidden-users', async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
@@ -1921,185 +2001,6 @@ export function registerPanelRoutes(
     return c.json({ ok: true });
   });
 
-  /**
-   * The hosts on this panel — what actually puts an inbound in a subscription.
-   *
-   * The panel has no inbound endpoint at all: `POST /api/inbound` is 404 and
-   * `/api/inbounds` is 405. An inbound is a section of the Xray core config,
-   * and the only way to add one is to rewrite that whole config — which a
-   * dashboard should not do, because one bad edit takes every customer's proxy
-   * down rather than one tier.
-   *
-   * A host is the piece that was actually missing, and it is the one that
-   * decides delivery: an inbound with no host is in every listing, counts
-   * toward every total, and hands the customer nothing.
-   */
-  app.get('/api/v1/admin/panels/:id/hosts', async (c) => {
-    const ident = c.get('identity');
-    if (ident.role === null) return c.json({ ok: false, error: 'forbidden' }, 403);
-
-    const id = Number(c.req.param('id'));
-    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
-
-    const ctx = await panelContext(c.env.DB, id);
-    if (!ctx.ok) {
-      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
-      return c.json({ ok: true, hosts: null, reason: ctx.reason });
-    }
-    if (!ctx.adapter.listHosts) {
-      return c.json({ ok: true, hosts: null, reason: 'این نوع پنل هاست ندارد.' });
-    }
-
-    const result = await ctx.adapter.listHosts(ctx.provider);
-    return c.json({
-      ok: true,
-      hosts: result.ok ? result.hosts : null,
-      ...(result.ok ? {} : { reason: result.reason }),
-    });
-  });
-
-  app.post('/api/v1/admin/panels/:id/hosts', async (c) => {
-    const ident = c.get('identity');
-    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
-
-    const id = Number(c.req.param('id'));
-    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
-
-    const body = HostSpec.safeParse(await c.req.json().catch(() => null));
-    if (!body.success) {
-      return c.json(
-        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
-        400,
-      );
-    }
-
-    const ctx = await panelContext(c.env.DB, id);
-    if (!ctx.ok) {
-      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
-      return c.json({ ok: false, error: 'panel_unavailable', detail: ctx.reason }, 400);
-    }
-    if (!ctx.adapter.createHost) {
-      return c.json({ ok: false, error: 'unsupported', detail: 'این نوع پنل هاست ندارد.' }, 400);
-    }
-
-    const result = await ctx.adapter.createHost(ctx.provider, body.data);
-    if (!result.ok) {
-      return c.json({ ok: false, error: 'panel_refused', detail: result.reason }, 400);
-    }
-
-    await audit(
-      c.env.DB,
-      ident,
-      'catalog.panel_host_created',
-      'PROVISIONING_PROVIDER',
-      String(id),
-      null,
-      {
-        code: ctx.code,
-        host: result.host.id,
-        remark: result.host.remark,
-        inbound: result.host.inboundTag,
-      },
-      null,
-    );
-    return c.json({ ok: true, host: result.host });
-  });
-
-  /**
-   * Remove a host — refused when it is the last one keeping a tier alive.
-   *
-   * Same shape as the group guard and the same failure it prevents, one level
-   * down. Deleting the last enabled host on an inbound does not break anything
-   * loudly: every customer keeps their subscription link, and the link quietly
-   * stops producing that config. A tier that used to hand out two now hands out
-   * one, and the first report of it is a support message.
-   *
-   * Only when a group WE SELL carries that inbound. A host on an inbound no
-   * tier of ours uses is the operator's own business.
-   */
-  app.delete('/api/v1/admin/panels/:id/hosts/:hostId', async (c) => {
-    const ident = c.get('identity');
-    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
-
-    const id = Number(c.req.param('id'));
-    const hostId = Number(c.req.param('hostId'));
-    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
-    if (!Number.isInteger(hostId) || hostId < 0) {
-      return c.json({ ok: false, error: 'invalid_host_id' }, 400);
-    }
-
-    const ctx = await panelContext(c.env.DB, id);
-    if (!ctx.ok) {
-      if (ctx.status === 404) return c.json({ ok: false, error: 'not_found' }, 404);
-      return c.json({ ok: false, error: 'panel_unavailable', detail: ctx.reason }, 400);
-    }
-    if (!ctx.adapter.deleteHost || !ctx.adapter.listHosts) {
-      return c.json({ ok: false, error: 'unsupported', detail: 'این نوع پنل هاست ندارد.' }, 400);
-    }
-
-    const hosts = await ctx.adapter.listHosts(ctx.provider);
-    if (!hosts.ok) {
-      // Refusing rather than guessing. The guard below cannot run without this
-      // listing, and deleting with the guard skipped is exactly the delete the
-      // guard exists to stop.
-      return c.json(
-        {
-          ok: false,
-          error: 'panel_unavailable',
-          detail: `فهرست هاست‌ها خوانده نشد، پس نمی‌دانیم حذفش چه چیزی را خالی می‌کند: ${hosts.reason}`,
-        },
-        400,
-      );
-    }
-    const target = hosts.hosts.find((h) => h.id === hostId);
-    if (target) {
-      const survivors = hosts.hosts.filter(
-        (h) => h.inboundTag === target.inboundTag && h.id !== hostId && !h.disabled,
-      );
-      if (survivors.length === 0) {
-        const inUse = await groupIdsInUse(c.env.DB, id);
-        const groups = ctx.adapter.listGroups
-          ? await ctx.adapter.listGroups(ctx.provider)
-          : { ok: false as const, reason: 'no group listing' };
-        const stranded =
-          groups.ok
-            ? groups.groups.filter(
-                (g) => inUse.has(g.id) && (g.inboundTags ?? []).includes(target.inboundTag),
-              )
-            : [];
-        if (stranded.length > 0) {
-          return c.json(
-            {
-              ok: false,
-              error: 'host_in_use',
-              detail: `این تنها هاستِ «${target.inboundTag}» است و گروه ${stranded
-                .map((g) => `«${g.name}»`)
-                .join('، ')} که می‌فروشیم روی همین اینباند است. با حذفش، مشتری‌های آن گروه بی‌سروصدا یک کانفیگ کمتر می‌گیرند. اول اینباند را از گروه بردارید.`,
-            },
-            409,
-          );
-        }
-      }
-    }
-
-    const result = await ctx.adapter.deleteHost(ctx.provider, hostId);
-    if (!result.ok) {
-      return c.json({ ok: false, error: 'panel_refused', detail: result.reason }, 400);
-    }
-
-    await audit(
-      c.env.DB,
-      ident,
-      'catalog.panel_host_deleted',
-      'PROVISIONING_PROVIDER',
-      String(id),
-      { code: ctx.code, host: hostId, inbound: target?.inboundTag ?? null },
-      null,
-      null,
-    );
-    return c.json({ ok: true });
-  });
-
   app.post('/api/v1/admin/panels/:id/test', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
@@ -2371,6 +2272,9 @@ export function registerPanelRoutes(
     if (patch.extraTimeTomanPerDay !== undefined) {
       configPatch['priceextratime'] = patch.extraTimeTomanPerDay;
     }
+    if (patch.extraVolumeMinGb !== undefined) configPatch['mainvolume'] = patch.extraVolumeMinGb;
+    if (patch.extraTimeMinDays !== undefined) configPatch['maintime'] = patch.extraTimeMinDays;
+    if (patch.newcomersOnly !== undefined) configPatch['newcomers_only'] = patch.newcomersOnly;
     if (patch.downgradeGroupIds !== undefined) {
       configPatch['downgrade_group_ids'] = patch.downgradeGroupIds ?? [];
     }
