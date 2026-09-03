@@ -445,6 +445,34 @@ SELECT assert_rejects($$
        VALUES (-4242, true, 'gold', now())
 $$, 'a customer on a level that does not exist');
 
+-- ---------------------------------------------------------------------------
+-- A name the panel would refuse never reaches an order
+-- ---------------------------------------------------------------------------
+--
+-- `orders.username_text` is written already sanitised: the bot runs the
+-- customer's answer through `sanitiseUsernamePart` at the prompt and asks again
+-- when it comes back null. The CHECK is the database saying the same thing, so
+-- a caller that forgets fails at the INSERT rather than at the panel, in the
+-- middle of a paid order — which is a 422 on a purchase somebody has already
+-- been charged for.
+DO $$
+DECLARE u bigint;
+BEGIN
+  INSERT INTO users (telegram_id, registered_at) VALUES (-4243, now()) RETURNING id INTO u;
+  PERFORM assert_rejects(format($q$
+    INSERT INTO orders (public_id, user_id, kind, unit_price_irr, discount_irr, total_irr, username_text)
+         VALUES ('__inv-un1', %s, 'NEW_PURCHASE', 100, 0, 100, 'RezaVPN')
+  $q$, u), 'a panel account name with capitals in it');
+  PERFORM assert_rejects(format($q$
+    INSERT INTO orders (public_id, user_id, kind, unit_price_irr, discount_irr, total_irr, username_text)
+         VALUES ('__inv-un2', %s, 'NEW_PURCHASE', 100, 0, 100, '9reza')
+  $q$, u), 'a panel account name that does not start with a letter');
+  PERFORM assert_rejects(format($q$
+    INSERT INTO orders (public_id, user_id, kind, unit_price_irr, discount_irr, total_irr, username_text)
+         VALUES ('__inv-un3', %s, 'NEW_PURCHASE', 100, 0, 100, 'ab')
+  $q$, u), 'a panel account name shorter than the panel accepts');
+END $$;
+
 \echo ''
 \echo '  All invariants hold.'
 \echo ''

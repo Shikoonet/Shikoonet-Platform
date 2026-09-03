@@ -924,7 +924,12 @@ export interface PanelGroups {
  * Legacy offers eight; five of them are random or counted and cannot be
  * reproduced by a retry, so `remoteUsernameFor` carries only these three.
  */
-export type PanelUsernameMode = 'TELEGRAM_ID' | 'PANEL_TEXT' | 'TELEGRAM_USERNAME';
+export type PanelUsernameMode =
+  | 'TELEGRAM_ID'
+  | 'PANEL_TEXT'
+  | 'TELEGRAM_USERNAME'
+  | 'ORDER_ID'
+  | 'CUSTOMER_TEXT';
 
 /**
  * One price per customer tier, in TOMAN — `f` ordinary, `n` reseller, `n2`

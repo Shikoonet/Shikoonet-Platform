@@ -2,6 +2,7 @@
  * Choosing an adapter, and naming the remote account.
  */
 
+import { createHash } from 'node:crypto';
 import { marzbanAdapter } from './marzban.js';
 import { manualAdapter } from './manual.js';
 import type { ProvisioningAdapter, RenewMode } from './types.js';
@@ -273,11 +274,11 @@ export function remoteUsernameFor(
   shape?: UsernameShape,
 ): string {
   const suffix = orderPublicId.replace(/[^a-z0-9]/gi, '').toLowerCase();
-  return `${usernamePrefix(telegramId, shape)}_${suffix}`;
+  return `${usernamePrefix(telegramId, orderPublicId, shape)}_${suffix}`;
 }
 
 /**
- * Which of the three shapes a panel gives the part BEFORE the suffix.
+ * Which shape a panel gives the part BEFORE the suffix.
  *
  * Legacy offers eight (`function.php:687`) and five of them cannot be built
  * here, because five of them are random or counted:
@@ -300,12 +301,47 @@ export function remoteUsernameFor(
  * only the PREFIX is configurable. That keeps every mode idempotent by
  * construction rather than by a retry that hopes.
  *
- * The two «customer types their own name» modes are not here either, and that
- * is not an oversight: they need a prompt this shop does not have, and
- * `setting.statusnamecustom` is `offnamecustom` in production - the shop turned
- * them off. They fall to TELEGRAM_ID with everything else unrecognised.
+ * ## What 2026-09-03 added, and what it did NOT
+ *
+ * Sam asked for a random name and for one the customer types. Both are here,
+ * and neither breaks the paragraph above.
+ *
+ * `ORDER_ID` looks random and is a digest of the order's public id, so a retry
+ * reproduces it exactly. It is labelled «برگرفته از شمارهٔ سفارش» on the panel
+ * screen rather than «تصادفی», because an option called random in a file
+ * arguing that random names cost money is a trap for the next reader.
+ *
+ * `CUSTOMER_TEXT` is the customer's own text as the PREFIX, with the order-id
+ * suffix untouched — which is what lets it cost nothing in uniqueness and need
+ * no «this name is taken» round-trip to the panel. It is worth knowing that a
+ * customer who types «reza» gets `reza_84702b7df0` and not `reza`; the bot's
+ * prompt says so, because the alternative is support tickets about ten hex
+ * characters.
+ *
+ * `setting.statusnamecustom` is still `offnamecustom` in production and the
+ * legacy phrase «نام کاربری دلخواه» is still deliberately absent from
+ * `LEGACY_USERNAME_MODES` below. Mapping it would switch a live panel's
+ * behaviour on a migration nobody asked for. An operator picks the mode from
+ * the dropdown or it does not happen.
  */
-export type UsernameMode = 'TELEGRAM_ID' | 'PANEL_TEXT' | 'TELEGRAM_USERNAME';
+/**
+ * The modes an admin may choose, and the ONE list of them.
+ *
+ * `panelRoutes.ts` builds its `z.enum` from this rather than repeating it: a
+ * mode the schema accepts and `usernameShapeFor` does not recognise saves,
+ * reports success, and silently names every account after the Telegram id —
+ * the setting switched on and inert, which this file has already been through
+ * once with `MethodUsername`.
+ */
+export const USERNAME_MODES = [
+  'TELEGRAM_ID',
+  'PANEL_TEXT',
+  'TELEGRAM_USERNAME',
+  'ORDER_ID',
+  'CUSTOMER_TEXT',
+] as const;
+
+export type UsernameMode = (typeof USERNAME_MODES)[number];
 
 export interface UsernameShape {
   mode: UsernameMode;
@@ -313,6 +349,15 @@ export interface UsernameShape {
   panelText?: string | null;
   /** The customer's Telegram @username, when they have one. */
   telegramUsername?: string | null;
+  /**
+   * What the customer typed, already sanitised, from `orders.username_text`.
+   *
+   * Per ORDER and not per customer, because `remoteUsernameFor` must give the
+   * same answer on every retry — a name that moved under a half-finished
+   * provisioning is the second-paid-account bug this file's own comments spend
+   * a page preventing.
+   */
+  customerText?: string | null;
 }
 
 /**
@@ -338,15 +383,10 @@ const LEGACY_USERNAME_MODES: Record<string, UsernameMode> = {
   'نام کاربری + عدد به ترتیب': 'TELEGRAM_USERNAME',
 };
 
-const USERNAME_MODES: readonly UsernameMode[] = [
-  'TELEGRAM_ID',
-  'PANEL_TEXT',
-  'TELEGRAM_USERNAME',
-];
-
 export function usernameShapeFor(
   config: Record<string, unknown>,
   telegramUsername?: string | null,
+  customerText?: string | null,
 ): UsernameShape {
   const explicit = config['username_mode'];
   const legacy = config['MethodUsername'];
@@ -368,6 +408,7 @@ export function usernameShapeFor(
     mode,
     panelText: typeof text === 'string' ? text : null,
     telegramUsername: telegramUsername ?? null,
+    customerText: customerText ?? null,
   };
 }
 
@@ -384,13 +425,60 @@ export function usernameShapeFor(
  * on them `none_...`. That is why the route refuses to save PANEL_TEXT without
  * a deliberate text; here it is merely survivable.
  */
-function usernamePrefix(telegramId: number, shape?: UsernameShape): string {
+function usernamePrefix(
+  telegramId: number,
+  orderPublicId: string,
+  shape?: UsernameShape,
+): string {
   const fallback = String(telegramId);
   if (shape?.mode === 'PANEL_TEXT') return sanitiseUsernamePart(shape.panelText) ?? fallback;
   if (shape?.mode === 'TELEGRAM_USERNAME') {
     return sanitiseUsernamePart(shape.telegramUsername) ?? fallback;
   }
+  if (shape?.mode === 'ORDER_ID') return orderIdPrefix(orderPublicId);
+  if (shape?.mode === 'CUSTOMER_TEXT') {
+    // The customer's own name, and the ORDER_ID prefix rather than the Telegram
+    // id when they have not given one. A trial is the ordinary way to arrive
+    // here without one — it is never prompted, because its whole point is that
+    // it has no steps — and falling back to the numeric id would put on the
+    // customer's phone exactly what this mode exists to keep off it.
+    return sanitiseUsernamePart(shape.customerText) ?? orderIdPrefix(orderPublicId);
+  }
   return fallback;
+}
+
+/**
+ * A prefix that looks random and is not.
+ *
+ * Sam asked for a random name on 2026-09-03. A name that is genuinely random
+ * cannot be reproduced, and the paragraph above `remoteUsernameFor` spends
+ * itself on why that matters: a sweep that created the account and died before
+ * writing the row asks for the same name next time and FINDS what it made. A
+ * different name means a second account on the panel and a customer billed once
+ * for two.
+ *
+ * So the prefix is a digest of the order's public id — the same input the
+ * suffix already carries. Same order in, same name out, for ever. What it buys
+ * over `TELEGRAM_ID` is the whole of what was asked for: the customer's numeric
+ * id is not on their phone, and one person's two services look nothing alike.
+ *
+ * It is labelled «برگرفته از شمارهٔ سفارش» on the panel screen and NOT
+ * «تصادفی», deliberately. A dropdown option called random, in a file whose
+ * central argument is that random names cost money, is a trap for the next
+ * person to read it.
+ *
+ * Eight characters of base36 is about forty bits — far more than the ten-hex
+ * suffix beside it already guarantees, and uniqueness is not this half's job in
+ * any case. It is forced to start with a letter because the panel's charset
+ * demands one.
+ */
+function orderIdPrefix(orderPublicId: string): string {
+  const digest = createHash('sha256').update(`username:${orderPublicId}`).digest();
+  const n = digest.readUInt32BE(0) * 4_294_967_296 + digest.readUInt32BE(4);
+  const body = n.toString(36).replace(/[^a-z0-9]/g, '').slice(0, 7);
+  // 'u' for user, and a letter is required anyway. Padded so a small digest
+  // cannot produce a prefix under the three-character minimum.
+  return `u${body.padEnd(7, '0')}`;
 }
 
 /**
@@ -404,7 +492,22 @@ function usernamePrefix(telegramId: number, shape?: UsernameShape): string {
  */
 const USERNAME_PART_MAX = 32;
 
-function sanitiseUsernamePart(raw: string | null | undefined): string | null {
+/**
+ * The cap on a name the CUSTOMER types, which is tighter than the admin's.
+ *
+ * Thirty-two, plus a separator, plus a ten-character public id is forty-three,
+ * and `USERNAME_PART_MAX`'s own comment says the panel answers 422 somewhere
+ * past forty. An admin hits that once and reads the error; customers would hit
+ * it daily, in the middle of a paid order. `orders.username_text` carries the
+ * same bound as a CHECK.
+ */
+export const CUSTOMER_NAME_MAX = 16;
+
+/**
+ * The bot's prompt runs input through this too, so the rule a customer is held
+ * to and the rule the panel is given are one rule rather than two.
+ */
+export function sanitiseUsernamePart(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
   const cleaned = raw
     .toLowerCase()

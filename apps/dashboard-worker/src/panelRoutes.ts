@@ -50,6 +50,7 @@ import {
   adapterFor,
   extraBoundsFor,
   RENEW_MODES,
+  USERNAME_MODES,
   keyId,
   open,
   panelSecretKey,
@@ -131,13 +132,19 @@ const PanelPatch = z
      */
     autoStatus: z.boolean().optional(),
     /**
-     * «روش ساخت نام کاربری». Three shapes, not legacy's eight, and the five
-     * that are missing are the random and counted ones — see `usernameShapeFor`
-     * for why a name a retry cannot reproduce is a second account nobody bills
-     * for. `MethodUsername`, a Persian UI label, stays as the read-only
-     * fallback and is never written from here.
+     * «روش ساخت نام کاربری», from the ONE list of modes rather than a second
+     * copy of it — a mode this schema accepts and `usernameShapeFor` does not
+     * recognise would save, report success, and name every account after the
+     * Telegram id.
+     *
+     * Five, not legacy's eight, and the missing three are the counted ones.
+     * `ORDER_ID` and `CUSTOMER_TEXT` were added on 2026-09-03 and neither is
+     * random in the sense legacy's are: the first is a digest of the order id
+     * and the second is the customer's own text, both reproducible by a retry.
+     * `MethodUsername`, a Persian UI label, stays as the read-only fallback and
+     * is never written from here.
      */
-    usernameMode: z.enum(['TELEGRAM_ID', 'PANEL_TEXT', 'TELEGRAM_USERNAME']).optional(),
+    usernameMode: z.enum(USERNAME_MODES).optional(),
     usernameText: z.string().trim().max(32).nullable().optional(),
     /** «حجم و زمان اکانت تست». GB and HOURS — legacy stores MB and hours. */
     trialEnabled: z.boolean().optional(),

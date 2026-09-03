@@ -71,6 +71,7 @@ interface PendingOrder {
   /** Which price column the add-on buttons on the delivery screen read from. */
   is_reseller: boolean;
   reseller_tier: string | null;
+  username_text: string | null;
   plan_id: number | null;
   target_subscription_id: number | null;
   target_username: string | null;
@@ -339,6 +340,7 @@ export async function provisionPaidOrders(
               o.user_id       AS user_id,
               o.kind          AS order_kind,
               o.quantity      AS quantity,
+              o.username_text AS username_text,
               u.telegram_id   AS telegram_id,
               u.username      AS telegram_username,
               u.is_reseller   AS is_reseller,
@@ -583,7 +585,7 @@ async function deliver(
       row.order_public_id,
       // «روش ساخت نام کاربری». The suffix is still the order's public id in
       // every mode, so every mode is still reproducible by a retry.
-      usernameShapeFor(row.provider_config ?? {}, row.telegram_username),
+      usernameShapeFor(row.provider_config ?? {}, row.telegram_username, row.username_text),
     ),
     volumeGb,
     durationDays,

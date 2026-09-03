@@ -132,7 +132,9 @@ async function lastOrder(userId: number) {
 }
 
 /** Merges a pricing table into the panel's config. Shared state: put it back. */
-async function setPanelPricing(pricing: Record<string, string>): Promise<void> {
+async function setPanelPricing(
+  pricing: Record<string, string | number | null>,
+): Promise<void> {
   await db
     .prepare(
       `UPDATE provisioning_providers SET config = config || ?1::jsonb WHERE code = 'sim-vip'`,
