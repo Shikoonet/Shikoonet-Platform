@@ -66,9 +66,11 @@ export const CALLBACK_ACTIONS = [
   // can post these three. `handleCallback` re-reads `is_admin` before acting on
   // any of them, which is where the door actually is.
   'emj', // the admin's premium-emoji screen: what the bot has, and how to add
-  'emja', // ask the admin to SEND a premium emoji, so its id can be read off
-  //         the message entity — the only way to get an id without guessing
-  'emjb', // <emojiId>:<buttonIndex> — put that emoji on that main-menu button
+  'emja', // [buttonSlot] — ask the admin to SEND a premium emoji, so its id can
+  //         be read off the message entity: the only way to get one without
+  //         guessing. The slot rides along so the answer lands back on the
+  //         button they were looking at.
+  'emjb', // <buttonSlot>[:<emojiId>] — that button's tiles, then the swap
   'wal', // the balance and the last movements on it
   'top', // the deposit amounts on offer
   'tp', // <presetIndex> — deposit that preset. An INDEX, never an amount:
