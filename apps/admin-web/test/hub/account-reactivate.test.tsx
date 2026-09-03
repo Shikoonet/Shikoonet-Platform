@@ -150,8 +150,40 @@ describe('an account that has been switched off', () => {
     render(<AccountsView cache={createCache()} />);
 
     await screen.findAllByRole('button', { name: 'فعال‌کردن' });
-    const pills = await screen.findAllByText(/خاموش/);
-    expect(pills.some((p) => p.className.includes('status-pill'))).toBe(true);
+    const pills = (await screen.findAllByText(/خاموش/)).filter((p) =>
+      p.className.includes('status-pill'),
+    );
+    expect(pills.length).toBe(1);
+  });
+
+  /**
+   * And the same row on a phone.
+   *
+   * This screen renders two layouts and `useMediaQuery` picks one, so a fix to
+   * the desktop table alone leaves «فعال» beside «فعال‌کردن» for anyone not at
+   * a desk — the identical bug, in the layout nobody re-checks. Found by
+   * CodeRabbit on PR #81, which is exactly what a second reader is for.
+   */
+  it('says it on the narrow layout too', async () => {
+    rows = [account({ id: 'acc-pill-m', display_name: 'حساب خاموش', active: 0, status: 'ACTIVE' })];
+    window.matchMedia = vi.fn().mockImplementation((q: string) => ({
+      matches: q.includes('max-width: 639'),
+      media: q,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+
+    render(<AccountsView cache={createCache()} />);
+
+    await screen.findAllByRole('button', { name: 'فعال‌کردن' });
+    const pills = (await screen.findAllByText(/خاموش/)).filter((p) =>
+      p.className.includes('status-pill'),
+    );
+    expect(pills.length).toBe(1);
   });
 
   it('names the card’s own switch when the account is fine', async () => {

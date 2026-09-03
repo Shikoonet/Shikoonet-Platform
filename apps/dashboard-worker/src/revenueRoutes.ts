@@ -540,9 +540,29 @@ const FROM_LEDGER = `
   LEFT JOIN expense_categories ec ON ec.id = ra.category_id
   ${EDIT_HISTORY_JOIN}`;
 
-/** One CSV cell, quoted the way every spreadsheet agrees on. */
-/** Shared with the payments export. One quoting rule, not two. */
-export const csvCell = (v: unknown) => `"${String(v ?? '').replaceAll('"', '""')}"`;
+/**
+ * One CSV cell, quoted the way every spreadsheet agrees on — and defused.
+ *
+ * Shared with the payments export: one quoting rule, not two.
+ *
+ * The apostrophe is not decoration. Quoting stops a comma from splitting a
+ * cell; it does NOT stop Excel, LibreOffice or Sheets from EVALUATING a cell
+ * whose text begins `=`, `+`, `-` or `@` — `=1+1` becomes 2, and
+ * `=HYPERLINK(...)` or a DDE formula becomes something worse, on the machine
+ * of whoever opens the file. Both exports carry operator-supplied text
+ * (`customer_reference` is whatever the customer typed, a note is whatever an
+ * operator typed), so the text arrives from outside the trust boundary and
+ * leaves as a file somebody double-clicks.
+ *
+ * A leading `'` is the fix spreadsheets themselves use for "this is text":
+ * they consume it and display the original. Applied before quoting, so the
+ * quote rules below are unchanged.
+ */
+export const csvCell = (v: unknown) => {
+  const s = String(v ?? '');
+  const defused = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  return `"${defused.replaceAll('"', '""')}"`;
+};
 
 const KIND_FA: Record<Kind, string> = {
   EXPENSE: 'هزینه',
