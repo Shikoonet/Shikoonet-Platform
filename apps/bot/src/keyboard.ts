@@ -31,6 +31,7 @@ import {
   DEFAULT_LAYOUTS,
   isMenuAction,
   MENUS,
+  ADMIN_ONLY,
   RESELLER_ONLY_HIDDEN,
   type ButtonPlacement,
   type MenuId,
@@ -154,6 +155,9 @@ export function buildMainMenu(
   return buildMenu('main', buttons, {
     applies: (action) => {
       if (viewer.is_reseller && RESELLER_ONLY_HIDDEN.has(action)) return false;
+      // The other half of the rule this function's docstring has always
+      // described. `is_admin` was computed on every screen and read by nothing.
+      if (!viewer.is_admin && ADMIN_ONLY.has(action)) return false;
       return true;
     },
   });
@@ -206,6 +210,11 @@ export function actionForLabel(
   for (const button of buttons) {
     if (!button.visible || button.action === 'back') continue;
     if (viewer.is_reseller && RESELLER_ONLY_HIDDEN.has(button.action)) continue;
+    // The same audience rule the drawing side applies. A bottom keyboard sends
+    // TEXT, so without this a customer who typed the admin button's label word
+    // for word would be routed to its action — the handler refuses them anyway,
+    // but a door that is locked and also not drawn is the shape this wants.
+    if (!viewer.is_admin && ADMIN_ONLY.has(button.action)) continue;
     const label = fill(button.label, {});
     const split = splitCustomEmojiLabel(label);
     if (typed === anchorLabel(split.text) || typed === split.text) return button.action;
