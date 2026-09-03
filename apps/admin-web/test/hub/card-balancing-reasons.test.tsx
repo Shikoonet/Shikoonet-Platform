@@ -97,7 +97,7 @@ afterEach(() => {
 });
 
 const draw = () =>
-  render(<CardBalancingPanel cache={createCache()} rangeState={{ preset: 'all', day: null }} />);
+  render(<CardBalancingPanel cache={createCache()} rangeState={{ preset: 'all' }} />);
 
 describe('the card balancing panel', () => {
   it('lists a card the table no longer has, with the money that went to it', async () => {
