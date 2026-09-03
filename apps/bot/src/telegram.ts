@@ -60,9 +60,35 @@ const DocumentSchema = z.object({
   mime_type: z.string().optional(),
 });
 
+/**
+ * One entity in a message, narrowed to the only kind this bot reads.
+ *
+ * A premium emoji arrives as `custom_emoji` with the id attached — which is the
+ * ONLY place an id can be got from without guessing. `getStickerSet` needs the
+ * set's name, and a person who wants «this emoji, the one I just used» does not
+ * know the name of the set it came from; they have the emoji itself, in their
+ * keyboard, because their own Premium put it there.
+ *
+ * So an admin sends the emoji to the bot and the bot reads the id off the
+ * message. Nothing is typed, nothing is looked up, and the round trip doubles
+ * as the proof: an emoji that comes back drawn is an emoji this bot can send.
+ *
+ * Every other entity type — bold, a link, a mention — is parsed and ignored.
+ * The array is `.catch()`-free on purpose: a shape we cannot read makes the
+ * whole message unreadable, and `UpdateSchema` already turns that into an
+ * ignored update rather than a wedged poller.
+ */
+const EntitySchema = z.object({
+  type: z.string(),
+  offset: z.number().int(),
+  length: z.number().int(),
+  custom_emoji_id: z.string().optional(),
+});
+
 const MessageSchema = z.object({
   message_id: z.number().int(),
   from: TelegramUserSchema.optional(),
+  entities: z.array(EntitySchema).optional(),
   /**
    * `type` is read for one reason: to refuse a chat that is not private.
    *

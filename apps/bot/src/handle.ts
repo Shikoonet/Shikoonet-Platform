@@ -88,6 +88,13 @@ import {
   subscriptionOnPanelForUser,
   subscriptionsForUser,
 } from './owned.js';
+import {
+  customEmojiIn,
+  emojiById,
+  rememberEmoji,
+  setButtonEmoji,
+  storedEmoji,
+} from './emoji.js';
 import { actionsFor, tierFor } from './serviceActions.js';
 import { checkoutFor, recordPaidClick, recordReceipt } from './payment.js';
 import {
@@ -802,7 +809,50 @@ async function handleTypedAnswer(
   if (session.step === 'uname') {
     return withCleanChat(await handleCustomerName(tx, message, user, session), message, session);
   }
+  if (session.step === 'emoji') {
+    return withCleanChat(await handlePremiumEmoji(tx, message, user), message, session);
+  }
   return IGNORED;
+}
+
+/**
+ * A message an admin sent so the bot could read a premium emoji off it.
+ *
+ * This is the whole reason the flow asks for a MESSAGE rather than a link or a
+ * pack name: Telegram attaches `custom_emoji_id` to the entity, so the id comes
+ * from the same service that will later be asked to draw it. Nothing is typed
+ * and nothing is guessed.
+ *
+ * The admin check is repeated here even though the prompt is only reachable
+ * from an admin-only button. The session is a row keyed on the user, and a
+ * customer whose admin rights were revoked between the question and the answer
+ * would otherwise still be answering it.
+ */
+async function handlePremiumEmoji(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+): Promise<HandleOutcome> {
+  const reply = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, keyboard }],
+  });
+  if (!user.is_admin) {
+    await clearSession(tx, user.id);
+    return reply(menu.MENU_TITLE, menu.mainMenu(user));
+  }
+
+  const found = customEmojiIn(message);
+  if (found.length === 0) {
+    // The question stays open: an admin who sent an ordinary emoji can try
+    // again without walking back through the menu.
+    return reply(menu.EMOJI_NONE_FOUND, menu.promptMenu(encode('emj')));
+  }
+
+  const added = await rememberEmoji(tx, found);
+  await clearSession(tx, user.id);
+  const have = await storedEmoji(tx);
+  return reply(menu.emojiSaved(added, have.length), menu.emojiMenu(have));
 }
 
 /**
@@ -2129,6 +2179,60 @@ async function handleCallback(
         case 'none':
           return screen(menu.ORDER_GONE, menu.afterPaidMenu());
       }
+    }
+
+    // ── the admin's premium-emoji screen ─────────────────────────────────
+    //
+    // `user.is_admin` is re-read here rather than inferred from the button
+    // having been pressed. `ADMIN_ONLY` keeps these three off a customer's
+    // keyboard, and that is presentation: `callback_data` is unsigned, so
+    // anybody can post `emj` and this is the line that answers them.
+    //
+    // The answer is the main menu, not a refusal. Telling a stranger «شما ادمین
+    // نیستید» confirms the surface exists, which is the one thing a probe is
+    // looking for.
+    case 'emj':
+    case 'emja':
+    case 'emjb': {
+      if (!user.is_admin) return screen(menu.MENU_TITLE, menu.mainMenu(user));
+
+      if (action.action === 'emja') {
+        await ask(tx, user.id, 'emoji', {}, editId);
+        return screen(menu.ASK_PREMIUM_EMOJI, menu.promptMenu(encode('emj')));
+      }
+
+      if (action.action === 'emjb' && action.id !== undefined) {
+        const chosen = await emojiById(tx, action.id);
+        // Gone between the screen being drawn and the button being pressed —
+        // another admin removed its pack. The list is redrawn rather than an
+        // error shown: there is nothing for this admin to do about it.
+        if (!chosen) return screen(menu.emojiHome(0), menu.emojiMenu(await storedEmoji(tx)));
+
+        const buttons = menu.mainMenuButtons();
+
+        if (action.id2 === undefined) {
+          return screen(
+            menu.emojiButtonPick(chosen.fallbackEmoji),
+            menu.emojiButtonMenu(chosen.id, buttons),
+          );
+        }
+        // Resolved through the DECLARED order rather than through the list
+        // above, so a layout edited between the two taps cannot move the target.
+        const targetAction = menu.mainMenuActionAt(action.id2);
+        const target = buttons.find((b) => b.action === targetAction);
+        if (!target) return screen(menu.emojiHome(0), menu.emojiMenu(await storedEmoji(tx)));
+        const label = await setButtonEmoji(tx, target.action, target.label, chosen);
+        // Null means the composed label was refused — too long once the glyph
+        // is on it, most likely. Said plainly, because the alternative is a
+        // screen claiming success over a button that did not change.
+        return screen(
+          label === null ? menu.emojiTooLong(target.label) : menu.emojiPlaced(label),
+          menu.emojiMenu(await storedEmoji(tx)),
+        );
+      }
+
+      const have = await storedEmoji(tx);
+      return screen(menu.emojiHome(have.length), menu.emojiMenu(have));
     }
 
     case 'wal': {
