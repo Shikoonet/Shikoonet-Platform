@@ -4143,3 +4143,17 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* «نماینده» on a payment row. Warm rather than alarming: a reseller payment is
+   a good thing, it just answers a different question from a personal one. */
+.badge--reseller {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
+/* The CSV link sits with the filter buttons and must not look like a filter. */
+.payments-filters__export {
+  text-decoration: none;
+  align-self: end;
+}

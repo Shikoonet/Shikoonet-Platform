@@ -24,7 +24,7 @@ import {
   level1GroupFromTab,
 } from './paymentsNav.js';
 import { HeaderSlot } from './shikoonetShell.js';
-import { useWriteProps } from '../role.js';
+import { useWriteProps, useCanWriteAdmin } from '../role.js';
 import {
   AssignToPaymentModal,
   DeclinedIncomeRow,
@@ -111,6 +111,49 @@ interface Filters {
   cardDigits: string;
   /** A Telegram id — «این آی‌دی چند بار و به کدام کارت‌ها واریز داشته». */
   telegramId: string;
+  /** '' | 'personal' | 'reseller' — «تفکیک عادی و نماینده». */
+  customerType: string;
+}
+
+/**
+ * The filter keys that survive a reload — and a link.
+ *
+ * They were `useState` and nothing else: a filtered view could not be
+ * bookmarked, could not be sent to anyone, and vanished on refresh. On a money
+ * screen that matters more than usual, because «چقدر به این کارت رفت» is
+ * exactly the kind of answer somebody wants to hand to somebody else.
+ *
+ * `replaceState`, like the tab beside it: turning six filter changes into six
+ * back-button steps would make Back mean «undo my last keystroke» instead of
+ * «leave this screen».
+ */
+const FILTER_KEYS = [
+  'status',
+  'accountId',
+  'reason',
+  'from',
+  'to',
+  'cardDigits',
+  'telegramId',
+  'customerType',
+] as const;
+
+export function parseFiltersFromLocation(search = window.location.search): Filters {
+  const qs = new URLSearchParams(search);
+  const out = { ...EMPTY_FILTERS };
+  for (const k of FILTER_KEYS) out[k] = qs.get(k) ?? '';
+  return out;
+}
+
+export function syncFiltersToLocation(filters: Filters): void {
+  const qs = new URLSearchParams(window.location.search);
+  for (const k of FILTER_KEYS) {
+    // Deleted rather than set empty: `?cardDigits=&reason=` in a shared link
+    // is noise that reads like a filter somebody meant to set.
+    if (filters[k]) qs.set(k, filters[k]);
+    else qs.delete(k);
+  }
+  window.history.replaceState(null, '', `${window.location.pathname}?${qs.toString()}`);
 }
 
 const EMPTY_FILTERS: Filters = {
@@ -121,6 +164,7 @@ const EMPTY_FILTERS: Filters = {
   to: '',
   cardDigits: '',
   telegramId: '',
+  customerType: '',
 };
 
 function buildQuery(
@@ -152,6 +196,7 @@ function buildQuery(
     if (filters.to) qs.set('toDay', filters.to);
     if (filters.cardDigits) qs.set('cardDigits', filters.cardDigits);
     if (filters.telegramId) qs.set('telegramId', filters.telegramId);
+    if (filters.customerType) qs.set('customerType', filters.customerType);
   }
   return qs.toString();
 }
@@ -164,11 +209,15 @@ function isPaymentItem(
 
 export function PaymentsView({ cache }: { cache: Cache }) {
   const w = useWriteProps();
+  // The export is ADMIN, and stricter than the screen on purpose — see the
+  // route. Hidden rather than disabled: a control that only ever answers 403
+  // teaches nothing by being visible.
+  const canExport = useCanWriteAdmin();
   const [tab, setTab] = useState<PaymentTab>(() => parsePaymentTabFromLocation());
   const isWide = useMediaQuery('(min-width: 1200px)');
   const [rangeState, setRangeState] = useState<HistoryRangeState>(defaultHistoryRangeState());
   const [page, setPage] = useState(1);
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [filters, setFilters] = useState<Filters>(() => parseFiltersFromLocation());
   // DEV-only: filters specific to the Bot Auto Verified tab.
   const botAutoFilter = useBotAutoVerifiedFilter();
   const [reviewingId, setReviewingId] = useState<string | null>(() => parseReviewIdFromLocation());
@@ -221,6 +270,9 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   useEffect(() => {
     setPage(1);
   }, [baseQuery]);
+  useEffect(() => {
+    syncFiltersToLocation(filters);
+  }, [filters]);
   const query = page > 1 ? `${baseQuery}&page=${page}` : baseQuery;
   const queryKey = QK.payments(query);
   const analyticsQs = new URLSearchParams();
@@ -601,6 +653,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 filters={filters}
                 onChange={setFilters}
                 reasons={collectReasons(claimItems)}
+                query={baseQuery}
+                canExport={canExport}
               />
             )}
 
@@ -1499,6 +1553,37 @@ function ReopenVerificationModal({
   );
 }
 
+/**
+ * «نماینده» beside a payment — and «نامشخص» when we cannot say.
+ *
+ * Only drawn when it is NOT a personal customer. Personal is 15,914 of the
+ * 15,916 imported users, so a badge on every one of those rows would be a
+ * column of one repeated word, and the two rows that matter would be harder to
+ * see rather than easier.
+ *
+ * «نامشخص» is drawn, though, and deliberately: a claim whose reference matches
+ * no user is a payment nobody can attribute — one production row carries
+ * «Poyan test payment» there — and that is worth an operator's eye, not a
+ * silent default to the commonest answer.
+ */
+function CustomerTypeMark({ item }: { item: PaymentItem }) {
+  if (item.customerType === 'RESELLER') {
+    return (
+      <span className="badge badge--reseller" title="این پرداخت از یک نماینده است">
+        نماینده
+      </span>
+    );
+  }
+  if (item.customerType === 'UNKNOWN') {
+    return (
+      <span className="badge" title="آی‌دی این پرداخت به هیچ کاربری نمی‌خورد">
+        نامشخص
+      </span>
+    );
+  }
+  return null;
+}
+
 function AllRow({ item, onOpen }: { item: PaymentItem; onOpen: () => void }) {
   const identity = paymentIdentityLine(item);
   const masked = maskAccountHint(item.accountHint, item.cardMasked);
@@ -1512,6 +1597,7 @@ function AllRow({ item, onOpen }: { item: PaymentItem; onOpen: () => void }) {
             <span className={`status-pill status-pill--${item.reviewState.toLowerCase()}`}>
               {stateLabel(item.reviewState)}
             </span>
+            <CustomerTypeMark item={item} />
           </span>
           <span className="hub-list-row__amount tabular-nums">
             {formatToman(item.expectedAmountToman)}
@@ -1589,11 +1675,15 @@ function AllFilters({
   filters,
   onChange,
   reasons,
+  query,
+  canExport,
 }: {
   cache: Cache;
   filters: Filters;
   onChange: (f: Filters) => void;
   reasons: string[];
+  query: string;
+  canExport: boolean;
 }) {
   const { data } = cache.useQuery<{
     items: Array<{ id: string; display_name: string; bank_name: string }>;
@@ -1661,6 +1751,14 @@ function AllFilters({
         </select>
       </label>
       <label>
+        نوع مشتری
+        <select value={filters.customerType} onChange={(e) => set({ customerType: e.target.value })}>
+          <option value="">همه</option>
+          <option value="personal">شخصی</option>
+          <option value="reseller">نماینده</option>
+        </select>
+      </label>
+      <label>
         آی‌دی تلگرام
         <input
           type="text"
@@ -1681,6 +1779,21 @@ function AllFilters({
       <button type="button" className="ghost" onClick={() => onChange(EMPTY_FILTERS)}>
         پاک کردن
       </button>
+      {/* A plain link, not a fetch-and-blob: the browser already knows how to
+          save a file the server marks as an attachment, and doing it by hand
+          would mean holding the whole export in memory to hand it straight
+          back. `query` is the SAME string the list is showing, so the file and
+          the screen cannot disagree. ADMIN only — the server refuses anyone
+          else, and hiding the button as well spares the operator a 403. */}
+      {canExport && (
+        <a
+          className="ghost payments-filters__export"
+          href={`/api/v1/payments?${query}&format=csv`}
+          download
+        >
+          خروجی CSV
+        </a>
+      )}
     </div>
   );
 }

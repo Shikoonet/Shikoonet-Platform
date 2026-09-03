@@ -146,6 +146,12 @@ export interface CandidateTransaction {
 }
 
 export interface PaymentItem {
+  /**
+   * Whether the payer is a personal customer or a reseller — and «UNKNOWN»
+   * when the claim's reference matches no user at all, which is a real state
+   * and not a synonym for «personal».
+   */
+  customerType?: 'PERSONAL' | 'RESELLER' | 'UNKNOWN';
   id: string;
   orderId: string;
   telegramUserId: string | null;

@@ -799,3 +799,144 @@ describe('the payments list is paginated rather than silently cut', () => {
     expect(body.total).toBe(N);
   });
 });
+
+describe('the payments list can be taken as a file', () => {
+  const CRLF = '\r\n';
+
+  async function csv(qs: string, email = EMAIL) {
+    const r = await app.fetch(
+      new Request(`https://x/api/v1/payments?${qs}&format=csv`),
+      envAs(email),
+    );
+    // `bytes` as well as `text`: `Response.text()` decodes UTF-8 and the
+    // decoder STRIPS a leading BOM, so asserting on the string can never see
+    // the one thing Excel needs. Checked on the wire instead.
+    const buf = await r.clone().arrayBuffer();
+    return {
+      status: r.status,
+      text: await r.text(),
+      bytes: new Uint8Array(buf),
+      type: r.headers.get('content-type'),
+    };
+  }
+
+  it('exports the SAME set the screen is showing, filters and all', async () => {
+    // The whole reason this lives on the list route rather than beside it: an
+    // export that answers a different question from the screen it was taken
+    // from is worse than no export.
+    await seedClaim('x-a1', { status: 'VERIFIED', cardDigits: '6104337712345678' });
+    await seedClaim('x-a2', { status: 'VERIFIED', cardDigits: '6104337712345678' });
+    await seedClaim('x-b1', { status: 'VERIFIED', cardDigits: '6104338898765432' });
+
+    const all = await csv('tab=all&range=all');
+    expect(all.status).toBe(200);
+    // Three rows and one header.
+    expect(all.text.trim().split(CRLF)).toHaveLength(4);
+
+    const oneCard = await csv('tab=all&range=all&cardDigits=6104337712345678');
+    const rows = oneCard.text.trim().split(CRLF).slice(1);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.includes('6104337712345678'))).toBe(true);
+    expect(oneCard.text).not.toContain('6104338898765432');
+  });
+
+  it('is a file Excel can read: BOM, CRLF, and Toman', async () => {
+    await seedClaim('x-m1', { status: 'VERIFIED' });
+    const r = await csv('tab=all&range=all');
+    expect(r.type).toContain('text/csv');
+    // Without the BOM every Persian heading arrives as mojibake. Asserted on
+    // the bytes: the first version of this read `text.charCodeAt(0)` and got
+    // 34 -- a quote -- because the decoder had already eaten the BOM. The file
+    // was right and the test was looking at the wrong layer.
+    expect([r.bytes[0], r.bytes[1], r.bytes[2]]).toEqual([0xef, 0xbb, 0xbf]);
+    expect(r.text).toContain(CRLF);
+    // AMOUNT is 1_950_000 IRR. The file is Toman, like every screen.
+    expect(r.text).toContain('195000');
+    expect(r.text).not.toContain('1950000');
+  });
+
+  it('refuses a READ_ONLY operator, who may still read the screen', async () => {
+    // Deliberately stricter than the list. `/api/v1/payments` is not in
+    // PERSONAL_DATA_PREFIXES, so READ_ONLY may browse it — but reading a page
+    // and taking a file of every customer's Telegram id are different acts,
+    // and only one of them leaves the building.
+    const ro = 'ro@example.com';
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at)
+       VALUES (?1, ?2, 'READ_ONLY', 1, ?3, ?3)`,
+    )
+      .bind(crypto.randomUUID(), ro, Date.now())
+      .run();
+    await seedClaim('x-ro', { status: 'VERIFIED' });
+
+    expect((await csv('tab=all&range=all', ro)).status).toBe(403);
+    // ...and the screen itself still answers them.
+    const list = await app.fetch(
+      new Request('https://x/api/v1/payments?tab=all&range=all'),
+      envAs(ro),
+    );
+    expect(list.status).toBe(200);
+  });
+});
+
+describe('personal customers and resellers, told apart', () => {
+  async function ask(qs: string) {
+    const r = await app.fetch(new Request(`https://x/api/v1/payments?${qs}`), envAs());
+    expect(r.status).toBe(200);
+    return (await r.json()) as {
+      items: Array<{ id: string; customerType: string }>;
+      total: number;
+    };
+  }
+
+  beforeEach(async () => {
+    await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id IN (7001, 7002)`).run();
+    for (const [tg, isReseller] of [
+      [7001, false],
+      [7002, true],
+    ] as const) {
+      // No `id`: it is `generated always as identity`, and Postgres refuses a
+      // supplied value outright rather than ignoring it. And no timestamps
+      // either: `users` keeps `timestamptz` while `payment_claims` keeps epoch
+      // milliseconds — the two conventions this schema carries, and handing
+      // one to the other is «date/time field value out of range».
+      await baseEnv.DB.prepare(
+        `INSERT INTO users (telegram_id, status, is_reseller, registered_at)
+         VALUES (?1, 'ACTIVE', ?2, now())`,
+      )
+        .bind(tg, isReseller)
+        .run();
+    }
+  });
+
+  it('splits the list three ways, and «unknown» is not «personal»', async () => {
+    await seedClaim('s-p', { status: 'VERIFIED', customerReference: '7001' });
+    await seedClaim('s-r', { status: 'VERIFIED', customerReference: '7002' });
+    // The third case, and it is real: one production row carries
+    // «Poyan test payment» in this column. It matches no user, and calling it
+    // personal would be inventing a fact about a payment.
+    await seedClaim('s-u', { status: 'VERIFIED', customerReference: 'Poyan test payment' });
+
+    const all = await ask('tab=all&range=all');
+    const by = new Map(all.items.map((i) => [i.id, i.customerType]));
+    expect(by.get('s-p')).toBe('PERSONAL');
+    expect(by.get('s-r')).toBe('RESELLER');
+    expect(by.get('s-u')).toBe('UNKNOWN');
+
+    expect((await ask('tab=all&range=all&customerType=reseller')).items.map((i) => i.id)).toEqual([
+      's-r',
+    ]);
+    const personal = await ask('tab=all&range=all&customerType=personal');
+    expect(personal.items.map((i) => i.id)).toEqual(['s-p']);
+    // The unattributable one is in NEITHER bucket, which is the point.
+    expect(personal.items.map((i) => i.id)).not.toContain('s-u');
+  });
+
+  it('does not fall over on a reference that is not a number', async () => {
+    // `customer_reference::bigint` would error here and take the whole query
+    // with it — which is why the join casts the column to text instead.
+    await seedClaim('s-text', { status: 'VERIFIED', customerReference: 'Poyan test payment' });
+    const r = await ask('tab=all&range=all');
+    expect(r.items.map((i) => i.id)).toContain('s-text');
+  });
+});
