@@ -509,6 +509,7 @@ describe('GET /api/v1/cards/analytics', () => {
         hubEligible: boolean;
         exclusionReason: string;
         cardStatus: string;
+        purchaseBarPercent: number;
       }>;
     };
 
@@ -521,6 +522,13 @@ describe('GET /api/v1/cards/analytics', () => {
     ).first<{ n: number }>();
     expect(shown).toBe(Number(claimed!.n));
 
+    // The bar is drawn against every row it draws, not against the eligible
+    // ones alone: an unmapped card carrying auto-verified purchases would
+    // otherwise scale past 100% and out of the panel. CodeRabbit caught this on
+    // PR #87 — the distribution and the bar answer different questions and can
+    // no longer share one maximum.
+    expect(body.items.every((i) => i.purchaseBarPercent <= 100)).toBe(true);
+
     const orphan = body.items.find((i) => i.cardMasked.endsWith('7777'));
     expect(orphan).toBeDefined();
     expect(orphan!.takingsIrr).toBe(5_000_000);
@@ -531,5 +539,23 @@ describe('GET /api/v1/cards/analytics', () => {
     expect(orphan!.hubEligible).toBe(false);
     expect(orphan!.exclusionReason).toBe('card_not_mapped');
     expect(orphan!.cardStatus).toBe('UNMAPPED');
+  });
+
+  /**
+   * The sentence over the list has to describe the list.
+   *
+   * It said «به تفکیک کارت نگاشت‌شده» — true of the query, and false of the
+   * answer as soon as unmapped cards were added to it. A note is read as a
+   * definition of what the numbers cover, so a stale one is the same fault as a
+   * stale number.
+   */
+  it('describes the rows it is actually sending', async () => {
+    const r = await app.fetch(
+      new Request('https://x/api/v1/cards/analytics?range=all'),
+      envAs(EMAIL),
+    );
+    const body = (await r.json()) as { note: string };
+    expect(body.note).toContain('کارت‌هایی که دیگر نگاشت ندارند');
+    expect(body.note).not.toContain('به تفکیک کارت نگاشت‌شده');
   });
 });

@@ -698,7 +698,12 @@ export async function loadCardAnalytics(
   // lopsided for cards it has deliberately taken out of service.
   const purchaseCounts = allItems.filter((i) => i.hubEligible).map((i) => i.purchaseCount);
   const distribution = cardBalancingDistribution(purchaseCounts);
-  const maxPurchases = Math.max(...purchaseCounts, 1);
+  // Two maxima, because they answer two questions. The distribution is about
+  // FAIRNESS and so counts only cards in rotation; the bar is about DRAWING and
+  // has to cover every row on screen. An unmapped card can carry auto-verified
+  // purchases — that is why it is listed at all — and scaling its bar against
+  // the eligible maximum alone would put it past 100% and out of the panel.
+  const maxPurchases = Math.max(...allItems.map((i) => i.purchaseCount), 1);
 
   return {
     range,
@@ -709,7 +714,11 @@ export async function loadCardAnalytics(
     windows: CARD_ACTIVITY_WINDOWS,
     // Sent to the browser and rendered verbatim, so it is written in the
     // language the screen is in.
-    note: 'خریدهای تاییدشده به تفکیک کارت نگاشت‌شده. توازن تخصیص کارت بر پایهٔ اجاره‌های تکمیل‌شدهٔ ربات است، نه این نمودار.',
+    // Says what the list HOLDS, not what it used to hold. It read «به تفکیک
+    // کارت نگاشت‌شده» while the rows below now include the unmapped ones — a
+    // sentence describing the query rather than the answer, which is the same
+    // fault the rows were added to repair.
+    note: 'خریدهای تاییدشده به تفکیک کارت، شامل کارت‌هایی که دیگر نگاشت ندارند. توازن تخصیص کارت بر پایهٔ اجاره‌های تکمیل‌شدهٔ ربات است، نه این نمودار.',
     distribution,
     items: allItems.map((i) => ({
       ...i,
