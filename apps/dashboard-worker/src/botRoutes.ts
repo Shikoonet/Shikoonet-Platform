@@ -130,12 +130,49 @@ export function registerBotRoutes(
     ).first<{ value: unknown }>();
     const liveUsername = typeof live?.value === 'string' ? live.value : null;
 
+    /*
+     * The reports group, read here rather than from a screen of its own.
+     *
+     * «کدام ربات جواب می‌دهد» and «کجا گزارش می‌دهد» are the same question asked
+     * twice, and an operator who cannot see the second one has no way to tell
+     * whether reporting is configured — the failure is silent by design, since
+     * an unset topic simply posts to the group's General.
+     *
+     * Every kind is listed, including the ones still at zero, because «۳ از ۱۰»
+     * is the useful sentence and a list of only the configured ones cannot say
+     * it.
+     */
+    const topicRows = await c.env.DB.prepare(
+      `SELECT key, value FROM settings WHERE scope = 'bot' AND key LIKE 'topic\_%'`,
+    ).all<{ key: string; value: unknown }>();
+    const byKey = new Map((topicRows.results ?? []).map((r) => [r.key, Number(r.value ?? 0)]));
+    const topics = REPORT_KINDS.map((kind) => {
+      const threadId = byKey.get(reportTopicKey(kind)) ?? 0;
+      return {
+        kind,
+        title: REPORT_TOPIC_TITLES[kind],
+        // Zero and negative are «not configured» — legacy's own sentinels, and
+        // what `topicId` in the bot's settings reader treats as absent.
+        threadId: Number.isSafeInteger(threadId) && threadId > 0 ? threadId : null,
+      };
+    });
+    const groupRow = await c.env.DB.prepare(
+      `SELECT value FROM settings WHERE scope = 'bot' AND key = 'Channel_Report'`,
+    ).first<{ value: unknown }>();
+    const rawGroup = String(groupRow?.value ?? '').trim();
+    const groupChatId = /^-?[0-9]{1,19}$/.test(rawGroup) ? Number(rawGroup) : null;
+
     return c.json({
       ok: true,
       // `dashboard` when a row of this environment's exists, `environment` when
       // the service is still running on its variable, `none` when neither — and
       // `none` is a shop with no bot, which the screen says in those words.
       source: stored ? 'dashboard' : c.env.TELEGRAM_BOT_TOKEN?.trim() ? 'environment' : 'none',
+      reportGroup: {
+        chatId: groupChatId,
+        topics,
+        configured: topics.filter((t) => t.threadId !== null).length,
+      },
       envName,
       connected: stored,
       liveUsername,

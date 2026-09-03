@@ -81,14 +81,20 @@ const DecisionBody = z
   })
   .strict();
 
-/** Only the two things an operator may change about a level. */
-const TierBody = z
-  .object({
-    name: z.string().trim().min(1).max(60).optional(),
-    percent: z.number().int().min(0).max(100).optional(),
-  })
-  .strict()
-  .refine((b) => b.name !== undefined || b.percent !== undefined, 'nothing to change');
+/**
+ * The one thing an operator may change about a level.
+ *
+ * NOT the name. The label is seeded by 0047 and shown, and «قیمت حجم و زمان
+ * اضافه» on every panel screen hardcodes the same two words — so a level
+ * renamed to «طلایی» here would still read «نماینده سطح ۲» there, which is one
+ * level wearing two names. Sam chose the fixed ladder over free-form named
+ * groups on 2026-09-03, so the ladder's names are the ladder's.
+ *
+ * This accepted `name` for a while and no screen ever sent one. A route that
+ * takes a field nothing can supply is not an unused feature, it is an untested
+ * write path on a money table.
+ */
+const TierBody = z.object({ percent: z.number().int().min(0).max(100) }).strict();
 
 interface SettingRow {
   scope: string;
@@ -395,9 +401,11 @@ export function registerSettingsRoutes(
   });
 
   /**
-   * Renames a level or re-prices it. There is no create and no delete: the
-   * ladder is two rows fixed by a CHECK, because a third level would also need
-   * a `CustomerTier` member and a price box on every panel — see 0047.
+   * Re-prices a level. Not renames it — see `TierBody`.
+   *
+   * There is no create and no delete either: the ladder is two rows fixed by a
+   * CHECK, because a third level would also need a `CustomerTier` member and a
+   * price box on every panel — see 0047.
    */
   app.post('/api/v1/admin/reseller-tiers/:code', async (c) => {
     const ident = c.get('identity');
@@ -406,7 +414,7 @@ export function registerSettingsRoutes(
     const code = c.req.param('code');
     const parsed = TierBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
-    const { name, percent } = parsed.data;
+    const { percent } = parsed.data;
 
     const before = await c.env.DB.prepare(
       `SELECT code, name, discount_percent FROM reseller_tiers WHERE code = ?1`,
@@ -415,19 +423,12 @@ export function registerSettingsRoutes(
       .first<{ code: string; name: string; discount_percent: number }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
-    const after = {
-      name: name ?? before.name,
-      discount_percent: percent ?? Number(before.discount_percent),
-    };
-    if (after.name === before.name && after.discount_percent === Number(before.discount_percent)) {
-      return c.json({ ok: true, changed: false });
-    }
+    if (percent === Number(before.discount_percent)) return c.json({ ok: true, changed: false });
 
     await c.env.DB.prepare(
-      `UPDATE reseller_tiers SET name = ?2, discount_percent = ?3, updated_at = now()
-        WHERE code = ?1`,
+      `UPDATE reseller_tiers SET discount_percent = ?2, updated_at = now() WHERE code = ?1`,
     )
-      .bind(code, after.name, after.discount_percent)
+      .bind(code, percent)
       .run();
 
     // Every member's price moves with this, which is the point of the change
@@ -438,8 +439,8 @@ export function registerSettingsRoutes(
       'reseller_tier.updated',
       'RESELLER_TIER',
       code,
-      { name: before.name, discount_percent: Number(before.discount_percent) },
-      after,
+      { discount_percent: Number(before.discount_percent) },
+      { discount_percent: percent },
       null,
     );
     return c.json({ ok: true, changed: true });

@@ -215,3 +215,66 @@ describe('pointing the bot at a reports group', () => {
     expect((await setup(GROUP, REVIEWER)).status).toBe(403);
   });
 });
+
+describe('what the screen can tell an operator', () => {
+  /**
+   * The state «GET /bot» has to carry, and why every kind is listed.
+   *
+   * An unconfigured topic is silent by design — its report goes to the group's
+   * General rather than failing — so an operator has no way to discover a
+   * half-finished setup except by being shown it. «۳ از ۱۰» is the sentence
+   * that does that, and a response listing only the configured topics could not
+   * produce it.
+   */
+  it('says nothing is configured before anything is', async () => {
+    const res = await app.request('/api/v1/admin/bot', {}, envAs(ADMIN));
+    const body = (await res.json()) as {
+      reportGroup: { chatId: number | null; configured: number; topics: unknown[] };
+    };
+
+    expect(body.reportGroup.chatId).toBeNull();
+    expect(body.reportGroup.configured).toBe(0);
+    // Every kind, including the ones at zero.
+    expect(body.reportGroup.topics).toHaveLength(REPORT_KINDS.length);
+  });
+
+  it('names the group and counts the topics once it is set up', async () => {
+    await connectBot();
+    telegram();
+    await setup(GROUP);
+
+    const res = await app.request('/api/v1/admin/bot', {}, envAs(ADMIN));
+    const body = (await res.json()) as {
+      reportGroup: {
+        chatId: number | null;
+        configured: number;
+        topics: { kind: string; title: string; threadId: number | null }[];
+      };
+    };
+
+    expect(body.reportGroup.chatId).toBe(GROUP);
+    expect(body.reportGroup.configured).toBe(REPORT_KINDS.length);
+    // The Persian titles, so the screen does not keep a second copy of them.
+    expect(body.reportGroup.topics.every((t) => t.title.length > 0)).toBe(true);
+    expect(body.reportGroup.topics.every((t) => t.threadId !== null)).toBe(true);
+  });
+
+  it('reads a topic left at zero as not configured, not as topic zero', async () => {
+    await connectBot();
+    telegram();
+    await setup(GROUP);
+    await baseEnv.DB.prepare(
+      `UPDATE settings SET value = '0'::jsonb WHERE scope = 'bot' AND key = 'topic_buyreport'`,
+    ).run();
+
+    const res = await app.request('/api/v1/admin/bot', {}, envAs(ADMIN));
+    const body = (await res.json()) as {
+      reportGroup: { configured: number; topics: { kind: string; threadId: number | null }[] };
+    };
+
+    // Zero is legacy's «never made» sentinel. Reporting it as a thread id would
+    // put `message_thread_id: 0` on the wire, which Telegram answers 400 to.
+    expect(body.reportGroup.topics.find((t) => t.kind === 'buyreport')?.threadId).toBeNull();
+    expect(body.reportGroup.configured).toBe(REPORT_KINDS.length - 1);
+  });
+});

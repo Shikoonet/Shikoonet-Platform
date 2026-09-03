@@ -1143,6 +1143,19 @@ export interface BotConnection {
   /** What the bot that is actually RUNNING said about itself at its last boot. */
   liveUsername: string | null;
   appliesAfter: string;
+  /**
+   * Where the shop's own reports go, and which topics exist.
+   *
+   * `chatId` null means nothing is configured and no report is sent at all. A
+   * topic with `threadId` null is one that has not been made — its reports land
+   * in the group's General rather than being lost, which is why the screen has
+   * to say how many are set and not just whether a group is.
+   */
+  reportGroup: {
+    chatId: number | null;
+    configured: number;
+    topics: { kind: string; title: string; threadId: number | null }[];
+  };
 }
 
 export interface BotScreen {
@@ -1728,8 +1741,14 @@ export const api = {
     return req<{ ok: boolean; items: ResellerTierRow[] }>('/reseller-tiers');
   },
 
-  /** One number here moves the price for every reseller on that level. */
-  saveResellerTier(code: string, body: { name?: string; percent?: number }) {
+  /**
+   * One number here moves the price for every reseller on that level.
+   *
+   * The percentage only. A level's NAME is seeded by 0047 and not editable —
+   * the panel screen's own tier labels hardcode the same words, and one level
+   * with two names is worse than one that cannot be renamed.
+   */
+  saveResellerTier(code: string, body: { percent: number }) {
     return req<{ ok: boolean; changed: boolean }>(`/reseller-tiers/${code}`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -1824,6 +1843,21 @@ export const api = {
 
   botConnection() {
     return req<{ ok: boolean } & BotConnection>('/bot');
+  },
+
+  /**
+   * Points the bot at a forum group and creates the report topics in it.
+   *
+   * The group must already have the bot in it as an admin — the server asks
+   * Telegram and refuses with a sentence rather than letting ten topic
+   * creations fail one by one.
+   */
+  setReportGroup(chatId: number) {
+    return req<{
+      ok: boolean;
+      chatId: number;
+      created: Record<string, number>;
+    }>('/bot/report-group', { method: 'POST', body: JSON.stringify({ chatId }) });
   },
 
   setBotToken(token: string) {

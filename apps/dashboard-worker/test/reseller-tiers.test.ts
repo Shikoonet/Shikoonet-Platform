@@ -251,6 +251,30 @@ describe('what a level costs', () => {
     expect(after['n2']! - before['n2']!).toBe(1);
   });
 
+  /**
+   * A level cannot be renamed, and that is a decision rather than an omission.
+   *
+   * «قیمت حجم و زمان اضافه» on every panel screen hardcodes the same two
+   * labels, so a level renamed here would read one way on the levels table and
+   * another beside its own prices. Sam chose the fixed ladder over free-form
+   * named groups, so the ladder keeps the ladder's names.
+   *
+   * Asserted rather than left implicit: the route accepted `name` for a while
+   * and no screen ever sent one, which is an untested write path on a money
+   * table wearing the costume of a feature.
+   */
+  it('refuses a rename outright rather than ignoring it', async () => {
+    const res = await post('/api/v1/admin/reseller-tiers/n', { name: 'طلایی', percent: 20 });
+
+    expect(res.status).toBe(400);
+    const row = await baseEnv.DB.prepare(`SELECT name, discount_percent FROM reseller_tiers WHERE code = 'n'`)
+      .first<{ name: string; discount_percent: number }>();
+    // Neither half landed — a `.strict()` body is all-or-nothing, which is what
+    // stops «the name was ignored but the price went through».
+    expect(row?.name).toBe('نماینده');
+    expect(Number(row?.discount_percent)).toBe(0);
+  });
+
   it('is not something a reviewer may change', async () => {
     expect((await post('/api/v1/admin/reseller-tiers/n', { percent: 5 }, REVIEWER)).status).toBe(
       403,

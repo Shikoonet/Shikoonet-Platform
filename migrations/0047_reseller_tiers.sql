@@ -71,9 +71,14 @@ BEGIN;
 
 CREATE TABLE reseller_tiers (
   code             text PRIMARY KEY CHECK (code IN ('n', 'n2')),
-  -- Shown in the panel and editable there. Seeded with the labels the panel
-  -- screen already hardcodes, so nothing on screen changes on the day this
-  -- lands.
+  -- Shown in the panel and deliberately NOT editable there. Seeded with the
+  -- labels «قیمت حجم و زمان اضافه» already hardcodes on every panel screen, so
+  -- nothing on screen changes on the day this lands — and so there is one name
+  -- per level rather than a row that says «طلایی» beside a price box that still
+  -- says «نماینده سطح ۲».
+  --
+  -- Read by the customers screen and the levels table; written by nothing after
+  -- this INSERT.
   name             text         NOT NULL,
   discount_percent numeric(5,2) NOT NULL DEFAULT 0
                      CHECK (discount_percent >= 0 AND discount_percent <= 100),
