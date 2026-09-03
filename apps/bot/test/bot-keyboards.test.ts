@@ -289,25 +289,38 @@ describe('the buttons a shop may not remove', () => {
     });
   });
 
-  it('refuses custom emoji markup on a label, switch on or off', () => {
-    // The text path checks this and the keyboard path did not, so an admin
-    // could save `<tg-emoji …>🔥</tg-emoji> خرید` and get a 200 — then every
-    // customer saw the raw tag on the button, which `botTexts.ts` itself calls
-    // the worst outcome there is.
+  it('takes a leading premium emoji on a label, and refuses one anywhere else', () => {
+    // This test used to assert the opposite, and the reversal is the point.
     //
-    // Stricter than the rule for texts on purpose, and this is the part the
-    // audit did not have: an inline button's `text` is plain, always. Telegram
-    // parses no entities there at all, so there is no `parse_mode` to set and
-    // no shop switch that could make this work. It is refused even with custom
-    // emoji fully on, because on a button it can only ever be characters.
-    const marked = DEFAULT_LAYOUTS.main.map((b) =>
+    // Refusing every tag was right while a button's `text` was the only place a
+    // custom emoji could have gone: `text` is plain, Telegram parses no entities
+    // there, so markup could only ever reach a customer as angle brackets.
+    //
+    // `icon_custom_emoji_id` changed that on 2026-09-03 — a field on the button
+    // that draws ONE emoji at the label's leading edge — and this check was left
+    // behind for a day. The bot could draw an emoji on a button and the panel
+    // refused every attempt to give it one: two halves, each defensible alone,
+    // and a feature unreachable between them.
+    //
+    // So a LEADING tag is now the shape that saves, because it is the shape the
+    // send path can draw.
+    const leading = DEFAULT_LAYOUTS.main.map((b) =>
       b.action === 'buy'
         ? { ...b, label: '<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji> خرید' }
         : b,
     );
-    expect(checkLayout('main', marked)).toEqual({ kind: 'LABEL_MARKUP', actions: ['buy'] });
+    expect(checkLayout('main', leading)).toBeNull();
 
-    // A typo'd tag is refused for the same reason, and named the same way.
+    // Anywhere else is still refused: the button has ONE icon slot, so a second
+    // emoji has nowhere to render and would be dropped without a word.
+    const middle = DEFAULT_LAYOUTS.main.map((b) =>
+      b.action === 'buy'
+        ? { ...b, label: 'خرید <tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji>' }
+        : b,
+    );
+    expect(checkLayout('main', middle)).toEqual({ kind: 'LABEL_MARKUP', actions: ['buy'] });
+
+    // A typo'd tag is refused, and named the same way.
     const broken = DEFAULT_LAYOUTS.main.map((b) =>
       b.action === 'buy' ? { ...b, label: '<tg-emoji emoji-id="5"> خرید' } : b,
     );
