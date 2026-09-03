@@ -498,7 +498,31 @@ interface Caller {
 }
 
 /** Same expression in both places a `Caller` is loaded, so they cannot drift. */
-const IS_ADMIN = `EXISTS (SELECT 1 FROM admins a WHERE a.telegram_id = ?1 AND a.active) AS is_admin`;
+/**
+ * Whether this customer may see the bot's ADMIN surfaces.
+ *
+ * `admins.role` is one of OWNER, ADMIN, SUPPORT, and this predicate reads it —
+ * which it did not until 2026-09-03. Sam: «ایموجی پریمیوم برای همه نشان داده
+ * می‌شود، فقط باید برای ادمین‌ها و owner باشد.» Support staff were in the table,
+ * so support staff were being offered a screen that reshapes the shop's
+ * keyboard for every customer.
+ *
+ * ## Narrower than `isActiveAdmin`, on purpose
+ *
+ * That function stays as it is, and the two now mean different things:
+ *
+ *   `isActiveAdmin`  — may WALK the shop past its own guards: the closed sign,
+ *                      the flood counter, the join-the-channel gate. Support
+ *                      answering a customer at 2am needs all three.
+ *   `IS_ADMIN` here  — may CHANGE what every customer sees.
+ *
+ * Collapsing them into one flag is what produced the report. Reading a role
+ * column that has existed since `0001` is what fixes it.
+ */
+const IS_ADMIN = `EXISTS (
+  SELECT 1 FROM admins a
+   WHERE a.telegram_id = ?1 AND a.active AND a.role IN ('OWNER', 'ADMIN')
+ ) AS is_admin`;
 
 /**
  * The percentage `priceForUser` is fed, in the one expression all three
