@@ -120,7 +120,14 @@ export async function storedEmoji(db: Db, limit = 40): Promise<StoredEmoji[]> {
          FROM emoji_pack_items i
          JOIN emoji_packs p ON p.id = i.pack_id
         WHERE p.active
-        ORDER BY p.id, i.sort_order, i.id
+        -- NEWEST FIRST, which is the opposite of how the rows were written.
+        --
+        -- An admin who has just sent the bot an emoji is looking for that one,
+        -- and it used to sort last: behind the three shipped defaults and
+        -- behind every pack imported from the panel. On a shop with a real
+        -- pack that is twelve tiles down, and the report was the obvious one —
+        -- «the emoji I added is not shown».
+        ORDER BY i.id DESC
         LIMIT ?1`,
     )
     .bind(limit)

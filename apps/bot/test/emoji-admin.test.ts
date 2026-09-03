@@ -224,6 +224,7 @@ describe('the order the screens ask in', () => {
 
     // 2. one press later, that button's tiles
     const one = await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
+    expect(one.replies[0]?.text ?? '').toContain('تمدید');
     expect((one.replies[0]?.keyboard ?? []).flat().some((b) => b.text.includes(FIRE_ID))).toBe(true);
 
     // 3. and pressing a tile swaps it, on the same screen
@@ -248,12 +249,30 @@ describe('giving the bot an emoji', () => {
     const saved = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
 
     expect(saved.status).toBe('processed');
-    // Back on that button's screen, not on the button list.
-    expect(saved.replies[0]?.text ?? '').toContain('تمدید');
+    // It says WHAT it captured. Without this line an admin who sent an emoji
+    // had no way to tell it apart from one that was ignored — which is exactly
+    // what was reported: «the emoji I added is not shown».
+    expect(saved.replies[0]?.text ?? '').toContain('ذخیره شد');
     // The tile carries the TAG, which `keyboardFor` turns into the button's
     // icon on the way out. That is what makes this screen the live proof.
     const drawn = (saved.replies[0]?.keyboard ?? []).flat().map((b) => b.text);
     expect(drawn.some((t) => t.includes(FIRE_ID))).toBe(true);
+  });
+
+  it('puts what was just added at the FRONT of the tiles', async () => {
+    // Sam, on a screen with twelve tiles: «ایموجی پریمیومی که اضافه کردم رو
+    // نشون نمی‌ده». It was stored — it was sorted last, behind the shipped
+    // defaults and behind every pack imported from the panel, which on a real
+    // shop is far enough down to read as «not there».
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emja:1'));
+    const out = await handleUpdate(db, sentEmoji(ids().updateId, telegramId, '5111111111111111111'));
+
+    const tiles = (out.replies[0]?.keyboard ?? [])[0] ?? [];
+    expect(tiles[0]?.text).toContain('5111111111111111111');
   });
 
   it('says so plainly when the message held no premium emoji', async () => {
