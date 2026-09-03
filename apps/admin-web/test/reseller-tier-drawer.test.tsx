@@ -137,7 +137,7 @@ describe('saving', () => {
     await openDrawer();
 
     fireEvent.change(screen.getByLabelText('سطح'), { target: { value: 'n2' } });
-    fireEvent.click(screen.getAllByRole('button', { name: 'ذخیره' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: 'ذخیره نمایندگی' }));
 
     await waitFor(() => expect(setReseller).toHaveBeenCalled());
     const [, body] = setReseller.mock.calls[0]!;
@@ -148,7 +148,7 @@ describe('saving', () => {
     await openDrawer();
 
     fireEvent.change(screen.getByLabelText('سطح'), { target: { value: '' } });
-    fireEvent.click(screen.getAllByRole('button', { name: 'ذخیره' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: 'ذخیره نمایندگی' }));
 
     await waitFor(() => expect(setReseller).toHaveBeenCalled());
     expect(setReseller.mock.calls[0]![1]).toEqual({ isReseller: false, tier: null });
@@ -165,7 +165,7 @@ describe('saving', () => {
     await openDrawer();
 
     fireEvent.change(screen.getByLabelText('درصد'), { target: { value: '12' } });
-    fireEvent.click(screen.getAllByRole('button', { name: 'ذخیره' })[1]!);
+    fireEvent.click(screen.getByRole('button', { name: 'ذخیره تخفیف' }));
 
     await waitFor(() => expect(setDiscount).toHaveBeenCalled());
     const note = await screen.findByText(/در «نماینده» است/);

@@ -693,7 +693,11 @@ function CustomerDrawer({
               disabled={busy}
               onClick={() => void saveReseller()}
             >
-              ذخیره
+              {/* Named, not «ذخیره». There are two save buttons in this card
+                  now and they write different things — a screen reader hearing
+                  «ذخیره» twice cannot tell which is which, and neither could
+                  the browser walk. */}
+              ذخیره نمایندگی
             </button>
           </div>
 
@@ -725,7 +729,7 @@ function CustomerDrawer({
               disabled={busy || discountPercent === null}
               onClick={() => void saveDiscount()}
             >
-              ذخیره
+              ذخیره تخفیف
             </button>
           </div>
 
