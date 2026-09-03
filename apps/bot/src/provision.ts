@@ -1016,6 +1016,13 @@ async function renew(
                 -- must go with it or the service reads as exhausted until the
                 -- next sync. ADD leaves it alone: the quota grew, the usage
                 -- did not.
+                --
+                -- ADD_VOLUME_RESET_TIME is in the second group even though it
+                -- restarts the clock, and it has to be: the adapter issues no
+                -- POST /reset for it, for the reason spelled out there. This
+                -- condition and that one are the same decision, and they must
+                -- keep agreeing or our used_bytes and the panel's disagree
+                -- until the next sync.
                 used_bytes        = CASE WHEN ?7 THEN 0 ELSE used_bytes END,
                 -- The warning sweep has already told this customer their
                 -- service was running out. It is not, any more.

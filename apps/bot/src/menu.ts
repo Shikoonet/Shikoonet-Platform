@@ -36,6 +36,7 @@ import { encode } from './callback.js';
 import type { CatalogCategory, CatalogPlan, CatalogProduct, TrialPanel } from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
+import type { RenewMode } from '@shikoo/domain';
 import {
   buildMainMenu,
   buildMenu,
@@ -1593,6 +1594,10 @@ export function addonTooMuch(max: number): string {
   return TEXTS_NOW.render('ADDON_TOO_MUCH', { max: max.toLocaleString('en-US') });
 }
 
+export function addonTooLittle(min: number): string {
+  return TEXTS_NOW.render('ADDON_TOO_LITTLE', { min: min.toLocaleString('en-US') });
+}
+
 export function addonInvoice(
   kind: 'ADD_VOLUME' | 'ADD_TIME',
   quantity: number,
@@ -1723,7 +1728,7 @@ export function renewMenu(
  */
 export function renewIntro(
   service: { plan_name_at_sale: string; public_id: string; expires_at: string | null },
-  mode: 'ADD' | 'RESET',
+  mode: RenewMode,
   now: number,
 ): string {
   const t = TEXTS_NOW;
@@ -1752,7 +1757,13 @@ export function renewIntro(
       ? t.raw('RENEW_MODE_ADD')
       : mode === 'ADD'
         ? t.raw('RENEW_MODE_ADD_EXPIRED')
-        : t.raw('RENEW_MODE_RESET'),
+        : mode === 'ADD_VOLUME_RESET_TIME'
+          ? // No «expired» variant: this mode's promise is about VOLUME, and
+            // volume is kept whether or not the clock had run out. The ADD
+            // sentence needs one because it promises remaining TIME, which an
+            // expired service does not have.
+            t.raw('RENEW_MODE_ADD_VOLUME_RESET_TIME')
+          : t.raw('RENEW_MODE_RESET'),
     '',
     t.raw('RENEW_CHOOSE_PLAN'),
   );

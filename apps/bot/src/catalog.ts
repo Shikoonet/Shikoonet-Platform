@@ -80,6 +80,30 @@ const PURCHASABLE = `
         )
       )
   /*
+   * «فقط برای کسانی که هنوز خرید نکرده‌اند» — Sam, 2026-09-03. A starter panel
+   * that disappears the moment the customer owns anything.
+   *
+   * The same question as once_per_user directly above, asked of the PANEL
+   * rather than of the product, and answered with the identical sub-select on
+   * purpose: «has this person bought» means services OWNED, not orders placed
+   * — legacy index.php:4249, and the reason discount.ts:203 says so too. An
+   * order that was never paid for has bought nothing.
+   *
+   * Here rather than in the listing queries for the reason the deny list above
+   * gives, and with one consequence the panel screen has to state out loud:
+   * plansOnPanel uses this predicate for the RENEWAL list, so a customer who
+   * bought here once cannot renew here. That is what «only for people who have
+   * never bought» means, and it is not a bug — but it is a sentence somebody
+   * must read before ticking the box.
+   */
+  AND (
+        (pr.config->>'newcomers_only') IS DISTINCT FROM 'true'
+     OR NOT EXISTS (
+          SELECT 1 FROM subscriptions s
+           WHERE s.user_id = u.id AND s.status <> 'PENDING_PAYMENT'
+        )
+      )
+  /*
    * «محدودیت ساخت اکانت» — legacy 'limit_panel', migrated into
    * provisioning_providers.capacity, where it sat unread. The dashboard has
    * written it and drawn it beside the live count since the screen was built,

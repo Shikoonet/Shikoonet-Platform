@@ -361,6 +361,13 @@ describe('every write route, asked directly', () => {
     // price for EVERY reseller on that level at once, so it is the widest
     // money write in the product. There is no create and no delete — the ladder
     // is two rows fixed by a CHECK in 0046.
-    expect(writeRoutes().length).toBe(149);
+    //
+    // −2, «هاست‌ها». Sam said on 2026-09-03 that the shop does not need it, so
+    // the fold, its component, its client methods and the POST and DELETE
+    // routes are gone. Host management goes back to the panel's own web UI.
+    // Nothing in the bot ever called them, and the «هیچ اینباندش هاست ندارد»
+    // warning in «گروه‌های پنل» survives because it is fed by the separate
+    // `/inbounds` route, not by these.
+    expect(writeRoutes().length).toBe(147);
   });
 });

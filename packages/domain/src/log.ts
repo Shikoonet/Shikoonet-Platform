@@ -83,6 +83,12 @@ const DENY = [
   'cookie',
   'body',
   'sms',
+  // Half a panel credential. `GET /panels/:id/credential-username` is the one
+  // route that hands it back, deliberately and to an ADMIN only; nothing is
+  // meant to log it, and this is what makes that true rather than intended.
+  // Matched as a substring, so `panelUsername`, `panel_username` and
+  // `credentialUsername` are all covered.
+  'username',
 ] as const;
 
 const REDACTED = '[redacted]';
