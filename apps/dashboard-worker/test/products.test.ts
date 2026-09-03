@@ -12,7 +12,7 @@
  * test in this package might be reading.
  */
 
-import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, afterAll, afterEach, describe, expect, it } from 'vitest';
 import { applySchema, env as baseEnv, fixtureCategory } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
@@ -513,6 +513,91 @@ describe('creating a product and its plans', () => {
       envAs(email),
     );
   }
+
+  /**
+   * Switches the shop's custom-emoji setting on, and takes it off again after.
+   *
+   * The row is shared: every package in this workspace tests against ONE
+   * Postgres, and `bot-content.test.ts` asserts that the bot's wording comes
+   * back with the markup STRIPPED. Leaving this on turned that suite red from a
+   * file it never mentions — rule 8, met in the wild.
+   */
+  async function withCustomEmojiOn(): Promise<void> {
+    await baseEnv.DB.prepare(
+      `INSERT INTO settings (scope, key, value) VALUES ('bot', 'custom_emoji', 'true'::jsonb)
+       ON CONFLICT (scope, key) DO UPDATE SET value = 'true'::jsonb`,
+    ).run();
+  }
+
+  afterEach(async () => {
+    await baseEnv.DB.prepare(
+      `DELETE FROM settings WHERE scope = 'bot' AND key = 'custom_emoji'`,
+    ).run();
+  });
+
+  /**
+   * A custom emoji in a product NAME.
+   *
+   * The wording of the bot has been checked at the write path since the feature
+   * shipped; a name never was, because a name is a column. From 2026-09-03 an
+   * admin may put a tag in one, so the same `checkCustomEmoji` gate runs here —
+   * and a malformed tag has to be refused rather than stored, because the only
+   * other place it could be noticed is a customer's invoice.
+   */
+  it('refuses a malformed emoji tag in a product name', async () => {
+    await withCustomEmojiOn();
+    const provider = await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind) VALUES (?1, 'پنل ایموجی', 'marzban')
+       RETURNING id`,
+    )
+      .bind(`${PREFIX}emoji-prod`)
+      .first<{ id: number }>();
+    const cat = await post('product-categories', { name: `${PREFIX}دستهٔ ایموجی`, sortOrder: 3 });
+    const categoryId = ((await cat.json()) as { category: { id: number } }).category.id;
+
+    const res = await post('products', {
+      code: `${PREFIX}emoji-broken`,
+      name: '<tg-emoji emoji-id="abc">🔥</tg-emoji> پلاتینیوم',
+      kind: 'vpn',
+      providerId: provider!.id,
+      categoryId,
+    });
+
+    expect(res.status).toBe(400);
+    // Nothing was written: the refusal is the whole point.
+    const row = await baseEnv.DB.prepare(`SELECT id FROM products WHERE code = ?1`)
+      .bind(`${PREFIX}emoji-broken`)
+      .first<{ id: number }>();
+    expect(row).toBeNull();
+  });
+
+  it('stores a well-formed emoji tag in a product name', async () => {
+    await withCustomEmojiOn();
+    const provider = await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind) VALUES (?1, 'پنل ایموجی ۲', 'marzban')
+       RETURNING id`,
+    )
+      .bind(`${PREFIX}emoji-prod-ok`)
+      .first<{ id: number }>();
+    const cat = await post('product-categories', { name: `${PREFIX}دستهٔ ایموجی ۲`, sortOrder: 4 });
+    const categoryId = ((await cat.json()) as { category: { id: number } }).category.id;
+
+    const name = '<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji> پلاتینیوم';
+    const res = await post('products', {
+      code: `${PREFIX}emoji-ok`,
+      name,
+      kind: 'vpn',
+      providerId: provider!.id,
+      categoryId,
+    });
+
+    expect(res.status).toBe(201);
+    // Read back from the table, not from the response.
+    const row = await baseEnv.DB.prepare(`SELECT name FROM products WHERE code = ?1`)
+      .bind(`${PREFIX}emoji-ok`)
+      .first<{ name: string }>();
+    expect(row?.name).toBe(name);
+  });
 
   it('writes every field the panel had no way to set before', async () => {
     // These eight columns existed in `0002_catalog.sql` from the first day and

@@ -19,18 +19,14 @@ import {
   type BotMenu,
   type BotScreen,
   type BotTextRow,
+  type EmojiPack,
   type KeyboardButton,
   type MenuActionInfo,
 } from '../api.js';
 import { count, dateTime } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 import { ButtonGrid, GRID_HELP, type GridRows } from './ButtonGrid.js';
-import {
-  BUTTON_STYLES,
-  PREMIUM_EMOJI_PACK,
-  premiumEmojiTag,
-  type ButtonStyle,
-} from '@shikoo/contracts';
+import { BUTTON_STYLES, premiumEmojiTag, type ButtonStyle } from '@shikoo/contracts';
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -50,6 +46,8 @@ export function BotTextsPage() {
   const [screens, setScreens] = useState<BotScreen[]>([]);
   const [maxLength, setMaxLength] = useState(4096);
   const [customEmoji, setCustomEmoji] = useState(false);
+  const [packs, setPacks] = useState<EmojiPack[]>([]);
+  const [packLink, setPackLink] = useState('');
   const [screen, setScreen] = useState('');
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
@@ -66,8 +64,43 @@ export function BotTextsPage() {
       setScreens(d.screens);
       setMaxLength(d.maxLength);
       setCustomEmoji(d.customEmoji);
+      // Its own failure, swallowed: the packs are a convenience beside the
+      // editor, and a picker that could not load must not take the page that
+      // edits the shop's wording down with it.
+      setPacks(await api.emojiPacks().then((p) => p.packs).catch(() => []));
     } catch (e) {
       setErr(message(e));
+    }
+  }
+
+  async function addPack() {
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      const res = await api.addEmojiPack(packLink.trim());
+      setPackLink('');
+      setPacks((await api.emojiPacks()).packs);
+      setDone(res.message);
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removePack(id: number) {
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await api.hideEmojiPack(id);
+      setPacks((await api.emojiPacks()).packs);
+      setDone('پکیج برداشته شد. ایموجی‌هایی که از قبل در متن‌ها هستند دست‌نخورده می‌مانند.');
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -148,12 +181,63 @@ export function BotTextsPage() {
           </button>
         </div>
         <p className="muted" style={{ marginBlockStart: 0 }}>
-          وقتی روشن باشد می‌توانید داخل هر متن{' '}
-          <span className="ltr">{'<tg-emoji emoji-id="…">🔥</tg-emoji>'}</span> بنویسید. این فقط
-          زمانی کار می‌کند که <strong>صاحب ربات</strong> اشتراک تلگرام پرمیوم داشته باشد — و راهی
-          نیست که از قبل بشود فهمید. اگر تلگرام رد کند، همان پیام با ایموجی جایگزین فرستاده می‌شود و
-          این کلید خودکار خاموش می‌شود؛ نوشتهٔ شما دست‌نخورده می‌ماند.
+          وقتی روشن باشد، زیر هر متن دکمه‌های ایموجی پکیج‌هایتان ظاهر می‌شود و با یک کلیک داخل متن
+          می‌نشیند. این فقط زمانی کار می‌کند که <strong>صاحب ربات</strong> اشتراک تلگرام پرمیوم
+          داشته باشد — و راهی نیست که از قبل بشود فهمید. اگر تلگرام رد کند، همان پیام با ایموجی
+          جایگزین فرستاده می‌شود و این کلید خودکار خاموش می‌شود؛ نوشتهٔ شما دست‌نخورده می‌ماند.
         </p>
+
+        {/* The packs, and how one is added.
+            The ids used to be a hand-written list in the source. That list had
+            two entries sharing one id and five that ran sequentially — invented
+            rather than observed — and an invented id renders nothing. So they
+            are read from Telegram's own `getStickerSet` now, and the only thing
+            an operator has to know is the link they already have. */}
+        <div className="filters" style={{ alignItems: 'flex-end' }}>
+          <div style={{ flexGrow: 1 }}>
+            <label className="form-label" htmlFor="emoji-pack-link">
+              افزودن پکیج ایموجی
+            </label>
+            <input
+              id="emoji-pack-link"
+              className="form-control ltr"
+              placeholder="https://t.me/addemoji/…"
+              value={packLink}
+              onChange={(e) => setPackLink(e.target.value)}
+              {...w}
+            />
+          </div>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy || packLink.trim() === ''}
+            onClick={() => void addPack()}
+            {...w}
+          >
+            خواندن از تلگرام
+          </button>
+        </div>
+        {packs.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBlockStart: 8 }}>
+            {packs.map((pack) => (
+              <span key={pack.id} className="chip" title={pack.setName}>
+                {pack.title} · {count(pack.emoji.length)}
+                {pack.setName !== '__builtin__' && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ marginInlineStart: 6 }}
+                    disabled={busy}
+                    onClick={() => void removePack(pack.id)}
+                    {...w}
+                  >
+                    حذف
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -243,18 +327,25 @@ export function BotTextsPage() {
                             that does nothing on save. */}
                         {customEmoji && (
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBlockStart: 6 }}>
-                            {PREMIUM_EMOJI_PACK.map((e) => (
-                              <button
-                                key={e.id}
-                                type="button"
-                                className="btn btn-sm"
-                                title={`${e.label} (${e.id})`}
-                                onClick={() => setDraft((d) => d + premiumEmojiTag(e))}
-                                {...w}
-                              >
-                                {e.fallback}
-                              </button>
-                            ))}
+                            {packs.flatMap((pack) =>
+                              pack.emoji.map((e) => (
+                                <button
+                                  key={`${pack.id}-${e.id}`}
+                                  type="button"
+                                  className="btn btn-sm"
+                                  title={`${pack.title} — ${e.id}`}
+                                  onClick={() =>
+                                    setDraft(
+                                      (d) =>
+                                        d + premiumEmojiTag({ label: pack.title, fallback: e.fallback, id: e.id }),
+                                    )
+                                  }
+                                  {...w}
+                                >
+                                  {e.fallback}
+                                </button>
+                              )),
+                            )}
                           </div>
                         )}
                       </>

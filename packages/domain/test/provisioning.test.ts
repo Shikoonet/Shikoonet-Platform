@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  checkRemoteUsername,
   adapterFor,
   groupIdsFor,
   isAutomated,
@@ -140,6 +141,84 @@ describe('remoteUsernameFor', () => {
     // pays twice and receives one service.
     expect(remoteUsernameFor(1, 'abcdef1235')).not.toBe(remoteUsernameFor(1, 'abcdef1234'));
     expect(remoteUsernameFor(1, 'aaaaaaaaab')).not.toBe(remoteUsernameFor(1, 'aaaaaaaaaa'));
+  });
+
+  describe('«متن پنل + آیدی عددی + شمارهٔ خرید»', () => {
+    const seq = (purchaseSeq: number | null) =>
+      remoteUsernameFor(369469521, '84702b7df0', {
+        mode: 'PANEL_TEXT_SEQ' as const,
+        panelText: 'shikoo',
+        purchaseSeq,
+      });
+
+    it('reads the way support asked for', () => {
+      expect(seq(2)).toBe('shikoo_369469521_2');
+      expect(seq(1)).toBe('shikoo_369469521_1');
+    });
+
+    it('is the same every time, so a retry finds the account it made', () => {
+      expect(seq(3)).toBe(seq(3));
+    });
+
+    it('keeps two purchases of one customer apart', () => {
+      // The only thing standing between this mode and a second paid account:
+      // the suffix is no longer the order id, so the number IS the uniqueness.
+      expect(seq(1)).not.toBe(seq(2));
+    });
+
+    it('falls back to the order-id shape when the number is not known', () => {
+      // A caller that could not count it — an old row, a path that predates
+      // this. Inventing a number here is the one thing that must not happen:
+      // a guessed «1» is a name the customer's first account already has.
+      expect(seq(null)).toBe('shikoo_84702b7df0');
+      expect(seq(0)).toBe('shikoo_84702b7df0');
+    });
+
+    it('falls back with the shop’s own word, not a bare id', () => {
+      // The prefix and the suffix are separate decisions. Losing the count
+      // should not also lose the panel's name.
+      expect(seq(null).startsWith('shikoo_')).toBe(true);
+    });
+
+    it('uses the telegram id when the panel has no text to use', () => {
+      expect(
+        remoteUsernameFor(369469521, '84702b7df0', {
+          mode: 'PANEL_TEXT_SEQ' as const,
+          panelText: null,
+          purchaseSeq: 2,
+        }),
+      ).toBe('369469521_369469521_2');
+    });
+  });
+});
+
+describe('checkRemoteUsername', () => {
+  // A WHOLE name, not a part of one. The distinction matters because a handover
+  // note proposed `checkNamePrefix` for this job, and that validator caps at
+  // twelve characters and refuses the underscore — it would reject every real
+  // username this system builds.
+
+  it('accepts the names this product actually creates', () => {
+    expect(checkRemoteUsername('shikoo_369469521_2')).toBeNull();
+    expect(checkRemoteUsername('369469521_84702b7df0')).toBeNull();
+    expect(checkRemoteUsername('shikoo-vip_12')).toBeNull();
+  });
+
+  it('refuses what a panel would store differently from what we sent', () => {
+    // The failure this prevents is not cosmetic: provisioning looks an account
+    // up by the exact string it sent, so a name the panel case-folds or strips
+    // is an account this system never finds again — and the sweep then loops on
+    // a PAID order for ever.
+    expect(checkRemoteUsername('Shikoo_1')).not.toBeNull();
+    expect(checkRemoteUsername('علی')).not.toBeNull();
+    expect(checkRemoteUsername('has space')).not.toBeNull();
+    expect(checkRemoteUsername('_leading')).not.toBeNull();
+    expect(checkRemoteUsername('ab')).not.toBeNull();
+    expect(checkRemoteUsername('a'.repeat(65))).not.toBeNull();
+  });
+
+  it('answers in Persian, because an operator reads it', () => {
+    expect(checkRemoteUsername('Shikoo_1')).toContain('حروف کوچک');
   });
 });
 

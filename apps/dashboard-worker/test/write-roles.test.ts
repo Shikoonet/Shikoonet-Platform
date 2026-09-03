@@ -375,6 +375,16 @@ describe('every write route, asked directly', () => {
     // errors — are published, and «who may read those» is not a reviewer's
     // decision. It writes `Channel_Report` LAST, so a half-finished run leaves
     // the shop reporting exactly where it did before.
-    expect(writeRoutes().length).toBe(148);
+    //
+    // +2, the emoji packs. «POST /emoji-packs» asks Telegram what is in a
+    // sticker set and stores the ids a picker offers; «DELETE /emoji-packs/:id»
+    // hides a pack again. ADMIN-only like every other write beside the bot's
+    // wording — and the reason is the token rather than the rows: the POST is
+    // the one route on this panel that spends the shop's bot token on an
+    // arbitrary set name, so who may call it is the same question as who may
+    // connect the bot. Neither route can change a message: the ids they store
+    // are a MENU, and what actually reaches a customer still goes through
+    // `checkCustomEmoji` on the text that quotes one.
+    expect(writeRoutes().length).toBe(150);
   });
 });

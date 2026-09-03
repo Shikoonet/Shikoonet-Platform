@@ -17,7 +17,12 @@
  */
 
 import { z } from 'zod';
-import { hasCustomEmoji, stripCustomEmoji, toTelegramHtml } from '@shikoo/contracts';
+import {
+  hasCustomEmoji,
+  splitCustomEmojiLabel,
+  stripCustomEmoji,
+  toTelegramHtml,
+} from '@shikoo/contracts';
 import { createLogger } from '@shikoo/domain';
 
 const log = createLogger('bot');
@@ -55,9 +60,35 @@ const DocumentSchema = z.object({
   mime_type: z.string().optional(),
 });
 
+/**
+ * One entity in a message, narrowed to the only kind this bot reads.
+ *
+ * A premium emoji arrives as `custom_emoji` with the id attached — which is the
+ * ONLY place an id can be got from without guessing. `getStickerSet` needs the
+ * set's name, and a person who wants «this emoji, the one I just used» does not
+ * know the name of the set it came from; they have the emoji itself, in their
+ * keyboard, because their own Premium put it there.
+ *
+ * So an admin sends the emoji to the bot and the bot reads the id off the
+ * message. Nothing is typed, nothing is looked up, and the round trip doubles
+ * as the proof: an emoji that comes back drawn is an emoji this bot can send.
+ *
+ * Every other entity type — bold, a link, a mention — is parsed and ignored.
+ * The array is `.catch()`-free on purpose: a shape we cannot read makes the
+ * whole message unreadable, and `UpdateSchema` already turns that into an
+ * ignored update rather than a wedged poller.
+ */
+const EntitySchema = z.object({
+  type: z.string(),
+  offset: z.number().int(),
+  length: z.number().int(),
+  custom_emoji_id: z.string().optional(),
+});
+
 const MessageSchema = z.object({
   message_id: z.number().int(),
   from: TelegramUserSchema.optional(),
+  entities: z.array(EntitySchema).optional(),
   /**
    * `type` is read for one reason: to refuse a chat that is not private.
    *
@@ -131,12 +162,48 @@ export interface InlineButton {
    * ignores it, and the label is unchanged either way.
    */
   style?: ButtonStyle;
+  /**
+   * One custom emoji drawn at the label's leading edge.
+   *
+   * A button's `text` is plain — Telegram parses no markup in it — so this is
+   * the only way a premium emoji reaches a button, and it is set from the
+   * label's own leading `<tg-emoji>` tag by `keyboardFor`. Nothing builds it by
+   * hand, which is what keeps the shop's «custom emoji off» switch meaningful:
+   * one place decides, and that place also decides to drop it.
+   */
+  icon_custom_emoji_id?: string;
 }
 
 /** Telegram's cap on what a copy button may carry. */
 export const MAX_COPY_TEXT_LENGTH = 256;
 
 export type InlineKeyboard = InlineButton[][];
+
+/**
+ * The keyboard that sits UNDER the chat, over the text field.
+ *
+ * A different thing from an `InlineKeyboard` in every way that matters, and the
+ * differences are why this is its own type rather than a flag on that one:
+ *
+ *   * it belongs to the CHAT, not to a message — it stays after the message
+ *     that carried it has been deleted, and the only way to change it is to
+ *     send another message;
+ *   * pressing a button sends its label as an ordinary text message, so the
+ *     label is the only thing the bot gets back. `actionForLabel` in
+ *     `keyboard.ts` is what turns it into an action again;
+ *   * a message may carry ONE `reply_markup`, so a screen with inline buttons
+ *     cannot also change what is under the chat.
+ *
+ * `'remove'` takes it away, which is not the same as sending no keyboard at
+ * all: omitting the field leaves whatever is already there.
+ */
+export interface ReplyButton {
+  text: string;
+  /** The same field an inline button uses; see `keyboardFor`. */
+  icon_custom_emoji_id?: string;
+}
+
+export type ReplyKeyboard = ReplyButton[][] | 'remove';
 
 const EnvelopeSchema = z.object({
   ok: z.boolean(),
@@ -211,6 +278,15 @@ export interface TelegramApi {
     text: string,
     keyboard?: InlineKeyboard,
     threadId?: number | null,
+    /**
+     * The chat's own keyboard, when this message is meant to change it.
+     *
+     * Mutually exclusive with `keyboard` — Telegram allows one `reply_markup`
+     * per message — and the call refuses rather than silently dropping one of
+     * them, because which one vanished would be invisible until a customer
+     * reported a screen with no buttons.
+     */
+    replyKeyboard?: ReplyKeyboard,
   ): Promise<void>;
   /**
    * Re-sends a photo we were sent, by its `file_id`.
@@ -244,6 +320,19 @@ export interface TelegramApi {
    * from what was stored, not from what comes back.
    */
   sendDocument(chatId: number, fileId: string, caption?: string): Promise<void>;
+  /**
+   * Removes a message from the chat.
+   *
+   * In a private chat a bot may delete both its OWN messages and the ones the
+   * customer sent it, which is what makes «one live screen» possible at all:
+   * a typed discount code and the answer to it both go, and the screen the
+   * customer was looking at is the only thing left.
+   *
+   * Best-effort by contract. Telegram refuses a message older than 48 hours and
+   * one that is already gone, and neither is a fault worth failing an update
+   * over — the caller logs and carries on.
+   */
+  deleteMessage(chatId: number, messageId: number): Promise<void>;
   /** Replaces a message in place, so a menu does not leave a trail behind it. */
   editMessageText(
     chatId: number,
@@ -370,15 +459,109 @@ export function anchorLabel(text: string): string {
   return LEADING_DIGIT.test(text) && ARABIC_LETTER.test(text) ? RTL_MARK + text : text;
 }
 
-/** The same, applied to every label in a keyboard. `copy_text` is left alone:
- *  that one goes on the clipboard and then into a banking app. */
-function anchorKeyboard(keyboard: InlineKeyboard): InlineKeyboard {
-  return keyboard.map((row) => row.map((b) => ({ ...b, text: anchorLabel(b.text) })));
+/**
+ * Every label in a keyboard, made ready to send.
+ *
+ * Two jobs, one pass, because both are about the label and neither belongs to
+ * the screen that wrote it:
+ *
+ *   * the RTL anchor above;
+ *   * the custom emoji, which on a BUTTON is a field rather than markup —
+ *     `splitCustomEmojiLabel` says why, and this is its only caller.
+ *
+ * `premium` is the whole switch. False strips the markup and sends no icon,
+ * which is what a shop without Premium needs and what the second attempt in
+ * `withEmojiFallback` sends; true asks for the icon. Anchoring runs on the
+ * SPLIT label rather than the raw one, or a label led by a tag would be tested
+ * for its leading character against a `<`.
+ *
+ * `copy_text` is left alone: that one goes on the clipboard and then into a
+ * banking app.
+ */
+function keyboardFor(keyboard: InlineKeyboard, premium: boolean): InlineKeyboard {
+  return keyboard.map((row) =>
+    row.map((b) => {
+      // Not `splitCustomEmojiLabel` on both paths, and a test pins the
+      // difference. Splitting moves the leading emoji OUT of the label and into
+      // the icon field — right when the icon is going to be sent, and a silent
+      // deletion when it is not: the customer of a shop without Premium would
+      // read «پلاتینیوم» where every other client shows «🔥 پلاتینیوم». Plain
+      // means the fallback glyph stays in the text, which is what the glyph is
+      // written between the tags for.
+      const label = premium ? splitCustomEmojiLabel(b.text) : { text: stripCustomEmoji(b.text), icon: null };
+      const icon = label.icon === null ? {} : { icon_custom_emoji_id: label.icon };
+      return { ...b, text: anchorLabel(label.text), ...icon };
+    }),
+  );
+}
+
+/** Whether any label in this keyboard carries markup at all. */
+function keyboardHasCustomEmoji(keyboard?: InlineKeyboard): boolean {
+  return keyboard !== undefined && keyboard.some((row) => row.some((b) => hasCustomEmoji(b.text)));
+}
+
+/**
+ * The text half of a premium send: HTML only when the text itself has markup.
+ *
+ * Split out because the two halves of a message answer different questions.
+ * `parse_mode` is about escaping THIS string; the keyboard's icons are a field
+ * on a button and need no parse mode at all. Deciding both from one flag is how
+ * an unescaped `<` in a Persian sentence would have ridden along with an emoji
+ * that happened to be on a button.
+ */
+function richText(text: string): Record<string, unknown> {
+  return hasCustomEmoji(text) ? { text: toTelegramHtml(text), parse_mode: 'HTML' } : { text };
 }
 
 /** Omitted entirely when there is no keyboard, so a menu is never sent as `null`. */
-function markup(keyboard?: InlineKeyboard): Record<string, unknown> {
-  return keyboard === undefined ? {} : { reply_markup: { inline_keyboard: anchorKeyboard(keyboard) } };
+function markup(keyboard: InlineKeyboard | undefined, premium: boolean): Record<string, unknown> {
+  return keyboard === undefined
+    ? {}
+    : { reply_markup: { inline_keyboard: keyboardFor(keyboard, premium) } };
+}
+
+/**
+ * The same, for the keyboard under the chat.
+ *
+ * `resize_keyboard` because the default is a keyboard half the screen high, and
+ * `is_persistent` because the customer closing it once should not lose the
+ * shop's menu for good — the two settings are what make a bottom keyboard read
+ * as part of the app rather than as something that happened.
+ *
+ * Labels go through the same split as inline ones: an admin may have typed a
+ * custom emoji into a menu label, and on a button that has to become the icon
+ * field or be stripped. Left as markup it would draw as literal angle brackets
+ * on the one keyboard that is always on screen.
+ */
+function replyMarkup(keyboard: ReplyKeyboard, premium: boolean): Record<string, unknown> {
+  if (keyboard === 'remove') return { reply_markup: { remove_keyboard: true } };
+  return {
+    reply_markup: {
+      keyboard: keyboard.map((row) =>
+        row.map((b) => {
+          const label = premium
+            ? splitCustomEmojiLabel(b.text)
+            : { text: stripCustomEmoji(b.text), icon: null };
+          return {
+            ...b,
+            text: anchorLabel(label.text),
+            ...(label.icon === null ? {} : { icon_custom_emoji_id: label.icon }),
+          };
+        }),
+      ),
+      resize_keyboard: true,
+      is_persistent: true,
+    },
+  };
+}
+
+/** Whether any label in a bottom keyboard carries markup. */
+function replyHasCustomEmoji(keyboard?: ReplyKeyboard): boolean {
+  return (
+    keyboard !== undefined &&
+    keyboard !== 'remove' &&
+    keyboard.some((row) => row.some((b) => hasCustomEmoji(b.text)))
+  );
 }
 
 /**
@@ -503,15 +686,34 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
    */
   async function withEmojiFallback(
     text: string,
+    keyboard: InlineKeyboard | undefined,
     send: (body: Record<string, unknown>) => Promise<unknown>,
+    replyKeyboard?: ReplyKeyboard,
   ): Promise<void> {
     const clamped = clamp(text);
-    if (!hasCustomEmoji(clamped)) {
-      await send({ text: clamped });
+    // The KEYBOARD is built in here rather than by the caller, and that is the
+    // point of the second parameter. While the caller spread its own
+    // `markup(keyboard)` into the body, the retry below re-sent the identical
+    // keyboard — so a shop whose Premium had just been refused sent the icon
+    // field again, was refused again, and the customer got nothing at all. The
+    // landing has to be plain on BOTH halves or it is not a landing.
+    // Both kinds of keyboard, because both carry labels an admin may have put
+    // markup into and both are refused the same way.
+    const both = (premium: boolean): Record<string, unknown> =>
+      replyKeyboard === undefined ? markup(keyboard, premium) : replyMarkup(replyKeyboard, premium);
+    const rich =
+      hasCustomEmoji(clamped) ||
+      keyboardHasCustomEmoji(keyboard) ||
+      replyHasCustomEmoji(replyKeyboard);
+    if (!rich) {
+      await send({ text: clamped, ...both(false) });
       return;
     }
     try {
-      await send({ text: toTelegramHtml(clamped), parse_mode: 'HTML' });
+      // `parse_mode` is decided by the TEXT alone. A plain sentence under a
+      // button that carries an emoji must not be sent as HTML: nothing escaped
+      // it, and a Persian «قیمت < ۱۰۰ هزار» would reach Telegram's parser.
+      await send({ ...richText(clamped), ...both(true) });
       return;
     } catch (err) {
       // Two ways this is not a refusal. A network error means Telegram never
@@ -521,7 +723,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       if (!isRejection(err) || isNotModified(err)) throw err;
       log.warn('telegram.custom_emoji_refused');
     }
-    await send({ text: stripCustomEmoji(clamped) });
+    await send({ text: stripCustomEmoji(clamped), ...both(false) });
     await options.onCustomEmojiRefused?.();
   }
 
@@ -568,14 +770,24 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       return parsed.data.status;
     },
 
-    async sendMessage(chatId, text, keyboard, threadId) {
-      await withEmojiFallback(text, (body) =>
-        call(
-          'sendMessage',
-          { chat_id: chatId, ...body, ...markup(keyboard), ...topic(threadId) },
-          15_000,
-        ),
+    async sendMessage(chatId, text, keyboard, threadId, replyKeyboard) {
+      // Refused rather than resolved. One `reply_markup` per message is
+      // Telegram's rule, so a caller asking for both has decided something it
+      // cannot have — and whichever half this dropped silently would show up as
+      // a screen with no buttons, days later, with nothing pointing here.
+      if (keyboard !== undefined && replyKeyboard !== undefined) {
+        throw new Error('sendMessage takes an inline keyboard or a bottom one, not both');
+      }
+      await withEmojiFallback(
+        text,
+        keyboard,
+        (body) => call('sendMessage', { chat_id: chatId, ...body, ...topic(threadId) }, 15_000),
+        replyKeyboard,
       );
+    },
+
+    async deleteMessage(chatId, messageId) {
+      await call('deleteMessage', { chat_id: chatId, message_id: messageId }, 10_000);
     },
 
     async sendPhoto(chatId, fileId, caption) {
@@ -603,7 +815,11 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       form.set('photo', new Blob([bytes], { type: 'image/png' }), 'qr.png');
       if (caption !== undefined) form.set('caption', caption.slice(0, MAX_CAPTION_LENGTH));
       if (keyboard !== undefined) {
-        form.set('reply_markup', JSON.stringify({ inline_keyboard: anchorKeyboard(keyboard) }));
+        // Plain, not premium. The one keyboard that reaches here is the QR
+        // screen's own «copy the link» button, which the bot writes itself and
+        // no admin can put markup into — and a multipart upload has no second
+        // attempt to land on if Telegram refused an icon.
+        form.set('reply_markup', JSON.stringify({ inline_keyboard: keyboardFor(keyboard, false) }));
       }
       await callForm('sendPhoto', form, 30_000);
     },
@@ -624,10 +840,10 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
 
     async editMessageText(chatId, messageId, text, keyboard) {
       try {
-        await withEmojiFallback(text, (body) =>
+        await withEmojiFallback(text, keyboard, (body) =>
           call(
             'editMessageText',
-            { chat_id: chatId, message_id: messageId, ...body, ...markup(keyboard) },
+            { chat_id: chatId, message_id: messageId, ...body },
             15_000,
           ),
         );

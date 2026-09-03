@@ -64,6 +64,7 @@ import {
 } from '@shikoo/domain';
 import type { ProviderContext, ProvisioningAdapter } from '@shikoo/domain';
 import { faNum } from './fa.js';
+import { checkNameEmoji } from './customEmojiNames.js';
 
 
 /**
@@ -916,6 +917,11 @@ export function registerPanelRoutes(
       );
     }
     const p = body.data;
+    // The panel's name reaches the customer — «سرویس روی <panel>» — so from
+    // 2026-09-03 it may carry a custom emoji, and a malformed tag is refused
+    // here rather than discovered on an invoice.
+    const nameProblem = await checkNameEmoji(c.env.DB, p.name);
+    if (nameProblem) return c.json({ ok: false, error: 'invalid_body', detail: nameProblem }, 400);
 
     // Applied before the duplicate check, so two panels that differ only by a
     // trailing slash collide on `code` rather than both being created.
@@ -2192,6 +2198,10 @@ export function registerPanelRoutes(
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     const patch = body.data;
+    const namePatchProblem = await checkNameEmoji(c.env.DB, patch.name);
+    if (namePatchProblem) {
+      return c.json({ ok: false, error: 'invalid_body', detail: namePatchProblem }, 400);
+    }
 
     let baseUrl: string | null | undefined = patch.baseUrl;
     if (baseUrl) {

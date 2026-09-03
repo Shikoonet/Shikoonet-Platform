@@ -94,8 +94,12 @@ describe('walking from /start to an order', () => {
 
     const start = await handleUpdate(db, startUpdate(updateId, telegramId));
     expect(start.status).toBe('processed');
-    const menuButtons = start.replies[0]?.keyboard?.flat().map((b) => b.callback_data) ?? [];
-    expect(menuButtons).toContain('buy');
+    // The menu is UNDER the chat since 2026-09-03, so the greeting carries a
+    // `replyKeyboard` rather than an inline one. The claim is the same one it
+    // always was: the customer can reach «خرید» from the very first screen.
+    const rows = start.replies[0]?.replyKeyboard;
+    const menuButtons = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
+    expect(menuButtons.some((label) => label.includes('خرید'))).toBe(true);
     // A greeting is a new message, not an edit of one.
     expect(start.replies[0]?.editMessageId).toBeUndefined();
 

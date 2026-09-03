@@ -929,7 +929,8 @@ export type PanelUsernameMode =
   | 'PANEL_TEXT'
   | 'TELEGRAM_USERNAME'
   | 'ORDER_ID'
-  | 'CUSTOMER_TEXT';
+  | 'CUSTOMER_TEXT'
+  | 'PANEL_TEXT_SEQ';
 
 /**
  * One price per customer tier, in TOMAN — `f` ordinary, `n` reseller, `n2`
@@ -1170,6 +1171,14 @@ export interface BotScreen {
  * and `customised` is whether a row exists — not whether the value differs,
  * which the client could compute and get subtly wrong.
  */
+export interface EmojiPack {
+  id: number;
+  setName: string;
+  title: string;
+  syncedAt: string | null;
+  emoji: { id: string; fallback: string }[];
+}
+
 export interface BotTextRow {
   key: string;
   /** Which bot screen this line belongs to. Labels come from `BotScreen`. */
@@ -2279,6 +2288,31 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ enabled }),
     });
+  },
+
+  /**
+   * The emoji packs a picker draws from.
+   *
+   * Read from the database rather than from a constant, and that is the whole
+   * point of the feature: an id typed by hand is a 64-bit number nobody can
+   * verify, and the list that used to be hard-coded in `@shikoo/contracts` had
+   * two entries sharing one id and five that ran sequentially — invented, not
+   * observed. These come from Telegram's own `getStickerSet`.
+   */
+  emojiPacks() {
+    return req<{ ok: boolean; packs: EmojiPack[] }>('/emoji-packs');
+  },
+
+  addEmojiPack(set: string) {
+    return req<{
+      ok: boolean;
+      pack: { id: number; setName: string; title: string; count: number };
+      message: string;
+    }>('/emoji-packs', { method: 'POST', body: JSON.stringify({ set }) });
+  },
+
+  hideEmojiPack(id: number) {
+    return req<{ ok: boolean }>(`/emoji-packs/${id}`, { method: 'DELETE' });
   },
 
   saveBotText(key: string, value: string) {

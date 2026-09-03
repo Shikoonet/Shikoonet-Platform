@@ -92,7 +92,10 @@ async function makeService(
          (public_id, user_id, provider_id, plan_name_at_sale, provider_name_at_sale,
           price_irr, remote_username, subscription_url, volume_gb, duration_days,
           status, purchased_at, expires_at)
-       VALUES (?1, ?2, ?3, 'یک‌ماهه-۲۰گیگ', 'لوکیشن تست', 1000000, 'u_add',
+       -- The name is unique per row: migration 0051 makes
+       -- (provider_id, remote_username) unique, which is a fact about panels
+       -- rather than a rule invented here — two accounts cannot share one name.
+       VALUES (?1, ?2, ?3, 'یک‌ماهه-۲۰گیگ', 'لوکیشن تست', 1000000, 'u_add' || ?1,
                'https://panel.test/sub/u_add', ?4, 30, 'ACTIVE', now(), ?5)
        RETURNING id`,
     )

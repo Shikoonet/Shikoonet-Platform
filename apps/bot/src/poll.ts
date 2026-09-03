@@ -26,7 +26,9 @@ import {
   markBroadcastFailed,
   markBroadcastSent,
   strandedSendingCount,
+  SEND_CONCURRENCY,
   SEND_GAP_MS,
+  type BroadcastMessage,
 } from './broadcast.js';
 import { sweepDailyReport } from './report.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
@@ -265,7 +267,13 @@ export async function pollOnce(
         } else if (reply.document !== undefined) {
           await api.sendDocument(reply.chatId, reply.document, reply.text);
         } else if (reply.editMessageId === undefined) {
-          await api.sendMessage(reply.chatId, reply.text, reply.keyboard);
+          await api.sendMessage(
+            reply.chatId,
+            reply.text,
+            reply.keyboard,
+            undefined,
+            reply.replyKeyboard,
+          );
         } else {
           await api.editMessageText(reply.chatId, reply.editMessageId, reply.text, reply.keyboard);
         }
@@ -274,6 +282,22 @@ export async function pollOnce(
         // now be a no-op against the claim, so the reply is simply lost and said
         // to be lost.
         log.error('reply.undelivered', { trace: traceOf(update) }, err);
+      }
+    }
+    // After the replies, and never before them: the screen being edited is one
+    // of the messages this may delete, and deleting it first would leave the
+    // customer with nothing while the edit failed against a message that is
+    // already gone.
+    //
+    // Best-effort, one by one. A refusal here is ordinary — Telegram will not
+    // delete a message older than 48 hours, and the customer may have deleted
+    // it themselves — and none of it is worth failing an update that has
+    // already committed. What it costs when it fails is a tidier chat.
+    for (const gone of outcome.deletes ?? []) {
+      try {
+        await api.deleteMessage(gone.chatId, gone.messageId);
+      } catch (err) {
+        log.warn('reply.undeleted', { trace: traceOf(update) }, err);
       }
     }
     await answer(api, update);
@@ -347,16 +371,20 @@ async function sweep(name: string, produce: () => Promise<number>): Promise<void
  * count. A failure here is recorded against the recipient — almost always a
  * customer who blocked the bot — and never retried.
  *
- * Paced rather than fired off at once. `SEND_GAP_MS` keeps this under
- * Telegram's bulk ceiling; the cost is a few seconds added to the cycle while a
- * broadcast is running, which is why the admin is told it takes some minutes.
+ * Paced rather than fired off at once, and CONCURRENT rather than serial. The
+ * pace is what Telegram limits; the concurrency is what stops the round trip to
+ * Telegram — 200ms and up from here — from being the real limit instead. See
+ * `SEND_CONCURRENCY` for the arithmetic and for what mirzabot does not do.
  */
 export async function sweepBroadcasts(
   db: D1Database,
   api: TelegramApi,
   signal?: AbortSignal,
 ): Promise<number> {
-  let batch;
+  // Typed rather than inferred: `worker()` below closes over it, and a `let`
+  // with no annotation is `any` inside a closure — which would have hidden a
+  // wrong field name in the send.
+  let batch: BroadcastMessage[];
   try {
     batch = await claimBroadcastBatch(db);
   } catch (err) {
@@ -364,28 +392,55 @@ export async function sweepBroadcasts(
     return 0;
   }
   let sent = 0;
-  for (const message of batch) {
-    // Everything still claimed when this breaks stays SENDING rather than
-    // being counted as delivered. That is the ordinary shutdown, not a crash,
-    // and until 2026-08-19 it silently inflated the number the shop was told.
-    if (signal?.aborted) break;
-    try {
-      await api.sendMessage(message.chatId, message.text);
-      // After the send, not before it. A failure here leaves the row SENDING —
-      // Telegram has the message and our record does not say so, which is a
-      // discrepancy somebody can see, rather than a message nobody sent that
-      // the shop was told about.
-      await markBroadcastSent(db, message.broadcastId, message.userId).catch((e: unknown) =>
-        log.error('broadcast.sent_unrecorded', { ref: message.broadcastId }, e),
-      );
-      sent += 1;
-    } catch (err) {
-      await markBroadcastFailed(db, message.broadcastId, message.userId, String(err)).catch(
-        (e: unknown) => log.error('broadcast.failure_unrecorded', { ref: message.broadcastId }, e),
-      );
+  // One shared index and one shared clock, read by every worker below.
+  //
+  // The workers take from the SAME array rather than being handed a slice each:
+  // a slice would make one slow recipient hold up its whole share while other
+  // workers sat idle, which is the shape of the problem this replaces.
+  let next = 0;
+  let nextSendAt = 0;
+
+  async function worker(): Promise<void> {
+    for (;;) {
+      // Everything still claimed when this stops stays SENDING rather than
+      // being counted as delivered. That is the ordinary shutdown, not a crash,
+      // and until 2026-08-19 it silently inflated the number the shop was told.
+      if (signal?.aborted) return;
+      const message = batch[next++];
+      if (message === undefined) return;
+
+      // The pace, held across the whole pool rather than per worker. Twelve
+      // workers each sleeping 40ms between their own sends would be twelve
+      // times the rate Telegram allows; this makes the gap a property of the
+      // BROADCAST, which is the thing being limited.
+      const wait = nextSendAt - Date.now();
+      nextSendAt = Math.max(nextSendAt, Date.now()) + SEND_GAP_MS;
+      if (wait > 0) await sleep(wait, signal);
+
+      try {
+        await api.sendMessage(message.chatId, message.text);
+        // After the send, not before it. A failure here leaves the row SENDING —
+        // Telegram has the message and our record does not say so, which is a
+        // discrepancy somebody can see, rather than a message nobody sent that
+        // the shop was told about.
+        await markBroadcastSent(db, message.broadcastId, message.userId).catch((e: unknown) =>
+          log.error('broadcast.sent_unrecorded', { ref: message.broadcastId }, e),
+        );
+        sent += 1;
+      } catch (err) {
+        await markBroadcastFailed(db, message.broadcastId, message.userId, String(err)).catch(
+          (e: unknown) => log.error('broadcast.failure_unrecorded', { ref: message.broadcastId }, e),
+        );
+      }
     }
-    await sleep(SEND_GAP_MS, signal);
   }
+
+  // `all` rather than `allSettled`: every throw inside a worker is already
+  // caught above, so a rejection here would mean a bug in this function rather
+  // than a message that failed to send — and swallowing it would hide it.
+  await Promise.all(
+    Array.from({ length: Math.min(SEND_CONCURRENCY, batch.length) }, () => worker()),
+  );
   if (batch.length > 0) {
     await closeFinishedBroadcasts(db).catch((err: unknown) =>
       log.error('broadcast.close_failed', {}, err),

@@ -496,16 +496,17 @@ describe('the card-to-card notes', () => {
     // `PaySetting.helpcart` is live in production and shown before EVERY card
     // invoice there. A shop that prints the rules on one screen out of four has
     // customers reading them once and paying three more times without them.
+    //
+    // Four numbered notes became one line on 2026-09-03 — Sam asked for a
+    // simpler invoice — and what this asserts is unchanged in the way that
+    // matters: the two facts that cost a customer something are still on all
+    // four screens. پایا/ساتنا arrive outside the five-minute window automatic
+    // verification matches in, and a transfer described as «VPN» can be refused
+    // by the bank outright. The two notes that went were repetitions of
+    // sentences already on the same screen.
     for (const [which, text] of invoices()) {
-      expect(text, which).toContain('نکات مهم قبل از کارت به کارت');
-      expect(text, which).toContain('فیلترشکن');
       expect(text, which).toContain('ساتنا');
-      // Note 4 used to promise «حداکثر تا ۱۰ دقیقه تایید می‌شود», and that
-      // promise was not the shop's to make: ten minutes is the auto-match
-      // window, and a claim that does not match an isolated bank SMS waits for
-      // an operator for as long as the operator takes. It now says the one
-      // thing about note 4 that is always true — where the receipt goes.
-      expect(text, which).toContain('در پیام خصوصی به ادمین');
+      expect(text, which).toContain('VPN');
     }
   });
 
