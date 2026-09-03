@@ -36,14 +36,31 @@ function ids(): { updateId: number; telegramId: number } {
   return { updateId: 655_000 + n, telegramId: 555_000 + n };
 }
 
-async function makeAdmin(telegramId: number): Promise<void> {
+async function makeAdmin(telegramId: number, role = 'ADMIN'): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO admins (telegram_id, role, active) VALUES (?1, 'ADMIN', true)
-       ON CONFLICT (telegram_id) DO UPDATE SET active = true`,
+      `INSERT INTO admins (telegram_id, role, active) VALUES (?1, ?2, true)
+       ON CONFLICT (telegram_id) DO UPDATE SET active = true, role = EXCLUDED.role`,
     )
-    .bind(telegramId)
+    .bind(telegramId, role)
     .run();
+}
+
+/** Whether the shop's menu offers this person the emoji screen. */
+async function seesEmojiButton(telegramId: number): Promise<boolean> {
+  const out = await handleUpdate(db, {
+    update_id: ids().updateId,
+    message: {
+      message_id: 1,
+      from: { id: telegramId },
+      chat: { id: telegramId },
+      text: '/start',
+    },
+  });
+  const rows = out.replies[0]?.replyKeyboard;
+  return (Array.isArray(rows) ? rows : [])
+    .flat()
+    .some((b) => b.text.includes('ایموجی پریمیوم'));
 }
 
 function press(updateId: number, telegramId: number, data: string) {
@@ -136,6 +153,38 @@ describe('who may open it', () => {
     expect(labels.some((l) => l.includes('ایموجی پریمیوم'))).toBe(true);
   });
 
+  it('is not drawn for SUPPORT, who may walk the shop but not reshape it', async () => {
+    // Sam: «برای همه نشان داده می‌شود، فقط باید برای ادمین‌ها و owner باشد.»
+    // `admins.role` has held OWNER / ADMIN / SUPPORT since 0001 and the bot's
+    // check ignored it, so anybody in the table — support staff included — was
+    // offered a screen that changes what every customer sees.
+    //
+    // `isActiveAdmin` is deliberately NOT narrowed with it: support still walks
+    // past the closed sign, the flood counter and the channel gate, because
+    // answering a customer at 2am needs all three. Seeing the shop and changing
+    // it are different permissions.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId, 'SUPPORT');
+    expect(await seesEmojiButton(telegramId)).toBe(false);
+  });
+
+  it('is drawn for OWNER', async () => {
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId, 'OWNER');
+    expect(await seesEmojiButton(telegramId)).toBe(true);
+  });
+
+  it('refuses SUPPORT who posts the callback anyway', async () => {
+    // Undrawn is not closed, for a role as much as for a stranger.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId, 'SUPPORT');
+    const out = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
+    expect(out.replies[0]?.text ?? '').not.toContain('کدام دکمه');
+  });
+
   it('refuses a customer who posts the callback anyway', async () => {
     // Not drawn is not closed: `callback_data` is unsigned. And the answer is
     // the main menu rather than «شما ادمین نیستید», because confirming that an
@@ -149,18 +198,59 @@ describe('who may open it', () => {
   });
 });
 
+describe('the order the screens ask in', () => {
+  it('opens on the BUTTONS, and puts the emoji on with one press', async () => {
+    // Sam, 2026-09-03: «برم تو منوی ایموجی، منو رو انتخاب کنم، و وقتی ایموجی‌ای
+    // که می‌خوام رو می‌زنم همون جایگزین بشه». The first build asked for the
+    // emoji first and then where to put it, which reads backwards: an admin
+    // arrives already knowing which button they are unhappy with.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emja'));
+    await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    const row = await db
+      .prepare(
+        `SELECT i.id FROM emoji_pack_items i JOIN emoji_packs p ON p.id = i.pack_id
+          WHERE p.set_name = '__from_bot__'`,
+      )
+      .first<{ id: number }>();
+
+    // 1. the menu opens on the shop's own buttons
+    const home = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
+    expect(home.replies[0]?.text ?? '').toContain('کدام دکمه');
+    const labels = (home.replies[0]?.keyboard ?? []).flat().map((b) => b.text);
+    expect(labels.some((l) => l.includes('تمدید'))).toBe(true);
+
+    // 2. one press later, that button's tiles
+    const one = await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
+    expect((one.replies[0]?.keyboard ?? []).flat().some((b) => b.text.includes(FIRE_ID))).toBe(true);
+
+    // 3. and pressing a tile swaps it, on the same screen
+    const done = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${row!.id}`));
+    expect(done.replies[0]?.text ?? '').toContain('عوض شد');
+    const saved = await db
+      .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
+      .first<{ label: string }>();
+    expect(saved?.label).toContain(FIRE_ID);
+  });
+});
+
 describe('giving the bot an emoji', () => {
-  it('stores what was sent and offers it back as a drawn button', async () => {
+  it('offers it straight back as a drawn tile, on the button it came from', async () => {
     const { telegramId } = ids();
     await makeCustomer(telegramId);
     await makeAdmin(telegramId);
 
-    await handleUpdate(db, press(ids().updateId, telegramId, 'emja'));
+    // «افزودن» pressed from a BUTTON's screen carries that button's slot, so
+    // the emoji the admin just gave the bot is one tap from being on it.
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emja:1'));
     const saved = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
 
     expect(saved.status).toBe('processed');
-    expect(saved.replies[0]?.text ?? '').toContain('ذخیره شد');
-    // The button carries the TAG, which `keyboardFor` turns into the button's
+    // Back on that button's screen, not on the button list.
+    expect(saved.replies[0]?.text ?? '').toContain('تمدید');
+    // The tile carries the TAG, which `keyboardFor` turns into the button's
     // icon on the way out. That is what makes this screen the live proof.
     const drawn = (saved.replies[0]?.keyboard ?? []).flat().map((b) => b.text);
     expect(drawn.some((t) => t.includes(FIRE_ID))).toBe(true);
@@ -203,14 +293,15 @@ describe('putting it on a button', () => {
       .first<{ id: number }>();
 
     // First press: which button. Second: that one.
-    const pick = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${row!.id}`));
-    expect(pick.replies[0]?.text ?? '').toContain('کدام دکمه');
+    // First press: that button's screen, with every emoji as a tile.
+    const pick = await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
+    expect(pick.replies[0]?.text ?? '').toContain('تمدید');
 
-    // Slot 1, the first DECLARED button. A zero would not even decode —
-    // `parseId` refuses one — and that is deliberate: the slot indexes the
-    // action list in the source, so it cannot move when a layout is edited.
-    const applied = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${row!.id}:1`));
-    expect(applied.replies[0]?.text ?? '').toContain('نشست');
+    // `emjb:<slot>:<emojiId>` — the button first, then the emoji, which is the
+    // order the screens ask in. Slot 1 is the first DECLARED button; a zero
+    // would not even decode, since `parseId` refuses one.
+    const applied = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${row!.id}`));
+    expect(applied.replies[0]?.text ?? '').toContain('عوض شد');
 
     // Slot 1 is the first DECLARED action — `renew` — so that is the row to
     // read. Reading «any row of main» passed by luck while only one existed.
@@ -241,7 +332,7 @@ describe('putting it on a button', () => {
       )
       .first<{ id: number }>();
 
-    await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${row!.id}:1`));
+    await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${row!.id}`));
 
     const { results } = await db
       .prepare(`SELECT action FROM bot_keyboard_buttons WHERE menu = 'main'`)
@@ -365,9 +456,9 @@ describe('putting it on a button', () => {
       .first<{ id: number }>();
 
     // Slot 1 is `renew`, the button this shop does not have.
-    const out = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${row!.id}:1`));
+    const out = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${row!.id}`));
 
-    expect(out.replies[0]?.text ?? '').not.toContain('نشست');
+    expect(out.replies[0]?.text ?? '').toContain('دیگر در کیبورد');
     // And it was not quietly added back.
     const added = await db
       .prepare(`SELECT action FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
@@ -415,7 +506,7 @@ describe('putting it on a button', () => {
       )
       .first<{ id: number }>();
 
-    const out = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${row!.id}:1`));
+    const out = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${row!.id}`));
 
     // A sentence, not a stack trace — and the button is untouched.
     expect(out.replies[0]?.text ?? '').toContain('جا نشد');
@@ -445,8 +536,8 @@ describe('putting it on a button', () => {
       .all<{ id: number }>();
     const [first, second] = results ?? [];
 
-    await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${first!.id}:1`));
-    await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${second!.id}:1`));
+    await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${first!.id}`));
+    await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${second!.id}`));
 
     const saved = await db
       .prepare(`SELECT label FROM bot_keyboard_buttons
