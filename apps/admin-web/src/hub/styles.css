@@ -4133,3 +4133,13 @@
   color: var(--muted, #667085);
   font-variant-numeric: tabular-nums;
 }
+
+/* Takings beside the purchase count on a card row. Tabular figures so the
+   amounts line up down the list, which is the whole reason to put money in a
+   column rather than in a sentence. */
+.account-usage-row__takings {
+  font-size: 13px;
+  color: var(--muted, #667085);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
