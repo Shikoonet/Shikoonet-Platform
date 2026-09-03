@@ -69,6 +69,7 @@ function plan(id: number, name: string, provider: PanelRef | null, status = 'ACT
     },
     provider,
     categoryName: 'سرویس‌ها',
+    categoryActive: true,
     ordersCount: 0,
   };
 }

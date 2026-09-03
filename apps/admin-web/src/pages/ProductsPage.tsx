@@ -67,6 +67,10 @@ function SellState({ row }: { row: PlanRow }) {
   const reasons: NotSellable[] = whyNotSellable({
     planStatus: row.status,
     productStatus: row.product.status,
+    category:
+      row.product.categoryId === null
+        ? null
+        : { name: row.categoryName ?? '—', active: row.categoryActive ?? false },
     panel: row.provider
       ? {
           name: row.provider.name ?? '—',
