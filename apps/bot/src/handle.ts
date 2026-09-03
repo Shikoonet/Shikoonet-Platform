@@ -22,7 +22,13 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { renewAllowed, renewModeFor } from '@shikoo/domain';
+import {
+  CUSTOMER_NAME_MAX,
+  extraBoundsFor,
+  renewAllowed,
+  renewModeFor,
+  sanitiseUsernamePart,
+} from '@shikoo/domain';
 import { actOnService } from './actions.js';
 import { decode, encode } from './callback.js';
 import type { CatalogCategory, CatalogPlan } from './catalog.js';
@@ -136,6 +142,22 @@ export interface HandleOutcome {
 const IGNORED: HandleOutcome = { status: 'ignored', replies: [] };
 
 /**
+ * Whether this update came from a one-to-one chat with a customer.
+ *
+ * A callback query carries its own message, and a button pressed on a message
+ * the bot posted into a group arrives with that group as its chat — so both
+ * halves are checked rather than only `update.message`.
+ *
+ * Absent means private: see `MessageSchema` in `telegram.ts` for why the field
+ * is optional. A callback query with no message at all is private too — it can
+ * only come from an inline result, which has no chat to be public.
+ */
+function isPrivateChat(update: TelegramUpdate): boolean {
+  const chat = update.callback_query?.message?.chat ?? update.message?.chat;
+  return chat?.type === undefined || chat.type === 'private';
+}
+
+/**
  * The shop's switches for the update being handled.
  *
  * Module-level for the same reason `menu.ts` keeps its wording that way, and
@@ -199,6 +221,22 @@ export async function handleUpdate(
   // Telegram refuses — see `gate.ts`.
   api?: MembershipApi,
 ): Promise<HandleOutcome> {
+  // Before the database is touched at all, because this bot is about to be put
+  // in a group.
+  //
+  // Nothing below distinguishes a chat: `chatId` is read the same way whatever
+  // it is, `upsertUser` would write a customer row for anybody who typed in the
+  // group, and every reply goes back to `message.chat.id` — so adding the bot
+  // to the reports group would draw customer menus into it and mint customers
+  // out of whoever spoke. It has never happened only because the bot has never
+  // been in a group, which is not a guarantee, and the report topics are about
+  // to make it one.
+  //
+  // Ignored rather than claimed: no `telegram_updates` row, no session, no
+  // write. A redelivery of the same group message is ignored again for the same
+  // reason, so there is nothing to remember.
+  if (!isPrivateChat(update)) return IGNORED;
+
   await refreshShopContent(db);
 
   return db.withSession(async (tx) => {
@@ -256,6 +294,7 @@ export async function handleUpdate(
         telegramId: from.id,
         updateId: update.update_id,
         reportChatId: SHOP.reportChatId,
+        reportThreadId: SHOP.reportTopics.otherreport,
       });
       // Told once, at the moment it happens. Every message after this one is
       // ignored in silence, which is what the per-handler checks already do.
@@ -390,6 +429,18 @@ interface Caller {
   id: number;
   status: string;
   is_reseller: boolean;
+  /**
+   * The reseller LEVEL, or null for an ordinary customer.
+   *
+   * Separate from `is_reseller` because the two answer different questions:
+   * the flag decides what this person may SEE (`products.resellers_only`), the
+   * level decides what they PAY. `tierFor` reads this one.
+   */
+  reseller_tier: string | null;
+  /**
+   * What `priceForUser` is fed — already the LEVEL's percentage when they are
+   * on one. See `DISCOUNT_PERCENT`: it is not the raw column.
+   */
   discount_percent: number;
   /**
    * Whether `admins` holds an active row for this Telegram id.
@@ -410,6 +461,51 @@ interface Caller {
 const IS_ADMIN = `EXISTS (SELECT 1 FROM admins a WHERE a.telegram_id = ?1 AND a.active) AS is_admin`;
 
 /**
+ * The percentage `priceForUser` is fed, in the one expression all three
+ * `Caller` loads share — written once here for the same reason `IS_ADMIN`
+ * above it is.
+ *
+ * The LEVEL wins outright. A reseller is priced by their tier and their own
+ * `discount_percent` is left untouched on the row, which is what they go back
+ * to the moment they stop being one. That is the whole reason this is a read
+ * and not a copy: `POST /customers/:id/discount` writes that column directly,
+ * and `migrate.ts` rewrites it from legacy `pricediscount` on every import run.
+ *
+ * `is_reseller` is asked FIRST and a NULL tier means level one — the same rule
+ * `tierFor` applies, written here in SQL because these two must agree. The flag
+ * is set in several places and any of them could omit a level; reading the flag
+ * first means such a row is priced as the reseller they are rather than as an
+ * ordinary customer. Clearing the flag ends tier pricing immediately, even if
+ * the column still holds a level.
+ *
+ * A scalar subquery rather than a LEFT JOIN because two of the three loads are
+ * `INSERT … RETURNING` and `UPDATE … RETURNING`, which cannot join. All three
+ * name the table `users` unaliased, so one string drops into all three.
+ *
+ * NO bind parameters, deliberately: the adapter closes parameter gaps, so a
+ * `?n` in here would renumber `IS_ADMIN`'s `?1` and silently ask whether the
+ * customer's username is an active admin.
+ *
+ * ## One of the three loads cannot be tested, and is written this way anyway
+ *
+ * `upsertUser`'s copy is dead weight for pricing today: its three callers end
+ * in the main menu or a receipt, and neither renders a price, so no assertion
+ * can tell the two expressions apart there. The other two are covered —
+ * `handleCallback`'s by `reseller-tier.test.ts` and `handleTypedAnswer`'s by
+ * the add-on case in `addon.test.ts`, both checked by removing this expression
+ * and watching them go red.
+ *
+ * It uses the constant regardless, because the alternative is a
+ * `Caller.discount_percent` that means the level's price from two producers and
+ * the personal one from the third. That trap springs on the day somebody puts a
+ * priced screen behind `/start`, and it springs silently.
+ */
+const DISCOUNT_PERCENT = `COALESCE(
+         (SELECT t.discount_percent FROM reseller_tiers t
+           WHERE users.is_reseller AND t.code = COALESCE(users.reseller_tier, 'n')),
+         users.discount_percent) AS discount_percent`;
+
+/**
  * The customer row for whoever sent this, created if it is their first message.
  *
  * Upsert rather than SELECT-then-INSERT: two messages cannot race into two rows
@@ -427,7 +523,7 @@ async function upsertUser(
          SET username = EXCLUDED.username,
              last_seen_at = now(),
              updated_at = now()
-       RETURNING id, status, is_reseller, discount_percent, ${IS_ADMIN}`,
+       RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
     )
     .bind(from.id, from.username ?? null)
     .first<Caller>();
@@ -574,7 +670,13 @@ async function handleStart(
   };
 }
 
-/** The largest add-on one purchase may be. */
+/**
+ * The largest add-on one purchase may be when the panel names no ceiling.
+ *
+ * A panel's own `maxvolume` / `maxtime` win over this — see `extraBoundsFor`.
+ * This is what a panel that has never had them set gets, and it is the bound
+ * the bot has always applied.
+ */
 export const ADDON_MAX = 1000;
 
 /**
@@ -605,7 +707,7 @@ async function handleTypedAnswer(
   if (!from) return IGNORED;
   const user = await tx
     .prepare(
-      `SELECT id, status, is_reseller, discount_percent, ${IS_ADMIN}
+      `SELECT id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}
          FROM users WHERE telegram_id = ?1`,
     )
     .bind(from.id)
@@ -624,6 +726,7 @@ async function handleTypedAnswer(
   if (session.step === 'gift') return handleGiftCode(tx, message, user);
   if (session.step === 'topup') return handleTopupAmount(tx, message, user);
   if (session.step === 'agent') return handleResellerRequest(tx, message, user);
+  if (session.step === 'uname') return handleCustomerName(tx, message, user, session);
   return IGNORED;
 }
 
@@ -697,7 +800,6 @@ async function handleAddonAmount(
   if (!/^[0-9]+$/.test(typed)) return reply(menu.ADDON_NOT_A_NUMBER);
   const quantity = Number(typed);
   if (quantity <= 0) return reply(menu.ADDON_NOT_A_NUMBER);
-  if (quantity > ADDON_MAX) return reply(menu.addonTooMuch(ADDON_MAX));
 
   const service = await subscriptionOnPanelForUser(tx, user.id, subscriptionId);
   if (!service) return reply(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
@@ -705,6 +807,19 @@ async function handleAddonAmount(
   const unit =
     kind === 'ADD_VOLUME' ? (actions?.volumeIrrPerGb ?? null) : (actions?.timeIrrPerDay ?? null);
   if (unit === null) return reply(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu());
+
+  // The bounds are the PANEL's, so they are checked after it is loaded and
+  // after «this panel does not sell that» above — otherwise a panel that sells
+  // no extra volume would answer «کمترین مقدار ۱۰ است» to somebody who cannot
+  // buy any amount at all.
+  //
+  // The range check used to sit above, on the typed digits alone, which is why
+  // this reads as a move rather than an addition.
+  const bounds = extraBoundsFor(service.provider_config ?? {});
+  const min = kind === 'ADD_VOLUME' ? bounds.minVolumeGb : bounds.minTimeDays;
+  const max = (kind === 'ADD_VOLUME' ? bounds.maxVolumeGb : bounds.maxTimeDays) ?? ADDON_MAX;
+  if (min !== null && quantity < min) return reply(menu.addonTooLittle(min));
+  if (quantity > max) return reply(menu.addonTooMuch(max));
 
   const placed = await placeAddonOrder(
     tx,
@@ -892,6 +1007,151 @@ async function heldRenewalCode(
 }
 
 /** The code a renewal screen should show as held, if any. */
+/**
+ * Placing the order and drawing the invoice — extracted so there is ONE way in.
+ *
+ * `case 'order'` reaches it from the button, and `handleCustomerName` reaches it
+ * again once the customer has typed a name. Two copies of this would be two
+ * places to forget the held discount code, which is the drift `planScreen`'s own
+ * comment warns about.
+ */
+async function placeOrderScreen(
+  tx: D1DatabaseSession,
+  user: Caller,
+  plan: CatalogPlan,
+  screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+): Promise<HandleOutcome> {
+  /*
+   * The one edge into an order, which is why the prompt is here and not beside
+   * the discount-code step it otherwise resembles.
+   *
+   * That step is OPTIONAL: `planDetailMenu` draws «خرید» beside «کد تخفیف», so
+   * a customer reaches `order` having never entered it. Mirroring its placement
+   * would place orders with no name on a panel configured to ask for one — the
+   * setting saved, reported, and inert, which is the failure `panelRoutes`
+   * refuses for PANEL_TEXT.
+   */
+  const chosenName =
+    plan.usernameMode === 'CUSTOMER_TEXT' ? await heldName(tx, user.id, plan.planId) : null;
+  if (plan.usernameMode === 'CUSTOMER_TEXT' && chosenName === null) {
+    await ask(tx, user.id, 'uname', { planId: plan.planId });
+    return screen(menu.ASK_ACCOUNT_NAME, menu.promptMenu(encode('plan', plan.planId)));
+  }
+
+  // The code is checked once more, here, in the transaction that writes the
+  // order and the redemption together. Two taps cannot both spend it: the
+  // second `redeem` writes no row, and the order is placed at full price.
+  const listed = priceForUser(plan.priceIrr, user.discount_percent);
+  const held = await heldCode(tx, user, plan, listed.totalIrr);
+  const placed = await placeOrder(
+    tx,
+    user.id,
+    plan,
+    user.discount_percent,
+    held?.discountIrr ?? 0,
+    chosenName,
+  );
+  // A total of zero is refused rather than written. The code is left
+  // unredeemed on purpose: nothing was bought with it.
+  if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.planDetailMenu(plan));
+  // Not cleared afterwards, deliberately: the held code is what lets a
+  // second tap re-price the same plan the same way and land back on the
+  // order that already exists. `/start` and «برداشتن کد» clear it.
+  if (held) await redeem(tx, held.code.id, user.id, placed.id, held.discountIrr);
+  const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
+  if (!checkout) {
+    return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
+  }
+  if (checkout.claimed) {
+    return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
+  }
+  return screen(
+    menu.checkout(
+      placed.publicId,
+      plan,
+      placed.totalIrr,
+      checkout.cardDigits,
+      checkout.cardHolder,
+    ),
+    menu.checkoutMenu(
+      placed.id,
+      placed.totalIrr,
+      checkout.cardDigits,
+      { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
+      SHOP.showsCopyButtons,
+    ),
+  );
+}
+
+/**
+ * The name this customer has already given for this plan, or null.
+ *
+ * A copy of `heldRenewalName` in everything but the two names it reads, and for
+ * the same reason: the answer is held in the session between the moment it is
+ * typed and the moment the order is written.
+ *
+ * Scoped to the plan, so a name chosen for one service is not silently spent on
+ * another the customer opened afterwards.
+ */
+async function heldName(
+  tx: D1DatabaseSession,
+  userId: number,
+  planId: number,
+): Promise<string | null> {
+  const row = await tx
+    .prepare(`SELECT step, data FROM bot_sessions WHERE user_id = ?1`)
+    .bind(userId)
+    .first<{ step: string | null; data: Record<string, unknown> | null }>();
+  if (row?.step !== 'uname:held') return null;
+  if (Number(row.data?.['planId']) !== planId) return null;
+  const typed = row.data?.['name'];
+  return typeof typed === 'string' ? typed : null;
+}
+
+/**
+ * «اسم اکانتت را بنویس» — the answer, in the middle of a purchase.
+ *
+ * Unusable input RE-ASKS and leaves the step open, which is
+ * `handleDiscountCode`'s own pattern. It matters more here than there:
+ * `sanitiseUsernamePart` strips everything outside `[a-z0-9_]`, so Persian
+ * reduces to nothing — and Persian is what most customers of a Persian shop
+ * will type first. Falling through to a default would be the panel setting
+ * doing nothing, one customer at a time.
+ *
+ * What is stored is the SANITISED string, so `orders.username_text` holds
+ * exactly what the panel will be asked for and no screen can promise a name the
+ * panel will not give.
+ */
+async function handleCustomerName(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+  session: Session,
+): Promise<HandleOutcome> {
+  const planId = Number(session.data['planId']);
+  if (!Number.isSafeInteger(planId)) return IGNORED;
+
+  const screen = (text: string, keyboard?: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, ...(keyboard ? { keyboard } : {}) }],
+  });
+
+  // Re-checked rather than trusted from the moment the prompt was drawn: an
+  // admin may have hidden the plan in between, and this is the same check the
+  // button itself makes.
+  const plan = await purchasablePlan(tx, user.id, planId);
+  if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
+
+  const clean = sanitiseUsernamePart((message.text ?? '').slice(0, CUSTOMER_NAME_MAX));
+  if (clean === null) {
+    // The question stays open — the customer mistyped and can type again.
+    return screen(menu.ACCOUNT_NAME_REFUSED, menu.promptMenu(encode('plan', plan.planId)));
+  }
+
+  await ask(tx, user.id, 'uname:held', { planId, name: clean });
+  return placeOrderScreen(tx, user, plan, screen);
+}
+
 async function heldRenewalName(
   tx: D1DatabaseSession,
   userId: number,
@@ -1167,7 +1427,7 @@ async function handleCallback(
     .prepare(
       `UPDATE users SET last_seen_at = now(), updated_at = now()
         WHERE telegram_id = ?1
-        RETURNING id, status, is_reseller, discount_percent, ${IS_ADMIN}`,
+        RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
     )
     .bind(query.from.id)
     .first<Caller>();
@@ -1411,48 +1671,7 @@ async function handleCallback(
       // is not evidence that a button was ever offered for this plan.
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
-      // The code is checked once more, here, in the transaction that writes the
-      // order and the redemption together. Two taps cannot both spend it: the
-      // second `redeem` writes no row, and the order is placed at full price.
-      const listed = priceForUser(plan.priceIrr, user.discount_percent);
-      const held = await heldCode(tx, user, plan, listed.totalIrr);
-      const placed = await placeOrder(
-        tx,
-        user.id,
-        plan,
-        user.discount_percent,
-        held?.discountIrr ?? 0,
-      );
-      // A total of zero is refused rather than written. The code is left
-      // unredeemed on purpose: nothing was bought with it.
-      if (!placed) return screen(menu.ORDER_NOT_PAYABLE, menu.planDetailMenu(plan));
-      // Not cleared afterwards, deliberately: the held code is what lets a
-      // second tap re-price the same plan the same way and land back on the
-      // order that already exists. `/start` and «برداشتن کد» clear it.
-      if (held) await redeem(tx, held.code.id, user.id, placed.id, held.discountIrr);
-      const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
-      if (!checkout) {
-        return screen(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
-      }
-      if (checkout.claimed) {
-        return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
-      }
-      return screen(
-        menu.checkout(
-          placed.publicId,
-          plan,
-          placed.totalIrr,
-          checkout.cardDigits,
-          checkout.cardHolder,
-        ),
-        menu.checkoutMenu(
-          placed.id,
-          placed.totalIrr,
-          checkout.cardDigits,
-          { balanceIrr: await balanceFor(tx, user.id), totalIrr: placed.totalIrr },
-          SHOP.showsCopyButtons,
-        ),
-      );
+      return placeOrderScreen(tx, user, plan, screen);
     }
 
     case 'mine': {

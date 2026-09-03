@@ -644,6 +644,9 @@ export const marzbanAdapter: ProvisioningAdapter = {
 
       let dataLimit: number;
       let expiresAtMs: number | null;
+      // The volume half of ADD, so the two branches below are read as one
+      // decision made twice rather than two coincidences.
+      const addsVolume = request.mode === 'ADD' || request.mode === 'ADD_VOLUME_RESET_TIME';
       if (request.mode === 'ADD') {
         // Measured from whatever time is left, so renewing early keeps the days
         // already paid for. `time() - expire > 0 ? time() : expire` in the PHP.
@@ -659,8 +662,18 @@ export const marzbanAdapter: ProvisioningAdapter = {
         // unmetered — anything else would put a cap on a service that had none.
         dataLimit = addedBytes === null || currentQuota === null ? 0 : currentQuota + addedBytes;
       } else {
+        // RESET and ADD_VOLUME_RESET_TIME share the clock: the month starts
+        // again from the moment of renewal, whatever was left.
         expiresAtMs = addedMs === null ? null : from + addedMs;
-        dataLimit = addedBytes ?? 0;
+        if (addsVolume) {
+          // …and ADD_VOLUME_RESET_TIME keeps the volume, on the same terms the
+          // ADD branch states: adding to an unmetered account, or adding
+          // unmetered volume, leaves it unmetered.
+          const currentQuota = quotaBytes(found.user.data_limit);
+          dataLimit = addedBytes === null || currentQuota === null ? 0 : currentQuota + addedBytes;
+        } else {
+          dataLimit = addedBytes ?? 0;
+        }
       }
       // Seconds, not ISO — and the difference is not ours to choose. The live
       // PHP writes this field two different ways against these same five
@@ -686,6 +699,11 @@ export const marzbanAdapter: ProvisioningAdapter = {
       // record of it used to be that the order said FAILED.
       const applied: string[] = [];
 
+      // RESET only, and ADD_VOLUME_RESET_TIME deliberately does NOT join it
+      // despite resetting the clock. `/reset` zeroes the usage counter, and
+      // this mode ADDS to the quota — so zeroing would leave the account
+      // claiming «old + new» gigabytes with nothing spent, handing the customer
+      // everything they had already used back as free traffic.
       if (request.mode === 'RESET') {
         const reset = await withTimeout((signal) =>
           provider.fetch(`${base}/api/user/${encodeURIComponent(request.username)}/reset`, {

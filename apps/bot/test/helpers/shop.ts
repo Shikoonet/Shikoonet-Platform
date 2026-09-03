@@ -122,6 +122,26 @@ export async function planIdIn(productCode: string, planName: string): Promise<n
 export interface CustomerOptions {
   reseller?: boolean;
   discountPercent?: number;
+  /**
+   * The reseller LEVEL. Left null by default even when `reseller` is true,
+   * because that is the shape every row carried before 0047 and the shape the
+   * request-approval route still writes — a fixture that always set it would
+   * stop testing the case the shop actually has.
+   */
+  tier?: 'n' | 'n2' | null;
+}
+
+/**
+ * Sets what a level costs, for a test that needs one.
+ *
+ * The two rows are seeded by 0047 and are shared state like every other row in
+ * the sim, so a test that changes one puts it back.
+ */
+export async function setTierDiscount(code: 'n' | 'n2', percent: number): Promise<void> {
+  await db
+    .prepare(`UPDATE reseller_tiers SET discount_percent = ?2, updated_at = now() WHERE code = ?1`)
+    .bind(code, percent)
+    .run();
 }
 
 export async function makeCustomer(
@@ -130,14 +150,21 @@ export async function makeCustomer(
 ): Promise<number> {
   const row = await db
     .prepare(
-      `INSERT INTO users (telegram_id, username, is_reseller, discount_percent, registered_at)
-       VALUES (?1, ?2, ?3, ?4, now())
+      `INSERT INTO users (telegram_id, username, is_reseller, reseller_tier, discount_percent, registered_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, now())
        ON CONFLICT (telegram_id) DO UPDATE
          SET is_reseller = EXCLUDED.is_reseller,
+             reseller_tier = EXCLUDED.reseller_tier,
              discount_percent = EXCLUDED.discount_percent
        RETURNING id`,
     )
-    .bind(telegramId, `shop${telegramId}`, options.reseller ?? false, options.discountPercent ?? 0)
+    .bind(
+      telegramId,
+      `shop${telegramId}`,
+      options.reseller ?? false,
+      options.tier ?? null,
+      options.discountPercent ?? 0,
+    )
     .first<{ id: number }>();
   if (!row) throw new Error('customer fixture failed');
   return row.id;

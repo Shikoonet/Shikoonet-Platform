@@ -140,7 +140,14 @@ export function resetSpamWindows(): void {
  */
 export async function blockForSpam(
   tx: D1DatabaseSession,
-  opts: { userId: number; telegramId: number; updateId: number; reportChatId: number | null },
+  opts: {
+    userId: number;
+    telegramId: number;
+    updateId: number;
+    reportChatId: number | null;
+    /** «⚙️ سایر گزارشات» — legacy's home for everything without a topic. */
+    reportThreadId?: number | null;
+  },
 ): Promise<boolean> {
   const outcome = await setCustomerStatus(tx, {
     userId: opts.userId,
@@ -164,6 +171,7 @@ export async function blockForSpam(
       // is worse than no button: it looks like the bot is broken rather than
       // like the screen moved.
       text: menu.spamBlockedReport(opts.telegramId),
+      threadId: opts.reportThreadId ?? null,
     });
   }
   return true;

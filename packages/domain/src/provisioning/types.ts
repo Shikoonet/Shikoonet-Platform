@@ -58,8 +58,19 @@ export interface ProvisionRequest {
  * ADD    — the plan's volume is added to what is already there and its days are
  *          added to whatever time is left, so a customer who renews early loses
  *          nothing. Usage is NOT reset; the quota grows instead.
+ * ADD_VOLUME_RESET_TIME
+ *        — Sam asked for it on 2026-09-03: the half of each. The clock starts
+ *          again from now, and the plan's volume is ADDED to whatever is left
+ *          rather than replacing it, so a customer who renews with gigabytes
+ *          unspent keeps them while their month restarts.
+ *
+ *          The usage counter is NOT reset in this mode, and that is the part
+ *          worth reading twice. `/reset` zeroes the counter, and on a panel
+ *          where the quota is being ADDED to, zeroing it would hand the
+ *          customer everything they had already spent back as free traffic —
+ *          the quota would say «old + new» while usage said zero.
  */
-export type RenewMode = 'RESET' | 'ADD';
+export type RenewMode = 'RESET' | 'ADD' | 'ADD_VOLUME_RESET_TIME';
 
 /** What a renewal buys, flattened the same way `ProvisionRequest` is. */
 export interface RenewRequest {

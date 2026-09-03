@@ -239,7 +239,7 @@ export async function sweepDailyReport(db: D1Database, now: number = Date.now())
   // report went to the environment's channel and a block report went nowhere.
   // The fallback is applied in `loadShopSettings` now, so there is one value
   // and every reader gets it.
-  const { reportChatId: chatId } = await loadShopSettings(db);
+  const { reportChatId: chatId, reportTopics } = await loadShopSettings(db);
   // No channel configured is not an error — the legacy skips the send the same
   // way, and a shop that does not want the report should not be paying for six
   // aggregate queries a night to not send it.
@@ -257,6 +257,10 @@ export async function sweepDailyReport(db: D1Database, now: number = Date.now())
   if (already) return false;
 
   const text = await buildDailyReport(db, dateStr);
-  await db.withSession((tx) => enqueue(tx, { dedupeKey: key, chatId, text }));
+  // «🌙 گزارش شبانه». Null until somebody makes the topics, and null is a
+  // message in the group's General topic — exactly where it goes today.
+  await db.withSession((tx) =>
+    enqueue(tx, { dedupeKey: key, chatId, text, threadId: reportTopics.reportnight }),
+  );
   return true;
 }

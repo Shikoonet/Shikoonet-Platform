@@ -36,6 +36,7 @@ import { encode } from './callback.js';
 import type { CatalogCategory, CatalogPlan, CatalogProduct, TrialPanel } from './catalog.js';
 import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
+import type { RenewMode } from '@shikoo/domain';
 import {
   buildMainMenu,
   buildMenu,
@@ -133,6 +134,8 @@ export let SERVICE_GONE = DEFAULT_TEXTS.raw('SERVICE_GONE');
 export let ACTION_UNSUPPORTED = DEFAULT_TEXTS.raw('ACTION_UNSUPPORTED');
 export let CONFIRM_REVOKE = DEFAULT_TEXTS.raw('CONFIRM_REVOKE');
 export let ADDON_NOT_A_NUMBER = DEFAULT_TEXTS.raw('ADDON_NOT_A_NUMBER');
+export let ASK_ACCOUNT_NAME = DEFAULT_TEXTS.raw('ASK_ACCOUNT_NAME');
+export let ACCOUNT_NAME_REFUSED = DEFAULT_TEXTS.raw('ACCOUNT_NAME_REFUSED');
 export let NOTHING_TO_RENEW = DEFAULT_TEXTS.raw('NOTHING_TO_RENEW');
 export let CHOOSE_SERVICE_TO_RENEW = DEFAULT_TEXTS.raw('CHOOSE_SERVICE_TO_RENEW');
 export let RENEWAL_GONE = DEFAULT_TEXTS.raw('RENEWAL_GONE');
@@ -257,6 +260,8 @@ export function applyContent(content: BotContent): void {
   ACTION_UNSUPPORTED = t.raw('ACTION_UNSUPPORTED');
   CONFIRM_REVOKE = t.raw('CONFIRM_REVOKE');
   ADDON_NOT_A_NUMBER = t.raw('ADDON_NOT_A_NUMBER');
+  ASK_ACCOUNT_NAME = t.raw('ASK_ACCOUNT_NAME');
+  ACCOUNT_NAME_REFUSED = t.raw('ACCOUNT_NAME_REFUSED');
   NOTHING_TO_RENEW = t.raw('NOTHING_TO_RENEW');
   CHOOSE_SERVICE_TO_RENEW = t.raw('CHOOSE_SERVICE_TO_RENEW');
   RENEWAL_GONE = t.raw('RENEWAL_GONE');
@@ -1593,6 +1598,10 @@ export function addonTooMuch(max: number): string {
   return TEXTS_NOW.render('ADDON_TOO_MUCH', { max: max.toLocaleString('en-US') });
 }
 
+export function addonTooLittle(min: number): string {
+  return TEXTS_NOW.render('ADDON_TOO_LITTLE', { min: min.toLocaleString('en-US') });
+}
+
 export function addonInvoice(
   kind: 'ADD_VOLUME' | 'ADD_TIME',
   quantity: number,
@@ -1723,7 +1732,7 @@ export function renewMenu(
  */
 export function renewIntro(
   service: { plan_name_at_sale: string; public_id: string; expires_at: string | null },
-  mode: 'ADD' | 'RESET',
+  mode: RenewMode,
   now: number,
 ): string {
   const t = TEXTS_NOW;
@@ -1752,7 +1761,13 @@ export function renewIntro(
       ? t.raw('RENEW_MODE_ADD')
       : mode === 'ADD'
         ? t.raw('RENEW_MODE_ADD_EXPIRED')
-        : t.raw('RENEW_MODE_RESET'),
+        : mode === 'ADD_VOLUME_RESET_TIME'
+          ? // No «expired» variant: this mode's promise is about VOLUME, and
+            // volume is kept whether or not the clock had run out. The ADD
+            // sentence needs one because it promises remaining TIME, which an
+            // expired service does not have.
+            t.raw('RENEW_MODE_ADD_VOLUME_RESET_TIME')
+          : t.raw('RENEW_MODE_RESET'),
     '',
     t.raw('RENEW_CHOOSE_PLAN'),
   );
@@ -1940,6 +1955,69 @@ export function serviceNeverUsed(
  */
 export function spamBlockedReport(telegramId: number): string {
   return TEXTS_NOW.render('SPAM_BLOCKED_REPORT', { telegramId: String(telegramId) });
+}
+
+/** «🛍 خرید تازه» — one delivered purchase, for the reports group. */
+export function purchaseReport(f: {
+  order: string;
+  customer: number | null;
+  service: string;
+  totalIrr: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_PURCHASE', {
+    order: f.order,
+    customer: f.customer === null ? '—' : String(f.customer),
+    service: f.service,
+    amount: formatToman(f.totalIrr),
+  });
+}
+
+/** «📌 گزارش خرید خدمات» — a renewal or an add-on on a service already sold. */
+export function serviceReport(f: {
+  kind: 'RENEWAL' | 'ADD_VOLUME' | 'ADD_TIME';
+  order: string;
+  customer: number | null;
+  service: string;
+}): string {
+  const t = TEXTS_NOW;
+  const kind =
+    f.kind === 'RENEWAL'
+      ? t.raw('REPORT_KIND_RENEWAL')
+      : f.kind === 'ADD_VOLUME'
+        ? t.raw('REPORT_KIND_ADD_VOLUME')
+        : t.raw('REPORT_KIND_ADD_TIME');
+  return t.render('REPORT_SERVICE', {
+    kind,
+    order: f.order,
+    customer: f.customer === null ? '—' : String(f.customer),
+    service: f.service,
+  });
+}
+
+/** «🔑 گزارش اکانت تست» — a free account handed out. */
+export function trialReport(f: {
+  order: string;
+  customer: number | null;
+  panel: string;
+}): string {
+  return TEXTS_NOW.render('REPORT_TRIAL', {
+    order: f.order,
+    customer: f.customer === null ? '—' : String(f.customer),
+    panel: f.panel,
+  });
+}
+
+/** «💰 گزارش مالی» — money in, at the moment it is settled. */
+export function paymentReport(f: {
+  payment: string;
+  customer: number | null;
+  amountIrr: number;
+}): string {
+  return TEXTS_NOW.render('REPORT_PAYMENT', {
+    payment: f.payment,
+    customer: f.customer === null ? '—' : String(f.customer),
+    amount: formatToman(f.amountIrr),
+  });
 }
 
 /**

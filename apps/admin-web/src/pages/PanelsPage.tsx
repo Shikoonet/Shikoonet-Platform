@@ -49,7 +49,7 @@
  * it — and until today the only way to set it was SQL by hand.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api, ApiError, type PanelItem } from '../api.js';
 import { count } from '../format.js';
@@ -58,7 +58,6 @@ import { useAdminWriteProps } from '../role.js';
 import type {
   PanelGroups,
   PanelHiddenUser,
-  PanelHostItem,
   PanelTestResult,
   PanelTierPrices,
   PanelUsernameMode,
@@ -273,276 +272,6 @@ const KINDS: ReadonlyArray<{ value: string; label: string; login: boolean }> = [
   { value: 'ai_account', label: 'حساب هوش مصنوعی', login: false },
   { value: 'manual', label: 'دستی', login: false },
 ];
-
-/**
- * اینباندها — and what «ساختن» one actually means here.
- *
- * The panel has no inbound endpoint. `POST /api/inbound` is 404 and
- * `/api/inbounds` is 405, asked on 2026-08-23: an inbound is a section of the
- * panel's Xray core config, and the only way to add one is to rewrite that
- * whole config. A dashboard that offers a button for that can take every
- * customer's proxy down with one bad edit, not one tier — so it does not offer
- * one.
- *
- * What was actually missing is the HOST, and it is the half that decides
- * delivery. A host points at an inbound and carries the address the customer
- * connects to; an inbound with no host is in every listing, counts toward every
- * total, and hands the customer nothing. That was measured the hard way: a
- * `vip` group with two inbounds delivered exactly what a `normal` group with
- * one delivered, until a host went on the second and the same subscription link
- * went to two configs with nothing re-delivered.
- *
- * So the screen shows the inbounds the panel HAS, and lets an address be added
- * to any of them. That is the whole of what an operator building a tier needs,
- * and it is honest about which of the two things it is doing.
- */
-function PanelHostsSection({ panel }: { panel: PanelItem }) {
-  const w = useAdminWriteProps();
-  const [hosts, setHosts] = useState<PanelHostItem[] | null>(null);
-  const [inbounds, setInbounds] = useState<Array<{ tag: string; hosted?: boolean }> | null>(null);
-  const [reason, setReason] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [adding, setAdding] = useState<string | null>(null);
-  const [remark, setRemark] = useState('');
-  const [address, setAddress] = useState('');
-  const noticeRef = useRef<HTMLDivElement | null>(null);
-
-  async function load() {
-    setBusy(true);
-    try {
-      const [h, i] = await Promise.all([api.panelHosts(panel.id), api.panelInbounds(panel.id)]);
-      setHosts(h.hosts);
-      setInbounds(i.inbounds);
-      setReason(h.reason ?? i.reason ?? null);
-    } catch (e) {
-      setErr(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  useEffect(() => {
-    void load();
-  }, [panel.id]);
-
-  useEffect(() => {
-    if (err !== null || done !== null) {
-      noticeRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    }
-  }, [err, done]);
-
-  async function create() {
-    if (adding === null) return;
-    setBusy(true);
-    setErr(null);
-    setDone(null);
-    try {
-      const host = await api.createPanelHost(panel.id, {
-        remark: remark.trim(),
-        inboundTag: adding,
-        // Empty is a real answer and the panel accepts it: the host then
-        // resolves to the panel's own address, which is what a single-server
-        // shop wants and what somebody leaving the box blank means.
-        addresses: address.trim() === '' ? [] : address.split(',').map((a) => a.trim()),
-      });
-      setDone(`هاست «${host.host.remark}» روی «${adding}» ساخته شد — این اینباند حالا کانفیگ می‌دهد.`);
-      setAdding(null);
-      setRemark('');
-      setAddress('');
-      await load();
-    } catch (e) {
-      setErr(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function remove(h: PanelHostItem) {
-    if (
-      !window.confirm(
-        `هاست «${h.remark}» روی «${h.inboundTag}» حذف شود؟ اگر آخرین هاست این اینباند باشد، مشتری‌های آن اینباند یک کانفیگ کمتر می‌گیرند.`,
-      )
-    ) {
-      return;
-    }
-    setBusy(true);
-    setErr(null);
-    setDone(null);
-    try {
-      await api.deletePanelHost(panel.id, h.id);
-      setDone(`هاست «${h.remark}» حذف شد.`);
-      await load();
-    } catch (e) {
-      setErr(message(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <>
-      <p className="muted" style={{ marginBlockStart: 0 }}>
-        اینباند را پنل در تنظیمات Xray خودش تعریف می‌کند و از این‌جا ساخته نمی‌شود — API ندارد، و
-        دست‌بردن در آن تنظیمات یعنی ریسکِ قطع‌شدن سرویسِ همهٔ مشتری‌ها، نه یک سطح. آن‌چه از این‌جا
-        ساخته می‌شود <b>هاست</b> است: آدرسی که روی یک اینباند می‌نشیند. اینباندی که هاست ندارد در
-        همهٔ فهرست‌ها هست و در اشتراک مشتری <b>نیست</b>.
-      </p>
-
-      <div ref={noticeRef}>
-        {err && <div className="alert alert-error">{err}</div>}
-        {done && <div className="alert alert-ok">{done}</div>}
-      </div>
-
-      {inbounds === null ? (
-        <div className="alert alert-warning">
-          فهرست اینباندها از پنل خوانده نشد{reason ? ` — ${reason}` : ''}.
-        </div>
-      ) : (
-        <div className="table-wrap">
-          <table className="app-table">
-            <thead>
-              <tr>
-                <th>اینباند</th>
-                <th>هاست‌ها</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {inbounds.length === 0 && (
-                <tr>
-                  <td className="empty" colSpan={3}>
-                    این پنل هیچ اینباندی ندارد.
-                  </td>
-                </tr>
-              )}
-              {inbounds.map((i) => {
-                const mine = (hosts ?? []).filter((h) => h.inboundTag === i.tag);
-                const live = mine.filter((h) => !h.disabled);
-                return (
-                  <tr key={i.tag}>
-                    <td>
-                      <div className="ltr">{i.tag}</div>
-                      {live.length === 0 && (
-                        <span className="badge badge-block">به مشتری کانفیگ نمی‌دهد</span>
-                      )}
-                    </td>
-                    <td>
-                      {mine.length === 0 ? (
-                        <span className="muted">هیچ</span>
-                      ) : (
-                        mine.map((h) => (
-                          <div key={h.id} style={{ marginBlockEnd: 4 }}>
-                            {/* One `ltr` span around the whole pair, not two
-                                side by side. Two of them in an RTL row put the
-                                second BEFORE the first and swallowed the
-                                separator — «www.shikoneet.comtest-host» on the
-                                live screen, which reads as one broken string
-                                rather than a name and an address. Seen in the
-                                screenshot; the markup looked fine. */}
-                            <span className="ltr">
-                              {h.remark}
-                              {h.addresses.length > 0 && (
-                                <span className="muted"> · {h.addresses.join(', ')}</span>
-                              )}
-                            </span>{' '}
-                            {h.disabled && <span className="badge badge-warning">خاموش</span>}{' '}
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-danger"
-                              onClick={() => void remove(h)}
-                              {...w}
-                            >
-                              حذف
-                            </button>
-                          </div>
-                        ))
-                      )}
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => {
-                          setAdding(i.tag);
-                          setRemark('');
-                          setAddress('');
-                          setDone(null);
-                        }}
-                        {...w}
-                      >
-                        + هاست
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {adding !== null && (
-        <div className="card" style={{ marginBlock: 12 }}>
-          <div className="card__head">
-            <span className="card__title">
-              هاست تازه روی <span className="ltr">{adding}</span>
-            </span>
-            <button type="button" className="btn btn-sm" onClick={() => setAdding(null)}>
-              انصراف
-            </button>
-          </div>
-          <div className="filters">
-            <div className="grow">
-              <label className="form-label" htmlFor="host-remark">
-                نام هاست
-              </label>
-              <input
-                id="host-remark"
-                className="form-control"
-                type="text"
-                maxLength={120}
-                placeholder="آلمان-۱"
-                value={remark}
-                onChange={(e) => setRemark(e.target.value)}
-                {...w}
-              />
-            </div>
-            <div className="grow">
-              <label className="form-label" htmlFor="host-address">
-                آدرس
-              </label>
-              <input
-                id="host-address"
-                className="form-control ltr"
-                type="text"
-                placeholder="de1.example.com"
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                {...w}
-              />
-            </div>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={busy || remark.trim() === ''}
-              onClick={() => void create()}
-              {...w}
-            >
-              بساز
-            </button>
-          </div>
-          <p className="muted">
-            آدرس خالی یعنی همان آدرس خودِ پنل، که برای فروشگاهِ تک‌سروری همان چیزی است که می‌خواهید.
-            چند آدرس را با ویرگول جدا کنید.
-          </p>
-        </div>
-      )}
-    </>
-  );
-}
-
 
 /**
  * The panel's groups, asked for ONCE per modal.
@@ -1164,7 +893,7 @@ function PanelModal({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [autoStatus, setAutoStatus] = useState(true);
-  const [renewMode, setRenewMode] = useState<'ADD' | 'RESET'>(panel?.renewMode ?? 'RESET');
+  const [renewMode, setRenewMode] = useState<PanelItem['renewMode']>(panel?.renewMode ?? 'RESET');
   const [renewEnabled, setRenewEnabled] = useState(panel?.renewEnabled ?? true);
   const [capacity, setCapacity] = useState(
     panel?.capacity === null || panel?.capacity === undefined ? '' : String(panel.capacity),
@@ -1179,6 +908,12 @@ function PanelModal({
   const [trialHours, setTrialHours] = useState(numText(panel?.trial.durationHours));
   const [extraVolume, setExtraVolume] = useState<TierText>(tierText(panel?.extraVolumeTomanPerGb));
   const [extraTime, setExtraTime] = useState<TierText>(tierText(panel?.extraTimeTomanPerDay));
+  const [minVolume, setMinVolume] = useState(numText(panel?.extraVolumeMinGb));
+  const [minTime, setMinTime] = useState(numText(panel?.extraTimeMinDays));
+  const [newcomersOnly, setNewcomersOnly] = useState(panel?.newcomersOnly ?? false);
+  /** The panel's login name, fetched once when the modal opens. Never a password. */
+  const [storedUsername, setStoredUsername] = useState<string | null>(null);
+  const [credentialSetBy, setCredentialSetBy] = useState<string | null>(null);
   const [downgradeGroupIds, setDowngradeGroupIds] = useState<number[]>(
     panel?.downgradeGroupIds ?? [],
   );
@@ -1192,6 +927,31 @@ function PanelModal({
   const needsLogin = KINDS.find((k) => k.value === kind)?.login ?? true;
   // One fetch for both group folds — see `usePanelGroups`.
   const groups = usePanelGroups(panel !== null && needsLogin ? panel.id : null);
+
+  /**
+   * The panel's login name, asked for once when the modal opens.
+   *
+   * Its own request rather than a field on the panel list: this is half a
+   * credential, and `GET /panels` is drawn on a screen an operator leaves open
+   * with every panel on it. Failure is silent on purpose — an operator who
+   * cannot be told which account a panel uses can still edit everything else,
+   * and a red banner over a name is the wrong size of complaint.
+   */
+  useEffect(() => {
+    if (panel === null || !panel.hasSecretRef) return;
+    let live = true;
+    void api
+      .panelCredentialUsername(panel.id)
+      .then((d) => {
+        if (!live) return;
+        setStoredUsername(d.username);
+        setCredentialSetBy(d.setBy);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [panel]);
 
   async function save() {
     setBusy(true);
@@ -1248,6 +1008,15 @@ function PanelModal({
         setErr('قیمت‌ها باید عدد صحیح بزرگ‌تر از صفر باشند — خالی یعنی فروخته نمی‌شود.');
         return;
       }
+      // Same rule as the prices beside them: empty is «no floor», a mistyped
+      // number is neither and stops the save rather than quietly becoming null
+      // — which the operator would read on screen as «حداقلی ندارد».
+      const minVolumeValue = positiveIntOrNull(minVolume);
+      const minTimeValue = positiveIntOrNull(minTime);
+      if (minVolumeValue === 'bad' || minTimeValue === 'bad') {
+        setErr('حداقل خرید باید عدد صحیح بزرگ‌تر از صفر باشد — خالی یعنی حداقلی ندارد.');
+        return;
+      }
       const panelText = usernameText.trim() === '' ? null : usernameText.trim();
       /*
        * The trial's three fields move together and the two price tables move
@@ -1283,6 +1052,9 @@ function PanelModal({
           ? {}
           : { extraTimeTomanPerDay: timePrices }),
         ...(sameIds(downgradeGroupIds, panel.downgradeGroupIds) ? {} : { downgradeGroupIds }),
+        ...(minVolumeValue === panel.extraVolumeMinGb ? {} : { extraVolumeMinGb: minVolumeValue }),
+        ...(minTimeValue === panel.extraTimeMinDays ? {} : { extraTimeMinDays: minTimeValue }),
+        ...(newcomersOnly === panel.newcomersOnly ? {} : { newcomersOnly }),
       });
       setNote(statusNote(updated.panel, updated.probe));
       setPassword('');
@@ -1390,6 +1162,10 @@ function PanelModal({
                   className="form-control ltr"
                   type="text"
                   autoComplete="off"
+                  // The stored name as the placeholder rather than the value:
+                  // typing must still mean «change it to this», and prefilling
+                  // the value would send the same name back on every save.
+                  placeholder={storedUsername ?? ''}
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   {...w}
@@ -1414,8 +1190,11 @@ function PanelModal({
             </div>
             {editing && panel.hasSecretRef && (
               <p className="muted" style={{ marginBlockStart: 4 }}>
-                رمزی ذخیره شده است. هیچ‌جای این پنل آن را پس نمی‌دهد — فقط سرویس‌هایی که تحویل
-                می‌دهند می‌توانند بازش کنند.
+                {storedUsername === null
+                  ? 'رمزی ذخیره شده است.'
+                  : `این پنل با «${storedUsername}» وارد می‌شود.`}{' '}
+                رمزش را هیچ‌جا پس نمی‌دهد — فقط سرویس‌هایی که تحویل می‌دهند می‌توانند بازش کنند.
+                {credentialSetBy !== null && ` آخرین بار ${credentialSetBy} تنظیمش کرده.`}
               </p>
             )}
 
@@ -1463,11 +1242,12 @@ function PanelModal({
                 id="panel-renew-mode"
                 className="form-control"
                 value={renewMode}
-                onChange={(e) => setRenewMode(e.target.value as 'ADD' | 'RESET')}
+                onChange={(e) => setRenewMode(e.target.value as PanelItem['renewMode'])}
                 {...w}
               >
                 <option value="RESET">ریست حجم و زمان</option>
                 <option value="ADD">اضافه‌شدن حجم و زمان به قبلی</option>
+                <option value="ADD_VOLUME_RESET_TIME">ریست زمان، اضافه‌شدن حجم</option>
               </select>
             </div>
             <div className="grow">
@@ -1530,13 +1310,34 @@ function PanelModal({
               سرویس‌های این پنل از فهرست خرید برداشته می‌شوند و تمدیدها دست‌نخورده می‌مانند.
             </p>
           )}
+
+          <label className="check" style={{ marginBlockStart: 12 }}>
+            <input
+              type="checkbox"
+              checked={newcomersOnly}
+              onChange={(e) => setNewcomersOnly(e.target.checked)}
+              {...w}
+            />{' '}
+            فقط برای کسانی که هنوز خریدی نکرده‌اند
+          </label>
+          <p className="muted" style={{ marginBlockStart: 4 }}>
+            پنلِ شروع: هر کس <b>یک سرویس داشته باشد</b> دیگر این پنل را نمی‌بیند. «خرید کرده» یعنی
+            سرویسی در اختیار دارد، نه اینکه سفارشی ثبت کرده باشد.{' '}
+            <b>
+              تمدید هم از همین قاعده پیروی می‌کند — کسی که یک‌بار از این پنل خریده، دیگر نمی‌تواند
+              روی همین پنل تمدید کند.
+            </b>
+          </p>
         </Fold>
 
         {/*
           Only for a saved panel, and each in its own fold. Sam asked for the
-          groups view to show groups and nothing else — hosts are a different
-          question about the same panel, and this screen is still the only place
-          they can be managed at all.
+          groups view to show groups and nothing else.
+
+          «هاست‌ها» used to be the last fold here and was removed on 2026-09-03:
+          Sam said the shop does not need it, so host management goes back to
+          the panel's own web UI. The «هیچ اینباندش هاست ندارد» warning in
+          «گروه‌های پنل» survives — it is fed by `/inbounds`, not by that fold.
 
           The four folds added on 2026-09-02 are the panel settings the old bot
           had and this screen did not. Three of them are plain form state and go
@@ -1561,6 +1362,12 @@ function PanelModal({
                     <option value="TELEGRAM_ID">آیدی عددی کاربر</option>
                     <option value="PANEL_TEXT">متن دلخواه این پنل</option>
                     <option value="TELEGRAM_USERNAME">نام کاربری تلگرام</option>
+                    {/* NOT «تصادفی». The name is a digest of the order number,
+                        so a retry reproduces it — a genuinely random one would
+                        make a second paid account. Labelling it random is how
+                        the next person undoes that. */}
+                    <option value="ORDER_ID">برگرفته از شمارهٔ سفارش</option>
+                    <option value="CUSTOMER_TEXT">نام دلخواه مشتری</option>
                   </select>
                 </div>
                 {usernameMode === 'PANEL_TEXT' && (
@@ -1587,6 +1394,24 @@ function PanelModal({
                 دوم نسازد.
                 {usernameMode === 'TELEGRAM_USERNAME' && (
                   <> مشتری‌ای که نام کاربری تلگرام ندارد با آیدی عددی‌اش ساخته می‌شود.</>
+                )}
+                {usernameMode === 'ORDER_ID' && (
+                  <>
+                    {' '}
+                    پیشوند از روی <b>شمارهٔ همان سفارش</b> ساخته می‌شود؛ نامفهوم به نظر می‌رسد ولی
+                    تصادفی نیست — آیدی عددی مشتری در نام اکانت دیده نمی‌شود و دو سرویسِ یک نفر هیچ
+                    شباهتی به هم ندارند.
+                  </>
+                )}
+                {usernameMode === 'CUSTOMER_TEXT' && (
+                  <>
+                    {' '}
+                    ربات هنگام خرید از مشتری یک نام می‌پرسد و همان پیشوند می‌شود —{' '}
+                    <b>شمارهٔ سفارش باز هم به انتهایش اضافه می‌شود</b>، پس مشتری‌ای که «reza»
+                    بنویسد اکانتی به نام <span className="ltr">reza_1a2b3c4d5e</span> می‌گیرد.
+                    نامی که پنل نپذیرد دوباره پرسیده می‌شود؛ سرویس تست پرسشی ندارد و مثل حالت بالا
+                    ساخته می‌شود.
+                  </>
                 )}
               </p>
             </Fold>
@@ -1691,6 +1516,46 @@ function PanelModal({
               <p className="muted" style={{ marginBlockStart: 4 }}>
                 قیمت‌ها به تومان‌اند. خالی یعنی روی این پنل فروخته نمی‌شود.
               </p>
+
+              <div className="form-label" style={{ marginBlockStart: 12 }}>
+                حداقل خرید
+              </div>
+              <div className="filters">
+                <div className="grow">
+                  <label className="form-label" htmlFor="panel-min-vol">
+                    کمترین حجم (گیگابایت)
+                  </label>
+                  <input
+                    id="panel-min-vol"
+                    className="form-control ltr"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="بدون حداقل"
+                    value={minVolume}
+                    onChange={(e) => setMinVolume(e.target.value)}
+                    {...w}
+                  />
+                </div>
+                <div className="grow">
+                  <label className="form-label" htmlFor="panel-min-time">
+                    کمترین زمان (روز)
+                  </label>
+                  <input
+                    id="panel-min-time"
+                    className="form-control ltr"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="بدون حداقل"
+                    value={minTime}
+                    onChange={(e) => setMinTime(e.target.value)}
+                    {...w}
+                  />
+                </div>
+              </div>
+              <p className="muted" style={{ marginBlockStart: 4 }}>
+                یک حداقل برای همهٔ سطح‌ها، نه برای هر سطح جدا. خالی یعنی حداقلی ندارد و مشتری
+                می‌تواند یک گیگابایت هم بخرد.
+              </p>
             </Fold>
 
             <Fold title="گروه‌های پنل" open>
@@ -1709,12 +1574,6 @@ function PanelModal({
         {editing && (
           <Fold title="😶 کاربرانی که این پنل را نمی‌بینند" onOpen={() => setHiddenOpened(true)}>
             {hiddenOpened && <PanelHiddenUsersSection panel={panel} />}
-          </Fold>
-        )}
-
-        {editing && needsLogin && (
-          <Fold title="هاست‌ها">
-            <PanelHostsSection panel={panel} />
           </Fold>
         )}
 

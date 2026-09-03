@@ -46,6 +46,22 @@ export interface EventFacets {
   events: Array<{ evt: string; svc: string; count: number }>;
 }
 
+/**
+ * The level a reseller is on, or null. `percent` is the level's, and it is what
+ * `effectiveDiscountPercent` will be showing whenever this is not null.
+ */
+export interface ResellerTierRef {
+  code: 'n' | 'n2';
+  name: string;
+  percent: number;
+}
+
+export interface ResellerTierRow extends ResellerTierRef {
+  /** Resellers on this level. A reseller with no level is counted as `n`. */
+  members: number;
+  updatedAt: string;
+}
+
 export interface CustomerListItem {
   id: number;
   telegramId: number;
@@ -53,7 +69,15 @@ export interface CustomerListItem {
   phone: string | null;
   status: string;
   isReseller: boolean;
+  /** Their own standing percentage — stored, but not necessarily charged. */
   discountPercent: number;
+  tier: ResellerTierRef | null;
+  /**
+   * What the bot will actually take off. The level's percentage when they are
+   * on one, `discountPercent` otherwise — never compute this in the browser,
+   * the two would drift the first time either rule changed.
+   */
+  effectiveDiscountPercent: number;
   balanceIrr: number;
   registeredAt: string;
   lastSeenAt: string | null;
@@ -84,7 +108,15 @@ export interface CustomerDetail {
   status: string;
   blockedReason: string | null;
   isReseller: boolean;
+  /** Their own standing percentage — stored, but not necessarily charged. */
   discountPercent: number;
+  tier: ResellerTierRef | null;
+  /**
+   * What the bot will actually take off. The level's percentage when they are
+   * on one, `discountPercent` otherwise — never compute this in the browser,
+   * the two would drift the first time either rule changed.
+   */
+  effectiveDiscountPercent: number;
   referralCode: string | null;
   balanceIrr: number;
   registeredAt: string;
@@ -857,28 +889,6 @@ export interface PanelInbounds {
 }
 
 /**
- * One host — the thing a subscription is actually built out of.
- *
- * The panel has no inbound endpoint (`POST /api/inbound` is 404), because an
- * inbound is part of its Xray core config. A host is what points at an inbound
- * and carries the address, and an inbound with no host delivers nothing. So
- * this is what «اینباند تازه» on the screen creates, and the screen says so.
- */
-export interface PanelHostItem {
-  id: number;
-  remark: string;
-  inboundTag: string;
-  addresses: string[];
-  disabled: boolean;
-}
-
-export interface PanelHosts {
-  ok: boolean;
-  hosts: PanelHostItem[] | null;
-  reason?: string;
-}
-
-/**
  * What a panel sends, what it has, and who ignores it.
  *
  * `available: null` means the panel could not be asked — NOT that it has no
@@ -914,7 +924,12 @@ export interface PanelGroups {
  * Legacy offers eight; five of them are random or counted and cannot be
  * reproduced by a retry, so `remoteUsernameFor` carries only these three.
  */
-export type PanelUsernameMode = 'TELEGRAM_ID' | 'PANEL_TEXT' | 'TELEGRAM_USERNAME';
+export type PanelUsernameMode =
+  | 'TELEGRAM_ID'
+  | 'PANEL_TEXT'
+  | 'TELEGRAM_USERNAME'
+  | 'ORDER_ID'
+  | 'CUSTOMER_TEXT';
 
 /**
  * One price per customer tier, in TOMAN — `f` ordinary, `n` reseller, `n2`
@@ -954,7 +969,12 @@ export interface PanelItem {
    * a hysteria shared secret. `'ADD'` accumulates volume and time onto a
    * renewal, `'RESET'` starts both over.
    */
-  renewMode: 'ADD' | 'RESET';
+  renewMode: 'ADD' | 'RESET' | 'ADD_VOLUME_RESET_TIME';
+  /** «حداقل خرید» for add-ons. Null means no floor. */
+  extraVolumeMinGb: number | null;
+  extraTimeMinDays: number | null;
+  /** A starter panel: only customers who own nothing can see it. */
+  newcomersOnly: boolean;
   renewEnabled: boolean;
   /*
    * The rest of the panel's settings, derived on the server the same way and
@@ -1123,6 +1143,19 @@ export interface BotConnection {
   /** What the bot that is actually RUNNING said about itself at its last boot. */
   liveUsername: string | null;
   appliesAfter: string;
+  /**
+   * Where the shop's own reports go, and which topics exist.
+   *
+   * `chatId` null means nothing is configured and no report is sent at all. A
+   * topic with `threadId` null is one that has not been made — its reports land
+   * in the group's General rather than being lost, which is why the screen has
+   * to say how many are set and not just whether a group is.
+   */
+  reportGroup: {
+    chatId: number | null;
+    configured: number;
+    topics: { kind: string; title: string; threadId: number | null }[];
+  };
 }
 
 export interface BotScreen {
@@ -1324,6 +1357,7 @@ export const api = {
     page: number;
     pageSize: number;
     sort?: 'recent' | 'balance' | 'debt';
+    reseller?: 'yes' | 'no';
   }) {
     const qs = new URLSearchParams({
       page: String(params.page),
@@ -1332,6 +1366,7 @@ export const api = {
     if (params.q) qs.set('q', params.q);
     if (params.status) qs.set('status', params.status);
     if (params.sort && params.sort !== 'recent') qs.set('sort', params.sort);
+    if (params.reseller) qs.set('reseller', params.reseller);
     return req<CustomerListPage>(`/customers?${qs.toString()}`);
   },
 
@@ -1682,7 +1717,39 @@ export const api = {
   },
 
   setDiscount(id: number, body: { percent: number }) {
-    return req<{ ok: boolean; percent: number }>(`/customers/${id}/discount`, {
+    return req<{
+      ok: boolean;
+      percent: number;
+      /** What the customer will be charged — the level's, if they are on one. */
+      effectivePercent: number;
+      tierName: string | null;
+    }>(`/customers/${id}/discount`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** Makes somebody a reseller, or stops them being one. The level rides along. */
+  setReseller(id: number, body: { isReseller: boolean; tier: 'n' | 'n2' | null }) {
+    return req<{ ok: boolean; changed: boolean }>(`/customers/${id}/reseller`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  resellerTiers() {
+    return req<{ ok: boolean; items: ResellerTierRow[] }>('/reseller-tiers');
+  },
+
+  /**
+   * One number here moves the price for every reseller on that level.
+   *
+   * The percentage only. A level's NAME is seeded by 0047 and not editable —
+   * the panel screen's own tier labels hardcode the same words, and one level
+   * with two names is worse than one that cannot be renamed.
+   */
+  saveResellerTier(code: string, body: { percent: number }) {
+    return req<{ ok: boolean; changed: boolean }>(`/reseller-tiers/${code}`, {
       method: 'POST',
       body: JSON.stringify(body),
     });
@@ -1776,6 +1843,21 @@ export const api = {
 
   botConnection() {
     return req<{ ok: boolean } & BotConnection>('/bot');
+  },
+
+  /**
+   * Points the bot at a forum group and creates the report topics in it.
+   *
+   * The group must already have the bot in it as an admin — the server asks
+   * Telegram and refuses with a sentence rather than letting ten topic
+   * creations fail one by one.
+   */
+  setReportGroup(chatId: number) {
+    return req<{
+      ok: boolean;
+      chatId: number;
+      created: Record<string, number>;
+    }>('/bot/report-group', { method: 'POST', body: JSON.stringify({ chatId }) });
   },
 
   setBotToken(token: string) {
@@ -1919,6 +2001,16 @@ export const api = {
     });
   },
 
+  /**
+   * The username a panel signs in with. Never the password — nothing can read
+   * one back, which is why the box on the screen means «خالی = بدون تغییر».
+   */
+  panelCredentialUsername(id: number) {
+    return req<{ ok: boolean; username: string | null; setBy: string | null; setAt: string | null }>(
+      `/panels/${id}/credential-username`,
+    );
+  },
+
   panelInbounds(id: number) {
     return req<PanelInbounds>(`/panels/${id}/inbounds`);
   },
@@ -1965,20 +2057,8 @@ export const api = {
     );
   },
 
-  panelHosts(id: number) {
-    return req<PanelHosts>(`/panels/${id}/hosts`);
-  },
 
-  createPanelHost(id: number, spec: { remark: string; inboundTag: string; addresses: string[] }) {
-    return req<{ ok: boolean; host: PanelHostItem }>(`/panels/${id}/hosts`, {
-      method: 'POST',
-      body: JSON.stringify(spec),
-    });
-  },
 
-  deletePanelHost(id: number, hostId: number) {
-    return req<{ ok: boolean }>(`/panels/${id}/hosts/${hostId}`, { method: 'DELETE' });
-  },
 
   updatePanel(
     id: number,
@@ -1988,7 +2068,10 @@ export const api = {
       capacity?: number | null;
       sortOrder?: number;
       baseUrl?: string | null;
-      renewMode?: 'ADD' | 'RESET';
+      renewMode?: 'ADD' | 'RESET' | 'ADD_VOLUME_RESET_TIME';
+      extraVolumeMinGb?: number | null;
+      extraTimeMinDays?: number | null;
+      newcomersOnly?: boolean;
       renewEnabled?: boolean;
       /**
        * Re-probe and let the answer set the status. Ignored when `status` is in
@@ -2169,10 +2252,15 @@ export const api = {
     return req<{ ok: boolean; items: ResellerRequestRow[] }>(`/reseller-requests?${qs.toString()}`);
   },
 
-  decideResellerRequest(id: number, status: 'APPROVED' | 'REJECTED') {
+  /** `tier` is only read on APPROVED; null there means level one. */
+  decideResellerRequest(
+    id: number,
+    status: 'APPROVED' | 'REJECTED',
+    tier: 'n' | 'n2' | null = null,
+  ) {
     return req<{ ok: boolean; status: string }>(`/reseller-requests/${id}`, {
       method: 'POST',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, tier }),
     });
   },
 

@@ -14,6 +14,7 @@ export * from './customEmoji.js';
 export * from './premiumEmoji.js';
 export * from './mirzabot.js';
 export * from './botTexts.js';
+export * from './reportTopics.js';
 export * from './botKeyboard.js';
 export * from './planLabel.js';
 export * from './catalogLayout.js';
