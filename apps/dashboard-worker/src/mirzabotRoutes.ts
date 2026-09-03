@@ -255,6 +255,51 @@ function stateSql(state: ReviewState): string {
   }
 }
 
+/**
+ * Every state a claim row can be in — and the only list the badge query, the
+ * «همه» tab's status filter and `stateSql` are allowed to read.
+ *
+ * It exists because those three had drifted apart twice, in both directions:
+ *
+ * - the badge's `CASE` had no arm for `FULFILLED_UNRECONCILED`, so that badge
+ *   read zero forever and its rows fell through `ELSE` into «در انتظار بررسی»,
+ *   whose own filter can never return them. Staging, 2026-09-03: the queue
+ *   promised 15 and listed 2, and the 13 underneath were delivered orders the
+ *   bank had never confirmed — the one gap that is money;
+ * - the status filter's allow-list was missing the same state, so choosing
+ *   «تحویل‌شده، در انتظار تطبیق» in the panel dropped the filter and showed
+ *   every claim, which reads as "there are no others".
+ *
+ * Both are the shape a hand-kept second copy always fails in: silently, and in
+ * the direction that looks like data rather than a bug. One array, read three
+ * times, cannot drift.
+ */
+const REVIEW_STATES: readonly ReviewState[] = [
+  'AUTO_VERIFIED',
+  'MANUALLY_VERIFIED',
+  'FULFILLED_UNRECONCILED',
+  'NO_TRANSFER_FOUND',
+  'NEEDS_REVIEW',
+  'WAITING',
+  'REJECTED',
+  'FAKE',
+  'EXPIRED',
+];
+
+/**
+ * The badge's projection, built from the same predicates the lists use.
+ *
+ * `ELSE NULL` rather than a catch-all bucket: a row whose status matches no
+ * state is a row no tab can show, and counting it under a tab that cannot list
+ * it is exactly what went wrong. It still reaches the «همه» badge, which counts
+ * rows rather than states, so nothing disappears — it just stops being counted
+ * as something it is not.
+ */
+const REVIEW_STATE_CASE = `CASE
+  ${REVIEW_STATES.map((s) => `WHEN ${stateSql(s)} THEN '${s}'`).join('\n  ')}
+  ELSE NULL
+END`;
+
 type ClaimRow = {
   id: string;
   external_order_id: string;
@@ -537,17 +582,7 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
   const rows = await db
     .prepare(
       `SELECT
-         CASE
-           WHEN c.status = 'VERIFIED' AND m.status = 'AUTO_VERIFIED' THEN 'AUTO_VERIFIED'
-           WHEN c.status = 'VERIFIED' THEN 'MANUALLY_VERIFIED'
-           WHEN c.status = 'FAKE_RECEIPT' THEN 'FAKE'
-           WHEN c.status = 'REJECTED' THEN 'REJECTED'
-           WHEN c.status = 'EXPIRED' THEN 'EXPIRED'
-           WHEN ${PENDING_CLAIM} AND c.suspect_reason IN ${NO_TRANSFER_REASONS} THEN 'NO_TRANSFER_FOUND'
-           WHEN ${PENDING_CLAIM} AND c.suspect_reason IS NOT NULL THEN 'NEEDS_REVIEW'
-           WHEN ${PENDING_CLAIM} AND c.suspect_reason IS NULL THEN 'WAITING'
-           ELSE 'NEEDS_REVIEW'
-         END AS review_state,
+         ${REVIEW_STATE_CASE} AS review_state,
          COUNT(*) AS n,
          SUM(CASE WHEN ${EFFECTIVE_TS} BETWEEN ?2 AND ?3 THEN 1 ELSE 0 END) AS n_today
        FROM payment_claims c
@@ -564,7 +599,7 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
     // `packages/db` refuses a statement with a parameter nothing uses rather
     // than guessing — SQLite ignored those, Postgres cannot.
     .bind(MIRZABOT_SOURCE, dayStart, dayEnd)
-    .all<{ review_state: ReviewState; n: number; n_today: number }>();
+    .all<{ review_state: ReviewState | null; n: number; n_today: number }>();
 
   const total: Record<ReviewState, number> = {
     AUTO_VERIFIED: 0,
@@ -580,9 +615,11 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
   const today = { ...total };
   let all = 0;
   for (const r of rows.results ?? []) {
+    // `all` counts rows, so a state nobody can list still shows up there.
+    all += r.n;
+    if (r.review_state == null) continue;
     total[r.review_state] += r.n;
     today[r.review_state] += r.n_today ?? 0;
-    all += r.n;
   }
 
   const decidedToday =
@@ -1144,17 +1181,7 @@ export function registerMirzabotRoutes(
                   : null;
       if (tabState) where.push(stateSql(tabState));
       if (tab === 'all' && statusFilter) {
-        const allowed: ReviewState[] = [
-          'AUTO_VERIFIED',
-          'NEEDS_REVIEW',
-          'MANUALLY_VERIFIED',
-          'WAITING',
-          'NO_TRANSFER_FOUND',
-          'REJECTED',
-          'FAKE',
-          'EXPIRED',
-        ];
-        if (allowed.includes(statusFilter as ReviewState)) {
+        if (REVIEW_STATES.includes(statusFilter as ReviewState)) {
           const st = statusFilter as ReviewState;
           where.push(stateSql(st));
         }

@@ -242,6 +242,56 @@ describe('GET /api/v1/payments', () => {
     expect(body.summary.botAutoVerified.payments).toBe(1);
   });
 
+  /**
+   * The badge and the list are two queries over the same rows, and they have
+   * now drifted twice. This time `FULFILLED_UNRECONCILED` had no arm in the
+   * badge's `CASE` at all: its own badge read zero forever, and its rows fell
+   * through to `ELSE 'NEEDS_REVIEW'` — a queue whose `stateSql` filter can
+   * never return them.
+   *
+   * Measured on staging, 2026-09-03: «در انتظار بررسی» promised 15 and listed
+   * 2, with 14 delivered-but-unmatched claims making up the difference. That
+   * is the one queue where the gap is money — the customer has the product and
+   * the bank never confirmed the payment.
+   *
+   * So the assertion is not «FULFILLED_UNRECONCILED counts» but the rule the
+   * screen actually needs: no badge may promise rows its own filter cannot
+   * produce. Any future state added to `stateSql` without an arm in the badge
+   * — or the reverse — fails here.
+   */
+  it('every badge equals the number of rows its own filter returns', async () => {
+    const base = Date.now();
+    await seedClaim('s-auto', { status: 'VERIFIED', paidClickedAt: base });
+    await seedTx('t-auto', base);
+    await seedMatch('s-auto', 't-auto', 'AUTO_VERIFIED');
+    await seedClaim('s-man', { status: 'VERIFIED' });
+    await seedClaim('s-ful', { status: 'FULFILLED_UNRECONCILED' });
+    await seedClaim('s-wait');
+    await seedClaim('s-need', { suspectReason: 'AMBIGUOUS_CLAIMS' });
+    await seedClaim('s-no-tx', { suspectReason: 'NO_TRANSACTION_AFTER_10M' });
+    await seedClaim('s-rej', { status: 'REJECTED' });
+    await seedClaim('s-fake', { status: 'FAKE_RECEIPT' });
+    await seedClaim('s-exp', { status: 'EXPIRED' });
+
+    const states = [
+      'AUTO_VERIFIED',
+      'MANUALLY_VERIFIED',
+      'FULFILLED_UNRECONCILED',
+      'WAITING',
+      'NEEDS_REVIEW',
+      'NO_TRANSFER_FOUND',
+      'REJECTED',
+      'FAKE',
+      'EXPIRED',
+    ] as const;
+
+    const badge = (await get('tab=all')).counts;
+    for (const state of states) {
+      const listed = await get(`tab=all&status=${state}`);
+      expect(`${state} badge=${badge[state]}`).toBe(`${state} badge=${listed.items.length}`);
+    }
+  });
+
   it('masks the card number and never returns the full PAN', async () => {
     await seedClaim('c-card', { suspectReason: 'UNMAPPED_CARD' });
     const body = await get('tab=needs_review');
