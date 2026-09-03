@@ -214,6 +214,27 @@ describe('the switch', () => {
   });
 });
 
+describe('a custom emoji inside a NAME, not inside the wording', () => {
+  // A product name and a panel name are DATA. They reach a screen through a
+  // slot, and `raw()` had already made its stripping decision one step earlier —
+  // so with the shop's switch off, a name an admin had put an emoji in arrived
+  // at the customer as the literal `<tg-emoji …>` markup, in the middle of an
+  // invoice. Nobody had seen it because nobody had yet typed one.
+
+  it('strips a tag that arrived in a slot when the switch is off', () => {
+    const texts = new Texts({}, false);
+    const line = texts.render('CHECKOUT_SERVICE', { product: `${FIRE} پلاتینیوم` });
+    expect(line).not.toContain('tg-emoji');
+    expect(line).toContain('🔥 پلاتینیوم');
+  });
+
+  it('keeps it when the switch is on, so the message can render it', () => {
+    const texts = new Texts({}, true);
+    const line = texts.render('CHECKOUT_SERVICE', { product: `${FIRE} پلاتینیوم` });
+    expect(line).toContain('tg-emoji');
+  });
+});
+
 describe('sending it, and being refused', () => {
   /** A Telegram that answers however the test says, and records what it got. */
   function fakeTelegram(answers: ('ok' | 'reject' | 'network' | 'notmodified')[]) {
@@ -278,6 +299,81 @@ describe('sending it, and being refused', () => {
     // The customer got the screen, with the fallback emoji in it.
     expect(bodies[1]!['text']).toBe('خوش آمدید 🔥');
     expect(bodies[1]!['parse_mode']).toBeUndefined();
+    expect(refused).toHaveBeenCalledTimes(1);
+  });
+
+  it('puts a leading emoji on the BUTTON, as an icon rather than as markup', async () => {
+    // A button's `text` is plain — Telegram parses no markup in it — so the
+    // only way a premium emoji reaches one is `icon_custom_emoji_id`. Sent as
+    // markup it would arrive as the literal string on the button.
+    const { bodies, fetchImpl } = fakeTelegram(['ok']);
+    const api = createTelegramApi({ token: 't', baseUrl: 'https://x.test', fetch: fetchImpl });
+
+    await api.sendMessage(1, 'یک متن ساده', [[{ text: `${FIRE} پلاتینیوم`, callback_data: 'x' }]]);
+
+    const button = (bodies[0]!['reply_markup'] as { inline_keyboard: Record<string, unknown>[][] })
+      .inline_keyboard[0]![0]!;
+    expect(button['text']).toBe('پلاتینیوم');
+    expect(button['icon_custom_emoji_id']).toBe('5368324170671202286');
+    // The TEXT decided nothing here: it carries no markup, so no parse_mode.
+    // Sending one would hand Telegram an unescaped Persian sentence.
+    expect(bodies[0]!['parse_mode']).toBeUndefined();
+  });
+
+  it('keeps the glyph when the label is nothing but an emoji', async () => {
+    // An icon with an empty label is a button with no text, which Telegram
+    // refuses — and the button is somebody's whole screen.
+    const { bodies, fetchImpl } = fakeTelegram(['ok']);
+    const api = createTelegramApi({ token: 't', baseUrl: 'https://x.test', fetch: fetchImpl });
+
+    await api.sendMessage(1, 'سلام', [[{ text: FIRE, callback_data: 'x' }]]);
+
+    const button = (bodies[0]!['reply_markup'] as { inline_keyboard: Record<string, unknown>[][] })
+      .inline_keyboard[0]![0]!;
+    expect(button['text']).toBe('🔥');
+    expect(button['icon_custom_emoji_id']).toBeUndefined();
+  });
+
+  it('lands the KEYBOARD plain too, not just the text', async () => {
+    // The bug this pins: the retry used to re-send the identical keyboard, so a
+    // shop whose Premium had just been refused sent the icon field again, was
+    // refused again, and the customer got nothing at all.
+    const refused = vi.fn();
+    const { bodies, fetchImpl } = fakeTelegram(['reject', 'ok']);
+    const api = createTelegramApi({
+      token: 't',
+      baseUrl: 'https://x.test',
+      fetch: fetchImpl,
+      onCustomEmojiRefused: refused,
+    });
+
+    await expect(
+      api.sendMessage(1, 'یک متن ساده', [[{ text: `${FIRE} پلاتینیوم`, callback_data: 'x' }]]),
+    ).resolves.toBeUndefined();
+
+    expect(bodies).toHaveLength(2);
+    const second = (bodies[1]!['reply_markup'] as { inline_keyboard: Record<string, unknown>[][] })
+      .inline_keyboard[0]![0]!;
+    expect(second['icon_custom_emoji_id']).toBeUndefined();
+    expect(second['text']).toBe('🔥 پلاتینیوم');
+    expect(refused).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries the premium form even when only a BUTTON carries markup', async () => {
+    // The ladder used to be entered on the text alone, so an emoji that lived
+    // only on a button was sent once and never landed anywhere when refused.
+    const refused = vi.fn();
+    const { bodies, fetchImpl } = fakeTelegram(['reject', 'ok']);
+    const api = createTelegramApi({
+      token: 't',
+      baseUrl: 'https://x.test',
+      fetch: fetchImpl,
+      onCustomEmojiRefused: refused,
+    });
+
+    await api.sendMessage(1, 'بدون ایموجی', [[{ text: `${FIRE} خرید`, callback_data: 'buy' }]]);
+
+    expect(bodies).toHaveLength(2);
     expect(refused).toHaveBeenCalledTimes(1);
   });
 

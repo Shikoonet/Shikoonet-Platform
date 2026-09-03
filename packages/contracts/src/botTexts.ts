@@ -1883,8 +1883,25 @@ export class Texts {
    */
   render(key: TextKey, values: Record<string, string | number> = {}): string {
     return this.raw(key).replace(PLACEHOLDER, (whole, name: string) =>
-      name in values ? String(values[name]) : whole,
+      // The VALUE is stripped too, and not by `raw()` above.
+      //
+      // `raw()` runs before the slots are filled, so it only ever saw the
+      // shop's own wording. What goes INTO a slot is data — a product name, a
+      // panel name — and from 2026-09-03 an admin can put a custom emoji in
+      // those. With the shop's switch off, such a name reached the customer as
+      // the literal string `<tg-emoji emoji-id="…">🔥</tg-emoji>` in the middle
+      // of an invoice, because nothing between the column and Telegram had a
+      // reason to look at it.
+      //
+      // Here rather than at each call site: `render` is the one door every
+      // slot goes through, and a screen written next month cannot forget it.
+      name in values ? this.plain(String(values[name])) : whole,
     );
+  }
+
+  /** A value on its way into a slot, obeying the same switch the wording does. */
+  private plain(value: string): string {
+    return this.customEmoji ? value : stripCustomEmoji(value);
   }
 }
 
