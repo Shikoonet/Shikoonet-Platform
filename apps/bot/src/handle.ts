@@ -810,7 +810,7 @@ async function handleTypedAnswer(
     return withCleanChat(await handleCustomerName(tx, message, user, session), message, session);
   }
   if (session.step === 'emoji') {
-    return withCleanChat(await handlePremiumEmoji(tx, message, user), message, session);
+    return withCleanChat(await handlePremiumEmoji(tx, message, user, session), message, session);
   }
   return IGNORED;
 }
@@ -832,6 +832,7 @@ async function handlePremiumEmoji(
   tx: D1DatabaseSession,
   message: TelegramMessage,
   user: Caller,
+  session: Session,
 ): Promise<HandleOutcome> {
   const reply = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
     status: 'processed',
@@ -849,10 +850,23 @@ async function handlePremiumEmoji(
     return reply(menu.EMOJI_NONE_FOUND, menu.promptMenu(encode('emj')));
   }
 
-  const added = await rememberEmoji(tx, found);
+  await rememberEmoji(tx, found);
+  const slot = Number(session.data['slot']);
   await clearSession(tx, user.id);
   const have = await storedEmoji(tx);
-  return reply(menu.emojiSaved(added, have.length), menu.emojiMenu(have));
+
+  // Back to the button the admin came from, so the emoji they just gave the bot
+  // is one tap from being on it. «افزودن» pressed from the first screen has no
+  // slot, and lands on the button list instead.
+  const target = Number.isSafeInteger(slot)
+    ? menu.mainMenuButtons().find((b) => b.slot === slot)
+    : undefined;
+  return target
+    ? reply(
+        menu.emojiForButton(target.label, have.length),
+        menu.emojiForButtonMenu(target.slot, have),
+      )
+    : reply(menu.emojiHome(), menu.emojiHomeMenu(menu.mainMenuButtons()));
 }
 
 /**
@@ -2191,48 +2205,77 @@ async function handleCallback(
     // The answer is the main menu, not a refusal. Telling a stranger «شما ادمین
     // نیستید» confirms the surface exists, which is the one thing a probe is
     // looking for.
+    // ── the admin's premium-emoji screen ─────────────────────────────────
+    //
+    // `user.is_admin` is re-read here rather than inferred from the button
+    // having been pressed. `ADMIN_ONLY` keeps these three off a customer's
+    // keyboard, and that is presentation: `callback_data` is unsigned, so
+    // anybody can post `emj` and this is the line that answers them.
+    //
+    // The answer is the main menu, not a refusal. Telling a stranger «شما ادمین
+    // نیستید» confirms the surface exists, which is the one thing a probe is
+    // looking for.
+    //
+    // The flow is BUTTON first, then emoji: you arrive knowing which button you
+    // are unhappy with, and pressing an emoji replaces it there and then.
+    //
+    //   emj                  which button?
+    //   emjb:<slot>          that button, with every emoji as a live tile
+    //   emjb:<slot>:<id>     replace, and redraw the same screen
+    //   emja[:<slot>]        send me one — coming back to <slot> when it had one
     case 'emj':
     case 'emja':
     case 'emjb': {
       if (!user.is_admin) return screen(menu.MENU_TITLE, menu.mainMenu(user));
+      const buttons = menu.mainMenuButtons();
 
       if (action.action === 'emja') {
-        await ask(tx, user.id, 'emoji', {}, editId);
+        // The slot travels through the session, because the answer arrives as a
+        // MESSAGE — a different update with no callback data on it.
+        await ask(tx, user.id, 'emoji', action.id === undefined ? {} : { slot: action.id }, editId);
         return screen(menu.ASK_PREMIUM_EMOJI, menu.promptMenu(encode('emj')));
       }
 
       if (action.action === 'emjb' && action.id !== undefined) {
-        const chosen = await emojiById(tx, action.id);
-        // Gone between the screen being drawn and the button being pressed —
-        // another admin removed its pack. The list is redrawn rather than an
-        // error shown: there is nothing for this admin to do about it.
-        if (!chosen) return screen(menu.emojiHome(0), menu.emojiMenu(await storedEmoji(tx)));
-
-        const buttons = menu.mainMenuButtons();
+        const target = buttons.find((b) => b.slot === action.id);
+        // The slot names a declared action this shop's layout does not carry —
+        // an admin removed that row. Said plainly rather than silently redrawn.
+        if (!target) return screen(menu.EMOJI_BUTTON_GONE, menu.emojiHomeMenu(buttons));
 
         if (action.id2 === undefined) {
+          const have = await storedEmoji(tx);
           return screen(
-            menu.emojiButtonPick(chosen.fallbackEmoji),
-            menu.emojiButtonMenu(chosen.id, buttons),
+            menu.emojiForButton(target.label, have.length),
+            menu.emojiForButtonMenu(target.slot, have),
           );
         }
-        // Resolved through the DECLARED order rather than through the list
-        // above, so a layout edited between the two taps cannot move the target.
-        const targetAction = menu.mainMenuActionAt(action.id2);
-        const target = buttons.find((b) => b.action === targetAction);
-        if (!target) return screen(menu.emojiHome(0), menu.emojiMenu(await storedEmoji(tx)));
+
+        const chosen = await emojiById(tx, action.id2);
+        // Gone between the screen being drawn and the tile being pressed —
+        // another admin hid its pack. Redrawn rather than errored: there is
+        // nothing for this admin to do about it.
+        if (!chosen) {
+          const have = await storedEmoji(tx);
+          return screen(
+            menu.emojiForButton(target.label, have.length),
+            menu.emojiForButtonMenu(target.slot, have),
+          );
+        }
+
         const label = await setButtonEmoji(tx, target.action, target.label, chosen);
-        // Null means the composed label was refused — too long once the glyph
-        // is on it, most likely. Said plainly, because the alternative is a
-        // screen claiming success over a button that did not change.
+        // Redrawn from the LIVE layout, so the tile the admin just pressed is
+        // shown on the button it landed on rather than on a stale copy.
+        const after = menu.mainMenuButtons().find((b) => b.slot === target.slot) ?? target;
+        const have = await storedEmoji(tx);
         return screen(
-          label === null ? menu.emojiTooLong(target.label) : menu.emojiPlaced(label),
-          menu.emojiMenu(await storedEmoji(tx)),
+          label === null
+            ? menu.emojiTooLong(target.label)
+            : menu.emojiForButton(after.label, have.length, true),
+          menu.emojiForButtonMenu(target.slot, have),
         );
       }
 
-      const have = await storedEmoji(tx);
-      return screen(menu.emojiHome(have.length), menu.emojiMenu(have));
+      return screen(menu.emojiHome(), menu.emojiHomeMenu(buttons));
     }
 
     case 'wal': {
