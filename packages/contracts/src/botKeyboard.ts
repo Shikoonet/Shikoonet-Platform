@@ -508,11 +508,20 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
     ['buy', 2, 0],
     ['menu', 2, 1],
   ],
+  // «پرداخت کردم» and «بازگشت» share a row from 2026-09-03: Sam asked for an
+  // invoice with fewer buttons on it, and three rows for two buttons was the
+  // easiest one to give back. The wallet pair above them is conditional and
+  // usually absent, so the ordinary invoice is now the copy row and one row of
+  // chrome.
+  //
+  // The copy row is NOT in this layout and is not removable from it — it is
+  // drawn above the chrome by `checkoutMenu`, because sixteen digits retyped by
+  // eye is how money reaches somebody else's account.
   checkout: [
     ['wpay', 0, 0],
     ['tpo', 0, 1],
     ['paid', 1, 0],
-    ['menu', 2, 0],
+    ['menu', 1, 1],
   ],
   afterPaid: [['menu', 0, 0]],
   myServices: [['menu', 0, 0]],

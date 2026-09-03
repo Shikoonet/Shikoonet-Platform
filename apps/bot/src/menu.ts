@@ -213,7 +213,6 @@ function buttonLabel(menuId: MenuId, action: string, shipped: string): string {
 }
 
 const renewButtonLabel = (): string => buttonLabel('main', 'renew', 'تمدید سرویس');
-const paidButtonLabel = (): string => buttonLabel('checkout', 'paid', 'پرداخت کردم');
 const joinedButtonLabel = (): string => buttonLabel('gateChannels', 'chk', 'عضو شدم');
 
 /**
@@ -936,22 +935,11 @@ function checkoutTail(cardDigits: string, cardHolder: string | null): string[] {
   const t = TEXTS_NOW;
   const lines = [t.raw('CHECKOUT_CARD_LABEL'), formatCard(cardDigits)];
   if (cardHolder) lines.push(t.render('CHECKOUT_CARD_HOLDER', { name: cardHolder }));
-  lines.push('', t.raw('CHECKOUT_EXACT_WARNING'), t.raw('CHECKOUT_PRESS_BUTTON'));
-  // `PaySetting.helpcart`, live in production and shown before every card
-  // invoice there. It is on the invoice itself here so it cannot be scrolled
-  // past, and it is on all four because `checkoutTail` is the one place the
-  // four builders share.
-  lines.push(
-    '',
-    t.raw('CHECKOUT_NOTES_TITLE'),
-    t.raw('CHECKOUT_NOTE_WORDS'),
-    t.raw('CHECKOUT_NOTE_TRANSFER'),
-    // The one note that names a button. It reads the live label for the same
-    // reason the three renewal messages do: an admin who renames «پرداخت کردم»
-    // would otherwise leave every invoice pointing at a button nobody can find.
-    t.render('CHECKOUT_NOTE_PRESS', { paidButton: paidButtonLabel() }),
-    t.raw('CHECKOUT_NOTE_WAIT'),
-  );
+  // Seven lines where there were fifteen. The four numbered notes and their
+  // header are one line now — `CHECKOUT_NOTE` says which two facts survived the
+  // compression and why the other two were repetitions of sentences already on
+  // this screen.
+  lines.push('', t.raw('CHECKOUT_EXACT_WARNING'), t.raw('CHECKOUT_NOTE'), '', t.raw('CHECKOUT_PRESS_BUTTON'));
   return lines;
 }
 
