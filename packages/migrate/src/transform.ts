@@ -350,6 +350,29 @@ export function legacyBool(value: unknown, field: string): boolean {
   );
 }
 
+/**
+ * WHICH tier, for the column `is_reseller` cannot hold.
+ *
+ * `is_reseller` folds 'n' and 'n2' onto one boolean, and `agent` is in the
+ * importer's `claimed` list — so it does not reach `legacy_attrs` either. The
+ * tier was simply lost at import, while the shop charges two different prices
+ * for it: the VIP panel carries `{"f":"50000","n":"5000","n2":"5000"}`.
+ *
+ * `users.reseller_tier` has existed since migration 0047 and the panel and the
+ * bot both read it. `null` for an ordinary customer, because no tier is not
+ * tier one — and the same throw as `isReseller` for anything outside the
+ * legacy domain, for the same reason: a wrong tier is a wrong price, quietly.
+ */
+export function resellerTier(value: unknown): 'n' | 'n2' | null {
+  const agent = (legacyText(value, 'user.agent') ?? '').trim();
+  if (agent === '' || agent === 'f') return null;
+  if (agent === 'n' || agent === 'n2') return agent;
+  throw new Error(
+    `unmapped legacy agent value ${JSON.stringify(agent)} — the domain is ` +
+      "'f', 'n', 'n2' (index.php:299). Add it here deliberately; do not default it.",
+  );
+}
+
 export function isReseller(value: unknown): boolean {
   const agent = (legacyText(value, 'user.agent') ?? '').trim();
   // Absent, not unmapped: a row that never had the column set is an ordinary

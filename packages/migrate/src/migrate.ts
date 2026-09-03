@@ -132,6 +132,7 @@ async function migrateUsers(ctx: Ctx): Promise<number> {
     t.userStatus(r.User_Status),
     r.description_blocking || null,
     t.isReseller(r.agent),
+    t.resellerTier(r.agent),
     r.codeInvitation || null,
     Number(r.limit_usertest ?? 0),
     Number(r.score ?? 0),
@@ -166,6 +167,9 @@ async function migrateUsers(ctx: Ctx): Promise<number> {
       'status',
       'blocked_reason',
       'is_reseller',
+      // Which tier, beside whether. `is_reseller` stays: seventeen places read
+      // it, and the tier is a second column rather than a replacement.
+      'reseller_tier',
       'referral_code',
       'test_quota_used',
       'score',
