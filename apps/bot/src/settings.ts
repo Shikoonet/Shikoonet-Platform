@@ -14,7 +14,7 @@
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { invalidateBotContent } from './botContent.js';
 import { createLogger } from '@shikoo/domain';
-import { checkPlanLabel, PLAN_LABEL_SETTING } from '@shikoo/contracts';
+import { checkPlanLabel, PLAN_LABEL_SETTING, REPORT_KINDS, type ReportKind } from '@shikoo/contracts';
 
 const log = createLogger('bot');
 
@@ -146,6 +146,16 @@ export interface ShopSettings {
    * legacy skips the send the same way on `strlen(...) > 0`.
    */
   reportChatId: number | null;
+  /**
+   * The forum topic each kind of report goes to, in the one group above.
+   *
+   * Zero and absent both mean «not configured», and both reach Telegram as no
+   * `message_thread_id` at all — so a shop that has never run the setup keeps
+   * getting every report in one flat chat, exactly as it does today. That is
+   * legacy's own degrade path (`botapi.php:10`) and it is what lets this ship
+   * before anybody makes the topics.
+   */
+  reportTopics: Record<ReportKind, number | null>;
   /** Referral commission on a referred customer's first purchase, in percent. */
   commissionPercent: number;
   /**
@@ -271,6 +281,10 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   // No guess. A chat id is not a thing that has a sensible default — sending
   // the shop's daily takings to a channel nobody chose is worse than silence.
   reportChatId: null,
+  reportTopics: Object.fromEntries(REPORT_KINDS.map((k) => [k, null])) as Record<
+    ReportKind,
+    number | null
+  >,
   commissionPercent: 10,
   renewCashbackPercent: 0,
   topupMinIrr: 800_000,
@@ -328,6 +342,17 @@ function chatId(value: number | null): number | null {
   return value !== null && Number.isSafeInteger(value) && value !== 0 ? value : null;
 }
 
+/**
+ * A forum topic id, or null for «not configured».
+ *
+ * Zero is the value the importer and the migration both seed, and legacy's own
+ * sentinel for a topic that was never made. Negative is faoxima's poison marker
+ * for a topic Telegram refused to create — both mean the same thing here.
+ */
+function topicId(value: number | null): number | null {
+  return value !== null && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
 /** Where the custom emoji switch lives, named once so nothing mistypes it. */
 export const CUSTOM_EMOJI_SETTING = { scope: 'bot', key: 'custom_emoji' } as const;
 
@@ -373,6 +398,18 @@ export const SHOP_SETTING_KEYS = [
   // Ours, not a migrated legacy column — there was nothing in the PHP schema
   // that composed a button label, which is the whole reason this exists.
   [PLAN_LABEL_SETTING.scope, PLAN_LABEL_SETTING.key],
+  // The report topics. Ten rows the importer has been writing since it was
+  // written and nothing has ever read — see `packages/contracts/reportTopics`.
+  ['bot', 'topic_buyreport'],
+  ['bot', 'topic_otherservice'],
+  ['bot', 'topic_paymentreport'],
+  ['bot', 'topic_otherreport'],
+  ['bot', 'topic_reporttest'],
+  ['bot', 'topic_errorreport'],
+  ['bot', 'topic_porsantreport'],
+  ['bot', 'topic_reportnight'],
+  ['bot', 'topic_reportcron'],
+  ['bot', 'topic_backupfile'],
 ] as const satisfies readonly (readonly [SettingScope, string])[];
 
 type ShopSettingKey = (typeof SHOP_SETTING_KEYS)[number][1];
@@ -510,6 +547,23 @@ function tomanLimit(value: number | null, fallback: number): number {
  */
 let reportFallback: number | null = null;
 
+/**
+ * The topic for one kind of report, from the cache, without awaiting.
+ *
+ * For the event sink alone. That sink is created at boot — before any settings
+ * have been read — and is SYNCHRONOUS, because it is called from `log.error`
+ * on paths that are already failing and must not be made to await a database.
+ *
+ * Null before the first `loadShopSettings`, which means the handful of alerts
+ * raised in the first seconds of a boot land in the group's General topic
+ * rather than in «گزارش خطاها». That is the correct trade: an alert in the
+ * wrong topic is read; an alert that had to await a settings query on the path
+ * that is already broken might not be sent at all.
+ */
+export function peekReportTopic(kind: ReportKind): number | null {
+  return cached?.value.reportTopics[kind] ?? null;
+}
+
 export function setReportChatIdFallback(chatId: number | null): void {
   reportFallback = chatId;
   invalidateShopSettings();
@@ -563,6 +617,11 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       // gets the same answer without either of them knowing there is a
       // fallback at all.
       reportChatId: chatId(num('Channel_Report')) ?? reportFallback,
+      // `topicId`, not `chatId`: a topic is a small positive integer and a
+      // chat id is a large negative one, so the two cannot share a validator.
+      reportTopics: Object.fromEntries(
+        REPORT_KINDS.map((k) => [k, topicId(num(`topic_${k}` as ShopSettingKey))]),
+      ) as Record<ReportKind, number | null>,
       commissionPercent: percent(
         num('affiliatespercentage'),
         DEFAULT_SHOP_SETTINGS.commissionPercent,

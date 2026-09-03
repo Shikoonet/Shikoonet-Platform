@@ -135,6 +135,39 @@ describe('the token never leaks', () => {
   });
 });
 
+describe('sendMessage into a forum topic', () => {
+  /**
+   * The report topics, at the only place that decides what Telegram receives.
+   *
+   * `notify.ts` passes the column through and `report-topics.test.ts` proves
+   * that; this is the half that matters on the day the feature ships, when
+   * every shop has a reports group and no topics yet. Telegram answers 400 to
+   * `message_thread_id: 0`, and the message carrying it would be a report about
+   * an order somebody has already paid for.
+   *
+   * Legacy strips the field on the same condition — `botapi.php:10` — which is
+   * why zero is the value both the importer and migration 0048 seed.
+   */
+  it('sends the field for a real topic', async () => {
+    const { api, calls } = apiWith(() => ok({}));
+    await api.sendMessage(-1_001_555_000, 'گزارش', undefined, 91);
+    expect(calls[0]?.body).toMatchObject({ message_thread_id: 91 });
+  });
+
+  for (const [label, value] of [
+    ['zero, the unconfigured sentinel', 0],
+    ['negative, faoxima’s poison marker', -1],
+    ['null', null],
+    ['absent', undefined],
+  ] as const) {
+    it(`omits the field entirely for ${label}`, async () => {
+      const { api, calls } = apiWith(() => ok({}));
+      await api.sendMessage(-1_001_555_000, 'گزارش', undefined, value);
+      expect(calls[0]?.body).not.toHaveProperty('message_thread_id');
+    });
+  }
+});
+
 describe('sendMessage', () => {
   it('posts the chat id and text', async () => {
     const { api, calls } = apiWith(() => ok(true));

@@ -197,7 +197,21 @@ export interface TelegramApi {
    * the full poll — 25 seconds of nothing on every restart.
    */
   getUpdates(offset: number, timeoutSec: number, signal?: AbortSignal): Promise<TelegramUpdate[]>;
-  sendMessage(chatId: number, text: string, keyboard?: InlineKeyboard): Promise<void>;
+  /**
+   * `threadId` is a forum topic in a group — «تاپیک» on the reports group.
+   *
+   * Sent only when it is a positive number, which is legacy's own rule
+   * (`botapi.php:10` strips the field when it is `<= 0`). An unconfigured topic
+   * then lands in the group's General rather than failing, and that is what
+   * lets the report topics ship before anybody has made them: nothing moves
+   * until the ids are filled in.
+   */
+  sendMessage(
+    chatId: number,
+    text: string,
+    keyboard?: InlineKeyboard,
+    threadId?: number | null,
+  ): Promise<void>;
   /**
    * Re-sends a photo we were sent, by its `file_id`.
    *
@@ -365,6 +379,19 @@ function anchorKeyboard(keyboard: InlineKeyboard): InlineKeyboard {
 /** Omitted entirely when there is no keyboard, so a menu is never sent as `null`. */
 function markup(keyboard?: InlineKeyboard): Record<string, unknown> {
   return keyboard === undefined ? {} : { reply_markup: { inline_keyboard: anchorKeyboard(keyboard) } };
+}
+
+/**
+ * A forum topic, or nothing at all.
+ *
+ * The `> 0` test is legacy's, and it is what makes an unconfigured topic
+ * harmless: `topicid` seeds every row at `0`, `botapi.php:10` drops the field
+ * when it is not positive, and the message lands in the group's General topic
+ * instead of being refused. Sending `message_thread_id: 0` would be a 400 on a
+ * message somebody has already been charged for.
+ */
+function topic(threadId?: number | null): Record<string, unknown> {
+  return typeof threadId === 'number' && threadId > 0 ? { message_thread_id: threadId } : {};
 }
 
 /** Telegram answered. `call()` says "failed" when we never reached it at all. */
@@ -541,9 +568,13 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       return parsed.data.status;
     },
 
-    async sendMessage(chatId, text, keyboard) {
+    async sendMessage(chatId, text, keyboard, threadId) {
       await withEmojiFallback(text, (body) =>
-        call('sendMessage', { chat_id: chatId, ...body, ...markup(keyboard) }, 15_000),
+        call(
+          'sendMessage',
+          { chat_id: chatId, ...body, ...markup(keyboard), ...topic(threadId) },
+          15_000,
+        ),
       );
     },
 

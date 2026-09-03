@@ -18,7 +18,7 @@ import { beat } from './heartbeat.js';
 import { run } from './poll.js';
 import { acquirePollerLock } from './singleton.js';
 import { createTelegramApi, TELEGRAM_API_BASE } from './telegram.js';
-import { disableCustomEmoji, setReportChatIdFallback } from './settings.js';
+import { disableCustomEmoji, peekReportTopic, setReportChatIdFallback } from './settings.js';
 import { watchBotToken } from './tokenWatch.js';
 
 /** Module level, so the two handlers below the entry point log the same way. */
@@ -63,6 +63,10 @@ export async function start(): Promise<{ stop: () => Promise<void> }> {
       alertChatId:
         parseAlertChatId(process.env['ALERT_CHAT_ID']) ??
         parseAlertChatId(process.env['REPORT_CHAT_ID']),
+      // «❌ گزارش خطاها». Read at send time from the settings cache, because
+      // this runs before any settings have been read and the answer can change
+      // without a restart.
+      alertThreadId: () => peekReportTopic('errorreport'),
     }),
   );
 
