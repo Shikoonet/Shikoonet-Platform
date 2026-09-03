@@ -635,6 +635,28 @@ export type LayoutProblem =
 export const MAX_LABEL_LENGTH = 64;
 
 /**
+ * A label's length as everything that measures it counts.
+ *
+ * Two decisions, and both were wrong once before this existed:
+ *
+ * **Stripped.** The cap is about one line on a phone, and markup is not on the
+ * screen. A `<tg-emoji>` tag is fifty-two characters that draw as one glyph.
+ *
+ * **Code points, not UTF-16 units.** `'🔥'.length` is 2 in JavaScript and
+ * `length('🔥')` is 1 in Postgres, so a plain `.length` here is stricter than
+ * the CHECK constraint that has the last word — the panel would refuse a label
+ * the database would have taken, and only for labels with emoji in them, which
+ * is most of this shop's. Spreading the string counts what Postgres counts.
+ *
+ * One function, because three layers ask this question — `checkLayout`, the
+ * bot's own writer, and migration 0053 — and a version of this commit shipped
+ * with them disagreeing.
+ */
+export function renderedLabelLength(label: string): number {
+  return [...stripCustomEmoji(label)].length;
+}
+
+/**
  * Whether a label's custom-emoji markup is something a button can draw.
  *
  * True means «refuse». One tag, at the very front, well formed: that is the
@@ -706,7 +728,7 @@ export function checkLayout(menuId: string, buttons: ButtonPlacement[]): LayoutP
   // characters that draw as one glyph, so counting it would refuse
   // «🔥 خرید اشتراک» for being too long while a plainly longer label saves.
   const long = buttons
-    .filter((b) => stripCustomEmoji(b.label).length > MAX_LABEL_LENGTH)
+    .filter((b) => renderedLabelLength(b.label) > MAX_LABEL_LENGTH)
     .map((b) => b.action);
   if (long.length > 0) {
     return { kind: 'LABEL_TOO_LONG', actions: long, limit: MAX_LABEL_LENGTH };

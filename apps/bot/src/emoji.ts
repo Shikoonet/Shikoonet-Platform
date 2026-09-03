@@ -26,7 +26,13 @@
  */
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
-import { DEFAULT_LAYOUTS, labelMarkupProblem, stripCustomEmoji } from '@shikoo/contracts';
+import {
+  DEFAULT_LAYOUTS,
+  MAX_LABEL_LENGTH,
+  labelMarkupProblem,
+  renderedLabelLength,
+  stripCustomEmoji,
+} from '@shikoo/contracts';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -175,34 +181,74 @@ export async function setButtonEmoji(
   action: string,
   currentLabel: string,
   emoji: { customEmojiId: string; fallbackEmoji: string },
-): Promise<string> {
+): Promise<string | null> {
   const plain = stripCustomEmoji(currentLabel).trim();
   const label = `<tg-emoji emoji-id="${emoji.customEmojiId}">${emoji.fallbackEmoji}</tg-emoji> ${plain}`;
-  // Refused rather than written. Reaching this means the composed label is a
-  // shape the send path cannot draw — a fallback glyph that is not one emoji,
-  // say — and storing it would put raw markup on every customer's keyboard.
-  if (labelMarkupProblem(label)) return currentLabel;
+  // Refused rather than written, and NULL rather than the old label — the
+  // caller has to be able to tell «placed» from «could not».
+  //
+  // Two ways it can be refused, and the second was found by review rather than
+  // by a test:
+  //
+  //   * a shape the send path cannot draw — a fallback glyph that is not one
+  //     emoji, say — which would put raw markup on every customer's keyboard;
+  //   * a label that is now too long. The glyph and its space add two or three
+  //     characters, so a button already near the cap goes over it, and the only
+  //     thing that noticed was the CHECK in 0053 — as an exception thrown out of
+  //     an admin's button press, with a constraint name for a message.
+  if (labelMarkupProblem(label)) return null;
+  if (renderedLabelLength(label) > MAX_LABEL_LENGTH) return null;
 
-  const existing = await db
-    .prepare(`SELECT row_index, col_index, visible FROM bot_keyboard_buttons
-               WHERE menu = 'main' AND action = ?1`)
-    .bind(action)
-    .first<{ row_index: number; col_index: number; visible: boolean }>();
-  const shipped = DEFAULT_LAYOUTS['main'].find((b) => b.action === action);
-  // A shop that never arranged its menu has no rows at all, so the first emoji
-  // placed also writes the shipped layout's position for that one button. The
-  // panel reads the same table, so the two stay one layout rather than two.
-  const rowIndex = existing?.row_index ?? shipped?.rowIndex ?? 0;
-  const colIndex = existing?.col_index ?? shipped?.colIndex ?? 0;
-  const visible = existing?.visible ?? shipped?.visible ?? true;
+  // ## The whole layout, or none of it
+  //
+  // A saved layout REPLACES the shipped one — `readLayouts` does
+  // `layouts[menu] = buttons`, not a merge — so writing a single row for `main`
+  // does not add an emoji to one button. It makes that button the entire menu,
+  // for every customer, until somebody notices.
+  //
+  // An earlier version of this function wrote exactly one row. It passed its own
+  // tests, because those pressed a button and then read the row back; what it
+  // broke was every OTHER screen, which is how it was found — a suite that never
+  // mentions emoji went red because «خرید» had vanished from the keyboard.
+  //
+  // So a shop with nothing saved gets the shipped layout written out in full,
+  // with this one label changed. That is also what the panel's own save does,
+  // which keeps the two writers producing the same kind of row.
+  const anySaved = await db
+    .prepare(`SELECT 1 AS present FROM bot_keyboard_buttons WHERE menu = 'main' LIMIT 1`)
+    .first<{ present: number }>();
 
-  await db
+  if (!anySaved) {
+    for (const b of DEFAULT_LAYOUTS['main']) {
+      await db
+        .prepare(
+          `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
+           VALUES ('main', ?1, ?2, ?3, ?4, ?5)
+           ON CONFLICT (menu, action) DO NOTHING`,
+        )
+        .bind(
+          b.action,
+          b.action === action ? label : b.label,
+          b.rowIndex,
+          b.colIndex,
+          b.visible,
+        )
+        .run();
+    }
+    return label;
+  }
+
+  const updated = await db
     .prepare(
-      `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
-       VALUES ('main', ?1, ?2, ?3, ?4, ?5)
-       ON CONFLICT (menu, action) DO UPDATE SET label = EXCLUDED.label`,
+      `UPDATE bot_keyboard_buttons SET label = ?2
+        WHERE menu = 'main' AND action = ?1
+       RETURNING action`,
     )
-    .bind(action, label, rowIndex, colIndex, visible)
-    .run();
+    .bind(action, label)
+    .first<{ action: string }>();
+  // The button is in `MENUS` but not in this shop's saved layout — an admin
+  // hid it by removing the row. Adding it back silently would put a button on
+  // every customer's menu that this shop took off on purpose.
+  if (!updated) return null;
   return label;
 }

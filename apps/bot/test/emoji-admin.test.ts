@@ -26,6 +26,7 @@ import { makeCustomer } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 import { invalidateBotContent } from '../src/botContent.js';
 import { customEmojiIn } from '../src/emoji.js';
+import { DEFAULT_LAYOUTS } from '@shikoo/contracts';
 
 const FIRE_ID = '5368324170671202286';
 
@@ -211,12 +212,108 @@ describe('putting it on a button', () => {
     const applied = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${row!.id}:1`));
     expect(applied.replies[0]?.text ?? '').toContain('نشست');
 
+    // Slot 1 is the first DECLARED action — `renew` — so that is the row to
+    // read. Reading «any row of main» passed by luck while only one existed.
     const saved = await db
-      .prepare(`SELECT action, label FROM bot_keyboard_buttons WHERE menu = 'main'`)
+      .prepare(`SELECT action, label FROM bot_keyboard_buttons
+                 WHERE menu = 'main' AND action = 'renew'`)
       .first<{ action: string; label: string }>();
     // The tag is at the FRONT — the only place a button has an icon slot.
     expect(saved?.label.startsWith(`<tg-emoji emoji-id="${FIRE_ID}">`)).toBe(true);
     expect(saved?.label).not.toBe('');
+  });
+
+  it('leaves the rest of the menu alone on a shop that never arranged it', async () => {
+    // The bug this pins is the worst one in the branch, and no test of this
+    // feature could have found it: a saved layout REPLACES the shipped one, so
+    // writing a single row made that button the entire menu — for every
+    // customer. It was found by `buy.test` going red, a suite that does not
+    // mention emoji.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emja'));
+    await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    const row = await db
+      .prepare(
+        `SELECT i.id FROM emoji_pack_items i JOIN emoji_packs p ON p.id = i.pack_id
+          WHERE p.set_name = '__from_bot__'`,
+      )
+      .first<{ id: number }>();
+
+    await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${row!.id}:1`));
+
+    const { results } = await db
+      .prepare(`SELECT action FROM bot_keyboard_buttons WHERE menu = 'main'`)
+      .all<{ action: string }>();
+    // Every shipped button is still there, not just the one that was touched.
+    expect(results?.length).toBe(DEFAULT_LAYOUTS.main.length);
+    expect(results?.map((r) => r.action)).toContain('buy');
+
+    // And the customer's own menu still holds them.
+    invalidateBotContent();
+    const started = await handleUpdate(db, {
+      update_id: ids().updateId,
+      message: {
+        message_id: 1,
+        from: { id: telegramId },
+        chat: { id: telegramId },
+        text: '/start',
+      },
+    });
+    const rows = started.replies[0]?.replyKeyboard;
+    const labels = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
+    expect(labels.some((l) => l.includes('خرید'))).toBe(true);
+  });
+
+  it('says it did not fit instead of throwing a constraint at the admin', async () => {
+    // Found by review, not by me. `setButtonEmoji` checked the SHAPE of the
+    // composed label and not its length, so a button already near the cap went
+    // over it — and the only thing that noticed was the CHECK from 0053, as an
+    // exception out of an admin's button press with a constraint name for a
+    // message.
+    //
+    // 64 is the cap, measured on what is drawn. The glyph and its space add
+    // two, so a 63-character label cannot take one.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+    // The WHOLE layout, with one label lengthened — a single row would make
+    // that button the entire menu, which is the bug the test above pins.
+    for (const b of DEFAULT_LAYOUTS.main) {
+      await db
+        .prepare(
+          `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
+           VALUES ('main', ?1, ?2, ?3, ?4, ?5)`,
+        )
+        .bind(
+          b.action,
+          b.action === 'renew' ? 'ت'.repeat(63) : b.label,
+          b.rowIndex,
+          b.colIndex,
+          b.visible,
+        )
+        .run();
+    }
+    invalidateBotContent();
+
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emja'));
+    await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    const row = await db
+      .prepare(
+        `SELECT i.id FROM emoji_pack_items i JOIN emoji_packs p ON p.id = i.pack_id
+          WHERE p.set_name = '__from_bot__'`,
+      )
+      .first<{ id: number }>();
+
+    const out = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${row!.id}:1`));
+
+    // A sentence, not a stack trace — and the button is untouched.
+    expect(out.replies[0]?.text ?? '').toContain('جا نشد');
+    const saved = await db
+      .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
+      .first<{ label: string }>();
+    expect(saved?.label).toBe('ت'.repeat(63));
   });
 
   it('swaps the emoji instead of stacking a second one', async () => {
@@ -243,7 +340,8 @@ describe('putting it on a button', () => {
     await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${second!.id}:1`));
 
     const saved = await db
-      .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main'`)
+      .prepare(`SELECT label FROM bot_keyboard_buttons
+                 WHERE menu = 'main' AND action = 'renew'`)
       .first<{ label: string }>();
     const tags = [...(saved?.label ?? '').matchAll(/<tg-emoji/g)];
     expect(tags).toHaveLength(1);

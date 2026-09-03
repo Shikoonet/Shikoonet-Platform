@@ -2222,7 +2222,13 @@ async function handleCallback(
         const target = buttons.find((b) => b.action === targetAction);
         if (!target) return screen(menu.emojiHome(0), menu.emojiMenu(await storedEmoji(tx)));
         const label = await setButtonEmoji(tx, target.action, target.label, chosen);
-        return screen(menu.emojiPlaced(label), menu.emojiMenu(await storedEmoji(tx)));
+        // Null means the composed label was refused — too long once the glyph
+        // is on it, most likely. Said plainly, because the alternative is a
+        // screen claiming success over a button that did not change.
+        return screen(
+          label === null ? menu.emojiTooLong(target.label) : menu.emojiPlaced(label),
+          menu.emojiMenu(await storedEmoji(tx)),
+        );
       }
 
       const have = await storedEmoji(tx);
