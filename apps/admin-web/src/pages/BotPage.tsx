@@ -40,6 +40,18 @@ export function message(e: unknown): string {
       // `SecretKeyMissing` writes it for whoever edits the service, and a
       // translation here would be a second place to keep in step.
       return `توکن جایی برای ذخیره‌شدن ندارد — ${e.detail ?? 'PANEL_SECRET_KEY روی این سرور تنظیم نشده است'}`;
+    // The reports-group refusals. Each names the NEXT ACTION rather than the
+    // fault, because every one of them is fixed in Telegram and not here — an
+    // operator reading «گروه پیدا نشد» goes looking in the panel.
+    if (e.code === 'no_bot') return 'اول باید رباتی وصل باشد — از همین صفحه، بالاتر.';
+    if (e.code === 'chat_unreachable')
+      return 'ربات این گروه را نمی‌بیند. اول ربات را به گروه اضافه کن و ادمینش کن، بعد دوباره بزن.';
+    if (e.code === 'not_a_forum')
+      return 'این گروه حالت تاپیک ندارد. در تنظیمات گروه تلگرام «Topics» را روشن کن، بعد دوباره بزن.';
+    if (e.code === 'topic_failed')
+      return `${e.detail ?? 'ساخت تاپیک انجام نشد'} — ربات باید در گروه ادمین باشد و اجازهٔ «Manage Topics» داشته باشد.`;
+    if (e.code === 'bot_token_unreadable')
+      return `توکن ذخیره‌شده باز نمی‌شود — ${e.detail ?? 'PANEL_SECRET_KEY عوض شده است'}`;
     // `bad_shape`, `rejected_by_telegram` and `telegram_unreachable` each send
     // their own Persian sentence; `detail` is what zod produced for anything
     // that never reached them.
@@ -61,6 +73,7 @@ export function BotPage() {
   const w = useAdminWriteProps();
   const [data, setData] = useState<BotConnection | null>(null);
   const [token, setToken] = useState('');
+  const [groupId, setGroupId] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -92,6 +105,43 @@ export function BotPage() {
           ? `ربات @${r.connected.username} وصل شد.`
           : `ربات ${fa(r.connected.botId)} وصل شد.`,
       );
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** A supergroup id: large and negative, which is what an operator pastes. */
+  const groupValue = /^-[0-9]{6,19}$/.test(groupId.trim()) ? Number(groupId.trim()) : null;
+
+  async function saveGroup() {
+    if (groupValue === null) return;
+    // Asked, because it is not undoable from here: the topics are created in
+    // somebody's Telegram group and this screen has no button that removes
+    // them. Re-running is safe and makes only what is missing — that is the
+    // sentence worth showing, since «مطمئنید؟» alone teaches nothing.
+    if (
+      !window.confirm(
+        `گزارش‌های فروشگاه به گروه ${fa(groupValue)} فرستاده شود؟ ` +
+          `تاپیک‌های نداشته ساخته می‌شوند و تاپیک‌های موجود دست نمی‌خورند.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      const r = await api.setReportGroup(groupValue);
+      const made = Object.keys(r.created).length;
+      setDone(
+        made === 0
+          ? 'گروه گزارش‌ها ذخیره شد — همهٔ تاپیک‌ها از قبل ساخته بودند.'
+          : `گروه گزارش‌ها ذخیره شد و ${fa(made)} تاپیک ساخته شد.`,
+      );
+      setGroupId('');
       await load();
     } catch (e) {
       setErr(message(e));
@@ -221,6 +271,107 @@ export function BotPage() {
           {...w}
         >
           {busy ? 'در حال تایید با تلگرام…' : 'تایید و وصل کن'}
+        </button>
+      </div>
+
+      {/*
+        «گروه گزارش‌ها» is on THIS screen and not «تنظیمات» for the reason the
+        token is: the settings screen lists rows into a browser and refuses any
+        key that looks like a credential, and it cannot create a key that does
+        not exist. This needs Telegram asked, topics created, and ten rows
+        written — none of which a key/value grid can do.
+      */}
+      <div className="card" style={{ marginBlockStart: 16 }}>
+        <div className="card__head">
+          <span className="card__title">گروه گزارش‌ها</span>
+          {data && (
+            <span
+              className={
+                data.reportGroup.chatId === null ? 'badge badge-block' : 'badge badge-active'
+              }
+            >
+              {data.reportGroup.chatId === null
+                ? 'تنظیم نشده'
+                : `${fa(data.reportGroup.configured)} از ${fa(data.reportGroup.topics.length)} تاپیک`}
+            </span>
+          )}
+        </div>
+
+        <p className="muted" style={{ marginBlockStart: 0 }}>
+          گزارش‌های فروشگاه — خرید، مالی، اکانت تست، خدمات، خطا — در یک گروه تلگرام با تاپیک جدا
+          برای هر کدام فرستاده می‌شوند. تا وقتی گروهی تنظیم نشده، <b>هیچ گزارشی فرستاده نمی‌شود</b>؛
+          و تاپیکی که ساخته نشده باشد، گزارشش در تاپیک عمومی گروه می‌افتد نه اینکه گم شود.
+        </p>
+
+        {data && data.reportGroup.chatId !== null && (
+          <div className="table-wrap">
+            <table className="app-table">
+              <thead>
+                <tr>
+                  <th>تاپیک</th>
+                  <th>وضعیت</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.reportGroup.topics.map((t) => (
+                  <tr key={t.kind}>
+                    <td>{t.title}</td>
+                    <td>
+                      {t.threadId === null ? (
+                        <span className="muted">ساخته نشده — در تاپیک عمومی</span>
+                      ) : (
+                        <bdi dir="ltr">#{fa(t.threadId)}</bdi>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <ol className="muted" style={{ marginBlockEnd: 8 }}>
+          <li>
+            یک گروه بساز و در تنظیماتش <bdi dir="ltr">Topics</bdi> را روشن کن.
+          </li>
+          <li>ربات را به گروه اضافه کن و ادمینش کن، با اجازهٔ ساخت تاپیک.</li>
+          <li>
+            آیدی عددی گروه را این‌جا بگذار — عددی منفی و بلند، مثل{' '}
+            <bdi dir="ltr">-1001234567890</bdi>.
+          </li>
+        </ol>
+
+        <label className="form-label" htmlFor="bot-report-group">
+          آیدی عددی گروه
+        </label>
+        <input
+          id="bot-report-group"
+          className="form-control ltr"
+          type="text"
+          inputMode="numeric"
+          spellCheck={false}
+          dir="ltr"
+          placeholder={
+            data?.reportGroup.chatId === null || data === null
+              ? '-1001234567890'
+              : String(data.reportGroup.chatId)
+          }
+          value={groupId}
+          onChange={(e) => setGroupId(e.target.value)}
+        />
+        <p className="muted">
+          {data?.reportGroup.chatId === null
+            ? 'دوباره زدن این دکمه امن است — فقط تاپیک‌های نداشته ساخته می‌شوند.'
+            : 'گروه فعلی بالا نوشته شده. برای عوض‌کردنش آیدی تازه را بگذار؛ تاپیک‌های گروه قبلی پاک نمی‌شوند.'}
+        </p>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => void saveGroup()}
+          disabled={busy || groupValue === null}
+          {...w}
+        >
+          {busy ? 'در حال ساخت تاپیک‌ها…' : 'تنظیم گروه و ساخت تاپیک‌ها'}
         </button>
       </div>
     </div>
