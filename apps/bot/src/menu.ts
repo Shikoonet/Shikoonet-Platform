@@ -38,7 +38,9 @@ import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
 import type { RenewMode } from '@shikoo/domain';
 import {
+  actionForLabel,
   buildMainMenu,
+  buildReplyMenu,
   buildMenu,
   DEFAULT_LAYOUTS,
   MENU_ACTIONS,
@@ -60,6 +62,7 @@ import {
   type ButtonStyle,
   type InlineButton,
   type InlineKeyboard,
+  type ReplyKeyboard,
 } from './telegram.js';
 
 /**
@@ -287,6 +290,23 @@ export function resetContent(): void {
 
 export function mainMenu(viewer: MenuViewer): InlineKeyboard {
   return buildMainMenu(layout('main'), viewer);
+}
+
+/**
+ * The same menu, under the chat.
+ *
+ * Drawn from `layout('main')` like its inline twin, so the shop arranges one
+ * menu and gets both. Everything about which buttons appear lives in
+ * `buildReplyMenu`; this is only the layout lookup, kept here so `handle.ts`
+ * asks `menu` for a keyboard the way it does for every other screen.
+ */
+export function mainReplyMenu(viewer: MenuViewer): ReplyKeyboard {
+  return buildReplyMenu(layout('main'), viewer);
+}
+
+/** Which action a bottom-keyboard label means, against the live layout. */
+export function actionForReplyLabel(viewer: MenuViewer, text: string): string | null {
+  return actionForLabel(layout('main'), viewer, text);
 }
 
 /**

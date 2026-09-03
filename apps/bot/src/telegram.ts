@@ -153,6 +153,32 @@ export const MAX_COPY_TEXT_LENGTH = 256;
 
 export type InlineKeyboard = InlineButton[][];
 
+/**
+ * The keyboard that sits UNDER the chat, over the text field.
+ *
+ * A different thing from an `InlineKeyboard` in every way that matters, and the
+ * differences are why this is its own type rather than a flag on that one:
+ *
+ *   * it belongs to the CHAT, not to a message — it stays after the message
+ *     that carried it has been deleted, and the only way to change it is to
+ *     send another message;
+ *   * pressing a button sends its label as an ordinary text message, so the
+ *     label is the only thing the bot gets back. `actionForLabel` in
+ *     `keyboard.ts` is what turns it into an action again;
+ *   * a message may carry ONE `reply_markup`, so a screen with inline buttons
+ *     cannot also change what is under the chat.
+ *
+ * `'remove'` takes it away, which is not the same as sending no keyboard at
+ * all: omitting the field leaves whatever is already there.
+ */
+export interface ReplyButton {
+  text: string;
+  /** The same field an inline button uses; see `keyboardFor`. */
+  icon_custom_emoji_id?: string;
+}
+
+export type ReplyKeyboard = ReplyButton[][] | 'remove';
+
 const EnvelopeSchema = z.object({
   ok: z.boolean(),
   description: z.string().optional(),
@@ -226,6 +252,15 @@ export interface TelegramApi {
     text: string,
     keyboard?: InlineKeyboard,
     threadId?: number | null,
+    /**
+     * The chat's own keyboard, when this message is meant to change it.
+     *
+     * Mutually exclusive with `keyboard` — Telegram allows one `reply_markup`
+     * per message — and the call refuses rather than silently dropping one of
+     * them, because which one vanished would be invisible until a customer
+     * reported a screen with no buttons.
+     */
+    replyKeyboard?: ReplyKeyboard,
   ): Promise<void>;
   /**
    * Re-sends a photo we were sent, by its `file_id`.
@@ -259,6 +294,19 @@ export interface TelegramApi {
    * from what was stored, not from what comes back.
    */
   sendDocument(chatId: number, fileId: string, caption?: string): Promise<void>;
+  /**
+   * Removes a message from the chat.
+   *
+   * In a private chat a bot may delete both its OWN messages and the ones the
+   * customer sent it, which is what makes «one live screen» possible at all:
+   * a typed discount code and the answer to it both go, and the screen the
+   * customer was looking at is the only thing left.
+   *
+   * Best-effort by contract. Telegram refuses a message older than 48 hours and
+   * one that is already gone, and neither is a fault worth failing an update
+   * over — the caller logs and carries on.
+   */
+  deleteMessage(chatId: number, messageId: number): Promise<void>;
   /** Replaces a message in place, so a menu does not leave a trail behind it. */
   editMessageText(
     chatId: number,
@@ -447,6 +495,50 @@ function markup(keyboard: InlineKeyboard | undefined, premium: boolean): Record<
 }
 
 /**
+ * The same, for the keyboard under the chat.
+ *
+ * `resize_keyboard` because the default is a keyboard half the screen high, and
+ * `is_persistent` because the customer closing it once should not lose the
+ * shop's menu for good — the two settings are what make a bottom keyboard read
+ * as part of the app rather than as something that happened.
+ *
+ * Labels go through the same split as inline ones: an admin may have typed a
+ * custom emoji into a menu label, and on a button that has to become the icon
+ * field or be stripped. Left as markup it would draw as literal angle brackets
+ * on the one keyboard that is always on screen.
+ */
+function replyMarkup(keyboard: ReplyKeyboard, premium: boolean): Record<string, unknown> {
+  if (keyboard === 'remove') return { reply_markup: { remove_keyboard: true } };
+  return {
+    reply_markup: {
+      keyboard: keyboard.map((row) =>
+        row.map((b) => {
+          const label = premium
+            ? splitCustomEmojiLabel(b.text)
+            : { text: stripCustomEmoji(b.text), icon: null };
+          return {
+            ...b,
+            text: anchorLabel(label.text),
+            ...(label.icon === null ? {} : { icon_custom_emoji_id: label.icon }),
+          };
+        }),
+      ),
+      resize_keyboard: true,
+      is_persistent: true,
+    },
+  };
+}
+
+/** Whether any label in a bottom keyboard carries markup. */
+function replyHasCustomEmoji(keyboard?: ReplyKeyboard): boolean {
+  return (
+    keyboard !== undefined &&
+    keyboard !== 'remove' &&
+    keyboard.some((row) => row.some((b) => hasCustomEmoji(b.text)))
+  );
+}
+
+/**
  * A forum topic, or nothing at all.
  *
  * The `> 0` test is legacy's, and it is what makes an unconfigured topic
@@ -570,6 +662,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     text: string,
     keyboard: InlineKeyboard | undefined,
     send: (body: Record<string, unknown>) => Promise<unknown>,
+    replyKeyboard?: ReplyKeyboard,
   ): Promise<void> {
     const clamped = clamp(text);
     // The KEYBOARD is built in here rather than by the caller, and that is the
@@ -578,16 +671,23 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
     // keyboard — so a shop whose Premium had just been refused sent the icon
     // field again, was refused again, and the customer got nothing at all. The
     // landing has to be plain on BOTH halves or it is not a landing.
-    const rich = hasCustomEmoji(clamped) || keyboardHasCustomEmoji(keyboard);
+    // Both kinds of keyboard, because both carry labels an admin may have put
+    // markup into and both are refused the same way.
+    const both = (premium: boolean): Record<string, unknown> =>
+      replyKeyboard === undefined ? markup(keyboard, premium) : replyMarkup(replyKeyboard, premium);
+    const rich =
+      hasCustomEmoji(clamped) ||
+      keyboardHasCustomEmoji(keyboard) ||
+      replyHasCustomEmoji(replyKeyboard);
     if (!rich) {
-      await send({ text: clamped, ...markup(keyboard, false) });
+      await send({ text: clamped, ...both(false) });
       return;
     }
     try {
       // `parse_mode` is decided by the TEXT alone. A plain sentence under a
       // button that carries an emoji must not be sent as HTML: nothing escaped
       // it, and a Persian «قیمت < ۱۰۰ هزار» would reach Telegram's parser.
-      await send({ ...richText(clamped), ...markup(keyboard, true) });
+      await send({ ...richText(clamped), ...both(true) });
       return;
     } catch (err) {
       // Two ways this is not a refusal. A network error means Telegram never
@@ -597,7 +697,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       if (!isRejection(err) || isNotModified(err)) throw err;
       log.warn('telegram.custom_emoji_refused');
     }
-    await send({ text: stripCustomEmoji(clamped), ...markup(keyboard, false) });
+    await send({ text: stripCustomEmoji(clamped), ...both(false) });
     await options.onCustomEmojiRefused?.();
   }
 
@@ -644,14 +744,24 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       return parsed.data.status;
     },
 
-    async sendMessage(chatId, text, keyboard, threadId) {
-      await withEmojiFallback(text, keyboard, (body) =>
-        call(
-          'sendMessage',
-          { chat_id: chatId, ...body, ...topic(threadId) },
-          15_000,
-        ),
+    async sendMessage(chatId, text, keyboard, threadId, replyKeyboard) {
+      // Refused rather than resolved. One `reply_markup` per message is
+      // Telegram's rule, so a caller asking for both has decided something it
+      // cannot have — and whichever half this dropped silently would show up as
+      // a screen with no buttons, days later, with nothing pointing here.
+      if (keyboard !== undefined && replyKeyboard !== undefined) {
+        throw new Error('sendMessage takes an inline keyboard or a bottom one, not both');
+      }
+      await withEmojiFallback(
+        text,
+        keyboard,
+        (body) => call('sendMessage', { chat_id: chatId, ...body, ...topic(threadId) }, 15_000),
+        replyKeyboard,
       );
+    },
+
+    async deleteMessage(chatId, messageId) {
+      await call('deleteMessage', { chat_id: chatId, message_id: messageId }, 10_000);
     },
 
     async sendPhoto(chatId, fileId, caption) {
