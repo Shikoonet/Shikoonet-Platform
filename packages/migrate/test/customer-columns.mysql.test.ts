@@ -55,14 +55,33 @@ async function load(): Promise<Loaded> {
   // `helpers/productionDump.ts`.
   const dumpMissing = productionDumpAbsent();
   if (dumpMissing !== null) return { ...empty, unreachable: dumpMissing };
+  /*
+   * The catch below covers the CONNECTION only, and that boundary is the point.
+   *
+   * It used to wrap the queries too, so on a runner with the dump present a
+   * broken query — a renamed column, a collation MySQL refuses — came back as
+   * «simulation MySQL unreachable» and every assertion here skipped. «The
+   * database is not there» and «the check itself is broken» would have looked
+   * identical, and only one of them is safe to walk past. Found by CodeRabbit
+   * on PR #87.
+   */
+  let conn;
   try {
-    const conn = await createConnection({
+    conn = await createConnection({
       ...cfg.mysql,
       charset: 'utf8mb4',
       dateStrings: true,
       supportBigNumbers: true,
       bigNumberStrings: true,
     });
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    if (process.env['CI'] !== 'true') throw error;
+    console.warn(`[customer-columns.mysql] skipped: simulation MySQL unreachable — ${why}`);
+    return { ...empty, unreachable: why };
+  }
+
+  {
     try {
       const [rollRows] = await conn.query(
         `SELECT roll_Status AS k, COUNT(*) AS n FROM user GROUP BY roll_Status`,
@@ -86,11 +105,6 @@ async function load(): Promise<Loaded> {
     } finally {
       await conn.end();
     }
-  } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
-    if (process.env['CI'] !== 'true') throw error;
-    console.warn(`[customer-columns.mysql] skipped: simulation MySQL unreachable — ${why}`);
-    return { ...empty, unreachable: why };
   }
 }
 
