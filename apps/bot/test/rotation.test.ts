@@ -154,6 +154,19 @@ afterEach(async () => {
   await db.prepare(`DELETE FROM payment_cards WHERE id LIKE ?1`).bind(`${PREFIX}%`).run();
   await db.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(ACCOUNT_ID).run();
   await db.prepare(`UPDATE payment_cards SET status = 'ACTIVE'`).run();
+  /*
+   * And every ACCOUNT back on.
+   *
+   * The card picker asks the account too since 2026-09-03, so a test here that
+   * switches one off takes every card of that account out of rotation — for
+   * this file AND for every file after it on the shared database. `pool()`
+   * re-creates its own row with `ON CONFLICT DO NOTHING`, which does NOT undo
+   * an `active = 0` left on a row that still exists.
+   *
+   * The line above has done the same for `payment_cards.status` since this file
+   * was written, and for the same reason. This is its other half.
+   */
+  await db.prepare(`UPDATE financial_accounts SET active = 1 WHERE active <> 1`).run();
 });
 
 /**
