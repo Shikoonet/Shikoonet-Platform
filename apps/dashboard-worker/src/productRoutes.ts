@@ -374,6 +374,7 @@ interface PlanRow {
   provider_capacity: number | null;
   provider_live: number | null;
   category_name: string | null;
+  category_active: boolean | null;
   orders_count: number;
 }
 
@@ -423,6 +424,7 @@ function shape(r: PlanRow) {
         }
       : null,
     categoryName: r.category_name,
+    categoryActive: r.category_active,
     ordersCount: Number(r.orders_count),
   };
 }
@@ -619,7 +621,8 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
  * interpolated wherever those three are already in scope.
  */
 const SELLABLE = `
-      pr.status = 'ACTIVE'
+      cat.active
+  AND pr.status = 'ACTIVE'
   AND p.status  = 'ACTIVE'
   AND pl.status = 'ACTIVE'
   AND (pr.capacity IS NULL
@@ -662,6 +665,12 @@ const SELECT_PLAN = `
          pr.status AS provider_status, pr.kind AS provider_kind,
          ${PANEL_CEILING},
          cat.name AS category_name,
+         -- Carried for the same reason provider_capacity is: whyNotSellable
+         -- cannot say «دستهٔ … خاموش است» without it, and a switched-off
+         -- category takes every service under it out of the shop with nothing
+         -- on this screen saying so.
+         -- (No backticks in here: this is inside a JS template literal.)
+         cat.active AS category_active,
          (SELECT COUNT(*) FROM orders o WHERE o.plan_id = pl.id) AS orders_count
     FROM product_plans pl
     JOIN products p ON p.id = pl.product_id
@@ -887,6 +896,7 @@ export function registerProductRoutes(
          FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
          LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
+         LEFT JOIN product_categories cat ON cat.id = p.category_id
          ${whereSql}`,
     )
       .bind(...params)

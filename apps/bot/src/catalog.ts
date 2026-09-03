@@ -52,7 +52,25 @@ type Db = D1Database | D1DatabaseSession;
  * received anything", which is what makes a first-purchase offer first.
  */
 const PURCHASABLE = `
-      pr.status = 'ACTIVE'
+  /*
+   * The category's own switch, and it is FIRST because it was the one condition
+   * this predicate did not hold. (No backticks in this comment: it is inside a
+   * JS template literal.)
+   *
+   * categoriesForUser and productsForUser each checked cat.active themselves,
+   * which looked like enough because those are the two screens that draw the
+   * buttons. The three plan queries below did not join product_categories at
+   * all — so switching a category off took its buttons off every fresh screen
+   * and left purchasablePlan selling. A customer holding an older message with
+   * plan:<id> in it could still buy, and callback_data is unsigned, so anybody
+   * could type the number.
+   *
+   * That is precisely the split this file's own header forbids: list with one
+   * rule, sell with another. The two copies stayed in step for as long as
+   * nobody added a third caller, and then they did not.
+   */
+      cat.active
+  AND pr.status = 'ACTIVE'
   AND p.status  = 'ACTIVE'
   AND pl.status = 'ACTIVE'
   AND (p.resellers_only = false OR u.is_reseller)
@@ -207,9 +225,10 @@ export async function productsForUser(
       // they are what keeps a service with nothing sellable inside it off the
       // list, which is a rule about visibility rather than about money.
       //
-      // `cat.active` is joined for the same reason `plansInCategory` checks it:
-      // `cat:<id>` is unsigned callback data, and a switched-off category must
-      // not become reachable by posting its number.
+      // `product_categories` is joined because `PURCHASABLE` reads `cat.active`
+      // — the switched-off category must not become reachable by posting its
+      // `cat:<id>`, and that clause now lives in one place for every caller
+      // rather than being repeated by the two screens that remembered it.
       `SELECT p.id                AS product_id,
               p.name              AS name,
               pr.name             AS provider_name,
@@ -231,7 +250,7 @@ export async function productsForUser(
          JOIN product_categories cat    ON cat.id = p.category_id
          JOIN users u                   ON u.id = ?1
         WHERE (?2::bigint IS NULL OR pr.id = ?2)
-          AND (?3::bigint IS NULL OR (p.category_id = ?3 AND cat.active))
+          AND (?3::bigint IS NULL OR p.category_id = ?3)
           AND ${PURCHASABLE}
         GROUP BY p.id, p.name, p.sort_order, p.row_index, pr.name
         -- The product's own order, and nothing before it.
@@ -306,9 +325,10 @@ export interface CatalogCategory {
  * already applies one level down, and it is the reason this cannot be a plain
  * `SELECT * FROM product_categories`.
  *
- * `active` is the admin's own switch and is checked here rather than in the
- * screen: a category taken off sale must be off sale everywhere, including the
- * `cat:<id>` a customer still has sitting in an old message.
+ * `active` is the admin's own switch, and it is no longer checked here: it is
+ * part of `PURCHASABLE` itself, so this query gets it for the same reason the
+ * order gate does. A category taken off sale is off sale everywhere, including
+ * the `cat:<id>` a customer still has sitting in an old message.
  */
 export async function categoriesForUser(db: Db, userId: number): Promise<CatalogCategory[]> {
   const rows = await db
@@ -320,7 +340,7 @@ export async function categoriesForUser(db: Db, userId: number): Promise<Catalog
          JOIN product_plans pl          ON pl.product_id = p.id
          JOIN provisioning_providers pr ON pr.id = p.provider_id
          JOIN users u                   ON u.id = ?1
-        WHERE cat.active AND ${PURCHASABLE}
+        WHERE ${PURCHASABLE}
         GROUP BY cat.id, cat.name, cat.badge, cat.button_style, cat.row_index, cat.sort_order
         ORDER BY cat.sort_order, cat.id`,
     )
@@ -450,6 +470,7 @@ const PLAN_FROM = `
   FROM product_plans pl
   JOIN products p                ON p.id = pl.product_id
   JOIN provisioning_providers pr ON pr.id = p.provider_id
+  JOIN product_categories cat    ON cat.id = p.category_id
   JOIN users u                   ON u.id = ?1
 `;
 

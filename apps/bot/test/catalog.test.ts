@@ -368,6 +368,60 @@ describe('purchasablePlan answers the same question as the list', () => {
   it('answers null for a plan that does not exist', async () => {
     expect(await purchasablePlan(db, customer, 2_000_000_000)).toBeNull();
   });
+
+  /**
+   * The gate, not the list — and that distinction is the whole bug.
+   *
+   * `product_categories.active` was checked by `categoriesForUser` and by
+   * `productsForUser`, so switching a category off really did take its buttons
+   * off every screen a customer opened next. `PURCHASABLE` did not check it and
+   * the plan queries did not even join the table, so the ORDER path kept
+   * selling: a customer holding an older message with `plan:<id>` in it could
+   * still buy, and `callback_data` carries no signature, so posting the number
+   * by hand was enough.
+   *
+   * A test written against the list would have passed the whole time. This one
+   * asks all three of the queries that had no join, and the first assertion is
+   * that the row sells BEFORE the switch — without it, a fixture that stopped
+   * existing would make this pass for the wrong reason.
+   */
+  it('refuses at the order gate when the category is switched off, not only on the screens', async () => {
+    const plan = await planId('sim-vip-1m-50');
+    const sold = await purchasablePlan(db, customer, plan);
+    expect(sold).not.toBeNull();
+
+    const cat = await db
+      .prepare(
+        `SELECT p.category_id AS id
+           FROM product_plans pl JOIN products p ON p.id = pl.product_id
+          WHERE pl.id = ?1`,
+      )
+      .bind(plan)
+      .first<{ id: number }>();
+
+    await db
+      .prepare(`UPDATE product_categories SET active = false WHERE id = ?1`)
+      .bind(cat!.id)
+      .run();
+    try {
+      expect(await purchasablePlan(db, customer, plan)).toBeNull();
+      expect((await plansOnPanel(db, customer, sold!.providerId)).map((p) => p.planId)).not.toContain(
+        plan,
+      );
+      expect((await productsForUser(db, customer)).map((p) => p.productId)).not.toContain(
+        sold!.productId,
+      );
+    } finally {
+      await db
+        .prepare(`UPDATE product_categories SET active = true WHERE id = ?1`)
+        .bind(cat!.id)
+        .run();
+    }
+
+    // Switched back on, it sells again — so the refusal above was the category
+    // and nothing else that happened to be true at that moment.
+    expect(await purchasablePlan(db, customer, plan)).not.toBeNull();
+  });
 });
 
 /**

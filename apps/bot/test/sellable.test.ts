@@ -59,6 +59,7 @@ async function makeShop(
     capacity?: number | null;
     liveSubscriptions?: number;
     withPanel?: boolean;
+    categoryActive?: boolean;
   } = {},
 ): Promise<Shop> {
   const withPanel = opts.withPanel ?? true;
@@ -99,8 +100,10 @@ async function makeShop(
   }
 
   const category = await db
-    .prepare(`INSERT INTO product_categories (name, sort_order) VALUES (?1, 0) RETURNING id`)
-    .bind(`${PREFIX}${label}`)
+    .prepare(
+      `INSERT INTO product_categories (name, sort_order, active) VALUES (?1, 0, ?2) RETURNING id`,
+    )
+    .bind(`${PREFIX}${label}`, opts.categoryActive ?? true)
     .first<{ id: number }>();
   const categoryId = Number(category!.id);
 
@@ -135,11 +138,13 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
   const row = await db
     .prepare(
       `SELECT pl.status AS plan_status, p.status AS product_status,
+              cat.name AS category_name, cat.active AS category_active,
               pr.name AS panel_name, pr.status AS panel_status, pr.capacity,
               (SELECT COUNT(*)::int FROM subscriptions s
                 WHERE s.provider_id = pr.id AND s.status IN ('ACTIVE','ON_HOLD')) AS live
          FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
+         LEFT JOIN product_categories cat ON cat.id = p.category_id
          LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
         WHERE pl.id = ?1`,
     )
@@ -147,6 +152,8 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
     .first<{
       plan_status: string;
       product_status: string;
+      category_name: string | null;
+      category_active: boolean | null;
       panel_name: string | null;
       panel_status: string | null;
       capacity: number | null;
@@ -155,6 +162,10 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
   return {
     planStatus: row!.plan_status,
     productStatus: row!.product_status,
+    category:
+      row!.category_active === null
+        ? null
+        : { name: row!.category_name!, active: row!.category_active },
     panel:
       row!.panel_status === null
         ? null
@@ -236,6 +247,19 @@ describe('what the dashboard says is on sale, and what the bot sells', () => {
     const shop = await makeShop('ok');
     expect(await agree(shop)).toEqual({ dashboard: true, bot: true });
     expect(whyNotSellable(await factsOf(shop))).toEqual([]);
+  });
+
+  it('agrees a switched-off category takes everything under it off sale', async () => {
+    // The gap this case closes was the other way round from the panel one: the
+    // BOT was the screen that lied. `PURCHASABLE` did not read `cat.active`, so
+    // the order gate kept selling a category the operator had switched off —
+    // and `whyNotSellable`, which is supposed to restate `PURCHASABLE`, had no
+    // opinion about categories at all. Both sides moved for this test.
+    const shop = await makeShop('cat-off', { categoryActive: false });
+    expect(await agree(shop)).toEqual({ dashboard: false, bot: false });
+    expect(whyNotSellable(await factsOf(shop))).toEqual([
+      { kind: 'CATEGORY_OFF', category: `${PREFIX}cat-off` },
+    ]);
   });
 
   it('agrees a switched-off panel takes its catalogue with it', async () => {
