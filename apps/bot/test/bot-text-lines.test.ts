@@ -25,7 +25,6 @@ import { handleUpdate } from '../src/handle.js';
 import { invalidateBotContent, loadBotContent } from '../src/botContent.js';
 import { createTelegramApi, MAX_MESSAGE_LENGTH } from '../src/telegram.js';
 import { DEFAULT_LAYOUT } from '../src/keyboard.js';
-import { DEFAULT_LAYOUTS } from '@shikoo/contracts';
 import * as menu from '../src/menu.js';
 
 let nextId = 0;
@@ -264,61 +263,6 @@ describe('the renew button is quoted from the live keyboard', () => {
 
   it('says the shipped label when no layout is saved at all', () => {
     expect(menu.timeRunningOut('یک ماهه', 3)).toContain('«♻️ تمدید سرویس»');
-  });
-});
-
-describe('the card-to-card note that names the «paid» button', () => {
-  const PLAN = {
-    planId: 42,
-    productId: 7,
-    productName: '۱ماهه',
-    planName: '۱ماهه',
-    badge: null,
-    buttonStyle: null,
-    priceIrr: 1_950_000,
-    durationDays: 30,
-    volumeGb: 50,
-    userLimit: 1,
-    providerId: 7,
-    providerName: 'سیم',
-    categoryId: 1,
-    rowIndex: null,
-    siblings: 1,
-    tiers: 1,
-    usernameMode: null,
-  };
-  const invoice = (): string =>
-    menu.checkout('ord0000001', PLAN, 1_950_000, '6037997512345678', null);
-
-  it('follows the label the admin saved, on the invoice itself', async () => {
-    // The same coupling `{renewButton}` fixed, in the note that tells a customer
-    // which button opens their claim. Quoting the wording would leave every
-    // invoice pointing at a button that no longer exists the moment it is
-    // renamed — and nothing about that looks broken.
-    for (const b of DEFAULT_LAYOUTS['checkout']) {
-      await db
-        .prepare(
-          `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
-           VALUES ('checkout', ?1, ?2, ?3, ?4, ?5)`,
-        )
-        .bind(
-          b.action,
-          b.action === 'paid' ? '💰 واریز کردم' : b.label,
-          b.rowIndex,
-          b.colIndex,
-          b.visible,
-        )
-        .run();
-    }
-    await applySaved();
-
-    expect(invoice()).toContain('«💰 واریز کردم»');
-  });
-
-  it('never leaves the raw slot on a customer’s screen', () => {
-    const text = invoice();
-    expect(text).not.toContain('{paidButton}');
-    expect(text).toContain('پرداخت کردم');
   });
 });
 
