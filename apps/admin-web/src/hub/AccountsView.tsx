@@ -454,6 +454,17 @@ export function AccountsView({ cache }: AccountsViewProps) {
                       <span className={`status-pill status-pill--${a.status.toLowerCase()}`}>
                         {statusLabel(a.status)}
                       </span>
+                      {/*
+                       * Two switches, two pills. `status` is the lifecycle and
+                       * `active` is the on/off, and this column used to print
+                       * only the first — so a row whose button said
+                       * «فعال‌کردن» said «فعال» right beside it. Seven of them
+                       * on staging, 2026-09-04.
+                       *
+                       * Same word the card cell one column over uses, so the
+                       * two cannot be read against each other and disagree.
+                       */}
+                      {a.active === 0 && <span className="status-pill status-muted">خاموش</span>}
                     </td>
                     <td className="actions-cell">
                       <button type="button" onClick={() => setEditing(a.id)}>
