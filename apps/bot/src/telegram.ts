@@ -58,7 +58,17 @@ const DocumentSchema = z.object({
 const MessageSchema = z.object({
   message_id: z.number().int(),
   from: TelegramUserSchema.optional(),
-  chat: z.object({ id: z.number().int() }),
+  /**
+   * `type` is read for one reason: to refuse a chat that is not private.
+   *
+   * Telegram's Chat object always carries it, so a real update always has it.
+   * It is optional here anyway, and absent counts as private, because the
+   * fixtures in `apps/bot/test` predate the field and `UpdateSchema` catches a
+   * parse failure into `undefined` — making it required would not fail those
+   * tests, it would silently turn every one of their messages into an ignored
+   * update, which is the kind of green nobody reads.
+   */
+  chat: z.object({ id: z.number().int(), type: z.string().optional() }),
   text: z.string().optional(),
   photo: z.array(PhotoSizeSchema).optional(),
   document: DocumentSchema.optional(),

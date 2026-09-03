@@ -136,6 +136,22 @@ export interface HandleOutcome {
 const IGNORED: HandleOutcome = { status: 'ignored', replies: [] };
 
 /**
+ * Whether this update came from a one-to-one chat with a customer.
+ *
+ * A callback query carries its own message, and a button pressed on a message
+ * the bot posted into a group arrives with that group as its chat — so both
+ * halves are checked rather than only `update.message`.
+ *
+ * Absent means private: see `MessageSchema` in `telegram.ts` for why the field
+ * is optional. A callback query with no message at all is private too — it can
+ * only come from an inline result, which has no chat to be public.
+ */
+function isPrivateChat(update: TelegramUpdate): boolean {
+  const chat = update.callback_query?.message?.chat ?? update.message?.chat;
+  return chat?.type === undefined || chat.type === 'private';
+}
+
+/**
  * The shop's switches for the update being handled.
  *
  * Module-level for the same reason `menu.ts` keeps its wording that way, and
@@ -199,6 +215,22 @@ export async function handleUpdate(
   // Telegram refuses — see `gate.ts`.
   api?: MembershipApi,
 ): Promise<HandleOutcome> {
+  // Before the database is touched at all, because this bot is about to be put
+  // in a group.
+  //
+  // Nothing below distinguishes a chat: `chatId` is read the same way whatever
+  // it is, `upsertUser` would write a customer row for anybody who typed in the
+  // group, and every reply goes back to `message.chat.id` — so adding the bot
+  // to the reports group would draw customer menus into it and mint customers
+  // out of whoever spoke. It has never happened only because the bot has never
+  // been in a group, which is not a guarantee, and the report topics are about
+  // to make it one.
+  //
+  // Ignored rather than claimed: no `telegram_updates` row, no session, no
+  // write. A redelivery of the same group message is ignored again for the same
+  // reason, so there is nothing to remember.
+  if (!isPrivateChat(update)) return IGNORED;
+
   await refreshShopContent(db);
 
   return db.withSession(async (tx) => {
