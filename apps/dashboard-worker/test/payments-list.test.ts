@@ -144,6 +144,10 @@ type PaymentsBody = {
     isNew?: boolean;
   }>;
   counts: Record<string, number>;
+  /** Present on every tab since the income tabs stopped cutting at 200. */
+  page?: number;
+  pageSize?: number;
+  total?: number;
   summary: {
     botAutoVerified: { payments: number; amountIrr: number };
     unassignedIncome: { count: number; amountIrr: number };

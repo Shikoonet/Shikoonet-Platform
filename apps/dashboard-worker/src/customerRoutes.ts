@@ -34,10 +34,11 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 
-import { MAX_SINGLE_PAYMENT_IRR, Texts } from '@shikoo/contracts';
+import { MAX_SINGLE_PAYMENT_IRR, MIRZABOT_SOURCE, Texts } from '@shikoo/contracts';
 import {
   MAX_MESSAGE_LENGTH,
   adjustWallet,
+  maskCardDigits,
   queueDirectMessage,
   setCustomerReseller,
   setCustomerStatus,
@@ -330,6 +331,52 @@ export function registerCustomerRoutes(
       .bind(id)
       .first<{ n: number; paid: number }>();
 
+    /**
+     * «این آی‌دی چند بار و به کدام کارت‌ها واریز داشته» — the question this
+     * drawer is opened with and could not answer. It knew the wallet and the
+     * order count; the claims, and the cards they named, were only reachable
+     * from the payments screen by typing the id in again.
+     *
+     * Counted exactly as «توازن کارت‌ها» counts a card's takings — settled
+     * claims of this source, summing `expected_amount_irr` — so a customer's
+     * rows here are a SUBSET of that card's number rather than a second
+     * definition of the same word (rule 6: the two screens have to agree by
+     * construction, not by coincidence).
+     *
+     * `customer_reference` is text and holds the Telegram id — one production
+     * row holds «Poyan test payment» — so the id is bound as text and the
+     * column is never cast. `idx_claim_customer_reference` (migration 0046)
+     * is what keeps this cheap on the drawer's open.
+     */
+    const byCard = await c.env.DB.prepare(
+      `SELECT c.card_digits,
+              COUNT(*) AS payments,
+              COALESCE(SUM(c.expected_amount_irr), 0) AS amount_irr,
+              MAX(COALESCE(c.paid_clicked_at, c.created_at)) AS last_paid_at
+         FROM payment_claims c
+        WHERE c.source_system = ?1
+          AND c.status = 'VERIFIED'
+          AND c.customer_reference = ?2
+        GROUP BY c.card_digits
+        ORDER BY amount_irr DESC, c.card_digits ASC`,
+    )
+      .bind(MIRZABOT_SOURCE, String(row.telegram_id))
+      .all<{
+        card_digits: string | null;
+        payments: number;
+        amount_irr: number;
+        last_paid_at: number | null;
+      }>();
+
+    const cards = (byCard.results ?? []).map((r) => ({
+      // Never the full number, on any screen — the payments list holds the
+      // same line.
+      cardMasked: r.card_digits ? maskCardDigits(r.card_digits) : null,
+      payments: Number(r.payments),
+      amountIrr: Number(r.amount_irr),
+      lastPaidAt: r.last_paid_at,
+    }));
+
     return c.json({
       ok: true,
       customer: {
@@ -357,6 +404,11 @@ export function registerCustomerRoutes(
         lastSeenAt: row.last_seen_at,
         orderCount: orders?.n ?? 0,
         paidTotalIrr: orders?.paid ?? 0,
+      },
+      payments: {
+        count: cards.reduce((n, c) => n + c.payments, 0),
+        totalIrr: cards.reduce((n, c) => n + c.amountIrr, 0),
+        byCard: cards,
       },
       entries: (entries.results ?? []).map((e) => ({
         amountIrr: e.amount_irr,
