@@ -135,7 +135,9 @@ async function giveService(publicId: string, hoursFromNow: number): Promise<numb
       `INSERT INTO subscriptions
          (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
           remote_username, status, purchased_at, expires_at)
-       VALUES (?1, ?2, ?3, 'سرویس تست تنزل', 1000, 'acct', 'ACTIVE', now(),
+       -- The name is the public id, so it is unique per row: 0051 makes
+       -- (provider_id, remote_username) unique the way a real panel does.
+       VALUES (?1, ?2, ?3, 'سرویس تست تنزل', 1000, 'acct' || ?1, 'ACTIVE', now(),
                now() + make_interval(secs => ?4))
        RETURNING id`,
     )

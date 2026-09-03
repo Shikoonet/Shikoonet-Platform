@@ -929,7 +929,8 @@ export type PanelUsernameMode =
   | 'PANEL_TEXT'
   | 'TELEGRAM_USERNAME'
   | 'ORDER_ID'
-  | 'CUSTOMER_TEXT';
+  | 'CUSTOMER_TEXT'
+  | 'PANEL_TEXT_SEQ';
 
 /**
  * One price per customer tier, in TOMAN — `f` ordinary, `n` reseller, `n2`

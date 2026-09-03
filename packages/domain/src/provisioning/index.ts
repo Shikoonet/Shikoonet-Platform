@@ -273,6 +273,39 @@ export function remoteUsernameFor(
   orderPublicId: string,
   shape?: UsernameShape,
 ): string {
+  // The one mode whose suffix is NOT the order's public id.
+  //
+  // `shikoo_369469521_2` — the shop's word, the customer's telegram id, and
+  // which purchase of theirs this is. Sam asked for it because it reads at a
+  // glance and support can act on it; a ten-character hex digest never did.
+  //
+  // ## The uniqueness the public id was giving away for free
+  //
+  // Every other mode ends in `orderPublicId`, which is unique by definition, so
+  // no two accounts can collide however the prefix is chosen. This one drops
+  // that, and the replacement has to be at least as strong — because the
+  // failure mode is not an error. The adapter finds the account that already
+  // exists and reports SUCCESS, so the customer pays for a second service and
+  // receives their first one again.
+  //
+  // `purchaseSeq` is that replacement, and it is safe for three reasons that
+  // were checked rather than assumed (see `provisionPaidOrders`, which counts
+  // it): `orders.kind` is written at INSERT and appears in no `UPDATE orders
+  // SET` in this repository, nothing deletes an order outside the tests, and
+  // the legacy half of the count is a constant per customer. So it is fixed the
+  // moment the order exists, identical on every retry, and strictly larger for
+  // a later order of the same customer.
+  //
+  // Null means the caller could not count it — an old row, a caller that
+  // predates this — and then the order-id shape is used instead. Inventing a
+  // number here is the one thing that must not happen.
+  if (shape?.mode === 'PANEL_TEXT_SEQ') {
+    const seq = shape.purchaseSeq;
+    if (typeof seq === 'number' && Number.isSafeInteger(seq) && seq > 0) {
+      const prefix = sanitiseUsernamePart(shape.panelText) ?? String(telegramId);
+      return `${prefix}_${telegramId}_${seq}`;
+    }
+  }
   const suffix = orderPublicId.replace(/[^a-z0-9]/gi, '').toLowerCase();
   return `${usernamePrefix(telegramId, orderPublicId, shape)}_${suffix}`;
 }
@@ -339,6 +372,7 @@ export const USERNAME_MODES = [
   'TELEGRAM_USERNAME',
   'ORDER_ID',
   'CUSTOMER_TEXT',
+  'PANEL_TEXT_SEQ',
 ] as const;
 
 export type UsernameMode = (typeof USERNAME_MODES)[number];
@@ -358,6 +392,13 @@ export interface UsernameShape {
    * a page preventing.
    */
   customerText?: string | null;
+  /**
+   * Which purchase of this customer's this order is — 1, 2, 3.
+   *
+   * Only `PANEL_TEXT_SEQ` reads it, and null there falls back to the shape every
+   * other mode uses. It is COUNTED, never stored: see `remoteUsernameFor`.
+   */
+  purchaseSeq?: number | null;
 }
 
 /**
@@ -387,6 +428,8 @@ export function usernameShapeFor(
   config: Record<string, unknown>,
   telegramUsername?: string | null,
   customerText?: string | null,
+  /** Which purchase of this customer's the order is; only `PANEL_TEXT_SEQ` reads it. */
+  purchaseSeq?: number | null,
 ): UsernameShape {
   const explicit = config['username_mode'];
   const legacy = config['MethodUsername'];
@@ -409,6 +452,7 @@ export function usernameShapeFor(
     panelText: typeof text === 'string' ? text : null,
     telegramUsername: telegramUsername ?? null,
     customerText: customerText ?? null,
+    purchaseSeq: purchaseSeq ?? null,
   };
 }
 
@@ -431,7 +475,12 @@ function usernamePrefix(
   shape?: UsernameShape,
 ): string {
   const fallback = String(telegramId);
-  if (shape?.mode === 'PANEL_TEXT') return sanitiseUsernamePart(shape.panelText) ?? fallback;
+  // `PANEL_TEXT_SEQ` shares this line on purpose: when the sequence could not be
+  // counted it falls back to the order-id suffix above, and the prefix it falls
+  // back WITH should still be the shop's own word rather than a bare id.
+  if (shape?.mode === 'PANEL_TEXT' || shape?.mode === 'PANEL_TEXT_SEQ') {
+    return sanitiseUsernamePart(shape.panelText) ?? fallback;
+  }
   if (shape?.mode === 'TELEGRAM_USERNAME') {
     return sanitiseUsernamePart(shape.telegramUsername) ?? fallback;
   }
@@ -507,6 +556,50 @@ export const CUSTOMER_NAME_MAX = 16;
  * The bot's prompt runs input through this too, so the rule a customer is held
  * to and the rule the panel is given are one rule rather than two.
  */
+/**
+ * What a WHOLE panel username may be, as opposed to one part of one.
+ *
+ * `sanitiseUsernamePart` above is about a PIECE — the shop's word, the
+ * customer's chosen name — and enforces the rules a piece needs: at least three
+ * characters, starting with a letter, short enough to leave room for a suffix.
+ * A whole name is a different object: it is `shikoo_369469521_2`, so it is
+ * longer than a part, it carries the separators a part may not, and it starts
+ * with whatever the first piece started with.
+ *
+ * ## Why this exists rather than reusing the other one
+ *
+ * A handover note proposed putting `checkNamePrefix` on the shelf's input. It
+ * cannot go there: that validator caps at twelve characters and REFUSES the
+ * underscore, because the underscore is the separator between the parts it
+ * validates. Every real username this system builds would be rejected by it.
+ * The suggestion was right about the gap and wrong about the tool, and the
+ * distinction is worth this comment because the two names look alike.
+ *
+ * ## The charset is the panels', not ours
+ *
+ * `[a-z0-9_-]`, starting with a letter or a digit. The comment above
+ * `NAME_PREFIX` says where it comes from: every username observed in production
+ * is `[0-9a-z_]` and 14–20 characters long, and a panel that quietly truncates
+ * or case-folds what we send breaks the one thing provisioning relies on — the
+ * retry looks the account up by the exact string it sent, so a name the panel
+ * stored differently is a name we never find again, and the sweep loops on a
+ * PAID order for ever.
+ *
+ * 64 characters because that is comfortably past the longest shape this builds
+ * (a 16-character part, a 10-digit id and a counter is 28) and comfortably
+ * under the point where panels start answering 422.
+ */
+const REMOTE_USERNAME = /^[a-z0-9][a-z0-9_-]{2,63}$/;
+
+/** Null when acceptable, otherwise the sentence to show. */
+export function checkRemoteUsername(value: string): string | null {
+  if (value.length > 64) return 'حداکثر ۶۴ نویسه.';
+  if (!REMOTE_USERNAME.test(value)) {
+    return 'فقط حروف کوچک انگلیسی، رقم، خط تیره و زیرخط؛ دست‌کم ۳ نویسه و شروع با حرف یا رقم.';
+  }
+  return null;
+}
+
 export function sanitiseUsernamePart(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
   const cleaned = raw
