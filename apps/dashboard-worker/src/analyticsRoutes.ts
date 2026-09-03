@@ -480,6 +480,13 @@ export async function loadCardAnalytics(
               fa.owner_label,
               fa.account_hint,
               fa.status AS account_status,
+              fa.active AS account_active,
+              -- The CARD's own switch. Eligibility read the account's status
+              -- and nothing else, so a card somebody had turned off was
+              -- reported «واجد شرایط» and counted among the eligible cards with
+              -- no sales — a card that cannot take a sale, filed under cards
+              -- that took none.
+              pc.status AS card_status,
               COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED'${rangeFilter}
                                   THEN c.id END) AS purchase_count,
               ${windowSql}
@@ -499,12 +506,23 @@ export async function loadCardAnalytics(
        LEFT JOIN reconciliation_matches m
          ON m.payment_claim_id = c.id
         AND m.status = 'AUTO_VERIFIED'
-       WHERE fa.active = 1
+       -- No WHERE fa.active = 1. It used to be here, and it is the reason
+       -- this screen could not answer the question an operator brings to it.
+       --
+       -- «توازن کارت‌ها» is where somebody goes to ask «چرا کارت من کار نکرد»,
+       -- and a card whose ACCOUNT was switched off simply vanished from the
+       -- list — the one cross-account view of cards hid exactly the cards that
+       -- had stopped working. Now the row is here and says account_deactivated,
+       -- which is the answer.
+       --
+       -- The distribution below is computed over the ELIGIBLE cards only, so
+       -- listing the excluded ones does not make the balance look worse than it
+       -- is: a card nobody can be sent to is not competing for turns.
        -- fa.id is financial_accounts' primary key, so Postgres accepts the
        -- other fa.* columns by functional dependency. SQLite allowed the bare
        -- columns and picked an arbitrary row per group; that only happened to
        -- be right because a card belongs to exactly one account.
-       GROUP BY pc.card_digits, pc.display_weight, fa.id
+       GROUP BY pc.card_digits, pc.display_weight, pc.status, fa.id
        ORDER BY purchase_count DESC, pc.card_digits ASC`,
     )
     .bind(...binds)
@@ -516,6 +534,8 @@ export async function loadCardAnalytics(
       owner_label: string | null;
       account_hint: string | null;
       account_status: string;
+      account_active: number;
+      card_status: string;
       purchase_count: number;
     } & Record<`w_${CardActivityWindowKey}`, number>>();
 
@@ -536,12 +556,34 @@ export async function loadCardAnalytics(
     activity: Object.fromEntries(
       CARD_ACTIVITY_WINDOWS.map((w) => [w.key, Number(r[`w_${w.key}`] ?? 0)]),
     ) as CardActivityCounts,
-    hubEligible: r.account_status === 'ACTIVE',
+    cardStatus: r.card_status,
+    /*
+     * The same three conditions `rotateCard` picks on, in the same order.
+     *
+     * There were three definitions of «eligible card» in this repo and no two
+     * agreed: the bot's picker, this, and the legacy hub's sync script. This
+     * one asked only about the account's review status — not the operator's
+     * on/off, and not the card's own switch — so it called a card eligible that
+     * the bot would never hand out.
+     */
+    hubEligible:
+      r.card_status === 'ACTIVE' && r.account_status === 'ACTIVE' && Number(r.account_active) === 1,
+    // The FIRST reason it is out, so the operator is sent to one switch rather
+    // than told «not eligible» and left to find which of three it is.
     exclusionReason:
-      r.account_status === 'ACTIVE' ? 'hub_active' : `account_${r.account_status.toLowerCase()}`,
+      r.card_status !== 'ACTIVE'
+        ? 'card_disabled'
+        : Number(r.account_active) !== 1
+          ? 'account_deactivated'
+          : r.account_status === 'ACTIVE'
+            ? 'hub_active'
+            : `account_${r.account_status.toLowerCase()}`,
   }));
 
-  const purchaseCounts = items.map((i) => i.purchaseCount);
+  // Balance is a question about the cards IN rotation. An excluded card has no
+  // turns to be fair about, and counting its zero would report a shop as
+  // lopsided for cards it has deliberately taken out of service.
+  const purchaseCounts = items.filter((i) => i.hubEligible).map((i) => i.purchaseCount);
   const distribution = cardBalancingDistribution(purchaseCounts);
   const maxPurchases = Math.max(...purchaseCounts, 1);
 

@@ -86,31 +86,37 @@ const RESOLVE_SQL = `
       FROM financial_accounts fa
       JOIN input_matches m ON m.input_kind IN ('account_number', 'account_hint')
                           AND fa.account_hint = m.normalized_value
-                          AND fa.active = 1 AND fa.status = 'ACTIVE'
+                          AND fa.status = 'ACTIVE'
     UNION ALL
     SELECT fa.id, 'CARD_LAST_FOUR'
       FROM financial_accounts fa
       JOIN input_matches m ON m.input_kind = 'card_last_four'
                           AND fa.card_last_four = m.normalized_value
-                          AND fa.active = 1 AND fa.status = 'ACTIVE'
+                          AND fa.status = 'ACTIVE'
     UNION ALL
     SELECT fa.id, 'ACCOUNT_LAST_FOUR'
       FROM financial_accounts fa
       JOIN input_matches m ON m.input_kind = 'account_last_four'
                           AND fa.account_last_four = m.normalized_value
-                          AND fa.active = 1 AND fa.status = 'ACTIVE'
+                          AND fa.status = 'ACTIVE'
     UNION ALL
     SELECT fa.id, 'IBAN'
       FROM financial_accounts fa
       JOIN input_matches m ON m.input_kind = 'iban'
                           AND fa.iban = m.normalized_value
-                          AND fa.active = 1 AND fa.status = 'ACTIVE'
+                          AND fa.status = 'ACTIVE'
     UNION ALL
     -- financial_account_identifiers stores ACCOUNT_HINT for the
     -- account-number kind. Match the input via the fai table when the
     -- canonical column is empty. JOIN financial_accounts to enforce
     -- status = 'ACTIVE' on the target account (PENDING / MUTED /
     -- DECLINED accounts are excluded from automatic resolution).
+    --
+    -- The four branches above used to ALSO require active = 1 and this one
+    -- never did. They agree on status alone since 2026-09-03 — see the block
+    -- above RESOLVE_SQL in resolution.ts for why the operator's on/off switch
+    -- must not decide what an arriving SMS means, and what the extra filter
+    -- cost: a duplicate account minted for an identifier the shop owned.
     SELECT fai.financial_account_id AS account_id, fai.kind AS matched_kind
       FROM financial_account_identifiers fai
       JOIN financial_accounts fa ON fa.id = fai.financial_account_id

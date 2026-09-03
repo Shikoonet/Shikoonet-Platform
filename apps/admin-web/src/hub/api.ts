@@ -116,6 +116,8 @@ export interface AccountListItem {
     masked: string;
     display: string;
     label: string | null;
+    /** ACTIVE | DISABLED. A list that omits it draws a dead card as a live one. */
+    status?: string;
   }>;
 }
 

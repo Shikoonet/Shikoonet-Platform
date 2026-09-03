@@ -32,10 +32,30 @@ const MOBILE_SORT_OPTIONS = [
   { value: 'recent', label: 'تازه‌ترین', column: 'created_at', direction: 'desc' as const },
 ];
 
+/**
+ * The «حساب / کارت» cell, and why a card that is off has to say so.
+ *
+ * This drew a disabled card and a live one identically. The bot will not hand
+ * out either the disabled card OR any card of a switched-off account, so an
+ * operator asking «چرا کارت من نشان داده نشد» was reading a list that could not
+ * answer — which is the question Sam arrived with.
+ *
+ * Both switches are named, and the ACCOUNT's is named first because it is the
+ * one that takes every card down at once.
+ */
 function formatPaymentCardCell(a: AccountListItem): string {
   const mapped = a.payment_cards ?? [];
   if (mapped.length > 0) {
-    return mapped.map((c) => (c.label ? `${c.display} (${c.label})` : c.display)).join(', ');
+    const accountOff = a.active === 0;
+    return mapped
+      .map((c) => {
+        const name = c.label ? `${c.display} (${c.label})` : c.display;
+        if (accountOff) return `${name} — حساب خاموش`;
+        // `!== 'ACTIVE'` rather than `=== 'DISABLED'`: an older response with
+        // no status must read as live, which is what it always was.
+        return c.status !== undefined && c.status !== 'ACTIVE' ? `${name} — خاموش` : name;
+      })
+      .join('، ');
   }
   if (a.card_last_four) return `*${a.card_last_four}`;
   return '—';
@@ -1031,6 +1051,7 @@ export function PaymentCardsPanel({
                   <select
                     value={c.display_weight}
                     disabled={busy || !on}
+                    {...w}
                     onChange={(e) =>
                       void edit(c.id, { displayWeight: Number(e.target.value) }, 'تغییر وزن')
                     }

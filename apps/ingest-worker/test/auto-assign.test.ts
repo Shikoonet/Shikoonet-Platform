@@ -181,6 +181,87 @@ describe('ingest auto-assign', () => {
     expect(hist?.normalized_identifier).toBe(ACCOUNT_NUMBER);
   });
 
+  /**
+   * An account the operator retired still owns its own money.
+   *
+   * Four of the resolver's five branches used to require `active = 1`, so an
+   * SMS for a switched-off account resolved to NOT_FOUND — and ingest answers
+   * NOT_FOUND by calling `autoCreatePendingAccount`. The shop ended up with a
+   * SECOND account for an identifier it already owned, the transaction pinned
+   * to the duplicate and the customer's claim pointing at the original, and
+   * nothing that could ever match them.
+   *
+   * `active` is the operator's on/off; it cannot decide what an arriving SMS
+   * MEANS. `status` is the axis that says «is this ours», and the fifth branch
+   * had always filtered on that alone.
+   *
+   * Seeded WITHOUT a `financial_account_identifiers` row on purpose: with one,
+   * the fifth branch resolves it and the bug is invisible. That is exactly why
+   * the existing tests never saw this.
+   */
+  it('attributes to a deactivated account instead of minting a duplicate', async () => {
+    const hint = '4400000011';
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO financial_accounts
+         (id, bank_name, display_name, account_type, account_hint,
+          active, status, parser_configuration, created_at, updated_at)
+       VALUES (?1, 'PARSIAN', 'حساب بازنشسته', 'ACCOUNT', ?2, 0, 'ACTIVE', '{}', ?3, ?3)`,
+    )
+      .bind(id, hint, now)
+      .run();
+
+    const before = await env.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM financial_accounts`,
+    ).first<{ n: number }>();
+
+    const device = await seedDevice();
+    const message = [
+      'انتقال اینترنت',
+      `حساب:${hint}`,
+      'مبلغ:5,000,000+',
+      'مانده:10,000,000',
+      '05/14-11:30',
+    ].join('\n');
+    expect((await postSmsForDevice(device, message, Date.now())).status).toBe(200);
+
+    const tx = await env.DB.prepare(
+      `SELECT financial_account_id FROM transaction_candidates ORDER BY created_at DESC LIMIT 1`,
+    ).first<{ financial_account_id: string | null }>();
+
+    // The money is on the account it actually arrived at.
+    expect(tx?.financial_account_id).toBe(id);
+    // And no second account was invented for an identifier the shop owns. This
+    // is the half that was data corruption rather than a wrong screen.
+    const after = await env.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM financial_accounts`,
+    ).first<{ n: number }>();
+    expect(Number(after?.n)).toBe(Number(before?.n));
+  });
+
+  it('still refuses an account that was DECLINED — that one is not ours', async () => {
+    // The other axis, and the reason this is not «drop every filter». DECLINED
+    // is a review decision that the account is not the shop's; money for it
+    // must NOT be attributed, and minting a pending row is the right answer.
+    const hint = '4400000022';
+    await env.DB.prepare(
+      `INSERT INTO financial_accounts
+         (id, bank_name, display_name, account_type, account_hint,
+          active, status, parser_configuration, created_at, updated_at)
+       VALUES (?1, 'PARSIAN', 'حساب رد شده', 'ACCOUNT', ?2, 1, 'DECLINED', '{}', ?3, ?3)`,
+    )
+      .bind(crypto.randomUUID(), hint, Date.now())
+      .run();
+
+    const { resolveAccountByHint } = await import('@shikoo/domain');
+    const r = await resolveAccountByHint(
+      env.DB as unknown as Parameters<typeof resolveAccountByHint>[0],
+      hint,
+    );
+    expect(r.status).toBe('NOT_FOUND');
+  });
+
   it('ambiguous detection stays unassigned (no AUTO_IDENTIFIER history row)', async () => {
     // The partial unique index on (kind, value) in financial_account_identifiers
     // and the partial unique indexes on the canonical columns make two
