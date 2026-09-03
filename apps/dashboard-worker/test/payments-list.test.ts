@@ -940,7 +940,6 @@ describe('personal customers and resellers, told apart', () => {
   }
 
   beforeEach(async () => {
-    await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id IN (7001, 7002)`).run();
     for (const [tg, isReseller] of [
       [7001, false],
       [7002, true],
@@ -950,9 +949,16 @@ describe('personal customers and resellers, told apart', () => {
       // either: `users` keeps `timestamptz` while `payment_claims` keeps epoch
       // milliseconds — the two conventions this schema carries, and handing
       // one to the other is «date/time field value out of range».
+      //
+      // Upsert rather than delete-then-insert. It used to delete these two
+      // first, which passed on a fresh database and failed on every run after:
+      // by then the users owned a wallet and its entries, and eleven tables
+      // carry a RESTRICT foreign key to `users`. The test needs the two rows to
+      // EXIST with a known `is_reseller` — it never needed them to be new.
       await baseEnv.DB.prepare(
         `INSERT INTO users (telegram_id, status, is_reseller, registered_at)
-         VALUES (?1, 'ACTIVE', ?2, now())`,
+         VALUES (?1, 'ACTIVE', ?2, now())
+         ON CONFLICT (telegram_id) DO UPDATE SET is_reseller = EXCLUDED.is_reseller`,
       )
         .bind(tg, isReseller)
         .run();
@@ -988,5 +994,47 @@ describe('personal customers and resellers, told apart', () => {
     await seedClaim('s-text', { status: 'VERIFIED', customerReference: 'Poyan test payment' });
     const r = await ask('tab=all&range=all');
     expect(r.items.map((i) => i.id)).toContain('s-text');
+  });
+});
+
+/**
+ * The three tabs that were left behind when the claim list got pagination.
+ *
+ * «واریزی‌ها» is where «پول رسید و به هیچ سفارشی نخورد» is answered, and on
+ * staging on 2026-09-04 its badge said 225 while the screen listed 200 — no
+ * pager, no `total`, and nothing saying 25 rows were missing (issue #82). The
+ * claim tabs had been fixed the day before; `income`, `declined_income` and
+ * `reseller` still ended in a bare `LIMIT 200`.
+ *
+ * A fixture below the ceiling cannot see the old bug, so these ask the
+ * narrower question the fix has to answer anyway: does the tab report how many
+ * rows exist, and does page 2 continue where page 1 stopped.
+ */
+describe('the income tabs count what they did not send', () => {
+  beforeEach(async () => {
+    const base = Date.now();
+    for (let i = 0; i < 3; i++) await seedTx(`inc-${i}`, base - i * 60_000);
+  });
+
+  it('reports the total beside the page, not the page as the total', async () => {
+    const body = await get('tab=income&range=all&pageSize=2');
+    expect(body.items.length).toBe(2);
+    expect(body.total).toBe(3);
+    expect(body.pageSize).toBe(2);
+    expect(body.page).toBe(1);
+  });
+
+  it('page 2 continues where page 1 stopped', async () => {
+    const p1 = await get('tab=income&range=all&pageSize=2');
+    const p2 = await get('tab=income&range=all&pageSize=2&page=2');
+    expect(p2.items.length).toBe(1);
+    expect(p2.page).toBe(2);
+    const ids = [...p1.items, ...p2.items].map((i) => i.id);
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it('the total agrees with the badge the tab draws', async () => {
+    const body = await get('tab=income&range=all&pageSize=2');
+    expect(body.total).toBe(body.counts.income);
   });
 });

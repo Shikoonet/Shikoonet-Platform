@@ -79,6 +79,7 @@ export async function loadDeclinedIncomeItems(
   now: number,
   day?: string | null,
   limit = 200,
+  offset = 0,
 ) {
   const binds: unknown[] = [];
   const p = (v: unknown) => {
@@ -98,7 +99,7 @@ export async function loadDeclinedIncomeItems(
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
        WHERE idt.restored_at IS NULL${rangeFilter.sql}
        ORDER BY idt.declined_at DESC
-       LIMIT ${p(limit)}`,
+       LIMIT ${p(limit)} OFFSET ${p(offset)}`,
     )
     .bind(...binds)
     .all<{
@@ -171,6 +172,7 @@ export async function loadIncomeItems(
   day?: string | null,
   limit = 200,
   actorEmail?: string,
+  offset = 0,
 ) {
   const binds: unknown[] = [];
   const p = (v: unknown) => {
@@ -188,7 +190,7 @@ export async function loadIncomeItems(
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
        WHERE ${INCOME_TX_WHERE}${rangeFilter.sql}
        ORDER BY t.bank_timestamp DESC
-       LIMIT ${p(limit)}`,
+       LIMIT ${p(limit)} OFFSET ${p(offset)}`,
     )
     .bind(...binds)
     .all<{
@@ -257,6 +259,7 @@ export async function loadResellerItems(
   now: number,
   day?: string | null,
   limit = 200,
+  offset = 0,
 ) {
   const binds: unknown[] = [];
   const p = (v: unknown) => {
@@ -277,7 +280,7 @@ export async function loadResellerItems(
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
        WHERE 1=1${rangeFilter.sql}
        ORDER BY rt.classified_at DESC
-       LIMIT ${p(limit)}`,
+       LIMIT ${p(limit)} OFFSET ${p(offset)}`,
     )
     .bind(...binds)
     .all<{
