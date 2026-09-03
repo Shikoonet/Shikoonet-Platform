@@ -147,6 +147,47 @@ export function AccountsView({ cache }: AccountsViewProps) {
   }
 
   /**
+   * The way back, which this screen did not have.
+   *
+   * `deactivate` shipped without it: once `active` was 0 the only button left
+   * was «حذف همیشگی», so switching an account off was a one-way door with a
+   * permanent delete at the end of it. Sam switched every account off on
+   * 2026-09-03 and had nothing to press.
+   *
+   * `PATCH /api/v1/accounts/:id` has always accepted `{ active }` and
+   * `updateAccount` has always carried it — only the button was missing, which
+   * is why this is six lines and not a route.
+   *
+   * It asks, and the question names the consequence rather than the field: an
+   * account back in service is one the bot will hand customers a card for
+   * again, and that is the half an operator is actually deciding.
+   */
+  async function activate(id: string) {
+    const acc = items.find((x) => x.id === id);
+    const name = acc?.display_name ?? id;
+    if (
+      !window.confirm(
+        `«${name}» دوباره فعال شود؟ به فهرست حساب‌ها و به «آمار مالی» برمی‌گردد، ` +
+          `و ربات می‌تواند دوباره کارت‌های همین حساب را به مشتری بدهد.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(id);
+    setError(null);
+    try {
+      await api.updateAccount(id, { active: true });
+      setSuccess(`«${name}» فعال شد.`);
+      cache.invalidate(QK.accounts, QK.accountTotals('all_time'));
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
    * Run one of the lifecycle transitions (accept / mute / unmute /
    * decline / restore). The server enforces the (from, to) legality
    * with a 409; we surface the typed error so the user sees a clear
@@ -342,6 +383,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                 busy={busy === a.id}
                 onEdit={() => setEditing(a.id)}
                 onDeactivate={() => deactivate(a.id)}
+                onActivate={() => activate(a.id)}
                 onDelete={() => setDeletingId(a.id)}
                 onRerunAssignment={() => setRerunAssignmentFor(a.id)}
                 onAccept={() => runStatusTransition(a.id, 'accept')}
@@ -456,15 +498,29 @@ export function AccountsView({ cache }: AccountsViewProps) {
                           غیرفعال‌کردن
                         </button>
                       ) : (
-                        <button
-                          type="button"
-                          className="danger"
-                          disabled={busy === a.id}
-                          onClick={() => setDeletingId(a.id)}
-                          {...w}
-                        >
-                          حذف همیشگی
-                        </button>
+                        <>
+                          {/* First, and not styled `danger`: the way back is
+                              the ordinary thing to want here, and the
+                              irreversible one should not be the only one on
+                              offer. */}
+                          <button
+                            type="button"
+                            disabled={busy === a.id}
+                            onClick={() => activate(a.id)}
+                            {...w}
+                          >
+                            فعال‌کردن
+                          </button>
+                          <button
+                            type="button"
+                            className="danger"
+                            disabled={busy === a.id}
+                            onClick={() => setDeletingId(a.id)}
+                            {...w}
+                          >
+                            حذف همیشگی
+                          </button>
+                        </>
                       )}
                     </td>
                   </tr>
@@ -631,6 +687,7 @@ function AccountCard({
   busy,
   onEdit,
   onDeactivate,
+  onActivate,
   onDelete,
   onRerunAssignment,
   onAccept,
@@ -643,6 +700,7 @@ function AccountCard({
   busy: boolean;
   onEdit: () => void;
   onDeactivate: () => void;
+  onActivate: () => void;
   onDelete: () => void;
   onRerunAssignment: () => void;
   onAccept: () => void;
@@ -721,9 +779,14 @@ function AccountCard({
             غیرفعال‌کردن
           </button>
         ) : (
-          <button type="button" className="danger" disabled={busy} onClick={onDelete} {...w}>
-            حذف همیشگی
-          </button>
+          <>
+            <button type="button" disabled={busy} onClick={onActivate} {...w}>
+              فعال‌کردن
+            </button>
+            <button type="button" className="danger" disabled={busy} onClick={onDelete} {...w}>
+              حذف همیشگی
+            </button>
+          </>
         )}
       </div>
     </li>
