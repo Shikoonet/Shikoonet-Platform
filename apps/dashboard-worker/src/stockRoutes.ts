@@ -30,6 +30,7 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
+import { checkRemoteUsername } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 const StockBody = z
@@ -194,6 +195,17 @@ export function registerStockRoutes(
       .bind(body.data.planId)
       .first<{ id: number; provider_id: number }>();
     if (!plan) return c.json({ ok: false, error: 'plan_not_found' }, 404);
+
+    // The name goes to a PANEL, and until now this field took any 200
+    // characters — Persian, spaces, capitals, anything. That matters more than
+    // it looks: a shelved config is handed to a customer whose panel account is
+    // then looked up by this exact string on every later sync and renewal, so a
+    // name the panel stores differently is an account this system loses. The
+    // charset is the one every real username on this shop's panels uses.
+    const nameProblem = checkRemoteUsername(body.data.remoteUsername);
+    if (nameProblem) {
+      return c.json({ ok: false, error: 'invalid_body', detail: nameProblem }, 400);
+    }
 
     const row = await c.env.DB.prepare(
       `INSERT INTO provisioning_stock
