@@ -159,3 +159,77 @@ export async function setCustomerStatus(
     .run();
   return { changed: true, before, blockedReason };
 }
+
+export interface ResellerChange {
+  userId: number;
+  isReseller: boolean;
+  /** The level. Ignored — and cleared — when `isReseller` is false. */
+  tier: 'n' | 'n2' | null;
+}
+
+export interface ResellerChangeResult {
+  changed: boolean;
+  before: { is_reseller: boolean; reseller_tier: string | null };
+  after: { is_reseller: boolean; reseller_tier: string | null };
+}
+
+/**
+ * Makes a customer a reseller, or stops them being one. Null when there is no
+ * such customer.
+ *
+ * Until now the only way `is_reseller` became true was an operator approving a
+ * request the customer had filed through the bot. Sam asked to be able to
+ * choose somebody directly, which is this.
+ *
+ * ## One statement, because the two columns are one decision
+ *
+ * Ending a reseller clears the level in the same UPDATE. Doing it in two would
+ * leave a moment where the row says «not a reseller, level two», and the
+ * pricing rule reads the flag first — so that moment prices them as an ordinary
+ * customer while a screen still shows a level. One statement has no moment.
+ *
+ * There is deliberately no CHECK enforcing the pair. `is_reseller` is also
+ * written by the request-approval route, the importer and the seed, and a
+ * constraint would turn any of those forgetting the level into a failed write
+ * rather than a reseller priced at level one — which is what `tierFor` already
+ * makes them.
+ */
+export async function setCustomerReseller(
+  db: Db,
+  { userId, isReseller, tier }: ResellerChange,
+): Promise<ResellerChangeResult | null> {
+  const before = await db
+    .prepare(`SELECT is_reseller, reseller_tier FROM users WHERE id = ?1`)
+    .bind(userId)
+    .first<{ is_reseller: boolean; reseller_tier: string | null }>();
+  if (!before) return null;
+
+  const wantedTier = isReseller ? tier : null;
+  const after = { is_reseller: isReseller, reseller_tier: wantedTier };
+  if (before.is_reseller === isReseller && before.reseller_tier === wantedTier) {
+    return { changed: false, before, after };
+  }
+
+  await db
+    .prepare(
+      `UPDATE users SET is_reseller = ?2, reseller_tier = ?3, updated_at = now() WHERE id = ?1`,
+    )
+    .bind(userId, isReseller, wantedTier)
+    .run();
+
+  // A person who has just been made a reseller by hand is not still waiting for
+  // an answer. Without this the requests screen keeps offering «تایید» and «رد»
+  // for somebody who already is one, and pressing «رد» would then read as
+  // having taken it away.
+  if (isReseller) {
+    await db
+      .prepare(
+        `UPDATE reseller_requests SET status = 'APPROVED', decided_at = now()
+          WHERE user_id = ?1 AND status = 'PENDING'`,
+      )
+      .bind(userId)
+      .run();
+  }
+
+  return { changed: true, before, after };
+}

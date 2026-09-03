@@ -349,6 +349,18 @@ describe('every write route, asked directly', () => {
     // deny list is a set and «add» and «remove» name different rows — legacy
     // has two menu entries for exactly this and its removal only takes the
     // FIRST match out, which is the bug a primary key here makes unwritable.
-    expect(writeRoutes().length).toBe(147);
+    //
+    // +1, «POST /customers/:id/reseller». Makes somebody a reseller from the
+    // panel, or stops them being one, and carries the level in the same body.
+    // ADMIN-only: it changes what a person may see in the shop AND what they
+    // pay for it, which is the same blast radius as the discount route beside
+    // it.
+    //
+    // +1, «POST /reseller-tiers/:code». Renames a level or re-prices it. It is
+    // ADMIN-only for a reason the others are not: one number here moves the
+    // price for EVERY reseller on that level at once, so it is the widest
+    // money write in the product. There is no create and no delete — the ladder
+    // is two rows fixed by a CHECK in 0046.
+    expect(writeRoutes().length).toBe(149);
   });
 });
