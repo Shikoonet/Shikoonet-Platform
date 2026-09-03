@@ -100,7 +100,12 @@ async function makeService(
       `act${nextId}-${userId}`,
       userId,
       provider,
-      options.username === undefined ? 'u_act' : options.username,
+      // Unique per service, because migration 0051 makes
+      // `(provider_id, remote_username)` unique — which is a fact about panels,
+      // not a rule this repository invented: two accounts cannot share one name
+      // on one panel, so a fixture that built two was describing something that
+      // could never exist. Tests that pass a name explicitly still get theirs.
+      options.username === undefined ? `u_act${nextId}_${userId}` : options.username,
       options.status ?? 'ACTIVE',
     )
     .first<{ id: number }>();

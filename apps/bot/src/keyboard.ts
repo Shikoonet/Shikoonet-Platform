@@ -24,11 +24,14 @@
  */
 
 import { encode, type CallbackAction } from './callback.js';
-import type { InlineKeyboard } from './telegram.js';
+import type { InlineKeyboard, ReplyKeyboard } from './telegram.js';
+import { splitCustomEmojiLabel, stripCustomEmoji } from '@shikoo/contracts';
+import { anchorLabel } from './telegram.js';
 import {
   DEFAULT_LAYOUTS,
   isMenuAction,
   MENUS,
+  ADMIN_ONLY,
   RESELLER_ONLY_HIDDEN,
   type ButtonPlacement,
   type MenuId,
@@ -152,9 +155,73 @@ export function buildMainMenu(
   return buildMenu('main', buttons, {
     applies: (action) => {
       if (viewer.is_reseller && RESELLER_ONLY_HIDDEN.has(action)) return false;
+      // The other half of the rule this function's docstring has always
+      // described. `is_admin` was computed on every screen and read by nothing.
+      if (!viewer.is_admin && ADMIN_ONLY.has(action)) return false;
       return true;
     },
   });
+}
+
+/**
+ * The same main menu, drawn UNDER the chat instead of under a message.
+ *
+ * Same layout, same labels, same two visibility rules — deliberately the same
+ * `buildMenu` rather than a second builder. The failure this avoids is the one
+ * `MenuViewer` already describes: two places that draw the shop's menu drift,
+ * and the way you find out is a customer seeing a button that is supposed to be
+ * hidden from them.
+ *
+ * `back` is dropped and nothing else is. A bottom keyboard belongs to the chat
+ * rather than to a screen, so it has no «back» to go to — the button would sit
+ * there for ever pointing at whatever the customer last looked at.
+ */
+export function buildReplyMenu(
+  buttons: readonly ButtonPlacement[],
+  viewer: MenuViewer,
+): ReplyKeyboard {
+  return buildMainMenu(buttons, viewer)
+    .map((row) => row.filter((b) => b.callback_data !== 'back').map((b) => ({ text: b.text })))
+    .filter((row) => row.length > 0);
+}
+
+/**
+ * Which action a bottom-keyboard press means.
+ *
+ * A bottom button sends its LABEL as an ordinary text message — that is all the
+ * bot gets back, and it is why this lookup has to exist. Matching is against the
+ * layout the shop is running, not against the shipped defaults: an admin who
+ * renamed «خرید» would otherwise be typing at a bot that has never heard of the
+ * button it is showing them.
+ *
+ * The comparison is on the label as DRAWN, custom-emoji markup already resolved.
+ * What arrives from Telegram is what the customer's client displayed, so a label
+ * stored as `<tg-emoji …>🛒</tg-emoji> خرید` comes back either as «🛒 خرید» or —
+ * when the icon rendered as the button's own icon — as «خرید». Both are matched,
+ * which is the only reason a shop with Premium and one without behave the same.
+ */
+export function actionForLabel(
+  buttons: readonly ButtonPlacement[],
+  viewer: MenuViewer,
+  text: string,
+): string | null {
+  const typed = text.trim();
+  if (typed === '') return null;
+  for (const button of buttons) {
+    if (!button.visible || button.action === 'back') continue;
+    if (viewer.is_reseller && RESELLER_ONLY_HIDDEN.has(button.action)) continue;
+    // The same audience rule the drawing side applies. A bottom keyboard sends
+    // TEXT, so without this a customer who typed the admin button's label word
+    // for word would be routed to its action — the handler refuses them anyway,
+    // but a door that is locked and also not drawn is the shape this wants.
+    if (!viewer.is_admin && ADMIN_ONLY.has(button.action)) continue;
+    const label = fill(button.label, {});
+    const split = splitCustomEmojiLabel(label);
+    if (typed === anchorLabel(split.text) || typed === split.text) return button.action;
+    const plain = stripCustomEmoji(label);
+    if (typed === anchorLabel(plain) || typed === plain) return button.action;
+  }
+  return null;
 }
 
 /**

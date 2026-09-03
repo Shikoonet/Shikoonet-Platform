@@ -33,12 +33,51 @@ export {
  * How many messages one poll cycle sends.
  *
  * Telegram's documented ceiling for bulk sending is around 30 messages per
- * second; `SEND_GAP_MS` keeps this well under it. At a 25-second cycle these
- * numbers drain 11,000 customers in about twenty minutes while adding eight
- * seconds to each cycle — the bot stays responsive, a little slower, and is
- * never rate limited.
+ * second, and the pacing below keeps this under it.
  */
 export const BROADCAST_BATCH = 200;
+
+/**
+ * How many sends are in flight at once.
+ *
+ * ## The arithmetic that made this necessary
+ *
+ * The loop was `await sendMessage(...)` followed by `await sleep(40)`, and the
+ * comment here used to reason about the 40ms as though it were the limit. It
+ * was not. A round trip to Telegram from Iran is 200ms and up, so each message
+ * cost latency + gap ≈ 240ms — about four per second against a ceiling of
+ * thirty. Nine tenths of a broadcast was this process waiting.
+ *
+ * Sam asked for mirzabot's «7.5× faster». Their code has no such change: it
+ * still sends twenty per cron tick (`cronbot/sendmessage.php`) with the cron
+ * running once a minute (`function.php:1734`), which is 1,200 an hour, and
+ * there is not one
+ * `curl_multi` in their repository. The number is not in the source. What
+ * reading it did show is that they have the same shape of loop we did — so the
+ * fix below is ours rather than theirs.
+ *
+ * ## Why a pool is safe here and would not be there
+ *
+ * Every recipient is claimed by its own `UPDATE … SKIP LOCKED` and marked by
+ * its own statement, so two sends share no state. That is what makes running
+ * them at once ordinary rather than daring. Mirzabot rewrites a `users.json`
+ * after each tick; parallel sends against that file would lose or duplicate
+ * whatever the last writer did not see.
+ *
+ * Twelve rather than thirty: the pool's throughput is bounded by the pace below
+ * as soon as the connection is fast, and twelve is enough to hide a 250ms round
+ * trip at that pace (12 / 0.25s ≈ 48/s of capacity against a 25/s pace) while
+ * keeping the number of open sockets small on a box that is also polling.
+ */
+export const SEND_CONCURRENCY = 12;
+
+/**
+ * The floor on the gap between two sends STARTING, across the whole pool.
+ *
+ * 40ms is 25 messages a second, which is what the old per-message gap was aiming
+ * at and never reached. Kept as a pace rather than a sleep-after-each-send: with
+ * a pool the two are different things, and it is the RATE Telegram limits.
+ */
 export const SEND_GAP_MS = 40;
 
 export interface BroadcastMessage {

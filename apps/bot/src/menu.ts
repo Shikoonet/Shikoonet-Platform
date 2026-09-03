@@ -38,7 +38,11 @@ import type { RequiredChannel } from './gate.js';
 import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
 import type { RenewMode } from '@shikoo/domain';
 import {
+  actionForLabel,
+  MAX_LABEL_LENGTH,
+  MENUS,
   buildMainMenu,
+  buildReplyMenu,
   buildMenu,
   DEFAULT_LAYOUTS,
   MENU_ACTIONS,
@@ -53,6 +57,7 @@ import {
   renderPlanLabel,
   type TextKey,
   type Texts,
+  stripCustomEmoji,
 } from '@shikoo/contracts';
 import { formatToman, nameMentionsPrice, priceForUser, tomanDigits, type Price } from './money.js';
 import {
@@ -60,6 +65,7 @@ import {
   type ButtonStyle,
   type InlineButton,
   type InlineKeyboard,
+  type ReplyKeyboard,
 } from './telegram.js';
 
 /**
@@ -210,7 +216,6 @@ function buttonLabel(menuId: MenuId, action: string, shipped: string): string {
 }
 
 const renewButtonLabel = (): string => buttonLabel('main', 'renew', 'تمدید سرویس');
-const paidButtonLabel = (): string => buttonLabel('checkout', 'paid', 'پرداخت کردم');
 const joinedButtonLabel = (): string => buttonLabel('gateChannels', 'chk', 'عضو شدم');
 
 /**
@@ -285,8 +290,155 @@ export function resetContent(): void {
   applyContent(DEFAULT_CONTENT);
 }
 
+// ---------------------------------------------------------------------------
+// The admin's premium-emoji screen
+//
+// Hardcoded Persian rather than `bot_texts` rows, and that is the one decision
+// worth defending here. `bot_texts` exists so a SHOP can rebrand what its
+// CUSTOMERS read; nobody but an admin of this bot ever sees these lines, and
+// putting them in the editable set would add five keys to every shop's text
+// screen that no shop has a reason to touch.
+// ---------------------------------------------------------------------------
+
+/**
+ * The main menu's buttons as the shop has them, for the admin's picker.
+ *
+ * `layout('main')` and not `DEFAULT_LAYOUTS`: the point of the screen is to put
+ * an emoji on a button this shop actually draws, and a shop that renamed or
+ * reordered its menu would otherwise be offered the shipped one.
+ */
+export function mainMenuButtons(): { action: string; label: string; slot: number }[] {
+  // `slot` indexes the DECLARED order in `MENUS`, which is a constant in the
+  // source, and it is 1-based because `parseId` refuses a zero.
+  //
+  // Not the position in this list, and the difference is a real bug avoided: an
+  // admin who hides a button between the screen being drawn and the button
+  // being pressed would shift every later position by one, and the emoji would
+  // land on a button they did not choose. Nothing would error. The same shape
+  // as the `ROW_NUMBER` trap in the purchase counter.
+  const declared: string[] = MENUS['main'].buttons.map((b) => b.action);
+  const live = layout('main');
+  return live
+    .filter((b) => b.visible && declared.includes(b.action))
+    .map((b) => ({
+      action: b.action,
+      label: b.label,
+      slot: declared.indexOf(b.action) + 1,
+    }));
+}
+
+/** The declared action a slot names, or null if the number means nothing. */
+export function mainMenuActionAt(slot: number): string | null {
+  return MENUS['main'].buttons[slot - 1]?.action ?? null;
+}
+
+/** The screen that says what the bot has, and how to give it more. */
+export function emojiHome(count: number): string {
+  return [
+    '🎨 ایموجی پریمیوم',
+    '',
+    count === 0
+      ? 'هنوز ایموجی‌ای ندارم.'
+      : `${count} ایموجی دارم. هرکدام را بزنی، روی یکی از دکمه‌های منوی اصلی می‌نشیند.`,
+    '',
+    'برای افزودن، «➕ افزودن ایموجی» را بزن و بعد ایموجی پریمیوم را همین‌جا بفرست.',
+    'ایموجی‌های زیر همان‌طور کشیده می‌شوند که مشتری می‌بیند — اگر به‌جای ایموجی یک مربع یا',
+    'ایموجی سادهٔ معمولی دیدی، یعنی تلگرام این ربات را برای ایموجی پریمیوم قبول نمی‌کند.',
+  ].join('\n');
+}
+
+/** The list, plus the two ways out. Each emoji is drawn BY the bot, on purpose. */
+export function emojiMenu(items: { id: number; customEmojiId: string; fallbackEmoji: string }[]): InlineKeyboard {
+  const rows: InlineKeyboard = [];
+  for (let i = 0; i < items.length; i += 4) {
+    rows.push(
+      items.slice(i, i + 4).map((e) => ({
+        // The tag, so `keyboardFor` turns it into the button's icon. This is the
+        // proof as well as the list: an emoji that comes back drawn is an emoji
+        // this bot can send.
+        text: `<tg-emoji emoji-id="${e.customEmojiId}">${e.fallbackEmoji}</tg-emoji>`,
+        callback_data: encode('emjb', e.id),
+      })),
+    );
+  }
+  rows.push([{ text: '➕ افزودن ایموجی', callback_data: encode('emja') }]);
+  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  return rows;
+}
+
+export const ASK_PREMIUM_EMOJI = [
+  '✋ ایموجی پریمیوم را همین‌جا بفرست.',
+  '',
+  'یک پیام که فقط همان ایموجی(ها) در آن باشد. من شناسه‌اش را از خود پیام برمی‌دارم —',
+  'نه از لینک، نه از اسم پکیج.',
+  '',
+  'اگر تلگرام تو پریمیوم ندارد، ایموجی پریمیوم اصلاً تایپ نمی‌شود و این کار جواب نمی‌دهد.',
+].join('\n');
+
+export const EMOJI_NONE_FOUND = [
+  '❌ در آن پیام ایموجی پریمیومی نبود.',
+  '',
+  'ایموجی معمولی شناسه ندارد و روی دکمه نمی‌نشیند. باید از ایموجی‌های پریمیوم خودت باشد.',
+].join('\n');
+
+export function emojiSaved(added: number, total: number): string {
+  return added === 0
+    ? `این ایموجی را از قبل داشتم. الان ${total} تا دارم.`
+    : `✅ ${added} ایموجی تازه ذخیره شد. الان ${total} تا دارم.`;
+}
+
+/** Which button this emoji should sit on. */
+export function emojiButtonPick(fallback: string): string {
+  return [
+    `«${fallback}» روی کدام دکمهٔ منوی اصلی بنشیند؟`,
+    '',
+    'روی همان دکمه، جلوی متن فعلی‌اش می‌نشیند و متن دست نمی‌خورد.',
+  ].join('\n');
+}
+
+export function emojiButtonMenu(
+  emojiId: number,
+  buttons: { action: string; label: string; slot: number }[],
+): InlineKeyboard {
+  const rows: InlineKeyboard = buttons.map((b) => [
+    { text: stripCustomEmoji(b.label), callback_data: encode('emjb', emojiId, b.slot) },
+  ]);
+  rows.push([{ text: '↩️ بازگشت', callback_data: encode('emj') }]);
+  return rows;
+}
+
+export function emojiTooLong(label: string): string {
+  return [
+    `❌ روی «${stripCustomEmoji(label)}» جا نشد.`,
+    '',
+    `متن این دکمه با ایموجی از ${MAX_LABEL_LENGTH} نویسه رد می‌شود. اول در «چیدمان کیبورد»`,
+    'کوتاهش کن، بعد دوباره امتحان کن.',
+  ].join('\n');
+}
+
+export function emojiPlaced(label: string): string {
+  return `✅ روی «${stripCustomEmoji(label)}» نشست. /start بزن تا کیبورد تازه را ببینی.`;
+}
+
 export function mainMenu(viewer: MenuViewer): InlineKeyboard {
   return buildMainMenu(layout('main'), viewer);
+}
+
+/**
+ * The same menu, under the chat.
+ *
+ * Drawn from `layout('main')` like its inline twin, so the shop arranges one
+ * menu and gets both. Everything about which buttons appear lives in
+ * `buildReplyMenu`; this is only the layout lookup, kept here so `handle.ts`
+ * asks `menu` for a keyboard the way it does for every other screen.
+ */
+export function mainReplyMenu(viewer: MenuViewer): ReplyKeyboard {
+  return buildReplyMenu(layout('main'), viewer);
+}
+
+/** Which action a bottom-keyboard label means, against the live layout. */
+export function actionForReplyLabel(viewer: MenuViewer, text: string): string | null {
+  return actionForLabel(layout('main'), viewer, text);
 }
 
 /**
@@ -916,22 +1068,11 @@ function checkoutTail(cardDigits: string, cardHolder: string | null): string[] {
   const t = TEXTS_NOW;
   const lines = [t.raw('CHECKOUT_CARD_LABEL'), formatCard(cardDigits)];
   if (cardHolder) lines.push(t.render('CHECKOUT_CARD_HOLDER', { name: cardHolder }));
-  lines.push('', t.raw('CHECKOUT_EXACT_WARNING'), t.raw('CHECKOUT_PRESS_BUTTON'));
-  // `PaySetting.helpcart`, live in production and shown before every card
-  // invoice there. It is on the invoice itself here so it cannot be scrolled
-  // past, and it is on all four because `checkoutTail` is the one place the
-  // four builders share.
-  lines.push(
-    '',
-    t.raw('CHECKOUT_NOTES_TITLE'),
-    t.raw('CHECKOUT_NOTE_WORDS'),
-    t.raw('CHECKOUT_NOTE_TRANSFER'),
-    // The one note that names a button. It reads the live label for the same
-    // reason the three renewal messages do: an admin who renames «پرداخت کردم»
-    // would otherwise leave every invoice pointing at a button nobody can find.
-    t.render('CHECKOUT_NOTE_PRESS', { paidButton: paidButtonLabel() }),
-    t.raw('CHECKOUT_NOTE_WAIT'),
-  );
+  // Seven lines where there were fifteen. The four numbered notes and their
+  // header are one line now — `CHECKOUT_NOTE` says which two facts survived the
+  // compression and why the other two were repetitions of sentences already on
+  // this screen.
+  lines.push('', t.raw('CHECKOUT_EXACT_WARNING'), t.raw('CHECKOUT_NOTE'), '', t.raw('CHECKOUT_PRESS_BUTTON'));
   return lines;
 }
 

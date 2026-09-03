@@ -56,7 +56,7 @@
  * per button instead of per keyboard.
  */
 
-import { checkCustomEmoji } from './customEmoji.js';
+import { checkCustomEmoji, stripCustomEmoji } from './customEmoji.js';
 
 /** A slot in a button label, as an admin writes it. Same contract as the texts. */
 const PLACEHOLDER = /\{([a-zA-Z][a-zA-Z0-9_]*)\}/g;
@@ -128,6 +128,11 @@ export const MENUS = {
       { action: 'sup', label: '☎️ پشتیبانی', hint: 'صفحهٔ پشتیبانی' },
       { action: 'hlp', label: '📚 آموزش', hint: 'مطالب آموزشی' },
       { action: 'ref', label: '👥 زیر مجموعه گیری', hint: 'لینک دعوت و پورسانت' },
+      {
+        action: 'emj',
+        label: '🎨 ایموجی پریمیوم',
+        hint: 'فقط ادمین‌ها می‌بینند — افزودن ایموجی پریمیوم و گذاشتنش روی دکمه‌ها',
+      },
       {
         action: 'agr',
         label: '👨‍💻 درخواست نمایندگی',
@@ -419,8 +424,25 @@ export const MENU_ACTIONS: readonly MenuAction[] = MENUS.main.buttons;
  */
 export const RESELLER_ONLY_HIDDEN: ReadonlySet<string> = new Set(['agr']);
 
+/**
+ * Buttons only an admin ever sees.
+ *
+ * The rule this file's own docstring has described since it was written — «hide
+ * «پنل مدیریت» from everyone else» — and never implemented. `MenuViewer` has
+ * carried `is_admin` the whole time and nothing read it.
+ *
+ * `emj` is the first entry: the screen where an admin gives the bot a premium
+ * emoji by sending it. It is hidden rather than merely useless to a customer,
+ * because a button that answers «شما ادمین نیستید» is a button that tells every
+ * customer an admin surface exists.
+ *
+ * Hiding is NOT the guard. `handleCallback` re-checks `is_admin` before it acts,
+ * because `callback_data` is unsigned and anybody can post `emj`.
+ */
+export const ADMIN_ONLY: ReadonlySet<string> = new Set(['emj']);
+
 /** Buttons that some viewers never see, whoever they are. */
-const AUDIENCE_LIMITED: ReadonlySet<string> = RESELLER_ONLY_HIDDEN;
+const AUDIENCE_LIMITED: ReadonlySet<string> = new Set([...RESELLER_ONLY_HIDDEN, ...ADMIN_ONLY]);
 
 export interface ButtonPlacement {
   action: string;
@@ -483,6 +505,13 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
      * top in «چیدمان کیبورد», which is the screen that exists for this.
      */
     ['tst', 4, 0],
+    /*
+     * Last, and for a stronger version of the reason above: nobody but an admin
+     * sees it at all. `ADMIN_ONLY` drops it for everybody else and `buildMenu`
+     * closes the row up, so a customer's menu is byte-for-byte the one they had
+     * before this button existed.
+     */
+    ['emj', 5, 0],
   ],
   gateChannels: [['chk', 0, 0]],
   gateRules: [['acc', 0, 0]],
@@ -508,11 +537,20 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
     ['buy', 2, 0],
     ['menu', 2, 1],
   ],
+  // «پرداخت کردم» and «بازگشت» share a row from 2026-09-03: Sam asked for an
+  // invoice with fewer buttons on it, and three rows for two buttons was the
+  // easiest one to give back. The wallet pair above them is conditional and
+  // usually absent, so the ordinary invoice is now the copy row and one row of
+  // chrome.
+  //
+  // The copy row is NOT in this layout and is not removable from it — it is
+  // drawn above the chrome by `checkoutMenu`, because sixteen digits retyped by
+  // eye is how money reaches somebody else's account.
   checkout: [
     ['wpay', 0, 0],
     ['tpo', 0, 1],
     ['paid', 1, 0],
-    ['menu', 2, 0],
+    ['menu', 1, 1],
   ],
   afterPaid: [['menu', 0, 0]],
   myServices: [['menu', 0, 0]],
@@ -596,6 +634,52 @@ export type LayoutProblem =
 /** Telegram truncates beyond this and the row stops being readable on a phone. */
 export const MAX_LABEL_LENGTH = 64;
 
+/**
+ * A label's length as everything that measures it counts.
+ *
+ * Two decisions, and both were wrong once before this existed:
+ *
+ * **Stripped.** The cap is about one line on a phone, and markup is not on the
+ * screen. A `<tg-emoji>` tag is fifty-two characters that draw as one glyph.
+ *
+ * **Code points, not UTF-16 units.** `'🔥'.length` is 2 in JavaScript and
+ * `length('🔥')` is 1 in Postgres, so a plain `.length` here is stricter than
+ * the CHECK constraint that has the last word — the panel would refuse a label
+ * the database would have taken, and only for labels with emoji in them, which
+ * is most of this shop's. Spreading the string counts what Postgres counts.
+ *
+ * One function, because three layers ask this question — `checkLayout`, the
+ * bot's own writer, and migration 0053 — and a version of this commit shipped
+ * with them disagreeing.
+ */
+export function renderedLabelLength(label: string): number {
+  return [...stripCustomEmoji(label)].length;
+}
+
+/**
+ * Whether a label's custom-emoji markup is something a button can draw.
+ *
+ * True means «refuse». One tag, at the very front, well formed: that is the
+ * shape `keyboardFor` turns into `icon_custom_emoji_id`, and it is the only
+ * shape a button has anywhere to put.
+ *
+ * Exported so the bot's own admin screen can ask the same question before it
+ * writes a label — one rule, two callers, rather than a second spelling of it
+ * next to the thing that writes.
+ */
+export function labelMarkupProblem(label: string): boolean {
+  if (!label.includes('<tg-emoji')) return false;
+  // Well formed at all? `true` for the switch here rather than `false`: this
+  // function is about SHAPE, and «the shop has the feature off» is a different
+  // refusal that belongs to the screen doing the saving.
+  if (checkCustomEmoji(label, true) !== null) return true;
+  // Exactly one, and at the front. `stripCustomEmoji` on the remainder tells us
+  // whether a second one is hiding further along.
+  const leading = /^\s*<tg-emoji\s+emoji-id="\d{1,24}">[^<>]{1,16}<\/tg-emoji>/.exec(label);
+  if (!leading) return true;
+  return label.slice(leading[0].length).includes('<tg-emoji');
+}
+
 /** The slots a label actually uses, deduplicated. */
 export function placeholdersInLabel(value: string): string[] {
   return [...new Set([...value.matchAll(PLACEHOLDER)].map((m) => m[1] as string))].sort();
@@ -637,23 +721,47 @@ export function checkLayout(menuId: string, buttons: ButtonPlacement[]): LayoutP
   const empty = buttons.filter((b) => b.label.trim() === '').map((b) => b.action);
   if (empty.length > 0) return { kind: 'LABEL_EMPTY', actions: empty };
 
-  const long = buttons.filter((b) => b.label.length > MAX_LABEL_LENGTH).map((b) => b.action);
+  // Measured on the label as DRAWN, not as written.
+  //
+  // The cap is about a phone screen — a button label is one line, shared with
+  // nothing — and markup is not on the screen. A `<tg-emoji>` tag is fifty-two
+  // characters that draw as one glyph, so counting it would refuse
+  // «🔥 خرید اشتراک» for being too long while a plainly longer label saves.
+  const long = buttons
+    .filter((b) => renderedLabelLength(b.label) > MAX_LABEL_LENGTH)
+    .map((b) => b.action);
   if (long.length > 0) {
     return { kind: 'LABEL_TOO_LONG', actions: long, limit: MAX_LABEL_LENGTH };
   }
 
-  // The text path has checked this since custom emoji shipped; this one had
-  // nothing, so a label carrying `<tg-emoji …>` saved with a 200 and every
-  // customer then read the raw tag off the button.
+  // A tag at the START of a label is allowed; anywhere else is not.
   //
-  // `false`, unconditionally, rather than taking the shop's switch as an
-  // argument like `checkOverride` does. An inline button's `text` is plain in
-  // the Bot API — no entities, nothing to set `parse_mode` on — so the markup
-  // cannot render there whatever the shop has switched on. Passing the switch
-  // in would imply there is a setting that makes it work.
-  const marked = buttons
-    .filter((b) => checkCustomEmoji(b.label, false) !== null)
-    .map((b) => b.action);
+  // ## This rule was the opposite of itself for a day, and that is worth saying
+  //
+  // It used to refuse markup on a label unconditionally, and the reasoning was
+  // sound when it was written: an inline button's `text` is plain in the Bot
+  // API, so a tag could only ever reach the customer as literal angle brackets.
+  //
+  // Then `icon_custom_emoji_id` was added to the SEND path (2026-09-03) — a
+  // field on the button itself that draws one custom emoji at the label's
+  // leading edge — and this check was not moved with it. The result was a
+  // feature that could be drawn and could not be saved: the bot knew how to put
+  // an emoji on a button and the panel answered «LABEL_MARKUP» to every attempt
+  // to give it one. Nothing was broken; the two halves simply disagreed, which
+  // is worse, because each half looks right on its own.
+  //
+  // What is still refused, and why:
+  //
+  //   * a tag anywhere but the front — the button has ONE icon slot, so a
+  //     second emoji has nowhere to render and would be silently dropped;
+  //   * a malformed tag — `checkCustomEmoji` decides that, and the admin hears
+  //     about it at save time rather than from a customer.
+  //
+  // `false` for the switch stays, and now means something narrower than it did:
+  // whether the SHOP has custom emoji on is a question for the send path, which
+  // strips the tag and draws the fallback glyph when it is off. A layout saved
+  // while the feature was off must still be the same layout when it is on.
+  const marked = buttons.filter((b) => labelMarkupProblem(b.label)).map((b) => b.action);
   if (marked.length > 0) return { kind: 'LABEL_MARKUP', actions: marked };
 
   // A label carries a value or it does not. Dropping `{balance}` from the

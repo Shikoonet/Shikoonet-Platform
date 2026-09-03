@@ -88,6 +88,13 @@ import {
   subscriptionOnPanelForUser,
   subscriptionsForUser,
 } from './owned.js';
+import {
+  customEmojiIn,
+  emojiById,
+  rememberEmoji,
+  setButtonEmoji,
+  storedEmoji,
+} from './emoji.js';
 import { actionsFor, tierFor } from './serviceActions.js';
 import { checkoutFor, recordPaidClick, recordReceipt } from './payment.js';
 import {
@@ -100,6 +107,7 @@ import {
 } from './wallet.js';
 import type {
   InlineKeyboard,
+  ReplyKeyboard,
   TelegramCallbackQuery,
   TelegramMessage,
   TelegramUpdate,
@@ -123,6 +131,14 @@ export interface Reply {
    *  Unlike `photo` there is no `file_id`: the picture is made for this reply
    *  and exists nowhere else. */
   qrOf?: string;
+  /**
+   * The keyboard under the chat, when this message is meant to set it.
+   *
+   * Only `/start` and the end of a prompt carry one. A message may hold one
+   * `reply_markup`, so this and `keyboard` are exclusive — `sendMessage`
+   * refuses both rather than dropping one.
+   */
+  replyKeyboard?: ReplyKeyboard;
 }
 
 export type HandleStatus =
@@ -134,9 +150,33 @@ export type HandleStatus =
    *  unrecognised callback, a non-message update, or a blocked user. */
   | 'ignored';
 
+/** A message to take out of the chat. */
+export interface Deletion {
+  chatId: number;
+  messageId: number;
+}
+
 export interface HandleOutcome {
   status: HandleStatus;
   replies: Reply[];
+  /**
+   * Messages to remove once the replies are out.
+   *
+   * The shop's screens are edited in place, so a button press has never left a
+   * trail. What did: everything TYPED. A discount code, a wallet amount, the
+   * name for a new account — each one is a message from the customer plus an
+   * answer from the bot, and after three of them the screen the customer is
+   * meant to be looking at is somewhere up the scrollback.
+   *
+   * So a typed answer now edits the screen that ASKED, and the question and the
+   * customer's own message are listed here. In a private chat a bot may delete
+   * both, which is what makes «one live screen» possible rather than aspirational.
+   *
+   * Best-effort by contract: `poll.ts` logs a refusal and carries on. A message
+   * Telegram will not delete — older than 48 hours, or already gone — is not a
+   * reason to fail an update that has already committed.
+   */
+  deletes?: Deletion[];
 }
 
 const IGNORED: HandleOutcome = { status: 'ignored', replies: [] };
@@ -658,14 +698,29 @@ async function handleStart(
     if (gated) return gateScreen(message.chat.id, gated);
   }
 
+  // The menu goes UNDER the chat here, not under the message.
+  //
+  // Sam, 2026-09-03: «دکمه‌ها پایین صفحه». A message carries ONE `reply_markup`,
+  // so this is a choice rather than an arrangement — the welcome shows the
+  // bottom keyboard OR the inline menu, and it cannot show both without sending
+  // a second message on every `/start` for a keyboard that never changes.
+  //
+  // The inline main menu has not gone anywhere: every «بازگشت به منو» in the bot
+  // still edits a screen back into it, which is what an inline menu is for. What
+  // changed is where the shop's front door lives, and a bottom keyboard is the
+  // better door — it belongs to the chat, so it survives every screen, and it is
+  // reachable without scrolling back to find the message that drew it.
+  //
+  // `/start` is the only place it is set, for the same reason: it outlives the
+  // message that carried it.
   return {
     status: 'processed',
     replies: [
-      reply(
-        message.chat.id,
-        claimed ? `${menu.REFERRAL_WELCOME}\n\n${menu.WELCOME}` : menu.WELCOME,
-        menu.mainMenu(user),
-      ),
+      {
+        chatId: message.chat.id,
+        text: claimed ? `${menu.REFERRAL_WELCOME}\n\n${menu.WELCOME}` : menu.WELCOME,
+        replyKeyboard: menu.mainReplyMenu(user),
+      },
     ],
   };
 }
@@ -720,14 +775,171 @@ async function handleTypedAnswer(
     .first<{ step: string | null; data: Record<string, unknown> | null }>();
   const session: Session = { step: row?.step ?? '', data: row?.data ?? {} };
 
-  if (session.step.startsWith('addon:')) return handleAddonAmount(tx, message, user, session);
-  if (session.step === 'code') return handleDiscountCode(tx, message, user, session);
-  if (session.step === 'coder') return handleRenewalCode(tx, message, user, session);
-  if (session.step === 'gift') return handleGiftCode(tx, message, user);
-  if (session.step === 'topup') return handleTopupAmount(tx, message, user);
-  if (session.step === 'agent') return handleResellerRequest(tx, message, user);
-  if (session.step === 'uname') return handleCustomerName(tx, message, user, session);
+  // The shop's own menu, pressed from under the chat.
+  //
+  // A bottom-keyboard button arrives as an ordinary text message, so this has to
+  // be asked BEFORE the session — and asking it first is also what makes those
+  // buttons cancel: pressing «خرید» while the bot is waiting for a discount code
+  // means the customer has left, and treating their press as the answer to a
+  // question they walked away from is the one reading that is certainly wrong.
+  const pressed = menu.actionForReplyLabel(user, message.text ?? '');
+  if (pressed !== null) {
+    await clearSession(tx, user.id);
+    return withCleanChat(await handleMenuAction(tx, pressed, from.id), message, session);
+  }
+
+  if (session.step.startsWith('addon:')) {
+    return withCleanChat(await handleAddonAmount(tx, message, user, session), message, session);
+  }
+  if (session.step === 'code') {
+    return withCleanChat(await handleDiscountCode(tx, message, user, session), message, session);
+  }
+  if (session.step === 'coder') {
+    return withCleanChat(await handleRenewalCode(tx, message, user, session), message, session);
+  }
+  if (session.step === 'gift') {
+    return withCleanChat(await handleGiftCode(tx, message, user), message, session);
+  }
+  if (session.step === 'topup') {
+    return withCleanChat(await handleTopupAmount(tx, message, user), message, session);
+  }
+  if (session.step === 'agent') {
+    return withCleanChat(await handleResellerRequest(tx, message, user), message, session);
+  }
+  if (session.step === 'uname') {
+    return withCleanChat(await handleCustomerName(tx, message, user, session), message, session);
+  }
+  if (session.step === 'emoji') {
+    return withCleanChat(await handlePremiumEmoji(tx, message, user), message, session);
+  }
   return IGNORED;
+}
+
+/**
+ * A message an admin sent so the bot could read a premium emoji off it.
+ *
+ * This is the whole reason the flow asks for a MESSAGE rather than a link or a
+ * pack name: Telegram attaches `custom_emoji_id` to the entity, so the id comes
+ * from the same service that will later be asked to draw it. Nothing is typed
+ * and nothing is guessed.
+ *
+ * The admin check is repeated here even though the prompt is only reachable
+ * from an admin-only button. The session is a row keyed on the user, and a
+ * customer whose admin rights were revoked between the question and the answer
+ * would otherwise still be answering it.
+ */
+async function handlePremiumEmoji(
+  tx: D1DatabaseSession,
+  message: TelegramMessage,
+  user: Caller,
+): Promise<HandleOutcome> {
+  const reply = (text: string, keyboard: InlineKeyboard): HandleOutcome => ({
+    status: 'processed',
+    replies: [{ chatId: message.chat.id, text, keyboard }],
+  });
+  if (!user.is_admin) {
+    await clearSession(tx, user.id);
+    return reply(menu.MENU_TITLE, menu.mainMenu(user));
+  }
+
+  const found = customEmojiIn(message);
+  if (found.length === 0) {
+    // The question stays open: an admin who sent an ordinary emoji can try
+    // again without walking back through the menu.
+    return reply(menu.EMOJI_NONE_FOUND, menu.promptMenu(encode('emj')));
+  }
+
+  const added = await rememberEmoji(tx, found);
+  await clearSession(tx, user.id);
+  const have = await storedEmoji(tx);
+  return reply(menu.emojiSaved(added, have.length), menu.emojiMenu(have));
+}
+
+/**
+ * Opens the screen a bottom-keyboard button names.
+ *
+ * A synthetic callback rather than a second dispatch. Every rule that guards a
+ * button press — the block check, the closed sign, «this customer never pressed
+ * /start» — lives in `handleCallback`, and a bottom keyboard that reached the
+ * screens by another road would be a second door into the same building with
+ * nobody checking it. Legacy has exactly that shape and it is why its «closed»
+ * switch was walkable.
+ *
+ * No `message` on the query, deliberately. `handleCallback` reads
+ * `query.message?.message_id` as the screen to EDIT, and the only message here
+ * is the customer's own — which no bot may edit. Leaving it out makes the reply
+ * a fresh message, which is what a press from under the chat should produce.
+ */
+async function handleMenuAction(
+  tx: D1DatabaseSession,
+  action: string,
+  telegramId: number,
+): Promise<HandleOutcome> {
+  return handleCallback(tx, {
+    // Never answered: `poll.ts` only clears the spinner for a real
+    // `callback_query`, and there is no spinner on a bottom-keyboard press.
+    id: `reply:${action}`,
+    // The TELEGRAM id, not the chat id. They are the same number in a private
+    // chat and this bot has only private chats — but `handleCallback` looks the
+    // customer up by this field, so passing the one that happens to match is
+    // how a shop that ever gains a group chat finds out the hard way.
+    from: { id: telegramId },
+    data: action,
+  });
+}
+
+/**
+ * Turns a typed answer into an edit of the screen that asked, and takes the
+ * typing out of the chat.
+ *
+ * One place rather than seven. Every handler above builds its own reply, and
+ * teaching each of them to edit and to delete would be seven chances to forget
+ * — with a failure nobody would report, because a stray message in a chat is
+ * not a bug anyone opens a ticket about. It is just the shop looking untidy for
+ * ever.
+ *
+ * Three rules, and each has a reason it is not the obvious thing:
+ *
+ *   * only the FIRST reply to this customer's own chat becomes the edit. A
+ *     handler may also write to an admin — `handleResellerRequest` does — and
+ *     that message belongs in the admin's chat as a new one.
+ *   * a reply carrying a picture is left alone. `editMessageText` cannot turn a
+ *     text message into a photo, so an edit would simply be refused.
+ *   * the customer's own message is deleted whether or not there was a screen
+ *     to edit. It is the half that piles up fastest, and it is theirs — a
+ *     receipt is the one thing that is kept, and that path never reaches here.
+ */
+function withCleanChat(
+  outcome: HandleOutcome,
+  message: TelegramMessage,
+  session: Session,
+): HandleOutcome {
+  if (outcome.status === 'ignored') return outcome;
+  const screen = screenOf(session);
+  let edited = false;
+  const replies = outcome.replies.map((reply) => {
+    if (
+      edited ||
+      screen === undefined ||
+      reply.chatId !== message.chat.id ||
+      reply.photo !== undefined ||
+      reply.document !== undefined ||
+      reply.qrOf !== undefined ||
+      reply.editMessageId !== undefined
+    ) {
+      return reply;
+    }
+    edited = true;
+    return { ...reply, editMessageId: screen };
+  });
+  return {
+    ...outcome,
+    replies,
+    deletes: [
+      ...(outcome.deletes ?? []),
+      { chatId: message.chat.id, messageId: message.message_id },
+    ],
+  };
 }
 
 /**
@@ -767,6 +979,17 @@ async function ask(
   userId: number,
   step: string,
   data: Record<string, unknown>,
+  /**
+   * The message the question was asked ON, so the answer can be written back
+   * into it instead of below it.
+   *
+   * Carried in the session rather than passed around, because the two halves
+   * happen in different updates: the question is a button press and the answer
+   * is a typed message, and nothing else survives between them. A step that
+   * does not know its screen still works — `screenOf` answers undefined and the
+   * reply is sent as a new message, exactly as it was before.
+   */
+  screenId?: number,
 ): Promise<void> {
   await tx
     .prepare(
@@ -775,8 +998,14 @@ async function ask(
        ON CONFLICT (user_id) DO UPDATE
          SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now()`,
     )
-    .bind(userId, step, JSON.stringify(data))
+    .bind(userId, step, JSON.stringify(screenId === undefined ? data : { ...data, screen: screenId }))
     .run();
+}
+
+/** The message a question was asked on, when the session remembers one. */
+function screenOf(session: Session): number | undefined {
+  const raw = session.data['screen'];
+  return typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0 ? raw : undefined;
 }
 
 async function handleAddonAmount(
@@ -910,7 +1139,7 @@ async function handleDiscountCode(
     );
   }
 
-  await ask(tx, user.id, 'code:held', { planId, code: check.code.code });
+  await ask(tx, user.id, 'code:held', { planId, code: check.code.code }, screenOf(session));
   const applied = { code: check.code.code, discountIrr: check.discountIrr };
   return answer(
     `${menu.discountApplied(check.code.code, check.discountIrr)}\n\n${menu.planDetail(plan, price, applied)}`,
@@ -956,7 +1185,7 @@ async function handleRenewalCode(
       menu.promptMenu(encode('rnw', subscriptionId)),
     );
   }
-  await ask(tx, user.id, 'coder:held', { subscriptionId, code: check.code.code });
+  await ask(tx, user.id, 'coder:held', { subscriptionId, code: check.code.code }, screenOf(session));
   const plans = await plansOnPanel(tx, user.id, service.provider_id);
   return answer(
     menu.discountHeldForRenewal(check.code.code),
@@ -1020,6 +1249,8 @@ async function placeOrderScreen(
   user: Caller,
   plan: CatalogPlan,
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+  /** The message `screen` writes onto, so the typed name can land back on it. */
+  screenId?: number,
 ): Promise<HandleOutcome> {
   /*
    * The one edge into an order, which is why the prompt is here and not beside
@@ -1034,7 +1265,7 @@ async function placeOrderScreen(
   const chosenName =
     plan.usernameMode === 'CUSTOMER_TEXT' ? await heldName(tx, user.id, plan.planId) : null;
   if (plan.usernameMode === 'CUSTOMER_TEXT' && chosenName === null) {
-    await ask(tx, user.id, 'uname', { planId: plan.planId });
+    await ask(tx, user.id, 'uname', { planId: plan.planId }, screenId);
     return screen(menu.ASK_ACCOUNT_NAME, menu.promptMenu(encode('plan', plan.planId)));
   }
 
@@ -1148,8 +1379,10 @@ async function handleCustomerName(
     return screen(menu.ACCOUNT_NAME_REFUSED, menu.promptMenu(encode('plan', plan.planId)));
   }
 
-  await ask(tx, user.id, 'uname:held', { planId, name: clean });
-  return placeOrderScreen(tx, user, plan, screen);
+  await ask(tx, user.id, 'uname:held', { planId, name: clean }, screenOf(session));
+  // The screen the question was asked on, carried through: this call may ask
+  // again (a second panel, a second name) and it has to land in the same place.
+  return placeOrderScreen(tx, user, plan, screen, screenOf(session));
 }
 
 async function heldRenewalName(
@@ -1575,7 +1808,7 @@ async function handleCallback(
       // flow that ends in an order for it.
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
-      await ask(tx, user.id, 'code', { planId: plan.planId });
+      await ask(tx, user.id, 'code', { planId: plan.planId }, editId);
       return screen(menu.ASK_DISCOUNT_CODE, menu.promptMenu(encode('plan', plan.planId)));
     }
 
@@ -1592,7 +1825,7 @@ async function handleCallback(
     }
 
     case 'gft': {
-      await ask(tx, user.id, 'gift', {});
+      await ask(tx, user.id, 'gift', {}, editId);
       return screen(menu.ASK_GIFT_CODE, menu.promptMenu(encode('wal')));
     }
 
@@ -1661,7 +1894,7 @@ async function handleCallback(
       if (await hasOpenRequest(tx, user.id)) {
         return screen(menu.RESELLER_REQUEST_OPEN, menu.mainMenu(user));
       }
-      await ask(tx, user.id, 'agent', {});
+      await ask(tx, user.id, 'agent', {}, editId);
       return screen(menu.ASK_RESELLER_REQUEST, menu.promptMenu(encode('menu')));
     }
 
@@ -1671,7 +1904,7 @@ async function handleCallback(
       // is not evidence that a button was ever offered for this plan.
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
-      return placeOrderScreen(tx, user, plan, screen);
+      return placeOrderScreen(tx, user, plan, screen, editId);
     }
 
     case 'mine': {
@@ -1858,7 +2091,7 @@ async function handleCallback(
       // Ownership first, like every other id off a button.
       const service = await renewableForUserById(tx, user.id, action.id);
       if (!service) return screen(menu.RENEWAL_GONE, menu.renewMenu([], Date.now(), 1, 1));
-      await ask(tx, user.id, 'coder', { subscriptionId: service.id });
+      await ask(tx, user.id, 'coder', { subscriptionId: service.id }, editId);
       return screen(menu.ASK_DISCOUNT_CODE, menu.promptMenu(encode('rnw', service.id)));
     }
 
@@ -1948,6 +2181,60 @@ async function handleCallback(
       }
     }
 
+    // ── the admin's premium-emoji screen ─────────────────────────────────
+    //
+    // `user.is_admin` is re-read here rather than inferred from the button
+    // having been pressed. `ADMIN_ONLY` keeps these three off a customer's
+    // keyboard, and that is presentation: `callback_data` is unsigned, so
+    // anybody can post `emj` and this is the line that answers them.
+    //
+    // The answer is the main menu, not a refusal. Telling a stranger «شما ادمین
+    // نیستید» confirms the surface exists, which is the one thing a probe is
+    // looking for.
+    case 'emj':
+    case 'emja':
+    case 'emjb': {
+      if (!user.is_admin) return screen(menu.MENU_TITLE, menu.mainMenu(user));
+
+      if (action.action === 'emja') {
+        await ask(tx, user.id, 'emoji', {}, editId);
+        return screen(menu.ASK_PREMIUM_EMOJI, menu.promptMenu(encode('emj')));
+      }
+
+      if (action.action === 'emjb' && action.id !== undefined) {
+        const chosen = await emojiById(tx, action.id);
+        // Gone between the screen being drawn and the button being pressed —
+        // another admin removed its pack. The list is redrawn rather than an
+        // error shown: there is nothing for this admin to do about it.
+        if (!chosen) return screen(menu.emojiHome(0), menu.emojiMenu(await storedEmoji(tx)));
+
+        const buttons = menu.mainMenuButtons();
+
+        if (action.id2 === undefined) {
+          return screen(
+            menu.emojiButtonPick(chosen.fallbackEmoji),
+            menu.emojiButtonMenu(chosen.id, buttons),
+          );
+        }
+        // Resolved through the DECLARED order rather than through the list
+        // above, so a layout edited between the two taps cannot move the target.
+        const targetAction = menu.mainMenuActionAt(action.id2);
+        const target = buttons.find((b) => b.action === targetAction);
+        if (!target) return screen(menu.emojiHome(0), menu.emojiMenu(await storedEmoji(tx)));
+        const label = await setButtonEmoji(tx, target.action, target.label, chosen);
+        // Null means the composed label was refused — too long once the glyph
+        // is on it, most likely. Said plainly, because the alternative is a
+        // screen claiming success over a button that did not change.
+        return screen(
+          label === null ? menu.emojiTooLong(target.label) : menu.emojiPlaced(label),
+          menu.emojiMenu(await storedEmoji(tx)),
+        );
+      }
+
+      const have = await storedEmoji(tx);
+      return screen(menu.emojiHome(have.length), menu.emojiMenu(have));
+    }
+
     case 'wal': {
       const [balance, entries] = await Promise.all([
         balanceFor(tx, user.id),
@@ -1978,7 +2265,7 @@ async function handleCallback(
       // customer who wants 75,000 Toman choosing between paying 100,000 and
       // giving up. Mirzabot has always let them type it (`index.php:4712`
       // enforces the same floor and ceiling on whatever they send).
-      await ask(tx, user.id, 'topup', {});
+      await ask(tx, user.id, 'topup', {}, editId);
       return screen(
         menu.askTopupAmount(SHOP.topupMinIrr, SHOP.topupMaxIrr),
         menu.promptMenu(encode('top')),
