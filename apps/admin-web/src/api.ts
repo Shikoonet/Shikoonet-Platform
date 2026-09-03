@@ -46,6 +46,22 @@ export interface EventFacets {
   events: Array<{ evt: string; svc: string; count: number }>;
 }
 
+/**
+ * The level a reseller is on, or null. `percent` is the level's, and it is what
+ * `effectiveDiscountPercent` will be showing whenever this is not null.
+ */
+export interface ResellerTierRef {
+  code: 'n' | 'n2';
+  name: string;
+  percent: number;
+}
+
+export interface ResellerTierRow extends ResellerTierRef {
+  /** Resellers on this level. A reseller with no level is counted as `n`. */
+  members: number;
+  updatedAt: string;
+}
+
 export interface CustomerListItem {
   id: number;
   telegramId: number;
@@ -53,7 +69,15 @@ export interface CustomerListItem {
   phone: string | null;
   status: string;
   isReseller: boolean;
+  /** Their own standing percentage — stored, but not necessarily charged. */
   discountPercent: number;
+  tier: ResellerTierRef | null;
+  /**
+   * What the bot will actually take off. The level's percentage when they are
+   * on one, `discountPercent` otherwise — never compute this in the browser,
+   * the two would drift the first time either rule changed.
+   */
+  effectiveDiscountPercent: number;
   balanceIrr: number;
   registeredAt: string;
   lastSeenAt: string | null;
@@ -84,7 +108,15 @@ export interface CustomerDetail {
   status: string;
   blockedReason: string | null;
   isReseller: boolean;
+  /** Their own standing percentage — stored, but not necessarily charged. */
   discountPercent: number;
+  tier: ResellerTierRef | null;
+  /**
+   * What the bot will actually take off. The level's percentage when they are
+   * on one, `discountPercent` otherwise — never compute this in the browser,
+   * the two would drift the first time either rule changed.
+   */
+  effectiveDiscountPercent: number;
   referralCode: string | null;
   balanceIrr: number;
   registeredAt: string;
@@ -1324,6 +1356,7 @@ export const api = {
     page: number;
     pageSize: number;
     sort?: 'recent' | 'balance' | 'debt';
+    reseller?: 'yes' | 'no';
   }) {
     const qs = new URLSearchParams({
       page: String(params.page),
@@ -1332,6 +1365,7 @@ export const api = {
     if (params.q) qs.set('q', params.q);
     if (params.status) qs.set('status', params.status);
     if (params.sort && params.sort !== 'recent') qs.set('sort', params.sort);
+    if (params.reseller) qs.set('reseller', params.reseller);
     return req<CustomerListPage>(`/customers?${qs.toString()}`);
   },
 
@@ -1682,7 +1716,33 @@ export const api = {
   },
 
   setDiscount(id: number, body: { percent: number }) {
-    return req<{ ok: boolean; percent: number }>(`/customers/${id}/discount`, {
+    return req<{
+      ok: boolean;
+      percent: number;
+      /** What the customer will be charged — the level's, if they are on one. */
+      effectivePercent: number;
+      tierName: string | null;
+    }>(`/customers/${id}/discount`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** Makes somebody a reseller, or stops them being one. The level rides along. */
+  setReseller(id: number, body: { isReseller: boolean; tier: 'n' | 'n2' | null }) {
+    return req<{ ok: boolean; changed: boolean }>(`/customers/${id}/reseller`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  resellerTiers() {
+    return req<{ ok: boolean; items: ResellerTierRow[] }>('/reseller-tiers');
+  },
+
+  /** One number here moves the price for every reseller on that level. */
+  saveResellerTier(code: string, body: { name?: string; percent?: number }) {
+    return req<{ ok: boolean; changed: boolean }>(`/reseller-tiers/${code}`, {
       method: 'POST',
       body: JSON.stringify(body),
     });
@@ -2169,10 +2229,15 @@ export const api = {
     return req<{ ok: boolean; items: ResellerRequestRow[] }>(`/reseller-requests?${qs.toString()}`);
   },
 
-  decideResellerRequest(id: number, status: 'APPROVED' | 'REJECTED') {
+  /** `tier` is only read on APPROVED; null there means level one. */
+  decideResellerRequest(
+    id: number,
+    status: 'APPROVED' | 'REJECTED',
+    tier: 'n' | 'n2' | null = null,
+  ) {
     return req<{ ok: boolean; status: string }>(`/reseller-requests/${id}`, {
       method: 'POST',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, tier }),
     });
   },
 

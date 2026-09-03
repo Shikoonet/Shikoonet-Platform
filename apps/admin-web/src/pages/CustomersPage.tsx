@@ -64,6 +64,7 @@ export function CustomersPage() {
   const [page, setPage] = useState(1);
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
+  const [reseller, setReseller] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [openId, setOpenId] = useState<number | null>(null);
@@ -77,6 +78,7 @@ export function CustomersPage() {
         pageSize: PAGE_SIZE,
         ...(q.trim() ? { q: q.trim() } : {}),
         ...(status ? { status } : {}),
+        ...(reseller ? { reseller: reseller as 'yes' | 'no' } : {}),
       });
       setRows(d.items);
       setTotal(d.total);
@@ -91,7 +93,7 @@ export function CustomersPage() {
     void load(page);
     // Not on `q`: the box searches when it is submitted, not on every
     // keystroke against 11k rows.
-  }, [page, status]);
+  }, [page, status, reseller]);
 
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -144,6 +146,26 @@ export function CustomersPage() {
               <option value="BLOCKED">مسدود</option>
             </select>
           </div>
+          {/* «لیست نمایندگان» — a filter on the list that already searches and
+              pages, rather than a screen of its own. */}
+          <div>
+            <label className="form-label" htmlFor="cust-reseller">
+              نمایندگی
+            </label>
+            <select
+              id="cust-reseller"
+              className="form-control"
+              value={reseller}
+              onChange={(e) => {
+                setReseller(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">همه</option>
+              <option value="yes">فقط نماینده‌ها</option>
+              <option value="no">بدون نمایندگی</option>
+            </select>
+          </div>
           <button type="submit" className="btn btn-primary" disabled={loading}>
             جست‌وجو
           </button>
@@ -188,7 +210,12 @@ export function CustomersPage() {
                     >
                       {u.status === 'BLOCKED' ? 'مسدود' : 'فعال'}
                     </span>
-                    {u.isReseller && <span className="badge badge-info">نماینده</span>}
+                    {u.isReseller && (
+                      // The LEVEL, not just «نماینده» — the two are priced
+                      // differently and a row that does not say which is a row
+                      // that cannot explain the price on the next screen.
+                      <span className="badge badge-info">{u.tier?.name ?? 'نماینده'}</span>
+                    )}
                   </td>
                   <td>{dateTime(u.registeredAt)}</td>
                   <td>
@@ -264,6 +291,7 @@ function CustomerDrawer({
   const [adjustKey, setAdjustKey] = useState(() => crypto.randomUUID());
   const [blockReason, setBlockReason] = useState('');
   const [discount, setDiscount] = useState('');
+  const [tier, setTier] = useState<'' | 'n' | 'n2'>('');
   const [body, setBody] = useState('');
   const [messageId, setMessageId] = useState(() => crypto.randomUUID());
 
@@ -276,6 +304,9 @@ function CustomerDrawer({
       // The field starts at what the customer already has, so «ذخیره» without
       // typing is a no-op rather than a silent reset to zero.
       setDiscount(String(d.customer.discountPercent));
+      // Their current level, so «ذخیره» without touching it is a no-op rather
+      // than a silent demotion to level one.
+      setTier(d.customer.tier?.code ?? (d.customer.isReseller ? 'n' : ''));
     } catch (e) {
       setErr(message(e));
     }
@@ -346,6 +377,36 @@ function CustomerDrawer({
   const discountPercent =
     /^[0-9]+$/.test(discount.trim()) && Number(discount) <= 100 ? Number(discount) : null;
 
+  async function saveReseller() {
+    if (customer === null) return;
+    const wasTier = customer.tier?.code ?? (customer.isReseller ? 'n' : '');
+    if (wasTier === tier) return;
+    // Confirmed for the same reason the discount is: this changes what the
+    // customer may SEE in the shop — `resellers_only` products and codes — as
+    // well as what every future order costs them.
+    const who = customer.username ? `@${customer.username}` : String(customer.telegramId);
+    const ok = window.confirm(
+      tier === ''
+        ? `نمایندگی ${who} برداشته شود؟ قیمت‌های نمایندگی و محصولات مخصوص نماینده برایش بسته می‌شود.`
+        : `${who} به «${tier === 'n2' ? 'نماینده سطح ۲' : 'نماینده'}» تغییر کند؟ ` +
+            `تخفیف همان سطح از هر سفارش بعدی او کم می‌شود.`,
+    );
+    if (!ok) return;
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await api.setReseller(id, { isReseller: tier !== '', tier: tier === '' ? null : tier });
+      setDone(tier === '' ? `نمایندگی ${who} برداشته شد.` : `سطح نمایندگی ${who} ذخیره شد.`);
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveDiscount() {
     if (discountPercent === null || customer === null) return;
     const was = customer.discountPercent;
@@ -367,8 +428,15 @@ function CustomerDrawer({
     setErr(null);
     setDone(null);
     try {
-      await api.setDiscount(id, { percent: discountPercent });
-      setDone(`تخفیف دائمی روی ${count(discountPercent)}٪ ذخیره شد.`);
+      const saved = await api.setDiscount(id, { percent: discountPercent });
+      setDone(
+        saved.tierName === null
+          ? `تخفیف دائمی روی ${count(discountPercent)}٪ ذخیره شد.`
+          : // Stored, and not what they pay. Saying «ذخیره شد» alone here would
+            // be true and misleading in the same sentence.
+            `ذخیره شد، ولی این کاربر در «${saved.tierName}» است و ${count(saved.effectivePercent)}٪ ` +
+            `تخفیف همان سطح روی سفارش‌هایش اعمال می‌شود. این عدد وقتی به کار می‌آید که نمایندگی‌اش برداشته شود.`,
+      );
       await load();
       onChanged();
     } catch (e) {
@@ -490,7 +558,18 @@ function CustomerDrawer({
                 ۹۰۰٬۰۰۰ تومان» — two stats in one grid disagreeing about what a
                 number looks like, which no test saw and opening the drawer
                 did. */}
-            <Fact label="تخفیف دائمی" value={`${count(customer.discountPercent)}٪`} />
+            {/* The EFFECTIVE number, because that is the one the shop charges.
+                Showing the personal column here while the bot takes the level's
+                is the «two screens, two answers» this panel keeps being rebuilt
+                to avoid — so when a level is in force the fact says so. */}
+            <Fact
+              label="تخفیف مؤثر"
+              value={
+                customer.tier
+                  ? `${count(customer.effectiveDiscountPercent)}٪ · ${customer.tier.name}`
+                  : `${count(customer.effectiveDiscountPercent)}٪`
+              }
+            />
             <Fact label="عضویت" value={dateTime(customer.registeredAt)} />
             <Fact label="آخرین بازدید" value={dateTime(customer.lastSeenAt)} />
           </div>
@@ -586,6 +665,37 @@ function CustomerDrawer({
               </button>
             </div>
           )}
+
+          <h4>نمایندگی</h4>
+          <p className="muted" style={{ marginBlockStart: 0 }}>
+            سطح نمایندگی تعیین می‌کند چه تخفیفی روی هر سفارش این کاربر اعمال شود و قیمت حجم و زمان
+            اضافه را از کدام ستون پنل بردارد. درصدِ هر سطح در «لیست درخواست‌ها» تنظیم می‌شود.
+          </p>
+          <div className="filters">
+            <div>
+              <label className="form-label" htmlFor="cust-tier">
+                سطح
+              </label>
+              <select
+                id="cust-tier"
+                className="form-control"
+                value={tier}
+                onChange={(e) => setTier(e.target.value as '' | 'n' | 'n2')}
+              >
+                <option value="">نماینده نیست</option>
+                <option value="n">نماینده</option>
+                <option value="n2">نماینده سطح ۲</option>
+              </select>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void saveReseller()}
+            >
+              ذخیره
+            </button>
+          </div>
 
           {/* Both of these existed only in the bot's admin panel until
               `bot-subset.test.ts` said so out loud. The page showed the
