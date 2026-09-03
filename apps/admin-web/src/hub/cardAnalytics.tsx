@@ -1,5 +1,6 @@
 import type { Cache } from './query.js';
 import { count } from '../format.js';
+import { formatTomanFromIrr } from './format.js';
 import type { CardAnalyticsResponse } from './analytics.js';
 import { type HistoryRangeState, appendHistoryRangeQuery } from './paymentReview.js';
 
@@ -76,6 +77,20 @@ export function CardBalancingPanel({
                   <strong className="account-usage-row__label">{cardUsageLabel(item)}</strong>
                   <span className="account-usage-row__purchases">
                     {count(item.purchaseCount)} خرید
+                  </span>
+                  {/* «چقدر به این کارت رفت، و از چند نفر» — the question Sam
+                      opened this work with. Its own count sits with it because
+                      «خرید» beside it is the bot-verified subset used to judge
+                      rotation, and an amount read against that count would be
+                      two populations under one row. Toman, like every other
+                      money figure the operator sees; the store is IRR. */}
+                  <span
+                    className="account-usage-row__takings"
+                    title={`${count(item.verifiedCount)} پرداخت تاییدشده از ${count(
+                      item.uniqueCustomers,
+                    )} نفر`}
+                  >
+                    {formatTomanFromIrr(item.takingsIrr)} · {count(item.uniqueCustomers)} نفر
                   </span>
                   {/* Only shown when it is not 1. A weight beside every card
                       would be noise; a weight beside the one card being pushed
