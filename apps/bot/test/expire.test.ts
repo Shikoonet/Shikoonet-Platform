@@ -313,6 +313,7 @@ describe('a sweep that runs on a bot nobody is talking to', () => {
       sendMessage: async (chatId, text) => {
         sent.push({ chatId, text });
       },
+      deleteMessage: async () => undefined,
       sendPhoto: async () => undefined,
       sendPhotoBytes: async () => undefined,
       sendDocument: async () => undefined,
