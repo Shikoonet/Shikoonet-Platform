@@ -184,9 +184,14 @@ describe('the texts a customer receives', () => {
 
 describe('the keyboard', () => {
   it('is production’s layout when nothing is customised', async () => {
+    // Read from `replyKeyboard` since 2026-09-03: `/start` puts the shop's menu
+    // UNDER the chat rather than under the message. Same layout, same labels,
+    // same source — `layout('main')` — which is the point of asserting it here
+    // rather than trusting that two builders agree.
     const reply = await start(await makeCustomer());
-    const rows = reply?.keyboard ?? [];
-    expect(rows.map((r) => r.map((b) => b.text))).toEqual([
+    const rows = reply?.replyKeyboard;
+    expect(rows).not.toBe('remove');
+    expect((Array.isArray(rows) ? rows : []).map((r) => r.map((b) => b.text))).toEqual([
       ['♻️ تمدید سرویس', '🔐 خرید اشتراک'],
       ['🏦 کیف پول + شارژ', '🛍 سرویس های من'],
       ['☎️ پشتیبانی', '📚 آموزش', '👥 زیر مجموعه گیری'],
@@ -217,7 +222,8 @@ describe('the keyboard', () => {
     invalidateBotContent();
 
     const reply = await start(await makeCustomer());
-    expect((reply?.keyboard ?? []).map((r) => r.map((b) => b.text))).toEqual([
+    const rows = reply?.replyKeyboard;
+    expect((Array.isArray(rows) ? rows : []).map((r) => r.map((b) => b.text))).toEqual([
       ['🛒 خرید', '💰 کیف پول'],
       ['♻️ تمدید', '☎️ پشتیبانی'],
     ]);
