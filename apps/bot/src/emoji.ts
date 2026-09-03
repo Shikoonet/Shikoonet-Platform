@@ -235,7 +235,15 @@ export async function setButtonEmoji(
         )
         .run();
     }
-    return label;
+    // No early return here, and that is the fix rather than a tidy-up.
+    //
+    // Every insert above is `DO NOTHING`, so if another writer seeded this
+    // layout between the SELECT and this loop — a second admin, or the panel
+    // saving — all of them are no-ops, INCLUDING the target's. Returning
+    // `label` at that point told the admin «نشست» about a button that still
+    // carries somebody else's text. The update below is what makes the answer
+    // true: it runs either way, and success is claimed only for a row that came
+    // back from it.
   }
 
   const updated = await db
@@ -246,9 +254,11 @@ export async function setButtonEmoji(
     )
     .bind(action, label)
     .first<{ action: string }>();
-  // The button is in `MENUS` but not in this shop's saved layout — an admin
-  // hid it by removing the row. Adding it back silently would put a button on
-  // every customer's menu that this shop took off on purpose.
+  // Nothing came back, so nothing was written. Two ways to arrive: the button
+  // is in `MENUS` but absent from this shop's saved layout — an admin removed
+  // that row on purpose and putting it back would add a button they took off —
+  // or the seed above lost a race with a layout that does not carry it. Both
+  // are «could not», and the caller says so.
   if (!updated) return null;
   return label;
 }

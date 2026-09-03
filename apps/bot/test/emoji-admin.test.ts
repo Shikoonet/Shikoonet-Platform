@@ -25,7 +25,7 @@ import { db, resetBot } from './helpers/env.js';
 import { makeCustomer } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 import { invalidateBotContent } from '../src/botContent.js';
-import { customEmojiIn } from '../src/emoji.js';
+import { customEmojiIn, setButtonEmoji } from '../src/emoji.js';
 import { DEFAULT_LAYOUTS } from '@shikoo/contracts';
 
 const FIRE_ID = '5368324170671202286';
@@ -264,6 +264,115 @@ describe('putting it on a button', () => {
     const rows = started.replies[0]?.replyKeyboard;
     const labels = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
     expect(labels.some((l) => l.includes('خرید'))).toBe(true);
+  });
+
+  it('writes the label even when another writer seeded the layout first', async () => {
+    // The race the review named, staged rather than approximated.
+    //
+    // `setButtonEmoji` asks whether any layout is saved, and seeds the shipped
+    // one when the answer is no. Every insert in that loop is DO NOTHING, so a
+    // layout written by somebody else in between — a second admin, or the panel
+    // saving — turns all of them into no-ops, the target's included. The old
+    // code returned «placed» at that point without looking.
+    //
+    // The interleaving is produced by answering the question truthfully and
+    // then, before the caller can act on the answer, doing what the other
+    // writer would have done. That is exactly the window, and nothing else in
+    // this suite can reach it: by the time a test can insert rows, the check
+    // has either not run or already passed.
+    let seeded = false;
+    const racing = {
+      prepare(sql: string) {
+        const stmt = db.prepare(sql);
+        if (!sql.includes('SELECT 1 AS present')) return stmt;
+        return {
+          ...stmt,
+          bind: (...args: unknown[]) => stmt.bind(...(args as never[])),
+          first: async <T>() => {
+            const answer = await stmt.first<T>();
+            if (!seeded) {
+              seeded = true;
+              // Somebody else's COMPLETE layout, target button included. That
+              // is what makes every insert in the loop below a no-op — a first
+              // draft of this test had the racer omit `renew`, so our own
+              // insert succeeded and the old code was right by accident.
+              for (const b of DEFAULT_LAYOUTS.main) {
+                await db
+                  .prepare(
+                    `INSERT INTO bot_keyboard_buttons
+                       (menu, action, label, row_index, col_index, visible)
+                     VALUES ('main', ?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT (menu, action) DO NOTHING`,
+                  )
+                  .bind(b.action, b.label, b.rowIndex, b.colIndex, b.visible)
+                  .run();
+              }
+            }
+            return answer;
+          },
+        };
+      },
+    } as unknown as typeof db;
+
+    const placed = await setButtonEmoji(racing, 'renew', '♻️ تمدید سرویس', {
+      customEmojiId: FIRE_ID,
+      fallbackEmoji: '🔥',
+    });
+
+    // The row has to carry OUR label. The old code returned this same string
+    // without writing it, so the admin read «نشست» while the button still said
+    // what the other writer had put there — which is why the assertion is on
+    // the TABLE and not on the return value.
+    const renew = await db
+      .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
+      .first<{ label: string }>();
+    expect(renew?.label).toContain(FIRE_ID);
+    expect(placed).toContain(FIRE_ID);
+  });
+
+  it('does not claim success when the button is not in this shop’s layout', async () => {
+    // The seeding branch used to return «placed» without looking, so a layout
+    // written by somebody else between the check and the inserts — every one of
+    // which is DO NOTHING — left the admin told «نشست» about a button carrying
+    // another person's text.
+    //
+    // The race itself needs two writers and cannot be staged here without
+    // hooks. What CAN be staged is the state it lands in, which is the same
+    // state as «an admin removed this button from the layout on purpose»: rows
+    // exist for `main`, and the target is not among them. Both now take the
+    // same path, which is why one test covers the logic of both.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+    for (const b of DEFAULT_LAYOUTS.main.filter((x) => x.action !== 'renew')) {
+      await db
+        .prepare(
+          `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
+           VALUES ('main', ?1, ?2, ?3, ?4, ?5)`,
+        )
+        .bind(b.action, b.label, b.rowIndex, b.colIndex, b.visible)
+        .run();
+    }
+    invalidateBotContent();
+
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emja'));
+    await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    const row = await db
+      .prepare(
+        `SELECT i.id FROM emoji_pack_items i JOIN emoji_packs p ON p.id = i.pack_id
+          WHERE p.set_name = '__from_bot__'`,
+      )
+      .first<{ id: number }>();
+
+    // Slot 1 is `renew`, the button this shop does not have.
+    const out = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:${row!.id}:1`));
+
+    expect(out.replies[0]?.text ?? '').not.toContain('نشست');
+    // And it was not quietly added back.
+    const added = await db
+      .prepare(`SELECT action FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
+      .first<{ action: string }>();
+    expect(added).toBeNull();
   });
 
   it('says it did not fit instead of throwing a constraint at the admin', async () => {
