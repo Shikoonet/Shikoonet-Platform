@@ -59,6 +59,16 @@ export const CALLBACK_ACTIONS = [
   'renew', // [page] — the services that can be extended
   'rnw', // <subscriptionId> — the plans this service can be extended onto
   'rord', // <subscriptionId>:<planId> — extend that service with that plan
+  // ── admin only, and the guard is in the handler ──────────────────────────
+  //
+  // `emj` is drawn only for an admin (`ADMIN_ONLY` in `botKeyboard.ts`), and
+  // being undrawn is not being closed: `callback_data` is unsigned, so anybody
+  // can post these three. `handleCallback` re-reads `is_admin` before acting on
+  // any of them, which is where the door actually is.
+  'emj', // the admin's premium-emoji screen: what the bot has, and how to add
+  'emja', // ask the admin to SEND a premium emoji, so its id can be read off
+  //         the message entity — the only way to get an id without guessing
+  'emjb', // <emojiId>:<buttonIndex> — put that emoji on that main-menu button
   'wal', // the balance and the last movements on it
   'top', // the deposit amounts on offer
   'tp', // <presetIndex> — deposit that preset. An INDEX, never an amount:
@@ -126,7 +136,7 @@ const ActionSchema = z.enum(CALLBACK_ACTIONS);
  * yet" is not a property anybody can rely on, and an action's arity is part of
  * its shape in the same way its name is.
  */
-const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord']);
+const TWO_ID_ACTIONS = new Set<CallbackAction>(['rord', 'emjb']);
 
 /**
  * Telegram's limit is 64 bytes. Our longest is `order:<bigint>` — well inside
