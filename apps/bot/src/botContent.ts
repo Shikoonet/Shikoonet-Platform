@@ -26,7 +26,7 @@
 
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { DEFAULT_LAYOUTS, isMenuId, type ButtonPlacement, type MenuId } from './keyboard.js';
-import { isButtonStyle, Texts } from '@shikoo/contracts';
+import { isButtonStyle, stripCustomEmoji, Texts } from '@shikoo/contracts';
 import { createLogger } from '@shikoo/domain';
 
 const log = createLogger('bot');
@@ -149,6 +149,17 @@ async function half<T>(what: string, read: () => Promise<T>, fallback: T): Promi
  * length of a cache window, and the disagreement would show as angle brackets
  * in front of a customer.
  */
+/** Every label with its custom-emoji markup replaced by the glyph it quotes. */
+function plainLayouts(layouts: Layouts): Layouts {
+  const out = {} as Layouts;
+  for (const [menu, buttons] of Object.entries(layouts) as [MenuId, readonly ButtonPlacement[]][]) {
+    out[menu] = buttons.map((b) =>
+      b.label.includes('<tg-emoji') ? { ...b, label: stripCustomEmoji(b.label) } : b,
+    );
+  }
+  return out;
+}
+
 export async function loadBotContent(
   db: Db,
   now = Date.now(),
@@ -165,7 +176,23 @@ export async function loadBotContent(
   // also strips custom emoji markup when the shop has the feature off, which is
   // what makes switching it off — or having it switched off automatically —
   // leave the shop's own wording in place.
-  const content: BotContent = { texts: new Texts(overrides, customEmoji), layouts };
+  // The KEYBOARD obeys the same switch, and until 2026-09-04 it did not.
+  //
+  // `Texts` has always stripped markup when the feature is off. Labels went
+  // straight through, which was harmless while `checkLayout` refused every tag
+  // on a label — and stopped being harmless the day a leading tag became the
+  // way to put an emoji on a button.
+  //
+  // The cost was not a wrong screen, it was a permanent one. `withEmojiFallback`
+  // decides «is this message rich» by looking at the text AND both keyboards, so
+  // one tagged label made every screen in the shop take the premium path: sent,
+  // refused, stripped, sent again. Telegram refusing once switches the feature
+  // off — and the tag stayed in the label, so the doubling continued for ever,
+  // on exactly the shop whose account cannot use the feature.
+  const content: BotContent = {
+    texts: new Texts(overrides, customEmoji),
+    layouts: customEmoji ? layouts : plainLayouts(layouts),
+  };
   // A failed read is not cached. Caching it would hold the defaults for the
   // next thirty seconds after the database came back, for no gain.
   if (failed) {

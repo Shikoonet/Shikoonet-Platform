@@ -36,7 +36,7 @@ import {
   invalidateShopSettings,
   loadShopSettings,
 } from '../src/settings.js';
-import { invalidateBotContent } from '../src/botContent.js';
+import { invalidateBotContent, loadBotContent } from '../src/botContent.js';
 
 const FIRE = '<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji>';
 
@@ -211,6 +211,61 @@ describe('the switch', () => {
     await makeCustomer(again.telegramId);
     const on = await handleUpdate(db, startUpdate(again.updateId, again.telegramId));
     expect(on.replies[0]?.text ?? '').toContain('tg-emoji');
+  });
+});
+
+describe('a custom emoji on a BUTTON, when the shop has the feature off', () => {
+  /**
+   * The switch has to reach the keyboard, not only the wording.
+   *
+   * `Texts` has stripped markup when the feature is off since it shipped.
+   * Labels went straight through, which was harmless while `checkLayout`
+   * refused every tag on a label — and stopped being harmless the day a leading
+   * tag became the way to put an emoji on a button.
+   *
+   * The cost is not a wrong screen. `withEmojiFallback` decides «is this
+   * message rich» from the text AND both keyboards, so ONE tagged label makes
+   * every screen in the shop take the premium path: sent, refused, stripped,
+   * sent again. Telegram refusing once switches the feature off — and the tag
+   * stays in the label, so the doubling goes on for ever, on exactly the shop
+   * whose account cannot use the feature.
+   */
+  it('strips the tag from the label, so no screen pays for a refusal twice', async () => {
+    await db
+      .prepare(
+        `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
+         VALUES ('main', 'buy', ?1, 0, 0, true)
+         ON CONFLICT (menu, action) DO UPDATE SET label = EXCLUDED.label`,
+      )
+      .bind(`${FIRE} خرید اشتراک`)
+      .run();
+    await setSwitch(false);
+    invalidateBotContent();
+
+    const content = await loadBotContent(db, Date.now(), false);
+    const label = content.layouts['main'].find((b) => b.action === 'buy')?.label ?? '';
+
+    expect(label).not.toContain('tg-emoji');
+    // The glyph survives — the customer sees «🔥 خرید اشتراک», which is what the
+    // fallback between the tags is written for.
+    expect(label).toContain('🔥 خرید اشتراک');
+  });
+
+  it('keeps it when the shop has the feature on', async () => {
+    await db
+      .prepare(
+        `INSERT INTO bot_keyboard_buttons (menu, action, label, row_index, col_index, visible)
+         VALUES ('main', 'buy', ?1, 0, 0, true)
+         ON CONFLICT (menu, action) DO UPDATE SET label = EXCLUDED.label`,
+      )
+      .bind(`${FIRE} خرید اشتراک`)
+      .run();
+    invalidateBotContent();
+
+    const content = await loadBotContent(db, Date.now(), true);
+    expect(content.layouts['main'].find((b) => b.action === 'buy')?.label ?? '').toContain(
+      'tg-emoji',
+    );
   });
 });
 

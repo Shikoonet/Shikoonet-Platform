@@ -460,6 +460,40 @@ describe('button presses', () => {
     expect(sent).toEqual([]);
   });
 
+  it('sends a new message when the edit target is too old to touch', async () => {
+    // Telegram refuses to edit a message older than 48 hours, one the customer
+    // deleted, and one from a chat it no longer has. Until 2026-09-04 every
+    // screen being edited came straight off the update that asked for it, so it
+    // was minutes old and this could not happen.
+    //
+    // It can now. A typed answer is written back into the message that ASKED,
+    // and that id is remembered in `bot_sessions` — so a customer who opens «کد
+    // تخفیف», walks away for three days and comes back is editing something
+    // Telegram will not touch. Without a fallback the reply is simply lost, and
+    // what they see is a button that did nothing.
+    const { updateId, telegramId } = ids();
+    await pollOnce(db, fakeApi([startUpdate(updateId, telegramId)]).api, updateId);
+
+    const sent: string[] = [];
+    const api = stubApi({
+      getUpdates: async () => [press(updateId + 1, telegramId, 'menu')],
+      editMessageText: async () => {
+        throw new Error('telegram editMessageText rejected: message to edit not found');
+      },
+      sendMessage: async (_chatId, text) => {
+        sent.push(text);
+      },
+    });
+
+    const errors = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await pollOnce(db, api, updateId + 1);
+    errors.mockRestore();
+
+    // The screen arrived, as a new message rather than not at all.
+    expect(sent).toHaveLength(1);
+    expect(sent[0] ?? '').not.toBe('');
+  });
+
   it('stops the spinner when the update failed outright', async () => {
     // Otherwise a database outage looks like a bot that hung on the button.
     const { updateId } = ids();
