@@ -73,6 +73,8 @@ interface PendingOrder {
   is_reseller: boolean;
   reseller_tier: string | null;
   username_text: string | null;
+  /** `bigint` arrives as a string from the driver on some paths; both are taken. */
+  purchase_seq: string | number | null;
   plan_id: number | null;
   target_subscription_id: number | null;
   target_username: string | null;
@@ -342,6 +344,39 @@ export async function provisionPaidOrders(
               o.kind          AS order_kind,
               o.quantity      AS quantity,
               o.username_text AS username_text,
+              -- Which purchase of this customer's this order is, for
+              -- «متن پنل + آیدی عددی + شمارهٔ خرید». Counted here rather than
+              -- stored anywhere, and the shape of the count is the whole point.
+              --
+              -- NOT ROW_NUMBER() OVER (PARTITION BY o.user_id ORDER BY o.id),
+              -- which is the obvious way to write this and is wrong: a window
+              -- function runs AFTER the WHERE and the LIMIT 20 below, so it
+              -- would number the rows inside this sweep's batch. A customer's
+              -- second-ever purchase, arriving alone, would be «1» — the name
+              -- their first account already has, and the adapter answers that
+              -- with success and their old config.
+              --
+              -- A correlated subquery is evaluated per row against the whole
+              -- table, which is the question actually being asked.
+              (SELECT count(*) FROM orders o2
+                WHERE o2.user_id = o.user_id
+                  AND o2.kind = 'NEW_PURCHASE'
+                  AND o2.id <= o.id)
+              -- Plus what they bought from the PHP bot, which carries no order
+              -- at all: the migration builds orders only from service_other,
+              -- which is renewals and add-ons. Without this the first purchase
+              -- made here would reuse the name of a migrated account.
+              --
+              -- A constant per customer, and that is what makes it safe: the
+              -- only subscriptions with no order_id are the migrated ones --
+              -- the shelf writes one — nothing updates that column, and the
+              -- migration runs once, before this bot sells anything. Legacy
+              -- rows appearing AFTER an order exists would move that order's
+              -- number, so a second import into a live shop is the thing this
+              -- must never see.
+              + (SELECT count(*) FROM subscriptions s2
+                  WHERE s2.user_id = o.user_id AND s2.order_id IS NULL)
+                                                                  AS purchase_seq,
               u.telegram_id   AS telegram_id,
               u.username      AS telegram_username,
               u.is_reseller   AS is_reseller,
@@ -628,7 +663,12 @@ async function deliver(
       row.order_public_id,
       // «روش ساخت نام کاربری». The suffix is still the order's public id in
       // every mode, so every mode is still reproducible by a retry.
-      usernameShapeFor(row.provider_config ?? {}, row.telegram_username, row.username_text),
+      usernameShapeFor(
+        row.provider_config ?? {},
+        row.telegram_username,
+        row.username_text,
+        toNumber(row.purchase_seq),
+      ),
     ),
     volumeGb,
     durationDays,
@@ -672,6 +712,91 @@ async function deliver(
     return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 
+  // The insert can now be REFUSED, and the refusal has to be caught here.
+  //
+  // Migration 0051 makes «one account on a panel belongs to one subscription» a
+  // unique index, and an index is not a `DO NOTHING`: a second subscription for
+  // the same `(provider_id, remote_username)` raises 23505 and this transaction
+  // throws. Left to escape, that throw is not a loud failure — it is a silent
+  // loop. The order stays PROVISIONING, `reclaimStalled` hands it back to PAID,
+  // the next sweep computes the same name, and it is refused again, for ever,
+  // with the customer's money taken and nothing on any screen.
+  //
+  // So it lands where every other unrecoverable provisioning failure lands:
+  // `fail()`, which marks the order FAILED and refunds it in one transaction,
+  // and the customer is told. The name collision is a bug in the shop's naming
+  // — two orders that resolved to one account — and the money is not ours to
+  // keep while somebody works out which.
+  //
+  // The `ON CONFLICT (order_id)` inside stays exactly as it is. It answers a
+  // DIFFERENT question — «has this order already got a subscription» — and
+  // widening it to swallow the new index would put the double sale back, silent
+  // again, which is the whole thing 0051 exists to stop.
+  try {
+    await writeSubscription(
+      db,
+      row,
+      result,
+      // What was sold, snapshotted at the sale. A legacy row's plan and product
+      // are the same string, so those are untouched; a tiered one needs both,
+      // because the plan names inside «پلاتینیوم», «طلایی» and «معمولی» are
+      // sizes and three services can hold the same size. The customer's
+      // «سرویس های من» is keyed off this column, so without the service on it
+      // two different levels list as the same line.
+      trial === null
+        ? menu.soldAs(row.product_name ?? '', row.plan_name ?? '')
+        : menu.TRIAL_SERVICE_NAME,
+      volumeGb,
+      durationDays,
+      expiresAt,
+    );
+  } catch (err) {
+    if (!isDuplicatePanelAccount(err)) throw err;
+    const refunded = await fail(db, row.order_id, 'this panel account already belongs to another subscription');
+    log.error(
+      'provision.duplicate_account',
+      { ref: row.order_public_id, username: result.remoteUsername, refunded },
+      err,
+    );
+    return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
+  }
+
+  // A manual provider has no link to give. Promising one that does not exist is
+  // worse than saying a person is finishing it.
+  if (result.subscriptionUrl === null) return say(menu.serviceBeingPrepared(row.order_public_id));
+  // The full service screen, with its buttons and its QR code. The three-line
+  // `serviceReady` remains the fallback for the case the row cannot be read
+  // back — the customer must get their link either way.
+  return (
+    (await purchasedScreen(db, row, now)) ??
+    say(menu.serviceReady(result.subscriptionUrl, result.remoteUsername, expiresAt))
+  );
+}
+
+/**
+ * Whether a driver error is the panel-account index from 0051, and not some
+ * other unique violation.
+ *
+ * Matched on the index NAME rather than on the error code alone: 23505 is also
+ * what `public_id` and the one-subscription-per-order index raise, and refunding
+ * a customer because their order was inserted twice would be the wrong answer
+ * to the right code. `packages/db` carries the driver's message through with the
+ * statement, which is what makes this readable at all.
+ */
+function isDuplicatePanelAccount(err: unknown): boolean {
+  return String(err).includes('idx_subscription_one_per_panel_account');
+}
+
+/** The subscription row and the order's completion, in one transaction. */
+async function writeSubscription(
+  db: D1Database,
+  row: PendingOrder,
+  result: { remoteUsername: string; remoteRef: unknown; subscriptionUrl: string | null },
+  planNameAtSale: string,
+  volumeGb: number | null,
+  durationDays: number | null,
+  expiresAt: Date | null,
+): Promise<void> {
   await db.withSession(async (tx) => {
     // The guard is in the statement, not in a read before it. It used to be a
     // SELECT and a comment arguing that only one sweep can hold an order in
@@ -705,9 +830,7 @@ async function deliver(
           // «معمولی» are sizes and three services can hold the same size. The
           // customer's «سرویس های من» is keyed off this column, so without the
           // service on it two different levels list as the same line.
-          trial === null
-            ? menu.soldAs(row.product_name ?? '', row.plan_name ?? '')
-            : menu.TRIAL_SERVICE_NAME,
+          planNameAtSale,
           row.total_irr,
           JSON.stringify(result.remoteRef),
           result.remoteUsername,
@@ -722,17 +845,6 @@ async function deliver(
     }
     await complete(tx, row.order_id);
   });
-
-  // A manual provider has no link to give. Promising one that does not exist is
-  // worse than saying a person is finishing it.
-  if (result.subscriptionUrl === null) return say(menu.serviceBeingPrepared(row.order_public_id));
-  // The full service screen, with its buttons and its QR code. The three-line
-  // `serviceReady` remains the fallback for the case the row cannot be read
-  // back — the customer must get their link either way.
-  return (
-    (await purchasedScreen(db, row, now)) ??
-    say(menu.serviceReady(result.subscriptionUrl, result.remoteUsername, expiresAt))
-  );
 }
 
 /**

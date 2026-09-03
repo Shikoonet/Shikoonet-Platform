@@ -1368,9 +1368,15 @@ function PanelModal({
                         the next person undoes that. */}
                     <option value="ORDER_ID">برگرفته از شمارهٔ سفارش</option>
                     <option value="CUSTOMER_TEXT">نام دلخواه مشتری</option>
+                    {/* The only mode whose suffix is not the order id. It is
+                        readable — shikoo_369469521_2 — and it stays unique
+                        because the purchase number is counted from the orders
+                        table rather than stored, so a retry computes the same
+                        one. See `remoteUsernameFor`. */}
+                    <option value="PANEL_TEXT_SEQ">متن پنل + آیدی عددی + شمارهٔ خرید</option>
                   </select>
                 </div>
-                {usernameMode === 'PANEL_TEXT' && (
+                {(usernameMode === 'PANEL_TEXT' || usernameMode === 'PANEL_TEXT_SEQ') && (
                   <div className="grow">
                     <label className="form-label" htmlFor="panel-username-text">
                       متن دلخواه
@@ -1389,9 +1395,24 @@ function PanelModal({
                 )}
               </div>
               <p className="muted" style={{ marginBlockStart: 4 }}>
-                نام اکانت روی پنل این شکلی می‌شود: <b>{'<پیشوند>_<شناسهٔ سفارش>'}</b>. پسوند همیشه
-                شناسهٔ سفارش است تا اگر ساخت نیمه‌کاره ماند، تلاش دوم همان اکانت را پیدا کند و اکانت
-                دوم نسازد.
+                {usernameMode === 'PANEL_TEXT_SEQ' ? (
+                  <>
+                    نام اکانت روی پنل این شکلی می‌شود:{' '}
+                    <b>{'<متن پنل>_<آیدی عددی>_<شمارهٔ خرید>'}</b> — مثلاً{' '}
+                    <span className="ltr">shikoo_369469521_2</span>. شمارهٔ خرید از روی سفارش‌های
+                    همان مشتری شمرده می‌شود، نه ذخیره؛ برای همین اگر ساخت نیمه‌کاره ماند، تلاش دوم
+                    همان عدد را درمی‌آورد و همان اکانت را پیدا می‌کند. سفارش لغو یا برگشت‌خورده هم
+                    شمرده می‌شود، پس ممکن است یک نفر ۱، ۲، ۴ داشته باشد — این عمدی است: عددی که
+                    زیر پای یک سفارشِ در حال تلاش تکان بخورد، اکانت قبلی خودش را دوباره تحویل
+                    می‌دهد.
+                  </>
+                ) : (
+                  <>
+                    نام اکانت روی پنل این شکلی می‌شود: <b>{'<پیشوند>_<شناسهٔ سفارش>'}</b>. پسوند
+                    همیشه شناسهٔ سفارش است تا اگر ساخت نیمه‌کاره ماند، تلاش دوم همان اکانت را پیدا
+                    کند و اکانت دوم نسازد.
+                  </>
+                )}
                 {usernameMode === 'TELEGRAM_USERNAME' && (
                   <> مشتری‌ای که نام کاربری تلگرام ندارد با آیدی عددی‌اش ساخته می‌شود.</>
                 )}
