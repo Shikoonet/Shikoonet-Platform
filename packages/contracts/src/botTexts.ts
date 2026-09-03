@@ -465,49 +465,38 @@ export const TEXTS = {
     screen: 'checkout',
     hint: 'خط آخر فاکتور',
   },
-  // The four notes below are `PaySetting.helpcart`, the live production text
-  // read out of the dump on 2026-08-15. The legacy bot sends them as a separate
-  // message just before every card invoice (`index.php:4811`); here they are
-  // part of the invoice, so a customer cannot scroll past them.
-  //
-  // They are not decoration. Automatic verification has zero tolerance on the
-  // amount and matches on the bank's own SMS, so notes 2 and 3 are what keep a
-  // payment out of the manual queue, and note 1 is what keeps the transfer from
-  // being refused by the bank at all. Dropping them lengthens the queue.
-  CHECKOUT_NOTES_TITLE: {
-    default: 'نکات مهم قبل از کارت به کارت:',
+  /**
+   * One line where there were five.
+   *
+   * Sam, 2026-09-03: the invoice is «خیلی ساده» — the amount, the card, and one
+   * button. It was fifteen lines: four numbered notes under a header, plus the
+   * exact-amount warning and «دکمهٔ زیر را بزنید» above them.
+   *
+   * ## What was dropped, and what could not be
+   *
+   * Notes 3 and 4 are gone because they were already said twice.
+   * `CHECKOUT_PRESS_BUTTON` sits five lines above «۳- دکمه را بزنید», and
+   * `PAID_SEND_RECEIPT` asks for the picture on the very next screen, at the
+   * moment it is wanted rather than before the customer has paid.
+   *
+   * Notes 1 and 2 are NOT decoration and are not dropped — they are compressed
+   * into this line. `PaySetting.helpcart` in the production dump is where they
+   * come from, and each one is load-bearing in a way the customer cannot see:
+   * a transfer whose description says «VPN» can be refused by the bank
+   * outright, and پایا/ساتنا arrive hours later, which puts the payment outside
+   * the five-minute window automatic verification matches in — so it lands in
+   * the manual queue with somebody's money in it.
+   *
+   * Compressing them is the trade Sam asked for: the same two facts, one line
+   * instead of three, and no note that only repeats a sentence already on the
+   * screen. Shortening it further means dropping one of the two facts, and
+   * neither is ours to drop — the cost lands on a customer, not on us.
+   */
+  CHECKOUT_NOTE: {
+    default: '⚠️ کارت‌به‌کارت معمولی (نه پایا/ساتنا)، و در توضیحات واریز کلمهٔ VPN ننویسید.',
     placeholders: [],
     screen: 'checkout',
-    hint: 'سرصفحهٔ نکات کارت به کارت — روی هر چهار فاکتور',
-  },
-  CHECKOUT_NOTE_WORDS: {
-    default:
-      '۱- به هیچ عنوان از کلمات مشکل‌دار مثل VPN، فیلترشکن، قندشکن و … در توضیحات رسید استفاده نکنید.',
-    placeholders: [],
-    screen: 'checkout',
-    hint: 'نکتهٔ ۱ — کلمات مشکل‌دار در توضیحات واریز',
-  },
-  CHECKOUT_NOTE_TRANSFER: {
-    default: '۲- از انتقال پل، پایا و ساتنا استفاده نکنید؛ تراکنش با تاخیر می‌رسد.',
-    placeholders: [],
-    screen: 'checkout',
-    hint: 'نکتهٔ ۲ — پل/پایا/ساتنا تایید خودکار را از پنجرهٔ ۵ دقیقه بیرون می‌برد',
-  },
-  CHECKOUT_NOTE_PRESS: {
-    default: '۳- بعد از واریز حتماً دکمهٔ «{paidButton}» را بزنید و بعد عکس رسید را بفرستید.',
-    placeholders: ['paidButton'],
-    screen: 'checkout',
-    hint: 'نکتهٔ ۳ — بدون این دکمه هیچ claimی باز نمی‌شود · {paidButton} نام زندهٔ دکمه است',
-  },
-  CHECKOUT_NOTE_WAIT: {
-    // Was «رسید را برای ادمین نفرستید», one line under a note telling the
-    // customer to send the receipt. Both were true — send it to the BOT, not in
-    // a private message to an admin — and read together they cancelled out. The
-    // distinction that matters is where, so that is what it says.
-    default: '۴- رسید را همین‌جا برای ربات بفرستید، نه در پیام خصوصی به ادمین.',
-    placeholders: [],
-    screen: 'checkout',
-    hint: 'نکتهٔ ۴ — رسید به ربات، نه به ادمین',
+    hint: 'تنها نکتهٔ فاکتور — پایا/ساتنا تایید خودکار را از پنجرهٔ ۵ دقیقه بیرون می‌برد و کلمهٔ VPN را بانک رد می‌کند',
   },
   CHECKOUT_COPY_CARD: {
     default: '📋 کپی شمارهٔ کارت',
