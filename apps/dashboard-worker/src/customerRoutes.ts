@@ -39,6 +39,7 @@ import {
   MAX_MESSAGE_LENGTH,
   adjustWallet,
   queueDirectMessage,
+  setCustomerReseller,
   setCustomerStatus,
 } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
@@ -54,6 +55,29 @@ import { audit, type Ident } from './adminAudit.js';
  */
 
 const PAGE_SIZE_MAX = 100;
+
+/**
+ * The reseller level in force, and the rule for which one that is.
+ *
+ * The identical rule lives in `DISCOUNT_PERCENT` and `tierFor`
+ * (`apps/bot/src/handle.ts`, `serviceActions.ts`): `is_reseller` is asked
+ * first, and a NULL level means level one. It is written here a third time
+ * rather than imported because it is SQL against a different alias — what keeps
+ * the two honest is `customers.test.ts`, which asserts this route returns the
+ * number the bot charges.
+ *
+ * A LEFT JOIN rather than the bot's scalar subquery because both statements
+ * here are plain SELECTs and the panel needs the level's NAME as well as its
+ * percentage — «۱۵٪ از نماینده سطح ۲» rather than a bare number an operator
+ * cannot account for.
+ */
+const TIER_JOIN = `LEFT JOIN reseller_tiers t
+    ON u.is_reseller AND t.code = COALESCE(u.reseller_tier, 'n')`;
+
+/** The percentage the bot will actually charge. */
+const TIER_COLUMNS = `t.code AS tier_code, t.name AS tier_name,
+              t.discount_percent AS tier_percent,
+              COALESCE(t.discount_percent, u.discount_percent) AS effective_discount_percent`;
 
 const ListQuery = z.object({
   q: z.string().trim().max(64).optional(),
@@ -71,6 +95,11 @@ const ListQuery = z.object({
    * the two wallet totals apart instead of netting them.
    */
   sort: z.enum(['recent', 'balance', 'debt']).default('recent'),
+  /**
+   * «لیست نمایندگان» — Sam, 2026-09-03. A filter on the list that already
+   * paginates, searches and sorts, rather than a screen of its own.
+   */
+  reseller: z.enum(['yes', 'no']).optional(),
 });
 
 const ORDER_BY: Record<'recent' | 'balance' | 'debt', string> = {
@@ -111,6 +140,21 @@ const StatusBody = z
 /** Whole percent, 0 to 100 — the same bound the bot's typed answer enforces. */
 const DiscountBody = z.object({ percent: z.number().int().min(0).max(100) }).strict();
 
+/**
+ * The two levels, spelled out rather than taken as any string.
+ *
+ * `reseller_tiers` has a CHECK allowing only these, so a third value would be a
+ * constraint error rather than a wrong price — but a 400 naming the field is a
+ * better answer than a 500, and this is also where the enum is visible to
+ * whoever adds a third level later.
+ */
+const ResellerBody = z
+  .object({
+    isReseller: z.boolean(),
+    tier: z.enum(['n', 'n2']).nullable().default(null),
+  })
+  .strict();
+
 const MessageBody = z
   .object({
     body: z.string().trim().min(1).max(MAX_MESSAGE_LENGTH),
@@ -122,7 +166,14 @@ const MessageBody = z
   })
   .strict();
 
-interface CustomerRow {
+interface TierColumns {
+  tier_code: string | null;
+  tier_name: string | null;
+  tier_percent: number | null;
+  effective_discount_percent: number;
+}
+
+interface CustomerRow extends TierColumns {
   id: number;
   telegram_id: number;
   username: string | null;
@@ -146,10 +197,11 @@ export function registerCustomerRoutes(
       status: c.req.query('status') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
+      reseller: c.req.query('reseller') || undefined,
       sort: c.req.query('sort') || undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, status, page, pageSize, sort } = parsed.data;
+    const { q, status, page, pageSize, sort, reseller } = parsed.data;
 
     // Built by hand rather than by string concatenation of values: the
     // Postgres adapter closes parameter gaps, so the numbering has to stay
@@ -160,6 +212,9 @@ export function registerCustomerRoutes(
       params.push(status);
       where.push(`u.status = ?${params.length}`);
     }
+    // No parameter: the value is one of two literals from a closed enum, and
+    // binding a boolean here would renumber everything after it for nothing.
+    if (reseller) where.push(reseller === 'yes' ? `u.is_reseller` : `NOT u.is_reseller`);
     if (q) {
       // A Telegram id is the identifier an admin actually has to hand — it is
       // what the bot reports and what a customer can read off their own
@@ -188,9 +243,11 @@ export function registerCustomerRoutes(
     params.push((page - 1) * pageSize);
     const rows = await c.env.DB.prepare(
       `SELECT u.id, u.telegram_id, u.username, u.phone, u.status, u.is_reseller,
-              u.discount_percent, w.balance_irr, u.registered_at, u.last_seen_at
+              u.discount_percent, ${TIER_COLUMNS},
+              w.balance_irr, u.registered_at, u.last_seen_at
          FROM users u
          LEFT JOIN wallets w ON w.user_id = u.id
+         ${TIER_JOIN}
          ${whereSql}
         ORDER BY ${ORDER_BY[sort]}
         LIMIT ?${limitParam} OFFSET ?${params.length}`,
@@ -210,7 +267,12 @@ export function registerCustomerRoutes(
         phone: r.phone,
         status: r.status,
         isReseller: r.is_reseller,
+        // The personal column, raw. `effectiveDiscountPercent` beside it is
+        // what the bot charges — they differ for every reseller on a level, and
+        // a screen showing only the first would disagree with the shop.
         discountPercent: Number(r.discount_percent),
+        tier: r.tier_code === null ? null : { code: r.tier_code, name: r.tier_name ?? r.tier_code, percent: Number(r.tier_percent) },
+        effectiveDiscountPercent: Number(r.effective_discount_percent),
         // No wallets row means no entries, which is a zero balance and not a
         // missing one — the trigger writes the row on the first entry.
         balanceIrr: r.balance_irr ?? 0,
@@ -228,10 +290,11 @@ export function registerCustomerRoutes(
 
     const row = await c.env.DB.prepare(
       `SELECT u.id, u.telegram_id, u.username, u.phone, u.phone_verified, u.status,
-              u.blocked_reason, u.is_reseller, u.discount_percent, u.referral_code,
-              u.registered_at, u.last_seen_at, w.balance_irr
+              u.blocked_reason, u.is_reseller, u.discount_percent, ${TIER_COLUMNS},
+              u.referral_code, u.registered_at, u.last_seen_at, w.balance_irr
          FROM users u
          LEFT JOIN wallets w ON w.user_id = u.id
+         ${TIER_JOIN}
         WHERE u.id = ?1`,
     )
       .bind(id)
@@ -279,6 +342,15 @@ export function registerCustomerRoutes(
         blockedReason: row.blocked_reason,
         isReseller: row.is_reseller,
         discountPercent: Number(row.discount_percent),
+        tier:
+          row.tier_code === null
+            ? null
+            : {
+                code: row.tier_code,
+                name: row.tier_name ?? row.tier_code,
+                percent: Number(row.tier_percent),
+              },
+        effectiveDiscountPercent: Number(row.effective_discount_percent),
         referralCode: row.referral_code,
         balanceIrr: row.balance_irr ?? 0,
         registeredAt: row.registered_at,
@@ -406,9 +478,15 @@ export function registerCustomerRoutes(
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const { percent } = parsed.data;
 
-    const before = await c.env.DB.prepare(`SELECT discount_percent FROM users WHERE id = ?1`)
+    // The PERSONAL column, raw and deliberately not the effective one. This
+    // route writes that column, and an audit entry saying «was 20» when the
+    // personal value was 5 — because the level's 20 was read instead — turns
+    // the one record of what an operator actually changed into fiction.
+    const before = await c.env.DB.prepare(
+      `SELECT u.discount_percent, u.is_reseller, u.reseller_tier FROM users u WHERE u.id = ?1`,
+    )
       .bind(id)
-      .first<{ discount_percent: number }>();
+      .first<{ discount_percent: number; is_reseller: boolean; reseller_tier: string | null }>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
 
     await c.env.DB.prepare(
@@ -426,7 +504,63 @@ export function registerCustomerRoutes(
       { discount_percent: percent },
       null,
     );
-    return c.json({ ok: true, percent });
+    // What the customer will actually be charged. For a reseller on a level
+    // this is the LEVEL's number and not the one just saved — so the screen can
+    // say «this is stored, but the level is what they pay» instead of showing a
+    // figure the shop will never use.
+    const effective = await c.env.DB.prepare(
+      `SELECT ${TIER_COLUMNS} FROM users u ${TIER_JOIN} WHERE u.id = ?1`,
+    )
+      .bind(id)
+      .first<TierColumns>();
+
+    return c.json({
+      ok: true,
+      percent,
+      effectivePercent: Number(effective?.effective_discount_percent ?? percent),
+      tierName: effective?.tier_name ?? null,
+    });
+  });
+
+  // --- reseller, and which level ------------------------------------------
+
+  /**
+   * Makes somebody a reseller from the panel, or stops them being one.
+   *
+   * Sam, 2026-09-03: he wanted to choose a person himself rather than wait for
+   * them to apply through the bot, which until now was the only path
+   * `is_reseller` had.
+   *
+   * The flag and the level are one body and one statement because they are one
+   * decision — see `setCustomerReseller` for why doing it in two would price
+   * somebody wrongly in between.
+   */
+  app.post('/api/v1/admin/customers/:id/reseller', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const parsed = ResellerBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const { isReseller, tier } = parsed.data;
+
+    const outcome = await setCustomerReseller(c.env.DB, { userId: id, isReseller, tier });
+    if (!outcome) return c.json({ ok: false, error: 'not_found' }, 404);
+    if (!outcome.changed) return c.json({ ok: true, changed: false });
+
+    await audit(
+      c.env.DB,
+      ident,
+      isReseller ? 'customer.reseller_set' : 'customer.reseller_cleared',
+      'CUSTOMER',
+      String(id),
+      outcome.before,
+      outcome.after,
+      null,
+    );
+    return c.json({ ok: true, changed: true });
   });
 
   // --- one message to one customer ----------------------------------------
