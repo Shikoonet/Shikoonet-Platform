@@ -939,6 +939,26 @@ export const TEXTS = {
     screen: 'addon',
     hint: 'عددی بزرگ‌تر از سقف مجاز',
   },
+  ASK_ACCOUNT_NAME: {
+    default:
+      'یک نام برای اکانتت بنویس — با حرف انگلیسی شروع شود و دست‌کم ۳ حرف باشد.\n\nشمارهٔ سفارش هم به انتهایش اضافه می‌شود، مثل reza_1a2b3c4d5e.',
+    placeholders: [],
+    screen: 'planDetail',
+    hint: 'پنلی که اسم اکانت را از مشتری می‌پرسد',
+  },
+  ACCOUNT_NAME_REFUSED: {
+    default:
+      'این نام روی پنل ساخته نمی‌شود. فقط حروف انگلیسی و عدد، با حرف شروع شود و دست‌کم ۳ حرف باشد. دوباره بفرست.',
+    placeholders: [],
+    screen: 'planDetail',
+    hint: 'نامی که پنل نمی‌پذیرد',
+  },
+  ADDON_TOO_LITTLE: {
+    default: 'کمترین مقدار در هر خرید {min} است. عدد بزرگ‌تری بفرستید.',
+    placeholders: ['min'],
+    screen: 'addon',
+    hint: 'عددی کوچک‌تر از حداقل مجاز این پنل',
+  },
   ADDON_QUANTITY_VOLUME: {
     default: '{quantity} گیگابایت حجم',
     placeholders: ['quantity'],
@@ -1114,6 +1134,12 @@ export const TEXTS = {
     placeholders: [],
     screen: 'renew',
     hint: 'پنلی که تمدید را از نو شروع می‌کند',
+  },
+  RENEW_MODE_ADD_VOLUME_RESET_TIME: {
+    default: 'با تمدید، زمان از نو شروع می‌شود و حجم تازه به حجم باقی‌مانده اضافه می‌گردد.',
+    placeholders: [],
+    screen: 'renew',
+    hint: 'پنلی که زمان را ریست می‌کند ولی حجم را نگه می‌دارد',
   },
   RENEW_CHOOSE_PLAN: {
     default: '🛍 پلن تمدید را انتخاب کنید:',
@@ -1654,6 +1680,57 @@ export const TEXTS = {
     placeholders: ['telegramId'],
     screen: 'warnings',
     hint: 'به کانال گزارش، با دکمهٔ باز کردن همان کاربر',
+  },
+
+  /*
+   * The reports, one per topic. Editable like every other text the bot sends,
+   * because an operator who wants «فروش» instead of «خرید» in their own group
+   * should not need a deploy.
+   */
+  REPORT_PURCHASE: {
+    default:
+      '🛍 <b>خرید تازه</b>\nسفارش: <code>{order}</code>\nمشتری: <code>{customer}</code>\nسرویس: {service}\nمبلغ: {amount}',
+    placeholders: ['order', 'customer', 'service', 'amount'],
+    screen: 'warnings',
+    hint: 'به تاپیک «گزارش‌های خرید»، بعد از تحویل سرویس',
+  },
+  REPORT_SERVICE: {
+    default:
+      '📌 <b>{kind}</b>\nسفارش: <code>{order}</code>\nمشتری: <code>{customer}</code>\nسرویس: {service}',
+    placeholders: ['kind', 'order', 'customer', 'service'],
+    screen: 'warnings',
+    hint: 'به تاپیک «گزارش خرید خدمات» — تمدید و حجم و زمان اضافه',
+  },
+  REPORT_TRIAL: {
+    default: '🔑 <b>اکانت تست</b>\nسفارش: <code>{order}</code>\nمشتری: <code>{customer}</code>\nپنل: {panel}',
+    placeholders: ['order', 'customer', 'panel'],
+    screen: 'warnings',
+    hint: 'به تاپیک «گزارش اکانت تست»',
+  },
+  REPORT_PAYMENT: {
+    default:
+      '💰 <b>پرداخت تایید شد</b>\nفیش: <code>{payment}</code>\nمشتری: <code>{customer}</code>\nمبلغ: {amount}',
+    placeholders: ['payment', 'customer', 'amount'],
+    screen: 'warnings',
+    hint: 'به تاپیک «گزارش مالی»، وقتی پرداختی تسویه می‌شود',
+  },
+  REPORT_KIND_RENEWAL: {
+    default: 'تمدید سرویس',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'عنوان گزارش تمدید',
+  },
+  REPORT_KIND_ADD_VOLUME: {
+    default: 'حجم اضافه',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'عنوان گزارش حجم اضافه',
+  },
+  REPORT_KIND_ADD_TIME: {
+    default: 'زمان اضافه',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'عنوان گزارش زمان اضافه',
   },
 
   PAGING_PREV: {

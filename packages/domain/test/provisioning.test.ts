@@ -695,6 +695,50 @@ describe('extending an account', () => {
     expect(panel.puts[0]?.['data_limit']).toBe(10 * 1024 ** 3);
   });
 
+  /**
+   * «ریست زمان، اضافه‌شدن حجم» — Sam, 2026-09-03. The half of each.
+   *
+   * The three assertions are the whole mode: the clock restarts like RESET, the
+   * quota grows like ADD, and NO reset call is made. The last one is not a
+   * detail — POST /reset zeroes the usage counter, and on a quota that is being
+   * added to, zeroing it hands the customer every gigabyte they had already
+   * spent back as free traffic.
+   */
+  it('restarts the clock and keeps the volume, without resetting usage', async () => {
+    const panel = panelWith({
+      // Ten days left and four gigabytes already spent against a ten-gigabyte
+      // quota — a customer renewing early with volume unspent.
+      expire: Math.floor((NOW + 10 * 86_400_000) / 1000),
+      data_limit: 10 * 1024 ** 3,
+      used_traffic: 4 * 1024 ** 3,
+    });
+
+    await marzbanAdapter.renew!(
+      renewRequest({ mode: 'ADD_VOLUME_RESET_TIME', volumeGb: 50, durationDays: 30 }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    // The clock: thirty days from NOW, not from the ten that were left.
+    expect(panel.puts[0]?.['expire']).toBe((NOW + 30 * 86_400_000) / 1000);
+    // The volume: the fifty bought ON TOP of the ten already there.
+    expect(panel.puts[0]?.['data_limit']).toBe(60 * 1024 ** 3);
+    // And the counter is left alone.
+    expect(panel.resets).toEqual([]);
+  });
+
+  it('leaves an unmetered account unmetered when it resets the clock', async () => {
+    // The same rule the ADD branch states, in the new mode: adding volume to an
+    // account that has none capped is not a reason to cap it.
+    const panel = panelWith({ expire: 0, data_limit: 0 });
+
+    await marzbanAdapter.renew!(
+      renewRequest({ mode: 'ADD_VOLUME_RESET_TIME', volumeGb: 50, durationDays: 30 }),
+      provider({ fetch: panel.fetchImpl }),
+    );
+
+    expect(panel.puts[0]?.['data_limit']).toBe(0);
+  });
+
   it('keeps an unmetered account unmetered', async () => {
     const panel = panelWith({ expire: 0, data_limit: 0 });
 

@@ -80,6 +80,30 @@ const PURCHASABLE = `
         )
       )
   /*
+   * «فقط برای کسانی که هنوز خرید نکرده‌اند» — Sam, 2026-09-03. A starter panel
+   * that disappears the moment the customer owns anything.
+   *
+   * The same question as once_per_user directly above, asked of the PANEL
+   * rather than of the product, and answered with the identical sub-select on
+   * purpose: «has this person bought» means services OWNED, not orders placed
+   * — legacy index.php:4249, and the reason discount.ts:203 says so too. An
+   * order that was never paid for has bought nothing.
+   *
+   * Here rather than in the listing queries for the reason the deny list above
+   * gives, and with one consequence the panel screen has to state out loud:
+   * plansOnPanel uses this predicate for the RENEWAL list, so a customer who
+   * bought here once cannot renew here. That is what «only for people who have
+   * never bought» means, and it is not a bug — but it is a sentence somebody
+   * must read before ticking the box.
+   */
+  AND (
+        (pr.config->>'newcomers_only') IS DISTINCT FROM 'true'
+     OR NOT EXISTS (
+          SELECT 1 FROM subscriptions s
+           WHERE s.user_id = u.id AND s.status <> 'PENDING_PAYMENT'
+        )
+      )
+  /*
    * «محدودیت ساخت اکانت» — legacy 'limit_panel', migrated into
    * provisioning_providers.capacity, where it sat unread. The dashboard has
    * written it and drawn it beside the live count since the screen was built,
@@ -333,6 +357,15 @@ export interface CatalogPlan {
   userLimit: number | null;
   providerId: number;
   providerName: string;
+  /**
+   * The panel's «روش ساخت نام کاربری», raw.
+   *
+   * Only one value changes anything here: `CUSTOMER_TEXT` means the buy path
+   * must ask the customer for a name before it writes an order. Everything else
+   * is decided later, by `usernameShapeFor` at provisioning time, and is none of
+   * this screen's business.
+   */
+  usernameMode: string | null;
   /** The category it is sold under. Decides where «بازگشت» lands. */
   categoryId: number;
   /**
@@ -381,6 +414,7 @@ interface PlanRow {
   row_index: number | null;
   siblings: number;
   tiers: number;
+  username_mode: string | null;
 }
 
 const PLAN_COLUMNS = `
@@ -396,6 +430,10 @@ const PLAN_COLUMNS = `
   pl.user_limit   AS user_limit,
   pr.id           AS provider_id,
   pr.name         AS provider_name,
+  -- Read here rather than in a second query because every plan lookup already
+  -- joins the panel, and the buy path needs to know BEFORE the order is placed
+  -- whether this panel asks the customer to name their account.
+  pr.config->>'username_mode' AS username_mode,
   p.category_id   AS category_id,
   pl.row_index    AS row_index,
   (SELECT COUNT(*)::int
@@ -433,6 +471,7 @@ function toPlan(row: PlanRow): CatalogPlan {
     rowIndex: row.row_index,
     siblings: row.siblings,
     tiers: row.tiers,
+    usernameMode: row.username_mode,
   };
 }
 

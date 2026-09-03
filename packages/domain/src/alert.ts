@@ -112,17 +112,19 @@ export async function alert(
   chatId: number,
   record: LogRecord,
   atMs: number = Date.now(),
+  /** «❌ گزارش خطاها», or null for the group's General topic. */
+  threadId: number | null = null,
 ): Promise<boolean> {
   const written = await db
     .prepare(
       // The same table `apps/bot/src/notify.ts` enqueues into and flushes.
       // Written here rather than through its `enqueue` because that one takes
       // a producer's transaction, and this deliberately has none.
-      `INSERT INTO bot_notifications (dedupe_key, chat_id, body)
-       VALUES (?1, ?2, ?3)
+      `INSERT INTO bot_notifications (dedupe_key, chat_id, body, message_thread_id)
+       VALUES (?1, ?2, ?3, ?4)
        ON CONFLICT (dedupe_key) DO NOTHING`,
     )
-    .bind(alertDedupeKey(record.evt, atMs), chatId, alertText(record, atMs))
+    .bind(alertDedupeKey(record.evt, atMs), chatId, alertText(record, atMs), threadId)
     .run();
   return written.meta.changes > 0;
 }

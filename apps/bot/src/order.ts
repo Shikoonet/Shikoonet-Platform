@@ -55,6 +55,16 @@ export async function placeOrder(
   discountPercent: number,
   /** A code the customer typed and `checkCode` allowed, already in IRR. */
   codeDiscountIrr = 0,
+  /**
+   * The name the customer chose for the account, already sanitised, on a panel
+   * whose «روش ساخت نام کاربری» is CUSTOMER_TEXT. Null everywhere else.
+   *
+   * Only this one of the five `place` callers takes it. A renewal and an add-on
+   * change an account that already exists and must never be renamed; a top-up
+   * has no account at all; a trial is never prompted. Saying so here is cheaper
+   * than discovering it from a customer whose service was renamed mid-month.
+   */
+  usernameText: string | null = null,
 ): Promise<PlaceResult> {
   return place(
     tx,
@@ -63,6 +73,8 @@ export async function placeOrder(
     withCode(priceForUser(plan.priceIrr, discountPercent), codeDiscountIrr),
     'NEW_PURCHASE',
     null,
+    1,
+    usernameText,
   );
 }
 
@@ -254,6 +266,8 @@ async function place(
    *  `total = unit x quantity - discount` check is what keeps the three
    *  honest, so the caller cannot quietly disagree with itself. */
   quantity = 1,
+  /** See `placeOrder` — null for every other caller, deliberately. */
+  usernameText: string | null = null,
 ): Promise<PlaceResult> {
   // An order that costs nothing is refused here, once, for all four callers.
   //
@@ -313,6 +327,26 @@ async function place(
     .bind(userId, planId, price.totalIrr, kind, subscriptionId, quantity)
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (open) {
+    /*
+     * The chosen name is NOT part of the tuple above, and must not become part
+     * of it: a customer who changes their mind would then get a second
+     * AWAITING_PAYMENT row for the same plan, which is the duplicate this
+     * file's header exists to prevent.
+     *
+     * So it is written onto the order that already exists — with the status in
+     * the WHERE clause, not read beforehand. PAID and PROVISIONING match
+     * nothing, so a name cannot move under a half-finished provisioning and
+     * strand an account the panel already made under the old one.
+     */
+    if (usernameText !== null) {
+      await tx
+        .prepare(
+          `UPDATE orders SET username_text = ?2, updated_at = now()
+            WHERE id = ?1 AND status = 'AWAITING_PAYMENT'`,
+        )
+        .bind(open.id, usernameText)
+        .run();
+    }
     return { id: open.id, publicId: open.public_id, totalIrr: open.total_irr, reused: true };
   }
 
@@ -325,9 +359,9 @@ async function place(
     .prepare(
       `INSERT INTO orders
          (public_id, user_id, kind, plan_id, target_subscription_id, quantity,
-          unit_price_irr, discount_irr, total_irr, status, expires_at)
+          unit_price_irr, discount_irr, total_irr, status, expires_at, username_text)
        VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8, 'AWAITING_PAYMENT',
-               now() + make_interval(secs => ?10))
+               now() + make_interval(secs => ?10), ?11)
        RETURNING id, public_id, total_irr`,
     )
     .bind(
@@ -341,6 +375,7 @@ async function place(
       price.totalIrr,
       quantity,
       ORDER_TTL_MS / 1000,
+      usernameText,
     )
     .first<{ id: number; public_id: string; total_irr: number }>();
   if (!row) throw new Error('order insert returned no row');

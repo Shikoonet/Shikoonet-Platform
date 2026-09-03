@@ -27,6 +27,14 @@ export interface EventSinkOptions {
    * channel, which is every developer machine.
    */
   alertChatId?: number | null;
+  /**
+   * The forum topic alerts go to, asked for at SEND time rather than at boot.
+   *
+   * A function because this sink is created before any settings have been
+   * read, and the topic lives in the database. Returning null is «no topic»,
+   * which is a message in the group's General — where every alert goes today.
+   */
+  alertThreadId?: () => number | null;
 }
 
 /** How long a row lives. Long enough to investigate last month, short enough to stay small. */
@@ -48,6 +56,7 @@ export function parseAlertChatId(raw: string | undefined | null): number | null 
 
 export function createPostgresEventSink(db: D1Database, options: EventSinkOptions = {}): EventSink {
   const alertChatId = options.alertChatId ?? null;
+  const alertThreadId = options.alertThreadId ?? ((): number | null => null);
 
   return (record: LogRecord): void => {
     void (async () => {
@@ -76,7 +85,7 @@ export function createPostgresEventSink(db: D1Database, options: EventSinkOption
     });
 
     if (alertChatId !== null && ALERTING_EVENTS.has(record.evt)) {
-      void alert(db, alertChatId, record).catch((err: unknown) => {
+      void alert(db, alertChatId, record, Date.now(), alertThreadId()).catch((err: unknown) => {
         console.error('[log] alert enqueue failed', record.evt, err);
       });
     }

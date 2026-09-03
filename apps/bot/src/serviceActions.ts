@@ -48,20 +48,40 @@ export function actionsFor(
 /**
  * Which price column this customer is charged from.
  *
- * The legacy `agent` field is three tiers and we carry one flag, so a reseller
- * reads the reseller column and everybody else the ordinary one.
+ * The legacy `agent` field is three tiers, and until 0047 we carried one flag —
+ * so this answered `n` or `f` and **`n2` was unreachable**. Every panel screen
+ * has had a «نماینده سطح ۲» price box since the pricing fold was built, and no
+ * customer could ever be charged from it.
  *
  * Counted rather than assumed, 2026-08-19, in the 2026-08-11 production dump:
- * **11,265 customers are `f` and exactly one is `n`. None is `n2`.** So the
- * third tier is a column in `shopSetting` that no customer has ever been in,
- * and one flag loses nothing.
+ * 11,265 customers were `f` and exactly one was `n`. None was `n2` — which was
+ * the *consequence* of this function, not evidence that the tier was unwanted.
+ * Sam asked for both levels to be real on 2026-09-03, so the level now comes
+ * from `users.reseller_tier` and that box finally decides a price.
  *
- * It said "n2 is priced identically to n on every live panel" before, which was
- * about add-on pricing and did not survive contact with the neighbouring
- * setting: `chashbackextend_agent` is `{"n":"5","n2":0}`, so the two tiers were
- * never identical — the renewal cashback differs. The reason one flag is enough
- * is that nobody is in the tier, not that the tiers agree.
+ * ## `is_reseller` still decides, and the tier only refines
+ *
+ * A reseller whose `reseller_tier` is NULL is level one. That is one rule and
+ * it is deliberate: the flag is written in several places — the request-approval
+ * route, the importer, the seed — and if any of them sets it without a level,
+ * the alternative is a reseller silently paying the ORDINARY rate. Reading the
+ * flag first makes that impossible, and it is why this change moves nobody's
+ * price on the day it lands.
+ *
+ * The identical rule is spelled in SQL in `DISCOUNT_PERCENT` (`handle.ts`),
+ * for the same reason `IS_ADMIN` beside it is spelled once: the two must agree,
+ * so each of them says so and points at the other.
+ *
+ * An unknown string reads as level one rather than throwing. The column is a
+ * foreign key onto `reseller_tiers`, whose CHECK allows only these two, so a
+ * third value cannot be written today; if a later migration adds one and
+ * forgets this function, the level the shop already had is the safe way to be
+ * wrong.
  */
-export function tierFor(user: { is_reseller: boolean }): menu.CustomerTier {
-  return user.is_reseller ? 'n' : 'f';
+export function tierFor(user: {
+  is_reseller: boolean;
+  reseller_tier: string | null;
+}): menu.CustomerTier {
+  if (!user.is_reseller) return 'f';
+  return user.reseller_tier === 'n2' ? 'n2' : 'n';
 }

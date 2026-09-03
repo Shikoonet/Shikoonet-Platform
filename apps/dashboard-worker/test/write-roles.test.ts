@@ -349,6 +349,32 @@ describe('every write route, asked directly', () => {
     // deny list is a set and «add» and «remove» name different rows — legacy
     // has two menu entries for exactly this and its removal only takes the
     // FIRST match out, which is the bug a primary key here makes unwritable.
-    expect(writeRoutes().length).toBe(147);
+    //
+    // +1, «POST /customers/:id/reseller». Makes somebody a reseller from the
+    // panel, or stops them being one, and carries the level in the same body.
+    // ADMIN-only: it changes what a person may see in the shop AND what they
+    // pay for it, which is the same blast radius as the discount route beside
+    // it.
+    //
+    // +1, «POST /reseller-tiers/:code». Renames a level or re-prices it. It is
+    // ADMIN-only for a reason the others are not: one number here moves the
+    // price for EVERY reseller on that level at once, so it is the widest
+    // money write in the product. There is no create and no delete — the ladder
+    // is two rows fixed by a CHECK in 0047.
+    //
+    // −2, «هاست‌ها». Sam said on 2026-09-03 that the shop does not need it, so
+    // the fold, its component, its client methods and the POST and DELETE
+    // routes are gone. Host management goes back to the panel's own web UI.
+    // Nothing in the bot ever called them, and the «هیچ اینباندش هاست ندارد»
+    // warning in «گروه‌های پنل» survives because it is fed by the separate
+    // `/inbounds` route, not by these.
+    //
+    // +1, «POST /bot/report-group». Points the bot at a forum group and creates
+    // the ten report topics in it. ADMIN-only for the reason the token route
+    // beside it is: it decides where the shop's own reports — money, purchases,
+    // errors — are published, and «who may read those» is not a reviewer's
+    // decision. It writes `Channel_Report` LAST, so a half-finished run leaves
+    // the shop reporting exactly where it did before.
+    expect(writeRoutes().length).toBe(148);
   });
 });

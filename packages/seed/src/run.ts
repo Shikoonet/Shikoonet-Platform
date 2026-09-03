@@ -45,6 +45,13 @@ const KEEP = new Set([
   'bank_card_prefixes',
   'schema_migrations',
   'expense_categories',
+  // `expense_categories` a third time: two rows inserted by 0047 and edited by
+  // admins on «لیست درخواست‌ها» afterwards, and `users.reseller_tier` is a
+  // foreign key onto them. Truncating them does not merely lose the two
+  // percentages — it makes approving a reseller fail with a constraint error,
+  // which is how this was found: the browser walk clicked «تایید» and the row
+  // would not go away.
+  'reseller_tiers',
 ]);
 
 /**

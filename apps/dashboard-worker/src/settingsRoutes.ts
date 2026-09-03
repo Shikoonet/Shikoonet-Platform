@@ -73,8 +73,28 @@ const UpdateBody = z
 const DecisionBody = z
   .object({
     status: z.enum(['APPROVED', 'REJECTED']),
+    /**
+     * Which level to approve them onto. Absent means level one, which is what
+     * every reseller made before 0047 is.
+     */
+    tier: z.enum(['n', 'n2']).nullable().default(null),
   })
   .strict();
+
+/**
+ * The one thing an operator may change about a level.
+ *
+ * NOT the name. The label is seeded by 0047 and shown, and «قیمت حجم و زمان
+ * اضافه» on every panel screen hardcodes the same two words — so a level
+ * renamed to «طلایی» here would still read «نماینده سطح ۲» there, which is one
+ * level wearing two names. Sam chose the fixed ladder over free-form named
+ * groups on 2026-09-03, so the ladder's names are the ladder's.
+ *
+ * This accepted `name` for a while and no screen ever sent one. A route that
+ * takes a field nothing can supply is not an unused feature, it is an untested
+ * write path on a money table.
+ */
+const TierBody = z.object({ percent: z.number().int().min(0).max(100) }).strict();
 
 interface SettingRow {
   scope: string;
@@ -286,7 +306,7 @@ export function registerSettingsRoutes(
 
     const parsed = DecisionBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
-    const { status } = parsed.data;
+    const { status, tier } = parsed.data;
 
     const before = await c.env.DB.prepare(
       `SELECT r.id, r.status, r.user_id, u.is_reseller
@@ -310,10 +330,15 @@ export function registerSettingsRoutes(
     // Approving is what actually makes someone a reseller — the flag the
     // catalogue's `resellers_only` reads. Rejecting changes nothing about them.
     if (status === 'APPROVED') {
+      // The level goes in the same statement as the flag. `tierFor` reads the
+      // flag first and treats a missing level as level one, so approving
+      // without choosing is the old behaviour exactly — and choosing «سطح ۲»
+      // here is the whole reason the second level is worth having.
       await c.env.DB.prepare(
-        `UPDATE users SET is_reseller = true, updated_at = now() WHERE id = ?1`,
+        `UPDATE users SET is_reseller = true, reseller_tier = ?2, updated_at = now()
+          WHERE id = ?1`,
       )
-        .bind(before.user_id)
+        .bind(before.user_id, tier)
         .run();
     }
 
@@ -324,10 +349,100 @@ export function registerSettingsRoutes(
       'RESELLER_REQUEST',
       String(id),
       { status: before.status, is_reseller: before.is_reseller },
-      { status, is_reseller: status === 'APPROVED' ? true : before.is_reseller },
+      {
+        status,
+        is_reseller: status === 'APPROVED' ? true : before.is_reseller,
+        ...(status === 'APPROVED' ? { reseller_tier: tier } : {}),
+      },
       null,
     );
 
     return c.json({ ok: true, status });
+  });
+
+  // --- the reseller levels ------------------------------------------------
+
+  /**
+   * The two levels and what each one costs.
+   *
+   * Readable by any signed-in operator: a level's name and its percentage are
+   * shop configuration, not anybody's personal data, so this does not join
+   * `PERSONAL_DATA_PREFIXES` in `access.ts`. The member count is a count.
+   */
+  app.get('/api/v1/admin/reseller-tiers', async (c) => {
+    const rows = await c.env.DB.prepare(
+      `SELECT t.code, t.name, t.discount_percent, t.updated_at,
+              (SELECT COUNT(*) FROM users u
+                WHERE u.is_reseller
+                  AND COALESCE(u.reseller_tier, 'n') = t.code) AS members
+         FROM reseller_tiers t
+        ORDER BY t.code`,
+    ).all<{
+      code: string;
+      name: string;
+      discount_percent: number;
+      updated_at: string;
+      members: number;
+    }>();
+
+    return c.json({
+      ok: true,
+      items: (rows.results ?? []).map((r) => ({
+        code: r.code,
+        name: r.name,
+        percent: Number(r.discount_percent),
+        // Counted the way the bot prices: a reseller with no level is level
+        // one, so level one's tally includes them and the two add up to every
+        // reseller there is.
+        members: Number(r.members),
+        updatedAt: r.updated_at,
+      })),
+    });
+  });
+
+  /**
+   * Re-prices a level. Not renames it — see `TierBody`.
+   *
+   * There is no create and no delete either: the ladder is two rows fixed by a
+   * CHECK, because a third level would also need a `CustomerTier` member and a
+   * price box on every panel — see 0047.
+   */
+  app.post('/api/v1/admin/reseller-tiers/:code', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const code = c.req.param('code');
+    const parsed = TierBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const { percent } = parsed.data;
+
+    const before = await c.env.DB.prepare(
+      `SELECT code, name, discount_percent FROM reseller_tiers WHERE code = ?1`,
+    )
+      .bind(code)
+      .first<{ code: string; name: string; discount_percent: number }>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+
+    if (percent === Number(before.discount_percent)) return c.json({ ok: true, changed: false });
+
+    await c.env.DB.prepare(
+      `UPDATE reseller_tiers SET discount_percent = ?2, updated_at = now() WHERE code = ?1`,
+    )
+      .bind(code, percent)
+      .run();
+
+    // Every member's price moves with this, which is the point of the change
+    // and the reason it is audited with both numbers in it.
+    await audit(
+      c.env.DB,
+      ident,
+      'reseller_tier.updated',
+      'RESELLER_TIER',
+      code,
+      { discount_percent: Number(before.discount_percent) },
+      { discount_percent: percent },
+      null,
+    );
+    return c.json({ ok: true, changed: true });
   });
 }

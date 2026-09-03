@@ -22,6 +22,9 @@ import { app } from '../src/index.js';
 
 const ADMIN = 'admin-pm@example.com';
 const REVIEWER = 'reviewer-pm@example.com';
+const READER = 'reader-pm@example.com';
+/** Sealing needs a key. Same 32-byte hex fixture `panel-create.test.ts` uses. */
+const PANEL_KEY = '1'.repeat(64);
 const PREFIX = 'zz-pm-test-';
 const CONFIG_SECRET = 'zz-pm-canary-hysteria-secret';
 
@@ -98,6 +101,7 @@ beforeAll(async () => {
   for (const [email, role] of [
     [ADMIN, 'ADMIN'],
     [REVIEWER, 'REVIEWER'],
+    [READER, 'READ_ONLY'],
   ] as const) {
     await baseEnv.DB.prepare(
       `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at)
@@ -108,8 +112,14 @@ beforeAll(async () => {
   }
 });
 
-beforeEach(purge);
-afterAll(purge);
+beforeEach(async () => {
+  process.env['PANEL_SECRET_KEY'] = PANEL_KEY;
+  await purge();
+});
+afterAll(async () => {
+  delete process.env['PANEL_SECRET_KEY'];
+  await purge();
+});
 
 describe('روش ساخت نام کاربری', () => {
   it('saves the mode and its text', async () => {
@@ -333,6 +343,166 @@ describe('مخفی کردن پنل برای یک کاربر', () => {
       .bind(id)
       .first<{ n: number }>();
     expect(left?.n).toBe(0);
+  });
+});
+
+describe('دو حالت تازهٔ نام کاربری', () => {
+  it('saves the customer-typed mode with no panel text, and does not ask for one', async () => {
+    // The PANEL_TEXT refusal must not be copied here: this mode's data arrives
+    // per order, so there is nothing that could be missing at save time.
+    const id = await makePanel('unamecust');
+    expect((await patch(id, { usernameMode: 'CUSTOMER_TEXT' })).status).toBe(200);
+    expect((await configOf(id))['username_mode']).toBe('CUSTOMER_TEXT');
+  });
+
+  it('saves the order-id mode', async () => {
+    const id = await makePanel('unameorder');
+    expect((await patch(id, { usernameMode: 'ORDER_ID' })).status).toBe(200);
+    expect((await configOf(id))['username_mode']).toBe('ORDER_ID');
+  });
+
+  it('refuses a mode the builder would not recognise', async () => {
+    // The schema's enum is `USERNAME_MODES`, the same list `usernameShapeFor`
+    // reads. A mode accepted here and unknown there would save, report success,
+    // and name every account after the Telegram id.
+    const id = await makePanel('unamebad');
+    expect((await patch(id, { usernameMode: 'RANDOM' })).status).toBe(400);
+  });
+});
+
+describe('حداقل خرید حجم و زمان', () => {
+  it('saves a floor and reads it back through the function the bot enforces with', async () => {
+    const id = await makePanel('min');
+
+    expect((await patch(id, { extraVolumeMinGb: 10, extraTimeMinDays: 3 })).status).toBe(200);
+
+    // The legacy column names, because that is where the importer has been
+    // putting these all along and where `extraBoundsFor` looks.
+    const config = await configOf(id);
+    expect(config['mainvolume']).toBe(10);
+    expect(config['maintime']).toBe(3);
+  });
+
+  it('reads a legacy {f,n,n2} table the importer carried, not just a number', async () => {
+    // Production rows hold the tier table. One bound per panel is Sam's answer,
+    // so the `f` entry is the one read — and a test written only against the
+    // number this screen writes would never have touched that path.
+    const id = await makePanel('minlegacy', { mainvolume: '{"f":"25","n":"5","n2":"5"}' });
+
+    const res = await app.request('/api/v1/admin/panels', {}, envAs(ADMIN));
+    const body = (await res.json()) as { items: { id: number; extraVolumeMinGb: number | null }[] };
+    expect(body.items.find((p) => p.id === id)?.extraVolumeMinGb).toBe(25);
+  });
+
+  it('clears a floor with null', async () => {
+    const id = await makePanel('minclear', { mainvolume: 10 });
+    expect((await patch(id, { extraVolumeMinGb: null })).status).toBe(200);
+    expect((await configOf(id))['mainvolume']).toBeNull();
+  });
+});
+
+describe('روش تمدید سرویس', () => {
+  it('accepts the third mode', async () => {
+    const id = await makePanel('renew3');
+    expect((await patch(id, { renewMode: 'ADD_VOLUME_RESET_TIME' })).status).toBe(200);
+    expect((await configOf(id))['renew_mode']).toBe('ADD_VOLUME_RESET_TIME');
+  });
+
+  it('refuses a mode nothing knows how to apply', async () => {
+    // The schema's enum is `RENEW_MODES`, the same list `renewModeFor` reads.
+    // A mode accepted here and unknown there would save, report success, and
+    // silently renew as RESET.
+    const id = await makePanel('renewbad');
+    expect((await patch(id, { renewMode: 'ADD_TIME_RESET_VOLUME' })).status).toBe(400);
+  });
+});
+
+describe('پنل فقط برای تازه‌واردها', () => {
+  it('saves the tick and reads it back', async () => {
+    const id = await makePanel('newcomers');
+    expect((await patch(id, { newcomersOnly: true })).status).toBe(200);
+    expect((await configOf(id))['newcomers_only']).toBe(true);
+
+    const res = await app.request('/api/v1/admin/panels', {}, envAs(ADMIN));
+    const body = (await res.json()) as { items: { id: number; newcomersOnly: boolean }[] };
+    expect(body.items.find((p) => p.id === id)?.newcomersOnly).toBe(true);
+  });
+
+  it('is off on a panel nobody has ticked', async () => {
+    const id = await makePanel('newcomers-off');
+    const res = await app.request('/api/v1/admin/panels', {}, envAs(ADMIN));
+    const body = (await res.json()) as { items: { id: number; newcomersOnly: boolean }[] };
+    expect(body.items.find((p) => p.id === id)?.newcomersOnly).toBe(false);
+  });
+});
+
+describe('یوزرنیم پنل', () => {
+  /**
+   * Half a credential, handed back on purpose — and only to an ADMIN.
+   *
+   * Sam asked to see which account a panel signs in with. The password is not
+   * here and cannot be: nothing reads one back, which is what makes «خالی =
+   * بدون تغییر» on that box true.
+   */
+  it('hands the username back to an admin, and never the password', async () => {
+    const id = await makePanel('cred');
+    const set = await app.request(
+      `/api/v1/admin/panels/${id}/credentials`,
+      { method: 'POST', body: JSON.stringify({ username: 'paneladmin', password: 'sup3r-s3cret' }) },
+      envAs(ADMIN),
+    );
+    expect(set.status).toBe(200);
+
+    const res = await app.request(
+      `/api/v1/admin/panels/${id}/credential-username`,
+      {},
+      envAs(ADMIN),
+    );
+    const text = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(text)).toMatchObject({ ok: true, username: 'paneladmin' });
+    // The half that must never travel.
+    expect(text).not.toContain('sup3r-s3cret');
+  });
+
+  it('records who set it, which the screen has never been able to say', async () => {
+    const id = await makePanel('credwho');
+    await app.request(
+      `/api/v1/admin/panels/${id}/credentials`,
+      { method: 'POST', body: JSON.stringify({ username: 'u', password: 'p' }) },
+      envAs(ADMIN),
+    );
+    const res = await app.request(
+      `/api/v1/admin/panels/${id}/credential-username`,
+      {},
+      envAs(ADMIN),
+    );
+    expect(await res.json()).toMatchObject({ setBy: ADMIN });
+  });
+
+  it('is refused to a reviewer and to a reader', async () => {
+    // The role that may CHANGE a credential is the role that may see one. A
+    // REVIEWER may read what a panel is; who it signs in as is not that.
+    const id = await makePanel('credrole');
+    for (const who of [REVIEWER, READER]) {
+      const res = await app.request(
+        `/api/v1/admin/panels/${id}/credential-username`,
+        {},
+        envAs(who),
+      );
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it('answers null rather than inventing one when no credential is stored', async () => {
+    const id = await makePanel('crednone');
+    const res = await app.request(
+      `/api/v1/admin/panels/${id}/credential-username`,
+      {},
+      envAs(ADMIN),
+    );
+    expect(await res.json()).toMatchObject({ ok: true, username: null });
   });
 });
 

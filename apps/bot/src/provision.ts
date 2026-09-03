@@ -46,6 +46,7 @@ import { actionsFor, tierFor } from './serviceActions.js';
 import { deliverFromStock } from './stock.js';
 import { creditRenewalCashback, refundOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
+import { report } from './reports.js';
 import { createLogger } from '@shikoo/domain';
 
 const log = createLogger('bot');
@@ -70,6 +71,8 @@ interface PendingOrder {
   telegram_username: string | null;
   /** Which price column the add-on buttons on the delivery screen read from. */
   is_reseller: boolean;
+  reseller_tier: string | null;
+  username_text: string | null;
   plan_id: number | null;
   target_subscription_id: number | null;
   target_username: string | null;
@@ -338,9 +341,11 @@ export async function provisionPaidOrders(
               o.user_id       AS user_id,
               o.kind          AS order_kind,
               o.quantity      AS quantity,
+              o.username_text AS username_text,
               u.telegram_id   AS telegram_id,
               u.username      AS telegram_username,
               u.is_reseller   AS is_reseller,
+              u.reseller_tier AS reseller_tier,
               o.plan_id       AS plan_id,
               o.total_irr     AS total_irr,
               o.target_subscription_id AS target_subscription_id,
@@ -487,7 +492,49 @@ export async function provisionPaidOrders(
       .prepare(`SELECT status FROM orders WHERE id = ?1`)
       .bind(row.order_id)
       .first<{ status: string }>();
-    if (ended?.status === 'COMPLETED') log.info('provision.delivered', { ref: row.order_public_id });
+    if (ended?.status === 'COMPLETED') {
+      log.info('provision.delivered', { ref: row.order_public_id });
+      /*
+       * The reports group, in the topic for this kind of order.
+       *
+       * Read from the same `orders` status as the event above, so a report is
+       * never sent for a delivery that did not happen — and OUTSIDE `deliver`'s
+       * transactions, so a report that cannot be queued cannot roll a delivered
+       * service back. `enqueue` dedupes on the order's public id, so a sweep
+       * that runs twice produces one message.
+       */
+      const shop = await loadShopSettings(db);
+      const [kind, text] =
+        row.order_kind === 'TRIAL'
+          ? ([
+              'reporttest' as const,
+              menu.trialReport({
+                order: row.order_public_id,
+                customer: row.telegram_id,
+                panel: row.provider_name ?? String(row.provider_id ?? '—'),
+              }),
+            ] as const)
+          : row.order_kind === 'NEW_PURCHASE'
+            ? ([
+                'buyreport' as const,
+                menu.purchaseReport({
+                  order: row.order_public_id,
+                  customer: row.telegram_id,
+                  service: row.plan_name ?? row.product_name ?? '—',
+                  totalIrr: Number(row.total_irr),
+                }),
+              ] as const)
+            : ([
+                'otherservice' as const,
+                menu.serviceReport({
+                  kind: row.order_kind as 'RENEWAL' | 'ADD_VOLUME' | 'ADD_TIME',
+                  order: row.order_public_id,
+                  customer: row.telegram_id,
+                  service: row.target_name ?? row.plan_name ?? row.product_name ?? '—',
+                }),
+              ] as const);
+      await db.withSession((tx) => report(tx, shop, kind, row.order_public_id, text));
+    }
 
     if (note !== null && row.telegram_id !== null) {
       // Still enqueued just after `deliver` commits rather than inside its
@@ -581,7 +628,7 @@ async function deliver(
       row.order_public_id,
       // «روش ساخت نام کاربری». The suffix is still the order's public id in
       // every mode, so every mode is still reproducible by a retry.
-      usernameShapeFor(row.provider_config ?? {}, row.telegram_username),
+      usernameShapeFor(row.provider_config ?? {}, row.telegram_username, row.username_text),
     ),
     volumeGb,
     durationDays,
@@ -1014,6 +1061,13 @@ async function renew(
                 -- must go with it or the service reads as exhausted until the
                 -- next sync. ADD leaves it alone: the quota grew, the usage
                 -- did not.
+                --
+                -- ADD_VOLUME_RESET_TIME is in the second group even though it
+                -- restarts the clock, and it has to be: the adapter issues no
+                -- POST /reset for it, for the reason spelled out there. This
+                -- condition and that one are the same decision, and they must
+                -- keep agreeing or our used_bytes and the panel's disagree
+                -- until the next sync.
                 used_bytes        = CASE WHEN ?7 THEN 0 ELSE used_bytes END,
                 -- The warning sweep has already told this customer their
                 -- service was running out. It is not, any more.

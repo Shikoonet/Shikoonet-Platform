@@ -37,6 +37,19 @@ function press(updateId: number, telegramId: number, data: string): TelegramUpda
   };
 }
 
+/** A typed answer, for the flows that ask a question mid-purchase. */
+function typed(updateId: number, telegramId: number, text: string): TelegramUpdate {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      from: { id: telegramId, username: `buyer${telegramId}` },
+      chat: { id: telegramId },
+      text,
+    },
+  };
+}
+
 function startUpdate(updateId: number, telegramId: number): TelegramUpdate {
   return {
     update_id: updateId,
@@ -387,5 +400,164 @@ describe('a panel that sells more than one level', () => {
     expect(back).toContain(`prd:${platinum}`);
     expect(back).not.toContain(`cat:${category}`);
     expect(back.some((d) => d?.startsWith('panel:'))).toBe(false);
+  });
+});
+
+/**
+ * «نام کاربری دلخواه مشتری» — the panel that asks before it sells.
+ *
+ * The assertion that justifies this file existing is the last one: tapping
+ * «خرید» twice must leave ONE order. `place()` reuses an open order on
+ * (user, plan, price, kind, target, quantity), and the chosen name is
+ * deliberately not part of that tuple — if it were, a customer changing their
+ * mind would get a second AWAITING_PAYMENT row for the same plan.
+ */
+describe('a panel that asks the customer to name their account', () => {
+  const PANEL = 'sim-vip';
+  let plan = 0;
+
+  async function setMode(mode: string | null): Promise<void> {
+    await db
+      .prepare(
+        mode === null
+          ? `UPDATE provisioning_providers SET config = config - 'username_mode' WHERE code = ?1`
+          : `UPDATE provisioning_providers
+                SET config = config || jsonb_build_object('username_mode', ?2::text)
+              WHERE code = ?1`,
+      )
+      .bind(...(mode === null ? [PANEL] : [PANEL, mode]))
+      .run();
+  }
+
+  async function orderCount(userId: number): Promise<number> {
+    const row = await db
+      .prepare(`SELECT COUNT(*)::int AS n FROM orders WHERE user_id = ?1`)
+      .bind(userId)
+      .first<{ n: number }>();
+    return Number(row?.n ?? 0);
+  }
+
+  async function nameOn(userId: number): Promise<string | null> {
+    const row = await db
+      .prepare(`SELECT username_text FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`)
+      .bind(userId)
+      .first<{ username_text: string | null }>();
+    return row?.username_text ?? null;
+  }
+
+  beforeAll(async () => {
+    await ensureCatalog();
+    plan = await planId('sim-vip-1m-50');
+  });
+
+  it('asks before it writes anything, and takes the name on the second message', async () => {
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    await setMode('CUSTOMER_TEXT');
+
+    try {
+      const asked = await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+
+      expect(asked.replies[0]?.text).toBe(menu.ASK_ACCOUNT_NAME);
+      // Nothing written. A prompt that had already placed the order would be a
+      // customer holding an invoice for an account they had not named.
+      expect(await orderCount(user)).toBe(0);
+
+      const placed = await handleUpdate(db, typed(updateId + 1, telegramId, 'RezaVPN'));
+
+      // Sanitised on the way in, so the column holds what the panel will get.
+      expect(await nameOn(user)).toBe('rezavpn');
+      expect(await orderCount(user)).toBe(1);
+      // And it went straight to the invoice rather than back to the plan.
+      expect(placed.replies[0]?.text).toContain('تومان');
+    } finally {
+      await setMode(null);
+    }
+  });
+
+  it('asks again for a name the panel would refuse, and still writes nothing', async () => {
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    await setMode('CUSTOMER_TEXT');
+
+    try {
+      await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+
+      // Persian sanitises to the empty string — the common case for this shop.
+      const persian = await handleUpdate(db, typed(updateId + 1, telegramId, 'رضا'));
+      expect(persian.replies[0]?.text).toBe(menu.ACCOUNT_NAME_REFUSED);
+      expect(await orderCount(user)).toBe(0);
+
+      // Too short is the other half of the same rule.
+      const short = await handleUpdate(db, typed(updateId + 2, telegramId, 'ab'));
+      expect(short.replies[0]?.text).toBe(menu.ACCOUNT_NAME_REFUSED);
+      expect(await orderCount(user)).toBe(0);
+
+      // The question stayed open the whole time.
+      const ok = await handleUpdate(db, typed(updateId + 3, telegramId, 'reza'));
+      expect(ok.replies[0]?.text).toContain('تومان');
+      expect(await orderCount(user)).toBe(1);
+    } finally {
+      await setMode(null);
+    }
+  });
+
+  it('gives a second tap the order that already exists, not a second one', async () => {
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    await setMode('CUSTOMER_TEXT');
+
+    try {
+      await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+      await handleUpdate(db, typed(updateId + 1, telegramId, 'reza'));
+      expect(await orderCount(user)).toBe(1);
+
+      // Tapping «خرید» again: the held name means no second prompt, and
+      // `place()` reuses the open order.
+      await handleUpdate(db, press(updateId + 2, telegramId, `order:${plan}`));
+
+      expect(await orderCount(user)).toBe(1);
+    } finally {
+      await setMode(null);
+    }
+  });
+
+  it('rewrites the name on the open order when the customer changes their mind', async () => {
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    await setMode('CUSTOMER_TEXT');
+
+    try {
+      await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+      await handleUpdate(db, typed(updateId + 1, telegramId, 'firstname'));
+      expect(await nameOn(user)).toBe('firstname');
+
+      // A fresh prompt, a different answer. Still one order — the name is not
+      // part of what makes an order the same order.
+      await db.prepare(`DELETE FROM bot_sessions WHERE user_id = ?1`).bind(user).run();
+      await handleUpdate(db, press(updateId + 2, telegramId, `order:${plan}`));
+      await handleUpdate(db, typed(updateId + 3, telegramId, 'secondname'));
+
+      expect(await orderCount(user)).toBe(1);
+      expect(await nameOn(user)).toBe('secondname');
+    } finally {
+      await setMode(null);
+    }
+  });
+
+  it('asks nothing on a panel that builds the name itself', async () => {
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    await setMode('ORDER_ID');
+
+    try {
+      const out = await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+
+      expect(out.replies[0]?.text).not.toBe(menu.ASK_ACCOUNT_NAME);
+      expect(await orderCount(user)).toBe(1);
+      expect(await nameOn(user)).toBeNull();
+    } finally {
+      await setMode(null);
+    }
   });
 });

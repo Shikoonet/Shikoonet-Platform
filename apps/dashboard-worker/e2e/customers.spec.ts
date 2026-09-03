@@ -183,7 +183,7 @@ test('a standing discount names the old value and the new one before saving', as
     void d.dismiss();
   });
   await page.locator('#cust-discount').fill('50');
-  await page.getByRole('button', { name: 'ذخیره' }).click();
+  await page.getByRole('button', { name: 'ذخیره تخفیف' }).click();
   await expect.poll(() => asked.length).toBe(1);
 
   // Both numbers, because the mistake this catches is a digit: 5 typed as 50
@@ -202,7 +202,7 @@ test('an accepted discount is stored as the number the bot prices from', async (
   page.on('dialog', (d) => void d.accept());
 
   await page.locator('#cust-discount').fill('15');
-  await page.getByRole('button', { name: 'ذخیره' }).click();
+  await page.getByRole('button', { name: 'ذخیره تخفیف' }).click();
   await expect(page.locator('#main-content .alert-info')).toContainText(
     `${fa.format(15)}٪ ذخیره شد`,
   );
