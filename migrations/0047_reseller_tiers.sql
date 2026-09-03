@@ -1,4 +1,4 @@
--- 0046 — a reseller's discount belongs to their LEVEL, not to their row.
+-- 0047 — a reseller's discount belongs to their LEVEL, not to their row.
 --
 -- Sam, 2026-09-03: «دو گروه N و N2 دارم … هر گروه تخفیف خودش را داشته باشد که
 -- کم و زیادش کنم». Today there is no such thing. `users.is_reseller` is one

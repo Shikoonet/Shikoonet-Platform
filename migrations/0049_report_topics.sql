@@ -1,4 +1,4 @@
--- 0048 — the reports get their own topics, and the outbox learns to carry one.
+-- 0049 — the reports get their own topics, and the outbox learns to carry one.
 --
 -- Sam, 2026-09-03: one Telegram group with a topic per kind of report — «مثل
 -- میرزا و فاکسیما». Both legacy bots do exactly this and neither uses separate

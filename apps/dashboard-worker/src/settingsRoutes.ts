@@ -75,7 +75,7 @@ const DecisionBody = z
     status: z.enum(['APPROVED', 'REJECTED']),
     /**
      * Which level to approve them onto. Absent means level one, which is what
-     * every reseller made before 0046 is.
+     * every reseller made before 0047 is.
      */
     tier: z.enum(['n', 'n2']).nullable().default(null),
   })
@@ -397,7 +397,7 @@ export function registerSettingsRoutes(
   /**
    * Renames a level or re-prices it. There is no create and no delete: the
    * ladder is two rows fixed by a CHECK, because a third level would also need
-   * a `CustomerTier` member and a price box on every panel — see 0046.
+   * a `CustomerTier` member and a price box on every panel — see 0047.
    */
   app.post('/api/v1/admin/reseller-tiers/:code', async (c) => {
     const ident = c.get('identity');

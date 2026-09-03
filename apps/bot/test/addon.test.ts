@@ -210,7 +210,7 @@ describe('buying extra volume', () => {
   /**
    * «نماینده سطح ۲» was a price box nobody could ever be charged from.
    *
-   * `tierFor` could only answer `f` or `n` until 0046, so the `n2` entry in
+   * `tierFor` could only answer `f` or `n` until 0047, so the `n2` entry in
    * `priceextravolume` — present on every live panel and editable on every
    * panel screen — decided nothing. This is the first test that reaches it.
    *

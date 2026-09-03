@@ -91,7 +91,7 @@ describe('a report queued before the topics exist', () => {
    * the message that would carry it is a report about a purchase somebody has
    * already paid for. Legacy strips the field for the same reason
    * (`botapi.php:10`), which is why zero is the value both the importer and
-   * migration 0048 seed.
+   * migration 0049 seed.
    */
   it('sends no thread id at all rather than a zero', async () => {
     await db.withSession((tx) =>

@@ -17,6 +17,8 @@ const ADMIN = 'admin-tiers@example.com';
 const REVIEWER = 'reviewer-tiers@example.com';
 const READER = 'reader-tiers@example.com';
 const TG_BASE = 771_000_000;
+/** Every row this file makes carries it, and nothing else in the package does. */
+const PREFIX = 'zz-tiers-';
 
 let seq = 0;
 
@@ -37,14 +39,21 @@ async function makeCustomer(opts: {
   tier?: string | null;
   discountPercent?: number;
 }): Promise<number> {
+  // The rows are deleted by prefix in `beforeEach`, so a repeated id inside one
+  // run is impossible; `ON CONFLICT` covers a row an earlier run left behind
+  // under a name this file no longer uses.
   const telegramId = TG_BASE + ++seq;
   const row = await baseEnv.DB.prepare(
     `INSERT INTO users (telegram_id, username, status, is_reseller, reseller_tier, discount_percent, registered_at)
-     VALUES (?1, ?2, 'ACTIVE', ?3, ?4, ?5, now()) RETURNING id`,
+     VALUES (?1, ?2, 'ACTIVE', ?3, ?4, ?5, now())
+     ON CONFLICT (telegram_id) DO UPDATE
+       SET username = EXCLUDED.username, is_reseller = EXCLUDED.is_reseller,
+           reseller_tier = EXCLUDED.reseller_tier, discount_percent = EXCLUDED.discount_percent
+     RETURNING id`,
   )
     .bind(
       telegramId,
-      `tiers${telegramId}`,
+      `${PREFIX}${telegramId}`,
       opts.reseller ?? false,
       opts.tier ?? null,
       opts.discountPercent ?? 0,
@@ -69,6 +78,12 @@ async function auditRows(entityId: string) {
     .bind(entityId)
     .all<{ action: string; before_json: string; after_json: string }>();
   return results ?? [];
+}
+
+async function memberCounts(): Promise<Record<string, number>> {
+  const res = await app.request('/api/v1/admin/reseller-tiers', {}, envAs(REVIEWER));
+  const body = (await res.json()) as { items: { code: string; members: number }[] };
+  return Object.fromEntries(body.items.map((i) => [i.code, i.members]));
 }
 
 async function detail(id: number, email = ADMIN) {
@@ -101,15 +116,23 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  // Wallets first: `wallets.user_id` is a foreign key and the row is written by
-  // a trigger, so it outlives the test that caused it. Same order and same
-  // reason as `purgeOurCustomers` in `customers.test.ts`.
-  await baseEnv.DB.prepare(`TRUNCATE wallet_entries, wallets RESTART IDENTITY CASCADE`).run();
-  await baseEnv.DB.prepare(`DELETE FROM reseller_requests WHERE user_id IN
-    (SELECT id FROM users WHERE telegram_id >= ?1)`)
-    .bind(TG_BASE)
-    .run();
-  await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id >= ?1`).bind(TG_BASE).run();
+  /*
+   * Only the rows THIS file made, matched on its own username prefix.
+   *
+   * It deleted `users` by telegram-id range at first, and that passed here and
+   * died in CI on `subscriptions_user_id_fkey`: another suite owns ids in the
+   * same range and gives them services, so the range delete was reaching rows
+   * that were not ours. A prefix cannot do that however the suites are ordered.
+   *
+   * Dependents first, and wallets among them: `wallets.user_id` is a foreign
+   * key and the row is written by a trigger, so it outlives the test that
+   * caused it.
+   */
+  const mine = `(SELECT id FROM users WHERE username LIKE '${PREFIX}%')`;
+  for (const table of ['wallet_entries', 'wallets', 'reseller_requests', 'orders']) {
+    await baseEnv.DB.prepare(`DELETE FROM ${table} WHERE user_id IN ${mine}`).run();
+  }
+  await baseEnv.DB.prepare(`DELETE FROM users WHERE username LIKE ?1`).bind(`${PREFIX}%`).run();
   // `audit_logs` is deliberately NOT cleared. It is append-only by trigger so a
   // DELETE is refused, and TRUNCATE is refused too because
   // `account_assignment_previews` references it. Every assertion below scopes
@@ -213,15 +236,19 @@ describe('what a level costs', () => {
   });
 
   it('counts a reseller with no level as level one', async () => {
+    // The DELTA, not the total: the count is over every reseller in the shop
+    // and other suites leave their own behind. Asserting the total passed here
+    // and depended on this file having deleted everybody else's rows, which is
+    // exactly the range-delete that broke in CI.
+    const before = await memberCounts();
     await makeCustomer({ reseller: true, tier: null });
     await makeCustomer({ reseller: true, tier: 'n2' });
 
-    const res = await app.request('/api/v1/admin/reseller-tiers', {}, envAs(REVIEWER));
-    const body = (await res.json()) as { items: { code: string; members: number }[] };
+    const after = await memberCounts();
 
-    const byCode = Object.fromEntries(body.items.map((i) => [i.code, i.members]));
-    expect(byCode['n']).toBe(1);
-    expect(byCode['n2']).toBe(1);
+    // The one with no level is counted as level one, the way the bot prices it.
+    expect(after['n']! - before['n']!).toBe(1);
+    expect(after['n2']! - before['n2']!).toBe(1);
   });
 
   it('is not something a reviewer may change', async () => {

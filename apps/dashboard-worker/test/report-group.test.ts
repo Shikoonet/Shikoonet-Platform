@@ -124,7 +124,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   process.env['PANEL_SECRET_KEY'] = KEY_HEX;
   await baseEnv.DB.prepare(`DELETE FROM bot_credentials`).run();
-  // Back to «nothing configured», which is what 0048 seeds — written as an
+  // Back to «nothing configured», which is what 0049 seeds — written as an
   // upsert because other suites in this package truncate `settings`, and a test
   // that assumed the migration's rows were still there would pass alone and
   // fail in the full run.

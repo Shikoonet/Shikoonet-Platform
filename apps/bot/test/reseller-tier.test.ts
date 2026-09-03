@@ -1,7 +1,7 @@
 /**
  * What a reseller pays, and where that number comes from.
  *
- * Until 0046 a discount was one column on one customer, so «everybody at level
+ * Until 0047 a discount was one column on one customer, so «everybody at level
  * one gets 20» meant typing 20 into twenty rows. The level now carries the
  * percentage and the customer's own `discount_percent` is left alone — which is
  * the part these tests are really about, because the alternative design (copy
