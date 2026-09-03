@@ -4116,3 +4116,20 @@
   font-weight: 400;
   opacity: 0.45;
 }
+
+/* The payments pager. Centred rather than pinned to one side because the
+   panel is RTL and a control that changes side with the writing direction is
+   one more thing to keep in step for no gain. */
+.claim-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 0 2px;
+}
+
+.claim-pager__count {
+  font-size: 13px;
+  color: var(--muted, #667085);
+  font-variant-numeric: tabular-nums;
+}
