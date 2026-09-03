@@ -63,6 +63,45 @@ describe('pollOnce', () => {
     expect(sent).toHaveLength(2);
   });
 
+  /**
+   * A message in a group must not wedge the queue.
+   *
+   * `handleUpdate` ignores any chat that is not private — the guard that makes
+   * it safe to put this bot in the reports group. That guard returns rather
+   * than throwing, so the offset moves past it; if it ever threw, or the poller
+   * ever stopped acknowledging an ignored update, ONE message typed in the
+   * group would freeze every customer's update behind it for ever.
+   *
+   * That failure would be silent — no error, no reply, just a bot that stopped
+   * — which is why it is asserted here and not left to be read off `poll.ts`.
+   */
+  it('acknowledges a group message instead of stopping behind it', async () => {
+    const a = ids();
+    const b = ids();
+    const inGroup: TelegramUpdate = {
+      update_id: a.updateId,
+      message: {
+        message_id: a.updateId,
+        from: { id: a.telegramId, username: 'someone' },
+        // A real group: its own id, not the sender's.
+        chat: { id: -100_500_123, type: 'supergroup' },
+        text: 'سلام',
+      },
+    };
+    const { api, sent } = fakeApi([inGroup, startUpdate(b.updateId, b.telegramId)]);
+
+    const result = await pollOnce(db, api, a.updateId);
+
+    // Past BOTH: the group message was acknowledged, and the private one behind
+    // it was answered rather than left waiting.
+    expect(result.offset).toBe(b.updateId + 1);
+    expect(result.failed).toBe(0);
+    expect(result.counts.ignored).toBe(1);
+    expect(result.counts.processed).toBe(1);
+    // Nothing was said INTO the group.
+    expect(sent.map((m) => m.chatId)).toEqual([b.telegramId]);
+  });
+
   it('leaves the offset alone when nothing arrived', async () => {
     const { api } = fakeApi([]);
     const result = await pollOnce(db, api, 4242);
