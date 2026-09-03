@@ -39,6 +39,7 @@ import { DEFAULT_CONTENT, type BotContent } from './botContent.js';
 import type { RenewMode } from '@shikoo/domain';
 import {
   actionForLabel,
+  MAX_LABEL_LENGTH,
   MENUS,
   buildMainMenu,
   buildReplyMenu,
@@ -404,6 +405,15 @@ export function emojiButtonMenu(
   ]);
   rows.push([{ text: '↩️ بازگشت', callback_data: encode('emj') }]);
   return rows;
+}
+
+export function emojiTooLong(label: string): string {
+  return [
+    `❌ روی «${stripCustomEmoji(label)}» جا نشد.`,
+    '',
+    `متن این دکمه با ایموجی از ${MAX_LABEL_LENGTH} نویسه رد می‌شود. اول در «چیدمان کیبورد»`,
+    'کوتاهش کن، بعد دوباره امتحان کن.',
+  ].join('\n');
 }
 
 export function emojiPlaced(label: string): string {
