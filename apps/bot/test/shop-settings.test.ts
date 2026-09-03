@@ -381,7 +381,8 @@ describe('the shop’s closed sign', () => {
     const started = await handleUpdate(db, startUpdate(updateId + 1, telegramId));
 
     expect(started.replies[0]?.text).not.toContain('فروشگاه موقتاً بسته است');
-    expect(started.replies[0]?.keyboard).toBeDefined();
+    // An admin gets a working shop, and the shop's menu now lives under the chat.
+    expect(started.replies[0]?.replyKeyboard).toBeDefined();
   });
 
   it('still consumes the update, so the poller does not hand it back for ever', async () => {

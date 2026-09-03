@@ -267,7 +267,13 @@ export async function pollOnce(
         } else if (reply.document !== undefined) {
           await api.sendDocument(reply.chatId, reply.document, reply.text);
         } else if (reply.editMessageId === undefined) {
-          await api.sendMessage(reply.chatId, reply.text, reply.keyboard);
+          await api.sendMessage(
+            reply.chatId,
+            reply.text,
+            reply.keyboard,
+            undefined,
+            reply.replyKeyboard,
+          );
         } else {
           await api.editMessageText(reply.chatId, reply.editMessageId, reply.text, reply.keyboard);
         }
@@ -276,6 +282,22 @@ export async function pollOnce(
         // now be a no-op against the claim, so the reply is simply lost and said
         // to be lost.
         log.error('reply.undelivered', { trace: traceOf(update) }, err);
+      }
+    }
+    // After the replies, and never before them: the screen being edited is one
+    // of the messages this may delete, and deleting it first would leave the
+    // customer with nothing while the edit failed against a message that is
+    // already gone.
+    //
+    // Best-effort, one by one. A refusal here is ordinary — Telegram will not
+    // delete a message older than 48 hours, and the customer may have deleted
+    // it themselves — and none of it is worth failing an update that has
+    // already committed. What it costs when it fails is a tidier chat.
+    for (const gone of outcome.deletes ?? []) {
+      try {
+        await api.deleteMessage(gone.chatId, gone.messageId);
+      } catch (err) {
+        log.warn('reply.undeleted', { trace: traceOf(update) }, err);
       }
     }
     await answer(api, update);
