@@ -1,0 +1,25 @@
+-- The payments list now says whether each payment came from a personal
+-- customer or a reseller, which means joining `users` on every page load.
+--
+-- The join has to cast the COLUMN to text rather than the reference to
+-- bigint: one production row holds «Poyan test payment» in
+-- `payment_claims.customer_reference`, so `customer_reference::bigint` errors
+-- on the whole query — and a guard beside it does not save you, because SQL
+-- does not promise to evaluate the guard first.
+--
+-- That cast puts `users_telegram_id_key` out of reach, and the planner falls
+-- back to sorting the whole users table. Measured on the imported production
+-- data (15,916 users, 283 claims):
+--
+--   no join at all                          1.8 ms
+--   join, no expression index   merge join  20.2 ms
+--   join, with this index       hash join   6.7 ms
+--
+-- The index is what moves it, not fresher statistics — dropping it and
+-- re-running ANALYZE puts the merge join and the 20 ms straight back.
+--
+-- 0048 rather than 0047: PR #72 was asked to take 0047 for its reseller-tier
+-- migration, after both branches independently wrote an 0046. A gap in the
+-- sequence is harmless; two files with one number is not.
+CREATE INDEX IF NOT EXISTS idx_users_telegram_id_text
+  ON users ((telegram_id::text));

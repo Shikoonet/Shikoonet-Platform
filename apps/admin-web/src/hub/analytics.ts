@@ -96,6 +96,18 @@ export interface CardAnalyticsItem {
   accountHint: string | null;
   accountStatus: string;
   purchaseCount: number;
+  /**
+   * What the card actually took, and from how many people.
+   *
+   * A WIDER population than `purchaseCount` beside it: that one counts only
+   * bot-verified claims because it judges rotation fairness, while money
+   * counts every settled claim naming the card. `verifiedCount` is here so the
+   * amount is never read against a count that means something else.
+   */
+  verifiedCount: number;
+  takingsIrr: number;
+  uniqueCustomers: number;
+
   /** Rotation weight: how many turns this card takes per turn of a normal one. */
   displayWeight: number;
   purchaseBarPercent: number;
