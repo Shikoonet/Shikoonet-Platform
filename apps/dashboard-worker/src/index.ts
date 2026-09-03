@@ -60,6 +60,7 @@ import { registerAdminAccessRoutes } from './adminAccessRoutes.js';
 import { registerBotContentRoutes } from './botContentRoutes.js';
 import { registerContentRoutes } from './contentRoutes.js';
 import { registerStockRoutes } from './stockRoutes.js';
+import { registerEmojiPackRoutes } from './emojiPackRoutes.js';
 import { registerRevenueRoutes } from './revenueRoutes.js';
 import { registerChannelRoutes } from './channelRoutes.js';
 import { registerEventRoutes } from './eventRoutes.js';
@@ -4958,6 +4959,8 @@ registerSettingsRoutes(app);
 registerImportRoutes(app);
 registerAdminAccessRoutes(app);
 registerBotContentRoutes(app);
+// The picker's menu. Next to the texts because that is the screen it serves.
+registerEmojiPackRoutes(app);
 registerContentRoutes(app);
 registerStockRoutes(app);
 registerRevenueRoutes(app);
