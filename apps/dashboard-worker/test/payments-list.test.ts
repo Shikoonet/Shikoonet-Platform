@@ -54,6 +54,10 @@ beforeEach(async () => {
 
 interface ClaimSeed {
   status?: string;
+  /** The card the customer was told to pay into. Defaults to `CARD`. */
+  cardDigits?: string;
+  /** `payment_claims.customer_reference` — the Telegram id. Defaults to `tg-42`. */
+  customerReference?: string;
   suspectReason?: string | null;
   paidClickedAt?: number;
   suspectMeta?: object;
@@ -73,7 +77,7 @@ async function seedClaim(id: string, seed: ClaimSeed = {}) {
        (id, external_order_id, customer_reference, expected_amount_irr, target_financial_account_id,
         submitted_at, source_system, metadata_json, status, paid_clicked_at, receipt_submitted_at,
         suspect_reason, suspect_metadata_json, card_digits, created_at, updated_at)
-     VALUES (?1, ?2, 'tg-42', ?3, ?4, ?5, 'MIRZABOT',
+     VALUES (?1, ?2, ?10, ?3, ?4, ?5, 'MIRZABOT',
              '{"telegramUserId":"42","telegramUsername":"ali"}', ?6, ?5, ?5, ?7, ?8, ?9, ?5, ?5)`,
   )
     .bind(
@@ -85,7 +89,8 @@ async function seedClaim(id: string, seed: ClaimSeed = {}) {
       seed.status ?? 'PENDING',
       seed.suspectReason ?? null,
       JSON.stringify(seed.suspectMeta ?? {}),
-      CARD,
+      seed.cardDigits ?? CARD,
+      seed.customerReference ?? 'tg-42',
     )
     .run();
   return { id, paid, now };
@@ -594,5 +599,203 @@ describe('one claim by id', () => {
 
     const body = await get('claim=no-such-claim');
     expect(body.items).toEqual([]);
+  });
+});
+
+describe('filtering the payments list by card and by customer', () => {
+  const CARD_A = '6104337712345678';
+  const CARD_B = '6104338898765432';
+
+  async function ask(qs: string) {
+    const r = await app.fetch(new Request(`https://x/api/v1/payments?${qs}`), envAs());
+    expect(r.status).toBe(200);
+    return (await r.json()) as {
+      items: Array<{ id: string }>;
+      page: number;
+      pageSize: number;
+      total: number;
+    };
+  }
+
+  it('narrows to one card, and the two cards do not bleed into each other', async () => {
+    await seedClaim('f-a1', { status: 'VERIFIED', cardDigits: CARD_A });
+    await seedClaim('f-a2', { status: 'VERIFIED', cardDigits: CARD_A });
+    await seedClaim('f-b1', { status: 'VERIFIED', cardDigits: CARD_B });
+
+    expect((await ask('tab=all&range=all')).total).toBe(3);
+    const a = await ask(`tab=all&range=all&cardDigits=${CARD_A}`);
+    expect(a.total).toBe(2);
+    expect(a.items.map((i) => i.id).sort()).toEqual(['f-a1', 'f-a2']);
+    expect((await ask(`tab=all&range=all&cardDigits=${CARD_B}`)).total).toBe(1);
+  });
+
+  it('narrows to one Telegram id', async () => {
+    await seedClaim('f-u1', { status: 'VERIFIED', customerReference: '900000001' });
+    await seedClaim('f-u2', { status: 'VERIFIED', customerReference: '900000001' });
+    await seedClaim('f-u3', { status: 'VERIFIED', customerReference: '900000002' });
+
+    const one = await ask('tab=all&range=all&telegramId=900000001');
+    expect(one.total).toBe(2);
+    expect(one.items.map((i) => i.id).sort()).toEqual(['f-u1', 'f-u2']);
+  });
+
+  it('answers a malformed filter with everything, not with an empty shop', async () => {
+    // A rejected value must not become `card_digits = 'abc'`, which would
+    // return nothing and read as «this card took no money» -- a sentence about
+    // the shop rather than about the input.
+    await seedClaim('f-x1', { status: 'VERIFIED', cardDigits: CARD_A });
+    expect((await ask('tab=all&range=all&cardDigits=abc')).total).toBe(1);
+    expect((await ask('tab=all&range=all&cardDigits=5678')).total).toBe(1);
+    expect((await ask('tab=all&range=all&telegramId=not-a-number')).total).toBe(1);
+  });
+
+  /**
+   * `?claim=` answers with that one row whatever else is asked.
+   *
+   * The route returns early for a deep link precisely so that no filter can
+   * narrow away the row the caller named -- the alternative renders «این
+   * پرداخت در فهرست باز نیست», which reads as «somebody decided this» and is
+   * not what happened. Both new filters had to go inside that `else`, and
+   * putting either one outside it would be silent: the link still works for
+   * every claim the current filters happen to include.
+   */
+  it('a deep link ignores the filters, including the two added here', async () => {
+    await seedClaim('f-deep', {
+      status: 'VERIFIED',
+      cardDigits: CARD_B,
+      customerReference: '777',
+    });
+    const r = await ask('claim=f-deep&cardDigits=' + CARD_A + '&telegramId=999');
+    expect(r.items.map((i) => i.id)).toEqual(['f-deep']);
+  });
+
+  it('combines the two filters rather than letting the later one win', async () => {
+    await seedClaim('f-c1', { status: 'VERIFIED', cardDigits: CARD_A, customerReference: '5551' });
+    await seedClaim('f-c2', { status: 'VERIFIED', cardDigits: CARD_A, customerReference: '5552' });
+    await seedClaim('f-c3', { status: 'VERIFIED', cardDigits: CARD_B, customerReference: '5551' });
+
+    const both = await ask(`tab=all&range=all&cardDigits=${CARD_A}&telegramId=5551`);
+    expect(both.total).toBe(1);
+    expect(both.items[0]!.id).toBe('f-c1');
+  });
+});
+
+describe('the payments list is paginated rather than silently cut', () => {
+  /**
+   * 210 claims, because the old behaviour was a hard `LIMIT 200`.
+   *
+   * A fixture of three rows cannot see this at all -- the same reason rule 9
+   * of CLAUDE.md gives for the subquery LIMIT: below the ceiling every version
+   * of the code agrees, so a small fixture is silent, not green.
+   */
+  const N = 210;
+
+  beforeEach(async () => {
+    for (let i = 0; i < N; i++) {
+      await seedClaim(`pg-${String(i).padStart(3, '0')}`, {
+        status: 'VERIFIED',
+        paidClickedAt: Date.now() - i * 60_000,
+      });
+    }
+  });
+
+  it('reports how many there are, not how many it sent', async () => {
+    const r = await app.fetch(new Request('https://x/api/v1/payments?tab=all&range=all'), envAs());
+    const body = (await r.json()) as { items: unknown[]; total: number; pageSize: number };
+    expect(body.total).toBe(N);
+    // The default page is still 200, so an unchanged caller sees exactly what
+    // it saw before -- but now it is told there is more.
+    expect(body.items.length).toBe(200);
+    expect(body.pageSize).toBe(200);
+  });
+
+  it('page 2 continues where page 1 stopped, with no row lost or repeated', async () => {
+    const p1 = (await (
+      await app.fetch(
+        new Request('https://x/api/v1/payments?tab=all&range=all&pageSize=100&page=1'),
+        envAs(),
+      )
+    ).json()) as { items: Array<{ id: string }>; total: number };
+    const p2 = (await (
+      await app.fetch(
+        new Request('https://x/api/v1/payments?tab=all&range=all&pageSize=100&page=2'),
+        envAs(),
+      )
+    ).json()) as { items: Array<{ id: string }> };
+    const p3 = (await (
+      await app.fetch(
+        new Request('https://x/api/v1/payments?tab=all&range=all&pageSize=100&page=3'),
+        envAs(),
+      )
+    ).json()) as { items: Array<{ id: string }> };
+
+    expect(p1.total).toBe(N);
+    expect(p1.items.length).toBe(100);
+    expect(p2.items.length).toBe(100);
+    expect(p3.items.length).toBe(N - 200);
+
+    const seen = [...p1.items, ...p2.items, ...p3.items].map((i) => i.id);
+    expect(new Set(seen).size).toBe(N);
+  });
+
+  /**
+   * Every row at the SAME instant, which the other pagination tests never do.
+   *
+   * They seed `now - i * 60_000`, so `effective_ts` is unique and the sort is
+   * total whether or not it has a tie-breaker — green, and silent about the
+   * one thing paging can get wrong. SQL leaves the order of tied rows
+   * undefined, so without `c.id` the database may answer page 1 and page 2
+   * with different orderings and a tied row lands on both pages or on
+   * neither. A batch of claims imported with one timestamp, or two customers
+   * paying in the same second, is all it takes.
+   *
+   * The assertion is on the SET across pages, not on any row's position:
+   * position is genuinely free to change, losing a row is not.
+   */
+  it('pages tied timestamps without dropping or repeating a row', async () => {
+    const SAME = Date.now();
+    for (let i = 0; i < 120; i++) {
+      await seedClaim(`tie-${String(i).padStart(3, '0')}`, {
+        status: 'VERIFIED',
+        paidClickedAt: SAME,
+      });
+    }
+
+    const pageOf = async (nth: number) => {
+      const r = await app.fetch(
+        new Request(`https://x/api/v1/payments?tab=all&range=all&pageSize=50&page=${nth}`),
+        envAs(),
+      );
+      return ((await r.json()) as { items: Array<{ id: string }> }).items.map((i) => i.id);
+    };
+
+    const tied = [...(await pageOf(1)), ...(await pageOf(2)), ...(await pageOf(3))].filter((id) =>
+      id.startsWith('tie-'),
+    );
+    // 120 tied rows sit inside 210 seeded ones; whichever of them the three
+    // pages reach, none may be reached twice.
+    expect(new Set(tied).size).toBe(tied.length);
+
+    // And every tied row is somewhere in the full walk — nothing falls between
+    // two pages.
+    const all: string[] = [];
+    for (let nth = 1; nth <= 7; nth++) all.push(...(await pageOf(nth)));
+    expect(all.filter((id) => id.startsWith('tie-')).length).toBe(120);
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  it('caps pageSize, because every row in the answer costs its own query', async () => {
+    // `isPaymentEventUnread` runs once per claim, so the page size multiplies
+    // round trips. 200 is the cap as well as the default: a bigger page nobody
+    // asked for would only buy a slower request.
+    const r = await app.fetch(
+      new Request('https://x/api/v1/payments?tab=all&range=all&pageSize=100000'),
+      envAs(),
+    );
+    const body = (await r.json()) as { pageSize: number; items: unknown[]; total: number };
+    expect(body.pageSize).toBe(200);
+    expect(body.items.length).toBe(200);
+    // And it still says how many there really are, which is the whole point.
+    expect(body.total).toBe(N);
   });
 });
