@@ -99,6 +99,27 @@ export interface WalletEntryRow {
   createdAt: string;
 }
 
+/** One card this customer has actually paid into, and how much went there. */
+export interface CustomerCardPayments {
+  cardMasked: string | null;
+  payments: number;
+  amountIrr: number;
+  lastPaidAt: number | null;
+}
+
+/**
+ * «این آی‌دی چند بار و به کدام کارت‌ها واریز داشته».
+ *
+ * Settled claims only, counted the way «توازن کارت‌ها» counts a card's
+ * takings — so these rows are a subset of that screen's numbers rather than a
+ * second answer to the same question.
+ */
+export interface CustomerPayments {
+  count: number;
+  totalIrr: number;
+  byCard: CustomerCardPayments[];
+}
+
 export interface CustomerDetail {
   id: number;
   telegramId: number;
@@ -1380,9 +1401,12 @@ export const api = {
   },
 
   customer(id: number) {
-    return req<{ ok: boolean; customer: CustomerDetail; entries: WalletEntryRow[] }>(
-      `/customers/${id}`,
-    );
+    return req<{
+      ok: boolean;
+      customer: CustomerDetail;
+      payments: CustomerPayments;
+      entries: WalletEntryRow[];
+    }>(`/customers/${id}`);
   },
 
   adjustWallet(id: number, body: { amountIrr: number; note: string; idempotencyKey: string }) {

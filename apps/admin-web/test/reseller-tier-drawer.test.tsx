@@ -171,4 +171,45 @@ describe('saving', () => {
     const note = await screen.findByText(/در «نماینده» است/);
     expect(note.textContent).toContain('۴۰٪');
   });
+
+  /**
+   * «این آی‌دی چند بار و به کدام کارت‌ها واریز داشته» — plan item 1.6.
+   *
+   * The drawer knew the wallet and the order count and said nothing about what
+   * the customer had actually transferred, so answering it meant leaving the
+   * customer's own page and typing their id into the payments filter.
+   *
+   * The stub above deliberately omits `payments` — an older server, or a
+   * response that fails halfway — and the tile has to read «—» rather than
+   * «۰ · ۰ تومان», which would be a claim rather than a gap.
+   */
+  it('shows what this customer paid, by card', async () => {
+    customer.mockResolvedValueOnce({
+      ok: true,
+      customer: DETAIL,
+      entries: [],
+      payments: {
+        count: 3,
+        totalIrr: 3_500_000,
+        byCard: [
+          { cardMasked: '**** 0095', payments: 2, amountIrr: 3_000_000, lastPaidAt: 1_788_000_000_000 },
+          { cardMasked: '**** 5678', payments: 1, amountIrr: 500_000, lastPaidAt: null },
+        ],
+      },
+    } as never);
+
+    await openDrawer();
+
+    expect((await screen.findAllByText(/۳۵۰٬۰۰۰ تومان/)).length).toBeGreaterThan(0);
+    expect(await screen.findByText('**** 0095')).toBeTruthy();
+    expect(await screen.findByText('**** 5678')).toBeTruthy();
+  });
+
+  it('says «—» rather than zero when the server sent no payment figures', async () => {
+    await openDrawer();
+    expect(await screen.findByText('واریز کارت‌به‌کارت')).toBeTruthy();
+    expect(
+      await screen.findByText('هیچ واریز تاییدشده‌ای از این مشتری ثبت نشده است.'),
+    ).toBeTruthy();
+  });
 });
