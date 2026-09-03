@@ -56,7 +56,7 @@ afterEach(() => {
 
 describe('editing a card', () => {
   it('saves a typed label AND the button pressed straight afterwards', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive />);
     await screen.findByText('5047-0616-7456-0137');
 
     const label = screen.getByLabelText('نام دلخواه');
@@ -74,7 +74,7 @@ describe('editing a card', () => {
   });
 
   it('sends only the field that changed, so one save cannot revert another', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive />);
     await screen.findByText('5047-0616-7456-0137');
 
     fireEvent.click(screen.getByRole('button', { name: 'خاموش کن' }));
@@ -84,11 +84,37 @@ describe('editing a card', () => {
   });
 
   it('does not save a label the operator did not change', async () => {
-    render(<PaymentCardsPanel accountId="acc-1" />);
+    render(<PaymentCardsPanel accountId="acc-1" accountActive />);
     await screen.findByText('5047-0616-7456-0137');
 
     fireEvent.blur(screen.getByLabelText('نام دلخواه'));
 
     expect(sent).toHaveLength(0);
+  });
+});
+
+/**
+ * The badge is the only place a card's real state is written down.
+ *
+ * `rotateCard` requires the card to be ACTIVE **and** its account to be in
+ * service. So a card that is ACTIVE on an account somebody switched off is one
+ * the bot will never hand out — and while the badge read `pc.status` alone it
+ * said «در گردش» about exactly that card. Sam's «کارت‌ها را نشان نداد» had no
+ * screen that could explain it.
+ */
+describe('what the badge says when the account is off', () => {
+  it('does not claim a card is in rotation when its account is not', async () => {
+    render(<PaymentCardsPanel accountId="acc-1" accountActive={false} />);
+    await screen.findByText('5047-0616-7456-0137');
+
+    // Neither «در گردش» (a lie) nor «خاموش» (true of the card, and it points
+    // the operator at the wrong switch).
+    expect(screen.queryByText('در گردش')).toBeNull();
+    expect(await screen.findByText('حساب خاموش است')).toBeTruthy();
+  });
+
+  it('still says «در گردش» when both switches are on', async () => {
+    render(<PaymentCardsPanel accountId="acc-1" accountActive />);
+    expect(await screen.findByText('در گردش')).toBeTruthy();
   });
 });

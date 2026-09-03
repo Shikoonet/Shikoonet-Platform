@@ -32,10 +32,30 @@ const MOBILE_SORT_OPTIONS = [
   { value: 'recent', label: 'تازه‌ترین', column: 'created_at', direction: 'desc' as const },
 ];
 
+/**
+ * The «حساب / کارت» cell, and why a card that is off has to say so.
+ *
+ * This drew a disabled card and a live one identically. The bot will not hand
+ * out either the disabled card OR any card of a switched-off account, so an
+ * operator asking «چرا کارت من نشان داده نشد» was reading a list that could not
+ * answer — which is the question Sam arrived with.
+ *
+ * Both switches are named, and the ACCOUNT's is named first because it is the
+ * one that takes every card down at once.
+ */
 function formatPaymentCardCell(a: AccountListItem): string {
   const mapped = a.payment_cards ?? [];
   if (mapped.length > 0) {
-    return mapped.map((c) => (c.label ? `${c.display} (${c.label})` : c.display)).join(', ');
+    const accountOff = a.active === 0;
+    return mapped
+      .map((c) => {
+        const name = c.label ? `${c.display} (${c.label})` : c.display;
+        if (accountOff) return `${name} — حساب خاموش`;
+        // `!== 'ACTIVE'` rather than `=== 'DISABLED'`: an older response with
+        // no status must read as live, which is what it always was.
+        return c.status !== undefined && c.status !== 'ACTIVE' ? `${name} — خاموش` : name;
+      })
+      .join('، ');
   }
   if (a.card_last_four) return `*${a.card_last_four}`;
   return '—';
@@ -126,8 +146,16 @@ export function AccountsView({ cache }: AccountsViewProps) {
     // nothing at all.
     if (
       !window.confirm(
-        `«${name}» غیرفعال شود؟ از فهرست حساب‌ها بیرون می‌رود. ` +
-          `اگر فقط می‌خواهید موقتاً از «امروز» و تطبیق بیرون بماند، «بی‌صدا» همان کار را می‌کند و برگشتش یک کلیک است.`,
+        // What it actually does, checked against the routes on 2026-09-03.
+        // This used to promise «از فهرست حساب‌ها بیرون می‌رود», which is not
+        // true — the row stays right here. What it really does is take the
+        // account out of «آمار مالی», stop the bot handing out its cards, and
+        // drop it from the review queue, and that last one is why the old
+        // wording mattered: an operator looking for it there would not find it.
+        `«${name}» غیرفعال شود؟ از «آمار مالی» بیرون می‌رود، ربات دیگر کارت‌های آن را ` +
+          `به مشتری نمی‌دهد، و از صف بررسی هم برداشته می‌شود. در همین فهرست می‌ماند و ` +
+          `با «فعال‌کردن» برمی‌گردد.\n\n` +
+          `اگر فقط می‌خواهید موقتاً از «امروز» و تطبیق بیرون بماند، «بی‌صدا» همان کار را می‌کند.`,
       )
     ) {
       return;
@@ -137,6 +165,47 @@ export function AccountsView({ cache }: AccountsViewProps) {
     try {
       await api.deactivateAccount(id);
       setSuccess(`«${name}» غیرفعال شد.`);
+      cache.invalidate(QK.accounts, QK.accountTotals('all_time'));
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * The way back, which this screen did not have.
+   *
+   * `deactivate` shipped without it: once `active` was 0 the only button left
+   * was «حذف همیشگی», so switching an account off was a one-way door with a
+   * permanent delete at the end of it. Sam switched every account off on
+   * 2026-09-03 and had nothing to press.
+   *
+   * `PATCH /api/v1/accounts/:id` has always accepted `{ active }` and
+   * `updateAccount` has always carried it — only the button was missing, which
+   * is why this is six lines and not a route.
+   *
+   * It asks, and the question names the consequence rather than the field: an
+   * account back in service is one the bot will hand customers a card for
+   * again, and that is the half an operator is actually deciding.
+   */
+  async function activate(id: string) {
+    const acc = items.find((x) => x.id === id);
+    const name = acc?.display_name ?? id;
+    if (
+      !window.confirm(
+        `«${name}» دوباره فعال شود؟ به فهرست حساب‌ها و به «آمار مالی» برمی‌گردد، ` +
+          `و ربات می‌تواند دوباره کارت‌های همین حساب را به مشتری بدهد.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(id);
+    setError(null);
+    try {
+      await api.updateAccount(id, { active: true });
+      setSuccess(`«${name}» فعال شد.`);
       cache.invalidate(QK.accounts, QK.accountTotals('all_time'));
       setTimeout(() => setSuccess(null), 4000);
     } catch (e) {
@@ -342,6 +411,7 @@ export function AccountsView({ cache }: AccountsViewProps) {
                 busy={busy === a.id}
                 onEdit={() => setEditing(a.id)}
                 onDeactivate={() => deactivate(a.id)}
+                onActivate={() => activate(a.id)}
                 onDelete={() => setDeletingId(a.id)}
                 onRerunAssignment={() => setRerunAssignmentFor(a.id)}
                 onAccept={() => runStatusTransition(a.id, 'accept')}
@@ -456,15 +526,29 @@ export function AccountsView({ cache }: AccountsViewProps) {
                           غیرفعال‌کردن
                         </button>
                       ) : (
-                        <button
-                          type="button"
-                          className="danger"
-                          disabled={busy === a.id}
-                          onClick={() => setDeletingId(a.id)}
-                          {...w}
-                        >
-                          حذف همیشگی
-                        </button>
+                        <>
+                          {/* First, and not styled `danger`: the way back is
+                              the ordinary thing to want here, and the
+                              irreversible one should not be the only one on
+                              offer. */}
+                          <button
+                            type="button"
+                            disabled={busy === a.id}
+                            onClick={() => activate(a.id)}
+                            {...w}
+                          >
+                            فعال‌کردن
+                          </button>
+                          <button
+                            type="button"
+                            className="danger"
+                            disabled={busy === a.id}
+                            onClick={() => setDeletingId(a.id)}
+                            {...w}
+                          >
+                            حذف همیشگی
+                          </button>
+                        </>
                       )}
                     </td>
                   </tr>
@@ -631,6 +715,7 @@ function AccountCard({
   busy,
   onEdit,
   onDeactivate,
+  onActivate,
   onDelete,
   onRerunAssignment,
   onAccept,
@@ -643,6 +728,7 @@ function AccountCard({
   busy: boolean;
   onEdit: () => void;
   onDeactivate: () => void;
+  onActivate: () => void;
   onDelete: () => void;
   onRerunAssignment: () => void;
   onAccept: () => void;
@@ -721,9 +807,14 @@ function AccountCard({
             غیرفعال‌کردن
           </button>
         ) : (
-          <button type="button" className="danger" disabled={busy} onClick={onDelete} {...w}>
-            حذف همیشگی
-          </button>
+          <>
+            <button type="button" disabled={busy} onClick={onActivate} {...w}>
+              فعال‌کردن
+            </button>
+            <button type="button" className="danger" disabled={busy} onClick={onDelete} {...w}>
+              حذف همیشگی
+            </button>
+          </>
         )}
       </div>
     </li>
@@ -769,9 +860,19 @@ interface PaymentCardRow {
 
 export function PaymentCardsPanel({
   accountId,
+  accountActive,
   onChanged,
 }: {
   accountId: string;
+  /**
+   * Whether the ACCOUNT these cards belong to is in service.
+   *
+   * Required, not optional-defaulting-to-true: a caller that forgets it would
+   * go back to the badge below claiming a card is «در گردش» when the bot will
+   * never hand it out, and a default of `true` is precisely the wrong way to
+   * guess.
+   */
+  accountActive: boolean;
   onChanged?: () => void;
 }) {
   const w = useWriteProps();
@@ -901,7 +1002,12 @@ export function PaymentCardsPanel({
           </li>
         )}
         {cards.map((c) => {
-          const on = c.status === 'ACTIVE';
+          // Both switches, because the bot asks for both. `rotateCard` joins
+          // `financial_accounts` and requires the account to be live, so a card
+          // that is ACTIVE on an account that is not is a card nobody will ever
+          // be shown — and this badge is the only place that says so.
+          const on = c.status === 'ACTIVE' && accountActive;
+          const offBecauseAccount = c.status === 'ACTIVE' && !accountActive;
           return (
             <li key={c.id} className={on ? undefined : 'is-off'}>
               {/* Line one is the card's identity and its one state. The state
@@ -910,7 +1016,10 @@ export function PaymentCardsPanel({
                   states looked identical at a glance. */}
               <div className="payment-card__identity">
                 <span className={`badge ${on ? 'badge-active' : 'badge-block'}`}>
-                  {on ? 'در گردش' : 'خاموش'}
+                  {/* Three states, not two. «خاموش» on a card somebody switched
+                      off is a sentence they can act on; «خاموش» on a card whose
+                      ACCOUNT is off sends them to the wrong switch. */}
+                  {on ? 'در گردش' : offBecauseAccount ? 'حساب خاموش است' : 'خاموش'}
                 </span>
                 <IdentifierText value={c.display} />
                 {c.bank_name && <span className="badge">{c.bank_name}</span>}
@@ -942,6 +1051,7 @@ export function PaymentCardsPanel({
                   <select
                     value={c.display_weight}
                     disabled={busy || !on}
+                    {...w}
                     onChange={(e) =>
                       void edit(c.id, { displayWeight: Number(e.target.value) }, 'تغییر وزن')
                     }
@@ -1135,6 +1245,7 @@ function AccountEditor({ account, onClose, onSaved, onCardsChanged }: EditorProp
       {account?.id && (
         <PaymentCardsPanel
           accountId={account.id}
+          accountActive={account.active !== 0}
           {...(onCardsChanged ? { onChanged: onCardsChanged } : {})}
         />
       )}

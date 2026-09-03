@@ -88,11 +88,31 @@ export async function rotateCard(
           SET rotation_cursor  = rotation_cursor + ?1 / display_weight,
               last_assigned_at = ?2
         WHERE id = (
-          SELECT id FROM payment_cards
-           WHERE status = 'ACTIVE'
-           ORDER BY rotation_cursor, id
+          SELECT pc.id FROM payment_cards pc
+           JOIN financial_accounts fa ON fa.id = pc.financial_account_id
+           WHERE pc.status = 'ACTIVE'
+             -- The ACCOUNT has to be live too, and it did not used to be asked.
+             --
+             -- Sam switched every account off on 2026-09-03 and the bot kept
+             -- handing out a card: the picker read payment_cards.status and
+             -- nothing else, so «غیرفعال‌کردن» on the accounts screen stopped the
+             -- account appearing in «آمار مالی» and did not stop customers being
+             -- told to pay into it. Money kept arriving somewhere the panel had
+             -- been told to retire, and the balances screen — which filters
+             -- fa.active = 1 AND fa.status = 'ACTIVE' — could not show it.
+             --
+             -- Both columns, because they are different switches and each has a
+             -- state that must not receive money: active = 0 is the operator's
+             -- own off, PENDING is an account ingest invented from an unknown
+             -- SMS and nobody has claimed, MUTED is one somebody deliberately
+             -- quieted, and DECLINED is one already refused. The same pair
+             -- analyticsRoutes uses, so the money screen and the checkout
+             -- cannot disagree about which accounts are in service.
+             AND fa.active = 1
+             AND fa.status = 'ACTIVE'
+           ORDER BY pc.rotation_cursor, pc.id
            LIMIT 1
-           FOR UPDATE SKIP LOCKED
+           FOR UPDATE OF pc SKIP LOCKED
         )
         RETURNING card_digits, holder_name, financial_account_id`,
     )

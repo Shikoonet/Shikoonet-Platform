@@ -2278,7 +2278,23 @@ app.patch('/api/v1/accounts/:id', async (c) => {
   for (const [k, v] of Object.entries(parsed.data)) {
     if (v === undefined) continue;
     fields.push(`${k} = ?${i++}`);
-    values.push(v as string | number | null);
+    /*
+     * A JSON boolean cannot be bound to `active`, and the cast below used to
+     * say it could.
+     *
+     * `financial_accounts.active` is `smallint NOT NULL CHECK (active IN (0,1))`
+     * (0004), while `AccountUpdate` declares `active: z.boolean()`. The driver
+     * hands parameters to node-postgres unchanged, which serialises `true` as
+     * the TEXT 'true' — and Postgres answers 22P02, «invalid input syntax for
+     * type smallint». The route caught only 23505, so every `{active: …}` PATCH
+     * came back 500 `update_failed` with the row untouched.
+     *
+     * `v as string | number | null` was the whole reason nobody saw it: the
+     * cast made a boolean look like a number to the compiler and lied at
+     * runtime. Coerced here rather than in the schema so the fix covers any
+     * boolean this body ever grows, not just this one.
+     */
+    values.push(typeof v === 'boolean' ? (v ? 1 : 0) : (v as string | number | null));
   }
   if (fields.length === 0) return c.json({ ok: true });
   fields.push(`updated_at = ?${i++}`);

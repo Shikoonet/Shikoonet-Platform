@@ -25,6 +25,7 @@ import { app } from '../src/index.js';
 
 const ACCOUNT = 'card-status-account';
 const READER = 'card-status-reader@example.com';
+const REVIEWER = 'card-status-reviewer@example.com';
 
 /**
  * A fresh card id per test.
@@ -86,6 +87,7 @@ beforeAll(async () => {
   for (const [email, role] of [
     [baseEnv.TEST_ACCESS_USER!, 'ADMIN'],
     [READER, 'READ_ONLY'],
+    [REVIEWER, 'REVIEWER'],
   ] as const) {
     await baseEnv.DB.prepare(
       `INSERT INTO access_users (id, email, role, active, created_at, updated_at)
@@ -256,6 +258,26 @@ describe('what the route refuses', () => {
 
     expect((await patch(A, { status: 'DISABLED' }, READER)).status).toBe(403);
     expect(await card(A)).toMatchObject({ status: 'ACTIVE' });
+  });
+
+  /**
+   * A REVIEWER may add a card and may delete one. Disabling is the smaller act.
+   *
+   * This route guarded on `role !== 'ADMIN'` while its two siblings — POST
+   * add-card and DELETE card — guard on `role === 'READ_ONLY'`. The screen
+   * followed the siblings: the toggle spreads `useWriteProps`, which is
+   * `role !== 'READ_ONLY'`, so a REVIEWER was shown an enabled «خاموش کن» that
+   * answered 403 and surfaced as «خاموش کردن ناموفق بود (403)».
+   *
+   * Fixed by matching the siblings rather than by disabling the button: the
+   * other direction leaves a REVIEWER able to DELETE a card but not to turn one
+   * off, which is the wrong way round.
+   */
+  it('lets a reviewer switch a card off, like the add and delete beside it', async () => {
+    await seedCard(A, '5047061674737313', 1_000_000);
+
+    expect((await patch(A, { status: 'DISABLED' }, REVIEWER)).status).toBe(200);
+    expect(await card(A)).toMatchObject({ status: 'DISABLED' });
   });
 
   it('404s on a card that does not exist', async () => {
