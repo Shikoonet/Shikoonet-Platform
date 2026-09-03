@@ -28,6 +28,7 @@ import {
   ApiError,
   type CustomerDetail,
   type CustomerListItem,
+  type CustomerPayments,
   type WalletEntryRow,
 } from '../api.js';
 import { CopyButton } from '../CopyButton.js';
@@ -270,6 +271,7 @@ function CustomerDrawer({
 }) {
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [entries, setEntries] = useState<WalletEntryRow[]>([]);
+  const [payments, setPayments] = useState<CustomerPayments | null>(null);
   const [err, setErr] = useState<string | null>(null);
   /**
    * What the last action did, in a sentence.
@@ -301,6 +303,7 @@ function CustomerDrawer({
       const d = await api.customer(id);
       setCustomer(d.customer);
       setEntries(d.entries);
+      setPayments(d.payments);
       // The field starts at what the customer already has, so «ذخیره» without
       // typing is a no-op rather than a silent reset to zero.
       setDiscount(String(d.customer.discountPercent));
@@ -553,6 +556,17 @@ function CustomerDrawer({
               label="سفارش‌ها"
               value={`${count(customer.orderCount)} · ${toman(customer.paidTotalIrr)}`}
             />
+            {/* «این آی‌دی چند بار و به کدام کارت‌ها واریز داشته» — the question
+                this drawer is opened with. Settled claims only, counted as
+                «توازن کارت‌ها» counts them, so the two screens agree. */}
+            <Fact
+              label="واریز کارت‌به‌کارت"
+              value={
+                payments
+                  ? `${count(payments.count)} · ${toman(payments.totalIrr)}`
+                  : '—'
+              }
+            />
             {/* Through `count`, like every other number on this panel. A raw
                 interpolation put «25٪» in Latin digits directly beside «۱ ·
                 ۹۰۰٬۰۰۰ تومان» — two stats in one grid disagreeing about what a
@@ -760,6 +774,37 @@ function CustomerDrawer({
             >
               فرستادن
             </button>
+          </div>
+
+          <h4>واریزها به تفکیک کارت</h4>
+          <div className="table-wrap">
+            <table className="app-table">
+              <thead>
+                <tr>
+                  <th>کارت</th>
+                  <th>تعداد</th>
+                  <th>مبلغ</th>
+                  <th>آخرین واریز</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(payments?.byCard.length ?? 0) === 0 && (
+                  <tr>
+                    <td className="empty" colSpan={4}>
+                      هیچ واریز تاییدشده‌ای از این مشتری ثبت نشده است.
+                    </td>
+                  </tr>
+                )}
+                {payments?.byCard.map((c) => (
+                  <tr key={c.cardMasked ?? 'unknown'}>
+                    <td className="ltr">{c.cardMasked ?? '—'}</td>
+                    <td>{count(c.payments)}</td>
+                    <td>{toman(c.amountIrr)}</td>
+                    <td>{c.lastPaidAt ? dateTime(c.lastPaidAt) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
 
           <h4>دفتر کیف پول</h4>
