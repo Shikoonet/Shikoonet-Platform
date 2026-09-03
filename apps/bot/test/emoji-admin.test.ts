@@ -36,14 +36,31 @@ function ids(): { updateId: number; telegramId: number } {
   return { updateId: 655_000 + n, telegramId: 555_000 + n };
 }
 
-async function makeAdmin(telegramId: number): Promise<void> {
+async function makeAdmin(telegramId: number, role = 'ADMIN'): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO admins (telegram_id, role, active) VALUES (?1, 'ADMIN', true)
-       ON CONFLICT (telegram_id) DO UPDATE SET active = true`,
+      `INSERT INTO admins (telegram_id, role, active) VALUES (?1, ?2, true)
+       ON CONFLICT (telegram_id) DO UPDATE SET active = true, role = EXCLUDED.role`,
     )
-    .bind(telegramId)
+    .bind(telegramId, role)
     .run();
+}
+
+/** Whether the shop's menu offers this person the emoji screen. */
+async function seesEmojiButton(telegramId: number): Promise<boolean> {
+  const out = await handleUpdate(db, {
+    update_id: ids().updateId,
+    message: {
+      message_id: 1,
+      from: { id: telegramId },
+      chat: { id: telegramId },
+      text: '/start',
+    },
+  });
+  const rows = out.replies[0]?.replyKeyboard;
+  return (Array.isArray(rows) ? rows : [])
+    .flat()
+    .some((b) => b.text.includes('ایموجی پریمیوم'));
 }
 
 function press(updateId: number, telegramId: number, data: string) {
@@ -134,6 +151,38 @@ describe('who may open it', () => {
     const rows = out.replies[0]?.replyKeyboard;
     const labels = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
     expect(labels.some((l) => l.includes('ایموجی پریمیوم'))).toBe(true);
+  });
+
+  it('is not drawn for SUPPORT, who may walk the shop but not reshape it', async () => {
+    // Sam: «برای همه نشان داده می‌شود، فقط باید برای ادمین‌ها و owner باشد.»
+    // `admins.role` has held OWNER / ADMIN / SUPPORT since 0001 and the bot's
+    // check ignored it, so anybody in the table — support staff included — was
+    // offered a screen that changes what every customer sees.
+    //
+    // `isActiveAdmin` is deliberately NOT narrowed with it: support still walks
+    // past the closed sign, the flood counter and the channel gate, because
+    // answering a customer at 2am needs all three. Seeing the shop and changing
+    // it are different permissions.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId, 'SUPPORT');
+    expect(await seesEmojiButton(telegramId)).toBe(false);
+  });
+
+  it('is drawn for OWNER', async () => {
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId, 'OWNER');
+    expect(await seesEmojiButton(telegramId)).toBe(true);
+  });
+
+  it('refuses SUPPORT who posts the callback anyway', async () => {
+    // Undrawn is not closed, for a role as much as for a stranger.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId, 'SUPPORT');
+    const out = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
+    expect(out.replies[0]?.text ?? '').not.toContain('کدام دکمه');
   });
 
   it('refuses a customer who posts the callback anyway', async () => {
