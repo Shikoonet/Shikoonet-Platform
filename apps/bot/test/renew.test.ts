@@ -117,7 +117,28 @@ async function setPanelConfig(provider: number, config: Record<string, unknown>)
     .prepare(
       `UPDATE provisioning_providers
           SET base_url = 'https://renew.test', secret_ref = ?2, kind = 'pasarguard',
-              config = coalesce(config, '{}'::jsonb) || ?3::jsonb
+              -- renew_mode is stripped before the merge, and that is not tidiness.
+              --
+              -- Every caller below sets the mode through the LEGACY key
+              -- Methodextend, and renewModeFor reads renew_mode FIRST and only
+              -- falls back to the phrase. So any leftover renew_mode on this
+              -- shared row shadows what these tests are setting, silently, and
+              -- they fail describing a renewal bug that is not there.
+              --
+              -- That is not hypothetical: the panel screen sends renewMode on
+              -- EVERY save, so one run of the browser walk leaves
+              -- renew_mode: 'RESET' on sim-vip and five tests here go red until
+              -- somebody re-seeds. Found on 2026-09-03 exactly that way.
+              --
+              -- renew_enabled goes with it, for the identical reason: it shadows
+              -- status_extend, the panel sends it on every save too, and
+              -- «honours a panel the admin switched renewal off for» is the
+              -- test that goes red.
+              --
+              -- Stripped rather than set, so a test that wants to exercise the
+              -- legacy fallback still can — which is what all of them do.
+              config = (coalesce(config, '{}'::jsonb) - 'renew_mode' - 'renew_enabled')
+                       || ?3::jsonb
         WHERE id = ?1`,
     )
     .bind(provider, PROVIDER_CODE, JSON.stringify(config))

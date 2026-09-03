@@ -294,4 +294,81 @@ describe('GET /api/v1/cards/analytics', () => {
     expect(body.entity).toBe('card_number');
     expect(body.items.some((i) => i.cardMasked === '****7613' && i.purchaseCount === 1)).toBe(true);
   });
+
+  /**
+   * «واجد شرایط» has to mean what the bot means by it.
+   *
+   * This asked about the account's review status and nothing else — not the
+   * operator's on/off, not the card's own switch. So a card somebody had turned
+   * off was reported eligible and counted under «کارت‌های واجد شرایط بدون هیچ
+   * خرید»: a card that cannot take a sale, filed among the cards that took none.
+   *
+   * The three conditions are the three `rotateCard` picks on. Asserted one at a
+   * time because each was a separate way to be wrong, and `exclusionReason`
+   * names the FIRST switch that is off so the operator is sent to one place.
+   */
+  async function eligibilityOf(digits: string) {
+    const r = await app.fetch(new Request('https://x/api/v1/cards/analytics?range=all'), envAs());
+    const body = (await r.json()) as {
+      items: Array<{ cardDigits: string; hubEligible: boolean; exclusionReason: string }>;
+    };
+    return body.items.find((i) => i.cardDigits === digits);
+  }
+
+  it('calls a card eligible only when the bot would actually hand it out', async () => {
+    // Its own number: the previous test already owns 5054161706277613, and
+    // card_digits is UNIQUE across the whole table.
+    const digits = '5054161706278611';
+    await baseEnv.DB.prepare(
+      `INSERT INTO payment_cards (id, financial_account_id, card_digits, status, created_at)
+       VALUES ('pc-elig', ?1, ?2, 'ACTIVE', ?3)
+       ON CONFLICT (id) DO UPDATE SET status = 'ACTIVE', financial_account_id = ?1`,
+    )
+      .bind(ACCOUNT, digits, Date.now())
+      .run();
+    await baseEnv.DB.prepare(
+      `UPDATE financial_accounts SET active = 1, status = 'ACTIVE' WHERE id = ?1`,
+    )
+      .bind(ACCOUNT)
+      .run();
+
+    expect(await eligibilityOf(digits)).toMatchObject({
+      hubEligible: true,
+      exclusionReason: 'hub_active',
+    });
+
+    // 1. the card's own switch
+    await baseEnv.DB.prepare(`UPDATE payment_cards SET status = 'DISABLED' WHERE id = 'pc-elig'`)
+      .run();
+    expect(await eligibilityOf(digits)).toMatchObject({
+      hubEligible: false,
+      exclusionReason: 'card_disabled',
+    });
+
+    // 2. the operator's on/off, with the card back on
+    await baseEnv.DB.prepare(`UPDATE payment_cards SET status = 'ACTIVE' WHERE id = 'pc-elig'`)
+      .run();
+    await baseEnv.DB.prepare(`UPDATE financial_accounts SET active = 0 WHERE id = ?1`)
+      .bind(ACCOUNT)
+      .run();
+    expect(await eligibilityOf(digits)).toMatchObject({
+      hubEligible: false,
+      exclusionReason: 'account_deactivated',
+    });
+
+    // 3. the review status, which is the one it always asked about
+    await baseEnv.DB.prepare(
+      `UPDATE financial_accounts SET active = 1, status = 'MUTED' WHERE id = ?1`,
+    )
+      .bind(ACCOUNT)
+      .run();
+    expect(await eligibilityOf(digits)).toMatchObject({
+      hubEligible: false,
+      exclusionReason: 'account_muted',
+    });
+
+    await baseEnv.DB.prepare(`UPDATE financial_accounts SET status = 'ACTIVE' WHERE id = ?1`)
+      .bind(ACCOUNT)
+      .run();
+  });
 });

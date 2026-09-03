@@ -54,19 +54,44 @@ const RESOLVE_LIMITS = 2;
  * applies to the whole union (we want to know whether ≥ 2 rows match,
  * never the order-of-arbitrary-row ordering of any single branch).
  */
+/*
+ * Every branch filters `status`, and NONE filters `active`. That is a change
+ * from 2026-09-03 and it is the money-path half of a bug Sam hit.
+ *
+ * The two columns are different questions. `status` is «is this one of ours» —
+ * a review decision, and DECLINED means the answer is no. `active` is «are we
+ * still using it», the operator's own on/off. Only the first can decide what an
+ * arriving bank SMS MEANS: money that lands on an account we retired is still
+ * our money, and it still arrived there.
+ *
+ * Four of these branches used to carry `active = 1` as well, and the fifth
+ * never did — its own comment says the JOIN is there «to enforce status =
+ * 'ACTIVE'», which is the rule the whole statement now follows. The odd four
+ * were not a decision anybody wrote down, and they cost:
+ *
+ *   an SMS for a retired account resolved to NOT_FOUND, so ingest called
+ *   `autoCreatePendingAccount` and MINTED A SECOND ACCOUNT for an identifier
+ *   the shop already owned. The customer's claim then pointed at the original
+ *   and the transaction at the duplicate, and nothing could ever match them.
+ *
+ * Attributing it to the account it actually arrived on is strictly better than
+ * inventing a row. What the operator then sees is a separate question —
+ * «آمار مالی» filters `active = 1` and will not show it until the account is
+ * switched back on, which is now one button.
+ */
 const RESOLVE_SQL = `
   SELECT id, matched_by FROM (
     SELECT id, 'account_hint' AS matched_by, 1 AS priority FROM financial_accounts
-     WHERE account_hint = ?1 AND active = 1 AND status = 'ACTIVE'
+     WHERE account_hint = ?1 AND status = 'ACTIVE'
     UNION ALL
     SELECT id, 'card_last_four', 2 FROM financial_accounts
-     WHERE card_last_four = ?1 AND active = 1 AND status = 'ACTIVE'
+     WHERE card_last_four = ?1 AND status = 'ACTIVE'
     UNION ALL
     SELECT id, 'account_last_four', 3 FROM financial_accounts
-     WHERE account_last_four = ?1 AND active = 1 AND status = 'ACTIVE'
+     WHERE account_last_four = ?1 AND status = 'ACTIVE'
     UNION ALL
     SELECT id, 'iban', 4 FROM financial_accounts
-     WHERE iban = ?1 AND active = 1 AND status = 'ACTIVE'
+     WHERE iban = ?1 AND status = 'ACTIVE'
     UNION ALL
     SELECT fai.financial_account_id AS id, 'identifier_table', 5
       FROM financial_account_identifiers fai

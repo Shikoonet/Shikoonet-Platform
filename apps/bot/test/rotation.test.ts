@@ -154,6 +154,19 @@ afterEach(async () => {
   await db.prepare(`DELETE FROM payment_cards WHERE id LIKE ?1`).bind(`${PREFIX}%`).run();
   await db.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(ACCOUNT_ID).run();
   await db.prepare(`UPDATE payment_cards SET status = 'ACTIVE'`).run();
+  /*
+   * And every ACCOUNT back on.
+   *
+   * The card picker asks the account too since 2026-09-03, so a test here that
+   * switches one off takes every card of that account out of rotation — for
+   * this file AND for every file after it on the shared database. `pool()`
+   * re-creates its own row with `ON CONFLICT DO NOTHING`, which does NOT undo
+   * an `active = 0` left on a row that still exists.
+   *
+   * The line above has done the same for `payment_cards.status` since this file
+   * was written, and for the same reason. This is its other half.
+   */
+  await db.prepare(`UPDATE financial_accounts SET active = 1 WHERE active <> 1`).run();
 });
 
 /**
@@ -359,5 +372,107 @@ describe('card queue advances on money, not on being shown', { timeout: 60_000 }
 
     expect(counts.get(cards[0]!) ?? 0).toBe(0);
     expect(counts.get(cards[1]!)).toBe(20);
+  });
+});
+
+/**
+ * Whose card it is, not just which card it is.
+ *
+ * Sam switched every financial account off on 2026-09-03 and the bot kept
+ * handing out a card. The picker read `payment_cards.status` and nothing else,
+ * so «غیرفعال‌کردن» on the accounts screen removed the account from «آمار مالی»
+ * — which filters `fa.active = 1 AND fa.status = 'ACTIVE'` — while customers
+ * went on being told to pay into it. The money still arrived and still matched;
+ * it simply arrived somewhere the panel had been told to retire and could no
+ * longer show.
+ *
+ * These assert the picker against the ACCOUNT, and each one is a state an
+ * operator can put an account into from the screens that exist.
+ */
+describe('a card is only handed out while its account is in service', () => {
+  /** Puts the rotation account into one state for the length of one test. */
+  async function accountState(active: 0 | 1, status: string): Promise<void> {
+    await db
+      .prepare(`UPDATE financial_accounts SET active = ?2, status = ?3 WHERE id = ?1`)
+      .bind(ACCOUNT_ID, active, status)
+      .run();
+  }
+
+  it('refuses every card on a deactivated account rather than picking one', async () => {
+    await pool(3);
+    // It works first — otherwise this test could pass against a broken fixture.
+    expect(await drawOne()).toBeTruthy();
+
+    await accountState(0, 'ACTIVE');
+
+    const card = await db.withSession((tx) => rotateCard(tx, 1_700_000_000_000));
+    // Null is the honest answer, and `checkoutFor` turns it into «کارت موجود
+    // نیست». Handing the card out anyway is what this is fixing.
+    expect(card).toBeNull();
+  });
+
+  for (const status of ['PENDING', 'MUTED', 'DECLINED']) {
+    it(`refuses a card whose account is ${status}`, async () => {
+      await pool(3);
+      await accountState(1, status);
+
+      expect(await db.withSession((tx) => rotateCard(tx, 1_700_000_000_000))).toBeNull();
+    });
+  }
+
+  it('hands it out again the moment the account comes back', async () => {
+    // The other half, and the reason «فعال‌کردن» had to ship in the same change:
+    // a gate with no way back is a shop that cannot sell again.
+    await pool(3);
+    await accountState(0, 'ACTIVE');
+    expect(await db.withSession((tx) => rotateCard(tx, 1_700_000_000_000))).toBeNull();
+
+    await accountState(1, 'ACTIVE');
+
+    const card = await db.withSession((tx) => rotateCard(tx, 1_700_000_000_001));
+    expect(card?.card_digits).toBeTruthy();
+  });
+
+  it('skips the switched-off account and still serves a live one', async () => {
+    // The mixed case, which is the one a shop is actually in: not everything
+    // off, just one account retired. The rest must keep selling.
+    await pool(2);
+    const live = 'fa-rotation-live';
+    await db
+      .prepare(
+        `INSERT INTO financial_accounts
+           (id, bank_name, display_name, account_type, account_hint, card_last_four,
+            active, status, parser_configuration, created_at, updated_at)
+         VALUES (?1, 'ROTATION', 'حساب زنده', 'CARD', '0001', '0001', 1, 'ACTIVE', '{}', 0, 0)
+         ON CONFLICT (id) DO UPDATE SET active = 1, status = 'ACTIVE'`,
+      )
+      .bind(live)
+      .run();
+    const liveDigits = digitsFor(90);
+    await db
+      .prepare(
+        `INSERT INTO payment_cards
+           (id, financial_account_id, card_digits, label, holder_name, status,
+            created_at, display_weight, rotation_cursor)
+         VALUES (?1, ?2, ?3, 'زنده', 'چرخش', 'ACTIVE', 0, 1, 0)
+         ON CONFLICT (card_digits) DO UPDATE SET status = 'ACTIVE', rotation_cursor = 0`,
+      )
+      .bind(`${PREFIX}live`, live, liveDigits)
+      .run();
+
+    await db
+      .prepare(`UPDATE financial_accounts SET active = 0 WHERE id = ?1`)
+      .bind(ACCOUNT_ID)
+      .run();
+
+    try {
+      // Every draw must land on the live account's card, never on the two
+      // belonging to the account that was switched off.
+      const seen = await draw(5);
+      expect([...seen.keys()]).toEqual([liveDigits]);
+    } finally {
+      await db.prepare(`DELETE FROM payment_cards WHERE id = ?1`).bind(`${PREFIX}live`).run();
+      await db.prepare(`DELETE FROM financial_accounts WHERE id = ?1`).bind(live).run();
+    }
   });
 });
