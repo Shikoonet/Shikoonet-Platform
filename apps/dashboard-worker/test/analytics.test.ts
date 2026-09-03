@@ -98,6 +98,8 @@ async function seedClaim(
     amount?: number;
     /** The card the customer was told to pay into — `payment_claims.card_digits`. */
     cardDigits?: string;
+    /** `payment_claims.customer_reference`, so «how many people» can be asked. */
+    customerReference?: string;
   },
 ) {
   const now = Date.now();
@@ -106,9 +108,17 @@ async function seedClaim(
        (id, external_order_id, customer_reference, expected_amount_irr, target_financial_account_id,
         submitted_at, source_system, metadata_json, status, paid_clicked_at, receipt_submitted_at,
         suspect_reason, suspect_metadata_json, card_digits, created_at, updated_at)
-     VALUES (?1, ?2, 'u1', ?3, ?4, ?5, 'MIRZABOT', '{}', 'VERIFIED', ?5, ?5, NULL, '{}', ?6, ?5, ?5)`,
+     VALUES (?1, ?2, ?7, ?3, ?4, ?5, 'MIRZABOT', '{}', 'VERIFIED', ?5, ?5, NULL, '{}', ?6, ?5, ?5)`,
   )
-    .bind(id, `ord-${id}`, opts.amount ?? AMOUNT, ACCOUNT, now, opts.cardDigits ?? '5678')
+    .bind(
+      id,
+      `ord-${id}`,
+      opts.amount ?? AMOUNT,
+      ACCOUNT,
+      now,
+      opts.cardDigits ?? '5678',
+      opts.customerReference ?? 'u1',
+    )
     .run();
   await baseEnv.DB.prepare(
     `INSERT INTO reconciliation_matches
@@ -269,6 +279,77 @@ describe('GET /api/v1/cards/analytics', () => {
     const card = body.items.find((i) => i.cardDigits === CARD);
     expect(card).toBeDefined();
     expect(card!.activity).toEqual({ h12: 1, h24: 2, d3: 2, d7: 2, d15: 3, d30: 3 });
+  });
+
+  /**
+   * «چقدر به کارت ملت رفت، و کدام کاربرها ریختند» — Sam, 2026-09-02.
+   *
+   * The expected numbers below were written before the query was run: card A
+   * takes three claims from two customers (one of them twice) and card B one,
+   * with amounts chosen so no two sums collide by accident. A test that reads
+   * the answer and then asserts it is a test that agrees with itself.
+   *
+   * One of card A's claims is CONFIRMED rather than AUTO_VERIFIED, and that is
+   * the point of the case: money does not care who approved it. `takingsIrr`
+   * must count it and `purchaseCount` — which judges rotation fairness — must
+   * not.
+   */
+  it('sums what each card actually took, and from how many people', async () => {
+    const CARD_A = '6104337712345678';
+    const CARD_B = '6104338898765432';
+    for (const [id, card, amount, customer, status] of [
+      ['t-a1', CARD_A, 1_000_000, 'u-1', 'AUTO_VERIFIED'],
+      ['t-a2', CARD_A, 2_000_000, 'u-1', 'AUTO_VERIFIED'],
+      ['t-a3', CARD_A, 4_000_000, 'u-2', 'CONFIRMED'],
+      ['t-b1', CARD_B, 8_000_000, 'u-3', 'AUTO_VERIFIED'],
+    ] as const) {
+      await baseEnv.DB.prepare(
+        `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
+         VALUES (?1, ?2, ?3, ?4)`,
+      )
+        .bind(`pc-${card.slice(-4)}`, ACCOUNT, card, Date.now())
+        .run();
+      await seedTx(`tx-${id}`, { ts: BASE, amount });
+      await seedClaim(id, `tx-${id}`, {
+        matchStatus: status,
+        reviewedAt: BASE,
+        amount,
+        cardDigits: card,
+        customerReference: customer,
+      });
+    }
+
+    const r = await app.fetch(new Request('https://x/api/v1/cards/analytics?range=all'), envAs());
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      items: Array<{
+        cardDigits: string;
+        purchaseCount: number;
+        verifiedCount: number;
+        takingsIrr: number;
+        uniqueCustomers: number;
+      }>;
+    };
+    const by = new Map(body.items.map((i) => [i.cardDigits, i]));
+
+    expect(by.get(CARD_A)).toMatchObject({
+      takingsIrr: 7_000_000,
+      verifiedCount: 3,
+      uniqueCustomers: 2,
+      // The manual one is money but not a rotation datapoint.
+      purchaseCount: 2,
+    });
+    expect(by.get(CARD_B)).toMatchObject({
+      takingsIrr: 8_000_000,
+      verifiedCount: 1,
+      uniqueCustomers: 1,
+      purchaseCount: 1,
+    });
+
+    // The two cards share one account, so an account-level figure would print
+    // 15,000,000 twice. This is the bug fixed in #61, asserted again from the
+    // money side because that is where it would be most expensive.
+    expect(by.get(CARD_A)!.takingsIrr).not.toBe(by.get(CARD_B)!.takingsIrr);
   });
 
   it('groups auto-verified purchases by mapped card', async () => {
