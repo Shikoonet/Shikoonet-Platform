@@ -17,7 +17,7 @@ import { provisionPaidOrders } from '../src/provision.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
-import { ensureCatalog, makeCustomer, providerId } from './helpers/shop.js';
+import { ensureCatalog, makeCustomer, providerId, setTierDiscount } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 7, 14, 9, 0, 0);
 const DAY = 86_400_000;
@@ -131,6 +131,16 @@ async function lastOrder(userId: number) {
     }>();
 }
 
+/** Merges a pricing table into the panel's config. Shared state: put it back. */
+async function setPanelPricing(pricing: Record<string, string>): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE provisioning_providers SET config = config || ?1::jsonb WHERE code = 'sim-vip'`,
+    )
+    .bind(JSON.stringify(pricing))
+    .run();
+}
+
 beforeAll(async () => {
   await ensureCatalog();
   process.env[`PANEL_${PANEL_CODE.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`] = 'admin:secret';
@@ -193,6 +203,73 @@ describe('buying extra volume', () => {
 
     // 5,000 toman a gigabyte on this panel, not 50,000.
     expect(await lastOrder(userId)).toMatchObject({ unit_price_irr: 50_000, total_irr: 250_000 });
+  });
+
+  /**
+   * «نماینده سطح ۲» was a price box nobody could ever be charged from.
+   *
+   * `tierFor` could only answer `f` or `n` until 0046, so the `n2` entry in
+   * `priceextravolume` — present on every live panel and editable on every
+   * panel screen — decided nothing. This is the first test that reaches it.
+   *
+   * The production figures have `n` and `n2` both at 5,000, so asserting
+   * against them would pass with the tier ignored. The panel is given a
+   * distinct `n2` for the length of this test and put back afterwards.
+   */
+  it('charges the second reseller level its own rate', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId, { reseller: true, tier: 'n2' });
+    const service = await makeService(userId);
+    await setPanelPricing({ ...PRICING, priceextravolume: '{"f":"50000","n":"5000","n2":"2000"}' });
+
+    try {
+      await handleUpdate(db, press(updateId, telegramId, `xv:${service}`));
+      await handleUpdate(db, types(updateId + 1, telegramId, '5'));
+
+      // 2,000 toman a gigabyte — neither the ordinary 50,000 nor level one's 5,000.
+      expect(await lastOrder(userId)).toMatchObject({
+        unit_price_irr: 20_000,
+        total_irr: 100_000,
+      });
+    } finally {
+      await setPanelPricing(PRICING);
+    }
+  });
+
+  /**
+   * The `handleTypedAnswer` load of `Caller`, which nothing else reaches.
+   *
+   * Two of the three loads are `RETURNING` clauses in `handleCallback`; this
+   * one is a plain SELECT, and an add-on quantity is the only typed answer that
+   * spends the discount it carries. Drop the shared expression from that
+   * statement and this is the test that goes red.
+   *
+   * It also puts a decision on the record: a level's discount applies to an
+   * add-on as well as to the panel rate, so a reseller gets both. That is what
+   * `placeAddonOrder` has always done with a standing discount — «unlike a
+   * deposit, this IS merchandise» — and a level is a standing discount.
+   */
+  it('applies the level’s discount to an add-on', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId, { reseller: true, tier: 'n' });
+    const service = await makeService(userId);
+    await setTierDiscount('n', 50);
+
+    try {
+      await handleUpdate(db, press(updateId, telegramId, `xv:${service}`));
+      await handleUpdate(db, types(updateId + 1, telegramId, '4'));
+
+      // Level one's panel rate is 5,000 toman a gigabyte — 50,000 IRR — so four
+      // gigabytes list at 200,000 IRR, and the level's 50% halves that.
+      expect(await lastOrder(userId)).toMatchObject({
+        quantity: 4,
+        unit_price_irr: 50_000,
+        discount_irr: 100_000,
+        total_irr: 100_000,
+      });
+    } finally {
+      await setTierDiscount('n', 0);
+    }
   });
 
   it('adds the gigabytes without moving an expiry that does not exist', async () => {
