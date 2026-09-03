@@ -107,6 +107,50 @@ describe('an account that has been switched off', () => {
     expect(asked).toContain('کارت');
   });
 
+  /**
+   * The «حساب / کارت» cell, which drew a dead card and a live one identically.
+   *
+   * The bot will hand out neither a DISABLED card nor any card of a switched-off
+   * account, and this column is where an operator looks first. It said nothing.
+   */
+  it('says on the row why a card is not being handed out', async () => {
+    rows = [
+      account({
+        id: 'acc-cards',
+        display_name: 'حساب کارت‌دار',
+        active: 0,
+        payment_cards: [
+          { id: 'c1', card_digits: '6037000000000095', masked: '****0095', display: '6037-0000-0000-0095', label: null, status: 'ACTIVE' },
+        ],
+      }),
+    ];
+
+    render(<AccountsView cache={createCache()} />);
+
+    // The ACCOUNT's switch is named, because it takes every card down at once.
+    // `findAll`, because this screen draws a table AND a card list — one is
+    // hidden by CSS at a given width and both are in the DOM.
+    expect((await screen.findAllByText(/حساب خاموش/)).length).toBeGreaterThan(0);
+  });
+
+  it('names the card’s own switch when the account is fine', async () => {
+    rows = [
+      account({
+        id: 'acc-cards2',
+        display_name: 'حساب زنده',
+        active: 1,
+        payment_cards: [
+          { id: 'c2', card_digits: '6037000000000095', masked: '****0095', display: '6037-0000-0000-0095', label: null, status: 'DISABLED' },
+        ],
+      }),
+    ];
+
+    render(<AccountsView cache={createCache()} />);
+
+    const cells = await screen.findAllByText(/6037-0000-0000-0095/);
+    expect(cells[0]!.textContent).toContain('خاموش');
+  });
+
   it('leaves a live account alone — it still only offers the way out', async () => {
     rows = [account({ id: 'acc-on', display_name: 'حساب زنده', active: 1 })];
 

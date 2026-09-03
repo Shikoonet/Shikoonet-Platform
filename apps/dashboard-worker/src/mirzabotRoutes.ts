@@ -64,6 +64,8 @@ export type PaymentCardListItem = {
   masked: string;
   display: string;
   label: string | null;
+  /** ACTIVE | DISABLED — so a list can say why the bot ignored one. */
+  status: string;
 };
 
 /** Mirzabot payment_cards for account list views. */
@@ -75,12 +77,20 @@ export async function loadPaymentCardsForAccounts(
   const placeholders = accountIds.map((_, i) => `?${i + 1}`).join(',');
   const rows = await db
     .prepare(
-      `SELECT id, financial_account_id, card_digits, label
+      // `status` too: the accounts list drew a disabled card and a live one
+      // identically, so «حساب / کارت» could not say why the bot had ignored one.
+      `SELECT id, financial_account_id, card_digits, label, status
        FROM payment_cards WHERE financial_account_id IN (${placeholders})
        ORDER BY created_at ASC`,
     )
     .bind(...accountIds)
-    .all<{ id: string; financial_account_id: string; card_digits: string; label: string | null }>();
+    .all<{
+      id: string;
+      financial_account_id: string;
+      card_digits: string;
+      label: string | null;
+      status: string;
+    }>();
   const map = new Map<string, PaymentCardListItem[]>();
   for (const r of rows.results ?? []) {
     const item: PaymentCardListItem = {
@@ -89,6 +99,7 @@ export async function loadPaymentCardsForAccounts(
       masked: maskCardDigits(r.card_digits),
       display: formatCardDigitsForDisplay(r.card_digits),
       label: r.label,
+      status: r.status,
     };
     const list = map.get(r.financial_account_id) ?? [];
     list.push(item);
@@ -848,7 +859,14 @@ export function registerMirzabotRoutes(
     .refine((b) => b.displayWeight !== undefined || b.status !== undefined || b.label !== undefined);
   app.patch('/api/v1/payment-cards/:id', async (c) => {
     const ident = c.get('identity');
-    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+    // READ_ONLY, not «not ADMIN» — the same guard its two siblings use.
+    //
+    // Adding a card (POST, above) and deleting one (DELETE, below) both admit a
+    // REVIEWER; only turning one off demanded ADMIN, and the screen did not
+    // know: the button spreads `useWriteProps`, which is `role !== 'READ_ONLY'`,
+    // so a REVIEWER saw an enabled «خاموش کن» that answered 403. Whoever may
+    // add and delete a card may certainly disable one.
+    if (ident.role === 'READ_ONLY') return c.json({ ok: false, error: 'forbidden' }, 403);
     const parsed = CardEditBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const cardId = c.req.param('id');
