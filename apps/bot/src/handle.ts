@@ -874,7 +874,7 @@ async function handlePremiumEmoji(
     return reply(menu.EMOJI_NONE_FOUND, menu.promptMenu(encode('emj')));
   }
 
-  await rememberEmoji(tx, found);
+  const added = await rememberEmoji(tx, found);
   const slot = Number(session.data['slot']);
   await clearSession(tx, user.id);
   const have = await storedEmoji(tx);
@@ -887,10 +887,10 @@ async function handlePremiumEmoji(
     : undefined;
   return target
     ? reply(
-        menu.emojiForButton(target.label, have.length),
+        menu.emojiForButton(target.label, have.length, { added }),
         menu.emojiForButtonMenu(target.slot, have),
       )
-    : reply(menu.emojiHome(), menu.emojiHomeMenu(menu.mainMenuButtons()));
+    : reply(menu.emojiAdded(added, have.length), menu.emojiHomeMenu(menu.mainMenuButtons()));
 }
 
 /**
@@ -2294,7 +2294,7 @@ async function handleCallback(
         return screen(
           label === null
             ? menu.emojiTooLong(target.label)
-            : menu.emojiForButton(after.label, have.length, true),
+            : menu.emojiForButton(after.label, have.length, { placed: true }),
           menu.emojiForButtonMenu(target.slot, have),
         );
       }

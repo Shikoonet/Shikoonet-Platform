@@ -275,7 +275,26 @@ export async function pollOnce(
             reply.replyKeyboard,
           );
         } else {
-          await api.editMessageText(reply.chatId, reply.editMessageId, reply.text, reply.keyboard);
+          try {
+            await api.editMessageText(reply.chatId, reply.editMessageId, reply.text, reply.keyboard);
+          } catch (err) {
+            // An edit that cannot land must not take the reply with it.
+            //
+            // Telegram refuses to edit a message older than 48 hours, one the
+            // customer deleted, and one from a chat it no longer has. Until
+            // 2026-09-04 every screen being edited came straight off the update
+            // that asked for it, so it was minutes old and this could not
+            // happen. It can now: a typed answer is written back into the
+            // message that ASKED, and that id is remembered in the session —
+            // a customer who opens «کد تخفیف», walks away for three days and
+            // comes back is editing something Telegram will not touch.
+            //
+            // Sent as a new message instead. A screen in the wrong place is a
+            // tidiness problem; a screen that never arrives is the customer
+            // pressing a button and watching nothing happen.
+            log.warn('reply.edit_failed', { trace: traceOf(update), fallback: 'new message' }, err);
+            await api.sendMessage(reply.chatId, reply.text, reply.keyboard);
+          }
         }
       } catch (err) {
         // The transaction has already committed. Retrying the whole update would

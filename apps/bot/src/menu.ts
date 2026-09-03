@@ -360,17 +360,53 @@ export function emojiHomeMenu(buttons: { label: string; slot: number }[]): Inlin
   return rows;
 }
 
-/** One button's screen: press an emoji and it is on there. */
-export function emojiForButton(label: string, count: number, placed = false): string {
+/**
+ * The answer to «افزودن» pressed from the button LIST, where there is no button
+ * to go back to — so it says what happened and shows the list again.
+ */
+export function emojiAdded(added: number, total: number): string {
   return [
-    placed ? '✅ عوض شد.' : `دکمهٔ «${stripCustomEmoji(label).trim()}»`,
+    added === 0 ? '↩️ این ایموجی را از قبل داشتم.' : `✅ ${added} ایموجی تازه ذخیره شد.`,
+    `الان ${total} ایموجی دارم.`,
+    '',
+    'کدام دکمه را می‌خواهی عوض کنی؟',
+  ].join('\n');
+}
+
+/**
+ * One button's screen: press an emoji and it is on there.
+ *
+ * `added` is what the bot has just taken off a message. It is said out loud
+ * because the alternative was the report that produced this line: an admin sent
+ * an emoji, landed back on this screen, and had no way to tell whether it had
+ * been stored, ignored, or was somewhere further down the grid.
+ */
+export function emojiForButton(
+  label: string,
+  count: number,
+  state: { placed?: boolean; added?: number } = {},
+): string {
+  const head =
+    state.added !== undefined
+      ? state.added === 0
+        ? '↩️ این ایموجی را از قبل داشتم — اولین کاشی زیر، همان است.'
+        : `✅ ${state.added} ایموجی تازه ذخیره شد — اولین کاشی(های) زیر، همان‌هاست.`
+      : state.placed
+        ? '✅ عوض شد.'
+        : `دکمهٔ «${stripCustomEmoji(label).trim()}»`;
+  return [
+    head,
     '',
     count === 0
       ? 'هنوز ایموجی‌ای ندارم. «➕ افزودن ایموجی» را بزن.'
-      : 'یکی از ایموجی‌های زیر را بزن تا همان لحظه جایگزین شود.',
+      : 'یکی از ایموجی‌های زیر را بزن تا همان لحظه جایگزین شود. تازه‌ترین‌ها اول‌اند.',
     '',
-    'اگر به‌جای ایموجی پریمیوم یک ایموجی سادهٔ معمولی می‌بینی، یعنی تلگرام این ربات را',
-    'برای ایموجی پریمیوم قبول نمی‌کند و هیچ تنظیمی درستش نمی‌کند.',
+    // The condition is Telegram's own, quoted from the Bot API's description of
+    // `icon_custom_emoji_id`, because an operator staring at plain glyphs
+    // deserves the actual rule rather than «it did not work».
+    'اگر کاشی‌ها ایموجی سادهٔ معمولی‌اند و نه پریمیوم: تلگرام این را فقط از رباتی می‌پذیرد',
+    'که یا روی Fragment یوزرنیم خریده باشد، یا صاحبش اشتراک Premium داشته باشد.',
+    'تا آن نباشد، هیچ تنظیمی این‌جا درستش نمی‌کند.',
   ].join('\n');
 }
 
