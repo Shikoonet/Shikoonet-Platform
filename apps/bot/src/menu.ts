@@ -332,44 +332,73 @@ export function mainMenuActionAt(slot: number): string | null {
   return MENUS['main'].buttons[slot - 1]?.action ?? null;
 }
 
-/** The screen that says what the bot has, and how to give it more. */
-export function emojiHome(count: number): string {
+/**
+ * The first screen: which button are we changing?
+ *
+ * Button first, emoji second — Sam, 2026-09-03: «برم تو منوی ایموجی، منو رو
+ * انتخاب کنم، و وقتی ایموجی‌ای که می‌خوام رو می‌زنم همون جایگزین بشه». The first
+ * build asked for the emoji first and then where to put it, which reads
+ * backwards: you go in knowing which button you are unhappy with.
+ */
+export function emojiHome(): string {
   return [
     '🎨 ایموجی پریمیوم',
     '',
-    count === 0
-      ? 'هنوز ایموجی‌ای ندارم.'
-      : `${count} ایموجی دارم. هرکدام را بزنی، روی یکی از دکمه‌های منوی اصلی می‌نشیند.`,
-    '',
-    'برای افزودن، «➕ افزودن ایموجی» را بزن و بعد ایموجی پریمیوم را همین‌جا بفرست.',
-    'ایموجی‌های زیر همان‌طور کشیده می‌شوند که مشتری می‌بیند — اگر به‌جای ایموجی یک مربع یا',
-    'ایموجی سادهٔ معمولی دیدی، یعنی تلگرام این ربات را برای ایموجی پریمیوم قبول نمی‌کند.',
+    'کدام دکمه را می‌خواهی عوض کنی؟',
   ].join('\n');
 }
 
-/** The list, plus the two ways out. Each emoji is drawn BY the bot, on purpose. */
-export function emojiMenu(items: { id: number; customEmojiId: string; fallbackEmoji: string }[]): InlineKeyboard {
+/** The buttons of the main menu, drawn as they are drawn for a customer. */
+export function emojiHomeMenu(buttons: { label: string; slot: number }[]): InlineKeyboard {
+  const rows: InlineKeyboard = buttons.map((b) => [
+    // The label with its markup INTACT, so `keyboardFor` turns a tag it already
+    // carries into this button's icon. An admin looking at this list is looking
+    // at what the customer sees — including which buttons already have one.
+    { text: b.label, callback_data: encode('emjb', b.slot) },
+  ]);
+  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  return rows;
+}
+
+/** One button's screen: press an emoji and it is on there. */
+export function emojiForButton(label: string, count: number, placed = false): string {
+  return [
+    placed ? '✅ عوض شد.' : `دکمهٔ «${stripCustomEmoji(label).trim()}»`,
+    '',
+    count === 0
+      ? 'هنوز ایموجی‌ای ندارم. «➕ افزودن ایموجی» را بزن.'
+      : 'یکی از ایموجی‌های زیر را بزن تا همان لحظه جایگزین شود.',
+    '',
+    'اگر به‌جای ایموجی پریمیوم یک ایموجی سادهٔ معمولی می‌بینی، یعنی تلگرام این ربات را',
+    'برای ایموجی پریمیوم قبول نمی‌کند و هیچ تنظیمی درستش نمی‌کند.',
+  ].join('\n');
+}
+
+export function emojiForButtonMenu(
+  slot: number,
+  items: { id: number; customEmojiId: string; fallbackEmoji: string }[],
+): InlineKeyboard {
   const rows: InlineKeyboard = [];
   for (let i = 0; i < items.length; i += 4) {
     rows.push(
       items.slice(i, i + 4).map((e) => ({
-        // The tag, so `keyboardFor` turns it into the button's icon. This is the
-        // proof as well as the list: an emoji that comes back drawn is an emoji
-        // this bot can send.
+        // The tag, so the button draws the emoji itself. This grid is the proof
+        // as much as the picker: an emoji that comes back drawn is one this bot
+        // can send.
         text: `<tg-emoji emoji-id="${e.customEmojiId}">${e.fallbackEmoji}</tg-emoji>`,
-        callback_data: encode('emjb', e.id),
+        callback_data: encode('emjb', slot, e.id),
       })),
     );
   }
-  rows.push([{ text: '➕ افزودن ایموجی', callback_data: encode('emja') }]);
-  rows.push([{ text: '🏠 بازگشت به منو', callback_data: encode('menu') }]);
+  rows.push([{ text: '➕ افزودن ایموجی', callback_data: encode('emja', slot) }]);
+  rows.push([{ text: '↩️ دکمهٔ دیگر', callback_data: encode('emj') }]);
   return rows;
 }
 
 export const ASK_PREMIUM_EMOJI = [
   '✋ ایموجی پریمیوم را همین‌جا بفرست.',
   '',
-  'یک پیام که فقط همان ایموجی(ها) در آن باشد. من شناسه‌اش را از خود پیام برمی‌دارم —',
+  'یک پیام که فقط همان ایموجی(ها) در آن باشد. شناسه‌اش را از خودِ پیام برمی‌دارم —',
   'نه از لینک، نه از اسم پکیج.',
   '',
   'اگر تلگرام تو پریمیوم ندارد، ایموجی پریمیوم اصلاً تایپ نمی‌شود و این کار جواب نمی‌دهد.',
@@ -381,44 +410,17 @@ export const EMOJI_NONE_FOUND = [
   'ایموجی معمولی شناسه ندارد و روی دکمه نمی‌نشیند. باید از ایموجی‌های پریمیوم خودت باشد.',
 ].join('\n');
 
-export function emojiSaved(added: number, total: number): string {
-  return added === 0
-    ? `این ایموجی را از قبل داشتم. الان ${total} تا دارم.`
-    : `✅ ${added} ایموجی تازه ذخیره شد. الان ${total} تا دارم.`;
-}
-
-/** Which button this emoji should sit on. */
-export function emojiButtonPick(fallback: string): string {
-  return [
-    `«${fallback}» روی کدام دکمهٔ منوی اصلی بنشیند؟`,
-    '',
-    'روی همان دکمه، جلوی متن فعلی‌اش می‌نشیند و متن دست نمی‌خورد.',
-  ].join('\n');
-}
-
-export function emojiButtonMenu(
-  emojiId: number,
-  buttons: { action: string; label: string; slot: number }[],
-): InlineKeyboard {
-  const rows: InlineKeyboard = buttons.map((b) => [
-    { text: stripCustomEmoji(b.label), callback_data: encode('emjb', emojiId, b.slot) },
-  ]);
-  rows.push([{ text: '↩️ بازگشت', callback_data: encode('emj') }]);
-  return rows;
-}
-
 export function emojiTooLong(label: string): string {
   return [
-    `❌ روی «${stripCustomEmoji(label)}» جا نشد.`,
+    `❌ روی «${stripCustomEmoji(label).trim()}» جا نشد.`,
     '',
     `متن این دکمه با ایموجی از ${MAX_LABEL_LENGTH} نویسه رد می‌شود. اول در «چیدمان کیبورد»`,
     'کوتاهش کن، بعد دوباره امتحان کن.',
   ].join('\n');
 }
 
-export function emojiPlaced(label: string): string {
-  return `✅ روی «${stripCustomEmoji(label)}» نشست. /start بزن تا کیبورد تازه را ببینی.`;
-}
+/** The button this shop no longer has — an admin removed its row. */
+export const EMOJI_BUTTON_GONE = '❌ این دکمه دیگر در کیبورد این فروشگاه نیست.';
 
 export function mainMenu(viewer: MenuViewer): InlineKeyboard {
   return buildMainMenu(layout('main'), viewer);
