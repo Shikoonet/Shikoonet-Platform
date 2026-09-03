@@ -756,6 +756,10 @@ function AccountCard({
         <span className={`status-pill status-pill--${a.status.toLowerCase()}`}>
           {statusLabel(a.status)}
         </span>
+        {/* The narrow layout draws the same row, so it needs the same second
+            pill: the desktop table was fixed and this was not, which would
+            have left «فعال» beside «فعال‌کردن» on a phone only. */}
+        {a.active === 0 && <span className="status-pill status-muted">خاموش</span>}
       </div>
       <div className="card-row">
         <span className="label">بانک</span>

@@ -890,8 +890,34 @@ describe('the payments list can be taken as a file', () => {
     const oneCard = await csv('tab=all&range=all&cardDigits=6104337712345678');
     const rows = oneCard.text.trim().split(CRLF).slice(1);
     expect(rows).toHaveLength(2);
-    expect(rows.every((r) => r.includes('6104337712345678'))).toBe(true);
+    // The card is NAMED, not printed. This line used to demand the opposite —
+    // `r.includes('6104337712345678')` — which is how a full PAN got into a
+    // file that leaves the panel: the assertion protecting the export was the
+    // one requiring the leak.
+    expect(rows.every((r) => r.includes('5678'))).toBe(true);
+    expect(oneCard.text).not.toContain('6104337712345678');
     expect(oneCard.text).not.toContain('6104338898765432');
+  });
+
+  /**
+   * A CSV cell is text until a spreadsheet decides it is a formula.
+   *
+   * Quoting stops a comma from splitting a cell; it does not stop Excel,
+   * LibreOffice or Sheets from EVALUATING one that begins `=`, `+`, `-` or
+   * `@`. `customer_reference` is whatever the customer typed — it arrives from
+   * outside the trust boundary and leaves as a file somebody double-clicks.
+   */
+  it('does not hand the spreadsheet a formula to run', async () => {
+    await seedClaim('x-f1', { status: 'VERIFIED', customerReference: '=1+1' });
+    await seedClaim('x-f2', { status: 'VERIFIED', customerReference: '@SUM(A1:A9)' });
+
+    const r = await csv('tab=all&range=all');
+    expect(r.text).toContain(`"'=1+1"`);
+    expect(r.text).toContain(`"'@SUM(A1:A9)"`);
+    // And the dangerous form is gone: no cell opens with the formula character
+    // straight after the quote.
+    expect(r.text).not.toContain('"=');
+    expect(r.text).not.toContain('"@');
   });
 
   it('is a file Excel can read: BOM, CRLF, and Toman', async () => {

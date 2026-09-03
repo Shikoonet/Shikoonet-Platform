@@ -1434,7 +1434,10 @@ export function registerMirzabotRoutes(
           row.external_order_id,
           row.customer_reference,
           Math.round((row.expected_amount_irr ?? 0) / 10),
-          row.card_digits ?? '',
+          // Masked, as it is in the JSON this file is built from. The rows go
+          // out as a file that leaves the panel entirely — the one place a
+          // full PAN would travel furthest and be noticed least.
+          row.card_digits ? maskCardDigits(row.card_digits) : '',
           row.account_display ?? '',
           row.match_status ?? row.status,
           row.effective_ts ? new Date(row.effective_ts).toISOString() : '',
