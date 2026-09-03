@@ -13,7 +13,13 @@
  */
 
 import { useEffect, useState } from 'react';
-import { api, ApiError, type ResellerRequestRow, type SettingRow } from '../api.js';
+import {
+  api,
+  ApiError,
+  type ResellerRequestRow,
+  type ResellerTierRow,
+  type SettingRow,
+} from '../api.js';
 import {
   checkPlanLabel,
   PLAN_LABEL_PRESETS,
@@ -255,14 +261,25 @@ export function SettingsPage() {
 
 export function RequestsPage() {
   const [rows, setRows] = useState<ResellerRequestRow[]>([]);
+  const [tiers, setTiers] = useState<ResellerTierRow[]>([]);
   const [status, setStatus] = useState('PENDING');
   const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The level each pending row would be approved onto. Keyed by request id. */
+  const [pickedTier, setPickedTier] = useState<Record<number, 'n' | 'n2'>>({});
+  const [tierDraft, setTierDraft] = useState<Record<string, string>>({});
 
   async function load() {
     setErr(null);
     try {
-      setRows((await api.resellerRequests(status || undefined)).items);
+      const [requests, levels] = await Promise.all([
+        api.resellerRequests(status || undefined),
+        api.resellerTiers(),
+      ]);
+      setRows(requests.items);
+      setTiers(levels.items);
+      setTierDraft(Object.fromEntries(levels.items.map((t) => [t.code, String(t.percent)])));
     } catch (e) {
       setErr(message(e));
     }
@@ -272,11 +289,44 @@ export function RequestsPage() {
     void load();
   }, [status]);
 
+  async function saveTier(t: ResellerTierRow) {
+    const raw = (tierDraft[t.code] ?? '').trim();
+    if (!/^[0-9]+$/.test(raw) || Number(raw) > 100) return;
+    const percent = Number(raw);
+    if (percent === t.percent) return;
+    // Every member at once. That is the point of a level, and it is also why
+    // this asks: it is the widest price change the panel can make.
+    if (
+      !window.confirm(
+        `تخفیف «${t.name}» از ${count(t.percent)}٪ به ${count(percent)}٪ برسد؟ ` +
+          `قیمت ${count(t.members)} نماینده در همین لحظه عوض می‌شود.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      await api.saveResellerTier(t.code, { percent });
+      setDone(`تخفیف «${t.name}» روی ${count(percent)}٪ ذخیره شد.`);
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function decide(r: ResellerRequestRow, next: 'APPROVED' | 'REJECTED') {
+    const tier = pickedTier[r.id] ?? 'n';
+    const level = tiers.find((t) => t.code === tier);
     if (
       next === 'APPROVED' &&
       !window.confirm(
-        `${r.customer.username ? `@${r.customer.username}` : r.customer.telegramId} نماینده شود؟ قیمت‌های نمایندگی برایش باز می‌شود.`,
+        `${r.customer.username ? `@${r.customer.username}` : r.customer.telegramId} ` +
+          `«${level?.name ?? 'نماینده'}» شود؟ ` +
+          `قیمت‌های نمایندگی برایش باز می‌شود و ${count(level?.percent ?? 0)}٪ از هر سفارش کم می‌شود.`,
       )
     ) {
       return;
@@ -284,7 +334,7 @@ export function RequestsPage() {
     setBusy(true);
     setErr(null);
     try {
-      await api.decideResellerRequest(r.id, next);
+      await api.decideResellerRequest(r.id, next, next === 'APPROVED' ? tier : null);
       await load();
     } catch (e) {
       setErr(message(e));
@@ -299,6 +349,63 @@ export function RequestsPage() {
         <div>
           <div className="page-head__title">لیست درخواست‌ها</div>
           <div className="page-head__sub">{count(rows.length)} درخواست نمایندگی</div>
+        </div>
+      </div>
+
+      {/* Above the requests, because it is the question the requests screen
+          asks: approving somebody puts them on one of these, and the number
+          here is what they will pay from that moment. */}
+      <div className="card">
+        <h4 style={{ marginBlockStart: 0 }}>سطح‌های نمایندگی</h4>
+        <p className="muted" style={{ marginBlockStart: 0 }}>
+          درصد هر سطح از <strong>هر سفارش</strong> اعضای آن سطح کم می‌شود، و تغییرش قیمت همهٔ آن‌ها
+          را در همان لحظه عوض می‌کند. تخفیف شخصی یک کاربر تا وقتی نماینده است اعمال نمی‌شود.
+        </p>
+        {done && <div className="alert alert-info">{done}</div>}
+        <div className="table-wrap">
+          <table className="app-table">
+            <thead>
+              <tr>
+                <th>سطح</th>
+                <th>درصد تخفیف</th>
+                <th>تعداد</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {tiers.map((t) => (
+                <tr key={t.code}>
+                  <td>{t.name}</td>
+                  <td>
+                    <input
+                      className="form-control form-control-sm ltr"
+                      type="number"
+                      min={0}
+                      max={100}
+                      aria-label={`درصد تخفیف ${t.name}`}
+                      value={tierDraft[t.code] ?? ''}
+                      onChange={(e) =>
+                        setTierDraft((prev) => ({ ...prev, [t.code]: e.target.value }))
+                      }
+                    />
+                  </td>
+                  {/* A reseller with no level set is counted here as «نماینده»,
+                      the same way the bot prices them. */}
+                  <td>{count(t.members)} نماینده</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      disabled={busy}
+                      onClick={() => void saveTier(t)}
+                    >
+                      ذخیره
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -373,6 +480,27 @@ export function RequestsPage() {
                         server refuses a second decision from a stale screen. */}
                     {r.status === 'PENDING' && (
                       <>
+                        {/* Chosen before «تایید», not after: approving is what
+                            writes the level, and there is no second screen to
+                            correct it on. */}
+                        <select
+                          className="form-control form-control-sm"
+                          aria-label={`سطح نمایندگی برای درخواست ${r.id}`}
+                          value={pickedTier[r.id] ?? 'n'}
+                          disabled={busy}
+                          onChange={(e) =>
+                            setPickedTier((prev) => ({
+                              ...prev,
+                              [r.id]: e.target.value as 'n' | 'n2',
+                            }))
+                          }
+                        >
+                          {tiers.map((t) => (
+                            <option key={t.code} value={t.code}>
+                              {t.name} — {count(t.percent)}٪
+                            </option>
+                          ))}
+                        </select>{' '}
                         <button
                           type="button"
                           className="btn btn-sm btn-primary"
