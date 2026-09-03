@@ -1047,8 +1047,30 @@ export function registerMirzabotRoutes(
     const counts = await loadCounts(c.env.DB, start, end, ident.email);
     const domainDb = c.env.DB as unknown as DomainD1Database;
 
+    /**
+     * The three tabs the claim list left behind.
+     *
+     * `LIMIT 200` and nothing else: on staging «واریزی‌ها» drew 200 rows under
+     * a badge saying 225, with no pager and no `total` (issue #82). Every one
+     * of these already runs a totals query over the SAME `WHERE`, so the true
+     * count was one field away the whole time — the page just never carried it.
+     *
+     * Same `page`/`pageSize` binds the claim list uses, so the pager the panel
+     * already renders needs nothing new to work here.
+     */
+    const { page: tabPage, pageSize: tabPageSize } = pageParams(url);
+    const tabOffset = (tabPage - 1) * tabPageSize;
+
     if (tab === 'income') {
-      const items = await loadIncomeItems(c.env.DB, range, now, day, 200, ident.email);
+      const items = await loadIncomeItems(
+        c.env.DB,
+        range,
+        now,
+        day,
+        tabPageSize,
+        ident.email,
+        tabOffset,
+      );
       const incomeTotals = await loadIncomeTotals(c.env.DB, range, now, day);
       return c.json({
         ok: true,
@@ -1056,13 +1078,23 @@ export function registerMirzabotRoutes(
         range,
         items,
         incomeTotals,
+        page: tabPage,
+        pageSize: tabPageSize,
+        total: incomeTotals.count,
         counts: counts.total,
         summary: financialSummary,
       });
     }
 
     if (tab === 'declined_income') {
-      const items = await loadDeclinedIncomeItems(c.env.DB, range, now, day);
+      const items = await loadDeclinedIncomeItems(
+        c.env.DB,
+        range,
+        now,
+        day,
+        tabPageSize,
+        tabOffset,
+      );
       const declinedTotals = await loadDeclinedIncomeTotals(c.env.DB, range, now, day);
       return c.json({
         ok: true,
@@ -1070,13 +1102,16 @@ export function registerMirzabotRoutes(
         range,
         items,
         declinedTotals,
+        page: tabPage,
+        pageSize: tabPageSize,
+        total: declinedTotals.count,
         counts: counts.total,
         summary: financialSummary,
       });
     }
 
     if (tab === 'reseller') {
-      const items = await loadResellerItems(c.env.DB, range, now, day);
+      const items = await loadResellerItems(c.env.DB, range, now, day, tabPageSize, tabOffset);
       const itemsWithNew = await Promise.all(
         items.map(async (item) => ({
           ...item,
@@ -1090,6 +1125,9 @@ export function registerMirzabotRoutes(
         range,
         items: itemsWithNew,
         resellerStats,
+        page: tabPage,
+        pageSize: tabPageSize,
+        total: resellerStats.payments,
         counts: counts.total,
         summary: financialSummary,
       });
