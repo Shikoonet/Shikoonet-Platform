@@ -7,6 +7,7 @@ import { Hono } from 'hono';
 import {
   BANK_INCOME_TX_WHERE,
   MIRZABOT_SOURCE,
+  SALE_CLAIM_WHERE,
   SETTLED_MATCH_SUBQUERY,
   VERIFIED_AT,
   INCOME_TX_WHERE,
@@ -562,6 +563,84 @@ export async function loadCardAnalytics(
       unique_customers: number;
     } & Record<`w_${CardActivityWindowKey}`, number>>();
 
+  /**
+   * The money on cards this table does not have — issue #86.
+   *
+   * The query above starts `FROM payment_cards`, so a claim naming a card that
+   * was deleted, moved to another account, or never mapped matched no row and
+   * was counted NOWHERE. The page then reported a total that was not the total,
+   * and said nothing about the difference. On staging, 2026-09-04, that was all
+   * of it: 669,000 Toman across four settled payments, under a screen showing
+   * three cards and zero.
+   *
+   * Asked from the claim side, with the same `SALE_CLAIM_WHERE` and the same
+   * range filter as the rows above, so these are the same rials counted the
+   * same way — a different population, not a different definition.
+   *
+   * `NOT EXISTS` rather than a LEFT JOIN with an IS NULL test: the join above
+   * is what defines «mapped», and this is exactly its complement.
+   *
+   * They are listed rather than summed into a footnote because the operator's
+   * next question is «which card», and the answer is a row like every other —
+   * the same treatment a card whose account is switched off already gets.
+   */
+  const orphanBinds: unknown[] = [];
+  const op = (v: unknown) => {
+    orphanBinds.push(v);
+    return `?${orphanBinds.length}`;
+  };
+  const orphanRange = rangeSql(VERIFIED_AT, start, end, op);
+  const orphanRows = await db
+    .prepare(
+      `SELECT c.card_digits,
+              COUNT(DISTINCT c.id) AS verified_count,
+              COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED' THEN c.id END) AS purchase_count,
+              COALESCE(SUM(c.expected_amount_irr), 0) AS takings_irr,
+              COUNT(DISTINCT c.customer_reference) AS unique_customers
+         FROM payment_claims c
+         LEFT JOIN reconciliation_matches m
+           ON m.payment_claim_id = c.id
+          AND m.status IN ('AUTO_VERIFIED', 'CONFIRMED')
+        WHERE ${SALE_CLAIM_WHERE}
+          AND c.card_digits IS NOT NULL
+          AND NOT EXISTS (
+                SELECT 1 FROM payment_cards pc WHERE pc.card_digits = c.card_digits
+              )${orphanRange}
+        GROUP BY c.card_digits
+        ORDER BY takings_irr DESC, c.card_digits ASC`,
+    )
+    .bind(...orphanBinds)
+    .all<{
+      card_digits: string;
+      verified_count: number;
+      purchase_count: number;
+      takings_irr: number;
+      unique_customers: number;
+    }>();
+
+  const orphans = (orphanRows.results ?? []).map((r) => ({
+    cardDigits: r.card_digits,
+    cardMasked: `****${r.card_digits.slice(-4)}`,
+    displayWeight: 0,
+    accountId: null,
+    displayName: 'کارت نگاشت‌نشده',
+    ownerLabel: null,
+    accountHint: null,
+    accountStatus: 'UNMAPPED',
+    purchaseCount: Number(r.purchase_count ?? 0),
+    verifiedCount: Number(r.verified_count ?? 0),
+    takingsIrr: Number(r.takings_irr ?? 0),
+    uniqueCustomers: Number(r.unique_customers ?? 0),
+    // Zeroed rather than computed: the windows answer «is this card busy right
+    // now», and a card the bot cannot hand out is not busy — it is finished.
+    activity: Object.fromEntries(
+      CARD_ACTIVITY_WINDOWS.map((w) => [w.key, 0]),
+    ) as CardActivityCounts,
+    cardStatus: 'UNMAPPED',
+    hubEligible: false,
+    exclusionReason: 'card_not_mapped',
+  }));
+
   const items = (rows.results ?? []).map((r) => ({
     cardDigits: r.card_digits,
     cardMasked: `****${r.card_digits.slice(-4)}`,
@@ -609,10 +688,15 @@ export async function loadCardAnalytics(
             : `account_${r.account_status.toLowerCase()}`,
   }));
 
+  // Appended, not merged in: they sort after the mapped cards because they are
+  // history rather than rotation, and `hubEligible: false` keeps them out of
+  // the balance maths below exactly as a switched-off card is kept out.
+  const allItems = [...items, ...orphans];
+
   // Balance is a question about the cards IN rotation. An excluded card has no
   // turns to be fair about, and counting its zero would report a shop as
   // lopsided for cards it has deliberately taken out of service.
-  const purchaseCounts = items.filter((i) => i.hubEligible).map((i) => i.purchaseCount);
+  const purchaseCounts = allItems.filter((i) => i.hubEligible).map((i) => i.purchaseCount);
   const distribution = cardBalancingDistribution(purchaseCounts);
   const maxPurchases = Math.max(...purchaseCounts, 1);
 
@@ -627,7 +711,7 @@ export async function loadCardAnalytics(
     // language the screen is in.
     note: 'خریدهای تاییدشده به تفکیک کارت نگاشت‌شده. توازن تخصیص کارت بر پایهٔ اجاره‌های تکمیل‌شدهٔ ربات است، نه این نمودار.',
     distribution,
-    items: items.map((i) => ({
+    items: allItems.map((i) => ({
       ...i,
       purchaseBarPercent: Math.round((i.purchaseCount / maxPurchases) * 100),
     })),

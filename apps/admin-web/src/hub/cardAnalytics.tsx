@@ -10,6 +10,32 @@ function cardUsageLabel(item: CardAnalyticsResponse['items'][number]): string {
   return `${item.cardMasked} · ${hint} · ${owner}`;
 }
 
+/**
+ * Why a card is out of rotation, in the language the screen is written in.
+ *
+ * The server sends these as keys — `account_deactivated`, `card_disabled` — and
+ * this row used to print them verbatim, so a Persian screen answered «چرا کارت
+ * من کار نمی‌کند» with an English identifier. The keys are the API's, not the
+ * operator's.
+ *
+ * The fallback is the raw key rather than a shrug: an unmapped reason is a
+ * server the panel has not caught up with, and showing it is how somebody
+ * notices. `card_not_mapped` is the newest, and it is the one that says the
+ * card itself is gone — see issue #86.
+ */
+const EXCLUSION_REASON_FA: Record<string, string> = {
+  card_not_mapped: 'این کارت دیگر در فهرست کارت‌ها نیست — پولش این‌جاست، خودش نه',
+  card_disabled: 'خودِ کارت خاموش است',
+  account_deactivated: 'حساب این کارت غیرفعال شده است',
+  account_muted: 'حساب این کارت بی‌صدا است',
+  account_declined: 'حساب این کارت رد شده است',
+  account_pending: 'حساب این کارت هنوز تایید نشده است',
+};
+
+function exclusionReasonFa(reason: string): string {
+  return EXCLUSION_REASON_FA[reason] ?? reason;
+}
+
 const RANK = new Intl.NumberFormat('fa-IR', { minimumIntegerDigits: 2, useGrouping: false });
 
 function formatRank(index: number): string {
@@ -104,7 +130,7 @@ export function CardBalancingPanel({
                     {item.hubEligible ? (
                       <span className="muted">واجد شرایط</span>
                     ) : (
-                      <span className="muted" title={item.exclusionReason}>
+                      <span className="muted" title={exclusionReasonFa(item.exclusionReason)}>
                         کنار گذاشته‌شده
                       </span>
                     )}
@@ -146,7 +172,9 @@ export function CardBalancingPanel({
                   />
                 </div>
                 {!item.hubEligible && (
-                  <p className="muted card-balancing-panel__reason">{item.exclusionReason}</p>
+                  <p className="muted card-balancing-panel__reason">
+                    {exclusionReasonFa(item.exclusionReason)}
+                  </p>
                 )}
               </div>
             </li>

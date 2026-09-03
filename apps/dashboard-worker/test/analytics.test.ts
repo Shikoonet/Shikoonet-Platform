@@ -452,4 +452,84 @@ describe('GET /api/v1/cards/analytics', () => {
       .bind(ACCOUNT)
       .run();
   });
+
+  /**
+   * Money on a card the card table no longer has — issue #86.
+   *
+   * This screen answers «چقدر به هر کارت رفت», and it answers it by starting
+   * `FROM payment_cards`. A claim naming a card that was deleted, moved, or
+   * never mapped therefore matched no row and was counted nowhere, with nothing
+   * on the page saying so.
+   *
+   * Measured on staging, 2026-09-04: every settled claim there — 669,000 Toman
+   * across four payments — named a card absent from `payment_cards`, and the
+   * screen showed three cards and a total of zero. Not «zero for these three,
+   * and this much elsewhere». Zero.
+   *
+   * The assertion is the rule rather than the instance: what the page reports
+   * as taken must equal what the claims say was taken. A card can leave the
+   * table; the money it took cannot leave the total.
+   */
+  it('counts money taken on a card that is no longer mapped', async () => {
+    const t = Date.now();
+    await seedTx('tx-un1', { ts: t - 1_000 });
+    await seedTx('tx-un2', { ts: t - 2_000 });
+    // One mapped card, so the page has something ordinary to show beside it.
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
+       VALUES ('pc-un', ?1, '6037111122223333', ?2)`,
+    )
+      .bind(ACCOUNT, t)
+      .run();
+    await seedClaim('cl-un-mapped', 'tx-un1', {
+      matchStatus: 'AUTO_VERIFIED',
+      reviewedAt: t,
+      amount: 3_000_000,
+      cardDigits: '6037111122223333',
+    });
+    // And one on a card nothing maps — the case that vanished.
+    await seedClaim('cl-un-orphan', 'tx-un2', {
+      matchStatus: 'CONFIRMED',
+      reviewedAt: t,
+      amount: 5_000_000,
+      cardDigits: '6104999988887777',
+      customerReference: 'u-orphan',
+    });
+
+    const r = await app.fetch(
+      new Request('https://x/api/v1/cards/analytics?range=all'),
+      envAs(EMAIL),
+    );
+    const body = (await r.json()) as {
+      items: Array<{
+        cardMasked: string;
+        takingsIrr: number;
+        verifiedCount: number;
+        uniqueCustomers: number;
+        hubEligible: boolean;
+        exclusionReason: string;
+        cardStatus: string;
+      }>;
+    };
+
+    const shown = body.items.reduce((sum, i) => sum + i.takingsIrr, 0);
+    // What the claims say, asked of the claims — not of this endpoint.
+    const claimed = await baseEnv.DB.prepare(
+      `SELECT COALESCE(SUM(expected_amount_irr), 0)::bigint AS n
+         FROM payment_claims
+        WHERE status = 'VERIFIED' AND source_system = 'MIRZABOT' AND card_digits IS NOT NULL`,
+    ).first<{ n: number }>();
+    expect(shown).toBe(Number(claimed!.n));
+
+    const orphan = body.items.find((i) => i.cardMasked.endsWith('7777'));
+    expect(orphan).toBeDefined();
+    expect(orphan!.takingsIrr).toBe(5_000_000);
+    expect(orphan!.verifiedCount).toBe(1);
+    expect(orphan!.uniqueCustomers).toBe(1);
+    // It is listed, and it is listed as something the bot can never hand out —
+    // the same treatment a card whose account is switched off already gets.
+    expect(orphan!.hubEligible).toBe(false);
+    expect(orphan!.exclusionReason).toBe('card_not_mapped');
+    expect(orphan!.cardStatus).toBe('UNMAPPED');
+  });
 });
