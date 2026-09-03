@@ -541,7 +541,8 @@ const FROM_LEDGER = `
   ${EDIT_HISTORY_JOIN}`;
 
 /** One CSV cell, quoted the way every spreadsheet agrees on. */
-const csvCell = (v: unknown) => `"${String(v ?? '').replaceAll('"', '""')}"`;
+/** Shared with the payments export. One quoting rule, not two. */
+export const csvCell = (v: unknown) => `"${String(v ?? '').replaceAll('"', '""')}"`;
 
 const KIND_FA: Record<Kind, string> = {
   EXPENSE: 'هزینه',
