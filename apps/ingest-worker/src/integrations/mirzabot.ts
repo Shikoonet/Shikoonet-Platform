@@ -91,9 +91,11 @@ interface ClaimPoolRow {
 }
 
 /**
- * Load every pending Mirzabot claim for one amount, resolving each claim's
+ * Load every live Mirzabot claim for one amount, resolving each claim's
  * card→account mapping at read time so a card mapped after the claim arrived
- * is picked up on the next matcher run.
+ * is picked up on the next matcher run. FULFILLED_UNRECONCILED is live here:
+ * delivery happened, but matching the later bank credit is still required to
+ * close its reconciliation task.
  */
 async function loadClaimPool(db: D1Database, amountIrr: number): Promise<MirzabotClaimCandidate[]> {
   const rows = await db
@@ -115,7 +117,7 @@ async function loadClaimPool(db: D1Database, amountIrr: number): Promise<Mirzabo
               ) AS order_already_verified
        FROM payment_claims c
        WHERE c.source_system = ?1
-         AND c.status IN ('PENDING','MATCH_SUGGESTED')
+         AND c.status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED')
          AND c.expected_amount_irr = ?2`,
     )
     .bind(MIRZABOT_SOURCE, amountIrr)
@@ -203,7 +205,7 @@ export async function runMirzabotMatching(
       .prepare(
         `UPDATE payment_claims SET target_financial_account_id = ?2, updated_at = ?3
          WHERE id = ?1
-           AND status IN ('PENDING','MATCH_SUGGESTED')
+           AND status IN ('PENDING','MATCH_SUGGESTED','FULFILLED_UNRECONCILED')
            AND (target_financial_account_id IS NULL OR target_financial_account_id != ?2)`,
       )
       .bind(c.id, scope.accountId, opts.now ?? Date.now())
@@ -544,6 +546,13 @@ export async function handleMirzabotClaim(
       continuityFulfilled = out.ok && !out.already;
       if (!out.ok) {
         log.warn('continuity.fulfil_failed', { claimId, error: out.error });
+      } else if (continuityFulfilled && opts.webhookEnv) {
+        // `runMirzabotMatching` flushed the outbox before Continuity created
+        // this notice. Without a second flush, a legacy-bot customer waited for
+        // the next minute sweep even though this request had already promised
+        // the order was fulfilled. Retry remains durable in the same outbox if
+        // the receiver is down; this only restores the immediate common case.
+        await flushWebhookDeliveries(db, opts.webhookEnv, { now });
       }
     }
   }

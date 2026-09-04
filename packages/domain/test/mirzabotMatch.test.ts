@@ -60,6 +60,12 @@ describe('PHASE 6 — decision test matrix', () => {
     expect(d.diagnostics.timeDeltaMs).toBe(20_000);
   });
 
+  it('a delivered-but-unreconciled claim still matches the bank credit', () => {
+    const d = decide(claim({ status: 'FULFILLED_UNRECONCILED' }), [tx()]);
+    expect(d.decision).toBe('AUTO_VERIFY');
+    expect(d.reason).toBe('UNIQUE_EXACT_MATCH');
+  });
+
   it('TEST 2 delta 4m59s → AUTO_VERIFY', () => {
     const d = decide(claim(), [tx({ bankTimestamp: BASE_MS + 4 * 60_000 + 59_000 })]);
     expect(d.decision).toBe('AUTO_VERIFY');

@@ -9,9 +9,11 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
+import { activateContinuityMode, deactivateContinuityMode } from '@shikoo/domain';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import { checkoutFor } from '../src/payment.js';
+import { settleVerifiedPayments } from '../src/settle.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
@@ -73,7 +75,8 @@ async function claimsOf(userId: number) {
   const rows = await db
     .prepare(
       `SELECT c.external_order_id, c.expected_amount_irr, c.source_system, c.status,
-              c.card_digits, c.target_financial_account_id, c.paid_clicked_at, c.customer_reference
+              c.card_digits, c.target_financial_account_id, c.paid_clicked_at, c.customer_reference,
+              c.fulfilment_mode, c.fulfilled_at, c.fulfilled_by, c.fulfilment_reason
          FROM payment_claims c
          JOIN payments p ON ('shikoo:' || p.public_id) = c.external_order_id
         WHERE p.user_id = ?1
@@ -89,6 +92,10 @@ async function claimsOf(userId: number) {
       target_financial_account_id: string | null;
       paid_clicked_at: number | null;
       customer_reference: string | null;
+      fulfilment_mode: string | null;
+      fulfilled_at: number | null;
+      fulfilled_by: string | null;
+      fulfilment_reason: string | null;
     }>();
   return rows.results;
 }
@@ -289,6 +296,62 @@ describe('"I have paid"', () => {
     expect(claim.paid_clicked_at).toBeGreaterThanOrEqual(before);
 
     expect(payments[0]?.status).toBe('AWAITING_REVIEW');
+  });
+
+  it('fulfils a current-bot claim opened while Continuity is on', async () => {
+    const actor = 'continuity-admin@example.com';
+    const reason = 'bank SMS relay is unavailable';
+    const activated = await activateContinuityMode(db, {
+      actorEmail: actor,
+      reason,
+      durationMs: 30 * 60 * 1000,
+      confirmed: true,
+    });
+    expect(activated.ok).toBe(true);
+
+    try {
+      const { updateId, telegramId } = ids();
+      const user = await makeCustomer(telegramId);
+      const plan = await planId('sim-vip-1m-50');
+
+      await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+      const order = await orderIdOf(user);
+      await handleUpdate(db, press(updateId + 1, telegramId, `paid:${order}`));
+
+      const claims = await claimsOf(user);
+      expect(claims).toHaveLength(1);
+      expect(claims[0]).toMatchObject({
+        status: 'FULFILLED_UNRECONCILED',
+        fulfilment_mode: 'CONTINUITY',
+        fulfilled_by: actor,
+        fulfilment_reason: reason,
+      });
+      expect(claims[0]?.fulfilled_at).not.toBeNull();
+
+      // This is the delivery boundary for the current bot. Before the fix the
+      // claim stayed PENDING, so the ordinary bot sweep found zero work even
+      // though the panel's switch visibly said Continuity was active.
+      expect(await settleVerifiedPayments(db)).toBe(1);
+      expect((await paymentsOf(user))[0]?.status).toBe('PAID');
+      const moved = await db
+        .prepare(`SELECT status FROM orders WHERE id = ?1`)
+        .bind(order)
+        .first<{ status: string }>();
+      expect(moved?.status).toBe('PAID');
+
+      const audit = await db
+        .prepare(
+          `SELECT actor_email, actor_role, reason
+             FROM audit_logs
+            WHERE entity_id = (SELECT id FROM payment_claims WHERE external_order_id = ?1)
+              AND action = 'claim.continuity_fulfilled'`,
+        )
+        .bind(claims[0]!.external_order_id)
+        .first<{ actor_email: string; actor_role: string; reason: string }>();
+      expect(audit).toEqual({ actor_email: actor, actor_role: 'SYSTEM', reason });
+    } finally {
+      await deactivateContinuityMode(db, { actorEmail: actor });
+    }
   });
 
   it('does not open a second claim when the button is pressed twice', async () => {
