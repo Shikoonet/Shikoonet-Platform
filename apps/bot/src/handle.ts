@@ -1289,6 +1289,17 @@ async function placeOrderScreen(
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
   /** The message `screen` writes onto, so the typed name can land back on it. */
   screenId?: number,
+  /**
+   * The customer pressed «خودکار انتخاب کن!» — ask nothing, name nothing.
+   *
+   * Only the `auto` button sets it, and it does not reach into what a name IS:
+   * the order is written with `username_text` null, exactly as it would be for
+   * a panel that never asks, and `remoteUsernameFor` names a CUSTOMER_TEXT
+   * order with no text after its own order id. So «خودکار» is not a second
+   * naming rule to keep in step with the first — it is the absence of the
+   * first, which the provisioning path already had an answer for.
+   */
+  auto = false,
 ): Promise<HandleOutcome> {
   /*
    * The one edge into an order, which is why the prompt is here and not beside
@@ -1302,9 +1313,9 @@ async function placeOrderScreen(
    */
   const chosenName =
     plan.usernameMode === 'CUSTOMER_TEXT' ? await heldName(tx, user.id, plan.planId) : null;
-  if (plan.usernameMode === 'CUSTOMER_TEXT' && chosenName === null) {
+  if (plan.usernameMode === 'CUSTOMER_TEXT' && chosenName === null && !auto) {
     await ask(tx, user.id, 'uname', { planId: plan.planId }, screenId);
-    return screen(menu.ASK_ACCOUNT_NAME, menu.promptMenu(encode('plan', plan.planId)));
+    return screen(menu.ASK_ACCOUNT_NAME, menu.askAccountNameMenu(plan.planId));
   }
 
   // The code is checked once more, here, in the transaction that writes the
@@ -1943,6 +1954,18 @@ async function handleCallback(
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
       return placeOrderScreen(tx, user, plan, screen, editId);
+    }
+
+    case 'auto': {
+      if (action.id === undefined) return IGNORED;
+      const plan = await purchasablePlan(tx, user.id, action.id);
+      if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
+      // The open question is closed first. Without this the session still says
+      // `uname`, and the next thing the customer types — «سلام», the receipt
+      // amount, anything — is read as the account name for an order that has
+      // already been placed and paid for.
+      await clearSession(tx, user.id);
+      return placeOrderScreen(tx, user, plan, screen, editId, true);
     }
 
     case 'mine': {
