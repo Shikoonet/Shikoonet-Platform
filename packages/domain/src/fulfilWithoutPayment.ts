@@ -36,7 +36,7 @@
  * which delivers nothing. See `mirzabotVerify.ts`.
  */
 
-import type { D1Database } from '@shikoo/database';
+import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { MIRZABOT_SOURCE, type MirzabotVerifiedWebhook } from '@shikoo/contracts';
 
 /** How a claim came to be delivered without evidence. */
@@ -91,7 +91,7 @@ interface Row {
 }
 
 export async function fulfilMirzabotClaimWithoutPayment(
-  db: D1Database,
+  db: D1Database | D1DatabaseSession,
   args: {
     claimId: string;
     actorEmail: string;
@@ -226,7 +226,7 @@ export async function fulfilMirzabotClaimWithoutPayment(
   return done(claim, args.mode, false);
 }
 
-async function read(db: D1Database, claimId: string): Promise<Row | null> {
+async function read(db: D1Database | D1DatabaseSession, claimId: string): Promise<Row | null> {
   return await db
     .prepare(
       `SELECT id, status, source_system, external_order_id, expected_amount_irr,

@@ -12,9 +12,10 @@
  * database ended up holding rather than against a return value.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env } from './helpers/env.js';
 import { app } from '../src/index.js';
+import { runMirzabotMatching } from '../src/integrations/mirzabot.js';
 import { MIRZABOT_CLAIMS_PATH } from '@shikoo/contracts';
 
 const SECRET = 'test-hmac-secret-32chars-minimum!!';
@@ -38,7 +39,10 @@ async function sha256Hex(data: string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function submitClaim(over: Record<string, unknown> = {}): Promise<Response> {
+async function submitClaim(
+  over: Record<string, unknown> = {},
+  envOver: Record<string, string> = {},
+): Promise<Response> {
   const body = {
     eventId: `evt-${crypto.randomUUID()}`,
     source: 'MIRZABOT',
@@ -77,6 +81,7 @@ async function submitClaim(over: Record<string, unknown> = {}): Promise<Response
       MIRZABOT_INTEGRATION_HMAC_SECRET: SECRET,
       MIRZABOT_INTEGRATION_ID: INTEGRATION_ID,
       AUTO_MATCH_ENABLED: 'true',
+      ...envOver,
     },
   );
 }
@@ -102,7 +107,7 @@ async function setContinuity(active: boolean, expiresAt?: number): Promise<void>
 
 async function claimFor(orderId: string) {
   return await env.DB.prepare(
-    `SELECT status, fulfilment_mode, fulfilled_at, fulfilled_by, fulfilment_reason
+    `SELECT status, fulfilment_mode, fulfilled_at, fulfilled_by, fulfilment_reason, reconciled_at
        FROM payment_claims WHERE external_order_id LIKE ?1`,
   )
     .bind(`%${orderId}%`)
@@ -112,6 +117,7 @@ async function claimFor(orderId: string) {
       fulfilled_at: number | null;
       fulfilled_by: string | null;
       fulfilment_reason: string | null;
+      reconciled_at: number | null;
     }>();
 }
 
@@ -123,6 +129,11 @@ beforeEach(async () => {
   await env.DB.prepare(
     `DELETE FROM settings WHERE scope = 'pay' AND key = 'continuity_mode'`,
   ).run();
+  await env.DB.prepare(`DELETE FROM webhook_deliveries`).run();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('a claim arriving while the shop is in NORMAL mode', () => {
@@ -204,6 +215,134 @@ describe('a claim arriving while Continuity is on', () => {
       .bind(claim!.id)
       .first<{ n: number }>();
     expect(rows?.n).toBe(1);
+  });
+
+  it('notifies the legacy bot before the claim request returns', async () => {
+    await setContinuity(true);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+    const orderId = `ord-${crypto.randomUUID().slice(0, 8)}`;
+
+    const res = await submitClaim(
+      { orderId },
+      {
+        AUTO_FULFILLMENT_ENABLED: 'true',
+        MIRZABOT_WEBHOOK_URL: 'https://legacy.example.com/api/v1/integrations/payment-hub/verified',
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ continuityFulfilled: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const delivery = await env.DB
+      .prepare(
+        `SELECT w.status, w.attempt_count
+           FROM webhook_deliveries w
+           JOIN payment_claims c ON w.id = 'fulfilled-' || c.id
+          WHERE c.external_order_id LIKE ?1`,
+      )
+      .bind(`%${orderId}%`)
+      .first<{ status: string; attempt_count: number }>();
+    expect(delivery).toEqual({ status: 'DELIVERED', attempt_count: 1 });
+  });
+
+  it('reconciles the delivered claim when its bank credit arrives later', async () => {
+    await setContinuity(true);
+    const suffix = crypto.randomUUID().slice(0, 8);
+    const accountId = `acc-cont-${suffix}`;
+    const cardDigits = `60379975${[...suffix].map((c) => parseInt(c, 16) % 10).join('')}`;
+    await env.DB.prepare(
+      `INSERT INTO financial_accounts
+         (id, bank_name, display_name, owner_label, account_type, active,
+          status, parser_configuration, created_at, updated_at)
+       VALUES (?1, 'TEST', 'Continuity account', NULL, 'CARD', 1,
+               'ACTIVE', '{}', ?2, ?2)`,
+    )
+      .bind(accountId, BASE_MS)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO payment_cards
+         (id, financial_account_id, card_digits, label, created_at)
+       VALUES (?1, ?2, ?3, 'Continuity card', ?4)`,
+    )
+      .bind(`card-cont-${suffix}`, accountId, cardDigits, BASE_MS)
+      .run();
+    const orderId = `ord-${crypto.randomUUID().slice(0, 8)}`;
+    const amountToman = 123_457;
+    const amountIrr = amountToman * 10;
+    expect(
+      (
+        await submitClaim({
+          orderId,
+          amountToman,
+          expectedAmountIrr: amountIrr,
+          cardNumber: cardDigits,
+        })
+      ).status,
+    ).toBe(200);
+    expect((await claimFor(orderId))?.status).toBe('FULFILLED_UNRECONCILED');
+
+    const claim = await env.DB
+      .prepare(
+        `SELECT id, target_financial_account_id, paid_clicked_at
+           FROM payment_claims WHERE external_order_id LIKE ?1`,
+      )
+      .bind(`%${orderId}%`)
+      .first<{
+        id: string;
+        target_financial_account_id: string;
+        paid_clicked_at: number;
+      }>();
+    expect(claim?.target_financial_account_id).toBeTruthy();
+
+    const deviceId = `dev-cont-${suffix}`;
+    const smsId = `sms-cont-${suffix}`;
+    const txId = `tx-cont-${suffix}`;
+    await env.DB.prepare(
+      `INSERT INTO devices
+         (id, device_code, display_name, active, created_at, updated_at)
+       VALUES (?1, ?2, 'Continuity test', 1, ?3, ?3)`,
+    )
+      .bind(deviceId, deviceId, BASE_MS)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO raw_sms_events
+         (id, device_id, sender, normalized_body, body_sha256, app_checksum,
+          sms_timestamp, received_at, classification, parser_status,
+          parser_id, parser_version, created_at)
+       VALUES (?1, ?2, 'TEST', 'seed', ?3, ?3, ?4, ?4,
+               'BANK_CREDIT', 'OK', 'test', 'v1', ?4)`,
+    )
+      .bind(smsId, deviceId, `hash-${suffix}`, claim!.paid_clicked_at + 20_000)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO transaction_candidates
+         (id, raw_sms_event_id, financial_account_id, direction, amount_irr,
+          status, bank_timestamp, confidence, parser_id, parser_version,
+          parser_evidence_json, processing_disposition, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 'CREDIT', ?4, 'PARSED', ?5, 1.0,
+               'test', 'v1', '{}', 'ACTIONABLE', ?5, ?5)`,
+    )
+      .bind(
+        txId,
+        smsId,
+        claim!.target_financial_account_id,
+        amountIrr,
+        claim!.paid_clicked_at + 20_000,
+      )
+      .run();
+
+    const matched = await runMirzabotMatching(
+      env.DB,
+      { accountId: claim!.target_financial_account_id, amountIrr },
+      { autoMatchEnabled: true, now: claim!.paid_clicked_at + 30_000 },
+    );
+
+    expect(matched.autoVerifiedClaimIds).toEqual([claim!.id]);
+    const after = await claimFor(orderId);
+    expect(after?.status).toBe('VERIFIED');
+    expect(after?.reconciled_at).not.toBeNull();
   });
 
   it('does not touch the backlog that was already waiting', async () => {
