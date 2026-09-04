@@ -54,10 +54,10 @@ describe('the price list', () => {
     // once for the shop. A fixed choice prints a column of identical values for
     // whichever half of the catalogue does not vary that way.
     const table = menu.tariffTable([
-      plan({ planId: 1, productName: 'VIP', volumeGb: 10, priceIrr: 800_000 }),
-      plan({ planId: 2, productName: 'VIP', volumeGb: 20, priceIrr: 1_500_000 }),
-      plan({ planId: 3, productName: '30 روزه', volumeGb: null, userLimit: 1, priceIrr: 1_190_000 }),
-      plan({ planId: 4, productName: '30 روزه', volumeGb: null, userLimit: 2, priceIrr: 1_490_000 }),
+      plan({ planId: 1, productId: 1, productName: 'VIP', volumeGb: 10, priceIrr: 800_000 }),
+      plan({ planId: 2, productId: 1, productName: 'VIP', volumeGb: 20, priceIrr: 1_500_000 }),
+      plan({ planId: 3, productId: 2, productName: '30 روزه', volumeGb: null, userLimit: 1, priceIrr: 1_190_000 }),
+      plan({ planId: 4, productId: 2, productName: '30 روزه', volumeGb: null, userLimit: 2, priceIrr: 1_490_000 }),
     ]);
 
     expect(table).toBe(
@@ -65,11 +65,43 @@ describe('the price list', () => {
     );
   });
 
+  it('keeps two services apart when they happen to share a name', () => {
+    // Found by review, 2026-09-04, and the codebase had already said it was
+    // possible: `productMenu` appends the panel's name to a service «whose name
+    // is not unique in this list», because a second panel selling its own
+    // «پلاتینیوم» is a thing that happens.
+    //
+    // Grouping on the NAME merged them, and the damage went past a wrong
+    // heading: `tierText` decides the left column from what varies among the
+    // rows it is handed, so two services under one heading would be described
+    // by a difference the customer never chooses between — «10 گیگ» against
+    // «10 گیگ», priced differently, with nothing saying which panel is which.
+    const table = menu.tariffTable([
+      plan({ planId: 1, productId: 10, productName: 'پلاتینیوم', volumeGb: 10, priceIrr: 1_000_000 }),
+      plan({ planId: 2, productId: 10, productName: 'پلاتینیوم', volumeGb: 20, priceIrr: 2_000_000 }),
+      plan({ planId: 3, productId: 20, productName: 'پلاتینیوم', volumeGb: 10, priceIrr: 3_000_000 }),
+    ]);
+
+    // Two blocks, not one — and the second one's single row falls back to its
+    // plan name, because on its own it has no sibling to differ from.
+    expect(table.split('\n\n')).toHaveLength(2);
+    expect(table).toBe(
+      [
+        'پلاتینیوم',
+        ' 10 گیگ  100,000 تومان',
+        ' 20 گیگ  200,000 تومان',
+        '',
+        'پلاتینیوم',
+        ` ${PLAN.planName}  300,000 تومان`,
+      ].join('\n'),
+    );
+  });
+
   it('falls back to the plan name when nothing printable varies', () => {
     // One plan in a group has no sibling to differ from, so «10 گیگ» would be
     // a column that says nothing. The plan's own name is what the button beside
     // it draws, and the two agreeing is the point.
-    const table = menu.tariffTable([plan({ productName: 'تکی', planName: 'سرویس ویژه' })]);
+    const table = menu.tariffTable([plan({ productId: 3, productName: 'تکی', planName: 'سرویس ویژه' })]);
     expect(table).toBe(['تکی', ' سرویس ویژه  195,000 تومان'].join('\n'));
   });
 
@@ -77,8 +109,8 @@ describe('the price list', () => {
     // A standing discount is applied on every plan BUTTON. A price list that
     // quoted the list price would be the one screen in the shop that lies to a
     // reseller about what they pay.
-    const full = menu.tariffTable([plan({ productName: 'تکی' })]);
-    const off = menu.tariffTable([plan({ productName: 'تکی' })], 50);
+    const full = menu.tariffTable([plan({ productId: 4, productName: 'تکی' })]);
+    const off = menu.tariffTable([plan({ productId: 4, productName: 'تکی' })], 50);
     expect(full).toContain('195,000 تومان');
     expect(off).toContain('97,500 تومان');
   });

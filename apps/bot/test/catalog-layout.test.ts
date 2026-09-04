@@ -228,17 +228,45 @@ describe('the price list', () => {
     const listed = before.replies[0]?.text ?? '';
     expect(listed, 'the fixture must sell something').not.toBe('');
 
+    // Judged against the DATABASE, not against the list's own earlier self.
+    //
+    // The first version of this compared the rendering before and after and
+    // asserted one line had gone. It passed with a filter that dropped the
+    // WRONG plan — because a filter that is wrong in both snapshots cancels
+    // out. That is rule 6 in this repo's own words: a test that only agrees
+    // with itself proves nothing. Proven by mutation, not by reading.
+    //
+    // So the outside truth is `product_plans`: every plan this customer may buy
+    // has its price on the list, and nothing else does.
+    const priced = (text: string) =>
+      text.split('\n').filter((l) => l.startsWith(' ')).map((l) => l.trim().split(/ {2,}/).pop());
+
+    const payable = async (): Promise<string[]> => {
+      const rows = await db
+        .prepare(
+          `SELECT pl.price_irr FROM product_plans pl
+             JOIN products p ON p.id = pl.product_id
+             JOIN provisioning_providers pr ON pr.id = p.provider_id
+            WHERE pl.status = 'ACTIVE' AND p.status = 'ACTIVE' AND pr.status = 'ACTIVE'
+              AND p.resellers_only = false`,
+        )
+        .all<{ price_irr: number }>();
+      return rows.results
+        .map((r) => `${Math.round(Number(r.price_irr) / 10).toLocaleString('en-US')} تومان`)
+        .sort();
+    };
+
+    expect(priced(listed).sort(), 'every purchasable plan is on the list').toEqual(await payable());
+
     await db
       .prepare(`UPDATE product_plans SET status = 'HIDDEN' WHERE id = ?1`)
       .bind(PLATINUM[0])
       .run();
     try {
       const after = await handleUpdate(db, press(updateId + 2, telegramId, 'tar'));
-      const lines = (after.replies[0]?.text ?? '').split('\n').filter((l) => l.startsWith(' '));
-      const wasThere = listed.split('\n').filter((l) => l.startsWith(' '));
-      // One priced row fewer, and the rest untouched: a hidden plan leaves the
-      // list rather than blanking the service it belonged to.
-      expect(lines).toHaveLength(wasThere.length - 1);
+      // The same claim again, against a catalogue that now has one fewer row.
+      // Hiding a plan has to take that plan off the list and leave the rest.
+      expect(priced(after.replies[0]?.text ?? '').sort()).toEqual(await payable());
     } finally {
       await db
         .prepare(`UPDATE product_plans SET status = 'ACTIVE' WHERE id = ?1`)
