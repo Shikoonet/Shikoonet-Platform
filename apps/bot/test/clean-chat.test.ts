@@ -173,6 +173,36 @@ describe('/start tidying up after the last visit', () => {
   });
 });
 
+describe('which door /start opens with', () => {
+  it('gives a brand-new customer the bottom keyboard, and a returning one the inline menu', async () => {
+    // Found in Sam's own Telegram, 2026-09-04. The welcome said «از منوی زیر
+    // انتخاب کنید» and there was nothing under it: the bottom keyboard had been
+    // delivered correctly weeks earlier and his client had it COLLAPSED, behind
+    // a toggle he had to know to press. We send `is_persistent: true`; that
+    // client does not honour it.
+    //
+    // So a menu is drawn either way, and the two together are self-healing: a
+    // customer whose keyboard is hidden presses /start, is no longer new, and
+    // gets a menu they can see. That property is what this test is really for —
+    // asserting only the first half would pass with the second one deleted.
+    const { telegramId } = ids();
+
+    // Nothing creates the row first: `/start` does, which is what makes it new.
+    const first = await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
+    expect(first.replies[0]?.replyKeyboard, 'a new customer has no keyboard yet').toBeDefined();
+    expect(first.replies[0]?.keyboard).toBeUndefined();
+
+    const again = await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
+    expect(again.replies[0]?.keyboard, 'the door a client cannot collapse').toBeDefined();
+    expect(again.replies[0]?.replyKeyboard).toBeUndefined();
+
+    // And it is the same menu both times — one layout, two markups.
+    const bottom = (first.replies[0]?.replyKeyboard as { text: string }[][]).flat().map((b) => b.text);
+    const inline = (again.replies[0]?.keyboard ?? []).flat().map((b) => b.text);
+    expect(inline).toEqual(bottom);
+  });
+});
+
 describe('the menu under the chat', () => {
   it('opens the same screen the inline button opens', async () => {
     // The bottom keyboard sends a LABEL, not a callback. If the two roads led to

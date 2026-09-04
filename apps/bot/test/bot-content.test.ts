@@ -184,12 +184,15 @@ describe('the texts a customer receives', () => {
 
 describe('the keyboard', () => {
   it('is production’s layout when nothing is customised', async () => {
-    // Read from `replyKeyboard` since 2026-09-03: `/start` puts the shop's menu
-    // UNDER the chat rather than under the message. Same layout, same labels,
-    // same source — `layout('main')` — which is the point of asserting it here
-    // rather than trusting that two builders agree.
+    // Same layout, same labels, same source — `layout('main')` — which is the
+    // point of asserting it here rather than trusting that two builders agree.
+    //
+    // // Read from the INLINE keyboard since 2026-09-04: `/start` draws the menu in
+    // the message for a customer who already exists, and only a brand-new one
+    // gets the bottom keyboard — see `handleStart`. These fixtures create the
+    // customer first, so they are always the returning case.
     const reply = await start(await makeCustomer());
-    const rows = reply?.replyKeyboard;
+    const rows = reply?.keyboard;
     expect(rows).not.toBe('remove');
     expect((Array.isArray(rows) ? rows : []).map((r) => r.map((b) => b.text))).toEqual([
       ['♻️ تمدید سرویس', '🔐 خرید اشتراک'],
@@ -223,7 +226,7 @@ describe('the keyboard', () => {
     invalidateBotContent();
 
     const reply = await start(await makeCustomer());
-    const rows = reply?.replyKeyboard;
+    const rows = reply?.keyboard;
     expect((Array.isArray(rows) ? rows : []).map((r) => r.map((b) => b.text))).toEqual([
       ['🛒 خرید', '💰 کیف پول'],
       ['♻️ تمدید', '☎️ پشتیبانی'],

@@ -57,7 +57,7 @@ async function seesEmojiButton(telegramId: number): Promise<boolean> {
       text: '/start',
     },
   });
-  const rows = out.replies[0]?.replyKeyboard;
+  const rows = out.replies[0]?.keyboard;
   return (Array.isArray(rows) ? rows : [])
     .flat()
     .some((b) => b.text.includes('ایموجی پریمیوم'));
@@ -138,7 +138,7 @@ describe('who may open it', () => {
         text: '/start',
       },
     });
-    const rows = out.replies[0]?.replyKeyboard;
+    const rows = out.replies[0]?.keyboard;
     const labels = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
     expect(labels.some((l) => l.includes('ایموجی پریمیوم'))).toBe(false);
   });
@@ -156,7 +156,7 @@ describe('who may open it', () => {
         text: '/start',
       },
     });
-    const rows = out.replies[0]?.replyKeyboard;
+    const rows = out.replies[0]?.keyboard;
     const labels = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
     expect(labels.some((l) => l.includes('ایموجی پریمیوم'))).toBe(true);
   });
@@ -410,7 +410,7 @@ describe('putting it on a button', () => {
         text: '/start',
       },
     });
-    const rows = started.replies[0]?.replyKeyboard;
+    const rows = started.replies[0]?.keyboard;
     const labels = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
     expect(labels.some((l) => l.includes('خرید'))).toBe(true);
   });
