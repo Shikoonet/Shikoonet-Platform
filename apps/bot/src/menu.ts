@@ -604,15 +604,26 @@ export function choosePlan(
  * Telegram's HTML parser. Two spaces, like the shop we are copying.
  */
 export function tariffTable(plans: readonly CatalogPlan[], discountPercent = 0): string {
-  const groups = new Map<string, CatalogPlan[]>();
+  // Keyed on `productId`, not on the name, and the codebase already says why:
+  // `productMenu` appends the panel's name to a service «whose name is not
+  // unique in this list», because a second panel selling its own «پلاتینیوم» is
+  // a thing that happens. Grouping on the name would put two services' sizes
+  // under one heading — and worse than looking wrong, `tierText` would then
+  // compare plans from different services to decide what varies, so the left
+  // column would describe a difference that is not the one the customer picks
+  // between. Found by review, 2026-09-04.
+  const groups = new Map<number, CatalogPlan[]>();
   for (const plan of plans) {
-    const into = groups.get(plan.productName) ?? [];
+    const into = groups.get(plan.productId) ?? [];
     into.push(plan);
-    groups.set(plan.productName, into);
+    groups.set(plan.productId, into);
   }
 
   const blocks: string[] = [];
-  for (const [productName, rows] of groups) {
+  for (const rows of groups.values()) {
+    // From the first row rather than the key: the heading is the shop's own
+    // wording, and the key is only identity.
+    const productName = rows[0]!.productName;
     const lines = rows.map((plan) => {
       const price = priceForUser(plan.priceIrr, discountPercent);
       return ` ${tierText(plan, rows)}  ${formatToman(price.totalIrr)}`;
