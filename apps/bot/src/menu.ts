@@ -463,12 +463,26 @@ export function mainMenu(viewer: MenuViewer): InlineKeyboard {
 }
 
 /**
- * The same menu, under the chat.
+ * The one navigation bar that stays under the chat.
  *
- * Drawn from `layout('main')` like its inline twin, so the shop arranges one
- * menu and gets both. Everything about which buttons appear lives in
- * `buildReplyMenu`; this is only the layout lookup, kept here so `handle.ts`
- * asks `menu` for a keyboard the way it does for every other screen.
+ * The shop itself remains an inline menu: it can be edited in place as the
+ * customer walks through it, while this small bottom bar always offers the
+ * same escape hatch back home. Keeping only that escape hatch here also keeps
+ * the text field usable; a copy of the whole shop menu can fill most of a
+ * phone's screen.
+ */
+export const HOME_REPLY_LABEL = '🏠 بازگشت به منوی اصلی';
+
+export function homeReplyMenu(): ReplyKeyboard {
+  return [[{ text: HOME_REPLY_LABEL }]];
+}
+
+/**
+ * The old full menu under the chat.
+ *
+ * Kept so labels from a keyboard installed by the previous release continue
+ * to work until the customer next sends `/start`, which replaces it with the
+ * single home bar above.
  */
 export function mainReplyMenu(viewer: MenuViewer): ReplyKeyboard {
   return buildReplyMenu(layout('main'), viewer);
@@ -476,6 +490,7 @@ export function mainReplyMenu(viewer: MenuViewer): ReplyKeyboard {
 
 /** Which action a bottom-keyboard label means, against the live layout. */
 export function actionForReplyLabel(viewer: MenuViewer, text: string): string | null {
+  if (text.trim() === HOME_REPLY_LABEL) return 'menu';
   return actionForLabel(layout('main'), viewer, text);
 }
 
