@@ -299,6 +299,7 @@ describe('the channel gate', () => {
     const out = await handleUpdate(db, startUpdate(updateId, telegramId), globalThis.fetch, api);
 
     expect(out.replies[0]!.text).toBe(menu.WELCOME);
+    expect(out.replies[0]!.replyKeyboard).toEqual(menu.homeReplyMenu());
     expect(await checkedAt(telegramId)).not.toBeNull();
   });
 
@@ -456,6 +457,7 @@ describe('«عضو شدم»', () => {
     );
 
     expect(out.replies[0]!.text).toBe(menu.WELCOME);
+    expect(out.replies[0]!.replyKeyboard).toEqual(menu.homeReplyMenu());
     expect(await checkedAt(telegramId)).not.toBeNull();
   });
 
@@ -523,6 +525,7 @@ describe('the rules gate', () => {
     expect(await rulesAccepted(telegramId)).toBe(true);
     expect(out.replies[0]!.text).toContain(menu.GATE_RULES_ACCEPTED);
     expect(out.replies[0]!.text).toContain(menu.WELCOME);
+    expect(out.replies[0]!.replyKeyboard).toEqual(menu.homeReplyMenu());
   });
 
   it('cannot be used to skip the channel', async () => {

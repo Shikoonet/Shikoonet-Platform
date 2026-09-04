@@ -252,10 +252,9 @@ describe('a customer sending their receipt', () => {
     });
 
     expect(out.status).toBe('processed');
-    // `/start` answers with the shop's menu — inline here, since the fixture
-    // created this customer first. The claim is unchanged: a message with no
-    // photo still reaches the handler it always reached.
-    const rows = out.replies[0]?.keyboard;
+    // `/start` answers with the fixed navigation row. The claim is unchanged:
+    // a message with no photo still reaches the handler it always reached.
+    const rows = out.replies[0]?.replyKeyboard;
     expect(Array.isArray(rows) && rows.flat().length).toBeGreaterThan(0);
   });
 });
