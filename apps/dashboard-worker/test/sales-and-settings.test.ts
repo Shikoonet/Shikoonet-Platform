@@ -59,22 +59,10 @@ async function makeUser(): Promise<{ id: number; telegramId: number }> {
 }
 
 async function purge(): Promise<void> {
-  await baseEnv.DB.prepare(
-    `DELETE FROM reseller_requests WHERE user_id IN (SELECT id FROM users WHERE telegram_id >= ?1)`,
-  )
-    .bind(TG_BASE)
-    .run();
-  await baseEnv.DB.prepare(
-    `DELETE FROM orders WHERE user_id IN (SELECT id FROM users WHERE telegram_id >= ?1)`,
-  )
-    .bind(TG_BASE)
-    .run();
-  await baseEnv.DB.prepare(
-    `DELETE FROM subscriptions WHERE user_id IN (SELECT id FROM users WHERE telegram_id >= ?1)`,
-  )
-    .bind(TG_BASE)
-    .run();
   await baseEnv.DB.prepare(`TRUNCATE wallet_entries, wallets RESTART IDENTITY CASCADE`).run();
+  // Reseller requests, orders and subscriptions used to be deleted by hand here
+  // with an UNBOUNDED `telegram_id >= TG_BASE`, which reached into every suite
+  // with a higher base. `deleteFixtureUsers` does all four tables now, bounded.
   await deleteFixtureUsers(TG_BASE);
   await baseEnv.DB.prepare(`DELETE FROM settings WHERE scope = 'pay'`).run();
 }

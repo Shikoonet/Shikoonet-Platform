@@ -93,7 +93,8 @@ async function purge(): Promise<void> {
   await baseEnv.DB.prepare(`DELETE FROM reseller_requests WHERE legacy_id LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();
-  await baseEnv.DB.prepare(`DELETE FROM admins WHERE telegram_id >= ?1`).bind(TG_BASE).run();
+  // `admins` is deleted by `deleteFixtureUsers` below, bounded to this suite's
+  // range. It was unbounded here and reached every other suite's admins.
   // "The last active OWNER" is a property of the whole table, so a test of it
   // has to own the whole table — a stray OWNER from `apps/bot/test/admin.test.ts`
   // (which clears its own 500000–599999 range at `beforeAll`, so its rows

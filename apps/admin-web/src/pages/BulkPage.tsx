@@ -135,6 +135,8 @@ export function BulkPage() {
   const [audienceKind, setAudienceKind] = useState<BroadcastAudience['kind']>('all');
   const [audiencePanel, setAudiencePanel] = useState('');
   const [messageReach, setMessageReach] = useState<number | null>(null);
+  /** Which count request is the current one; see `loadMessageReach`. */
+  const reachSeq = useRef(0);
   const [broadcastId, setBroadcastId] = useState(newId);
   const [confirmingMessage, setConfirmingMessage] = useState(false);
 
@@ -174,16 +176,20 @@ export function BulkPage() {
    * count derived in the browser would agree until somebody edited one of them.
    */
   async function loadMessageReach(a: BroadcastAudience | null) {
-    if (a === null) {
-      setMessageReach(null);
-      return;
-    }
+    // Cleared BEFORE the request, not after it comes back. Between choosing a
+    // new audience and the server answering, the old audience's number was
+    // still in state — so the button stayed armed and the confirmation showed
+    // one audience's name beside another's count. On a button with no undo.
+    const mine = ++reachSeq.current;
+    setMessageReach(null);
+    if (a === null) return;
     try {
-      setMessageReach((await api.bulkReach(a)).reach);
+      const answer = (await api.bulkReach(a)).reach;
+      // Two changes in quick succession can answer out of order, and the slower
+      // first response would then overwrite the right count with a stale one.
+      if (reachSeq.current === mine) setMessageReach(answer);
     } catch (e) {
-      // Null rather than a stale number: the button reads this, and a count
-      // left over from the previous audience is the one wrong answer that
-      // would still look right.
+      if (reachSeq.current !== mine) return;
       setMessageReach(null);
       setErr(message(e));
     }
