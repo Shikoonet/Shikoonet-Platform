@@ -28,9 +28,24 @@ import { resolveBotToken } from '@shikoo/domain';
 
 const TELEGRAM_API = 'https://api.telegram.org';
 
+/**
+ * A deadline on every call, because these run on an admin's request thread.
+ *
+ * Telegram accepting a connection and then never answering would otherwise hang
+ * the route for as long as the platform allows. The same 15s the bot's own
+ * client uses (`apps/bot/src/telegram.ts`), so the two do not disagree about
+ * how long Telegram is allowed to think. Both callers already answer 502 on a
+ * throw, so an abort arrives as the right sentence.
+ */
+const CALL_TIMEOUT_MS = 15_000;
+
 /** The bindings any route needs before it can speak as the bot. */
 export interface BotCallEnv {
   DB: D1Database;
+  /**
+   * Optional on the type because every `Bindings` in this worker declares it
+   * so, and REFUSED below rather than defaulted. See `botTelegram`.
+   */
   ENV_NAME?: EnvName;
   TELEGRAM_BOT_TOKEN?: string;
 }
@@ -55,11 +70,36 @@ export type BotCall =
   | { ok: true; call: TelegramCall }
   | { ok: false; status: 409 | 503; error: string; detail: string };
 
-/** The bot's Telegram, or the reason there isn't one — never a throw. */
+/**
+ * The bot's Telegram, or the reason there isn't one — never a throw.
+ *
+ * ## Why a missing `ENV_NAME` is refused rather than defaulted
+ *
+ * `resolveBotToken` compares the stored row's `env_name` against this value and
+ * IGNORES the row when they differ. So `?? 'local'` — which is what every
+ * caller in this worker wrote, and what this function was first written with —
+ * turns a missing binding into «no bot is connected» on a shop that has one.
+ * The operator is then sent to re-paste a token that was already right.
+ *
+ * A 503 is not the same as refusing to start, which is what this deserves and
+ * what `ENV_NAME` gets in `deploy/autodeploy.sh` (it will not deploy a
+ * container that reports none). Making it required at the type level means
+ * every `Bindings` in the worker and a boot guard beside them — a change worth
+ * making and not worth smuggling into a broadcast feature. Issue #91.
+ */
 export async function botTelegram(env: BotCallEnv): Promise<BotCall> {
+  const envName = env.ENV_NAME;
+  if (!envName) {
+    return {
+      ok: false,
+      status: 503,
+      error: 'no_env_name',
+      detail: 'ENV_NAME روی این سرویس تنظیم نشده — تا تنظیم نشود، ربات پیدا نمی‌شود.',
+    };
+  }
   let resolved;
   try {
-    resolved = await resolveBotToken(env.DB, env.ENV_NAME ?? 'local', {
+    resolved = await resolveBotToken(env.DB, envName, {
       TELEGRAM_BOT_TOKEN: env.TELEGRAM_BOT_TOKEN,
       PANEL_SECRET_KEY: process.env['PANEL_SECRET_KEY'],
     });
@@ -90,6 +130,7 @@ export async function botTelegram(env: BotCallEnv): Promise<BotCall> {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
       });
       return (await res.json()) as TelegramReply;
     },

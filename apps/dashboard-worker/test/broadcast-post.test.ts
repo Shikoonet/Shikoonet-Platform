@@ -21,7 +21,28 @@ const ADMIN = 'admin-post@example.com';
 const KEY_HEX = 'e'.repeat(64);
 const TOKEN = '7712345678:AAH9fakeTokenForTestsOnly_not_a_real_one';
 const GROUP = '-1003992817118';
-const TEST_TOPIC = 174;
+/** «سایر گزارشات» — where a rehearsal belongs; see `rehearseForward`. */
+const REHEARSAL_TOPIC = 175;
+
+/**
+ * Fixture ids, counted rather than drawn.
+ *
+ * `crypto.randomUUID()` was here and is what this package's older suites use.
+ * A random id makes a failure depend on the run: the row that broke is gone by
+ * the time anybody looks, and there is nothing to put back into a query. The
+ * shape still has to be a v4 uuid because the route's own schema demands one.
+ */
+let ids = 0;
+const uuid = () => `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}`;
+
+/**
+ * A clock, pinned.
+ *
+ * Nothing here asserts on a date, so this is not the bomb rule 5 is about — but
+ * `access_users.created_at` was reading the real one, and a fixture whose value
+ * changes every run is a fixture that cannot be reproduced.
+ */
+const NOW_MS = Date.UTC(2026, 8, 4, 6, 0, 0);
 
 function envAs(email = ADMIN) {
   return { ...baseEnv, TEST_ACCESS_USER: email };
@@ -92,15 +113,13 @@ async function queued(): Promise<{ broadcasts: number; recipients: number }> {
   return { broadcasts: Number(b?.n ?? 0), recipients: Number(r?.n ?? 0) };
 }
 
-const uuid = () => crypto.randomUUID();
-
 beforeAll(async () => {
   await applySchema();
   await baseEnv.DB.prepare(
     `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at)
      VALUES (?1, ?2, 'ADMIN', 1, ?3, ?3)`,
   )
-    .bind(uuid(), ADMIN, Date.now())
+    .bind(uuid(), ADMIN, NOW_MS)
     .run();
   // One active customer, so «nothing queued» is a real claim rather than the
   // route's `no_active_customers` refusal wearing the same shape.
@@ -117,7 +136,7 @@ beforeEach(async () => {
   await baseEnv.DB.prepare(`TRUNCATE broadcast_recipients, broadcasts CASCADE`).run();
   await baseEnv.DB.prepare(`DELETE FROM bot_credentials`).run();
   await setting('Channel_Report', GROUP);
-  await setting('topic_reporttest', String(TEST_TOPIC));
+  await setting('topic_otherreport', String(REHEARSAL_TOPIC));
   // A bot the panel can speak as. `TELEGRAM_BOT_TOKEN` on the env rather than a
   // sealed row: the sealing is `botRoutes`' subject, not this one's.
   Object.assign(baseEnv, { TELEGRAM_BOT_TOKEN: TOKEN });
@@ -136,14 +155,14 @@ describe('a broadcast built from a channel post link', () => {
     const res = await send({ postLink: 'https://t.me/shikoonet/137', broadcastId });
 
     expect(res.status).toBe(200);
-    // Once, and into the report group's own test topic — a place the shop's
-    // people watch and no customer does.
+    // Once, and into «سایر گزارشات» — a topic the shop's own people watch and
+    // no customer does.
     expect(forwards).toHaveLength(1);
     expect(forwards[0]).toMatchObject({
       chat_id: Number(GROUP),
       from_chat_id: '@shikoonet',
       message_id: 137,
-      message_thread_id: TEST_TOPIC,
+      message_thread_id: REHEARSAL_TOPIC,
     });
 
     const row = await baseEnv.DB.prepare(

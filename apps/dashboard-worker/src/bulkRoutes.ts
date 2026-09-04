@@ -33,7 +33,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 
-import { MAX_SINGLE_PAYMENT_IRR, parseChannelPostLink } from '@shikoo/contracts';
+import { MAX_SINGLE_PAYMENT_IRR, parseChannelPostLink, reportTopicKey } from '@shikoo/contracts';
 import type { EnvName } from '@shikoo/contracts';
 import {
   MAX_MESSAGE_LENGTH,
@@ -143,8 +143,16 @@ const BroadcastBody = z.union([
  * «bot is not a member of the channel chat» are three different things for an
  * operator to go and fix, and without it all three arrive as «it did not work».
  *
- * It goes to the report group's «گزارش تست» topic — the topic that exists for
- * exactly this, a place the shop's own people watch and no customer does.
+ * It goes to «سایر گزارشات» — the topic whose whole definition is «everything
+ * without a topic of its own». A rehearsal is exactly that. The first draft
+ * sent it to «گزارش اکانت تست», which reads right and is not: that topic is for
+ * free trial accounts handed to customers, and an operator watching it would
+ * have no idea why a shop announcement appeared in it.
+ *
+ * The key comes from `reportTopicKey` rather than being spelled out, because
+ * `botRoutes` WRITES it with that helper. Two spellings of one settings key
+ * means the day it changes this lookup silently finds nothing and the rehearsal
+ * lands in the group's General instead.
  */
 async function rehearseForward(
   env: BotCallEnv,
@@ -153,10 +161,13 @@ async function rehearseForward(
 ): Promise<
   { ok: true } | { ok: false; status: 409 | 422 | 502 | 503; error: string; detail: string }
 > {
+  const topicKey = reportTopicKey('otherreport');
   const rows = await env.DB.prepare(
     `SELECT key, value FROM settings
-      WHERE scope = 'bot' AND key IN ('Channel_Report', 'topic_reporttest')`,
-  ).all<{ key: string; value: unknown }>();
+      WHERE scope = 'bot' AND key IN ('Channel_Report', ?1)`,
+  )
+    .bind(topicKey)
+    .all<{ key: string; value: unknown }>();
   const setting = new Map((rows.results ?? []).map((r) => [r.key, String(r.value ?? '').trim()]));
 
   const rawChat = setting.get('Channel_Report') ?? '';
@@ -173,7 +184,7 @@ async function rehearseForward(
   // Zero and negative are «not configured» — legacy's own sentinels, and what
   // the bot's settings reader treats as absent. An unset topic lands in the
   // group's General, which is a fine place for a rehearsal.
-  const rawTopic = Number(setting.get('topic_reporttest') ?? '');
+  const rawTopic = Number(setting.get(topicKey) ?? '');
   const threadId = Number.isSafeInteger(rawTopic) && rawTopic > 0 ? rawTopic : null;
 
   const bot = await botTelegram(env);

@@ -19,12 +19,22 @@ import { sweepBroadcasts } from '../src/poll.js';
 
 let seq = 0;
 
+/**
+ * Fixture ids, counted rather than drawn.
+ *
+ * A random uuid makes a failure depend on the run — the row that broke is gone
+ * by the time anybody looks. The shape is still a v4 uuid because `broadcasts`
+ * types the column as one.
+ */
+let ids = 0;
+const uuid = () => `00000000-0000-4000-9000-${String(++ids).padStart(12, '0')}`;
+
 /** A broadcast with `count` recipients, all PENDING. */
 async function queue(
   payload: { body: string } | { chat: string; messageId: number },
   count = 2,
 ): Promise<string> {
-  const id = crypto.randomUUID();
+  const id = uuid();
   seq += 1;
   await db
     .prepare(
@@ -169,7 +179,7 @@ describe('a broadcast that names a channel post', () => {
           `INSERT INTO broadcasts (id, body, source_chat, source_message_id, created_by)
                 VALUES (?1, 'سلام', '@shikoonet', 137, 111)`,
         )
-        .bind(crypto.randomUUID())
+        .bind(uuid())
         .run(),
     ).rejects.toThrow();
 
@@ -179,7 +189,7 @@ describe('a broadcast that names a channel post', () => {
           `INSERT INTO broadcasts (id, body, source_chat, source_message_id, created_by)
                 VALUES (?1, NULL, NULL, NULL, 111)`,
         )
-        .bind(crypto.randomUUID())
+        .bind(uuid())
         .run(),
     ).rejects.toThrow();
 
@@ -190,7 +200,7 @@ describe('a broadcast that names a channel post', () => {
           `INSERT INTO broadcasts (id, body, source_chat, source_message_id, created_by)
                 VALUES (?1, NULL, 'https://t.me/shikoonet', 137, 111)`,
         )
-        .bind(crypto.randomUUID())
+        .bind(uuid())
         .run(),
     ).rejects.toThrow();
   });
