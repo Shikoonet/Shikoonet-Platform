@@ -298,6 +298,23 @@ export interface TelegramApi {
    */
   sendPhoto(chatId: number, fileId: string, caption?: string): Promise<void>;
   /**
+   * Passes an existing message on, whole.
+   *
+   * The only way a broadcast can carry what a channel post carries — images, an
+   * album, formatting an admin wrote in Telegram's own editor — because none of
+   * that survives a round trip through a `text` column.
+   *
+   * `forwardMessage` and not `copyMessage`: the two differ only in the
+   * «Forwarded from» header, and for a shop announcement that header is the
+   * point. A customer can tap it and land on the channel.
+   *
+   * `fromChatId` is a string as well as a number because that is what the
+   * source is: `@shikoonet`, or a `-100…` id. It is never a `t.me/…` URL —
+   * `parseChannelPostLink` turns one into the other, and the CHECK on
+   * `broadcasts` refuses the URL shape outright.
+   */
+  forwardMessage(chatId: number, fromChatId: string | number, messageId: number): Promise<void>;
+  /**
    * Sends an image we generated ourselves, as bytes.
    *
    * Distinct from `sendPhoto` because there is no `file_id` to send: a QR code
@@ -788,6 +805,18 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
 
     async deleteMessage(chatId, messageId) {
       await call('deleteMessage', { chat_id: chatId, message_id: messageId }, 10_000);
+    },
+
+    async forwardMessage(chatId, fromChatId, messageId) {
+      // Nothing to escape and no keyboard to fall back from: the message
+      // already exists on Telegram's side and none of its content passes
+      // through here. That is why this does not go through
+      // `withEmojiFallback` the way `sendMessage` does.
+      await call(
+        'forwardMessage',
+        { chat_id: chatId, from_chat_id: fromChatId, message_id: messageId },
+        15_000,
+      );
     },
 
     async sendPhoto(chatId, fileId, caption) {
