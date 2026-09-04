@@ -122,21 +122,45 @@ export async function queueDirectMessage(
 }
 
 /**
+ * What a broadcast carries.
+ *
+ * Text, or the identity of a post to pass on. The second exists because what a
+ * shop announces with is a channel post — images, an album, formatting written
+ * in Telegram's own editor — and none of that survives being retyped into a
+ * textarea. `broadcasts` enforces the same either/or in SQL.
+ */
+export type BroadcastContent =
+  | { kind: 'text'; body: string }
+  | { kind: 'forward'; chat: string; messageId: number };
+
+/**
  * Writes the broadcast and its recipient list down. Returns how many will get
  * it, which is fixed from this moment.
+ *
+ * One function for both kinds rather than two, because the half that is hard is
+ * the half they share: the snapshot of recipients, the `ON CONFLICT` that makes
+ * a resubmit free, and the primary key that stops anybody hearing twice. Only
+ * the payload differs, and it differs in one INSERT.
  */
 export async function queueBroadcast(
   db: Db,
   broadcastId: string,
-  body: string,
+  content: BroadcastContent,
   createdBy: number,
 ): Promise<number> {
   await db
     .prepare(
-      `INSERT INTO broadcasts (id, body, created_by) VALUES (?1, ?2, ?3)
+      `INSERT INTO broadcasts (id, body, source_chat, source_message_id, created_by)
+            VALUES (?1, ?2, ?3, ?4, ?5)
               ON CONFLICT (id) DO NOTHING`,
     )
-    .bind(broadcastId, body, createdBy)
+    .bind(
+      broadcastId,
+      content.kind === 'text' ? content.body : null,
+      content.kind === 'forward' ? content.chat : null,
+      content.kind === 'forward' ? content.messageId : null,
+      createdBy,
+    )
     .run();
   const done = await db
     .prepare(

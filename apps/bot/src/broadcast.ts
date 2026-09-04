@@ -20,6 +20,9 @@
  */
 
 import type { D1Database } from '@shikoo/database';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('bot');
 
 export {
   MAX_MESSAGE_LENGTH,
@@ -80,11 +83,24 @@ export const SEND_CONCURRENCY = 12;
  */
 export const SEND_GAP_MS = 40;
 
+/**
+ * What one queued message actually is.
+ *
+ * A union rather than a nullable `text` beside a nullable pair, because the two
+ * are answered by two different Telegram methods and the send loop has to pick
+ * one. `broadcasts` says the same thing in SQL — one payload or the other,
+ * never both, never neither — and this is that CHECK in the type system, so a
+ * row that somehow held both could not be turned into a message at all.
+ */
+export type BroadcastPayload =
+  | { kind: 'text'; text: string }
+  | { kind: 'forward'; fromChat: string; messageId: number };
+
 export interface BroadcastMessage {
   broadcastId: string;
   userId: number;
   chatId: number;
-  text: string;
+  payload: BroadcastPayload;
 }
 
 /**
@@ -158,16 +174,48 @@ export async function claimBroadcastBatch(
            AND r.user_id = p.user_id
            AND r.status = 'PENDING'
            AND b.id = r.broadcast_id
-       RETURNING r.broadcast_id, r.user_id, r.telegram_id, b.body`,
+       RETURNING r.broadcast_id, r.user_id, r.telegram_id,
+                 b.body, b.source_chat, b.source_message_id`,
     )
     .bind(limit)
-    .all<{ broadcast_id: string; user_id: number; telegram_id: number; body: string }>();
-  return (results ?? []).map((r) => ({
-    broadcastId: r.broadcast_id,
-    userId: r.user_id,
-    chatId: r.telegram_id,
-    text: r.body,
-  }));
+    .all<{
+      broadcast_id: string;
+      user_id: number;
+      telegram_id: number;
+      body: string | null;
+      source_chat: string | null;
+      source_message_id: number | null;
+    }>();
+  return (results ?? []).flatMap((r) => {
+    const payload = payloadOf(r);
+    // A row that satisfies neither branch cannot exist — the CHECK on
+    // `broadcasts` refuses it — so this is unreachable rather than a case. It
+    // is dropped rather than sent as something invented, and it stays claimed
+    // as SENDING, which is the state that means «somebody has to look».
+    if (payload === null) {
+      log.error('broadcast.payload_unreadable', { ref: r.broadcast_id });
+      return [];
+    }
+    return [{
+      broadcastId: r.broadcast_id,
+      userId: r.user_id,
+      chatId: r.telegram_id,
+      payload,
+    }];
+  });
+}
+
+/** The one place a stored broadcast row becomes a thing that can be sent. */
+function payloadOf(r: {
+  body: string | null;
+  source_chat: string | null;
+  source_message_id: number | null;
+}): BroadcastPayload | null {
+  if (r.body !== null) return { kind: 'text', text: r.body };
+  if (r.source_chat !== null && r.source_message_id !== null) {
+    return { kind: 'forward', fromChat: r.source_chat, messageId: Number(r.source_message_id) };
+  }
+  return null;
 }
 
 /** Records that a claimed message reached Telegram. */
