@@ -107,7 +107,7 @@ describe('sending a channel post to every customer', () => {
     fireEvent.click(within(messageCard()).getByRole('button', { name: 'ادامه' }));
 
     expect(
-      await within(confirmBox('این پست فوروارد شود؟')).findByText(/گزارش تست/),
+      await within(confirmBox('این پست فوروارد شود؟')).findByText(/سایر گزارشات/),
     ).toBeTruthy();
     // And nothing has been sent by merely opening the confirmation.
     expect(sent).toEqual([]);
