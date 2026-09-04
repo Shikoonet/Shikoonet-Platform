@@ -7,6 +7,7 @@ import { Hono } from 'hono';
 import {
   BANK_INCOME_TX_WHERE,
   MIRZABOT_SOURCE,
+  SALE_CLAIM_WHERE,
   SETTLED_MATCH_SUBQUERY,
   VERIFIED_AT,
   INCOME_TX_WHERE,
@@ -489,6 +490,26 @@ export async function loadCardAnalytics(
               pc.status AS card_status,
               COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED'${rangeFilter}
                                   THEN c.id END) AS purchase_count,
+              -- «چقدر به کارت ملت رفت، و کدام کاربرها ریختند» -- Sam,
+              -- 2026-09-02. Summed here rather than in a route of its own:
+              -- this query already scans exactly the rows the question is
+              -- about, so a second endpoint would be a second scan and a
+              -- second place to keep in step with this one.
+              --
+              -- Deliberately a WIDER population than purchase_count beside it.
+              -- That column counts only AUTO_VERIFIED matches, because it
+              -- exists to judge whether card rotation is fair. Money does not
+              -- care who approved it: a claim an operator confirmed by hand
+              -- put the same rials on the same card. So these three agree with
+              -- each other and are counted over every settled claim naming the
+              -- card, and verified_count is here so the amount is never read
+              -- against a count that means something else.
+              COUNT(DISTINCT CASE WHEN c.id IS NOT NULL${rangeFilter}
+                                  THEN c.id END) AS verified_count,
+              COALESCE(SUM(CASE WHEN c.id IS NOT NULL${rangeFilter}
+                                THEN c.expected_amount_irr END), 0) AS takings_irr,
+              COUNT(DISTINCT CASE WHEN c.id IS NOT NULL${rangeFilter}
+                                  THEN c.customer_reference END) AS unique_customers,
               ${windowSql}
        FROM payment_cards pc
        JOIN financial_accounts fa ON fa.id = pc.financial_account_id
@@ -537,7 +558,88 @@ export async function loadCardAnalytics(
       account_active: number;
       card_status: string;
       purchase_count: number;
+      verified_count: number;
+      takings_irr: number;
+      unique_customers: number;
     } & Record<`w_${CardActivityWindowKey}`, number>>();
+
+  /**
+   * The money on cards this table does not have — issue #86.
+   *
+   * The query above starts `FROM payment_cards`, so a claim naming a card that
+   * was deleted, moved to another account, or never mapped matched no row and
+   * was counted NOWHERE. The page then reported a total that was not the total,
+   * and said nothing about the difference. On staging, 2026-09-04, that was all
+   * of it: 669,000 Toman across four settled payments, under a screen showing
+   * three cards and zero.
+   *
+   * Asked from the claim side, with the same `SALE_CLAIM_WHERE` and the same
+   * range filter as the rows above, so these are the same rials counted the
+   * same way — a different population, not a different definition.
+   *
+   * `NOT EXISTS` rather than a LEFT JOIN with an IS NULL test: the join above
+   * is what defines «mapped», and this is exactly its complement.
+   *
+   * They are listed rather than summed into a footnote because the operator's
+   * next question is «which card», and the answer is a row like every other —
+   * the same treatment a card whose account is switched off already gets.
+   */
+  const orphanBinds: unknown[] = [];
+  const op = (v: unknown) => {
+    orphanBinds.push(v);
+    return `?${orphanBinds.length}`;
+  };
+  const orphanRange = rangeSql(VERIFIED_AT, start, end, op);
+  const orphanRows = await db
+    .prepare(
+      `SELECT c.card_digits,
+              COUNT(DISTINCT c.id) AS verified_count,
+              COUNT(DISTINCT CASE WHEN m.status = 'AUTO_VERIFIED' THEN c.id END) AS purchase_count,
+              COALESCE(SUM(c.expected_amount_irr), 0) AS takings_irr,
+              COUNT(DISTINCT c.customer_reference) AS unique_customers
+         FROM payment_claims c
+         LEFT JOIN reconciliation_matches m
+           ON m.payment_claim_id = c.id
+          AND m.status IN ('AUTO_VERIFIED', 'CONFIRMED')
+        WHERE ${SALE_CLAIM_WHERE}
+          AND c.card_digits IS NOT NULL
+          AND NOT EXISTS (
+                SELECT 1 FROM payment_cards pc WHERE pc.card_digits = c.card_digits
+              )${orphanRange}
+        GROUP BY c.card_digits
+        ORDER BY takings_irr DESC, c.card_digits ASC`,
+    )
+    .bind(...orphanBinds)
+    .all<{
+      card_digits: string;
+      verified_count: number;
+      purchase_count: number;
+      takings_irr: number;
+      unique_customers: number;
+    }>();
+
+  const orphans = (orphanRows.results ?? []).map((r) => ({
+    cardDigits: r.card_digits,
+    cardMasked: `****${r.card_digits.slice(-4)}`,
+    displayWeight: 0,
+    accountId: null,
+    displayName: 'کارت نگاشت‌نشده',
+    ownerLabel: null,
+    accountHint: null,
+    accountStatus: 'UNMAPPED',
+    purchaseCount: Number(r.purchase_count ?? 0),
+    verifiedCount: Number(r.verified_count ?? 0),
+    takingsIrr: Number(r.takings_irr ?? 0),
+    uniqueCustomers: Number(r.unique_customers ?? 0),
+    // Zeroed rather than computed: the windows answer «is this card busy right
+    // now», and a card the bot cannot hand out is not busy — it is finished.
+    activity: Object.fromEntries(
+      CARD_ACTIVITY_WINDOWS.map((w) => [w.key, 0]),
+    ) as CardActivityCounts,
+    cardStatus: 'UNMAPPED',
+    hubEligible: false,
+    exclusionReason: 'card_not_mapped',
+  }));
 
   const items = (rows.results ?? []).map((r) => ({
     cardDigits: r.card_digits,
@@ -552,6 +654,12 @@ export async function loadCardAnalytics(
     accountHint: r.account_hint,
     accountStatus: r.account_status,
     purchaseCount: r.purchase_count,
+    // Money, and a count that matches it. `SUM` on the SQL side rather than a
+    // `reduce` in the browser: the browser only ever holds the rows it was
+    // sent, so a total assembled there is a total of one page.
+    verifiedCount: r.verified_count,
+    takingsIrr: Number(r.takings_irr ?? 0),
+    uniqueCustomers: r.unique_customers,
     // Numbers, not a nested query per card: one scan produces all six.
     activity: Object.fromEntries(
       CARD_ACTIVITY_WINDOWS.map((w) => [w.key, Number(r[`w_${w.key}`] ?? 0)]),
@@ -580,12 +688,22 @@ export async function loadCardAnalytics(
             : `account_${r.account_status.toLowerCase()}`,
   }));
 
+  // Appended, not merged in: they sort after the mapped cards because they are
+  // history rather than rotation, and `hubEligible: false` keeps them out of
+  // the balance maths below exactly as a switched-off card is kept out.
+  const allItems = [...items, ...orphans];
+
   // Balance is a question about the cards IN rotation. An excluded card has no
   // turns to be fair about, and counting its zero would report a shop as
   // lopsided for cards it has deliberately taken out of service.
-  const purchaseCounts = items.filter((i) => i.hubEligible).map((i) => i.purchaseCount);
+  const purchaseCounts = allItems.filter((i) => i.hubEligible).map((i) => i.purchaseCount);
   const distribution = cardBalancingDistribution(purchaseCounts);
-  const maxPurchases = Math.max(...purchaseCounts, 1);
+  // Two maxima, because they answer two questions. The distribution is about
+  // FAIRNESS and so counts only cards in rotation; the bar is about DRAWING and
+  // has to cover every row on screen. An unmapped card can carry auto-verified
+  // purchases — that is why it is listed at all — and scaling its bar against
+  // the eligible maximum alone would put it past 100% and out of the panel.
+  const maxPurchases = Math.max(...allItems.map((i) => i.purchaseCount), 1);
 
   return {
     range,
@@ -596,9 +714,13 @@ export async function loadCardAnalytics(
     windows: CARD_ACTIVITY_WINDOWS,
     // Sent to the browser and rendered verbatim, so it is written in the
     // language the screen is in.
-    note: 'خریدهای تاییدشده به تفکیک کارت نگاشت‌شده. توازن تخصیص کارت بر پایهٔ اجاره‌های تکمیل‌شدهٔ ربات است، نه این نمودار.',
+    // Says what the list HOLDS, not what it used to hold. It read «به تفکیک
+    // کارت نگاشت‌شده» while the rows below now include the unmapped ones — a
+    // sentence describing the query rather than the answer, which is the same
+    // fault the rows were added to repair.
+    note: 'خریدهای تاییدشده به تفکیک کارت، شامل کارت‌هایی که دیگر نگاشت ندارند. توازن تخصیص کارت بر پایهٔ اجاره‌های تکمیل‌شدهٔ ربات است، نه این نمودار.',
     distribution,
-    items: items.map((i) => ({
+    items: allItems.map((i) => ({
       ...i,
       purchaseBarPercent: Math.round((i.purchaseCount / maxPurchases) * 100),
     })),

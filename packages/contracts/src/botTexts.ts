@@ -224,6 +224,18 @@ export const TEXTS = {
     screen: 'categories',
     hint: 'فهرست سرویس‌های یک دسته — صفحهٔ دوم خرید',
   },
+  TARIFF_TITLE: {
+    default: '📋 تعرفه سرویس‌ها',
+    placeholders: [],
+    screen: 'categories',
+    hint: 'بالای فهرست قیمت‌ها — پیامی که همهٔ سرویس‌ها و قیمتشان را یک‌جا نشان می‌دهد',
+  },
+  TARIFF_EMPTY: {
+    default: 'در حال حاضر چیزی برای فروش نیست.',
+    placeholders: [],
+    screen: 'categories',
+    hint: 'وقتی هیچ سرویس قابل خریدی برای این کاربر وجود ندارد',
+  },
   CATEGORY_EMPTY: {
     default: 'در حال حاضر چیزی در این دسته موجود نیست.',
     placeholders: [],

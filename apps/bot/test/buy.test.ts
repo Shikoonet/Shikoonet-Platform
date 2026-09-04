@@ -486,6 +486,59 @@ describe('a panel that asks the customer to name their account', () => {
     }
   });
 
+  it('offers «خودکار انتخاب کن!» on the question, and places the order without a name', async () => {
+    // Sam, 2026-09-04, after we walked the reference shop together: it answers
+    // the same question with a “pick one for me” button and most customers
+    // press it. Ours asked and had no way out but typing.
+    //
+    // The order is written with `username_text` NULL — not with a name this
+    // screen invented. Inventing one here would be a second naming rule to keep
+    // in step with `remoteUsernameFor`, and the day they disagreed the customer
+    // would be shown one account name and handed another.
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    await setMode('CUSTOMER_TEXT');
+
+    try {
+      const asked = await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+      const labels = (asked.replies[0]?.keyboard ?? []).flat().map((b) => b.text);
+      expect(labels).toContain(menu.ACCOUNT_NAME_AUTO);
+      expect(await orderCount(user)).toBe(0);
+
+      const placed = await handleUpdate(db, press(updateId + 1, telegramId, `auto:${plan}`));
+
+      expect(placed.replies[0]?.text).toContain('تومان');
+      expect(await orderCount(user)).toBe(1);
+      expect(await nameOn(user)).toBeNull();
+    } finally {
+      await setMode(null);
+    }
+  });
+
+  it('closes the name question when «خودکار» answers it', async () => {
+    // The failure this is here for leaves no trace on any screen: press
+    // «خودکار», get the invoice, then send anything at all — «سلام», the amount
+    // you just transferred — and a session still parked on `uname` reads it as
+    // the account name for the order that is already placed and being paid.
+    const { updateId, telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    await setMode('CUSTOMER_TEXT');
+
+    try {
+      await handleUpdate(db, press(updateId, telegramId, `order:${plan}`));
+      await handleUpdate(db, press(updateId + 1, telegramId, `auto:${plan}`));
+
+      const after = await handleUpdate(db, typed(updateId + 2, telegramId, 'salam'));
+
+      // Not read as an answer: the name stays unset and no second order appears.
+      expect(await nameOn(user)).toBeNull();
+      expect(await orderCount(user)).toBe(1);
+      expect(after.replies[0]?.text ?? '').not.toContain('تومان');
+    } finally {
+      await setMode(null);
+    }
+  });
+
   it('asks again for a name the panel would refuse, and still writes nothing', async () => {
     const { updateId, telegramId } = ids();
     const user = await makeCustomer(telegramId);

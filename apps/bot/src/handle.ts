@@ -35,6 +35,7 @@ import type { CatalogCategory, CatalogPlan } from './catalog.js';
 import {
   categoriesForUser,
   plansInProduct,
+  tariffForUser,
   plansOnPanel,
   productsForUser,
   purchasablePlan,
@@ -703,6 +704,29 @@ async function handleStart(
 
   // /start is the reset button: whatever half-finished flow the customer was in
   // is abandoned, which is exactly what they expect it to do.
+  //
+  // Read BEFORE the reset, because the reset is what forgets it. The screen id
+  // is the message the abandoned flow was living on — a half-written invoice, a
+  // question nobody answered — and «abandoned» is only true once it is off the
+  // customer's chat as well as out of the session. Otherwise `/start` leaves
+  // the wreck of the last attempt sitting above the fresh welcome, still
+  // showing buttons that now belong to nothing.
+  const parked = await tx
+    .prepare(`SELECT data FROM bot_sessions WHERE user_id = ?1`)
+    .bind(user.id)
+    .first<{ data: Record<string, unknown> | null }>();
+  const openScreen = screenOf({ step: '', data: parked?.data ?? {} });
+
+  // Built here rather than at the return, because there are TWO returns and the
+  // gated one is the easier to forget — which is exactly what happened, and
+  // what review caught. A customer who has not joined the channel yet is the
+  // one most likely to press /start again and again, so leaving the wreck on
+  // THEIR chat is the worst place to leave it.
+  const tidy: Deletion[] = [
+    { chatId: message.chat.id, messageId: message.message_id },
+    ...(openScreen === undefined ? [] : [{ chatId: message.chat.id, messageId: openScreen }]),
+  ];
+
   await tx
     .prepare(
       `INSERT INTO bot_sessions (user_id, step, data, updated_at)
@@ -730,7 +754,7 @@ async function handleStart(
   // Admins are exempt, as they are for the closed sign and at the single point.
   if (!(await isActiveAdmin(tx, from.id))) {
     const gated = await gateFor(tx, api, from.id, SHOP.requiresRules);
-    if (gated) return gateScreen(message.chat.id, gated);
+    if (gated) return { ...gateScreen(message.chat.id, gated), deletes: tidy };
   }
 
   // The menu goes UNDER the chat here, not under the message.
@@ -785,6 +809,18 @@ async function handleStart(
           : { keyboard: menu.mainMenu(user) }),
       },
     ],
+    // Sam, 2026-09-04: «می‌خوام داخل چت خیلی تمیز باشه و چت‌های قدیمی پاک بشه».
+    //
+    // Two messages go, and neither is one the customer will look for later: the
+    // «/start» they just typed, and the screen the abandoned flow was on. What
+    // is NOT deleted is every earlier welcome — those are separate visits, and
+    // a bot that reaches back through somebody's history erasing its own past
+    // is a different thing from one that tidies up after itself.
+    //
+    // Best-effort by construction: `poll.ts` runs deletes after the replies and
+    // swallows their failures, so a message Telegram will no longer delete —
+    // older than 48 hours, already gone — costs a log line and nothing else.
+    deletes: tidy,
   };
 }
 
@@ -1328,6 +1364,17 @@ async function placeOrderScreen(
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
   /** The message `screen` writes onto, so the typed name can land back on it. */
   screenId?: number,
+  /**
+   * The customer pressed «خودکار انتخاب کن!» — ask nothing, name nothing.
+   *
+   * Only the `auto` button sets it, and it does not reach into what a name IS:
+   * the order is written with `username_text` null, exactly as it would be for
+   * a panel that never asks, and `remoteUsernameFor` names a CUSTOMER_TEXT
+   * order with no text after its own order id. So «خودکار» is not a second
+   * naming rule to keep in step with the first — it is the absence of the
+   * first, which the provisioning path already had an answer for.
+   */
+  auto = false,
 ): Promise<HandleOutcome> {
   /*
    * The one edge into an order, which is why the prompt is here and not beside
@@ -1341,9 +1388,9 @@ async function placeOrderScreen(
    */
   const chosenName =
     plan.usernameMode === 'CUSTOMER_TEXT' ? await heldName(tx, user.id, plan.planId) : null;
-  if (plan.usernameMode === 'CUSTOMER_TEXT' && chosenName === null) {
+  if (plan.usernameMode === 'CUSTOMER_TEXT' && chosenName === null && !auto) {
     await ask(tx, user.id, 'uname', { planId: plan.planId }, screenId);
-    return screen(menu.ASK_ACCOUNT_NAME, menu.promptMenu(encode('plan', plan.planId)));
+    return screen(menu.ASK_ACCOUNT_NAME, menu.askAccountNameMenu(plan.planId));
   }
 
   // The code is checked once more, here, in the transaction that writes the
@@ -1711,7 +1758,10 @@ async function categoryScreen(
   const plans = await plansInProduct(tx, user.id, only.productId);
   if (plans.length === 0) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu([]));
   if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
-  return screen(menu.choosePlan(only.name), menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate));
+  return screen(
+    menu.choosePlan(only.name, plans, user.discount_percent),
+    menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate),
+  );
 }
 
 async function handleCallback(
@@ -1869,7 +1919,20 @@ async function handleCallback(
       // the discount check and the held code, and having two ways to reach it
       // is how the two drift apart.
       if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
-      return screen(menu.choosePlan(plans[0]!.productName), menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate));
+      return screen(
+        menu.choosePlan(plans[0]!.productName, plans, user.discount_percent),
+        menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate),
+      );
+    }
+
+    case 'tar': {
+      // Everything this customer may buy, priced for THEM: `tariffForUser`
+      // applies the same visibility predicate the buttons do, and the standing
+      // discount is applied here the way it is on every plan button. A price
+      // list quoting the list price to a customer who is charged less is a
+      // support ticket; quoting it to a reseller is a worse one.
+      const plans = await tariffForUser(tx, user.id);
+      return screen(menu.tariff(plans, user.discount_percent), menu.tariffMenu());
     }
 
     case 'plan': {
@@ -1982,6 +2045,18 @@ async function handleCallback(
       const plan = await purchasablePlan(tx, user.id, action.id);
       if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
       return placeOrderScreen(tx, user, plan, screen, editId);
+    }
+
+    case 'auto': {
+      if (action.id === undefined) return IGNORED;
+      const plan = await purchasablePlan(tx, user.id, action.id);
+      if (!plan) return screen(menu.PLAN_GONE, menu.planMenu([]));
+      // The open question is closed first. Without this the session still says
+      // `uname`, and the next thing the customer types — «سلام», the receipt
+      // amount, anything — is read as the account name for an order that has
+      // already been placed and paid for.
+      await clearSession(tx, user.id);
+      return placeOrderScreen(tx, user, plan, screen, editId, true);
     }
 
     case 'mine': {

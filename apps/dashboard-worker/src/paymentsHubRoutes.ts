@@ -79,6 +79,7 @@ export async function loadDeclinedIncomeItems(
   now: number,
   day?: string | null,
   limit = 200,
+  offset = 0,
 ) {
   const binds: unknown[] = [];
   const p = (v: unknown) => {
@@ -97,8 +98,13 @@ export async function loadDeclinedIncomeItems(
        JOIN transaction_candidates t ON t.id = idt.transaction_candidate_id
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
        WHERE idt.restored_at IS NULL${rangeFilter.sql}
-       ORDER BY idt.declined_at DESC
-       LIMIT ${p(limit)}`,
+       -- The id breaks the tie, and it is what makes OFFSET safe. Two rows
+       -- with the same timestamp have no defined order between them, so a
+       -- plain timestamp sort can hand page 2 a row page 1 already showed and
+       -- silently drop another. Bank timestamps collide readily: an SMS burst
+       -- lands on the same minute.
+       ORDER BY idt.declined_at DESC, idt.id DESC
+       LIMIT ${p(limit)} OFFSET ${p(offset)}`,
     )
     .bind(...binds)
     .all<{
@@ -171,6 +177,7 @@ export async function loadIncomeItems(
   day?: string | null,
   limit = 200,
   actorEmail?: string,
+  offset = 0,
 ) {
   const binds: unknown[] = [];
   const p = (v: unknown) => {
@@ -187,8 +194,13 @@ export async function loadIncomeItems(
        FROM transaction_candidates t
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
        WHERE ${INCOME_TX_WHERE}${rangeFilter.sql}
-       ORDER BY t.bank_timestamp DESC
-       LIMIT ${p(limit)}`,
+       -- The id breaks the tie, and it is what makes OFFSET safe. Two rows
+       -- with the same timestamp have no defined order between them, so a
+       -- plain timestamp sort can hand page 2 a row page 1 already showed and
+       -- silently drop another. Bank timestamps collide readily: an SMS burst
+       -- lands on the same minute.
+       ORDER BY t.bank_timestamp DESC, t.id DESC
+       LIMIT ${p(limit)} OFFSET ${p(offset)}`,
     )
     .bind(...binds)
     .all<{
@@ -257,6 +269,7 @@ export async function loadResellerItems(
   now: number,
   day?: string | null,
   limit = 200,
+  offset = 0,
 ) {
   const binds: unknown[] = [];
   const p = (v: unknown) => {
@@ -276,8 +289,13 @@ export async function loadResellerItems(
        JOIN transaction_candidates t ON t.id = rt.transaction_candidate_id
        LEFT JOIN financial_accounts fa ON fa.id = t.financial_account_id
        WHERE 1=1${rangeFilter.sql}
-       ORDER BY rt.classified_at DESC
-       LIMIT ${p(limit)}`,
+       -- The id breaks the tie, and it is what makes OFFSET safe. Two rows
+       -- with the same timestamp have no defined order between them, so a
+       -- plain timestamp sort can hand page 2 a row page 1 already showed and
+       -- silently drop another. Bank timestamps collide readily: an SMS burst
+       -- lands on the same minute.
+       ORDER BY rt.classified_at DESC, rt.id DESC
+       LIMIT ${p(limit)} OFFSET ${p(offset)}`,
     )
     .bind(...binds)
     .all<{

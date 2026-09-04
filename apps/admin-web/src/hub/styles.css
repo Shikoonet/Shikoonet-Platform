@@ -4133,3 +4133,27 @@
   color: var(--muted, #667085);
   font-variant-numeric: tabular-nums;
 }
+
+/* Takings beside the purchase count on a card row. Tabular figures so the
+   amounts line up down the list, which is the whole reason to put money in a
+   column rather than in a sentence. */
+.account-usage-row__takings {
+  font-size: 13px;
+  color: var(--muted, #667085);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* «نماینده» on a payment row. Warm rather than alarming: a reseller payment is
+   a good thing, it just answers a different question from a personal one. */
+.badge--reseller {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
+/* The CSV link sits with the filter buttons and must not look like a filter. */
+.payments-filters__export {
+  text-decoration: none;
+  align-self: end;
+}

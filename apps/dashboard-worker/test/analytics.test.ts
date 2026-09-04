@@ -98,6 +98,8 @@ async function seedClaim(
     amount?: number;
     /** The card the customer was told to pay into — `payment_claims.card_digits`. */
     cardDigits?: string;
+    /** `payment_claims.customer_reference`, so «how many people» can be asked. */
+    customerReference?: string;
   },
 ) {
   const now = Date.now();
@@ -106,9 +108,17 @@ async function seedClaim(
        (id, external_order_id, customer_reference, expected_amount_irr, target_financial_account_id,
         submitted_at, source_system, metadata_json, status, paid_clicked_at, receipt_submitted_at,
         suspect_reason, suspect_metadata_json, card_digits, created_at, updated_at)
-     VALUES (?1, ?2, 'u1', ?3, ?4, ?5, 'MIRZABOT', '{}', 'VERIFIED', ?5, ?5, NULL, '{}', ?6, ?5, ?5)`,
+     VALUES (?1, ?2, ?7, ?3, ?4, ?5, 'MIRZABOT', '{}', 'VERIFIED', ?5, ?5, NULL, '{}', ?6, ?5, ?5)`,
   )
-    .bind(id, `ord-${id}`, opts.amount ?? AMOUNT, ACCOUNT, now, opts.cardDigits ?? '5678')
+    .bind(
+      id,
+      `ord-${id}`,
+      opts.amount ?? AMOUNT,
+      ACCOUNT,
+      now,
+      opts.cardDigits ?? '5678',
+      opts.customerReference ?? 'u1',
+    )
     .run();
   await baseEnv.DB.prepare(
     `INSERT INTO reconciliation_matches
@@ -271,6 +281,77 @@ describe('GET /api/v1/cards/analytics', () => {
     expect(card!.activity).toEqual({ h12: 1, h24: 2, d3: 2, d7: 2, d15: 3, d30: 3 });
   });
 
+  /**
+   * «چقدر به کارت ملت رفت، و کدام کاربرها ریختند» — Sam, 2026-09-02.
+   *
+   * The expected numbers below were written before the query was run: card A
+   * takes three claims from two customers (one of them twice) and card B one,
+   * with amounts chosen so no two sums collide by accident. A test that reads
+   * the answer and then asserts it is a test that agrees with itself.
+   *
+   * One of card A's claims is CONFIRMED rather than AUTO_VERIFIED, and that is
+   * the point of the case: money does not care who approved it. `takingsIrr`
+   * must count it and `purchaseCount` — which judges rotation fairness — must
+   * not.
+   */
+  it('sums what each card actually took, and from how many people', async () => {
+    const CARD_A = '6104337712345678';
+    const CARD_B = '6104338898765432';
+    for (const [id, card, amount, customer, status] of [
+      ['t-a1', CARD_A, 1_000_000, 'u-1', 'AUTO_VERIFIED'],
+      ['t-a2', CARD_A, 2_000_000, 'u-1', 'AUTO_VERIFIED'],
+      ['t-a3', CARD_A, 4_000_000, 'u-2', 'CONFIRMED'],
+      ['t-b1', CARD_B, 8_000_000, 'u-3', 'AUTO_VERIFIED'],
+    ] as const) {
+      await baseEnv.DB.prepare(
+        `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
+         VALUES (?1, ?2, ?3, ?4)`,
+      )
+        .bind(`pc-${card.slice(-4)}`, ACCOUNT, card, Date.now())
+        .run();
+      await seedTx(`tx-${id}`, { ts: BASE, amount });
+      await seedClaim(id, `tx-${id}`, {
+        matchStatus: status,
+        reviewedAt: BASE,
+        amount,
+        cardDigits: card,
+        customerReference: customer,
+      });
+    }
+
+    const r = await app.fetch(new Request('https://x/api/v1/cards/analytics?range=all'), envAs());
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      items: Array<{
+        cardDigits: string;
+        purchaseCount: number;
+        verifiedCount: number;
+        takingsIrr: number;
+        uniqueCustomers: number;
+      }>;
+    };
+    const by = new Map(body.items.map((i) => [i.cardDigits, i]));
+
+    expect(by.get(CARD_A)).toMatchObject({
+      takingsIrr: 7_000_000,
+      verifiedCount: 3,
+      uniqueCustomers: 2,
+      // The manual one is money but not a rotation datapoint.
+      purchaseCount: 2,
+    });
+    expect(by.get(CARD_B)).toMatchObject({
+      takingsIrr: 8_000_000,
+      verifiedCount: 1,
+      uniqueCustomers: 1,
+      purchaseCount: 1,
+    });
+
+    // The two cards share one account, so an account-level figure would print
+    // 15,000,000 twice. This is the bug fixed in #61, asserted again from the
+    // money side because that is where it would be most expensive.
+    expect(by.get(CARD_A)!.takingsIrr).not.toBe(by.get(CARD_B)!.takingsIrr);
+  });
+
   it('groups auto-verified purchases by mapped card', async () => {
     await baseEnv.DB.prepare(
       `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
@@ -370,5 +451,111 @@ describe('GET /api/v1/cards/analytics', () => {
     await baseEnv.DB.prepare(`UPDATE financial_accounts SET status = 'ACTIVE' WHERE id = ?1`)
       .bind(ACCOUNT)
       .run();
+  });
+
+  /**
+   * Money on a card the card table no longer has — issue #86.
+   *
+   * This screen answers «چقدر به هر کارت رفت», and it answers it by starting
+   * `FROM payment_cards`. A claim naming a card that was deleted, moved, or
+   * never mapped therefore matched no row and was counted nowhere, with nothing
+   * on the page saying so.
+   *
+   * Measured on staging, 2026-09-04: every settled claim there — 669,000 Toman
+   * across four payments — named a card absent from `payment_cards`, and the
+   * screen showed three cards and a total of zero. Not «zero for these three,
+   * and this much elsewhere». Zero.
+   *
+   * The assertion is the rule rather than the instance: what the page reports
+   * as taken must equal what the claims say was taken. A card can leave the
+   * table; the money it took cannot leave the total.
+   */
+  it('counts money taken on a card that is no longer mapped', async () => {
+    const t = Date.now();
+    await seedTx('tx-un1', { ts: t - 1_000 });
+    await seedTx('tx-un2', { ts: t - 2_000 });
+    // One mapped card, so the page has something ordinary to show beside it.
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO payment_cards (id, financial_account_id, card_digits, created_at)
+       VALUES ('pc-un', ?1, '6037111122223333', ?2)`,
+    )
+      .bind(ACCOUNT, t)
+      .run();
+    await seedClaim('cl-un-mapped', 'tx-un1', {
+      matchStatus: 'AUTO_VERIFIED',
+      reviewedAt: t,
+      amount: 3_000_000,
+      cardDigits: '6037111122223333',
+    });
+    // And one on a card nothing maps — the case that vanished.
+    await seedClaim('cl-un-orphan', 'tx-un2', {
+      matchStatus: 'CONFIRMED',
+      reviewedAt: t,
+      amount: 5_000_000,
+      cardDigits: '6104999988887777',
+      customerReference: 'u-orphan',
+    });
+
+    const r = await app.fetch(
+      new Request('https://x/api/v1/cards/analytics?range=all'),
+      envAs(EMAIL),
+    );
+    const body = (await r.json()) as {
+      items: Array<{
+        cardMasked: string;
+        takingsIrr: number;
+        verifiedCount: number;
+        uniqueCustomers: number;
+        hubEligible: boolean;
+        exclusionReason: string;
+        cardStatus: string;
+        purchaseBarPercent: number;
+      }>;
+    };
+
+    const shown = body.items.reduce((sum, i) => sum + i.takingsIrr, 0);
+    // What the claims say, asked of the claims — not of this endpoint.
+    const claimed = await baseEnv.DB.prepare(
+      `SELECT COALESCE(SUM(expected_amount_irr), 0)::bigint AS n
+         FROM payment_claims
+        WHERE status = 'VERIFIED' AND source_system = 'MIRZABOT' AND card_digits IS NOT NULL`,
+    ).first<{ n: number }>();
+    expect(shown).toBe(Number(claimed!.n));
+
+    // The bar is drawn against every row it draws, not against the eligible
+    // ones alone: an unmapped card carrying auto-verified purchases would
+    // otherwise scale past 100% and out of the panel. CodeRabbit caught this on
+    // PR #87 — the distribution and the bar answer different questions and can
+    // no longer share one maximum.
+    expect(body.items.every((i) => i.purchaseBarPercent <= 100)).toBe(true);
+
+    const orphan = body.items.find((i) => i.cardMasked.endsWith('7777'));
+    expect(orphan).toBeDefined();
+    expect(orphan!.takingsIrr).toBe(5_000_000);
+    expect(orphan!.verifiedCount).toBe(1);
+    expect(orphan!.uniqueCustomers).toBe(1);
+    // It is listed, and it is listed as something the bot can never hand out —
+    // the same treatment a card whose account is switched off already gets.
+    expect(orphan!.hubEligible).toBe(false);
+    expect(orphan!.exclusionReason).toBe('card_not_mapped');
+    expect(orphan!.cardStatus).toBe('UNMAPPED');
+  });
+
+  /**
+   * The sentence over the list has to describe the list.
+   *
+   * It said «به تفکیک کارت نگاشت‌شده» — true of the query, and false of the
+   * answer as soon as unmapped cards were added to it. A note is read as a
+   * definition of what the numbers cover, so a stale one is the same fault as a
+   * stale number.
+   */
+  it('describes the rows it is actually sending', async () => {
+    const r = await app.fetch(
+      new Request('https://x/api/v1/cards/analytics?range=all'),
+      envAs(EMAIL),
+    );
+    const body = (await r.json()) as { note: string };
+    expect(body.note).toContain('کارت‌هایی که دیگر نگاشت ندارند');
+    expect(body.note).not.toContain('به تفکیک کارت نگاشت‌شده');
   });
 });

@@ -11,7 +11,7 @@
  */
 
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv } from './helpers/env.js';
+import { applySchema, env as baseEnv, deleteFixtureUsers } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 
@@ -88,7 +88,7 @@ async function makeCustomer(
  */
 async function purgeOurCustomers(): Promise<void> {
   await baseEnv.DB.prepare(`TRUNCATE wallet_entries, wallets RESTART IDENTITY CASCADE`).run();
-  await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id >= ?1`).bind(TG_BASE).run();
+  await deleteFixtureUsers(TG_BASE);
 }
 
 beforeAll(async () => {
@@ -597,5 +597,80 @@ describe('GET /api/v1/admin/customers/:id', () => {
   it('404s on an unknown id', async () => {
     const res = await app.request('/api/v1/admin/customers/99999999', {}, envAs(ADMIN));
     expect(res.status).toBe(404);
+  });
+});
+
+/**
+ * «این آی‌دی چند بار و به کدام کارت‌ها واریز داشته» — plan item 1.6, and the
+ * last question the money pass left unanswered on this screen.
+ *
+ * The detail drawer knew the wallet and the order count and said nothing about
+ * claims or cards, so the one place an operator opens with a customer's name in
+ * front of them could not answer what that customer actually paid.
+ *
+ * Counted exactly as «توازن کارت‌ها» counts it — `status = 'VERIFIED'`,
+ * `source_system = MIRZABOT`, summing `expected_amount_irr` — so this customer's
+ * rows are a subset of that card's takings rather than a second definition of
+ * the same word.
+ */
+describe('the money on a customer’s own page', () => {
+  async function claim(
+    id: string,
+    telegramId: number,
+    card: string,
+    amountIrr: number,
+    status = 'VERIFIED',
+  ) {
+    const now = Date.now();
+    await baseEnv.DB.prepare(
+      `INSERT INTO payment_claims
+         (id, external_order_id, customer_reference, expected_amount_irr,
+          submitted_at, source_system, metadata_json, status, paid_clicked_at,
+          card_digits, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'MIRZABOT', '{}', ?6, ?5, ?7, ?5, ?5)`,
+    )
+      .bind(id, `cust:${id}`, String(telegramId), amountIrr, now, status, card)
+      .run();
+  }
+
+  it('says how much this id paid, to which cards, and how many times', async () => {
+    const { id, telegramId } = await makeCustomer('payer');
+    await claim(`pc-1-${telegramId}`, telegramId, '6037000000000095', 1_000_000);
+    await claim(`pc-2-${telegramId}`, telegramId, '6037000000000095', 2_000_000);
+    await claim(`pc-3-${telegramId}`, telegramId, '5054161706275678', 500_000);
+    // Not settled, so not money: it is a claim nobody confirmed.
+    await claim(`pc-4-${telegramId}`, telegramId, '5054161706275678', 9_000_000, 'PENDING');
+
+    const r = await app.fetch(
+      new Request(`https://x/api/v1/admin/customers/${id}`),
+      envAs(ADMIN),
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      payments: {
+        count: number;
+        totalIrr: number;
+        byCard: Array<{ cardMasked: string; payments: number; amountIrr: number }>;
+      };
+    };
+
+    expect(body.payments.count).toBe(3);
+    expect(body.payments.totalIrr).toBe(3_500_000);
+    expect(body.payments.byCard.map((c) => c.amountIrr)).toEqual([3_000_000, 500_000]);
+    expect(body.payments.byCard[0]!.payments).toBe(2);
+    // The card is named, never in full.
+    expect(JSON.stringify(body)).not.toContain('6037000000000095');
+    expect(body.payments.byCard[0]!.cardMasked).toContain('0095');
+  });
+
+  it('says zero rather than nothing when the customer has never paid', async () => {
+    const { id } = await makeCustomer('never-paid');
+    const r = await app.fetch(
+      new Request(`https://x/api/v1/admin/customers/${id}`),
+      envAs(ADMIN),
+    );
+    const body = (await r.json()) as { payments: { count: number; byCard: unknown[] } };
+    expect(body.payments.count).toBe(0);
+    expect(body.payments.byCard).toEqual([]);
   });
 });

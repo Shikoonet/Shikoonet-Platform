@@ -31,7 +31,7 @@ import {
   MAX_LABEL_LENGTH,
   labelMarkupProblem,
   renderedLabelLength,
-  stripCustomEmoji,
+  splitCustomEmojiLabel,
 } from '@shikoo/contracts';
 
 type Db = D1Database | D1DatabaseSession;
@@ -174,10 +174,17 @@ export async function emojiById(db: Db, id: number): Promise<StoredEmoji | null>
  *
  * ## Replacing rather than stacking
  *
- * `stripCustomEmoji` first, so pressing this twice on one button swaps the
- * emoji instead of collecting them. A button has ONE icon slot; a second tag
- * would be silently dropped at send time, and the admin would be looking at a
- * label they cannot explain.
+ * `splitCustomEmojiLabel` first, because the leading tag has to go with its
+ * fallback glyph and not be replaced by it. A button has ONE icon slot; a
+ * second tag would be silently dropped at send time, and the admin would be
+ * looking at a label they cannot explain.
+ *
+ * This said `stripCustomEmoji` and claimed the same thing, and the claim was
+ * false — that call turns the old tag INTO its glyph, so every press left one
+ * more emoji behind as plain text. Seen on staging 2026-09-04, where «🔐 خرید
+ * اشتراک» had grown to «👛 👤 🔐 خرید اشتراک» and «♻️ تمدید سرویس» to «👋 ⏰ 💳
+ * ♻️ 💠 تمدید سرویس» — five presses, five glyphs, marching toward the length
+ * cap where the button would start being refused for a reason nothing names.
  *
  * The row is written into `bot_keyboard_buttons`, which is where the panel
  * saves layouts — so the change is the shop's layout, visible in the panel, and
@@ -189,7 +196,7 @@ export async function setButtonEmoji(
   currentLabel: string,
   emoji: { customEmojiId: string; fallbackEmoji: string },
 ): Promise<string | null> {
-  const plain = stripCustomEmoji(currentLabel).trim();
+  const plain = splitCustomEmojiLabel(currentLabel).text.trim();
   const label = `<tg-emoji emoji-id="${emoji.customEmojiId}">${emoji.fallbackEmoji}</tg-emoji> ${plain}`;
   // Refused rather than written, and NULL rather than the old label — the
   // caller has to be able to tell «placed» from «could not».
