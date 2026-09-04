@@ -20,7 +20,7 @@
  *     path can actually draw.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { db, resetBot } from './helpers/env.js';
 import { makeCustomer } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
@@ -95,6 +95,14 @@ beforeEach(async () => {
   await db.prepare(`DELETE FROM emoji_pack_items WHERE pack_id IN
     (SELECT id FROM emoji_packs WHERE set_name = '__from_bot__')`).run();
   await db.prepare(`DELETE FROM emoji_packs WHERE set_name = '__from_bot__'`).run();
+  invalidateBotContent();
+});
+
+// Rule 8: this suite writes `bot_keyboard_buttons`, and a row left behind is a
+// keyboard every later suite draws from. `buy.test.ts` has gone red from a
+// single row left by a neighbour once already.
+afterEach(async () => {
+  await db.prepare(`DELETE FROM bot_keyboard_buttons`).run();
   invalidateBotContent();
 });
 
@@ -234,6 +242,37 @@ describe('the order the screens ask in', () => {
       .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
       .first<{ label: string }>();
     expect(saved?.label).toContain(FIRE_ID);
+  });
+
+  it('swaps the emoji rather than leaving the last one behind as a glyph', async () => {
+    // Found on the live staging bot, 2026-09-04. «🔐 خرید اشتراک» had become
+    // «👛 👤 🔐 خرید اشتراک» and «♻️ تمدید سرویس» had become «👋 ⏰ 💳 ♻️ 💠 تمدید
+    // سرویس»: one extra glyph per press, because the old tag was replaced BY its
+    // fallback glyph instead of taken away WITH it.
+    //
+    // Nothing errors on the way — the label is still valid, still draws, still
+    // routes. It just grows, and the button it ends at is one refused by the
+    // length CHECK for a reason no screen explains. The docstring above this
+    // function claimed the opposite for a day, which is why the assertion is on
+    // the second press and not the first: the first was always right.
+    const seq = [
+      { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' },
+      { customEmojiId: '5215420556089776398', fallbackEmoji: '👛' },
+      { customEmojiId: '5411394265924257943', fallbackEmoji: '👋' },
+    ];
+    let label = '♻️ تمدید سرویس';
+    for (const emoji of seq) {
+      const next = await setButtonEmoji(db, 'renew', label, emoji);
+      expect(next).not.toBeNull();
+      label = next!;
+    }
+
+    // The shop's own plain emoji survives — it is part of the label the admin
+    // wrote. Only the ones this function put there are replaced.
+    expect(label).toBe('<tg-emoji emoji-id="5411394265924257943">👋</tg-emoji> ♻️ تمدید سرویس');
+    expect(label).not.toContain('🔥');
+    expect(label).not.toContain('👛');
+    expect(label).not.toContain(FIRE_ID);
   });
 });
 

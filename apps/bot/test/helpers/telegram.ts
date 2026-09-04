@@ -19,6 +19,7 @@ export function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
     sendDocument: async () => undefined,
     editMessageText: async () => undefined,
     deleteMessage: async () => undefined,
+    forwardMessage: async () => undefined,
     answerCallbackQuery: async () => undefined,
     getChatMember: async () => 'member',
     ...overrides,

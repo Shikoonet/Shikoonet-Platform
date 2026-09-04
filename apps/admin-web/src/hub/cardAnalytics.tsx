@@ -1,12 +1,43 @@
 import type { Cache } from './query.js';
 import { count } from '../format.js';
+import { formatTomanFromIrr } from './format.js';
 import type { CardAnalyticsResponse } from './analytics.js';
 import { type HistoryRangeState, appendHistoryRangeQuery } from './paymentReview.js';
 
 function cardUsageLabel(item: CardAnalyticsResponse['items'][number]): string {
   const hint = item.accountHint ? `**** ${item.accountHint}` : item.displayName;
   const owner = item.ownerLabel?.trim() || item.displayName;
-  return `${item.cardMasked} · ${hint} · ${owner}`;
+  // De-duplicated, because both halves fall back to `displayName` and an
+  // unmapped card has neither a hint nor an owner — so the row read
+  // «****0037 · کارت نگاشت‌نشده · کارت نگاشت‌نشده» on staging. Two identical
+  // words separated by a dot read as two facts, and there is one.
+  return [item.cardMasked, hint, owner].filter((part, i, all) => all.indexOf(part) === i).join(' · ');
+}
+
+/**
+ * Why a card is out of rotation, in the language the screen is written in.
+ *
+ * The server sends these as keys — `account_deactivated`, `card_disabled` — and
+ * this row used to print them verbatim, so a Persian screen answered «چرا کارت
+ * من کار نمی‌کند» with an English identifier. The keys are the API's, not the
+ * operator's.
+ *
+ * The fallback is the raw key rather than a shrug: an unmapped reason is a
+ * server the panel has not caught up with, and showing it is how somebody
+ * notices. `card_not_mapped` is the newest, and it is the one that says the
+ * card itself is gone — see issue #86.
+ */
+const EXCLUSION_REASON_FA: Record<string, string> = {
+  card_not_mapped: 'این کارت دیگر در فهرست کارت‌ها نیست — پولش این‌جاست، خودش نه',
+  card_disabled: 'خودِ کارت خاموش است',
+  account_deactivated: 'حساب این کارت غیرفعال شده است',
+  account_muted: 'حساب این کارت بی‌صدا است',
+  account_declined: 'حساب این کارت رد شده است',
+  account_pending: 'حساب این کارت هنوز تایید نشده است',
+};
+
+function exclusionReasonFa(reason: string): string {
+  return EXCLUSION_REASON_FA[reason] ?? reason;
 }
 
 const RANK = new Intl.NumberFormat('fa-IR', { minimumIntegerDigits: 2, useGrouping: false });
@@ -77,6 +108,20 @@ export function CardBalancingPanel({
                   <span className="account-usage-row__purchases">
                     {count(item.purchaseCount)} خرید
                   </span>
+                  {/* «چقدر به این کارت رفت، و از چند نفر» — the question Sam
+                      opened this work with. Its own count sits with it because
+                      «خرید» beside it is the bot-verified subset used to judge
+                      rotation, and an amount read against that count would be
+                      two populations under one row. Toman, like every other
+                      money figure the operator sees; the store is IRR. */}
+                  <span
+                    className="account-usage-row__takings"
+                    title={`${count(item.verifiedCount)} پرداخت تاییدشده از ${count(
+                      item.uniqueCustomers,
+                    )} نفر`}
+                  >
+                    {formatTomanFromIrr(item.takingsIrr)} · {count(item.uniqueCustomers)} نفر
+                  </span>
                   {/* Only shown when it is not 1. A weight beside every card
                       would be noise; a weight beside the one card being pushed
                       is the reminder to set it back once the count catches up. */}
@@ -89,7 +134,7 @@ export function CardBalancingPanel({
                     {item.hubEligible ? (
                       <span className="muted">واجد شرایط</span>
                     ) : (
-                      <span className="muted" title={item.exclusionReason}>
+                      <span className="muted" title={exclusionReasonFa(item.exclusionReason)}>
                         کنار گذاشته‌شده
                       </span>
                     )}
@@ -131,7 +176,9 @@ export function CardBalancingPanel({
                   />
                 </div>
                 {!item.hubEligible && (
-                  <p className="muted card-balancing-panel__reason">{item.exclusionReason}</p>
+                  <p className="muted card-balancing-panel__reason">
+                    {exclusionReasonFa(item.exclusionReason)}
+                  </p>
                 )}
               </div>
             </li>

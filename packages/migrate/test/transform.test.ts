@@ -158,6 +158,30 @@ describe('status mapping', () => {
     expect(t.isReseller('n2')).toBe(true);
   });
 
+  /**
+   * Which tier, not merely whether. `is_reseller` folds 'n' and 'n2' onto one
+   * boolean, and `agent` is in the importer's `claimed` list — so it does not
+   * reach `legacy_attrs` either. The tier was not stored anywhere: it was lost
+   * at import, and the shop charges two different prices for it
+   * (`{"f":"50000","n":"5000","n2":"5000"}` on the VIP panel).
+   *
+   * `users.reseller_tier` has existed since migration 0047 and the panel reads
+   * it; this is the half that fills it in.
+   */
+  it('keeps WHICH reseller tier, not just that there is one', () => {
+    expect(t.resellerTier('n')).toBe('n');
+    expect(t.resellerTier('n2')).toBe('n2');
+    // Not a reseller is not tier one — it is no tier, and the column is NULL.
+    expect(t.resellerTier('f')).toBeNull();
+    expect(t.resellerTier(null)).toBeNull();
+    expect(t.resellerTier('')).toBeNull();
+  });
+
+  it('refuses an unknown agent when reading the tier, exactly as the flag does', () => {
+    expect(() => t.resellerTier('reseller')).toThrow(/unmapped legacy agent value/);
+    expect(() => t.resellerTier('N2')).toThrow(/unmapped legacy agent value/);
+  });
+
   it('refuses an agent value outside the legacy domain', () => {
     // A wrong `false` here is invisible — the product simply never appears for
     // the customer it was meant for — so it must stop the migration instead.

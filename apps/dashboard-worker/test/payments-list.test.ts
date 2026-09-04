@@ -144,6 +144,10 @@ type PaymentsBody = {
     isNew?: boolean;
   }>;
   counts: Record<string, number>;
+  /** Present on every tab since the income tabs stopped cutting at 200. */
+  page?: number;
+  pageSize?: number;
+  total?: number;
   summary: {
     botAutoVerified: { payments: number; amountIrr: number };
     unassignedIncome: { count: number; amountIrr: number };
@@ -240,6 +244,56 @@ describe('GET /api/v1/payments', () => {
     const body = await get('tab=needs_review');
     expect(body.summary.unassignedIncome).toBeDefined();
     expect(body.summary.botAutoVerified.payments).toBe(1);
+  });
+
+  /**
+   * The badge and the list are two queries over the same rows, and they have
+   * now drifted twice. This time `FULFILLED_UNRECONCILED` had no arm in the
+   * badge's `CASE` at all: its own badge read zero forever, and its rows fell
+   * through to `ELSE 'NEEDS_REVIEW'` — a queue whose `stateSql` filter can
+   * never return them.
+   *
+   * Measured on staging, 2026-09-03: «در انتظار بررسی» promised 15 and listed
+   * 2, with 14 delivered-but-unmatched claims making up the difference. That
+   * is the one queue where the gap is money — the customer has the product and
+   * the bank never confirmed the payment.
+   *
+   * So the assertion is not «FULFILLED_UNRECONCILED counts» but the rule the
+   * screen actually needs: no badge may promise rows its own filter cannot
+   * produce. Any future state added to `stateSql` without an arm in the badge
+   * — or the reverse — fails here.
+   */
+  it('every badge equals the number of rows its own filter returns', async () => {
+    const base = Date.now();
+    await seedClaim('s-auto', { status: 'VERIFIED', paidClickedAt: base });
+    await seedTx('t-auto', base);
+    await seedMatch('s-auto', 't-auto', 'AUTO_VERIFIED');
+    await seedClaim('s-man', { status: 'VERIFIED' });
+    await seedClaim('s-ful', { status: 'FULFILLED_UNRECONCILED' });
+    await seedClaim('s-wait');
+    await seedClaim('s-need', { suspectReason: 'AMBIGUOUS_CLAIMS' });
+    await seedClaim('s-no-tx', { suspectReason: 'NO_TRANSACTION_AFTER_10M' });
+    await seedClaim('s-rej', { status: 'REJECTED' });
+    await seedClaim('s-fake', { status: 'FAKE_RECEIPT' });
+    await seedClaim('s-exp', { status: 'EXPIRED' });
+
+    const states = [
+      'AUTO_VERIFIED',
+      'MANUALLY_VERIFIED',
+      'FULFILLED_UNRECONCILED',
+      'WAITING',
+      'NEEDS_REVIEW',
+      'NO_TRANSFER_FOUND',
+      'REJECTED',
+      'FAKE',
+      'EXPIRED',
+    ] as const;
+
+    const badge = (await get('tab=all')).counts;
+    for (const state of states) {
+      const listed = await get(`tab=all&status=${state}`);
+      expect(`${state} badge=${badge[state]}`).toBe(`${state} badge=${listed.items.length}`);
+    }
   });
 
   it('masks the card number and never returns the full PAN', async () => {
@@ -797,5 +851,220 @@ describe('the payments list is paginated rather than silently cut', () => {
     expect(body.items.length).toBe(200);
     // And it still says how many there really are, which is the whole point.
     expect(body.total).toBe(N);
+  });
+});
+
+describe('the payments list can be taken as a file', () => {
+  const CRLF = '\r\n';
+
+  async function csv(qs: string, email = EMAIL) {
+    const r = await app.fetch(
+      new Request(`https://x/api/v1/payments?${qs}&format=csv`),
+      envAs(email),
+    );
+    // `bytes` as well as `text`: `Response.text()` decodes UTF-8 and the
+    // decoder STRIPS a leading BOM, so asserting on the string can never see
+    // the one thing Excel needs. Checked on the wire instead.
+    const buf = await r.clone().arrayBuffer();
+    return {
+      status: r.status,
+      text: await r.text(),
+      bytes: new Uint8Array(buf),
+      type: r.headers.get('content-type'),
+    };
+  }
+
+  it('exports the SAME set the screen is showing, filters and all', async () => {
+    // The whole reason this lives on the list route rather than beside it: an
+    // export that answers a different question from the screen it was taken
+    // from is worse than no export.
+    await seedClaim('x-a1', { status: 'VERIFIED', cardDigits: '6104337712345678' });
+    await seedClaim('x-a2', { status: 'VERIFIED', cardDigits: '6104337712345678' });
+    await seedClaim('x-b1', { status: 'VERIFIED', cardDigits: '6104338898765432' });
+
+    const all = await csv('tab=all&range=all');
+    expect(all.status).toBe(200);
+    // Three rows and one header.
+    expect(all.text.trim().split(CRLF)).toHaveLength(4);
+
+    const oneCard = await csv('tab=all&range=all&cardDigits=6104337712345678');
+    const rows = oneCard.text.trim().split(CRLF).slice(1);
+    expect(rows).toHaveLength(2);
+    // The card is NAMED, not printed. This line used to demand the opposite —
+    // `r.includes('6104337712345678')` — which is how a full PAN got into a
+    // file that leaves the panel: the assertion protecting the export was the
+    // one requiring the leak.
+    expect(rows.every((r) => r.includes('5678'))).toBe(true);
+    expect(oneCard.text).not.toContain('6104337712345678');
+    expect(oneCard.text).not.toContain('6104338898765432');
+  });
+
+  /**
+   * A CSV cell is text until a spreadsheet decides it is a formula.
+   *
+   * Quoting stops a comma from splitting a cell; it does not stop Excel,
+   * LibreOffice or Sheets from EVALUATING one that begins `=`, `+`, `-` or
+   * `@`. `customer_reference` is whatever the customer typed — it arrives from
+   * outside the trust boundary and leaves as a file somebody double-clicks.
+   */
+  it('does not hand the spreadsheet a formula to run', async () => {
+    await seedClaim('x-f1', { status: 'VERIFIED', customerReference: '=1+1' });
+    await seedClaim('x-f2', { status: 'VERIFIED', customerReference: '@SUM(A1:A9)' });
+
+    const r = await csv('tab=all&range=all');
+    expect(r.text).toContain(`"'=1+1"`);
+    expect(r.text).toContain(`"'@SUM(A1:A9)"`);
+    // And the dangerous form is gone: no cell opens with the formula character
+    // straight after the quote.
+    expect(r.text).not.toContain('"=');
+    expect(r.text).not.toContain('"@');
+  });
+
+  it('is a file Excel can read: BOM, CRLF, and Toman', async () => {
+    await seedClaim('x-m1', { status: 'VERIFIED' });
+    const r = await csv('tab=all&range=all');
+    expect(r.type).toContain('text/csv');
+    // Without the BOM every Persian heading arrives as mojibake. Asserted on
+    // the bytes: the first version of this read `text.charCodeAt(0)` and got
+    // 34 -- a quote -- because the decoder had already eaten the BOM. The file
+    // was right and the test was looking at the wrong layer.
+    expect([r.bytes[0], r.bytes[1], r.bytes[2]]).toEqual([0xef, 0xbb, 0xbf]);
+    expect(r.text).toContain(CRLF);
+    // AMOUNT is 1_950_000 IRR. The file is Toman, like every screen.
+    expect(r.text).toContain('195000');
+    expect(r.text).not.toContain('1950000');
+  });
+
+  it('refuses a READ_ONLY operator, who may still read the screen', async () => {
+    // Deliberately stricter than the list. `/api/v1/payments` is not in
+    // PERSONAL_DATA_PREFIXES, so READ_ONLY may browse it — but reading a page
+    // and taking a file of every customer's Telegram id are different acts,
+    // and only one of them leaves the building.
+    const ro = 'ro@example.com';
+    await baseEnv.DB.prepare(
+      `INSERT OR IGNORE INTO access_users (id, email, role, active, created_at, updated_at)
+       VALUES (?1, ?2, 'READ_ONLY', 1, ?3, ?3)`,
+    )
+      .bind(crypto.randomUUID(), ro, Date.now())
+      .run();
+    await seedClaim('x-ro', { status: 'VERIFIED' });
+
+    expect((await csv('tab=all&range=all', ro)).status).toBe(403);
+    // ...and the screen itself still answers them.
+    const list = await app.fetch(
+      new Request('https://x/api/v1/payments?tab=all&range=all'),
+      envAs(ro),
+    );
+    expect(list.status).toBe(200);
+  });
+});
+
+describe('personal customers and resellers, told apart', () => {
+  async function ask(qs: string) {
+    const r = await app.fetch(new Request(`https://x/api/v1/payments?${qs}`), envAs());
+    expect(r.status).toBe(200);
+    return (await r.json()) as {
+      items: Array<{ id: string; customerType: string }>;
+      total: number;
+    };
+  }
+
+  beforeEach(async () => {
+    for (const [tg, isReseller] of [
+      [7001, false],
+      [7002, true],
+    ] as const) {
+      // No `id`: it is `generated always as identity`, and Postgres refuses a
+      // supplied value outright rather than ignoring it. And no timestamps
+      // either: `users` keeps `timestamptz` while `payment_claims` keeps epoch
+      // milliseconds — the two conventions this schema carries, and handing
+      // one to the other is «date/time field value out of range».
+      //
+      // Upsert rather than delete-then-insert. It used to delete these two
+      // first, which passed on a fresh database and failed on every run after:
+      // by then the users owned a wallet and its entries, and eleven tables
+      // carry a RESTRICT foreign key to `users`. The test needs the two rows to
+      // EXIST with a known `is_reseller` — it never needed them to be new.
+      await baseEnv.DB.prepare(
+        `INSERT INTO users (telegram_id, status, is_reseller, registered_at)
+         VALUES (?1, 'ACTIVE', ?2, now())
+         ON CONFLICT (telegram_id) DO UPDATE SET is_reseller = EXCLUDED.is_reseller`,
+      )
+        .bind(tg, isReseller)
+        .run();
+    }
+  });
+
+  it('splits the list three ways, and «unknown» is not «personal»', async () => {
+    await seedClaim('s-p', { status: 'VERIFIED', customerReference: '7001' });
+    await seedClaim('s-r', { status: 'VERIFIED', customerReference: '7002' });
+    // The third case, and it is real: one production row carries
+    // «Poyan test payment» in this column. It matches no user, and calling it
+    // personal would be inventing a fact about a payment.
+    await seedClaim('s-u', { status: 'VERIFIED', customerReference: 'Poyan test payment' });
+
+    const all = await ask('tab=all&range=all');
+    const by = new Map(all.items.map((i) => [i.id, i.customerType]));
+    expect(by.get('s-p')).toBe('PERSONAL');
+    expect(by.get('s-r')).toBe('RESELLER');
+    expect(by.get('s-u')).toBe('UNKNOWN');
+
+    expect((await ask('tab=all&range=all&customerType=reseller')).items.map((i) => i.id)).toEqual([
+      's-r',
+    ]);
+    const personal = await ask('tab=all&range=all&customerType=personal');
+    expect(personal.items.map((i) => i.id)).toEqual(['s-p']);
+    // The unattributable one is in NEITHER bucket, which is the point.
+    expect(personal.items.map((i) => i.id)).not.toContain('s-u');
+  });
+
+  it('does not fall over on a reference that is not a number', async () => {
+    // `customer_reference::bigint` would error here and take the whole query
+    // with it — which is why the join casts the column to text instead.
+    await seedClaim('s-text', { status: 'VERIFIED', customerReference: 'Poyan test payment' });
+    const r = await ask('tab=all&range=all');
+    expect(r.items.map((i) => i.id)).toContain('s-text');
+  });
+});
+
+/**
+ * The three tabs that were left behind when the claim list got pagination.
+ *
+ * «واریزی‌ها» is where «پول رسید و به هیچ سفارشی نخورد» is answered, and on
+ * staging on 2026-09-04 its badge said 225 while the screen listed 200 — no
+ * pager, no `total`, and nothing saying 25 rows were missing (issue #82). The
+ * claim tabs had been fixed the day before; `income`, `declined_income` and
+ * `reseller` still ended in a bare `LIMIT 200`.
+ *
+ * A fixture below the ceiling cannot see the old bug, so these ask the
+ * narrower question the fix has to answer anyway: does the tab report how many
+ * rows exist, and does page 2 continue where page 1 stopped.
+ */
+describe('the income tabs count what they did not send', () => {
+  beforeEach(async () => {
+    const base = Date.now();
+    for (let i = 0; i < 3; i++) await seedTx(`inc-${i}`, base - i * 60_000);
+  });
+
+  it('reports the total beside the page, not the page as the total', async () => {
+    const body = await get('tab=income&range=all&pageSize=2');
+    expect(body.items.length).toBe(2);
+    expect(body.total).toBe(3);
+    expect(body.pageSize).toBe(2);
+    expect(body.page).toBe(1);
+  });
+
+  it('page 2 continues where page 1 stopped', async () => {
+    const p1 = await get('tab=income&range=all&pageSize=2');
+    const p2 = await get('tab=income&range=all&pageSize=2&page=2');
+    expect(p2.items.length).toBe(1);
+    expect(p2.page).toBe(2);
+    const ids = [...p1.items, ...p2.items].map((i) => i.id);
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it('the total agrees with the badge the tab draws', async () => {
+    const body = await get('tab=income&range=all&pageSize=2');
+    expect(body.total).toBe(body.counts.income);
   });
 });

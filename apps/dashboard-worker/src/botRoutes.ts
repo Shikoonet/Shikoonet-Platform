@@ -33,20 +33,15 @@ import {
   keyId,
   panelSecretKey,
   readBotCredential,
-  resolveBotToken,
   seal,
   type BotIdentity,
 } from '@shikoo/domain';
 import { REPORT_KINDS, REPORT_TOPIC_TITLES, reportTopicKey } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
+import { botTelegram, type TelegramReply } from './telegramCall.js';
 
 const TELEGRAM_API = 'https://api.telegram.org';
 
-/** Only what Telegram sends back that this route reads. */
-interface TelegramReply {
-  ok?: boolean;
-  result?: { is_forum?: boolean; message_thread_id?: number };
-}
 
 const ReportGroupBody = z
   .object({
@@ -330,44 +325,16 @@ export function registerBotRoutes(
     if (!body.success) return c.json({ ok: false, error: 'bad_body' }, 400);
     const chatId = body.data.chatId;
 
-    /*
-     * `PANEL_SECRET_KEY` is passed through deliberately.
-     *
-     * `resolveBotToken`'s env argument REPLACES `process.env`, so handing it
-     * only the bot token leaves it unable to open the sealed row — and the
-     * symptom is «no bot is connected» on a shop that has one. That is exactly
-     * the confusion `botToken.ts` warns about two paragraphs above the
-     * function, and it cost this route one debugging round.
-     */
-    let resolved;
-    try {
-      resolved = await resolveBotToken(c.env.DB, c.env.ENV_NAME ?? 'local', {
-        TELEGRAM_BOT_TOKEN: c.env.TELEGRAM_BOT_TOKEN,
-        PANEL_SECRET_KEY: process.env['PANEL_SECRET_KEY'],
-      });
-    } catch (err) {
-      // A stored token that will not open is not a missing one. Saying «connect
-      // a bot first» would send an operator to re-paste a token that was
-      // already right, when the real answer is a wrong PANEL_SECRET_KEY.
-      return c.json(
-        { ok: false, error: 'bot_token_unreadable', detail: (err as Error).message },
-        503,
-      );
+    // `botTelegram` holds the two failure modes this route used to spell out
+    // itself: a token that will not decrypt is NOT a missing token, and
+    // `resolveBotToken`'s env argument replaces `process.env` rather than
+    // adding to it. Both are now written once, where the third caller of this
+    // (the broadcast that forwards a channel post) reads them too.
+    const bot = await botTelegram(c.env);
+    if (!bot.ok) {
+      return c.json({ ok: false, error: bot.error, detail: bot.detail }, bot.status);
     }
-    if (!resolved) {
-      return c.json(
-        { ok: false, error: 'no_bot', detail: 'اول باید رباتی به پنل وصل باشد.' },
-        409,
-      );
-    }
-    const call = async (method: string, payload: unknown): Promise<TelegramReply> => {
-      const res = await globalThis.fetch(`${TELEGRAM_API}/bot${resolved.token}/${method}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      return (await res.json()) as TelegramReply;
-    };
+    const call = bot.call;
 
     let chat: TelegramReply;
     try {

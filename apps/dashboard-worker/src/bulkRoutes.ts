@@ -33,7 +33,8 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 
-import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
+import { MAX_SINGLE_PAYMENT_IRR, parseChannelPostLink, reportTopicKey } from '@shikoo/contracts';
+import type { EnvName } from '@shikoo/contracts';
 import {
   MAX_MESSAGE_LENGTH,
   activeCustomerCount,
@@ -41,8 +42,11 @@ import {
   creditEveryone,
   previewBulkPrice,
   queueBroadcast,
+  type BroadcastAudience,
+  type BroadcastContent,
 } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
+import { botTelegram, type BotCallEnv } from './telegramCall.js';
 
 /**
  * A v4 UUID, which is what `newBatchId()` produces on the bot side. Bounded
@@ -104,19 +108,175 @@ const PriceBody = z
     path: ['amount'],
   });
 
-const BroadcastBody = z
-  .object({
-    body: z.string().trim().min(1).max(MAX_MESSAGE_LENGTH),
-    broadcastId: UUID,
-  })
-  .strict();
+/**
+ * A broadcast is one of two things, and the union is what keeps them apart.
+ *
+ * `.strict()` on both halves is the part doing the work: a request carrying
+ * BOTH a body and a link matches neither branch and is refused here, rather
+ * than reaching the CHECK on `broadcasts` as a 500.
+ *
+ * The link is bounded at 500 characters and validated by shape afterwards.
+ * `required_channels` refuses a `t.me/…` URL for its `chat_ref` and this
+ * accepts nothing else — the two are not inconsistent: there the URL is the
+ * mistake, here it is the input, because a URL is what Telegram's own «copy
+ * link» puts in the operator's clipboard.
+ */
+/**
+ * Who the announcement is for.
+ *
+ * A flat discriminator plus one optional id rather than a nested object,
+ * because the same shape has to survive a query string on the reach route —
+ * and a preview whose shape differs from the send's is how the two come to
+ * count different people.
+ *
+ * `.default({ kind: 'all' })` keeps every existing caller working and keeps the
+ * old behaviour the default: a broadcast with nothing said about its audience
+ * still goes to everybody.
+ */
+const Audience = z
+  .discriminatedUnion('kind', [
+    z.object({ kind: z.literal('all') }).strict(),
+    z.object({ kind: z.literal('never_bought') }).strict(),
+    z.object({ kind: z.literal('service_ended') }).strict(),
+    z.object({ kind: z.literal('provider'), providerId: z.number().int().positive() }).strict(),
+  ])
+  .default({ kind: 'all' });
+
+/**
+ * The same union, read off a query string for the GET that previews a count.
+ *
+ * Returns `null` for anything it cannot read, so the route refuses rather than
+ * quietly counting everybody — the one failure that matters here is a preview
+ * that says a different number from the send.
+ */
+function audienceFromQuery(url: URL): BroadcastAudience | null {
+  const kind = url.searchParams.get('audience') ?? 'all';
+  if (kind === 'provider') {
+    const id = Number(url.searchParams.get('providerId'));
+    return Number.isSafeInteger(id) && id > 0 ? { kind: 'provider', providerId: id } : null;
+  }
+  return kind === 'all' || kind === 'never_bought' || kind === 'service_ended'
+    ? { kind }
+    : null;
+}
+
+const BroadcastBody = z.union([
+  z
+    .object({
+      body: z.string().trim().min(1).max(MAX_MESSAGE_LENGTH),
+      broadcastId: UUID,
+      audience: Audience,
+    })
+    .strict(),
+  z
+    .object({
+      postLink: z.string().trim().min(1).max(500),
+      broadcastId: UUID,
+      audience: Audience,
+    })
+    .strict(),
+]);
+
+/**
+ * Forwards the post once, where a person will see it, before anybody else does.
+ *
+ * Returns Telegram's own `description` on refusal. That field is the whole
+ * value of this check: «chat not found», «message to forward not found» and
+ * «bot is not a member of the channel chat» are three different things for an
+ * operator to go and fix, and without it all three arrive as «it did not work».
+ *
+ * It goes to «سایر گزارشات» — the topic whose whole definition is «everything
+ * without a topic of its own». A rehearsal is exactly that. The first draft
+ * sent it to «گزارش اکانت تست», which reads right and is not: that topic is for
+ * free trial accounts handed to customers, and an operator watching it would
+ * have no idea why a shop announcement appeared in it.
+ *
+ * The key comes from `reportTopicKey` rather than being spelled out, because
+ * `botRoutes` WRITES it with that helper. Two spellings of one settings key
+ * means the day it changes this lookup silently finds nothing and the rehearsal
+ * lands in the group's General instead.
+ */
+async function rehearseForward(
+  env: BotCallEnv,
+  fromChat: string,
+  messageId: number,
+): Promise<
+  { ok: true } | { ok: false; status: 409 | 422 | 502 | 503; error: string; detail: string }
+> {
+  const topicKey = reportTopicKey('otherreport');
+  const rows = await env.DB.prepare(
+    `SELECT key, value FROM settings
+      WHERE scope = 'bot' AND key IN ('Channel_Report', ?1)`,
+  )
+    .bind(topicKey)
+    .all<{ key: string; value: unknown }>();
+  const setting = new Map((rows.results ?? []).map((r) => [r.key, String(r.value ?? '').trim()]));
+
+  const rawChat = setting.get('Channel_Report') ?? '';
+  const chatId = /^-?[0-9]{1,19}$/.test(rawChat) ? Number(rawChat) : null;
+  if (chatId === null || chatId === 0) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'no_report_group',
+      detail:
+        'برای فوروارد پست، اول باید گروه گزارش وصل باشد — پست یک بار آن‌جا آزمایش می‌شود تا اگر ربات به کانال دسترسی ندارد، شما ببینیدش نه یازده هزار مشتری.',
+    };
+  }
+  // Zero and negative are «not configured» — legacy's own sentinels, and what
+  // the bot's settings reader treats as absent. An unset topic lands in the
+  // group's General, which is a fine place for a rehearsal.
+  const rawTopic = Number(setting.get(topicKey) ?? '');
+  const threadId = Number.isSafeInteger(rawTopic) && rawTopic > 0 ? rawTopic : null;
+
+  const bot = await botTelegram(env);
+  if (!bot.ok) return bot;
+
+  let reply;
+  try {
+    reply = await bot.call('forwardMessage', {
+      chat_id: chatId,
+      from_chat_id: fromChat,
+      message_id: messageId,
+      ...(threadId === null ? {} : { message_thread_id: threadId }),
+    });
+  } catch {
+    // Telegram could not be reached at all, which is not the same as Telegram
+    // saying no — nothing about the post has been learned, so nothing is queued
+    // and the operator is asked to try again rather than to fix a link.
+    return { ok: false, status: 502, error: 'telegram_unreachable', detail: 'تلگرام جواب نداد.' };
+  }
+  if (reply.ok !== true) {
+    return {
+      ok: false,
+      status: 422,
+      error: 'post_unreachable',
+      detail: `تلگرام این پست را فوروارد نکرد: ${reply.description ?? 'بدون توضیح'} — معمولاً یعنی ربات ادمین آن کانال نیست، یا پست پاک شده.`,
+    };
+  }
+  return { ok: true };
+}
 
 export function registerBulkRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{
+    // Wider than `{ DB }` since 0055: forwarding a channel post means calling
+    // Telegram from here, once, before anything is queued.
+    Bindings: { DB: D1Database; ENV_NAME?: EnvName; TELEGRAM_BOT_TOKEN?: string };
+    Variables: { identity: Ident };
+  }>,
 ) {
-  /** How many customers either action would reach. Readable by any operator. */
+  /**
+   * How many customers an action would reach. Readable by any operator.
+   *
+   * Takes the audience so the number an operator approves is a count of the
+   * rows the send will actually insert — the same predicate, from
+   * `audienceSql`, runs on both sides. A preview that counts something else is
+   * worse than no preview: it is a number somebody trusted.
+   */
   app.get('/api/v1/admin/bulk/reach', async (c) => {
-    return c.json({ ok: true, reach: await activeCustomerCount(c.env.DB) });
+    const audience = audienceFromQuery(new URL(c.req.url));
+    if (audience === null) return c.json({ ok: false, error: 'invalid_audience' }, 400);
+    return c.json({ ok: true, reach: await activeCustomerCount(c.env.DB, audience) });
   });
 
   /**
@@ -198,21 +358,73 @@ export function registerBulkRoutes(
     return c.json({ ok: true, credited, reach });
   });
 
+  /**
+   * Queues one announcement for every active customer — text, or a channel post.
+   *
+   * ## The rehearsal, and why it is not optional
+   *
+   * A forward can fail for reasons no amount of validating the LINK will catch:
+   * the bot was never added to the channel, it was removed last week, the post
+   * was deleted, the channel went private. None of those are visible from here
+   * and all of them fail identically — per recipient, eleven thousand times,
+   * after the operator has walked away.
+   *
+   * So the post is forwarded ONCE, into the shop's own report group, before a
+   * single recipient row is written. If Telegram refuses, the operator reads
+   * Telegram's own sentence while they are still standing at the screen, and
+   * nothing was queued. If it succeeds, they can also SEE what is about to go
+   * out, which is the other half of what a rehearsal is for.
+   *
+   * The report group is required rather than skipped-when-absent: a shop with
+   * nowhere to show the rehearsal has nowhere to show the failure either, and
+   * «we could not check» silently becoming «we did not check» is the whole
+   * failure mode this exists to prevent.
+   */
   app.post('/api/v1/admin/bulk/broadcast', async (c) => {
     const ident = c.get('identity');
     if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
 
     const parsed = BroadcastBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
-    const { body, broadcastId } = parsed.data;
+    const { broadcastId, audience } = parsed.data;
 
-    const reach = await activeCustomerCount(c.env.DB);
+    const reach = await activeCustomerCount(c.env.DB, audience);
+    // Counted for THIS audience, so «nobody» now means «nobody matches» rather
+    // than «the shop has no customers» — and the send stops either way, which
+    // is the point: queueing a broadcast nobody will get is a silent no-op that
+    // reads on the screen as a success.
     if (reach === 0) return c.json({ ok: false, error: 'no_active_customers' }, 409);
+
+    let content: BroadcastContent;
+    let detail: Record<string, unknown>;
+    if ('postLink' in parsed.data) {
+      const post = parseChannelPostLink(parsed.data.postLink);
+      if (post === null) {
+        return c.json(
+          {
+            ok: false,
+            error: 'invalid_post_link',
+            detail:
+              'این لینک، لینک یک پست کانال نیست. مثل «https://t.me/shikoonet/137» باشد — از دکمهٔ «کپی لینک» روی خود پست.',
+          },
+          422,
+        );
+      }
+      const rehearsal = await rehearseForward(c.env, post.chat, post.messageId);
+      if (!rehearsal.ok) {
+        return c.json({ ok: false, error: rehearsal.error, detail: rehearsal.detail }, rehearsal.status);
+      }
+      content = { kind: 'forward', chat: post.chat, messageId: post.messageId };
+      detail = { source_chat: post.chat, source_message_id: post.messageId };
+    } else {
+      content = { kind: 'text', body: parsed.data.body };
+      detail = { length: parsed.data.body.length };
+    }
 
     // `created_by` is a Telegram id on the bot's path and this operator has
     // none. 0 rather than a fake id: the audit row carries the email, which is
     // who actually did it.
-    const queued = await queueBroadcast(c.env.DB, broadcastId, body, 0);
+    const queued = await queueBroadcast(c.env.DB, broadcastId, content, 0, audience);
     await audit(
       c.env.DB,
       ident,
@@ -220,7 +432,7 @@ export function registerBulkRoutes(
       'CUSTOMER',
       broadcastId,
       null,
-      { recipients: queued, length: body.length },
+      { recipients: queued, audience: audience.kind, ...detail },
       null,
     );
     return c.json({ ok: true, queued, reach });

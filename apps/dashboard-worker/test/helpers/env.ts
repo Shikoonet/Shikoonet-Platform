@@ -145,3 +145,48 @@ export async function fixtureCategory(name = '__fixture'): Promise<number> {
   if (!row) throw new Error(`could not make the fixture category ${name}`);
   return row.id;
 }
+
+/**
+ * This file's own fixture customers, and nobody else's.
+ *
+ * Six suites each pick a `TG_BASE` and each wrote
+ * `DELETE FROM users WHERE telegram_id >= TG_BASE` — unbounded. So the suite
+ * with the LOWEST base silently owned every other suite's customers: 940 000 000
+ * deletes 950, 960, 990, 993 and everything above them. They pass today because
+ * each file deletes before it inserts, which is ordering rather than isolation.
+ *
+ * It stopped being theoretical on 2026-09-04. A new suite at 996 100 000 gave
+ * its customers ORDERS; the sweep in `bulk.test.ts` then hit
+ * `orders_user_id_fkey` and took all 23 of its tests down — in a file that had
+ * not changed. That is the shape of issue #46 one range up, and it is the
+ * second time a fixture range has reached rows it did not own.
+ *
+ * One million ids is far more than any suite uses and far less than the gap
+ * between two bases.
+ */
+export async function deleteFixtureUsers(base: number, span = 1_000_000): Promise<void> {
+  const hi = base + span;
+  const mine = `SELECT id FROM users WHERE telegram_id >= ?1 AND telegram_id < ?2`;
+  /*
+   * The rows that hang off those customers, bounded the SAME way.
+   *
+   * Bounding only the `users` delete was half a fix, and CodeRabbit was right
+   * to say so on PR #93: the dependent deletes each suite wrote by hand still
+   * read `telegram_id >= TG_BASE`, so a suite could still reach into another's
+   * orders and subscriptions — the same landmine, one table down.
+   *
+   * They live here rather than in six files because the range is one idea, and
+   * an idea spelled out six times is one that will be spelled wrong somewhere.
+   */
+  for (const table of ['reseller_requests', 'orders', 'subscriptions']) {
+    await env.DB.prepare(`DELETE FROM ${table} WHERE user_id IN (${mine})`)
+      .bind(base, hi)
+      .run();
+  }
+  await env.DB.prepare(`DELETE FROM admins WHERE telegram_id >= ?1 AND telegram_id < ?2`)
+    .bind(base, hi)
+    .run();
+  await env.DB.prepare(`DELETE FROM users WHERE telegram_id >= ?1 AND telegram_id < ?2`)
+    .bind(base, hi)
+    .run();
+}
