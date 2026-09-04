@@ -28,6 +28,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   api,
   ApiError,
+  type BroadcastAudience,
   type BulkPriceChange,
   type BulkPricePreview,
   type BulkSend,
@@ -65,6 +66,21 @@ function LastSend({ send, verb }: { send: BulkSend | null; verb: string }) {
 
 /** Telegram refuses a longer message outright rather than truncating it. */
 const MAX_MESSAGE_LENGTH = 4096;
+
+/**
+ * The audiences, in the words an operator picks them by.
+ *
+ * «سرویسش تمام شده» rather than «منقضی شده»: the server answers this from the
+ * service's STATUS, not from an expiry date, because no imported service has
+ * one (issue #92). Saying «منقضی» would promise a precision the data does not
+ * have, and the day #92 lands the wording can get sharper.
+ */
+const AUDIENCES = [
+  ['all', 'همهٔ مشتری‌های فعال'],
+  ['never_bought', 'استارت زده و هیچ خریدی نکرده'],
+  ['service_ended', 'سرویسش تمام شده و سرویس فعالی ندارد'],
+  ['provider', 'سرویس فعال روی یک پنل مشخص دارد'],
+] as const;
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -107,6 +123,20 @@ export function BulkPage() {
    */
   const [messageKind, setMessageKind] = useState<'text' | 'post'>('text');
   const [postLink, setPostLink] = useState('');
+  /**
+   * Who hears it, and how many that is.
+   *
+   * `messageReach` is separate from the page's `reach` on purpose: the credit
+   * card still charges every active customer, so one shared number would drift
+   * the moment an audience is chosen here. `null` means «not counted yet», and
+   * the button stays down until the server has answered — an operator must
+   * never be able to send to an audience nobody has counted.
+   */
+  const [audienceKind, setAudienceKind] = useState<BroadcastAudience['kind']>('all');
+  const [audiencePanel, setAudiencePanel] = useState('');
+  const [messageReach, setMessageReach] = useState<number | null>(null);
+  /** Which count request is the current one; see `loadMessageReach`. */
+  const reachSeq = useRef(0);
   const [broadcastId, setBroadcastId] = useState(newId);
   const [confirmingMessage, setConfirmingMessage] = useState(false);
 
@@ -134,6 +164,33 @@ export function BulkPage() {
     try {
       setReach((await api.bulkReach()).reach);
     } catch (e) {
+      setErr(message(e));
+    }
+  }
+
+  /**
+   * The count for the audience currently chosen.
+   *
+   * Re-asked on every change rather than computed here, because the number an
+   * operator approves has to come from the same predicate the send uses. A
+   * count derived in the browser would agree until somebody edited one of them.
+   */
+  async function loadMessageReach(a: BroadcastAudience | null) {
+    // Cleared BEFORE the request, not after it comes back. Between choosing a
+    // new audience and the server answering, the old audience's number was
+    // still in state — so the button stayed armed and the confirmation showed
+    // one audience's name beside another's count. On a button with no undo.
+    const mine = ++reachSeq.current;
+    setMessageReach(null);
+    if (a === null) return;
+    try {
+      const answer = (await api.bulkReach(a)).reach;
+      // Two changes in quick succession can answer out of order, and the slower
+      // first response would then overwrite the right count with a stale one.
+      if (reachSeq.current === mine) setMessageReach(answer);
+    } catch (e) {
+      if (reachSeq.current !== mine) return;
+      setMessageReach(null);
       setErr(message(e));
     }
   }
@@ -175,7 +232,36 @@ export function BulkPage() {
    * «this is not a post link», and it is what keeps the button disabled.
    */
   const post = parseChannelPostLink(postLink);
-  const messageReady = messageKind === 'text' ? trimmed !== '' : post !== null;
+
+  /**
+   * The audience as the server takes it, or `null` while the panel picker is
+   * still empty — «کاربران یک پنل» with no panel chosen is not an audience yet,
+   * and counting it as «all» would be the wrong number under the right label.
+   */
+  const audience: BroadcastAudience | null =
+    audienceKind !== 'provider'
+      ? { kind: audienceKind }
+      : audiencePanel === ''
+        ? null
+        : { kind: 'provider', providerId: Number(audiencePanel) };
+
+  const contentReady = messageKind === 'text' ? trimmed !== '' : post !== null;
+  const messageReady = contentReady && audience !== null && (messageReach ?? 0) > 0;
+  const audienceLabel = AUDIENCES.find(([k]) => k === audienceKind)?.[1] ?? '';
+
+  /*
+   * Keyed on the audience's own two fields rather than on the object, which is
+   * rebuilt on every render and would make this loop for ever.
+   */
+  useEffect(() => {
+    void loadMessageReach(
+      audienceKind !== 'provider'
+        ? { kind: audienceKind }
+        : audiencePanel === ''
+          ? null
+          : { kind: 'provider', providerId: Number(audiencePanel) },
+    );
+  }, [audienceKind, audiencePanel]);
 
   // Digits only, like the amount above. For FIXED the operator types Toman and
   // the panel converts once; for PERCENT the number is a percent and must not
@@ -265,8 +351,11 @@ export function BulkPage() {
     setErr(null);
     setDone(null);
     try {
+      // `audience` is non-null here: `messageReady` gates the button on it.
       const r = await api.broadcast(
-        messageKind === 'text' ? { body: trimmed, broadcastId } : { postLink, broadcastId },
+        messageKind === 'text'
+          ? { body: trimmed, broadcastId, audience: audience! }
+          : { postLink, broadcastId, audience: audience! },
       );
       setDone(
         messageKind === 'text'
@@ -359,6 +448,62 @@ export function BulkPage() {
           پیام برای هر مشتری فعال در صف می‌رود و ربات آن را می‌فرستد — نه از این صفحه. کسی که بعد از
           این لحظه /start بزند آن را نمی‌گیرد.
         </p>
+        <div className="filters">
+          <div>
+            <label className="form-label" htmlFor="bulk-audience">
+              برای چه کسانی
+            </label>
+            <select
+              id="bulk-audience"
+              className="form-control"
+              value={audienceKind}
+              disabled={busy}
+              onChange={(e) => setAudienceKind(e.target.value as BroadcastAudience['kind'])}
+            >
+              {AUDIENCES.map(([k, label]) => (
+                <option key={k} value={k}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {audienceKind === 'provider' && (
+            <div>
+              <label className="form-label" htmlFor="bulk-audience-panel">
+                پنل
+              </label>
+              {/* By id, from the catalogue. Matching the plan's NAME would empty
+                  the audience the day somebody renames it, with nothing on any
+                  screen to say so. */}
+              <select
+                id="bulk-audience-panel"
+                className="form-control"
+                value={audiencePanel}
+                disabled={busy}
+                onChange={(e) => setAudiencePanel(e.target.value)}
+              >
+                <option value="">— انتخاب کنید —</option>
+                {(panels ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+        {/* The number, before the press and not after. An audience an operator
+            believed was a hundred people and is fifteen thousand has to be
+            visible here. */}
+        <p className="muted">
+          {audience === null
+            ? 'اول پنل را انتخاب کنید.'
+            : messageReach === null
+              ? 'در حال شمردن…'
+              : messageReach === 0
+                ? 'هیچ‌کس در این گروه نیست — چیزی فرستاده نمی‌شود.'
+                : `${count(messageReach)} نفر این را می‌گیرند.`}
+        </p>
         <div className="tabs">
           {(
             [
@@ -429,7 +574,7 @@ export function BulkPage() {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={busy || !messageReady || !reach}
+    disabled={busy || !messageReady}
           onClick={() => setConfirmingMessage(true)}
         >
           ادامه
@@ -559,7 +704,7 @@ export function BulkPage() {
         </Confirm>
       )}
 
-      {confirmingMessage && reach !== null && (
+      {confirmingMessage && messageReach !== null && (
         <Confirm
           title={messageKind === 'text' ? 'پیام همگانی فرستاده شود؟' : 'این پست فوروارد شود؟'}
           onCancel={() => setConfirmingMessage(false)}
@@ -568,7 +713,12 @@ export function BulkPage() {
         >
           <p>
             {messageKind === 'text' ? 'این پیام' : 'این پست'} برای{' '}
-            <strong>{count(reach)}</strong> مشتری در صف می‌رود.
+            <strong>{count(messageReach)}</strong> مشتری در صف می‌رود —{' '}
+            {audienceLabel}
+            {audienceKind === 'provider'
+              ? `: ${(panels ?? []).find((p) => String(p.id) === audiencePanel)?.name ?? ''}`
+              : ''}
+            .
           </p>
           {messageKind === 'text' ? (
             <pre className="code-scrollable">{trimmed}</pre>
