@@ -156,13 +156,20 @@ describe('/start tidying up after the last visit', () => {
     // The line between tidying up after itself and rewriting somebody's
     // history. A second `/start` with nothing open deletes only the command
     // that asked for it — the welcome from the first visit stays where it is.
+    //
+    // Asserted as the exact message and chat, not as a count: «one thing was
+    // deleted» is also true of a regression that deletes the FIRST visit's
+    // message instead, which is the one thing this test exists to forbid.
+    // Review caught that on PR #99, and it is rule 6 again.
     const { telegramId } = ids();
     await makeCustomer(telegramId);
-    await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
+    const firstId = ids().updateId;
+    await handleUpdate(db, typed(firstId, telegramId, '/start'));
 
-    const second = await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
+    const secondId = ids().updateId;
+    const second = await handleUpdate(db, typed(secondId, telegramId, '/start'));
 
-    expect(second.deletes ?? []).toHaveLength(1);
+    expect(second.deletes ?? []).toEqual([{ chatId: telegramId, messageId: secondId }]);
   });
 });
 
