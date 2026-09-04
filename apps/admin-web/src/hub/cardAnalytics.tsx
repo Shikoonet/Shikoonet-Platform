@@ -7,7 +7,11 @@ import { type HistoryRangeState, appendHistoryRangeQuery } from './paymentReview
 function cardUsageLabel(item: CardAnalyticsResponse['items'][number]): string {
   const hint = item.accountHint ? `**** ${item.accountHint}` : item.displayName;
   const owner = item.ownerLabel?.trim() || item.displayName;
-  return `${item.cardMasked} · ${hint} · ${owner}`;
+  // De-duplicated, because both halves fall back to `displayName` and an
+  // unmapped card has neither a hint nor an owner — so the row read
+  // «****0037 · کارت نگاشت‌نشده · کارت نگاشت‌نشده» on staging. Two identical
+  // words separated by a dot read as two facts, and there is one.
+  return [item.cardMasked, hint, owner].filter((part, i, all) => all.indexOf(part) === i).join(' · ');
 }
 
 /**
