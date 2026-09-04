@@ -575,10 +575,20 @@ const DISCOUNT_PERCENT = `COALESCE(
  * Upsert rather than SELECT-then-INSERT: two messages cannot race into two rows
  * for one telegram_id, because the unique index decides, not this code.
  */
+/**
+ * `is_new` is whether THIS statement created the row.
+ *
+ * `now()` is the transaction's clock, so an INSERT writes the same instant into
+ * `registered_at` and `last_seen_at`, and the ON CONFLICT branch moves only the
+ * second. No `xmax` trick, and nothing for the adapter to keep in step with.
+ *
+ * It is read once, by `/start`, to decide whether this customer has ever been
+ * sent the bottom keyboard.
+ */
 async function upsertUser(
   tx: D1DatabaseSession,
   from: { id: number; username?: string | undefined },
-): Promise<Caller> {
+): Promise<Caller & { is_new: boolean }> {
   const user = await tx
     .prepare(
       `INSERT INTO users (telegram_id, username, registered_at, last_seen_at)
@@ -587,10 +597,11 @@ async function upsertUser(
          SET username = EXCLUDED.username,
              last_seen_at = now(),
              updated_at = now()
-       RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
+       RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN},
+                 (registered_at = last_seen_at) AS is_new`,
     )
     .bind(from.id, from.username ?? null)
-    .first<Caller>();
+    .first<Caller & { is_new: boolean }>();
   if (!user) throw new Error('user upsert returned no row');
   return user;
 }
@@ -737,13 +748,41 @@ async function handleStart(
   //
   // `/start` is the only place it is set, for the same reason: it outlives the
   // message that carried it.
+  // Which menu the welcome carries, and it is one message either way.
+  //
+  // Sam and I found the reason together in his own Telegram, 2026-09-04. The
+  // welcome said «از منوی زیر انتخاب کنید» and there was nothing under it: the
+  // bottom keyboard had been delivered correctly weeks before and his client
+  // had it COLLAPSED, behind a toggle he had to know to press. We send
+  // `is_persistent: true`; that client does not honour it.
+  //
+  // A brand-new customer gets the BOTTOM keyboard, because a keyboard Telegram
+  // has just been given is one it shows — collapsing is a thing the person does
+  // later — and because it is the only moment they do not already have one. It
+  // then belongs to the chat: it survives every screen and needs no scrolling
+  // back, which is why #76 chose it and still the best door when it is drawn.
+  //
+  // Everybody else gets the INLINE menu, which renders wherever the message
+  // does. They already have the bottom keyboard — Telegram keeps one until
+  // something replaces it — so this adds the door that cannot be hidden rather
+  // than replacing the one that can.
+  //
+  // The two together are also self-healing, and that is worth more than either:
+  // a customer whose menu is hidden presses /start, is no longer new, and gets
+  // a menu they can see.
+  //
+  // Not both on one message, because Telegram allows one `reply_markup` — the
+  // choice #76's own comment describes. What has changed since is only which
+  // way it should fall, and for whom.
   return {
     status: 'processed',
     replies: [
       {
         chatId: message.chat.id,
         text: claimed ? `${menu.REFERRAL_WELCOME}\n\n${menu.WELCOME}` : menu.WELCOME,
-        replyKeyboard: menu.mainReplyMenu(user),
+        ...(user.is_new
+          ? { replyKeyboard: menu.mainReplyMenu(user) }
+          : { keyboard: menu.mainMenu(user) }),
       },
     ],
   };
