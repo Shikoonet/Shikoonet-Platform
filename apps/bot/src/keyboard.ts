@@ -166,11 +166,10 @@ export function buildMainMenu(
 /**
  * The same main menu, drawn UNDER the chat instead of under a message.
  *
- * Same layout, same labels, same two visibility rules — deliberately the same
- * `buildMenu` rather than a second builder. The failure this avoids is the one
- * `MenuViewer` already describes: two places that draw the shop's menu drift,
- * and the way you find out is a customer seeing a button that is supposed to be
- * hidden from them.
+ * New chats now receive a single permanent home row instead. This builder is
+ * retained for compatibility with labels from the full reply keyboard sent by
+ * the previous release: those buttons remain usable until `/start` replaces
+ * them.
  *
  * `back` is dropped and nothing else is. A bottom keyboard belongs to the chat
  * rather than to a screen, so it has no «back» to go to — the button would sit

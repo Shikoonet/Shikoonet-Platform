@@ -60,7 +60,15 @@ describe('pollOnce', () => {
     expect(result.counts.processed).toBe(2);
     expect(result.failed).toBe(0);
     expect(result.offset).toBe(b.updateId + 1);
-    expect(sent).toHaveLength(2);
+    // Each `/start` sends the setup message that installs the persistent row,
+    // then the inline main menu as the last message in that chat.
+    expect(sent).toHaveLength(4);
+    expect(sent.map((message) => message.chatId)).toEqual([
+      a.telegramId,
+      a.telegramId,
+      b.telegramId,
+      b.telegramId,
+    ]);
   });
 
   /**
@@ -99,7 +107,7 @@ describe('pollOnce', () => {
     expect(result.counts.ignored).toBe(1);
     expect(result.counts.processed).toBe(1);
     // Nothing was said INTO the group.
-    expect(sent.map((m) => m.chatId)).toEqual([b.telegramId]);
+    expect(sent.map((m) => m.chatId)).toEqual([b.telegramId, b.telegramId]);
   });
 
   it('leaves the offset alone when nothing arrived', async () => {
@@ -137,8 +145,8 @@ describe('pollOnce', () => {
     expect(result.failed).toBe(1);
     expect(result.counts.processed).toBe(1);
     // The update behind the failure was still handled.
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.chatId).toBe(good.telegramId);
+    expect(sent).toHaveLength(2);
+    expect(sent.every((message) => message.chatId === good.telegramId)).toBe(true);
     // And the failed one is free to be retried on redelivery.
     const claimed = await db
       .prepare(`SELECT COUNT(*)::int AS n FROM telegram_updates WHERE update_id = ?1`)

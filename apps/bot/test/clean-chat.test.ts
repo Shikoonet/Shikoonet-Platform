@@ -1,5 +1,5 @@
 /**
- * One live screen, and the menu under the chat.
+ * One live screen, and a permanent way home under the chat.
  *
  * Two changes with one purpose, and both are about what the customer SEES after
  * they have used the bot for a minute.
@@ -11,10 +11,10 @@
  * somewhere up the scrollback. So a typed answer now edits the screen that
  * ASKED, and the customer's own message is deleted.
  *
- * The menu moved under the chat at the same time, which is what makes the first
- * change safe to have: a customer whose screen is being edited in place still
- * has the shop's front door in front of them, and pressing it is also how they
- * abandon a question they no longer want to answer.
+ * The navigation row under the chat makes the first change safe to have: a
+ * customer whose screen is being edited in place still has a stable way back
+ * to the shop's inline menu, and pressing it is also how they abandon a
+ * question they no longer want to answer.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -173,37 +173,30 @@ describe('/start tidying up after the last visit', () => {
   });
 });
 
-describe('which door /start opens with', () => {
-  it('gives a brand-new customer the bottom keyboard, and a returning one the inline menu', async () => {
-    // Found in Sam's own Telegram, 2026-09-04. The welcome said «از منوی زیر
-    // انتخاب کنید» and there was nothing under it: the bottom keyboard had been
-    // delivered correctly weeks earlier and his client had it COLLAPSED, behind
-    // a toggle he had to know to press. We send `is_persistent: true`; that
-    // client does not honour it.
-    //
-    // So a menu is drawn either way, and the two together are self-healing: a
-    // customer whose keyboard is hidden presses /start, is no longer new, and
-    // gets a menu they can see. That property is what this test is really for —
-    // asserting only the first half would pass with the second one deleted.
+describe('the navigation bar installed by /start', () => {
+  it('keeps the home row below the app and the inline main menu as the last message', async () => {
+    // `/start` is also the upgrade and repair path. Restricting the row to the
+    // INSERT branch would leave every existing customer on whatever keyboard a
+    // previous release happened to install. The inline half is asserted at the
+    // end of the reply list because that order is what the customer sees.
     const { telegramId } = ids();
 
-    // Nothing creates the row first: `/start` does, which is what makes it new.
     const first = await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
-    expect(first.replies[0]?.replyKeyboard, 'a new customer has no keyboard yet').toBeDefined();
+    expect(first.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
     expect(first.replies[0]?.keyboard).toBeUndefined();
+    expect(first.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
+    expect(first.replies.at(-1)?.keyboard).toEqual(
+      menu.mainMenu({ is_reseller: false, is_admin: false }),
+    );
 
     const again = await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
-    expect(again.replies[0]?.keyboard, 'the door a client cannot collapse').toBeDefined();
-    expect(again.replies[0]?.replyKeyboard).toBeUndefined();
-
-    // And it is the same menu both times — one layout, two markups.
-    const bottom = (first.replies[0]?.replyKeyboard as { text: string }[][]).flat().map((b) => b.text);
-    const inline = (again.replies[0]?.keyboard ?? []).flat().map((b) => b.text);
-    expect(inline).toEqual(bottom);
+    expect(again.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
+    expect(again.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
+    expect(again.replies.at(-1)?.keyboard).toBeDefined();
   });
 });
 
-describe('the menu under the chat', () => {
+describe('the navigation bar under the chat', () => {
   it('opens the same screen the inline button opens', async () => {
     // The bottom keyboard sends a LABEL, not a callback. If the two roads led to
     // different screens, the shop would have two menus that drift — and the one
@@ -211,17 +204,15 @@ describe('the menu under the chat', () => {
     const { telegramId } = ids();
     await makeCustomer(telegramId);
 
-    const label = (menu.mainReplyMenu({ is_reseller: false, is_admin: false }) as { text: string }[][])
-      .flat()
-      .map((b) => b.text)
-      .find((t) => t.includes('خرید'));
-    expect(label).toBeDefined();
-
-    const viaLabel = await handleUpdate(db, typed(ids().updateId, telegramId, label!));
-    const viaButton = await handleUpdate(db, pressed(ids().updateId, telegramId, 'buy', 900));
+    const viaLabel = await handleUpdate(
+      db,
+      typed(ids().updateId, telegramId, menu.HOME_REPLY_LABEL),
+    );
+    const viaButton = await handleUpdate(db, pressed(ids().updateId, telegramId, 'menu', 900));
 
     expect(viaLabel.status).toBe('processed');
     expect(viaLabel.replies[0]?.text).toBe(viaButton.replies[0]?.text);
+    expect(viaLabel.replies[0]?.keyboard).toEqual(viaButton.replies[0]?.keyboard);
   });
 
   it('abandons an open question rather than answering it', async () => {
@@ -234,11 +225,7 @@ describe('the menu under the chat', () => {
     const plan = await planId('sim-vip-1m-50');
     await handleUpdate(db, pressed(ids().updateId, telegramId, `dsc:${plan}`, 77));
 
-    const label = (menu.mainReplyMenu({ is_reseller: false, is_admin: false }) as { text: string }[][])
-      .flat()
-      .map((b) => b.text)
-      .find((t) => t.includes('خرید'))!;
-    await handleUpdate(db, typed(ids().updateId, telegramId, label));
+    await handleUpdate(db, typed(ids().updateId, telegramId, menu.HOME_REPLY_LABEL));
 
     const row = await db
       .prepare(`SELECT step FROM bot_sessions WHERE user_id = ?1`)
@@ -247,9 +234,10 @@ describe('the menu under the chat', () => {
     expect(row?.step).toBeNull();
   });
 
-  it('still matches after an admin renames the button', async () => {
-    // The labels are the shop's, not ours. A lookup against the shipped defaults
-    // would leave a renamed button typing at a bot that has never heard of it.
+  it('still accepts a renamed button left by the previous full keyboard', async () => {
+    // Deploying the one-row navbar cannot atomically replace a reply keyboard
+    // in every existing chat. Until a customer next presses `/start`, labels
+    // installed by the previous release must still lead somewhere.
     const { telegramId } = ids();
     await makeCustomer(telegramId);
     await db

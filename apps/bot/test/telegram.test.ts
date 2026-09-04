@@ -176,6 +176,23 @@ describe('sendMessage', () => {
     expect(calls[0]?.body).toEqual({ chat_id: 42, text: 'سلام' });
   });
 
+  it('sends the navigation row as a persistent keyboard under the chat', async () => {
+    const { api, calls } = apiWith(() => ok(true));
+    await api.sendMessage(42, 'سلام', undefined, undefined, [
+      [{ text: '🏠 بازگشت به منوی اصلی' }],
+    ]);
+
+    expect(calls[0]?.body).toEqual({
+      chat_id: 42,
+      text: 'سلام',
+      reply_markup: {
+        keyboard: [[{ text: '🏠 بازگشت به منوی اصلی' }]],
+        resize_keyboard: true,
+        is_persistent: true,
+      },
+    });
+  });
+
   it('throws when Telegram rejects it', async () => {
     const { api } = apiWith(
       () =>

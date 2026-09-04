@@ -94,21 +94,15 @@ describe('walking from /start to an order', () => {
 
     const start = await handleUpdate(db, startUpdate(updateId, telegramId));
     expect(start.status).toBe('processed');
-    // Nothing created this customer before `/start` did, so this is the walk a
-    // real first-time buyer takes — and a brand-new customer is the one case
-    // that gets the BOTTOM keyboard (2026-09-04): it is the only moment they do
-    // not already have one, and a keyboard Telegram has just been handed is one
-    // it draws. Everybody else gets the menu inside the message, because that
-    // is the door a client cannot collapse.
-    //
-    // The claim is the one it always was: «خرید» is reachable from the very
-    // first screen. What changed is that «the very first screen» now has to
-    // actually show it.
-    const rows = start.replies[0]?.replyKeyboard;
-    const menuButtons = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
-    expect(menuButtons.some((label) => label.includes('خرید'))).toBe(true);
+    // The fixed row under the chat is deliberately only the way home. The next
+    // and last message is the shop's real inline menu, where «خرید» remains
+    // the first step of the purchase journey.
+    expect(start.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
     // A greeting is a new message, not an edit of one.
     expect(start.replies[0]?.editMessageId).toBeUndefined();
+    expect(
+      start.replies.at(-1)?.keyboard?.flat().some((button) => button.callback_data === 'buy'),
+    ).toBe(true);
 
     const product = await productId('sim-vip-1m-50');
     const category = await categoryIdOfProduct('sim-vip-1m-50');

@@ -26,6 +26,7 @@ import { makeCustomer } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
 import { invalidateBotContent } from '../src/botContent.js';
 import { customEmojiIn, setButtonEmoji } from '../src/emoji.js';
+import * as menu from '../src/menu.js';
 import { DEFAULT_LAYOUTS } from '@shikoo/contracts';
 
 const FIRE_ID = '5368324170671202286';
@@ -48,13 +49,22 @@ async function makeAdmin(telegramId: number, role = 'ADMIN'): Promise<void> {
 
 /** Whether the shop's menu offers this person the emoji screen. */
 async function seesEmojiButton(telegramId: number): Promise<boolean> {
-  const out = await handleUpdate(db, {
+  await handleUpdate(db, {
     update_id: ids().updateId,
     message: {
       message_id: 1,
       from: { id: telegramId },
       chat: { id: telegramId },
       text: '/start',
+    },
+  });
+  const out = await handleUpdate(db, {
+    update_id: ids().updateId,
+    message: {
+      message_id: 2,
+      from: { id: telegramId },
+      chat: { id: telegramId },
+      text: menu.HOME_REPLY_LABEL,
     },
   });
   const rows = out.replies[0]?.keyboard;
@@ -127,38 +137,16 @@ describe('reading the id off the message', () => {
 
 describe('who may open it', () => {
   it('is not drawn for a customer', async () => {
-    const { updateId, telegramId } = ids();
+    const { telegramId } = ids();
     await makeCustomer(telegramId);
-    const out = await handleUpdate(db, {
-      update_id: updateId,
-      message: {
-        message_id: updateId,
-        from: { id: telegramId },
-        chat: { id: telegramId },
-        text: '/start',
-      },
-    });
-    const rows = out.replies[0]?.keyboard;
-    const labels = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
-    expect(labels.some((l) => l.includes('ایموجی پریمیوم'))).toBe(false);
+    expect(await seesEmojiButton(telegramId)).toBe(false);
   });
 
   it('is drawn for an admin', async () => {
-    const { updateId, telegramId } = ids();
+    const { telegramId } = ids();
     await makeCustomer(telegramId);
     await makeAdmin(telegramId);
-    const out = await handleUpdate(db, {
-      update_id: updateId,
-      message: {
-        message_id: updateId,
-        from: { id: telegramId },
-        chat: { id: telegramId },
-        text: '/start',
-      },
-    });
-    const rows = out.replies[0]?.keyboard;
-    const labels = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
-    expect(labels.some((l) => l.includes('ایموجی پریمیوم'))).toBe(true);
+    expect(await seesEmojiButton(telegramId)).toBe(true);
   });
 
   it('is not drawn for SUPPORT, who may walk the shop but not reshape it', async () => {
@@ -410,8 +398,11 @@ describe('putting it on a button', () => {
         text: '/start',
       },
     });
-    const rows = started.replies[0]?.keyboard;
-    const labels = (Array.isArray(rows) ? rows : []).flat().map((b) => b.text);
+    expect(started.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
+    const labels = menu
+      .mainMenu({ is_reseller: false, is_admin: true })
+      .flat()
+      .map((b) => b.text);
     expect(labels.some((l) => l.includes('خرید'))).toBe(true);
   });
 
