@@ -107,6 +107,20 @@ describe('the card balancing panel', () => {
     expect((await screen.findAllByText('کنار گذاشته‌شده')).length).toBeGreaterThan(0);
   });
 
+  /**
+   * Seen on staging the moment the row went live: «****0037 · کارت نگاشت‌نشده ·
+   * کارت نگاشت‌نشده». The label joins the card, the account hint and the owner,
+   * and both of the last two fall back to `displayName` — which an unmapped
+   * card has only one of. Two identical words with a dot between them read as
+   * two facts.
+   */
+  it('does not say the same thing twice in one label', async () => {
+    draw();
+    const label = await screen.findByText(/\*\*\*\*7777/);
+    const parts = label.textContent!.split('·').map((p) => p.trim());
+    expect(new Set(parts).size).toBe(parts.length);
+  });
+
   it('says why in Persian, not in the API’s own words', async () => {
     draw();
     expect(
