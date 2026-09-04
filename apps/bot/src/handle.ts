@@ -692,6 +692,19 @@ async function handleStart(
 
   // /start is the reset button: whatever half-finished flow the customer was in
   // is abandoned, which is exactly what they expect it to do.
+  //
+  // Read BEFORE the reset, because the reset is what forgets it. The screen id
+  // is the message the abandoned flow was living on — a half-written invoice, a
+  // question nobody answered — and «abandoned» is only true once it is off the
+  // customer's chat as well as out of the session. Otherwise `/start` leaves
+  // the wreck of the last attempt sitting above the fresh welcome, still
+  // showing buttons that now belong to nothing.
+  const parked = await tx
+    .prepare(`SELECT data FROM bot_sessions WHERE user_id = ?1`)
+    .bind(user.id)
+    .first<{ data: Record<string, unknown> | null }>();
+  const openScreen = screenOf({ step: '', data: parked?.data ?? {} });
+
   await tx
     .prepare(
       `INSERT INTO bot_sessions (user_id, step, data, updated_at)
@@ -745,6 +758,21 @@ async function handleStart(
         text: claimed ? `${menu.REFERRAL_WELCOME}\n\n${menu.WELCOME}` : menu.WELCOME,
         replyKeyboard: menu.mainReplyMenu(user),
       },
+    ],
+    // Sam, 2026-09-04: «می‌خوام داخل چت خیلی تمیز باشه و چت‌های قدیمی پاک بشه».
+    //
+    // Two messages go, and neither is one the customer will look for later: the
+    // «/start» they just typed, and the screen the abandoned flow was on. What
+    // is NOT deleted is every earlier welcome — those are separate visits, and
+    // a bot that reaches back through somebody's history erasing its own past
+    // is a different thing from one that tidies up after itself.
+    //
+    // Best-effort by construction: `poll.ts` runs deletes after the replies and
+    // swallows their failures, so a message Telegram will no longer delete —
+    // older than 48 hours, already gone — costs a log line and nothing else.
+    deletes: [
+      { chatId: message.chat.id, messageId: message.message_id },
+      ...(openScreen === undefined ? [] : [{ chatId: message.chat.id, messageId: openScreen }]),
     ],
   };
 }
