@@ -212,3 +212,66 @@ describe('a shop screen the admin arranged', () => {
     expect(rows.some((row) => row.length === 1 && row[0] === `plan:${PLATINUM[2]}`)).toBe(true);
   });
 });
+
+describe('the price list', () => {
+  it('shows only what this customer could actually walk in and buy', async () => {
+    // The one thing a price list can get wrong that no screen shows: it is the
+    // only place in the shop that reads the WHOLE catalogue at once, so a
+    // predicate missing here advertises a hidden tier, a disabled panel, or a
+    // resellers-only service to everybody. Asserted through `handleUpdate` and
+    // not against `tariffForUser`, for this file's own stated reason — what is
+    // being defended is that a row reaches, or does not reach, a screen.
+    const { updateId, telegramId } = ids();
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+
+    const before = await handleUpdate(db, press(updateId + 1, telegramId, 'tar'));
+    const listed = before.replies[0]?.text ?? '';
+    expect(listed, 'the fixture must sell something').not.toBe('');
+
+    // Judged against the DATABASE, not against the list's own earlier self.
+    //
+    // The first version of this compared the rendering before and after and
+    // asserted one line had gone. It passed with a filter that dropped the
+    // WRONG plan — because a filter that is wrong in both snapshots cancels
+    // out. That is rule 6 in this repo's own words: a test that only agrees
+    // with itself proves nothing. Proven by mutation, not by reading.
+    //
+    // So the outside truth is `product_plans`: every plan this customer may buy
+    // has its price on the list, and nothing else does.
+    const priced = (text: string) =>
+      text.split('\n').filter((l) => l.startsWith(' ')).map((l) => l.trim().split(/ {2,}/).pop());
+
+    const payable = async (): Promise<string[]> => {
+      const rows = await db
+        .prepare(
+          `SELECT pl.price_irr FROM product_plans pl
+             JOIN products p ON p.id = pl.product_id
+             JOIN provisioning_providers pr ON pr.id = p.provider_id
+            WHERE pl.status = 'ACTIVE' AND p.status = 'ACTIVE' AND pr.status = 'ACTIVE'
+              AND p.resellers_only = false`,
+        )
+        .all<{ price_irr: number }>();
+      return rows.results
+        .map((r) => `${Math.round(Number(r.price_irr) / 10).toLocaleString('en-US')} تومان`)
+        .sort();
+    };
+
+    expect(priced(listed).sort(), 'every purchasable plan is on the list').toEqual(await payable());
+
+    await db
+      .prepare(`UPDATE product_plans SET status = 'HIDDEN' WHERE id = ?1`)
+      .bind(PLATINUM[0])
+      .run();
+    try {
+      const after = await handleUpdate(db, press(updateId + 2, telegramId, 'tar'));
+      // The same claim again, against a catalogue that now has one fewer row.
+      // Hiding a plan has to take that plan off the list and leave the rest.
+      expect(priced(after.replies[0]?.text ?? '').sort()).toEqual(await payable());
+    } finally {
+      await db
+        .prepare(`UPDATE product_plans SET status = 'ACTIVE' WHERE id = ?1`)
+        .bind(PLATINUM[0])
+        .run();
+    }
+  });
+});
