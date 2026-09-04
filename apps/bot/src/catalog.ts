@@ -492,6 +492,38 @@ function toPlan(row: PlanRow): CatalogPlan {
  */
 
 /**
+ * The whole price list this customer may buy from, in reading order.
+ *
+ * The shop's own screens go category → service → plans and never want this;
+ * `plansInCategory` was removed for flattening exactly this way. The difference
+ * is what happens to the grouping. That function flattened a category's
+ * services into ONE ladder and drew it as a list of buttons, so three services'
+ * sizes interleaved and the customer could not tell which service a row
+ * belonged to. A tariff keeps the grouping — it is printed as text under each
+ * service's own heading — and interleaving is the thing it exists to show side
+ * by side rather than the thing it destroys.
+ *
+ * Same `PURCHASABLE` predicate as every other lookup here, so a panel that is
+ * off, a resellers-only service, or a customer the panel hides are absent from
+ * the price list for the same reason they are absent from the buttons. A
+ * tariff that advertised what the shop will not sell is worse than no tariff.
+ *
+ * `p.sort_order` first and `pl.sort_order` second: the admin's arrangement of
+ * services, and inside each the admin's arrangement of sizes.
+ */
+export async function tariffForUser(db: Db, userId: number): Promise<CatalogPlan[]> {
+  const rows = await db
+    .prepare(
+      `SELECT ${PLAN_COLUMNS} ${PLAN_FROM}
+        WHERE ${PURCHASABLE}
+        ORDER BY p.sort_order, p.id, pl.sort_order, pl.price_irr, pl.id`,
+    )
+    .bind(userId)
+    .all<PlanRow>();
+  return rows.results.map(toPlan);
+}
+
+/**
  * Every plan on one panel, flat.
  *
  * The SHOP no longer draws this — it goes through services now — but a RENEWAL

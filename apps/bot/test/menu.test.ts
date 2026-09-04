@@ -44,15 +44,65 @@ const PLAN: CatalogPlan = {
   usernameMode: null,
 };
 
+describe('the price list', () => {
+  const plan = (over: Partial<CatalogPlan>): CatalogPlan => ({ ...PLAN, ...over });
+
+  it('names each row by whatever tells it apart from its siblings', () => {
+    // Sam, 2026-09-04: «مثل یه جدول درست کرده». The shop we copied it from
+    // draws «10 گیگ» under VIP and «تک کاربر» under «30 روزه» — two shapes in
+    // ONE price list, which is why the column is chosen per group instead of
+    // once for the shop. A fixed choice prints a column of identical values for
+    // whichever half of the catalogue does not vary that way.
+    const table = menu.tariffTable([
+      plan({ planId: 1, productName: 'VIP', volumeGb: 10, priceIrr: 800_000 }),
+      plan({ planId: 2, productName: 'VIP', volumeGb: 20, priceIrr: 1_500_000 }),
+      plan({ planId: 3, productName: '30 روزه', volumeGb: null, userLimit: 1, priceIrr: 1_190_000 }),
+      plan({ planId: 4, productName: '30 روزه', volumeGb: null, userLimit: 2, priceIrr: 1_490_000 }),
+    ]);
+
+    expect(table).toBe(
+      ['VIP', ' 10 گیگ  80,000 تومان', ' 20 گیگ  150,000 تومان', '', '30 روزه', ' تک کاربر  119,000 تومان', ' 2 کاربر  149,000 تومان'].join('\n'),
+    );
+  });
+
+  it('falls back to the plan name when nothing printable varies', () => {
+    // One plan in a group has no sibling to differ from, so «10 گیگ» would be
+    // a column that says nothing. The plan's own name is what the button beside
+    // it draws, and the two agreeing is the point.
+    const table = menu.tariffTable([plan({ productName: 'تکی', planName: 'سرویس ویژه' })]);
+    expect(table).toBe(['تکی', ' سرویس ویژه  195,000 تومان'].join('\n'));
+  });
+
+  it('prices the list for the customer reading it, not for the shop', () => {
+    // A standing discount is applied on every plan BUTTON. A price list that
+    // quoted the list price would be the one screen in the shop that lies to a
+    // reseller about what they pay.
+    const full = menu.tariffTable([plan({ productName: 'تکی' })]);
+    const off = menu.tariffTable([plan({ productName: 'تکی' })], 50);
+    expect(full).toContain('195,000 تومان');
+    expect(off).toContain('97,500 تومان');
+  });
+
+  it('says nothing at all when there is nothing to sell', () => {
+    expect(menu.tariffTable([])).toBe('');
+  });
+});
+
 describe('the main menu', () => {
   it('is the production layout', () => {
     // setting.keyboardmain on the 2026-08-11 dump, in order. Customers have this
     // muscle memory and the replacement must not move their buttons.
     //
     // The trial is APPENDED, and that is the whole reason it is last rather
-    // than beside «خرید اشتراک» where it belongs: a fifth row at the end moves
+    // than beside «خرید اشتراک» where it belongs: a row at the end moves
     // nothing, and any other position moves «کیف پول» or «پشتیبانی» for every
     // customer. The first four rows below are still the dump's, unchanged.
+    //
+    // «تعرفه سرویس‌ها» (2026-09-04) is appended under the same rule, and the
+    // shop we copied it from puts it THIRD. It is not third here: this test is
+    // the thing standing between a good idea and eleven thousand people finding
+    // their buttons somewhere else. An admin who wants it third drags it there
+    // in «چیدمان کیبورد», which is the screen that exists for exactly this.
     const rows = menu.mainMenu(CUSTOMER).map((row) => row.map((b) => b.text));
     expect(rows).toEqual([
       ['♻️ تمدید سرویس', '🔐 خرید اشتراک'],
@@ -60,6 +110,7 @@ describe('the main menu', () => {
       ['☎️ پشتیبانی', '📚 آموزش', '👥 زیر مجموعه گیری'],
       ['👨‍💻 درخواست نمایندگی'],
       ['🎁 سرویس تست رایگان'],
+      ['📋 تعرفه سرویس‌ها'],
     ]);
   });
 
