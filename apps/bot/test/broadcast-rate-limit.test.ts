@@ -114,7 +114,47 @@ describe('a broadcast that Telegram rate-limits', () => {
     expect(row.error).toBeNull();
   });
 
-  it('and the next sweep actually delivers it', async () => {
+  /**
+   * The deadline outlives the sweep, and that is the half the first version
+   * did not have.
+   *
+   * `pauseUntil` inside `sweepBroadcasts` backs the worker pool off correctly
+   * and then forgets: a sweep is one poll cycle, and the next starts
+   * twenty-five seconds later remembering nothing. So a `retry_after` of sixty
+   * seconds was obeyed for the rest of that sweep and ignored by the next
+   * three, which would have burned all five attempts inside two minutes — in
+   * the code written to stop exactly that. Found by CodeRabbit on PR #95.
+   *
+   * Asserted by sweeping IMMEDIATELY, which is the case that was broken.
+   */
+  it('will not pick the row up again before Telegram’s deadline', async () => {
+    const { id, users } = await queue(1);
+    await sweepBroadcasts(
+      db,
+      stubApi({
+        sendMessage: async () => {
+          throw tooFast(30);
+        },
+      }),
+    );
+
+    let tried = 0;
+    const sent = await sweepBroadcasts(
+      db,
+      stubApi({
+        sendMessage: async () => {
+          tried += 1;
+        },
+      }),
+    );
+
+    expect(tried).toBe(0);
+    expect(sent).toBe(0);
+    // Still queued, still owed — not failed, and not sent.
+    expect((await rowOf(id, users[0]!)).status).toBe('PENDING');
+  });
+
+  it('and delivers it once the deadline has passed', async () => {
     const { id, users } = await queue(1);
     await sweepBroadcasts(
       db,
@@ -124,6 +164,17 @@ describe('a broadcast that Telegram rate-limits', () => {
         },
       }),
     );
+
+    // The deadline moved into the past, rather than a second of real waiting.
+    // The clock being tested here is Postgres's `now()`, so this is the honest
+    // way to move it — `vi.spyOn(Date, 'now')` would not reach it.
+    await db
+      .prepare(
+        `UPDATE broadcast_recipients SET next_attempt_at = now() - interval '1 minute'
+          WHERE broadcast_id = ?1`,
+      )
+      .bind(id)
+      .run();
 
     const sent = await sweepBroadcasts(db, stubApi());
 
@@ -181,7 +232,19 @@ describe('a broadcast that Telegram rate-limits', () => {
       },
     });
 
-    for (let i = 0; i < MAX_SEND_ATTEMPTS; i++) await sweepBroadcasts(db, api);
+    for (let i = 0; i < MAX_SEND_ATTEMPTS; i++) {
+      await sweepBroadcasts(db, api);
+      // Past the deadline the last sweep wrote, so the next one may claim it.
+      // Without this the loop would sweep an empty queue four times and the
+      // test would assert nothing.
+      await db
+        .prepare(
+          `UPDATE broadcast_recipients SET next_attempt_at = now() - interval '1 minute'
+            WHERE broadcast_id = ?1 AND next_attempt_at IS NOT NULL`,
+        )
+        .bind(id)
+        .run();
+    }
 
     const row = await rowOf(id, users[0]!);
     expect(row.attempts).toBe(MAX_SEND_ATTEMPTS);

@@ -518,6 +518,10 @@ export async function sweepBroadcasts(
           message.broadcastId,
           message.userId,
           String(err),
+          // The same wait, written onto the row. `pauseUntil` above holds the
+          // workers that are already mid-batch; this holds the next sweep,
+          // which starts twenty-five seconds later remembering nothing.
+          Math.ceil(waitMs / 1000),
         ).catch((e: unknown) => {
           log.error('broadcast.retry_unrecorded', { ref: message.broadcastId }, e);
           return null;

@@ -32,11 +32,29 @@
 -- cycle for ever, and the broadcast never finishes and never fails. The count
 -- lives on the row rather than in memory because the process that made the
 -- attempt may not be the process that makes the next one.
+--
+-- ## Why the DEADLINE is on the row too, and not only in the sweep
+--
+-- The first version held the pause in a local variable inside
+-- `sweepBroadcasts`, which backs the whole worker pool off correctly and then
+-- forgets. A sweep runs for one poll cycle; the next one starts twenty-five
+-- seconds later with no memory of anything. So a `retry_after` of sixty
+-- seconds was obeyed for the rest of that sweep and ignored by the next three
+-- — which would have burned every one of the five attempts inside two minutes
+-- and lost the customer, in the code written to stop exactly that.
+--
+-- Both are needed and they answer different questions. `pauseUntil` in the
+-- sweep stops the eleven workers that have already claimed rows and are about
+-- to call Telegram; this column stops the NEXT sweep claiming a row that is not
+-- due yet. Found by CodeRabbit on PR #95.
 
 BEGIN;
 
 ALTER TABLE broadcast_recipients
   ADD COLUMN attempts integer NOT NULL DEFAULT 0
-    CHECK (attempts >= 0);
+    CHECK (attempts >= 0),
+  -- NULL means «due now», which is what every existing row is and what an
+  -- ordinary queued message stays.
+  ADD COLUMN next_attempt_at timestamptz;
 
 COMMIT;

@@ -163,6 +163,13 @@ export async function claimBroadcastBatch(
             FROM broadcast_recipients rr
             JOIN broadcasts bb ON bb.id = rr.broadcast_id
            WHERE rr.status = 'PENDING'
+             -- A row Telegram told us to come back to later. NULL is «due now»,
+             -- which every ordinary queued message is and stays. Without this
+             -- the deadline lived only inside one sweep: the next poll cycle,
+             -- twenty-five seconds later, would claim the row again however
+             -- long Telegram had asked for -- and a sixty-second rate limit
+             -- would burn all five attempts inside two minutes.
+             AND (rr.next_attempt_at IS NULL OR rr.next_attempt_at <= now())
            ORDER BY bb.created_at, rr.user_id
            LIMIT ?1
            FOR UPDATE OF rr SKIP LOCKED
@@ -288,6 +295,14 @@ export async function markBroadcastRetryable(
   broadcastId: string,
   userId: number,
   error: string,
+  /**
+   * Seconds Telegram asked for, written onto the row.
+   *
+   * The sweep's own pause covers the workers already holding rows; this covers
+   * the NEXT sweep, which starts with no memory of anything. Both are needed
+   * and they stop different things.
+   */
+  retryAfterSec: number,
 ): Promise<'PENDING' | 'FAILED' | null> {
   const row = await db
     .prepare(
@@ -300,6 +315,12 @@ export async function markBroadcastRetryable(
               -- this comment: the SQL is a template literal and one would end
               -- it -- the same trap warn.ts names.)
               claimed_at = NULL,
+              -- Cleared on the way out, so a row that gave up is not left
+              -- carrying a deadline nobody will ever read.
+              next_attempt_at = CASE WHEN attempts + 1 >= ?3
+                                     THEN NULL
+                                     ELSE now() + make_interval(secs => ?5)
+                                END,
               -- The reason is written only at the end, where it is the final
               -- word an operator reads, and it names the attempts as well as
               -- the refusal: "gave up" and "failed once" are different facts.
@@ -309,7 +330,7 @@ export async function markBroadcastRetryable(
         WHERE broadcast_id = ?1 AND user_id = ?2 AND status = 'SENDING'
     RETURNING status`,
     )
-    .bind(broadcastId, userId, MAX_SEND_ATTEMPTS, error.slice(0, 500))
+    .bind(broadcastId, userId, MAX_SEND_ATTEMPTS, error.slice(0, 500), retryAfterSec)
     .first<{ status: 'PENDING' | 'FAILED' }>();
   return row?.status ?? null;
 }
