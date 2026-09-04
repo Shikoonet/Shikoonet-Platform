@@ -234,6 +234,28 @@ afterAll(async () => {
 });
 
 describe('the channel gate', () => {
+  it('still tidies the chat for the customer it is holding back', async () => {
+    // Found by review on PR #99, and it is the worst chat to leave untidy: a
+    // customer who has not joined the channel yet is the one who presses
+    // /start again and again, so every attempt would pile up on the one screen
+    // that has nothing on it but a wall.
+    //
+    // `handleStart` returns the gate screen from an EARLIER return than the
+    // welcome, so a `deletes` attached only to the welcome never reached them.
+    await addChannel();
+    const { updateId, telegramId } = ids();
+
+    const out = await handleUpdate(
+      db,
+      startUpdate(updateId, telegramId),
+      globalThis.fetch,
+      membership('left'),
+    );
+
+    expect(out.replies[0]!.text).toBe(menu.gateChannels());
+    expect(out.deletes ?? []).toEqual([{ chatId: telegramId, messageId: updateId }]);
+  });
+
   it('stops a customer who is not in the channel, and offers the way in', async () => {
     await addChannel();
     const { updateId, telegramId } = ids();

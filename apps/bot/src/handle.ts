@@ -705,6 +705,16 @@ async function handleStart(
     .first<{ data: Record<string, unknown> | null }>();
   const openScreen = screenOf({ step: '', data: parked?.data ?? {} });
 
+  // Built here rather than at the return, because there are TWO returns and the
+  // gated one is the easier to forget — which is exactly what happened, and
+  // what review caught. A customer who has not joined the channel yet is the
+  // one most likely to press /start again and again, so leaving the wreck on
+  // THEIR chat is the worst place to leave it.
+  const tidy: Deletion[] = [
+    { chatId: message.chat.id, messageId: message.message_id },
+    ...(openScreen === undefined ? [] : [{ chatId: message.chat.id, messageId: openScreen }]),
+  ];
+
   await tx
     .prepare(
       `INSERT INTO bot_sessions (user_id, step, data, updated_at)
@@ -732,7 +742,7 @@ async function handleStart(
   // Admins are exempt, as they are for the closed sign and at the single point.
   if (!(await isActiveAdmin(tx, from.id))) {
     const gated = await gateFor(tx, api, from.id, SHOP.requiresRules);
-    if (gated) return gateScreen(message.chat.id, gated);
+    if (gated) return { ...gateScreen(message.chat.id, gated), deletes: tidy };
   }
 
   // The menu goes UNDER the chat here, not under the message.
@@ -770,10 +780,7 @@ async function handleStart(
     // Best-effort by construction: `poll.ts` runs deletes after the replies and
     // swallows their failures, so a message Telegram will no longer delete —
     // older than 48 hours, already gone — costs a log line and nothing else.
-    deletes: [
-      { chatId: message.chat.id, messageId: message.message_id },
-      ...(openScreen === undefined ? [] : [{ chatId: message.chat.id, messageId: openScreen }]),
-    ],
+    deletes: tidy,
   };
 }
 
