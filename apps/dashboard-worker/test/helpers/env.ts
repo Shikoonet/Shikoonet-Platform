@@ -165,7 +165,28 @@ export async function fixtureCategory(name = '__fixture'): Promise<number> {
  * between two bases.
  */
 export async function deleteFixtureUsers(base: number, span = 1_000_000): Promise<void> {
+  const hi = base + span;
+  const mine = `SELECT id FROM users WHERE telegram_id >= ?1 AND telegram_id < ?2`;
+  /*
+   * The rows that hang off those customers, bounded the SAME way.
+   *
+   * Bounding only the `users` delete was half a fix, and CodeRabbit was right
+   * to say so on PR #93: the dependent deletes each suite wrote by hand still
+   * read `telegram_id >= TG_BASE`, so a suite could still reach into another's
+   * orders and subscriptions — the same landmine, one table down.
+   *
+   * They live here rather than in six files because the range is one idea, and
+   * an idea spelled out six times is one that will be spelled wrong somewhere.
+   */
+  for (const table of ['reseller_requests', 'orders', 'subscriptions']) {
+    await env.DB.prepare(`DELETE FROM ${table} WHERE user_id IN (${mine})`)
+      .bind(base, hi)
+      .run();
+  }
+  await env.DB.prepare(`DELETE FROM admins WHERE telegram_id >= ?1 AND telegram_id < ?2`)
+    .bind(base, hi)
+    .run();
   await env.DB.prepare(`DELETE FROM users WHERE telegram_id >= ?1 AND telegram_id < ?2`)
-    .bind(base, base + span)
+    .bind(base, hi)
     .run();
 }

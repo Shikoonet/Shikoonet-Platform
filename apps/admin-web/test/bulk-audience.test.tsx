@@ -20,6 +20,8 @@ import { BulkPage } from '../src/pages/BulkPage.js';
 let sent: { url: string; body: Record<string, unknown> }[] = [];
 /** Every `/bulk/reach` the screen asked, in order, as a query string. */
 let asked: string[] = [];
+/** Held answers, when a test wants to look at the moment before one arrives. */
+let holdReach: ((n: number) => void) | null = null;
 
 /** What the server answers for each audience, so the screen cannot invent one. */
 const REACH: Record<string, number> = {
@@ -33,6 +35,7 @@ const REACH: Record<string, number> = {
 beforeEach(() => {
   sent = [];
   asked = [];
+  holdReach = null;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
@@ -46,11 +49,14 @@ beforeEach(() => {
         const q = new URL(u, 'https://x').searchParams;
         const kind = q.get('audience') ?? 'all';
         asked.push(kind === 'provider' ? `provider:${q.get('providerId')}` : kind);
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ ok: true, reach: REACH[asked[asked.length - 1]!] ?? 0 }),
-        } as Response;
+        const answer = REACH[asked[asked.length - 1]!] ?? 0;
+        if (holdReach !== null) {
+          const wait = new Promise<number>((resolve) => {
+            holdReach = resolve;
+          });
+          return { ok: true, status: 200, json: async () => ({ ok: true, reach: await wait }) } as Response;
+        }
+        return { ok: true, status: 200, json: async () => ({ ok: true, reach: answer }) } as Response;
       }
       return {
         ok: true,
@@ -133,6 +139,30 @@ describe('choosing who hears a broadcast', () => {
 
     await waitFor(() => expect(within(messageCard()).getByText(/هیچ‌کس در این گروه نیست/)).toBeTruthy());
     expect(go().disabled).toBe(true);
+  });
+
+  /**
+   * The window between choosing an audience and the server answering.
+   *
+   * The count used to stay in state while the new one loaded, so the button
+   * stayed armed and the confirmation put one audience's NAME beside another's
+   * NUMBER. On the least reversible button in the project. Found by CodeRabbit
+   * on PR #93.
+   */
+  it('will not send on a stale count while the new one is still loading', async () => {
+    const picker = await open();
+    await waitFor(() => expect(go().disabled).toBe(false));
+    expect(within(messageCard()).getByText(/۱۵٬۵۲۴ نفر/)).toBeTruthy();
+
+    // Now make the next answer arrive late, and switch audience.
+    holdReach = () => undefined;
+    fireEvent.change(picker, { target: { value: 'service_ended' } });
+
+    // The old number is gone the moment the audience changes, not when the new
+    // one lands — and the button is down until it does.
+    await waitFor(() => expect(go().disabled).toBe(true));
+    expect(within(messageCard()).queryByText(/۱۵٬۵۲۴ نفر/)).toBeNull();
+    expect(within(messageCard()).getByText(/در حال شمردن/)).toBeTruthy();
   });
 
   it('sends the audience with the message, and names it on the confirmation', async () => {

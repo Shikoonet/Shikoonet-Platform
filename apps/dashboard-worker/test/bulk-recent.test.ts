@@ -19,7 +19,16 @@ import { app } from '../src/index.js';
 
 const ADMIN = 'bulk-recent-admin@example.com';
 const READER = 'bulk-recent-reader@example.com';
-const TG_BASE = 993_000_000;
+/**
+ * This suite's own range, and it must not be anybody else's.
+ *
+ * It was 993,000,000 — the same base `bulk.test.ts` uses — so bounding the
+ * cleanup to a million ids isolated both of them from everybody except each
+ * other. Found by CodeRabbit on PR #93, which is what a second reader is for.
+ * 992,000,000–992,999,999 sits between `customers.test.ts` and `bulk.test.ts`
+ * and touches neither.
+ */
+const TG_BASE = 992_000_000;
 
 function envAs(email: string) {
   return { ...baseEnv, TEST_ACCESS_USER: email };
