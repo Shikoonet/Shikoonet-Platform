@@ -16,7 +16,7 @@
  */
 
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv } from './helpers/env.js';
+import { applySchema, env as baseEnv, deleteFixtureUsers } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 
@@ -92,7 +92,7 @@ async function purge(): Promise<void> {
   await baseEnv.DB.prepare(`DELETE FROM discount_codes WHERE lower(code) LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();
-  await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id >= ?1`).bind(TG_BASE).run();
+  await deleteFixtureUsers(TG_BASE);
 }
 
 beforeAll(async () => {
