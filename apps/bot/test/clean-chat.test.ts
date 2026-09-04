@@ -121,6 +121,51 @@ describe('a typed answer', () => {
   });
 });
 
+describe('/start tidying up after the last visit', () => {
+  it('takes the command and the abandoned screen off the chat', async () => {
+    // Sam, 2026-09-04: «می‌خوام داخل چت خیلی تمیز باشه و چت‌های قدیمی پاک بشه».
+    // Walking the live bot, every `/start` left two messages behind — the
+    // command and a welcome — on top of whatever half-finished screen the last
+    // visit had stopped on, still showing buttons for a flow that no longer
+    // exists.
+    const { telegramId } = ids();
+    const user = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+
+    // A question, left open on a screen — the wreck `/start` is abandoning.
+    const SCREEN = 4242;
+    await handleUpdate(db, pressed(ids().updateId, telegramId, `dsc:${plan}`, SCREEN));
+
+    const startId = ids().updateId;
+    const started = await handleUpdate(db, typed(startId, telegramId, '/start'));
+    const gone = (started.deletes ?? []).map((d) => d.messageId);
+
+    expect(started.status).toBe('processed');
+    expect(gone, 'the screen the abandoned flow was on').toContain(SCREEN);
+    expect(gone, 'the «/start» the customer just typed').toContain(startId);
+
+    // And the session really is reset, not just visually tidied.
+    const row = await db
+      .prepare(`SELECT step FROM bot_sessions WHERE user_id = ?1`)
+      .bind(user)
+      .first<{ step: string | null }>();
+    expect(row?.step).toBeNull();
+  });
+
+  it('leaves earlier visits alone', async () => {
+    // The line between tidying up after itself and rewriting somebody's
+    // history. A second `/start` with nothing open deletes only the command
+    // that asked for it — the welcome from the first visit stays where it is.
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
+
+    const second = await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
+
+    expect(second.deletes ?? []).toHaveLength(1);
+  });
+});
+
 describe('the menu under the chat', () => {
   it('opens the same screen the inline button opens', async () => {
     // The bottom keyboard sends a LABEL, not a callback. If the two roads led to
