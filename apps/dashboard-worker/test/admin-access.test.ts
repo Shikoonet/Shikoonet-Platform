@@ -16,7 +16,7 @@
 
 import { ADMIN_PERMISSIONS } from '@shikoo/contracts';
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv } from './helpers/env.js';
+import { applySchema, env as baseEnv, deleteFixtureUsers } from './helpers/env.js';
 import { app } from '../src/index.js';
 
 const ADMIN = 'admin-access-suite@example.com';
@@ -105,7 +105,7 @@ async function purge(): Promise<void> {
   )
     .bind(TG_BASE)
     .run();
-  await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id >= ?1`).bind(TG_BASE).run();
+  await deleteFixtureUsers(TG_BASE);
   // Only this suite's own rows. `%@example.com` would take `admin@example.com`
   // with it — the identity `customers.test.ts` and `products.test.ts` create in
   // their `beforeAll` and never create again, so those suites would start

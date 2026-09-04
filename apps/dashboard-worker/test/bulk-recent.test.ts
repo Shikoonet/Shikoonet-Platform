@@ -14,7 +14,7 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv } from './helpers/env.js';
+import { applySchema, env as baseEnv, deleteFixtureUsers } from './helpers/env.js';
 import { app } from '../src/index.js';
 
 const ADMIN = 'bulk-recent-admin@example.com';
@@ -91,7 +91,7 @@ beforeEach(async () => {
   // route returns and what the screen shows.
   await baseEnv.DB.prepare(`TRUNCATE wallet_entries, wallets RESTART IDENTITY CASCADE`).run();
   await baseEnv.DB.prepare(`TRUNCATE broadcast_recipients, broadcasts CASCADE`).run();
-  await baseEnv.DB.prepare(`DELETE FROM users WHERE telegram_id >= ?1`).bind(TG_BASE).run();
+  await deleteFixtureUsers(TG_BASE);
 });
 
 describe('the last send, so nobody repeats it by hand', () => {
