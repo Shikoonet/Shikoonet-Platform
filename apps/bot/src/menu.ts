@@ -1045,6 +1045,25 @@ export function promptMenu(back: string): InlineKeyboard {
   return buildMenu('prompt', layout('prompt'), { target: () => back });
 }
 
+/** «خودکار انتخاب کن!» — the customer declines to name the account themselves. */
+export const ACCOUNT_NAME_AUTO = '⚡ خودکار انتخاب کن!';
+
+/**
+ * The name question's keyboard: the shop's own prompt chrome, plus one button.
+ *
+ * A row ON TOP of `promptMenu` rather than a button added to the `prompt` menu,
+ * because that menu is shared by every question the bot asks — the discount
+ * code, the gift code, the extra volume, the reseller request. An «خودکار»
+ * button there would appear under «کد تخفیف را بفرست», where it means nothing
+ * and would answer with an order.
+ */
+export function askAccountNameMenu(planId: number): InlineKeyboard {
+  return [
+    [{ text: ACCOUNT_NAME_AUTO, callback_data: encode('auto', planId) }],
+    ...promptMenu(encode('plan', planId)),
+  ];
+}
+
 /**
  * The apps, as a list of links in one message.
  *

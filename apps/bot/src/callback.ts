@@ -53,6 +53,11 @@ export const CALLBACK_ACTIONS = [
   //        old screen — the same reason `panel` is still here.
   'plan', // <planId> — one plan, with its price
   'order', // <planId> — create the order and show the card to pay into
+  'auto', // <planId> — «خودکار انتخاب کن!»: place the order WITHOUT a typed
+  //         account name, on a panel whose mode asks for one. Not a shortcut
+  //         past the setting — `remoteUsernameFor` already names a
+  //         CUSTOMER_TEXT order with no text after its own order id, which is
+  //         the generated name the customer is agreeing to here.
   'paid', // <orderId> — the customer says they have paid
   'mine', // [page] — the services this customer already owns
   'sub', // <subscriptionId> — one owned service, with its link
