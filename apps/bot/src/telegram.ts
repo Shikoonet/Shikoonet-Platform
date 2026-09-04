@@ -210,6 +210,18 @@ const EnvelopeSchema = z.object({
   description: z.string().optional(),
   error_code: z.number().optional(),
   result: z.unknown().optional(),
+  /**
+   * Where Telegram puts `retry_after`, and it was being thrown away.
+   *
+   * Every caller treated a 429 the same as any other refusal, so the one field
+   * that says HOW LONG TO WAIT never left this function. The broadcast sweep
+   * paid for that: it recorded the recipient as failed for ever rather than
+   * waiting the seconds Telegram had just named. Issue #90.
+   */
+  parameters: z
+    .object({ retry_after: z.number().optional() })
+    .passthrough()
+    .optional(),
 });
 
 /**
@@ -229,10 +241,36 @@ export class TelegramRejection extends Error {
   constructor(
     message: string,
     readonly code?: number,
+    /**
+     * Seconds Telegram asked us to wait, when it said so.
+     *
+     * Only a 429 carries it. Present rather than inferred: guessing a backoff
+     * when Telegram has told us the number is how a rate limit turns into a
+     * longer rate limit.
+     */
+    readonly retryAfterSec?: number,
   ) {
     super(message);
     this.name = 'TelegramRejection';
   }
+}
+
+/**
+ * How long Telegram said to wait, or `null` if this is not a rate limit.
+ *
+ * The one refusal that carries its own proof of NON-delivery: Telegram is
+ * saying it did not send this and when to try again. Every other non-permanent
+ * error — a 5xx, a socket that closed — leaves it unknown whether the message
+ * went, which is why only this one is safe to send again.
+ *
+ * A 429 without the field is still a 429; the caller gets a floor of one second
+ * rather than nothing, because «wait an unspecified amount» and «do not wait»
+ * are not the same instruction.
+ */
+export function rateLimitedForMs(err: unknown): number | null {
+  if (!(err instanceof TelegramRejection) || err.code !== 429) return null;
+  const sec = err.retryAfterSec;
+  return Number.isFinite(sec) && (sec ?? 0) > 0 ? Math.ceil(sec!) * 1000 : 1000;
 }
 
 /**
@@ -678,6 +716,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       throw new TelegramRejection(
         `telegram ${method} rejected: ${redact(envelope.data.description ?? 'no description', token)}`,
         envelope.data.error_code,
+        envelope.data.parameters?.retry_after,
       );
     }
     return envelope.data.result;
