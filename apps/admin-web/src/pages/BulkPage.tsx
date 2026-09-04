@@ -34,6 +34,7 @@ import {
   type PanelItem,
 } from '../api.js';
 import { count, dateTime, toman } from '../format.js';
+import { parseChannelPostLink } from '@shikoo/contracts';
 
 /**
  * What went out from here last, said next to the button that would do it again.
@@ -97,6 +98,15 @@ export function BulkPage() {
   const [confirmingCredit, setConfirmingCredit] = useState(false);
 
   const [body, setBody] = useState('');
+  /**
+   * Which of the two things this announcement is.
+   *
+   * A tab rather than «paste a link OR type text and we work it out»: the two
+   * produce completely different messages and the operator has already decided
+   * which one they mean before they reach this screen.
+   */
+  const [messageKind, setMessageKind] = useState<'text' | 'post'>('text');
+  const [postLink, setPostLink] = useState('');
   const [broadcastId, setBroadcastId] = useState(newId);
   const [confirmingMessage, setConfirmingMessage] = useState(false);
 
@@ -157,6 +167,15 @@ export function BulkPage() {
   const toman10 = /^[0-9]+$/.test(amount.trim()) ? Number(amount.trim()) : null;
   const amountIrr = toman10 === null || toman10 <= 0 ? null : toman10 * 10;
   const trimmed = body.trim();
+  /**
+   * What the link was understood to mean, shown back before anything is sent.
+   *
+   * Parsed by the same function the server parses with — `@shikoo/contracts` —
+   * so the screen cannot say one post and the route queue another. `null` is
+   * «this is not a post link», and it is what keeps the button disabled.
+   */
+  const post = parseChannelPostLink(postLink);
+  const messageReady = messageKind === 'text' ? trimmed !== '' : post !== null;
 
   // Digits only, like the amount above. For FIXED the operator types Toman and
   // the panel converts once; for PERCENT the number is a percent and must not
@@ -241,14 +260,21 @@ export function BulkPage() {
   }
 
   async function submitBroadcast() {
-    if (trimmed === '') return;
+    if (!messageReady) return;
     setBusy(true);
     setErr(null);
     setDone(null);
     try {
-      const r = await api.broadcast({ body: trimmed, broadcastId });
-      setDone(`پیام برای ${count(r.queued)} مشتری در صف قرار گرفت. ربات آن را می‌فرستد.`);
+      const r = await api.broadcast(
+        messageKind === 'text' ? { body: trimmed, broadcastId } : { postLink, broadcastId },
+      );
+      setDone(
+        messageKind === 'text'
+          ? `پیام برای ${count(r.queued)} مشتری در صف قرار گرفت. ربات آن را می‌فرستد.`
+          : `پست برای ${count(r.queued)} مشتری در صف قرار گرفت — یک نسخه هم همین حالا در تاپیک «سایر گزارشات» فرستاده شد تا ببینیدش.`,
+      );
       setBody('');
+      setPostLink('');
       setBroadcastId(newId());
     } catch (e) {
       setErr(message(e));
@@ -333,27 +359,77 @@ export function BulkPage() {
           پیام برای هر مشتری فعال در صف می‌رود و ربات آن را می‌فرستد — نه از این صفحه. کسی که بعد از
           این لحظه /start بزند آن را نمی‌گیرد.
         </p>
-        <div>
-          <label className="form-label" htmlFor="bulk-body">
-            متن پیام
-          </label>
-          <textarea
-            id="bulk-body"
-            className="form-control"
-            rows={6}
-            maxLength={MAX_MESSAGE_LENGTH}
-            value={body}
-            disabled={busy}
-            onChange={(e) => setBody(e.target.value)}
-          />
-          <p className="muted">
-            {count(trimmed.length)} از {count(MAX_MESSAGE_LENGTH)} نویسه
-          </p>
+        <div className="tabs">
+          {(
+            [
+              ['text', 'متن پیام'],
+              ['post', 'لینک پست کانال'],
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              className={`tab${messageKind === k ? ' tab--on' : ''}`}
+              disabled={busy}
+              onClick={() => setMessageKind(k)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
+        {messageKind === 'text' ? (
+          <div>
+            <label className="form-label" htmlFor="bulk-body">
+              متن پیام
+            </label>
+            <textarea
+              id="bulk-body"
+              className="form-control"
+              rows={6}
+              maxLength={MAX_MESSAGE_LENGTH}
+              value={body}
+              disabled={busy}
+              onChange={(e) => setBody(e.target.value)}
+            />
+            <p className="muted">
+              {count(trimmed.length)} از {count(MAX_MESSAGE_LENGTH)} نویسه
+            </p>
+          </div>
+        ) : (
+          <div>
+            <label className="form-label" htmlFor="bulk-post">
+              لینک پست
+            </label>
+            <input
+              id="bulk-post"
+              className="form-control"
+              type="text"
+              dir="ltr"
+              placeholder="https://t.me/shikoonet/137"
+              value={postLink}
+              disabled={busy}
+              onChange={(e) => setPostLink(e.target.value)}
+            />
+            {/* What the link was understood to mean, before it is sent to
+                anybody. A link that points at a different post than the
+                operator thinks is the one mistake nothing downstream catches. */}
+            <p className="muted">
+              {postLink.trim() === ''
+                ? 'روی خود پست، «کپی لینک» را بزنید و این‌جا بچسبانید.'
+                : post === null
+                  ? 'این لینکِ یک پست نیست — باید مثل https://t.me/shikoonet/137 باشد.'
+                  : `کانال ${post.chat} · پیام شمارهٔ ${count(post.messageId)}`}
+            </p>
+            <p className="muted">
+              پست همان‌طور که هست فوروارد می‌شود — با عکس و قالب‌بندی، و با سربرگ «Forwarded
+              from». ربات باید ادمین آن کانال باشد.
+            </p>
+          </div>
+        )}
         <button
           type="button"
           className="btn btn-primary"
-          disabled={busy || trimmed === '' || !reach}
+          disabled={busy || !messageReady || !reach}
           onClick={() => setConfirmingMessage(true)}
         >
           ادامه
@@ -485,15 +561,31 @@ export function BulkPage() {
 
       {confirmingMessage && reach !== null && (
         <Confirm
-          title="پیام همگانی فرستاده شود؟"
+          title={messageKind === 'text' ? 'پیام همگانی فرستاده شود؟' : 'این پست فوروارد شود؟'}
           onCancel={() => setConfirmingMessage(false)}
           onConfirm={() => void submitBroadcast()}
           busy={busy}
         >
           <p>
-            این پیام برای <strong>{count(reach)}</strong> مشتری در صف می‌رود.
+            {messageKind === 'text' ? 'این پیام' : 'این پست'} برای{' '}
+            <strong>{count(reach)}</strong> مشتری در صف می‌رود.
           </p>
-          <pre className="code-scrollable">{trimmed}</pre>
+          {messageKind === 'text' ? (
+            <pre className="code-scrollable">{trimmed}</pre>
+          ) : (
+            <>
+              <pre className="code-scrollable" dir="ltr">
+                {post === null ? '' : `${post.chat} / ${post.messageId}`}
+              </pre>
+              {/* Said before the press, not after: the rehearsal is the only
+                  thing between «the bot is not in that channel» and eleven
+                  thousand rows marked FAILED with nobody watching. */}
+              <p className="muted">
+                اول یک نسخه در تاپیک «سایر گزارشات» فرستاده می‌شود. اگر ربات به آن کانال
+                دسترسی نداشته باشد، همین‌جا خطا می‌گیرید و هیچ‌چیز برای مشتری‌ها در صف نمی‌رود.
+              </p>
+            </>
+          )}
           <p className="muted">بعد از تایید، جلوی فرستادن را نمی‌شود گرفت.</p>
         </Confirm>
       )}

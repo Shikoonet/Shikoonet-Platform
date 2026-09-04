@@ -437,7 +437,20 @@ export async function sweepBroadcasts(
       if (wait > 0) await sleep(wait, signal);
 
       try {
-        await api.sendMessage(message.chatId, message.text);
+        // Two Telegram methods, one loop. Everything that makes a broadcast a
+        // broadcast — the claim, the pace, the pool, the at-most-once record —
+        // is the same either way, and the only thing that differs is which call
+        // carries it. A second sweep for forwards would have had to re-earn all
+        // of that.
+        if (message.payload.kind === 'forward') {
+          await api.forwardMessage(
+            message.chatId,
+            message.payload.fromChat,
+            message.payload.messageId,
+          );
+        } else {
+          await api.sendMessage(message.chatId, message.payload.text);
+        }
         // After the send, not before it. A failure here leaves the row SENDING —
         // Telegram has the message and our record does not say so, which is a
         // discrepancy somebody can see, rather than a message nobody sent that

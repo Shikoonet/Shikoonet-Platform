@@ -1823,7 +1823,15 @@ export const api = {
     });
   },
 
-  broadcast(body: { body: string; broadcastId: string }) {
+  /**
+   * One announcement for every active customer — text, or a channel post.
+   *
+   * The two shapes are exclusive and the server refuses a request carrying
+   * both. A post is not queued until the bot has forwarded it once into the
+   * shop's report topic: a channel the bot cannot reach fails eleven thousand
+   * times otherwise, quietly, hours later.
+   */
+  broadcast(body: { body: string; broadcastId: string } | { postLink: string; broadcastId: string }) {
     return req<{ ok: boolean; queued: number; reach: number }>('/bulk/broadcast', {
       method: 'POST',
       body: JSON.stringify(body),
