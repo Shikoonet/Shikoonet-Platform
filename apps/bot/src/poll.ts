@@ -24,6 +24,7 @@ import {
   claimBroadcastBatch,
   closeFinishedBroadcasts,
   markBroadcastFailed,
+  markBroadcastRetryable,
   markBroadcastSent,
   strandedSendingCount,
   SEND_CONCURRENCY,
@@ -31,6 +32,7 @@ import {
   type BroadcastMessage,
 } from './broadcast.js';
 import { sweepDailyReport } from './report.js';
+import { rateLimitedForMs } from './telegram.js';
 import type { TelegramApi, TelegramUpdate } from './telegram.js';
 import { qrPng } from './qr.js';
 import { createLogger, pruneAppEvents } from '@shikoo/domain';
@@ -411,6 +413,10 @@ export async function sweepBroadcasts(
     return 0;
   }
   let sent = 0;
+  // Counted so a rate-limited broadcast is visible as one. Without these the
+  // shop sees a sweep that sent fewer messages than it claimed, and no reason.
+  let rateLimited = 0;
+  let gaveUp = 0;
   // One shared index and one shared clock, read by every worker below.
   //
   // The workers take from the SAME array rather than being handed a slice each:
@@ -418,6 +424,20 @@ export async function sweepBroadcasts(
   // workers sat idle, which is the shape of the problem this replaces.
   let next = 0;
   let nextSendAt = 0;
+  /**
+   * Until when nobody may send, because Telegram said so.
+   *
+   * Separate from `nextSendAt` and NOT merged into it, which was the first
+   * attempt and did not work: a worker reserves its slot from `nextSendAt`
+   * before the send, so pushing that forward only reaches workers who have not
+   * reserved yet. With a batch no larger than the pool that is nobody, and the
+   * pool sailed straight through a rate limit. The test measured a 41ms gap
+   * where a second was owed.
+   *
+   * Checked AFTER the pace and immediately before the call, so a worker that
+   * was already waiting still stops.
+   */
+  let pauseUntil = 0;
 
   async function worker(): Promise<void> {
     for (;;) {
@@ -435,6 +455,15 @@ export async function sweepBroadcasts(
       const wait = nextSendAt - Date.now();
       nextSendAt = Math.max(nextSendAt, Date.now()) + SEND_GAP_MS;
       if (wait > 0) await sleep(wait, signal);
+
+      // A pause that appeared while this worker was waiting for its slot. A
+      // loop rather than one sleep: a second 429 may land from another worker
+      // while this one is serving the first.
+      while (pauseUntil > Date.now()) {
+        if (signal?.aborted) return;
+        await sleep(pauseUntil - Date.now(), signal);
+      }
+      if (signal?.aborted) return;
 
       try {
         // Two Telegram methods, one loop. Everything that makes a broadcast a
@@ -460,9 +489,41 @@ export async function sweepBroadcasts(
         );
         sent += 1;
       } catch (err) {
-        await markBroadcastFailed(db, message.broadcastId, message.userId, String(err)).catch(
-          (e: unknown) => log.error('broadcast.failure_unrecorded', { ref: message.broadcastId }, e),
-        );
+        /*
+         * The one refusal worth offering again.
+         *
+         * A 429 is Telegram saying it did NOT deliver this, and how long to
+         * wait. Every other non-permanent error — a 5xx, a socket that closed —
+         * leaves delivery unknown, and re-sending there is the duplicate this
+         * table's primary key exists to prevent. So the split is not
+         * permanent against temporary; it is «Telegram told us it did not go»
+         * against everything else.
+         */
+        const waitMs = rateLimitedForMs(err);
+        if (waitMs === null) {
+          await markBroadcastFailed(db, message.broadcastId, message.userId, String(err)).catch(
+            (e: unknown) =>
+              log.error('broadcast.failure_unrecorded', { ref: message.broadcastId }, e),
+          );
+          continue;
+        }
+
+        // The whole POOL backs off, not this one worker: the limit Telegram
+        // applies is on the BOT, and eleven others carrying on would earn the
+        // next 429 immediately. Sends already in flight cannot be recalled —
+        // what this stops is everyone who has not called yet.
+        pauseUntil = Math.max(pauseUntil, Date.now() + waitMs);
+        const ended = await markBroadcastRetryable(
+          db,
+          message.broadcastId,
+          message.userId,
+          String(err),
+        ).catch((e: unknown) => {
+          log.error('broadcast.retry_unrecorded', { ref: message.broadcastId }, e);
+          return null;
+        });
+        rateLimited += 1;
+        if (ended === 'FAILED') gaveUp += 1;
       }
     }
   }
@@ -484,6 +545,13 @@ export async function sweepBroadcasts(
   const stranded = await strandedSendingCount(db).catch(() => 0);
   if (stranded > 0) {
     log.warn('broadcast.stranded', { messages: stranded });
+  }
+  if (rateLimited > 0) {
+    // A warning rather than an error: the queue kept them and the next cycle
+    // takes them. It is logged at all because it is the shop's only sign that
+    // it is sending faster than Telegram will take, and `gave_up` is the
+    // number that is actually lost.
+    log.warn('broadcast.rate_limited', { messages: rateLimited, gave_up: gaveUp });
   }
   return sent;
 }

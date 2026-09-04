@@ -256,6 +256,64 @@ export async function strandedSendingCount(
   return row?.n ?? 0;
 }
 
+/**
+ * How many times one recipient may be offered to Telegram.
+ *
+ * Only a 429 ever consumes one of these — see `markBroadcastRetryable` — so in
+ * a healthy send nothing reaches two. The ceiling exists for the shop that is
+ * rate-limited for longer than it is patient: without it, a broadcast that
+ * cannot get through neither finishes nor fails, and no screen ever changes.
+ */
+export const MAX_SEND_ATTEMPTS = 5;
+
+/**
+ * Puts a rate-limited recipient back in the queue, and says whether it stayed.
+ *
+ * Called for a 429 and nothing else. That narrowness is the whole design:
+ * Telegram is stating it did NOT deliver this message, which is what makes
+ * offering it again safe. A 5xx or a dropped socket leaves delivery unknown,
+ * and sending again there is the duplicate `PRIMARY KEY (broadcast_id,
+ * user_id)` exists to prevent — a shop that spams a paying customer has done
+ * worse than miss them once.
+ *
+ * The count and the decision are in ONE statement rather than a read followed
+ * by a write. Two sweeps overlapping on one row is the case that makes a
+ * count-then-act wrong, and this project has been bitten by that shape before.
+ *
+ * Returns the status the row ended on, so the caller can log the give-up
+ * without asking the database a second question.
+ */
+export async function markBroadcastRetryable(
+  db: D1Database,
+  broadcastId: string,
+  userId: number,
+  error: string,
+): Promise<'PENDING' | 'FAILED' | null> {
+  const row = await db
+    .prepare(
+      `UPDATE broadcast_recipients
+          SET attempts = attempts + 1,
+              status = CASE WHEN attempts + 1 >= ?3 THEN 'FAILED' ELSE 'PENDING' END,
+              -- Cleared on the way back to PENDING: the row is nobody's now,
+              -- and a stale claim time would make strandedSendingCount report
+              -- a queued message as one somebody abandoned. (No backticks in
+              -- this comment: the SQL is a template literal and one would end
+              -- it -- the same trap warn.ts names.)
+              claimed_at = NULL,
+              -- The reason is written only at the end, where it is the final
+              -- word an operator reads, and it names the attempts as well as
+              -- the refusal: "gave up" and "failed once" are different facts.
+              error = CASE WHEN attempts + 1 >= ?3
+                           THEN 'after ' || ?3 || ' attempts: ' || ?4
+                           ELSE NULL END
+        WHERE broadcast_id = ?1 AND user_id = ?2 AND status = 'SENDING'
+    RETURNING status`,
+    )
+    .bind(broadcastId, userId, MAX_SEND_ATTEMPTS, error.slice(0, 500))
+    .first<{ status: 'PENDING' | 'FAILED' }>();
+  return row?.status ?? null;
+}
+
 /** Records that a claimed message did not get through, with the reason. */
 export async function markBroadcastFailed(
   db: D1Database,
