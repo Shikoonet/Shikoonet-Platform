@@ -977,6 +977,19 @@ export interface PanelHiddenUser {
   hiddenBy: string | null;
 }
 
+/**
+ * Who an announcement is for.
+ *
+ * Mirrors `BroadcastAudience` in `@shikoo/domain`. Not imported from there:
+ * this package depends on `@shikoo/contracts` alone, and a wire shape written
+ * twice is exactly what `bulk.test.ts` on the server side pins.
+ */
+export type BroadcastAudience =
+  | { kind: 'all' }
+  | { kind: 'never_bought' }
+  | { kind: 'service_ended' }
+  | { kind: 'provider'; providerId: number };
+
 export interface PanelItem {
   id: number;
   code: string;
@@ -1796,9 +1809,18 @@ export const api = {
     });
   },
 
-  /** How many customers a bulk action would reach, before committing to it. */
-  bulkReach() {
-    return req<{ ok: boolean; reach: number }>('/bulk/reach');
+  /**
+   * How many customers a bulk action would reach, before committing to it.
+   *
+   * The audience travels as a query string so this GET and the POST that sends
+   * ask the server the same question. The count is not decoration: it is the
+   * only thing standing between «I thought this was for a hundred people» and
+   * fifteen thousand messages.
+   */
+  bulkReach(audience: BroadcastAudience = { kind: 'all' }) {
+    const q = new URLSearchParams({ audience: audience.kind });
+    if (audience.kind === 'provider') q.set('providerId', String(audience.providerId));
+    return req<{ ok: boolean; reach: number }>(`/bulk/reach?${q.toString()}`);
   },
 
   /** The last credit and the last broadcast, so neither is sent twice by hand. */
@@ -1831,7 +1853,12 @@ export const api = {
    * shop's report topic: a channel the bot cannot reach fails eleven thousand
    * times otherwise, quietly, hours later.
    */
-  broadcast(body: { body: string; broadcastId: string } | { postLink: string; broadcastId: string }) {
+  broadcast(
+    body: ({ body: string } | { postLink: string }) & {
+      broadcastId: string;
+      audience: BroadcastAudience;
+    },
+  ) {
     return req<{ ok: boolean; queued: number; reach: number }>('/bulk/broadcast', {
       method: 'POST',
       body: JSON.stringify(body),

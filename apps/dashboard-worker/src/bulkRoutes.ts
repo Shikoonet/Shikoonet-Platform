@@ -42,6 +42,7 @@ import {
   creditEveryone,
   previewBulkPrice,
   queueBroadcast,
+  type BroadcastAudience,
   type BroadcastContent,
 } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
@@ -120,17 +121,58 @@ const PriceBody = z
  * mistake, here it is the input, because a URL is what Telegram's own «copy
  * link» puts in the operator's clipboard.
  */
+/**
+ * Who the announcement is for.
+ *
+ * A flat discriminator plus one optional id rather than a nested object,
+ * because the same shape has to survive a query string on the reach route —
+ * and a preview whose shape differs from the send's is how the two come to
+ * count different people.
+ *
+ * `.default({ kind: 'all' })` keeps every existing caller working and keeps the
+ * old behaviour the default: a broadcast with nothing said about its audience
+ * still goes to everybody.
+ */
+const Audience = z
+  .discriminatedUnion('kind', [
+    z.object({ kind: z.literal('all') }).strict(),
+    z.object({ kind: z.literal('never_bought') }).strict(),
+    z.object({ kind: z.literal('service_ended') }).strict(),
+    z.object({ kind: z.literal('provider'), providerId: z.number().int().positive() }).strict(),
+  ])
+  .default({ kind: 'all' });
+
+/**
+ * The same union, read off a query string for the GET that previews a count.
+ *
+ * Returns `null` for anything it cannot read, so the route refuses rather than
+ * quietly counting everybody — the one failure that matters here is a preview
+ * that says a different number from the send.
+ */
+function audienceFromQuery(url: URL): BroadcastAudience | null {
+  const kind = url.searchParams.get('audience') ?? 'all';
+  if (kind === 'provider') {
+    const id = Number(url.searchParams.get('providerId'));
+    return Number.isSafeInteger(id) && id > 0 ? { kind: 'provider', providerId: id } : null;
+  }
+  return kind === 'all' || kind === 'never_bought' || kind === 'service_ended'
+    ? { kind }
+    : null;
+}
+
 const BroadcastBody = z.union([
   z
     .object({
       body: z.string().trim().min(1).max(MAX_MESSAGE_LENGTH),
       broadcastId: UUID,
+      audience: Audience,
     })
     .strict(),
   z
     .object({
       postLink: z.string().trim().min(1).max(500),
       broadcastId: UUID,
+      audience: Audience,
     })
     .strict(),
 ]);
@@ -223,9 +265,18 @@ export function registerBulkRoutes(
     Variables: { identity: Ident };
   }>,
 ) {
-  /** How many customers either action would reach. Readable by any operator. */
+  /**
+   * How many customers an action would reach. Readable by any operator.
+   *
+   * Takes the audience so the number an operator approves is a count of the
+   * rows the send will actually insert — the same predicate, from
+   * `audienceSql`, runs on both sides. A preview that counts something else is
+   * worse than no preview: it is a number somebody trusted.
+   */
   app.get('/api/v1/admin/bulk/reach', async (c) => {
-    return c.json({ ok: true, reach: await activeCustomerCount(c.env.DB) });
+    const audience = audienceFromQuery(new URL(c.req.url));
+    if (audience === null) return c.json({ ok: false, error: 'invalid_audience' }, 400);
+    return c.json({ ok: true, reach: await activeCustomerCount(c.env.DB, audience) });
   });
 
   /**
@@ -335,9 +386,13 @@ export function registerBulkRoutes(
 
     const parsed = BroadcastBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
-    const { broadcastId } = parsed.data;
+    const { broadcastId, audience } = parsed.data;
 
-    const reach = await activeCustomerCount(c.env.DB);
+    const reach = await activeCustomerCount(c.env.DB, audience);
+    // Counted for THIS audience, so «nobody» now means «nobody matches» rather
+    // than «the shop has no customers» — and the send stops either way, which
+    // is the point: queueing a broadcast nobody will get is a silent no-op that
+    // reads on the screen as a success.
     if (reach === 0) return c.json({ ok: false, error: 'no_active_customers' }, 409);
 
     let content: BroadcastContent;
@@ -369,7 +424,7 @@ export function registerBulkRoutes(
     // `created_by` is a Telegram id on the bot's path and this operator has
     // none. 0 rather than a fake id: the audit row carries the email, which is
     // who actually did it.
-    const queued = await queueBroadcast(c.env.DB, broadcastId, content, 0);
+    const queued = await queueBroadcast(c.env.DB, broadcastId, content, 0, audience);
     await audit(
       c.env.DB,
       ident,
@@ -377,7 +432,7 @@ export function registerBulkRoutes(
       'CUSTOMER',
       broadcastId,
       null,
-      { recipients: queued, ...detail },
+      { recipients: queued, audience: audience.kind, ...detail },
       null,
     );
     return c.json({ ok: true, queued, reach });
