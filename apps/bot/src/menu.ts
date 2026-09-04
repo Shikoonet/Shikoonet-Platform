@@ -559,8 +559,132 @@ export function gateRulesMenu(): InlineKeyboard {
  * a placeholder: without the name on it, three plan lists reached from three
  * different services are three identical screens.
  */
-export function choosePlan(productName: string): string {
-  return TEXTS_NOW.render('CHOOSE_PLAN', { product: productName });
+export function choosePlan(
+  productName: string,
+  /**
+   * The rows the buttons below will draw, so the title can price them.
+   *
+   * Passed in rather than looked up, and both call sites hand over the SAME
+   * array they hand to `planMenu`. A table built from a second query is a table
+   * that can disagree with the buttons under it about what is for sale.
+   */
+  plans: readonly CatalogPlan[] = [],
+  discountPercent = 0,
+): string {
+  const title = TEXTS_NOW.render('CHOOSE_PLAN', { product: productName });
+  const table = tariffTable(plans, discountPercent);
+  return table === '' ? title : `${title}\n\n${table}`;
+}
+
+/**
+ * A price list as text: one line per plan, what you get and what it costs.
+ *
+ * Sam, 2026-09-04, pointing at the reference shop's «تعرفه سرویس ها»: «مثل یه
+ * جدول درست کرده». It is two columns — what distinguishes this row, then its
+ * price — grouped under each service's name.
+ *
+ * ## The left column is whatever VARIES
+ *
+ * The reference draws «10 گیگ» under VIP and «تک کاربر» under «30 روزه», and
+ * that is not two hard-coded shapes: within a service, the field that tells its
+ * sizes apart is the field worth printing. Volume, when the sizes differ by
+ * volume; the user count, when they differ by that; the duration, when by that.
+ * A service whose plans differ in nothing printable falls back to the plan's own
+ * name, which is what the buttons have always drawn.
+ *
+ * Deciding this per group rather than per shop is what lets one shop sell both
+ * shapes at once — which the reference does, and which a fixed choice of column
+ * would print as a column of identical values.
+ *
+ * ## No padding
+ *
+ * Telegram renders this in a proportional font, so spaces do not align columns
+ * and a `<pre>` block would need `parse_mode`, which this bot sets from the TEXT
+ * alone — a Persian «قیمت < ۱۰۰ هزار» in an admin's override would reach
+ * Telegram's HTML parser. Two spaces, like the shop we are copying.
+ */
+export function tariffTable(plans: readonly CatalogPlan[], discountPercent = 0): string {
+  // Keyed on `productId`, not on the name, and the codebase already says why:
+  // `productMenu` appends the panel's name to a service «whose name is not
+  // unique in this list», because a second panel selling its own «پلاتینیوم» is
+  // a thing that happens. Grouping on the name would put two services' sizes
+  // under one heading — and worse than looking wrong, `tierText` would then
+  // compare plans from different services to decide what varies, so the left
+  // column would describe a difference that is not the one the customer picks
+  // between. Found by review, 2026-09-04.
+  const groups = new Map<number, CatalogPlan[]>();
+  for (const plan of plans) {
+    const into = groups.get(plan.productId) ?? [];
+    into.push(plan);
+    groups.set(plan.productId, into);
+  }
+
+  const blocks: string[] = [];
+  for (const rows of groups.values()) {
+    // From the first row rather than the key: the heading is the shop's own
+    // wording, and the key is only identity.
+    const productName = rows[0]!.productName;
+    const lines = rows.map((plan) => {
+      const price = priceForUser(plan.priceIrr, discountPercent);
+      return ` ${tierText(plan, rows)}  ${formatToman(price.totalIrr)}`;
+    });
+    blocks.push([productName, ...lines].join('\n'));
+  }
+  return blocks.join('\n\n');
+}
+
+/** What tells this plan apart from its siblings — the table's left column. */
+function tierText(plan: CatalogPlan, siblings: readonly CatalogPlan[]): string {
+  const varies = (of: (p: CatalogPlan) => unknown): boolean =>
+    new Set(siblings.map(of)).size > 1;
+
+  const parts = [
+    varies((p) => p.volumeGb) ? volumeText(plan.volumeGb) : '',
+    varies((p) => p.durationDays) ? durationText(plan.durationDays) : '',
+    varies((p) => p.userLimit) ? usersTariffText(plan.userLimit) : '',
+  ].filter((part) => part !== '');
+
+  // Nothing printable varies — one plan in the group, or several that differ
+  // only in something this table has no column for. The plan's own name is
+  // what the button beside it says, so the two agree.
+  return parts.length === 0 ? plan.planName : parts.join(' · ');
+}
+
+/**
+ * `1` -> `'تک کاربر'`, `4` -> `'4 کاربر'`.
+ *
+ * Not `usersText`, and the difference is the point. That one draws NOTHING for
+ * a single user, because on a button the ordinary case is not worth the line.
+ * Here the count is the whole left column — a shop selling one, two, three and
+ * four users would otherwise print «» beside three of its four prices.
+ */
+function usersTariffText(limit: number | null): string {
+  if (limit === null) return '';
+  return limit <= 1 ? 'تک کاربر' : `${limit} کاربر`;
+}
+
+/**
+ * The whole price list, as one message.
+ *
+ * Its own screen rather than a link into the buy path, which is the reference
+ * shop's arrangement and the reason it earns a menu button: a customer deciding
+ * WHETHER to buy is asking one question — what does it cost — and answering it
+ * today costs three taps and an abandoned half-order.
+ *
+ * Empty says so rather than drawing an empty heading. `PURCHASABLE` hides a
+ * panel that is off and a service this customer may not see, so «nothing here»
+ * is a real answer for a real customer and not only for an empty shop.
+ */
+export function tariff(plans: readonly CatalogPlan[], discountPercent = 0): string {
+  const table = tariffTable(plans, discountPercent);
+  return table === ''
+    ? TEXTS_NOW.render('TARIFF_EMPTY')
+    : `${TEXTS_NOW.render('TARIFF_TITLE')}\n\n${table}`;
+}
+
+/** Back to where the customer came from — a price list has nothing to press. */
+export function tariffMenu(): InlineKeyboard {
+  return buildMenu('categories', layout('categories'));
 }
 
 /** The heading over a category's price list. */

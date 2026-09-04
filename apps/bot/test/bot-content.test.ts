@@ -200,6 +200,7 @@ describe('the keyboard', () => {
       // note beside `['tst', 4, 0]` in `botKeyboard.ts`. The four rows above
       // are still `setting.keyboardmain` from the dump, in its order.
       ['🎁 سرویس تست رایگان'],
+      ['📋 تعرفه سرویس‌ها'],
     ]);
   });
 
