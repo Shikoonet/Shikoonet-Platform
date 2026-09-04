@@ -212,3 +212,38 @@ describe('a shop screen the admin arranged', () => {
     expect(rows.some((row) => row.length === 1 && row[0] === `plan:${PLATINUM[2]}`)).toBe(true);
   });
 });
+
+describe('the price list', () => {
+  it('shows only what this customer could actually walk in and buy', async () => {
+    // The one thing a price list can get wrong that no screen shows: it is the
+    // only place in the shop that reads the WHOLE catalogue at once, so a
+    // predicate missing here advertises a hidden tier, a disabled panel, or a
+    // resellers-only service to everybody. Asserted through `handleUpdate` and
+    // not against `tariffForUser`, for this file's own stated reason — what is
+    // being defended is that a row reaches, or does not reach, a screen.
+    const { updateId, telegramId } = ids();
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+
+    const before = await handleUpdate(db, press(updateId + 1, telegramId, 'tar'));
+    const listed = before.replies[0]?.text ?? '';
+    expect(listed, 'the fixture must sell something').not.toBe('');
+
+    await db
+      .prepare(`UPDATE product_plans SET status = 'HIDDEN' WHERE id = ?1`)
+      .bind(PLATINUM[0])
+      .run();
+    try {
+      const after = await handleUpdate(db, press(updateId + 2, telegramId, 'tar'));
+      const lines = (after.replies[0]?.text ?? '').split('\n').filter((l) => l.startsWith(' '));
+      const wasThere = listed.split('\n').filter((l) => l.startsWith(' '));
+      // One priced row fewer, and the rest untouched: a hidden plan leaves the
+      // list rather than blanking the service it belonged to.
+      expect(lines).toHaveLength(wasThere.length - 1);
+    } finally {
+      await db
+        .prepare(`UPDATE product_plans SET status = 'ACTIVE' WHERE id = ?1`)
+        .bind(PLATINUM[0])
+        .run();
+    }
+  });
+});

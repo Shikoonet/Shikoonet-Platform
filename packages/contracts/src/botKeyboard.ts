@@ -119,6 +119,11 @@ export const MENUS = {
       { action: 'renew', label: '♻️ تمدید سرویس', hint: 'تمدید سرویس‌های موجود' },
       { action: 'buy', label: '🔐 خرید اشتراک', hint: 'خرید سرویس جدید' },
       {
+        action: 'tar',
+        label: '📋 تعرفه سرویس‌ها',
+        hint: 'فهرست قیمت همهٔ سرویس‌ها در یک پیام — بدون رفتن داخل مسیر خرید',
+      },
+      {
         action: 'tst',
         label: '🎁 سرویس تست رایگان',
         hint: 'یک اکانت رایگان و کوتاه. حجم و زمانش را هر پنل خودش تعیین می‌کند و سهمیهٔ هر کاربر در «تنظیمات» است',
@@ -512,6 +517,21 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
      * before this button existed.
      */
     ['emj', 5, 0],
+    /*
+     * Appended for the same reason `tst` was, and it is worth reading that
+     * comment first: the four rows above are `setting.keyboardmain` from the
+     * production dump and moving them moves buttons under eleven thousand
+     * thumbs. A price list is genuinely useful high up — the shop we copied it
+     * from has it third — and «چیدمان کیبورد» is the screen for saying so.
+     *
+     * A shop that has ALREADY saved a layout will not see this button at all:
+     * `readLayouts` replaces the shipped menu with the saved one rather than
+     * merging, so a new default row reaches only shops that never customised.
+     * That is the existing rule and not something this button changes; it is
+     * written down here because the next person to add one will wonder why
+     * theirs did not appear on staging.
+     */
+    ['tar', 6, 0],
   ],
   gateChannels: [['chk', 0, 0]],
   gateRules: [['acc', 0, 0]],

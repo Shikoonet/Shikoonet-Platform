@@ -35,6 +35,7 @@ import type { CatalogCategory, CatalogPlan } from './catalog.js';
 import {
   categoriesForUser,
   plansInProduct,
+  tariffForUser,
   plansOnPanel,
   productsForUser,
   purchasablePlan,
@@ -1672,7 +1673,10 @@ async function categoryScreen(
   const plans = await plansInProduct(tx, user.id, only.productId);
   if (plans.length === 0) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu([]));
   if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
-  return screen(menu.choosePlan(only.name), menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate));
+  return screen(
+    menu.choosePlan(only.name, plans, user.discount_percent),
+    menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate),
+  );
 }
 
 async function handleCallback(
@@ -1830,7 +1834,20 @@ async function handleCallback(
       // the discount check and the held code, and having two ways to reach it
       // is how the two drift apart.
       if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
-      return screen(menu.choosePlan(plans[0]!.productName), menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate));
+      return screen(
+        menu.choosePlan(plans[0]!.productName, plans, user.discount_percent),
+        menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate),
+      );
+    }
+
+    case 'tar': {
+      // Everything this customer may buy, priced for THEM: `tariffForUser`
+      // applies the same visibility predicate the buttons do, and the standing
+      // discount is applied here the way it is on every plan button. A price
+      // list quoting the list price to a customer who is charged less is a
+      // support ticket; quoting it to a reseller is a worse one.
+      const plans = await tariffForUser(tx, user.id);
+      return screen(menu.tariff(plans, user.discount_percent), menu.tariffMenu());
     }
 
     case 'plan': {
