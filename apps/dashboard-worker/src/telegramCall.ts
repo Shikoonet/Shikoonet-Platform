@@ -78,14 +78,24 @@ export type BotCall =
  * `resolveBotToken` compares the stored row's `env_name` against this value and
  * IGNORES the row when they differ. So `?? 'local'` — which is what every
  * caller in this worker wrote, and what this function was first written with —
- * turns a missing binding into «no bot is connected» on a shop that has one.
- * The operator is then sent to re-paste a token that was already right.
+ * would turn a missing binding into «no bot is connected» on a shop that has
+ * one, and send the operator to re-paste a token that was already right.
  *
- * A 503 is not the same as refusing to start, which is what this deserves and
- * what `ENV_NAME` gets in `deploy/autodeploy.sh` (it will not deploy a
- * container that reports none). Making it required at the type level means
- * every `Bindings` in the worker and a boot guard beside them — a change worth
- * making and not worth smuggling into a broadcast feature. Issue #91.
+ * **It cannot actually happen, and that is worth writing down rather than
+ * leaving to be re-derived.** `start()` builds the env through `buildEnv`,
+ * which calls `parseEnvName`, which THROWS on absent and on a near-miss like
+ * «prod» (`packages/contracts/src/env.ts:63`). The worker does not come up
+ * without a valid `ENV_NAME`. `deploy/autodeploy.sh:825` refuses a container
+ * that reports none, from the other side.
+ *
+ * So this refusal covers the one hole those two leave: the TYPE says
+ * `ENV_NAME?`, so a caller — a test, a future route — can hand this an env
+ * without one, and the compiler will not say so. A 503 naming the binding beats
+ * «no bot is connected», which is the answer the `?? 'local'` gave.
+ *
+ * The four remaining `?? 'local'` in this worker are dead for the same reason,
+ * and read as live defaults. Deleting them means making `ENV_NAME` required on
+ * every `Bindings` here; that is #91, and it is tidying rather than a fix.
  */
 export async function botTelegram(env: BotCallEnv): Promise<BotCall> {
   const envName = env.ENV_NAME;
