@@ -540,10 +540,9 @@ function markup(keyboard: InlineKeyboard | undefined, premium: boolean): Record<
 /**
  * The same, for the keyboard under the chat.
  *
- * `resize_keyboard` because the default is a keyboard half the screen high, and
- * `is_persistent` because the customer closing it once should not lose the
- * shop's menu for good — the two settings are what make a bottom keyboard read
- * as part of the app rather than as something that happened.
+ * `resize_keyboard` keeps the single navigation row compact, and
+ * `is_persistent` tells clients that it is part of the bot's navigation rather
+ * than a one-time answer keyboard.
  *
  * Labels go through the same split as inline ones: an admin may have typed a
  * custom emoji into a menu label, and on a button that has to become the icon

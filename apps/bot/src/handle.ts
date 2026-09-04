@@ -135,9 +135,9 @@ export interface Reply {
   /**
    * The keyboard under the chat, when this message is meant to set it.
    *
-   * Only `/start` and the end of a prompt carry one. A message may hold one
-   * `reply_markup`, so this and `keyboard` are exclusive — `sendMessage`
-   * refuses both rather than dropping one.
+   * `/start` and the moment an onboarding gate opens carry it. A message may
+   * hold one `reply_markup`, so this and `keyboard` are exclusive —
+   * `sendMessage` refuses both rather than dropping one.
    */
   replyKeyboard?: ReplyKeyboard;
 }
@@ -315,7 +315,19 @@ export async function handleUpdate(
     };
 
     if (!SHOP.open && from && chatId !== undefined && !(await isAdmin())) {
-      return { status: 'processed', replies: [reply(chatId, menu.SHOP_CLOSED)] };
+      return {
+        status: 'processed',
+        replies: [
+          {
+            chatId,
+            text: menu.SHOP_CLOSED,
+            // A closed sign replaces the screen, not the app's navigation.
+            // This also installs the bar for a customer whose first visit
+            // happens while the shop is paused.
+            replyKeyboard: menu.homeReplyMenu(),
+          },
+        ],
+      };
     }
 
     // The flood guard, above everything a customer can reach — the same place
@@ -577,19 +589,14 @@ const DISCOUNT_PERCENT = `COALESCE(
  * for one telegram_id, because the unique index decides, not this code.
  */
 /**
- * `is_new` is whether THIS statement created the row.
- *
- * `now()` is the transaction's clock, so an INSERT writes the same instant into
- * `registered_at` and `last_seen_at`, and the ON CONFLICT branch moves only the
- * second. No `xmax` trick, and nothing for the adapter to keep in step with.
- *
- * It is read once, by `/start`, to decide whether this customer has ever been
- * sent the bottom keyboard.
+ * The same shape comes back for a new customer and a returning one. `/start`
+ * installs the navigation bar for both, so there is no longer a second menu
+ * policy hiding in whether the INSERT or UPDATE branch happened to run.
  */
 async function upsertUser(
   tx: D1DatabaseSession,
   from: { id: number; username?: string | undefined },
-): Promise<Caller & { is_new: boolean }> {
+): Promise<Caller> {
   const user = await tx
     .prepare(
       `INSERT INTO users (telegram_id, username, registered_at, last_seen_at)
@@ -598,11 +605,10 @@ async function upsertUser(
          SET username = EXCLUDED.username,
              last_seen_at = now(),
              updated_at = now()
-       RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN},
-                 (registered_at = last_seen_at) AS is_new`,
+       RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
     )
     .bind(from.id, from.username ?? null)
-    .first<Caller & { is_new: boolean }>();
+    .first<Caller>();
   if (!user) throw new Error('user upsert returned no row');
   return user;
 }
@@ -757,57 +763,30 @@ async function handleStart(
     if (gated) return { ...gateScreen(message.chat.id, gated), deletes: tidy };
   }
 
-  // The menu goes UNDER the chat here, not under the message.
+  // The navigation bar goes UNDER the chat here, not under the message.
   //
-  // Sam, 2026-09-03: «دکمه‌ها پایین صفحه». A message carries ONE `reply_markup`,
-  // so this is a choice rather than an arrangement — the welcome shows the
-  // bottom keyboard OR the inline menu, and it cannot show both without sending
-  // a second message on every `/start` for a keyboard that never changes.
+  // Sam, 2026-09-04: «می‌خوام همیشه این navbar زیر ربات باشه». It is one
+  // persistent «بازگشت به منوی اصلی» row rather than a second copy of the
+  // whole shop menu: screens keep their own inline buttons, and the row remains
+  // the stable way out of every one of them.
   //
-  // The inline main menu has not gone anywhere: every «بازگشت به منو» in the bot
-  // still edits a screen back into it, which is what an inline menu is for. What
-  // changed is where the shop's front door lives, and a bottom keyboard is the
-  // better door — it belongs to the chat, so it survives every screen, and it is
-  // reachable without scrolling back to find the message that drew it.
-  //
-  // `/start` is the only place it is set, for the same reason: it outlives the
-  // message that carried it.
-  // Which menu the welcome carries, and it is one message either way.
-  //
-  // Sam and I found the reason together in his own Telegram, 2026-09-04. The
-  // welcome said «از منوی زیر انتخاب کنید» and there was nothing under it: the
-  // bottom keyboard had been delivered correctly weeks before and his client
-  // had it COLLAPSED, behind a toggle he had to know to press. We send
-  // `is_persistent: true`; that client does not honour it.
-  //
-  // A brand-new customer gets the BOTTOM keyboard, because a keyboard Telegram
-  // has just been given is one it shows — collapsing is a thing the person does
-  // later — and because it is the only moment they do not already have one. It
-  // then belongs to the chat: it survives every screen and needs no scrolling
-  // back, which is why #76 chose it and still the best door when it is drawn.
-  //
-  // Everybody else gets the INLINE menu, which renders wherever the message
-  // does. They already have the bottom keyboard — Telegram keeps one until
-  // something replaces it — so this adds the door that cannot be hidden rather
-  // than replacing the one that can.
-  //
-  // The two together are also self-healing, and that is worth more than either:
-  // a customer whose menu is hidden presses /start, is no longer new, and gets
-  // a menu they can see.
-  //
-  // Not both on one message, because Telegram allows one `reply_markup` — the
-  // choice #76's own comment describes. What has changed since is only which
-  // way it should fall, and for whom.
+  // Sent on EVERY `/start`, not only on the INSERT branch. That is both the
+  // upgrade path for existing chats and the repair path when Telegram has lost
+  // or replaced a keyboard. After this message Telegram keeps it until another
+  // reply keyboard replaces it; this bot never does.
   return {
     status: 'processed',
     replies: [
       {
         chatId: message.chat.id,
         text: claimed ? `${menu.REFERRAL_WELCOME}\n\n${menu.WELCOME}` : menu.WELCOME,
-        ...(user.is_new
-          ? { replyKeyboard: menu.mainReplyMenu(user) }
-          : { keyboard: menu.mainMenu(user) }),
+        replyKeyboard: menu.homeReplyMenu(),
       },
+      // Telegram accepts only one `reply_markup` on a message. The welcome
+      // above installs the chat-wide navigation bar; this second message is
+      // deliberately last, so the live screen at the bottom of the chat is the
+      // shop's main menu rather than the setup message.
+      reply(message.chat.id, menu.MENU_TITLE, menu.mainMenu(user)),
     ],
     // Sam, 2026-09-04: «می‌خوام داخل چت خیلی تمیز باشه و چت‌های قدیمی پاک بشه».
     //
@@ -874,7 +853,8 @@ async function handleTypedAnswer(
     .first<{ step: string | null; data: Record<string, unknown> | null }>();
   const session: Session = { step: row?.step ?? '', data: row?.data ?? {} };
 
-  // The shop's own menu, pressed from under the chat.
+  // The fixed way home (or a button from the full keyboard installed by the
+  // previous release), pressed from under the chat.
   //
   // A bottom-keyboard button arrives as an ordinary text message, so this has to
   // be asked BEFORE the session — and asking it first is also what makes those
@@ -1825,7 +1805,18 @@ async function handleCallback(
       const opening = action.action === 'acc' ? `${menu.GATE_RULES_ACCEPTED}\n\n` : '';
       return {
         status: 'processed',
-        replies: [reply(chatId, `${opening}${menu.WELCOME}`, menu.mainMenu(user))],
+        replies: [
+          {
+            chatId,
+            text: `${opening}${menu.WELCOME}`,
+            // The gate screen needed its inline join/accept button, so this is
+            // the first message that can install the permanent row.
+            replyKeyboard: menu.homeReplyMenu(),
+          },
+          // Same two-markup hand-off as `/start`: the persistent row is now
+          // installed, and the main menu remains the last visible message.
+          reply(chatId, menu.MENU_TITLE, menu.mainMenu(user)),
+        ],
       };
     }
 

@@ -56,9 +56,11 @@ describe('/start', () => {
     const outcome = await handleUpdate(db, startUpdate(updateId, telegramId));
 
     expect(outcome.status).toBe('processed');
-    expect(outcome.replies).toHaveLength(1);
+    expect(outcome.replies).toHaveLength(2);
     expect(outcome.replies[0]?.chatId).toBe(telegramId);
     expect(outcome.replies[0]?.text).toContain('شیکو');
+    expect(outcome.replies.at(-1)?.text).toContain('منوی اصلی');
+    expect(outcome.replies.at(-1)?.keyboard).toBeDefined();
 
     const user = await userRow(telegramId);
     expect(user?.username).toBe(`user${telegramId}`);
