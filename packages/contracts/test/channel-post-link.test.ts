@@ -19,7 +19,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { parseChannelPostLink } from '../src/index.js';
+// The module, not the barrel. `../src/index.js` re-exports every contract this
+// package has, and importing it here pulled all of them into the coverage
+// denominator with nothing exercising them — the functions floor went from
+// green to 26%. The barrel is what the APPS import; a unit test names its
+// subject.
+import { parseChannelPostLink } from '../src/channelPost.js';
 
 describe('a channel post link', () => {
   it('reads the link Telegram’s own «copy link» produces', () => {
