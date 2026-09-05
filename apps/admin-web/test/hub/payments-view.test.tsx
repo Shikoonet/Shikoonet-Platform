@@ -76,6 +76,8 @@ const COUNTS = {
   open: 17,
   autoVerified: 143,
   botAutoVerified: 143,
+  continuity: 5,
+  continuityPending: 3,
   income: 5,
   manuallyVerified: 4,
   declinedIncome: 0,
@@ -341,6 +343,37 @@ describe('PaymentsView tabs', () => {
     expect(screen.queryByText(/minutes ago/)).toBeNull();
     const verifiedAt = formatExactDateTime(BASE + 19_000);
     expect(screen.getAllByText(verifiedAt).length).toBeGreaterThan(0);
+  });
+
+  it('lists Continuity deliveries separately and exposes their later-review audit facts', async () => {
+    mockApi({
+      continuity: [
+        item({
+          id: 'continuity-1',
+          reviewState: 'FULFILLED_UNRECONCILED',
+          claimStatus: 'FULFILLED_UNRECONCILED',
+          fulfilmentMode: 'CONTINUITY',
+          fulfilledAt: BASE + 10_000,
+          fulfilledBy: 'operator@example.com',
+          fulfilmentReason: 'SMS relay unavailable',
+          reconciledAt: null,
+          hasReceipt: true,
+        }),
+      ],
+    });
+    renderView();
+    fireEvent.click(await hubNav().findByRole('tab', { name: /حالت تداوم 5/i }));
+
+    expect(await screen.findByText('در انتظار تطبیق')).toBeTruthy();
+    expect(screen.getByText('SMS relay unavailable')).toBeTruthy();
+    expect(screen.getByText('📸 رسید دارد')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('SMS relay unavailable'));
+    const review = await openReviewPanel();
+    expect(within(review).getByRole('heading', { name: 'حالت تداوم' })).toBeTruthy();
+    expect(within(review).getByText('خودکار در حالت تداوم')).toBeTruthy();
+    expect(within(review).getByText('operator@example.com')).toBeTruthy();
+    expect(within(review).getByText('هنوز تطبیق نشده و نیاز به بازبینی دارد')).toBeTruthy();
   });
 
   it('does not offer a casual Approve / Reject / Undo on auto verified rows', async () => {

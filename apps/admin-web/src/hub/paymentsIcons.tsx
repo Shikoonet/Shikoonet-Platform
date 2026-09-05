@@ -85,6 +85,20 @@ export function IconBotVerified({ className }: IconProps) {
   );
 }
 
+export function IconContinuity({ className }: IconProps) {
+  return (
+    <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M12 3 4.5 6v5.2c0 4.5 3 8.1 7.5 9.8 4.5-1.7 7.5-5.3 7.5-9.8V6L12 3Z"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
+      />
+      <path d="m9 12 2 2 4-4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function IconManualVerified({ className }: IconProps) {
   return (
     <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>

@@ -3,6 +3,7 @@ import type { PaymentTab } from './paymentReview.js';
 import {
   IconAll,
   IconBotVerified,
+  IconContinuity,
   IconDeclined,
   IconIncome,
   IconManualVerified,
@@ -57,6 +58,13 @@ const REVIEW_TABS = [
     countKey: 'open' as const,
     unreadKey: 'needsReviewUnread' as const,
     Icon: IconReview,
+  },
+  {
+    value: 'continuity' as const,
+    label: 'حالت تداوم',
+    shortLabel: 'تداوم',
+    countKey: 'continuity' as const,
+    Icon: IconContinuity,
   },
   {
     value: 'bot_auto_verified' as const,
@@ -123,6 +131,7 @@ export function parsePaymentTabFromLocation(search = window.location.search): Pa
     'declined_income',
     'waiting',
     'suspected_fake',
+    'continuity',
     'bot_auto_verified',
     'manually_verified',
     'reseller',
@@ -235,6 +244,7 @@ export function PrimaryOpsNav({
     (counts?.needsReview ?? 0) +
     (counts?.waiting ?? 0) +
     (counts?.suspectedFake ?? 0) +
+    (counts?.continuityPending ?? 0) +
     (counts?.botAutoVerified ?? 0);
   const paymentsTotal = (counts?.manuallyVerified ?? 0) + (counts?.declinedIncome ?? 0);
 

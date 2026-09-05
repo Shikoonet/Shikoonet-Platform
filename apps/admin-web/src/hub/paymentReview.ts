@@ -72,6 +72,8 @@ export type PaymentTab =
   | 'declined_income'
   | 'waiting'
   | 'suspected_fake'
+  /** Every order delivered automatically while Continuity mode was active. */
+  | 'continuity'
   | 'bot_auto_verified'
   | 'manually_verified'
   | 'reseller'
@@ -206,6 +208,12 @@ export interface PaymentItem {
   /** Present when reopenEligible is false — explains why reopen is blocked. */
   reopenBlockedReason?: string | null;
   fulfillmentState?: 'UNKNOWN' | 'NOT_APPLICABLE';
+  /** Audit facts stamped when an order was delivered before bank evidence. */
+  fulfilmentMode?: 'MANUAL' | 'CONTINUITY' | null;
+  fulfilledAt?: number | null;
+  fulfilledBy?: string | null;
+  fulfilmentReason?: string | null;
+  reconciledAt?: number | null;
   isNew?: boolean;
   /** DEV-only: business classification (NEW_PURCHASE / RENEWAL / UNKNOWN).
    *  Present only when the worker is built with ENABLE_PURCHASE_TYPE=true. */

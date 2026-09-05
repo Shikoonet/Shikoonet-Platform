@@ -330,6 +330,11 @@ type ClaimRow = {
   device_id: string | null;
   device_display_name: string | null;
   device_code: string | null;
+  fulfilment_mode: 'MANUAL' | 'CONTINUITY' | null;
+  fulfilled_at: number | null;
+  fulfilled_by: string | null;
+  fulfilment_reason: string | null;
+  reconciled_at: number | null;
   /**
    * `true`, `false`, or `null` when the reference matches no user at all.
    *
@@ -595,7 +600,10 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
       `SELECT
          ${REVIEW_STATE_CASE} AS review_state,
          COUNT(*) AS n,
-         SUM(CASE WHEN ${EFFECTIVE_TS} BETWEEN ?2 AND ?3 THEN 1 ELSE 0 END) AS n_today
+         SUM(CASE WHEN ${EFFECTIVE_TS} BETWEEN ?2 AND ?3 THEN 1 ELSE 0 END) AS n_today,
+         SUM(CASE WHEN c.fulfilment_mode = 'CONTINUITY' THEN 1 ELSE 0 END) AS continuity_n,
+         SUM(CASE WHEN c.fulfilment_mode = 'CONTINUITY' AND c.reconciled_at IS NULL
+                  THEN 1 ELSE 0 END) AS continuity_pending_n
        FROM payment_claims c
        LEFT JOIN reconciliation_matches m ON m.id = (${SETTLED_MATCH_ID})
        WHERE c.source_system = ?1
@@ -610,7 +618,13 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
     // `packages/db` refuses a statement with a parameter nothing uses rather
     // than guessing — SQLite ignored those, Postgres cannot.
     .bind(MIRZABOT_SOURCE, dayStart, dayEnd)
-    .all<{ review_state: ReviewState | null; n: number; n_today: number }>();
+    .all<{
+      review_state: ReviewState | null;
+      n: number;
+      n_today: number;
+      continuity_n: number;
+      continuity_pending_n: number;
+    }>();
 
   const total: Record<ReviewState, number> = {
     AUTO_VERIFIED: 0,
@@ -625,9 +639,13 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
   };
   const today = { ...total };
   let all = 0;
+  let continuity = 0;
+  let continuityPending = 0;
   for (const r of rows.results ?? []) {
     // `all` counts rows, so a state nobody can list still shows up there.
     all += r.n;
+    continuity += r.continuity_n ?? 0;
+    continuityPending += r.continuity_pending_n ?? 0;
     if (r.review_state == null) continue;
     total[r.review_state] += r.n;
     today[r.review_state] += r.n_today ?? 0;
@@ -670,6 +688,8 @@ async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, acto
       autoVerified: total.AUTO_VERIFIED,
       botAutoVerified: total.AUTO_VERIFIED,
       manuallyVerified: total.MANUALLY_VERIFIED,
+      continuity,
+      continuityPending,
       income: await loadIncomeCount(db),
       declinedIncome: await loadDeclinedIncomeCount(db),
       reseller: await loadResellerCount(db),
@@ -1025,6 +1045,7 @@ export function registerMirzabotRoutes(
         'declined_income',
         'waiting',
         'suspected_fake',
+        'continuity',
         'bot_auto_verified',
         'manually_verified',
         'reseller',
@@ -1240,6 +1261,7 @@ export function registerMirzabotRoutes(
       // actually matters to an operator — nobody has decided about it yet — so
       // there is no shape left for a row to fall between.
       if (tab === 'open') where.push(PENDING_CLAIM);
+      if (tab === 'continuity') where.push(`c.fulfilment_mode = 'CONTINUITY'`);
 
       const tabState: ReviewState | null =
         tab === 'needs_review'
@@ -1372,6 +1394,8 @@ export function registerMirzabotRoutes(
               -- handle server-side and streams the bytes.
               (c.receipt_url_or_r2_key IS NOT NULL) AS has_receipt,
               c.suspect_metadata_json, c.metadata_json, c.status,
+              c.fulfilment_mode, c.fulfilled_at, c.fulfilled_by,
+              c.fulfilment_reason, c.reconciled_at,
               ${projectionExtras}
               fa.display_name AS account_display, fa.bank_name AS account_bank,
               fa.account_hint,
@@ -1578,6 +1602,11 @@ export function registerMirzabotRoutes(
             metadataJson: row.metadata_json,
           }),
           fulfillmentState: state === 'MANUALLY_VERIFIED' ? ('UNKNOWN' as const) : undefined,
+          fulfilmentMode: row.fulfilment_mode,
+          fulfilledAt: row.fulfilled_at,
+          fulfilledBy: row.fulfilled_by,
+          fulfilmentReason: row.fulfilment_reason,
+          reconciledAt: row.reconciled_at,
           // 'PERSONAL' | 'RESELLER' | 'UNKNOWN' rather than a boolean, so the
           // screen can say «نامشخص» instead of quietly drawing «شخصی».
           customerType:
