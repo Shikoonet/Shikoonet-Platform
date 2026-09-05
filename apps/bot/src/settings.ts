@@ -439,6 +439,28 @@ export function invalidateShopSettings(): void {
 }
 
 /**
+ * Enables custom emoji after an admin assigns one inside the bot.
+ *
+ * Choosing a premium emoji is itself an explicit opt-in. Leaving the switch
+ * off stores the tagged label but makes the next content refresh replace it
+ * with its ordinary fallback glyph, so the assignment appears to vanish.
+ * Telegram still has the last word: if the bot is not entitled to send the
+ * emoji, the send path falls back safely and `disableCustomEmoji` turns this
+ * switch off again.
+ */
+export async function enableCustomEmoji(db: Db): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO settings (scope, key, value) VALUES (?1, ?2, 'true'::jsonb)
+       ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value, updated_at = now()`,
+    )
+    .bind(CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key)
+    .run();
+  invalidateShopSettings();
+  invalidateBotContent();
+}
+
+/**
  * Switches custom emoji off because Telegram refused one.
  *
  * Called from the send path's fallback, so it must not throw: the customer's
