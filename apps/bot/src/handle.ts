@@ -74,6 +74,7 @@ import {
 import { applyForReseller, hasOpenRequest } from './reseller.js';
 import {
   DEFAULT_SHOP_SETTINGS,
+  enableCustomEmoji,
   loadShopSettings,
   settingIs,
   settingText,
@@ -991,6 +992,7 @@ async function handlePremiumEmoji(
     if (label === null) {
       return reply(menu.emojiTooLong(target.label), menu.emojiHomeMenu(menu.mainMenuButtons()));
     }
+    await enableCustomEmoji(tx);
     await rememberEmoji(tx, found);
     const buttons = menu
       .mainMenuButtons()
@@ -2594,6 +2596,7 @@ async function handleCallback(
         }
 
         const label = await setButtonEmoji(tx, target.action, chosen);
+        if (label !== null) await enableCustomEmoji(tx);
         await clearSession(tx, user.id);
         const after = buttons.map((b) =>
           b.slot === target.slot && label !== null ? { ...b, label } : b,
