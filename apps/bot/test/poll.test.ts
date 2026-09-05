@@ -89,7 +89,7 @@ describe('pollOnce', () => {
       ],
       replaceReplyKeyboard: async (chatId, keyboard) => {
         expect(chatId).toBe(telegramId);
-        expect(keyboard).toEqual([[{ text: '↩️ برگشت', style: 'primary' }]]);
+        expect(keyboard).toEqual([[{ text: '↩️ برگشت', style: 'success' }]]);
         calls.push('bar');
       },
       sendMessage: async () => {
