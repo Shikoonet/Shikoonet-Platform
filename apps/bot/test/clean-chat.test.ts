@@ -184,7 +184,7 @@ describe('the navigation bar installed by /start', () => {
     const first = await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
     expect(first.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
     expect(first.replies[0]?.replyKeyboard).toEqual([
-      [{ text: menu.HOME_REPLY_LABEL, style: 'success' }],
+      [{ text: menu.HOME_REPLY_LABEL, style: 'primary' }],
     ]);
     expect(first.replies[0]?.keyboard).toBeUndefined();
     expect(first.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
@@ -218,7 +218,7 @@ describe('the navigation bar under the chat', () => {
     expect(viaLabel.replies[0]?.keyboard).toEqual(viaButton.replies[0]?.keyboard);
   });
 
-  it('turns green «برگشت» inside a menu and returns home from its first screen', async () => {
+  it('turns blue «برگشت» inside a menu and returns home from its first screen', async () => {
     const { telegramId } = ids();
     await makeCustomer(telegramId);
 
@@ -228,7 +228,7 @@ describe('the navigation bar under the chat', () => {
     );
     expect(inside.replyKeyboardUpdate).toEqual({
       chatId: telegramId,
-      keyboard: [[{ text: menu.BACK_REPLY_LABEL, style: 'success' }]],
+      keyboard: [[{ text: menu.BACK_REPLY_LABEL, style: 'primary' }]],
     });
 
     const back = await handleUpdate(
@@ -238,7 +238,7 @@ describe('the navigation bar under the chat', () => {
     expect(back.replies[0]?.text).toBe(menu.MENU_TITLE);
     expect(back.replyKeyboardUpdate).toEqual({
       chatId: telegramId,
-      keyboard: [[{ text: menu.HOME_REPLY_LABEL, style: 'success' }]],
+      keyboard: [[{ text: menu.HOME_REPLY_LABEL, style: 'primary' }]],
     });
   });
 
