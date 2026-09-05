@@ -86,15 +86,32 @@ function press(updateId: number, telegramId: number, data: string) {
 }
 
 /** A message carrying a premium emoji, exactly as Telegram delivers one. */
-function sentEmoji(updateId: number, telegramId: number, id = FIRE_ID) {
+function sentEmoji(updateId: number, telegramId: number, id = FIRE_ID, fallback = '🔥') {
   return {
     update_id: updateId,
     message: {
       message_id: updateId,
       from: { id: telegramId },
       chat: { id: telegramId },
-      text: '🔥',
-      entities: [{ type: 'custom_emoji', offset: 0, length: 2, custom_emoji_id: id }],
+      text: fallback,
+      entities: [{ type: 'custom_emoji', offset: 0, length: fallback.length, custom_emoji_id: id }],
+    },
+  };
+}
+
+/** Two premium emoji in one message: ambiguous for a one-button assignment. */
+function sentEmojiPair(updateId: number, telegramId: number) {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      from: { id: telegramId },
+      chat: { id: telegramId },
+      text: '🔥👋',
+      entities: [
+        { type: 'custom_emoji', offset: 0, length: 2, custom_emoji_id: FIRE_ID },
+        { type: 'custom_emoji', offset: 2, length: 2, custom_emoji_id: '5411394265924257943' },
+      ],
     },
   };
 }
@@ -195,41 +212,71 @@ describe('who may open it', () => {
 });
 
 describe('the order the screens ask in', () => {
-  it('opens on the BUTTONS, and puts the emoji on with one press', async () => {
-    // Sam, 2026-09-03: «برم تو منوی ایموجی، منو رو انتخاب کنم، و وقتی ایموجی‌ای
-    // که می‌خوام رو می‌زنم همون جایگزین بشه». The first build asked for the
-    // emoji first and then where to put it, which reads backwards: an admin
-    // arrives already knowing which button they are unhappy with.
+  it('asks for one emoji after the button and assigns that message directly', async () => {
+    // The old path was button -> add -> send -> choose the same emoji again.
+    // The selected slot now stays in the session, so sending is the assignment.
     const { telegramId } = ids();
     await makeCustomer(telegramId);
     await makeAdmin(telegramId);
-    await handleUpdate(db, press(ids().updateId, telegramId, 'emja'));
-    await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
-    const row = await db
-      .prepare(
-        `SELECT i.id FROM emoji_pack_items i JOIN emoji_packs p ON p.id = i.pack_id
-          WHERE p.set_name = '__from_bot__'`,
-      )
-      .first<{ id: number }>();
 
-    // 1. the menu opens on the shop's own buttons
     const home = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
     expect(home.replies[0]?.text ?? '').toContain('کدام دکمه');
     const labels = (home.replies[0]?.keyboard ?? []).flat().map((b) => b.text);
     expect(labels.some((l) => l.includes('تمدید'))).toBe(true);
 
-    // 2. one press later, that button's tiles
-    const one = await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
-    expect(one.replies[0]?.text ?? '').toContain('تمدید');
-    expect((one.replies[0]?.keyboard ?? []).flat().some((b) => b.text.includes(FIRE_ID))).toBe(true);
+    const ask = await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
+    expect(ask.replies[0]?.text ?? '').toContain('یک ایموجی پریمیوم');
+    expect(ask.replies[0]?.text ?? '').toContain('تمدید');
+    expect((ask.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data)).toEqual(['emj']);
 
-    // 3. and pressing a tile swaps it, on the same screen
-    const done = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${row!.id}`));
-    expect(done.replies[0]?.text ?? '').toContain('عوض شد');
+    const done = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    expect(done.replies[0]?.text ?? '').toContain('تغییر کرد');
     const saved = await db
       .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
       .first<{ label: string }>();
     expect(saved?.label).toContain(FIRE_ID);
+
+    // It is remembered too, but there is no separate add/assign step.
+    const remembered = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM emoji_pack_items i JOIN emoji_packs p ON p.id = i.pack_id
+          WHERE p.set_name = '__from_bot__' AND i.custom_emoji_id = ?1`,
+      )
+      .bind(FIRE_ID)
+      .first<{ n: number }>();
+    expect(remembered?.n).toBe(1);
+
+    // The content cache was invalidated by the write. Opening the picker again
+    // immediately must not resurrect the old icon for another thirty seconds.
+    const reopened = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
+    // This fixture keeps the shop's rich-emoji switch off, so a fresh load
+    // correctly exposes the new fallback glyph rather than the markup id.
+    expect(
+      (reopened.replies[0]?.keyboard ?? [])
+        .flat()
+        .some((b) => b.text.startsWith('🔥') && b.text.includes('تمدید')),
+    ).toBe(true);
+  });
+
+  it('replaces the previous premium icon through the direct flow', async () => {
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
+    await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+
+    const secondId = '5411394265924257943';
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
+    await handleUpdate(db, sentEmoji(ids().updateId, telegramId, secondId, '👋'));
+
+    const saved = await db
+      .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
+      .first<{ label: string }>();
+    expect(saved?.label).toContain(secondId);
+    expect(saved?.label).not.toContain(FIRE_ID);
+    expect(saved?.label).not.toContain('🔥');
+    expect([...(saved?.label ?? '').matchAll(/<tg-emoji/g)]).toHaveLength(1);
   });
 
   it('swaps the emoji rather than leaving the last one behind as a glyph', async () => {
@@ -250,7 +297,7 @@ describe('the order the screens ask in', () => {
     ];
     let label = '♻️ تمدید سرویس';
     for (const emoji of seq) {
-      const next = await setButtonEmoji(db, 'renew', label, emoji);
+      const next = await setButtonEmoji(db, 'renew', emoji);
       expect(next).not.toBeNull();
       label = next!;
     }
@@ -265,48 +312,55 @@ describe('the order the screens ask in', () => {
 });
 
 describe('giving the bot an emoji', () => {
-  it('offers it straight back as a drawn tile, on the button it came from', async () => {
+  it('saves it and puts it straight on the button it came from', async () => {
     const { telegramId } = ids();
     await makeCustomer(telegramId);
     await makeAdmin(telegramId);
 
-    // «افزودن» pressed from a BUTTON's screen carries that button's slot, so
-    // the emoji the admin just gave the bot is one tap from being on it.
-    await handleUpdate(db, press(ids().updateId, telegramId, 'emja:1'));
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
     const saved = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
 
     expect(saved.status).toBe('processed');
-    // It says WHAT it captured. Without this line an admin who sent an emoji
-    // had no way to tell it apart from one that was ignored — which is exactly
-    // what was reported: «the emoji I added is not shown».
-    expect(saved.replies[0]?.text ?? '').toContain('ذخیره شد');
-    // The tile carries the TAG, which `keyboardFor` turns into the button's
-    // icon on the way out. That is what makes this screen the live proof.
+    expect(saved.replies[0]?.text ?? '').toContain('تغییر کرد');
+    // The button list comes straight back with the assigned tag on its target.
     const drawn = (saved.replies[0]?.keyboard ?? []).flat().map((b) => b.text);
     expect(drawn.some((t) => t.includes(FIRE_ID))).toBe(true);
   });
 
-  it('puts what was just added at the FRONT of the tiles', async () => {
-    // Sam, on a screen with twelve tiles: «ایموجی پریمیومی که اضافه کردم رو
-    // نشون نمی‌ده». It was stored — it was sorted last, behind the shipped
-    // defaults and behind every pack imported from the panel, which on a real
-    // shop is far enough down to read as «not there».
+  it('refuses an ambiguous multi-emoji message and keeps the question open', async () => {
     const { telegramId } = ids();
     await makeCustomer(telegramId);
     await makeAdmin(telegramId);
 
-    await handleUpdate(db, press(ids().updateId, telegramId, 'emja:1'));
-    const out = await handleUpdate(db, sentEmoji(ids().updateId, telegramId, '5111111111111111111'));
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
+    const refused = await handleUpdate(db, sentEmojiPair(ids().updateId, telegramId));
+    expect(refused.replies[0]?.text ?? '').toContain('فقط یک ایموجی');
 
-    const tiles = (out.replies[0]?.keyboard ?? [])[0] ?? [];
-    expect(tiles[0]?.text).toContain('5111111111111111111');
+    const accepted = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    expect(accepted.replies[0]?.text ?? '').toContain('تغییر کرد');
+  });
+
+  it('cancels the selected button when the admin returns to the list', async () => {
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeAdmin(telegramId);
+
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
+    const late = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+
+    expect(late.status).toBe('ignored');
+    const saved = await db
+      .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
+      .first<{ label: string }>();
+    expect(saved).toBeNull();
   });
 
   it('says so plainly when the message held no premium emoji', async () => {
     const { telegramId } = ids();
     await makeCustomer(telegramId);
     await makeAdmin(telegramId);
-    await handleUpdate(db, press(ids().updateId, telegramId, 'emja'));
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
 
     const plain = ids();
     const out = await handleUpdate(db, {
@@ -338,8 +392,8 @@ describe('putting it on a button', () => {
       )
       .first<{ id: number }>();
 
-    // First press: which button. Second: that one.
-    // First press: that button's screen, with every emoji as a tile.
+    // A tile callback from the old picker remains usable even though the new
+    // screen asks for the replacement emoji directly.
     const pick = await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
     expect(pick.replies[0]?.text ?? '').toContain('تمدید');
 
@@ -347,7 +401,7 @@ describe('putting it on a button', () => {
     // order the screens ask in. Slot 1 is the first DECLARED button; a zero
     // would not even decode, since `parseId` refuses one.
     const applied = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${row!.id}`));
-    expect(applied.replies[0]?.text ?? '').toContain('عوض شد');
+    expect(applied.replies[0]?.text ?? '').toContain('تغییر کرد');
 
     // Slot 1 is the first DECLARED action — `renew` — so that is the row to
     // read. Reading «any row of main» passed by luck while only one existed.
@@ -454,7 +508,7 @@ describe('putting it on a button', () => {
       },
     } as unknown as typeof db;
 
-    const placed = await setButtonEmoji(racing, 'renew', '♻️ تمدید سرویس', {
+    const placed = await setButtonEmoji(racing, 'renew', {
       customEmojiId: FIRE_ID,
       fallbackEmoji: '🔥',
     });

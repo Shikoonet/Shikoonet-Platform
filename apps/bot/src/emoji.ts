@@ -33,6 +33,7 @@ import {
   renderedLabelLength,
   splitCustomEmojiLabel,
 } from '@shikoo/contracts';
+import { invalidateBotContent } from './botContent.js';
 
 type Db = D1Database | D1DatabaseSession;
 
@@ -193,11 +194,8 @@ export async function emojiById(db: Db, id: number): Promise<StoredEmoji | null>
 export async function setButtonEmoji(
   db: Db,
   action: string,
-  currentLabel: string,
   emoji: { customEmojiId: string; fallbackEmoji: string },
 ): Promise<string | null> {
-  const plain = splitCustomEmojiLabel(currentLabel).text.trim();
-  const label = `<tg-emoji emoji-id="${emoji.customEmojiId}">${emoji.fallbackEmoji}</tg-emoji> ${plain}`;
   // Refused rather than written, and NULL rather than the old label — the
   // caller has to be able to tell «placed» from «could not».
   //
@@ -210,8 +208,14 @@ export async function setButtonEmoji(
   //     characters, so a button already near the cap goes over it, and the only
   //     thing that noticed was the CHECK in 0053 — as an exception thrown out of
   //     an admin's button press, with a constraint name for a message.
-  if (labelMarkupProblem(label)) return null;
-  if (renderedLabelLength(label) > MAX_LABEL_LENGTH) return null;
+  const withEmoji = (source: string): string => {
+    const plain = splitCustomEmojiLabel(source).text.trim();
+    return `<tg-emoji emoji-id="${emoji.customEmojiId}">${emoji.fallbackEmoji}</tg-emoji> ${plain}`;
+  };
+  // Reject an invalid fallback before materialising a default layout. Length
+  // is checked later against the raw stored label, which may still contain an
+  // old tag even when the shop's display-time switch exposed only its glyph.
+  if (labelMarkupProblem(withEmoji(''))) return null;
 
   // ## The whole layout, or none of it
   //
@@ -242,7 +246,7 @@ export async function setButtonEmoji(
         )
         .bind(
           b.action,
-          b.action === action ? label : b.label,
+          b.label,
           b.rowIndex,
           b.colIndex,
           b.visible,
@@ -260,6 +264,20 @@ export async function setButtonEmoji(
     // back from it.
   }
 
+  // Read the raw row after seeding instead of trusting `currentLabel` from the
+  // screen. When the shop's rich-emoji switch is off, display loading strips a
+  // tag to its fallback glyph. Building from that display value would preserve
+  // the old glyph as plain text, so each replacement would still visibly
+  // accumulate despite there being only one tag.
+  const stored = await db
+    .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = ?1`)
+    .bind(action)
+    .first<{ label: string }>();
+  if (!stored) return null;
+  const label = withEmoji(stored.label);
+  if (labelMarkupProblem(label)) return null;
+  if (renderedLabelLength(label) > MAX_LABEL_LENGTH) return null;
+
   const updated = await db
     .prepare(
       `UPDATE bot_keyboard_buttons SET label = ?2
@@ -274,5 +292,9 @@ export async function setButtonEmoji(
   // or the seed above lost a race with a layout that does not carry it. Both
   // are «could not», and the caller says so.
   if (!updated) return null;
+  // The next update must read the label just written. `loadBotContent` normally
+  // keeps layouts for thirty seconds; without invalidation an admin could see
+  // the old icon return immediately after the success screen.
+  invalidateBotContent();
   return label;
 }

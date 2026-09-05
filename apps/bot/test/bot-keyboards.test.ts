@@ -189,9 +189,13 @@ describe('a button whose precondition is not met', () => {
     expect(datas(withBalance)).toContain('wpay:7');
     expect(datas(without)).not.toContain('wpay:7');
     expect(datas(without)).not.toContain('tpo:7');
-    // The two that always apply are still there, and no empty row survived.
-    expect(datas(without)).toEqual(['paid:7', 'menu']);
+    // The primary action is still there, and no empty row survived. Navigation
+    // belongs to the persistent keyboard below the chat, not to this invoice.
+    expect(datas(without)).toEqual(['paid:7']);
     expect(without.every((r) => r.length > 0)).toBe(true);
+    expect(without.at(-1)).toEqual([
+      { text: '✅ پرداخت کردم', callback_data: 'paid:7', style: 'success' },
+    ]);
   });
 
   it('offers a top-up instead when the balance is there but not enough', () => {

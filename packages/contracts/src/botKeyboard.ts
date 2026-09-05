@@ -256,7 +256,6 @@ export const MENUS = {
         hint: 'تنها راه مشتری برای گفتن اینکه واریز کرده',
         required: true,
       },
-      BACK_TO_MENU,
     ],
   },
   afterPaid: {
@@ -478,13 +477,19 @@ export function isButtonStyle(value: unknown): value is ButtonStyle {
 }
 
 /**
- * Where each menu's buttons sit by default.
+ * Where each menu's buttons sit and which colour they use by default.
  *
  * The main menu keeps production's grid. Every other menu is one button per
  * row, except the pairs that are already drawn side by side today — the two
- * add-ons on a service, and the two back buttons that end most screens.
+ * add-ons on a service, and the two back buttons that end most screens. The
+ * optional fourth cell is Telegram's button style; almost every button keeps
+ * the client's own colour, while a small number of primary actions name theirs
+ * explicitly.
  */
-const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, number]>> = {
+const DEFAULT_CELLS: Record<
+  MenuId,
+  ReadonlyArray<readonly [string, number, number, ButtonStyle?]>
+> = {
   main: [
     ['renew', 0, 0],
     ['buy', 0, 1],
@@ -557,11 +562,10 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
     ['buy', 2, 0],
     ['menu', 2, 1],
   ],
-  // «پرداخت کردم» and «بازگشت» share a row from 2026-09-03: Sam asked for an
-  // invoice with fewer buttons on it, and three rows for two buttons was the
-  // easiest one to give back. The wallet pair above them is conditional and
-  // usually absent, so the ordinary invoice is now the copy row and one row of
-  // chrome.
+  // «پرداخت کردم» owns the final row and is green: it is the primary action on
+  // an invoice, and sharing its row made it half the size of the wallet top-up
+  // immediately above it. There is no inline «بازگشت» here any more; the
+  // persistent keyboard below the chat is the one navigation control.
   //
   // The copy row is NOT in this layout and is not removable from it — it is
   // drawn above the chrome by `checkoutMenu`, because sixteen digits retyped by
@@ -569,8 +573,7 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
   checkout: [
     ['wpay', 0, 0],
     ['tpo', 0, 1],
-    ['paid', 1, 0],
-    ['menu', 1, 1],
+    ['paid', 1, 0, 'success'],
   ],
   afterPaid: [['menu', 0, 0]],
   myServices: [['menu', 0, 0]],
@@ -614,7 +617,7 @@ const DEFAULT_CELLS: Record<MenuId, ReadonlyArray<readonly [string, number, numb
 
 function layoutFor(id: MenuId): readonly ButtonPlacement[] {
   const byAction = new Map(MENUS[id].buttons.map((b) => [b.action, b]));
-  return DEFAULT_CELLS[id].map(([action, rowIndex, colIndex]) => ({
+  return DEFAULT_CELLS[id].map(([action, rowIndex, colIndex, style]) => ({
     action,
     // Labels come from `MENUS` rather than being repeated, so the default
     // wording has one definition and cannot disagree with itself.
@@ -622,9 +625,7 @@ function layoutFor(id: MenuId): readonly ButtonPlacement[] {
     rowIndex,
     colIndex,
     visible: true,
-    // The shipped layout has no colours. A default that painted these would be
-    // a change to every shop's screens on the day the column was added.
-    style: null,
+    style: style ?? null,
   }));
 }
 
