@@ -135,7 +135,20 @@ export function StockPage() {
   }
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const empty = shelves.filter((s) => s.available === 0);
+  /*
+   * Two different things, and they were one red box until the shelf list began
+   * showing shelves that had never been filled.
+   *
+   * A shelf that HAS sold and is now empty is the alarm this screen was built
+   * for: customers are buying that product and the next one gets nothing. A
+   * shelf with nothing on either side is simply not stocked yet — the normal
+   * state of a service somebody created an hour ago, and on a fresh database
+   * that is every one of them. Red on all of them is a screen that cries wolf,
+   * and `sections.spec.ts` caught it doing exactly that: it walks every section
+   * and treats a visible `.alert-error` as a broken screen.
+   */
+  const ranDry = shelves.filter((s) => s.available === 0 && s.used > 0);
+  const neverFilled = shelves.filter((s) => s.available === 0 && s.used === 0);
 
   return (
     <>
@@ -157,11 +170,16 @@ export function StockPage() {
         </div>
       </div>
 
-      {empty.length > 0 && (
+      {ranDry.length > 0 && (
         <div className="alert alert-error">
-          این قفسه‌ها خالی‌اند: {empty.map(shelfLabel).join('، ')} — محصولی که از قفسه تحویل
-          می‌شود و قفسه‌اش خالی است، فروخته می‌شود و به دست مشتری نمی‌رسد تا کسی دستی آماده‌اش
-          کند.
+          این قفسه‌ها فروخته‌اند و ته کشیده‌اند: {ranDry.map(shelfLabel).join('، ')} — مشتری بعدی
+          پول می‌دهد و چیزی نمی‌گیرد تا کسی دستی آماده‌اش کند.
+        </div>
+      )}
+
+      {neverFilled.length > 0 && (
+        <div className="alert alert-warning">
+          این قفسه‌ها هنوز پر نشده‌اند: {neverFilled.map(shelfLabel).join('، ')}.
         </div>
       )}
 
