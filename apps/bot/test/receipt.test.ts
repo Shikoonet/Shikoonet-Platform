@@ -152,6 +152,11 @@ describe('a customer sending their receipt', () => {
 
     expect(out.status).toBe('processed');
     expect(out.replies[0]?.text).toContain('رسید شما دریافت شد');
+    expect(out.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
+    expect(out.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
+    expect(out.replies.at(-1)?.keyboard).toEqual(
+      menu.mainMenu({ is_reseller: false, is_admin: false }),
+    );
 
     const row = await claimRow(sale.claimId);
     // The largest rendition, which is the one somebody can actually read.
@@ -250,6 +255,15 @@ describe('a customer sending their receipt', () => {
     );
 
     expect(out.replies[0]?.text).toBe(menu.RECEIPT_REPLACED);
+    // Regression: the receipt acknowledgement is the real carrier for the
+    // one-button navbar, and the app screen follows it. The screenshot that
+    // found this bug had the old full reply keyboard above the receipt and no
+    // main screen at the bottom of the chat.
+    expect(out.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
+    expect(out.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
+    expect(out.replies.at(-1)?.keyboard).toEqual(
+      menu.mainMenu({ is_reseller: false, is_admin: false }),
+    );
     const second = await claimRow(sale.claimId);
     expect(second?.receipt_url_or_r2_key).toBe('second-receipt-002');
     expect(second?.receipt_submitted_at).toBe(first?.receipt_submitted_at);
@@ -268,6 +282,7 @@ describe('a customer sending their receipt', () => {
     );
 
     expect(out.replies[0]?.text).toBe(menu.RECEIPT_SETTLED);
+    expect(out.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
     // A settled claim is history. Stamping it would make the record of what
     // happened disagree with what happened.
     const row = await claimRow(sale.claimId);
@@ -283,6 +298,7 @@ describe('a customer sending their receipt', () => {
 
     expect(out.status).toBe('processed');
     expect(out.replies[0]?.text).toBe(menu.RECEIPT_NOTHING_WAITING);
+    expect(out.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
   });
 
   it('does not take a file id that is not one', async () => {
