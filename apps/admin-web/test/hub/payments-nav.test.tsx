@@ -14,6 +14,8 @@ const COUNTS = {
   open: 6,
   autoVerified: 10,
   botAutoVerified: 10,
+  continuity: 4,
+  continuityPending: 2,
   income: 4,
   manuallyVerified: 3,
   declinedIncome: 0,
@@ -88,9 +90,13 @@ describe('Payments grouped navigation', () => {
     // three tabs — and, more to the point, without a fourth population of
     // pending claims that belonged to none of them going uncounted.
     expect(within(hub).getByRole('tab', { name: /در انتظار بررسی 6/i })).toBeTruthy();
+    expect(within(hub).getByRole('tab', { name: /حالت تداوم 4/i })).toBeTruthy();
     expect(within(hub).getByRole('tab', { name: /تایید خودکار ربات 10/i })).toBeTruthy();
     const reviewTab = opsNav().getByRole('tab', { name: 'بررسی' });
-    expect(reviewTab.textContent).toContain('20');
+    // Only the two unreconciled Continuity rows add work to the primary badge;
+    // reconciled history stays available in its tab without double-counting
+    // rows that also belong to Bot Auto Verified.
+    expect(reviewTab.textContent).toContain('22');
   });
 
   it('updates Review sub-tab counts on poll without reload', async () => {
@@ -139,6 +145,16 @@ describe('Payments grouped navigation', () => {
     render(<PaymentsView cache={createCache()} />);
     fireEvent.click(await hubNav().findByRole('tab', { name: /تایید خودکار ربات 10/i }));
     expect(await screen.findByText('در این بازه پرداختی با تایید خودکار ربات نیست.')).toBeTruthy();
+  });
+
+  it('selects the separate حالت تداوم review tab', async () => {
+    render(<PaymentsView cache={createCache()} />);
+    fireEvent.click(await hubNav().findByRole('tab', { name: /حالت تداوم 4/i }));
+    const pending = await screen.findByRole('region', { name: 'در انتظار تطبیق بانکی' });
+    const history = screen.getByRole('region', { name: 'سابقه تطبیق‌شده' });
+    expect(within(pending).getByText('موردی در انتظار تطبیق بانکی نیست.')).toBeTruthy();
+    expect(within(history).getByText('در این بازه سابقه تطبیق‌شده‌ای نیست.')).toBeTruthy();
+    expect(window.location.search).toContain('tab=continuity');
   });
 
   it('shows total and unread badges on تایید خودکار ربات sub-tab', async () => {
