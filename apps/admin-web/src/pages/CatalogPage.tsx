@@ -1696,6 +1696,10 @@ function NewServiceCard({
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Unknown until a panel is picked, and `true` then only for the kinds that
+  // really have groups — everything else is delivered from the shelf or by hand.
+  const panelHasGroups = panels.find((p) => String(p.id) === panelId)?.hasGroups ?? false;
+
   const suggestedCode = slug(name) || 'service';
   useEffect(() => {
     if (!codeTouched) setCode(suggestedCode);
@@ -1727,7 +1731,7 @@ function NewServiceCard({
 
     let chosen: number | null = groupId === '' ? null : Number(groupId);
     let madeGroup: string | null = null;
-    if (mode === 'new') {
+    if (mode === 'new' && panelHasGroups) {
       if (groupName.trim() === '') {
         setErr('نام گروه تازه را بنویسید.');
         setBusy(false);
@@ -1746,7 +1750,10 @@ function NewServiceCard({
         return;
       }
     }
-    if (chosen === null) {
+    // Only where a group is a real thing. A shelf or manual panel has none, and
+    // `products.attrs.group_ids` is nullable precisely so those can exist —
+    // every account product in the seed is stored that way.
+    if (chosen === null && panelHasGroups) {
       setErr('گروه را انتخاب کنید — بدون آن معلوم نیست مشتری چه تحویل می‌گیرد.');
       setBusy(false);
       return;
@@ -1771,7 +1778,9 @@ function NewServiceCard({
         description: description.trim() === '' ? null : description.trim(),
         resellersOnly,
         oncePerUser,
-        groupIds: [chosen],
+        // Null, not `[null]`: the field is nullable so a shelf or manual
+        // service can exist without one, and an array holding null is neither.
+        groupIds: chosen === null ? null : [chosen],
       });
       productId = created.productId;
     } catch (e) {
@@ -1891,17 +1900,33 @@ function NewServiceCard({
         />
       </div>
 
-      <GroupChooser
-        panelId={panelId}
-        mode={mode}
-        setMode={setMode}
-        groupId={groupId}
-        setGroupId={setGroupId}
-        groupName={groupName}
-        setGroupName={setGroupName}
-        tags={tags}
-        toggleTag={toggleTag}
-      />
+      {/*
+       * A group says which inbounds a panel hands the customer. The kinds that
+       * are delivered from the shelf or by hand have none, and asking for one
+       * made this form impossible to finish: it refused to build the service
+       * without a group while telling the operator, in the box above, that a
+       * panel of this kind has no groups.
+       */}
+      {panelHasGroups ? (
+        <GroupChooser
+          panelId={panelId}
+          mode={mode}
+          setMode={setMode}
+          groupId={groupId}
+          setGroupId={setGroupId}
+          groupName={groupName}
+          setGroupName={setGroupName}
+          tags={tags}
+          toggleTag={toggleTag}
+        />
+      ) : (
+        panelId !== '' && (
+          <p className="muted">
+            تحویل این پنل از قفسهٔ انبار یا دستی است، پس گروه ندارد. بعد از ساختن سرویس،
+            اکانت‌هایش را در «قفسهٔ انبار» بگذار.
+          </p>
+        )
+      )}
 
       <h4>اولین کانفیگ</h4>
       <ConfigFields idPrefix="ns-cf" draft={draft} />
@@ -1953,6 +1978,7 @@ function ServiceDrawer({
   const [resellersOnly, setResellersOnly] = useState(service.resellersOnly);
   const [oncePerUser, setOncePerUser] = useState(service.oncePerUser);
   const [groupIds, setGroupIds] = useState<number[] | null>(service.groupIds);
+  const [deliveryNote, setDeliveryNote] = useState(service.deliveryNote ?? '');
   const [err, setErr] = useState<string | null>(null);
   const [refused, setRefused] = useState<Refused>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -1984,6 +2010,7 @@ function ServiceDrawer({
         resellersOnly,
         oncePerUser,
         groupIds,
+        deliveryNote: deliveryNote.trim() === '' ? null : deliveryNote.trim(),
       });
       setDone('سرویس ذخیره شد.');
       onChanged();
@@ -2110,6 +2137,23 @@ function ServiceDrawer({
           onOnce={setOncePerUser}
         />
       </div>
+
+      <label className="form-label" htmlFor="sv-note">
+        متن همراه تحویل
+      </label>
+      <textarea
+        id="sv-note"
+        className="form-control"
+        rows={3}
+        maxLength={1000}
+        value={deliveryNote}
+        onChange={(e) => setDeliveryNote(e.target.value)}
+        placeholder="مثلاً روش ورود، لینک راهنما، یا آی‌دی پشتیبانی — زیر سرویس برای مشتری فرستاده می‌شود."
+      />
+      <p className="muted" style={{ marginBlockStart: 4 }}>
+        زیر هر تحویلِ این سرویس فرستاده می‌شود. هر محصولی می‌تواند متن خودش را بگذارد و جای این
+        را بگیرد.
+      </p>
 
       <label className="form-label" style={{ marginBlockStart: 8 }}>
         گروهِ این سرویس روی پنل
