@@ -165,6 +165,13 @@ export async function pollOnce(
   let sawFailure = false;
 
   for (const update of updates) {
+    // Telegram gives callback ids a short lifetime and the client holds a
+    // spinner open until this call lands. Do it before database work and reply
+    // delivery: either can take long enough for a perfectly fresh press to
+    // expire. Answering acknowledges only the button animation, not the update
+    // itself; the offset below remains the delivery acknowledgement.
+    await answer(api, update);
+
     const record = attempts.get(update.update_id);
     if (record !== undefined && record.count >= MAX_UPDATE_ATTEMPTS) {
       // Given up on. Acknowledging it is the whole point — it is what lets the
@@ -205,7 +212,6 @@ export async function pollOnce(
         // The same shape as an ordinary failure: the offset does not move past
         // it, the count is left where it is, and the spinner still stops.
         sawFailure = true;
-        await answer(api, update);
         continue;
       }
       abandoned++;
@@ -216,7 +222,6 @@ export async function pollOnce(
         kept_in: 'telegram_dead_updates',
       });
       if (!sawFailure) confirmedThrough = update.update_id;
-      await answer(api, update);
       continue;
     }
 
@@ -233,10 +238,6 @@ export async function pollOnce(
         lastError: String(err),
       });
       log.error('update.failed', { trace: traceOf(update), will_retry: true }, err);
-      // Still stop the client's spinner. A button that keeps spinning through a
-      // database outage reads as a bot that died, and answering says nothing
-      // about whether the work succeeded.
-      await answer(api, update);
       continue;
     }
     attempts.delete(update.update_id);
@@ -355,7 +356,6 @@ export async function pollOnce(
         log.warn('reply.undeleted', { trace: traceOf(update) }, err);
       }
     }
-    await answer(api, update);
   }
 
   // Everything failed, so the fault is shared and none of it belongs to any one
