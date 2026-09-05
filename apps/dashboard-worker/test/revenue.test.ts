@@ -112,13 +112,42 @@ async function purge(): Promise<void> {
 }
 
 /**
- * The totals are over the WHOLE ledger by design, so a row this file did not
- * write would be counted in every assertion below. Emptying the table is the
- * only way those assertions mean anything — and it is safe here for the same
- * reason every other file in this suite truncates its own tables.
+ * Empty the ledger — after proving there is nothing here but this suite's rows.
+ *
+ * The totals below are over the WHOLE ledger by design, so a row this file did
+ * not write is counted in every one of them. That is why this used to be
+ * `DELETE FROM revenue_adjustments` with no WHERE at all, and on a machine
+ * holding an imported dump it took all 239 production ledger rows with it —
+ * issue #46, in a `beforeEach`, silently, every run.
+ *
+ * Deleting only `${PREFIX}%` is not enough on its own: the assertions would
+ * then count the imported rows and fail in ways that read as bugs in the code
+ * under test. So the refusal comes first and says which database this is. A
+ * suite that cannot be isolated should stop, not guess — and stopping is
+ * strictly better than the silent version, because the answer («run the gate
+ * against a second database») is one line away instead of one restore away.
+ *
+ * Making these assertions scope themselves — every read filtered to
+ * `q=${PREFIX}` so the suite measures only its own rows — is the real repair
+ * and is issue #118.
  */
 async function emptyLedger(): Promise<void> {
-  await baseEnv.DB.prepare(`DELETE FROM revenue_adjustments`).run();
+  const foreign = await baseEnv.DB.prepare(
+    `SELECT count(*)::int AS n FROM revenue_adjustments WHERE note IS NULL OR note NOT LIKE ?1`,
+  )
+    .bind(`${PREFIX}%`)
+    .first<{ n: number }>();
+  if ((foreign?.n ?? 0) > 0) {
+    throw new Error(
+      `revenue_adjustments holds ${foreign?.n} row(s) this suite did not write. ` +
+        `Its totals are over the whole ledger, so it cannot run here without ` +
+        `destroying them — see issue #46. Point DATABASE_URL at a second, empty ` +
+        `database and run the gate there.`,
+    );
+  }
+  await baseEnv.DB.prepare(`DELETE FROM revenue_adjustments WHERE note LIKE ?1`)
+    .bind(`${PREFIX}%`)
+    .run();
   await baseEnv.DB.prepare(`DELETE FROM expense_recurrences WHERE label LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();

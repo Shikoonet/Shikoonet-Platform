@@ -15,13 +15,13 @@
  */
 
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv, deleteFixtureUsers } from './helpers/env.js';
+import { applySchema, env as baseEnv, deleteFixtureUsers, FIXTURE_TG_BASE } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { isSecretKey } from '../src/settingsRoutes.js';
 
 const ADMIN = 'admin@example.com';
 const REVIEWER = 'reviewer-sales@example.com';
-const TG_BASE = 950_000_000;
+const TG_BASE = FIXTURE_TG_BASE + 950_000_000;
 const CANARY = 'zz-canary-live-credential';
 let seq = 0;
 
