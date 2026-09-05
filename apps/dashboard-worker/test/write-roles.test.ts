@@ -391,6 +391,11 @@ describe('every write route, asked directly', () => {
     // beside it is — every line is a working account the moment a customer is
     // handed it — and the paste is the wider version of the same write: one
     // press can put a thousand of them on the shelf.
-    expect(writeRoutes().length).toBe(151);
+    //
+    // +1, «POST /stock/shelves». Builds a shelf — the panel, the service and
+    // the product under it — from a name and a price, in one transaction.
+    // ADMIN-only because it creates a sellable thing: a plan with a price that
+    // a customer can reach in the bot the moment it exists.
+    expect(writeRoutes().length).toBe(152);
   });
 });

@@ -1635,6 +1635,20 @@ export const api = {
     });
   },
 
+  /** Builds a shelf — the panel, the service and the product under it. */
+  createShelf(body: {
+    name: string;
+    kind?: string;
+    priceIrr: number;
+    durationDays?: number | null;
+    categoryId: number;
+  }) {
+    return req<{ ok: boolean; planId: number }>('/stock/shelves', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
   addStockBulk(body: { planId: number; text: string }) {
     return req<BulkStockResult>('/stock/bulk', {
       method: 'POST',

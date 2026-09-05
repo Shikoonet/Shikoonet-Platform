@@ -39,7 +39,7 @@ const wipe = () =>
   );
 
 /** A plan that has a panel behind it, found by name so a re-seed cannot move it. */
-async function plan(): Promise<{ id: number; label: string }> {
+async function plan(): Promise<{ id: number }> {
   return withDb(async (d) => {
     const row = await d
       .prepare(
@@ -50,7 +50,7 @@ async function plan(): Promise<{ id: number; label: string }> {
       .bind('اسپاتیفای - ۱ ماهه')
       .first<{ id: number; name: string; product: string }>();
     if (!row) throw new Error('the seeded plan is missing — run seed:sim');
-    return { id: Number(row.id), label: `${row.product} — ${row.name}` };
+    return { id: Number(row.id) };
   });
 }
 
@@ -81,7 +81,11 @@ test('a config added from the form lands on the shelf and is counted', async ({ 
   await page.goto('/admin/stock');
   await expect(page.locator('.sidebar-link.active')).toHaveText('قفسهٔ انبار');
   await page.getByRole('button', { name: 'افزودن کانفیگ' }).click();
-  await page.locator('#add-plan').selectOption(p.label);
+  // By id, not by the label. The option's TEXT is presentation — it collapses
+  // a service and plan that share a name into one word — and a spec that
+  // rebuilds that string is asserting the wording, not the behaviour it is
+  // here for. The value is the plan.
+  await page.locator('#add-plan').selectOption(String(p.id));
   await page.locator('#add-username').fill(USERNAME);
   await page.locator('#add-url').fill(URL_FOR(USERNAME));
   await page.getByRole('button', { name: 'افزودن', exact: true }).click();
