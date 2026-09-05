@@ -274,11 +274,35 @@ async function tell(db: D1Database, row: PendingOrder, note: Delivered): Promise
     enqueue(tx, {
       dedupeKey: `provision:${row.order_public_id}`,
       chatId,
-      text: note.text,
+      text: withDeliveryNote(note.text, row),
       keyboard: note.keyboard ?? null,
       qrPayload: note.qrPayload ?? null,
     }),
   );
+}
+
+/**
+ * The shop's own words, appended to whatever the delivery produced.
+ *
+ * Set once on a service or on one of its plans — setup steps for a ChatGPT
+ * account, where to point an OpenVPN client, a support handle. It rides in
+ * `attrs`, so `planAttrsFor` gives a plan the power to override its service
+ * and no migration was needed for either.
+ *
+ * Appended HERE rather than inside a message builder because this is the one
+ * place every delivery passes through: the panel card, the shelf's config
+ * message, the account's credentials, and the sweep that rebuilds a message
+ * nobody received. Written in any one builder it would be missing from the
+ * other four.
+ *
+ * After a blank line, always. `serviceReady` and `accountReady` both end on
+ * something the customer copies — a link, a password — and anything on the
+ * same line becomes part of what they copy.
+ */
+function withDeliveryNote(text: string, row: PendingOrder): string {
+  const note = planAttrsFor(row)['delivery_note'];
+  if (typeof note !== 'string' || note.trim() === '') return text;
+  return `${text}\n\n${note.trim()}`;
 }
 
 /**
