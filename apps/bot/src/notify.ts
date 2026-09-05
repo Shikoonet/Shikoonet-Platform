@@ -134,6 +134,7 @@ export interface FlushResult {
 
 interface DueRow {
   id: number;
+  dedupe_key: string;
   chat_id: number;
   body: string;
   attempt_count: number;
@@ -141,6 +142,19 @@ interface DueRow {
   qr_payload: string | null;
   qr_sent_at: string | null;
   message_thread_id: number | null;
+}
+
+/**
+ * Enough identity to make a dead row actionable without logging its customer,
+ * order or payment identifier. Reports (`report:*` and `spam:*`) go to the
+ * configured reports group; every other producer currently targets a customer.
+ */
+function routeOf(dedupeKey: string): { kind: string; destination: 'report' | 'customer' } {
+  const kind = dedupeKey.split(':', 1)[0] || 'unknown';
+  return {
+    kind,
+    destination: kind === 'report' || kind === 'spam' ? 'report' : 'customer',
+  };
 }
 
 /**
@@ -206,7 +220,7 @@ export async function flush(
              SET attempt_count = attempt_count + 1,
                  next_attempt_at = ?1 + ?3
            WHERE id IN (SELECT id FROM due)
-          RETURNING id, chat_id, body, attempt_count,
+          RETURNING id, dedupe_key, chat_id, body, attempt_count,
                     reply_markup, qr_payload, qr_sent_at, message_thread_id`,
       )
       .bind(now, limit, LEASE_MS)
@@ -267,7 +281,12 @@ export async function flush(
         result.dead += 1;
         log.error(
           'notify.dead',
-          { ref: String(row.id), attempts: row.attempt_count, permanent },
+          {
+            ref: String(row.id),
+            attempts: row.attempt_count,
+            permanent,
+            ...routeOf(row.dedupe_key),
+          },
           err,
         );
         continue;
