@@ -104,9 +104,9 @@ test('the link is not on the screen until somebody asks for it', async ({ page }
   // not in the document. A screen left open on a shared desk does not show
   // every unsold account on the shelf.
   await expect(page.locator('#main-content')).not.toContainText(URL_FOR(USERNAME));
-  await expect(row.getByRole('button', { name: 'نمایش لینک' })).toBeVisible();
+  await expect(row.getByRole('button', { name: 'نمایش' })).toBeVisible();
 
-  await row.getByRole('button', { name: 'نمایش لینک' }).click();
+  await row.getByRole('button', { name: 'نمایش' }).click();
   await expect(row.locator('code')).toHaveText(URL_FOR(USERNAME));
 });
 
@@ -148,6 +148,6 @@ test('a retired row is not handed out, and its link stops being sent at all', as
   // copying a link out of.
   await page.reload();
   const retiredRow = page.locator(`tbody tr:has-text("${RETIRED}")`);
-  await expect(retiredRow.getByRole('button', { name: 'نمایش لینک' })).toHaveCount(0);
+  await expect(retiredRow.getByRole('button', { name: 'نمایش' })).toHaveCount(0);
   await expect(page.locator('#main-content')).not.toContainText(URL_FOR(RETIRED));
 });
