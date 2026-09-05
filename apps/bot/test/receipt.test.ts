@@ -22,8 +22,10 @@ import type { TelegramUpdate } from '../src/telegram.js';
 // it too — the bot writes a receipt handle and the panel serves it, so neither
 // of them can own the format.
 import { receiptRef } from '@shikoo/contracts';
+import { activateContinuityMode, deactivateContinuityMode } from '@shikoo/domain';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
+import { settleVerifiedPayments } from '../src/settle.js';
 
 let nextId = 1;
 function ids(): { updateId: number; telegramId: number } {
@@ -155,6 +157,45 @@ describe('a customer sending their receipt', () => {
     // The largest rendition, which is the one somebody can actually read.
     expect(row?.receipt_url_or_r2_key).toBe('LARGEST-file-id-001');
     expect(row?.receipt_submitted_at).toBeGreaterThanOrEqual(before);
+  });
+
+  it('still accepts the receipt after Continuity has released the order', async () => {
+    const actor = 'continuity-receipt@example.com';
+    await activateContinuityMode(db, {
+      actorEmail: actor,
+      reason: 'bank evidence channel is down',
+      durationMs: 30 * 60 * 1000,
+      confirmed: true,
+    });
+
+    try {
+      const sale = await buyAndClaim('sim-gold-10');
+      expect((await claimRow(sale.claimId))?.status).toBe('FULFILLED_UNRECONCILED');
+      expect(await settleVerifiedPayments(db)).toBeGreaterThanOrEqual(1);
+      const payment = await db
+        .prepare(
+          `SELECT p.status
+             FROM payments p
+             JOIN payment_claims c ON c.external_order_id = 'shikoo:' || p.public_id
+            WHERE c.id = ?1`,
+        )
+        .bind(sale.claimId)
+        .first<{ status: string }>();
+      expect(payment?.status).toBe('PAID');
+
+      const out = await handleUpdate(
+        db,
+        sendsPhoto(sale.updateId + 2, sale.telegramId, ['continuity-receipt-0001']),
+      );
+
+      expect(out.replies[0]?.text).toContain('رسید شما دریافت شد');
+      const row = await claimRow(sale.claimId);
+      expect(row?.status).toBe('FULFILLED_UNRECONCILED');
+      expect(row?.receipt_url_or_r2_key).toBe('continuity-receipt-0001');
+      expect(row?.receipt_submitted_at).not.toBeNull();
+    } finally {
+      await deactivateContinuityMode(db, { actorEmail: actor });
+    }
   });
 
   it('is invited to, on the screen that comes right after «پرداخت کردم»', async () => {

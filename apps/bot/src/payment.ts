@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { MIRZABOT_SOURCE, RECEIPT_FILE_ID, storedReceipt } from '@shikoo/contracts';
 import type { D1DatabaseSession } from '@shikoo/database';
+import { fulfilMirzabotClaimWithoutPayment, readContinuityMode } from '@shikoo/domain';
 
 export interface CheckoutPayment {
   publicId: string;
@@ -327,6 +328,7 @@ export async function recordPaidClick(
     .bind(payment.id)
     .run();
 
+  const claimId = randomUUID();
   const inserted = await tx
     .prepare(
       `INSERT INTO payment_claims
@@ -337,7 +339,7 @@ export async function recordPaidClick(
        ON CONFLICT (external_order_id) DO NOTHING`,
     )
     .bind(
-      randomUUID(),
+      claimId,
       `shikoo:${payment.public_id}`,
       String(telegramId),
       payment.amount_irr,
@@ -348,6 +350,38 @@ export async function recordPaidClick(
       JSON.stringify({ telegramUserId: String(telegramId), bot: 'shikoo' }),
     )
     .run();
+
+  if (inserted.meta.changes === 1) {
+    /*
+     * The current bot opens its claim directly in Postgres. Continuity used to
+     * be wired only to the legacy PHP bot's HTTP ingest path, so this exact
+     * claim never crossed the code that read the switch: the panel said the
+     * mode was on while every current-bot purchase remained PENDING.
+     *
+     * Read and fulfil inside this same transaction. That makes "new while the
+     * mode is on" literal — an old claim cannot be swept retroactively — and a
+     * failure rolls the click and its Telegram update back together rather
+     * than acknowledging a customer the mode silently skipped.
+     *
+     * No legacy webhook is enqueued here. The current bot shares this database
+     * and `settleVerifiedPayments` derives its work from
+     * FULFILLED_UNRECONCILED on every poll cycle.
+     */
+    const mode = await readContinuityMode(tx, now);
+    if (mode.mode === 'CONTINUITY') {
+      const fulfilled = await fulfilMirzabotClaimWithoutPayment(tx, {
+        claimId,
+        actorEmail: mode.activatedBy ?? 'continuity',
+        actorRole: 'SYSTEM',
+        reason: mode.reason ?? 'continuity mode',
+        mode: 'CONTINUITY',
+        now,
+      });
+      if (!fulfilled.ok) {
+        throw new Error(`continuity fulfil failed: ${fulfilled.error}`);
+      }
+    }
+  }
 
   return inserted.meta.changes === 0
     ? { outcome: 'already', publicId: payment.public_id }
@@ -375,7 +409,9 @@ export type ReceiptResult =
  *
  * The claim keeps the handle, never the picture. Nothing is downloaded, so a
  * receipt costs no storage and no egress, and the admin sees the original
- * rather than a copy of one.
+ * rather than a copy of one. A Continuity claim still accepts that evidence
+ * after the order has moved: it was delivered, but it remains unreconciled and
+ * the receipt is exactly what the later review needs.
  *
  * `receipt_submitted_at` is stamped ONCE. It is the anchor for the ten minutes
  * the matcher will keep waiting for a bank SMS before it gives up, and a
@@ -402,7 +438,9 @@ export async function recordReceipt(
       `SELECT c.id, c.status, p.public_id
          FROM payments p
          JOIN payment_claims c ON c.external_order_id = 'shikoo:' || p.public_id
-        WHERE p.user_id = ?1 AND p.status = 'AWAITING_REVIEW'
+        WHERE p.user_id = ?1
+          AND (p.status = 'AWAITING_REVIEW'
+               OR (p.status = 'PAID' AND c.status = 'FULFILLED_UNRECONCILED'))
         ORDER BY p.updated_at DESC, p.id DESC
         LIMIT 1`,
     )
@@ -413,14 +451,16 @@ export async function recordReceipt(
   // The status is checked in the statement, not above it. A claim verified
   // between the read and the write must not take a receipt: the money is
   // settled, the row is history, and quietly stamping it would make the audit
-  // trail disagree with what happened.
+  // trail disagree with what happened. FULFILLED_UNRECONCILED is deliberately
+  // different: the product moved but the evidence question is still open.
   const updated = await tx
     .prepare(
       `UPDATE payment_claims
           SET receipt_url_or_r2_key = ?2,
               receipt_submitted_at  = COALESCE(receipt_submitted_at, ?3),
               updated_at            = ?3
-        WHERE id = ?1 AND status IN ('PENDING', 'MATCH_SUGGESTED')
+        WHERE id = ?1
+          AND status IN ('PENDING', 'MATCH_SUGGESTED', 'FULFILLED_UNRECONCILED')
       RETURNING receipt_submitted_at`,
     )
     .bind(claim.id, stored, now)

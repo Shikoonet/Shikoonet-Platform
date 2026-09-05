@@ -82,7 +82,15 @@ function waitingAnchorMs(claim: MirzabotClaimCandidate): number {
 const TERMINAL_CLAIM_STATUSES = new Set(['VERIFIED', 'REJECTED', 'FAKE_RECEIPT', 'EXPIRED']);
 
 function isEligibleClaimStatus(status: string): boolean {
-  return status === 'PENDING' || status === 'MATCH_SUGGESTED';
+  // A Continuity/manual fulfilment is deliberately still live: the product
+  // moved, but the bank evidence has not arrived yet. Letting the exact-match
+  // engine see it is what eventually closes the reconciliation queue. The
+  // verifier knows this status is reconciliation and does not deliver twice.
+  return (
+    status === 'PENDING' ||
+    status === 'MATCH_SUGGESTED' ||
+    status === 'FULFILLED_UNRECONCILED'
+  );
 }
 
 /**
