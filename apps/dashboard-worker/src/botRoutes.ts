@@ -101,7 +101,7 @@ async function verifyBotToken(token: string): Promise<BotIdentity | null> {
 
 export function registerBotRoutes(
   app: Hono<{
-    Bindings: { DB: D1Database; ENV_NAME?: EnvName; TELEGRAM_BOT_TOKEN?: string };
+    Bindings: { DB: D1Database; ENV_NAME: EnvName; TELEGRAM_BOT_TOKEN?: string };
     Variables: { identity: Ident };
   }>,
 ) {
@@ -113,7 +113,7 @@ export function registerBotRoutes(
    * they are looking at. Nothing here is a secret — the token is not in it.
    */
   app.get('/api/v1/admin/bot', async (c) => {
-    const envName = c.env.ENV_NAME ?? 'local';
+    const envName = c.env.ENV_NAME;
     const stored = await readBotCredential(c.env.DB, envName);
     // What the RUNNING bot said about itself at its last boot. Written by
     // `server.ts` from `getMe`, and until now read by nobody — so the panel
@@ -246,7 +246,7 @@ export function registerBotRoutes(
       return c.json({ ok: false, error: 'identity_mismatch' }, 502);
     }
 
-    const envName = c.env.ENV_NAME ?? 'local';
+    const envName = c.env.ENV_NAME;
     const before = await readBotCredential(c.env.DB, envName);
 
     await c.env.DB.prepare(
