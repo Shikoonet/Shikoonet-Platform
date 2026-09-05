@@ -266,14 +266,17 @@ describe('filling the shelf', () => {
     // Shelved, `username / password` sorts lowest and is therefore the FIRST
     // row handed to a paying customer.
     const acct = await accountPlan('hdr');
+    // Opening blank line on purpose: the header is then not line 1, and a check
+    // written against the line NUMBER rather than the first line with anything
+    // on it would wave it straight through.
     const res = await post('/api/v1/admin/stock/bulk', {
       planId: acct,
-      text: `username,password\n${PREFIX}real@mail.test,realpw`,
+      text: `\n\nusername,password\n${PREFIX}real@mail.test,realpw`,
     });
     const body = (await res.json()) as { added: number; skipped: { line: number }[] };
 
     expect(body.added).toBe(1);
-    expect(body.skipped.map((s) => s.line)).toEqual([1]);
+    expect(body.skipped.map((s) => s.line)).toEqual([3]);
     const row = await baseEnv.DB.prepare(
       `SELECT COUNT(*)::int AS n FROM provisioning_stock WHERE remote_username = 'username'`,
     ).first<{ n: number }>();

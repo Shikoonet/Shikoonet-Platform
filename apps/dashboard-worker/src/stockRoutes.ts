@@ -370,11 +370,17 @@ export function registerStockRoutes(
     }
 
     let added = 0;
+    let seenAContentLine = false;
     const skipped: { line: number; username?: string; reason: string }[] = [];
     for (let i = 0; i < lines.length; i++) {
       const line = (lines[i] ?? '').trim();
       if (line === '') continue;
       const at = i + 1;
+      // The FIRST line with anything on it, not line 1: a file that opens with
+      // a blank line would otherwise carry its header straight past the check
+      // below and onto the shelf.
+      const isFirstContentLine = !seenAContentLine;
+      seenAContentLine = true;
 
       const sep = /[\t,]/.exec(line);
       if (!sep) {
@@ -390,7 +396,7 @@ export function registerStockRoutes(
       // A spreadsheet export starts with its column names, and shelved as an
       // account that row sorts lowest — so «username / password» would be the
       // first thing sold to a real customer.
-      if (at === 1 && looksLikeHeader(username, credential)) {
+      if (isFirstContentLine && looksLikeHeader(username, credential)) {
         skipped.push({ line: at, reason: 'سطر عنوان فایل است، نه یک اکانت' });
         continue;
       }
