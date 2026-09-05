@@ -360,10 +360,7 @@ export function emojiHomeMenu(buttons: { label: string; slot: number }[]): Inlin
   return rows;
 }
 
-/**
- * The answer to «افزودن» pressed from the button LIST, where there is no button
- * to go back to — so it says what happened and shows the list again.
- */
+/** The answer to an old, button-less «افزودن» callback still in chat history. */
 export function emojiAdded(added: number, total: number): string {
   return [
     added === 0 ? '↩️ این ایموجی را از قبل داشتم.' : `✅ ${added} ایموجی تازه ذخیره شد.`,
@@ -374,61 +371,32 @@ export function emojiAdded(added: number, total: number): string {
 }
 
 /**
- * One button's screen: press an emoji and it is on there.
+ * The one-step prompt after an admin chooses a button.
  *
- * `added` is what the bot has just taken off a message. It is said out loud
- * because the alternative was the report that produced this line: an admin sent
- * an emoji, landed back on this screen, and had no way to tell whether it had
- * been stored, ignored, or was somewhere further down the grid.
+ * There used to be a stored-emoji grid here. A new emoji took three more
+ * actions: «افزودن», send, then pick the same emoji from the grid. The
+ * selected button now travels in the session instead, so the message itself is
+ * both the emoji being added and the choice being assigned.
  */
-export function emojiForButton(
-  label: string,
-  count: number,
-  state: { placed?: boolean; added?: number } = {},
-): string {
-  const head =
-    state.added !== undefined
-      ? state.added === 0
-        ? '↩️ این ایموجی را از قبل داشتم — اولین کاشی زیر، همان است.'
-        : `✅ ${state.added} ایموجی تازه ذخیره شد — اولین کاشی(های) زیر، همان‌هاست.`
-      : state.placed
-        ? '✅ عوض شد.'
-        : `دکمهٔ «${stripCustomEmoji(label).trim()}»`;
+export function askPremiumEmoji(label: string): string {
   return [
-    head,
+    `✋ یک ایموجی پریمیوم برای «${stripCustomEmoji(label).trim()}» همین‌جا بفرست.`,
     '',
-    count === 0
-      ? 'هنوز ایموجی‌ای ندارم. «➕ افزودن ایموجی» را بزن.'
-      : 'یکی از ایموجی‌های زیر را بزن تا همان لحظه جایگزین شود. تازه‌ترین‌ها اول‌اند.',
+    'فقط یک ایموجی بفرست. به‌محض ارسال، ذخیره می‌شود و مستقیماً روی همین دکمه می‌نشیند.',
+    'ایموجی پریمیوم قبلی دکمه حذف می‌شود؛ فقط ایموجی جدید می‌ماند.',
     '',
-    // The condition is Telegram's own, quoted from the Bot API's description of
-    // `icon_custom_emoji_id`, because an operator staring at plain glyphs
-    // deserves the actual rule rather than «it did not work».
-    'اگر کاشی‌ها ایموجی سادهٔ معمولی‌اند و نه پریمیوم: تلگرام این را فقط از رباتی می‌پذیرد',
+    'تلگرام این آیکن را فقط از رباتی می‌پذیرد',
     'که یا روی Fragment یوزرنیم خریده باشد، یا صاحبش اشتراک Premium داشته باشد.',
-    'تا آن نباشد، هیچ تنظیمی این‌جا درستش نمی‌کند.',
   ].join('\n');
 }
 
-export function emojiForButtonMenu(
-  slot: number,
-  items: { id: number; customEmojiId: string; fallbackEmoji: string }[],
-): InlineKeyboard {
-  const rows: InlineKeyboard = [];
-  for (let i = 0; i < items.length; i += 4) {
-    rows.push(
-      items.slice(i, i + 4).map((e) => ({
-        // The tag, so the button draws the emoji itself. This grid is the proof
-        // as much as the picker: an emoji that comes back drawn is one this bot
-        // can send.
-        text: `<tg-emoji emoji-id="${e.customEmojiId}">${e.fallbackEmoji}</tg-emoji>`,
-        callback_data: encode('emjb', slot, e.id),
-      })),
-    );
-  }
-  rows.push([{ text: '➕ افزودن ایموجی', callback_data: encode('emja', slot) }]);
-  rows.push([{ text: '↩️ دکمهٔ دیگر', callback_data: encode('emj') }]);
-  return rows;
+export function emojiChanged(label: string): string {
+  return [
+    `✅ ایموجی پریمیوم «${stripCustomEmoji(label).trim()}» تغییر کرد.`,
+    '',
+    'ایموجی قبلی، اگر وجود داشت، حذف شد و فقط ایموجی جدید روی دکمه ماند.',
+    'برای تغییر دکمهٔ دیگر، آن را از فهرست زیر انتخاب کن.',
+  ].join('\n');
 }
 
 export const ASK_PREMIUM_EMOJI = [
@@ -444,6 +412,12 @@ export const EMOJI_NONE_FOUND = [
   '❌ در آن پیام ایموجی پریمیومی نبود.',
   '',
   'ایموجی معمولی شناسه ندارد و روی دکمه نمی‌نشیند. باید از ایموجی‌های پریمیوم خودت باشد.',
+].join('\n');
+
+export const EMOJI_ONE_REQUIRED = [
+  '❌ فقط یک ایموجی پریمیوم بفرست.',
+  '',
+  'پیامت چند ایموجی داشت. برای اینکه دقیقاً مشخص باشد کدام آیکن روی دکمه بنشیند، یکی را جداگانه بفرست.',
 ].join('\n');
 
 export function emojiTooLong(label: string): string {
