@@ -1843,6 +1843,34 @@ export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) =
   const [deleting, setDeleting] = useState<PanelItem | null>(null);
   const aw = useAdminWriteProps();
 
+  /**
+   * A fresh `key` for the dialog on every OPENING — not per panel id.
+   *
+   * `<PanelModal panel={editing}>` had no key at all, so opening panel B over
+   * an open panel A kept the same component instance. Every field is seeded by
+   * `useState(panel?.name ?? '')` and a `useState` initialiser runs once per
+   * mount, so the form went on showing A's values while «ذخیره» saved against
+   * B's id — A's name and renew mode written onto B, answered with «ذخیره شد.».
+   *
+   * `key={editing?.id ?? 'new'}` is the obvious repair and it breaks the other
+   * half of this screen: creating deliberately keeps this dialog open as the
+   * editor for the panel just made (`onSaved` below), so that key changes from
+   * `'new'` to an id mid-flow, remounts, and throws away the status note saying
+   * whether the new panel came up ACTIVE. That note is computed from the
+   * create response and never fetched again, so it is gone for good. Proved,
+   * not assumed: the id-based key was written first and turned the second test
+   * in `panel-modal-identity.test.tsx` red.
+   *
+   * A counter says what is actually meant — «the operator asked for a dialog» —
+   * and the two open buttons are the only things that bump it.
+   */
+  const [openedAs, setOpenedAs] = useState(0);
+  function openEditor(p: PanelItem | null) {
+    setEditing(p);
+    setCreating(p === null);
+    setOpenedAs((n) => n + 1);
+  }
+
   async function load() {
     setLoading(true);
     setErr(null);
@@ -1934,7 +1962,7 @@ export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) =
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => setCreating(true)}
+            onClick={() => openEditor(null)}
             {...aw}
           >
             افزودن پنل جدید +
@@ -1954,7 +1982,7 @@ export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) =
               key={p.id}
               panel={p}
               busy={busy}
-              onEdit={() => setEditing(p)}
+              onEdit={() => openEditor(p)}
               onDelete={() => setDeleting(p)}
               onToggle={() => void toggleStatus(p)}
               onShowProducts={(id) => onGo('products', `?providerId=${id}`)}
@@ -2014,7 +2042,7 @@ export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) =
                       <button
                         type="button"
                         className="btn btn-sm"
-                        onClick={() => setEditing(p)}
+                        onClick={() => openEditor(p)}
                         {...aw}
                       >
                         ویرایش
@@ -2038,6 +2066,7 @@ export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) =
 
       {(creating || editing !== null) && (
         <PanelModal
+          key={openedAs}
           panel={editing}
           onClose={() => {
             setCreating(false);
