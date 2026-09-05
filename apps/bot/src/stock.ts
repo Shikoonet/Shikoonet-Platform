@@ -169,8 +169,10 @@ export async function deliverFromStock(
         providerName?.name ?? row.provider_name ?? 'panel',
         row.plan_name ?? row.product_name ?? 'plan',
         row.total_irr,
-        // The secret rides along in remote_ref so support can find it months
-        // later. It is delivered in the Telegram message and never logged.
+        // The secret rides along in remote_ref. Kept because the message is the
+        // only other copy the customer has and a message can be lost — but no
+        // screen renders it today, so reading it back is a query somebody runs
+        // by hand. Never logged.
         JSON.stringify({
           ...(stock.remote_ref ?? {}),
           ...(stock.secret === null ? {} : { secret: stock.secret }),

@@ -1729,7 +1729,11 @@ function NewServiceCard({
     setBusy(true);
     setErr(null);
 
-    let chosen: number | null = groupId === '' ? null : Number(groupId);
+    // Read from the panel that is selected NOW. The picker keeps whatever was
+    // chosen for a previous panel, so an operator who picks a VPN panel, takes
+    // group 5, then switches to an account panel would otherwise file the new
+    // service against a group belonging to the old one.
+    let chosen: number | null = !panelHasGroups || groupId === '' ? null : Number(groupId);
     let madeGroup: string | null = null;
     if (mode === 'new' && panelHasGroups) {
       if (groupName.trim() === '') {

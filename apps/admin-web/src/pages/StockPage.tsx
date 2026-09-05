@@ -615,7 +615,17 @@ function BulkStockForm({
             accept=".csv,.txt,text/csv,text/plain"
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) void f.text().then(setText);
+              // Refused here rather than by the server, which would answer a
+              // 400 about a body length nobody chose. 200k is the route's cap.
+              if (f && f.size > 200_000) {
+                setErr('فایل بزرگ‌تر از ۲۰۰ کیلوبایت است — تکه‌تکه‌اش کن.');
+              } else if (f) {
+                setErr(null);
+                void f
+                  .text()
+                  .then(setText)
+                  .catch(() => setErr('فایل خوانده نشد.'));
+              }
               // Same file twice must fire onChange again.
               e.target.value = '';
             }}

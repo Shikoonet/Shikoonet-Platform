@@ -67,6 +67,35 @@ async function makeCatalogue(): Promise<Fixture> {
   return { panelA, panelB, planA: await plan('a', panelA), planB: await plan('b', panelB) };
 }
 
+/**
+ * A plan on a panel with no automated adapter — the shape an account shelf
+ * needs. `makeCatalogue` builds 'pasarguard' panels, which sell configs.
+ */
+async function accountPlan(label: string): Promise<number> {
+  const panel = await baseEnv.DB.prepare(
+    `INSERT INTO provisioning_providers (code, name, kind, status)
+     VALUES (?1, 'پنل اکانت', 'ai_account', 'ACTIVE')
+     ON CONFLICT (code) DO UPDATE SET kind = 'ai_account' RETURNING id`,
+  )
+    .bind(`${PREFIX}acct-${label}`)
+    .first<{ id: number }>();
+  const product = await baseEnv.DB.prepare(
+    `INSERT INTO products (code, name, kind, provider_id, category_id, status)
+     VALUES (?1, 'اکانت', 'ai_account', ?2,
+             (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE')
+     RETURNING id`,
+  )
+    .bind(`${PREFIX}acct-p-${label}`, Number(panel!.id))
+    .first<{ id: number }>();
+  const plan = await baseEnv.DB.prepare(
+    `INSERT INTO product_plans (product_id, name, price_irr, duration_days, status)
+     VALUES (?1, 'یک‌ماهه', 9000000, 30, 'ACTIVE') RETURNING id`,
+  )
+    .bind(Number(product!.id))
+    .first<{ id: number }>();
+  return Number(plan!.id);
+}
+
 const post = (path: string, body: unknown, email = ADMIN) =>
   app.request(
     path,
@@ -185,6 +214,8 @@ describe('filling the shelf', () => {
   });
 
   it('fills a shelf from a pasted export, one verdict per line', async () => {
+    // An account shelf: passwords only make sense where no panel provisions.
+    const acct = await accountPlan('mixed');
     const text = [
       `${PREFIX}bulk@mail.test,bulk-pw-1`, // an account — email username, comma
       `${PREFIX}bulkurl\thttps://panel.invalid/sub/${PREFIX}bulkurl`, // a link — tab
@@ -194,7 +225,7 @@ describe('filling the shelf', () => {
       '', // blank lines are not verdicts
     ].join('\n');
 
-    const res = await post('/api/v1/admin/stock/bulk', { planId: fx.planA, text });
+    const res = await post('/api/v1/admin/stock/bulk', { planId: acct, text });
     expect(res.status).toBe(200);
     const raw = await res.text();
     const body = JSON.parse(raw) as {
@@ -223,13 +254,69 @@ describe('filling the shelf', () => {
       remote_username: `${PREFIX}bulk@mail.test`,
       subscription_url: null,
       secret: 'bulk-pw-1',
-      provider_id: fx.panelA,
     });
     expect(rows.results![1]).toMatchObject({
       remote_username: `${PREFIX}bulkurl`,
       subscription_url: `https://panel.invalid/sub/${PREFIX}bulkurl`,
       secret: null,
     });
+  });
+
+  it('refuses the spreadsheet header instead of selling it as an account', async () => {
+    // Shelved, `username / password` sorts lowest and is therefore the FIRST
+    // row handed to a paying customer.
+    const acct = await accountPlan('hdr');
+    const res = await post('/api/v1/admin/stock/bulk', {
+      planId: acct,
+      text: `username,password\n${PREFIX}real@mail.test,realpw`,
+    });
+    const body = (await res.json()) as { added: number; skipped: { line: number }[] };
+
+    expect(body.added).toBe(1);
+    expect(body.skipped.map((s) => s.line)).toEqual([1]);
+    const row = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM provisioning_stock WHERE remote_username = 'username'`,
+    ).first<{ n: number }>();
+    expect(row!.n).toBe(0);
+  });
+
+  it('strips the quotes a spreadsheet puts round a field', async () => {
+    const acct = await accountPlan('quo');
+    const res = await post('/api/v1/admin/stock/bulk', {
+      planId: acct,
+      text: `"${PREFIX}quoted@mail.test","pa,ss word"`,
+    });
+    expect(((await res.json()) as { added: number }).added).toBe(1);
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT remote_username, secret FROM provisioning_stock WHERE remote_username LIKE ?1`,
+    )
+      .bind(`${PREFIX}quoted%`)
+      .first<{ remote_username: string; secret: string }>();
+    // The quotes are gone from both, and the comma inside the password stayed:
+    // everything after the FIRST separator is the credential.
+    expect(row!.remote_username).toBe(`${PREFIX}quoted@mail.test`);
+    expect(row!.secret).toBe('pa,ss word');
+  });
+
+  it('will not shelve a password for a plan whose panel provisions itself', async () => {
+    // fx.planA is on a 'pasarguard' panel. A password there is an account on a
+    // server that never heard of it.
+    const res = await post('/api/v1/admin/stock/bulk', {
+      planId: fx.planA,
+      text: `${PREFIX}nopw@mail.test,secret123`,
+    });
+    const body = (await res.json()) as { added: number; skipped: { reason: string }[] };
+
+    expect(body.added).toBe(0);
+    expect(body.skipped).toHaveLength(1);
+    expect(body.skipped[0]!.reason).toContain('پنل خودکار');
+    // And a link for the same plan is still accepted.
+    const ok = await post('/api/v1/admin/stock/bulk', {
+      planId: fx.planA,
+      text: `${PREFIX}withurl,https://panel.invalid/sub/${PREFIX}withurl`,
+    });
+    expect(((await ok.json()) as { added: number }).added).toBe(1);
   });
 
   it('refuses a bulk paste for a plan that does not exist', async () => {
@@ -366,8 +453,9 @@ describe('who sees the accounts', () => {
   });
 
   it('treats a password exactly like the link it replaces', async () => {
+    const acct = await accountPlan('reveal');
     await post('/api/v1/admin/stock/bulk', {
-      planId: fx.planA,
+      planId: acct,
       text: `${PREFIX}pw@mail.test,${PREFIX}pw-value`,
     });
 

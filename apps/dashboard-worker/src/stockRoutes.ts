@@ -57,6 +57,31 @@ const BulkStockBody = z
 /** One shelf-load per request keeps the failure story simple. */
 const BULK_MAX_LINES = 1000;
 
+/**
+ * A pasted field, with the quotes a spreadsheet puts around it removed.
+ *
+ * Not a CSV parser and not trying to be: the format here is one separator per
+ * line and everything after it is the credential, so the only thing quoting
+ * changes is that `"user","pass"` would otherwise be shelved WITH its quotes
+ * and handed to a customer that way. A quote in the middle of a password is
+ * left exactly where it is.
+ */
+function unquote(field: string): string {
+  const v = field.trim();
+  return v.length >= 2 && v.startsWith('"') && v.endsWith('"')
+    ? v.slice(1, -1).replace(/""/g, '"').trim()
+    : v;
+}
+
+/** The column names a spreadsheet export puts on its first line. */
+function looksLikeHeader(username: string, credential: string): boolean {
+  const a = username.toLowerCase();
+  const b = credential.toLowerCase();
+  const names = ['username', 'user', 'email', 'login', 'account', 'نام کاربری', 'یوزرنیم'];
+  const creds = ['password', 'pass', 'secret', 'url', 'link', 'subscription', 'گذرواژه', 'رمز'];
+  return names.includes(a) && creds.some((c) => b === c || b.replace(/[_\s-]/g, '') === c);
+}
+
 const StockQuery = z.object({
   planId: z.coerce.number().int().positive().optional(),
   status: z.enum(['AVAILABLE', 'USED', 'RETIRED']).optional(),
@@ -172,7 +197,11 @@ export function registerStockRoutes(
          JOIN products p ON p.id = pl.product_id
          LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
          LEFT JOIN provisioning_stock st ON st.plan_id = pl.id
-        WHERE pl.status <> 'DISABLED' AND p.status <> 'DISABLED'
+        -- A switched-off plan that still HOLDS stock stays on the list: those
+        -- rows are real inventory and hiding them is how an admin stops seeing
+        -- accounts they have already paid for.
+        WHERE st.id IS NOT NULL
+           OR (pl.status <> 'DISABLED' AND p.status <> 'DISABLED')
         GROUP BY pl.id, pl.name, p.name, pr.kind
         ORDER BY available, pl.name`,
     ).all<{
@@ -313,13 +342,20 @@ export function registerStockRoutes(
     }
 
     const plan = await c.env.DB.prepare(
-      `SELECT pl.id, p.provider_id FROM product_plans pl
+      `SELECT pl.id, p.provider_id, pr.kind AS provider_kind
+         FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
+         LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
         WHERE pl.id = ?1`,
     )
       .bind(body.data.planId)
-      .first<{ id: number; provider_id: number }>();
+      .first<{ id: number; provider_id: number; provider_kind: string | null }>();
     if (!plan) return c.json({ ok: false, error: 'plan_not_found' }, 404);
+    // An account is a username and a password and no panel knows about it. On a
+    // panel that provisions for itself, the shelf holds CONFIGS — a password
+    // row there would be handed to a customer as an account on a server where
+    // it does not exist, and the panel would never have heard of the username.
+    const panelIsAutomated = isAutomated(plan.provider_kind ?? '');
 
     const lines = body.data.text.split(/\r?\n/);
     if (lines.filter((l) => l.trim() !== '').length > BULK_MAX_LINES) {
@@ -345,14 +381,29 @@ export function registerStockRoutes(
         skipped.push({ line: at, reason: 'جداکننده ندارد — «نام‌کاربری,گذرواژه» یا «نام‌کاربری,لینک»' });
         continue;
       }
-      const username = line.slice(0, sep.index).trim();
-      const credential = line.slice(sep.index + 1).trim();
+      const username = unquote(line.slice(0, sep.index));
+      const credential = unquote(line.slice(sep.index + 1));
       if (username === '' || credential === '') {
         skipped.push({ line: at, reason: 'نام کاربری یا اعتبارنامه خالی است' });
         continue;
       }
+      // A spreadsheet export starts with its column names, and shelved as an
+      // account that row sorts lowest — so «username / password» would be the
+      // first thing sold to a real customer.
+      if (at === 1 && looksLikeHeader(username, credential)) {
+        skipped.push({ line: at, reason: 'سطر عنوان فایل است، نه یک اکانت' });
+        continue;
+      }
 
       const isUrl = /^https?:\/\//i.test(credential);
+      if (!isUrl && panelIsAutomated) {
+        skipped.push({
+          line: at,
+          username,
+          reason: 'این محصول روی پنل خودکار است — قفسه‌اش لینک اشتراک می‌گیرد، نه گذرواژه.',
+        });
+        continue;
+      }
       if (isUrl) {
         // A link is sold onto a panel; the username must survive that panel.
         const nameProblem = checkRemoteUsername(username);
@@ -375,21 +426,34 @@ export function registerStockRoutes(
         }
       }
 
-      const row = await c.env.DB.prepare(
-        `INSERT INTO provisioning_stock
-           (plan_id, provider_id, remote_username, subscription_url, secret, status)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'AVAILABLE')
-         ON CONFLICT DO NOTHING
-         RETURNING id`,
-      )
-        .bind(
-          plan.id,
-          plan.provider_id,
-          username,
-          isUrl ? credential : null,
-          isUrl ? null : credential,
+      // Caught per line rather than left to escape. Escaping, the handler
+      // answers 500 with rows already committed and no audit row: the admin is
+      // told nothing was added while some of it was, and the only way to find
+      // out is to count the shelf by hand.
+      let row: { id: number } | null = null;
+      try {
+        row = await c.env.DB.prepare(
+          `INSERT INTO provisioning_stock
+             (plan_id, provider_id, remote_username, subscription_url, secret, status)
+           VALUES (?1, ?2, ?3, ?4, ?5, 'AVAILABLE')
+           ON CONFLICT DO NOTHING
+           RETURNING id`,
         )
-        .first<{ id: number }>();
+          .bind(
+            plan.id,
+            plan.provider_id,
+            username,
+            isUrl ? credential : null,
+            isUrl ? null : credential,
+          )
+          .first<{ id: number }>();
+      } catch {
+        // The driver attaches the failing statement to its error and the
+        // statement carries the credential, so the reason is written here
+        // rather than taken from the error.
+        skipped.push({ line: at, username, reason: 'دیتابیس این سطر را نپذیرفت' });
+        continue;
+      }
       if (!row) {
         skipped.push({ line: at, username, reason: 'از قبل روی همین پنل در قفسه است' });
         continue;
