@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import type { Cache } from './query.js';
+import type { Cache, QueryStatus } from './query.js';
 import { QK } from './queries.js';
 import { formatTomanFromIrr, formatTimeSeconds } from './format.js';
 import { count } from '../format.js';
@@ -54,6 +54,7 @@ import {
   ALL_TAB_STATES,
   bankName,
   defaultCandidateId,
+  formatExactDateTime,
   formatRelativeFuture,
   formatTimeAgo,
   formatToman,
@@ -217,6 +218,8 @@ export function PaymentsView({ cache }: { cache: Cache }) {
   const isWide = useMediaQuery('(min-width: 1200px)');
   const [rangeState, setRangeState] = useState<HistoryRangeState>(defaultHistoryRangeState());
   const [page, setPage] = useState(1);
+  const [continuityPendingPage, setContinuityPendingPage] = useState(1);
+  const [continuityHistoryPage, setContinuityHistoryPage] = useState(1);
   const [filters, setFilters] = useState<Filters>(() => parseFiltersFromLocation());
   // DEV-only: filters specific to the Bot Auto Verified tab.
   const botAutoFilter = useBotAutoVerifiedFilter();
@@ -269,12 +272,26 @@ export function PaymentsView({ cache }: { cache: Cache }) {
    */
   useEffect(() => {
     setPage(1);
+    setContinuityPendingPage(1);
+    setContinuityHistoryPage(1);
   }, [baseQuery]);
   useEffect(() => {
     syncFiltersToLocation(filters);
   }, [filters]);
-  const query = page > 1 ? `${baseQuery}&page=${page}` : baseQuery;
+  const primaryBaseQuery =
+    tab === 'continuity' ? `${baseQuery}&continuityState=pending` : baseQuery;
+  const primaryPage = tab === 'continuity' ? continuityPendingPage : page;
+  const query = primaryPage > 1 ? `${primaryBaseQuery}&page=${primaryPage}` : primaryBaseQuery;
   const queryKey = QK.payments(query);
+  const continuityHistoryBaseQuery = `${baseQuery}&continuityState=history`;
+  const continuityHistoryQuery =
+    continuityHistoryPage > 1
+      ? `${continuityHistoryBaseQuery}&page=${continuityHistoryPage}`
+      : continuityHistoryBaseQuery;
+  const continuityHistoryKey =
+    tab === 'continuity'
+      ? QK.payments(continuityHistoryQuery)
+      : QK.payments('continuity-history=idle');
   const analyticsQs = new URLSearchParams();
   appendHistoryRangeQuery(analyticsQs, rangeState);
   const analyticsKey = `analytics:${analyticsQs.toString()}`;
@@ -292,14 +309,34 @@ export function PaymentsView({ cache }: { cache: Cache }) {
       return r.json();
     },
   });
+  const {
+    data: continuityHistoryData,
+    status: continuityHistoryStatus,
+    refresh: refreshContinuityHistory,
+  } = cache.useQuery<PaymentsResponse>(
+    continuityHistoryKey,
+    tab === 'continuity'
+      ? {
+          fetcher: async (signal) => {
+            const r = await fetch(`/api/v1/payments?${continuityHistoryQuery}`, { signal });
+            if (!r.ok) throw new Error(`${r.status}`);
+            return r.json();
+          },
+        }
+      : undefined,
+  );
 
   const claimItems = (data?.items ?? []).filter(isPaymentItem);
+  const continuityHistoryItems = (continuityHistoryData?.items ?? []).filter(isPaymentItem);
   const incomeItems = tab === 'income' ? ((data?.items ?? []) as IncomeItem[]) : [];
   const declinedItems =
     tab === 'declined_income' ? ((data?.items ?? []) as DeclinedIncomeItem[]) : [];
   const resellerItems = tab === 'reseller' ? ((data?.items ?? []) as ResellerItem[]) : [];
-  const counts = data?.counts;
-  const inLoadedPage = claimItems.find((i) => i.id === reviewingId) ?? null;
+  const counts = data?.counts ?? continuityHistoryData?.counts;
+  const inLoadedPage =
+    claimItems.find((i) => i.id === reviewingId) ??
+    continuityHistoryItems.find((i) => i.id === reviewingId) ??
+    null;
 
   /**
    * The claim a `?claim=` link points at, when it is not on the page in hand.
@@ -660,7 +697,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
 
             {error && <p className="error">{error}</p>}
             {toast && <p className="toast toast--success">{toast}</p>}
-            {!data && status === 'error' && (
+            {tab !== 'continuity' && !data && status === 'error' && (
               <p className="error">
                 Could not load payments.{' '}
                 <button type="button" className="ghost" onClick={refresh}>
@@ -668,7 +705,9 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 </button>
               </p>
             )}
-            {!data && status !== 'error' && <p className="muted">در حال بارگذاری…</p>}
+            {tab !== 'continuity' && !data && status !== 'error' && (
+              <p className="muted">در حال بارگذاری…</p>
+            )}
             {data &&
               ((tab === 'income' && incomeItems.length === 0) ||
                 (tab === 'declined_income' && declinedItems.length === 0) ||
@@ -677,6 +716,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                 (tab !== 'income' &&
                   tab !== 'declined_income' &&
                   tab !== 'reseller' &&
+                  tab !== 'continuity' &&
                   tab !== 'bot_auto_verified' &&
                   tab !== 'manually_verified' &&
                   claimItems.length === 0)) && (
@@ -838,6 +878,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
             {tab !== 'income' &&
               tab !== 'declined_income' &&
               tab !== 'reseller' &&
+              tab !== 'continuity' &&
               tab !== 'bot_auto_verified' &&
               tab !== 'manually_verified' && (
                 <ul className="hub-list hub-list--table">
@@ -918,12 +959,45 @@ export function PaymentsView({ cache }: { cache: Cache }) {
               </ul>
             )}
 
-            <ClaimPager
-              page={data?.page ?? 1}
-              pageSize={data?.pageSize}
-              total={data?.total}
-              onPage={setPage}
-            />
+            {tab === 'continuity' && (
+              <div className="continuity-claims">
+                <ContinuityClaimsSection
+                  id="continuity-pending"
+                  title="در انتظار تطبیق بانکی"
+                  empty="موردی در انتظار تطبیق بانکی نیست."
+                  items={claimItems}
+                  data={data}
+                  status={status}
+                  onRetry={refresh}
+                  page={continuityPendingPage}
+                  onPage={setContinuityPendingPage}
+                  isNew={isClaimNew}
+                  onOpen={openClaim}
+                />
+                <ContinuityClaimsSection
+                  id="continuity-history"
+                  title="سابقه تطبیق‌شده"
+                  empty="در این بازه سابقه تطبیق‌شده‌ای نیست."
+                  items={continuityHistoryItems}
+                  data={continuityHistoryData}
+                  status={continuityHistoryStatus}
+                  onRetry={refreshContinuityHistory}
+                  page={continuityHistoryPage}
+                  onPage={setContinuityHistoryPage}
+                  isNew={isClaimNew}
+                  onOpen={openClaim}
+                />
+              </div>
+            )}
+
+            {tab !== 'continuity' && (
+              <ClaimPager
+                page={data?.page ?? 1}
+                pageSize={data?.pageSize}
+                total={data?.total}
+                onPage={setPage}
+              />
+            )}
 
             {tab === 'bot_auto_verified' && claimItems.length > 0 && (
               <div className={`bot-verified-layout${isWide ? ' bot-verified-layout--wide' : ''}`}>
@@ -1051,6 +1125,7 @@ function emptyText(tab: PaymentTab): string {
   if (tab === 'declined_income') return 'در این بازه واریزی ردشده‌ای نیست.';
   if (tab === 'waiting') return 'پرداختی در انتظار نیست.';
   if (tab === 'suspected_fake') return 'پرداختی بدون واریزی منطبق نمانده است.';
+  if (tab === 'continuity') return 'در این بازه سفارشی با حالت تداوم تحویل نشده است.';
   if (tab === 'bot_auto_verified') return 'در این بازه پرداختی با تایید خودکار ربات نیست.';
   if (tab === 'manually_verified') return 'در این بازه پرداختی با تایید دستی نیست.';
   if (tab === 'reseller') return 'در این بازه پرداخت نمایندگی نیست.';
@@ -1612,6 +1687,119 @@ function AllRow({ item, onOpen }: { item: PaymentItem; onOpen: () => void }) {
   );
 }
 
+function ContinuityClaimsSection({
+  id,
+  title,
+  empty,
+  items,
+  data,
+  status,
+  onRetry,
+  page,
+  onPage,
+  isNew,
+  onOpen,
+}: {
+  id: string;
+  title: string;
+  empty: string;
+  items: PaymentItem[];
+  data: PaymentsResponse | undefined;
+  status: QueryStatus;
+  onRetry: () => void;
+  page: number;
+  onPage: (next: number) => void;
+  isNew: (item: PaymentItem) => boolean;
+  onOpen: (item: PaymentItem) => void;
+}) {
+  const headingId = `${id}-heading`;
+  return (
+    <section className="continuity-claims__section" aria-labelledby={headingId}>
+      <div className="payment-table-header payment-table-header--split">
+        <h2 id={headingId} className="continuity-claims__heading">
+          {title}
+        </h2>
+        {data?.total !== undefined && (
+          <span className="continuity-claims__total">{count(data.total)} مورد</span>
+        )}
+      </div>
+      {!data && status === 'error' && (
+        <p className="error">
+          بارگذاری این بخش انجام نشد.{' '}
+          <button type="button" className="ghost" onClick={onRetry}>
+            تلاش دوباره
+          </button>
+        </p>
+      )}
+      {!data && status !== 'error' && <p className="muted">در حال بارگذاری…</p>}
+      {data && items.length === 0 && <CompactEmptyState>{empty}</CompactEmptyState>}
+      {items.length > 0 && (
+        <ul className="hub-list hub-list--table">
+          {items.map((item) => (
+            <ContinuityRow
+              key={item.id}
+              item={item}
+              isNew={isNew(item)}
+              onOpen={() => onOpen(item)}
+            />
+          ))}
+        </ul>
+      )}
+      <ClaimPager
+        page={data?.page ?? page}
+        pageSize={data?.pageSize}
+        total={data?.total}
+        onPage={onPage}
+        ariaLabel={`صفحه‌بندی ${title}`}
+      />
+    </section>
+  );
+}
+
+function ContinuityRow({
+  item,
+  isNew,
+  onOpen,
+}: {
+  item: PaymentItem;
+  isNew?: boolean;
+  onOpen: () => void;
+}) {
+  const identity = paymentIdentityLine(item);
+  const masked = maskAccountHint(item.accountHint, item.cardMasked);
+  const reconciled = item.reconciledAt != null;
+
+  return (
+    <li className={`hub-list-row${isNew ? ' hub-list-row--new' : ''}`}>
+      <button type="button" className="hub-list-row__button" onClick={onOpen}>
+        <div className="hub-list-row__line1">
+          <span className="hub-list-row__identity">
+            <NewBadge isNew={isNew} />
+            {identity && <strong>{identity}</strong>}
+            <span className="status-pill status-pill--fulfilled_unreconciled">حالت تداوم</span>
+          </span>
+          <span className="hub-list-row__amount tabular-nums">
+            {formatToman(item.expectedAmountToman)}
+          </span>
+        </div>
+        <div className="hub-list-row__line2 muted">
+          سفارش {item.orderId} · {masked}
+          {item.fulfilledAt != null && <> · تحویل {formatExactDateTime(item.fulfilledAt)}</>}
+        </div>
+        <div className="hub-list-row__line3 payment-reason">
+          <StatusBadge tone={reconciled ? 'verified' : 'review'}>
+            {reconciled ? 'تطبیق‌شده' : 'در انتظار تطبیق'}
+          </StatusBadge>
+          <span className="payment-reason__text">
+            {item.fulfilmentReason ?? 'تحویل خودکار در حالت تداوم'}
+          </span>
+          <ReceiptMark item={item} />
+        </div>
+      </button>
+    </li>
+  );
+}
+
 /**
  * «۲۰۰ از ۵۱۰» — and the two buttons that reach the rest.
  *
@@ -1632,6 +1820,7 @@ function ClaimPager({
   pageSize,
   total,
   onPage,
+  ariaLabel = 'صفحه‌بندی پرداخت‌ها',
 }: {
   page: number;
   // `| undefined` explicitly, not just `?`: `exactOptionalPropertyTypes` is on,
@@ -1640,13 +1829,14 @@ function ClaimPager({
   pageSize: number | undefined;
   total: number | undefined;
   onPage: (next: number) => void;
+  ariaLabel?: string;
 }) {
   if (total === undefined || pageSize === undefined || total <= pageSize) return null;
   const pages = Math.ceil(total / pageSize);
   const first = (page - 1) * pageSize + 1;
   const last = Math.min(page * pageSize, total);
   return (
-    <div className="claim-pager" aria-label="صفحه‌بندی پرداخت‌ها">
+    <div className="claim-pager" aria-label={ariaLabel}>
       <button
         type="button"
         className="ghost"
@@ -1921,6 +2111,28 @@ function ReviewPanel({
           <dd>{stateLabel(item.reviewState)}</dd>
         </dl>
       </section>
+
+      {item.fulfilmentMode === 'CONTINUITY' && (
+        <section className="drawer-section">
+          <h3 className="drawer-section__heading">حالت تداوم</h3>
+          <dl className="payment-review__facts">
+            <dt>نحوه تحویل</dt>
+            <dd>خودکار در حالت تداوم</dd>
+            <dt>زمان تحویل</dt>
+            <dd>{formatExactDateTime(item.fulfilledAt)}</dd>
+            <dt>فعال‌کننده</dt>
+            <dd>{item.fulfilledBy ?? '—'}</dd>
+            <dt>دلیل</dt>
+            <dd>{item.fulfilmentReason ?? '—'}</dd>
+            <dt>وضعیت تطبیق بانکی</dt>
+            <dd>
+              {item.reconciledAt != null
+                ? `تطبیق‌شده در ${formatExactDateTime(item.reconciledAt)}`
+                : 'هنوز تطبیق نشده و نیاز به بازبینی دارد'}
+            </dd>
+          </dl>
+        </section>
+      )}
 
       <ReceiptSection item={item} />
 
