@@ -680,8 +680,39 @@ async function handleReceipt(
   if (user.status === 'BLOCKED' && result.outcome === 'none') return IGNORED;
   const say = (text: string): HandleOutcome => ({
     status: 'processed',
-    replies: [reply(message.chat.id, text)],
+    replies:
+      user.status === 'BLOCKED'
+        ? [reply(message.chat.id, text)]
+        : [
+            // A REAL message carries the one-button home bar. Unlike the
+            // invisible navigation carrier, this receipt acknowledgement has
+            // a reason to stay in the chat and cannot be deleted out from
+            // under Telegram's keyboard state.
+            {
+              chatId: message.chat.id,
+              text,
+              replyKeyboard: menu.homeReplyMenu(),
+            },
+            // Last on purpose. The customer's receipt and its acknowledgement
+            // remain above it; the live app screen is once again the newest
+            // visible bot message instead of the old full reply keyboard seen
+            // in the report.
+            reply(message.chat.id, menu.MENU_TITLE, menu.mainMenu(user)),
+          ],
   });
+  if (user.status !== 'BLOCKED') {
+    // A receipt closes the checkout journey. Reset prompts AND navigation so
+    // the bar installed above says home truthfully rather than retaining a
+    // submenu parent that is no longer on screen.
+    await tx
+      .prepare(
+        `UPDATE bot_sessions
+            SET step = NULL, data = '{}'::jsonb, updated_at = now()
+          WHERE user_id = ?1`,
+      )
+      .bind(user.id)
+      .run();
+  }
   switch (result.outcome) {
     case 'received':
       return say(menu.receiptReceived(result.publicId));

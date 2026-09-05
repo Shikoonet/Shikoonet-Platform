@@ -193,14 +193,12 @@ describe('sendMessage', () => {
     });
   });
 
-  it('replaces the bottom keyboard and removes its invisible carrier message', async () => {
-    const { api, calls } = apiWith((url) =>
-      url.endsWith('/sendMessage') ? ok({ message_id: 771 }) : ok(true),
-    );
+  it('replaces the bottom keyboard without deleting its invisible carrier', async () => {
+    const { api, calls } = apiWith(() => ok({ message_id: 771 }));
 
     await api.replaceReplyKeyboard?.(42, [[{ text: '↩️ برگشت', style: 'primary' }]]);
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       url: expect.stringContaining('/sendMessage'),
       body: {
@@ -213,10 +211,6 @@ describe('sendMessage', () => {
           is_persistent: true,
         },
       },
-    });
-    expect(calls[1]).toMatchObject({
-      url: expect.stringContaining('/deleteMessage'),
-      body: { chat_id: 42, message_id: 771 },
     });
   });
 

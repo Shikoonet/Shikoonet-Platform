@@ -291,14 +291,13 @@ export interface TelegramApi {
     replyKeyboard?: ReplyKeyboard,
   ): Promise<void>;
   /**
-   * Replaces the persistent keyboard under a private chat without leaving a
-   * second navigation message in its history.
+   * Replaces the persistent keyboard under a private chat.
    *
    * Telegram has no standalone "set reply keyboard" method: a keyboard can
-   * only ride on a message. The implementation sends an invisible service
-   * message, then deletes that message after Telegram has installed the
-   * persistent keyboard. Optional so lightweight test/report transports that
-   * never drive customer navigation do not have to pretend to support it.
+   * only ride on a message. The implementation sends an invisible carrier and
+   * deliberately keeps it: deleting that message makes some clients restore
+   * the previous keyboard. Optional so lightweight test/report transports
+   * that never drive customer navigation do not have to support it.
    */
   replaceReplyKeyboard?(chatId: number, keyboard: ReplyKeyboard): Promise<void>;
   /**
@@ -817,9 +816,12 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
 
     async replaceReplyKeyboard(chatId, keyboard) {
       // U+2063 is non-empty to Telegram and invisible to the customer. The
-      // message exists only long enough to carry ReplyKeyboardMarkup; the
-      // keyboard is persistent chat state and survives deletion of its carrier.
-      const result = await call(
+      // carrier stays in history: deleting it can make Telegram Android walk
+      // back to the previous ReplyKeyboardMarkup — which is how an upgraded
+      // customer suddenly got the old full shop keyboard again. `poll.ts`
+      // sends the real screen after this, so the carrier is never the newest
+      // visible message.
+      await call(
         'sendMessage',
         {
           chat_id: chatId,
@@ -829,22 +831,6 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
         },
         15_000,
       );
-      const sent = z.object({ message_id: z.number().int() }).safeParse(result);
-      if (!sent.success) {
-        throw new Error('telegram sendMessage returned no message id for reply keyboard');
-      }
-      try {
-        await call(
-          'deleteMessage',
-          { chat_id: chatId, message_id: sent.data.message_id },
-          10_000,
-        );
-      } catch (err) {
-        // The keyboard is already installed. A carrier Telegram would not
-        // delete is a tidiness failure, not a reason to retry the state change
-        // and send another one beside it.
-        log.warn('telegram.reply_keyboard_carrier_delete_failed', {}, err);
-      }
     },
 
     async deleteMessage(chatId, messageId) {
