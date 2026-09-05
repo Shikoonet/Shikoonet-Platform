@@ -43,17 +43,30 @@ async function paidOrder(
   return { orderId: row!.id, publicId, telegramId, planId: plan };
 }
 
-/** One config on the shelf. Returns its id. */
-async function shelve(plan: number, username: string): Promise<number> {
-  const provider = await providerId('sim-vip');
+/**
+ * One row on the shelf. A config link by default; pass `secret` for an account
+ * (0057), which shelves with no link at all — the pair IS the product.
+ */
+async function shelve(
+  plan: number,
+  username: string,
+  options: { secret?: string; providerCode?: string } = {},
+): Promise<number> {
+  const provider = await providerId(options.providerCode ?? 'sim-vip');
   const row = await db
     .prepare(
       `INSERT INTO provisioning_stock
-         (plan_id, provider_id, remote_username, remote_ref, subscription_url)
-       VALUES (?1, ?2, ?3, '{"kind":"stock"}'::jsonb, ?4)
+         (plan_id, provider_id, remote_username, remote_ref, subscription_url, secret)
+       VALUES (?1, ?2, ?3, '{"kind":"stock"}'::jsonb, ?4, ?5)
        RETURNING id`,
     )
-    .bind(plan, provider, username, `https://panel.test/sub/${username}`)
+    .bind(
+      plan,
+      provider,
+      username,
+      options.secret === undefined ? `https://panel.test/sub/${username}` : null,
+      options.secret ?? null,
+    )
     .first<{ id: number }>();
   return row!.id;
 }
@@ -104,6 +117,12 @@ beforeAll(async () => {
           SET base_url = 'https://panel.test', secret_ref = ?1, kind = 'pasarguard'`,
     )
     .bind(PROVIDER_CODE)
+    .run();
+  // The blanket update above turns every provider into a panel; the account
+  // shop must stay adapterless, or the stock-first tests below would be
+  // testing the outage path instead.
+  await db
+    .prepare(`UPDATE provisioning_providers SET kind = 'manual' WHERE code = 'sim-shop'`)
     .run();
   // Start from an empty shelf: this database is shared and reused.
   await db.prepare(`DELETE FROM provisioning_stock`).run();
@@ -237,5 +256,81 @@ describe('selling from the shelf', () => {
     const plan = await planId('sim-vip-1m-50');
     await shelve(plan, 'stock-duplicate');
     await expect(shelve(plan, 'stock-duplicate')).rejects.toThrow();
+  });
+});
+
+/**
+ * The shelf's second job (0057): for a product with no automated adapter — an
+ * AI account, Spotify, anything sold as a username and password — the shelf is
+ * not the outage fallback, it is the delivery itself. No grace: nothing is
+ * failing, there is no panel that might come back.
+ */
+describe('selling accounts from the shelf', () => {
+  it('hands a shelved account over on the first sweep, password and all', async () => {
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    const stock = await shelve(order.planId, 'stock-acct@mail.test', {
+      secret: 'stock-acct-pw-1',
+      providerCode: 'sim-shop',
+    });
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    expect(await orderStatus(order.orderId)).toBe('COMPLETED');
+    expect(await stockRow(stock)).toMatchObject({ status: 'USED', order_id: order.orderId });
+
+    const subs = await subsFor(order.orderId);
+    expect(subs).toHaveLength(1);
+    expect(subs[0]).toMatchObject({
+      remote_username: 'stock-acct@mail.test',
+      subscription_url: null,
+      note: `from stock #${stock}`,
+    });
+    // The password rides in remote_ref so support can find it months later.
+    const ref = await db
+      .prepare(`SELECT remote_ref->>'secret' AS secret FROM subscriptions WHERE order_id = ?1`)
+      .bind(order.orderId)
+      .first<{ secret: string | null }>();
+    expect(ref?.secret).toBe('stock-acct-pw-1');
+
+    // Both halves of the credential reach the customer — a username without
+    // its password is not a delivery.
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain('stock-acct@mail.test');
+    expect(note?.text).toContain('stock-acct-pw-1');
+
+    // Nothing failed, so nothing was stamped as failing.
+    const failed = await db
+      .prepare(`SELECT provision_first_failed_at FROM orders WHERE id = ?1`)
+      .bind(order.orderId)
+      .first<{ provision_first_failed_at: string | null }>();
+    expect(failed?.provision_first_failed_at).toBeNull();
+  });
+
+  it('falls back to the manual path when the shelf is empty, not a retry loop', async () => {
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    // Exactly what an adapterless product did before the shelf could hold
+    // accounts: sold, completed, and a person finishes it.
+    expect(await orderStatus(order.orderId)).toBe('COMPLETED');
+    const subs = await subsFor(order.orderId);
+    expect(subs).toHaveLength(1);
+    expect(subs[0]!.subscription_url).toBeNull();
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain(order.publicId);
+  });
+
+  it('keeps a config link off the account message path', async () => {
+    // A shelved row for an adapterless product can still carry a link — then it
+    // is delivered as a link, exactly like the outage path would.
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-link', { providerCode: 'sim-shop' });
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    expect(await orderStatus(order.orderId)).toBe('COMPLETED');
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain('https://panel.test/sub/stock-acct-link');
   });
 });
