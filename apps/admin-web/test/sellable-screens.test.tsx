@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { RoleProvider } from '../src/role.js';
 import { ProductsPage } from '../src/pages/ProductsPage.js';
 import { CategoriesPage } from '../src/pages/CategoriesPage.js';
@@ -41,7 +41,13 @@ const FULL: PanelRef = {
   liveSubscriptions: 2,
 };
 
-function plan(id: number, name: string, provider: PanelRef | null, status = 'ACTIVE'): PlanRow {
+function plan(
+  id: number,
+  name: string,
+  provider: PanelRef | null,
+  status = 'ACTIVE',
+  productStatus = 'ACTIVE',
+): PlanRow {
   return {
     id,
     name,
@@ -59,7 +65,7 @@ function plan(id: number, name: string, provider: PanelRef | null, status = 'ACT
       code: `svc-${id}`,
       name: `سرویس ${id}`,
       kind: 'vpn',
-      status: 'ACTIVE',
+      status: productStatus,
       description: null,
       sortOrder: 0,
       categoryId: 1,
@@ -112,6 +118,8 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('«محصولات» says what the shop can do with a row', () => {
+  const onGo = vi.fn();
+
   async function draw(items: PlanRow[], sellableTotal: number) {
     products.mockResolvedValue({
       ok: true,
@@ -124,7 +132,7 @@ describe('«محصولات» says what the shop can do with a row', () => {
     });
     render(
       <RoleProvider role="ADMIN">
-        <ProductsPage onGo={() => {}} />
+        <ProductsPage onGo={onGo} />
       </RoleProvider>,
     );
     await waitFor(() => expect(products).toHaveBeenCalled());
@@ -169,6 +177,36 @@ describe('«محصولات» says what the shop can do with a row', () => {
   it('names both faults when a row has two', async () => {
     await draw([plan(4, 'هم پنهان هم روی پنل مرده', OFF, 'HIDDEN')], 0);
     await waitFor(() => expect(table().getByText(/پنل خاموش · پنهان/)).toBeTruthy());
+  });
+
+  /**
+   * The reason this screen could name and not repair.
+   *
+   * `api.setProductStatus` is called only from «سرویس‌ها», and this screen's own
+   * edit dialog shows «در فروشگاه» already ticked — that field is the CONFIG's
+   * status, and the config really is ACTIVE. So the operator saves, nothing
+   * happens, and the screen has said nothing about why.
+   *
+   * The link is asserted by where it GOES, not by its text: landing on
+   * «سرویس‌ها» with the search box already holding this service's name is what
+   * makes the sentence actionable, and an assertion on the label alone would
+   * pass for a button that went nowhere.
+   */
+  it('offers a way to the screen that owns the service status', async () => {
+    await draw([plan(5, 'کانفیگ زنده', LIVE, 'ACTIVE', 'HIDDEN')], 0);
+    await waitFor(() => expect(table().getByText('سرویس پنهان')).toBeTruthy());
+
+    fireEvent.click(table().getByRole('button', { name: /باز کردن «سرویس 5» در سرویس‌ها/ }));
+    expect(onGo).toHaveBeenCalledWith('catalog', `?q=${encodeURIComponent('سرویس 5')}`);
+  });
+
+  it('does not offer it for a fault that screen cannot fix either', async () => {
+    // A dead panel is «go and switch a panel on», which is «مدیریت پنل‌ها» and
+    // not «سرویس‌ها». A link that appears for every refusal is a link nobody
+    // reads the label of.
+    await draw([plan(6, 'روی پنل مرده', OFF)], 0);
+    await waitFor(() => expect(table().getByText('پنل خاموش')).toBeTruthy());
+    expect(table().queryByRole('button', { name: /در سرویس‌ها/ })).toBeNull();
   });
 });
 
