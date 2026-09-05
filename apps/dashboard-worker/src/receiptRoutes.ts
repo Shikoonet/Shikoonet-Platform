@@ -69,7 +69,7 @@ function contentTypeFor(filePath: string): string | null {
 
 export function registerReceiptRoutes(
   app: Hono<{
-    Bindings: { DB: D1Database; ENV_NAME?: EnvName; TELEGRAM_BOT_TOKEN?: string };
+    Bindings: { DB: D1Database; ENV_NAME: EnvName; TELEGRAM_BOT_TOKEN?: string };
     Variables: { identity: Ident };
   }>,
 ) {
@@ -118,7 +118,7 @@ export function registerReceiptRoutes(
     // and nothing would have said why.
     let token: string | undefined;
     try {
-      token = (await resolveBotToken(c.env.DB, c.env.ENV_NAME ?? 'local', c.env))?.token;
+      token = (await resolveBotToken(c.env.DB, c.env.ENV_NAME, c.env))?.token;
     } catch (err) {
       /*
        * Two different faults arrived here as one word, and the word sent the

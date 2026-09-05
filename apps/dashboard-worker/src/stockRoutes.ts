@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * قفسهٔ انبار — the pre-made configs that keep the shop selling when a panel is
  * unreachable.
@@ -104,7 +105,7 @@ const SELECT_STOCK = `
     LEFT JOIN orders o ON o.id = st.order_id`;
 
 export function registerStockRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   app.get('/api/v1/admin/stock', async (c) => {
     const q = StockQuery.safeParse(Object.fromEntries(new URL(c.req.url).searchParams));
