@@ -42,6 +42,18 @@ function message(e: unknown): string {
 
 const PAGE_SIZE = 50;
 
+/**
+ * What to call a shelf in one line.
+ *
+ * The service names it — «چت‌جی‌پی‌تی پلاس» — and the plan only separates two
+ * shelves of the same service. Named by plan alone, three shelves on three
+ * different services all read «یک‌ماهه», which tells an operator nothing about
+ * which one to go and fill.
+ */
+function shelfLabel(s: ShelfCount): string {
+  return s.productName === s.planName ? s.planName : `${s.productName} — ${s.planName}`;
+}
+
 export function StockPage() {
   const w = useAdminWriteProps();
   const [rows, setRows] = useState<StockRow[]>([]);
@@ -131,8 +143,8 @@ export function StockPage() {
         <div>
           <div className="page-head__title">قفسهٔ انبار</div>
           <div className="page-head__sub">
-            {count(shelves.reduce((n, s) => n + s.available, 0))} کانفیگ آماده روی{' '}
-            {count(shelves.length)} کانفیگ
+            {count(shelves.reduce((n, s) => n + s.available, 0))} اکانت آماده روی{' '}
+            {count(shelves.length)} قفسه
           </div>
         </div>
         <div>
@@ -147,8 +159,9 @@ export function StockPage() {
 
       {empty.length > 0 && (
         <div className="alert alert-error">
-          قفسهٔ این کانفیگ‌ها خالی است: {empty.map((s) => s.planName).join('، ')} — اگر پنل از دسترس
-          خارج شود، فروششان می‌خوابد.
+          این قفسه‌ها خالی‌اند: {empty.map(shelfLabel).join('، ')} — محصولی که از قفسه تحویل
+          می‌شود و قفسه‌اش خالی است، فروخته می‌شود و به دست مشتری نمی‌رسد تا کسی دستی آماده‌اش
+          کند.
         </div>
       )}
 
@@ -160,7 +173,7 @@ export function StockPage() {
           <table className="app-table">
             <thead>
               <tr>
-                <th>کانفیگ</th>
+                <th>قفسه</th>
                 <th>آماده</th>
                 <th>فروخته‌شده</th>
               </tr>
@@ -169,15 +182,17 @@ export function StockPage() {
               {shelves.length === 0 && (
                 <tr>
                   <td className="empty" colSpan={3}>
-                    هنوز هیچ کانفیگی در قفسه نیست.
+                    هنوز هیچ قفسه‌ای نیست — یک سرویس روی پنلی بساز که تحویلش دستی یا از قفسه است.
                   </td>
                 </tr>
               )}
               {shelves.map((s) => (
                 <tr key={s.planId}>
                   <td>
-                    <div>{s.planName}</div>
-                    <div className="page-head__sub">{s.productName}</div>
+                    {/* The service first: it is what names the shelf. The plan
+                        underneath only tells two shelves of one service apart. */}
+                    <div>{s.productName}</div>
+                    <div className="page-head__sub">{s.planName}</div>
                   </td>
                   <td>
                     <span
