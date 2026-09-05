@@ -14,6 +14,7 @@ export function stubApi(overrides: Partial<TelegramApi> = {}): TelegramApi {
     getMe: async () => ({ username: 'Test_Shikoo_bot' }),
     getUpdates: async () => [],
     sendMessage: async () => undefined,
+    replaceReplyKeyboard: async () => undefined,
     sendPhoto: async () => undefined,
     sendPhotoBytes: async () => undefined,
     sendDocument: async () => undefined,

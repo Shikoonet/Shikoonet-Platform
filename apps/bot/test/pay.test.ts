@@ -13,7 +13,6 @@ import { activateContinuityMode, deactivateContinuityMode } from '@shikoo/domain
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import { checkoutFor } from '../src/payment.js';
-import { settleVerifiedPayments } from '../src/settle.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
@@ -298,7 +297,7 @@ describe('"I have paid"', () => {
     expect(payments[0]?.status).toBe('AWAITING_REVIEW');
   });
 
-  it('fulfils a current-bot claim opened while Continuity is on', async () => {
+  it('does not fulfil on «پرداخت کردم», even while Continuity is on', async () => {
     const actor = 'continuity-admin@example.com';
     const reason = 'bank SMS relay is unavailable';
     const activated = await activateContinuityMode(db, {
@@ -321,34 +320,29 @@ describe('"I have paid"', () => {
       const claims = await claimsOf(user);
       expect(claims).toHaveLength(1);
       expect(claims[0]).toMatchObject({
-        status: 'FULFILLED_UNRECONCILED',
-        fulfilment_mode: 'CONTINUITY',
-        fulfilled_by: actor,
-        fulfilment_reason: reason,
+        status: 'PENDING',
+        fulfilment_mode: null,
+        fulfilled_by: null,
+        fulfilment_reason: null,
       });
-      expect(claims[0]?.fulfilled_at).not.toBeNull();
-
-      // This is the delivery boundary for the current bot. Before the fix the
-      // claim stayed PENDING, so the ordinary bot sweep found zero work even
-      // though the panel's switch visibly said Continuity was active.
-      expect(await settleVerifiedPayments(db)).toBe(1);
-      expect((await paymentsOf(user))[0]?.status).toBe('PAID');
+      expect(claims[0]?.fulfilled_at).toBeNull();
+      expect((await paymentsOf(user))[0]?.status).toBe('AWAITING_REVIEW');
       const moved = await db
         .prepare(`SELECT status FROM orders WHERE id = ?1`)
         .bind(order)
         .first<{ status: string }>();
-      expect(moved?.status).toBe('PAID');
+      expect(moved?.status).toBe('AWAITING_PAYMENT');
 
       const audit = await db
         .prepare(
-          `SELECT actor_email, actor_role, reason
+          `SELECT COUNT(*)::int AS n
              FROM audit_logs
             WHERE entity_id = (SELECT id FROM payment_claims WHERE external_order_id = ?1)
               AND action = 'claim.continuity_fulfilled'`,
         )
         .bind(claims[0]!.external_order_id)
-        .first<{ actor_email: string; actor_role: string; reason: string }>();
-      expect(audit).toEqual({ actor_email: actor, actor_role: 'SYSTEM', reason });
+        .first<{ n: number }>();
+      expect(audit?.n).toBe(0);
     } finally {
       await deactivateContinuityMode(db, { actorEmail: actor });
     }
