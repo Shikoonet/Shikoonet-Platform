@@ -159,7 +159,7 @@ describe('a customer sending their receipt', () => {
     expect(row?.receipt_submitted_at).toBeGreaterThanOrEqual(before);
   });
 
-  it('still accepts the receipt after Continuity has released the order', async () => {
+  it('releases a Continuity order only after the receipt arrives', async () => {
     const actor = 'continuity-receipt@example.com';
     await activateContinuityMode(db, {
       actorEmail: actor,
@@ -170,9 +170,10 @@ describe('a customer sending their receipt', () => {
 
     try {
       const sale = await buyAndClaim('sim-gold-10');
-      expect((await claimRow(sale.claimId))?.status).toBe('FULFILLED_UNRECONCILED');
-      expect(await settleVerifiedPayments(db)).toBeGreaterThanOrEqual(1);
-      const payment = await db
+      // «پرداخت کردم» is a claim, not evidence. Continuity must not turn that
+      // button alone into an account.
+      expect((await claimRow(sale.claimId))?.status).toBe('PENDING');
+      const beforeReceipt = await db
         .prepare(
           `SELECT p.status
              FROM payments p
@@ -181,7 +182,7 @@ describe('a customer sending their receipt', () => {
         )
         .bind(sale.claimId)
         .first<{ status: string }>();
-      expect(payment?.status).toBe('PAID');
+      expect(beforeReceipt?.status).toBe('AWAITING_REVIEW');
 
       const out = await handleUpdate(
         db,
@@ -193,6 +194,28 @@ describe('a customer sending their receipt', () => {
       expect(row?.status).toBe('FULFILLED_UNRECONCILED');
       expect(row?.receipt_url_or_r2_key).toBe('continuity-receipt-0001');
       expect(row?.receipt_submitted_at).not.toBeNull();
+
+      expect(await settleVerifiedPayments(db)).toBeGreaterThanOrEqual(1);
+      const afterReceipt = await db
+        .prepare(
+          `SELECT p.status
+             FROM payments p
+             JOIN payment_claims c ON c.external_order_id = 'shikoo:' || p.public_id
+            WHERE c.id = ?1`,
+        )
+        .bind(sale.claimId)
+        .first<{ status: string }>();
+      expect(afterReceipt?.status).toBe('PAID');
+
+      const audit = await db
+        .prepare(
+          `SELECT actor_email, actor_role
+             FROM audit_logs
+            WHERE entity_id = ?1 AND action = 'claim.continuity_fulfilled'`,
+        )
+        .bind(sale.claimId)
+        .first<{ actor_email: string; actor_role: string }>();
+      expect(audit).toEqual({ actor_email: actor, actor_role: 'SYSTEM' });
     } finally {
       await deactivateContinuityMode(db, { actorEmail: actor });
     }

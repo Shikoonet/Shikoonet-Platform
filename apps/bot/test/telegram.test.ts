@@ -179,17 +179,44 @@ describe('sendMessage', () => {
   it('sends the navigation row as a persistent keyboard under the chat', async () => {
     const { api, calls } = apiWith(() => ok(true));
     await api.sendMessage(42, 'سلام', undefined, undefined, [
-      [{ text: '🏠 بازگشت به منوی اصلی' }],
+      [{ text: '🏠 بازگشت به منوی اصلی', style: 'primary' }],
     ]);
 
     expect(calls[0]?.body).toEqual({
       chat_id: 42,
       text: 'سلام',
       reply_markup: {
-        keyboard: [[{ text: '🏠 بازگشت به منوی اصلی' }]],
+        keyboard: [[{ text: '🏠 بازگشت به منوی اصلی', style: 'primary' }]],
         resize_keyboard: true,
         is_persistent: true,
       },
+    });
+  });
+
+  it('replaces the bottom keyboard and removes its invisible carrier message', async () => {
+    const { api, calls } = apiWith((url) =>
+      url.endsWith('/sendMessage') ? ok({ message_id: 771 }) : ok(true),
+    );
+
+    await api.replaceReplyKeyboard?.(42, [[{ text: '↩️ برگشت', style: 'primary' }]]);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      url: expect.stringContaining('/sendMessage'),
+      body: {
+        chat_id: 42,
+        text: '\u2063',
+        disable_notification: true,
+        reply_markup: {
+          keyboard: [[{ text: '↩️ برگشت', style: 'primary' }]],
+          resize_keyboard: true,
+          is_persistent: true,
+        },
+      },
+    });
+    expect(calls[1]).toMatchObject({
+      url: expect.stringContaining('/deleteMessage'),
+      body: { chat_id: 42, message_id: 771 },
     });
   });
 
