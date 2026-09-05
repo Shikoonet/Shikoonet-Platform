@@ -168,6 +168,10 @@ export interface PlanRow {
   sortOrder: number;
   /** Where the admin broke the row on this category's screen; null = unarranged. */
   rowIndex: number | null;
+  /** The words the customer is sent under their service. The plan's own; the
+   *  service's is beneath it, and the bot merges them the same way round. */
+  deliveryNote: string | null;
+  productDeliveryNote: string | null;
   product: {
     id: number;
     code: string;
@@ -233,6 +237,9 @@ export interface ServiceRow {
   groupIds: number[] | null;
   /** Which row of its category's tier screen this service sits on. */
   rowIndex: number | null;
+  /** Sent to the customer under every product this service sells, unless the
+   *  product sets its own. */
+  deliveryNote: string | null;
   panel: PanelRef | null;
   configs: ConfigRow[];
 }
@@ -275,6 +282,10 @@ export interface ProviderOption {
   code: string;
   name: string;
   status: string;
+  /** False for the kinds delivered from the shelf or by hand — they have no
+   *  groups, so a form must not ask for one. Same server-side answer as
+   *  `ServiceRow.panel.hasGroups`. */
+  hasGroups: boolean;
 }
 
 export type CatalogStatus = 'ACTIVE' | 'HIDDEN' | 'DISABLED';
@@ -296,6 +307,8 @@ export interface PlanPatch {
   userLimit?: number | null;
   sortOrder?: number;
   status?: CatalogStatus;
+  /** Sent to the customer under this plan's delivery. Null or '' removes it. */
+  deliveryNote?: string | null;
 }
 
 /**
@@ -315,6 +328,7 @@ export interface PlanCreate {
   userLimit?: number | null;
   sortOrder?: number;
   status?: CatalogStatus;
+  deliveryNote?: string | null;
 }
 
 export interface ProductBody {
@@ -336,6 +350,8 @@ export interface ProductBody {
    * all. Leaving the field out changes nothing.
    */
   groupIds?: number[] | null;
+  /** Sent to the customer under every service this sells. Null or '' removes it. */
+  deliveryNote?: string | null;
 }
 
 export interface CategoryRow {

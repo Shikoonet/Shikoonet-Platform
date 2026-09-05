@@ -118,6 +118,16 @@ const BADGE = z
  */
 const BUTTON_STYLE = z.enum(['primary', 'success', 'danger']).nullable();
 
+/**
+ * The note the customer gets under their service, on a product or on a plan.
+ *
+ * Capped well under Telegram's 4096: this text is APPENDED to a delivery
+ * message that already exists, and `sendMessage` truncates rather than
+ * failing. Refused on the admin's screen beats cut on the customer's — the
+ * same reason `contentRoutes.ts` caps a help article below the hard limit.
+ */
+const DELIVERY_NOTE = z.string().trim().max(1000).nullable();
+
 const PLAN_FIELDS = {
   name: z.string().trim().min(1).max(120),
   badge: BADGE,
@@ -128,6 +138,7 @@ const PLAN_FIELDS = {
   userLimit: z.number().int().positive().max(10_000).nullable(),
   sortOrder: z.number().int().min(0).max(10_000),
   status: z.enum(STATUSES),
+  deliveryNote: DELIVERY_NOTE,
 };
 
 /**
@@ -138,10 +149,18 @@ const PLAN_FIELDS = {
  * REMOVED for null so that "the panel decides" is the absence of the key, which
  * is what `pick()` reads.
  */
-function groupIdsSql(param: number): string {
-  return `attrs = CASE WHEN ?${param}::jsonb IS NULL THEN attrs - 'group_ids'
-                       ELSE COALESCE(attrs, '{}'::jsonb) || jsonb_build_object('group_ids', ?${param}::jsonb)
+function attrsKeySql(key: string, param: number): string {
+  return `attrs = CASE WHEN ?${param}::jsonb IS NULL THEN attrs - '${key}'
+                       ELSE COALESCE(attrs, '{}'::jsonb) || jsonb_build_object('${key}', ?${param}::jsonb)
                   END`;
+}
+
+function groupIdsSql(param: number): string {
+  return attrsKeySql('group_ids', param);
+}
+
+function deliveryNoteSql(param: number): string {
+  return attrsKeySql('delivery_note', param);
 }
 
 const PlanPatch = z
@@ -155,6 +174,7 @@ const PlanPatch = z
     userLimit: PLAN_FIELDS.userLimit.optional(),
     sortOrder: PLAN_FIELDS.sortOrder.optional(),
     status: PLAN_FIELDS.status.optional(),
+    deliveryNote: PLAN_FIELDS.deliveryNote.optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
@@ -177,6 +197,7 @@ const PlanCreate = z
     userLimit: PLAN_FIELDS.userLimit.default(null),
     sortOrder: PLAN_FIELDS.sortOrder.default(0),
     status: PLAN_FIELDS.status.default('ACTIVE'),
+    deliveryNote: PLAN_FIELDS.deliveryNote.default(null),
   })
   .strict();
 
@@ -228,6 +249,7 @@ const PRODUCT_FIELDS = {
    * and by the purchase itself, not here.
    */
   groupIds: z.array(z.number().int().positive().max(1_000_000)).max(50).nullable(),
+  deliveryNote: DELIVERY_NOTE,
 };
 
 const ProductCreate = z
@@ -243,6 +265,7 @@ const ProductCreate = z
     sortOrder: PRODUCT_FIELDS.sortOrder.default(0),
     status: PRODUCT_FIELDS.status.default('ACTIVE'),
     groupIds: PRODUCT_FIELDS.groupIds.default(null),
+    deliveryNote: PRODUCT_FIELDS.deliveryNote.default(null),
   })
   .strict();
 
@@ -259,6 +282,7 @@ const ProductPatch = z
     sortOrder: PRODUCT_FIELDS.sortOrder.optional(),
     status: PRODUCT_FIELDS.status.optional(),
     groupIds: PRODUCT_FIELDS.groupIds.optional(),
+    deliveryNote: PRODUCT_FIELDS.deliveryNote.optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, 'no fields to change');
@@ -364,6 +388,8 @@ interface PlanRow {
   resellers_only: boolean;
   once_per_user: boolean;
   group_ids: number[] | null;
+  delivery_note: string | null;
+  product_delivery_note: string | null;
   provider_id: number | null;
   provider_name: string | null;
   provider_code: string | null;
@@ -394,6 +420,10 @@ function shape(r: PlanRow) {
     // Where the admin broke the row, so the arrangement editor can read back
     // what it saved instead of holding its own copy.
     rowIndex: r.row_index,
+    // What the customer is told under their service. The plan's own, and the
+    // service's beneath it — the bot merges them the same way round.
+    deliveryNote: r.delivery_note,
+    productDeliveryNote: r.product_delivery_note,
     product: {
       id: r.product_id,
       code: r.product_code,
@@ -470,6 +500,7 @@ interface ServiceRow {
   resellers_only: boolean;
   once_per_user: boolean;
   group_ids: number[] | null;
+  delivery_note: string | null;
   row_index: number | null;
   provider_id: number | null;
   provider_name: string | null;
@@ -544,6 +575,9 @@ function shapeService(r: ServiceRow, configs: ConfigRow[]) {
     // Which row of the TIER screen this service sits on — `category:<id>`
     // layout, not the config layout inside it.
     rowIndex: r.row_index,
+    // The words every product under this service is delivered with, unless the
+    // product overrides them.
+    deliveryNote: r.delivery_note,
     panel: r.provider_id
       ? {
           id: r.provider_id,
@@ -658,6 +692,8 @@ const SELECT_PLAN = `
          p.category_id,
          p.resellers_only, p.once_per_user,
          p.attrs->'group_ids' AS group_ids,
+         pl.attrs->>'delivery_note' AS delivery_note,
+         p.attrs->>'delivery_note' AS product_delivery_note,
          pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
          pr.status AS provider_status, pr.kind AS provider_kind,
          ${PANEL_CEILING},
@@ -1007,7 +1043,8 @@ export function registerProductRoutes(
     const services = await c.env.DB.prepare(
       `SELECT p.id, p.code, p.name, p.kind, p.status, p.description, p.sort_order,
               p.category_id, p.resellers_only, p.once_per_user,
-              p.attrs->'group_ids' AS group_ids, p.row_index,
+              p.attrs->'group_ids' AS group_ids, p.attrs->>'delivery_note' AS delivery_note,
+              p.row_index,
               pr.id AS provider_id, pr.name AS provider_name, pr.code AS provider_code,
               pr.status AS provider_status, pr.sort_order AS provider_sort_order,
               pr.kind AS provider_kind,
@@ -1034,8 +1071,8 @@ export function registerProductRoutes(
     const configs = rows.length === 0 ? [] : await configsFor(c.env.DB, rows.map((r) => r.id));
 
     const panels = await c.env.DB.prepare(
-      `SELECT id, code, name, status FROM provisioning_providers ORDER BY sort_order, id`,
-    ).all<{ id: number; code: string; name: string; status: string }>();
+      `SELECT id, code, name, status, kind FROM provisioning_providers ORDER BY sort_order, id`,
+    ).all<{ id: number; code: string; name: string; status: string; kind: string }>();
 
     return c.json({
       ok: true,
@@ -1048,6 +1085,11 @@ export function registerProductRoutes(
         code: p.code,
         name: p.name,
         status: p.status,
+        // The same question the service rows answer, asked of the panel a NEW
+        // service is about to be built on. Without it the create form demanded
+        // a group from an `ai_account` panel, which has none — see
+        // `NewServiceCard.create`.
+        hasGroups: isAutomated(p.kind ?? ''),
       })),
     });
   });
@@ -1090,6 +1132,16 @@ export function registerProductRoutes(
     if (patch.userLimit !== undefined) put('user_limit', patch.userLimit);
     if (patch.sortOrder !== undefined) put('sort_order', patch.sortOrder);
     if (patch.status !== undefined) put('status', patch.status);
+    if (patch.deliveryNote !== undefined) {
+      // Writes into `attrs` rather than a column of its own, and an empty box
+      // removes the key — see `attrsKeySql`.
+      params.push(
+        patch.deliveryNote === null || patch.deliveryNote === ''
+          ? null
+          : JSON.stringify(patch.deliveryNote),
+      );
+      sets.push(deliveryNoteSql(params.length));
+    }
     params.push(id);
 
     await c.env.DB.prepare(
@@ -1595,8 +1647,10 @@ export function registerProductRoutes(
          (code, name, kind, provider_id, category_id, description,
           resellers_only, once_per_user, sort_order, status, attrs)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-               CASE WHEN ?11::jsonb IS NULL THEN '{}'::jsonb
-                    ELSE jsonb_build_object('group_ids', ?11::jsonb) END)
+               (CASE WHEN ?11::jsonb IS NULL THEN '{}'::jsonb
+                     ELSE jsonb_build_object('group_ids', ?11::jsonb) END)
+               || (CASE WHEN ?12::text IS NULL THEN '{}'::jsonb
+                        ELSE jsonb_build_object('delivery_note', ?12::text) END))
        ON CONFLICT (code) DO NOTHING RETURNING id`,
     )
       .bind(
@@ -1611,6 +1665,7 @@ export function registerProductRoutes(
         p.sortOrder,
         p.status,
         p.groupIds === null ? null : JSON.stringify(p.groupIds),
+        p.deliveryNote === null || p.deliveryNote === '' ? null : p.deliveryNote,
       )
       .first<{ id: number }>()
       // A provider or category id that does not exist fails the foreign key.
@@ -1662,7 +1717,8 @@ export function registerProductRoutes(
 
     const SELECT_PRODUCT = `SELECT id, code, name, kind, provider_id, category_id, description,
                                    resellers_only, once_per_user, sort_order, status,
-                                   attrs->'group_ids' AS group_ids
+                                   attrs->'group_ids' AS group_ids,
+                                   attrs->>'delivery_note' AS delivery_note
                               FROM products WHERE id = ?1`;
     const before = await c.env.DB.prepare(SELECT_PRODUCT).bind(id).first<Record<string, unknown>>();
     if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
@@ -1689,6 +1745,16 @@ export function registerProductRoutes(
       // and it reads its parameter twice.
       params.push(patch.groupIds === null ? null : JSON.stringify(patch.groupIds));
       sets.push(groupIdsSql(params.length));
+    }
+    if (patch.deliveryNote !== undefined) {
+      // Same shape as the groups above, and an empty box means «no note» —
+      // the key is removed rather than set to a blank string.
+      params.push(
+        patch.deliveryNote === null || patch.deliveryNote === ''
+          ? null
+          : JSON.stringify(patch.deliveryNote),
+      );
+      sets.push(deliveryNoteSql(params.length));
     }
     params.push(id);
 
@@ -1788,8 +1854,11 @@ export function registerProductRoutes(
     const row = await c.env.DB.prepare(
       `INSERT INTO product_plans
          (product_id, name, badge, button_style, price_irr, duration_days, volume_gb,
-          user_limit, sort_order, status)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) RETURNING id`,
+          user_limit, sort_order, status, attrs)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+               CASE WHEN ?11::text IS NULL THEN '{}'::jsonb
+                    ELSE jsonb_build_object('delivery_note', ?11::text) END)
+       RETURNING id`,
     )
       .bind(
         productId,
@@ -1802,6 +1871,7 @@ export function registerProductRoutes(
         p.userLimit,
         p.sortOrder,
         p.status,
+        p.deliveryNote === null || p.deliveryNote === '' ? null : p.deliveryNote,
       )
       .first<{ id: number }>();
 
