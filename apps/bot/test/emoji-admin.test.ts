@@ -309,9 +309,11 @@ describe('the order the screens ask in', () => {
       label = next!;
     }
 
-    // The shop's own plain emoji survives — it is part of the label the admin
-    // wrote. Only the ones this function put there are replaced.
-    expect(label).toBe('<tg-emoji emoji-id="5411394265924257943">👋</tg-emoji> ♻️ تمدید سرویس');
+    // The ordinary icon that shipped with the button is replaced as well. A
+    // Telegram button has one icon slot, so retaining it would draw an ordinary
+    // emoji beside the new Premium one.
+    expect(label).toBe('<tg-emoji emoji-id="5411394265924257943">👋</tg-emoji> تمدید سرویس');
+    expect(label).not.toContain('♻️');
     expect(label).not.toContain('🔥');
     expect(label).not.toContain('👛');
     expect(label).not.toContain(FIRE_ID);

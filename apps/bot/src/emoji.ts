@@ -163,8 +163,8 @@ export async function emojiById(db: Db, id: number): Promise<StoredEmoji | null>
 }
 
 /**
- * Puts an emoji at the front of one main-menu button's label, and answers with
- * the label as it now reads.
+ * Replaces the icon at the front of one main-menu button's label, and answers
+ * with the label as it now reads.
  *
  * ## The shape is the one the send path can draw
  *
@@ -176,9 +176,10 @@ export async function emojiById(db: Db, id: number): Promise<StoredEmoji | null>
  * ## Replacing rather than stacking
  *
  * `splitCustomEmojiLabel` first, because the leading tag has to go with its
- * fallback glyph and not be replaced by it. A button has ONE icon slot; a
- * second tag would be silently dropped at send time, and the admin would be
- * looking at a label they cannot explain.
+ * fallback glyph and not be replaced by it. Leading ordinary emoji are removed
+ * too: they are the old button icon, not part of its Persian title. Telegram
+ * gives a button ONE icon slot, so keeping the ordinary one would show both the
+ * old glyph and the new Premium icon.
  *
  * This said `stripCustomEmoji` and claimed the same thing, and the claim was
  * false — that call turns the old tag INTO its glyph, so every press left one
@@ -209,7 +210,13 @@ export async function setButtonEmoji(
   //     thing that noticed was the CHECK in 0053 — as an exception thrown out of
   //     an admin's button press, with a constraint name for a message.
   const withEmoji = (source: string): string => {
-    const plain = splitCustomEmojiLabel(source).text.trim();
+    let plain = splitCustomEmojiLabel(source).text.trim();
+    const graphemes = new Intl.Segmenter('fa', { granularity: 'grapheme' });
+    while (plain !== '') {
+      const first = graphemes.segment(plain)[Symbol.iterator]().next().value?.segment;
+      if (first === undefined || !/\p{Extended_Pictographic}/u.test(first)) break;
+      plain = plain.slice(first.length).trimStart();
+    }
     return `<tg-emoji emoji-id="${emoji.customEmojiId}">${emoji.fallbackEmoji}</tg-emoji> ${plain}`;
   };
   // Reject an invalid fallback before materialising a default layout. Length
