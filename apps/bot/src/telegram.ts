@@ -554,7 +554,8 @@ function markup(keyboard: InlineKeyboard | undefined, premium: boolean): Record<
  *
  * `resize_keyboard` keeps the single navigation row compact, and
  * `is_persistent` tells clients that it is part of the bot's navigation rather
- * than a one-time answer keyboard.
+ * than a one-time answer keyboard. `one_time_keyboard: false` repeats that
+ * intent explicitly so clients do not fold the bar after its button is used.
  *
  * Labels go through the same split as inline ones: an admin may have typed a
  * custom emoji into a menu label, and on a button that has to become the icon
@@ -579,6 +580,7 @@ function replyMarkup(keyboard: ReplyKeyboard, premium: boolean): Record<string, 
       ),
       resize_keyboard: true,
       is_persistent: true,
+      one_time_keyboard: false,
     },
   };
 }
