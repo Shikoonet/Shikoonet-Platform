@@ -467,6 +467,8 @@ export interface StockRow {
   /** Null for a sold or retired row, and for anyone who is not an ADMIN: the
    *  link is the credential, and counting the shelf is not being handed it. */
   subscriptionUrl: string | null;
+  /** An account's password, same visibility rule as the link. */
+  secret: string | null;
   status: 'AVAILABLE' | 'USED' | 'RETIRED';
   orderPublicId: string | null;
   note: string | null;
@@ -496,6 +498,12 @@ export interface StockBody {
   remoteUsername: string;
   subscriptionUrl: string;
   note?: string | null;
+}
+
+export interface BulkStockResult {
+  ok: boolean;
+  added: number;
+  skipped: Array<{ line: number; username?: string; reason: string }>;
 }
 
 /**
@@ -1606,6 +1614,13 @@ export const api = {
 
   addStock(body: StockBody) {
     return req<{ ok: boolean; id: number }>('/stock', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  addStockBulk(body: { planId: number; text: string }) {
+    return req<BulkStockResult>('/stock/bulk', {
       method: 'POST',
       body: JSON.stringify(body),
     });

@@ -14,7 +14,14 @@
  */
 
 import { useEffect, useState } from 'react';
-import { api, ApiError, type PlanRow, type ShelfCount, type StockRow } from '../api.js';
+import {
+  api,
+  ApiError,
+  type BulkStockResult,
+  type PlanRow,
+  type ShelfCount,
+  type StockRow,
+} from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -64,6 +71,7 @@ export function StockPage() {
    */
   const [revealed, setRevealed] = useState<ReadonlySet<number>>(() => new Set());
   const [adding, setAdding] = useState(false);
+  const [bulk, setBulk] = useState(false);
 
   async function load() {
     setErr(null);
@@ -127,9 +135,14 @@ export function StockPage() {
             {count(shelves.length)} کانفیگ
           </div>
         </div>
-        <button type="button" className="btn btn-primary" onClick={() => setAdding(true)} {...w}>
-          افزودن کانفیگ
-        </button>
+        <div>
+          <button type="button" className="btn btn-primary" onClick={() => setAdding(true)} {...w}>
+            افزودن کانفیگ
+          </button>{' '}
+          <button type="button" className="btn" onClick={() => setBulk(true)} {...w}>
+            افزودن گروهی
+          </button>
+        </div>
       </div>
 
       {empty.length > 0 && (
@@ -234,7 +247,7 @@ export function StockPage() {
                 <th>پنل</th>
                 <th>وضعیت</th>
                 <th>سفارش</th>
-                <th>لینک اشتراک</th>
+                <th>اعتبارنامه</th>
                 <th />
               </tr>
             </thead>
@@ -262,20 +275,20 @@ export function StockPage() {
                   </td>
                   <td className="ltr">{r.orderPublicId ?? '—'}</td>
                   <td className="ltr">
-                    {r.subscriptionUrl === null ? (
+                    {r.subscriptionUrl === null && r.secret === null ? (
                       // Null for a sold or retired row and for anyone who is
                       // not an ADMIN. Nothing to press, and nothing to explain:
                       // the paragraph under the table says why.
                       '—'
                     ) : revealed.has(r.id) ? (
-                      <code className="stock-link">{r.subscriptionUrl}</code>
+                      <code className="stock-link">{r.subscriptionUrl ?? r.secret}</code>
                     ) : (
                       <button
                         type="button"
                         className="btn btn-sm"
                         onClick={() => setRevealed((was) => new Set(was).add(r.id))}
                       >
-                        نمایش لینک
+                        نمایش
                       </button>
                     )}
                   </td>
@@ -331,8 +344,9 @@ export function StockPage() {
         )}
 
         <p className="muted">
-          لینک اشتراک اعتبارنامه است: هرکس داشته باشدش سرویس را دارد. فقط برای کانفیگ‌های روی قفسه و
-          فقط به ادمین فرستاده می‌شود، و تا وقتی «نمایش لینک» را نزنی روی صفحه نمی‌آید.
+          لینک اشتراک و گذرواژه اعتبارنامه‌اند: هرکس داشته باشدشان سرویس را دارد. فقط برای
+          ردیف‌های روی قفسه و فقط به ادمین فرستاده می‌شوند، و تا وقتی «نمایش» را نزنی روی صفحه
+          نمی‌آیند.
         </p>
       </div>
 
@@ -346,6 +360,10 @@ export function StockPage() {
             void load();
           }}
         />
+      )}
+
+      {bulk && (
+        <BulkStockForm plans={plans} onClose={() => setBulk(false)} onFilled={() => void load()} />
       )}
     </>
   );
@@ -470,6 +488,147 @@ function StockForm({
           {...w}
         >
           افزودن
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A whole shelf-load at once: paste an export, or pick the file and it lands in
+ * the same textarea. Parsing and every per-line verdict live server-side; this
+ * form only carries the text and shows what came back. The form stays open
+ * after a send on purpose — the skipped lines ARE the result, and closing over
+ * them is how a half-loaded shelf goes unnoticed.
+ */
+function BulkStockForm({
+  plans,
+  onClose,
+  onFilled,
+}: {
+  plans: PlanRow[];
+  onClose: () => void;
+  onFilled: () => void;
+}) {
+  const w = useAdminWriteProps();
+  const [planId, setPlanId] = useState('');
+  const [text, setText] = useState('');
+  const [result, setResult] = useState<BulkStockResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const plan = plans.find((p) => String(p.id) === planId) ?? null;
+
+  async function send() {
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const res = await api.addStockBulk({ planId: Number(planId), text });
+      setResult(res);
+      if (res.added > 0) onFilled();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <span className="card__title">افزودن گروهی به قفسه</span>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن
+        </button>
+      </div>
+
+      {err && <div className="alert alert-error">{err}</div>}
+      {result && (
+        <div className={result.skipped.length > 0 ? 'alert alert-error' : 'alert alert-info'}>
+          {count(result.added)} ردیف به قفسه اضافه شد
+          {result.skipped.length > 0 ? ` و ${count(result.skipped.length)} ردیف رد شد:` : '.'}
+        </div>
+      )}
+      {result && result.skipped.length > 0 && (
+        <ul className="muted">
+          {result.skipped.map((s) => (
+            <li key={s.line}>
+              سطر {count(s.line)}
+              {s.username ? (
+                <>
+                  {' '}
+                  (<span className="ltr">{s.username}</span>)
+                </>
+              ) : null}
+              : {s.reason}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="bulk-plan">
+            کانفیگ
+          </label>
+          <select
+            id="bulk-plan"
+            className="form-control"
+            value={planId}
+            onChange={(e) => setPlanId(e.target.value)}
+          >
+            <option value="">انتخاب کنید…</option>
+            {plans.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.product.name} — {p.name}
+              </option>
+            ))}
+          </select>
+          <div className="page-head__sub">
+            {plan ? `پنل: ${plan.provider?.name ?? '—'}` : 'پنل از روی کانفیگ تعیین می‌شود'}
+          </div>
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="bulk-file">
+            فایل CSV یا متنی
+          </label>
+          <input
+            id="bulk-file"
+            className="form-control"
+            type="file"
+            accept=".csv,.txt,text/csv,text/plain"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void f.text().then(setText);
+              // Same file twice must fire onChange again.
+              e.target.value = '';
+            }}
+          />
+        </div>
+      </div>
+
+      <label className="form-label" htmlFor="bulk-text">
+        هر سطر یک اکانت: «نام‌کاربری,گذرواژه» یا «نام‌کاربری,لینک اشتراک»
+      </label>
+      <textarea
+        id="bulk-text"
+        className="form-control ltr"
+        rows={8}
+        placeholder={'user@example.com,secret123\nuser2@example.com,secret456'}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+
+      <div className="filters" style={{ marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || planId === '' || text.trim() === ''}
+          onClick={() => void send()}
+          {...w}
+        >
+          افزودن به قفسه
         </button>
       </div>
     </div>
