@@ -54,6 +54,7 @@ import {
   ALL_TAB_STATES,
   bankName,
   defaultCandidateId,
+  formatExactDateTime,
   formatRelativeFuture,
   formatTimeAgo,
   formatToman,
@@ -838,6 +839,7 @@ export function PaymentsView({ cache }: { cache: Cache }) {
             {tab !== 'income' &&
               tab !== 'declined_income' &&
               tab !== 'reseller' &&
+              tab !== 'continuity' &&
               tab !== 'bot_auto_verified' &&
               tab !== 'manually_verified' && (
                 <ul className="hub-list hub-list--table">
@@ -913,6 +915,19 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                     item={item}
                     onOpen={() => openReview(item)}
                     onReopen={() => setReopenTarget(item)}
+                  />
+                ))}
+              </ul>
+            )}
+
+            {tab === 'continuity' && (
+              <ul className="hub-list hub-list--table">
+                {claimItems.map((item) => (
+                  <ContinuityRow
+                    key={item.id}
+                    item={item}
+                    isNew={isClaimNew(item)}
+                    onOpen={() => openClaim(item)}
                   />
                 ))}
               </ul>
@@ -1051,6 +1066,7 @@ function emptyText(tab: PaymentTab): string {
   if (tab === 'declined_income') return 'در این بازه واریزی ردشده‌ای نیست.';
   if (tab === 'waiting') return 'پرداختی در انتظار نیست.';
   if (tab === 'suspected_fake') return 'پرداختی بدون واریزی منطبق نمانده است.';
+  if (tab === 'continuity') return 'در این بازه سفارشی با حالت تداوم تحویل نشده است.';
   if (tab === 'bot_auto_verified') return 'در این بازه پرداختی با تایید خودکار ربات نیست.';
   if (tab === 'manually_verified') return 'در این بازه پرداختی با تایید دستی نیست.';
   if (tab === 'reseller') return 'در این بازه پرداخت نمایندگی نیست.';
@@ -1612,6 +1628,50 @@ function AllRow({ item, onOpen }: { item: PaymentItem; onOpen: () => void }) {
   );
 }
 
+function ContinuityRow({
+  item,
+  isNew,
+  onOpen,
+}: {
+  item: PaymentItem;
+  isNew?: boolean;
+  onOpen: () => void;
+}) {
+  const identity = paymentIdentityLine(item);
+  const masked = maskAccountHint(item.accountHint, item.cardMasked);
+  const reconciled = item.reconciledAt != null;
+
+  return (
+    <li className={`hub-list-row${isNew ? ' hub-list-row--new' : ''}`}>
+      <button type="button" className="hub-list-row__button" onClick={onOpen}>
+        <div className="hub-list-row__line1">
+          <span className="hub-list-row__identity">
+            <NewBadge isNew={isNew} />
+            {identity && <strong>{identity}</strong>}
+            <span className="status-pill status-pill--fulfilled_unreconciled">حالت تداوم</span>
+          </span>
+          <span className="hub-list-row__amount tabular-nums">
+            {formatToman(item.expectedAmountToman)}
+          </span>
+        </div>
+        <div className="hub-list-row__line2 muted">
+          سفارش {item.orderId} · {masked}
+          {item.fulfilledAt != null && <> · تحویل {formatExactDateTime(item.fulfilledAt)}</>}
+        </div>
+        <div className="hub-list-row__line3 payment-reason">
+          <StatusBadge tone={reconciled ? 'verified' : 'review'}>
+            {reconciled ? 'تطبیق‌شده' : 'در انتظار تطبیق'}
+          </StatusBadge>
+          <span className="payment-reason__text">
+            {item.fulfilmentReason ?? 'تحویل خودکار در حالت تداوم'}
+          </span>
+          <ReceiptMark item={item} />
+        </div>
+      </button>
+    </li>
+  );
+}
+
 /**
  * «۲۰۰ از ۵۱۰» — and the two buttons that reach the rest.
  *
@@ -1921,6 +1981,28 @@ function ReviewPanel({
           <dd>{stateLabel(item.reviewState)}</dd>
         </dl>
       </section>
+
+      {item.fulfilmentMode === 'CONTINUITY' && (
+        <section className="drawer-section">
+          <h3 className="drawer-section__heading">حالت تداوم</h3>
+          <dl className="payment-review__facts">
+            <dt>نحوه تحویل</dt>
+            <dd>خودکار در حالت تداوم</dd>
+            <dt>زمان تحویل</dt>
+            <dd>{formatExactDateTime(item.fulfilledAt)}</dd>
+            <dt>فعال‌کننده</dt>
+            <dd>{item.fulfilledBy ?? '—'}</dd>
+            <dt>دلیل</dt>
+            <dd>{item.fulfilmentReason ?? '—'}</dd>
+            <dt>وضعیت تطبیق بانکی</dt>
+            <dd>
+              {item.reconciledAt != null
+                ? `تطبیق‌شده در ${formatExactDateTime(item.reconciledAt)}`
+                : 'هنوز تطبیق نشده و نیاز به بازبینی دارد'}
+            </dd>
+          </dl>
+        </section>
+      )}
 
       <ReceiptSection item={item} />
 

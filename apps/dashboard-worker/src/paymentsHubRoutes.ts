@@ -42,6 +42,7 @@ export type PaymentTab =
   | 'declined_income'
   | 'waiting'
   | 'suspected_fake'
+  | 'continuity'
   | 'bot_auto_verified'
   | 'manually_verified'
   | 'reseller'

@@ -61,6 +61,11 @@ interface ClaimSeed {
   suspectReason?: string | null;
   paidClickedAt?: number;
   suspectMeta?: object;
+  fulfilmentMode?: 'MANUAL' | 'CONTINUITY' | null;
+  fulfilledAt?: number | null;
+  fulfilledBy?: string | null;
+  fulfilmentReason?: string | null;
+  reconciledAt?: number | null;
   /**
    * `null` for the case the bot creates deliberately: a card nobody has mapped
    * to a financial account yet still opens a claim, because the alternative is
@@ -76,9 +81,11 @@ async function seedClaim(id: string, seed: ClaimSeed = {}) {
     `INSERT INTO payment_claims
        (id, external_order_id, customer_reference, expected_amount_irr, target_financial_account_id,
         submitted_at, source_system, metadata_json, status, paid_clicked_at, receipt_submitted_at,
-        suspect_reason, suspect_metadata_json, card_digits, created_at, updated_at)
+        suspect_reason, suspect_metadata_json, card_digits, created_at, updated_at,
+        fulfilment_mode, fulfilled_at, fulfilled_by, fulfilment_reason, reconciled_at)
      VALUES (?1, ?2, ?10, ?3, ?4, ?5, 'MIRZABOT',
-             '{"telegramUserId":"42","telegramUsername":"ali"}', ?6, ?5, ?5, ?7, ?8, ?9, ?5, ?5)`,
+             '{"telegramUserId":"42","telegramUsername":"ali"}', ?6, ?5, ?5, ?7, ?8, ?9,
+             ?5, ?5, ?11, ?12, ?13, ?14, ?15)`,
   )
     .bind(
       id,
@@ -91,6 +98,11 @@ async function seedClaim(id: string, seed: ClaimSeed = {}) {
       JSON.stringify(seed.suspectMeta ?? {}),
       seed.cardDigits ?? CARD,
       seed.customerReference ?? 'tg-42',
+      seed.fulfilmentMode ?? null,
+      seed.fulfilmentMode ? (seed.fulfilledAt ?? paid) : (seed.fulfilledAt ?? null),
+      seed.fulfilledBy ?? null,
+      seed.fulfilmentReason ?? null,
+      seed.reconciledAt ?? null,
     )
     .run();
   return { id, paid, now };
@@ -142,6 +154,11 @@ type PaymentsBody = {
     candidates: Array<{ id: string }>;
     matchedTransaction: { id: string; timeDeltaSeconds: number | null } | null;
     isNew?: boolean;
+    fulfilmentMode?: 'MANUAL' | 'CONTINUITY' | null;
+    fulfilledAt?: number | null;
+    fulfilledBy?: string | null;
+    fulfilmentReason?: string | null;
+    reconciledAt?: number | null;
   }>;
   counts: Record<string, number>;
   /** Present on every tab since the income tabs stopped cutting at 200. */
@@ -188,6 +205,49 @@ describe('GET /api/v1/payments', () => {
     expect(body.items.map((i) => i.id)).toEqual(['c-auto']);
     expect(body.items[0]!.matchedTransaction?.id).toBe('t-auto');
     expect(body.items[0]!.matchedTransaction?.timeDeltaSeconds).toBe(18);
+  });
+
+  it('continuity returns every claim delivered by that mode with its audit facts', async () => {
+    const base = Date.now();
+    await seedClaim('c-cont-pending', {
+      status: 'FULFILLED_UNRECONCILED',
+      paidClickedAt: base,
+      fulfilmentMode: 'CONTINUITY',
+      fulfilledAt: base + 1_000,
+      fulfilledBy: 'operator@example.com',
+      fulfilmentReason: 'SMS relay unavailable',
+    });
+    await seedClaim('c-cont-reconciled', {
+      status: 'VERIFIED',
+      paidClickedAt: base - 10_000,
+      fulfilmentMode: 'CONTINUITY',
+      fulfilledAt: base - 9_000,
+      fulfilledBy: 'operator@example.com',
+      fulfilmentReason: 'SMS relay unavailable',
+      reconciledAt: base - 1_000,
+    });
+    await seedClaim('c-manual-mode', {
+      status: 'FULFILLED_UNRECONCILED',
+      fulfilmentMode: 'MANUAL',
+    });
+    await seedClaim('c-ordinary');
+
+    const body = await get('tab=continuity&range=all');
+    expect(new Set(body.items.map((i) => i.id))).toEqual(
+      new Set(['c-cont-pending', 'c-cont-reconciled']),
+    );
+    expect(body.counts.continuity).toBe(2);
+    expect(body.counts.continuityPending).toBe(1);
+    expect(body.items.find((i) => i.id === 'c-cont-pending')).toMatchObject({
+      fulfilmentMode: 'CONTINUITY',
+      fulfilledAt: base + 1_000,
+      fulfilledBy: 'operator@example.com',
+      fulfilmentReason: 'SMS relay unavailable',
+      reconciledAt: null,
+    });
+    expect(body.items.find((i) => i.id === 'c-cont-reconciled')?.reconciledAt).toBe(
+      base - 1_000,
+    );
   });
 
   it('all returns every bucket including waiting and no-transfer-found', async () => {
