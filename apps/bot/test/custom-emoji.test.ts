@@ -26,6 +26,7 @@ import {
   Texts,
   toTelegramHtml,
 } from '@shikoo/contracts';
+import { setEventSink, type LogRecord } from '@shikoo/domain';
 import { assertSchema, db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer } from './helpers/shop.js';
 import { handleUpdate } from '../src/handle.js';
@@ -500,6 +501,10 @@ describe('sending it, and being refused', () => {
     // used to produce the misleading custom_emoji_refused -> notify.dead pair
     // seen in production logs.
     const refused = vi.fn();
+    const classified: LogRecord[] = [];
+    setEventSink((record) => {
+      if (record.evt === 'telegram.custom_emoji_refused') classified.push(record);
+    });
     const { bodies, fetchImpl } = fakeTelegram(['chatnotfound', 'chatnotfound']);
     const api = createTelegramApi({
       token: '8000000000:AAHfakefakefakefakefakefakefakefakefake',
@@ -508,12 +513,17 @@ describe('sending it, and being refused', () => {
       onCustomEmojiRefused: refused,
     });
 
-    await expect(api.sendMessage(1, `خوش آمدید ${FIRE}`)).rejects.toThrow('chat not found');
+    try {
+      await expect(api.sendMessage(1, `خوش آمدید ${FIRE}`)).rejects.toThrow('chat not found');
+    } finally {
+      setEventSink(null);
+    }
     // Telegram does not document every custom-emoji error sentence, so a 400
     // gets one plain probe. The same destination fails it too, which proves the
     // emoji was not the problem and prevents the global setting change.
     expect(bodies).toHaveLength(2);
     expect(refused).not.toHaveBeenCalled();
+    expect(classified).toEqual([]);
   });
 
   it('turns the setting off in the database, and the bot obeys it', async () => {
