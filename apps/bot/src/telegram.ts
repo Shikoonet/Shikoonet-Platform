@@ -645,11 +645,6 @@ function topic(threadId?: number | null): Record<string, unknown> {
   return typeof threadId === 'number' && threadId > 0 ? { message_thread_id: threadId } : {};
 }
 
-/** Telegram answered. `call()` says "failed" when we never reached it at all. */
-function isRejection(err: unknown): boolean {
-  return String(err).includes('rejected');
-}
-
 /**
  * Asking Telegram to replace a message with itself.
  *
@@ -743,11 +738,14 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
    * `<` and `&` is as safe as it was before this feature existed.
    *
    * A message that does carry markup goes as HTML with everything outside the
-   * tags escaped. If Telegram *rejects* it — which is what happens when the
-   * bot's owner has no Premium, and there is no API that would have told us
-   * beforehand — the tags become their own fallback emoji and the message is
-   * sent once more as plain text. The customer gets the screen; the shop gets
-   * the feature switched off rather than a bot that has stopped answering.
+   * tags escaped. If Telegram rejects the custom-emoji field or tag — which is
+   * what happens when the bot's owner has no Premium, and there is no API that
+   * would have told us beforehand — the tags become their own fallback emoji
+   * and the message is sent once more as plain text. The customer gets the
+   * screen; the shop gets the feature switched off rather than a bot that has
+   * stopped answering. The refusal is reported as a custom-emoji refusal only
+   * after the same call succeeds without the rich form. An unknown chat fails
+   * both calls and keeps its real identity instead.
    *
    * A network failure is not a refusal and is rethrown. `call()` says which is
    * which: "rejected" is Telegram answering, "failed" is not reaching it. Auto
@@ -778,6 +776,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       await send({ text: clamped, ...both(false) });
       return;
     }
+    let richError: unknown;
     try {
       // `parse_mode` is decided by the TEXT alone. A plain sentence under a
       // button that carries an emoji must not be sent as HTML: nothing escaped
@@ -785,14 +784,16 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       await send({ ...richText(clamped), ...both(true) });
       return;
     } catch (err) {
-      // Two ways this is not a refusal. A network error means Telegram never
-      // answered, and a "not modified" means it answered about something else
-      // entirely — the caller knows what to do with that one, so it goes back
-      // up untouched rather than being read here as a verdict on Premium.
-      if (!isRejection(err) || isNotModified(err)) throw err;
-      log.warn('telegram.custom_emoji_refused');
+      // Descriptions are not an API and Telegram does not document the exact
+      // sentence for every custom-emoji refusal. A 400 earns one plain probe;
+      // only that probe succeeding proves that the optional rich form was the
+      // difference. Network/5xx/403 failures keep their real identity without
+      // a second call, and "not modified" remains a successful edit above us.
+      if (!(err instanceof TelegramRejection) || err.code !== 400 || isNotModified(err)) throw err;
+      richError = err;
     }
     await send({ text: stripCustomEmoji(clamped), ...both(false) });
+    log.warn('telegram.custom_emoji_refused', {}, richError);
     await options.onCustomEmojiRefused?.();
   }
 
