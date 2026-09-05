@@ -305,9 +305,37 @@ async function untoldNote(
     return say(menu.serviceNeedsHelp(row.order_public_id, back ? Number(back.amount_irr) : null));
   }
 
-  // COMPLETED. The screen if there is a service to show — a fresh purchase, a
-  // renewal, an add-on all land here — and otherwise the honest answer for a
-  // manual product, which is that a person is finishing it.
+  // COMPLETED. A shelved ACCOUNT has to be answered before the screen below,
+  // for the reason `stockedScreen` exists: the card is drawn from the
+  // subscription row and never renders `remote_ref`, so recovering a lost
+  // message through it hands the customer their username, their expiry, and no
+  // password — an account they paid for and cannot sign into. The card is
+  // right for everything else, a shelved config included.
+  const account = await db
+    .prepare(
+      `SELECT remote_username, remote_ref->>'secret' AS secret, expires_at
+         FROM subscriptions
+        WHERE order_id = ?1
+          AND subscription_url IS NULL
+          AND remote_ref->>'secret' IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 1`,
+    )
+    .bind(row.order_id)
+    .first<{ remote_username: string | null; secret: string; expires_at: string | null }>();
+  if (account !== null) {
+    return say(
+      menu.accountReady(
+        account.remote_username ?? '',
+        account.secret,
+        account.expires_at === null ? null : new Date(account.expires_at),
+      ),
+    );
+  }
+
+  // The screen if there is a service to show — a fresh purchase, a renewal, an
+  // add-on all land here — and otherwise the honest answer for a manual
+  // product, which is that a person is finishing it.
   return (
     (await purchasedScreen(db, row, now)) ?? say(menu.serviceBeingPrepared(row.order_public_id))
   );

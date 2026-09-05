@@ -7,7 +7,7 @@
  * (migration 0010); these tests are what proves the enforcement is reachable.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { provisionPaidOrders } from '../src/provision.js';
 import { deliverFromStock, STOCK_GRACE_MS } from '../src/stock.js';
 import { db, pendingNotifications } from './helpers/env.js';
@@ -103,6 +103,18 @@ async function subsFor(orderId: number) {
   return results ?? [];
 }
 
+/**
+ * The clock these tests run on, pinned so two reads inside one test cannot
+ * drift apart.
+ *
+ * Captured from the real clock rather than written down. A hardcoded instant
+ * would be a time bomb of the other kind here: `provision_first_failed_at` is
+ * stamped by Postgres with its OWN `now()`, and the grace check subtracts that
+ * from this. Pin these two hours apart and every grace assertion in this file
+ * flips for a reason that has nothing to do with the code.
+ */
+const NOW_MS = Date.now();
+
 /** A moment late enough that the grace period has passed. */
 function afterGrace(): number {
   return Date.now() + STOCK_GRACE_MS + 60_000;
@@ -132,6 +144,7 @@ beforeAll(async () => {
 // *every* paid order, and the claim takes the lowest available config. Either
 // leftover makes a later test pass or fail for the previous test's reason.
 beforeEach(async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
   await db
     .prepare(
       `UPDATE orders SET status = 'FAILED', failure_reason = 'parked by stock.test'
@@ -139,6 +152,10 @@ beforeEach(async () => {
     )
     .run();
   await db.prepare(`DELETE FROM provisioning_stock`).run();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('selling from the shelf', () => {
@@ -319,6 +336,36 @@ describe('selling accounts from the shelf', () => {
     expect(subs[0]!.subscription_url).toBeNull();
     const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
     expect(note?.text).toContain(order.publicId);
+  });
+
+  it('still carries the password when the first message was lost', async () => {
+    // The delivery commits, then the message does not reach the customer — the
+    // process dies, the enqueue fails. The sweep's second branch rebuilds the
+    // sentence from the database, and that path draws the service CARD, which
+    // is built from the subscription row and never renders `remote_ref`. So the
+    // recovery used to hand back a username, an expiry, and no password: an
+    // account somebody paid for and cannot sign into.
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-lost@mail.test', {
+      secret: 'stock-acct-pw-lost',
+      providerCode: 'sim-shop',
+    });
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    const gone = await db
+      .prepare(`DELETE FROM bot_notifications WHERE dedupe_key = ?1`)
+      .bind(`provision:${order.publicId}`)
+      .run();
+    // The fixture has to actually remove something, or this proves nothing
+    // about a message that was never there.
+    expect(gone.meta.changes).toBe(1);
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.dedupeKey).toBe(`provision:${order.publicId}`);
+    expect(note?.text).toContain('stock-acct-lost@mail.test');
+    expect(note?.text).toContain('stock-acct-pw-lost');
   });
 
   it('keeps a config link off the account message path', async () => {
