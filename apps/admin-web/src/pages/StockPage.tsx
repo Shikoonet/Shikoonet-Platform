@@ -66,6 +66,29 @@ function planLabel(productName: string, planName: string): string {
   return productName === planName ? planName : `${productName} — ${planName}`;
 }
 
+/**
+ * Labels for a whole picker, with any repeat made tellable apart.
+ *
+ * Two shelves named the same thing read identically, and so does a shelf
+ * called «چت‌جی‌پی‌تی — پلاس» beside a service «چت‌جی‌پی‌تی» with a plan
+ * «پلاس» — the separator is just text. The `value` still carries the id so the
+ * machine is never confused; the person choosing which shelf to pour a
+ * thousand accounts into is the one who needs them distinct.
+ */
+function pickerLabels(rows: PlanRow[]): Map<number, string> {
+  const seen = new Map<string, number>();
+  for (const p of rows) {
+    const label = planLabel(p.product.name, p.name);
+    seen.set(label, (seen.get(label) ?? 0) + 1);
+  }
+  const out = new Map<number, string>();
+  for (const p of rows) {
+    const label = planLabel(p.product.name, p.name);
+    out.set(p.id, (seen.get(label) ?? 0) > 1 ? `${label} #${p.id}` : label);
+  }
+  return out;
+}
+
 export function StockPage() {
   const w = useAdminWriteProps();
   const [rows, setRows] = useState<StockRow[]>([]);
@@ -98,6 +121,17 @@ export function StockPage() {
   const [bulk, setBulk] = useState(false);
   const [making, setMaking] = useState(false);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
+  /**
+   * The shelf «قفسهٔ تازه» just made, preselected in the form that fills it.
+   *
+   * Not cosmetic: the plan list is fetched again after a shelf is created, and
+   * until it arrives the picker does not contain the new shelf at all. An
+   * operator who does not wait picks from the shelves that ARE listed — all of
+   * them the wrong one — and accounts land somewhere they were never meant to
+   * be. Handed the id directly, the form is already on the right shelf and the
+   * list catching up only changes what the option says.
+   */
+  const [fillPlanId, setFillPlanId] = useState<number | null>(null);
 
   async function load() {
     setErr(null);
@@ -154,6 +188,7 @@ export function StockPage() {
     }
   }
 
+  const labels = pickerLabels(plans);
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   /*
    * Two different things, and they were one red box until the shelf list began
@@ -268,7 +303,7 @@ export function StockPage() {
               <option value="">همه</option>
               {plans.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {planLabel(p.product.name, p.name)}
+                  {labels.get(p.id)}
                 </option>
               ))}
             </select>
@@ -422,18 +457,41 @@ export function StockPage() {
         <NewShelfForm
           categories={categories}
           onClose={() => setMaking(false)}
-          onMade={(name) => {
+          onMade={(name, planId) => {
             setMaking(false);
             setDone(`قفسهٔ «${name}» ساخته شد — حالا اکانت‌هایش را بگذار.`);
             void load();
-            void api.products({ page: 1, pageSize: 100 }).then((r) => setPlans(r.items));
+            void api
+              .products({ page: 1, pageSize: 100 })
+              .then((r) => setPlans(r.items))
+              .catch((e) => setErr(message(e)));
+            setFillPlanId(planId);
             setBulk(true);
           }}
         />
       )}
 
       {bulk && (
-        <BulkStockForm plans={plans} onClose={() => setBulk(false)} onFilled={() => void load()} />
+        <BulkStockForm
+          /*
+           * Keyed on the shelf, so a second «قفسهٔ تازه» starts a fresh form.
+           *
+           * `initialPlanId` alone is not enough: it is read into state once, at
+           * mount, and this form stays open after a successful fill on purpose.
+           * Make shelf A, fill it, then make shelf B — the banner says B, and
+           * the picker and the pasted text are still A's. B's accounts go onto
+           * A's shelf, and every one of them is a live credential that reaches
+           * whoever buys A next.
+           */
+          key={fillPlanId ?? 'any'}
+          plans={plans}
+          initialPlanId={fillPlanId}
+          onClose={() => {
+            setBulk(false);
+            setFillPlanId(null);
+          }}
+          onFilled={() => void load()}
+        />
       )}
     </>
   );
@@ -456,6 +514,7 @@ function StockForm({
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const labels = pickerLabels(plans);
   const plan = plans.find((p) => String(p.id) === planId) ?? null;
 
   async function save() {
@@ -501,7 +560,7 @@ function StockForm({
             <option value="">انتخاب کنید…</option>
             {plans.map((p) => (
               <option key={p.id} value={p.id}>
-                {planLabel(p.product.name, p.name)}
+                {labels.get(p.id)}
               </option>
             ))}
           </select>
@@ -579,7 +638,7 @@ function NewShelfForm({
 }: {
   categories: CategoryRow[];
   onClose: () => void;
-  onMade: (name: string) => void;
+  onMade: (name: string, planId: number) => void;
 }) {
   const w = useAdminWriteProps();
   const [name, setName] = useState('');
@@ -594,7 +653,7 @@ function NewShelfForm({
     setBusy(true);
     setErr(null);
     try {
-      await api.createShelf({
+      const made = await api.createShelf({
         name: name.trim(),
         kind,
         // Toman on the screen, IRR in the database, and the ×10 happens here
@@ -603,7 +662,7 @@ function NewShelfForm({
         durationDays: durationDays.trim() === '' ? null : Number(durationDays),
         categoryId: Number(categoryId),
       });
-      onMade(name.trim());
+      onMade(name.trim(), made.planId);
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -621,6 +680,15 @@ function NewShelfForm({
       </div>
 
       {err && <div className="alert alert-error">{err}</div>}
+      {categories.length === 0 && (
+        // Without one the button below can never be pressed, and «ساختن قفسه»
+        // sitting there greyed out with no sentence beside it is the worst
+        // version of that.
+        <div className="alert alert-warning">
+          هیچ دسته‌بندی‌ای نیست و قفسه بدون آن در فروشگاه دیده نمی‌شود — اول از «دسته‌بندی‌ها» یکی
+          بساز.
+        </div>
+      )}
 
       <div className="filters">
         <div className="grow">
@@ -663,9 +731,10 @@ function NewShelfForm({
           </label>
           <input
             id="shelf-price"
-            className="form-control"
+            className="form-control ltr"
             type="number"
-            min={0}
+            // A free shelf is one the bot refuses to sell — see the route.
+            min={1}
             value={priceToman}
             onChange={(e) => setPriceToman(e.target.value)}
           />
@@ -676,7 +745,7 @@ function NewShelfForm({
           </label>
           <input
             id="shelf-days"
-            className="form-control"
+            className="form-control ltr"
             type="number"
             min={1}
             placeholder="بی‌انقضا"
@@ -697,7 +766,11 @@ function NewShelfForm({
             <option value="">انتخاب کنید…</option>
             {categories.map((cat) => (
               <option key={cat.id} value={cat.id}>
-                {cat.name}
+                {/* Still offered — staging a shelf in a category that is off is
+                    a real thing to want — but never silently: filed under one,
+                    the shelf is invisible in the shop with nothing on any
+                    screen to say why. */}
+                {cat.active ? cat.name : `${cat.name} (خاموش — در فروشگاه دیده نمی‌شود)`}
               </option>
             ))}
           </select>
@@ -714,7 +787,14 @@ function NewShelfForm({
         <button
           type="button"
           className="btn btn-primary"
-          disabled={busy || name.trim() === '' || priceToman.trim() === '' || categoryId === ''}
+          disabled={
+            busy ||
+            name.trim() === '' ||
+            // Typed zero, not just empty: `min` on the input is advisory and a
+            // pasted 0 walks past it.
+            !(Number(priceToman) > 0) ||
+            categoryId === ''
+          }
           onClick={() => void make()}
           {...w}
         >
@@ -734,16 +814,20 @@ function NewShelfForm({
  */
 function BulkStockForm({
   plans,
+  initialPlanId,
   onClose,
   onFilled,
 }: {
   plans: PlanRow[];
+  /** The shelf to open on — see `fillPlanId`. Null means «ask». */
+  initialPlanId?: number | null;
   onClose: () => void;
   onFilled: () => void;
 }) {
   const w = useAdminWriteProps();
-  const [planId, setPlanId] = useState('');
+  const [planId, setPlanId] = useState(initialPlanId == null ? '' : String(initialPlanId));
   const [text, setText] = useState('');
+  const labels = pickerLabels(plans);
   const [result, setResult] = useState<BulkStockResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -821,9 +905,15 @@ function BulkStockForm({
             onChange={(e) => setPlanId(e.target.value)}
           >
             <option value="">انتخاب کنید…</option>
+            {/* The shelf just made, before the refreshed list has arrived. A
+                `value` with no matching option selects nothing, which would
+                silently drop the preselection this form exists to carry. */}
+            {planId !== '' && !plans.some((p) => String(p.id) === planId) && (
+              <option value={planId}>قفسهٔ تازه</option>
+            )}
             {plans.map((p) => (
               <option key={p.id} value={p.id}>
-                {planLabel(p.product.name, p.name)}
+                {labels.get(p.id)}
               </option>
             ))}
           </select>

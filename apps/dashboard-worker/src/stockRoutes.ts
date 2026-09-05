@@ -33,6 +33,10 @@ import type { D1Database } from '@shikoo/database';
 import { checkRemoteUsername, isAutomated } from '@shikoo/domain';
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
+import { checkNameEmoji } from './customEmojiNames.js';
+import { createLogger } from '@shikoo/domain';
+
+const log = createLogger('dashboard');
 
 const StockBody = z
   .object({
@@ -98,7 +102,11 @@ const ShelfCreate = z
     // What is being SOLD, which is labelling — the delivery route is decided by
     // the panel below, and this route always makes that panel `manual`.
     kind: z.enum(['vpn', 'ai_account', 'spotify', 'manual', 'other']).default('other'),
-    priceIrr: z.number().int().min(0).max(MAX_SINGLE_PAYMENT_IRR),
+    // One rial, not zero. `placeOrder` refuses `totalIrr <= 0` outright
+    // (`apps/bot/src/order.ts:304`), so a free shelf draws every button in the
+    // shop and then does nothing when the customer taps «خرید» — an operator
+    // fills it and waits for a sale that cannot happen.
+    priceIrr: z.number().int().min(1).max(MAX_SINGLE_PAYMENT_IRR),
     durationDays: z.number().int().positive().max(3650).nullable().default(null),
     categoryId: z.number().int().positive(),
   })
@@ -288,6 +296,12 @@ export function registerStockRoutes(
     }
     const b = body.data;
 
+    // The shelf's name is written into all three tables and the panel's copy
+    // reaches the customer through `PLAN_LOCATION`, so it gets the same check
+    // every other customer-facing name in this panel gets.
+    const nameProblem = await checkNameEmoji(c.env.DB, b.name);
+    if (nameProblem) return c.json({ ok: false, error: 'invalid_body', detail: nameProblem }, 400);
+
     // Refused here as well as by the foreign key, because the message matters:
     // a shelf with no category has no button on any screen in the shop.
     const category = await c.env.DB.prepare(`SELECT id FROM product_categories WHERE id = ?1`)
@@ -330,9 +344,29 @@ export function registerStockRoutes(
           .first<{ id: number }>();
         planId = Number(plan!.id);
       });
-    } catch {
-      // The only realistic one is the unique code, and the code is ours, so a
-      // collision here is a bug rather than something the operator can fix.
+    } catch (err) {
+      // Logged, not swallowed. The message tells the operator to retry, and a
+      // uuid collision — the one failure that is genuinely worth retrying —
+      // really is fixed by drawing another. Everything else that can land here
+      // is not: a pool timeout, a category deleted between the check above and
+      // the insert, a constraint nobody expected. Told only «try again», an
+      // operator retries something retrying cannot fix and «رویدادها» has
+      // nothing to show anyone looking for the reason.
+      //
+      // Safe to log in full, unlike the bulk route's catch: these statements
+      // bind a name, a kind, a price and two ids, and the driver attaches the
+      // statement to its error. No credential passes through here.
+      log.error(
+        'stock.shelf_create_failed',
+        {
+          actor: ident.email,
+          trace: ident.requestId,
+          name: b.name,
+          category_id: b.categoryId,
+          consequence: 'nothing was written — the transaction rolled back',
+        },
+        err,
+      );
       return c.json(
         { ok: false, error: 'rejected', detail: 'قفسه ساخته نشد — دوباره تلاش کن.' },
         409,
