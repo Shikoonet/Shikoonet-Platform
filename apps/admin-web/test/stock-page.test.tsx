@@ -76,6 +76,8 @@ const productCategories = vi.fn(async () => ({
   ok: true,
   items: [{ id: 1, name: 'اکانت‌ها', badge: null, buttonStyle: null }],
 }));
+let nextPlanId = 4242;
+const createShelf = vi.fn(async (_b: unknown) => ({ ok: true, planId: nextPlanId }));
 
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
@@ -86,6 +88,7 @@ vi.mock('../src/api.js', async () => {
       products: () => products(),
       addStockBulk: (b: { planId: number; text: string }) => addStockBulk(b),
       productCategories: () => productCategories(),
+      createShelf: (b: unknown) => createShelf(b),
     },
   };
 });
@@ -128,7 +131,26 @@ async function openBulkForm() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  nextPlanId = 4242;
 });
+
+/** Fills «قفسهٔ تازه» and submits it. */
+async function makeShelf(name: string) {
+  fireEvent.click(screen.getByRole('button', { name: 'قفسهٔ تازه' }));
+  fireEvent.change(document.querySelector('#shelf-name') as HTMLInputElement, {
+    target: { value: name },
+  });
+  fireEvent.change(document.querySelector('#shelf-price') as HTMLInputElement, {
+    target: { value: '250000' },
+  });
+  fireEvent.change(document.querySelector('#shelf-cat') as HTMLSelectElement, {
+    target: { value: '1' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'ساختن قفسه' }));
+  await waitFor(() =>
+    expect(document.querySelector('#bulk-plan') as HTMLSelectElement | null).not.toBeNull(),
+  );
+}
 
 describe('filling a shelf from a file', () => {
   it('drops a read that lands after a newer one', async () => {
@@ -165,5 +187,69 @@ describe('filling a shelf from a file', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(box.value).toBe('typed@mail.test,TYPED');
+  });
+});
+
+describe('making a shelf', () => {
+  it('opens the fill form ON the shelf it just made', async () => {
+    // The plan list is fetched again after a shelf is created. Until it
+    // arrives the picker does not contain the new shelf at all, so an operator
+    // who does not wait picks from the shelves that ARE listed — every one of
+    // them the wrong one — and the accounts land somewhere they were never
+    // meant to be.
+    draw();
+    await waitFor(() => expect(products).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'قفسهٔ تازه' }));
+
+    fireEvent.change(document.querySelector('#shelf-name') as HTMLInputElement, {
+      target: { value: 'اسپاتیفای' },
+    });
+    fireEvent.change(document.querySelector('#shelf-price') as HTMLInputElement, {
+      target: { value: '250000' },
+    });
+    fireEvent.change(document.querySelector('#shelf-cat') as HTMLSelectElement, {
+      target: { value: '1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'ساختن قفسه' }));
+
+    await waitFor(() => expect(createShelf).toHaveBeenCalled());
+    // Toman on the screen, IRR on the wire.
+    expect(createShelf).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'اسپاتیفای', priceIrr: 2_500_000, categoryId: 1 }),
+    );
+
+    const picker = await waitFor(() => {
+      const el = document.querySelector('#bulk-plan') as HTMLSelectElement | null;
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    // The id the server returned, selected — not «انتخاب کنید…», and not some
+    // other shelf that happened to be in the stale list.
+    expect(picker.value).toBe('4242');
+  });
+});
+
+describe('a second shelf does not inherit the first one', () => {
+  it('starts the fill form over, on the shelf just made', async () => {
+    // The fill form stays open after a successful paste, on purpose. Make
+    // shelf A, fill it, make shelf B — the banner says B, and without a fresh
+    // form the picker and the pasted text are still A's. B's accounts land on
+    // A's shelf, and each one is a live credential the next person to buy A
+    // receives.
+    draw();
+    await waitFor(() => expect(products).toHaveBeenCalled());
+
+    await makeShelf('اسپاتیفای');
+    const box = document.querySelector('#bulk-text') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'spot@mail.test,SPOT' } });
+    expect((document.querySelector('#bulk-plan') as HTMLSelectElement).value).toBe('4242');
+
+    nextPlanId = 5353;
+    await makeShelf('اوپن‌وی‌پی‌ان');
+
+    const picker = document.querySelector('#bulk-plan') as HTMLSelectElement;
+    const text = document.querySelector('#bulk-text') as HTMLTextAreaElement;
+    expect(picker.value).toBe('5353');
+    expect(text.value).toBe('');
   });
 });

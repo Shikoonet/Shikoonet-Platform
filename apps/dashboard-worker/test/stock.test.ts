@@ -290,6 +290,23 @@ describe('making a shelf', () => {
     });
   });
 
+  it('refuses a free shelf, which the bot would draw and then not sell', async () => {
+    // `placeOrder` refuses `totalIrr <= 0` outright, and nothing in the bot's
+    // visibility predicate looks at price — so a zero-price shelf draws every
+    // button in the shop and does nothing when the customer taps «خرید». The
+    // operator fills it and waits for a sale that cannot happen.
+    const res = await post('/api/v1/admin/stock/shelves', {
+      name: 'مجانی',
+      priceIrr: 0,
+      categoryId: await categoryId(),
+    });
+    expect(res.status).toBe(400);
+    const n = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM products WHERE name = 'مجانی'`,
+    ).first<{ n: number }>();
+    expect(n!.n).toBe(0);
+  });
+
   it('refuses a category that does not exist rather than an orphan shelf', async () => {
     const res = await post('/api/v1/admin/stock/shelves', {
       name: 'بی‌دسته',
