@@ -18,6 +18,7 @@ import {
   api,
   ApiError,
   type BulkStockResult,
+  type CategoryRow,
   type PlanRow,
   type ShelfCount,
   type StockRow,
@@ -51,7 +52,18 @@ const PAGE_SIZE = 50;
  * which one to go and fill.
  */
 function shelfLabel(s: ShelfCount): string {
-  return s.productName === s.planName ? s.planName : `${s.productName} — ${s.planName}`;
+  return planLabel(s.productName, s.planName);
+}
+
+/**
+ * The same rule for the pickers, which list plans rather than shelves.
+ *
+ * A shelf built from «قفسهٔ تازه» names its service and its product the same
+ * thing, so the picker read «اسپاتیفای — اسپاتیفای». Collapsed, one shelf is
+ * one line; a service with several plans still shows which plan it is.
+ */
+function planLabel(productName: string, planName: string): string {
+  return productName === planName ? planName : `${productName} — ${planName}`;
 }
 
 export function StockPage() {
@@ -84,6 +96,8 @@ export function StockPage() {
   const [revealed, setRevealed] = useState<ReadonlySet<number>>(() => new Set());
   const [adding, setAdding] = useState(false);
   const [bulk, setBulk] = useState(false);
+  const [making, setMaking] = useState(false);
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
 
   async function load() {
     setErr(null);
@@ -113,6 +127,12 @@ export function StockPage() {
     void api
       .products({ page: 1, pageSize: 100 })
       .then((r) => setPlans(r.items))
+      .catch((e) => setErr(message(e)));
+    // A shelf has to be filed under a category or it has no button anywhere in
+    // the shop, so the «قفسهٔ تازه» form needs the list before it can ask.
+    void api
+      .productCategories()
+      .then((r) => setCategories(r.items))
       .catch((e) => setErr(message(e)));
   }, []);
 
@@ -161,11 +181,14 @@ export function StockPage() {
           </div>
         </div>
         <div>
-          <button type="button" className="btn btn-primary" onClick={() => setAdding(true)} {...w}>
-            افزودن کانفیگ
+          <button type="button" className="btn btn-primary" onClick={() => setMaking(true)} {...w}>
+            قفسهٔ تازه
           </button>{' '}
           <button type="button" className="btn" onClick={() => setBulk(true)} {...w}>
             افزودن گروهی
+          </button>{' '}
+          <button type="button" className="btn" onClick={() => setAdding(true)} {...w}>
+            افزودن کانفیگ
           </button>
         </div>
       </div>
@@ -245,7 +268,7 @@ export function StockPage() {
               <option value="">همه</option>
               {plans.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.product.name} — {p.name}
+                  {planLabel(p.product.name, p.name)}
                 </option>
               ))}
             </select>
@@ -395,6 +418,20 @@ export function StockPage() {
         />
       )}
 
+      {making && (
+        <NewShelfForm
+          categories={categories}
+          onClose={() => setMaking(false)}
+          onMade={(name) => {
+            setMaking(false);
+            setDone(`قفسهٔ «${name}» ساخته شد — حالا اکانت‌هایش را بگذار.`);
+            void load();
+            void api.products({ page: 1, pageSize: 100 }).then((r) => setPlans(r.items));
+            setBulk(true);
+          }}
+        />
+      )}
+
       {bulk && (
         <BulkStockForm plans={plans} onClose={() => setBulk(false)} onFilled={() => void load()} />
       )}
@@ -464,7 +501,7 @@ function StockForm({
             <option value="">انتخاب کنید…</option>
             {plans.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.product.name} — {p.name}
+                {planLabel(p.product.name, p.name)}
               </option>
             ))}
           </select>
@@ -521,6 +558,167 @@ function StockForm({
           {...w}
         >
           افزودن
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * «قفسهٔ تازه» — a name and a price, and the shelf exists.
+ *
+ * A shelf is a plan on a service on a panel, and reaching one through those
+ * three screens means answering questions about panels and services to make a
+ * box of Spotify accounts. Asked here as the two things a shelf actually is;
+ * the server builds the rest in one transaction.
+ */
+function NewShelfForm({
+  categories,
+  onClose,
+  onMade,
+}: {
+  categories: CategoryRow[];
+  onClose: () => void;
+  onMade: (name: string) => void;
+}) {
+  const w = useAdminWriteProps();
+  const [name, setName] = useState('');
+  const [kind, setKind] = useState('other');
+  const [priceToman, setPriceToman] = useState('');
+  const [durationDays, setDurationDays] = useState('30');
+  const [categoryId, setCategoryId] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function make() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.createShelf({
+        name: name.trim(),
+        kind,
+        // Toman on the screen, IRR in the database, and the ×10 happens here
+        // the same way every other price form in this panel does it.
+        priceIrr: Math.round(Number(priceToman) * 10),
+        durationDays: durationDays.trim() === '' ? null : Number(durationDays),
+        categoryId: Number(categoryId),
+      });
+      onMade(name.trim());
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <span className="card__title">قفسهٔ تازه</span>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن
+        </button>
+      </div>
+
+      {err && <div className="alert alert-error">{err}</div>}
+
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="shelf-name">
+            اسم قفسه — همان که مشتری می‌بیند
+          </label>
+          <input
+            id="shelf-name"
+            className="form-control"
+            type="text"
+            maxLength={120}
+            placeholder="اسپاتیفای، اوپن‌وی‌پی‌ان، چت‌جی‌پی‌تی…"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="shelf-kind">
+            چه چیزی می‌فروشد
+          </label>
+          <select
+            id="shelf-kind"
+            className="form-control"
+            value={kind}
+            onChange={(e) => setKind(e.target.value)}
+          >
+            <option value="other">سایر</option>
+            <option value="ai_account">اکانت هوش مصنوعی</option>
+            <option value="spotify">اسپاتیفای</option>
+            <option value="vpn">وی‌پی‌ان</option>
+            <option value="manual">دستی</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="filters">
+        <div>
+          <label className="form-label" htmlFor="shelf-price">
+            قیمت (تومان)
+          </label>
+          <input
+            id="shelf-price"
+            className="form-control"
+            type="number"
+            min={0}
+            value={priceToman}
+            onChange={(e) => setPriceToman(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="shelf-days">
+            مدت (روز)
+          </label>
+          <input
+            id="shelf-days"
+            className="form-control"
+            type="number"
+            min={1}
+            placeholder="بی‌انقضا"
+            value={durationDays}
+            onChange={(e) => setDurationDays(e.target.value)}
+          />
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="shelf-cat">
+            دسته‌بندی
+          </label>
+          <select
+            id="shelf-cat"
+            className="form-control"
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+          >
+            <option value="">انتخاب کنید…</option>
+            {categories.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <p className="muted">
+        پنلِ این قفسه خودش ساخته می‌شود و تحویلش دستی است — یعنی هرچه در قفسه بگذاری همان به مشتری
+        می‌رسد. هر قفسه پنل خودش را دارد، پس یک ایمیل می‌تواند هم‌زمان در قفسهٔ اسپاتیفای و
+        چت‌جی‌پی‌تی باشد.
+      </p>
+
+      <div className="filters" style={{ marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || name.trim() === '' || priceToman.trim() === '' || categoryId === ''}
+          onClick={() => void make()}
+          {...w}
+        >
+          ساختن قفسه
         </button>
       </div>
     </div>
@@ -625,7 +823,7 @@ function BulkStockForm({
             <option value="">انتخاب کنید…</option>
             {plans.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.product.name} — {p.name}
+                {planLabel(p.product.name, p.name)}
               </option>
             ))}
           </select>

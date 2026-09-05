@@ -31,6 +31,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import { checkRemoteUsername, isAutomated } from '@shikoo/domain';
+import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 
 const StockBody = z
@@ -81,6 +82,27 @@ function looksLikeHeader(username: string, credential: string): boolean {
   const creds = ['password', 'pass', 'secret', 'url', 'link', 'subscription', 'گذرواژه', 'رمز'];
   return names.includes(a) && creds.some((c) => b === c || b.replace(/[_\s-]/g, '') === c);
 }
+
+/**
+ * Everything a shelf needs to exist, asked as the two things it actually is:
+ * a name and a price.
+ *
+ * A shelf is a plan, and a plan needs a product, and a product needs a panel.
+ * That is three screens to reach one «قفسهٔ اسپاتیفای», and the two middle
+ * steps ask about panels and services — machinery that has nothing to do with
+ * a box of accounts. This route builds the whole chain from a name.
+ */
+const ShelfCreate = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    // What is being SOLD, which is labelling — the delivery route is decided by
+    // the panel below, and this route always makes that panel `manual`.
+    kind: z.enum(['vpn', 'ai_account', 'spotify', 'manual', 'other']).default('other'),
+    priceIrr: z.number().int().min(0).max(MAX_SINGLE_PAYMENT_IRR),
+    durationDays: z.number().int().positive().max(3650).nullable().default(null),
+    categoryId: z.number().int().positive(),
+  })
+  .strict();
 
 const StockQuery = z.object({
   planId: z.coerce.number().int().positive().optional(),
@@ -233,6 +255,101 @@ export function registerStockRoutes(
           used: Number(r.used),
         })),
     });
+  });
+
+  /**
+   * Builds a shelf: «قفسهٔ اسپاتیفای», «قفسهٔ OpenVPN», whatever is in the box.
+   *
+   * Three rows, because that is what a sellable shelf is made of — a panel, a
+   * service on it, and one product under that — and one transaction, because
+   * two of the three on their own are litter nobody can see or delete from the
+   * shelf screen.
+   *
+   * **The panel is per-shelf, and that is not tidiness.**
+   * `idx_stock_account_once` is `(provider_id, remote_username)`, so two
+   * shelves sharing a panel could not both hold `sam@example.com` — and the
+   * same address having a Spotify account and a ChatGPT account is the ordinary
+   * case, not the strange one. One panel per shelf is what keeps those apart.
+   *
+   * Its kind is `manual`: no adapter, so `provision.ts` reaches for the shelf
+   * first and hands the account over. A kind with an adapter would try to
+   * provision on a panel that does not exist.
+   */
+  app.post('/api/v1/admin/stock/shelves', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const body = ShelfCreate.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+    const b = body.data;
+
+    // Refused here as well as by the foreign key, because the message matters:
+    // a shelf with no category has no button on any screen in the shop.
+    const category = await c.env.DB.prepare(`SELECT id FROM product_categories WHERE id = ?1`)
+      .bind(b.categoryId)
+      .first<{ id: number }>();
+    if (!category) return c.json({ ok: false, error: 'category_not_found' }, 404);
+
+    // The codes are ours, not the operator's. They must be lowercase-and-dashed
+    // for the panel, and a Persian name slugs to nothing — so they are derived
+    // from a uuid and never shown.
+    const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 10);
+    const code = `shelf-${suffix}`;
+
+    let planId: number | null = null;
+    try {
+      await c.env.DB.withSession(async (tx) => {
+        const provider = await tx
+          .prepare(
+            `INSERT INTO provisioning_providers (code, name, kind, status)
+             VALUES (?1, ?2, 'manual', 'ACTIVE') RETURNING id`,
+          )
+          .bind(code, b.name)
+          .first<{ id: number }>();
+        const product = await tx
+          .prepare(
+            `INSERT INTO products (code, name, kind, provider_id, category_id, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'ACTIVE') RETURNING id`,
+          )
+          .bind(code, b.name, b.kind, provider!.id, b.categoryId)
+          .first<{ id: number }>();
+        // Named after the shelf, not «یک‌ماهه»: the screen shows the service
+        // above the plan and hides the plan when they match, so one shelf reads
+        // as one line. A second plan added later is what makes it two.
+        const plan = await tx
+          .prepare(
+            `INSERT INTO product_plans (product_id, name, price_irr, duration_days, status)
+             VALUES (?1, ?2, ?3, ?4, 'ACTIVE') RETURNING id`,
+          )
+          .bind(product!.id, b.name, b.priceIrr, b.durationDays)
+          .first<{ id: number }>();
+        planId = Number(plan!.id);
+      });
+    } catch {
+      // The only realistic one is the unique code, and the code is ours, so a
+      // collision here is a bug rather than something the operator can fix.
+      return c.json(
+        { ok: false, error: 'rejected', detail: 'قفسه ساخته نشد — دوباره تلاش کن.' },
+        409,
+      );
+    }
+
+    await audit(
+      c.env.DB,
+      ident,
+      'stock.shelf_created',
+      'PRODUCT_PLAN',
+      String(planId),
+      null,
+      { name: b.name, kind: b.kind, price_irr: b.priceIrr, category_id: b.categoryId },
+      null,
+    );
+    return c.json({ ok: true, planId });
   });
 
   app.post('/api/v1/admin/stock', async (c) => {
