@@ -148,6 +148,18 @@ async function purgeAll(): Promise<void> {
   await baseEnv.DB.prepare(`DELETE FROM provisioning_providers WHERE code LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();
+  // Shelves built by `POST /stock/shelves` name themselves, so they are found
+  // by the code that route generates rather than by this file's prefix.
+  await baseEnv.DB.prepare(
+    `DELETE FROM provisioning_stock WHERE plan_id IN
+       (SELECT pl.id FROM product_plans pl JOIN products p ON p.id = pl.product_id
+         WHERE p.code LIKE 'shelf-%')`,
+  ).run();
+  await baseEnv.DB.prepare(
+    `DELETE FROM product_plans WHERE product_id IN (SELECT id FROM products WHERE code LIKE 'shelf-%')`,
+  ).run();
+  await baseEnv.DB.prepare(`DELETE FROM products WHERE code LIKE 'shelf-%'`).run();
+  await baseEnv.DB.prepare(`DELETE FROM provisioning_providers WHERE code LIKE 'shelf-%'`).run();
 }
 
 beforeAll(async () => {
@@ -170,6 +182,144 @@ beforeAll(async () => {
 
 beforeEach(purge);
 afterAll(purgeAll);
+
+describe('making a shelf', () => {
+  const categoryId = async () =>
+    Number(
+      (
+        await baseEnv.DB.prepare(`SELECT id FROM product_categories WHERE name = '__fixture'`)
+          .first<{ id: number }>()
+      )!.id,
+    );
+
+  it('builds the panel, the service and the product from one name', async () => {
+    // What Sam asked for: make the shelf first, then put accounts in it. Three
+    // rows have to exist for a shelf to be sellable, and none of them is a
+    // question about a box of Spotify accounts.
+    const res = await post('/api/v1/admin/stock/shelves', {
+      name: 'اسپاتیفای',
+      kind: 'spotify',
+      priceIrr: 2_500_000,
+      durationDays: 30,
+      categoryId: await categoryId(),
+    });
+    expect(res.status).toBe(200);
+    const { planId } = (await res.json()) as { planId: number };
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT pl.name AS plan_name, pl.price_irr, pl.duration_days, pl.status AS plan_status,
+              p.name AS product_name, p.kind AS product_kind, p.status AS product_status,
+              pr.name AS panel_name, pr.kind AS panel_kind
+         FROM product_plans pl
+         JOIN products p ON p.id = pl.product_id
+         JOIN provisioning_providers pr ON pr.id = p.provider_id
+        WHERE pl.id = ?1`,
+    )
+      .bind(planId)
+      .first<Record<string, unknown>>();
+
+    expect(row).toMatchObject({
+      plan_name: 'اسپاتیفای',
+      product_name: 'اسپاتیفای',
+      panel_name: 'اسپاتیفای',
+      product_kind: 'spotify',
+      plan_status: 'ACTIVE',
+      product_status: 'ACTIVE',
+      // `manual`, so the bot reaches for the shelf instead of a panel that does
+      // not exist. A kind with an adapter would try to provision on nothing.
+      panel_kind: 'manual',
+    });
+    expect(Number(row!['price_irr'])).toBe(2_500_000);
+  });
+
+  it('gives every shelf its own panel, so one address can be on two of them', async () => {
+    // The whole reason the panel is per-shelf: `idx_stock_account_once` is
+    // (provider_id, remote_username), and the same person having a Spotify
+    // account and a ChatGPT account is the ordinary case.
+    const cat = await categoryId();
+    const a = (await (
+      await post('/api/v1/admin/stock/shelves', {
+        name: 'اسپاتیفای دو',
+        priceIrr: 1_000_000,
+        categoryId: cat,
+      })
+    ).json()) as { planId: number };
+    const b = (await (
+      await post('/api/v1/admin/stock/shelves', {
+        name: 'چت‌جی‌پی‌تی دو',
+        priceIrr: 1_000_000,
+        categoryId: cat,
+      })
+    ).json()) as { planId: number };
+
+    const shared = `${PREFIX}same@mail.test`;
+    expect(
+      ((await (
+        await post('/api/v1/admin/stock/bulk', { planId: a.planId, text: `${shared},pw-a` })
+      ).json()) as { added: number }).added,
+    ).toBe(1);
+    expect(
+      ((await (
+        await post('/api/v1/admin/stock/bulk', { planId: b.planId, text: `${shared},pw-b` })
+      ).json()) as { added: number }).added,
+    ).toBe(1);
+
+    const n = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM provisioning_stock WHERE remote_username = ?1`,
+    )
+      .bind(shared)
+      .first<{ n: number }>();
+    expect(n!.n).toBe(2);
+  });
+
+  it('is a shelf the moment it is made, before anything is in it', async () => {
+    const res = await post('/api/v1/admin/stock/shelves', {
+      name: 'اوپن‌وی‌پی‌ان',
+      priceIrr: 500_000,
+      categoryId: await categoryId(),
+    });
+    const { planId } = (await res.json()) as { planId: number };
+
+    const body = (await (
+      await app.request('/api/v1/admin/stock', {}, envAs(ADMIN))
+    ).json()) as { shelves: { planId: number; available: number; used: number }[] };
+
+    expect(body.shelves.find((s) => s.planId === planId)).toMatchObject({
+      available: 0,
+      used: 0,
+    });
+  });
+
+  it('refuses a free shelf, which the bot would draw and then not sell', async () => {
+    // `placeOrder` refuses `totalIrr <= 0` outright, and nothing in the bot's
+    // visibility predicate looks at price — so a zero-price shelf draws every
+    // button in the shop and does nothing when the customer taps «خرید». The
+    // operator fills it and waits for a sale that cannot happen.
+    const res = await post('/api/v1/admin/stock/shelves', {
+      name: 'مجانی',
+      priceIrr: 0,
+      categoryId: await categoryId(),
+    });
+    expect(res.status).toBe(400);
+    const n = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM products WHERE name = 'مجانی'`,
+    ).first<{ n: number }>();
+    expect(n!.n).toBe(0);
+  });
+
+  it('refuses a category that does not exist rather than an orphan shelf', async () => {
+    const res = await post('/api/v1/admin/stock/shelves', {
+      name: 'بی‌دسته',
+      priceIrr: 1_000,
+      categoryId: 999_999_999,
+    });
+    expect(res.status).toBe(404);
+    const n = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM products WHERE name = 'بی‌دسته'`,
+    ).first<{ n: number }>();
+    expect(n!.n).toBe(0);
+  });
+});
 
 describe('filling the shelf', () => {
   it('files the config on the plan’s own panel, not one the request names', async () => {
