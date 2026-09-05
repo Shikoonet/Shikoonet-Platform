@@ -1,14 +1,22 @@
 /**
- * Selling from the shelf when the panel will not answer.
+ * Selling from the shelf.
  *
- * `provisionPaidOrders` handles an unreachable panel by putting the order back
- * to PAID and trying again later. That is right for a blip and wrong for an
- * outage: the customer has paid, and nothing arrives until the panel returns.
+ * The shelf plays two parts, told apart by `immediate`:
  *
- * So: configs made in advance, sitting in `provisioning_stock`, handed out when
- * the panel has been refusing an order for longer than `STOCK_GRACE_MS`. The
- * shelf is refilled by hand and it is finite, which is the whole reason for the
- * grace period — a thirty-second hiccup must not empty it.
+ * - For automated panels it is the outage escape. `provisionPaidOrders` handles
+ *   an unreachable panel by putting the order back to PAID and trying again
+ *   later. That is right for a blip and wrong for an outage: the customer has
+ *   paid, and nothing arrives until the panel returns. So configs made in
+ *   advance are handed out when the panel has been refusing an order for longer
+ *   than `STOCK_GRACE_MS`. The shelf is refilled by hand and it is finite,
+ *   which is the whole reason for the grace period — a thirty-second hiccup
+ *   must not empty it.
+ *
+ * - For kinds with no automated adapter (ai_account, spotify, manual, …) it is
+ *   the delivery itself: bulk-bought accounts wait on the shelf and the first
+ *   sweep after payment hands one over, no grace — there is no panel that might
+ *   come back. An empty shelf simply falls through to the manual path, exactly
+ *   what those kinds did before the shelf existed.
  *
  * Only for a NEW_PURCHASE. A renewal has to extend the account the customer
  * already has, on the panel it already lives on; a different account would give
@@ -57,7 +65,15 @@ interface StockRow {
   provider_name: string | null;
   remote_username: string;
   remote_ref: Record<string, unknown> | null;
-  subscription_url: string;
+  subscription_url: string | null;
+  secret: string | null;
+}
+
+export interface StockDelivery {
+  text: string;
+  /** True when `text` carries a password — it must reach the customer verbatim,
+   * not be replaced by a drawn card that never renders `remote_ref`. */
+  credential: boolean;
 }
 
 /**
@@ -89,14 +105,20 @@ export async function deliverFromStock(
   db: D1Database,
   row: StockOrder,
   now: number,
-): Promise<string | null> {
+  immediate = false,
+): Promise<StockDelivery | null> {
   // `deliver()` routes a renewal away before the panel call, so today this is
   // belt and braces — and it stays, because the day someone wires the shelf
   // into `renew()` the failure is a customer losing a service they paid for.
   if (row.order_kind !== 'NEW_PURCHASE' || row.plan_id === null) return null;
 
-  const since = await failingSinceMs(db, row.order_id);
-  if (since === null || now - since < STOCK_GRACE_MS) return null;
+  // The immediate path is for kinds with no panel behind them: nothing has
+  // failed, so nothing must be stamped as failing, and there is no outage to
+  // wait out.
+  if (!immediate) {
+    const since = await failingSinceMs(db, row.order_id);
+    if (since === null || now - since < STOCK_GRACE_MS) return null;
+  }
 
   const expiresAt =
     row.duration_days === null ? null : new Date(now + row.duration_days * 86_400_000);
@@ -115,7 +137,8 @@ export async function deliverFromStock(
                            ORDER BY id
                            LIMIT 1
                            FOR UPDATE SKIP LOCKED)
-            RETURNING s.id, s.provider_id, s.remote_username, s.remote_ref, s.subscription_url`,
+            RETURNING s.id, s.provider_id, s.remote_username, s.remote_ref, s.subscription_url,
+                      s.secret`,
         )
         .bind(row.plan_id, row.order_id)
         .first<StockRow>()) ?? null;
@@ -146,7 +169,12 @@ export async function deliverFromStock(
         providerName?.name ?? row.provider_name ?? 'panel',
         row.plan_name ?? row.product_name ?? 'plan',
         row.total_irr,
-        JSON.stringify(stock.remote_ref ?? {}),
+        // The secret rides along in remote_ref so support can find it months
+        // later. It is delivered in the Telegram message and never logged.
+        JSON.stringify({
+          ...(stock.remote_ref ?? {}),
+          ...(stock.secret === null ? {} : { secret: stock.secret }),
+        }),
         stock.remote_username,
         stock.subscription_url,
         row.volume_gb,
@@ -173,5 +201,17 @@ export async function deliverFromStock(
   if (taken === null) return null;
   const sold: StockRow = taken;
   log.info('stock.filled', { ref: row.order_public_id, stock_id: sold.id });
-  return menu.serviceReady(sold.subscription_url, sold.remote_username, expiresAt);
+  // A link wins when a row somehow carries both: it is self-serve and the
+  // password is still in remote_ref for support to hand over.
+  if (sold.subscription_url !== null) {
+    return {
+      text: menu.serviceReady(sold.subscription_url, sold.remote_username, expiresAt),
+      credential: false,
+    };
+  }
+  return {
+    // The CHECK constraint says a URL-less row has a secret.
+    text: menu.accountReady(sold.remote_username, sold.secret ?? '', expiresAt),
+    credential: true,
+  };
 }

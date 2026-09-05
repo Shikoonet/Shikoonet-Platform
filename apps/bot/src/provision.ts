@@ -27,6 +27,7 @@ import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { randomUUID } from 'node:crypto';
 import {
   adapterFor,
+  isAutomated,
   groupIdsFor,
   open,
   panelSecretKey,
@@ -43,7 +44,7 @@ import type { InlineKeyboard } from './telegram.js';
 import { enqueue } from './notify.js';
 import { subscriptionOnPanelForUser } from './owned.js';
 import { actionsFor, tierFor } from './serviceActions.js';
-import { deliverFromStock } from './stock.js';
+import { deliverFromStock, type StockDelivery } from './stock.js';
 import { creditRenewalCashback, refundOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
 import { report } from './reports.js';
@@ -227,6 +228,25 @@ async function purchasedScreen(
     log.error('provision.screen_failed', { ref: row.order_public_id }, err);
     return null;
   }
+}
+
+/**
+ * The screen a shelf delivery ends on.
+ *
+ * A config link gets the same full card a panel delivery would — whether it
+ * came from stock is ours to know. A password does not: the card is drawn from
+ * the subscription row and never renders `remote_ref`, so replacing the
+ * credential message with it would swallow the password. That message goes out
+ * verbatim.
+ */
+async function stockedScreen(
+  db: D1Database,
+  row: PendingOrder,
+  now: number,
+  sold: StockDelivery,
+): Promise<Delivered> {
+  if (sold.credential) return say(sold.text);
+  return (await purchasedScreen(db, row, now)) ?? say(sold.text);
 }
 
 /**
@@ -688,6 +708,16 @@ async function deliver(
     fetch: fetchImpl,
   };
 
+  // A kind with no automated adapter has no panel to ask — but it may have a
+  // shelf. Bulk-bought accounts (ai_account, spotify, …) are delivered from
+  // stock on the first sweep, no grace: nothing is failing, there is nothing to
+  // wait out. An empty shelf falls through to the manual path below, which is
+  // exactly what these kinds did before the shelf could hold accounts.
+  if (!isAutomated(row.provider_kind)) {
+    const sold = await deliverFromStock(db, row, now, true);
+    if (sold !== null) return stockedScreen(db, row, now, sold);
+  }
+
   const result = await adapterFor(row.provider_kind).provision(request, provider);
 
   if (!result.ok) {
@@ -699,7 +729,7 @@ async function deliver(
       // The shelf writes the same subscription row a panel would, so the
       // customer gets the same screen. Whether their config came from stock is
       // ours to know and theirs not to be told.
-      if (fromStock !== null) return (await purchasedScreen(db, row, now)) ?? say(fromStock);
+      if (fromStock !== null) return stockedScreen(db, row, now, fromStock);
       // Back to PAID so the next pass tries again. The customer is told nothing
       // yet — a panel that is briefly down is not news, and saying "there was a
       // problem" only to succeed a minute later is worse than silence.
