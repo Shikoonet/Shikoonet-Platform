@@ -2594,6 +2594,7 @@ async function handleCallback(
         }
 
         const label = await setButtonEmoji(tx, target.action, chosen);
+        await clearSession(tx, user.id);
         const after = buttons.map((b) =>
           b.slot === target.slot && label !== null ? { ...b, label } : b,
         );
