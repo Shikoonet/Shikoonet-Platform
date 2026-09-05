@@ -150,9 +150,10 @@ describe('Payments grouped navigation', () => {
   it('selects the separate حالت تداوم review tab', async () => {
     render(<PaymentsView cache={createCache()} />);
     fireEvent.click(await hubNav().findByRole('tab', { name: /حالت تداوم 4/i }));
-    expect(
-      await screen.findByText('در این بازه سفارشی با حالت تداوم تحویل نشده است.'),
-    ).toBeTruthy();
+    const pending = await screen.findByRole('region', { name: 'در انتظار تطبیق بانکی' });
+    const history = screen.getByRole('region', { name: 'سابقه تطبیق‌شده' });
+    expect(within(pending).getByText('موردی در انتظار تطبیق بانکی نیست.')).toBeTruthy();
+    expect(within(history).getByText('در این بازه سابقه تطبیق‌شده‌ای نیست.')).toBeTruthy();
     expect(window.location.search).toContain('tab=continuity');
   });
 

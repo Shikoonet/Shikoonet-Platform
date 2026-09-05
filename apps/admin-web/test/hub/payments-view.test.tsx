@@ -135,8 +135,31 @@ function mockApi(byTab: Record<string, PaymentsResponse['items']>) {
     // the worker. It used to be `income`, and that was the bug: a claim is never
     // in `transaction_candidates`, so the landing screen could not show the
     // thing an operator had just come to look at.
-    const tab = new URL(url, 'http://local').searchParams.get('tab') ?? 'open';
-    const range = new URL(url, 'http://local').searchParams.get('range') ?? 'all';
+    const parsed = new URL(url, 'http://local');
+    const tab = parsed.searchParams.get('tab') ?? 'open';
+    const range = parsed.searchParams.get('range') ?? 'all';
+    const unpagedItems =
+      byTab[tab] ??
+      (tab === 'open'
+        ? [
+            ...(byTab['needs_review'] ?? []),
+            ...(byTab['waiting'] ?? []),
+            ...(byTab['suspected_fake'] ?? []),
+          ]
+        : []);
+    const continuityState = parsed.searchParams.get('continuityState');
+    const continuityItems =
+      tab === 'continuity'
+        ? (unpagedItems as PaymentItem[]).filter((payment) =>
+            continuityState === 'pending'
+              ? payment.reconciledAt == null
+              : continuityState === 'history'
+                ? payment.reconciledAt != null
+                : true,
+          )
+        : [];
+    const continuityPage = Number(parsed.searchParams.get('page') ?? '1');
+    const continuityPageSize = 1;
     return new Response(
       JSON.stringify({
         ok: true,
@@ -147,14 +170,19 @@ function mockApi(byTab: Record<string, PaymentsResponse['items']>) {
         // server returns for `tab=open`. Tests that seeded one of those three
         // therefore keep meaning what they meant.
         items:
-          byTab[tab] ??
-          (tab === 'open'
-            ? [
-                ...(byTab['needs_review'] ?? []),
-                ...(byTab['waiting'] ?? []),
-                ...(byTab['suspected_fake'] ?? []),
-              ]
-            : []),
+          tab === 'continuity'
+            ? continuityItems.slice(
+                (continuityPage - 1) * continuityPageSize,
+                continuityPage * continuityPageSize,
+              )
+            : unpagedItems,
+        ...(tab === 'continuity'
+          ? {
+              page: continuityPage,
+              pageSize: continuityPageSize,
+              total: continuityItems.length,
+            }
+          : {}),
         counts: COUNTS,
         summary: SUMMARY,
         incomeTotals: { count: 5, amountIrr: 1_000_000 },
@@ -364,6 +392,10 @@ describe('PaymentsView tabs', () => {
     renderView();
     fireEvent.click(await hubNav().findByRole('tab', { name: /حالت تداوم 5/i }));
 
+    expect(
+      await screen.findByRole('region', { name: 'در انتظار تطبیق بانکی' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'سابقه تطبیق‌شده' })).toBeTruthy();
     expect(await screen.findByText('در انتظار تطبیق')).toBeTruthy();
     expect(screen.getByText('SMS relay unavailable')).toBeTruthy();
     expect(screen.getByText('📸 رسید دارد')).toBeTruthy();
@@ -374,6 +406,60 @@ describe('PaymentsView tabs', () => {
     expect(within(review).getByText('خودکار در حالت تداوم')).toBeTruthy();
     expect(within(review).getByText('operator@example.com')).toBeTruthy();
     expect(within(review).getByText('هنوز تطبیق نشده و نیاز به بازبینی دارد')).toBeTruthy();
+  });
+
+  it('paginates pending Continuity work and reconciled history independently', async () => {
+    mockApi({
+      continuity: [
+        item({
+          id: 'pending-1',
+          orderId: 'PENDING-1',
+          fulfilmentMode: 'CONTINUITY',
+          reconciledAt: null,
+        }),
+        item({
+          id: 'pending-2',
+          orderId: 'PENDING-2',
+          fulfilmentMode: 'CONTINUITY',
+          reconciledAt: null,
+        }),
+        item({
+          id: 'history-1',
+          orderId: 'HISTORY-1',
+          fulfilmentMode: 'CONTINUITY',
+          reconciledAt: BASE + 20_000,
+        }),
+        item({
+          id: 'history-2',
+          orderId: 'HISTORY-2',
+          fulfilmentMode: 'CONTINUITY',
+          reconciledAt: BASE + 10_000,
+        }),
+      ],
+    });
+    renderView();
+    fireEvent.click(await hubNav().findByRole('tab', { name: /حالت تداوم 5/i }));
+
+    const pending = await screen.findByRole('region', { name: 'در انتظار تطبیق بانکی' });
+    const history = await screen.findByRole('region', { name: 'سابقه تطبیق‌شده' });
+    expect(await within(pending).findByText(/سفارش PENDING-1/)).toBeTruthy();
+    expect(await within(history).findByText(/سفارش HISTORY-1/)).toBeTruthy();
+
+    fireEvent.click(within(pending).getByRole('button', { name: 'بعدی' }));
+    expect(await within(pending).findByText(/سفارش PENDING-2/)).toBeTruthy();
+    expect(within(history).getByText(/سفارش HISTORY-1/)).toBeTruthy();
+
+    fireEvent.click(within(history).getByRole('button', { name: 'بعدی' }));
+    expect(await within(history).findByText(/سفارش HISTORY-2/)).toBeTruthy();
+
+    const requests = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.map(([input]) => String(input))
+      .filter((url) => url.startsWith('/api/v1/payments?tab=continuity'));
+    expect(requests.some((url) => url.includes('continuityState=pending') && url.includes('page=2')))
+      .toBe(true);
+    expect(requests.some((url) => url.includes('continuityState=history') && url.includes('page=2')))
+      .toBe(true);
   });
 
   it('does not offer a casual Approve / Reject / Undo on auto verified rows', async () => {
