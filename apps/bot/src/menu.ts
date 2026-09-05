@@ -475,11 +475,11 @@ export const HOME_REPLY_LABEL = '🏠 بازگشت به منوی اصلی';
 export const BACK_REPLY_LABEL = '↩️ برگشت';
 
 export function homeReplyMenu(): ReplyKeyboard {
-  return [[{ text: HOME_REPLY_LABEL, style: 'success' }]];
+  return [[{ text: HOME_REPLY_LABEL, style: 'primary' }]];
 }
 
 export function backReplyMenu(): ReplyKeyboard {
-  return [[{ text: BACK_REPLY_LABEL, style: 'success' }]];
+  return [[{ text: BACK_REPLY_LABEL, style: 'primary' }]];
 }
 
 /**
