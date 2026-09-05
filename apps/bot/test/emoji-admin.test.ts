@@ -402,6 +402,8 @@ describe('putting it on a button', () => {
     // would not even decode, since `parseId` refuses one.
     const applied = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${row!.id}`));
     expect(applied.replies[0]?.text ?? '').toContain('تغییر کرد');
+    const late = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    expect(late.status).toBe('ignored');
 
     // Slot 1 is the first DECLARED action — `renew` — so that is the row to
     // read. Reading «any row of main» passed by luck while only one existed.
@@ -609,10 +611,13 @@ describe('putting it on a button', () => {
       )
       .first<{ id: number }>();
 
+    await handleUpdate(db, press(ids().updateId, telegramId, 'emjb:1'));
     const out = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${row!.id}`));
 
     // A sentence, not a stack trace — and the button is untouched.
     expect(out.replies[0]?.text ?? '').toContain('جا نشد');
+    const late = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
+    expect(late.status).toBe('ignored');
     const saved = await db
       .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = 'renew'`)
       .first<{ label: string }>();
