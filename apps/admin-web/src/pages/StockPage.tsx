@@ -13,7 +13,7 @@
  * both is letting them file an account on a server the customer did not buy.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   api,
   ApiError,
@@ -549,6 +549,17 @@ function BulkStockForm({
   const [result, setResult] = useState<BulkStockResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * Which input the pending file read belongs to.
+   *
+   * `File.text()` resolves whenever it resolves. Pick a big file, then pick a
+   * small one — or start typing in the box — and the first read can land after
+   * the second, quietly replacing what the operator is looking at. They press
+   * «افزودن به قفسه» on the text they can see, and a different set of accounts
+   * goes onto the shelf. Every input that supersedes a read bumps this, and a
+   * read that comes back stale is dropped.
+   */
+  const readGeneration = useRef(0);
 
   const plan = plans.find((p) => String(p.id) === planId) ?? null;
 
@@ -639,17 +650,21 @@ function BulkStockForm({
               // two or three bytes a character, so a byte check refuses files
               // the server would have taken.
               if (f) {
+                const mine = ++readGeneration.current;
                 setErr(null);
                 void f
                   .text()
                   .then((next) => {
+                    if (mine !== readGeneration.current) return;
                     if (next.length > 200_000) {
                       setErr('فایل بلندتر از ۲۰۰٬۰۰۰ نویسه است — تکه‌تکه‌اش کن.');
                       return;
                     }
                     setText(next);
                   })
-                  .catch(() => setErr('فایل خوانده نشد.'));
+                  .catch(() => {
+                    if (mine === readGeneration.current) setErr('فایل خوانده نشد.');
+                  });
               }
               // Same file twice must fire onChange again.
               e.target.value = '';
@@ -667,7 +682,11 @@ function BulkStockForm({
         rows={8}
         placeholder={'user@example.com,secret123\nuser2@example.com,secret456'}
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          // Typing wins over a file still being read — see `readGeneration`.
+          readGeneration.current += 1;
+          setText(e.target.value);
+        }}
       />
 
       <div className="filters" style={{ marginBlockStart: 12 }}>
