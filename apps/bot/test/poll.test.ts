@@ -89,17 +89,22 @@ describe('pollOnce', () => {
       ],
       replaceReplyKeyboard: async (chatId, keyboard) => {
         expect(chatId).toBe(telegramId);
-        expect(keyboard).toEqual([[{ text: '↩️ برگشت', style: 'primary' }]]);
+        expect(keyboard).toEqual([[{ text: '↩️ برگشت', style: 'success' }]]);
         calls.push('bar');
       },
-      editMessageText: async () => {
+      sendMessage: async () => {
         calls.push('screen');
+      },
+      deleteMessage: async (chatId, messageId) => {
+        expect(chatId).toBe(telegramId);
+        expect(messageId).toBe(812);
+        calls.push('old-screen');
       },
     });
 
     await pollOnce(db, api, updateId);
 
-    expect(calls).toEqual(['bar', 'screen']);
+    expect(calls).toEqual(['bar', 'screen', 'old-screen']);
   });
 
   /**
