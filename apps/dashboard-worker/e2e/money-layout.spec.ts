@@ -358,6 +358,11 @@ test('a receipt the shape customers actually send is legible', async ({ page }) 
     const img = page.locator('.payment-receipt img');
     await expect(img).toBeVisible();
 
+    // Visibility only describes the element's box; a lazily loaded image can
+    // be visible for a frame while its intrinsic dimensions are still zero.
+    await expect(img).toHaveJSProperty('naturalWidth', 591);
+    await expect(img).toHaveJSProperty('naturalHeight', 1280);
+
     const size = await img.evaluate((el) => {
       const r = el.getBoundingClientRect();
       const image = el as HTMLImageElement;
