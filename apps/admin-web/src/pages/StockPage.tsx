@@ -23,6 +23,7 @@ import {
   type ShelfCount,
   type StockRow,
 } from '../api.js';
+import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -42,6 +43,17 @@ function message(e: unknown): string {
 }
 
 const PAGE_SIZE = 50;
+
+/**
+ * The shelf price ceiling, in the unit the operator types.
+ *
+ * Derived from the server's own constant rather than written down again: the
+ * route refuses anything above `MAX_SINGLE_PAYMENT_IRR`, and without this the
+ * form takes the number, converts it, and returns a zod message quoting a RIAL
+ * limit to somebody who typed TOMAN — a ten-times difference on a money field,
+ * which reads as the form being broken rather than the number being too big.
+ */
+const MAX_SHELF_PRICE_TOMAN = MAX_SINGLE_PAYMENT_IRR / 10;
 
 /**
  * What to call a shelf in one line.
@@ -735,6 +747,7 @@ function NewShelfForm({
             type="number"
             // A free shelf is one the bot refuses to sell — see the route.
             min={1}
+            max={MAX_SHELF_PRICE_TOMAN}
             value={priceToman}
             onChange={(e) => setPriceToman(e.target.value)}
           />
@@ -777,6 +790,12 @@ function NewShelfForm({
         </div>
       </div>
 
+      {Number(priceToman) > MAX_SHELF_PRICE_TOMAN && (
+        <div className="alert alert-error">
+          قیمت از سقف یک پرداخت بیشتر است — حداکثر {count(MAX_SHELF_PRICE_TOMAN)} تومان.
+        </div>
+      )}
+
       <p className="muted">
         پنلِ این قفسه خودش ساخته می‌شود و تحویلش دستی است — یعنی هرچه در قفسه بگذاری همان به مشتری
         می‌رسد. هر قفسه پنل خودش را دارد، پس یک ایمیل می‌تواند هم‌زمان در قفسهٔ اسپاتیفای و
@@ -790,9 +809,10 @@ function NewShelfForm({
           disabled={
             busy ||
             name.trim() === '' ||
-            // Typed zero, not just empty: `min` on the input is advisory and a
-            // pasted 0 walks past it.
+            // Typed, not just empty: `min`/`max` on the input are advisory and
+            // a pasted number walks past both.
             !(Number(priceToman) > 0) ||
+            Number(priceToman) > MAX_SHELF_PRICE_TOMAN ||
             categoryId === ''
           }
           onClick={() => void make()}
