@@ -46,22 +46,34 @@ run() { # answer  args...  -> stdout, exit code in $?
 
 printf '\nwhat the pull request is now\n'
 
+# `if` rather than `A && B || C`: when the assertion passes and `ok` were ever
+# to fail, the `||` branch would report a failure that did not happen. Reported
+# by shellcheck as SC2015, and in a file whose whole job is to be believed.
 for answer in true false; do
   got=$(run "$answer" state acme/repo 7)
-  [ "$got" = "$answer" ] && ok "reports draft=${answer} from the API" ||
+  if [ "$got" = "$answer" ]; then
+    ok "reports draft=${answer} from the API"
+  else
     bad "reports draft=${answer} from the API" "got '${got}'"
+  fi
 done
 
 # The direction that matters: no answer must mean the COMPLETE gate, never the
 # fast one. A `true` here would skip the database and browser suites on every
 # run that happened to hit a rate limit.
 got=$(run down state acme/repo 7 2>/dev/null)
-[ "$got" = false ] && ok 'an unreachable API plans as NOT a draft' ||
+if [ "$got" = false ]; then
+  ok 'an unreachable API plans as NOT a draft'
+else
   bad 'an unreachable API plans as NOT a draft' "got '${got}'"
+fi
 
 got=$(run '"maybe"' state acme/repo 7 2>/dev/null)
-[ "$got" = false ] && ok 'an answer that is neither true nor false plans as NOT a draft' ||
+if [ "$got" = false ]; then
+  ok 'an answer that is neither true nor false plans as NOT a draft'
+else
   bad 'an answer that is neither true nor false plans as NOT a draft' "got '${got}'"
+fi
 
 printf '\nwhether the plan survived the run\n'
 
@@ -73,12 +85,13 @@ else
   ok 'a draft plan on a Ready pull request is refused'
 fi
 
-for pair in 'true true' 'false false' 'false true'; do
-  set -- $pair
-  if run "$2" assert-fresh "$1" acme/repo 7 >/dev/null 2>&1; then
-    ok "planned=${1}, now=${2} is accepted"
+for pair in 'true:true' 'false:false' 'false:true'; do
+  planned=${pair%%:*}
+  now=${pair##*:}
+  if run "$now" assert-fresh "$planned" acme/repo 7 >/dev/null 2>&1; then
+    ok "planned=${planned}, now=${now} is accepted"
   else
-    bad "planned=${1}, now=${2} is accepted" 'it was refused'
+    bad "planned=${planned}, now=${now} is accepted" 'it was refused'
   fi
 done
 
