@@ -236,6 +236,14 @@ describe('the order the screens ask in', () => {
       .first<{ label: string }>();
     expect(saved?.label).toContain(FIRE_ID);
 
+    // Assigning a premium icon is the opt-in. Before this, the label above was
+    // stored correctly while the switch stayed off, so the next update loaded
+    // it as the ordinary fallback glyph and the icon appeared to vanish.
+    const setting = await db
+      .prepare(`SELECT value FROM settings WHERE scope = 'bot' AND key = 'custom_emoji'`)
+      .first<{ value: unknown }>();
+    expect(setting?.value).toBe(true);
+
     // It is remembered too, but there is no separate add/assign step.
     const remembered = await db
       .prepare(
@@ -246,15 +254,14 @@ describe('the order the screens ask in', () => {
       .first<{ n: number }>();
     expect(remembered?.n).toBe(1);
 
-    // The content cache was invalidated by the write. Opening the picker again
-    // immediately must not resurrect the old icon for another thirty seconds.
+    // Both settings and content caches were invalidated by the write. Opening
+    // the picker again immediately must retain the premium id rather than
+    // exposing only its ordinary fallback glyph.
     const reopened = await handleUpdate(db, press(ids().updateId, telegramId, 'emj'));
-    // This fixture keeps the shop's rich-emoji switch off, so a fresh load
-    // correctly exposes the new fallback glyph rather than the markup id.
     expect(
       (reopened.replies[0]?.keyboard ?? [])
         .flat()
-        .some((b) => b.text.startsWith('🔥') && b.text.includes('تمدید')),
+        .some((b) => b.text.includes(FIRE_ID) && b.text.includes('تمدید')),
     ).toBe(true);
   });
 
@@ -402,6 +409,10 @@ describe('putting it on a button', () => {
     // would not even decode, since `parseId` refuses one.
     const applied = await handleUpdate(db, press(ids().updateId, telegramId, `emjb:1:${row!.id}`));
     expect(applied.replies[0]?.text ?? '').toContain('تغییر کرد');
+    const setting = await db
+      .prepare(`SELECT value FROM settings WHERE scope = 'bot' AND key = 'custom_emoji'`)
+      .first<{ value: unknown }>();
+    expect(setting?.value).toBe(true);
     const late = await handleUpdate(db, sentEmoji(ids().updateId, telegramId));
     expect(late.status).toBe('ignored');
 
