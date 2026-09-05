@@ -205,6 +205,14 @@ describe('every button we draw', () => {
   it('always leaves a way back', () => {
     for (const keyboard of keyboards.slice(2)) {
       const targets = callbacks(keyboard).map((b) => b.callback_data);
+      // Checkout deliberately has no inline navigation: the one persistent
+      // button below the chat owns the route home and leaves «پرداخت کردم»
+      // full-width. That bar is attached by the update handler, not by this
+      // inline-keyboard builder.
+      if (targets.some((t) => t.startsWith('paid:'))) {
+        expect(targets).not.toContain('menu');
+        continue;
+      }
       expect(targets.some((t) => t === 'menu' || t === 'buy' || t.startsWith('prd:'))).toBe(true);
     }
   });
@@ -550,7 +558,12 @@ describe('the copy buttons on an invoice', () => {
   it('sits above the buttons an admin can rearrange', () => {
     const rows = menu.checkoutMenu(4242, TOTAL, CARD);
     expect(rows[0]?.every((b) => b.copy_text !== undefined)).toBe(true);
-    expect(callbacks(rows).map((b) => b.callback_data)).toEqual(['paid:4242', 'menu']);
+    expect(callbacks(rows).map((b) => b.callback_data)).toEqual(['paid:4242']);
+    // A row with one button takes the full available width in Telegram, and
+    // `success` gives this action the requested green treatment.
+    expect(rows.at(-1)).toEqual([
+      { text: '✅ پرداخت کردم', callback_data: 'paid:4242', style: 'success' },
+    ]);
   });
 
   it('drops its own button rather than the invoice when a card is not a card', () => {
