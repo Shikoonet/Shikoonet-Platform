@@ -63,28 +63,26 @@ interface DueRow {
   reason: 'time' | 'volume' | 'unused';
 }
 
+/** The separator and the ceiling, so the assembly below reads as one line. */
+const UNION = '\n\n        UNION ALL\n\n';
+const LIMIT = '\n\n         LIMIT ?5';
+
 /**
- * Warns about services running out of days or gigabytes, once each.
+ * The three questions this sweep asks, each on its own switch.
  *
- * A service that is out of BOTH gets two messages, which is deliberate: they
- * are two different reasons and the customer is told the true one each time.
- * The alternative — one merged message — is a third string to keep correct and
- * it hides whichever limit they were not thinking about.
+ * Kept as separate strings rather than one query with `AND ?7` conditions
+ * because a disabled branch must not run at all: it would consume the shared
+ * `LIMIT` and, worse, its rows would reach the claim below and be marked
+ * warned. The columns are identical across all three and the UNION requires
+ * that, so a change to one has to be a change to all three — which is what the
+ * repeated SELECT list is for, not an accident.
+ *
+ * Only what is genuinely still running: expired and exhausted services are past
+ * warning, and a customer who has been told once is not told again.
+ * `notify->>'x' IS DISTINCT FROM 'true'` rather than `= 'false'`, because the
+ * key is absent on every row that has never been warned.
  */
-export async function warnExpiringServices(
-  db: D1Database,
-  now: number = Date.now(),
-): Promise<number> {
-  // Read once per sweep, like the commission in `settle.ts`: it is shop-wide,
-  // it is cached, and a sweep of fifty services should not ask fifty times.
-  const { warnDays, warnVolumeGb, onHoldDays } = await loadShopSettings(db);
-  const { results } = await db
-    .prepare(
-      // Only what is genuinely still running: expired and exhausted services are
-      // past warning, and a customer who has been told once is not told again.
-      // `notify->>'x' IS DISTINCT FROM 'true'` rather than `= 'false'`, because
-      // the key is absent on every row that has never been warned.
-      `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
+const TIME_BRANCH = `SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
               s.volume_gb, s.used_bytes, s.purchased_at, 'time' AS reason
          FROM subscriptions s
          JOIN users u ON u.id = s.user_id
@@ -101,11 +99,9 @@ export async function warnExpiringServices(
           AND s.notify->>'time' IS DISTINCT FROM 'true'
           AND s.expires_at IS NOT NULL
           AND s.expires_at > to_timestamp(?1 / 1000.0)
-          AND s.expires_at <= to_timestamp(?1 / 1000.0) + make_interval(days => ?2)
+          AND s.expires_at <= to_timestamp(?1 / 1000.0) + make_interval(days => ?2)`;
 
-        UNION ALL
-
-        SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
+const VOLUME_BRANCH = `        SELECT s.id, u.telegram_id, s.plan_name_at_sale, s.expires_at,
                s.volume_gb, s.used_bytes, s.purchased_at, 'volume' AS reason
           FROM subscriptions s
           JOIN users u ON u.id = s.user_id
@@ -121,11 +117,9 @@ export async function warnExpiringServices(
            AND s.volume_gb * ?4 - s.used_bytes <= ?3
            -- And not already over its date, or the customer gets a volume
            -- warning about a service that expired last week.
-           AND (s.expires_at IS NULL OR s.expires_at > to_timestamp(?1 / 1000.0))
+           AND (s.expires_at IS NULL OR s.expires_at > to_timestamp(?1 / 1000.0))`;
 
-        UNION ALL
-
-        -- Bought and never connected.
+const UNUSED_BRANCH = `        -- Bought and never connected.
         --
         -- The legacy asks the panel for accounts in its on_hold status. We do
         -- not carry that status: sync.ts refuses to write the panel's status
@@ -157,12 +151,48 @@ export async function warnExpiringServices(
            -- A service that has already run out is past nudging: telling
            -- somebody to go connect a thing that stopped working is worse than
            -- silence.
-           AND (s.expires_at IS NULL OR s.expires_at > to_timestamp(?1 / 1000.0))
+           AND (s.expires_at IS NULL OR s.expires_at > to_timestamp(?1 / 1000.0))`;
 
-         LIMIT ?5`,
-    )
+/**
+ * Warns about services running out of days or gigabytes, once each.
+ *
+ * A service that is out of BOTH gets two messages, which is deliberate: they
+ * are two different reasons and the customer is told the true one each time.
+ * The alternative — one merged message — is a third string to keep correct and
+ * it hides whichever limit they were not thinking about.
+ */
+export async function warnExpiringServices(
+  db: D1Database,
+  now: number = Date.now(),
+): Promise<number> {
+  // Read once per sweep, like the commission in `settle.ts`: it is shop-wide,
+  // it is cached, and a sweep of fifty services should not ask fifty times.
+  const { warnDays, warnVolumeGb, onHoldDays, cron } = await loadShopSettings(db);
+
+  // Only the branches the shop has switched on.
+  //
+  // Assembled rather than filtered afterwards, because the alternative is
+  // selecting rows in order to throw them away — and the throwing-away happens
+  // AFTER the claim below, which would mark a subscription warned about a thing
+  // the shop had turned off. The `LIMIT` is the second reason: a disabled
+  // branch that still runs eats the batch that the enabled ones needed.
+  //
+  // `packages/db` closes the parameter gap this leaves (`compactParameters`),
+  // so dropping the volume branch does not strand `?3` and `?4`.
+  const branches = [
+    cron.warn_time ? TIME_BRANCH : null,
+    cron.warn_volume ? VOLUME_BRANCH : null,
+    cron.warn_unused ? UNUSED_BRANCH : null,
+  ].filter((b): b is string => b !== null);
+  // Nothing on. Returned before the query rather than after it, so a shop with
+  // every warning off costs one settings read per cycle instead of a scan.
+  if (branches.length === 0) return 0;
+
+  const { results } = await db
+    .prepare(branches.join(UNION) + LIMIT)
     .bind(now, warnDays, warnVolumeGb * 1024 ** 3, 1024 ** 3, BATCH, onHoldDays)
     .all<DueRow>();
+
 
   // Asked once, and only when somebody is actually going to be pointed at
   // support. Every other pass pays nothing for it.
