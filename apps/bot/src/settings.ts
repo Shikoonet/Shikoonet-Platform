@@ -14,7 +14,14 @@
 import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { invalidateBotContent } from './botContent.js';
 import { createLogger } from '@shikoo/domain';
-import { checkPlanLabel, PLAN_LABEL_SETTING, REPORT_KINDS, type ReportKind } from '@shikoo/contracts';
+import {
+  checkPlanLabel,
+  PLAN_LABEL_SETTING,
+  REPORT_KINDS,
+  CRON_TOGGLES,
+  CRON_DRY_RUN,
+  type ReportKind,
+} from '@shikoo/contracts';
 
 const log = createLogger('bot');
 
@@ -79,6 +86,15 @@ export async function settingIs(
 // ---------------------------------------------------------------------------
 // The shop's own switches
 // ---------------------------------------------------------------------------
+
+/**
+ * One boolean per sweep that has an off switch.
+ *
+ * Keyed by the same `CronJobKey` the panel draws, so a job added to the
+ * registry with a toggle and forgotten here is a type error rather than a
+ * switch that turns nothing off.
+ */
+export type CronSwitches = Record<keyof typeof CRON_TOGGLES, boolean>;
 
 /**
  * What the shop has turned on, and the numbers it charges by.
@@ -215,6 +231,47 @@ export interface ShopSettings {
    */
   onHoldDays: number;
   /**
+   * Which sweeps are allowed to run.
+   *
+   * The registry that names these — what each does, its bounds, and the texts
+   * it sends — is `CRON_JOBS` in `@shikoo/contracts`, because the panel screen
+   * is built from it. What lives HERE is only what a sweep needs in order to
+   * decide whether to act, read through the same 30-second cache as the rest.
+   *
+   * Each switch defaults to what the bot did before it existed: the three
+   * warnings ON, the two removals OFF. That asymmetry is the point — a
+   * settings read that fails must not start deleting accounts, and must not
+   * stop telling a customer their service is ending.
+   */
+  cron: CronSwitches;
+  /**
+   * Whether the removal sweeps only report what they would delete.
+   *
+   * Defaults to TRUE, which is the only fallback in this object that is not
+   * «what the last release did» — the last release did not delete anything at
+   * all, so there is no behaviour to preserve, and the safe direction wins.
+   */
+  cronRemoveDryRun: boolean;
+  /**
+   * `setting.removedayc` — days past expiry before a service is removed.
+   *
+   * Production reads 30 on `backup_2026-09-02.sql` and 7 on the 08-11 dump.
+   * Two real answers from one shop, months apart, which is precisely why this
+   * is a row and not a constant.
+   */
+  removeAfterDays: number;
+  /** `setting.cronvolumere` — days since last connection, for a full service. */
+  removeVolumeAfterDays: number;
+  /** How many days after `/start` somebody who never bought is nudged. */
+  nudgeAfterDays: number;
+  /**
+   * How long an unpaid invoice is held — the constant `ORDER_TTL_MS` until now.
+   *
+   * `cronbot/payment_expire.php` uses `time() - 86400`, so 24 is both the
+   * legacy's number and ours and nothing moves on the day this ships.
+   */
+  orderTtlHours: number;
+  /**
    * Whether a customer must accept the shop's rules before anything else —
    * `setting.roll_Status`, which is `rolleon` in production.
    *
@@ -293,6 +350,22 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   trialQuotaPerUser: 1,
   warnVolumeGb: 1,
   onHoldDays: 1,
+  // The three warnings on and the two removals off, which is what this bot
+  // did on the day before the switches existed. A read that fails keeps
+  // telling customers their service is ending and keeps deleting nothing.
+  cron: {
+    warn_time: true,
+    warn_volume: true,
+    warn_unused: true,
+    remove_expired: false,
+    remove_volume: false,
+    nudge_never_bought: false,
+  },
+  cronRemoveDryRun: true,
+  removeAfterDays: 30,
+  removeVolumeAfterDays: 17,
+  nudgeAfterDays: 3,
+  orderTtlHours: 24,
   requiresRules: false,
   customEmoji: false,
   // Null, and deliberately not a template. `planLabel.ts` says why: every
@@ -326,6 +399,19 @@ function trialQuota(value: number | null): number {
 
 function wholeCount(value: number | null, fallback: number): number {
   return value !== null && Number.isSafeInteger(value) && value > 0 && value <= 365
+    ? value
+    : fallback;
+}
+
+/**
+ * The same shape as `wholeCount` with the ceiling an invoice deadline needs.
+ *
+ * 720 hours is thirty days, which is the registry's `order_ttl_hours` max and
+ * far past anything sensible — it is a guard against a mistyped row holding a
+ * customer's reservation for a year, not a feature.
+ */
+function hourCount(value: number | null, fallback: number): number {
+  return value !== null && Number.isSafeInteger(value) && value > 0 && value <= 720
     ? value
     : fallback;
 }
@@ -393,6 +479,21 @@ export const SHOP_SETTING_KEYS = [
   ['bot', 'daywarn'],
   ['bot', 'volumewarn'],
   ['bot', 'on_hold_day'],
+  // The cron rows, inserted by 0057. Listed here one at a time rather than
+  // spread from CRON_SETTING_KEYS, because this array is a `const` tuple that
+  // TYPES every read below — spreading a wider array would turn `text('daywarn')`
+  // back into an unchecked string lookup for all forty of them.
+  [CRON_TOGGLES.warn_time.scope, CRON_TOGGLES.warn_time.key],
+  [CRON_TOGGLES.warn_volume.scope, CRON_TOGGLES.warn_volume.key],
+  [CRON_TOGGLES.warn_unused.scope, CRON_TOGGLES.warn_unused.key],
+  [CRON_TOGGLES.remove_expired.scope, CRON_TOGGLES.remove_expired.key],
+  [CRON_TOGGLES.remove_volume.scope, CRON_TOGGLES.remove_volume.key],
+  [CRON_TOGGLES.nudge_never_bought.scope, CRON_TOGGLES.nudge_never_bought.key],
+  [CRON_DRY_RUN.scope, CRON_DRY_RUN.key],
+  ['bot', 'removedayc'],
+  ['bot', 'cronvolumere'],
+  ['bot', 'nudge_after_days'],
+  ['bot', 'order_ttl_hours'],
   ['bot', 'limit_usertest_all'],
   ['bot', 'roll_Status'],
   // Ours, not a migrated legacy column — there was nothing in the PHP schema
@@ -609,6 +710,21 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       const n = Number(value);
       return Number.isFinite(n) ? n : null;
     };
+    /**
+     * A switch row, or its default when the row cannot be read as one.
+     *
+     * Only the two exact words. `settingText` hands over `'true'` for a jsonb
+     * boolean and `'true'` for the string `"true"` a hand-edit might leave, so
+     * both spellings of an admin's intent are honoured — and anything else
+     * falls back rather than being coerced. `Boolean('false')` is `true`, which
+     * is exactly the coercion that would turn a switched-off deletion job on.
+     */
+    const bool = (key: ShopSettingKey, fallback: boolean): boolean => {
+      const value = text(key);
+      if (value === 'true') return true;
+      if (value === 'false') return false;
+      return fallback;
+    };
 
     const value: ShopSettings = {
       // Closed only on the exact word. Anything unrecognised leaves the shop
@@ -664,6 +780,33 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       trialQuotaPerUser: trialQuota(num('limit_usertest_all')),
       warnVolumeGb: wholeCount(num('volumewarn'), DEFAULT_SHOP_SETTINGS.warnVolumeGb),
       onHoldDays: wholeCount(num('on_hold_day'), DEFAULT_SHOP_SETTINGS.onHoldDays),
+      cron: {
+        warn_time: bool(CRON_TOGGLES.warn_time.key, DEFAULT_SHOP_SETTINGS.cron.warn_time),
+        warn_volume: bool(CRON_TOGGLES.warn_volume.key, DEFAULT_SHOP_SETTINGS.cron.warn_volume),
+        warn_unused: bool(CRON_TOGGLES.warn_unused.key, DEFAULT_SHOP_SETTINGS.cron.warn_unused),
+        remove_expired: bool(
+          CRON_TOGGLES.remove_expired.key,
+          DEFAULT_SHOP_SETTINGS.cron.remove_expired,
+        ),
+        remove_volume: bool(
+          CRON_TOGGLES.remove_volume.key,
+          DEFAULT_SHOP_SETTINGS.cron.remove_volume,
+        ),
+        nudge_never_bought: bool(
+          CRON_TOGGLES.nudge_never_bought.key,
+          DEFAULT_SHOP_SETTINGS.cron.nudge_never_bought,
+        ),
+      },
+      cronRemoveDryRun: bool(CRON_DRY_RUN.key, DEFAULT_SHOP_SETTINGS.cronRemoveDryRun),
+      removeAfterDays: wholeCount(num('removedayc'), DEFAULT_SHOP_SETTINGS.removeAfterDays),
+      removeVolumeAfterDays: wholeCount(
+        num('cronvolumere'),
+        DEFAULT_SHOP_SETTINGS.removeVolumeAfterDays,
+      ),
+      nudgeAfterDays: wholeCount(num('nudge_after_days'), DEFAULT_SHOP_SETTINGS.nudgeAfterDays),
+      // Hours, not days, so `wholeCount`'s 365 ceiling is the wrong one — a
+      // month-long hold is 720. Bounded here against the registry's own max.
+      orderTtlHours: hourCount(num('order_ttl_hours'), DEFAULT_SHOP_SETTINGS.orderTtlHours),
       // On only for the exact word, like `customEmoji` and unlike the three
       // legacy switches above. Those describe selling the shop has been doing
       // for years, so an unreadable value leaves it alone; this one puts a wall

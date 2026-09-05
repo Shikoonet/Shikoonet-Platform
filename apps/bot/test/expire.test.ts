@@ -16,7 +16,8 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_CONTENT, invalidateBotContent } from '../src/botContent.js';
-import { expireUnpaidOrders, ORDER_TTL_MS } from '../src/expire.js';
+import { expireUnpaidOrders } from '../src/expire.js';
+import { loadShopSettings } from '../src/settings.js';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import { run } from '../src/poll.js';
@@ -143,9 +144,15 @@ describe('an invoice with a deadline', () => {
     const { order } = await buy('sim-vip-1m-50');
     expect(order.expires_at).not.toBeNull();
 
+    // Against the shop's own row rather than a constant in this file. The
+    // length became a setting, and a test that keeps its own copy of the
+    // number would stay green on the day an admin changes it and the invoice
+    // stops matching — which is the whole failure this setting exists for.
+    const { orderTtlHours } = await loadShopSettings(db);
+    const ttlMs = orderTtlHours * 3600_000;
     const gap = new Date(order.expires_at!).getTime() - Date.now();
-    expect(gap).toBeGreaterThan(ORDER_TTL_MS - 60_000);
-    expect(gap).toBeLessThanOrEqual(ORDER_TTL_MS + 60_000);
+    expect(gap).toBeGreaterThan(ttlMs - 60_000);
+    expect(gap).toBeLessThanOrEqual(ttlMs + 60_000);
   });
 
   it('is left alone until the deadline passes', async () => {
