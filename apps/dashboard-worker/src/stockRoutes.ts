@@ -30,7 +30,7 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
-import { checkRemoteUsername } from '@shikoo/domain';
+import { checkRemoteUsername, isAutomated } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 const StockBody = z
@@ -152,19 +152,34 @@ export function registerStockRoutes(
 
     // What an admin actually needs from this screen: how deep the shelf is per
     // plan. Counting rows on the page would count the page, not the shelf.
+    //
+    // Counted FROM the plans, not from the rows. Started from
+    // `provisioning_stock`, an empty shelf was not a shelf with a zero on it —
+    // it was absent, so a product whose accounts had never been loaded appeared
+    // nowhere, and the «قفسه خالی است» warning below could only ever fire for a
+    // shelf that had once been full. A plan that sells from the shelf is a
+    // shelf on the day it is created.
+    //
+    // Which plans those are: any on a panel with no automated adapter — the
+    // account kinds — plus any that already holds stock, which is how a VPN
+    // panel's outage shelf keeps its row.
     const counts = await c.env.DB.prepare(
       `SELECT pl.id AS plan_id, pl.name AS plan_name, p.name AS product_name,
-              COUNT(*) FILTER (WHERE st.status = 'AVAILABLE')::int AS available,
-              COUNT(*) FILTER (WHERE st.status = 'USED')::int AS used
-         FROM provisioning_stock st
-         JOIN product_plans pl ON pl.id = st.plan_id
+              pr.kind AS provider_kind,
+              COUNT(st.id) FILTER (WHERE st.status = 'AVAILABLE')::int AS available,
+              COUNT(st.id) FILTER (WHERE st.status = 'USED')::int AS used
+         FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
-        GROUP BY pl.id, pl.name, p.name
+         LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
+         LEFT JOIN provisioning_stock st ON st.plan_id = pl.id
+        WHERE pl.status <> 'DISABLED' AND p.status <> 'DISABLED'
+        GROUP BY pl.id, pl.name, p.name, pr.kind
         ORDER BY available, pl.name`,
     ).all<{
       plan_id: number;
       plan_name: string;
       product_name: string;
+      provider_kind: string | null;
       available: number;
       used: number;
     }>();
@@ -175,13 +190,19 @@ export function registerStockRoutes(
       page: q.data.page,
       pageSize: q.data.pageSize,
       items: (rows.results ?? []).map((r) => shape(r, ident.role === 'ADMIN')),
-      shelves: (counts.results ?? []).map((r) => ({
-        planId: Number(r.plan_id),
-        planName: r.plan_name,
-        productName: r.product_name,
-        available: Number(r.available),
-        used: Number(r.used),
-      })),
+      shelves: (counts.results ?? [])
+        // A shelf is a plan that sells from one: every plan on a panel with no
+        // automated adapter, plus any plan that already holds stock — which is
+        // how a VPN panel's outage shelf keeps its row. Asked through
+        // `isAutomated` rather than a list of kinds spelled again in SQL.
+        .filter((r) => !isAutomated(r.provider_kind ?? '') || r.available + r.used > 0)
+        .map((r) => ({
+          planId: Number(r.plan_id),
+          planName: r.plan_name,
+          productName: r.product_name,
+          available: Number(r.available),
+          used: Number(r.used),
+        })),
     });
   });
 

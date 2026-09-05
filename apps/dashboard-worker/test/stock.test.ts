@@ -240,6 +240,43 @@ describe('filling the shelf', () => {
     expect(res.status).toBe(404);
   });
 
+  it('shows an account shelf that has never been filled', async () => {
+    // A shelf is a plan that sells from one — on the day it is created, not on
+    // the day somebody first pastes into it. Counted from `provisioning_stock`
+    // this row simply did not exist, so a product whose accounts were never
+    // loaded was invisible on the screen built to watch exactly that.
+    const panel = await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind, status)
+       VALUES (?1, 'پنل اکانت', 'ai_account', 'ACTIVE') RETURNING id`,
+    )
+      .bind(`${PREFIX}acct`)
+      .first<{ id: number }>();
+    const product = await baseEnv.DB.prepare(
+      `INSERT INTO products (code, name, kind, provider_id, category_id, status)
+       VALUES (?1, 'چت‌جی‌پی‌تی', 'ai_account', ?2,
+               (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE')
+       RETURNING id`,
+    )
+      .bind(`${PREFIX}acct-product`, Number(panel!.id))
+      .first<{ id: number }>();
+    const plan = await baseEnv.DB.prepare(
+      `INSERT INTO product_plans (product_id, name, price_irr, duration_days, status)
+       VALUES (?1, 'یک‌ماهه', 9000000, 30, 'ACTIVE') RETURNING id`,
+    )
+      .bind(Number(product!.id))
+      .first<{ id: number }>();
+
+    const res = await app.request('/api/v1/admin/stock', {}, envAs(ADMIN));
+    const body = (await res.json()) as { shelves: { planId: number; available: number }[] };
+
+    const shelf = body.shelves.find((s) => s.planId === Number(plan!.id));
+    expect(shelf).toBeDefined();
+    expect(shelf?.available).toBe(0);
+
+    // And a VPN plan with no stock is NOT a shelf — it sells from its panel.
+    expect(body.shelves.find((s) => s.planId === fx.planB)).toBeUndefined();
+  });
+
   it('counts the shelf per plan, not per page', async () => {
     await shelve(fx.planA, `${PREFIX}c1`);
     await shelve(fx.planA, `${PREFIX}c2`);
