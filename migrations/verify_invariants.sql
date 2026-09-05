@@ -272,6 +272,14 @@ SELECT assert_rejects($$
                '__inv-stock-a', 'https://example.invalid/sub/again')
 $$, 'the same panel account cannot be shelved twice');
 
+-- 0057: a row must carry a credential — a link, a secret, or both.
+SELECT assert_rejects($$
+  INSERT INTO provisioning_stock (plan_id, provider_id, remote_username)
+       VALUES ((SELECT id FROM product_plans WHERE name = '__inv-plan'),
+               (SELECT id FROM provisioning_providers WHERE code = '__inv-provider'),
+               '__inv-stock-naked')
+$$, 'a stock row with neither link nor secret is nothing to deliver');
+
 -- ---------------------------------------------------------------------------
 -- reseller applications — one open at a time, per person (0012)
 -- ---------------------------------------------------------------------------
