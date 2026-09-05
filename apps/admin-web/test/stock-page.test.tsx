@@ -70,6 +70,12 @@ const addStockBulk = vi.fn(async (_b: { planId: number; text: string }) => ({
   added: 0,
   skipped: [],
 }));
+// The page loads these for the «قفسهٔ تازه» form: a shelf has to be filed under
+// a category or it has no button anywhere in the shop.
+const productCategories = vi.fn(async () => ({
+  ok: true,
+  items: [{ id: 1, name: 'اکانت‌ها', badge: null, buttonStyle: null }],
+}));
 
 vi.mock('../src/api.js', async () => {
   const actual = await vi.importActual<typeof import('../src/api.js')>('../src/api.js');
@@ -79,6 +85,7 @@ vi.mock('../src/api.js', async () => {
       stock: () => stock(),
       products: () => products(),
       addStockBulk: (b: { planId: number; text: string }) => addStockBulk(b),
+      productCategories: () => productCategories(),
     },
   };
 });
