@@ -37,6 +37,10 @@ import { invalidateBotContent } from './botContent.js';
 
 type Db = D1Database | D1DatabaseSession;
 
+const PICTOGRAPHIC_GRAPHEME = /\p{Extended_Pictographic}/u;
+const FLAG_GRAPHEME = /^\p{Regional_Indicator}{2}$/u;
+const KEYCAP_GRAPHEME = /^[#*0-9]\uFE0F?\u20E3$/u;
+
 /** The pack that holds what was sent to the bot rather than imported by name. */
 const IN_BOT_PACK = '__from_bot__';
 
@@ -214,7 +218,14 @@ export async function setButtonEmoji(
     const graphemes = new Intl.Segmenter('fa', { granularity: 'grapheme' });
     while (plain !== '') {
       const first = graphemes.segment(plain)[Symbol.iterator]().next().value?.segment;
-      if (first === undefined || !/\p{Extended_Pictographic}/u.test(first)) break;
+      if (
+        first === undefined ||
+        (!PICTOGRAPHIC_GRAPHEME.test(first) &&
+          !FLAG_GRAPHEME.test(first) &&
+          !KEYCAP_GRAPHEME.test(first))
+      ) {
+        break;
+      }
       plain = plain.slice(first.length).trimStart();
     }
     return `<tg-emoji emoji-id="${emoji.customEmojiId}">${emoji.fallbackEmoji}</tg-emoji> ${plain}`;

@@ -318,6 +318,27 @@ describe('the order the screens ask in', () => {
     expect(label).not.toContain('👛');
     expect(label).not.toContain(FIRE_ID);
   });
+
+  it('also replaces flag and keycap icons at the front of a label', async () => {
+    await setButtonEmoji(db, 'renew', { customEmojiId: FIRE_ID, fallbackEmoji: '🔥' });
+
+    for (const oldIcon of ['🇺🇸', '1️⃣']) {
+      await db
+        .prepare(
+          `UPDATE bot_keyboard_buttons SET label = ?1
+            WHERE menu = 'main' AND action = 'renew'`,
+        )
+        .bind(`${oldIcon} تمدید سرویس`)
+        .run();
+
+      const label = await setButtonEmoji(db, 'renew', {
+        customEmojiId: FIRE_ID,
+        fallbackEmoji: '🔥',
+      });
+      expect(label).toBe(`<tg-emoji emoji-id="${FIRE_ID}">🔥</tg-emoji> تمدید سرویس`);
+      expect(label).not.toContain(oldIcon);
+    }
+  });
 });
 
 describe('giving the bot an emoji', () => {
