@@ -1155,6 +1155,11 @@ export function registerMirzabotRoutes(
     }
 
     const statusFilter = url.searchParams.get('status');
+    const continuityStateParam = url.searchParams.get('continuityState');
+    const continuityState =
+      continuityStateParam === 'pending' || continuityStateParam === 'history'
+        ? continuityStateParam
+        : null;
     /**
      * One claim by id, for the review page's deep link.
      *
@@ -1261,7 +1266,11 @@ export function registerMirzabotRoutes(
       // actually matters to an operator — nobody has decided about it yet — so
       // there is no shape left for a row to fall between.
       if (tab === 'open') where.push(PENDING_CLAIM);
-      if (tab === 'continuity') where.push(`c.fulfilment_mode = 'CONTINUITY'`);
+      if (tab === 'continuity') {
+        where.push(`c.fulfilment_mode = 'CONTINUITY'`);
+        if (continuityState === 'pending') where.push(`c.reconciled_at IS NULL`);
+        if (continuityState === 'history') where.push(`c.reconciled_at IS NOT NULL`);
+      }
 
       const tabState: ReviewState | null =
         tab === 'needs_review'

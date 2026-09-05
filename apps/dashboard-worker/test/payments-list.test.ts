@@ -207,7 +207,7 @@ describe('GET /api/v1/payments', () => {
     expect(body.items[0]!.matchedTransaction?.timeDeltaSeconds).toBe(18);
   });
 
-  it('continuity returns every claim delivered by that mode with its audit facts', async () => {
+  it('paginates pending continuity reconciliation and history independently', async () => {
     const base = Date.now();
     await seedClaim('c-cont-pending', {
       status: 'FULFILLED_UNRECONCILED',
@@ -216,6 +216,11 @@ describe('GET /api/v1/payments', () => {
       fulfilledAt: base + 1_000,
       fulfilledBy: 'operator@example.com',
       fulfilmentReason: 'SMS relay unavailable',
+    });
+    await seedClaim('c-cont-pending-old', {
+      status: 'FULFILLED_UNRECONCILED',
+      paidClickedAt: base - 20_000,
+      fulfilmentMode: 'CONTINUITY',
     });
     await seedClaim('c-cont-reconciled', {
       status: 'VERIFIED',
@@ -226,28 +231,47 @@ describe('GET /api/v1/payments', () => {
       fulfilmentReason: 'SMS relay unavailable',
       reconciledAt: base - 1_000,
     });
+    await seedClaim('c-cont-reconciled-old', {
+      status: 'VERIFIED',
+      paidClickedAt: base - 30_000,
+      fulfilmentMode: 'CONTINUITY',
+      reconciledAt: base - 20_000,
+    });
     await seedClaim('c-manual-mode', {
       status: 'FULFILLED_UNRECONCILED',
       fulfilmentMode: 'MANUAL',
     });
     await seedClaim('c-ordinary');
 
-    const body = await get('tab=continuity&range=all');
-    expect(new Set(body.items.map((i) => i.id))).toEqual(
-      new Set(['c-cont-pending', 'c-cont-reconciled']),
+    const pendingPage1 = await get(
+      'tab=continuity&continuityState=pending&range=all&pageSize=1',
     );
-    expect(body.counts.continuity).toBe(2);
-    expect(body.counts.continuityPending).toBe(1);
-    expect(body.items.find((i) => i.id === 'c-cont-pending')).toMatchObject({
+    const pendingPage2 = await get(
+      'tab=continuity&continuityState=pending&range=all&pageSize=1&page=2',
+    );
+    const historyPage1 = await get(
+      'tab=continuity&continuityState=history&range=all&pageSize=1',
+    );
+    const historyPage2 = await get(
+      'tab=continuity&continuityState=history&range=all&pageSize=1&page=2',
+    );
+
+    expect(pendingPage1.items.map((i) => i.id)).toEqual(['c-cont-pending']);
+    expect(pendingPage2.items.map((i) => i.id)).toEqual(['c-cont-pending-old']);
+    expect(pendingPage1.total).toBe(2);
+    expect(historyPage1.items.map((i) => i.id)).toEqual(['c-cont-reconciled']);
+    expect(historyPage2.items.map((i) => i.id)).toEqual(['c-cont-reconciled-old']);
+    expect(historyPage1.total).toBe(2);
+    expect(pendingPage1.counts.continuity).toBe(4);
+    expect(pendingPage1.counts.continuityPending).toBe(2);
+    expect(pendingPage1.items[0]).toMatchObject({
       fulfilmentMode: 'CONTINUITY',
       fulfilledAt: base + 1_000,
       fulfilledBy: 'operator@example.com',
       fulfilmentReason: 'SMS relay unavailable',
       reconciledAt: null,
     });
-    expect(body.items.find((i) => i.id === 'c-cont-reconciled')?.reconciledAt).toBe(
-      base - 1_000,
-    );
+    expect(historyPage1.items[0]?.reconciledAt).toBe(base - 1_000);
   });
 
   it('all returns every bucket including waiting and no-transfer-found', async () => {

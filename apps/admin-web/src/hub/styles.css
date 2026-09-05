@@ -4134,6 +4134,22 @@
   font-variant-numeric: tabular-nums;
 }
 
+.continuity-claims {
+  display: grid;
+  gap: var(--space-xl);
+}
+
+.continuity-claims__heading {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.continuity-claims__total {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Takings beside the purchase count on a card row. Tabular figures so the
    amounts line up down the list, which is the whole reason to put money in a
    column rather than in a sentence. */
