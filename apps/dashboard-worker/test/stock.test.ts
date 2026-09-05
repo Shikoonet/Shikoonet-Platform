@@ -203,7 +203,7 @@ describe('filling the shelf', () => {
     };
 
     expect(body.added).toBe(2);
-    expect(body.skipped.map((s) => s.line).sort()).toEqual([3, 4, 5]);
+    expect(body.skipped.map((s) => s.line).sort((a, b) => a - b)).toEqual([3, 4, 5]);
     // The response names the lines it refused — never the credentials on them.
     expect(raw).not.toContain('bulk-pw-1');
 
