@@ -472,9 +472,14 @@ export function mainMenu(viewer: MenuViewer): InlineKeyboard {
  * phone's screen.
  */
 export const HOME_REPLY_LABEL = '🏠 بازگشت به منوی اصلی';
+export const BACK_REPLY_LABEL = '↩️ برگشت';
 
 export function homeReplyMenu(): ReplyKeyboard {
-  return [[{ text: HOME_REPLY_LABEL }]];
+  return [[{ text: HOME_REPLY_LABEL, style: 'primary' }]];
+}
+
+export function backReplyMenu(): ReplyKeyboard {
+  return [[{ text: BACK_REPLY_LABEL, style: 'primary' }]];
 }
 
 /**
@@ -491,6 +496,7 @@ export function mainReplyMenu(viewer: MenuViewer): ReplyKeyboard {
 /** Which action a bottom-keyboard label means, against the live layout. */
 export function actionForReplyLabel(viewer: MenuViewer, text: string): string | null {
   if (text.trim() === HOME_REPLY_LABEL) return 'menu';
+  if (text.trim() === BACK_REPLY_LABEL) return 'back';
   return actionForLabel(layout('main'), viewer, text);
 }
 

@@ -161,6 +161,11 @@ export interface HandleOutcome {
   status: HandleStatus;
   replies: Reply[];
   /**
+   * A chat-wide keyboard change that cannot share the inline markup on the
+   * screen reply. `poll.ts` applies it immediately before the screen lands.
+   */
+  replyKeyboardUpdate?: { chatId: number; keyboard: ReplyKeyboard };
+  /**
    * Messages to remove once the replies are out.
    *
    * The shop's screens are edited in place, so a button press has never left a
@@ -402,7 +407,13 @@ export async function handleUpdate(
     }
 
     if (update.callback_query) {
-      return handleCallback(tx, update.callback_query, fetchImpl, api);
+      const outcome = await handleCallback(tx, update.callback_query, fetchImpl, api);
+      return applyCallbackNavigation(
+        tx,
+        update.callback_query.from.id,
+        update.callback_query.data,
+        outcome,
+      );
     }
 
     const message = update.message;
@@ -863,8 +874,9 @@ async function handleTypedAnswer(
   // question they walked away from is the one reading that is certainly wrong.
   const pressed = menu.actionForReplyLabel(user, message.text ?? '');
   if (pressed !== null) {
+    const target = pressed === 'back' ? navigationBack(session) : pressed;
     await clearSession(tx, user.id);
-    return withCleanChat(await handleMenuAction(tx, pressed, from.id), message, session);
+    return withCleanChat(await handleMenuAction(tx, target, from.id), message, session);
   }
 
   if (session.step.startsWith('addon:')) {
@@ -968,7 +980,7 @@ async function handleMenuAction(
   action: string,
   telegramId: number,
 ): Promise<HandleOutcome> {
-  return handleCallback(tx, {
+  const outcome = await handleCallback(tx, {
     // Never answered: `poll.ts` only clears the spinner for a real
     // `callback_query`, and there is no spinner on a bottom-keyboard press.
     id: `reply:${action}`,
@@ -979,6 +991,135 @@ async function handleMenuAction(
     from: { id: telegramId },
     data: action,
   });
+  return applyCallbackNavigation(tx, telegramId, action, outcome);
+}
+
+/** A valid callback saved as the destination of the persistent «برگشت». */
+function navigationBack(session: Session): string {
+  const saved = session.data['navBack'];
+  return typeof saved === 'string' && decode(saved) !== null ? saved : 'menu';
+}
+
+/**
+ * Where the bottom «برگشت» should land from the screen an action opens.
+ *
+ * These are the same safe callbacks the inline chrome uses. Entity ids remain
+ * untrusted when replayed: `handleCallback` re-checks ownership and visibility
+ * exactly as it does for a real inline press.
+ */
+function navigationParent(raw: string | undefined): string | null {
+  const action = decode(raw);
+  if (!action) return null;
+  const withId = (name: Parameters<typeof encode>[0]): string =>
+    action.id === undefined ? 'menu' : encode(name, action.id);
+
+  switch (action.action) {
+    case 'menu':
+    case 'chk':
+    case 'acc':
+      return null;
+    case 'cat':
+    case 'panel':
+    case 'prd':
+    case 'plan':
+      return 'buy';
+    case 'dsc':
+    case 'dsx':
+      return withId('plan');
+    case 'sub':
+      return 'mine';
+    case 'qr':
+    case 'xv':
+    case 'xt':
+    case 'rvk':
+    case 'rvk2':
+    case 'off':
+    case 'on':
+      return withId('sub');
+    case 'rnw':
+      return 'renew';
+    case 'dsr':
+    case 'dxr':
+      return withId('rnw');
+    case 'hlp':
+      return action.id === undefined ? 'menu' : 'hlp';
+    case 'app':
+      return 'hlp';
+    case 'emja':
+      return action.id === undefined ? 'emj' : withId('emjb');
+    case 'emjb':
+      return 'emj';
+    case 'top':
+    case 'tp':
+    case 'tpx':
+    case 'tpo':
+    case 'gft':
+      return 'wal';
+    case 'order':
+    case 'auto':
+    case 'paid':
+    case 'rord':
+    case 'wpay':
+      // Once an order exists, going back into its construction screen can
+      // create a second checkout. The ordinary menu is the safe way out.
+      return 'menu';
+    default:
+      // Every top-level surface — buy, services, renewal, wallet, support,
+      // referral, trial and admin emoji — goes home from its first screen.
+      return 'menu';
+  }
+}
+
+/**
+ * Persists the target independently of a prompt's `step`, and requests a
+ * Telegram keyboard replacement only when the visible mode changes between
+ * home and back. Deeper navigation changes the target without needless
+ * service messages because the label is already «برگشت».
+ */
+async function applyCallbackNavigation(
+  tx: D1DatabaseSession,
+  telegramId: number,
+  raw: string | undefined,
+  outcome: HandleOutcome,
+): Promise<HandleOutcome> {
+  if (outcome.status !== 'processed' || decode(raw) === null) return outcome;
+  const row = await tx
+    .prepare(
+      `SELECT u.id, COALESCE(s.data, '{}'::jsonb) AS data
+         FROM users u
+         LEFT JOIN bot_sessions s ON s.user_id = u.id
+        WHERE u.telegram_id = ?1`,
+    )
+    .bind(telegramId)
+    .first<{ id: number; data: Record<string, unknown> }>();
+  if (!row) return outcome;
+
+  const saved = row.data['navBack'];
+  const current = typeof saved === 'string' && decode(saved) !== null ? saved : null;
+  const next = navigationParent(raw);
+  const data = { ...row.data };
+  if (next === null) delete data['navBack'];
+  else data['navBack'] = next;
+
+  await tx
+    .prepare(
+      `INSERT INTO bot_sessions (user_id, step, data, updated_at)
+       VALUES (?1, NULL, ?2::jsonb, now())
+       ON CONFLICT (user_id) DO UPDATE
+         SET data = EXCLUDED.data, updated_at = now()`,
+    )
+    .bind(row.id, JSON.stringify(data))
+    .run();
+
+  if ((current === null) === (next === null)) return outcome;
+  const chatId = outcome.replies.find((reply) => reply.chatId === telegramId)?.chatId ?? telegramId;
+  return {
+    ...outcome,
+    replyKeyboardUpdate: {
+      chatId,
+      keyboard: next === null ? menu.homeReplyMenu() : menu.backReplyMenu(),
+    },
+  };
 }
 
 /**
@@ -1059,7 +1200,14 @@ async function isActiveAdmin(db: D1DatabaseSession, telegramId: number): Promise
 async function clearSession(tx: D1DatabaseSession, userId: number): Promise<void> {
   await tx
     .prepare(
-      `UPDATE bot_sessions SET step = NULL, data = '{}'::jsonb, updated_at = now()
+      `UPDATE bot_sessions
+          SET step = NULL,
+              data = CASE
+                WHEN jsonb_exists(data, 'navBack')
+                  THEN jsonb_build_object('navBack', data->'navBack')
+                ELSE '{}'::jsonb
+              END,
+              updated_at = now()
                WHERE user_id = ?1`,
     )
     .bind(userId)

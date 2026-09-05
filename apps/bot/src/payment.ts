@@ -351,38 +351,6 @@ export async function recordPaidClick(
     )
     .run();
 
-  if (inserted.meta.changes === 1) {
-    /*
-     * The current bot opens its claim directly in Postgres. Continuity used to
-     * be wired only to the legacy PHP bot's HTTP ingest path, so this exact
-     * claim never crossed the code that read the switch: the panel said the
-     * mode was on while every current-bot purchase remained PENDING.
-     *
-     * Read and fulfil inside this same transaction. That makes "new while the
-     * mode is on" literal — an old claim cannot be swept retroactively — and a
-     * failure rolls the click and its Telegram update back together rather
-     * than acknowledging a customer the mode silently skipped.
-     *
-     * No legacy webhook is enqueued here. The current bot shares this database
-     * and `settleVerifiedPayments` derives its work from
-     * FULFILLED_UNRECONCILED on every poll cycle.
-     */
-    const mode = await readContinuityMode(tx, now);
-    if (mode.mode === 'CONTINUITY') {
-      const fulfilled = await fulfilMirzabotClaimWithoutPayment(tx, {
-        claimId,
-        actorEmail: mode.activatedBy ?? 'continuity',
-        actorRole: 'SYSTEM',
-        reason: mode.reason ?? 'continuity mode',
-        mode: 'CONTINUITY',
-        now,
-      });
-      if (!fulfilled.ok) {
-        throw new Error(`continuity fulfil failed: ${fulfilled.error}`);
-      }
-    }
-  }
-
   return inserted.meta.changes === 0
     ? { outcome: 'already', publicId: payment.public_id }
     : { outcome: 'claimed', publicId: payment.public_id };
@@ -411,7 +379,9 @@ export type ReceiptResult =
  * receipt costs no storage and no egress, and the admin sees the original
  * rather than a copy of one. A Continuity claim still accepts that evidence
  * after the order has moved: it was delivered, but it remains unreconciled and
- * the receipt is exactly what the later review needs.
+ * the receipt is exactly what the later review needs. Continuity starts here,
+ * after that evidence exists — pressing «پرداخت کردم» only opens the claim and
+ * must never release an account on the strength of a button press alone.
  *
  * `receipt_submitted_at` is stamped ONCE. It is the anchor for the ten minutes
  * the matcher will keep waiting for a bank SMS before it gives up, and a
@@ -466,6 +436,32 @@ export async function recordReceipt(
     .bind(claim.id, stored, now)
     .first<{ receipt_submitted_at: number }>();
   if (!updated) return { outcome: 'settled', publicId: claim.public_id };
+
+  /*
+   * The current bot writes claims directly to Postgres, so this is its
+   * Continuity boundary: a valid receipt has been attached and the order may
+   * now be released without waiting for bank evidence. Keeping it in the same
+   * transaction as the receipt means a failed fulfilment cannot acknowledge a
+   * picture that did not actually unlock the order.
+   *
+   * A replacement receipt for an already fulfilled claim reaches this branch
+   * too. `fulfilMirzabotClaimWithoutPayment` deliberately treats that as an
+   * idempotent success, preserving the first actor, reason and timestamp.
+   */
+  const mode = await readContinuityMode(tx, now);
+  if (mode.mode === 'CONTINUITY') {
+    const fulfilled = await fulfilMirzabotClaimWithoutPayment(tx, {
+      claimId: claim.id,
+      actorEmail: mode.activatedBy ?? 'continuity',
+      actorRole: 'SYSTEM',
+      reason: mode.reason ?? 'continuity mode',
+      mode: 'CONTINUITY',
+      now,
+    });
+    if (!fulfilled.ok) {
+      throw new Error(`continuity fulfil failed: ${fulfilled.error}`);
+    }
+  }
 
   return updated.receipt_submitted_at === now
     ? { outcome: 'received', publicId: claim.public_id }

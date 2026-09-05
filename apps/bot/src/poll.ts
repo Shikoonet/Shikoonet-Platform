@@ -240,6 +240,22 @@ export async function pollOnce(
     attempts.delete(update.update_id);
     if (!sawFailure) confirmedThrough = update.update_id;
     counts[outcome.status]++;
+    // A reply keyboard cannot share a message with the inline keyboard on the
+    // screen. Change the chat-wide bar first through its short-lived carrier,
+    // then land the actual screen last so no navigation plumbing can become
+    // the newest visible message in the conversation.
+    if (outcome.replyKeyboardUpdate && api.replaceReplyKeyboard) {
+      try {
+        await api.replaceReplyKeyboard(
+          outcome.replyKeyboardUpdate.chatId,
+          outcome.replyKeyboardUpdate.keyboard,
+        );
+      } catch (err) {
+        // The transaction has committed. A stale bottom label is inconvenient,
+        // not a reason to lose or replay the action that produced the screen.
+        log.error('reply.keyboard_update_failed', { trace: traceOf(update) }, err);
+      }
+    }
     for (const reply of outcome.replies) {
       try {
         if (reply.qrOf !== undefined) {
