@@ -368,6 +368,67 @@ describe('selling accounts from the shelf', () => {
     expect(note?.text).toContain('stock-acct-pw-lost');
   });
 
+  it('sends the shop’s own words under the account', async () => {
+    // Setup steps for a ChatGPT account, where to point an OpenVPN client, a
+    // support handle — set once on the service or the plan, appended to every
+    // delivery. It rides in `attrs`, which is why there is no column for it.
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-noted@mail.test', {
+      secret: 'stock-acct-pw-noted',
+      providerCode: 'sim-shop',
+    });
+    await db
+      .prepare(
+        `UPDATE product_plans
+            SET attrs = COALESCE(attrs, '{}'::jsonb)
+                        || jsonb_build_object('delivery_note', ?2::text)
+          WHERE id = ?1`,
+      )
+      .bind(order.planId, 'برای ورود از مرورگر ناشناس استفاده کن.')
+      .run();
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain('stock-acct-pw-noted');
+    expect(note?.text).toContain('برای ورود از مرورگر ناشناس استفاده کن.');
+    // After a blank line, never on the password's own line — anything there
+    // becomes part of what the customer copies.
+    expect(note?.text).toMatch(/\n\nبرای ورود/);
+
+    await db
+      .prepare(`UPDATE product_plans SET attrs = attrs - 'delivery_note' WHERE id = ?1`)
+      .bind(order.planId)
+      .run();
+  });
+
+  it('lets a service’s words stand in for every plan under it', async () => {
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-svcnote@mail.test', {
+      secret: 'stock-acct-pw-svcnote',
+      providerCode: 'sim-shop',
+    });
+    await db
+      .prepare(
+        `UPDATE products
+            SET attrs = COALESCE(attrs, '{}'::jsonb)
+                        || jsonb_build_object('delivery_note', ?2::text)
+          WHERE code = ?1`,
+      )
+      .bind('sim-shop-ai', 'پشتیبانی: @shikoo_support')
+      .run();
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain('پشتیبانی: @shikoo_support');
+
+    await db
+      .prepare(`UPDATE products SET attrs = attrs - 'delivery_note' WHERE code = ?1`)
+      .bind('sim-shop-ai')
+      .run();
+  });
+
   it('keeps a config link off the account message path', async () => {
     // A shelved row for an adapterless product can still carry a link — then it
     // is delivered as a link, exactly like the outage path would.
