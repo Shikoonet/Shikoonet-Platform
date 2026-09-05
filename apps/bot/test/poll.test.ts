@@ -466,6 +466,17 @@ describe('button presses', () => {
     const { updateId, telegramId } = ids();
     await makeCustomer(telegramId);
     const calls: string[] = [];
+    const tracedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === 'withSession') {
+          return (...args: Parameters<typeof db.withSession>) => {
+            calls.push('database');
+            return target.withSession(...args);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
     const api = stubApi({
       getUpdates: async () => [press(updateId, telegramId, 'menu')],
       answerCallbackQuery: async () => {
@@ -476,9 +487,9 @@ describe('button presses', () => {
       },
     });
 
-    await pollOnce(db, api, updateId);
+    await pollOnce(tracedDb, api, updateId);
 
-    expect(calls).toEqual(['answer', 'screen']);
+    expect(calls).toEqual(['answer', 'database', 'screen']);
   });
 
   it('stops the spinner even for a redelivered press', async () => {
