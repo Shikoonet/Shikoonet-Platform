@@ -184,6 +184,62 @@ describe('filling the shelf', () => {
     }
   });
 
+  it('fills a shelf from a pasted export, one verdict per line', async () => {
+    const text = [
+      `${PREFIX}bulk@mail.test,bulk-pw-1`, // an account — email username, comma
+      `${PREFIX}bulkurl\thttps://panel.invalid/sub/${PREFIX}bulkurl`, // a link — tab
+      `${PREFIX}bulk@mail.test,bulk-pw-1`, // the same account again
+      'no separator on this line', // spaces are not separators
+      `bad name!,https://panel.invalid/sub/x`, // a link needs a panel-safe name
+      '', // blank lines are not verdicts
+    ].join('\n');
+
+    const res = await post('/api/v1/admin/stock/bulk', { planId: fx.planA, text });
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    const body = JSON.parse(raw) as {
+      added: number;
+      skipped: { line: number; reason: string }[];
+    };
+
+    expect(body.added).toBe(2);
+    expect(body.skipped.map((s) => s.line).sort()).toEqual([3, 4, 5]);
+    // The response names the lines it refused — never the credentials on them.
+    expect(raw).not.toContain('bulk-pw-1');
+
+    const rows = await baseEnv.DB.prepare(
+      `SELECT remote_username, subscription_url, secret, provider_id
+         FROM provisioning_stock WHERE remote_username LIKE ?1 ORDER BY id`,
+    )
+      .bind(`${PREFIX}bulk%`)
+      .all<{
+        remote_username: string;
+        subscription_url: string | null;
+        secret: string | null;
+        provider_id: number;
+      }>();
+    expect(rows.results).toHaveLength(2);
+    expect(rows.results![0]).toMatchObject({
+      remote_username: `${PREFIX}bulk@mail.test`,
+      subscription_url: null,
+      secret: 'bulk-pw-1',
+      provider_id: fx.panelA,
+    });
+    expect(rows.results![1]).toMatchObject({
+      remote_username: `${PREFIX}bulkurl`,
+      subscription_url: `https://panel.invalid/sub/${PREFIX}bulkurl`,
+      secret: null,
+    });
+  });
+
+  it('refuses a bulk paste for a plan that does not exist', async () => {
+    const res = await post('/api/v1/admin/stock/bulk', {
+      planId: 999_999_999,
+      text: `${PREFIX}x,pw`,
+    });
+    expect(res.status).toBe(404);
+  });
+
   it('counts the shelf per plan, not per page', async () => {
     await shelve(fx.planA, `${PREFIX}c1`);
     await shelve(fx.planA, `${PREFIX}c2`);
@@ -270,6 +326,20 @@ describe('who sees the accounts', () => {
     // the accounts on it.
     expect(asReviewer).not.toContain(`sub/${PREFIX}secret`);
     expect(asReviewer).toContain(`${PREFIX}secret`); // the username, which names it
+  });
+
+  it('treats a password exactly like the link it replaces', async () => {
+    await post('/api/v1/admin/stock/bulk', {
+      planId: fx.planA,
+      text: `${PREFIX}pw@mail.test,${PREFIX}pw-value`,
+    });
+
+    const asAdmin = await (await app.request('/api/v1/admin/stock', {}, envAs(ADMIN))).text();
+    const asReviewer = await (await app.request('/api/v1/admin/stock', {}, envAs(REVIEWER))).text();
+
+    expect(asAdmin).toContain(`${PREFIX}pw-value`);
+    expect(asReviewer).not.toContain(`${PREFIX}pw-value`);
+    expect(asReviewer).toContain(`${PREFIX}pw@mail.test`);
   });
 
   it('lets nobody but an admin write to the shelf', async () => {

@@ -385,6 +385,12 @@ describe('every write route, asked directly', () => {
     // connect the bot. Neither route can change a message: the ids they store
     // are a MENU, and what actually reaches a customer still goes through
     // `checkCustomEmoji` on the text that quotes one.
-    expect(writeRoutes().length).toBe(150);
+    //
+    // +1, «POST /stock/bulk». Fills a shelf from a pasted export instead of one
+    // row per press. ADMIN-only for exactly the reason the single-row route
+    // beside it is — every line is a working account the moment a customer is
+    // handed it — and the paste is the wider version of the same write: one
+    // press can put a thousand of them on the shelf.
+    expect(writeRoutes().length).toBe(151);
   });
 });
