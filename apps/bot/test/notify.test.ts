@@ -15,6 +15,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { setEventSink, type LogRecord } from '@shikoo/domain';
 import { enqueue, flush, LEASE_MS, MAX_ATTEMPTS, nextAttemptDelayMs } from '../src/notify.js';
 import { MAX_COPY_TEXT_LENGTH, TelegramRejection, type TelegramApi } from '../src/telegram.js';
 import * as menu from '../src/menu.js';
@@ -228,6 +229,26 @@ describe('delivering it', () => {
     expect(row.status).toBe('DEAD');
     expect(row.attempt_count).toBe(1);
     expect(row.next_attempt_at).toBeNull();
+  });
+
+  it('identifies whether a dead notification targeted the reports group', async () => {
+    await put('report:buyreport:order-1');
+    let dead: LogRecord | undefined;
+    setEventSink((record) => {
+      if (record.evt === 'notify.dead') dead = record;
+    });
+
+    try {
+      await flush(
+        db,
+        apiThat(() => Promise.reject(new TelegramRejection('chat not found', 400))),
+        { now: NOW },
+      );
+    } finally {
+      setEventSink(null);
+    }
+
+    expect(dead?.fields).toMatchObject({ kind: 'report', destination: 'report' });
   });
 
   it('retries a 429 rather than giving up on it', async () => {

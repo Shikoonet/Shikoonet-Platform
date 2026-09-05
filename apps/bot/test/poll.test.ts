@@ -462,6 +462,25 @@ describe('button presses', () => {
     expect(answered).toEqual([`cq-${updateId}`]);
   });
 
+  it('stops the spinner before doing the work that builds and sends the screen', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const calls: string[] = [];
+    const api = stubApi({
+      getUpdates: async () => [press(updateId, telegramId, 'menu')],
+      answerCallbackQuery: async () => {
+        calls.push('answer');
+      },
+      editMessageText: async () => {
+        calls.push('screen');
+      },
+    });
+
+    await pollOnce(db, api, updateId);
+
+    expect(calls).toEqual(['answer', 'screen']);
+  });
+
   it('stops the spinner even for a redelivered press', async () => {
     // The duplicate never reaches a handler, so answering cannot live in one.
     const { updateId, telegramId } = ids();
