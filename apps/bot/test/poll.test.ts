@@ -71,6 +71,37 @@ describe('pollOnce', () => {
     ]);
   });
 
+  it('changes the persistent bar before landing an inline submenu screen', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    const calls: string[] = [];
+    const api = stubApi({
+      getUpdates: async () => [
+        {
+          update_id: updateId,
+          callback_query: {
+            id: `nav-${updateId}`,
+            from: { id: telegramId, username: `poll${telegramId}` },
+            message: { message_id: 812, chat: { id: telegramId } },
+            data: 'soon',
+          },
+        },
+      ],
+      replaceReplyKeyboard: async (chatId, keyboard) => {
+        expect(chatId).toBe(telegramId);
+        expect(keyboard).toEqual([[{ text: '↩️ برگشت', style: 'primary' }]]);
+        calls.push('bar');
+      },
+      editMessageText: async () => {
+        calls.push('screen');
+      },
+    });
+
+    await pollOnce(db, api, updateId);
+
+    expect(calls).toEqual(['bar', 'screen']);
+  });
+
   /**
    * A message in a group must not wedge the queue.
    *

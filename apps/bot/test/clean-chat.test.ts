@@ -183,6 +183,9 @@ describe('the navigation bar installed by /start', () => {
 
     const first = await handleUpdate(db, typed(ids().updateId, telegramId, '/start'));
     expect(first.replies[0]?.replyKeyboard).toEqual(menu.homeReplyMenu());
+    expect(first.replies[0]?.replyKeyboard).toEqual([
+      [{ text: menu.HOME_REPLY_LABEL, style: 'primary' }],
+    ]);
     expect(first.replies[0]?.keyboard).toBeUndefined();
     expect(first.replies.at(-1)?.text).toBe(menu.MENU_TITLE);
     expect(first.replies.at(-1)?.keyboard).toEqual(
@@ -213,6 +216,55 @@ describe('the navigation bar under the chat', () => {
     expect(viaLabel.status).toBe('processed');
     expect(viaLabel.replies[0]?.text).toBe(viaButton.replies[0]?.text);
     expect(viaLabel.replies[0]?.keyboard).toEqual(viaButton.replies[0]?.keyboard);
+  });
+
+  it('turns blue «برگشت» inside a menu and returns home from its first screen', async () => {
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+
+    const inside = await handleUpdate(
+      db,
+      pressed(ids().updateId, telegramId, 'buy', 901),
+    );
+    expect(inside.replyKeyboardUpdate).toEqual({
+      chatId: telegramId,
+      keyboard: [[{ text: menu.BACK_REPLY_LABEL, style: 'primary' }]],
+    });
+
+    const back = await handleUpdate(
+      db,
+      typed(ids().updateId, telegramId, menu.BACK_REPLY_LABEL),
+    );
+    expect(back.replies[0]?.text).toBe(menu.MENU_TITLE);
+    expect(back.replyKeyboardUpdate).toEqual({
+      chatId: telegramId,
+      keyboard: [[{ text: menu.HOME_REPLY_LABEL, style: 'primary' }]],
+    });
+  });
+
+  it('remembers the real parent for «برگشت» on a deeper screen', async () => {
+    const { telegramId } = ids();
+    await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+
+    const prompt = await handleUpdate(
+      db,
+      pressed(ids().updateId, telegramId, `dsc:${plan}`, 902),
+    );
+    expect(prompt.replyKeyboardUpdate?.keyboard).toEqual(menu.backReplyMenu());
+
+    const back = await handleUpdate(
+      db,
+      typed(ids().updateId, telegramId, menu.BACK_REPLY_LABEL),
+    );
+    const direct = await handleUpdate(
+      db,
+      pressed(ids().updateId, telegramId, `plan:${plan}`, 903),
+    );
+    expect(back.replies[0]?.text).toBe(direct.replies[0]?.text);
+    // Both screens are still below the main menu, so no redundant Telegram
+    // keyboard replacement is requested — only the saved parent changes.
+    expect(back.replyKeyboardUpdate).toBeUndefined();
   });
 
   it('abandons an open question rather than answering it', async () => {
