@@ -152,6 +152,20 @@ beforeEach(async () => {
     )
     .run();
   await db.prepare(`DELETE FROM provisioning_stock`).run();
+  // Reset here rather than at the end of the tests that set them. A test whose
+  // assertion goes red never reaches its own cleanup, and both of these live in
+  // a database this whole suite shares: a leftover delivery note appends itself
+  // to somebody else's expected message, and a panel left without credentials
+  // fails every purchase after it.
+  await db.prepare(`UPDATE product_plans SET attrs = attrs - 'delivery_note'`).run();
+  await db.prepare(`UPDATE products SET attrs = attrs - 'delivery_note'`).run();
+  await db
+    .prepare(
+      `UPDATE provisioning_providers SET secret_ref = ?1, base_url = 'https://panel.test'
+        WHERE code = ?1`,
+    )
+    .bind(PROVIDER_CODE)
+    .run();
 });
 
 afterEach(() => {
@@ -396,6 +410,34 @@ describe('selling accounts from the shelf', () => {
     // becomes part of what the customer copies.
     expect(note?.text).toMatch(/\n\nبرای ورود/);
 
+  });
+
+  it('says none of it to a customer whose order failed', async () => {
+    // `tell()` is the funnel for EVERY provisioning message, the refund
+    // included. Appending the note to all of them tells somebody who has just
+    // been refunded how to sign in to the account they did not get.
+    const order = await paidOrder({ planCode: 'sim-vip-1m-50' });
+    await db
+      .prepare(
+        `UPDATE product_plans
+            SET attrs = COALESCE(attrs, '{}'::jsonb)
+                        || jsonb_build_object('delivery_note', ?2::text)
+          WHERE id = ?1`,
+      )
+      .bind(order.planId, 'برای ورود از مرورگر ناشناس استفاده کن.')
+      .run();
+    // A panel that refuses without hope of recovery: no credentials configured.
+    await db
+      .prepare(`UPDATE provisioning_providers SET secret_ref = NULL, base_url = NULL`)
+      .run();
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    expect(await orderStatus(order.orderId)).toBe('FAILED');
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toBeDefined();
+    expect(note?.text).not.toContain('برای ورود از مرورگر ناشناس استفاده کن.');
+
     await db
       .prepare(`UPDATE product_plans SET attrs = attrs - 'delivery_note' WHERE id = ?1`)
       .bind(order.planId)
@@ -423,10 +465,6 @@ describe('selling accounts from the shelf', () => {
     const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
     expect(note?.text).toContain('پشتیبانی: @shikoo_support');
 
-    await db
-      .prepare(`UPDATE products SET attrs = attrs - 'delivery_note' WHERE code = ?1`)
-      .bind('sim-shop-ai')
-      .run();
   });
 
   it('keeps a config link off the account message path', async () => {

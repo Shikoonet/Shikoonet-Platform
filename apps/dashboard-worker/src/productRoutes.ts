@@ -149,18 +149,28 @@ const PLAN_FIELDS = {
  * REMOVED for null so that "the panel decides" is the absence of the key, which
  * is what `pick()` reads.
  */
-function attrsKeySql(key: string, param: number): string {
-  return `attrs = CASE WHEN ?${param}::jsonb IS NULL THEN attrs - '${key}'
-                       ELSE COALESCE(attrs, '{}'::jsonb) || jsonb_build_object('${key}', ?${param}::jsonb)
-                  END`;
-}
-
-function groupIdsSql(param: number): string {
-  return attrsKeySql('group_ids', param);
-}
-
-function deliveryNoteSql(param: number): string {
-  return attrsKeySql('delivery_note', param);
+/**
+ * One `attrs = ...` assignment covering every key this patch touches.
+ *
+ * It has to be ONE, and that is the whole reason this takes a list rather than
+ * a key: `UPDATE ... SET attrs = a, attrs = b` is not a Postgres statement, it
+ * is `ERROR: multiple assignments to same column "attrs"`. Written per key, a
+ * patch carrying both the groups and the delivery note — which is every save
+ * from the services drawer, since it sends the whole form — was rejected by the
+ * database and reported to the operator as a duplicate code.
+ *
+ * Each entry nests inside the previous one, so the keys compose: a null removes
+ * that key and leaves the others, which is what «the panel decides» and «no
+ * note» each mean.
+ */
+function attrsSql(entries: { key: string; param: number }[]): string {
+  return `attrs = ${entries.reduce(
+    (inner, e) =>
+      `CASE WHEN ?${e.param}::jsonb IS NULL THEN (${inner}) - '${e.key}'
+            ELSE COALESCE(${inner}, '{}'::jsonb) || jsonb_build_object('${e.key}', ?${e.param}::jsonb)
+       END`,
+    'attrs',
+  )}`;
 }
 
 const PlanPatch = z
@@ -942,8 +952,8 @@ export function registerProductRoutes(
     // The filter needs the panels, and there are five of them — a second
     // round trip from the browser to fetch a five-row list is not worth it.
     const providers = await c.env.DB.prepare(
-      `SELECT id, code, name, status FROM provisioning_providers ORDER BY sort_order, id`,
-    ).all<{ id: number; code: string; name: string; status: string }>();
+      `SELECT id, code, name, status, kind FROM provisioning_providers ORDER BY sort_order, id`,
+    ).all<{ id: number; code: string; name: string; status: string; kind: string }>();
 
     return c.json({
       ok: true,
@@ -957,6 +967,11 @@ export function registerProductRoutes(
         code: p.code,
         name: p.name,
         status: p.status,
+        // Both panel lists answer this, and they must agree: `ProviderOption`
+        // declares it, so a producer that leaves it out ships `undefined`
+        // behind a type that says boolean — and `undefined` reads as «no
+        // groups», which is a real answer for the wrong reason.
+        hasGroups: isAutomated(p.kind ?? ''),
       })),
     });
   });
@@ -1140,7 +1155,7 @@ export function registerProductRoutes(
           ? null
           : JSON.stringify(patch.deliveryNote),
       );
-      sets.push(deliveryNoteSql(params.length));
+      sets.push(attrsSql([{ key: 'delivery_note', param: params.length }]));
     }
     params.push(id);
 
@@ -1740,22 +1755,24 @@ export function registerProductRoutes(
     if (patch.oncePerUser !== undefined) put('once_per_user', patch.oncePerUser);
     if (patch.sortOrder !== undefined) put('sort_order', patch.sortOrder);
     if (patch.status !== undefined) put('status', patch.status);
+    // Both of these live in `attrs`, so they must produce ONE assignment
+    // between them — see `attrsSql`. Not `put()`: these write a CASE over the
+    // column rather than a value into it, and each reads its parameter twice.
+    const attrKeys: { key: string; param: number }[] = [];
     if (patch.groupIds !== undefined) {
-      // Not `put()`: this one writes a CASE over `attrs` rather than a column,
-      // and it reads its parameter twice.
       params.push(patch.groupIds === null ? null : JSON.stringify(patch.groupIds));
-      sets.push(groupIdsSql(params.length));
+      attrKeys.push({ key: 'group_ids', param: params.length });
     }
     if (patch.deliveryNote !== undefined) {
-      // Same shape as the groups above, and an empty box means «no note» —
-      // the key is removed rather than set to a blank string.
+      // An empty box means «no note»: the key is removed, not set to a blank.
       params.push(
         patch.deliveryNote === null || patch.deliveryNote === ''
           ? null
           : JSON.stringify(patch.deliveryNote),
       );
-      sets.push(deliveryNoteSql(params.length));
+      attrKeys.push({ key: 'delivery_note', param: params.length });
     }
+    if (attrKeys.length > 0) sets.push(attrsSql(attrKeys));
     params.push(id);
 
     const written = await c.env.DB.prepare(

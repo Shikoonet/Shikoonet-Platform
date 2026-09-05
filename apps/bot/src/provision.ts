@@ -179,9 +179,24 @@ export interface Delivered {
   keyboard?: InlineKeyboard | null;
   /** Sent as a photo before the text. In practice the subscription link. */
   qrPayload?: string | null;
+  /**
+   * True only when this message hands a bought service to the customer.
+   *
+   * It gates the shop's delivery note, and it defaults to false rather than
+   * true on purpose: `tell()` is the funnel for EVERY provisioning message —
+   * the failure with its refund, «a person is finishing it», the trial that
+   * was not available — and a note that says how to sign in belongs to none of
+   * them. Appended to all of them, a refunded customer is told how to log into
+   * the account they did not get. A message type added later says nothing
+   * until it opts in.
+   */
+  sold?: boolean;
 }
 
 const say = (text: string): Delivered => ({ text });
+
+/** `say`, for a message that hands over what was bought. See `Delivered.sold`. */
+const handedOver = (text: string): Delivered => ({ text, sold: true });
 
 /**
  * The screen a completed purchase ends on.
@@ -223,6 +238,7 @@ async function purchasedScreen(
       text: menu.serviceReadyCard(service, now),
       keyboard: menu.serviceDetailMenu(actionsFor(service, shop, tierFor(row))),
       qrPayload: service.subscription_url,
+      sold: true,
     };
   } catch (err) {
     log.error('provision.screen_failed', { ref: row.order_public_id }, err);
@@ -245,8 +261,8 @@ async function stockedScreen(
   now: number,
   sold: StockDelivery,
 ): Promise<Delivered> {
-  if (sold.credential) return say(sold.text);
-  return (await purchasedScreen(db, row, now)) ?? say(sold.text);
+  if (sold.credential) return handedOver(sold.text);
+  return (await purchasedScreen(db, row, now)) ?? handedOver(sold.text);
 }
 
 /**
@@ -274,7 +290,7 @@ async function tell(db: D1Database, row: PendingOrder, note: Delivered): Promise
     enqueue(tx, {
       dedupeKey: `provision:${row.order_public_id}`,
       chatId,
-      text: withDeliveryNote(note.text, row),
+      text: note.sold === true ? withDeliveryNote(note.text, row) : note.text,
       keyboard: note.keyboard ?? null,
       qrPayload: note.qrPayload ?? null,
     }),
@@ -348,7 +364,7 @@ async function untoldNote(
     .bind(row.order_id)
     .first<{ remote_username: string | null; secret: string; expires_at: string | null }>();
   if (account !== null) {
-    return say(
+    return handedOver(
       menu.accountReady(
         account.remote_username ?? '',
         account.secret,
@@ -851,7 +867,7 @@ async function deliver(
   // back — the customer must get their link either way.
   return (
     (await purchasedScreen(db, row, now)) ??
-    say(menu.serviceReady(result.subscriptionUrl, result.remoteUsername, expiresAt))
+    handedOver(menu.serviceReady(result.subscriptionUrl, result.remoteUsername, expiresAt))
   );
 }
 
