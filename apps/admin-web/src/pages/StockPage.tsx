@@ -13,8 +13,15 @@
  * both is letting them file an account on a server the customer did not buy.
  */
 
-import { useEffect, useState } from 'react';
-import { api, ApiError, type PlanRow, type ShelfCount, type StockRow } from '../api.js';
+import { useEffect, useRef, useState } from 'react';
+import {
+  api,
+  ApiError,
+  type BulkStockResult,
+  type PlanRow,
+  type ShelfCount,
+  type StockRow,
+} from '../api.js';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -34,6 +41,18 @@ function message(e: unknown): string {
 }
 
 const PAGE_SIZE = 50;
+
+/**
+ * What to call a shelf in one line.
+ *
+ * The service names it — «چت‌جی‌پی‌تی پلاس» — and the plan only separates two
+ * shelves of the same service. Named by plan alone, three shelves on three
+ * different services all read «یک‌ماهه», which tells an operator nothing about
+ * which one to go and fill.
+ */
+function shelfLabel(s: ShelfCount): string {
+  return s.productName === s.planName ? s.planName : `${s.productName} — ${s.planName}`;
+}
 
 export function StockPage() {
   const w = useAdminWriteProps();
@@ -64,6 +83,7 @@ export function StockPage() {
    */
   const [revealed, setRevealed] = useState<ReadonlySet<number>>(() => new Set());
   const [adding, setAdding] = useState(false);
+  const [bulk, setBulk] = useState(false);
 
   async function load() {
     setErr(null);
@@ -115,7 +135,20 @@ export function StockPage() {
   }
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const empty = shelves.filter((s) => s.available === 0);
+  /*
+   * Two different things, and they were one red box until the shelf list began
+   * showing shelves that had never been filled.
+   *
+   * A shelf that HAS sold and is now empty is the alarm this screen was built
+   * for: customers are buying that product and the next one gets nothing. A
+   * shelf with nothing on either side is simply not stocked yet — the normal
+   * state of a service somebody created an hour ago, and on a fresh database
+   * that is every one of them. Red on all of them is a screen that cries wolf,
+   * and `sections.spec.ts` caught it doing exactly that: it walks every section
+   * and treats a visible `.alert-error` as a broken screen.
+   */
+  const ranDry = shelves.filter((s) => s.available === 0 && s.used > 0);
+  const neverFilled = shelves.filter((s) => s.available === 0 && s.used === 0);
 
   return (
     <>
@@ -123,19 +156,30 @@ export function StockPage() {
         <div>
           <div className="page-head__title">قفسهٔ انبار</div>
           <div className="page-head__sub">
-            {count(shelves.reduce((n, s) => n + s.available, 0))} کانفیگ آماده روی{' '}
-            {count(shelves.length)} کانفیگ
+            {count(shelves.reduce((n, s) => n + s.available, 0))} اکانت آماده روی{' '}
+            {count(shelves.length)} قفسه
           </div>
         </div>
-        <button type="button" className="btn btn-primary" onClick={() => setAdding(true)} {...w}>
-          افزودن کانفیگ
-        </button>
+        <div>
+          <button type="button" className="btn btn-primary" onClick={() => setAdding(true)} {...w}>
+            افزودن کانفیگ
+          </button>{' '}
+          <button type="button" className="btn" onClick={() => setBulk(true)} {...w}>
+            افزودن گروهی
+          </button>
+        </div>
       </div>
 
-      {empty.length > 0 && (
+      {ranDry.length > 0 && (
         <div className="alert alert-error">
-          قفسهٔ این کانفیگ‌ها خالی است: {empty.map((s) => s.planName).join('، ')} — اگر پنل از دسترس
-          خارج شود، فروششان می‌خوابد.
+          این قفسه‌ها فروخته‌اند و ته کشیده‌اند: {ranDry.map(shelfLabel).join('، ')} — مشتری بعدی
+          پول می‌دهد و چیزی نمی‌گیرد تا کسی دستی آماده‌اش کند.
+        </div>
+      )}
+
+      {neverFilled.length > 0 && (
+        <div className="alert alert-warning">
+          این قفسه‌ها هنوز پر نشده‌اند: {neverFilled.map(shelfLabel).join('، ')}.
         </div>
       )}
 
@@ -147,7 +191,7 @@ export function StockPage() {
           <table className="app-table">
             <thead>
               <tr>
-                <th>کانفیگ</th>
+                <th>قفسه</th>
                 <th>آماده</th>
                 <th>فروخته‌شده</th>
               </tr>
@@ -156,15 +200,17 @@ export function StockPage() {
               {shelves.length === 0 && (
                 <tr>
                   <td className="empty" colSpan={3}>
-                    هنوز هیچ کانفیگی در قفسه نیست.
+                    هنوز هیچ قفسه‌ای نیست — یک سرویس روی پنلی بساز که تحویلش دستی یا از قفسه است.
                   </td>
                 </tr>
               )}
               {shelves.map((s) => (
                 <tr key={s.planId}>
                   <td>
-                    <div>{s.planName}</div>
-                    <div className="page-head__sub">{s.productName}</div>
+                    {/* The service first: it is what names the shelf. The plan
+                        underneath only tells two shelves of one service apart. */}
+                    <div>{s.productName}</div>
+                    <div className="page-head__sub">{s.planName}</div>
                   </td>
                   <td>
                     <span
@@ -234,7 +280,7 @@ export function StockPage() {
                 <th>پنل</th>
                 <th>وضعیت</th>
                 <th>سفارش</th>
-                <th>لینک اشتراک</th>
+                <th>اعتبارنامه</th>
                 <th />
               </tr>
             </thead>
@@ -262,20 +308,20 @@ export function StockPage() {
                   </td>
                   <td className="ltr">{r.orderPublicId ?? '—'}</td>
                   <td className="ltr">
-                    {r.subscriptionUrl === null ? (
+                    {r.subscriptionUrl === null && r.secret === null ? (
                       // Null for a sold or retired row and for anyone who is
                       // not an ADMIN. Nothing to press, and nothing to explain:
                       // the paragraph under the table says why.
                       '—'
                     ) : revealed.has(r.id) ? (
-                      <code className="stock-link">{r.subscriptionUrl}</code>
+                      <code className="stock-link">{r.subscriptionUrl ?? r.secret}</code>
                     ) : (
                       <button
                         type="button"
                         className="btn btn-sm"
                         onClick={() => setRevealed((was) => new Set(was).add(r.id))}
                       >
-                        نمایش لینک
+                        نمایش
                       </button>
                     )}
                   </td>
@@ -331,8 +377,9 @@ export function StockPage() {
         )}
 
         <p className="muted">
-          لینک اشتراک اعتبارنامه است: هرکس داشته باشدش سرویس را دارد. فقط برای کانفیگ‌های روی قفسه و
-          فقط به ادمین فرستاده می‌شود، و تا وقتی «نمایش لینک» را نزنی روی صفحه نمی‌آید.
+          لینک اشتراک و گذرواژه اعتبارنامه‌اند: هرکس داشته باشدشان سرویس را دارد. فقط برای
+          ردیف‌های روی قفسه و فقط به ادمین فرستاده می‌شوند، و تا وقتی «نمایش» را نزنی روی صفحه
+          نمی‌آیند.
         </p>
       </div>
 
@@ -346,6 +393,10 @@ export function StockPage() {
             void load();
           }}
         />
+      )}
+
+      {bulk && (
+        <BulkStockForm plans={plans} onClose={() => setBulk(false)} onFilled={() => void load()} />
       )}
     </>
   );
@@ -470,6 +521,183 @@ function StockForm({
           {...w}
         >
           افزودن
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A whole shelf-load at once: paste an export, or pick the file and it lands in
+ * the same textarea. Parsing and every per-line verdict live server-side; this
+ * form only carries the text and shows what came back. The form stays open
+ * after a send on purpose — the skipped lines ARE the result, and closing over
+ * them is how a half-loaded shelf goes unnoticed.
+ */
+function BulkStockForm({
+  plans,
+  onClose,
+  onFilled,
+}: {
+  plans: PlanRow[];
+  onClose: () => void;
+  onFilled: () => void;
+}) {
+  const w = useAdminWriteProps();
+  const [planId, setPlanId] = useState('');
+  const [text, setText] = useState('');
+  const [result, setResult] = useState<BulkStockResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  /**
+   * Which input the pending file read belongs to.
+   *
+   * `File.text()` resolves whenever it resolves. Pick a big file, then pick a
+   * small one — or start typing in the box — and the first read can land after
+   * the second, quietly replacing what the operator is looking at. They press
+   * «افزودن به قفسه» on the text they can see, and a different set of accounts
+   * goes onto the shelf. Every input that supersedes a read bumps this, and a
+   * read that comes back stale is dropped.
+   */
+  const readGeneration = useRef(0);
+
+  const plan = plans.find((p) => String(p.id) === planId) ?? null;
+
+  async function send() {
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const res = await api.addStockBulk({ planId: Number(planId), text });
+      setResult(res);
+      if (res.added > 0) onFilled();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <span className="card__title">افزودن گروهی به قفسه</span>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن
+        </button>
+      </div>
+
+      {err && <div className="alert alert-error">{err}</div>}
+      {result && (
+        <div className={result.skipped.length > 0 ? 'alert alert-error' : 'alert alert-info'}>
+          {count(result.added)} ردیف به قفسه اضافه شد
+          {result.skipped.length > 0 ? ` و ${count(result.skipped.length)} ردیف رد شد:` : '.'}
+        </div>
+      )}
+      {result && result.skipped.length > 0 && (
+        <ul className="muted">
+          {result.skipped.map((s) => (
+            <li key={s.line}>
+              سطر {count(s.line)}
+              {s.username ? (
+                <>
+                  {' '}
+                  (<span className="ltr">{s.username}</span>)
+                </>
+              ) : null}
+              : {s.reason}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="bulk-plan">
+            کانفیگ
+          </label>
+          <select
+            id="bulk-plan"
+            className="form-control"
+            value={planId}
+            onChange={(e) => setPlanId(e.target.value)}
+          >
+            <option value="">انتخاب کنید…</option>
+            {plans.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.product.name} — {p.name}
+              </option>
+            ))}
+          </select>
+          <div className="page-head__sub">
+            {plan ? `پنل: ${plan.provider?.name ?? '—'}` : 'پنل از روی کانفیگ تعیین می‌شود'}
+          </div>
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="bulk-file">
+            فایل CSV یا متنی
+          </label>
+          <input
+            id="bulk-file"
+            className="form-control"
+            type="file"
+            accept=".csv,.txt,text/csv,text/plain"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              // Measured after decoding, not from `f.size`. The route caps the
+              // body at 200k CHARACTERS and a byte count is a different number
+              // in UTF-8 — a Persian note or an email with non-ASCII in it is
+              // two or three bytes a character, so a byte check refuses files
+              // the server would have taken.
+              if (f) {
+                const mine = ++readGeneration.current;
+                setErr(null);
+                void f
+                  .text()
+                  .then((next) => {
+                    if (mine !== readGeneration.current) return;
+                    if (next.length > 200_000) {
+                      setErr('فایل بلندتر از ۲۰۰٬۰۰۰ نویسه است — تکه‌تکه‌اش کن.');
+                      return;
+                    }
+                    setText(next);
+                  })
+                  .catch(() => {
+                    if (mine === readGeneration.current) setErr('فایل خوانده نشد.');
+                  });
+              }
+              // Same file twice must fire onChange again.
+              e.target.value = '';
+            }}
+          />
+        </div>
+      </div>
+
+      <label className="form-label" htmlFor="bulk-text">
+        هر سطر یک اکانت: «نام‌کاربری,گذرواژه» یا «نام‌کاربری,لینک اشتراک»
+      </label>
+      <textarea
+        id="bulk-text"
+        className="form-control ltr"
+        rows={8}
+        placeholder={'user@example.com,secret123\nuser2@example.com,secret456'}
+        value={text}
+        onChange={(e) => {
+          // Typing wins over a file still being read — see `readGeneration`.
+          readGeneration.current += 1;
+          setText(e.target.value);
+        }}
+      />
+
+      <div className="filters" style={{ marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || planId === '' || text.trim() === ''}
+          onClick={() => void send()}
+          {...w}
+        >
+          افزودن به قفسه
         </button>
       </div>
     </div>

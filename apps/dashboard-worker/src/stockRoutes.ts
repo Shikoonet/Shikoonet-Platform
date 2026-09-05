@@ -30,7 +30,7 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
-import { checkRemoteUsername } from '@shikoo/domain';
+import { checkRemoteUsername, isAutomated } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
 
 const StockBody = z
@@ -47,6 +47,41 @@ const StockBody = z
   })
   .strict();
 
+const BulkStockBody = z
+  .object({
+    planId: z.number().int().positive(),
+    text: z.string().min(1).max(200_000),
+  })
+  .strict();
+
+/** One shelf-load per request keeps the failure story simple. */
+const BULK_MAX_LINES = 1000;
+
+/**
+ * A pasted field, with the quotes a spreadsheet puts around it removed.
+ *
+ * Not a CSV parser and not trying to be: the format here is one separator per
+ * line and everything after it is the credential, so the only thing quoting
+ * changes is that `"user","pass"` would otherwise be shelved WITH its quotes
+ * and handed to a customer that way. A quote in the middle of a password is
+ * left exactly where it is.
+ */
+function unquote(field: string): string {
+  const v = field.trim();
+  return v.length >= 2 && v.startsWith('"') && v.endsWith('"')
+    ? v.slice(1, -1).replace(/""/g, '"').trim()
+    : v;
+}
+
+/** The column names a spreadsheet export puts on its first line. */
+function looksLikeHeader(username: string, credential: string): boolean {
+  const a = username.toLowerCase();
+  const b = credential.toLowerCase();
+  const names = ['username', 'user', 'email', 'login', 'account', 'نام کاربری', 'یوزرنیم'];
+  const creds = ['password', 'pass', 'secret', 'url', 'link', 'subscription', 'گذرواژه', 'رمز'];
+  return names.includes(a) && creds.some((c) => b === c || b.replace(/[_\s-]/g, '') === c);
+}
+
 const StockQuery = z.object({
   planId: z.coerce.number().int().positive().optional(),
   status: z.enum(['AVAILABLE', 'USED', 'RETIRED']).optional(),
@@ -61,7 +96,8 @@ interface StockRow {
   product_name: string;
   provider_name: string;
   remote_username: string;
-  subscription_url: string;
+  subscription_url: string | null;
+  secret: string | null;
   status: string;
   order_public_id: string | null;
   note: string | null;
@@ -74,6 +110,7 @@ interface StockRow {
  * service. It is returned only for a row that is still on the shelf, and only
  * to an ADMIN — a REVIEWER counting stock does not need to be handed the
  * accounts, and a sold row's link belongs to the customer who bought it.
+ * A password (0057) is the same kind of thing and gets the same gate.
  */
 function shape(r: StockRow, withUrl: boolean) {
   return {
@@ -84,6 +121,7 @@ function shape(r: StockRow, withUrl: boolean) {
     providerName: r.provider_name,
     remoteUsername: r.remote_username,
     subscriptionUrl: withUrl && r.status === 'AVAILABLE' ? r.subscription_url : null,
+    secret: withUrl && r.status === 'AVAILABLE' ? r.secret : null,
     status: r.status,
     orderPublicId: r.order_public_id,
     note: r.note,
@@ -93,7 +131,7 @@ function shape(r: StockRow, withUrl: boolean) {
 }
 
 const SELECT_STOCK = `
-  SELECT st.id, st.plan_id, st.remote_username, st.subscription_url, st.status,
+  SELECT st.id, st.plan_id, st.remote_username, st.subscription_url, st.secret, st.status,
          st.note, st.created_at, st.used_at,
          pl.name AS plan_name, p.name AS product_name, pr.name AS provider_name,
          o.public_id AS order_public_id
@@ -139,19 +177,38 @@ export function registerStockRoutes(
 
     // What an admin actually needs from this screen: how deep the shelf is per
     // plan. Counting rows on the page would count the page, not the shelf.
+    //
+    // Counted FROM the plans, not from the rows. Started from
+    // `provisioning_stock`, an empty shelf was not a shelf with a zero on it —
+    // it was absent, so a product whose accounts had never been loaded appeared
+    // nowhere, and the «قفسه خالی است» warning below could only ever fire for a
+    // shelf that had once been full. A plan that sells from the shelf is a
+    // shelf on the day it is created.
+    //
+    // Which plans those are: any on a panel with no automated adapter — the
+    // account kinds — plus any that already holds stock, which is how a VPN
+    // panel's outage shelf keeps its row.
     const counts = await c.env.DB.prepare(
       `SELECT pl.id AS plan_id, pl.name AS plan_name, p.name AS product_name,
-              COUNT(*) FILTER (WHERE st.status = 'AVAILABLE')::int AS available,
-              COUNT(*) FILTER (WHERE st.status = 'USED')::int AS used
-         FROM provisioning_stock st
-         JOIN product_plans pl ON pl.id = st.plan_id
+              pr.kind AS provider_kind,
+              COUNT(st.id) FILTER (WHERE st.status = 'AVAILABLE')::int AS available,
+              COUNT(st.id) FILTER (WHERE st.status = 'USED')::int AS used
+         FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
-        GROUP BY pl.id, pl.name, p.name
+         LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
+         LEFT JOIN provisioning_stock st ON st.plan_id = pl.id
+        -- A switched-off plan that still HOLDS stock stays on the list: those
+        -- rows are real inventory and hiding them is how an admin stops seeing
+        -- accounts they have already paid for.
+        WHERE st.id IS NOT NULL
+           OR (pl.status <> 'DISABLED' AND p.status <> 'DISABLED')
+        GROUP BY pl.id, pl.name, p.name, pr.kind
         ORDER BY available, pl.name`,
     ).all<{
       plan_id: number;
       plan_name: string;
       product_name: string;
+      provider_kind: string | null;
       available: number;
       used: number;
     }>();
@@ -162,13 +219,19 @@ export function registerStockRoutes(
       page: q.data.page,
       pageSize: q.data.pageSize,
       items: (rows.results ?? []).map((r) => shape(r, ident.role === 'ADMIN')),
-      shelves: (counts.results ?? []).map((r) => ({
-        planId: Number(r.plan_id),
-        planName: r.plan_name,
-        productName: r.product_name,
-        available: Number(r.available),
-        used: Number(r.used),
-      })),
+      shelves: (counts.results ?? [])
+        // A shelf is a plan that sells from one: every plan on a panel with no
+        // automated adapter, plus any plan that already holds stock — which is
+        // how a VPN panel's outage shelf keeps its row. Asked through
+        // `isAutomated` rather than a list of kinds spelled again in SQL.
+        .filter((r) => !isAutomated(r.provider_kind ?? '') || r.available + r.used > 0)
+        .map((r) => ({
+          planId: Number(r.plan_id),
+          planName: r.plan_name,
+          productName: r.product_name,
+          available: Number(r.available),
+          used: Number(r.used),
+        })),
     });
   });
 
@@ -249,6 +312,172 @@ export function registerStockRoutes(
       null,
     );
     return c.json({ ok: true, id: Number(row.id) });
+  });
+
+  /**
+   * Fills a shelf from a pasted export — the bulk half of the form above.
+   *
+   * One account per line, `username,credential` (a tab works too, so a
+   * spreadsheet export pastes as-is). A credential starting with http(s) is a
+   * subscription link and the username must be panel-safe, exactly as the
+   * single-row route demands; anything else is an account password (0057) —
+   * there the username is whatever the upstream service issued, an email
+   * included, so it is only required to be one whitespace-free token.
+   *
+   * Nothing is transactional across lines on purpose: every line answers for
+   * itself, a duplicate is the database's verdict per row, and the response
+   * names each line that did not make it. Credentials never appear in the
+   * response or the audit trail — counts and usernames only.
+   */
+  app.post('/api/v1/admin/stock/bulk', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const body = BulkStockBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json(
+        { ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message },
+        400,
+      );
+    }
+
+    const plan = await c.env.DB.prepare(
+      `SELECT pl.id, p.provider_id, pr.kind AS provider_kind
+         FROM product_plans pl
+         JOIN products p ON p.id = pl.product_id
+         LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
+        WHERE pl.id = ?1`,
+    )
+      .bind(body.data.planId)
+      .first<{ id: number; provider_id: number; provider_kind: string | null }>();
+    if (!plan) return c.json({ ok: false, error: 'plan_not_found' }, 404);
+    // An account is a username and a password and no panel knows about it. On a
+    // panel that provisions for itself, the shelf holds CONFIGS — a password
+    // row there would be handed to a customer as an account on a server where
+    // it does not exist, and the panel would never have heard of the username.
+    const panelIsAutomated = isAutomated(plan.provider_kind ?? '');
+
+    const lines = body.data.text.split(/\r?\n/);
+    if (lines.filter((l) => l.trim() !== '').length > BULK_MAX_LINES) {
+      return c.json(
+        {
+          ok: false,
+          error: 'too_many_lines',
+          detail: `حداکثر ${BULK_MAX_LINES} سطر در هر بار — فایل را تکه‌تکه بفرست.`,
+        },
+        400,
+      );
+    }
+
+    let added = 0;
+    let seenAContentLine = false;
+    const skipped: { line: number; username?: string; reason: string }[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = (lines[i] ?? '').trim();
+      if (line === '') continue;
+      const at = i + 1;
+      // The FIRST line with anything on it, not line 1: a file that opens with
+      // a blank line would otherwise carry its header straight past the check
+      // below and onto the shelf.
+      const isFirstContentLine = !seenAContentLine;
+      seenAContentLine = true;
+
+      const sep = /[\t,]/.exec(line);
+      if (!sep) {
+        skipped.push({ line: at, reason: 'جداکننده ندارد — «نام‌کاربری,گذرواژه» یا «نام‌کاربری,لینک»' });
+        continue;
+      }
+      const username = unquote(line.slice(0, sep.index));
+      const credential = unquote(line.slice(sep.index + 1));
+      if (username === '' || credential === '') {
+        skipped.push({ line: at, reason: 'نام کاربری یا اعتبارنامه خالی است' });
+        continue;
+      }
+      // A spreadsheet export starts with its column names, and shelved as an
+      // account that row sorts lowest — so «username / password» would be the
+      // first thing sold to a real customer.
+      if (isFirstContentLine && looksLikeHeader(username, credential)) {
+        skipped.push({ line: at, reason: 'سطر عنوان فایل است، نه یک اکانت' });
+        continue;
+      }
+
+      const isUrl = /^https?:\/\//i.test(credential);
+      if (!isUrl && panelIsAutomated) {
+        skipped.push({
+          line: at,
+          username,
+          reason: 'این محصول روی پنل خودکار است — قفسه‌اش لینک اشتراک می‌گیرد، نه گذرواژه.',
+        });
+        continue;
+      }
+      if (isUrl) {
+        // A link is sold onto a panel; the username must survive that panel.
+        const nameProblem = checkRemoteUsername(username);
+        if (nameProblem) {
+          skipped.push({ line: at, username, reason: nameProblem });
+          continue;
+        }
+        if (credential.length > 2000) {
+          skipped.push({ line: at, username, reason: 'لینک بلندتر از ۲۰۰۰ نویسه است' });
+          continue;
+        }
+      } else {
+        if (!/^\S{1,200}$/.test(username)) {
+          skipped.push({ line: at, username, reason: 'نام کاربری باید یک تکه و حداکثر ۲۰۰ نویسه باشد' });
+          continue;
+        }
+        if (credential.length > 500) {
+          skipped.push({ line: at, username, reason: 'گذرواژه بلندتر از ۵۰۰ نویسه است' });
+          continue;
+        }
+      }
+
+      // Caught per line rather than left to escape. Escaping, the handler
+      // answers 500 with rows already committed and no audit row: the admin is
+      // told nothing was added while some of it was, and the only way to find
+      // out is to count the shelf by hand.
+      let row: { id: number } | null = null;
+      try {
+        row = await c.env.DB.prepare(
+          `INSERT INTO provisioning_stock
+             (plan_id, provider_id, remote_username, subscription_url, secret, status)
+           VALUES (?1, ?2, ?3, ?4, ?5, 'AVAILABLE')
+           ON CONFLICT DO NOTHING
+           RETURNING id`,
+        )
+          .bind(
+            plan.id,
+            plan.provider_id,
+            username,
+            isUrl ? credential : null,
+            isUrl ? null : credential,
+          )
+          .first<{ id: number }>();
+      } catch {
+        // The driver attaches the failing statement to its error and the
+        // statement carries the credential, so the reason is written here
+        // rather than taken from the error.
+        skipped.push({ line: at, username, reason: 'دیتابیس این سطر را نپذیرفت' });
+        continue;
+      }
+      if (!row) {
+        skipped.push({ line: at, username, reason: 'از قبل روی همین پنل در قفسه است' });
+        continue;
+      }
+      added++;
+    }
+
+    await audit(
+      c.env.DB,
+      ident,
+      'stock.bulk_added',
+      'PROVISIONING_STOCK',
+      `plan:${plan.id}`,
+      null,
+      { plan_id: plan.id, added, skipped: skipped.length },
+      null,
+    );
+    return c.json({ ok: true, added, skipped });
   });
 
   /**
