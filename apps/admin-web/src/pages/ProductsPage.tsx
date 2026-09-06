@@ -63,7 +63,7 @@ const PAGE_SIZE = 25;
  * a dead panel needs both, and showing one at a time is how the second is found
  * in production.
  */
-function SellState({ row }: { row: PlanRow }) {
+function SellState({ row, onGo }: { row: PlanRow; onGo: (id: 'catalog', search?: string) => void }) {
   const reasons: NotSellable[] = whyNotSellable({
     planStatus: row.status,
     productStatus: row.product.status,
@@ -79,10 +79,37 @@ function SellState({ row }: { row: PlanRow }) {
 
   if (reasons.length === 0) return <span className="num--dim">در فروشگاه</span>;
 
+  /*
+   * «سرویسش پنهان است» is the one reason this screen could name and not repair.
+   *
+   * The service's status is a column on `products`, and the only control that
+   * writes it is `api.setProductStatus`, called from «سرویس‌ها». Here the edit
+   * dialog shows «در فروشگاه» already ticked — because that field is the
+   * CONFIG's status and the config really is ACTIVE — so an operator saves and
+   * nothing happens, with no way to tell why from this screen.
+   *
+   * A link rather than a second status control. Putting the service switch on
+   * this screen means one edit here changing every config under that service,
+   * which needs the warning `EditProduct` already gives for service-level
+   * fields; sending the operator to the screen that owns the column costs one
+   * line and cannot disagree with it. The address is the search box that
+   * screen already has, so nothing new has to be understood on the other side.
+   */
+  const productOff = reasons.some((r) => r.kind === 'PRODUCT_OFF');
+
   return (
     <div className="tone-orange" title={reasons.map(notSellableFa).join(' ')}>
       <strong>فروخته نمی‌شود</strong>
       <div className="page-head__sub">{reasons.map(notSellableShortFa).join(' · ')}</div>
+      {productOff && (
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => onGo('catalog', `?q=${encodeURIComponent(row.product.name)}`)}
+        >
+          باز کردن «{row.product.name}» در سرویس‌ها
+        </button>
+      )}
     </div>
   );
 }
@@ -105,7 +132,11 @@ function duration(days: number | null): string {
   return days === null ? 'بی‌انقضا' : `${count(days)} روز`;
 }
 
-export function ProductsPage({ onGo }: { onGo: (id: 'categories') => void }) {
+export function ProductsPage({
+  onGo,
+}: {
+  onGo: (id: 'categories' | 'catalog', search?: string) => void;
+}) {
   const w = useAdminWriteProps();
   const [rows, setRows] = useState<PlanRow[]>([]);
   const [providers, setProviders] = useState<ProviderOption[]>([]);
@@ -444,7 +475,7 @@ export function ProductsPage({ onGo }: { onGo: (id: 'categories') => void }) {
                     <span className="trunc">{r.categoryName ?? '—'}</span>
                   </td>
                   <td className="cell-tight">
-                    <SellState row={r} />
+                    <SellState row={r} onGo={onGo} />
                   </td>
                   <td className="cell-actions">
                     <div className="row-actions">
@@ -713,6 +744,7 @@ function EditProduct({
   const [providerId, setProviderId] = useState(row.provider === null ? '' : String(row.provider.id));
   const [categoryId, setCategoryId] = useState(String(row.product.categoryId ?? ''));
   const [resellersOnly, setResellersOnly] = useState(row.product.resellersOnly);
+  const [deliveryNote, setDeliveryNote] = useState(row.deliveryNote ?? '');
 
   const [siblings, setSiblings] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -749,6 +781,7 @@ function EditProduct({
         volumeGb: volumeGb.trim() === '' ? null : Number(volumeGb),
         durationDays: durationDays.trim() === '' ? null : Number(durationDays),
         status,
+        deliveryNote: deliveryNote.trim() === '' ? null : deliveryNote.trim(),
       });
       // Only when one of them actually moved: an unchanged `updateProduct` still
       // writes an audit row saying a service was edited, and an audit trail full
@@ -885,6 +918,24 @@ function EditProduct({
             />
           </div>
         </div>
+
+        <label className="form-label" htmlFor="ed-note">
+          متن همراه تحویل
+        </label>
+        <textarea
+          id="ed-note"
+          className="form-control"
+          rows={3}
+          maxLength={1000}
+          value={deliveryNote}
+          onChange={(e) => setDeliveryNote(e.target.value)}
+          placeholder="مثلاً روش ورود، لینک راهنما، یا آی‌دی پشتیبانی — زیر اکانت برای مشتری فرستاده می‌شود."
+        />
+        <p className="muted" style={{ marginBlockStart: 4 }}>
+          {row.productDeliveryNote === null
+            ? 'خالی بگذاری چیزی اضافه نمی‌شود.'
+            : 'این جای متنِ سرویس را برای همین محصول می‌گیرد. خالی بگذاری، متن سرویس فرستاده می‌شود.'}
+        </p>
 
         <h4 style={{ marginBlockEnd: 4 }}>روی کلِ سرویس «{row.product.name}»</h4>
         <p className="muted" style={{ marginBlockStart: 0 }}>

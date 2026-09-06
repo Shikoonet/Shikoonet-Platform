@@ -135,7 +135,7 @@ interface CatalogBody {
   ok: boolean;
   total: number;
   items: CatalogItem[];
-  panels: Array<{ id: number; name: string }>;
+  panels: Array<{ id: number; name: string; hasGroups: boolean }>;
 }
 
 async function get(query: string, email = ADMIN) {
@@ -144,6 +144,34 @@ async function get(query: string, email = ADMIN) {
 }
 
 describe('GET /api/v1/admin/catalog', () => {
+  it('says which panels in the picker have groups at all', async () => {
+    // The create form asks a panel for its groups before it will build a
+    // service. Without this field it asked every panel — and an `ai_account`
+    // panel has none, so the form demanded a group it had just reported does
+    // not exist, and an account service could not be created from the
+    // dashboard at all.
+    // 'pasarguard' rather than `makePanel`'s 'marzban': the adapter registry
+    // holds exactly one automated kind today, and this field answers from it
+    // rather than from a list of names kept somewhere else.
+    const vpn = await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind, status)
+       VALUES (?1, 'پنل وی‌پی‌ان', 'pasarguard', 'ACTIVE') RETURNING id`,
+    )
+      .bind(`${PREFIX}has-groups`)
+      .first<{ id: number }>();
+    const shelf = await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind, status)
+       VALUES (?1, 'پنل اکانت', 'ai_account', 'ACTIVE') RETURNING id`,
+    )
+      .bind(`${PREFIX}no-groups`)
+      .first<{ id: number }>();
+
+    const { body } = await get('page=1&pageSize=1');
+
+    expect(body.panels.find((p) => p.id === Number(vpn!.id))?.hasGroups).toBe(true);
+    expect(body.panels.find((p) => p.id === Number(shelf!.id))?.hasGroups).toBe(false);
+  });
+
   it('returns one item per service with its configs inside it', async () => {
     const panelId = await makePanel('one');
     await makeService('طلایی', {

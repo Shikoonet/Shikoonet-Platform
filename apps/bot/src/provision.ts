@@ -27,6 +27,7 @@ import type { D1Database, D1DatabaseSession } from '@shikoo/database';
 import { randomUUID } from 'node:crypto';
 import {
   adapterFor,
+  isAutomated,
   groupIdsFor,
   open,
   panelSecretKey,
@@ -43,7 +44,7 @@ import type { InlineKeyboard } from './telegram.js';
 import { enqueue } from './notify.js';
 import { subscriptionOnPanelForUser } from './owned.js';
 import { actionsFor, tierFor } from './serviceActions.js';
-import { deliverFromStock } from './stock.js';
+import { deliverFromStock, type StockDelivery } from './stock.js';
 import { creditRenewalCashback, refundOrder } from './wallet.js';
 import { loadShopSettings } from './settings.js';
 import { report } from './reports.js';
@@ -178,9 +179,24 @@ export interface Delivered {
   keyboard?: InlineKeyboard | null;
   /** Sent as a photo before the text. In practice the subscription link. */
   qrPayload?: string | null;
+  /**
+   * True only when this message hands a bought service to the customer.
+   *
+   * It gates the shop's delivery note, and it defaults to false rather than
+   * true on purpose: `tell()` is the funnel for EVERY provisioning message —
+   * the failure with its refund, «a person is finishing it», the trial that
+   * was not available — and a note that says how to sign in belongs to none of
+   * them. Appended to all of them, a refunded customer is told how to log into
+   * the account they did not get. A message type added later says nothing
+   * until it opts in.
+   */
+  sold?: boolean;
 }
 
 const say = (text: string): Delivered => ({ text });
+
+/** `say`, for a message that hands over what was bought. See `Delivered.sold`. */
+const handedOver = (text: string): Delivered => ({ text, sold: true });
 
 /**
  * The screen a completed purchase ends on.
@@ -222,11 +238,31 @@ async function purchasedScreen(
       text: menu.serviceReadyCard(service, now),
       keyboard: menu.serviceDetailMenu(actionsFor(service, shop, tierFor(row))),
       qrPayload: service.subscription_url,
+      sold: true,
     };
   } catch (err) {
     log.error('provision.screen_failed', { ref: row.order_public_id }, err);
     return null;
   }
+}
+
+/**
+ * The screen a shelf delivery ends on.
+ *
+ * A config link gets the same full card a panel delivery would — whether it
+ * came from stock is ours to know. A password does not: the card is drawn from
+ * the subscription row and never renders `remote_ref`, so replacing the
+ * credential message with it would swallow the password. That message goes out
+ * verbatim.
+ */
+async function stockedScreen(
+  db: D1Database,
+  row: PendingOrder,
+  now: number,
+  sold: StockDelivery,
+): Promise<Delivered> {
+  if (sold.credential) return handedOver(sold.text);
+  return (await purchasedScreen(db, row, now)) ?? handedOver(sold.text);
 }
 
 /**
@@ -254,11 +290,35 @@ async function tell(db: D1Database, row: PendingOrder, note: Delivered): Promise
     enqueue(tx, {
       dedupeKey: `provision:${row.order_public_id}`,
       chatId,
-      text: note.text,
+      text: note.sold === true ? withDeliveryNote(note.text, row) : note.text,
       keyboard: note.keyboard ?? null,
       qrPayload: note.qrPayload ?? null,
     }),
   );
+}
+
+/**
+ * The shop's own words, appended to whatever the delivery produced.
+ *
+ * Set once on a service or on one of its plans — setup steps for a ChatGPT
+ * account, where to point an OpenVPN client, a support handle. It rides in
+ * `attrs`, so `planAttrsFor` gives a plan the power to override its service
+ * and no migration was needed for either.
+ *
+ * Appended HERE rather than inside a message builder because this is the one
+ * place every delivery passes through: the panel card, the shelf's config
+ * message, the account's credentials, and the sweep that rebuilds a message
+ * nobody received. Written in any one builder it would be missing from the
+ * other four.
+ *
+ * After a blank line, always. `serviceReady` and `accountReady` both end on
+ * something the customer copies — a link, a password — and anything on the
+ * same line becomes part of what they copy.
+ */
+function withDeliveryNote(text: string, row: PendingOrder): string {
+  const note = planAttrsFor(row)['delivery_note'];
+  if (typeof note !== 'string' || note.trim() === '') return text;
+  return `${text}\n\n${note.trim()}`;
 }
 
 /**
@@ -285,9 +345,37 @@ async function untoldNote(
     return say(menu.serviceNeedsHelp(row.order_public_id, back ? Number(back.amount_irr) : null));
   }
 
-  // COMPLETED. The screen if there is a service to show — a fresh purchase, a
-  // renewal, an add-on all land here — and otherwise the honest answer for a
-  // manual product, which is that a person is finishing it.
+  // COMPLETED. A shelved ACCOUNT has to be answered before the screen below,
+  // for the reason `stockedScreen` exists: the card is drawn from the
+  // subscription row and never renders `remote_ref`, so recovering a lost
+  // message through it hands the customer their username, their expiry, and no
+  // password — an account they paid for and cannot sign into. The card is
+  // right for everything else, a shelved config included.
+  const account = await db
+    .prepare(
+      `SELECT remote_username, remote_ref->>'secret' AS secret, expires_at
+         FROM subscriptions
+        WHERE order_id = ?1
+          AND subscription_url IS NULL
+          AND remote_ref->>'secret' IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 1`,
+    )
+    .bind(row.order_id)
+    .first<{ remote_username: string | null; secret: string; expires_at: string | null }>();
+  if (account !== null) {
+    return handedOver(
+      menu.accountReady(
+        account.remote_username ?? '',
+        account.secret,
+        account.expires_at === null ? null : new Date(account.expires_at),
+      ),
+    );
+  }
+
+  // The screen if there is a service to show — a fresh purchase, a renewal, an
+  // add-on all land here — and otherwise the honest answer for a manual
+  // product, which is that a person is finishing it.
   return (
     (await purchasedScreen(db, row, now)) ?? say(menu.serviceBeingPrepared(row.order_public_id))
   );
@@ -688,6 +776,16 @@ async function deliver(
     fetch: fetchImpl,
   };
 
+  // A kind with no automated adapter has no panel to ask — but it may have a
+  // shelf. Bulk-bought accounts (ai_account, spotify, …) are delivered from
+  // stock on the first sweep, no grace: nothing is failing, there is nothing to
+  // wait out. An empty shelf falls through to the manual path below, which is
+  // exactly what these kinds did before the shelf could hold accounts.
+  if (!isAutomated(row.provider_kind)) {
+    const sold = await deliverFromStock(db, row, now, true);
+    if (sold !== null) return stockedScreen(db, row, now, sold);
+  }
+
   const result = await adapterFor(row.provider_kind).provision(request, provider);
 
   if (!result.ok) {
@@ -699,7 +797,7 @@ async function deliver(
       // The shelf writes the same subscription row a panel would, so the
       // customer gets the same screen. Whether their config came from stock is
       // ours to know and theirs not to be told.
-      if (fromStock !== null) return (await purchasedScreen(db, row, now)) ?? say(fromStock);
+      if (fromStock !== null) return stockedScreen(db, row, now, fromStock);
       // Back to PAID so the next pass tries again. The customer is told nothing
       // yet — a panel that is briefly down is not news, and saying "there was a
       // problem" only to succeed a minute later is worse than silence.
@@ -769,7 +867,7 @@ async function deliver(
   // back — the customer must get their link either way.
   return (
     (await purchasedScreen(db, row, now)) ??
-    say(menu.serviceReady(result.subscriptionUrl, result.remoteUsername, expiresAt))
+    handedOver(menu.serviceReady(result.subscriptionUrl, result.remoteUsername, expiresAt))
   );
 }
 

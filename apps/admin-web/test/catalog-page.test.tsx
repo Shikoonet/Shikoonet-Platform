@@ -46,6 +46,7 @@ function service(
     kind: 'vpn',
     status: 'ACTIVE',
     description: null,
+    deliveryNote: null,
     sortOrder: id,
     categoryId: null,
     categoryName: null,
@@ -150,6 +151,31 @@ describe('the service editor belongs to one service', () => {
     // Without closing the first — the transition a missing key gets wrong.
     fireEvent.click(screen.getAllByRole('button', { name: 'ویرایش سرویس' })[1]!);
     expect(nameBox().value).toBe('طلایی');
+  });
+});
+
+describe('the address «محصولات» sends people to', () => {
+  /**
+   * The other half of the link. «محصولات» can name «سرویسش پنهان است» and not
+   * repair it, so it offers a button here — and a button that lands on an
+   * unfiltered list of every service is the same dead end one screen later.
+   *
+   * The search box is the address rather than a new «selected service» notion,
+   * because it is already the thing that narrows this list; a second selector
+   * would be a second state to keep in step with it. The assertion is that the
+   * REQUEST carried the filter, not merely that the box has text in it — a box
+   * seeded without the list reloading looks right and shows everything.
+   */
+  it('opens filtered to the service it was sent', async () => {
+    window.history.replaceState({}, '', `/?q=${encodeURIComponent('طلایی')}`);
+    try {
+      draw();
+      await waitFor(() => expect(catalog).toHaveBeenCalled());
+      expect(catalog.mock.calls[0]![0]).toMatchObject({ q: 'طلایی' });
+      expect((screen.getByPlaceholderText(/نام سرویس/) as HTMLInputElement).value).toBe('طلایی');
+    } finally {
+      window.history.replaceState({}, '', '/');
+    }
   });
 });
 

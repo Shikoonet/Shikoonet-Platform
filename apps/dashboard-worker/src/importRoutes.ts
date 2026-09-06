@@ -74,6 +74,7 @@ import { pipeline } from 'node:stream/promises';
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
+import type { EnvName } from '@shikoo/contracts';
 import {
   captureReport,
   configFrom,
@@ -101,7 +102,12 @@ import { audit, type Ident } from './adminAudit.js';
 
 const log = createLogger('dashboard.import');
 
-type Env = { DB: D1Database; IMPORT_DIR?: string; IMPORT_MYSQL_URL?: string };
+type Env = {
+  DB: D1Database;
+  ENV_NAME: EnvName;
+  IMPORT_DIR?: string;
+  IMPORT_MYSQL_URL?: string;
+};
 
 /**
  * A run left RUNNING by a process that is no longer here.
