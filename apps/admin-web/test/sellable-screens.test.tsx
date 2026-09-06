@@ -177,6 +177,26 @@ describe('«محصولات» says what the shop can do with a row', () => {
     expect(table().queryByText('فروخته نمی‌شود')).toBeNull();
   });
 
+  it('names the CATEGORY as the reason when the shelf is the thing that is off', async () => {
+    /**
+     * The one reason on this screen the operator cannot see from the row.
+     *
+     * Every other verdict here has something visibly wrong with the row or its
+     * panel. A switched-off category leaves the config ACTIVE, the product
+     * ACTIVE and the panel live — three green things and a product nobody can
+     * buy — so if this screen does not name the category, the operator has no
+     * way to reach the fix from the screen that shows the symptom.
+     *
+     * The fixture is otherwise the same healthy row as «در فروشگاه» above, on
+     * purpose: `categoryActive` is the ONLY difference between the two tests,
+     * so a pass here cannot be coming from anything else.
+     */
+    await draw([{ ...plan(6, 'زیر دستهٔ خاموش', LIVE), categoryActive: false }], 0);
+    await waitFor(() => expect(table().getByText('فروخته نمی‌شود')).toBeTruthy());
+    expect(table().getByText('دسته خاموش')).toBeTruthy();
+    expect(table().queryByText('در فروشگاه')).toBeNull();
+  });
+
   it('names both faults when a row has two', async () => {
     await draw([plan(4, 'هم پنهان هم روی پنل مرده', OFF, 'HIDDEN')], 0);
     await waitFor(() => expect(table().getByText(/پنل خاموش · پنهان/)).toBeTruthy());
