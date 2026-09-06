@@ -717,6 +717,7 @@ function EditProduct({
   const [providerId, setProviderId] = useState(row.provider === null ? '' : String(row.provider.id));
   const [categoryId, setCategoryId] = useState(String(row.product.categoryId ?? ''));
   const [resellersOnly, setResellersOnly] = useState(row.product.resellersOnly);
+  const [deliveryNote, setDeliveryNote] = useState(row.deliveryNote ?? '');
 
   const [siblings, setSiblings] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -753,6 +754,7 @@ function EditProduct({
         volumeGb: volumeGb.trim() === '' ? null : Number(volumeGb),
         durationDays: durationDays.trim() === '' ? null : Number(durationDays),
         status,
+        deliveryNote: deliveryNote.trim() === '' ? null : deliveryNote.trim(),
       });
       // Only when one of them actually moved: an unchanged `updateProduct` still
       // writes an audit row saying a service was edited, and an audit trail full
@@ -889,6 +891,24 @@ function EditProduct({
             />
           </div>
         </div>
+
+        <label className="form-label" htmlFor="ed-note">
+          متن همراه تحویل
+        </label>
+        <textarea
+          id="ed-note"
+          className="form-control"
+          rows={3}
+          maxLength={1000}
+          value={deliveryNote}
+          onChange={(e) => setDeliveryNote(e.target.value)}
+          placeholder="مثلاً روش ورود، لینک راهنما، یا آی‌دی پشتیبانی — زیر اکانت برای مشتری فرستاده می‌شود."
+        />
+        <p className="muted" style={{ marginBlockStart: 4 }}>
+          {row.productDeliveryNote === null
+            ? 'خالی بگذاری چیزی اضافه نمی‌شود.'
+            : 'این جای متنِ سرویس را برای همین محصول می‌گیرد. خالی بگذاری، متن سرویس فرستاده می‌شود.'}
+        </p>
 
         <h4 style={{ marginBlockEnd: 4 }}>روی کلِ سرویس «{row.product.name}»</h4>
         <p className="muted" style={{ marginBlockStart: 0 }}>
