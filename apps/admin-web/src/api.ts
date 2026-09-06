@@ -1342,6 +1342,13 @@ export interface ImportReportLine {
   text: string;
 }
 
+/** What a reset would remove, and what it would leave, table by table. */
+export interface ImportResetPreview {
+  wipe: { table: string; rows: number }[];
+  keep: { table: string; rows: number }[];
+  total: number;
+}
+
 export interface ImportRun {
   id: string;
   mode: ImportMode;
@@ -2562,6 +2569,30 @@ export const api = {
     return req<{ ok: boolean; total: number; removed: { table: string; rows: number }[] }>(
       `/import/runs/${encodeURIComponent(id)}/undo`,
       { method: 'POST' },
+    );
+  },
+
+  /**
+   * What a reset would remove, per table, before anything is removed.
+   *
+   * Deliberately does not carry the environment's name: the phrase the reset
+   * takes has to come from the operator knowing which box they are on, and a
+   * screen that could read it off this call would hand it to them.
+   */
+  importResetPreview() {
+    return req<ImportResetPreview & { ok: boolean }>('/import/reset/preview');
+  },
+
+  /**
+   * Empties the shop's data, keeping only what makes this installation
+   * reachable — the operators, the bot's token, the paired SMS phone.
+   *
+   * `confirm` must be this environment's own name, as the SERVER reads it.
+   */
+  resetImportedData(confirm: string) {
+    return req<{ ok: boolean; total: number; removed: { table: string; rows: number }[] }>(
+      '/import/reset',
+      { method: 'POST', body: JSON.stringify({ confirm }) },
     );
   },
 
