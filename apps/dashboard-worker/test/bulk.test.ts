@@ -16,7 +16,7 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv, deleteFixtureUsers } from './helpers/env.js';
+import { applySchema, env as baseEnv, deleteFixtureUsers, FIXTURE_TG_BASE } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 
@@ -28,7 +28,7 @@ function envAs(email: string) {
 }
 
 /** Telegram ids far above anything another suite seeds. */
-const TG_BASE = 993_000_000;
+const TG_BASE = FIXTURE_TG_BASE + 993_000_000;
 let seq = 0;
 
 async function makeCustomer(status = 'ACTIVE'): Promise<number> {

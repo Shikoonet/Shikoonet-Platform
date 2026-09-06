@@ -1477,6 +1477,26 @@ export function serviceReady(
 }
 
 /**
+ * Delivery of a shelved account: a username and a password, no link to tap and
+ * so no howto line. The password sits alone after its label for the same
+ * reason the URL does above — anything appended becomes part of what the
+ * customer copies.
+ */
+export function accountReady(username: string, password: string, expiresAt: Date | null): string {
+  const t = TEXTS_NOW;
+  const lines = [
+    t.raw('SERVICE_READY_TITLE'),
+    '',
+    t.render('SERVICE_READY_USERNAME', { username }),
+    t.render('SERVICE_READY_PASSWORD', { password }),
+  ];
+  if (expiresAt !== null) {
+    lines.push(t.render('SERVICE_READY_EXPIRES', { date: formatTehranDate(expiresAt) }));
+  }
+  return lines.join('\n');
+}
+
+/**
  * The same moment, on the screen the service actually deserves.
  *
  * `serviceReady` above is three lines: username, expiry, link. The screen a

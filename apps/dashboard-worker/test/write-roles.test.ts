@@ -386,12 +386,23 @@ describe('every write route, asked directly', () => {
     // are a MENU, and what actually reaches a customer still goes through
     // `checkCustomEmoji` on the text that quotes one.
     //
+    // +1, «POST /stock/bulk». Fills a shelf from a pasted export instead of one
+    // row per press. ADMIN-only for exactly the reason the single-row route
+    // beside it is — every line is a working account the moment a customer is
+    // handed it — and the paste is the wider version of the same write: one
+    // press can put a thousand of them on the shelf.
+    //
+    // +1, «POST /stock/shelves». Builds a shelf — the panel, the service and
+    // the product under it — from a name and a price, in one transaction.
+    // ADMIN-only because it creates a sellable thing: a plan with a price that
+    // a customer can reach in the bot the moment it exists.
+    //
     // +1, «POST /cron». One route for every switch and threshold on
-    // «کرون‌جاب‌ها», ADMIN-only — and of the 151 routes counted here it is the
+    // «کرون‌جاب‌ها», ADMIN-only — and of the 153 routes counted here it is the
     // only one that can arm something which DELETES a paying customer's
     // account from a panel. It refuses any key not in the `CRON_JOBS`
     // registry, so «what this route may write» is a list a reviewer can read
     // rather than the whole `settings` table.
-    expect(writeRoutes().length).toBe(151);
+    expect(writeRoutes().length).toBe(153);
   });
 });
