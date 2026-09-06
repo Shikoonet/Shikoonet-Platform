@@ -397,12 +397,19 @@ describe('every write route, asked directly', () => {
     // ADMIN-only because it creates a sellable thing: a plan with a price that
     // a customer can reach in the bot the moment it exists.
     //
+    // +1, «POST /import/reset». Empties the shop's data so a new dump can be
+    // imported over a clean page. ADMIN, obviously — but the role is not what
+    // guards it. It is the only write route on this panel that takes a typed
+    // phrase, and the phrase is this environment's own `ENV_NAME` as the
+    // SERVER read it at boot, never echoed back to the caller. The preview
+    // beside it is a GET and does not appear here.
+    //
     // +1, «POST /discounts/:id/status». Switches a discount code off and back
     // on. ADMIN-only like every other write on this screen: it decides whether
     // a code takes money off an invoice, which is the same blast radius as
     // creating one. It is the only write here that is REVERSIBLE — expiring a
     // code rewrites when it ended and cannot be undone — and that is why the
     // screen does not ask «مطمئنی؟» before it, unlike delete.
-    expect(writeRoutes().length).toBe(153);
+    expect(writeRoutes().length).toBe(154);
   });
 });
