@@ -775,6 +775,36 @@ describe('POST /api/v1/admin/products/:id', () => {
     expect(row!.provider_id).toBeNull();
   });
 
+  it('saves the groups and the delivery note in one patch', async () => {
+    // Both live in `products.attrs`, and the services drawer sends the whole
+    // form, so this combination is EVERY save from that screen. Written as two
+    // assignments it is not a statement Postgres will run — `multiple
+    // assignments to same column "attrs"` — and the route reported that to the
+    // operator as a duplicate code, which sent them to fix the wrong thing.
+    const { productId } = await makeCatalog('both-attrs');
+
+    const res = await edit(productId, {
+      groupIds: [3, 4],
+      deliveryNote: 'برای ورود از مرورگر ناشناس استفاده کن.',
+    });
+    expect(res.status).toBe(200);
+
+    // Read the column, not the response: an echo would pass either way.
+    const row = await baseEnv.DB.prepare(`SELECT attrs FROM products WHERE id = ?1`)
+      .bind(productId)
+      .first<{ attrs: Record<string, unknown> }>();
+    expect(row!.attrs['group_ids']).toEqual([3, 4]);
+    expect(row!.attrs['delivery_note']).toBe('برای ورود از مرورگر ناشناس استفاده کن.');
+
+    // And each key can be cleared without taking the other with it.
+    expect((await edit(productId, { deliveryNote: null })).status).toBe(200);
+    const after = await baseEnv.DB.prepare(`SELECT attrs FROM products WHERE id = ?1`)
+      .bind(productId)
+      .first<{ attrs: Record<string, unknown> }>();
+    expect(after!.attrs['group_ids']).toEqual([3, 4]);
+    expect(after!.attrs['delivery_note']).toBeUndefined();
+  });
+
   it('refuses an empty patch and a field it does not know', async () => {
     const { productId } = await makeCatalog('strict');
     expect((await edit(productId, {})).status).toBe(400);
