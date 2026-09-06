@@ -95,9 +95,37 @@ export const RESET_KEEP: readonly string[] = [
   // key from `users`; seed keeps them for the same reason.
   'expense_categories',
   'reseller_tiers',
+  // «پیش‌فرض شیکو» — the `__builtin__` pack and its three items, installed by
+  // `0050`. Product defaults rather than shop data, exactly like
+  // `bank_card_prefixes`, and a shop's own added packs are a menu of Telegram
+  // ids an admin chose rather than anything a customer did.
+  //
+  // Found by measurement, not by reading this list: import → reset → the same
+  // import again, comparing all 75 table counts. `emoji_packs` came back 1→0
+  // and `emoji_pack_items` 3→0, because a migration installed them and no
+  // import re-supplies them. Nothing would have said so at run time.
+  'emoji_packs',
+  'emoji_pack_items',
   // The log of the very thing that led to this reset.
   'import_runs',
 ];
+
+/**
+ * What that same measurement says a reset legitimately DOES take.
+ *
+ * `settings` and `product_categories` also hold rows a migration installs, and
+ * they are not here — they are the shop's configuration and the import writes
+ * them. The re-import restored `product_categories` exactly and `settings` to
+ * within two rows: `pay:continuity_mode` and `shop:plan_button_template`, both
+ * installed by a migration and written by no import.
+ *
+ * Both are absent-safe and were read rather than assumed: `continuityMode.ts`
+ * answers `OFF` — NORMAL verification, the safe direction — and `planLabel.ts`
+ * treats a missing row as «the way labels have always been written». So the
+ * loss is a return to defaults rather than a hole, which is why they go.
+ * Written down because the next person will find the same two rows missing and
+ * deserves to know somebody looked.
+ */
 
 /** A table and how many rows it holds. */
 export interface TableCount {

@@ -251,6 +251,34 @@ describe('resetShopData — the clean page an undo cannot give', () => {
       done();
     }
   });
+
+  it('keeps the defaults a migration installed and no import re-supplies', async () => {
+    /**
+     * The regression test for a loss nothing reported.
+     *
+     * Found by measuring rather than by reading the list: the same dump
+     * imported, reset, and imported again, comparing all 75 table counts.
+     * `emoji_packs` came back 1→0 and `emoji_pack_items` 3→0. A migration
+     * installs «پیش‌فرض شیکو» and no import writes it, so the rows were gone
+     * with no path back and nothing said a word.
+     *
+     * Named here rather than trusted to the list, because the whole point is
+     * that reading the list is what missed it.
+     */
+    const done = quiet();
+    try {
+      const packs = await count('emoji_packs');
+      const items = await count('emoji_pack_items');
+      expect(packs, 'a migrated database has the builtin pack').toBeGreaterThan(0);
+
+      await resetShopData(pgc);
+
+      expect(await count('emoji_packs')).toBe(packs);
+      expect(await count('emoji_pack_items')).toBe(items);
+    } finally {
+      done();
+    }
+  });
 });
 
 describe('the guard on the KEEP set', () => {
