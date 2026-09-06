@@ -38,6 +38,7 @@ import {
   type ImportDomain,
   type ImportDumpFile,
   type ImportMode,
+  type ImportResetPreview,
   type ImportRun,
 } from '../api.js';
 import { count, dateTime } from '../format.js';
@@ -273,6 +274,173 @@ function Samples({ run }: { run: ImportRun }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * «پاک کردن دیتای فروشگاه» — the clean page «بازگرداندن» cannot give.
+ *
+ * ## Why it is here and not beside «بازگرداندن» in the table
+ *
+ * They read as alternatives and they are not. Undo belongs to ONE run and is
+ * the right tool for «that import was a mistake»; this belongs to the
+ * installation and is the answer to «I want to start over». Putting a button
+ * that empties the whole shop into a per-run row would make the wrong one one
+ * misclick away from the right one.
+ *
+ * ## The confirmation, and why it is not «مطمئنی؟»
+ *
+ * The panel has three strengths of confirmation and this takes the strongest,
+ * borrowed from `DeleteAccountModal`: a preview with real counts, a phrase
+ * typed by hand, and a danger button that stays disabled until it matches.
+ * Neither `window.confirm` nor the in-place twin button `«بازگرداندن»` uses is
+ * enough for a statement with no inverse.
+ *
+ * And the phrase is the ENVIRONMENT's name, which this screen never shows.
+ * That is Sam's decision and it is the point: the only confirmation worth
+ * anything here is one you cannot satisfy without first finding out which box
+ * you are standing on. The panel prints it in its own header — CLAUDE.md's
+ * «روی سرور، اول بپرس این کدام محیط است», moved from the shell to the browser.
+ */
+function ResetCard({
+  onDone,
+  disabled,
+}: {
+  onDone: (message: string) => void;
+  disabled: boolean;
+}) {
+  const w = useAdminWriteProps();
+  const [preview, setPreview] = useState<ImportResetPreview | null>(null);
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    setErr(null);
+    setBusy(true);
+    try {
+      setPreview(await api.importResetPreview());
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function run() {
+    setErr(null);
+    setBusy(true);
+    try {
+      const r = await api.resetImportedData(typed.trim());
+      onDone(`${count(r.total)} ردیف پاک شد.`);
+      setTyped('');
+    } catch (e) {
+      setErr(message(e));
+      return;
+    } finally {
+      setBusy(false);
+    }
+
+    // Re-read rather than assume: the card now claims the shop is empty, and
+    // that claim should come from the server like the first one did.
+    //
+    // Its OWN try, deliberately. Inside the one above, a re-read that failed
+    // after a reset that SUCCEEDED would put an error under a success note for
+    // an action that cannot be undone — and leave the pre-reset counts on
+    // screen, which reads as «it did not work». The reset is done; a stale
+    // table is the smaller lie, and the next press of «تازه‌سازی» fixes it.
+    try {
+      setPreview(await api.importResetPreview());
+    } catch {
+      // Left as it was. See above.
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <h3>پاک کردن دیتای فروشگاه</h3>
+      <p className="muted">
+        همهٔ دیتای فروشگاه را می‌برد تا بشود یک دامپ دیگر را از اول وارد کرد. برخلاف
+        «بازگرداندن» — که فقط ردیف‌های یک اجرا را پس می‌گیرد و اگر مشتری بعدش چیزی خریده باشد
+        شکست می‌خورد — این یکی رد نمی‌شود.
+      </p>
+      <p className="muted">
+        اپراتورهای پنل، توکن ربات، گوشیِ جفت‌شدهٔ پیامک، الگوهای بانکی و سیاههٔ همین ایمپورت‌ها
+        می‌مانند. بقیه‌چیز — مشتری، سفارش، کیف پول، سرویس، تنظیمات فروشگاه و تاریخچه — می‌رود.
+        <strong> برگشت‌پذیر نیست.</strong>
+      </p>
+
+      {preview === null ? (
+        <button className="btn" onClick={() => void load()} disabled={busy || disabled}>
+          ببین چه چیزی پاک می‌شود
+        </button>
+      ) : (
+        <>
+          <p>
+            <strong>{count(preview.total)}</strong> ردیف در {count(preview.wipe.length)} جدول پاک
+            می‌شود.
+          </p>
+          <div style={{ overflowX: 'auto', maxHeight: 220, overflowY: 'auto' }}>
+            <table className="table" style={{ fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th>جدول</th>
+                  <th>ردیف</th>
+                </tr>
+              </thead>
+              <tbody>
+                {preview.wipe.map((t) => (
+                  <tr key={t.table}>
+                    <td className="ltr">{t.table}</td>
+                    <td>{count(t.rows)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="muted" style={{ marginTop: 10 }}>
+            دست‌نخورده می‌مانند:{' '}
+            <span className="ltr">
+              {preview.keep.map((t) => t.table).join('، ')}
+            </span>
+          </p>
+
+          <label className="form-label" style={{ display: 'block', marginTop: 12 }}>
+            <span>
+              برای تایید، <strong>نام همین محیط</strong> را بنویس — همانی که بالای پنل نوشته شده:
+            </span>
+            <input
+              type="text"
+              className="form-control ltr"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              spellCheck={false}
+              disabled={busy || disabled}
+              {...w}
+            />
+          </label>
+          <button
+            className="btn danger"
+            style={{ marginTop: 10 }}
+            onClick={() => void run()}
+            disabled={busy || disabled || typed.trim() === ''}
+            title={
+              typed.trim() === ''
+                ? 'اول نام این محیط را بنویس.'
+                : 'دیتای فروشگاه برای همیشه پاک شود'
+            }
+            {...w}
+          >
+            {busy ? 'در حال پاک کردن…' : 'پاک کن'}
+          </button>
+        </>
+      )}
+      {err && (
+        <div className="alert-error" style={{ marginTop: 10 }}>
+          {err}
+        </div>
+      )}
     </div>
   );
 }
@@ -749,6 +917,14 @@ export function ImportPage() {
           </div>
         )}
       </div>
+
+      <ResetCard
+        disabled={busy || running || uploading}
+        onDone={(m) => {
+          setNote(m);
+          void loadRuns();
+        }}
+      />
     </div>
   );
 }
