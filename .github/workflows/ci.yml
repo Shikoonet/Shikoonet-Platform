@@ -240,6 +240,10 @@ jobs:
       deploy_suites: ${{ steps.decide.outputs.deploy_suites }}
       image: ${{ steps.decide.outputs.image }}
       mode: ${{ steps.decide.outputs.mode }}
+      # What this run BELIEVED about the pull request when it planned. The gate
+      # compares it against what is true when the gate runs — see «the plan was
+      # made for the pull request as it is now».
+      is_draft: ${{ steps.draft.outputs.is_draft }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -281,10 +285,33 @@ jobs:
           echo "changed files: $(grep -c . /tmp/changed.txt || printf '0')"
           sed 's/^/  /' /tmp/changed.txt
 
+      # Draft or not — asked, not read off the event.
+      #
+      # `github.event.pull_request.draft` is a snapshot taken when the event was
+      # queued, and a run created LATER can carry an OLDER snapshot. The whole
+      # measurement, and why issue #69's guess was wrong, is in
+      # `tools/ci-draft-state.sh`; its behaviour is pinned by
+      # `tools/test/ci-draft-state.test.sh`, because a check about CI is the one
+      # whose bugs are invisible.
+      - id: draft
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          PAYLOAD_SAID: ${{ github.event.pull_request.draft }}
+        run: |
+          set -Eeuo pipefail
+          now=$(bash tools/ci-draft-state.sh state "$REPO" "$PR")
+          if [ "$now" != "$PAYLOAD_SAID" ]; then
+            echo "::notice::the event payload said draft=${PAYLOAD_SAID}, the pull request says draft=${now} — planning with ${now}"
+          fi
+          echo "is_draft=${now}" >>"$GITHUB_OUTPUT"
+
       - id: decide
         env:
           EVENT: ${{ github.event_name }}
-          IS_DRAFT: ${{ github.event.pull_request.draft }}
+          IS_DRAFT: ${{ steps.draft.outputs.is_draft }}
           PROVEN: ${{ steps.provenance.outputs.proven }}
           ASSOCIATION: ${{ steps.provenance.outputs.association }}
         run: |
@@ -750,8 +777,51 @@ jobs:
     needs: [checks, integration-db, integration-e2e, image]
     if: always()
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # The belt to `checks`' braces, and it covers a window that one cannot.
+      #
+      # `checks` asks the API when it plans, so a run STARTED after «Ready» sees
+      # it. A pull request marked Ready while this run is already going is a
+      # different case: the plan was honest when it was made, the fast gate has
+      # already been spent, and the green that lands is still a draft's green on
+      # a Ready pull request. Nothing creates a new run for that, so the only
+      # place it can be caught is here, at the end.
+      #
+      # Red rather than a warning. `ci.yml`'s own instruction is «NEVER MERGE
+      # UNTIL Required Quality Gate IS GREEN ON THE EXACT FINAL READY HEAD», and
+      # a rule that has to be remembered by a person is the one `tools/
+      # ci-main-provenance.sh` currently catches a merge too late — at the cost
+      # of a burnt merge and a red `main`.
+      - name: The plan was made for the pull request as it is now
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLANNED_DRAFT: ${{ needs.checks.outputs.is_draft }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          if bash tools/ci-draft-state.sh assert-fresh "${PLANNED_DRAFT:-}" "$REPO" "$PR"; then
+            exit 0
+          fi
+          echo "::error::This run planned as a DRAFT and the pull request is Ready now."
+          echo "::error::integration-db and integration-e2e were skipped, so this green is the fast gate's."
+          {
+            echo "## Required Quality Gate — STALE"
+            echo
+            echo "This run planned with \`IS_DRAFT=true\`, so the complete gate was never spent"
+            echo "on \`${GITHUB_SHA}\`. The pull request is Ready now, and a green here would"
+            echo "read as the complete gate having passed."
+            echo
+            echo "Push the branch again, or re-run this workflow, so one run plans and tests"
+            echo "the same pull request."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Every job did exactly what the plan said
         env:
