@@ -217,6 +217,43 @@ async function botOffers(categoryId: number): Promise<boolean> {
 }
 
 /**
+ * What happens when a customer presses a `plan:` button they already have.
+ *
+ * `botOffers` above asks the LIST, and a list that hides a row is not the same
+ * guarantee as a gate that refuses one. Every message this bot has ever sent
+ * stays in the customer's chat, so «switched the category off» has to mean the
+ * button in a month-old message stops working too — otherwise the operator
+ * turned off a shelf and kept selling from it, which is the whole bug.
+ *
+ * Returns whether the bot answered with something to buy. `purchasablePlan`
+ * re-applies `PURCHASABLE`, so a refusal draws no order screen at all.
+ */
+async function botSellsPlanDirectly(planId: number): Promise<boolean> {
+  const { updateId, telegramId } = ids();
+  await handleUpdate(db, {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      from: { id: telegramId, username: `sl${telegramId}` },
+      chat: { id: telegramId },
+      text: '/start',
+    },
+  });
+  const shown = await handleUpdate(db, {
+    update_id: updateId + 1,
+    callback_query: {
+      id: `cq-${updateId}`,
+      from: { id: telegramId, username: `sl${telegramId}` },
+      message: { message_id: updateId, chat: { id: telegramId } },
+      data: `plan:${planId}`,
+    },
+  });
+  return (shown.replies[0]?.keyboard ?? [])
+    .flat()
+    .some((b) => /^order:/.test(b.callback_data ?? ''));
+}
+
+/**
  * The whole assertion, in one place: what the dashboard would say, and what the
  * customer actually got.
  */
@@ -260,6 +297,27 @@ describe('what the dashboard says is on sale, and what the bot sells', () => {
     expect(whyNotSellable(await factsOf(shop))).toEqual([
       { kind: 'CATEGORY_OFF', category: `${PREFIX}cat-off` },
     ]);
+  });
+
+  it('refuses the button a customer is already holding, not just the list', async () => {
+    /**
+     * The path the list test cannot reach. `cat:` proves the shelf is hidden;
+     * this presses `plan:<id>` the way a customer scrolling back through their
+     * own chat does, and that is the request that takes money.
+     *
+     * Both halves are asserted on purpose. A gate that refuses everything would
+     * pass the first line and be a shop that sells nothing, so the same plan is
+     * bought again with the category switched back on — which is also the exact
+     * thing an operator does when they realise they turned off the wrong one.
+     */
+    const off = await makeShop('stale-off', { categoryActive: false });
+    expect(await botSellsPlanDirectly(off.planId)).toBe(false);
+
+    await db
+      .prepare(`UPDATE product_categories SET active = TRUE WHERE id = ?1`)
+      .bind(off.categoryId)
+      .run();
+    expect(await botSellsPlanDirectly(off.planId)).toBe(true);
   });
 
   it('agrees a switched-off panel takes its catalogue with it', async () => {
