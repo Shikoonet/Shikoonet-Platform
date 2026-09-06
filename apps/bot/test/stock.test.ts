@@ -7,7 +7,7 @@
  * (migration 0010); these tests are what proves the enforcement is reachable.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { provisionPaidOrders } from '../src/provision.js';
 import { deliverFromStock, STOCK_GRACE_MS } from '../src/stock.js';
 import { db, pendingNotifications } from './helpers/env.js';
@@ -43,17 +43,30 @@ async function paidOrder(
   return { orderId: row!.id, publicId, telegramId, planId: plan };
 }
 
-/** One config on the shelf. Returns its id. */
-async function shelve(plan: number, username: string): Promise<number> {
-  const provider = await providerId('sim-vip');
+/**
+ * One row on the shelf. A config link by default; pass `secret` for an account
+ * (0057), which shelves with no link at all — the pair IS the product.
+ */
+async function shelve(
+  plan: number,
+  username: string,
+  options: { secret?: string; providerCode?: string } = {},
+): Promise<number> {
+  const provider = await providerId(options.providerCode ?? 'sim-vip');
   const row = await db
     .prepare(
       `INSERT INTO provisioning_stock
-         (plan_id, provider_id, remote_username, remote_ref, subscription_url)
-       VALUES (?1, ?2, ?3, '{"kind":"stock"}'::jsonb, ?4)
+         (plan_id, provider_id, remote_username, remote_ref, subscription_url, secret)
+       VALUES (?1, ?2, ?3, '{"kind":"stock"}'::jsonb, ?4, ?5)
        RETURNING id`,
     )
-    .bind(plan, provider, username, `https://panel.test/sub/${username}`)
+    .bind(
+      plan,
+      provider,
+      username,
+      options.secret === undefined ? `https://panel.test/sub/${username}` : null,
+      options.secret ?? null,
+    )
     .first<{ id: number }>();
   return row!.id;
 }
@@ -90,6 +103,18 @@ async function subsFor(orderId: number) {
   return results ?? [];
 }
 
+/**
+ * The clock these tests run on, pinned so two reads inside one test cannot
+ * drift apart.
+ *
+ * Captured from the real clock rather than written down. A hardcoded instant
+ * would be a time bomb of the other kind here: `provision_first_failed_at` is
+ * stamped by Postgres with its OWN `now()`, and the grace check subtracts that
+ * from this. Pin these two hours apart and every grace assertion in this file
+ * flips for a reason that has nothing to do with the code.
+ */
+const NOW_MS = Date.now();
+
 /** A moment late enough that the grace period has passed. */
 function afterGrace(): number {
   return Date.now() + STOCK_GRACE_MS + 60_000;
@@ -105,6 +130,12 @@ beforeAll(async () => {
     )
     .bind(PROVIDER_CODE)
     .run();
+  // The blanket update above turns every provider into a panel; the account
+  // shop must stay adapterless, or the stock-first tests below would be
+  // testing the outage path instead.
+  await db
+    .prepare(`UPDATE provisioning_providers SET kind = 'manual' WHERE code = 'sim-shop'`)
+    .run();
   // Start from an empty shelf: this database is shared and reused.
   await db.prepare(`DELETE FROM provisioning_stock`).run();
 });
@@ -113,6 +144,7 @@ beforeAll(async () => {
 // *every* paid order, and the claim takes the lowest available config. Either
 // leftover makes a later test pass or fail for the previous test's reason.
 beforeEach(async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
   await db
     .prepare(
       `UPDATE orders SET status = 'FAILED', failure_reason = 'parked by stock.test'
@@ -120,6 +152,24 @@ beforeEach(async () => {
     )
     .run();
   await db.prepare(`DELETE FROM provisioning_stock`).run();
+  // Reset here rather than at the end of the tests that set them. A test whose
+  // assertion goes red never reaches its own cleanup, and both of these live in
+  // a database this whole suite shares: a leftover delivery note appends itself
+  // to somebody else's expected message, and a panel left without credentials
+  // fails every purchase after it.
+  await db.prepare(`UPDATE product_plans SET attrs = attrs - 'delivery_note'`).run();
+  await db.prepare(`UPDATE products SET attrs = attrs - 'delivery_note'`).run();
+  await db
+    .prepare(
+      `UPDATE provisioning_providers SET secret_ref = ?1, base_url = 'https://panel.test'
+        WHERE code = ?1`,
+    )
+    .bind(PROVIDER_CODE)
+    .run();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('selling from the shelf', () => {
@@ -237,5 +287,196 @@ describe('selling from the shelf', () => {
     const plan = await planId('sim-vip-1m-50');
     await shelve(plan, 'stock-duplicate');
     await expect(shelve(plan, 'stock-duplicate')).rejects.toThrow();
+  });
+});
+
+/**
+ * The shelf's second job (0057): for a product with no automated adapter — an
+ * AI account, Spotify, anything sold as a username and password — the shelf is
+ * not the outage fallback, it is the delivery itself. No grace: nothing is
+ * failing, there is no panel that might come back.
+ */
+describe('selling accounts from the shelf', () => {
+  it('hands a shelved account over on the first sweep, password and all', async () => {
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    const stock = await shelve(order.planId, 'stock-acct@mail.test', {
+      secret: 'stock-acct-pw-1',
+      providerCode: 'sim-shop',
+    });
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    expect(await orderStatus(order.orderId)).toBe('COMPLETED');
+    expect(await stockRow(stock)).toMatchObject({ status: 'USED', order_id: order.orderId });
+
+    const subs = await subsFor(order.orderId);
+    expect(subs).toHaveLength(1);
+    expect(subs[0]).toMatchObject({
+      remote_username: 'stock-acct@mail.test',
+      subscription_url: null,
+      note: `from stock #${stock}`,
+    });
+    // The password rides in remote_ref so support can find it months later.
+    const ref = await db
+      .prepare(`SELECT remote_ref->>'secret' AS secret FROM subscriptions WHERE order_id = ?1`)
+      .bind(order.orderId)
+      .first<{ secret: string | null }>();
+    expect(ref?.secret).toBe('stock-acct-pw-1');
+
+    // Both halves of the credential reach the customer — a username without
+    // its password is not a delivery.
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain('stock-acct@mail.test');
+    expect(note?.text).toContain('stock-acct-pw-1');
+
+    // Nothing failed, so nothing was stamped as failing.
+    const failed = await db
+      .prepare(`SELECT provision_first_failed_at FROM orders WHERE id = ?1`)
+      .bind(order.orderId)
+      .first<{ provision_first_failed_at: string | null }>();
+    expect(failed?.provision_first_failed_at).toBeNull();
+  });
+
+  it('falls back to the manual path when the shelf is empty, not a retry loop', async () => {
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    // Exactly what an adapterless product did before the shelf could hold
+    // accounts: sold, completed, and a person finishes it.
+    expect(await orderStatus(order.orderId)).toBe('COMPLETED');
+    const subs = await subsFor(order.orderId);
+    expect(subs).toHaveLength(1);
+    expect(subs[0]!.subscription_url).toBeNull();
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain(order.publicId);
+  });
+
+  it('still carries the password when the first message was lost', async () => {
+    // The delivery commits, then the message does not reach the customer — the
+    // process dies, the enqueue fails. The sweep's second branch rebuilds the
+    // sentence from the database, and that path draws the service CARD, which
+    // is built from the subscription row and never renders `remote_ref`. So the
+    // recovery used to hand back a username, an expiry, and no password: an
+    // account somebody paid for and cannot sign into.
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-lost@mail.test', {
+      secret: 'stock-acct-pw-lost',
+      providerCode: 'sim-shop',
+    });
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    const gone = await db
+      .prepare(`DELETE FROM bot_notifications WHERE dedupe_key = ?1`)
+      .bind(`provision:${order.publicId}`)
+      .run();
+    // The fixture has to actually remove something, or this proves nothing
+    // about a message that was never there.
+    expect(gone.meta.changes).toBe(1);
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.dedupeKey).toBe(`provision:${order.publicId}`);
+    expect(note?.text).toContain('stock-acct-lost@mail.test');
+    expect(note?.text).toContain('stock-acct-pw-lost');
+  });
+
+  it('sends the shop’s own words under the account', async () => {
+    // Setup steps for a ChatGPT account, where to point an OpenVPN client, a
+    // support handle — set once on the service or the plan, appended to every
+    // delivery. It rides in `attrs`, which is why there is no column for it.
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-noted@mail.test', {
+      secret: 'stock-acct-pw-noted',
+      providerCode: 'sim-shop',
+    });
+    await db
+      .prepare(
+        `UPDATE product_plans
+            SET attrs = COALESCE(attrs, '{}'::jsonb)
+                        || jsonb_build_object('delivery_note', ?2::text)
+          WHERE id = ?1`,
+      )
+      .bind(order.planId, 'برای ورود از مرورگر ناشناس استفاده کن.')
+      .run();
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain('stock-acct-pw-noted');
+    expect(note?.text).toContain('برای ورود از مرورگر ناشناس استفاده کن.');
+    // After a blank line, never on the password's own line — anything there
+    // becomes part of what the customer copies.
+    expect(note?.text).toMatch(/\n\nبرای ورود/);
+
+  });
+
+  it('says none of it to a customer whose order failed', async () => {
+    // `tell()` is the funnel for EVERY provisioning message, the refund
+    // included. Appending the note to all of them tells somebody who has just
+    // been refunded how to sign in to the account they did not get.
+    const order = await paidOrder({ planCode: 'sim-vip-1m-50' });
+    await db
+      .prepare(
+        `UPDATE product_plans
+            SET attrs = COALESCE(attrs, '{}'::jsonb)
+                        || jsonb_build_object('delivery_note', ?2::text)
+          WHERE id = ?1`,
+      )
+      .bind(order.planId, 'برای ورود از مرورگر ناشناس استفاده کن.')
+      .run();
+    // A panel that refuses without hope of recovery: no credentials configured.
+    await db
+      .prepare(`UPDATE provisioning_providers SET secret_ref = NULL, base_url = NULL`)
+      .run();
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    expect(await orderStatus(order.orderId)).toBe('FAILED');
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toBeDefined();
+    expect(note?.text).not.toContain('برای ورود از مرورگر ناشناس استفاده کن.');
+
+    await db
+      .prepare(`UPDATE product_plans SET attrs = attrs - 'delivery_note' WHERE id = ?1`)
+      .bind(order.planId)
+      .run();
+  });
+
+  it('lets a service’s words stand in for every plan under it', async () => {
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-svcnote@mail.test', {
+      secret: 'stock-acct-pw-svcnote',
+      providerCode: 'sim-shop',
+    });
+    await db
+      .prepare(
+        `UPDATE products
+            SET attrs = COALESCE(attrs, '{}'::jsonb)
+                        || jsonb_build_object('delivery_note', ?2::text)
+          WHERE code = ?1`,
+      )
+      .bind('sim-shop-ai', 'پشتیبانی: @shikoo_support')
+      .run();
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain('پشتیبانی: @shikoo_support');
+
+  });
+
+  it('keeps a config link off the account message path', async () => {
+    // A shelved row for an adapterless product can still carry a link — then it
+    // is delivered as a link, exactly like the outage path would.
+    const order = await paidOrder({ planCode: 'sim-shop-ai' });
+    await shelve(order.planId, 'stock-acct-link', { providerCode: 'sim-shop' });
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    expect(await orderStatus(order.orderId)).toBe('COMPLETED');
+    const note = (await pendingNotifications()).find((n) => n.chatId === order.telegramId);
+    expect(note?.text).toContain('https://panel.test/sub/stock-acct-link');
   });
 });

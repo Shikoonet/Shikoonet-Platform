@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { seedCatalog } from '@shikoo/seed';
-import { plansOnPanel, productsForUser, purchasablePlan } from '../src/catalog.js';
+import {
+  categoriesForUser,
+  plansInProduct,
+  plansOnPanel,
+  productsForUser,
+  purchasablePlan,
+} from '../src/catalog.js';
 import { productMenu } from '../src/menu.js';
 import { db } from './helpers/env.js';
 import {
@@ -576,5 +582,85 @@ describe('the panel cap', () => {
       .first<{ n: number }>();
     expect(renewable!.n).toBe(1);
     await setCapacity(null);
+  });
+});
+
+/**
+ * A shelf built by «قفسهٔ تازه» has to be reachable by a customer, or the whole
+ * feature is an operator filling a box nobody can buy from.
+ *
+ * The rows are written here the way `POST /api/v1/admin/stock/shelves` writes
+ * them — a `manual` panel with no address and no credential, a product with no
+ * `group_ids` and no `row_index`, and a plan with no volume and no user limit.
+ * That shape is the thing under test: what breaks it is a change to the bot's
+ * visibility predicate, not a change to the route, and this file is where that
+ * predicate lives.
+ */
+describe('a shelf made from the dashboard is something a customer can buy', () => {
+  const CODE = 'zz-shelf-visible';
+  let customer: number;
+  let categoryId: number;
+  let productId: number;
+  let planId: number;
+
+  beforeAll(async () => {
+    await ensureCatalog();
+    customer = await makeCustomer(811_101);
+
+    const category = await db
+      .prepare(`SELECT id FROM product_categories ORDER BY id LIMIT 1`)
+      .first<{ id: number }>();
+    categoryId = Number(category!.id);
+
+    const provider = await db
+      .prepare(
+        `INSERT INTO provisioning_providers (code, name, kind, status)
+         VALUES (?1, 'قفسهٔ تست', 'manual', 'ACTIVE')
+         ON CONFLICT (code) DO UPDATE SET kind = 'manual', status = 'ACTIVE' RETURNING id`,
+      )
+      .bind(CODE)
+      .first<{ id: number }>();
+    const product = await db
+      .prepare(
+        `INSERT INTO products (code, name, kind, provider_id, category_id, status)
+         VALUES (?1, 'قفسهٔ تست', 'other', ?2, ?3, 'ACTIVE')
+         ON CONFLICT (code) DO UPDATE SET status = 'ACTIVE' RETURNING id`,
+      )
+      .bind(CODE, Number(provider!.id), categoryId)
+      .first<{ id: number }>();
+    productId = Number(product!.id);
+    const plan = await db
+      .prepare(
+        `INSERT INTO product_plans (product_id, name, price_irr, duration_days, status)
+         VALUES (?1, 'قفسهٔ تست', 2500000, 30, 'ACTIVE') RETURNING id`,
+      )
+      .bind(productId)
+      .first<{ id: number }>();
+    planId = Number(plan!.id);
+  });
+
+  afterAll(async () => {
+    await db.prepare(`DELETE FROM product_plans WHERE id = ?1`).bind(planId).run();
+    await db.prepare(`DELETE FROM products WHERE code = ?1`).bind(CODE).run();
+    await db.prepare(`DELETE FROM provisioning_providers WHERE code = ?1`).bind(CODE).run();
+  });
+
+  it('is on every screen between the first button and the price', async () => {
+    const categories = await categoriesForUser(db, customer);
+    expect(categories.map((c) => c.categoryId)).toContain(categoryId);
+
+    const products = await productsForUser(db, customer, undefined, categoryId);
+    expect(products.map((p) => p.productId)).toContain(productId);
+
+    const plans = await plansInProduct(db, customer, productId);
+    expect(plans.map((p) => p.planId)).toContain(planId);
+
+    // The one that decides whether the money can be taken.
+    const buyable = await purchasablePlan(db, customer, planId);
+    expect(buyable).not.toBeNull();
+    expect(buyable?.priceIrr).toBe(2_500_000);
+    // No panel address, no volume, no user limit — none of which is a fault on
+    // a shelf, and none of which may quietly remove it from sale.
+    expect(buyable?.volumeGb).toBeNull();
   });
 });
