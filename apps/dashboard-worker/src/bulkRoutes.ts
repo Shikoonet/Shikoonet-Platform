@@ -261,7 +261,7 @@ export function registerBulkRoutes(
   app: Hono<{
     // Wider than `{ DB }` since 0055: forwarding a channel post means calling
     // Telegram from here, once, before anything is queued.
-    Bindings: { DB: D1Database; ENV_NAME?: EnvName; TELEGRAM_BOT_TOKEN?: string };
+    Bindings: { DB: D1Database; ENV_NAME: EnvName; TELEGRAM_BOT_TOKEN?: string };
     Variables: { identity: Ident };
   }>,
 ) {

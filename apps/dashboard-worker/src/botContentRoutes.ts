@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * متن‌های ربات and چیدمان کیبورد — the bot's own words and buttons.
  *
@@ -142,7 +143,7 @@ function layoutProblem(problem: NonNullable<ReturnType<typeof checkLayout>>): st
 }
 
 export function registerBotContentRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   // --- متن‌های ربات ---------------------------------------------------------
 
