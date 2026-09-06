@@ -63,6 +63,7 @@ export type PageId =
   | 'discounts'
   | 'texts'
   | 'keyboard'
+  | 'cron'
   | 'content'
   | 'access'
   | 'events'
@@ -155,6 +156,9 @@ export const NAV: NavGroup[] = [
       { id: 'texts', label: 'متن‌های ربات', icon: 'text' },
       { id: 'keyboard', label: 'چیدمان کیبورد', icon: 'keyboard' },
       { id: 'content', label: 'آموزش، برنامه‌ها و کانال‌ها', icon: 'text' },
+      // Last in its group: it is the only screen here that is about what the
+      // bot does when nobody is looking, rather than what it says when they are.
+      { id: 'cron', label: 'کرون‌جاب‌ها', icon: 'list' },
     ],
   },
   {
@@ -230,6 +234,9 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   // ADMIN-only in the route; what a reviewer sees is a bot's username, which
   // is public the moment anyone opens the shop.
   'bot',
+  // Reading which sweeps are on is shop operation, like «تنظیمات» below it.
+  // The write is ADMIN-only in the route.
+  'cron',
   'settings',
 ]);
 

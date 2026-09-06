@@ -143,6 +143,11 @@ describe('navigation', () => {
       // «ایمپورت میرزابات» — the legacy MySQL dump, brought in from the panel
       // rather than from a terminal nobody doing a cutover has.
       'import',
+      // «کرون‌جاب‌ها» — the sweeps the bot runs on its own. Until this screen
+      // there was no list of them anywhere outside TypeScript, and no switch:
+      // an admin could not stop the shop warning customers, and could not see
+      // that two jobs the PHP bot deletes services with had never been built.
+      'cron',
     ];
     expect([...ALL].sort()).toEqual([...implemented].sort());
   });
