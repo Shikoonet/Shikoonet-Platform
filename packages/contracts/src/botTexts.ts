@@ -680,6 +680,12 @@ export const TEXTS = {
     screen: 'delivery',
     hint: 'خط آخر پیام تحویل',
   },
+  SERVICE_READY_PASSWORD: {
+    default: '🔑 گذرواژه: {password}',
+    placeholders: ['password'],
+    screen: 'delivery',
+    hint: 'گذرواژهٔ اکانت، وقتی تحویل اکانت است نه لینک',
+  },
   SERVICE_MANUAL_TITLE: {
     default: '✅ پرداخت شما تایید شد و سفارش ثبت شد.',
     placeholders: [],

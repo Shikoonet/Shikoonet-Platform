@@ -13,8 +13,17 @@
  * both is letting them file an account on a server the customer did not buy.
  */
 
-import { useEffect, useState } from 'react';
-import { api, ApiError, type PlanRow, type ShelfCount, type StockRow } from '../api.js';
+import { useEffect, useRef, useState } from 'react';
+import {
+  api,
+  ApiError,
+  type BulkStockResult,
+  type CategoryRow,
+  type PlanRow,
+  type ShelfCount,
+  type StockRow,
+} from '../api.js';
+import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 import { count } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -34,6 +43,63 @@ function message(e: unknown): string {
 }
 
 const PAGE_SIZE = 50;
+
+/**
+ * The shelf price ceiling, in the unit the operator types.
+ *
+ * Derived from the server's own constant rather than written down again: the
+ * route refuses anything above `MAX_SINGLE_PAYMENT_IRR`, and without this the
+ * form takes the number, converts it, and returns a zod message quoting a RIAL
+ * limit to somebody who typed TOMAN — a ten-times difference on a money field,
+ * which reads as the form being broken rather than the number being too big.
+ */
+const MAX_SHELF_PRICE_TOMAN = MAX_SINGLE_PAYMENT_IRR / 10;
+
+/**
+ * What to call a shelf in one line.
+ *
+ * The service names it — «چت‌جی‌پی‌تی پلاس» — and the plan only separates two
+ * shelves of the same service. Named by plan alone, three shelves on three
+ * different services all read «یک‌ماهه», which tells an operator nothing about
+ * which one to go and fill.
+ */
+function shelfLabel(s: ShelfCount): string {
+  return planLabel(s.productName, s.planName);
+}
+
+/**
+ * The same rule for the pickers, which list plans rather than shelves.
+ *
+ * A shelf built from «قفسهٔ تازه» names its service and its product the same
+ * thing, so the picker read «اسپاتیفای — اسپاتیفای». Collapsed, one shelf is
+ * one line; a service with several plans still shows which plan it is.
+ */
+function planLabel(productName: string, planName: string): string {
+  return productName === planName ? planName : `${productName} — ${planName}`;
+}
+
+/**
+ * Labels for a whole picker, with any repeat made tellable apart.
+ *
+ * Two shelves named the same thing read identically, and so does a shelf
+ * called «چت‌جی‌پی‌تی — پلاس» beside a service «چت‌جی‌پی‌تی» with a plan
+ * «پلاس» — the separator is just text. The `value` still carries the id so the
+ * machine is never confused; the person choosing which shelf to pour a
+ * thousand accounts into is the one who needs them distinct.
+ */
+function pickerLabels(rows: PlanRow[]): Map<number, string> {
+  const seen = new Map<string, number>();
+  for (const p of rows) {
+    const label = planLabel(p.product.name, p.name);
+    seen.set(label, (seen.get(label) ?? 0) + 1);
+  }
+  const out = new Map<number, string>();
+  for (const p of rows) {
+    const label = planLabel(p.product.name, p.name);
+    out.set(p.id, (seen.get(label) ?? 0) > 1 ? `${label} #${p.id}` : label);
+  }
+  return out;
+}
 
 export function StockPage() {
   const w = useAdminWriteProps();
@@ -64,6 +130,20 @@ export function StockPage() {
    */
   const [revealed, setRevealed] = useState<ReadonlySet<number>>(() => new Set());
   const [adding, setAdding] = useState(false);
+  const [bulk, setBulk] = useState(false);
+  const [making, setMaking] = useState(false);
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
+  /**
+   * The shelf «قفسهٔ تازه» just made, preselected in the form that fills it.
+   *
+   * Not cosmetic: the plan list is fetched again after a shelf is created, and
+   * until it arrives the picker does not contain the new shelf at all. An
+   * operator who does not wait picks from the shelves that ARE listed — all of
+   * them the wrong one — and accounts land somewhere they were never meant to
+   * be. Handed the id directly, the form is already on the right shelf and the
+   * list catching up only changes what the option says.
+   */
+  const [fillPlanId, setFillPlanId] = useState<number | null>(null);
 
   async function load() {
     setErr(null);
@@ -94,6 +174,12 @@ export function StockPage() {
       .products({ page: 1, pageSize: 100 })
       .then((r) => setPlans(r.items))
       .catch((e) => setErr(message(e)));
+    // A shelf has to be filed under a category or it has no button anywhere in
+    // the shop, so the «قفسهٔ تازه» form needs the list before it can ask.
+    void api
+      .productCategories()
+      .then((r) => setCategories(r.items))
+      .catch((e) => setErr(message(e)));
   }, []);
 
   async function act(what: 'retire' | 'delete', row: StockRow) {
@@ -114,8 +200,22 @@ export function StockPage() {
     }
   }
 
+  const labels = pickerLabels(plans);
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const empty = shelves.filter((s) => s.available === 0);
+  /*
+   * Two different things, and they were one red box until the shelf list began
+   * showing shelves that had never been filled.
+   *
+   * A shelf that HAS sold and is now empty is the alarm this screen was built
+   * for: customers are buying that product and the next one gets nothing. A
+   * shelf with nothing on either side is simply not stocked yet — the normal
+   * state of a service somebody created an hour ago, and on a fresh database
+   * that is every one of them. Red on all of them is a screen that cries wolf,
+   * and `sections.spec.ts` caught it doing exactly that: it walks every section
+   * and treats a visible `.alert-error` as a broken screen.
+   */
+  const ranDry = shelves.filter((s) => s.available === 0 && s.used > 0);
+  const neverFilled = shelves.filter((s) => s.available === 0 && s.used === 0);
 
   return (
     <>
@@ -123,19 +223,33 @@ export function StockPage() {
         <div>
           <div className="page-head__title">قفسهٔ انبار</div>
           <div className="page-head__sub">
-            {count(shelves.reduce((n, s) => n + s.available, 0))} کانفیگ آماده روی{' '}
-            {count(shelves.length)} کانفیگ
+            {count(shelves.reduce((n, s) => n + s.available, 0))} اکانت آماده روی{' '}
+            {count(shelves.length)} قفسه
           </div>
         </div>
-        <button type="button" className="btn btn-primary" onClick={() => setAdding(true)} {...w}>
-          افزودن کانفیگ
-        </button>
+        <div>
+          <button type="button" className="btn btn-primary" onClick={() => setMaking(true)} {...w}>
+            قفسهٔ تازه
+          </button>{' '}
+          <button type="button" className="btn" onClick={() => setBulk(true)} {...w}>
+            افزودن گروهی
+          </button>{' '}
+          <button type="button" className="btn" onClick={() => setAdding(true)} {...w}>
+            افزودن کانفیگ
+          </button>
+        </div>
       </div>
 
-      {empty.length > 0 && (
+      {ranDry.length > 0 && (
         <div className="alert alert-error">
-          قفسهٔ این کانفیگ‌ها خالی است: {empty.map((s) => s.planName).join('، ')} — اگر پنل از دسترس
-          خارج شود، فروششان می‌خوابد.
+          این قفسه‌ها فروخته‌اند و ته کشیده‌اند: {ranDry.map(shelfLabel).join('، ')} — مشتری بعدی
+          پول می‌دهد و چیزی نمی‌گیرد تا کسی دستی آماده‌اش کند.
+        </div>
+      )}
+
+      {neverFilled.length > 0 && (
+        <div className="alert alert-warning">
+          این قفسه‌ها هنوز پر نشده‌اند: {neverFilled.map(shelfLabel).join('، ')}.
         </div>
       )}
 
@@ -147,7 +261,7 @@ export function StockPage() {
           <table className="app-table">
             <thead>
               <tr>
-                <th>کانفیگ</th>
+                <th>قفسه</th>
                 <th>آماده</th>
                 <th>فروخته‌شده</th>
               </tr>
@@ -156,15 +270,17 @@ export function StockPage() {
               {shelves.length === 0 && (
                 <tr>
                   <td className="empty" colSpan={3}>
-                    هنوز هیچ کانفیگی در قفسه نیست.
+                    هنوز هیچ قفسه‌ای نیست — یک سرویس روی پنلی بساز که تحویلش دستی یا از قفسه است.
                   </td>
                 </tr>
               )}
               {shelves.map((s) => (
                 <tr key={s.planId}>
                   <td>
-                    <div>{s.planName}</div>
-                    <div className="page-head__sub">{s.productName}</div>
+                    {/* The service first: it is what names the shelf. The plan
+                        underneath only tells two shelves of one service apart. */}
+                    <div>{s.productName}</div>
+                    <div className="page-head__sub">{s.planName}</div>
                   </td>
                   <td>
                     <span
@@ -199,7 +315,7 @@ export function StockPage() {
               <option value="">همه</option>
               {plans.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.product.name} — {p.name}
+                  {labels.get(p.id)}
                 </option>
               ))}
             </select>
@@ -234,7 +350,7 @@ export function StockPage() {
                 <th>پنل</th>
                 <th>وضعیت</th>
                 <th>سفارش</th>
-                <th>لینک اشتراک</th>
+                <th>اعتبارنامه</th>
                 <th />
               </tr>
             </thead>
@@ -262,20 +378,20 @@ export function StockPage() {
                   </td>
                   <td className="ltr">{r.orderPublicId ?? '—'}</td>
                   <td className="ltr">
-                    {r.subscriptionUrl === null ? (
+                    {r.subscriptionUrl === null && r.secret === null ? (
                       // Null for a sold or retired row and for anyone who is
                       // not an ADMIN. Nothing to press, and nothing to explain:
                       // the paragraph under the table says why.
                       '—'
                     ) : revealed.has(r.id) ? (
-                      <code className="stock-link">{r.subscriptionUrl}</code>
+                      <code className="stock-link">{r.subscriptionUrl ?? r.secret}</code>
                     ) : (
                       <button
                         type="button"
                         className="btn btn-sm"
                         onClick={() => setRevealed((was) => new Set(was).add(r.id))}
                       >
-                        نمایش لینک
+                        نمایش
                       </button>
                     )}
                   </td>
@@ -331,8 +447,9 @@ export function StockPage() {
         )}
 
         <p className="muted">
-          لینک اشتراک اعتبارنامه است: هرکس داشته باشدش سرویس را دارد. فقط برای کانفیگ‌های روی قفسه و
-          فقط به ادمین فرستاده می‌شود، و تا وقتی «نمایش لینک» را نزنی روی صفحه نمی‌آید.
+          لینک اشتراک و گذرواژه اعتبارنامه‌اند: هرکس داشته باشدشان سرویس را دارد. فقط برای
+          ردیف‌های روی قفسه و فقط به ادمین فرستاده می‌شوند، و تا وقتی «نمایش» را نزنی روی صفحه
+          نمی‌آیند.
         </p>
       </div>
 
@@ -345,6 +462,47 @@ export function StockPage() {
             setDone('کانفیگ به قفسه اضافه شد.');
             void load();
           }}
+        />
+      )}
+
+      {making && (
+        <NewShelfForm
+          categories={categories}
+          onClose={() => setMaking(false)}
+          onMade={(name, planId) => {
+            setMaking(false);
+            setDone(`قفسهٔ «${name}» ساخته شد — حالا اکانت‌هایش را بگذار.`);
+            void load();
+            void api
+              .products({ page: 1, pageSize: 100 })
+              .then((r) => setPlans(r.items))
+              .catch((e) => setErr(message(e)));
+            setFillPlanId(planId);
+            setBulk(true);
+          }}
+        />
+      )}
+
+      {bulk && (
+        <BulkStockForm
+          /*
+           * Keyed on the shelf, so a second «قفسهٔ تازه» starts a fresh form.
+           *
+           * `initialPlanId` alone is not enough: it is read into state once, at
+           * mount, and this form stays open after a successful fill on purpose.
+           * Make shelf A, fill it, then make shelf B — the banner says B, and
+           * the picker and the pasted text are still A's. B's accounts go onto
+           * A's shelf, and every one of them is a live credential that reaches
+           * whoever buys A next.
+           */
+          key={fillPlanId ?? 'any'}
+          plans={plans}
+          initialPlanId={fillPlanId}
+          onClose={() => {
+            setBulk(false);
+            setFillPlanId(null);
+          }}
+          onFilled={() => void load()}
         />
       )}
     </>
@@ -368,6 +526,7 @@ function StockForm({
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const labels = pickerLabels(plans);
   const plan = plans.find((p) => String(p.id) === planId) ?? null;
 
   async function save() {
@@ -413,7 +572,7 @@ function StockForm({
             <option value="">انتخاب کنید…</option>
             {plans.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.product.name} — {p.name}
+                {labels.get(p.id)}
               </option>
             ))}
           </select>
@@ -470,6 +629,383 @@ function StockForm({
           {...w}
         >
           افزودن
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * «قفسهٔ تازه» — a name and a price, and the shelf exists.
+ *
+ * A shelf is a plan on a service on a panel, and reaching one through those
+ * three screens means answering questions about panels and services to make a
+ * box of Spotify accounts. Asked here as the two things a shelf actually is;
+ * the server builds the rest in one transaction.
+ */
+function NewShelfForm({
+  categories,
+  onClose,
+  onMade,
+}: {
+  categories: CategoryRow[];
+  onClose: () => void;
+  onMade: (name: string, planId: number) => void;
+}) {
+  const w = useAdminWriteProps();
+  const [name, setName] = useState('');
+  const [kind, setKind] = useState('other');
+  const [priceToman, setPriceToman] = useState('');
+  const [durationDays, setDurationDays] = useState('30');
+  const [categoryId, setCategoryId] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function make() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const made = await api.createShelf({
+        name: name.trim(),
+        kind,
+        // Toman on the screen, IRR in the database, and the ×10 happens here
+        // the same way every other price form in this panel does it.
+        priceIrr: Math.round(Number(priceToman) * 10),
+        durationDays: durationDays.trim() === '' ? null : Number(durationDays),
+        categoryId: Number(categoryId),
+      });
+      onMade(name.trim(), made.planId);
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <span className="card__title">قفسهٔ تازه</span>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن
+        </button>
+      </div>
+
+      {err && <div className="alert alert-error">{err}</div>}
+      {categories.length === 0 && (
+        // Without one the button below can never be pressed, and «ساختن قفسه»
+        // sitting there greyed out with no sentence beside it is the worst
+        // version of that.
+        <div className="alert alert-warning">
+          هیچ دسته‌بندی‌ای نیست و قفسه بدون آن در فروشگاه دیده نمی‌شود — اول از «دسته‌بندی‌ها» یکی
+          بساز.
+        </div>
+      )}
+
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="shelf-name">
+            اسم قفسه — همان که مشتری می‌بیند
+          </label>
+          <input
+            id="shelf-name"
+            className="form-control"
+            type="text"
+            maxLength={120}
+            placeholder="اسپاتیفای، اوپن‌وی‌پی‌ان، چت‌جی‌پی‌تی…"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="shelf-kind">
+            چه چیزی می‌فروشد
+          </label>
+          <select
+            id="shelf-kind"
+            className="form-control"
+            value={kind}
+            onChange={(e) => setKind(e.target.value)}
+          >
+            <option value="other">سایر</option>
+            <option value="ai_account">اکانت هوش مصنوعی</option>
+            <option value="spotify">اسپاتیفای</option>
+            <option value="vpn">وی‌پی‌ان</option>
+            <option value="manual">دستی</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="filters">
+        <div>
+          <label className="form-label" htmlFor="shelf-price">
+            قیمت (تومان)
+          </label>
+          <input
+            id="shelf-price"
+            className="form-control ltr"
+            type="number"
+            // A free shelf is one the bot refuses to sell — see the route.
+            min={1}
+            max={MAX_SHELF_PRICE_TOMAN}
+            value={priceToman}
+            onChange={(e) => setPriceToman(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="shelf-days">
+            مدت (روز)
+          </label>
+          <input
+            id="shelf-days"
+            className="form-control ltr"
+            type="number"
+            min={1}
+            placeholder="بی‌انقضا"
+            value={durationDays}
+            onChange={(e) => setDurationDays(e.target.value)}
+          />
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="shelf-cat">
+            دسته‌بندی
+          </label>
+          <select
+            id="shelf-cat"
+            className="form-control"
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+          >
+            <option value="">انتخاب کنید…</option>
+            {categories.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {/* Still offered — staging a shelf in a category that is off is
+                    a real thing to want — but never silently: filed under one,
+                    the shelf is invisible in the shop with nothing on any
+                    screen to say why. */}
+                {cat.active ? cat.name : `${cat.name} (خاموش — در فروشگاه دیده نمی‌شود)`}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {Number(priceToman) > MAX_SHELF_PRICE_TOMAN && (
+        <div className="alert alert-error">
+          قیمت از سقف یک پرداخت بیشتر است — حداکثر {count(MAX_SHELF_PRICE_TOMAN)} تومان.
+        </div>
+      )}
+
+      <p className="muted">
+        پنلِ این قفسه خودش ساخته می‌شود و تحویلش دستی است — یعنی هرچه در قفسه بگذاری همان به مشتری
+        می‌رسد. هر قفسه پنل خودش را دارد، پس یک ایمیل می‌تواند هم‌زمان در قفسهٔ اسپاتیفای و
+        چت‌جی‌پی‌تی باشد.
+      </p>
+
+      <div className="filters" style={{ marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={
+            busy ||
+            name.trim() === '' ||
+            // Typed, not just empty: `min`/`max` on the input are advisory and
+            // a pasted number walks past both.
+            !(Number(priceToman) > 0) ||
+            Number(priceToman) > MAX_SHELF_PRICE_TOMAN ||
+            categoryId === ''
+          }
+          onClick={() => void make()}
+          {...w}
+        >
+          ساختن قفسه
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A whole shelf-load at once: paste an export, or pick the file and it lands in
+ * the same textarea. Parsing and every per-line verdict live server-side; this
+ * form only carries the text and shows what came back. The form stays open
+ * after a send on purpose — the skipped lines ARE the result, and closing over
+ * them is how a half-loaded shelf goes unnoticed.
+ */
+function BulkStockForm({
+  plans,
+  initialPlanId,
+  onClose,
+  onFilled,
+}: {
+  plans: PlanRow[];
+  /** The shelf to open on — see `fillPlanId`. Null means «ask». */
+  initialPlanId?: number | null;
+  onClose: () => void;
+  onFilled: () => void;
+}) {
+  const w = useAdminWriteProps();
+  const [planId, setPlanId] = useState(initialPlanId == null ? '' : String(initialPlanId));
+  const [text, setText] = useState('');
+  const labels = pickerLabels(plans);
+  const [result, setResult] = useState<BulkStockResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  /**
+   * Which input the pending file read belongs to.
+   *
+   * `File.text()` resolves whenever it resolves. Pick a big file, then pick a
+   * small one — or start typing in the box — and the first read can land after
+   * the second, quietly replacing what the operator is looking at. They press
+   * «افزودن به قفسه» on the text they can see, and a different set of accounts
+   * goes onto the shelf. Every input that supersedes a read bumps this, and a
+   * read that comes back stale is dropped.
+   */
+  const readGeneration = useRef(0);
+
+  const plan = plans.find((p) => String(p.id) === planId) ?? null;
+
+  async function send() {
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const res = await api.addStockBulk({ planId: Number(planId), text });
+      setResult(res);
+      if (res.added > 0) onFilled();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBlockStart: 16 }}>
+      <div className="card__head">
+        <span className="card__title">افزودن گروهی به قفسه</span>
+        <button type="button" className="btn btn-sm" onClick={onClose}>
+          بستن
+        </button>
+      </div>
+
+      {err && <div className="alert alert-error">{err}</div>}
+      {result && (
+        <div className={result.skipped.length > 0 ? 'alert alert-error' : 'alert alert-info'}>
+          {count(result.added)} ردیف به قفسه اضافه شد
+          {result.skipped.length > 0 ? ` و ${count(result.skipped.length)} ردیف رد شد:` : '.'}
+        </div>
+      )}
+      {result && result.skipped.length > 0 && (
+        <ul className="muted">
+          {result.skipped.map((s) => (
+            <li key={s.line}>
+              سطر {count(s.line)}
+              {s.username ? (
+                <>
+                  {' '}
+                  (<span className="ltr">{s.username}</span>)
+                </>
+              ) : null}
+              : {s.reason}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="filters">
+        <div className="grow">
+          <label className="form-label" htmlFor="bulk-plan">
+            کانفیگ
+          </label>
+          <select
+            id="bulk-plan"
+            className="form-control"
+            value={planId}
+            onChange={(e) => setPlanId(e.target.value)}
+          >
+            <option value="">انتخاب کنید…</option>
+            {/* The shelf just made, before the refreshed list has arrived. A
+                `value` with no matching option selects nothing, which would
+                silently drop the preselection this form exists to carry. */}
+            {planId !== '' && !plans.some((p) => String(p.id) === planId) && (
+              <option value={planId}>قفسهٔ تازه</option>
+            )}
+            {plans.map((p) => (
+              <option key={p.id} value={p.id}>
+                {labels.get(p.id)}
+              </option>
+            ))}
+          </select>
+          <div className="page-head__sub">
+            {plan ? `پنل: ${plan.provider?.name ?? '—'}` : 'پنل از روی کانفیگ تعیین می‌شود'}
+          </div>
+        </div>
+        <div className="grow">
+          <label className="form-label" htmlFor="bulk-file">
+            فایل CSV یا متنی
+          </label>
+          <input
+            id="bulk-file"
+            className="form-control"
+            type="file"
+            accept=".csv,.txt,text/csv,text/plain"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              // Measured after decoding, not from `f.size`. The route caps the
+              // body at 200k CHARACTERS and a byte count is a different number
+              // in UTF-8 — a Persian note or an email with non-ASCII in it is
+              // two or three bytes a character, so a byte check refuses files
+              // the server would have taken.
+              if (f) {
+                const mine = ++readGeneration.current;
+                setErr(null);
+                void f
+                  .text()
+                  .then((next) => {
+                    if (mine !== readGeneration.current) return;
+                    if (next.length > 200_000) {
+                      setErr('فایل بلندتر از ۲۰۰٬۰۰۰ نویسه است — تکه‌تکه‌اش کن.');
+                      return;
+                    }
+                    setText(next);
+                  })
+                  .catch(() => {
+                    if (mine === readGeneration.current) setErr('فایل خوانده نشد.');
+                  });
+              }
+              // Same file twice must fire onChange again.
+              e.target.value = '';
+            }}
+          />
+        </div>
+      </div>
+
+      <label className="form-label" htmlFor="bulk-text">
+        هر سطر یک اکانت: «نام‌کاربری,گذرواژه» یا «نام‌کاربری,لینک اشتراک»
+      </label>
+      <textarea
+        id="bulk-text"
+        className="form-control ltr"
+        rows={8}
+        placeholder={'user@example.com,secret123\nuser2@example.com,secret456'}
+        value={text}
+        onChange={(e) => {
+          // Typing wins over a file still being read — see `readGeneration`.
+          readGeneration.current += 1;
+          setText(e.target.value);
+        }}
+      />
+
+      <div className="filters" style={{ marginBlockStart: 12 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || planId === '' || text.trim() === ''}
+          onClick={() => void send()}
+          {...w}
+        >
+          افزودن به قفسه
         </button>
       </div>
     </div>

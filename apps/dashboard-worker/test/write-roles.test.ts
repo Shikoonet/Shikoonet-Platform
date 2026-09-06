@@ -386,12 +386,23 @@ describe('every write route, asked directly', () => {
     // are a MENU, and what actually reaches a customer still goes through
     // `checkCustomEmoji` on the text that quotes one.
     //
+    // +1, «POST /stock/bulk». Fills a shelf from a pasted export instead of one
+    // row per press. ADMIN-only for exactly the reason the single-row route
+    // beside it is — every line is a working account the moment a customer is
+    // handed it — and the paste is the wider version of the same write: one
+    // press can put a thousand of them on the shelf.
+    //
+    // +1, «POST /stock/shelves». Builds a shelf — the panel, the service and
+    // the product under it — from a name and a price, in one transaction.
+    // ADMIN-only because it creates a sellable thing: a plan with a price that
+    // a customer can reach in the bot the moment it exists.
+    //
     // +1, «POST /discounts/:id/status». Switches a discount code off and back
     // on. ADMIN-only like every other write on this screen: it decides whether
     // a code takes money off an invoice, which is the same blast radius as
     // creating one. It is the only write here that is REVERSIBLE — expiring a
     // code rewrites when it ended and cannot be undone — and that is why the
     // screen does not ask «مطمئنی؟» before it, unlike delete.
-    expect(writeRoutes().length).toBe(151);
+    expect(writeRoutes().length).toBe(153);
   });
 });
