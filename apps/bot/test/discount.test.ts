@@ -64,6 +64,9 @@ interface CodeOptions {
   productId?: number | null;
   providerId?: number | null;
   appliesTo?: 'ALL' | 'BUY' | 'RENEW';
+  usesPerUser?: number;
+  status?: 'ACTIVE' | 'DISABLED';
+  targetUserId?: number | null;
 }
 
 async function makeCode(code: string, options: CodeOptions = {}): Promise<number> {
@@ -71,8 +74,9 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
     .prepare(
       `INSERT INTO discount_codes
          (code, kind, percent, amount_irr, expires_at, max_uses, first_purchase_only,
-          resellers_only, product_id, provider_id, applies_to)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+          resellers_only, product_id, provider_id, applies_to,
+          uses_per_user, status, target_user_id)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
        -- Every column, not just the one it conflicted on. This used to set the
        -- code to itself, which is a no-op upsert: a code left in the table by
        -- an earlier run kept its OLD kind, so a test asking for a gift code
@@ -85,7 +89,9 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
          first_purchase_only = EXCLUDED.first_purchase_only,
          resellers_only = EXCLUDED.resellers_only,
          product_id = EXCLUDED.product_id, provider_id = EXCLUDED.provider_id,
-         applies_to = EXCLUDED.applies_to
+         applies_to = EXCLUDED.applies_to,
+         uses_per_user = EXCLUDED.uses_per_user, status = EXCLUDED.status,
+         target_user_id = EXCLUDED.target_user_id
        RETURNING id`,
     )
     .bind(
@@ -102,6 +108,9 @@ async function makeCode(code: string, options: CodeOptions = {}): Promise<number
       options.productId ?? null,
       options.providerId ?? null,
       options.appliesTo ?? 'ALL',
+      options.usesPerUser ?? 1,
+      options.status ?? 'ACTIVE',
+      options.targetUserId ?? null,
     )
     .first<{ id: number }>();
   if (!row) throw new Error(`code fixture ${code} failed`);
@@ -558,11 +567,17 @@ describe('a gift code', () => {
    * The ceiling, under the only condition that can break it.
    *
    * `max_uses` is checked by counting `discount_redemptions` and then acting on
-   * the count. The unique index `(code_id, user_id)` makes that safe for ONE
-   * customer pressing twice — the insert decides, not the count. It does
-   * nothing for two DIFFERENT customers on a code with `max_uses = 1`: both
-   * count zero, both insert without conflicting, and a shop that authorised one
-   * gift gives two.
+   * the count. Two DIFFERENT customers on a code with `max_uses = 1` both count
+   * zero, both insert, and a shop that authorised one gift gives two — unless
+   * the `FOR UPDATE` on the code's row serialises them, which is what this
+   * proves.
+   *
+   * The comment here used to add that «the unique index `(code_id, user_id)`
+   * makes that safe for ONE customer pressing twice». That index is gone —
+   * migration 0059 replaced it with a per-order one and a counted per-user
+   * ceiling — so the sentence is corrected rather than left to be believed.
+   * The same lock is what holds BOTH ceilings now, and there is a sibling test
+   * of this shape below for the per-user one.
    *
    * Sequential calls cannot show this; the second one sees the first's row.
    * Both redemptions have to be in flight at once, which is why this is
@@ -633,5 +648,330 @@ describe('a code nobody asked for', () => {
     await makeCustomer(telegramId);
     const out = await handleUpdate(db, types(updateId, telegramId, 'save20'));
     expect(out.status).toBe('ignored');
+  });
+});
+
+describe('how many times one customer may use a code', () => {
+  /**
+   * Until migration 0059 the answer was «once», and it was not a rule anybody
+   * chose — it was a UNIQUE index on `(code_id, user_id)`. The legacy is
+   * looser: 23 of its 33 codes allow 2 or 5 uses per person, and not one of
+   * them was ever used twice — 93 redemptions, 92 distinct customers, zero
+   * duplicate pairs on the 08-11 dump.
+   *
+   * So these tests are not restoring lost behaviour. They hold a guarantee
+   * that used to be structural and is now a count, which is the only thing
+   * worth testing about this change.
+   */
+  it('still refuses a second use when the code allows one', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('peruser1', { kind: 'GIFT_BALANCE', amountIrr: 100_000 });
+
+    await handleUpdate(db, press(updateId, telegramId, 'gft'));
+    await handleUpdate(db, types(updateId + 1, telegramId, 'peruser1'));
+    await handleUpdate(db, press(updateId + 2, telegramId, 'gft'));
+    const again = await handleUpdate(db, types(updateId + 3, telegramId, 'peruser1'));
+
+    expect(again.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['ALREADY_USED']);
+    const redeemed = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM discount_redemptions r
+           JOIN discount_codes c ON c.id = r.code_id WHERE c.code = 'peruser1'`,
+      )
+      .first<{ n: number }>();
+    expect(redeemed?.n).toBe(1);
+  });
+
+  it('allows a second use when the code allows two, and refuses the third', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('peruser2', { kind: 'GIFT_BALANCE', amountIrr: 100_000, usesPerUser: 2 });
+
+    for (const step of [0, 2]) {
+      await handleUpdate(db, press(updateId + step, telegramId, 'gft'));
+      await handleUpdate(db, types(updateId + step + 1, telegramId, 'peruser2'));
+    }
+    await handleUpdate(db, press(updateId + 4, telegramId, 'gft'));
+    const third = await handleUpdate(db, types(updateId + 5, telegramId, 'peruser2'));
+
+    expect(third.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['ALREADY_USED']);
+    // Two redemptions and two credits, read from the database rather than from
+    // the replies — the replies are written by the code that did the crediting.
+    const redeemed = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM discount_redemptions r
+           JOIN discount_codes c ON c.id = r.code_id WHERE c.code = 'peruser2'`,
+      )
+      .first<{ n: number }>();
+    const credited = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM wallet_entries
+          WHERE user_id = ?1 AND kind = 'GIFT_CODE' AND note = 'gift code peruser2'`,
+      )
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(redeemed?.n).toBe(2);
+    expect(credited?.n).toBe(2);
+  });
+
+  /**
+   * The ceiling that used to be an index, under the only condition that can
+   * break it.
+   *
+   * `uses_per_user` is now a count, and a count read outside a lock is a race:
+   * two taps arriving together both see one redemption, both pass a ceiling of
+   * two, and the customer takes a third gift. Sequential calls cannot show it —
+   * the second sees the first's row — so both have to be in flight at once.
+   *
+   * This is the same shape as «honours the use ceiling when two customers
+   * arrive together» above, and it rests on the same `FOR UPDATE` in `redeem`.
+   */
+  it('honours the per-user ceiling when the same customer taps twice at once', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('peruserrace', { kind: 'GIFT_BALANCE', amountIrr: 100_000, usesPerUser: 2 });
+
+    // One use already spent, so the ceiling is one away and two concurrent
+    // taps are exactly the pair that must not both pass.
+    await handleUpdate(db, press(updateId, telegramId, 'gft'));
+    await handleUpdate(db, types(updateId + 1, telegramId, 'peruserrace'));
+
+    await handleUpdate(db, press(updateId + 2, telegramId, 'gft'));
+    await handleUpdate(db, press(updateId + 4, telegramId, 'gft'));
+    await Promise.all([
+      handleUpdate(db, types(updateId + 3, telegramId, 'peruserrace')),
+      handleUpdate(db, types(updateId + 5, telegramId, 'peruserrace')),
+    ]);
+
+    const redeemed = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM discount_redemptions r
+           JOIN discount_codes c ON c.id = r.code_id WHERE c.code = 'peruserrace'`,
+      )
+      .first<{ n: number }>();
+    const credited = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM wallet_entries
+          WHERE user_id = ?1 AND kind = 'GIFT_CODE' AND note = 'gift code peruserrace'`,
+      )
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(redeemed?.n).toBe(2);
+    expect(credited?.n).toBe(2);
+  });
+});
+
+describe('a code an admin has switched off', () => {
+  it('is refused, and says paused rather than expired', async () => {
+    // The two words are not interchangeable to a customer: «مهلتش تمام شده» is
+    // final and «فعلاً غیرفعال است» is worth waiting for. A shop that pauses a
+    // code for an hour must not send everyone who tries it to support.
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('paused1', { kind: 'GIFT_BALANCE', amountIrr: 100_000, status: 'DISABLED' });
+
+    await handleUpdate(db, press(updateId, telegramId, 'gft'));
+    const out = await handleUpdate(db, types(updateId + 1, telegramId, 'paused1'));
+
+    expect(out.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['DISABLED']);
+  });
+
+  it('works again once it is switched back on', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('paused2', { kind: 'GIFT_BALANCE', amountIrr: 100_000, status: 'DISABLED' });
+
+    await handleUpdate(db, press(updateId, telegramId, 'gft'));
+    await handleUpdate(db, types(updateId + 1, telegramId, 'paused2'));
+
+    await db.prepare(`UPDATE discount_codes SET status = 'ACTIVE' WHERE code = 'paused2'`).run();
+
+    await handleUpdate(db, press(updateId + 2, telegramId, 'gft'));
+    await handleUpdate(db, types(updateId + 3, telegramId, 'paused2'));
+
+    // The refused attempt left nothing behind — that is what «pause» has to
+    // mean. A refusal that had spent the code would make the switch one-way.
+    const credited = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM wallet_entries
+          WHERE user_id = ?1 AND kind = 'GIFT_CODE' AND note = 'gift code paused2'`,
+      )
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(credited?.n).toBe(1);
+  });
+});
+
+describe('a code aimed at one customer', () => {
+  it('works for the customer it names', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('mine1', {
+      kind: 'GIFT_BALANCE',
+      amountIrr: 100_000,
+      targetUserId: userId,
+    });
+
+    await handleUpdate(db, press(updateId, telegramId, 'gft'));
+    await handleUpdate(db, types(updateId + 1, telegramId, 'mine1'));
+
+    const credited = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM wallet_entries
+          WHERE user_id = ?1 AND kind = 'GIFT_CODE' AND note = 'gift code mine1'`,
+      )
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(credited?.n).toBe(1);
+  });
+
+  it('refuses everybody else, and says whose it is rather than that it exists', async () => {
+    const owner = ids();
+    const other = ids();
+    const ownerId = await makeCustomer(owner.telegramId);
+    const otherId = await makeCustomer(other.telegramId);
+    await makeCode('mine2', {
+      kind: 'GIFT_BALANCE',
+      amountIrr: 100_000,
+      targetUserId: ownerId,
+    });
+
+    await handleUpdate(db, press(other.updateId, other.telegramId, 'gft'));
+    const out = await handleUpdate(db, types(other.updateId + 1, other.telegramId, 'mine2'));
+
+    // NOT_FOR_YOU rather than UNKNOWN_CODE: the customer typed something real,
+    // and «چنین کدی وجود ندارد» would send them to support to ask why their
+    // friend's code does not work.
+    expect(out.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['NOT_FOR_YOU']);
+    const credited = await db
+      .prepare(`SELECT count(*)::int AS n FROM wallet_entries WHERE user_id = ?1`)
+      .bind(otherId)
+      .first<{ n: number }>();
+    expect(credited?.n).toBe(0);
+  });
+});
+
+describe('the switch and the target, on the purchase path', () => {
+  /**
+   * The gift path and the purchase path read the same row through DIFFERENT
+   * functions — `redeemGift` and `checkCode` — and neither calls the other.
+   *
+   * The first version of these tests covered only the gift side, and a
+   * guard-removal run showed it: deleting the status check from `checkCode`
+   * turned nothing red. Two doors onto one rule need a test at each of them.
+   */
+  it('refuses a switched-off code on a purchase', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('offbuy1', { percent: 25, status: 'DISABLED' });
+
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'offbuy1')).toBe(
+      menu.DISCOUNT_REFUSED['DISABLED'],
+    );
+    // And the order is placed at full price rather than not at all — a refused
+    // code must not cost the customer their purchase.
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+    expect((await lastOrder(userId))?.discount_irr).toBe(0);
+  });
+
+  it('takes it again once it is switched back on', async () => {
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('offbuy2', { percent: 25, status: 'DISABLED' });
+
+    expect(await useCode(updateId, telegramId, VIP_PLAN, 'offbuy2')).toBe(
+      menu.DISCOUNT_REFUSED['DISABLED'],
+    );
+    await db.prepare(`UPDATE discount_codes SET status = 'ACTIVE' WHERE code = 'offbuy2'`).run();
+
+    const said = await useCode(updateId + 3, telegramId, VIP_PLAN, 'offbuy2');
+    expect(said).not.toBe(menu.DISCOUNT_REFUSED['DISABLED']);
+  });
+
+  it('refuses a targeted code on a purchase by anybody else', async () => {
+    const owner = ids();
+    const other = ids();
+    const ownerId = await makeCustomer(owner.telegramId);
+    const otherUserId = await makeCustomer(other.telegramId);
+    await makeCode('minebuy1', { percent: 25, targetUserId: ownerId });
+
+    expect(await useCode(other.updateId, other.telegramId, VIP_PLAN, 'minebuy1')).toBe(
+      menu.DISCOUNT_REFUSED['NOT_FOR_YOU'],
+    );
+    await handleUpdate(db, press(other.updateId + 2, other.telegramId, `order:${VIP_PLAN}`));
+    expect((await lastOrder(otherUserId))?.discount_irr).toBe(0);
+  });
+
+  it('applies it for the customer it names', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('minebuy2', { percent: 25, targetUserId: userId });
+
+    const said = await useCode(updateId, telegramId, VIP_PLAN, 'minebuy2');
+    expect(said).not.toBe(menu.DISCOUNT_REFUSED['NOT_FOR_YOU']);
+
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+    // Both halves, because a target check that refuses everybody would pass the
+    // test above on its own.
+    expect((await lastOrder(userId))?.discount_irr).toBeGreaterThan(0);
+  });
+
+  it('lets one customer buy twice with a code that allows two', async () => {
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('buytwice', { percent: 25, usesPerUser: 2 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'buytwice');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+    const first = await lastOrder(userId);
+    expect(first?.discount_irr).toBeGreaterThan(0);
+
+    // A genuinely new order — the first is paid off, so `place()` does not
+    // reuse it — and the second use is spent on that rather than on the
+    // invoice the customer was already looking at.
+    await db
+      .prepare(`UPDATE orders SET status = 'COMPLETED' WHERE id = ?1`)
+      .bind(first!.id)
+      .run();
+
+    await useCode(updateId + 4, telegramId, VIP_PLAN, 'buytwice');
+    await handleUpdate(db, press(updateId + 6, telegramId, `order:${VIP_PLAN}`));
+    const second = await lastOrder(userId);
+    expect(second?.id).not.toBe(first?.id);
+    expect(second?.discount_irr).toBeGreaterThan(0);
+  });
+
+  it('does not spend a second use on the invoice the customer already has', async () => {
+    /**
+     * The hazard migration 0059 introduces, and the reason the uniqueness
+     * moved to `(code_id, order_id)`.
+     *
+     * `handleOrder` calls `redeem` on EVERY tap of «سفارش», including the taps
+     * `place()` answers with the order the customer already has. While the
+     * unique index was `(code_id, user_id)` those extra calls were absorbed by
+     * the conflict clause. With a per-user ceiling of two and no order-scoped
+     * index, the second tap would silently spend the customer's second use on
+     * an invoice they were already looking at.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('taptwice', { percent: 25, usesPerUser: 2 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'taptwice');
+    await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+    await handleUpdate(db, press(updateId + 3, telegramId, `order:${VIP_PLAN}`));
+    await handleUpdate(db, press(updateId + 4, telegramId, `order:${VIP_PLAN}`));
+
+    const redeemed = await db
+      .prepare(
+        `SELECT count(*)::int AS n FROM discount_redemptions r
+           JOIN discount_codes c ON c.id = r.code_id
+          WHERE c.code = 'taptwice' AND r.user_id = ?1`,
+      )
+      .bind(userId)
+      .first<{ n: number }>();
+    // Three taps, one order, one use spent.
+    expect(redeemed?.n).toBe(1);
   });
 });
