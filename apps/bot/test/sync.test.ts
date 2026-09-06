@@ -8,6 +8,10 @@
  *     the customer as data loss.
  *   - It must not run on every poll cycle. At 25 seconds a cycle that is 144
  *     listings an hour per panel for a number that moves slowly.
+ *   - It may FILL an expiry and never overwrite one. Issue #92: every service
+ *     imported from the PHP bot arrived with `expires_at` NULL, so the panel is
+ *     the only place the date exists — but for a service this bot sold, our
+ *     date is the one the customer paid for and a panel must not shorten it.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,7 +30,16 @@ function nextTelegramId(): number {
 }
 
 /** A panel that reports usage for whatever accounts it was given. */
-function fakePanel(accounts: { username: string; used: number; url?: string | null }[]) {
+function fakePanel(
+  accounts: {
+    username: string;
+    used: number;
+    url?: string | null;
+    /** What the panel says about expiry. Left out entirely when undefined,
+     *  which is the «this panel does not report one» case. */
+    expire?: number | string | null;
+  }[],
+) {
   const calls: string[] = [];
   const fetchImpl = (async (input: string | URL | Request) => {
     const url = String(input);
@@ -41,6 +54,7 @@ function fakePanel(accounts: { username: string; used: number; url?: string | nu
             username: a.username,
             used_traffic: a.used,
             subscription_url: a.url === undefined ? `/sub/${a.username}` : a.url,
+            expire: a.expire,
           })),
           total: accounts.length,
         }),
@@ -65,6 +79,7 @@ async function makeService(
     usedBytes?: number | null;
     status?: string;
     syncedAtMs?: number | null;
+    expiresAtMs?: number | null;
   },
 ): Promise<number> {
   const row = await db
@@ -72,9 +87,10 @@ async function makeService(
       `INSERT INTO subscriptions
          (public_id, user_id, provider_id, plan_name_at_sale, price_irr,
           remote_username, subscription_url, used_bytes, volume_gb,
-          status, purchased_at, last_synced_at)
+          status, purchased_at, last_synced_at, expires_at)
        VALUES (?1, ?2, ?3, 'sync fixture', 1950000, ?4, ?5, ?6, 50, ?7, now(),
-               CASE WHEN ?8::bigint IS NULL THEN NULL ELSE to_timestamp(?8 / 1000.0) END)
+               CASE WHEN ?8::bigint IS NULL THEN NULL ELSE to_timestamp(?8 / 1000.0) END,
+               CASE WHEN ?9::bigint IS NULL THEN NULL ELSE to_timestamp(?9 / 1000.0) END)
        RETURNING id`,
     )
     .bind(
@@ -86,6 +102,7 @@ async function makeService(
       fields.usedBytes ?? null,
       fields.status ?? 'ACTIVE',
       fields.syncedAtMs ?? null,
+      fields.expiresAtMs ?? null,
     )
     .first<{ id: number }>();
   if (!row) throw new Error('sync fixture failed');
@@ -94,12 +111,16 @@ async function makeService(
 
 async function readService(id: number) {
   return db
-    .prepare(`SELECT used_bytes, subscription_url, last_synced_at FROM subscriptions WHERE id = ?1`)
+    .prepare(
+      `SELECT used_bytes, subscription_url, last_synced_at, expires_at
+         FROM subscriptions WHERE id = ?1`,
+    )
     .bind(id)
     .first<{
       used_bytes: number | null;
       subscription_url: string | null;
       last_synced_at: string | null;
+      expires_at: string | null;
     }>();
 }
 
@@ -265,5 +286,124 @@ describe('how often it runs', () => {
     const panel = fakePanel([{ username: 'u_g', used: GIB }]);
 
     expect((await syncSubscriptions(db, panel.fetchImpl, NOW_MS)).updated).toBe(1);
+  });
+});
+
+/**
+ * The half of issue #92 that lives here.
+ *
+ * The importer has no expiry to read: the legacy `invoice` table never stored
+ * one, and `legacy_attrs` carries an `expire` key on zero rows of 8,428. So the
+ * 5,352 services this shop inherited reached Postgres with `expires_at` NULL,
+ * and every screen and sweep that reads a date -- the ⌛ on «سرویس های
+ * من», the two-day warning in `warn.ts` -- has been silent for all of them.
+ *
+ * The panel holds the date. These four tests are the whole contract: fill a
+ * gap, never overwrite, and treat «the panel named no date» as the third
+ * answer it actually is rather than as zero.
+ */
+describe('the expiry an imported service never had', () => {
+  const PANEL_EXPIRY_S = Math.floor(Date.UTC(2026, 8, 1, 6, 0, 0) / 1000);
+
+  it('fills a date the importer could not supply', async () => {
+    const userId = await makeCustomer(nextTelegramId());
+    const id = await makeService(userId, panelId, {
+      publicId: 'sync-exp-a',
+      username: 'u_exp_a',
+      expiresAtMs: null,
+    });
+    const panel = fakePanel([{ username: 'u_exp_a', used: GIB, expire: PANEL_EXPIRY_S }]);
+
+    await syncSubscriptions(db, panel.fetchImpl, NOW_MS);
+
+    const after = await readService(id);
+    expect(Date.parse(after!.expires_at!)).toBe(PANEL_EXPIRY_S * 1000);
+  });
+
+  /**
+   * The guard, and the reason the statement says COALESCE rather than plain
+   * assignment.
+   *
+   * We sold this one, so the date is what the customer paid for. A panel with a
+   * wrong clock -- or an account somebody shortened there by hand -- must not be
+   * able to take days off it, least of all silently. Remove the COALESCE and
+   * this is the test that goes red.
+   */
+  it('never overwrites a date we already hold', async () => {
+    const ours = Date.UTC(2026, 9, 20, 0, 0, 0);
+    const userId = await makeCustomer(nextTelegramId());
+    const id = await makeService(userId, panelId, {
+      publicId: 'sync-exp-b',
+      username: 'u_exp_b',
+      expiresAtMs: ours,
+    });
+    // The panel says the account runs out seven weeks earlier than we sold.
+    const panel = fakePanel([{ username: 'u_exp_b', used: GIB, expire: PANEL_EXPIRY_S }]);
+
+    await syncSubscriptions(db, panel.fetchImpl, NOW_MS);
+
+    const after = await readService(id);
+    expect(Date.parse(after!.expires_at!)).toBe(ours);
+  });
+
+  /**
+   * «No expiry» is not «expires at the epoch».
+   *
+   * An unmetered account, and one the panel is holding until its first
+   * connection, both come back with `expire` absent or zero. Reading either as
+   * a timestamp would date every one of them 1970 -- and `menu.serviceState`
+   * would then show a service the customer is using as ⌛ expired.
+   */
+  it('leaves the column alone when the panel names no date', async () => {
+    const userId = await makeCustomer(nextTelegramId());
+    const zero = await makeService(userId, panelId, {
+      publicId: 'sync-exp-c',
+      username: 'u_exp_c',
+      expiresAtMs: null,
+    });
+    const absent = await makeService(userId, panelId, {
+      publicId: 'sync-exp-d',
+      username: 'u_exp_d',
+      expiresAtMs: null,
+    });
+    const panel = fakePanel([
+      { username: 'u_exp_c', used: GIB, expire: 0 },
+      // `expire` left out entirely: the key never reaches the JSON.
+      { username: 'u_exp_d', used: GIB },
+    ]);
+
+    await syncSubscriptions(db, panel.fetchImpl, NOW_MS);
+
+    expect((await readService(zero))?.expires_at).toBeNull();
+    expect((await readService(absent))?.expires_at).toBeNull();
+    // And the sweep still did its ordinary work on both rows, so this is a
+    // column left alone rather than an update that never happened.
+    expect((await readService(zero))?.used_bytes).toBe(GIB);
+    expect((await readService(absent))?.used_bytes).toBe(GIB);
+  });
+
+  /**
+   * The same field, the other shape.
+   *
+   * This panel reports `expire` as a unix number on one version and an ISO
+   * string on another -- which is why `expiryMs` exists in the adapter and why
+   * `listAccounts` calls it instead of reading the field itself. Asserted here
+   * because it is the shape that would fail silently: an unparsed string reads
+   * as «no expiry», which looks exactly like a correct no-op.
+   */
+  it('reads the date whichever way the panel spells it', async () => {
+    const userId = await makeCustomer(nextTelegramId());
+    const id = await makeService(userId, panelId, {
+      publicId: 'sync-exp-e',
+      username: 'u_exp_e',
+      expiresAtMs: null,
+    });
+    const panel = fakePanel([
+      { username: 'u_exp_e', used: GIB, expire: new Date(PANEL_EXPIRY_S * 1000).toISOString() },
+    ]);
+
+    await syncSubscriptions(db, panel.fetchImpl, NOW_MS);
+
+    expect(Date.parse((await readService(id))!.expires_at!)).toBe(PANEL_EXPIRY_S * 1000);
   });
 });
