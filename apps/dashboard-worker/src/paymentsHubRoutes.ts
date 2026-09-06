@@ -23,6 +23,7 @@ import {
   type HistoryRange,
   type D1Database as DomainD1Database,
 } from '@shikoo/domain';
+import type { EnvName } from '@shikoo/contracts';
 import { MIRZABOT_SOURCE } from '@shikoo/contracts';
 
 /**
@@ -474,7 +475,7 @@ function extractReference(parserEvidenceJson: string): string | null {
 
 export function registerPaymentsHubRoutes(
   app: Hono<{
-    Bindings: { DB: D1Database };
+    Bindings: { DB: D1Database; ENV_NAME: EnvName };
     Variables: { identity: Ident };
   }>,
 ) {

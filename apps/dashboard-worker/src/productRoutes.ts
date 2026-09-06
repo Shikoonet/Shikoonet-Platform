@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * The catalogue — what the shop sells, and for how much.
  *
@@ -852,7 +853,7 @@ function counts(row: Record<string, unknown> | null): Refs {
 }
 
 export function registerProductRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   // --- the catalogue ------------------------------------------------------
 

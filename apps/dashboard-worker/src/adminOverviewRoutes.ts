@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * The admin panel's home screen, in one request.
  *
@@ -23,7 +24,7 @@ type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
 const RECENT = 8;
 
 export function registerAdminOverviewRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   app.get('/api/v1/admin/overview', async (c) => {
     const db = c.env.DB;
