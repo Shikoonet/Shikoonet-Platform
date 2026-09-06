@@ -385,6 +385,13 @@ describe('every write route, asked directly', () => {
     // connect the bot. Neither route can change a message: the ids they store
     // are a MENU, and what actually reaches a customer still goes through
     // `checkCustomEmoji` on the text that quotes one.
-    expect(writeRoutes().length).toBe(150);
+    //
+    // +1, «POST /discounts/:id/status». Switches a discount code off and back
+    // on. ADMIN-only like every other write on this screen: it decides whether
+    // a code takes money off an invoice, which is the same blast radius as
+    // creating one. It is the only write here that is REVERSIBLE — expiring a
+    // code rewrites when it ended and cannot be undone — and that is why the
+    // screen does not ask «مطمئنی؟» before it, unlike delete.
+    expect(writeRoutes().length).toBe(151);
   });
 });
