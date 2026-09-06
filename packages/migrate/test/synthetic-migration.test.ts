@@ -46,6 +46,7 @@
 import { createConnection, type Connection } from 'mysql2/promise';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { migrate } from '../src/migrate.js';
 import { preflight } from '../src/preflight.js';
 import { loadConfig } from '../src/db.js';
 import * as t from '../src/transform.js';
@@ -111,6 +112,69 @@ afterAll(async () => {
 });
 
 const maybe = ENABLED ? describe : describe.skip;
+
+/**
+ * A migration that actually INSERTS, because nothing here did.
+ *
+ * Issue #64: `migrateProducts` did not list `category_id`, which migration 0032
+ * had made NOT NULL with no default, so every run died on the first product
+ * with `23502`. It went unnoticed for weeks — the simulation database was
+ * already seeded and nobody re-ran the import — and this file could not have
+ * caught it, because it called `preflight` and `transform` and never wrote a
+ * row to Postgres. A transform test proves the SHAPE of what would be written;
+ * only an insert proves the database accepts it.
+ *
+ * `commit: false` is what makes this safe to run anywhere: `migrate` opens a
+ * transaction and rolls it back, so the INSERTs are executed against the real
+ * schema — constraints, defaults and all — and nothing survives the test.
+ * `beforeSettle` is the only place the assertions can stand, because it runs
+ * while the rows still exist; afterwards they are gone by design.
+ */
+maybe('a migration that reaches the database', () => {
+  it('inserts the fixture products, every one of them filed under a category', async () => {
+    const cfg = loadConfig();
+    let seen: { products: number; orphans: number; categories: number } | null = null;
+
+    /*
+     * This fixture is deliberately unmigratable, and that is not a flaw in it.
+     * It exists so `preflight` has every violation to find, and the duplicate
+     * referral code is one of them — `users_referral_code_key` refuses it, as
+     * it should. One file cannot be both «the database with every problem» and
+     * «a database that migrates cleanly».
+     *
+     * So the test does what an operator does after reading the report: repairs
+     * exactly the finding, runs the migration, and puts the source back. The
+     * repair is in MySQL rather than in the fixture file, so the preflight
+     * assertions above keep the row they are about.
+     */
+    await my!.query("UPDATE `user` SET codeInvitation = 'FIXREF05' WHERE id = 9000000000005");
+    try {
+
+      const result = await migrate(cfg, my!, pgc!, {
+        commit: false,
+        domains: ['catalog'],
+        beforeSettle: async () => {
+          const q = async (sql: string) => Number((await pgc!.query(sql)).rows[0]!['n']);
+          seen = {
+            products: await q('SELECT count(*)::int AS n FROM products'),
+            orphans: await q('SELECT count(*)::int AS n FROM products WHERE category_id IS NULL'),
+            categories: await q('SELECT count(*)::int AS n FROM product_categories'),
+          };
+          return true;
+        },
+      });
+
+      expect(result.steps.some((step) => step.name.includes('products'))).toBe(true);
+      // The fixture's own products, and the assertion that would have failed
+      // with `23502` before the fix rather than passing quietly.
+      expect(seen!.products).toBeGreaterThan(0);
+      expect(seen!.orphans).toBe(0);
+      expect(seen!.categories).toBeGreaterThan(0);
+    } finally {
+      await my!.query("UPDATE `user` SET codeInvitation = 'FIXREF01' WHERE id = 9000000000005");
+    }
+  }, 120_000);
+});
 
 /**
  * The report is stored and rendered now, so it may not carry a card number.

@@ -39,7 +39,7 @@ const wipe = () =>
   );
 
 /** A plan that has a panel behind it, found by name so a re-seed cannot move it. */
-async function plan(): Promise<{ id: number; label: string }> {
+async function plan(): Promise<{ id: number }> {
   return withDb(async (d) => {
     const row = await d
       .prepare(
@@ -50,7 +50,7 @@ async function plan(): Promise<{ id: number; label: string }> {
       .bind('اسپاتیفای - ۱ ماهه')
       .first<{ id: number; name: string; product: string }>();
     if (!row) throw new Error('the seeded plan is missing — run seed:sim');
-    return { id: Number(row.id), label: `${row.product} — ${row.name}` };
+    return { id: Number(row.id) };
   });
 }
 
@@ -81,7 +81,11 @@ test('a config added from the form lands on the shelf and is counted', async ({ 
   await page.goto('/admin/stock');
   await expect(page.locator('.sidebar-link.active')).toHaveText('قفسهٔ انبار');
   await page.getByRole('button', { name: 'افزودن کانفیگ' }).click();
-  await page.locator('#add-plan').selectOption(p.label);
+  // By id, not by the label. The option's TEXT is presentation — it collapses
+  // a service and plan that share a name into one word — and a spec that
+  // rebuilds that string is asserting the wording, not the behaviour it is
+  // here for. The value is the plan.
+  await page.locator('#add-plan').selectOption(String(p.id));
   await page.locator('#add-username').fill(USERNAME);
   await page.locator('#add-url').fill(URL_FOR(USERNAME));
   await page.getByRole('button', { name: 'افزودن', exact: true }).click();
@@ -104,9 +108,9 @@ test('the link is not on the screen until somebody asks for it', async ({ page }
   // not in the document. A screen left open on a shared desk does not show
   // every unsold account on the shelf.
   await expect(page.locator('#main-content')).not.toContainText(URL_FOR(USERNAME));
-  await expect(row.getByRole('button', { name: 'نمایش لینک' })).toBeVisible();
+  await expect(row.getByRole('button', { name: 'نمایش' })).toBeVisible();
 
-  await row.getByRole('button', { name: 'نمایش لینک' }).click();
+  await row.getByRole('button', { name: 'نمایش' }).click();
   await expect(row.locator('code')).toHaveText(URL_FOR(USERNAME));
 });
 
@@ -148,6 +152,6 @@ test('a retired row is not handed out, and its link stops being sent at all', as
   // copying a link out of.
   await page.reload();
   const retiredRow = page.locator(`tbody tr:has-text("${RETIRED}")`);
-  await expect(retiredRow.getByRole('button', { name: 'نمایش لینک' })).toHaveCount(0);
+  await expect(retiredRow.getByRole('button', { name: 'نمایش' })).toHaveCount(0);
   await expect(page.locator('#main-content')).not.toContainText(URL_FOR(RETIRED));
 });
