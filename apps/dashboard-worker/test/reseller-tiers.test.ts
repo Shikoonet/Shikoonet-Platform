@@ -10,13 +10,13 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv } from './helpers/env.js';
+import { applySchema, env as baseEnv, FIXTURE_TG_BASE } from './helpers/env.js';
 import { app } from '../src/index.js';
 
 const ADMIN = 'admin-tiers@example.com';
 const REVIEWER = 'reviewer-tiers@example.com';
 const READER = 'reader-tiers@example.com';
-const TG_BASE = 771_000_000;
+const TG_BASE = FIXTURE_TG_BASE + 771_000_000;
 /** Every row this file makes carries it, and nothing else in the package does. */
 const PREFIX = 'zz-tiers-';
 
