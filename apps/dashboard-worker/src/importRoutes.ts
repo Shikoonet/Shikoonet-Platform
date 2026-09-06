@@ -1045,10 +1045,20 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
     const parsed = ResetBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
 
-    const envName = c.env.ENV_NAME ?? process.env['ENV_NAME'];
-    if (envName === undefined || envName === '') {
+    // The binding only. `start()` parses `process.env.ENV_NAME` once and hands
+    // the result to every request, so reading the environment again here would
+    // be a SECOND source for the one value that decides whether this box may be
+    // emptied — and the two can disagree.
+    const envName = c.env.ENV_NAME;
+    if (!envName) {
       // Nothing to compare against is not «anything matches». A box that
       // cannot say which box it is has no business running this.
+      //
+      // Truthiness rather than `=== undefined || === ''`: with the fallback
+      // gone the binding is the narrow union `parseEnvName` produces, and the
+      // typechecker now REFUSES a comparison against `''` — which is the
+      // clearest possible statement that there was a second, unvalidated
+      // source before this. This still catches both at run time.
       return c.json({ ok: false, error: 'import_not_configured' }, 503);
     }
     if (parsed.data.confirm.trim() !== envName) {
