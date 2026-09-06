@@ -147,6 +147,28 @@ export async function fixtureCategory(name = '__fixture'): Promise<number> {
 }
 
 /**
+ * Where fixture Telegram ids start, and why it is this far up.
+ *
+ * Every suite's base used to sit between 771 000 000 and 993 000 000, chosen to
+ * be «above the real population». It is not above anything: Telegram has been
+ * issuing ids in that band for years, and this project's own imported dump has
+ * **525 customers** in it — four of them inside `admin-access.test.ts`'s own
+ * million-wide window, with real usernames and July 2026 registrations. Running
+ * the gate on a machine holding an import deleted them and their orders and
+ * subscriptions, which is issue #46.
+ *
+ * «Above today's population» is the wrong test, because it is a statement about
+ * how many rows exist rather than about which ids can be issued. 9 × 10¹² is
+ * outside the space Telegram issues from at all — user ids are far below it and
+ * the documented ceiling is 2⁵³ — so no import can land in a fixture window
+ * however large the shop grows.
+ *
+ * Suites keep their old offsets on top of this, so the windows stay as far
+ * apart as they were and every existing base is still one number.
+ */
+export const FIXTURE_TG_BASE = 9_000_000_000_000;
+
+/**
  * This file's own fixture customers, and nobody else's.
  *
  * Six suites each pick a `TG_BASE` and each wrote
@@ -165,6 +187,19 @@ export async function fixtureCategory(name = '__fixture'): Promise<number> {
  * between two bases.
  */
 export async function deleteFixtureUsers(base: number, span = 1_000_000): Promise<void> {
+  /*
+   * The guard is here rather than in a lint rule because this is the statement
+   * that does the damage. A suite that invents its own base — which is how all
+   * seven of them came to sit inside the issued id space — fails loudly on its
+   * first teardown instead of quietly deleting somebody's customers.
+   */
+  if (base < FIXTURE_TG_BASE) {
+    throw new Error(
+      `fixture telegram ids must start at or above FIXTURE_TG_BASE (${FIXTURE_TG_BASE}); ` +
+        `got ${base}. Ids below it are inside the space Telegram actually issues, ` +
+        `and this function DELETES the whole window.`,
+    );
+  }
   const hi = base + span;
   const mine = `SELECT id FROM users WHERE telegram_id >= ?1 AND telegram_id < ?2`;
   /*

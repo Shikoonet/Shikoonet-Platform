@@ -27,6 +27,7 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
+import type { EnvName } from '@shikoo/contracts';
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 
@@ -147,7 +148,7 @@ const SELECT_CODE = `
     LEFT JOIN provisioning_providers pr ON pr.id = dc.provider_id`;
 
 export function registerDiscountRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   // --- the codes ----------------------------------------------------------
 
