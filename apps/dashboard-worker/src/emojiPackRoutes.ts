@@ -141,7 +141,7 @@ export function registerEmojiPackRoutes(
   // the live bot token, and a second spelling of these bindings is a second
   // place for the app's type to drift away from them.
   app: Hono<{
-    Bindings: { DB: D1Database; ENV_NAME?: EnvName; TELEGRAM_BOT_TOKEN?: string };
+    Bindings: { DB: D1Database; ENV_NAME: EnvName; TELEGRAM_BOT_TOKEN?: string };
     Variables: { identity: Ident };
   }>,
 ): void {
@@ -214,7 +214,7 @@ export function registerEmojiPackRoutes(
     // letting it escape turns it into a 500 that tells the operator nothing.
     let token: string | undefined;
     try {
-      token = (await resolveBotToken(c.env.DB, c.env.ENV_NAME ?? 'local', c.env))?.token;
+      token = (await resolveBotToken(c.env.DB, c.env.ENV_NAME, c.env))?.token;
     } catch (err) {
       log.warn('emoji_pack.token_unreadable', { set: setName }, err);
       return c.json(
