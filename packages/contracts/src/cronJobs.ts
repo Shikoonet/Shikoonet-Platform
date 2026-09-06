@@ -213,11 +213,7 @@ export const CRON_JOBS: readonly CronJob[] = [
         max: 365,
       },
     ],
-    // Empty until the sweep that sends it exists. `bot-text-lines.test.ts`
-    // refuses a TEXTS key no source file renders — an edit box that saves a
-    // sentence nobody will ever see — so the text and its reader land in the
-    // same commit, not this one.
-    texts: [],
+    texts: ['CRON_SERVICE_REMOVED'],
     destructive: true,
   },
   {
@@ -235,11 +231,7 @@ export const CRON_JOBS: readonly CronJob[] = [
         max: 365,
       },
     ],
-    // Empty until the sweep that sends it exists. `bot-text-lines.test.ts`
-    // refuses a TEXTS key no source file renders — an edit box that saves a
-    // sentence nobody will ever see — so the text and its reader land in the
-    // same commit, not this one.
-    texts: [],
+    texts: ['CRON_SERVICE_REMOVED_VOLUME'],
     destructive: true,
   },
   {

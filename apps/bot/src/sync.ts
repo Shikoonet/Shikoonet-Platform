@@ -160,7 +160,8 @@ export async function syncSubscriptions(
  * `subscription_url` is COALESCEd so a panel that stops returning one does not
  * erase a link the customer already has. `used_bytes` is not: a NULL there
  * means the panel genuinely no longer counts, and keeping a stale number would
- * be worse than showing none.
+ * be worse than showing none. `panel_status` is not either, and for a stronger
+ * reason — see the comment on the statement.
  */
 async function writeAccounts(
   db: D1Database,
@@ -175,10 +176,18 @@ async function writeAccounts(
         `UPDATE subscriptions s
             SET used_bytes       = v.used_bytes,
                 subscription_url = COALESCE(v.url, s.subscription_url),
+                -- The panel's own verdict, verbatim. NOT coalesced, unlike the
+                -- url above: a panel that stops reporting a status must make
+                -- the removal sweeps stop, and keeping the last word we heard
+                -- would let them go on deleting on a reading nobody confirmed.
+                panel_status     = v.panel_status,
+                panel_online_at  = v.panel_online_at,
                 last_synced_at   = now(),
                 updated_at       = now()
-           FROM (SELECT * FROM unnest(?2::text[], ?3::bigint[], ?4::text[])
-                          AS t(username, used_bytes, url)) v
+           FROM (SELECT * FROM unnest(?2::text[], ?3::bigint[], ?4::text[],
+                                      ?5::text[], ?6::timestamptz[])
+                          AS t(username, used_bytes, url,
+                               panel_status, panel_online_at)) v
           WHERE s.provider_id = ?1
             AND s.status = 'ACTIVE'
             AND s.remote_username = v.username`,
@@ -188,6 +197,8 @@ async function writeAccounts(
         chunk.map((a) => a.username),
         chunk.map((a) => a.usedBytes),
         chunk.map((a) => a.subscriptionUrl),
+        chunk.map((a) => a.status),
+        chunk.map((a) => a.onlineAt),
       )
       .run();
     updated += result.meta.changes;
