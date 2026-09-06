@@ -385,6 +385,13 @@ describe('every write route, asked directly', () => {
     // connect the bot. Neither route can change a message: the ids they store
     // are a MENU, and what actually reaches a customer still goes through
     // `checkCustomEmoji` on the text that quotes one.
-    expect(writeRoutes().length).toBe(150);
+    //
+    // +1, «POST /cron». One route for every switch and threshold on
+    // «کرون‌جاب‌ها», ADMIN-only — and of the 151 routes counted here it is the
+    // only one that can arm something which DELETES a paying customer's
+    // account from a panel. It refuses any key not in the `CRON_JOBS`
+    // registry, so «what this route may write» is a list a reviewer can read
+    // rather than the whole `settings` table.
+    expect(writeRoutes().length).toBe(151);
   });
 });

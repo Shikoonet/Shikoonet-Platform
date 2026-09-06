@@ -585,13 +585,53 @@ describe('listing every account on a panel', () => {
     const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
 
     expect(result.ok).toBe(true);
+    // `status` and `onlineAt` are null here because this fixture's panel does
+    // not report them, and null is the answer the removal sweeps require for
+    // «do not act». Asserted rather than omitted: a build that started sending
+    // an empty string or the word «unknown» would authorise nothing, and this
+    // is where that would be seen.
     expect(result.ok && result.accounts).toEqual([
-      { username: 'u_0', usedBytes: 0, subscriptionUrl: 'https://panel.example.com/sub/u_0' },
-      { username: 'u_1', usedBytes: 1024, subscriptionUrl: 'https://panel.example.com/sub/u_1' },
-      { username: 'u_2', usedBytes: 2048, subscriptionUrl: 'https://panel.example.com/sub/u_2' },
+      {
+        username: 'u_0',
+        usedBytes: 0,
+        subscriptionUrl: 'https://panel.example.com/sub/u_0',
+        status: null,
+        onlineAt: null,
+      },
+      {
+        username: 'u_1',
+        usedBytes: 1024,
+        subscriptionUrl: 'https://panel.example.com/sub/u_1',
+        status: null,
+        onlineAt: null,
+      },
+      {
+        username: 'u_2',
+        usedBytes: 2048,
+        subscriptionUrl: 'https://panel.example.com/sub/u_2',
+        status: null,
+        onlineAt: null,
+      },
     ]);
     // One full page was not needed, so one request.
     expect(panel.pages).toHaveLength(1);
+  });
+
+  it('carries the panel’s own status and last connection through, lowercased', async () => {
+    // The two fields the removal sweeps gate on. Lowercased because the panels
+    // disagree about case and every consumer compares against a known word;
+    // otherwise untouched, because nothing here is allowed to interpret them.
+    const panel = listingPanel(1, () => ({
+      status: 'Limited',
+      online_at: '2026-08-01T10:00:00Z',
+    }));
+
+    const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok && result.accounts[0]).toMatchObject({
+      status: 'limited',
+      onlineAt: '2026-08-01T10:00:00Z',
+    });
   });
 
   it('walks past the first page rather than stopping at it', async () => {
