@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * رویدادها — what the three services noticed, readable without an SSH key.
  *
@@ -78,7 +79,7 @@ function positiveInt(raw: string | undefined, fallback: number, max: number): nu
 }
 
 export function registerEventRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   app.get('/api/v1/admin/events', async (c) => {
     if (c.get('identity').role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);

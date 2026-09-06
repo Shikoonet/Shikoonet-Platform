@@ -585,13 +585,49 @@ describe('listing every account on a panel', () => {
     const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
 
     expect(result.ok).toBe(true);
+    // `expiresAtMs` is null here because this fixture's users carry no `expire`
+    // key at all — the panel saying nothing, which is not the same as a date of
+    // zero. The test below feeds it both.
+    const url = (i: number) => `https://panel.example.com/sub/u_${i}`;
     expect(result.ok && result.accounts).toEqual([
-      { username: 'u_0', usedBytes: 0, subscriptionUrl: 'https://panel.example.com/sub/u_0' },
-      { username: 'u_1', usedBytes: 1024, subscriptionUrl: 'https://panel.example.com/sub/u_1' },
-      { username: 'u_2', usedBytes: 2048, subscriptionUrl: 'https://panel.example.com/sub/u_2' },
+      { username: 'u_0', usedBytes: 0, subscriptionUrl: url(0), expiresAtMs: null },
+      { username: 'u_1', usedBytes: 1024, subscriptionUrl: url(1), expiresAtMs: null },
+      { username: 'u_2', usedBytes: 2048, subscriptionUrl: url(2), expiresAtMs: null },
     ]);
     // One full page was not needed, so one request.
     expect(panel.pages).toHaveLength(1);
+  });
+
+  /**
+   * The expiry the sync sweep fills an imported service's blank date from.
+   *
+   * Read here rather than at the sweep because this is where the panel's two
+   * spellings live: a unix number on one version, an ISO string on another,
+   * and `0` or nothing at all for an account with no expiry — which must stay
+   * NULL rather than becoming 1970. Issue #92.
+   */
+  it('reports the expiry however the panel spells it', async () => {
+    const spellings: (number | string | undefined)[] = [
+      1_788_000_000,
+      '1788000000',
+      '2026-09-01T06:00:00.000Z',
+      0,
+      undefined,
+    ];
+    const panel = listingPanel(spellings.length, (i) =>
+      spellings[i] === undefined ? {} : { expire: spellings[i] },
+    );
+
+    const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok && result.accounts.map((a) => a.expiresAtMs)).toEqual([
+      1_788_000_000_000,
+      1_788_000_000_000,
+      Date.parse('2026-09-01T06:00:00.000Z'),
+      // Zero and absent are the same answer: this account has no expiry.
+      null,
+      null,
+    ]);
   });
 
   it('walks past the first page rather than stopping at it', async () => {

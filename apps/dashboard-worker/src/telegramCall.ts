@@ -93,9 +93,11 @@ export type BotCall =
  * without one, and the compiler will not say so. A 503 naming the binding beats
  * «no bot is connected», which is the answer the `?? 'local'` gave.
  *
- * The four remaining `?? 'local'` in this worker are dead for the same reason,
- * and read as live defaults. Deleting them means making `ENV_NAME` required on
- * every `Bindings` here; that is #91, and it is tidying rather than a fix.
+ * The four other `?? 'local'` in this worker were dead for the same reason and
+ * read as live defaults; #91 deleted them by making `ENV_NAME` required on
+ * every `Bindings` here. This refusal stays: `BotCallEnv` is a plain object
+ * shape rather than one of those `Bindings`, so a test or a future caller can
+ * still hand this an env without one and the compiler will not say so.
  */
 export async function botTelegram(env: BotCallEnv): Promise<BotCall> {
   const envName = env.ENV_NAME;

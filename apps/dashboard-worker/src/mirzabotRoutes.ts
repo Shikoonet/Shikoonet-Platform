@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { SQL, type D1Database, type D1Result } from '@shikoo/database';
@@ -711,6 +712,7 @@ export function registerMirzabotRoutes(
   app: Hono<{
     Bindings: {
       DB: D1Database;
+      ENV_NAME: EnvName;
       // DEV-only feature flags. Production workers never set these, so they
       // are intentionally optional. Cast through Partial to keep the existing
       // Bindings type unchanged for callers that don't need the flags.
