@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * مدیریت پنل‌ها — the panels that actually fulfil an order.
  *
@@ -882,7 +883,7 @@ const SELECT_PANEL = `
     FROM provisioning_providers pr`;
 
 export function registerPanelRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   app.get('/api/v1/admin/panels', async (c) => {
     const rows = await c.env.DB.prepare(

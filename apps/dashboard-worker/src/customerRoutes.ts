@@ -34,6 +34,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 
+import type { EnvName } from '@shikoo/contracts';
 import { MAX_SINGLE_PAYMENT_IRR, MIRZABOT_SOURCE, Texts } from '@shikoo/contracts';
 import {
   MAX_MESSAGE_LENGTH,
@@ -188,7 +189,7 @@ interface CustomerRow extends TierColumns {
 }
 
 export function registerCustomerRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   // --- list ---------------------------------------------------------------
 
