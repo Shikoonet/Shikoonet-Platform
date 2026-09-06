@@ -23,6 +23,7 @@
  *
  * So this covers exactly the user-independent half:
  *
+ *     cat.active             ·  the category
  *     pr.status = 'ACTIVE'   ·  the panel
  *     p.status  = 'ACTIVE'   ·  the service
  *     pl.status = 'ACTIVE'   ·  the config
@@ -44,6 +45,20 @@ export interface SellableFacts {
   planStatus: string;
   /** `products.status`. */
   productStatus: string;
+  /**
+   * The category this service is filed under, and whether it is switched on.
+   *
+   * Required rather than optional on purpose. An optional field lets a screen
+   * that never learned about categories keep answering the old question while
+   * looking like it answers this one — which is the exact way the dashboard
+   * came to draw a green badge over thirteen undeliverable products. A screen
+   * that cannot supply this must fail to compile, not quietly disagree.
+   *
+   * Null is «no category», which the schema has forbidden since migration 0032
+   * and no row should be in; it reads as not-sellable for the same reason a
+   * product with no panel does.
+   */
+  category: { name: string; active: boolean } | null;
   /** The panel, or null when the service names none. */
   panel: {
     name: string;
@@ -57,6 +72,8 @@ export interface SellableFacts {
 }
 
 export type NotSellable =
+  | { kind: 'CATEGORY_OFF'; category: string }
+  | { kind: 'NO_CATEGORY' }
   | { kind: 'NO_PANEL' }
   | { kind: 'PANEL_OFF'; panel: string }
   | { kind: 'PANEL_FULL'; panel: string; capacity: number; live: number }
@@ -75,7 +92,17 @@ export type NotSellable =
  */
 export function whyNotSellable(facts: SellableFacts): NotSellable[] {
   const out: NotSellable[] = [];
-  const { panel } = facts;
+  const { panel, category } = facts;
+
+  // First, because it is the widest switch on the screen and the one whose
+  // repair changes what every row below it means. Switching a config back on
+  // while its category is off moves nothing a customer can see, so an operator
+  // told about the config first fixes the wrong thing and watches it not work.
+  if (category === null) {
+    out.push({ kind: 'NO_CATEGORY' });
+  } else if (!category.active) {
+    out.push({ kind: 'CATEGORY_OFF', category: category.name });
+  }
 
   if (panel === null) {
     out.push({ kind: 'NO_PANEL' });
@@ -127,6 +154,10 @@ const STATUS_FA: Record<string, string> = {
  */
 export function notSellableFa(reason: NotSellable): string {
   switch (reason.kind) {
+    case 'CATEGORY_OFF':
+      return `دستهٔ «${reason.category}» خاموش است، پس هیچ‌کدام از سرویس‌هایش فروخته نمی‌شود.`;
+    case 'NO_CATEGORY':
+      return 'دسته‌بندی ندارد، پس هیچ‌جای فروشگاه نشان داده نمی‌شود.';
     case 'NO_PANEL':
       return 'پنل ندارد، پس هیچ‌چیزی برای تحویل نیست.';
     case 'PANEL_OFF':
@@ -143,6 +174,10 @@ export function notSellableFa(reason: NotSellable): string {
 /** The short form for a table cell, where the full sentence does not fit. */
 export function notSellableShortFa(reason: NotSellable): string {
   switch (reason.kind) {
+    case 'CATEGORY_OFF':
+      return 'دسته خاموش';
+    case 'NO_CATEGORY':
+      return 'بدون دسته';
     case 'NO_PANEL':
       return 'بدون پنل';
     case 'PANEL_OFF':
