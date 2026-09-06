@@ -173,16 +173,24 @@ export type ProvisionResult = ProvisionOk | ProvisionFailed;
 /**
  * One remote account as the provider currently sees it.
  *
- * Deliberately small, and not the panel's whole user object: everything else it
- * knows is either ours to decide or cannot be mapped without guessing, and a
- * sync that guesses is a sync that can mark a paid service dead because a panel
- * had a bad minute.
+ * Deliberately small, and not the panel's whole user object: what is left out
+ * cannot be mapped without guessing, and a sync that guesses is a sync that can
+ * mark a paid service dead because a panel had a bad minute.
  *
- * ## The two fields added 2026-09-06, and why the rule above still holds
+ * ## `expiresAtMs`, and the rule that was wrong
  *
- * This was three fields, and the comment said status could not be mapped. That
- * is still true of `subscriptions.status` — six words of ours against five of
- * the panel's, and `sync.ts` still refuses to write one from the other.
+ * It was left out on those grounds too, and the grounds were wrong. «We sell
+ * the duration, so we own the date» is true of every service THIS bot has sold
+ * and false of the 5,352 it inherited: the importer has no expiry to read —
+ * `invoice` never stored one, and `legacy_attrs` carries an `expire` key on
+ * zero rows of 8,428 — so those services arrived with no date at all. Not a
+ * date we own: no date. Issue #92.
+ *
+ * ## `status` and `onlineAt`, and why the rule above still holds
+ *
+ * The comment here used to say status could not be mapped. That is still true
+ * of `subscriptions.status` — six words of ours against five of the panel's,
+ * and `sync.ts` still refuses to write one from the other.
  *
  * What changed is that two jobs now need to know what the PANEL thinks, kept
  * apart from what WE think. Mirzabot's two removal crons
@@ -190,7 +198,7 @@ export type ProvisionResult = ProvisionOk | ProvisionFailed;
  * account unless the panel itself reports `limited` or `expired`, and the
  * volume one also needs the last connection time. Deleting on our dates alone
  * would remove a service the panel considers live — which is precisely the
- * failure the original three-field rule was written against.
+ * failure the original rule was written against.
  *
  * So these are stored verbatim, under names that say whose opinion they are,
  * and nothing maps them onto our own status.
@@ -201,6 +209,15 @@ export interface RemoteAccount {
   usedBytes: number | null;
   /** Absolute, tappable. NULL when this provider hands out no link. */
   subscriptionUrl: string | null;
+  /**
+   * When the panel says this account runs out, in epoch milliseconds.
+   *
+   * NULL when the panel names no expiry — an unmetered account, or one being
+   * held until its first connection. The caller may only ever fill a gap with
+   * this and never overwrite; `writeAccounts` in the bot's sync sweep is where
+   * that rule is spelled out and enforced.
+   */
+  expiresAtMs: number | null;
   /**
    * The panel's own word for this account, unmapped and lowercased.
    *

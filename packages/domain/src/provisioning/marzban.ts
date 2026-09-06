@@ -1229,6 +1229,11 @@ export const marzbanAdapter: ProvisioningAdapter = {
             username,
             usedBytes: asByteCount(user.used_traffic),
             subscriptionUrl: absoluteSubUrl(user.subscription_url, base),
+            // Through the same reader `renew` uses, because this panel has
+            // reported the field as a unix number and as an ISO string across
+            // versions, and a second parser here would be a second chance to
+            // read one of the two as «no expiry».
+            expiresAtMs: expiryMs(user.expire),
             // Lowercased and otherwise untouched. Every consumer compares
             // against a known word and treats anything else as «do not act»,
             // so a panel that invents a sixth status makes removals stop

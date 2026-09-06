@@ -19,8 +19,14 @@
  *     the column allows six different values and no honest mapping exists.
  *     Expiry and exhaustion are derived at display time from data that cannot
  *     be lost (`menu.serviceState`).
- *   - `expires_at`. We sold the duration, so we own the date. A panel clock
- *     that is wrong must not be able to shorten what a customer paid for.
+ *   - `expires_at`, WHERE WE ALREADY HAVE ONE. We sold the duration, so we own
+ *     the date, and a panel clock that is wrong must not be able to shorten
+ *     what a customer paid for. Where the column is NULL there is no date to
+ *     defend: the 5,352 services imported from the PHP bot arrived without one
+ *     because the legacy `invoice` table never stored it, and every screen and
+ *     sweep that reads an expiry — the ⌛ on «سرویس های من», the two-day
+ *     warning — is silent for all of them. Filling a gap is not overwriting.
+ *     Issue #92.
  *   - Anything at all when the panel does not answer. A failed listing leaves
  *     every row exactly as it was, showing slightly old numbers rather than
  *     none.
@@ -162,6 +168,13 @@ export async function syncSubscriptions(
  * means the panel genuinely no longer counts, and keeping a stale number would
  * be worse than showing none. `panel_status` is not either, and for a stronger
  * reason — see the comment on the statement.
+ *
+ * `expires_at` is COALESCEd for a stronger reason than any of them: the
+ * existing value must WIN. Writing the panel's date over ours would hand a
+ * panel with a wrong clock — or an account somebody renewed there by hand —
+ * the power to shorten what a customer paid for, and no screen would show that
+ * it happened. So the panel is read only into rows that have no date, which
+ * after the import is the only rows that ever get one from here.
  */
 async function writeAccounts(
   db: D1Database,
@@ -176,17 +189,23 @@ async function writeAccounts(
         `UPDATE subscriptions s
             SET used_bytes       = v.used_bytes,
                 subscription_url = COALESCE(v.url, s.subscription_url),
+                -- Ours first, always. to_timestamp(NULL) is NULL, so a panel
+                -- that names no expiry leaves the column exactly as it was.
+                expires_at       = COALESCE(s.expires_at,
+                                            to_timestamp(v.expires_ms / 1000.0)),
                 -- The panel's own verdict, verbatim. NOT coalesced, unlike the
-                -- url above: a panel that stops reporting a status must make
-                -- the removal sweeps stop, and keeping the last word we heard
-                -- would let them go on deleting on a reading nobody confirmed.
+                -- url and the date above: a panel that stops reporting a status
+                -- must make the removal sweeps stop, and keeping the last word
+                -- we heard would let them go on deleting on a reading nobody
+                -- confirmed.
                 panel_status     = v.panel_status,
                 panel_online_at  = v.panel_online_at,
                 last_synced_at   = now(),
                 updated_at       = now()
            FROM (SELECT * FROM unnest(?2::text[], ?3::bigint[], ?4::text[],
-                                      ?5::text[], ?6::timestamptz[])
-                          AS t(username, used_bytes, url,
+                                      ?5::bigint[], ?6::text[],
+                                      ?7::timestamptz[])
+                          AS t(username, used_bytes, url, expires_ms,
                                panel_status, panel_online_at)) v
           WHERE s.provider_id = ?1
             AND s.status = 'ACTIVE'
@@ -197,6 +216,7 @@ async function writeAccounts(
         chunk.map((a) => a.username),
         chunk.map((a) => a.usedBytes),
         chunk.map((a) => a.subscriptionUrl),
+        chunk.map((a) => a.expiresAtMs),
         chunk.map((a) => a.status),
         chunk.map((a) => a.onlineAt),
       )
