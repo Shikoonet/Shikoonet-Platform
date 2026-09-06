@@ -16,14 +16,14 @@
  */
 
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv, deleteFixtureUsers } from './helpers/env.js';
+import { applySchema, env as baseEnv, deleteFixtureUsers, FIXTURE_TG_BASE } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 
 const ADMIN = 'admin@example.com';
 const REVIEWER = 'reviewer-discounts@example.com';
 const PREFIX = 'zzdisc';
-const TG_BASE = 960_000_000;
+const TG_BASE = FIXTURE_TG_BASE + 960_000_000;
 let seq = 0;
 
 function envAs(email: string) {

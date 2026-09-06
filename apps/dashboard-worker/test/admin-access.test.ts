@@ -16,7 +16,7 @@
 
 import { ADMIN_PERMISSIONS } from '@shikoo/contracts';
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv, deleteFixtureUsers } from './helpers/env.js';
+import { applySchema, env as baseEnv, deleteFixtureUsers, FIXTURE_TG_BASE } from './helpers/env.js';
 import { app } from '../src/index.js';
 
 const ADMIN = 'admin-access-suite@example.com';
@@ -27,7 +27,7 @@ const RACE_B = 'race-b@example.com';
 /** Every identity this file creates, so the purge can be exact. */
 const OURS = [OTHER_ADMIN, REVIEWER, RACE_A, RACE_B, 'new.person@example.com', 'x@example.com'];
 const PREFIX = 'zz-access-';
-const TG_BASE = 940_000_000;
+const TG_BASE = FIXTURE_TG_BASE + 940_000_000;
 
 function envAs(email: string) {
   return { ...baseEnv, TEST_ACCESS_USER: email };
