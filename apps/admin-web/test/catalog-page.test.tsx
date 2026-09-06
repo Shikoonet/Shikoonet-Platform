@@ -126,6 +126,34 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+describe('the service editor belongs to one service', () => {
+  /**
+   * The same defect «مدیریت پنل‌ها» had, on the screen next to it.
+   *
+   * `<ServiceDrawer service={editing}>` was mounted with no `key`, so opening
+   * service B's editor over service A's kept the same component instance —
+   * and every field is seeded by `useState(service.name)`, an initialiser that
+   * runs once per mount. The form showed A while «ذخیره» saved against B's id.
+   *
+   * Asserted directly rather than through `waitFor`, because the failure is a
+   * value that is wrong now rather than one that has not arrived: waiting for
+   * it reports a timeout instead of «پلاتینیوم».
+   */
+  it('shows the second service when it is opened over the first', async () => {
+    draw();
+    await screen.findByText('پلاتینیوم');
+
+    const edits = await screen.findAllByRole('button', { name: 'ویرایش سرویس' });
+    fireEvent.click(edits[0]!);
+    const nameBox = () => screen.getByLabelText('نام سرویس') as HTMLInputElement;
+    await waitFor(() => expect(nameBox().value).toBe('پلاتینیوم'));
+
+    // Without closing the first — the transition a missing key gets wrong.
+    fireEvent.click(screen.getAllByRole('button', { name: 'ویرایش سرویس' })[1]!);
+    expect(nameBox().value).toBe('طلایی');
+  });
+});
+
 describe('the address «محصولات» sends people to', () => {
   /**
    * The other half of the link. «محصولات» can name «سرویسش پنهان است» and not
