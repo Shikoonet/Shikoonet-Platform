@@ -173,10 +173,17 @@ export type ProvisionResult = ProvisionOk | ProvisionFailed;
 /**
  * One remote account as the provider currently sees it.
  *
- * Deliberately three fields and not the panel's whole user object. Everything
- * else the panel knows — status, expiry, inbounds — is either ours to decide or
- * cannot be mapped without guessing, and a sync that guesses is a sync that can
- * mark a paid service dead because a panel had a bad minute.
+ * Deliberately four fields and not the panel's whole user object. What is left
+ * out — status, inbounds — cannot be mapped without guessing, and a sync that
+ * guesses is a sync that can mark a paid service dead because a panel had a bad
+ * minute.
+ *
+ * `expiresAtMs` was left out on those grounds too, and the grounds were wrong.
+ * "We sell the duration, so we own the date" is true of every service THIS bot
+ * has sold and false of the 5,352 it inherited: the importer has no expiry to
+ * read — `invoice` never stored one, and `legacy_attrs` carries an `expire` key
+ * on zero rows of 8,428 — so those services arrived with no date at all. Not a
+ * date we own: no date. Issue #92.
  */
 export interface RemoteAccount {
   username: string;
@@ -184,6 +191,15 @@ export interface RemoteAccount {
   usedBytes: number | null;
   /** Absolute, tappable. NULL when this provider hands out no link. */
   subscriptionUrl: string | null;
+  /**
+   * When the panel says this account runs out, in epoch milliseconds.
+   *
+   * NULL when the panel names no expiry — an unmetered account, or one being
+   * held until its first connection. The caller may only ever fill a gap with
+   * this and never overwrite; `writeAccounts` in the bot's sync sweep is where
+   * that rule is spelled out and enforced.
+   */
+  expiresAtMs: number | null;
 }
 
 /** One group as the panel reports it. `name` is for a person to recognise. */

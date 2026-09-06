@@ -14,7 +14,7 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv, deleteFixtureUsers } from './helpers/env.js';
+import { applySchema, env as baseEnv, deleteFixtureUsers, FIXTURE_TG_BASE } from './helpers/env.js';
 import { app } from '../src/index.js';
 
 const ADMIN = 'bulk-recent-admin@example.com';
@@ -28,7 +28,7 @@ const READER = 'bulk-recent-reader@example.com';
  * 992,000,000–992,999,999 sits between `customers.test.ts` and `bulk.test.ts`
  * and touches neither.
  */
-const TG_BASE = 992_000_000;
+const TG_BASE = FIXTURE_TG_BASE + 992_000_000;
 
 function envAs(email: string) {
   return { ...baseEnv, TEST_ACCESS_USER: email };
