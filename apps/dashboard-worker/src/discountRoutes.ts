@@ -1,14 +1,24 @@
 /**
  * کدهای تخفیف — the codes, who has spent them, and what is left.
  *
- * The state of a code is not a column. It is derived from three facts the bot
- * checks at redemption time (`apps/bot/src/discount.ts:139`): the expiry, the
+ * The state of a code is not a column. It is derived from the facts the bot
+ * checks at redemption time (`apps/bot/src/discount.ts`): the expiry, the
  * redemption count against `max_uses`, and — for a discount, not a gift — the
  * fact that `GIFT_BALANCE` is never usable as a discount at all. This route
- * derives it from the same three, so the badge on the screen and the answer the
- * customer gets cannot disagree. Adding a `status` column instead would create
- * a second source of truth that drifts the first time someone forgets to write
- * it.
+ * derives it from the same facts, so the badge on the screen and the answer the
+ * customer gets cannot disagree. A `status` column holding «usable» would be a
+ * second source of truth that drifts the first time someone forgets to write it.
+ *
+ * ## `status` arrived in 0059 anyway, and it is not that column
+ *
+ * The warning above is about deriving a FACT into a column. `discount_codes
+ * .status` is not a fact about the code, it is an INTENT of the admin's:
+ * «paused» is not implied by any date or count and cannot be computed from
+ * anything. Nothing derives it and nothing else writes it.
+ *
+ * `state()` still derives, and now reads it FIRST — because a switched-off code
+ * that showed «قابل استفاده» would be precisely the drift this header exists to
+ * prevent, arriving from the other direction.
  *
  * **The code is unique case-insensitively here, and only here.** The column is
  * `UNIQUE` on the exact text, but the bot looks codes up with
@@ -43,7 +53,7 @@ const CODE_PATTERN = /^[A-Za-z0-9_-]{3,64}$/;
 
 const ListQuery = z.object({
   q: z.string().trim().max(64).optional(),
-  state: z.enum(['USABLE', 'EXPIRED', 'USED_UP']).optional(),
+  state: z.enum(['USABLE', 'EXPIRED', 'USED_UP', 'DISABLED']).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(25),
 });
@@ -63,6 +73,15 @@ const CreateBody = z
     productId: z.number().int().positive().nullable().default(null),
     providerId: z.number().int().positive().nullable().default(null),
     expiresAt: z.string().datetime().nullable().default(null),
+    // How many times ONE customer may use it. 1 is what every code did before
+    // migration 0059, so an unchanged form keeps producing what it always did.
+    // The ceiling of 100 is arbitrary and generous; what it refuses is the
+    // typo that turns a code into an unbounded discount for one person.
+    usesPerUser: z.number().int().min(1).max(100).default(1),
+    // The customer's TELEGRAM id, not our internal one. It is what an operator
+    // has in front of them — from «کاربران», from the customer's own message —
+    // and it is resolved to a user below rather than trusted as a row id.
+    targetTelegramId: z.number().int().nullable().default(null),
   })
   .strict()
   // The same rule as the table's own CHECK, stated here so the caller gets a
@@ -101,6 +120,11 @@ interface CodeRow {
   expires_at: string | null;
   created_at: string;
   used: number;
+  uses_per_user: number;
+  status: 'ACTIVE' | 'DISABLED';
+  target_user_id: number | null;
+  target_user_telegram_id: number | null;
+  target_user_username: string | null;
 }
 
 /**
@@ -109,7 +133,11 @@ interface CodeRow {
  * Expiry is compared against the server's clock, the same instant Postgres
  * would use; the caller renders it in Tehran time but never decides with it.
  */
-function state(r: CodeRow, nowMs: number): 'USABLE' | 'EXPIRED' | 'USED_UP' {
+function state(r: CodeRow, nowMs: number): 'USABLE' | 'EXPIRED' | 'USED_UP' | 'DISABLED' {
+  // First, and in the same order the bot refuses. A paused code that is also
+  // expired reads as paused here and refuses as paused there; the alternative
+  // is a screen that says «منقضی» about something an admin can un-pause.
+  if (r.status !== 'ACTIVE') return 'DISABLED';
   if (r.expires_at !== null && Date.parse(r.expires_at) <= nowMs) return 'EXPIRED';
   if (r.max_uses !== null && Number(r.used) >= r.max_uses) return 'USED_UP';
   return 'USABLE';
@@ -131,6 +159,19 @@ function shape(r: CodeRow, nowMs: number) {
     provider: r.provider_id ? { id: r.provider_id, name: r.provider_name } : null,
     expiresAt: r.expires_at,
     createdAt: r.created_at,
+    usesPerUser: r.uses_per_user,
+    status: r.status,
+    // The telegram id, not the internal one: it is what an operator can search
+    // «کاربران» by and what the customer would quote. No name is invented when
+    // the user has no username — «—» is the screen's business, not the API's.
+    targetUser: r.target_user_id
+      ? {
+          id: r.target_user_id,
+          telegramId:
+            r.target_user_telegram_id === null ? null : Number(r.target_user_telegram_id),
+          username: r.target_user_username,
+        }
+      : null,
     state: state(r, nowMs),
   };
 }
@@ -141,10 +182,13 @@ const SELECT_CODE = `
          dc.product_id, p.name AS product_name,
          dc.provider_id, pr.name AS provider_name,
          dc.expires_at, dc.created_at,
+         dc.uses_per_user, dc.status, dc.target_user_id,
+         tu.telegram_id AS target_user_telegram_id, tu.username AS target_user_username,
          (SELECT COUNT(*) FROM discount_redemptions r WHERE r.code_id = dc.id) AS used
     FROM discount_codes dc
     LEFT JOIN products p ON p.id = dc.product_id
-    LEFT JOIN provisioning_providers pr ON pr.id = dc.provider_id`;
+    LEFT JOIN provisioning_providers pr ON pr.id = dc.provider_id
+    LEFT JOIN users tu ON tu.id = dc.target_user_id`;
 
 export function registerDiscountRoutes(
   app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
@@ -281,11 +325,24 @@ export function registerDiscountRoutes(
       if (!p) return c.json({ ok: false, error: 'unknown_panel' }, 400);
     }
 
+    // Resolved rather than stored as typed. A code aimed at a telegram id that
+    // has never opened the bot would be a code that silently works for nobody,
+    // and the operator would have no way to see that from the screen.
+    let targetUserId: number | null = null;
+    if (b.targetTelegramId !== null) {
+      const u = await c.env.DB.prepare(`SELECT id FROM users WHERE telegram_id = ?1`)
+        .bind(b.targetTelegramId)
+        .first<{ id: number }>();
+      if (!u) return c.json({ ok: false, error: 'unknown_customer' }, 400);
+      targetUserId = Number(u.id);
+    }
+
     const created = await c.env.DB.prepare(
       `INSERT INTO discount_codes
          (code, kind, amount_irr, percent, max_uses, applies_to,
-          first_purchase_only, resellers_only, product_id, provider_id, expires_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+          first_purchase_only, resellers_only, product_id, provider_id, expires_at,
+          uses_per_user, target_user_id)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
        RETURNING id`,
     )
       .bind(
@@ -300,6 +357,8 @@ export function registerDiscountRoutes(
         b.productId,
         b.providerId,
         b.expiresAt,
+        b.usesPerUser,
+        targetUserId,
       )
       .first<{ id: number }>();
     const id = Number(created!.id);
@@ -319,12 +378,69 @@ export function registerDiscountRoutes(
         max_uses: b.maxUses,
         applies_to: b.appliesTo,
         expires_at: b.expiresAt,
+        uses_per_user: b.usesPerUser,
+        target_user_id: targetUserId,
       },
       null,
     );
 
     const row = await c.env.DB.prepare(`${SELECT_CODE} WHERE dc.id = ?1`).bind(id).first<CodeRow>();
     return c.json({ ok: true, discount: shape(row!, Date.now()) }, 201);
+  });
+
+  // --- pause and resume ---------------------------------------------------
+
+  /**
+   * Turns a code off, or back on.
+   *
+   * Deliberately separate from `/expire` rather than folded into it, because
+   * they are not two spellings of one thing. Expiring writes a DATE and cannot
+   * be undone — the record of when the code ended is the point. Pausing is a
+   * switch, and every reason to reach for it («stop this until I check
+   * something») is a reason to want it back.
+   */
+  app.post('/api/v1/admin/discounts/:id/status', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    const body = z
+      .object({ status: z.enum(['ACTIVE', 'DISABLED']) })
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+
+    const before = await c.env.DB.prepare(`${SELECT_CODE} WHERE dc.id = ?1`)
+      .bind(id)
+      .first<CodeRow>();
+    if (!before) return c.json({ ok: false, error: 'not_found' }, 404);
+    // Already there. Not an error, and not an audit row saying nothing moved.
+    if (before.status === body.data.status) {
+      return c.json({ ok: true, changed: false, discount: shape(before, Date.now()) });
+    }
+
+    await c.env.DB.prepare(`UPDATE discount_codes SET status = ?2 WHERE id = ?1`)
+      .bind(id, body.data.status)
+      .run();
+
+    const after = await c.env.DB.prepare(`${SELECT_CODE} WHERE dc.id = ?1`)
+      .bind(id)
+      .first<CodeRow>();
+
+    await audit(
+      c.env.DB,
+      ident,
+      'discount.status',
+      'DISCOUNT_CODE',
+      String(id),
+      { status: before.status },
+      { status: body.data.status },
+      null,
+    );
+
+    return c.json({ ok: true, changed: true, discount: shape(after!, Date.now()) });
   });
 
   // --- retire -------------------------------------------------------------
