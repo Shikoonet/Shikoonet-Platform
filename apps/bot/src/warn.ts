@@ -1,17 +1,27 @@
 /**
  * Telling a customer their service is about to run out.
  *
- * The thresholds are not invented. They are the live `setting` row on the
- * 2026-08-13 dump:
+ * The thresholds are not invented. They are the live `setting` row, and they
+ * are now read from `settings` rather than believed from a dump — the fallbacks
+ * below are what a failed read uses.
  *
- *     volumewarn   1     → warn at one gigabyte remaining
- *     daywarn      2     → warn at two days remaining
- *     cron_status  {"day":true,"volume":true,"remove":false,"remove_volume":false}
+ * ## The paragraph that used to be here, and why it is gone
  *
- * The two `remove` flags being false is why this file only warns. Legacy can
- * also delete an expired account from the panel, and the admin has that switched
- * off; building it anyway would be building a thing that deletes customers'
- * services and is never asked to.
+ * It said: the 2026-08-13 dump has
+ * `cron_status {"day":true,"volume":true,"remove":false,"remove_volume":false}`,
+ * so the two removal crons are switched off, so building them would be building
+ * a thing that deletes customers' services and is never asked to.
+ *
+ * That was true when it was written and false by 2026-09-02.
+ * `backup_2026-09-02.sql` reads `"remove":true,"remove_volume":true` — the
+ * admin turned both on some time in between, and the PHP bot has been deleting
+ * expired accounts 30 days out and volume-exhausted ones 17 days after their
+ * last connection ever since. Nothing in this file noticed, because a comment
+ * that asked the data once is not a witness to what the data says today.
+ *
+ * Both are built now, in `remove.ts`, behind switches that default OFF and a
+ * report-only mode that defaults ON. This file still only warns; the deleting
+ * lives next door where it can be read on its own.
  *
  * Each warning is sent once. `subscriptions.notify` is the record — the same
  * column and the same two keys the PHP uses — and a renewal clears it, so the

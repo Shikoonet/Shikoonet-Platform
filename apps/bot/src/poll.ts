@@ -19,6 +19,7 @@ import { provisionPaidOrders } from './provision.js';
 import { syncSubscriptions, SYNC_INTERVAL_MS } from './sync.js';
 import { downgradeExpired } from './downgrade.js';
 import { warnExpiringServices } from './warn.js';
+import { removeFinishedServices } from './remove.js';
 import type { CronJobKey } from '@shikoo/contracts';
 import { expireUnpaidOrders } from './expire.js';
 import {
@@ -783,6 +784,27 @@ export async function run(
       // advancing it, and an order settled or delivered earlier in this same
       // cycle must have moved out of AWAITING_PAYMENT before this looks.
       await sweep('expiring unpaid orders', () => expireUnpaidOrders(db), 'expire_orders');
+      // The two that delete an account from a panel.
+      //
+      // After the sync, because both read `panel_status` and `panel_online_at`
+      // and a stale verdict is the one input that could make them remove a
+      // service the panel has since brought back. After the warnings for the
+      // ordinary reason: a customer hears their service is ending before
+      // anything happens to it.
+      //
+      // Both are off by default and return before touching the database when
+      // they are, so on every shop that has not turned them on this is two
+      // cached settings reads a cycle.
+      await sweep(
+        'removing expired services from panels',
+        async () => (await removeFinishedServices(db, 'expired')).removed,
+        'remove_expired',
+      );
+      await sweep(
+        'removing volume-exhausted services from panels',
+        async () => (await removeFinishedServices(db, 'volume')).removed,
+        'remove_volume',
+      );
       // Yesterday's numbers, once. Cheap on the ~3,400 cycles a day that have
       // nothing to do — it asks whether the report exists before it builds one,
       // which is a primary-key hit against six aggregate queries.

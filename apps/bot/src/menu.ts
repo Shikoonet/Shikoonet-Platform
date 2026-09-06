@@ -2264,6 +2264,32 @@ export function serviceNeverUsed(
 }
 
 /**
+ * «Your service was removed from the panel», and why.
+ *
+ * The only two messages the bot sends about something taken away rather than
+ * something ending, and the reason each one names its cause: an account that
+ * vanishes with no explanation produces a support message, and one that says
+ * «۳۰ روز از انقضایش گذشته بود» does not.
+ *
+ * `days` is a whole number the sweep already had to compute in order to select
+ * the row, so it is passed in rather than recomputed here — two readings of
+ * «how long ago» that can disagree is the shape this project keeps finding.
+ */
+export function serviceRemovedExpired(serviceName: string, days: number): string {
+  return TEXTS_NOW.render('CRON_SERVICE_REMOVED', {
+    service: serviceName,
+    days: days.toLocaleString('en-US'),
+  });
+}
+
+export function serviceRemovedVolume(serviceName: string, days: number): string {
+  return TEXTS_NOW.render('CRON_SERVICE_REMOVED_VOLUME', {
+    service: serviceName,
+    days: days.toLocaleString('en-US'),
+  });
+}
+
+/**
  * What the shop's channel is told when the flood guard fires.
  *
  * The numeric id rather than the @handle: a customer who was blocked for
