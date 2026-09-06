@@ -2275,6 +2275,18 @@ export function serviceNeverUsed(
  * the row, so it is passed in rather than recomputed here — two readings of
  * «how long ago» that can disagree is the shape this project keeps finding.
  */
+/**
+ * The one message this bot sends to somebody who is not a customer.
+ *
+ * No placeholders on purpose. «۳ روز پیش استارت کردید» would be the obvious
+ * addition and it is the sentence that makes a marketing message feel watched:
+ * the shop knows what they did and when. What is being offered is help, and
+ * help does not need to prove it has been counting.
+ */
+export function neverBoughtNudge(): string {
+  return TEXTS_NOW.raw('NUDGE_NEVER_BOUGHT');
+}
+
 export function serviceRemovedExpired(serviceName: string, days: number): string {
   return TEXTS_NOW.render('CRON_SERVICE_REMOVED', {
     service: serviceName,

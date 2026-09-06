@@ -249,11 +249,7 @@ export const CRON_JOBS: readonly CronJob[] = [
         max: 365,
       },
     ],
-    // Empty until the sweep that sends it exists. `bot-text-lines.test.ts`
-    // refuses a TEXTS key no source file renders — an edit box that saves a
-    // sentence nobody will ever see — so the text and its reader land in the
-    // same commit, not this one.
-    texts: [],
+    texts: ['NUDGE_NEVER_BOUGHT'],
     // Sends a message to somebody who has never paid us anything. It takes
     // nothing away, so it is not in the same class as the two above it.
     destructive: false,

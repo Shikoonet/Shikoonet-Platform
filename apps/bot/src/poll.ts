@@ -20,6 +20,7 @@ import { syncSubscriptions, SYNC_INTERVAL_MS } from './sync.js';
 import { downgradeExpired } from './downgrade.js';
 import { warnExpiringServices } from './warn.js';
 import { removeFinishedServices } from './remove.js';
+import { nudgeNeverBought } from './nudge.js';
 import type { CronJobKey } from '@shikoo/contracts';
 import { expireUnpaidOrders } from './expire.js';
 import {
@@ -805,6 +806,10 @@ export async function run(
         async () => (await removeFinishedServices(db, 'volume')).removed,
         'remove_volume',
       );
+      // The nudge, after everything that concerns paying customers. It is the
+      // only sweep whose audience never gave us money, so it queues behind
+      // every message somebody is actually waiting for.
+      await sweep('nudging people who never bought', () => nudgeNeverBought(db));
       // Yesterday's numbers, once. Cheap on the ~3,400 cycles a day that have
       // nothing to do — it asks whether the report exists before it builds one,
       // which is a primary-key hit against six aggregate queries.

@@ -1687,6 +1687,16 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'وقتی سرویسِ حجم‌تمام‌شده بعد از مهلتِ حذف از پنل پاک می‌شود',
   },
+  // Nobody's service is touched by this one — it goes to a person who has
+  // never bought anything. Mirzabot has the same audience (`admin.php:1247`,
+  // `nonecustomer`) but no cron for it: an admin presses a button.
+  NUDGE_NEVER_BOUGHT: {
+    default:
+      '👋 سلام!\n\nمدتی پیش ربات را استارت کردید ولی هنوز خریدی نکرده‌اید. اگر سؤالی هست یا در انتخاب سرویس کمک می‌خواهید، همین‌جا بپرسید.',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'یک بار به هر کسی که استارت کرده و بعد از N روز نخریده',
+  },
   // --- ضد-اسپم ---------------------------------------------------------------
   // `index.php:307` — ۳۵ پیام در یک دقیقه و کاربر مسدود می‌شود. متن مشتری از
   // `users.spam.spamedMessage` لگاسی می‌آید و متن کانال از `spamedReport`.
