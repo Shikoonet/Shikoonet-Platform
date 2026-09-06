@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * سفارشات · سرویس‌ها · تراکنش‌ها — the three ledgers an admin reads, never writes.
  *
@@ -136,7 +137,7 @@ function customerFilter(
 }
 
 export function registerSalesRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   // --- سفارشات -------------------------------------------------------------
 

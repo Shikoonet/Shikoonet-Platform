@@ -585,33 +585,19 @@ describe('listing every account on a panel', () => {
     const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
 
     expect(result.ok).toBe(true);
-    // `status` and `onlineAt` are null here because this fixture's panel does
-    // not report them, and null is the answer the removal sweeps require for
-    // «do not act». Asserted rather than omitted: a build that started sending
-    // an empty string or the word «unknown» would authorise nothing, and this
-    // is where that would be seen.
+    // `expiresAtMs` is null because this fixture's users carry no `expire` key
+    // at all — the panel saying nothing, which is not the same as a date of
+    // zero. `status` and `onlineAt` are null because it does not report them
+    // either, and null is the answer the removal sweeps require for «do not
+    // act». All three asserted rather than omitted: a build that started
+    // sending an empty string or the word «unknown» would authorise nothing,
+    // and this is where that would be seen. The tests below feed each of them.
+    const url = (i: number) => `https://panel.example.com/sub/u_${i}`;
+    const blank = { expiresAtMs: null, status: null, onlineAt: null };
     expect(result.ok && result.accounts).toEqual([
-      {
-        username: 'u_0',
-        usedBytes: 0,
-        subscriptionUrl: 'https://panel.example.com/sub/u_0',
-        status: null,
-        onlineAt: null,
-      },
-      {
-        username: 'u_1',
-        usedBytes: 1024,
-        subscriptionUrl: 'https://panel.example.com/sub/u_1',
-        status: null,
-        onlineAt: null,
-      },
-      {
-        username: 'u_2',
-        usedBytes: 2048,
-        subscriptionUrl: 'https://panel.example.com/sub/u_2',
-        status: null,
-        onlineAt: null,
-      },
+      { username: 'u_0', usedBytes: 0, subscriptionUrl: url(0), ...blank },
+      { username: 'u_1', usedBytes: 1024, subscriptionUrl: url(1), ...blank },
+      { username: 'u_2', usedBytes: 2048, subscriptionUrl: url(2), ...blank },
     ]);
     // One full page was not needed, so one request.
     expect(panel.pages).toHaveLength(1);
@@ -632,6 +618,38 @@ describe('listing every account on a panel', () => {
       status: 'limited',
       onlineAt: '2026-08-01T10:00:00Z',
     });
+  });
+
+  /**
+   * The expiry the sync sweep fills an imported service's blank date from.
+   *
+   * Read here rather than at the sweep because this is where the panel's two
+   * spellings live: a unix number on one version, an ISO string on another,
+   * and `0` or nothing at all for an account with no expiry — which must stay
+   * NULL rather than becoming 1970. Issue #92.
+   */
+  it('reports the expiry however the panel spells it', async () => {
+    const spellings: (number | string | undefined)[] = [
+      1_788_000_000,
+      '1788000000',
+      '2026-09-01T06:00:00.000Z',
+      0,
+      undefined,
+    ];
+    const panel = listingPanel(spellings.length, (i) =>
+      spellings[i] === undefined ? {} : { expire: spellings[i] },
+    );
+
+    const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok && result.accounts.map((a) => a.expiresAtMs)).toEqual([
+      1_788_000_000_000,
+      1_788_000_000_000,
+      Date.parse('2026-09-01T06:00:00.000Z'),
+      // Zero and absent are the same answer: this account has no expiry.
+      null,
+      null,
+    ]);
   });
 
   it('walks past the first page rather than stopping at it', async () => {

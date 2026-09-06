@@ -128,8 +128,22 @@ export interface Env {
    * Which environment this is. A union rather than a string, so a comparison
    * against `'prod'` stops compiling — see `parseEnvName`. Drives the header
    * badge, the origin check, the cookie's Secure flag and the bypass refusal.
+   *
+   * Required, and that is a statement about startup rather than a wish.
+   * `buildEnv` fills it from `parseEnvName(optional('ENV_NAME'))`, which throws
+   * on absent, on empty and on a near-miss like «prod»
+   * (`packages/contracts/src/env.ts`), and `deploy/autodeploy.sh` refuses a
+   * container that reports none. No process exists holding an `Env` without one.
+   *
+   * It was optional, and the cost was four `?? 'local'` that could never fire
+   * and read as live defaults — CodeRabbit flagged them twice on PR #89 as live
+   * bugs and both times the time went into proving something already true. They
+   * were not harmless either: `resolveBotToken` compares the stored row's
+   * `env_name` against this value and ignores the row when they differ, so a
+   * fired `'local'` would answer «no bot is connected» on a shop that has one,
+   * and one of the four WROTE it into `bot_credentials.env_name`.
    */
-  ENV_NAME?: EnvName;
+  ENV_NAME: EnvName;
   // Injected at deploy time by scripts/release.sh via `wrangler deploy --var`,
   // because dev and production share one SPA bundle and one source tree.
   APP_VERSION?: string;
@@ -316,7 +330,7 @@ app.get('/api/v1/version', (c) =>
   c.json({
     ok: true,
     version: c.env.APP_VERSION ?? 'unknown',
-    env: c.env.ENV_NAME ?? 'unknown',
+    env: c.env.ENV_NAME,
   }),
 );
 

@@ -31,6 +31,7 @@ import {
   CRON_DRY_RUN,
   type CronJob,
   type CronJobKey,
+  type EnvName,
 } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 
@@ -89,7 +90,7 @@ function asNumber(value: unknown): number | null {
 }
 
 export function registerCronRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   app.get('/api/v1/admin/cron', async (c) => {
     const { results: rows } = await c.env.DB.prepare(
