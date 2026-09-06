@@ -335,13 +335,25 @@ function ResetCard({
       const r = await api.resetImportedData(typed.trim());
       onDone(`${count(r.total)} ردیف پاک شد.`);
       setTyped('');
-      // Re-read rather than assume: the card now claims the shop is empty, and
-      // that claim should come from the server like the first one did.
-      setPreview(await api.importResetPreview());
     } catch (e) {
       setErr(message(e));
+      return;
     } finally {
       setBusy(false);
+    }
+
+    // Re-read rather than assume: the card now claims the shop is empty, and
+    // that claim should come from the server like the first one did.
+    //
+    // Its OWN try, deliberately. Inside the one above, a re-read that failed
+    // after a reset that SUCCEEDED would put an error under a success note for
+    // an action that cannot be undone — and leave the pre-reset counts on
+    // screen, which reads as «it did not work». The reset is done; a stale
+    // table is the smaller lie, and the next press of «تازه‌سازی» fixes it.
+    try {
+      setPreview(await api.importResetPreview());
+    } catch {
+      // Left as it was. See above.
     }
   }
 
