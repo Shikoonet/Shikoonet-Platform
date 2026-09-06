@@ -397,6 +397,16 @@ export function CatalogPage() {
 
       {editing && (
         <ServiceDrawer
+          /*
+           * Same defect as «مدیریت پنل‌ها», same repair — see PanelsPage's
+           * `openedAs`. Every field below is seeded by `useState(service.name)`
+           * and that initialiser runs once per mount, so opening service B over
+           * an open service A kept A's values in the form and saved them
+           * against B's id. Here the id is enough: nothing turns this drawer
+           * into the editor for a service it just created, so the key never
+           * changes underneath one flow.
+           */
+          key={editing.id}
           service={editing}
           panels={panels}
           categories={categories}
@@ -769,6 +779,11 @@ function ConfigList({ service, onChanged }: { service: ServiceRow; onChanged: ()
 
       {editing && (
         <ConfigDrawer
+          /* The third of the same. The row button switches straight from one
+             config to another without closing — `setEditing(editing?.id === cf.id
+             ? null : cf)` — which is exactly the transition a missing key gets
+             wrong. */
+          key={editing.id}
           config={editing}
           onClose={() => setEditing(null)}
           onChanged={onChanged}
