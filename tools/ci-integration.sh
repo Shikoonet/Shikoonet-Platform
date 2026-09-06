@@ -335,6 +335,7 @@ suite_deploy_suites() {
     deploy/test/candidates.test.sh \
     deploy/test/production-workflows.test.sh \
     tools/test/ci-plan.test.sh \
+    tools/test/ci-draft-state.test.sh \
     tools/test/ci-suite-map.test.sh; do
     echo "::group::${t}"
     if bash "$t"; then

@@ -129,11 +129,26 @@ const REACHES_A_PANEL: ReadonlySet<string> = new Set([
  */
 type Readiness = { tone: 'ok' | 'warn' | 'bad'; label: string; why: string | null };
 
+/**
+ * «تحویل نمی‌دهد» said nothing about who was already on the panel.
+ *
+ * Staging, 2026-09-03: five of eight panels had no credential and between them
+ * held 4,805 of the shop's 4,942 live services. None of those had ever synced —
+ * no expiry, no usage, no fresh subscription link — and the only place it was
+ * said was the bot's own log, twenty `sync.panel_skipped` lines in six hours
+ * that nobody reads. This screen showed «رمز ندارد» and looked like a
+ * configuration detail (issue #112).
+ *
+ * A panel that cannot be reached and has nobody on it is a setup step. The same
+ * panel with two thousand live services on it is customers whose «سرویس های من»
+ * has been frozen since the import, and the difference is one number.
+ */
 function readiness(p: {
   kind: string;
   status: string;
   baseUrl: string | null;
   hasSecretRef: boolean;
+  liveSubscriptions: number;
 }): Readiness {
   if (p.status !== 'ACTIVE') {
     return { tone: 'warn', label: 'غیرفعال', why: 'از خرید و تمدید برداشته شده' };
@@ -143,7 +158,11 @@ function readiness(p: {
   // fixed in different places and an operator has to know which one to open.
   const missing = [...(p.baseUrl ? [] : ['آدرس']), ...(p.hasSecretRef ? [] : ['رمز'])];
   if (missing.length > 0) {
-    return { tone: 'bad', label: 'تحویل نمی‌دهد', why: `${missing.join(' و ')} ندارد` };
+    const stranded =
+      p.liveSubscriptions > 0
+        ? ` — ${count(p.liveSubscriptions)} اشتراک زنده رویش هست که به‌روز نمی‌شود`
+        : '';
+    return { tone: 'bad', label: 'تحویل نمی‌دهد', why: `${missing.join(' و ')} ندارد${stranded}` };
   }
   return { tone: 'ok', label: 'آمادهٔ تحویل', why: null };
 }
@@ -1928,7 +1947,12 @@ export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) =
     }
   }
 
-  const broken = rows.filter((r) => readiness(r).tone === 'bad').length;
+  const brokenRows = rows.filter((r) => readiness(r).tone === 'bad');
+  const broken = brokenRows.length;
+  // The customers behind the number, not the number of panels. A shop reading
+  // «۵ تای‌شان سفارش تحویل نمی‌دهند» hears a configuration backlog; the same
+  // sentence with 4,805 in it is the whole shop.
+  const stranded = brokenRows.reduce((n, r) => n + r.liveSubscriptions, 0);
 
   return (
     <>
@@ -1937,7 +1961,9 @@ export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) =
           <div className="page-head__title">مدیریت پنل‌ها</div>
           <div className="page-head__sub">
             {count(rows.length)} پنل
-            {broken > 0 && ` — ${count(broken)} تای‌شان سفارش تحویل نمی‌دهند`}
+            {broken > 0 &&
+              ` — ${count(broken)} تای‌شان سفارش تحویل نمی‌دهند` +
+                (stranded > 0 ? ` و ${count(stranded)} اشتراک زنده رویشان به‌روز نمی‌شود` : '')}
           </div>
         </div>
         <div className="filters" style={{ margin: 0 }}>

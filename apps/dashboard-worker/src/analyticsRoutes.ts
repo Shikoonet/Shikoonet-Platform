@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 import type { D1Database } from '@shikoo/database';
 /**
  * Financial analytics API: sales, balances, trends, per-account metrics.
@@ -729,7 +730,7 @@ export async function loadCardAnalytics(
 
 export function registerAnalyticsRoutes(
   app: Hono<{
-    Bindings: { DB: D1Database };
+    Bindings: { DB: D1Database; ENV_NAME: EnvName };
     Variables: { identity: Ident };
   }>,
 ) {

@@ -67,6 +67,35 @@ async function makeCatalogue(): Promise<Fixture> {
   return { panelA, panelB, planA: await plan('a', panelA), planB: await plan('b', panelB) };
 }
 
+/**
+ * A plan on a panel with no automated adapter — the shape an account shelf
+ * needs. `makeCatalogue` builds 'pasarguard' panels, which sell configs.
+ */
+async function accountPlan(label: string): Promise<number> {
+  const panel = await baseEnv.DB.prepare(
+    `INSERT INTO provisioning_providers (code, name, kind, status)
+     VALUES (?1, 'پنل اکانت', 'ai_account', 'ACTIVE')
+     ON CONFLICT (code) DO UPDATE SET kind = 'ai_account' RETURNING id`,
+  )
+    .bind(`${PREFIX}acct-${label}`)
+    .first<{ id: number }>();
+  const product = await baseEnv.DB.prepare(
+    `INSERT INTO products (code, name, kind, provider_id, category_id, status)
+     VALUES (?1, 'اکانت', 'ai_account', ?2,
+             (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE')
+     RETURNING id`,
+  )
+    .bind(`${PREFIX}acct-p-${label}`, Number(panel!.id))
+    .first<{ id: number }>();
+  const plan = await baseEnv.DB.prepare(
+    `INSERT INTO product_plans (product_id, name, price_irr, duration_days, status)
+     VALUES (?1, 'یک‌ماهه', 9000000, 30, 'ACTIVE') RETURNING id`,
+  )
+    .bind(Number(product!.id))
+    .first<{ id: number }>();
+  return Number(plan!.id);
+}
+
 const post = (path: string, body: unknown, email = ADMIN) =>
   app.request(
     path,
@@ -119,6 +148,18 @@ async function purgeAll(): Promise<void> {
   await baseEnv.DB.prepare(`DELETE FROM provisioning_providers WHERE code LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();
+  // Shelves built by `POST /stock/shelves` name themselves, so they are found
+  // by the code that route generates rather than by this file's prefix.
+  await baseEnv.DB.prepare(
+    `DELETE FROM provisioning_stock WHERE plan_id IN
+       (SELECT pl.id FROM product_plans pl JOIN products p ON p.id = pl.product_id
+         WHERE p.code LIKE 'shelf-%')`,
+  ).run();
+  await baseEnv.DB.prepare(
+    `DELETE FROM product_plans WHERE product_id IN (SELECT id FROM products WHERE code LIKE 'shelf-%')`,
+  ).run();
+  await baseEnv.DB.prepare(`DELETE FROM products WHERE code LIKE 'shelf-%'`).run();
+  await baseEnv.DB.prepare(`DELETE FROM provisioning_providers WHERE code LIKE 'shelf-%'`).run();
 }
 
 beforeAll(async () => {
@@ -141,6 +182,144 @@ beforeAll(async () => {
 
 beforeEach(purge);
 afterAll(purgeAll);
+
+describe('making a shelf', () => {
+  const categoryId = async () =>
+    Number(
+      (
+        await baseEnv.DB.prepare(`SELECT id FROM product_categories WHERE name = '__fixture'`)
+          .first<{ id: number }>()
+      )!.id,
+    );
+
+  it('builds the panel, the service and the product from one name', async () => {
+    // What Sam asked for: make the shelf first, then put accounts in it. Three
+    // rows have to exist for a shelf to be sellable, and none of them is a
+    // question about a box of Spotify accounts.
+    const res = await post('/api/v1/admin/stock/shelves', {
+      name: 'اسپاتیفای',
+      kind: 'spotify',
+      priceIrr: 2_500_000,
+      durationDays: 30,
+      categoryId: await categoryId(),
+    });
+    expect(res.status).toBe(200);
+    const { planId } = (await res.json()) as { planId: number };
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT pl.name AS plan_name, pl.price_irr, pl.duration_days, pl.status AS plan_status,
+              p.name AS product_name, p.kind AS product_kind, p.status AS product_status,
+              pr.name AS panel_name, pr.kind AS panel_kind
+         FROM product_plans pl
+         JOIN products p ON p.id = pl.product_id
+         JOIN provisioning_providers pr ON pr.id = p.provider_id
+        WHERE pl.id = ?1`,
+    )
+      .bind(planId)
+      .first<Record<string, unknown>>();
+
+    expect(row).toMatchObject({
+      plan_name: 'اسپاتیفای',
+      product_name: 'اسپاتیفای',
+      panel_name: 'اسپاتیفای',
+      product_kind: 'spotify',
+      plan_status: 'ACTIVE',
+      product_status: 'ACTIVE',
+      // `manual`, so the bot reaches for the shelf instead of a panel that does
+      // not exist. A kind with an adapter would try to provision on nothing.
+      panel_kind: 'manual',
+    });
+    expect(Number(row!['price_irr'])).toBe(2_500_000);
+  });
+
+  it('gives every shelf its own panel, so one address can be on two of them', async () => {
+    // The whole reason the panel is per-shelf: `idx_stock_account_once` is
+    // (provider_id, remote_username), and the same person having a Spotify
+    // account and a ChatGPT account is the ordinary case.
+    const cat = await categoryId();
+    const a = (await (
+      await post('/api/v1/admin/stock/shelves', {
+        name: 'اسپاتیفای دو',
+        priceIrr: 1_000_000,
+        categoryId: cat,
+      })
+    ).json()) as { planId: number };
+    const b = (await (
+      await post('/api/v1/admin/stock/shelves', {
+        name: 'چت‌جی‌پی‌تی دو',
+        priceIrr: 1_000_000,
+        categoryId: cat,
+      })
+    ).json()) as { planId: number };
+
+    const shared = `${PREFIX}same@mail.test`;
+    expect(
+      ((await (
+        await post('/api/v1/admin/stock/bulk', { planId: a.planId, text: `${shared},pw-a` })
+      ).json()) as { added: number }).added,
+    ).toBe(1);
+    expect(
+      ((await (
+        await post('/api/v1/admin/stock/bulk', { planId: b.planId, text: `${shared},pw-b` })
+      ).json()) as { added: number }).added,
+    ).toBe(1);
+
+    const n = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM provisioning_stock WHERE remote_username = ?1`,
+    )
+      .bind(shared)
+      .first<{ n: number }>();
+    expect(n!.n).toBe(2);
+  });
+
+  it('is a shelf the moment it is made, before anything is in it', async () => {
+    const res = await post('/api/v1/admin/stock/shelves', {
+      name: 'اوپن‌وی‌پی‌ان',
+      priceIrr: 500_000,
+      categoryId: await categoryId(),
+    });
+    const { planId } = (await res.json()) as { planId: number };
+
+    const body = (await (
+      await app.request('/api/v1/admin/stock', {}, envAs(ADMIN))
+    ).json()) as { shelves: { planId: number; available: number; used: number }[] };
+
+    expect(body.shelves.find((s) => s.planId === planId)).toMatchObject({
+      available: 0,
+      used: 0,
+    });
+  });
+
+  it('refuses a free shelf, which the bot would draw and then not sell', async () => {
+    // `placeOrder` refuses `totalIrr <= 0` outright, and nothing in the bot's
+    // visibility predicate looks at price — so a zero-price shelf draws every
+    // button in the shop and does nothing when the customer taps «خرید». The
+    // operator fills it and waits for a sale that cannot happen.
+    const res = await post('/api/v1/admin/stock/shelves', {
+      name: 'مجانی',
+      priceIrr: 0,
+      categoryId: await categoryId(),
+    });
+    expect(res.status).toBe(400);
+    const n = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM products WHERE name = 'مجانی'`,
+    ).first<{ n: number }>();
+    expect(n!.n).toBe(0);
+  });
+
+  it('refuses a category that does not exist rather than an orphan shelf', async () => {
+    const res = await post('/api/v1/admin/stock/shelves', {
+      name: 'بی‌دسته',
+      priceIrr: 1_000,
+      categoryId: 999_999_999,
+    });
+    expect(res.status).toBe(404);
+    const n = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM products WHERE name = 'بی‌دسته'`,
+    ).first<{ n: number }>();
+    expect(n!.n).toBe(0);
+  });
+});
 
 describe('filling the shelf', () => {
   it('files the config on the plan’s own panel, not one the request names', async () => {
@@ -182,6 +361,160 @@ describe('filling the shelf', () => {
       });
       expect(res.status, url).toBe(400);
     }
+  });
+
+  it('fills a shelf from a pasted export, one verdict per line', async () => {
+    // An account shelf: passwords only make sense where no panel provisions.
+    const acct = await accountPlan('mixed');
+    const text = [
+      `${PREFIX}bulk@mail.test,bulk-pw-1`, // an account — email username, comma
+      `${PREFIX}bulkurl\thttps://panel.invalid/sub/${PREFIX}bulkurl`, // a link — tab
+      `${PREFIX}bulk@mail.test,bulk-pw-1`, // the same account again
+      'no separator on this line', // spaces are not separators
+      `bad name!,https://panel.invalid/sub/x`, // a link needs a panel-safe name
+      '', // blank lines are not verdicts
+    ].join('\n');
+
+    const res = await post('/api/v1/admin/stock/bulk', { planId: acct, text });
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    const body = JSON.parse(raw) as {
+      added: number;
+      skipped: { line: number; reason: string }[];
+    };
+
+    expect(body.added).toBe(2);
+    expect(body.skipped.map((s) => s.line).sort((a, b) => a - b)).toEqual([3, 4, 5]);
+    // The response names the lines it refused — never the credentials on them.
+    expect(raw).not.toContain('bulk-pw-1');
+
+    const rows = await baseEnv.DB.prepare(
+      `SELECT remote_username, subscription_url, secret, provider_id
+         FROM provisioning_stock WHERE remote_username LIKE ?1 ORDER BY id`,
+    )
+      .bind(`${PREFIX}bulk%`)
+      .all<{
+        remote_username: string;
+        subscription_url: string | null;
+        secret: string | null;
+        provider_id: number;
+      }>();
+    expect(rows.results).toHaveLength(2);
+    expect(rows.results![0]).toMatchObject({
+      remote_username: `${PREFIX}bulk@mail.test`,
+      subscription_url: null,
+      secret: 'bulk-pw-1',
+    });
+    expect(rows.results![1]).toMatchObject({
+      remote_username: `${PREFIX}bulkurl`,
+      subscription_url: `https://panel.invalid/sub/${PREFIX}bulkurl`,
+      secret: null,
+    });
+  });
+
+  it('refuses the spreadsheet header instead of selling it as an account', async () => {
+    // Shelved, `username / password` sorts lowest and is therefore the FIRST
+    // row handed to a paying customer.
+    const acct = await accountPlan('hdr');
+    // Opening blank line on purpose: the header is then not line 1, and a check
+    // written against the line NUMBER rather than the first line with anything
+    // on it would wave it straight through.
+    const res = await post('/api/v1/admin/stock/bulk', {
+      planId: acct,
+      text: `\n\nusername,password\n${PREFIX}real@mail.test,realpw`,
+    });
+    const body = (await res.json()) as { added: number; skipped: { line: number }[] };
+
+    expect(body.added).toBe(1);
+    expect(body.skipped.map((s) => s.line)).toEqual([3]);
+    const row = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM provisioning_stock WHERE remote_username = 'username'`,
+    ).first<{ n: number }>();
+    expect(row!.n).toBe(0);
+  });
+
+  it('strips the quotes a spreadsheet puts round a field', async () => {
+    const acct = await accountPlan('quo');
+    const res = await post('/api/v1/admin/stock/bulk', {
+      planId: acct,
+      text: `"${PREFIX}quoted@mail.test","pa,ss word"`,
+    });
+    expect(((await res.json()) as { added: number }).added).toBe(1);
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT remote_username, secret FROM provisioning_stock WHERE remote_username LIKE ?1`,
+    )
+      .bind(`${PREFIX}quoted%`)
+      .first<{ remote_username: string; secret: string }>();
+    // The quotes are gone from both, and the comma inside the password stayed:
+    // everything after the FIRST separator is the credential.
+    expect(row!.remote_username).toBe(`${PREFIX}quoted@mail.test`);
+    expect(row!.secret).toBe('pa,ss word');
+  });
+
+  it('will not shelve a password for a plan whose panel provisions itself', async () => {
+    // fx.planA is on a 'pasarguard' panel. A password there is an account on a
+    // server that never heard of it.
+    const res = await post('/api/v1/admin/stock/bulk', {
+      planId: fx.planA,
+      text: `${PREFIX}nopw@mail.test,secret123`,
+    });
+    const body = (await res.json()) as { added: number; skipped: { reason: string }[] };
+
+    expect(body.added).toBe(0);
+    expect(body.skipped).toHaveLength(1);
+    expect(body.skipped[0]!.reason).toContain('پنل خودکار');
+    // And a link for the same plan is still accepted.
+    const ok = await post('/api/v1/admin/stock/bulk', {
+      planId: fx.planA,
+      text: `${PREFIX}withurl,https://panel.invalid/sub/${PREFIX}withurl`,
+    });
+    expect(((await ok.json()) as { added: number }).added).toBe(1);
+  });
+
+  it('refuses a bulk paste for a plan that does not exist', async () => {
+    const res = await post('/api/v1/admin/stock/bulk', {
+      planId: 999_999_999,
+      text: `${PREFIX}x,pw`,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('shows an account shelf that has never been filled', async () => {
+    // A shelf is a plan that sells from one — on the day it is created, not on
+    // the day somebody first pastes into it. Counted from `provisioning_stock`
+    // this row simply did not exist, so a product whose accounts were never
+    // loaded was invisible on the screen built to watch exactly that.
+    const panel = await baseEnv.DB.prepare(
+      `INSERT INTO provisioning_providers (code, name, kind, status)
+       VALUES (?1, 'پنل اکانت', 'ai_account', 'ACTIVE') RETURNING id`,
+    )
+      .bind(`${PREFIX}acct`)
+      .first<{ id: number }>();
+    const product = await baseEnv.DB.prepare(
+      `INSERT INTO products (code, name, kind, provider_id, category_id, status)
+       VALUES (?1, 'چت‌جی‌پی‌تی', 'ai_account', ?2,
+               (SELECT id FROM product_categories WHERE name = '__fixture'), 'ACTIVE')
+       RETURNING id`,
+    )
+      .bind(`${PREFIX}acct-product`, Number(panel!.id))
+      .first<{ id: number }>();
+    const plan = await baseEnv.DB.prepare(
+      `INSERT INTO product_plans (product_id, name, price_irr, duration_days, status)
+       VALUES (?1, 'یک‌ماهه', 9000000, 30, 'ACTIVE') RETURNING id`,
+    )
+      .bind(Number(product!.id))
+      .first<{ id: number }>();
+
+    const res = await app.request('/api/v1/admin/stock', {}, envAs(ADMIN));
+    const body = (await res.json()) as { shelves: { planId: number; available: number }[] };
+
+    const shelf = body.shelves.find((s) => s.planId === Number(plan!.id));
+    expect(shelf).toBeDefined();
+    expect(shelf?.available).toBe(0);
+
+    // And a VPN plan with no stock is NOT a shelf — it sells from its panel.
+    expect(body.shelves.find((s) => s.planId === fx.planB)).toBeUndefined();
   });
 
   it('counts the shelf per plan, not per page', async () => {
@@ -270,6 +603,21 @@ describe('who sees the accounts', () => {
     // the accounts on it.
     expect(asReviewer).not.toContain(`sub/${PREFIX}secret`);
     expect(asReviewer).toContain(`${PREFIX}secret`); // the username, which names it
+  });
+
+  it('treats a password exactly like the link it replaces', async () => {
+    const acct = await accountPlan('reveal');
+    await post('/api/v1/admin/stock/bulk', {
+      planId: acct,
+      text: `${PREFIX}pw@mail.test,${PREFIX}pw-value`,
+    });
+
+    const asAdmin = await (await app.request('/api/v1/admin/stock', {}, envAs(ADMIN))).text();
+    const asReviewer = await (await app.request('/api/v1/admin/stock', {}, envAs(REVIEWER))).text();
+
+    expect(asAdmin).toContain(`${PREFIX}pw-value`);
+    expect(asReviewer).not.toContain(`${PREFIX}pw-value`);
+    expect(asReviewer).toContain(`${PREFIX}pw@mail.test`);
   });
 
   it('lets nobody but an admin write to the shelf', async () => {
