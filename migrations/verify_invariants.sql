@@ -213,17 +213,55 @@ SELECT assert_eq((SELECT total_irr FROM orders WHERE public_id = '__inv-ok-1'), 
                  'a consistent order total is accepted');
 
 -- ==========================================================================
--- 6. GIFT CODES — one redemption per user, enforced where it cannot be raced
+-- 6. GIFT CODES — one redemption per ORDER, and where the per-user rule went
 -- ==========================================================================
+-- Until migration 0059 this section asserted «the same code cannot be redeemed
+-- twice by one customer», and the database really did enforce it:
+-- `idx_redemption_once_per_user`, UNIQUE on `(code_id, user_id)`.
+--
+-- 0059 traded that structural guarantee for a counted one, deliberately —
+-- `uses_per_user` lets a shop hand out a code good for two. The count is read
+-- under the `FOR UPDATE` lock `discount.ts` already holds on `discount_codes`,
+-- so the ceiling still cannot be raced, but it is no longer something this
+-- file can ask the database about. It is held instead by
+-- `apps/bot/test/discount.test.ts` › «honours the per-user ceiling when the
+-- same customer taps twice at once» — the concurrent shape that is the only
+-- thing capable of breaking a count.
+--
+-- Written out rather than deleted because a guarantee that quietly leaves this
+-- file is exactly the kind of loss it exists to catch.
+--
+-- What the database still enforces, and what this section now asserts, is the
+-- rule that took its place: one redemption per ORDER. `handleOrder` calls
+-- `redeem()` on every tap of «سفارش», including the taps that land back on an
+-- invoice the customer already has, and this index is what stops the second
+-- tap spending a second use on it.
 INSERT INTO discount_codes (code, kind, amount_irr) VALUES ('__INV-GIFT10', 'GIFT_BALANCE', 100000);
-INSERT INTO discount_redemptions (code_id, user_id)
+INSERT INTO discount_redemptions (code_id, user_id, order_id)
      VALUES ((SELECT id FROM discount_codes WHERE code = '__INV-GIFT10'),
-             (SELECT id FROM users WHERE telegram_id = -900000001));
+             (SELECT id FROM users WHERE telegram_id = -900000001),
+             (SELECT id FROM orders WHERE public_id = '__inv-ok-1'));
 SELECT assert_rejects($$
-  INSERT INTO discount_redemptions (code_id, user_id)
+  INSERT INTO discount_redemptions (code_id, user_id, order_id)
        VALUES ((SELECT id FROM discount_codes WHERE code = '__INV-GIFT10'),
-               (SELECT id FROM users WHERE telegram_id = -900000001))
-$$, 'the same gift code cannot be redeemed twice by one user');
+               (SELECT id FROM users WHERE telegram_id = -900000001),
+               (SELECT id FROM orders WHERE public_id = '__inv-ok-1'))
+$$, 'the same code cannot be redeemed twice against one order');
+
+-- And the other half, because an index that refused everything would pass the
+-- assertion above on its own: a genuinely different order is a genuinely
+-- different use, which is the whole point of moving the uniqueness.
+INSERT INTO orders (public_id, user_id, kind, quantity, unit_price_irr, discount_irr, total_irr)
+     VALUES ('__inv-ok-2', (SELECT id FROM users WHERE telegram_id = -900000001),
+             'NEW_PURCHASE', 2, 1000000, 200000, 1800000);
+INSERT INTO discount_redemptions (code_id, user_id, order_id)
+     VALUES ((SELECT id FROM discount_codes WHERE code = '__INV-GIFT10'),
+             (SELECT id FROM users WHERE telegram_id = -900000001),
+             (SELECT id FROM orders WHERE public_id = '__inv-ok-2'));
+SELECT assert_eq((SELECT count(*) FROM discount_redemptions
+                   WHERE code_id = (SELECT id FROM discount_codes WHERE code = '__INV-GIFT10')),
+                 2,
+                 'the same customer may redeem one code against two orders');
 
 -- ==========================================================================
 -- 7. THE CONFIG SHELF — one config to one order, and only once

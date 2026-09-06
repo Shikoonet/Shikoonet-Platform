@@ -43,6 +43,8 @@ export type DiscountRefusal =
   | 'ALREADY_USED'
   | 'NOT_FOR_THIS'
   | 'NOT_FOR_YOU'
+  /** Switched off by an admin. Distinct from EXPIRED, which is a date. */
+  | 'DISABLED'
   | 'FIRST_PURCHASE_ONLY';
 
 export interface DiscountCode {
@@ -112,7 +114,8 @@ async function findCode(tx: D1DatabaseSession, typed: string) {
   return tx
     .prepare(
       `SELECT id, code, kind, amount_irr, percent, max_uses, first_purchase_only,
-              resellers_only, product_id, provider_id, expires_at, applies_to
+              resellers_only, product_id, provider_id, expires_at, applies_to,
+              uses_per_user, status, target_user_id
          FROM discount_codes
         WHERE lower(code) = ?1
         LIMIT 1`,
@@ -127,6 +130,9 @@ async function findCode(tx: D1DatabaseSession, typed: string) {
         provider_id: number | null;
         expires_at: string | null;
         applies_to: 'ALL' | 'BUY' | 'RENEW';
+        uses_per_user: number;
+        status: 'ACTIVE' | 'DISABLED';
+        target_user_id: number | null;
       }
     >();
 }
@@ -184,12 +190,30 @@ export async function checkCode(
     return { ok: false, reason: 'NOT_FOR_THIS' };
   }
   if (row.resellers_only && !isReseller) return { ok: false, reason: 'NOT_FOR_YOU' };
+  // Switched off by hand, which is not the same as expired and does not read
+  // like it to a customer: «این کد فعلا غیرفعال است» can come back on, and a
+  // date that has passed cannot.
+  if (row.status !== 'ACTIVE') return { ok: false, reason: 'DISABLED' };
+  // A code made for one person. `NOT_FOR_YOU` rather than `UNKNOWN_CODE`,
+  // deliberately: the customer typed something that exists, and telling them
+  // it does not would send them to support to ask why their friend's code
+  // «does not work».
+  if (row.target_user_id !== null && row.target_user_id !== userId) {
+    return { ok: false, reason: 'NOT_FOR_YOU' };
+  }
 
+  // How many times THIS person has used THIS code, against its own ceiling.
+  //
+  // This was `SELECT 1 ... LIMIT 1` against a UNIQUE index that made the
+  // answer structurally at most one. The index is gone (migration 0059) and
+  // the guarantee is now a count — under the same `FOR UPDATE` lock in
+  // `redeem`, which is the only place it has to hold under load. Here it is a
+  // read, so a customer is told before they tap rather than after.
   const mine = await tx
-    .prepare(`SELECT 1 FROM discount_redemptions WHERE code_id = ?1 AND user_id = ?2`)
+    .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1 AND user_id = ?2`)
     .bind(row.id, userId)
-    .first<{ '?column?': number }>();
-  if (mine) return { ok: false, reason: 'ALREADY_USED', code: row };
+    .first<{ n: number }>();
+  if ((mine?.n ?? 0) >= row.uses_per_user) return { ok: false, reason: 'ALREADY_USED', code: row };
 
   if (row.max_uses !== null) {
     const used = await tx
@@ -216,8 +240,18 @@ export async function checkCode(
   return { ok: true, code: row, discountIrr: discountFor(row, context.priceIrr) };
 }
 
-/** Why a redemption did not happen, or that it did. */
-export type Redemption = 'OK' | 'ALREADY_USED' | 'USED_UP';
+/**
+ * Why a redemption did not happen, or the row that says it did.
+ *
+ * The id is on the success arm because a redemption is now the unit of one
+ * USE, and callers that move money need to key on it. `redeemGift` keyed its
+ * wallet credit on `(code, user)` while a code could only be used once per
+ * customer; with `uses_per_user = 2` that key silently swallowed the second
+ * gift — the customer's redemption was written and their money was not.
+ */
+export type Redemption =
+  | { ok: true; redemptionId: number }
+  | { ok: false; reason: 'ALREADY_USED' | 'USED_UP' };
 
 /**
  * Spends the code.
@@ -260,28 +294,55 @@ export async function redeem(
   // nobody writes during a purchase, and the alternative is two paths through
   // here that behave differently under load.
   const code = await tx
-    .prepare(`SELECT max_uses FROM discount_codes WHERE id = ?1 FOR UPDATE`)
+    .prepare(`SELECT max_uses, uses_per_user FROM discount_codes WHERE id = ?1 FOR UPDATE`)
     .bind(codeId)
-    .first<{ max_uses: number | null }>();
-  if (code === null) return 'ALREADY_USED';
+    .first<{ max_uses: number | null; uses_per_user: number }>();
+  if (code === null) return { ok: false, reason: 'ALREADY_USED' };
 
   if (code.max_uses !== null) {
     const used = await tx
       .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1`)
       .bind(codeId)
       .first<{ n: number }>();
-    if ((used?.n ?? 0) >= code.max_uses) return 'USED_UP';
+    if ((used?.n ?? 0) >= code.max_uses) return { ok: false, reason: 'USED_UP' };
   }
+
+  // The per-user ceiling, counted under the lock taken above.
+  //
+  // Until migration 0059 this was a UNIQUE index on `(code_id, user_id)` and
+  // therefore structural: no count could disagree with it. It is a count now,
+  // and the only reason that is safe is the `FOR UPDATE` two lines up — two
+  // taps arriving together serialise on the code's row, so the second one
+  // counts a set the first has already committed to. Exactly the argument
+  // `max_uses` above rests on, and the same test shape proves it.
+  const mine = await tx
+    .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1 AND user_id = ?2`)
+    .bind(codeId, userId)
+    .first<{ n: number }>();
+  if ((mine?.n ?? 0) >= code.uses_per_user) return { ok: false, reason: 'ALREADY_USED' };
 
   const done = await tx
     .prepare(
+      // Once per ORDER, not once per user — see migration 0059. `handleOrder`
+      // calls this on every tap of «سفارش», including taps that land back on
+      // an order the customer already has, and absorbing those is what this
+      // conflict clause is for. A code with `uses_per_user = 2` must not spend
+      // the second use on the invoice the customer is already looking at.
+      //
+      // The gift path passes no order and the partial index does not cover it;
+      // its ceiling is the count above, under the same lock.
       `INSERT INTO discount_redemptions (code_id, user_id, order_id, amount_irr)
        VALUES (?1, ?2, ?3, ?4)
-       ON CONFLICT (code_id, user_id) DO NOTHING`,
+       ON CONFLICT (code_id, order_id) WHERE order_id IS NOT NULL DO NOTHING
+       RETURNING id`,
     )
     .bind(codeId, userId, orderId, amountIrr)
-    .run();
-  return done.meta.changes > 0 ? 'OK' : 'ALREADY_USED';
+    .first<{ id: number }>();
+  // No row back means the conflict clause absorbed it: this order already
+  // carries this code, which is a repeated tap rather than a second use.
+  return done === null
+    ? { ok: false, reason: 'ALREADY_USED' }
+    : { ok: true, redemptionId: Number(done.id) };
 }
 
 /**
@@ -336,6 +397,16 @@ export async function redeemGift(
     return { ok: false, reason: 'EXPIRED' };
   }
   if (row.resellers_only && !isReseller) return { ok: false, reason: 'NOT_FOR_YOU' };
+  // The same two checks `checkCode` makes, and they have to be repeated
+  // because this path does not go through it — a gift is not a discount on
+  // anything, so it has its own reading of the same row. Repeated rather than
+  // shared: the two functions disagree about `applies_to`, `product_id` and
+  // every other purchase-shaped field, and folding them together to save four
+  // lines would mean one of them starts enforcing rules that do not apply.
+  if (row.status !== 'ACTIVE') return { ok: false, reason: 'DISABLED' };
+  if (row.target_user_id !== null && row.target_user_id !== userId) {
+    return { ok: false, reason: 'NOT_FOR_YOU' };
+  }
 
   const amountIrr = row.amount_irr ?? 0;
   // Production holds a gift code with a NULL price — `15off`, which credits
@@ -348,14 +419,24 @@ export async function redeemGift(
   // disagree with the one that matters — and the reason it can disagree is a
   // race that cost a shop a duplicate gift.
   const spent = await redeem(tx, row.id, userId, null, amountIrr);
-  if (spent !== 'OK') return { ok: false, reason: spent };
+  if (!spent.ok) return { ok: false, reason: spent.reason };
   await tx
     .prepare(
+      // Keyed on the REDEMPTION, not on `(code, user)`.
+      //
+      // It was `gift:<code>:<user>`, which was exactly right while a code could
+      // only be used once per customer — and became a silent money bug the
+      // moment `uses_per_user` could be 2: the second redemption was written,
+      // this insert hit the first one's key, did nothing, and the customer was
+      // told their gift had been applied while their wallet did not move.
+      //
+      // One redemption is one use is one credit, and the id is the only thing
+      // that says so.
       `INSERT INTO wallet_entries (user_id, amount_irr, kind, note, idempotency_key)
        VALUES (?1, ?2, 'GIFT_CODE', ?3, ?4)
        ON CONFLICT (idempotency_key) DO NOTHING`,
     )
-    .bind(userId, amountIrr, `gift code ${row.code}`, `gift:${row.id}:${userId}`)
+    .bind(userId, amountIrr, `gift code ${row.code}`, `gift:redemption:${spent.redemptionId}`)
     .run();
   return { ok: true, amountIrr };
 }

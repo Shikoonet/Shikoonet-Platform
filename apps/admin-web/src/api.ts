@@ -1083,7 +1083,19 @@ export interface DiscountItem {
   provider: { id: number; name: string | null } | null;
   expiresAt: string | null;
   createdAt: string;
-  state: 'USABLE' | 'EXPIRED' | 'USED_UP';
+  /** How many times ONE customer may use it. 1 until migration 0059. */
+  usesPerUser: number;
+  /** The admin's switch. Not the same question as `state` — see below. */
+  status: 'ACTIVE' | 'DISABLED';
+  /** Set when the code works for exactly one customer. */
+  targetUser: { id: number; telegramId: number | null; username: string | null } | null;
+  /**
+   * What the code can do right now, derived server-side.
+   *
+   * `DISABLED` outranks the other three: a paused code that is also expired
+   * reads as paused, because pausing is the thing an admin can undo.
+   */
+  state: 'USABLE' | 'EXPIRED' | 'USED_UP' | 'DISABLED';
 }
 
 export interface RedemptionRow {
@@ -2295,6 +2307,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     });
+  },
+
+  setDiscountStatus(id: number, status: 'ACTIVE' | 'DISABLED') {
+    return req<{ ok: boolean; changed: boolean; discount: DiscountItem }>(
+      `/discounts/${id}/status`,
+      { method: 'POST', body: JSON.stringify({ status }) },
+    );
   },
 
   expireDiscount(id: number) {

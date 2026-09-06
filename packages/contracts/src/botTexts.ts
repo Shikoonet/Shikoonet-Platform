@@ -1478,6 +1478,16 @@ export const TEXTS = {
     screen: 'discount',
     hint: 'کدی که به مشتری دیگری بسته است',
   },
+  // Distinct from EXPIRED, and the wording carries the difference: a date that
+  // has passed is final, a switch an admin turned off can come back. A
+  // customer told «مهلتش تمام شده» about a code that is merely paused writes
+  // to support; one told «فعلا غیرفعال است» waits.
+  DISCOUNT_REFUSED_DISABLED: {
+    default: '❌ این کد فعلاً غیرفعال است.',
+    placeholders: [],
+    screen: 'discount',
+    hint: 'کدی که ادمین موقتاً خاموشش کرده',
+  },
   DISCOUNT_REFUSED_FIRST_PURCHASE_ONLY: {
     default: '❌ این کد فقط برای اولین خرید است.',
     placeholders: [],

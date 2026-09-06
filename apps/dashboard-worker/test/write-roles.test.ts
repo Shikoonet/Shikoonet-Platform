@@ -403,6 +403,13 @@ describe('every write route, asked directly', () => {
     // phrase, and the phrase is this environment's own `ENV_NAME` as the
     // SERVER read it at boot, never echoed back to the caller. The preview
     // beside it is a GET and does not appear here.
-    expect(writeRoutes().length).toBe(153);
+    //
+    // +1, «POST /discounts/:id/status». Switches a discount code off and back
+    // on. ADMIN-only like every other write on this screen: it decides whether
+    // a code takes money off an invoice, which is the same blast radius as
+    // creating one. It is the only write here that is REVERSIBLE — expiring a
+    // code rewrites when it ended and cannot be undone — and that is why the
+    // screen does not ask «مطمئنی؟» before it, unlike delete.
+    expect(writeRoutes().length).toBe(154);
   });
 });

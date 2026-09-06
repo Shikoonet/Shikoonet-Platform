@@ -375,3 +375,152 @@ describe('GET /api/v1/admin/discounts/:id/redemptions', () => {
     expect(body.items[0]!.telegramId).toBeGreaterThanOrEqual(TG_BASE);
   });
 });
+
+describe('the per-user ceiling and the customer a code is aimed at', () => {
+  it('defaults to once per customer, which is what every code did before', async () => {
+    // The form does not have to send it, and a form that does not send it must
+    // not change what a shop has been making for a year.
+    const res = await create(gift(`${PREFIX}_default`));
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { discount: { id: number; usesPerUser: number } };
+    expect(body.discount.usesPerUser).toBe(1);
+  });
+
+  it('stores a higher ceiling and reports it back', async () => {
+    const res = await create(gift(`${PREFIX}_two`, { usesPerUser: 2 }));
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { discount: { id: number; usesPerUser: number } };
+    expect(body.discount.usesPerUser).toBe(2);
+
+    const row = await baseEnv.DB.prepare(
+      `SELECT uses_per_user FROM discount_codes WHERE id = ?1`,
+    )
+      .bind(body.discount.id)
+      .first<{ uses_per_user: number }>();
+    expect(row?.uses_per_user).toBe(2);
+  });
+
+  it('refuses zero, which would be a code nobody can use', async () => {
+    expect((await create(gift(`${PREFIX}_zero`, { usesPerUser: 0 }))).status).toBe(400);
+  });
+
+  it('aims a code at a customer by their telegram id', async () => {
+    const userId = await makeUser();
+    const tg = await baseEnv.DB.prepare(`SELECT telegram_id FROM users WHERE id = ?1`)
+      .bind(userId)
+      .first<{ telegram_id: number }>();
+
+    const res = await create(gift(`${PREFIX}_mine`, { targetTelegramId: Number(tg!.telegram_id) }));
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      discount: { targetUser: { id: number; telegramId: number } | null };
+    };
+    expect(body.discount.targetUser?.id).toBe(userId);
+    expect(body.discount.targetUser?.telegramId).toBe(Number(tg!.telegram_id));
+  });
+
+  it('refuses a telegram id that has never opened the bot', async () => {
+    // Resolved rather than stored as typed: a code aimed at somebody who does
+    // not exist is a code that silently works for nobody, and the screen would
+    // have no way to show that.
+    const res = await create(gift(`${PREFIX}_ghost`, { targetTelegramId: 111_222_333_444 }));
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: 'unknown_customer' });
+  });
+});
+
+describe('switching a code off and on', () => {
+  async function makeCode(code: string, extra: Record<string, unknown> = {}): Promise<number> {
+    const res = await create(gift(code, extra));
+    const body = (await res.json()) as { discount: { id: number } };
+    return body.discount.id;
+  }
+
+  async function setStatus(id: number, status: string, email = ADMIN) {
+    return app.request(
+      `/api/v1/admin/discounts/${id}/status`,
+      { method: 'POST', body: JSON.stringify({ status }) },
+      envAs(email),
+    );
+  }
+
+  it('reports a switched-off code as DISABLED rather than usable', async () => {
+    const id = await makeCode(`${PREFIX}_off`);
+    const res = await setStatus(id, 'DISABLED');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { changed: boolean; discount: { state: string } };
+    expect(body.changed).toBe(true);
+    expect(body.discount.state).toBe('DISABLED');
+  });
+
+  it('says DISABLED even when the code is also expired', async () => {
+    // Pausing is the reversible one, so it is the word an operator needs to
+    // see: «منقضی» on something they can switch back on would send them
+    // looking for a way to change a date they never set.
+    const id = await makeCode(`${PREFIX}_offexp`, {
+      expiresAt: new Date(Date.now() - 86_400_000).toISOString(),
+    });
+    await setStatus(id, 'DISABLED');
+
+    const list = await app.request(
+      `/api/v1/admin/discounts?q=${PREFIX}_offexp`,
+      {},
+      envAs(ADMIN),
+    );
+    const body = (await list.json()) as { items: { state: string }[] };
+    expect(body.items[0]?.state).toBe('DISABLED');
+  });
+
+  it('turns it back on, which expiring can never do', async () => {
+    const id = await makeCode(`${PREFIX}_backon`);
+    await setStatus(id, 'DISABLED');
+    const res = await setStatus(id, 'ACTIVE');
+    const body = (await res.json()) as { discount: { state: string; status: string } };
+    expect(body.discount.status).toBe('ACTIVE');
+    expect(body.discount.state).toBe('USABLE');
+  });
+
+  it('says nothing changed when it is already there', async () => {
+    const id = await makeCode(`${PREFIX}_noop`);
+    const res = await setStatus(id, 'ACTIVE');
+    expect(((await res.json()) as { changed: boolean }).changed).toBe(false);
+
+    const audits = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM audit_logs WHERE action = 'discount.status'`,
+    ).first<{ n: number }>();
+    // And no audit row saying somebody did something they did not do.
+    expect(audits?.n).toBe(0);
+  });
+
+  it('writes an audit row when it does change', async () => {
+    const id = await makeCode(`${PREFIX}_audited`);
+    await setStatus(id, 'DISABLED');
+    const audit = await baseEnv.DB.prepare(
+      `SELECT action, entity_id, before_json, after_json FROM audit_logs
+        WHERE action = 'discount.status' LIMIT 1`,
+    ).first<{ action: string; entity_id: string; before_json: string; after_json: string }>();
+    expect(audit?.entity_id).toBe(String(id));
+    expect(audit?.before_json).toContain('ACTIVE');
+    expect(audit?.after_json).toContain('DISABLED');
+  });
+
+  it('refuses a reviewer', async () => {
+    const id = await makeCode(`${PREFIX}_rev`);
+    expect((await setStatus(id, 'DISABLED', REVIEWER)).status).toBe(403);
+
+    const row = await baseEnv.DB.prepare(`SELECT status FROM discount_codes WHERE id = ?1`)
+      .bind(id)
+      .first<{ status: string }>();
+    // A 403 that wrote anyway is what this is really checking.
+    expect(row?.status).toBe('ACTIVE');
+  });
+
+  it('refuses a status that is not one of the two', async () => {
+    const id = await makeCode(`${PREFIX}_bogus`);
+    expect((await setStatus(id, 'PAUSED_MAYBE')).status).toBe(400);
+  });
+
+  it('refuses a code that does not exist', async () => {
+    expect((await setStatus(99_999_999, 'DISABLED')).status).toBe(404);
+  });
+});
