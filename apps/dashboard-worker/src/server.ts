@@ -72,6 +72,11 @@ const PASSTHROUGH = [
   // import screen says it is not configured instead of listing nothing.
   'IMPORT_DIR',
   'IMPORT_MYSQL_URL',
+  // Whose panel this is. Unset on our own boxes, which keep reading
+  // «شیکو»; a reseller sets it once in their stack's env and the same
+  // image draws their name. See `brand.ts` for why it is not a build-time
+  // variable.
+  'BRAND_NAME',
 ] as const satisfies readonly (keyof Env)[];
 
 export function buildEnv(db: Env['DB']): Env {

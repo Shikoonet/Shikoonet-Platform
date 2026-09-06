@@ -26,6 +26,7 @@ import {
 } from '@shikoo/domain';
 import { parseSms, normalizeText } from '@shikoo/sms-parser';
 import {
+  brandName,
   generateApiToken,
   sha256Hex,
   tokenPrefix,
@@ -129,6 +130,15 @@ export interface Env {
    * badge, the origin check, the cookie's Secure flag and the bypass refusal.
    */
   ENV_NAME?: EnvName;
+  /**
+   * Whose panel this is, drawn in the header, the sidebar, the sign-in card
+   * and the browser tab.
+   *
+   * Read at run time and served to the page, so one image can carry every
+   * installation — a reseller sets this in their own stack and the bundle is
+   * unchanged. Unset means «شیکو»; see `brand.ts` for the whole argument.
+   */
+  BRAND_NAME?: string;
   // Injected at deploy time by scripts/release.sh via `wrangler deploy --var`,
   // because dev and production share one SPA bundle and one source tree.
   APP_VERSION?: string;
@@ -249,6 +259,12 @@ app.use('*', async (c, next) => {
   // no cookie and never will be. It reveals nothing.
   if (c.req.path === '/api/v1/health') return next();
 
+  // Whose panel this is. The sign-in card draws this name, so it has to answer
+  // before there is a session — a brand behind the gate is a reseller's front
+  // door still reading ours. It reveals only the name printed across a page
+  // anybody can already open.
+  if (c.req.path === '/api/v1/brand') return next();
+
   const ident = await identityFor(c.env, sessionCookie(c));
   if (!ident) return c.json({ ok: false, error: 'unauthorized' }, 401);
 
@@ -311,6 +327,20 @@ app.get('/api/v1/health', (c) => c.json({ ok: true }));
 // claim it matched. `/health` is deliberately public: the container's own probe
 // calls it and it reveals nothing. This reveals which commit is running, and an
 // operator is the only one with a reason to ask.
+/**
+ * Whose panel this is — the one thing the page needs before anybody signs in.
+ *
+ * Public, and it is the only unauthenticated route besides `/health`. The
+ * sign-in card draws this name, so it cannot sit behind the session gate; and
+ * it reveals nothing, because it is the name printed across the page anybody
+ * can already open.
+ *
+ * Not folded into `/health`: that is the container's own probe and its job is
+ * to stay boring. Not folded into `/version` either — that one is behind the
+ * gate on purpose, and this has to be readable before there is a session.
+ */
+app.get('/api/v1/brand', (c) => c.json({ ok: true, name: brandName(c.env.BRAND_NAME) }));
+
 app.get('/api/v1/version', (c) =>
   c.json({
     ok: true,

@@ -3,7 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>پنل مدیریت شیکو</title>
+    <!-- No brand here on purpose: this file is static and one bundle serves
+         every installation, so the name is stamped by `main.tsx` once the
+         server has said what it is. See `brand.ts`. -->
+    <title>پنل مدیریت</title>
     <!--
       The payment hub's theme bootstrap used to run here — an inline script that
       read `localStorage` and stamped `data-theme` before first paint. It is gone

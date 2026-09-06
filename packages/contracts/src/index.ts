@@ -6,6 +6,7 @@
  * custom headers or signed requests, so the bearer token lives in the body.
  */
 
+export * from './brand.js';
 export * from './env.js';
 export * from './device-auth.js';
 export * from './money.js';
