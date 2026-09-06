@@ -188,6 +188,8 @@ export interface PlanRow {
   };
   provider: PanelRef | null;
   categoryName: string | null;
+  /** `product_categories.active` — what `whyNotSellable` needs to see a switched-off category. */
+  categoryActive: boolean | null;
   ordersCount: number;
 }
 

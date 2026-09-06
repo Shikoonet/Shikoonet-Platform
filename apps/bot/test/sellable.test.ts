@@ -59,6 +59,7 @@ async function makeShop(
     capacity?: number | null;
     liveSubscriptions?: number;
     withPanel?: boolean;
+    categoryActive?: boolean;
   } = {},
 ): Promise<Shop> {
   const withPanel = opts.withPanel ?? true;
@@ -99,8 +100,10 @@ async function makeShop(
   }
 
   const category = await db
-    .prepare(`INSERT INTO product_categories (name, sort_order) VALUES (?1, 0) RETURNING id`)
-    .bind(`${PREFIX}${label}`)
+    .prepare(
+      `INSERT INTO product_categories (name, sort_order, active) VALUES (?1, 0, ?2) RETURNING id`,
+    )
+    .bind(`${PREFIX}${label}`, opts.categoryActive ?? true)
     .first<{ id: number }>();
   const categoryId = Number(category!.id);
 
@@ -135,11 +138,13 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
   const row = await db
     .prepare(
       `SELECT pl.status AS plan_status, p.status AS product_status,
+              cat.name AS category_name, cat.active AS category_active,
               pr.name AS panel_name, pr.status AS panel_status, pr.capacity,
               (SELECT COUNT(*)::int FROM subscriptions s
                 WHERE s.provider_id = pr.id AND s.status IN ('ACTIVE','ON_HOLD')) AS live
          FROM product_plans pl
          JOIN products p ON p.id = pl.product_id
+         LEFT JOIN product_categories cat ON cat.id = p.category_id
          LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
         WHERE pl.id = ?1`,
     )
@@ -147,6 +152,8 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
     .first<{
       plan_status: string;
       product_status: string;
+      category_name: string | null;
+      category_active: boolean | null;
       panel_name: string | null;
       panel_status: string | null;
       capacity: number | null;
@@ -155,6 +162,10 @@ async function factsOf(shop: Shop): Promise<SellableFacts> {
   return {
     planStatus: row!.plan_status,
     productStatus: row!.product_status,
+    category:
+      row!.category_active === null
+        ? null
+        : { name: row!.category_name!, active: row!.category_active },
     panel:
       row!.panel_status === null
         ? null
@@ -206,6 +217,43 @@ async function botOffers(categoryId: number): Promise<boolean> {
 }
 
 /**
+ * What happens when a customer presses a `plan:` button they already have.
+ *
+ * `botOffers` above asks the LIST, and a list that hides a row is not the same
+ * guarantee as a gate that refuses one. Every message this bot has ever sent
+ * stays in the customer's chat, so «switched the category off» has to mean the
+ * button in a month-old message stops working too — otherwise the operator
+ * turned off a shelf and kept selling from it, which is the whole bug.
+ *
+ * Returns whether the bot answered with something to buy. `purchasablePlan`
+ * re-applies `PURCHASABLE`, so a refusal draws no order screen at all.
+ */
+async function botSellsPlanDirectly(planId: number): Promise<boolean> {
+  const { updateId, telegramId } = ids();
+  await handleUpdate(db, {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      from: { id: telegramId, username: `sl${telegramId}` },
+      chat: { id: telegramId },
+      text: '/start',
+    },
+  });
+  const shown = await handleUpdate(db, {
+    update_id: updateId + 1,
+    callback_query: {
+      id: `cq-${updateId}`,
+      from: { id: telegramId, username: `sl${telegramId}` },
+      message: { message_id: updateId, chat: { id: telegramId } },
+      data: `plan:${planId}`,
+    },
+  });
+  return (shown.replies[0]?.keyboard ?? [])
+    .flat()
+    .some((b) => /^order:/.test(b.callback_data ?? ''));
+}
+
+/**
  * The whole assertion, in one place: what the dashboard would say, and what the
  * customer actually got.
  */
@@ -236,6 +284,40 @@ describe('what the dashboard says is on sale, and what the bot sells', () => {
     const shop = await makeShop('ok');
     expect(await agree(shop)).toEqual({ dashboard: true, bot: true });
     expect(whyNotSellable(await factsOf(shop))).toEqual([]);
+  });
+
+  it('agrees a switched-off category takes everything under it off sale', async () => {
+    // The gap this case closes was the other way round from the panel one: the
+    // BOT was the screen that lied. `PURCHASABLE` did not read `cat.active`, so
+    // the order gate kept selling a category the operator had switched off —
+    // and `whyNotSellable`, which is supposed to restate `PURCHASABLE`, had no
+    // opinion about categories at all. Both sides moved for this test.
+    const shop = await makeShop('cat-off', { categoryActive: false });
+    expect(await agree(shop)).toEqual({ dashboard: false, bot: false });
+    expect(whyNotSellable(await factsOf(shop))).toEqual([
+      { kind: 'CATEGORY_OFF', category: `${PREFIX}cat-off` },
+    ]);
+  });
+
+  it('refuses the button a customer is already holding, not just the list', async () => {
+    /**
+     * The path the list test cannot reach. `cat:` proves the shelf is hidden;
+     * this presses `plan:<id>` the way a customer scrolling back through their
+     * own chat does, and that is the request that takes money.
+     *
+     * Both halves are asserted on purpose. A gate that refuses everything would
+     * pass the first line and be a shop that sells nothing, so the same plan is
+     * bought again with the category switched back on — which is also the exact
+     * thing an operator does when they realise they turned off the wrong one.
+     */
+    const off = await makeShop('stale-off', { categoryActive: false });
+    expect(await botSellsPlanDirectly(off.planId)).toBe(false);
+
+    await db
+      .prepare(`UPDATE product_categories SET active = TRUE WHERE id = ?1`)
+      .bind(off.categoryId)
+      .run();
+    expect(await botSellsPlanDirectly(off.planId)).toBe(true);
   });
 
   it('agrees a switched-off panel takes its catalogue with it', async () => {
