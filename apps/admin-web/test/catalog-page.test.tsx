@@ -46,6 +46,7 @@ function service(
     kind: 'vpn',
     status: 'ACTIVE',
     description: null,
+    deliveryNote: null,
     sortOrder: id,
     categoryId: null,
     categoryName: null,
