@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * کانال‌های اجباری — the channels a customer must join before the shop will
  * talk to them.
@@ -81,7 +82,7 @@ const shape = (r: ChannelRow) => ({
 });
 
 export function registerChannelRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   app.get('/api/v1/admin/required-channels', async (c) => {
     const rows = await c.env.DB.prepare(

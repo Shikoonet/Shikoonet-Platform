@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * Who may use the panel, and who may use the bot's admin screens.
  *
@@ -150,7 +151,7 @@ async function lockingSurvivors<T>(
 }
 
 export function registerAdminAccessRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   /**
    * Who the caller is, according to the door they came through.

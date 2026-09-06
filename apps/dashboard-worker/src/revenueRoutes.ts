@@ -81,6 +81,7 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
+import type { EnvName } from '@shikoo/contracts';
 import { jalaliPeriodLabel, nextJalaliDue } from '@shikoo/contracts';
 import { parseStatsDay, parseStatsRange, statsRangeBounds } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
@@ -571,7 +572,7 @@ const KIND_FA: Record<Kind, string> = {
 };
 
 export function registerRevenueRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   // --- categories ---------------------------------------------------------
   //

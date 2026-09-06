@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * Banks: which one issued a card number, and which one sent an SMS.
  *
@@ -174,7 +175,7 @@ const PatternBody = z
   .strict();
 
 export function registerBankRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   // --- card prefixes ------------------------------------------------------
 

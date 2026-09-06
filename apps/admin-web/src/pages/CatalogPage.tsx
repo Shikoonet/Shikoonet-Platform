@@ -118,8 +118,19 @@ export function CatalogPage() {
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [q, setQ] = useState('');
-  const [typed, setTyped] = useState('');
+  /*
+   * The search box, seeded from `?q=` so this screen has an address.
+   *
+   * «محصولات» links here for a service it can name a problem with and not
+   * repair, and the same shape already existed one screen over — `PanelsPage`
+   * sends `?providerId=` and this file's own `ProductsPage` reads it. Reusing
+   * the search box means the deep link needs nothing on this side except the
+   * two initialisers: no second notion of «which service is selected» to keep
+   * in step with the filter that is already here.
+   */
+  const initialQ = new URLSearchParams(window.location.search).get('q') ?? '';
+  const [q, setQ] = useState(initialQ);
+  const [typed, setTyped] = useState(initialQ);
   const [status, setStatus] = useState('');
   const [panelId, setPanelId] = useState('');
   const [err, setErr] = useState<string | null>(null);
