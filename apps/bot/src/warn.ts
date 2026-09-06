@@ -201,6 +201,7 @@ export async function warnExpiringServices(
     : null;
 
   let warned = 0;
+  const warnedByReason: Record<string, number> = { time: 0, volume: 0, unused: 0 };
 
   for (const row of results ?? []) {
     // Claim the warning and record the message in one transaction, guarded on
@@ -259,7 +260,17 @@ export async function warnExpiringServices(
       }
       return queued;
     });
-    if (claimed) warned += 1;
+    if (claimed) {
+      warned += 1;
+      warnedByReason[row.reason] = (warnedByReason[row.reason] ?? 0) + 1;
+    }
+  }
+
+  // Per reason, so the panel can show three separate «last acted» times for
+  // what is one sweep here and three jobs on the screen. `poll.ts` deliberately
+  // does not label this sweep with a single job key for the same reason.
+  for (const [reason, count] of Object.entries(warnedByReason)) {
+    if (count > 0) log.info('sweep.acted', { job: `warn_${reason}`, count });
   }
 
   return warned;
