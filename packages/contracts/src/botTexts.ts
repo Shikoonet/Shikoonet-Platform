@@ -1673,6 +1673,36 @@ export const TEXTS = {
     screen: 'warnings',
     hint: 'فقط وقتی آیدی پشتیبانی در تنظیمات پر باشد',
   },
+  // The two sentences that follow a removal, and the only messages in this
+  // project that report something taken away rather than something ending.
+  // Mirzabot's own wording (`notifServiceDeleted`, `notifServiceDeleted2`) says
+  // only that the service was deleted; ours says why, because a customer whose
+  // account vanished with no reason writes to support and one who is told
+  // «۳۰ روز از انقضایش گذشته بود» does not.
+  CRON_SERVICE_REMOVED: {
+    default:
+      '🗑 سرویس «{service}» از پنل حذف شد.\n\n{days} روز از تاریخ انقضایش گذشته بود. برای گرفتن سرویس تازه از منوی خرید اقدام کنید.',
+    placeholders: ['service', 'days'],
+    screen: 'warnings',
+    hint: 'وقتی سرویس منقضی بعد از مهلتِ حذف از پنل پاک می‌شود',
+  },
+  CRON_SERVICE_REMOVED_VOLUME: {
+    default:
+      '🗑 سرویس «{service}» از پنل حذف شد.\n\nحجمش تمام شده بود و {days} روز از آخرین اتصال‌تان گذشته بود. برای گرفتن سرویس تازه از منوی خرید اقدام کنید.',
+    placeholders: ['service', 'days'],
+    screen: 'warnings',
+    hint: 'وقتی سرویسِ حجم‌تمام‌شده بعد از مهلتِ حذف از پنل پاک می‌شود',
+  },
+  // Nobody's service is touched by this one — it goes to a person who has
+  // never bought anything. Mirzabot has the same audience (`admin.php:1247`,
+  // `nonecustomer`) but no cron for it: an admin presses a button.
+  NUDGE_NEVER_BOUGHT: {
+    default:
+      '👋 سلام!\n\nمدتی پیش ربات را استارت کردید ولی هنوز خریدی نکرده‌اید. اگر سؤالی هست یا در انتخاب سرویس کمک می‌خواهید، همین‌جا بپرسید.',
+    placeholders: [],
+    screen: 'warnings',
+    hint: 'یک بار به هر کسی که استارت کرده و بعد از N روز نخریده',
+  },
   // --- ضد-اسپم ---------------------------------------------------------------
   // `index.php:307` — ۳۵ پیام در یک دقیقه و کاربر مسدود می‌شود. متن مشتری از
   // `users.spam.spamedMessage` لگاسی می‌آید و متن کانال از `spamedReport`.

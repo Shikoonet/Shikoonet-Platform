@@ -19,6 +19,9 @@ import { provisionPaidOrders } from './provision.js';
 import { syncSubscriptions, SYNC_INTERVAL_MS } from './sync.js';
 import { downgradeExpired } from './downgrade.js';
 import { warnExpiringServices } from './warn.js';
+import { removeFinishedServices } from './remove.js';
+import { nudgeNeverBought } from './nudge.js';
+import type { CronJobKey } from '@shikoo/contracts';
 import { expireUnpaidOrders } from './expire.js';
 import {
   claimBroadcastBatch,
@@ -410,9 +413,17 @@ async function answer(api: TelegramApi, update: TelegramUpdate): Promise<void> {
  * the transaction that earns it, and `flush` delivers with retries — so this is
  * only error containment.
  */
-async function sweep(name: string, produce: () => Promise<number>): Promise<void> {
+async function sweep(name: string, produce: () => Promise<number>, job?: CronJobKey): Promise<void> {
   try {
-    await produce();
+    const did = await produce();
+    // Recorded only when the sweep ACTED.
+    //
+    // «آخرین اجرا» on the panel would be a row every 25 seconds per job —
+    // roughly 27,000 a day for eight jobs, all of them saying «nothing was
+    // due». What an operator is actually asking is «is this thing working»,
+    // and the honest answer to that is when it last did something. The panel
+    // labels it as such rather than as a run time.
+    if (did > 0 && job !== undefined) log.info('sweep.acted', { job, count: did });
   } catch (err) {
     log.error('sweep.failed', { sweep: name, will_retry: true }, err);
   }
@@ -757,6 +768,10 @@ export async function run(
       }
       // After the sync, so a service is warned about the volume the panel
       // reports rather than the figure from ten minutes ago.
+      // Three registry jobs in one sweep, so it reports its own breakdown
+      // rather than being labelled with a single key — `warnExpiringServices`
+      // logs `sweep.acted` per reason. Passing one job here would put all
+      // three warnings' last-acted time on whichever key was named.
       await sweep('warning about services running out', () => warnExpiringServices(db));
       // After the warning, and the order matters: a customer is told their
       // service is running out BEFORE anything is done to it. It also does
@@ -769,7 +784,32 @@ export async function run(
       // Last, because it is the only sweep that closes something rather than
       // advancing it, and an order settled or delivered earlier in this same
       // cycle must have moved out of AWAITING_PAYMENT before this looks.
-      await sweep('expiring unpaid orders', () => expireUnpaidOrders(db));
+      await sweep('expiring unpaid orders', () => expireUnpaidOrders(db), 'expire_orders');
+      // The two that delete an account from a panel.
+      //
+      // After the sync, because both read `panel_status` and `panel_online_at`
+      // and a stale verdict is the one input that could make them remove a
+      // service the panel has since brought back. After the warnings for the
+      // ordinary reason: a customer hears their service is ending before
+      // anything happens to it.
+      //
+      // Both are off by default and return before touching the database when
+      // they are, so on every shop that has not turned them on this is two
+      // cached settings reads a cycle.
+      await sweep(
+        'removing expired services from panels',
+        async () => (await removeFinishedServices(db, 'expired')).removed,
+        'remove_expired',
+      );
+      await sweep(
+        'removing volume-exhausted services from panels',
+        async () => (await removeFinishedServices(db, 'volume')).removed,
+        'remove_volume',
+      );
+      // The nudge, after everything that concerns paying customers. It is the
+      // only sweep whose audience never gave us money, so it queues behind
+      // every message somebody is actually waiting for.
+      await sweep('nudging people who never bought', () => nudgeNeverBought(db));
       // Yesterday's numbers, once. Cheap on the ~3,400 cycles a day that have
       // nothing to do — it asks whether the report exists before it builds one,
       // which is a primary-key hit against six aggregate queries.

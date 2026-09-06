@@ -1498,3 +1498,70 @@ button.cat-card--new:hover {
 .statsbar__dates {
   gap: 16px;
 }
+
+/* ---------- کرون‌جاب‌ها ----------
+
+   The two destructive jobs are the whole reason this screen has styles of its
+   own. They sit in a block with its own border and heading, so an operator
+   scanning a column of identical switches cannot flip «delete customer
+   accounts» thinking it was another warning. */
+.cron-list,
+.cron-danger {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cron-danger {
+  margin-block-start: 28px;
+  padding: 16px;
+  border: 1px solid var(--danger, #b3261e);
+  border-radius: var(--radius-lg);
+}
+.cron-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.cron-card-danger {
+  border-color: var(--danger, #b3261e);
+}
+.cron-switch,
+.cron-dryrun {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.cron-dryrun {
+  align-items: flex-start;
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+.cron-number {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-block-start: 12px;
+}
+.cron-number input {
+  inline-size: 7rem;
+}
+.cron-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-block-start: 14px;
+}
+.cron-note {
+  margin-block-start: 10px;
+  font-size: 12.5px;
+}
+.cron-note-danger {
+  color: var(--danger, #b3261e);
+  font-weight: 700;
+}

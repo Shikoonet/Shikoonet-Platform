@@ -33,8 +33,18 @@ import type { D1Database } from '@shikoo/database';
 import * as menu from './menu.js';
 import { enqueue } from './notify.js';
 
-/** `cronbot/payment_expire.php`: `time() - 86400`. */
-export const ORDER_TTL_MS = 24 * 60 * 60 * 1000;
+/*
+ * The deadline is NOT here any more.
+ *
+ * It used to be `ORDER_TTL_MS = 24h`, a constant this file exported and
+ * `order.ts` imported. It is now `settings.order_ttl_hours`, read in `order.ts`
+ * at the moment an invoice is written — which is where the deadline is decided.
+ * This sweep reads `orders.expires_at` and always did; it never needed to know
+ * the length, only that the column had passed.
+ *
+ * The default is still 24 hours, which is `cronbot/payment_expire.php`'s
+ * `time() - 86400`, so nothing moved on the day it became configurable.
+ */
 
 /** A ceiling per pass, like every other sweep here. */
 const BATCH = 100;

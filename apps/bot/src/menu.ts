@@ -2284,6 +2284,44 @@ export function serviceNeverUsed(
 }
 
 /**
+ * «Your service was removed from the panel», and why.
+ *
+ * The only two messages the bot sends about something taken away rather than
+ * something ending, and the reason each one names its cause: an account that
+ * vanishes with no explanation produces a support message, and one that says
+ * «۳۰ روز از انقضایش گذشته بود» does not.
+ *
+ * `days` is a whole number the sweep already had to compute in order to select
+ * the row, so it is passed in rather than recomputed here — two readings of
+ * «how long ago» that can disagree is the shape this project keeps finding.
+ */
+/**
+ * The one message this bot sends to somebody who is not a customer.
+ *
+ * No placeholders on purpose. «۳ روز پیش استارت کردید» would be the obvious
+ * addition and it is the sentence that makes a marketing message feel watched:
+ * the shop knows what they did and when. What is being offered is help, and
+ * help does not need to prove it has been counting.
+ */
+export function neverBoughtNudge(): string {
+  return TEXTS_NOW.raw('NUDGE_NEVER_BOUGHT');
+}
+
+export function serviceRemovedExpired(serviceName: string, days: number): string {
+  return TEXTS_NOW.render('CRON_SERVICE_REMOVED', {
+    service: serviceName,
+    days: days.toLocaleString('en-US'),
+  });
+}
+
+export function serviceRemovedVolume(serviceName: string, days: number): string {
+  return TEXTS_NOW.render('CRON_SERVICE_REMOVED_VOLUME', {
+    service: serviceName,
+    days: days.toLocaleString('en-US'),
+  });
+}
+
+/**
  * What the shop's channel is told when the flood guard fires.
  *
  * The numeric id rather than the @handle: a customer who was blocked for
