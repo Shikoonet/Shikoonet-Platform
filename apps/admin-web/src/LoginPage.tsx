@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { brand } from './brand.js';
 
 interface Props {
   onSignedIn: () => void;
@@ -81,7 +82,7 @@ export function LoginPage({ onSignedIn }: Props) {
   return (
     <div className="login">
       <form className="login__card" onSubmit={submit}>
-        <div className="login__brand">شیکو</div>
+        <div className="login__brand">{brand()}</div>
         <div className="login__sub">ورود به پنل مدیریت</div>
 
         <label className="login__label" htmlFor="login-email">
