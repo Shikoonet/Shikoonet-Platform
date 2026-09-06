@@ -17,7 +17,7 @@
  * reseller. The whole shape of the reseller plan is one image and many stacks —
  * «ما یک ایمیج داریم و ده استک، نه ده فورک» — and ten bundles is ten forks
  * wearing a different hat. So the name is read at RUN time, from the
- * environment of the container that serves the page, and the same bundle серves
+ * environment of the container that serves the page, and the same bundle serves
  * every installation.
  *
  * ## Why the default is ours and not empty
@@ -58,7 +58,11 @@ export function brandName(raw: string | null | undefined): string {
     .replace(/\s+/g, ' ')
     .trim();
   if (clean === '') return DEFAULT_BRAND_NAME;
-  return clean.slice(0, MAX_BRAND_NAME);
+  // `Array.from` rather than `.slice`, for the same reason `brandMark` below
+  // uses it: `.slice` counts UTF-16 code units, so a name whose 40th character
+  // is an emoji would be cut through the middle of a surrogate pair and draw a
+  // replacement box as its last letter. The limit is a limit on CHARACTERS.
+  return Array.from(clean).slice(0, MAX_BRAND_NAME).join('');
 }
 
 /**

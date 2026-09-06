@@ -44,6 +44,21 @@ describe('brandName', () => {
     expect(brandName(long)).toHaveLength(MAX_BRAND_NAME);
   });
 
+  it('cuts at a whole character, not through the middle of one', () => {
+    // `.slice` counts UTF-16 code units, so a name whose last allowed character
+    // is an emoji comes back with half of one on the end and draws a
+    // replacement box. Built so the 40th character is the astral one: 39 plain
+    // letters, then a globe, then more that must be dropped.
+    const cut = brandName('\u0646'.repeat(MAX_BRAND_NAME - 1) + '\u{1F310}' + '\u0646'.repeat(5));
+    expect(Array.from(cut)).toHaveLength(MAX_BRAND_NAME);
+    expect(cut.endsWith('\u{1F310}')).toBe(true);
+    // And named directly: what `.slice` would have returned here, so the test
+    // says which implementation it is rejecting rather than only asserting a
+    // length that a second wrong implementation could also satisfy.
+    const byCodeUnit = '\u0646'.repeat(MAX_BRAND_NAME - 1) + '\u{1F310}' + '\u0646'.repeat(5);
+    expect(cut).not.toBe(byCodeUnit.slice(0, MAX_BRAND_NAME));
+  });
+
   it('refuses a value that is not a string at all', () => {
     // It arrives over the wire as JSON, so a number or an object is a shape the
     // page could genuinely be handed.
