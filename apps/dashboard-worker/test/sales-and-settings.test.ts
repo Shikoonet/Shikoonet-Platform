@@ -59,6 +59,47 @@ async function makeUser(): Promise<{ id: number; telegramId: number }> {
 }
 
 async function purge(): Promise<void> {
+  /*
+   * The one table this fixture cannot clean row by row.
+   *
+   * `wallet_entries` is append-only by trigger, so TRUNCATE is the only
+   * statement that empties it — and TRUNCATE takes no WHERE. That is how this
+   * line came to be unbounded while every delete beside it was being bounded,
+   * and CodeRabbit called it a major on this pull request. It was right about
+   * the danger: on a database holding an import, this removes every real
+   * customer's wallet and their whole ledger.
+   *
+   * Its proposed remedy — a bounded DELETE — is refused by the trigger itself:
+   * «wallet_entries is append-only (attempted DELETE)», reproduced against the
+   * real schema before this was written. So the statement stays and a guard
+   * goes in front of it.
+   *
+   * ## Why the guard counts USERS and not wallets
+   *
+   * Bounding on an id range was tried first, twice, and neither line holds.
+   * This suite's own window flags every sibling's fixture wallet;
+   * `FIXTURE_TG_BASE` flags them too, because suites that have not moved yet
+   * still write ids like `996100000` — which sits inside the range Telegram
+   * really issues and is indistinguishable from a customer by magnitude alone.
+   *
+   * So the question is not «whose wallet is this» but «is this a database
+   * anybody's data is in», and the repository already has a measured answer to
+   * that one: `@shikoo/seed` and `packages/migrate/test/undo.test.ts` both
+   * refuse to run past a thousand users, because production holds 11,241 and a
+   * test database holds a few dozen. One order of magnitude clear of both.
+   */
+  const NOT_A_SIMULATION = 1_000;
+  const users = await baseEnv.DB.prepare(`SELECT count(*)::int AS n FROM users`).first<{
+    n: number;
+  }>();
+  if ((users?.n ?? 0) >= NOT_A_SIMULATION) {
+    throw new Error(
+      `refusing to empty wallets: this database holds ${users?.n} users, which is not a ` +
+        `scratch database. Emptying them needs TRUNCATE because wallet_entries refuses ` +
+        `DELETE, so running here would destroy every one of them — see issue #46. ` +
+        `Point DATABASE_URL at a second, empty database and run the gate there.`,
+    );
+  }
   await baseEnv.DB.prepare(`TRUNCATE wallet_entries, wallets RESTART IDENTITY CASCADE`).run();
   // Reseller requests, orders and subscriptions used to be deleted by hand here
   // with an UNBOUNDED `telegram_id >= TG_BASE`, which reached into every suite
