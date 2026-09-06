@@ -47,6 +47,8 @@ function plan(id: number, name: string, provider: PanelRef | null, status = 'ACT
     name,
     badge: null,
     buttonStyle: null,
+    deliveryNote: null,
+    productDeliveryNote: null,
     priceIrr: 1_000_000,
     durationDays: 30,
     volumeGb: 10,
