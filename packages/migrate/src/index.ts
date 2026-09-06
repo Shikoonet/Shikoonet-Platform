@@ -32,6 +32,14 @@ export {
 } from './migrate.js';
 export { preflight, summarise, type Finding } from './preflight.js';
 export {
+  previewReset,
+  resetShopData,
+  RESET_KEEP,
+  type ResetPreview,
+  type ResetResult,
+  type TableCount,
+} from './reset.js';
+export {
   applyUndo,
   captureUndo,
   dropUndo,
