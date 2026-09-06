@@ -88,6 +88,8 @@ import {
   applyUndo,
   dropUndo,
   claimImportLock,
+  previewReset,
+  resetShopData,
   undoSchemaFor,
   DOMAINS,
   dumpSha256,
@@ -97,11 +99,22 @@ import {
   type ReportLine,
 } from '@shikoo/migrate';
 import { createLogger } from '@shikoo/domain';
+import type { EnvName } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 
 const log = createLogger('dashboard.import');
 
-type Env = { DB: D1Database; IMPORT_DIR?: string; IMPORT_MYSQL_URL?: string };
+type Env = {
+  DB: D1Database;
+  IMPORT_DIR?: string;
+  IMPORT_MYSQL_URL?: string;
+  /**
+   * The name of THIS box, as `server.ts` read it at boot with `parseEnvName`.
+   * The reset route compares the operator's typed phrase against it; nothing
+   * the browser sends can change it.
+   */
+  ENV_NAME?: EnvName;
+};
 
 /**
  * A run left RUNNING by a process that is no longer here.
@@ -131,6 +144,15 @@ const RunBody = z
     domains: z.array(z.enum(DOMAINS as unknown as [Domain, ...Domain[]])).optional(),
   })
   .strict();
+
+/**
+ * The typed confirmation a reset takes.
+ *
+ * Only the phrase — there is nothing else to send, and `.strict()` so a field
+ * somebody invents (a `force`, a `keep`) is a 400 rather than something
+ * quietly ignored on the one route where being ignored would matter most.
+ */
+const ResetBody = z.object({ confirm: z.string().min(1).max(64) }).strict();
 
 export interface DumpFile {
   name: string;
@@ -934,6 +956,170 @@ export function registerImportRoutes(app: Hono<{ Bindings: Env; Variables: { ide
       const message = err instanceof Error ? err.message : String(err);
       log.error('import.undo_failed', { runId: id, error: message });
       return c.json({ ok: false, error: 'undo_failed', detail: message }, 409);
+    } finally {
+      await pgc.end().catch(() => undefined);
+    }
+  });
+
+  /**
+   * What a reset would remove, before anything is removed.
+   *
+   * The pattern is `/accounts/:id/references` before `DELETE /accounts/:id`: a
+   * destructive button says what it will cost before it is armed, and the
+   * number is read out of the database rather than written into the screen.
+   *
+   * ADMIN even though it only reads. The answer is a table-by-table census of
+   * the whole shop — how many customers, how many orders, how much history —
+   * which is the same shape of thing the run report is ADMIN for.
+   *
+   * It deliberately does NOT return the environment's name. That is the one
+   * thing the operator has to know for themselves; see the POST below.
+   */
+  app.get('/api/v1/admin/import/reset/preview', async (c) => {
+    if (c.get('identity').role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const postgresUrl = process.env['DATABASE_URL'];
+    if (postgresUrl === undefined) {
+      return c.json({ ok: false, error: 'import_not_configured' }, 503);
+    }
+
+    const pgc = await connectPostgres(
+      configFrom({
+        mysql: { database: SCRATCH_DATABASE },
+        postgres: { connectionString: postgresUrl },
+      }),
+    );
+    try {
+      const preview = await previewReset(pgc);
+      return c.json({ ok: true, ...preview });
+    } finally {
+      await pgc.end().catch(() => undefined);
+    }
+  });
+
+  /**
+   * Empties the shop's data, keeping only what makes this installation
+   * reachable. `reset.ts` holds the list and the reasoning.
+   *
+   * ## Why it exists next to «بازگرداندن» rather than instead of it
+   *
+   * Undo takes back one run. It is the right tool and it will always be able
+   * to fail, because it DELETEs and a foreign key from a row created after the
+   * import holds a veto — `409 undo_failed`, with nothing beyond it. Sam's
+   * requirement on 2026-09-03 was a button that cannot land there: a reseller
+   * imports, works for a month, and wants a clean page for a new dump. That is
+   * `TRUNCATE … CASCADE`, which no key can refuse.
+   *
+   * ## The confirmation is the environment's own name, as the SERVER reads it
+   *
+   * The first write route on this panel to take a typed phrase, and the phrase
+   * is not «DELETE» or the shop's name — it is `ENV_NAME`, compared against
+   * `c.env.ENV_NAME`, which `server.ts` built at boot with `parseEnvName` from
+   * the process environment. Nothing the browser sends can move it, and this
+   * route never tells the caller what it is.
+   *
+   * Sam's decision, and it is the same lesson CLAUDE.md records under «روی
+   * سرور، اول بپرس این کدام محیط است»: a `uuid` in a notes file read as
+   * «dashboard» and turned out to be production. The only confirmation worth
+   * anything here is one that cannot be satisfied without first finding out
+   * which box you are standing on.
+   *
+   * ## The audit row is written after the commit, and that is not an oversight
+   *
+   * `audit_logs` is not in KEEP — it is this shop's history, telegram ids and
+   * amounts included, and a reseller handing an installation over is handing
+   * that over too. So the reset empties it, and the log then opens with the one
+   * row that says what happened to it. Written after COMMIT for exactly that
+   * reason: inside the transaction it would be truncated by the statement it
+   * is recording.
+   */
+  app.post('/api/v1/admin/import/reset', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const postgresUrl = process.env['DATABASE_URL'];
+    if (postgresUrl === undefined) {
+      return c.json({ ok: false, error: 'import_not_configured' }, 503);
+    }
+
+    const parsed = ResetBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+
+    const envName = c.env.ENV_NAME ?? process.env['ENV_NAME'];
+    if (envName === undefined || envName === '') {
+      // Nothing to compare against is not «anything matches». A box that
+      // cannot say which box it is has no business running this.
+      return c.json({ ok: false, error: 'import_not_configured' }, 503);
+    }
+    if (parsed.data.confirm.trim() !== envName) {
+      return c.json(
+        {
+          ok: false,
+          error: 'wrong_confirmation',
+          detail: 'عبارت تایید با نام این محیط یکی نیست.',
+        },
+        400,
+      );
+    }
+
+    // Read for the message; the decision is `claimImportLock` below. An import
+    // writing into the tables this truncates is the one thing that can make a
+    // reset fail, and a SELECT taken a moment earlier cannot stop it.
+    const busy = await c.env.DB.prepare(
+      `SELECT id FROM import_runs WHERE status = 'RUNNING' LIMIT 1`,
+    ).first<{ id: string }>();
+    if (busy) {
+      return c.json(
+        {
+          ok: false,
+          error: 'import_already_running',
+          detail: 'یک ایمپورت در حال اجراست؛ تا پایانش صبر کن.',
+        },
+        409,
+      );
+    }
+
+    const pgc = await connectPostgres(
+      configFrom({
+        mysql: { database: SCRATCH_DATABASE },
+        postgres: { connectionString: postgresUrl },
+      }),
+    );
+    try {
+      await pgc.query('BEGIN');
+      if (!(await claimImportLock(pgc))) {
+        await pgc.query('ROLLBACK');
+        return c.json(
+          {
+            ok: false,
+            error: 'import_already_running',
+            detail: 'یک ایمپورت در حال اجراست؛ تا پایانش صبر کن.',
+          },
+          409,
+        );
+      }
+      const result = await resetShopData(pgc);
+      await pgc.query('COMMIT');
+
+      await audit(
+        c.env.DB,
+        ident,
+        'import.reset',
+        'IMPORT_RESET',
+        envName,
+        null,
+        { removed: result.removed, total: result.total, undoSchemas: result.undoSchemas },
+        null,
+      );
+      log.info('import.reset', { total: result.total, tables: result.removed.length });
+
+      return c.json({ ok: true, removed: result.removed, total: result.total });
+    } catch (err) {
+      await pgc.query('ROLLBACK').catch(() => undefined);
+      const message = err instanceof Error ? err.message : String(err);
+      // The KEEP guard lands here, and its message names the table it caught.
+      log.error('import.reset_failed', { error: message });
+      return c.json({ ok: false, error: 'reset_failed', detail: message }, 409);
     } finally {
       await pgc.end().catch(() => undefined);
     }
