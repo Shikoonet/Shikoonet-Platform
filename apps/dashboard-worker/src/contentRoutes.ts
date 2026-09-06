@@ -1,3 +1,4 @@
+import type { EnvName } from '@shikoo/contracts';
 /**
  * بخش آموزش و برنامه‌ها — the two tables the bot reads and nobody could edit.
  *
@@ -102,7 +103,7 @@ const SELECT_ARTICLE = `SELECT id, title, category, body, media_id, sort_order, 
 const SELECT_APP = `SELECT id, name, platform, link, sort_order, active FROM client_apps`;
 
 export function registerContentRoutes(
-  app: Hono<{ Bindings: { DB: D1Database }; Variables: { identity: Ident } }>,
+  app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
   // --- آموزش ---------------------------------------------------------------
 

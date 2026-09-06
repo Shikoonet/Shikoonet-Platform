@@ -74,6 +74,7 @@ import { pipeline } from 'node:stream/promises';
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
+import type { EnvName } from '@shikoo/contracts';
 import {
   captureReport,
   configFrom,
@@ -99,21 +100,20 @@ import {
   type ReportLine,
 } from '@shikoo/migrate';
 import { createLogger } from '@shikoo/domain';
-import type { EnvName } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 
 const log = createLogger('dashboard.import');
 
 type Env = {
   DB: D1Database;
-  IMPORT_DIR?: string;
-  IMPORT_MYSQL_URL?: string;
   /**
    * The name of THIS box, as `server.ts` read it at boot with `parseEnvName`.
    * The reset route compares the operator's typed phrase against it; nothing
    * the browser sends can change it.
    */
-  ENV_NAME?: EnvName;
+  ENV_NAME: EnvName;
+  IMPORT_DIR?: string;
+  IMPORT_MYSQL_URL?: string;
 };
 
 /**

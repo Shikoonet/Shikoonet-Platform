@@ -9,10 +9,18 @@
 -- value sets `packages/migrate/src/transform.ts` declares.
 --
 -- No real name, phone number, Telegram id, card number, message, panel
--- address or credential appears. Telegram ids are negative — Telegram never
--- issues one, so a synthetic id cannot collide with a real customer even by
--- accident. Card numbers are Luhn-valid but drawn from the 0000-prefix range
--- no Iranian issuer uses. Usernames are `fixture-*`.
+-- address or credential appears. Telegram ids start at 9 000 000 000 000, far
+-- above anything Telegram issues, so a synthetic id cannot collide with a real
+-- customer even by accident. Card numbers are Luhn-valid but drawn from the
+-- 0000-prefix range no Iranian issuer uses. Usernames are `fixture-*`.
+--
+-- They were NEGATIVE until 2026-09-05, for the same non-collision reason, and
+-- that made this fixture unmigratable: `transform.ts` refuses a negative id as
+-- «not a numeric Telegram id», which is correct and is why no test ever ran the
+-- migration against this file. Issue #64 - a missing `category_id` that killed
+-- every real import on the first product - lived through weeks of green CI in
+-- that gap. A high positive id keeps the guarantee and lets the migration run.
+
 --
 -- ═══════════════════════════════════════════════════════════════════════════
 -- WHY IT EXISTS
@@ -87,24 +95,53 @@ SET FOREIGN_KEY_CHECKS = 0;
 -- preflight CASTs it. `roll_Status` and `get_gift` are tinyint(1) — the types
 -- that produced the 963-customer bug.
 -- ---------------------------------------------------------------------------
+-- The sixteen columns `migrateUsers` claims, not the six `preflight` reads.
+--
+-- This table modelled only what the preflight report needed, because until
+-- 2026-09-05 nothing ran the migration itself against this fixture. The rest
+-- are here so it can: a missing column reaches `transform.ts` as `undefined`
+-- and is refused by name, which is correct and is exactly how far the first
+-- attempt got.
 CREATE TABLE `user` (
-  `id`             bigint       NOT NULL,
-  `username`       varchar(64)  DEFAULT NULL,
-  `Balance`        varchar(32)  DEFAULT '0',
-  `codeInvitation` varchar(32)  DEFAULT NULL,
-  `roll_Status`    tinyint(1)   DEFAULT 0,
-  `agent`          tinyint(1)   DEFAULT 0,
+  `id`                   bigint       NOT NULL,
+  `username`             varchar(64)  DEFAULT NULL,
+  `number`               varchar(32)  DEFAULT NULL,
+  `verify`               varchar(4)   DEFAULT '0',
+  `lang`                 varchar(4)   DEFAULT 'fa',
+  `User_Status`          varchar(16)  DEFAULT 'active',
+  `description_blocking` text,
+  `Balance`              varchar(32)  DEFAULT '0',
+  `codeInvitation`       varchar(32)  DEFAULT NULL,
+  `register`             varchar(32)  DEFAULT NULL,
+  `limit_usertest`       int          DEFAULT 0,
+  `score`                int          DEFAULT 0,
+  `pricediscount`        varchar(16)  DEFAULT NULL,
+  `roll_Status`          tinyint(1)   DEFAULT 0,
+  -- The reseller tier, and it is TEXT: `transform.ts` reads 'f', 'n' and 'n2'
+  -- (index.php:299) and refuses anything else by name rather than defaulting.
+  -- It was `tinyint(1)` here, which modelled a column this shop never had.
+  `agent`                varchar(4)   DEFAULT 'f',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO `user` (`id`, `username`, `Balance`, `codeInvitation`, `roll_Status`, `agent`) VALUES
-  (-9000001, 'fixture-alpha',   '1500000', 'FIXREF01', 1, 0),
-  (-9000002, 'fixture-beta',     '250000', 'FIXREF02', 0, 0),
+INSERT INTO `user`
+  (`id`, `username`, `number`, `verify`, `lang`, `User_Status`,
+   `description_blocking`, `Balance`, `codeInvitation`, `register`,
+   `limit_usertest`, `score`, `pricediscount`, `roll_Status`, `agent`) VALUES
+  (9000000000001, 'fixture-alpha',   '09120000001', '1', 'fa', 'active',
+   NULL, '1500000', 'FIXREF01', '1783966400', 0, 10, NULL, 1, 'f'),
+  (9000000000002, 'fixture-beta',    NULL,          '0', 'en', 'active',
+   NULL,  '250000', 'FIXREF02', '1783966400', 1,  0, NULL, 0, 'f'),
   -- The negative balance. Migrated as-is; see the header.
-  (-9000003, 'fixture-gamma',   '-940000', 'FIXREF03', 1, 1),
-  (-9000004, 'fixture-delta',         '0', 'FIXREF04', 0, 0),
+  (9000000000003, 'fixture-gamma',   '09120000003', '1', 'fa', 'active',
+   NULL, '-940000', 'FIXREF03', '1783966400', 0,  0, '15', 1, 'n'),
+  -- Blocked, with the reason the shop typed. `User_Status` is a closed set and
+  -- an unmapped value is refused, so both members of it appear here.
+  (9000000000004, 'fixture-delta',   NULL,          '0', 'fa', 'block',
+   'fixture: blocked by hand', '0', 'FIXREF04', '1783966400', 0, 0, NULL, 0, 'f'),
   -- Duplicate referral code, so preflight has a uniqueness violation to find.
-  (-9000005, 'fixture-epsilon',  '310000', 'FIXREF01', 1, 0);
+  (9000000000005, 'fixture-epsilon', NULL,          '0', 'fa', 'active',
+   NULL,  '310000', 'FIXREF01', '1783966400', 0,  0, NULL, 1, 'n2');
 
 -- SUM(Balance) = 1500000 + 250000 - 940000 + 0 + 310000 = 1,120,000 Toman
 --              = 11,200,000 IRR
@@ -148,15 +185,18 @@ CREATE TABLE `product` (
   `volume_product` varchar(32)  DEFAULT NULL,
   `time_product`   varchar(32)  DEFAULT NULL,
   `one_buy_status` tinyint(1)   DEFAULT 0,
-  `agent`          tinyint(1)   DEFAULT 0,
+  -- Text, like `user`.`agent` and for the same reason: the migration reads the
+  -- closed set 'f', 'n', 'n2' and refuses anything else by name.
+  `agent`          varchar(4)   DEFAULT 'f',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `product` (`id`, `code_product`, `name_product`, `code_panel`, `price_product`, `volume_product`, `time_product`, `one_buy_status`, `agent`) VALUES
-  (1, 'fxp01', '30 گیگ - یک‌ماهه', 'fx01', '195000', '30', '30', 0, 0),
-  (2, 'fxp02', '50 گیگ - یک‌ماهه', 'fx01', '295000', '50', '30', 0, 0),
-  (3, 'fxp03', 'تست رایگان',       'fx02',      '0',  '1',  '1', 1, 0),
-  (4, 'fxp04', 'نمایندگی',         'fx02', '900000','200', '60', 0, 1);
+  (1, 'fxp01', '30 گیگ - یک‌ماهه', 'fx01', '195000', '30', '30', 0, 'f'),
+  (2, 'fxp02', '50 گیگ - یک‌ماهه', 'fx01', '295000', '50', '30', 0, 'f'),
+  (3, 'fxp03', 'تست رایگان',       'fx02',      '0',  '1',  '1', 1, 'f'),
+  -- The resellers-only row, so the migration has one to file that way.
+  (4, 'fxp04', 'نمایندگی',         'fx02', '900000','200', '60', 0, 'n');
 
 -- ---------------------------------------------------------------------------
 -- Subscriptions. `Status` is a closed set with TWO spellings of disabled,
@@ -178,15 +218,15 @@ CREATE TABLE `invoice` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `invoice` (`id`, `id_invoice`, `id_user`, `Status`, `code_panel`, `username`, `Service_location`) VALUES
-  (1, 'FXINV0001', -9000001, 'active',         'fx01', 'fixture_sub_a', 'fixture panel A'),
-  (2, 'FXINV0002', -9000002, 'unpaid',         'fx01', 'fixture_sub_b', 'fixture panel A'),
-  (3, 'FXINV0003', -9000003, 'send_on_hold',   'fx02', 'fixture_sub_c', 'fixture panel B'),
-  (4, 'FXINV0004', -9000004, 'disabled',       'fx01', 'fixture_sub_d', 'fixture panel A'),
+  (1, 'FXINV0001', 9000000000001, 'active',         'fx01', 'fixture_sub_a', 'fixture panel A'),
+  (2, 'FXINV0002', 9000000000002, 'unpaid',         'fx01', 'fixture_sub_b', 'fixture panel A'),
+  (3, 'FXINV0003', 9000000000003, 'send_on_hold',   'fx02', 'fixture_sub_c', 'fixture panel B'),
+  (4, 'FXINV0004', 9000000000004, 'disabled',       'fx01', 'fixture_sub_d', 'fixture panel A'),
   -- Not a typo on our side. Production has both, from a bug in the PHP.
-  (5, 'FXINV0005', -9000005, 'disabledn',      'fx02', 'fixture_sub_e', 'fixture panel B'),
+  (5, 'FXINV0005', 9000000000005, 'disabledn',      'fx02', 'fixture_sub_e', 'fixture panel B'),
   -- A panel that no longer exists: migrates with provider_id NULL and the
   -- name kept, and preflight says so as a NOTICE.
-  (6, 'FXINV0006', -9000001, 'disablebyadmin', 'fx01', 'fixture_sub_f', 'fixture panel GONE');
+  (6, 'FXINV0006', 9000000000001, 'disablebyadmin', 'fx01', 'fixture_sub_f', 'fixture panel GONE');
 
 -- ---------------------------------------------------------------------------
 -- Payments. Every `payment_Status` and every `Payment_Method` in the closed
@@ -207,13 +247,13 @@ CREATE TABLE `Payment_report` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `Payment_report` (`id`, `id_order`, `id_user`, `price`, `payment_Status`, `Payment_Method`, `time_pay`) VALUES
-  (1, 'FXORD0001', -9000001, '195000', 'paid',       'cart to cart',         '1783966057'),
-  (2, 'FXORD0002', -9000002, '295000', 'Unpaid',     'cart to cart',         '1783966100'),
-  (3, 'FXORD0003', -9000003, '900000', 'expire',     'arze digital offline', '1783966200'),
-  (4, 'FXORD0004', -9000004, '150000', 'reject',     'plisio',               '1783966300'),
-  (5, 'FXORD0005', -9000005, '500000', 'processing', 'Star Telegram',        '1783966400'),
-  (6, 'FXORD0006', -9000001, '250000', 'waiting',    'add balance by admin', '1783966500'),
-  (7, 'FXORD0007', -9000099, '120000', 'paid',       'low balance by admin', '1783966600');
+  (1, 'FXORD0001', 9000000000001, '195000', 'paid',       'cart to cart',         '1783966057'),
+  (2, 'FXORD0002', 9000000000002, '295000', 'Unpaid',     'cart to cart',         '1783966100'),
+  (3, 'FXORD0003', 9000000000003, '900000', 'expire',     'arze digital offline', '1783966200'),
+  (4, 'FXORD0004', 9000000000004, '150000', 'reject',     'plisio',               '1783966300'),
+  (5, 'FXORD0005', 9000000000005, '500000', 'processing', 'Star Telegram',        '1783966400'),
+  (6, 'FXORD0006', 9000000000001, '250000', 'waiting',    'add balance by admin', '1783966500'),
+  (7, 'FXORD0007', 9000000000099, '120000', 'paid',       'low balance by admin', '1783966600');
 
 -- SUM(price) = 195000+295000+900000+150000+500000+250000+120000
 --            = 2,410,000 Toman = 24,100,000 IRR
@@ -232,10 +272,10 @@ CREATE TABLE `service_other` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `service_other` (`id`, `id_user`, `type`, `price`, `data_extra`) VALUES
-  (1, -9000001, 'extend_user',     '195000', '{}'),
-  (2, -9000002, 'extra_user',       '50000', '{"volume_value": "10"}'),
-  (3, -9000003, 'extra_time_user',  '30000', '{"time_value": "7"}'),
-  (4, -9000004, 'transfertouser',       '0', '{}');
+  (1, 9000000000001, 'extend_user',     '195000', '{}'),
+  (2, 9000000000002, 'extra_user',       '50000', '{"volume_value": "10"}'),
+  (3, 9000000000003, 'extra_time_user',  '30000', '{"time_value": "7"}'),
+  (4, 9000000000004, 'transfertouser',       '0', '{}');
 
 -- ---------------------------------------------------------------------------
 -- Cards. One is deliberately Luhn-INVALID so preflight has something to
@@ -268,13 +308,13 @@ CREATE TABLE `card_assignment_leases` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `card_assignment_leases` (`id`, `telegram_user_id`, `card_number`, `status`) VALUES
-  (1, -9000001, '0000000000000000', 'ACTIVE'),
-  (2, -9000002, '0000000000000018', 'COMPLETED'),
-  (3, -9000003, '0000000000000000', 'EXPIRED'),
-  (4, -9000004, '0000000000000018', 'CANCELLED'),
+  (1, 9000000000001, '0000000000000000', 'ACTIVE'),
+  (2, 9000000000002, '0000000000000018', 'COMPLETED'),
+  (3, 9000000000003, '0000000000000000', 'EXPIRED'),
+  (4, 9000000000004, '0000000000000018', 'CANCELLED'),
   -- References a card that is not in `card_number`: preflight reports it as a
   -- NOTICE, because `card_number` there is denormalised text by design.
-  (5, -9000005, '0000000000009999', 'COMPLETED');
+  (5, 9000000000005, '0000000000009999', 'COMPLETED');
 
 -- ---------------------------------------------------------------------------
 -- Discounts. `Discount` is gift codes, `DiscountSell` is sale codes.
@@ -327,8 +367,8 @@ CREATE TABLE `Giftcodeconsumed` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `Giftcodeconsumed` (`id`, `id_user`, `code`) VALUES
-  (1, -9000001, 'FXGIFT100'),
-  (2, -9000002, 'FXGIFT200');
+  (1, 9000000000001, 'FXGIFT100'),
+  (2, 9000000000002, 'FXGIFT200');
 
 -- ---------------------------------------------------------------------------
 -- Referrals. `get_gift` is the second tinyint(1) of the pair.
@@ -342,9 +382,9 @@ CREATE TABLE `reagent_report` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `reagent_report` (`id`, `id_user`, `id_friend`, `get_gift`) VALUES
-  (1, -9000001, -9000002, 1),
-  (2, -9000001, -9000004, 0),
-  (3, -9000003, -9000005, 0);
+  (1, 9000000000001, 9000000000002, 1),
+  (2, 9000000000001, 9000000000004, 0),
+  (3, 9000000000003, 9000000000005, 0);
 
 -- ---------------------------------------------------------------------------
 -- Reseller applications
@@ -357,8 +397,8 @@ CREATE TABLE `Requestagent` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `Requestagent` (`id`, `id_user`, `status`) VALUES
-  (1, -9000002, 'pending'),
-  (2, -9000003, 'accept');
+  (1, 9000000000002, 'pending'),
+  (2, 9000000000003, 'accept');
 
 -- ---------------------------------------------------------------------------
 -- Revenue adjustments. The legacy word is `deduct`, not `subtract` —
@@ -429,13 +469,13 @@ CREATE TABLE `wheel_list` (
   `id` int NOT NULL, `id_user` bigint DEFAULT NULL, `prize` varchar(32) DEFAULT '0',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-INSERT INTO `wheel_list` VALUES (1, -9000001, '10000');
+INSERT INTO `wheel_list` VALUES (1, 9000000000001, '10000');
 
 CREATE TABLE `support_message` (
   `id` int NOT NULL, `id_user` bigint DEFAULT NULL, `text` text, `departman` varchar(64) DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-INSERT INTO `support_message` VALUES (1, -9000002, 'fixture ticket body', 'fixture-dept');
+INSERT INTO `support_message` VALUES (1, 9000000000002, 'fixture ticket body', 'fixture-dept');
 
 CREATE TABLE `departman` (
   `id` int NOT NULL, `name` varchar(64) DEFAULT NULL,
@@ -465,7 +505,7 @@ CREATE TABLE `admin` (
   `id` int NOT NULL, `id_admin` bigint DEFAULT NULL, `username` varchar(64) DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-INSERT INTO `admin` VALUES (1, -9000001, 'fixture-admin');
+INSERT INTO `admin` VALUES (1, 9000000000001, 'fixture-admin');
 
 SET FOREIGN_KEY_CHECKS = 1;
 

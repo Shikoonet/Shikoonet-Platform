@@ -11,7 +11,7 @@
  */
 
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
-import { applySchema, env as baseEnv, deleteFixtureUsers } from './helpers/env.js';
+import { applySchema, env as baseEnv, deleteFixtureUsers, FIXTURE_TG_BASE } from './helpers/env.js';
 import { app } from '../src/index.js';
 import { MAX_SINGLE_PAYMENT_IRR } from '@shikoo/contracts';
 
@@ -52,8 +52,21 @@ async function entryCount(userId: number): Promise<number> {
 }
 
 /** Telegram ids far above anything another suite seeds, so runs cannot collide. */
-const TG_BASE = 990_000_000;
+const TG_BASE = FIXTURE_TG_BASE + 990_000_000;
 let seq = 0;
+
+/**
+ * Prefixes every fixture handle, because the searches below are assertions
+ * about COUNTS.
+ *
+ * `?q=st_&status=BLOCKED` expecting exactly one row is true of an empty
+ * database and false of a real one: the imported dump holds nine customers
+ * whose handle contains `st_`, and one of them being BLOCKED turns this red on
+ * a machine doing migration work. The telegram-id range being this suite's own
+ * (issue #46) keeps its WRITES to itself; a handle nobody else could have is
+ * what keeps its READS to itself.
+ */
+const HANDLE = 'zzcust-';
 
 async function makeCustomer(
   username: string,
@@ -64,7 +77,7 @@ async function makeCustomer(
     `INSERT INTO users (telegram_id, username, status, registered_at)
      VALUES (?1, ?2, ?3, now()) RETURNING id`,
   )
-    .bind(telegramId, username, opts.status ?? 'ACTIVE')
+    .bind(telegramId, `${HANDLE}${username}`, opts.status ?? 'ACTIVE')
     .first<{ id: number }>();
   return { id: Number(row!.id), telegramId };
 }
@@ -119,7 +132,7 @@ describe('GET /api/v1/admin/customers', () => {
     for (let i = 0; i < 5; i++) await makeCustomer(`pager_${i}`);
 
     const res = await app.request(
-      '/api/v1/admin/customers?q=pager_&page=1&pageSize=2',
+      `/api/v1/admin/customers?q=${HANDLE}pager_&page=1&pageSize=2`,
       {},
       envAs(ADMIN),
     );
@@ -132,7 +145,7 @@ describe('GET /api/v1/admin/customers', () => {
     expect(body.items).toHaveLength(2);
 
     const page3 = await app.request(
-      '/api/v1/admin/customers?q=pager_&page=3&pageSize=2',
+      `/api/v1/admin/customers?q=${HANDLE}pager_&page=3&pageSize=2`,
       {},
       envAs(ADMIN),
     );
@@ -146,7 +159,7 @@ describe('GET /api/v1/admin/customers', () => {
     const byIdBody = (await byId.json()) as { items: { id: number }[] };
     expect(byIdBody.items.map((i) => i.id)).toContain(id);
 
-    const byHandle = await app.request('/api/v1/admin/customers?q=@findme_one', {}, envAs(ADMIN));
+    const byHandle = await app.request(`/api/v1/admin/customers?q=@${HANDLE}findme_one`, {}, envAs(ADMIN));
     const byHandleBody = (await byHandle.json()) as { items: { id: number }[] };
     expect(byHandleBody.items.map((i) => i.id)).toContain(id);
   });
@@ -155,7 +168,7 @@ describe('GET /api/v1/admin/customers', () => {
     await makeCustomer('st_active');
     const blocked = await makeCustomer('st_blocked', { status: 'BLOCKED' });
 
-    const res = await app.request('/api/v1/admin/customers?q=st_&status=BLOCKED', {}, envAs(ADMIN));
+    const res = await app.request(`/api/v1/admin/customers?q=${HANDLE}st_&status=BLOCKED`, {}, envAs(ADMIN));
     const body = (await res.json()) as { total: number; items: { id: number }[] };
     expect(body.total).toBe(1);
     expect(body.items[0]!.id).toBe(blocked.id);
@@ -163,7 +176,7 @@ describe('GET /api/v1/admin/customers', () => {
 
   it('reports a customer who has never had an entry as zero, not missing', async () => {
     const { id } = await makeCustomer('nowallet');
-    const res = await app.request('/api/v1/admin/customers?q=nowallet', {}, envAs(ADMIN));
+    const res = await app.request(`/api/v1/admin/customers?q=${HANDLE}nowallet`, {}, envAs(ADMIN));
     const body = (await res.json()) as { items: { id: number; balanceIrr: number }[] };
     expect(body.items.find((i) => i.id === id)!.balanceIrr).toBe(0);
     // And there is genuinely no wallets row yet — the trigger writes it on the
