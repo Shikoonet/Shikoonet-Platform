@@ -188,6 +188,35 @@ describe('a change that is not a change', () => {
     expect(row!.blocked_reason).toBe('first');
   });
 
+  it('tells the loser of a race «nothing changed», so it does not announce a block it did not make', async () => {
+    // Both callers read ACTIVE, both then run the guarded UPDATE. Sequential
+    // here rather than truly concurrent, because that is the state the race
+    // ends in and it is the state the flag has to describe: the second
+    // statement matches no row.
+    const first = await setCustomerStatus(db, {
+      userId,
+      status: 'BLOCKED',
+      reason: 'flood',
+      actor: { kind: 'SYSTEM' },
+      note: 'flood guard, update 1',
+    });
+    expect(first?.changed).toBe(true);
+
+    // The same call again — as the loser's statement behaves.
+    const second = await setCustomerStatus(db, {
+      userId,
+      status: 'BLOCKED',
+      reason: 'flood',
+      actor: { kind: 'SYSTEM' },
+      note: 'flood guard, update 2',
+    });
+    expect(second?.changed).toBe(false);
+
+    // One row moved, one trail written, one caller told yes. `blockForSpam`
+    // announces to the shop's channel off this flag.
+    expect(await auditRows()).toHaveLength(1);
+  });
+
   it('answers null for a customer that does not exist, and writes nothing', async () => {
     const out = await setCustomerStatus(db, {
       userId: 2_147_000_000,
