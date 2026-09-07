@@ -135,8 +135,11 @@ die() {
 # release lock uses in attestation-store.sh — one lesson, written once.
 [ ! -L "$LOCK_FILE" ] || die "$LOCK_FILE is a symlink — refusing to lock through it"
 if ! ( set -C; : >"$LOCK_FILE" ) 2>/dev/null; then
-  [ -f "$LOCK_FILE" ] && [ ! -L "$LOCK_FILE" ] ||
+  # Written as an `if !`, not `A && B || die`: in that shape `die` also runs
+  # when A succeeds and B fails, which reads as if-then-else and is not one.
+  if ! { [ -f "$LOCK_FILE" ] && [ ! -L "$LOCK_FILE" ]; }; then
     die "$LOCK_FILE exists and is not a regular file — refusing to lock on it"
+  fi
   lock_owner=$(stat -c '%u' "$LOCK_FILE" 2>/dev/null) || die "cannot stat $LOCK_FILE"
   # Ours or root's. Anything else means somebody outside this pipeline got to
   # the path first, and adopting it is how a deploy waits for ever on a lock
