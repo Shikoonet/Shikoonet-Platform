@@ -64,6 +64,7 @@ export type PageId =
   | 'texts'
   | 'keyboard'
   | 'cron'
+  | 'resellers'
   | 'content'
   | 'access'
   | 'events'
@@ -105,6 +106,11 @@ export const NAV: NavGroup[] = [
       { id: 'orders', label: 'سفارشات', icon: 'receipt' },
       { id: 'subscriptions', label: 'اشتراک‌های مشتری', icon: 'package' },
       { id: 'requests', label: 'لیست درخواست‌ها', icon: 'list' },
+      // Beside «لیست درخواست‌ها» on purpose: that queue is where a franchise
+      // begins, and 177 of its rows are still waiting. A reseller is a
+      // BUSINESS rather than a customer, so it is not under «کاربران» — but
+      // it belongs to the same part of the panel.
+      { id: 'resellers', label: 'نمایندگان', icon: 'users' },
       { id: 'bulk', label: 'ارسال گروهی', icon: 'send' },
     ],
   },
@@ -237,6 +243,12 @@ export const READABLE_BY_READER: ReadonlySet<PageId> = new Set<PageId>([
   // Reading which sweeps are on is shop operation, like «تنظیمات» below it.
   // The write is ADMIN-only in the route.
   'cron',
+  // What a franchise bought and what its meter says. Not customer data in the
+  // sense this list draws the line at, and the strongest reason is structural:
+  // a reseller's customers never reach this database at all, so there is no
+  // name on this screen to withhold. Every write behind it is ADMIN-only in
+  // the route, and `write-roles.test.ts` counts all three separately.
+  'resellers',
   'settings',
 ]);
 
