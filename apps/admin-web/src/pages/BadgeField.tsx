@@ -53,7 +53,7 @@ const STYLES: { value: ButtonStyle; label: string; token: string }[] = [
  * of what this field was asked to allow.
  *
  * `renderedLabelLength` is the same function the worker's zod schema and
- * migration 0059's CHECK measure with, so the input, the route and the database
+ * migration 0060's CHECK measure with, so the input, the route and the database
  * cannot disagree about what fits.
  */
 export const BADGE_MAX = 24;

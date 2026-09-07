@@ -11,7 +11,7 @@
  * the shop-wide switch were all already right.
  *
  * What stopped it was arithmetic: `length(badge) BETWEEN 1 AND 24` counted the
- * markup, and one tag is 53 characters that draw as one glyph. Migration 0059
+ * markup, and one tag is 53 characters that draw as one glyph. migration 0060
  * measures the rendered form instead, and the route's zod schema now measures
  * it the same way with the same helper.
  *
