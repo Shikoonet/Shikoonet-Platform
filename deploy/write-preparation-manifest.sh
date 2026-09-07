@@ -51,7 +51,7 @@ refuse() {
 [[ $STAGING_RUN_ID =~ ^[0-9]{1,20}$ ]] || refuse "STAGING_RUN_ID is not a run id"
 [[ $SCHEMA_VERSION =~ ^[0-9]{1,4}$ ]] || refuse "SCHEMA_VERSION is not a migration count"
 for u in "$CANDIDATE_INGEST" "$CANDIDATE_DASHBOARD" "$CANDIDATE_BOT"; do
-  [[ $u =~ ^[a-z0-9]{20,32}$ ]] || refuse "'$u' is not a Coolify application uuid"
+  [[ "$u" =~ ^[a-z0-9]{20,32}$ ]] || refuse "'$u' is not a Coolify application uuid"
 done
 if [ "$CANDIDATE_INGEST" = "$CANDIDATE_DASHBOARD" ] ||
   [ "$CANDIDATE_INGEST" = "$CANDIDATE_BOT" ] ||

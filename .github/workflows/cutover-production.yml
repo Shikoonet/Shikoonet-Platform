@@ -216,7 +216,7 @@ jobs:
           CANDIDATE_DASHBOARD=$(field candidate_dashboard)
           CANDIDATE_BOT=$(field candidate_bot)
           for candidate in "$CANDIDATE_INGEST" "$CANDIDATE_DASHBOARD" "$CANDIDATE_BOT"; do
-            [[ $candidate =~ ^[a-z0-9]{20,32}$ ]] || {
+            [[ "$candidate" =~ ^[a-z0-9]{20,32}$ ]] || {
               echo "::error::the verified preparation artifact has a malformed candidate uuid"
               exit 1
             }

@@ -83,7 +83,7 @@ LEDGER_DIGEST=$(field digest)
 
 for candidate in "$EXPECTED_CAND_INGEST" "$EXPECTED_CAND_DASHBOARD" "$EXPECTED_CAND_BOT" \
   "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT"; do
-  [[ $candidate =~ ^[a-z0-9]{20,32}$ ]] ||
+  [[ "$candidate" =~ ^[a-z0-9]{20,32}$ ]] ||
     die "a candidate uuid is missing or malformed"
 done
 if [ "$EXPECTED_CAND_INGEST" = "$EXPECTED_CAND_DASHBOARD" ] ||

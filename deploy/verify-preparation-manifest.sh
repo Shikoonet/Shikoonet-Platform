@@ -60,7 +60,7 @@ CANDIDATE_INGEST=$(field candidate_ingest)
 CANDIDATE_DASHBOARD=$(field candidate_dashboard)
 CANDIDATE_BOT=$(field candidate_bot)
 for candidate in "$CANDIDATE_INGEST" "$CANDIDATE_DASHBOARD" "$CANDIDATE_BOT"; do
-  [[ $candidate =~ ^[a-z0-9]{20,32}$ ]] ||
+  [[ "$candidate" =~ ^[a-z0-9]{20,32}$ ]] ||
     fail "the preparation manifest has a missing or malformed candidate uuid"
 done
 if [ "$CANDIDATE_INGEST" = "$CANDIDATE_DASHBOARD" ] ||
