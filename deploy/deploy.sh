@@ -103,7 +103,14 @@ COOLIFY_TAG="sha256-$DIGEST_HEX"
 # than believed. Same pattern as restore-drill.sh.
 ENV_DIR=${ENV_DIR:-/etc/shikoo/$ENV_ARG}
 STATE_FILE=${STATE_FILE:-/var/lib/shikoo/$ENV_ARG/deployed}
-LOCK_FILE=${LOCK_FILE:-/var/lock/shikoo-deploy-$ENV_ARG.lock}
+# `-run-` in the name, because without it the production form of this path was
+# EXACTLY the release lock `attestation-store.sh` uses — one inode, two
+# protocols, fd 9 here against fd 8 there. Worse than the collision: this side
+# creates the file on demand as the deploy user, and `att_require_lock_file`
+# then refuses it for ever as «owned by shikoo-deploy, not root», which is a
+# release that cannot start and a message pointing at an intruder who is not
+# there. The two locks guard different things and now have different names.
+LOCK_FILE=${LOCK_FILE:-/var/lock/shikoo-deploy-run-$ENV_ARG.lock}
 WAIT_TIMEOUT=${WAIT_TIMEOUT:-420}
 NETWORK=${NETWORK:-coolify}
 
@@ -117,10 +124,22 @@ die() {
 # ---------------------------------------------------------------------- lock
 # Fail fast rather than queue: GitHub's environment concurrency already queues,
 # so a second copy here means a hand-run racing CI, which is worth seeing.
-exec 9>"$LOCK_FILE"
+# `>>`, not `>`: /var/lock is mode 1777, so a symlink planted at this path by
+# any local account would have `>` truncate whatever it points at. Append never
+# truncates, and the lock does not care what the file contains.
+exec 9>>"$LOCK_FILE"
 flock -n 9 || die "another deploy of $ENV_ARG holds $LOCK_FILE"
 
-CONF="$ENV_DIR/deploy.env"
+# Overridable, like every other script in this directory — and unlike them this
+# one was NOT, which was a live-traffic hazard rather than an inconsistency.
+# `prepare-production.sh` writes a candidate config naming the CANDIDATE
+# application uuids and passes it as `CONF=…`; this line used to overwrite that
+# with the environment's own file, whose `APP_*` rows are the LIVE applications.
+# So the first preparation to reach P6 would have rolled the new digest onto the
+# ingest and dashboard customers were using — the one thing the two-dispatch
+# split exists to prevent, in the workflow whose header promises it moves no
+# customer traffic. Nothing caught it because no test executes prepare's body.
+CONF=${CONF:-$ENV_DIR/deploy.env}
 # «missing» and «there but not readable» are different faults with different
 # fixes, and `[ -f ]` answers false to both. It said missing once when the file
 # was present and /etc/shikoo had lost its group execute bit, which sent the
@@ -160,7 +179,7 @@ PGUSER=${PGUSER:-postgres}
 for required in COOLIFY_URL COOLIFY_TOKEN APP_INGEST APP_DASHBOARD APP_BOT DB_CONTAINER; do
   [ -n "$(eval "printf '%s' \"\$$required\"")" ] || die "$CONF must set $required"
 done
-say "config: $ENV_DIR/deploy.env"
+say "config: $CONF"
 
 # ------------------------------------------------------------- the bot switch
 # Deploying the bot is not like deploying the other two. It does not answer a
