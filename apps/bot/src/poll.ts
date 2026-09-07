@@ -17,6 +17,7 @@ import * as notify from './notify.js';
 import { settleVerifiedPayments } from './settle.js';
 import { provisionPaidOrders } from './provision.js';
 import { syncSubscriptions, SYNC_INTERVAL_MS } from './sync.js';
+import { meterResellers, METER_INTERVAL_MS } from './resellerMeter.js';
 import { downgradeExpired } from './downgrade.js';
 import { warnExpiringServices } from './warn.js';
 import { removeFinishedServices } from './remove.js';
@@ -687,6 +688,7 @@ export async function run(
    * syncs: a deploy is a legitimate reason to look again immediately.
    */
   let lastSyncAttemptMs = 0;
+  let lastMeterAttemptMs = 0;
 
   while (!options.signal?.aborted) {
     try {
@@ -764,6 +766,20 @@ export async function run(
           await syncSubscriptions(db);
         } catch (err) {
           log.error('sync.failed', { will_retry: true }, err);
+        }
+      }
+      // Beside the subscription sync and gated the same way — its own attempt
+      // clock here, and the sweep's `MAX(taken_at)` gate as the second line for
+      // the case where more than one process runs. Hourly rather than every few
+      // minutes: a reseller's usage is a monthly invoice, not a screen somebody
+      // refreshes, and reading it ninety-six times a day would move a number
+      // nobody looks at until the end of the month.
+      if (Date.now() - lastMeterAttemptMs >= METER_INTERVAL_MS) {
+        lastMeterAttemptMs = Date.now();
+        try {
+          await meterResellers(db);
+        } catch (err) {
+          log.error('reseller.meter_failed', { will_retry: true }, err);
         }
       }
       // After the sync, so a service is warned about the volume the panel

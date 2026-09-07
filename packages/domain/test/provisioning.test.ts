@@ -1157,3 +1157,164 @@ describe('renewing an account into a different tier', () => {
     expect(put!.body).not.toHaveProperty('group_ids');
   });
 });
+
+/**
+ * `listPanelAdmins` — the meter a reseller is billed from.
+ *
+ * The shapes below are not invented: every one of them was read off a live
+ * `GET /api/admins` against the PasarGuard 5.2.1 test panel on 2026-09-07,
+ * because `/openapi.json` is 404 there and there is nothing else to read.
+ *
+ * Two of these cases are about money rather than about parsing, and they are
+ * the reason this block exists at all: a cap that is absent must not become a
+ * cap of zero, and a counter the panel could not report must not become a
+ * reading of zero. Both would be silently wrong on an invoice.
+ */
+describe('reading the meter off a panel', () => {
+  /** A panel that answers `/api/admins` with the envelope the real one sends. */
+  function adminPanel(admins: Record<string, unknown>[]) {
+    const calls: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok-123' }), { status: 200 });
+      }
+      if (url.includes('/api/admins')) {
+        // The real envelope, counters included — a shape that carried only the
+        // array would let a reader that expected `admins` pass by accident.
+        return new Response(
+          JSON.stringify({
+            total: admins.length,
+            active: admins.length,
+            disabled: 0,
+            limited: 0,
+            admins,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response('{}', { status: 500 });
+    }) as unknown as typeof globalThis.fetch;
+    return { calls, fetchImpl };
+  }
+
+  it('reads what the live panel actually returns', async () => {
+    // Copied field for field from the real response. `data_limit: null` and
+    // `lifetime_used_traffic` are the two that matter and both are here.
+    const panel = adminPanel([
+      {
+        username: 'hessamx',
+        used_traffic: 0,
+        lifetime_used_traffic: 0,
+        data_limit: null,
+        total_users: 2,
+        status: 'active',
+        is_disabled: false,
+        is_limited: false,
+      },
+    ]);
+
+    const result = await marzbanAdapter.listPanelAdmins!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.admins).toEqual([
+      {
+        username: 'hessamx',
+        usedBytes: 0,
+        lifetimeUsedBytes: 0,
+        dataLimitBytes: null,
+        totalUsers: 2,
+        status: 'active',
+        disabled: false,
+        limited: false,
+      },
+    ]);
+  });
+
+  it('keeps «no cap» apart from «a cap of nothing»', async () => {
+    /**
+     * The money case. `data_limit: null` is the panel saying this admin is
+     * unlimited; `0` would be an admin who may use nothing at all. Coercing
+     * the first into the second — which every «?? 0» in this file would do —
+     * turns an unlimited reseller into one that reads as permanently over
+     * their cap on the screen that decides whether to suspend them.
+     */
+    const panel = adminPanel([
+      { username: 'unlimited', used_traffic: 5, lifetime_used_traffic: 5, data_limit: null },
+      { username: 'capped_at_zero', used_traffic: 0, lifetime_used_traffic: 0, data_limit: 0 },
+    ]);
+
+    const result = await marzbanAdapter.listPanelAdmins!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok && result.admins.map((a) => a.dataLimitBytes)).toEqual([null, 0]);
+  });
+
+  it('leaves a gap rather than a zero when the counter is unreadable', async () => {
+    /**
+     * A panel mid-restart has been seen to report a negative counter — the
+     * reason `asByteCount` exists and refuses one. What matters here is what
+     * takes its place: `null`, meaning «not read», never `0`, meaning «used
+     * nothing». An invoice built on the second would bill a busy reseller for
+     * nothing and look exactly like a shop that had stopped selling.
+     */
+    const panel = adminPanel([
+      { username: 'mid_restart', used_traffic: -1, lifetime_used_traffic: 'not a number' },
+    ]);
+
+    const result = await marzbanAdapter.listPanelAdmins!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok && result.admins[0]).toMatchObject({
+      usedBytes: null,
+      lifetimeUsedBytes: null,
+    });
+  });
+
+  it('says it could not read rather than reporting an empty panel', async () => {
+    /**
+     * 403 is the realistic one: a credential that may list users and not
+     * admins. «This panel cannot be metered» and «this panel has no
+     * resellers» must never arrive as the same answer, because the second one
+     * would quietly stop billing everybody on it.
+     */
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/api/admin/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok-123' }), { status: 200 });
+      }
+      return new Response('{}', { status: 403 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const result = await marzbanAdapter.listPanelAdmins!(provider({ fetch: fetchImpl }));
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.reason).toContain('403');
+  });
+
+  it('drops an admin with no name rather than metering a blank', async () => {
+    // It cannot be matched to a reseller row, so it is not an admin as far as
+    // this sweep is concerned — the same rule `listAccounts` applies.
+    const panel = adminPanel([
+      { used_traffic: 10, lifetime_used_traffic: 10 },
+      { username: 'real', used_traffic: 20, lifetime_used_traffic: 20 },
+    ]);
+
+    const result = await marzbanAdapter.listPanelAdmins!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok && result.admins.map((a) => a.username)).toEqual(['real']);
+  });
+
+  it('asks once for the whole panel, not once per reseller', async () => {
+    // Ten franchises on one panel is one request. The same decision
+    // `listAccounts` documents, and the reason the sweep can run often.
+    const panel = adminPanel([
+      { username: 'a', used_traffic: 1, lifetime_used_traffic: 1 },
+      { username: 'b', used_traffic: 2, lifetime_used_traffic: 2 },
+      { username: 'c', used_traffic: 3, lifetime_used_traffic: 3 },
+    ]);
+
+    await marzbanAdapter.listPanelAdmins!(provider({ fetch: panel.fetchImpl }));
+
+    expect(panel.calls.filter((u) => u.includes('/api/admins'))).toHaveLength(1);
+  });
+});
