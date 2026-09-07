@@ -300,7 +300,10 @@ host_of() { # url -> lowercased hostname, no scheme, no port, no path
   h=${h%%\?*}
   h=${h##*@}
   h=${h%%:*}
-  printf '%s' "$h" | tr 'A-Z' 'a-z'
+  # bash's own case conversion, not `tr 'A-Z' 'a-z'`: no subprocess, and no
+  # locale in the loop. A hostname is ASCII, and a range-based `tr` would be
+  # the one thing here whose behaviour depends on where the host thinks it is.
+  printf '%s' "${h,,}"
 }
 for u in "$TEMP_INGEST_URL" "$TEMP_DASHBOARD_URL"; do
   case "$u" in
