@@ -275,6 +275,35 @@ fi
 
 section 'ambiguous or incoherent configuration is refused before a write'
 
+# A key that the source wants is still not a twin if only its preview half is
+# present. Filling in the missing active half would silently adopt whatever
+# dormant value was already there, so this inconsistent candidate is refused
+# rather than reconciled.
+cp "$WORK/ingest.candidate.json" "$WORK/ingest.before-preview-only-managed.json"
+python3 - "$WORK/ingest.candidate.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+rows = [row for row in json.load(open(path))
+        if row.get("key") != "ENV_NAME" or row.get("is_preview", False)]
+json.dump(rows, open(path, "w"))
+PY
+OUT_MANAGED_PREVIEW="$WORK/managed-preview-only.log"
+before=$(wc -l <"$FAKE_WRITES")
+reset_reads
+if run_sync "$OUT_MANAGED_PREVIEW"; then
+  bad 'a managed preview key with no active counterpart is refused' 'the sync proceeded'
+elif grep -qF 'candidate has preview-only key(s): ENV_NAME' "$OUT_MANAGED_PREVIEW"; then
+  ok 'a managed preview key with no active counterpart is refused'
+else
+  bad 'a managed preview key with no active counterpart is refused' "$(tail -4 "$OUT_MANAGED_PREVIEW")"
+fi
+if [ "$(wc -l <"$FAKE_WRITES")" = "$before" ]; then
+  ok 'a managed preview-only key causes no write'
+else
+  bad 'a managed preview-only key causes no write' 'the panel was mutated'
+fi
+cp "$WORK/ingest.before-preview-only-managed.json" "$WORK/ingest.candidate.json"
+
 # A preview twin for a managed key is Coolify's automatic bookkeeping. A
 # preview-only key is not: it came from a separate configuration decision and
 # must not be smuggled onto a production candidate merely because previews are
@@ -452,8 +481,8 @@ fi
 section 'no credential reaches output'
 
 for secret in "$SECRET_TOKEN" "$SECRET_DATABASE" "$SECRET_INGEST" "$SECRET_SESSION" "$SECRET_BOT"; do
-  if grep -qF -- "$secret" "$OUT1" "$OUT2" "$OUT_PREVIEW" "$OUT_PREVIEW_DUP" \
-    "$OUT3" "$OUT4" "$OUT5" "$OUT6" "$OUT7"; then
+  if grep -qF -- "$secret" "$OUT1" "$OUT2" "$OUT_MANAGED_PREVIEW" \
+    "$OUT_PREVIEW" "$OUT_PREVIEW_DUP" "$OUT3" "$OUT4" "$OUT5" "$OUT6" "$OUT7"; then
     bad 'candidate environment output contains no credential' 'a fake credential was printed'
   else
     ok 'candidate environment output contains no credential'
