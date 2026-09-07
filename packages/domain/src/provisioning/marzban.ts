@@ -50,6 +50,8 @@ import type {
   RemoteAccount,
   RenewRequest,
   GroupsResult,
+  PanelAdmin,
+  PanelAdminsResult,
   GroupDeleteResult,
   GroupMoveResult,
   GroupWriteResult,
@@ -77,6 +79,24 @@ const PAGE_SIZE = 500;
  * past it — the log line below says so by name.
  */
 const MAX_ACCOUNTS = 50_000;
+
+/**
+ * One row of `GET /api/admins`, as the panel actually sends it.
+ *
+ * Only the fields this file reads. Named `unknown` for the same reason
+ * `MarzbanUser` is: every one of them has to survive a panel that changed its
+ * mind about the type, and the readers below are where that is decided.
+ */
+interface MarzbanAdmin {
+  username?: unknown;
+  used_traffic?: unknown;
+  lifetime_used_traffic?: unknown;
+  data_limit?: unknown;
+  total_users?: unknown;
+  status?: unknown;
+  is_disabled?: unknown;
+  is_limited?: unknown;
+}
 
 interface MarzbanUser {
   username?: unknown;
@@ -1194,6 +1214,103 @@ export const marzbanAdapter: ProvisioningAdapter = {
         return { ok: false, reason: `panel refused the delete (HTTP ${res.status})` };
       }
       return { ok: true };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}` };
+    }
+  },
+
+  /**
+   * Every admin on the panel, with the meter a reseller is billed from.
+   *
+   * ## Why the panel and not the reseller
+   *
+   * A franchise runs its own installation, so asking it how much it used is
+   * asking the billed party to write their own invoice. The panel counts the
+   * traffic itself and neither side can move that number, which is the whole
+   * reason this call exists on the adapter rather than as an endpoint their
+   * dashboard posts to.
+   *
+   * ## Shapes, asked of PasarGuard 5.2.1 rather than of its documentation
+   *
+   * `/openapi.json` is 404 on our panel, so every field below was read off a
+   * live `GET /api/admins` on 2026-09-07:
+   *
+   *     { total, active, disabled, limited,
+   *       admins: [ { username, used_traffic, lifetime_used_traffic,
+   *                   data_limit, total_users, status,
+   *                   is_disabled, is_limited, role, … } ] }
+   *
+   * It takes `offset`/`limit` exactly as `/api/users` does, so the same
+   * short-page rule ends the loop here.
+   *
+   * **`data_limit: null` means unlimited** and is passed through as `null`,
+   * never coerced to zero — zero is a cap of nothing, which is the opposite.
+   */
+  async listPanelAdmins(provider: ProviderContext): Promise<PanelAdminsResult> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+
+      const admins: PanelAdmin[] = [];
+      for (let offset = 0; offset < MAX_ACCOUNTS; offset += PAGE_SIZE) {
+        const res = await withTimeout((signal) =>
+          provider.fetch(`${base}/api/admins?offset=${offset}&limit=${PAGE_SIZE}`, {
+            method: 'GET',
+            headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+            signal,
+          }),
+        );
+        // 403 is the interesting one and it is not a fault: a credential that
+        // is not an owner may list users and not admins. Reported as a reason
+        // rather than as an empty list, because «this panel cannot be metered»
+        // and «this panel has no resellers» must not look the same.
+        if (!res.ok) {
+          return { ok: false, reason: `panel would not list admins (HTTP ${res.status})` };
+        }
+
+        const json = (await res.json()) as { admins?: unknown };
+        const page = Array.isArray(json.admins) ? (json.admins as MarzbanAdmin[]) : [];
+        for (const admin of page) {
+          const username = asString(admin.username);
+          // An admin with no name cannot be matched to a reseller row, so it is
+          // not an admin as far as this sweep is concerned.
+          if (username === null) continue;
+          admins.push({
+            username,
+            // Null rather than zero when the panel's number is unreadable.
+            // `asByteCount` already refuses a negative or non-finite counter,
+            // which a panel mid-restart has been seen to report, and the sweep
+            // below skips such a reading rather than recording «used nothing».
+            usedBytes: asByteCount(admin.used_traffic),
+            lifetimeUsedBytes: asByteCount(admin.lifetime_used_traffic),
+            // The cap is read directly rather than through `asByteCount`,
+            // because for a cap the two nulls mean opposite things: an
+            // unreadable usage figure is a gap, an absent `data_limit` is
+            // «unlimited», and the panel really does send `null` for it.
+            dataLimitBytes:
+              typeof admin.data_limit === 'number' && Number.isFinite(admin.data_limit)
+                ? Math.max(0, Math.trunc(admin.data_limit))
+                : null,
+            totalUsers:
+              typeof admin.total_users === 'number' && Number.isFinite(admin.total_users)
+                ? Math.max(0, Math.trunc(admin.total_users))
+                : 0,
+            status: asString(admin.status)?.toLowerCase() ?? null,
+            disabled: admin.is_disabled === true,
+            limited: admin.is_limited === true,
+          });
+        }
+        // A short page is the last page — the rule `listAccounts` below uses,
+        // and for the same reason: trusting `total` would be trusting a number
+        // to agree with the array beside it.
+        if (page.length < PAGE_SIZE) return { ok: true, admins };
+      }
+      console.error(
+        `[marzban] panel ${provider.code} has more than ${MAX_ACCOUNTS} admins; the rest were not metered`,
+      );
+      return { ok: true, admins };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return { ok: false, reason: `could not reach the panel: ${reason}` };
