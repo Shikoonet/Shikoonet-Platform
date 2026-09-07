@@ -158,6 +158,11 @@ if not isinstance(rows,list) or not all(isinstance(r,dict) for r in rows):
 for r in rows:
     if not isinstance(r.get("key"),str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*",r["key"]):
         raise SystemExit(3)
+# The is_preview twin Coolify keeps beside every application variable is not
+# a duplicate: a normal deployment never reads it, and deploy.sh does not count
+# it. Listing it here would send somebody to delete a row that is not the
+# problem.
+rows = [r for r in rows if not r.get("is_preview")]
 dupes = {k for k, n in Counter(r["key"] for r in rows).items() if n > 1}
 selected=[]
 for r in rows:

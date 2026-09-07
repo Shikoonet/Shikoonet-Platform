@@ -68,7 +68,8 @@ cat >"$WORK/envs.json" <<EOF
  {"uuid":"env-name-prod","key":"ENV_NAME","value":"production"},
  {"uuid":"env-panel-a","key":"PANEL_SECRET_KEY","value":"a-secret-with-no-special-handling"},
  {"uuid":"env-panel-b","key":"PANEL_SECRET_KEY","value":"another-secret-value"},
- {"uuid":"env-once","key":"APPEARS_ONCE","value":"not-a-duplicate-and-must-not-be-listed"}
+ {"uuid":"env-once","key":"APPEARS_ONCE","value":"not-a-duplicate-and-must-not-be-listed"},
+ {"uuid":"env-once-twin","key":"APPEARS_ONCE","value":"not-a-duplicate-and-must-not-be-listed","is_preview":true}
 ]
 EOF
 
@@ -139,7 +140,8 @@ want 'the bot rows are identified by uuid' 'row env-bot-prod'
 want 'ENV_NAME is shown, because it is not a secret' 'ENV_NAME'
 want 'an unrecognised key is reported as present and nothing more' 'treated as a secret'
 
-# A key with one row is not a question and must not be in the answer.
+# A key with one ACTIVE row is not a question and must not be in the answer —
+# the is_preview twin Coolify keeps beside it is not a second definition.
 if grep -qF 'APPEARS_ONCE' "$OUT"; then
   bad 'a key that appears once is not listed' 'it was listed'
 else

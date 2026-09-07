@@ -69,6 +69,10 @@ except Exception:
     raise SystemExit(1)
 if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
     raise SystemExit(1)
+# The dormant is_preview twin Coolify creates beside every application
+# variable is not part of a normal deployment (see assert_deployable in
+# deploy.sh); the active rows are the environment this container will boot on.
+rows = [row for row in rows if not row.get("is_preview")]
 keys = [row.get("key") for row in rows]
 if any(not isinstance(key, str) for key in keys):
     raise SystemExit(1)
