@@ -203,6 +203,10 @@ unexpected_preview = sorted(set(preview_keys) - set(wanted) - transient)
 if unexpected_preview:
     refuse("candidate has unmanaged preview key(s): %s" % ", ".join(unexpected_preview))
 
+preview_without_active = sorted(set(preview_keys) - set(active_keys) - transient)
+if preview_without_active:
+    refuse("candidate has preview-only key(s): %s" % ", ".join(preview_without_active))
+
 unexpected = sorted(set(target) - set(wanted))
 if unexpected:
     refuse("candidate has unmanaged active key(s): %s" % ", ".join(unexpected))
