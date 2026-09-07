@@ -131,6 +131,11 @@ BACKUP_USER=$(cfg PGUSER)
 BACKUP_USER=${BACKUP_USER:-postgres}
 BACKUP_TMP="$BACKUP_DIR/.$BACKUP_ID.dump.partial"
 rm -f "$BACKUP_TMP"
+# Created 0600 BEFORE a byte of it exists. The shell applies the process umask
+# to a `>` redirection, so on a default umask this file was world-readable for
+# the whole time pg_dump streamed the customer database into it, and the chmod
+# below only closed the window after the last row had already gone through it.
+( umask 077; : >"$BACKUP_TMP" ) || die "cannot create $BACKUP_TMP"
 docker exec "$BACKUP_CONTAINER" pg_dump -U "$BACKUP_USER" -d "$BACKUP_DB" -Fc >"$BACKUP_TMP" || {
   rm -f "$BACKUP_TMP"
   die "pg_dump of $BACKUP_DB failed — nothing is migrated without a recovery point"
@@ -185,6 +190,26 @@ else
   # attestation, and for the same reason.
   [ -r "$RESTORE_ATT" ] ||
     die "no restore attestation at $RESTORE_ATT — run the drill on this host first (sudo sh /usr/local/lib/shikoo-step-e/restore-drill.sh production), then re-dispatch. The migration below has no recovery path until a restore has actually been proven, and a backup nobody has restored is a belief rather than a backup."
+  # ── who wrote it matters more than what it says ──────────────────────────
+  #
+  # This attestation is trusted BECAUSE root produced it. A checksum proves the
+  # file is internally consistent, and this account can compute one — so if
+  # `shikoo-deploy` could write here, preparation could write itself the proof
+  # that preparation is safe, and P3 would be a mirror rather than a control.
+  # Ownership is therefore checked before a field is read, exactly as
+  # `att_require_lock_file` does for the release lock.
+  for f in "$RESTORE_ATT" "$(dirname "$RESTORE_ATT")/restore-attestation.sha256"; do
+    [ ! -L "$f" ] || die "$f is a symlink — refusing to read the restore proof through it"
+    [ -f "$f" ] || die "$f is missing or not a regular file"
+    [ "$(stat -c '%u' "$f")" = '0' ] ||
+      die "$f is owned by uid $(stat -c '%u' "$f"), not root — a restore proof this account could write proves nothing"
+    # `-perm /022` is «group-write OR other-write set», which is the whole
+    # question. A glob over the mode string answers only about the last digit,
+    # so `0660` — group-writable, and the mode a careless chmod produces — would
+    # have read as safe.
+    [ -z "$(find "$f" -maxdepth 0 -perm /022 -print 2>/dev/null)" ] ||
+      die "$f is group- or world-writable (mode $(stat -c '%a' "$f")) — anyone who can rewrite it can forge the restore proof"
+  done
   ( cd "$(dirname "$RESTORE_ATT")" && sha256sum -c --status restore-attestation.sha256 ) ||
     die "the restore attestation does not match its checksum — it was altered after the drill wrote it"
   rfield() { sed -n "s/^$1=//p" "$RESTORE_ATT" | head -1; }
@@ -263,14 +288,31 @@ say "P5b. temporary domains ${TEMP_INGEST_URL} and ${TEMP_DASHBOARD_URL}"
 
 LIVE_INGEST_DOMAIN=${LIVE_INGEST_DOMAIN:-sms.chopon.uk}
 LIVE_DASHBOARD_DOMAIN=${LIVE_DASHBOARD_DOMAIN:-shikoo.chopon.uk}
+# The HOSTNAME is compared, not the URL string. Exact-string matching looked
+# sufficient and was not: `https://sms.chopon.uk:443`, a trailing slash, a path,
+# or any change of case all slip past it — and Coolify lowercases and keeps the
+# port, so the PATCH would have handed a candidate the live customer hostname
+# while this guard read «not a live domain». The one thing this must never do,
+# defeated by a colon.
+host_of() { # url -> lowercased hostname, no scheme, no port, no path
+  local h=${1#*://}
+  h=${h%%/*}
+  h=${h%%\?*}
+  h=${h##*@}
+  h=${h%%:*}
+  printf '%s' "$h" | tr 'A-Z' 'a-z'
+}
 for u in "$TEMP_INGEST_URL" "$TEMP_DASHBOARD_URL"; do
   case "$u" in
-    "https://${LIVE_INGEST_DOMAIN}" | "https://${LIVE_DASHBOARD_DOMAIN}" | \
-      "http://${LIVE_INGEST_DOMAIN}" | "http://${LIVE_DASHBOARD_DOMAIN}")
-      die "a temporary domain is set to a LIVE customer domain ($u) — preparation does not move live traffic" ;;
     https://* | http://*) ;;
     *) die "temporary domain '$u' is not an http(s) URL" ;;
   esac
+  h=$(host_of "$u")
+  [ -n "$h" ] || die "temporary domain '$u' has no hostname"
+  for live in "$LIVE_INGEST_DOMAIN" "$LIVE_DASHBOARD_DOMAIN"; do
+    [ "$h" != "$(host_of "https://$live")" ] ||
+      die "a temporary domain resolves to the LIVE customer hostname '${h}' (from '$u') — preparation does not move live traffic"
+  done
 done
 
 # shellcheck source=deploy/coolify-api.sh
