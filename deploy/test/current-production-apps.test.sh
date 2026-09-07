@@ -91,8 +91,9 @@ cp "$RACE_WINNER" "$RACE_POINTER"
 exec /usr/bin/ln "$@"
 FAKE
 chmod +x "$RACE_BIN/ln"
-if PATH="$RACE_BIN:$PATH" RACE_WINNER="$RACE_WINNER" RACE_POINTER="$RACE_POINTER" \
-  bash "$SCRIPT" adopt "$RACE_POINTER" "$NEW_INGEST" "$NEW_DASHBOARD" "$NEW_BOT" "$SHA" "$DIGEST" \
+export RACE_WINNER RACE_POINTER
+if PATH="$RACE_BIN:$PATH" bash "$SCRIPT" adopt "$RACE_POINTER" \
+  "$NEW_INGEST" "$NEW_DASHBOARD" "$NEW_BOT" "$SHA" "$DIGEST" \
   >"$WORK/race.log" 2>&1; then
   bad 'concurrent adoption cannot replace the winning pointer' 'the losing adoption reported success'
 elif grep -qF 'appeared while adopting' "$WORK/race.log" &&
