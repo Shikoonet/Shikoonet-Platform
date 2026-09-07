@@ -158,9 +158,9 @@ printf '%s\n' "$role" >>"$FAKE_WRITES"
 # the code under test; the file lives in a private mktemp directory.
 body_file="$FAKE_WORK/request-body.json"
 (umask 077; printf '%s' "$body" >"$body_file")
-python3 - "$FAKE_WORK/$role.candidate.json" "$body_file" <<'PY'
-import json, sys
-state_path, body_path = sys.argv[1:]
+python3 - "$FAKE_WORK/$role.candidate.json" "$body_file" "$role" <<'PY'
+import json, os, sys
+state_path, body_path, role = sys.argv[1:]
 rows = json.load(open(state_path))
 data = json.load(open(body_path))["data"]
 for item in data:
@@ -178,6 +178,9 @@ for item in data:
             twin["is_preview"] = True
             rows.append(twin)
     old.update(item)
+    if (os.environ.get("FAKE_CORRUPT_ROLE") == role
+            and item["key"] == "TELEGRAM_BOT_TOKEN"):
+        old["is_buildtime"] = not item["is_buildtime"]
 json.dump(rows, open(state_path, "w"), separators=(",", ":"))
 print(json.dumps(rows, separators=(",", ":")), end="")
 PY
@@ -271,6 +274,37 @@ if [ "$(wc -l <"$FAKE_WRITES")" = 3 ]; then
   ok 'the second sync writes NOTHING'
 else
   bad 'the second sync writes NOTHING' "$(cat "$FAKE_WRITES")"
+fi
+
+# Coolify 4.3.14 uses PHP loose comparison for comment updates, so it does not
+# change an existing null comment to an empty string. Both mean "no comment";
+# rejecting that stable panel state blocked the real production bot candidate
+# even though its values and every runtime/build flag were exact.
+python3 - "$WORK/bot.source.json" "$WORK/bot.candidate.json" <<'PY'
+import json, sys
+source_path, candidate_path = sys.argv[1:]
+source = json.load(open(source_path))
+candidate = json.load(open(candidate_path))
+for row in source:
+    if row.get("key") == "ENV_NAME" and not row.get("is_preview", False):
+        row["comment"] = ""
+next(row for row in candidate
+     if row.get("key") == "ENV_NAME" and not row.get("is_preview", False))["comment"] = None
+json.dump(source, open(source_path, "w"), separators=(",", ":"))
+json.dump(candidate, open(candidate_path, "w"), separators=(",", ":"))
+PY
+OUT_COMMENT="$WORK/empty-comment.log"
+before=$(wc -l <"$FAKE_WRITES")
+reset_reads
+if run_sync "$OUT_COMMENT"; then
+  ok 'an empty source comment and a null candidate comment are equivalent'
+else
+  bad 'an empty source comment and a null candidate comment are equivalent' "$(tail -5 "$OUT_COMMENT")"
+fi
+if [ "$(wc -l <"$FAKE_WRITES")" = "$before" ]; then
+  ok 'an empty/null comment difference writes NOTHING'
+else
+  bad 'an empty/null comment difference writes NOTHING' 'the panel was mutated'
 fi
 
 section 'ambiguous or incoherent configuration is refused before a write'
@@ -478,11 +512,23 @@ else
   bad 'a moving source causes no write' 'the panel was mutated'
 fi
 
+write_sources
+empty_candidates
+reset_reads
+OUT8="$WORK/post-write-mismatch.log"
+if run_sync "$OUT8" FAKE_CORRUPT_ROLE=bot; then
+  bad 'a post-write mismatch is refused with a secret-safe diagnostic' 'the corrupted flags were accepted'
+elif grep -qF 'candidate active key TELEGRAM_BOT_TOKEN differs in field(s): is_buildtime' "$OUT8"; then
+  ok 'a post-write mismatch names only the key and differing field'
+else
+  bad 'a post-write mismatch names only the key and differing field' "$(tail -5 "$OUT8")"
+fi
+
 section 'no credential reaches output'
 
 for secret in "$SECRET_TOKEN" "$SECRET_DATABASE" "$SECRET_INGEST" "$SECRET_SESSION" "$SECRET_BOT"; do
-  if grep -qF -- "$secret" "$OUT1" "$OUT2" "$OUT_MANAGED_PREVIEW" \
-    "$OUT_PREVIEW" "$OUT_PREVIEW_DUP" "$OUT3" "$OUT4" "$OUT5" "$OUT6" "$OUT7"; then
+  if grep -qF -- "$secret" "$OUT1" "$OUT2" "$OUT_COMMENT" "$OUT_MANAGED_PREVIEW" \
+    "$OUT_PREVIEW" "$OUT_PREVIEW_DUP" "$OUT3" "$OUT4" "$OUT5" "$OUT6" "$OUT7" "$OUT8"; then
     bad 'candidate environment output contains no credential' 'a fake credential was printed'
   else
     ok 'candidate environment output contains no credential'
