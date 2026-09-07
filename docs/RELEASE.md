@@ -590,7 +590,10 @@ application. It preserves Coolify's runtime/buildtime/literal flags, refuses an
 unreadable secret or an ambiguous duplicate, and leaves release-specific
 `APP_VERSION` and dashboard `INGEST_URL` to `deploy.sh`. Preparation then
 migrates and proves the candidates on temporary domains while the old
-applications keep serving. The dashboard is started with the final
+applications keep serving — through the proxy on the box, so the `-next` names
+need no public DNS record for the pipeline; add A records for them only if you
+want to open the candidates in a browser before cutting over. The dashboard is
+started with the final
 `https://sms.chopon.uk/api/v1/sms` endpoint rather than its temporary hostname,
 so the address it prints into a phone is right on both names. The bot's
 application record is pinned to the same digest and SHA but remains stopped;
