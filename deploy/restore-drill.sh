@@ -23,13 +23,21 @@
 # Restoring is not the check. Three things are, in this order:
 #
 #   1. pg_restore finishes.
-#   2. The schema ledger in the RESTORED copy says it is current. A dump that
-#      restores into an older schema than the running code is a dump that
-#      cannot be deployed onto, and the ledger is the only thing that can see
-#      that gap — the same reason the boot gate exists.
-#   3. `verify_invariants.sql` passes against the restored copy. Rows are what
-#      a backup is for; a structurally perfect restore with a broken money
-#      invariant is worse than a failed one, because it looks fine.
+#   2. The schema ledger in the RESTORED copy is an INITIAL RUN of the
+#      migrations shipped here: no unknown migration, no gap, no checksum that
+#      differs from the file of that name. It used to demand the ledger be
+#      current, which no production host can satisfy before a cutover — being
+#      behind by the pending range is the reason the release exists — so the
+#      drill was unpassable on the one database it matters for.
+#   3. `verify_invariants.sql` passes against the restored copy, WHEN that copy
+#      is current. Rows are what a backup is for, and a structurally perfect
+#      restore with a broken money invariant is worse than a failed one. But
+#      those assertions are written against today's schema, so against a
+#      restore that is behind they cannot be evaluated at all — a new assertion
+#      meeting an old database reads as a violation and is not one. The
+#      attestation records which of the two happened; proving the invariants on
+#      production's data after the pending range is applied is the dump
+#      rehearsal's job, recorded there as `prod_invariants`.
 #
 # Row counts are printed rather than asserted. A threshold here would be a
 # number that goes stale silently — a person reading "2 users" against a shop
@@ -323,12 +331,42 @@ else
 fi
 
 say "money invariants against the restored copy:"
-if [ -f "$INVARIANTS" ]; then
-  docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -v ON_ERROR_STOP=1 -q -d "$SCRATCH" < "$INVARIANTS"
-  say "  invariants PASS ($INVARIANTS)"
-else
+if [ ! -f "$INVARIANTS" ]; then
   say "FAIL: $INVARIANTS not found — migrations/ must ship beside deploy/ on this host"
   exit 1
+fi
+# ── the invariants describe TODAY's schema, so they need today's schema ───
+#
+# This ran them unconditionally and it cannot work on a restore that is behind.
+# `verify_invariants.sql` is written against the current migrations: 0059
+# replaced `idx_redemption_once_per_user` with a per-ORDER index, so the section
+# that proves «one customer may redeem one code against two orders» inserts a
+# second row that the OLD index still refuses. Against production's backup at
+# 0037 the drill therefore died on:
+#
+#   ERROR: duplicate key value violates unique constraint
+#          "idx_redemption_once_per_user"
+#
+# which reads as a broken invariant and is nothing of the kind — it is a new
+# assertion meeting an old database. Neither file is wrong; running them
+# together is.
+#
+# So they run when the restored copy is current, and are recorded as not
+# applicable when it is not. That is a division of labour, not a gap: proving
+# the invariants on production's data AFTER the pending range is applied is
+# exactly what `production-dump-rehearsal.sh` does and records as
+# `prod_invariants`, on a copy it has migrated forward. This drill's question is
+# narrower and stays answered — does the newest backup restore, and is it the
+# database we think it is.
+if [ "$LEDGER_VERDICT" = 'yes' ]; then
+  docker exec -i "$DB_CONTAINER" psql -U "$PGUSER" -v ON_ERROR_STOP=1 -q -d "$SCRATCH" < "$INVARIANTS"
+  INVARIANTS_VERDICT=pass
+  say "  invariants PASS ($INVARIANTS)"
+else
+  INVARIANTS_VERDICT=not-applicable-ledger-behind
+  say "  invariants NOT RUN: the restored copy is $(( DISK_COUNT - LEDGER_COUNT )) migration(s) behind the"
+  say "  invariants shipped beside this drill, so they describe a schema it does not have."
+  say "  The dump rehearsal proves them on the migrated copy — that is prod_invariants."
 fi
 
 psql_ -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH"
@@ -359,7 +397,7 @@ umask 027
   printf 'migrations_applied=%s\n' "$LEDGER_COUNT"
   printf 'migrations_pending=%s\n' "$(( DISK_COUNT - LEDGER_COUNT ))"
   printf 'migration_checksums=pass\n'
-  printf 'invariants=pass\n'
+  printf 'invariants=%s\n' "$INVARIANTS_VERDICT"
   printf 'scratch_dropped=yes\n'
   printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >"$TMP_ATTESTATION"
