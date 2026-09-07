@@ -153,6 +153,8 @@ want "$CUT_SCRIPT" 'the first release has an explicit zero-poller bootstrap mode
   'bootstrap-empty)'
 want "$CUT_SCRIPT" 'a successful first cutover adopts the canonical application UUIDs' \
   'current-production-apps.sh" adopt'
+# The literal shell expression is what the workflow must pass through.
+# shellcheck disable=SC2016
 want "$CUT" 'the verified artifact binds the bot handover mode to the host cutover' \
   '"$BOT_HANDOVER_MODE"'
 

@@ -25,8 +25,9 @@ validate_three() { # ingest dashboard bot
   valid_uuid "$ingest" || die "ingest application uuid is missing or malformed"
   valid_uuid "$dashboard" || die "dashboard application uuid is missing or malformed"
   valid_uuid "$bot" || die "bot application uuid is missing or malformed"
-  [ "$ingest" != "$dashboard" ] && [ "$ingest" != "$bot" ] && [ "$dashboard" != "$bot" ] ||
+  if [ "$ingest" = "$dashboard" ] || [ "$ingest" = "$bot" ] || [ "$dashboard" = "$bot" ]; then
     die "the three production roles must name distinct applications"
+  fi
 }
 
 field() { # file key
@@ -61,7 +62,9 @@ resolve_pointer() {
 case "$MODE" in
   resolve)
     CONF=${3:-}
-    [ -n "$FILE" ] && [ -n "$CONF" ] || die "usage: $0 resolve <pointer> <deploy.env>"
+    if [ -z "$FILE" ] || [ -z "$CONF" ]; then
+      die "usage: $0 resolve <pointer> <deploy.env>"
+    fi
     if [ -e "$FILE" ] || [ -L "$FILE" ]; then
       resolve_pointer
       exit 0
