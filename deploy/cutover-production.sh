@@ -24,12 +24,13 @@
 #
 # ── Domains move back on any failure ─────────────────────────────────────
 #
-# The rollback here is a domain move, which is seconds, and it happens
-# automatically the moment external verification fails. During the bot
-# handover the old bot container is stopped directly rather than deleted
-# through Coolify, so a failed candidate can restore those exact old bytes. A
-# bootstrap failure instead proves the candidate absent and restores the same
-# zero-poller baseline it began with.
+# The rollback here is a domain move plus a `docker start`, which is seconds,
+# and it happens automatically the moment a candidate fails to take its name
+# or external verification fails. The old ingest, dashboard and bot containers
+# are all stopped directly rather than deleted through Coolify, so a failed
+# candidate can restore those exact old bytes. A bootstrap failure instead
+# proves the candidate absent and restores the same zero-poller baseline it
+# began with.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # Run: cutover-production.sh <sha> <digest> <candidate-ingest> <candidate-dashboard> <candidate-bot> <replace-single|bootstrap-empty>
@@ -161,9 +162,9 @@ print(value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{6,80}", v
   [ -n "$BOT_DEPLOYMENT_UUID" ]
 }
 
-cancel_candidate_deployment() {
-  [ -n "$BOT_DEPLOYMENT_UUID" ] || return 1
-  coolify_api POST "/deployments/$BOT_DEPLOYMENT_UUID/cancel" || return 1
+cancel_deployment() { # deployment-uuid
+  [ -n "$1" ] || return 1
+  coolify_api POST "/deployments/$1/cancel" || return 1
   case "$API_STATUS" in
     2??) return 0 ;;
     400)
@@ -181,6 +182,7 @@ raise SystemExit(0 if ok else 1)
     *) return 1 ;;
   esac
 }
+cancel_candidate_deployment() { cancel_deployment "$BOT_DEPLOYMENT_UUID"; }
 
 probe() { curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$1" 2>/dev/null || printf '000'; }
 
@@ -220,19 +222,130 @@ CONF="$CONF" IMAGE_NAME="$IMAGE_NAME" \
   bash "$HERE/verify-production-bot-candidate.sh" prepared "$CAND_BOT" "$SHA_ARG" "$DIGEST_ARG" ||
   die "the candidate bot is not the stopped, immutable release preparation recorded"
 
+# The old web containers, by exact id, before a domain moves — the same
+# retain-for-rollback rule the bot handover uses. Exactly one each: zero means
+# customers are already off the air and this is not the tool for that, two
+# means a roll is still in flight and there is no single set of bytes to keep.
+containers_of() { docker ps -q --filter "label=coolify.name=$1" 2>/dev/null; }
+count_lines() { printf '%s\n' "$1" | sed '/^$/d' | wc -l; }
+OLD_INGEST_CONTAINERS=$(containers_of "$OLD_INGEST") ||
+  die "could not query Docker for the current ingest container"
+[ "$(count_lines "$OLD_INGEST_CONTAINERS")" = 1 ] ||
+  die "the current ingest has $(count_lines "$OLD_INGEST_CONTAINERS") running container(s), expected exactly one to retain for rollback"
+OLD_INGEST_CID=$(printf '%s\n' "$OLD_INGEST_CONTAINERS" | head -1)
+OLD_DASHBOARD_CONTAINERS=$(containers_of "$OLD_DASHBOARD") ||
+  die "could not query Docker for the current dashboard container"
+[ "$(count_lines "$OLD_DASHBOARD_CONTAINERS")" = 1 ] ||
+  die "the current dashboard has $(count_lines "$OLD_DASHBOARD_CONTAINERS") running container(s), expected exactly one to retain for rollback"
+OLD_DASHBOARD_CID=$(printf '%s\n' "$OLD_DASHBOARD_CONTAINERS" | head -1)
+# The candidates' current containers — the ones answering `-next` — so the
+# replacement each redeploy produces can be told apart from them.
+CAND_INGEST_CID=$(containers_of "$CAND_INGEST" | head -1)
+CAND_DASHBOARD_CID=$(containers_of "$CAND_DASHBOARD" | head -1)
+
 # ── P11. the domains ──────────────────────────────────────────────────────
 #
-# Off the old application first, then onto the new one. Both holding the same
-# name for even a moment is a proxy choosing between them, and which one it
-# picks is not a decision anybody made.
+# A domain lives in two places, and `PATCH domains` moves only one of them.
+# It rewrites the application record and regenerates the proxy labels stored
+# on it (`ApplicationsController::update_by_uuid`, when container labels are
+# read-only, which they are here) — and that is all. Traefik never reads that
+# record. It reads the labels on RUNNING CONTAINERS, and those were written
+# when each container was created. After the four PATCHes below the candidate
+# still advertises `sms-next` and the old container still advertises the live
+# name, exactly as before; a cutover that stopped there would verify the old
+# version on the live name and roll itself back, every time.
+#
+# So there are three moves, in this order:
+#
+#   1. the records — old released first, then the candidate given the name,
+#      because the API refuses a name two applications claim;
+#   2. the candidates REDEPLOYED. A restart of a Docker Image application is a
+#      full redeploy (`ApplicationDeploymentJob` forces `restart_only` off for
+#      `dockerimage`): the pinned digest is pulled again and a replacement
+#      container rolled in with the regenerated labels. The replacement is the
+#      only proof the move happened — a new container id, healthy, carrying the
+#      live name in its router rule, on the prepared digest;
+#   3. the old containers stopped — and kept, because their labels are the
+#      rollback: `docker start` puts the live name straight back on the bytes
+#      customers were on, without asking Coolify to rebuild anything.
+#
+# Between 2 and 3 both containers answer the live name. That overlap is chosen
+# over its alternative: both run against the schema preparation migrated and
+# proved on both sides (P7, P10), while stopping the old container first is an
+# outage exactly as long as the roll.
 say "P11. moving ${LIVE_INGEST_DOMAIN} and ${LIVE_DASHBOARD_DOMAIN}"
+WAIT_TIMEOUT=${WAIT_TIMEOUT:-420}
+STOP_TIMEOUT=${STOP_TIMEOUT:-30}
+WEB_DEPLOYMENTS=()
+
+relabel_candidate() { # uuid name previous-cid host
+  local uuid=$1 name=$2 previous=$3 host=$4 deadline cid state labels image digests deployment
+  coolify_api POST "/applications/$uuid/restart" || return 1
+  case "$API_STATUS" in 2??) ;; *) return 1 ;; esac
+  deployment=$(printf '%s' "$API_BODY" | python3 -c '
+import json, re, sys
+try:
+    value = json.load(sys.stdin).get("deployment_uuid", "")
+except Exception:
+    value = ""
+print(value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{6,80}", value) else "")
+')
+  [ -z "$deployment" ] || WEB_DEPLOYMENTS+=("$deployment")
+  deadline=$(($(date +%s) + WAIT_TIMEOUT))
+  while :; do
+    while IFS= read -r cid; do
+      if [ -z "$cid" ] || [ "$cid" = "$previous" ]; then continue; fi
+      state=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || echo gone)
+      [ "$state" = 'running healthy' ] || continue
+      labels=$(docker inspect --format '{{json .Config.Labels}}' "$cid" 2>/dev/null || echo '')
+      case "$labels" in *"Host(\`${host}\`)"*) ;; *) continue ;; esac
+      image=$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null || echo '')
+      digests=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" 2>/dev/null || echo '')
+      case "$digests" in
+        *"$DIGEST_ARG"*)
+          say "    ${name}: replacement ${cid:0:12} is healthy, answers ${host}, runs the prepared digest"
+          return 0 ;;
+      esac
+    done <<EOF
+$(containers_of "$uuid")
+EOF
+    [ "$(date +%s)" -lt "$deadline" ] || {
+      echo "[cutover] ${name}: no healthy replacement carrying ${host} on the prepared digest within ${WAIT_TIMEOUT}s" >&2
+      return 1
+    }
+    sleep 5
+  done
+}
+
 rollback_domains() {
-  local failed=0
+  local failed=0 uuid cid labels deployment
   say "ROLLING BACK: returning both domains to the old applications"
   set_domain "$CAND_INGEST" '' || failed=1
   set_domain "$CAND_DASHBOARD" '' || failed=1
   set_domain "$OLD_INGEST" "https://${LIVE_INGEST_DOMAIN}" || failed=1
   set_domain "$OLD_DASHBOARD" "https://${LIVE_DASHBOARD_DOMAIN}" || failed=1
+  # The records are back; the proxy routes by containers. The retained old
+  # containers still carry the live names in their own labels, so starting
+  # them is the whole restoration — a no-op on one that never stopped. Then
+  # every candidate container that took a live name is stopped, after any
+  # redeploy still in flight is cancelled so it cannot bring one back.
+  docker start "$OLD_INGEST_CID" >/dev/null || failed=1
+  docker start "$OLD_DASHBOARD_CID" >/dev/null || failed=1
+  for deployment in "${WEB_DEPLOYMENTS[@]:-}"; do
+    [ -z "$deployment" ] || cancel_deployment "$deployment" || failed=1
+  done
+  for uuid in "$CAND_INGEST" "$CAND_DASHBOARD"; do
+    while IFS= read -r cid; do
+      [ -n "$cid" ] || continue
+      labels=$(docker inspect --format '{{json .Config.Labels}}' "$cid" 2>/dev/null || echo '')
+      case "$labels" in
+        *"Host(\`${LIVE_INGEST_DOMAIN}\`)"* | *"Host(\`${LIVE_DASHBOARD_DOMAIN}\`)"*)
+          docker stop --time "$STOP_TIMEOUT" "$cid" >/dev/null || failed=1 ;;
+      esac
+    done <<EOF
+$(containers_of "$uuid")
+EOF
+  done
   [ "$failed" = 0 ]
 }
 
@@ -249,6 +362,24 @@ set_domain "$CAND_DASHBOARD" "https://${LIVE_DASHBOARD_DOMAIN}" || {
   rollback_domains || die "could not move ${LIVE_DASHBOARD_DOMAIN} onto the candidate and automatic domain rollback was incomplete"
   die "could not move ${LIVE_DASHBOARD_DOMAIN} onto the candidate"
 }
+say "    records moved; redeploying the candidates onto their new labels"
+
+relabel_candidate "$CAND_INGEST" ingest "$CAND_INGEST_CID" "$LIVE_INGEST_DOMAIN" || {
+  rollback_domains || die "the candidate ingest never answered ${LIVE_INGEST_DOMAIN} and automatic rollback was incomplete"
+  die "the candidate ingest never answered ${LIVE_INGEST_DOMAIN} — domains returned to the old applications"
+}
+relabel_candidate "$CAND_DASHBOARD" dashboard "$CAND_DASHBOARD_CID" "$LIVE_DASHBOARD_DOMAIN" || {
+  rollback_domains || die "the candidate dashboard never answered ${LIVE_DASHBOARD_DOMAIN} and automatic rollback was incomplete"
+  die "the candidate dashboard never answered ${LIVE_DASHBOARD_DOMAIN} — domains returned to the old applications"
+}
+
+for pair in "$OLD_INGEST_CID ingest" "$OLD_DASHBOARD_CID dashboard"; do
+  docker stop --time "$STOP_TIMEOUT" "${pair%% *}" >/dev/null || {
+    rollback_domains || die "could not stop the old ${pair##* } container and automatic rollback was incomplete"
+    die "could not stop the old ${pair##* } container — domains returned to the old applications"
+  }
+done
+say "    old ingest and dashboard containers stopped and retained for rollback"
 
 # ── P12. from outside, the way a customer would ───────────────────────────
 say "P12. external verification"

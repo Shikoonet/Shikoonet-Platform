@@ -435,6 +435,17 @@ EOF
     say "WARNING: could not read Coolify application settings for $2 from ${COOLIFY_DB_CONTAINER} — native Auto Deploy is UNVERIFIED for this deploy"
   fi
 
+  # Only the ACTIVE rows are the container's environment. Coolify creates a
+  # dormant `is_preview: true` twin for every application variable the moment
+  # it is inserted (`EnvironmentVariable::created()`, even with preview
+  # deployments off), and a normal deployment reads none of them —
+  # `generate_runtime_environment_variables` takes the preview set only when
+  # `pull_request_id !== 0`. Counting the twins is how the first production
+  # preparation refused its own candidates with seven keys «defined more than
+  # once» on 2026-09-07: `sync-production-candidate-envs.sh` had just verified
+  # exactly one active row per key, and this check then counted each twin as a
+  # second definition. Same rule as that script: a twin is never counted and
+  # never touched.
   local problem
   problem=$(api GET "/applications/$1/envs" |
     python3 -c 'import json,sys
@@ -445,6 +456,7 @@ except Exception:
     raise SystemExit(1)
 if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
     raise SystemExit(1)
+rows = [r for r in rows if not r.get("is_preview")]
 dupes = sorted(k for k, n in Counter(r.get("key") for r in rows).items() if n > 1 and k)
 if dupes:
     print("has %s defined more than once in Coolify — the container would get whichever row is written last. Delete the duplicate in the panel." % ", ".join(dupes))
@@ -492,7 +504,7 @@ import json, sys
 rows = json.load(sys.stdin)
 rows = rows if isinstance(rows, list) else []
 for r in rows:
-    if r.get("key") == "DATABASE_URL":
+    if r.get("key") == "DATABASE_URL" and not r.get("is_preview"):
         sys.stdout.write("DATABASE_URL=" + (r.get("value") or "") + "\n")
         break
 ' > "$DB_ENV_FILE"
@@ -558,14 +570,11 @@ set_app_env() { # uuid key value
 
   # One POST, two rows. Measured against the live panel on 2026-08-29 with a
   # throwaway key: the response named one uuid, and the application then listed
-  # that row AND a second one holding the same value. It is why `shikoo-bot`
-  # has carried `ENV_NAME` twice since the day it was created, and why the
-  # deploy after the one that first wrote `APP_VERSION` refused with
-  # «APP_VERSION defined more than once» — the create path planted the mine
-  # that `assert_deployable` then stepped on, one deploy later.
-  #
-  # So the create path clears up after itself, and ONLY after itself. Every row
-  # it removes carries the key it just wrote, seconds ago, from one value. A
+  # that row AND a second one holding the same value. The second one is the
+  # `is_preview: true` twin Coolify creates for every new application variable
+  # (see `assert_deployable`); it is inert for a normal deployment, so it is
+  # neither counted nor removed. What the create path does clear up is any
+  # further ACTIVE copy of the key it just wrote — and ONLY of that key. A
   # duplicate of any other key is still a refusal, because there the question
   # of which copy was meant is a real one and this script cannot answer it.
   #
@@ -576,13 +585,13 @@ set_app_env() { # uuid key value
   # other check passes.
   local rows doomed uuid
   rows=$(api GET "/applications/$1/envs") ||
-    die "$1: $2 was written but the variables could not be read back, so the duplicate row Coolify leaves behind is neither confirmed nor removed"
+    die "$1: $2 was written but the variables could not be read back, so a duplicate row Coolify may have left behind is neither confirmed nor removed"
   doomed=$(printf '%s' "$rows" | python3 -c 'import json,sys
 key, want = sys.argv[1], sys.argv[2]
 rows = json.load(sys.stdin)
 if not isinstance(rows, list):
     raise SystemExit(1)
-mine = [r for r in rows if isinstance(r, dict) and r.get("key") == key and r.get("uuid")]
+mine = [r for r in rows if isinstance(r, dict) and r.get("key") == key and r.get("uuid") and not r.get("is_preview")]
 keep = next((r for r in mine if r.get("value") == want), None)
 if keep is None:
     raise SystemExit(1)

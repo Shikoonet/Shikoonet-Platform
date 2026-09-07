@@ -124,9 +124,13 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
             # create, minus what it has been asked to delete. Nothing else can
             # show that the SECOND deploy is the one that used to refuse.
             printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"},{"key":"ENV_NAME","value":"production"}'
-            while IFS='|' read -r a u k v; do
+            while IFS='|' read -r a u k v flag; do
               [ "$a" = "$app" ] || continue
-              printf ',{"uuid":"%s","key":"%s","value":"%s"}' "$u" "$k" "$v"
+              if [ "$flag" = 'preview' ]; then
+                printf ',{"uuid":"%s","key":"%s","value":"%s","is_preview":true}' "$u" "$k" "$v"
+              else
+                printf ',{"uuid":"%s","key":"%s","value":"%s","is_preview":false}' "$u" "$k" "$v"
+              fi
             done <"$FAKE_ENV_ROWS"
             printf ']'
           elif [ "${FAKE_MALFORMED_ENVS:-}" = 'json' ]; then
@@ -135,6 +139,14 @@ if [ -n "${FAKE_COOLIFY_URL:-}" ]; then
             printf '{"key":"ENV_NAME","value":"production"}'
           elif [ "${FAKE_NO_ENV_NAME:-}" = '1' ]; then
             printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo"}]'
+          elif [ "${FAKE_PREVIEW_TWINS:-}" = '1' ]; then
+            # What every application looks like after its variables were
+            # created through the API or the panel: one active row per key and
+            # the dormant is_preview twin Coolify adds beside each. The shape
+            # the first production preparation was refused on, 2026-09-07.
+            printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo","is_preview":false},{"key":"ENV_NAME","value":"production","is_preview":false},{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo","is_preview":true},{"key":"ENV_NAME","value":"production","is_preview":true}]'
+          elif [ "${FAKE_PREVIEW_ONLY_ENV_NAME:-}" = '1' ]; then
+            printf '[{"key":"DATABASE_URL","value":"postgres://u:p@db:5432/shikoo","is_preview":false},{"key":"ENV_NAME","value":"production","is_preview":true}]'
           elif [ "${FAKE_DUPLICATE_ENVS:-}" = '1' ]; then
             # The shape the staging bot was actually in: every key twice, one
             # form submitted twice. ENV_NAME is present, so this passes the
@@ -164,9 +176,11 @@ print("%s	%s" % (d["key"], d["value"]))')
             # ONE post, TWO rows. Measured against the live Coolify panel on
             # 2026-08-29 with a throwaway key: the response named one uuid and
             # the application then listed that row and a second one holding the
-            # same value.
+            # same value. The second is the is_preview twin
+            # `EnvironmentVariable::created()` adds beside every new
+            # application variable.
             printf '%s|row%da|%s|%s
-%s|row%db|%s|%s
+%s|row%db|%s|%s|preview
 '               "$app" "$n" "$k" "$v" "$app" "$n" "$k" "$v" >>"$FAKE_ENV_ROWS"
             printf '{"uuid":"row%da"}' "$n"
           else
@@ -1007,6 +1021,7 @@ run_deploy() { # bot-flag
     FAKE_APP_IMAGE="${FAKE_APP_IMAGE:-ghcr.io/x/y}" FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a}" \
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
     FAKE_DUPLICATE_ENVS="${FAKE_DUPLICATE_ENVS:-}" FAKE_MALFORMED_ENVS="${FAKE_MALFORMED_ENVS:-}" \
+    FAKE_PREVIEW_TWINS="${FAKE_PREVIEW_TWINS:-}" FAKE_PREVIEW_ONLY_ENV_NAME="${FAKE_PREVIEW_ONLY_ENV_NAME:-}" \
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads"     FAKE_ENV_ROWS="${FAKE_ENV_ROWS:-}" FAKE_ENV_PATCH_FAILS="${FAKE_ENV_PATCH_FAILS:-}" \
     FAKE_INGEST_FQDN="${FAKE_INGEST_FQDN-https://sms.example.test}" FAKE_APP_TAG="${FAKE_APP_TAG:-}" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
@@ -1292,18 +1307,45 @@ else
 fi
 unset FAKE_DUPLICATE_ENVS
 
+# A twin is not a duplicate. Coolify adds a dormant `is_preview: true` row
+# beside every application variable the moment it is created, and a normal
+# deployment reads none of them — only the active rows reach the container.
+# On 2026-09-07 the first production preparation copied seven verified
+# variables onto its candidates and was then refused with all seven «defined
+# more than once»: the twins had been counted.
+FAKE_PREVIEW_TWINS=1
+if run_deploy false && ! grep -qF 'defined more than once' "$DEPLOY_LOG"; then
+  ok 'a preview twin beside every active row is not a duplicate'
+else
+  bad 'a preview twin beside every active row is not a duplicate' "$(tail -3 "$DEPLOY_LOG")"
+fi
+unset FAKE_PREVIEW_TWINS
+
+# And the converse: a key that exists ONLY as a preview row is not defined
+# for the container this deploy starts.
+FAKE_PREVIEW_ONLY_ENV_NAME=1
+if run_deploy false; then
+  bad 'ENV_NAME present only as a preview row is refused' 'it deployed anyway'
+elif grep -qF 'has no ENV_NAME' "$DEPLOY_LOG" && ! grep -qF 'migrating' "$DEPLOY_LOG"; then
+  ok 'ENV_NAME present only as a preview row is refused'
+else
+  bad 'ENV_NAME present only as a preview row is refused' "$(tail -2 "$DEPLOY_LOG")"
+fi
+unset FAKE_PREVIEW_ONLY_ENV_NAME
+
 # ═════════════════════════════════════════════════════════════════════════
-# The spare row Coolify creates alongside the one that was asked for
+# The preview twin Coolify creates alongside the one that was asked for
 # ═════════════════════════════════════════════════════════════════════════
 #
 # Two deploys, because one cannot show this. On 2026-08-29 deploy 1 wrote
 # `APP_VERSION` for the first time and passed; Coolify stored the value twice;
 # deploy 2 refused with «APP_VERSION defined more than once» before it touched
 # anything, and the staging environment sat behind `main` until a row was
-# deleted by hand. The refusal was right — nothing in a deploy reads a value,
-# so nothing in a deploy can tell which copy was meant — which is why the fix
-# belongs in the create path and not in the check.
-section 'the spare row Coolify creates alongside the one that was asked for'
+# deleted by hand. The second row was the `is_preview` twin. It is inert for a
+# normal deployment, so the check no longer counts it and the create path no
+# longer deletes it: an active duplicate of any key is still a refusal, and a
+# twin of any key is neither.
+section 'the preview twin Coolify creates alongside the one that was asked for'
 
 FAKE_ENV_ROWS="$WORK/envrows"
 : >"$FAKE_ENV_ROWS"
@@ -1315,21 +1357,25 @@ else
   bad 'the deploy that creates APP_VERSION still succeeds' "$(tail -3 "$DEPLOY_LOG")"
 fi
 
-if grep -qF 'removed the spare APP_VERSION row' "$DEPLOY_LOG"; then
-  ok 'the create path says out loud which row it removed'
+# The twin stays. Deleting it is not needed for anything, and a deploy that
+# deletes rows it does not need to is a deploy that one day deletes the wrong
+# one.
+twins=$(grep -c "|APP_VERSION|.*|preview\$" "$FAKE_ENV_ROWS" || true)
+if ! grep -qF 'removed the spare' "$DEPLOY_LOG" && [ "$twins" = 3 ]; then
+  ok 'the preview twin is left where Coolify put it'
 else
-  bad 'the create path says out loud which row it removed' "$(tail -3 "$DEPLOY_LOG")"
+  bad 'the preview twin is left where Coolify put it' "twins=$twins: $(tail -3 "$DEPLOY_LOG")"
 fi
 
-# Three applications are rolled, so three rows survive — and each one holds
-# THIS deploy's sha. Counting only the total would pass on a version that kept
-# a stale row and deleted the one it had just written.
-kept=$(grep -c "|APP_VERSION|" "$FAKE_ENV_ROWS" || true)
+# Three applications are rolled, so three ACTIVE rows survive — and each one
+# holds THIS deploy's sha. Counting only the total would pass on a version that
+# kept a stale row and deleted the one it had just written.
+kept=$(grep -c "|APP_VERSION|[^|]*\$" "$FAKE_ENV_ROWS" || true)
 right=$(grep -c "|APP_VERSION|$SHA_MERGED\$" "$FAKE_ENV_ROWS" || true)
 if [ "$kept" = 3 ] && [ "$right" = 3 ]; then
-  ok 'one APP_VERSION row per application, holding the sha that was deployed'
+  ok 'one active APP_VERSION row per application, holding the sha that was deployed'
 else
-  bad 'one APP_VERSION row per application, holding the sha that was deployed'     "kept=$kept right=$right: $(cat "$FAKE_ENV_ROWS")"
+  bad 'one active APP_VERSION row per application, holding the sha that was deployed'     "kept=$kept right=$right: $(cat "$FAKE_ENV_ROWS")"
 fi
 
 # The assertion the whole section exists for. The store is carried over, the
@@ -1360,12 +1406,11 @@ FAKE_INGEST_FQDN='https://sms.example.test'
 
 name='writes INGEST_URL on the dashboard, built from the ingest application domain'
 if run_deploy false; then
-  total=$(grep -c '|INGEST_URL|' "$FAKE_ENV_ROWS" || true)
+  total=$(grep -c '|INGEST_URL|[^|]*$' "$FAKE_ENV_ROWS" || true)
   right=$(grep -c '^aaaaaaaaaaaaaaaaaaaaaaa2|.*|INGEST_URL|https://sms.example.test/api/v1/sms$' "$FAKE_ENV_ROWS" || true)
-  # One row, on the dashboard, holding the ingest's own domain plus the path.
-  # The total matters as much as the match: Coolify creates a spare on every
-  # POST, and a version that wrote the right value and left the twin behind
-  # would make the NEXT deploy refuse with «defined more than once».
+  # One ACTIVE row, on the dashboard, holding the ingest's own domain plus the
+  # path. The total matters as much as the match: the preview twin Coolify
+  # adds on every POST is expected and ignored, a second active row is not.
   if [ "$total" = 1 ] && [ "$right" = 1 ]; then
     ok "$name"
   else

@@ -39,17 +39,25 @@ ENV_JSON="$WORK/envs.json"
 export FAKE_APP_UUID="$APP_UUID" FAKE_APP_JSON="$APP_JSON" FAKE_ENV_JSON="$ENV_JSON"
 export FAKE_IMAGE_NAME="$IMAGE" FAKE_DIGEST="$DIGEST" FAKE_SHA="$SHA"
 
+# The environment as Coolify actually lists it: one active row per key and
+# the dormant is_preview twin it adds beside each. The verifier must see
+# through the twins — the sync that wrote these rows already permits them —
+# and must still refuse a second ACTIVE row for a key.
 reset_fixtures() {
   cat >"$APP_JSON" <<EOF
 {"uuid":"$APP_UUID","build_pack":"dockerimage","docker_registry_image_name":"$IMAGE","docker_registry_image_tag":"sha256-${DIGEST#sha256:}"}
 EOF
   cat >"$ENV_JSON" <<EOF
 [
-  {"uuid":"e1","key":"ENV_NAME","value":"production"},
-  {"uuid":"e2","key":"SERVICE","value":"bot"},
-  {"uuid":"e3","key":"DATABASE_URL","value":"$SECRET_DB"},
-  {"uuid":"e4","key":"APP_VERSION","value":"$SHA"},
-  {"uuid":"e5","key":"TELEGRAM_BOT_TOKEN","value":"$SECRET_BOT"}
+  {"uuid":"e1","key":"ENV_NAME","value":"production","is_preview":false},
+  {"uuid":"e2","key":"SERVICE","value":"bot","is_preview":false},
+  {"uuid":"e3","key":"DATABASE_URL","value":"$SECRET_DB","is_preview":false},
+  {"uuid":"e4","key":"APP_VERSION","value":"$SHA","is_preview":false},
+  {"uuid":"e5","key":"TELEGRAM_BOT_TOKEN","value":"$SECRET_BOT","is_preview":false},
+  {"uuid":"p1","key":"ENV_NAME","value":"production","is_preview":true},
+  {"uuid":"p2","key":"SERVICE","value":"bot","is_preview":true},
+  {"uuid":"p3","key":"DATABASE_URL","value":"$SECRET_DB","is_preview":true},
+  {"uuid":"p5","key":"TELEGRAM_BOT_TOKEN","value":"$SECRET_BOT","is_preview":true}
 ]
 EOF
 }

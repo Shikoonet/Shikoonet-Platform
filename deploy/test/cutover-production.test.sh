@@ -43,10 +43,13 @@ cat >"$APP_JSON" <<EOF
 EOF
 cat >"$ENV_JSON" <<EOF
 [
-  {"uuid":"e1","key":"ENV_NAME","value":"production"},
-  {"uuid":"e2","key":"SERVICE","value":"bot"},
-  {"uuid":"e3","key":"DATABASE_URL","value":"$SECRET_DB"},
-  {"uuid":"e4","key":"APP_VERSION","value":"$SHA"}
+  {"uuid":"e1","key":"ENV_NAME","value":"production","is_preview":false},
+  {"uuid":"e2","key":"SERVICE","value":"bot","is_preview":false},
+  {"uuid":"e3","key":"DATABASE_URL","value":"$SECRET_DB","is_preview":false},
+  {"uuid":"e4","key":"APP_VERSION","value":"$SHA","is_preview":false},
+  {"uuid":"p1","key":"ENV_NAME","value":"production","is_preview":true},
+  {"uuid":"p2","key":"SERVICE","value":"bot","is_preview":true},
+  {"uuid":"p3","key":"DATABASE_URL","value":"$SECRET_DB","is_preview":true}
 ]
 EOF
 
@@ -93,6 +96,20 @@ case "$url" in
         printf '{"message":"Application stopping request queued."}200'
         ;;
       "POST /deployments/deploy123/cancel")
+        printf '{"message":"Deployment cannot be cancelled. Current status: finished"}400'
+        ;;
+      # A restart of a Docker Image application is a queued redeploy; the fake
+      # answers as Coolify does and lets the next `docker ps` show the
+      # replacement container — unless the case says the roll never lands.
+      "POST /applications/$FAKE_CAND_INGEST/restart")
+        [ "${FAKE_RELABEL_FAILS:-0}" = 1 ] || printf '1\n' >"$FAKE_STATE/cand-ingest-relabelled"
+        printf '{"message":"Restart request queued.","deployment_uuid":"web-deploy-ingest"}200'
+        ;;
+      "POST /applications/$FAKE_CAND_DASHBOARD/restart")
+        [ "${FAKE_RELABEL_FAILS:-0}" = 1 ] || printf '1\n' >"$FAKE_STATE/cand-dashboard-relabelled"
+        printf '{"message":"Restart request queued.","deployment_uuid":"web-deploy-dashboard"}200'
+        ;;
+      "POST /deployments/web-deploy-ingest/cancel" | "POST /deployments/web-deploy-dashboard/cancel")
         printf '{"message":"Deployment cannot be cancelled. Current status: finished"}400'
         ;;
       PATCH\ /applications/*) printf '{}200' ;;
@@ -148,22 +165,59 @@ case "$command" in
       'id=old-bot-cid')
         [ "$(cat "$FAKE_STATE/old-running")" != 1 ] || printf 'old-bot-cid\n'
         ;;
+      # The web tier. Each old application has one container until it is
+      # stopped; each candidate answers `-next` until its redeploy lands, after
+      # which the replacement carries the live name.
+      "label=coolify.name=$FAKE_OLD_INGEST")
+        [ "$(cat "$FAKE_STATE/old-ingest-running")" != 1 ] || printf 'old-ingest-cid\n'
+        ;;
+      "label=coolify.name=$FAKE_OLD_DASHBOARD")
+        [ "$(cat "$FAKE_STATE/old-dashboard-running")" != 1 ] || printf 'old-dashboard-cid\n'
+        ;;
+      "label=coolify.name=$FAKE_CAND_INGEST")
+        if [ "$(cat "$FAKE_STATE/cand-ingest-relabelled")" = 1 ]; then
+          [ "$(cat "$FAKE_STATE/cand-ingest-live-stopped")" = 1 ] || printf 'cand-ingest-live-cid\n'
+        else
+          printf 'cand-ingest-next-cid\n'
+        fi
+        ;;
+      "label=coolify.name=$FAKE_CAND_DASHBOARD")
+        if [ "$(cat "$FAKE_STATE/cand-dashboard-relabelled")" = 1 ]; then
+          [ "$(cat "$FAKE_STATE/cand-dashboard-live-stopped")" = 1 ] || printf 'cand-dashboard-live-cid\n'
+        else
+          printf 'cand-dashboard-next-cid\n'
+        fi
+        ;;
     esac
     ;;
   stop)
     target=${*: -1}
-    [ "$target" = 'old-bot-cid' ] || exit 1
+    case "$target" in
+      old-bot-cid)
+        printf '0\n' >"$FAKE_STATE/old-running"
+        printf '0\n' >"$FAKE_STATE/locks"
+        ;;
+      old-ingest-cid) printf '0\n' >"$FAKE_STATE/old-ingest-running" ;;
+      old-dashboard-cid) printf '0\n' >"$FAKE_STATE/old-dashboard-running" ;;
+      cand-ingest-live-cid) printf '1\n' >"$FAKE_STATE/cand-ingest-live-stopped" ;;
+      cand-dashboard-live-cid) printf '1\n' >"$FAKE_STATE/cand-dashboard-live-stopped" ;;
+      *) exit 1 ;;
+    esac
     printf 'stop %s\n' "$target" >>"$FAKE_DOCKER_LOG"
-    printf '0\n' >"$FAKE_STATE/old-running"
-    printf '0\n' >"$FAKE_STATE/locks"
     printf '%s\n' "$target"
     ;;
   start)
     target=${1:-}
-    [ "$target" = 'old-bot-cid' ] || exit 1
+    case "$target" in
+      old-bot-cid)
+        printf '1\n' >"$FAKE_STATE/old-running"
+        printf '1\n' >"$FAKE_STATE/locks"
+        ;;
+      old-ingest-cid) printf '1\n' >"$FAKE_STATE/old-ingest-running" ;;
+      old-dashboard-cid) printf '1\n' >"$FAKE_STATE/old-dashboard-running" ;;
+      *) exit 1 ;;
+    esac
     printf 'start %s\n' "$target" >>"$FAKE_DOCKER_LOG"
-    printf '1\n' >"$FAKE_STATE/old-running"
-    printf '1\n' >"$FAKE_STATE/locks"
     printf '%s\n' "$target"
     ;;
   inspect)
@@ -173,10 +227,36 @@ case "$command" in
       [ "$previous" != '--format' ] || format=$argument
       previous=$argument
     done
+    subject=${*: -1}
     case "$format" in
-      '{{.Image}}') printf 'candidate-image-id\n' ;;
-      *RepoDigests*) printf '%s@%s\n' "$FAKE_IMAGE" "${FAKE_RUNTIME_DIGEST:-$FAKE_DIGEST}" ;;
+      '{{.Image}}') printf '%s-image\n' "$subject" ;;
+      *RepoDigests*)
+        # Only the bot's image can be made to run the wrong bytes: the recovery
+        # cases below exercise the handover, not the web relabel.
+        case "$subject" in
+          candidate-bot-cid-image) printf '%s@%s\n' "$FAKE_IMAGE" "${FAKE_RUNTIME_DIGEST:-$FAKE_DIGEST}" ;;
+          *) printf '%s@%s\n' "$FAKE_IMAGE" "$FAKE_DIGEST" ;;
+        esac
+        ;;
       *Config.Env*) printf '["ENV_NAME=production","SERVICE=bot","APP_VERSION=%s","DATABASE_URL=hidden"]\n' "$FAKE_SHA" ;;
+      *State.Status*) printf 'running healthy\n' ;;
+      *Config.Labels*)
+        # The labels Coolify wrote into each container at creation — what
+        # Traefik routes by. The candidates' replacements carry the live name;
+        # their `-next` containers and the old containers carry what they
+        # were created with.
+        case "$subject" in
+          cand-ingest-live-cid | old-ingest-cid)
+            printf '{"traefik.http.routers.https-0-x.rule":"Host(`sms.chopon.uk`) \u0026\u0026 PathPrefix(`/`)"}\n' ;;
+          cand-dashboard-live-cid | old-dashboard-cid)
+            printf '{"traefik.http.routers.https-0-x.rule":"Host(`shikoo.chopon.uk`) \u0026\u0026 PathPrefix(`/`)"}\n' ;;
+          cand-ingest-next-cid)
+            printf '{"traefik.http.routers.https-0-x.rule":"Host(`sms-next.chopon.uk`) \u0026\u0026 PathPrefix(`/`)"}\n' ;;
+          cand-dashboard-next-cid)
+            printf '{"traefik.http.routers.https-0-x.rule":"Host(`shikoo-next.chopon.uk`) \u0026\u0026 PathPrefix(`/`)"}\n' ;;
+          *) printf '{}\n' ;;
+        esac
+        ;;
       *) exit 1 ;;
     esac
     ;;
@@ -186,6 +266,8 @@ FAKE
 chmod +x "$BIN/docker"
 
 export FAKE_OLD_BOT="$OLD_BOT" FAKE_CAND_BOT="$CAND_BOT"
+export FAKE_OLD_INGEST="$OLD_INGEST" FAKE_OLD_DASHBOARD="$OLD_DASHBOARD"
+export FAKE_CAND_INGEST="$CAND_INGEST" FAKE_CAND_DASHBOARD="$CAND_DASHBOARD"
 export FAKE_APP_JSON="$APP_JSON" FAKE_ENV_JSON="$ENV_JSON"
 export FAKE_SHA="$SHA" FAKE_DIGEST="$DIGEST" FAKE_IMAGE="$IMAGE"
 
@@ -195,6 +277,11 @@ make_case() { # name
   printf '1\n' >"$dir/old-running"
   printf '0\n' >"$dir/candidate-running"
   printf '1\n' >"$dir/locks"
+  for role in ingest dashboard; do
+    printf '1\n' >"$dir/old-${role}-running"
+    printf '0\n' >"$dir/cand-${role}-relabelled"
+    printf '0\n' >"$dir/cand-${role}-live-stopped"
+  done
   : >"$dir/api.log"
   : >"$dir/docker.log"
   cat >"$dir/state/preparation.env" <<EOF
@@ -214,7 +301,7 @@ run_cutover_mode() { # case-dir output handover-mode [extra env]
   local dir="$1" output="$2" handover_mode="$3"
   shift 3
   set +e
-  env PATH="$BIN:$PATH" CONF="$CONF" STATE="$dir/state" IMAGE_NAME="$IMAGE" \
+  env PATH="$BIN:$PATH" CONF="$CONF" STATE="$dir/state" IMAGE_NAME="$IMAGE" WAIT_TIMEOUT=5 \
     FAKE_STATE="$dir" FAKE_API_LOG="$dir/api.log" FAKE_DOCKER_LOG="$dir/docker.log" \
     "$@" bash "$SCRIPT" "$SHA" "$DIGEST" \
     "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT" "$handover_mode" >"$output" 2>&1
@@ -244,6 +331,27 @@ if grep -qF "PATCH /applications/$CAND_INGEST {\"domains\": \"https://sms.chopon
   ok 'both live domains move onto the candidates'
 else
   bad 'both live domains move onto the candidates' "$(tail -8 "$HAPPY/api.log")"
+fi
+
+# The record is not the route. Traefik reads container labels, so a domain
+# PATCH alone leaves the old container answering the live name; the candidates
+# have to be redeployed onto their new labels and the old containers stopped —
+# in that order, and only after the records moved.
+moved=$(grep -n 'records moved' "$HAPPY_OUT" | head -1 | cut -d: -f1)
+relabelled=$(grep -n 'dashboard: replacement' "$HAPPY_OUT" | head -1 | cut -d: -f1)
+retained=$(grep -n 'stopped and retained' "$HAPPY_OUT" | head -1 | cut -d: -f1)
+if grep -qF "POST /applications/$CAND_INGEST/restart" "$HAPPY/api.log" &&
+  grep -qF "POST /applications/$CAND_DASHBOARD/restart" "$HAPPY/api.log" &&
+  grep -qF 'stop old-ingest-cid' "$HAPPY/docker.log" &&
+  grep -qF 'stop old-dashboard-cid' "$HAPPY/docker.log" &&
+  [ "$(cat "$HAPPY/cand-ingest-live-stopped")" = 0 ] &&
+  [ "$(cat "$HAPPY/cand-dashboard-live-stopped")" = 0 ] &&
+  [ -n "$moved" ] && [ -n "$relabelled" ] && [ -n "$retained" ] &&
+  [ "$moved" -lt "$relabelled" ] && [ "$relabelled" -lt "$retained" ]; then
+  ok 'the candidates are redeployed onto the live names, then the old web containers are stopped and kept'
+else
+  bad 'the candidates are redeployed onto the live names, then the old web containers are stopped and kept' \
+    "moved=$moved relabelled=$relabelled retained=$retained docker=$(tr '\n' ' ' <"$HAPPY/docker.log")"
 fi
 
 if grep -qF 'stop old-bot-cid' "$HAPPY/docker.log" &&
@@ -344,6 +452,49 @@ else
   bad 'recovery restores domains and exactly one old poller without recording the failed release' "$(tail -10 "$RECOVERY_OUT")"
 fi
 
+# By the time the bot fails, the old web containers are stopped and the
+# candidates own the live names. Restoring the records alone would leave
+# customers on containers that no longer exist for the proxy.
+if grep -qF 'start old-ingest-cid' "$RECOVERY/docker.log" &&
+  grep -qF 'start old-dashboard-cid' "$RECOVERY/docker.log" &&
+  grep -qF 'stop cand-ingest-live-cid' "$RECOVERY/docker.log" &&
+  grep -qF 'stop cand-dashboard-live-cid' "$RECOVERY/docker.log" &&
+  grep -qF 'POST /deployments/web-deploy-ingest/cancel' "$RECOVERY/api.log" &&
+  [ "$(cat "$RECOVERY/old-ingest-running")" = 1 ] &&
+  [ "$(cat "$RECOVERY/old-dashboard-running")" = 1 ] &&
+  [ "$(cat "$RECOVERY/cand-ingest-live-stopped")" = 1 ] &&
+  [ "$(cat "$RECOVERY/cand-dashboard-live-stopped")" = 1 ]; then
+  ok 'recovery starts the retained old web containers and stops every candidate container holding a live name'
+else
+  bad 'recovery starts the retained old web containers and stops every candidate container holding a live name' \
+    "docker=$(tr '\n' ' ' <"$RECOVERY/docker.log") api=$(grep -c cancel "$RECOVERY/api.log")"
+fi
+
+section 'a candidate that never takes the live name'
+
+# The redeploy is queued and nothing comes back carrying the name. Customers
+# must still be on the old containers: nothing stopped, no bot touched, no
+# release recorded, records returned.
+RELABEL=$(make_case relabel)
+RELABEL_OUT="$RELABEL/output.log"
+if run_cutover "$RELABEL" "$RELABEL_OUT" FAKE_RELABEL_FAILS=1; then
+  bad 'a candidate that never answers the live name fails the cutover' 'the release was recorded'
+elif grep -qF 'candidate ingest never answered sms.chopon.uk' "$RELABEL_OUT" &&
+  grep -qF "PATCH /applications/$OLD_INGEST {\"domains\": \"https://sms.chopon.uk\"}" "$RELABEL/api.log" &&
+  grep -qF "PATCH /applications/$OLD_DASHBOARD {\"domains\": \"https://shikoo.chopon.uk\"}" "$RELABEL/api.log" &&
+  ! grep -qF 'stop old-ingest-cid' "$RELABEL/docker.log" &&
+  ! grep -qF 'stop old-bot-cid' "$RELABEL/docker.log" &&
+  ! grep -qF "POST /applications/$CAND_BOT/start" "$RELABEL/api.log" &&
+  [ "$(cat "$RELABEL/old-ingest-running")" = 1 ] &&
+  [ "$(cat "$RELABEL/old-running")" = 1 ] &&
+  [ ! -e "$RELABEL/state/deployed" ] &&
+  [ ! -e "$RELABEL/state/current-applications.env" ]; then
+  ok 'a candidate that never answers the live name leaves customers on the old containers'
+else
+  bad 'a candidate that never answers the live name leaves customers on the old containers' \
+    "$(tail -6 "$RELABEL_OUT") docker=$(tr '\n' ' ' <"$RELABEL/docker.log")"
+fi
+
 section 'pre-move refusal and redaction'
 
 MULTIPLE=$(make_case multiple)
@@ -397,10 +548,10 @@ else
 fi
 
 for secret in "$SECRET_TOKEN" "$SECRET_DB"; do
-  if grep -qF -- "$secret" "$HAPPY_OUT" "$RECOVERY_OUT" "$MULTIPLE_OUT" \
+  if grep -qF -- "$secret" "$HAPPY_OUT" "$RECOVERY_OUT" "$MULTIPLE_OUT" "$RELABEL_OUT" \
     "$BOOTSTRAP_OUT" "$BOOTSTRAP_RECOVERY_OUT" "$TAMPERED_OUT" "$DUPLICATE_OUT" "$REUSED_OUT" \
     "$HAPPY/api.log" "$RECOVERY/api.log" "$BOOTSTRAP/api.log" "$BOOTSTRAP_RECOVERY/api.log" \
-    "$MULTIPLE/api.log" "$TAMPERED/api.log" "$DUPLICATE/api.log" "$REUSED/api.log"; then
+    "$MULTIPLE/api.log" "$TAMPERED/api.log" "$DUPLICATE/api.log" "$REUSED/api.log" "$RELABEL/api.log"; then
     bad 'cutover output contains no credential' 'a fake credential was printed'
   else
     ok 'cutover output contains no credential'
