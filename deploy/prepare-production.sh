@@ -73,7 +73,19 @@ say "P0. the production-dump rehearsal covers this release"
 EXPECTED_SHA="$SHA_ARG" EXPECTED_DIGEST="$DIGEST_ARG" \
   EXPECTED_STAGING_RUN_ID="$STAGING_RUN" \
   bash "$HERE/verify-dump-attestation.sh" "$ATTESTATION" ||
-  die "the dump attestation does not cover this release"
+  # NOT «the dump attestation does not cover this release». That sentence was
+  # pasted over every non-zero exit of the verifier — a missing lock file, an
+  # unresolvable pointer, an unreadable directory — and it names a cause the
+  # caller has not established. It cost a real diagnosis twice: on 2026-08-28
+  # over «no attestation.env», and on 2026-09-07 over a release lock that did
+  # not exist, where it sent the reader off to re-run a rehearsal that would
+  # have died at the identical line. The verifier has already printed the
+  # precise reason as `::error::` and the store has printed the mechanism as
+  # `[att]`; both reach the log, so the only job left here is not to overwrite
+  # them. This is the rule verify-dump-attestation.sh's own header argues for —
+  # missing, malformed, stale and mismatched are different failures — applied
+  # one level up, where it had been lost.
+  die "P0 refused — the ::error:: line above says which check failed"
 
 # ── P1/P2. recovery points ────────────────────────────────────────────────
 say "P1/P2. snapshot and encrypted Coolify recovery backup"
@@ -96,19 +108,116 @@ say "P3. database backup and restore proof"
 BACKUP_ID="backup-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$BACKUP_DIR"
 
-# `restore-drill.sh` takes no arguments: it finds the newest dump itself,
-# restores it into a throwaway database beside the real one, checks what came
-# back is the database we think it is, and tears it down. It needs root, which
-# this script does not have — so it is invoked through the one thing that does,
-# and a host without that rule configured stops here rather than migrating on
-# an unproven backup.
+# ── the backup this step is named after, which was never actually taken ───
+#
+# `BACKUP_ID` was minted here, written into the preparation manifest, and then
+# nothing wrote a file. The directory was created empty and left that way, so
+# the manifest recorded a recovery point that did not exist — and cutover, which
+# refuses unless `backup_present=present` (observe-production.sh:94-98,
+# verify-preparation-manifest.sh:97), could never pass. Two checks agreeing
+# about a backup nobody had taken.
+#
+# `-Fc` because that is what `pg_restore` reads, and the restore drill is the
+# only reason to keep a dump at all. Written to a temporary name and renamed
+# only after `pg_dump` succeeds: a half-written dump that is 1 KB and growing
+# satisfies the «present» probe exactly like a real one.
+BACKUP_DB=$(cfg PGDATABASE)
+BACKUP_DB=${BACKUP_DB:-shikoo}
+BACKUP_CONTAINER=$(cfg DB_CONTAINER)
+[ -n "$BACKUP_CONTAINER" ] || die "$CONF does not name DB_CONTAINER — cannot take the pre-migration backup"
+BACKUP_USER=$(cfg PGUSER)
+[ -n "$BACKUP_USER" ] ||
+  BACKUP_USER=$(docker exec "$BACKUP_CONTAINER" printenv POSTGRES_USER 2>/dev/null || true)
+BACKUP_USER=${BACKUP_USER:-postgres}
+BACKUP_TMP="$BACKUP_DIR/.$BACKUP_ID.dump.partial"
+rm -f "$BACKUP_TMP"
+docker exec "$BACKUP_CONTAINER" pg_dump -U "$BACKUP_USER" -d "$BACKUP_DB" -Fc >"$BACKUP_TMP" || {
+  rm -f "$BACKUP_TMP"
+  die "pg_dump of $BACKUP_DB failed — nothing is migrated without a recovery point"
+}
+# A dump that restores into nothing is the failure that looks like success, so
+# the size is asserted rather than hoped for. The probe cutover uses is >1k.
+[ "$(stat -c '%s' "$BACKUP_TMP")" -gt 1024 ] || {
+  rm -f "$BACKUP_TMP"
+  die "the pre-migration dump is under 1 KB — that is not a backup of this database"
+}
+chmod 600 "$BACKUP_TMP"
+mv -f "$BACKUP_TMP" "$BACKUP_DIR/$BACKUP_ID.dump"
+say "    pre-migration dump: $BACKUP_DIR/$BACKUP_ID.dump ($(stat -c '%s' "$BACKUP_DIR/$BACKUP_ID.dump") bytes)"
+
+# `restore-drill.sh` finds the newest dump itself, restores it into a throwaway
+# database beside the real one, checks what came back is the database we think
+# it is, and tears it down. It needs root.
+#
+# ── Why this no longer tries to run it, and what it checks instead ────────
+#
+# This used to demand root or blanket passwordless sudo, and on this host it
+# gets neither: the only sudo grant is `hessamx` limited to fixed task-runner
+# subcommands, and the installer's own negative test asserts that
+# `restore-drill-production` is NOT among them. So P3 could not pass, and the
+# only ways to make it pass were to give the deploy account a passwordless root
+# command on production or to hand the runner a production drill — widening the
+# blast radius of a release path, to prove a backup.
+#
+# There was already a better answer in the repository. The drill writes a
+# non-secret, checksummed attestation of exactly what it proved, and the task
+# runner already lists it as evidence. So P3 verifies THAT, and the drill is run
+# beforehand by the owner — the same shape as the Coolify contract attestation
+# that P5 requires, for the same reason: the proof has to exist before the
+# release, and the release only has to be able to read it.
+#
+# The inline path is kept for the case where preparation legitimately has root,
+# so nothing is lost where the privilege already exists.
+# `/var/lib/shikoo`, not `$STATE` — the drill writes ONE attestation for the
+# whole host (restore-drill.sh:94,276), not one per environment. That is also
+# why the `environment=` field below is checked rather than assumed: a staging
+# drill overwrites this same file, and `restore-drill-staging` is the drill the
+# task runner actually grants.
+RESTORE_STATE=${RESTORE_STATE:-/var/lib/shikoo}
+RESTORE_ATT=${RESTORE_ATT:-$RESTORE_STATE/restore-attestation.env}
+RESTORE_MAX_AGE_H=${RESTORE_MAX_AGE_H:-48}
 if [ "$(id -u)" = '0' ]; then
-  sh "$HERE/restore-drill.sh"
-elif sudo -n true 2>/dev/null; then
-  sudo -n sh "$HERE/restore-drill.sh"
+  sh "$HERE/restore-drill.sh" ||
+    die "the restore of the newest backup could not be proven — refusing to migrate production on it"
+  say "P3. restore drill run inline (this preparation has root)"
 else
-  die "the restore drill needs root and this user cannot reach it. Grant a passwordless sudo rule for restore-drill.sh, or run it by hand and re-dispatch: the migration below has no recovery path until a restore has actually been proven, and a backup nobody has restored is a belief rather than a backup."
-fi || die "the restore of the newest backup could not be proven — refusing to migrate production on it"
+  # Checksum first, before a single field is read — same order as the dump
+  # attestation, and for the same reason.
+  [ -r "$RESTORE_ATT" ] ||
+    die "no restore attestation at $RESTORE_ATT — run the drill on this host first (sudo sh /usr/local/lib/shikoo-step-e/restore-drill.sh production), then re-dispatch. The migration below has no recovery path until a restore has actually been proven, and a backup nobody has restored is a belief rather than a backup."
+  ( cd "$(dirname "$RESTORE_ATT")" && sha256sum -c --status restore-attestation.sha256 ) ||
+    die "the restore attestation does not match its checksum — it was altered after the drill wrote it"
+  rfield() { sed -n "s/^$1=//p" "$RESTORE_ATT" | head -1; }
+  [ "$(rfield schema_version)" = '1' ] ||
+    die "unsupported restore attestation schema_version '$(rfield schema_version)'"
+  # The environment, because a staging drill proves nothing about production's
+  # backups — and `restore-drill-staging` is the one the runner DOES grant, so
+  # this is the confusion most likely to actually happen.
+  [ "$(rfield environment)" = "$ENV_ARG" ] ||
+    die "the restore attestation is for environment '$(rfield environment)', not $ENV_ARG"
+  for f in migration_checksums:pass invariants:pass scratch_dropped:yes; do
+    [ "$(rfield "${f%%:*}")" = "${f##*:}" ] ||
+      die "the restore attestation does not record ${f%%:*}=${f##*:} — the drill did not prove what P3 requires"
+  done
+  # `yes` (already current) or `prefix` (an initial run with a pending tail).
+  # Both mean no unknown migration, no gap and no drifted checksum; before the
+  # first cutover the honest answer is `prefix`, and demanding `yes` here would
+  # re-create the contradiction the drill was just fixed for.
+  case "$(rfield migration_set_exact)" in
+    yes | prefix) ;;
+    *) die "the restore attestation records migration_set_exact='$(rfield migration_set_exact)' — the restored ledger is not an initial run of the shipped migrations" ;;
+  esac
+  # Freshness. An old drill proves an old backup, and the one this release will
+  # fall back to is the newest one.
+  att_epoch=$(date -u -d "$(rfield created_at)" +%s 2>/dev/null) ||
+    die "the restore attestation has an unreadable created_at"
+  age_h=$(( ( $(date -u +%s) - att_epoch ) / 3600 ))
+  [ "$age_h" -ge 0 ] ||
+    die "the restore attestation is dated in the future — refusing to reason about it"
+  [ "$age_h" -le "$RESTORE_MAX_AGE_H" ] ||
+    die "the restore attestation is ${age_h}h old, older than the ${RESTORE_MAX_AGE_H}h this release accepts — run the drill again and re-dispatch"
+  say "P3. restore proven by attestation: dump $(rfield dump_file), ledger $(rfield schema_migrations), ${age_h}h old"
+fi
 
 # ── P4. the exact duplicate row ───────────────────────────────────────────
 #
@@ -132,6 +241,56 @@ for v in "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT"; do
   [ -n "$v" ] || die "the candidate applications were not all identified"
 done
 say "    candidates: ingest=${CAND_INGEST} dashboard=${CAND_DASHBOARD} bot=${CAND_BOT} (created ${CREATED_COUNT})"
+
+# ── P5b. the temporary domains ────────────────────────────────────────────
+#
+# Nothing did this, and P10 has always required its result. `observe-production`
+# probes `sms-next` and `shikoo-next`; `ensure-production-candidates.sh` creates
+# the candidates deliberately domainless ("no domain, no ports published,
+# auto-deploy off") and no later step gave them one. So `temp_domain_verify`
+# could only ever read `fail`, and a preparation that had done everything else
+# perfectly would die at its own verification — the whole point of preparing on
+# temporary names being that they are reachable.
+#
+# The temporary names, not the live ones. Moving `shikoo.chopon.uk` or
+# `sms.chopon.uk` is `cutover-production.sh`, a separate dispatch; this only
+# ever writes the `-next` names, and it refuses if a live name is what it was
+# handed.
+TEMP_INGEST_URL=${TEMP_INGEST_URL:-https://sms-next.chopon.uk}
+TEMP_DASHBOARD_URL=${TEMP_DASHBOARD_URL:-https://shikoo-next.chopon.uk}
+export TEMP_INGEST_URL TEMP_DASHBOARD_URL
+say "P5b. temporary domains ${TEMP_INGEST_URL} and ${TEMP_DASHBOARD_URL}"
+
+LIVE_INGEST_DOMAIN=${LIVE_INGEST_DOMAIN:-sms.chopon.uk}
+LIVE_DASHBOARD_DOMAIN=${LIVE_DASHBOARD_DOMAIN:-shikoo.chopon.uk}
+for u in "$TEMP_INGEST_URL" "$TEMP_DASHBOARD_URL"; do
+  case "$u" in
+    "https://${LIVE_INGEST_DOMAIN}" | "https://${LIVE_DASHBOARD_DOMAIN}" | \
+      "http://${LIVE_INGEST_DOMAIN}" | "http://${LIVE_DASHBOARD_DOMAIN}")
+      die "a temporary domain is set to a LIVE customer domain ($u) — preparation does not move live traffic" ;;
+    https://* | http://*) ;;
+    *) die "temporary domain '$u' is not an http(s) URL" ;;
+  esac
+done
+
+# shellcheck source=deploy/coolify-api.sh
+. "$HERE/coolify-api.sh"
+coolify_api_init "$CONF" || die "could not prepare the Coolify client for the temporary domains"
+trap coolify_api_cleanup EXIT
+
+# Checked, not assumed: `curl -sS` exits 0 for a 401 and for a 500, so a
+# «PATCH || die» would read Coolify refusing the write as success and then
+# verify against a domain that was never set. Same lesson cutover records.
+set_temp_domain() { # uuid url
+  coolify_api PATCH "/applications/$1" \
+    "$(python3 -c 'import json,sys; print(json.dumps({"domains": sys.argv[1]}))' "$2")" || return 1
+  case "$API_STATUS" in 2??) return 0 ;; *) return 1 ;; esac
+}
+set_temp_domain "$CAND_INGEST" "$TEMP_INGEST_URL" ||
+  die "could not set ${TEMP_INGEST_URL} on the candidate ingest (Coolify said ${API_STATUS})"
+set_temp_domain "$CAND_DASHBOARD" "$TEMP_DASHBOARD_URL" ||
+  die "could not set ${TEMP_DASHBOARD_URL} on the candidate dashboard (Coolify said ${API_STATUS})"
+say "    temporary domains assigned to the candidates; the live domains are untouched"
 
 # ── P6–P9. migrate, then roll ingest and dashboard only ───────────────────
 #

@@ -206,7 +206,7 @@ STATE_EXTRA="$FULL/state-extra"
 if run_full "$STATE_EXTRA" LEDGER_EXTRA=1; then
   bad 'an extra ledger migration not shipped with the drill is refused' 'the drill returned success'
 else
-  if grep -qF 'filename sets differ' "$WORK/out" &&
+  if grep -qF 'not an initial run of the shipped migrations' "$WORK/out" &&
      [ "$(grep -c 'DROP DATABASE IF EXISTS restore_test_scratch' "$FULL_LOG")" -ge 2 ] &&
      [ ! -e "$STATE_EXTRA/restore-attestation.env" ]; then
     ok 'an extra ledger migration is refused, cleaned up and not attested'
@@ -214,6 +214,43 @@ else
     bad 'an extra ledger migration is refused, cleaned up and not attested' "$(cat "$WORK/out")"
   fi
 fi
+
+# ── a ledger that is BEHIND, which is what production looks like ─────────
+#
+# The drill demanded the restored ledger equal the shipped set exactly, so the
+# one host it matters most on — production before its first cutover, some
+# migrations behind by definition — could never pass it. These two cases pin
+# the replacement: an initial run with a pending tail is accepted and recorded
+# as such, and MIGRATION_LEDGER_EXACT=1 still gets the old strictness.
+STATE_BEHIND="$FULL/state-behind"
+printf '%s\n' 'select 1;' >"$MIGRATIONS/0002_pending.sql"
+if run_full "$STATE_BEHIND"; then
+  if grep -qx 'migration_set_exact=prefix' "$STATE_BEHIND/restore-attestation.env" &&
+     grep -qx 'migrations_applied=1' "$STATE_BEHIND/restore-attestation.env" &&
+     grep -qx 'migrations_pending=1' "$STATE_BEHIND/restore-attestation.env" &&
+     grep -qx 'invariants=pass' "$STATE_BEHIND/restore-attestation.env" &&
+     (cd "$STATE_BEHIND" && sha256sum -c restore-attestation.sha256 >/dev/null); then
+    ok 'a ledger behind the shipped set passes and is attested as a prefix'
+  else
+    bad 'a ledger behind the shipped set passes and is attested as a prefix' \
+      "$(cat "$STATE_BEHIND/restore-attestation.env" 2>/dev/null || cat "$WORK/out")"
+  fi
+else
+  bad 'a ledger behind the shipped set passes and is attested as a prefix' "$(cat "$WORK/out")"
+fi
+
+STATE_STRICT="$FULL/state-strict"
+if run_full "$STATE_STRICT" MIGRATION_LEDGER_EXACT=1; then
+  bad 'MIGRATION_LEDGER_EXACT=1 still refuses a ledger that is behind' 'the drill returned success'
+else
+  if grep -qF 'MIGRATION_LEDGER_EXACT=1' "$WORK/out" &&
+     [ ! -e "$STATE_STRICT/restore-attestation.env" ]; then
+    ok 'MIGRATION_LEDGER_EXACT=1 still refuses a ledger that is behind'
+  else
+    bad 'MIGRATION_LEDGER_EXACT=1 still refuses a ledger that is behind' "$(cat "$WORK/out")"
+  fi
+fi
+rm -f "$MIGRATIONS/0002_pending.sql"
 
 if run \
   FAKE_FULL=1 \

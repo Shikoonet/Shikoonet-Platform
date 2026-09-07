@@ -46,10 +46,13 @@ BIN=/usr/local/sbin/shikoo-task-runner
 SUDOERS=/etc/sudoers.d/90-shikoo-task-runner
 RUN_AS=shikoo-deploy
 LOCKFILE=/var/lock/shikoo-task-runner.lock
+# The release lock, named here only so `status` can report it. This runner never
+# takes it — the rehearsal and Prepare do, through attestation-store.sh.
+RELEASE_LOCK=/var/lock/shikoo-deploy-production.lock
 STATE_DIR=/var/lib/shikoo
 
 # The hash of the manifest that lists every script this may run.
-MANIFEST_SHA256=964ec67794fe3e52c7cf32f89da366512730f7641b2e8fe8854e9d48688ed1a5
+MANIFEST_SHA256=67a4f5b4a4209b2dae0b5ae0b6d254a69bcf55f4a7aa4b34589a5948f9522181
 
 die() { echo "shikoo-task-runner: $*" >&2; exit 1; }
 note() {
@@ -99,9 +102,15 @@ verify_bundle() {
   local extra
   # `%P` so a manifest entry like `migrations/0001_core.sql` compares against
   # the path it actually occupies, not against its basename.
-  extra=$(comm -23 \
-    <(find "$LIB" -type f -printf '%P\n' | sort) \
-    <( { awk '{print $2}' "$LIB/MANIFEST"; echo MANIFEST; } | sort ))
+  # `LC_ALL=C` on both sides and on comm itself. The installer already carries
+  # this fix and the reason for it — this host's collation makes `sort` and
+  # `comm` disagree about ordering, so comm rejects the very input sort just
+  # produced — but the same pattern was left unfixed here. It surfaces as
+  # «comm: file 1 is not in sorted order» on stderr and an `extra` that is
+  # garbage, which would refuse a bundle that is correct.
+  extra=$(LC_ALL=C comm -23 \
+    <(find "$LIB" -type f -printf '%P\n' | LC_ALL=C sort) \
+    <( { awk '{print $2}' "$LIB/MANIFEST"; echo MANIFEST; } | LC_ALL=C sort ))
   [ -z "$extra" ] || die "unmanaged file(s) in $LIB: $(printf '%s' "$extra" | tr '\n' ' ')"
 
   require_safe_file "$BIN" 755
@@ -110,7 +119,18 @@ verify_bundle() {
 # One at a time. Two Step-E runs racing would each classify against a world the
 # other is changing.
 take_lock() {
-  exec 9>"$LOCKFILE" || die "cannot open $LOCKFILE"
+  # This runs as root in /var/lock, which is mode 1777 — whoever gets to a path
+  # first owns it. `exec 9>"$LOCKFILE"` followed a symlink and TRUNCATED its
+  # target, so any local account could have had root zero a file of their
+  # choosing by planting one here. Same protocol as the release lock in
+  # attestation-store.sh: create with O_EXCL when absent (which fails on a
+  # symlink rather than following it), validate a pre-existing one as a
+  # root-owned regular file, and open append-only either way so nothing on this
+  # path can truncate anything.
+  if ! ( set -C; : >"$LOCKFILE" ) 2>/dev/null; then
+    require_safe_file "$LOCKFILE" 600 644 660
+  fi
+  exec 9>>"$LOCKFILE" || die "cannot open $LOCKFILE"
   flock -n 9 || die "another shikoo-task-runner holds $LOCKFILE"
 }
 
@@ -227,6 +247,18 @@ case "$1" in
     verify_bundle
     echo "bundle:   verified against MANIFEST ($(grep -c . "$LIB/MANIFEST") script(s)), root-owned"
     echo "sudoers:  $([ -f "$SUDOERS" ] && echo present || echo absent)"
+    # The release lock, because its absence is invisible until a production
+    # dispatch spends a full run discovering it — which is exactly what
+    # happened on 2026-09-07. It lives on /run/lock, so a reboot removes it and
+    # nothing about the host looks different afterwards. `root:shikoo-deploy
+    # 660` is the only answer the rehearsal and Prepare both accept.
+    echo "release lock: $(
+      if [ -L "$RELEASE_LOCK" ]; then echo "SYMLINK — refuse, $RELEASE_LOCK"
+      elif [ -f "$RELEASE_LOCK" ]; then echo "$(stat -c '%U:%G:%a' "$RELEASE_LOCK") $RELEASE_LOCK"
+      elif [ -e "$RELEASE_LOCK" ]; then echo "NOT A REGULAR FILE — refuse, $RELEASE_LOCK"
+      else echo "ABSENT — run the installer, $RELEASE_LOCK"
+      fi
+    )"
     echo "evidence:"
     # All four, independently. An earlier edit replaced the staging
     # restore-drill line with the production one, which silently dropped the
