@@ -157,5 +157,55 @@ for missing in OBSERVED_SCHEMA_VERSION OBSERVED_CANDIDATE_HEALTH OBSERVED_LIVE_I
     "${missing}="
 done
 
+# ── the temporary-domain guard, which has been wrong twice ───────────────
+#
+# P5b writes a domain onto a candidate, and the only thing standing between it
+# and a LIVE customer hostname is `host_of`. That guard shipped broken twice —
+# first comparing whole URL strings, so `https://sms.chopon.uk:443` passed it;
+# then stripping the port but not the fragment, so `…#candidate` passed it.
+# Both times Coolify normalised what the guard had not, and both times nothing
+# in this repository would have noticed: no test executes prepare-production.sh.
+#
+# The function is lifted out of the real script rather than restated here — a
+# copy of the parser in the test would be a test of the copy.
+section 'the temporary-domain guard refuses every spelling of a live hostname'
+PREPARE="$ROOT/deploy/prepare-production.sh"
+eval "$(sed -n '/^host_of() {/,/^}/p' "$PREPARE")"
+if ! declare -F host_of >/dev/null; then
+  bad 'host_of could be lifted out of prepare-production.sh' 'the function was not found — did it move or get renamed?'
+else
+  ok 'host_of could be lifted out of prepare-production.sh'
+  LIVE='sms.chopon.uk'
+  for u in \
+    "https://${LIVE}" \
+    "https://${LIVE}:443" \
+    "https://${LIVE}#candidate" \
+    "https://${LIVE}#" \
+    "https://${LIVE}/" \
+    "https://${LIVE}/api/v1/sms" \
+    "https://${LIVE}?x=1" \
+    "https://u:p@${LIVE}" \
+    "https://u@${LIVE}:8443#z" \
+    "https://SMS.Chopon.UK" \
+    "http://${LIVE}:80/a?b#c"; do
+    got=$(host_of "$u")
+    if [ "$got" = "$LIVE" ]; then
+      ok "a live hostname is seen through '${u}'"
+    else
+      bad "a live hostname is seen through '${u}'" "host_of returned '${got}', so the guard would have let this reach Coolify"
+    fi
+  done
+  # And the names preparation is actually for must NOT collide with them.
+  for u in 'https://sms-next.chopon.uk' 'https://shikoo-next.chopon.uk'; do
+    got=$(host_of "$u")
+    want=${u#https://}
+    if [ "$got" = "$want" ]; then
+      ok "the temporary name '${want}' is left alone"
+    else
+      bad "the temporary name '${want}' is left alone" "host_of returned '${got}'"
+    fi
+  done
+fi
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
