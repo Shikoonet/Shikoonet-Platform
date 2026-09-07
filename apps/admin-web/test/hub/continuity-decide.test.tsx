@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createCache } from '../../src/hub/query.js';
 import { PaymentsView } from '../../src/hub/PaymentsView.js';
 import { RoleProvider } from '../../src/role.js';
