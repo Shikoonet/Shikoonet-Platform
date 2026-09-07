@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleUpdate } from '../src/handle.js';
-import { SPAM_LIMIT, SPAM_WINDOW_MS, resetSpamWindows } from '../src/spam.js';
+import { SPAM_BLOCK_REASON, SPAM_LIMIT, SPAM_WINDOW_MS, resetSpamWindows } from '../src/spam.js';
 import { db } from './helpers/env.js';
 import { ensureCatalog, makeCustomer } from './helpers/shop.js';
 import { invalidateShopSettings } from '../src/settings.js';
@@ -257,6 +257,65 @@ describe('telling the shop', () => {
     // screen that moved.
     expect(notes[0]?.text).toContain(String(telegramId));
     expect(notes[0]?.markup ?? null).toBeNull();
+  });
+
+  /**
+   * The block that used to leave no record at all.
+   *
+   * `blockForSpam` and the dashboard route share `setCustomerStatus`, and a
+   * comment above that helper said the sharing is what stops them drifting.
+   * They shared the UPDATE and drifted on everything around it: the route wrote
+   * an `audit_logs` row, this caller did not — so the blocks NOBODY WATCHED
+   * were exactly the ones with no actor and no timestamp, and «چرا این مشتری
+   * مسدود است؟» had no answer for them.
+   */
+  it('leaves an audit row naming the system, so the block can be explained later', async () => {
+    const { telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const since = Date.now();
+
+    await flood(telegramId, SPAM_LIMIT + 1);
+
+    /*
+     * Matched by this flood's own update id, not by a count.
+     *
+     * `users` is truncated with RESTART IDENTITY between tests while
+     * `audit_logs` is append-only and survives, and vitest runs the bot's files
+     * in parallel — so the same integer `entity_id` belongs to several
+     * customers at once and «exactly one row» is a claim about other tests
+     * rather than about this one. That count IS asserted, in
+     * `packages/domain/test/integration/customerStatusAudit.pg.test.ts`, where
+     * the customer is unique. What belongs here is the half only the bot can
+     * prove: that `blockForSpam` reaches the shared helper with an actor at all.
+     */
+    const rows = await db
+      .prepare(
+        `SELECT action, actor_role, actor_email, actor_telegram_id, reason, after_json
+           FROM audit_logs
+          WHERE entity_type = 'CUSTOMER' AND entity_id = ?1 AND created_at >= ?2
+            AND reason LIKE 'flood guard,%'`,
+      )
+      .bind(String(userId), since)
+      .all<{
+        action: string;
+        actor_role: string;
+        actor_email: string | null;
+        actor_telegram_id: number | null;
+        reason: string | null;
+        after_json: string;
+      }>();
+
+    const row = (rows.results ?? []).at(-1);
+    // Before this change there was NO row here at all — that is the bug.
+    expect(row).toBeDefined();
+    expect(row!.action).toBe('customer.blocked');
+    // `SYSTEM`, and no email. Nobody pressed anything, and inventing an address
+    // would be a lie in the table whose whole purpose is being believed later —
+    // the same reason 0013 gave Telegram admins a column of their own.
+    expect(row!.actor_role).toBe('SYSTEM');
+    expect(row!.actor_email).toBeNull();
+    expect(row!.actor_telegram_id).toBeNull();
+    expect(JSON.parse(row!.after_json).blocked_reason).toBe(SPAM_BLOCK_REASON);
   });
 
   it('says nothing more about a customer who is already blocked', async () => {

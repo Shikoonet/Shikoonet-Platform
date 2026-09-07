@@ -27,6 +27,7 @@ const LIST: CustomerListItem[] = [
     username: 'reza_kh',
     phone: null,
     status: 'ACTIVE',
+    blockedReason: null,
     isReseller: true,
     // Their own number is 5 and the level's is 40. Every assertion below turns
     // on the two being different.
@@ -85,6 +86,10 @@ vi.mock('../src/api.js', async () => {
       customer: (id: number) => customer(id),
       setReseller: (id: number, body: unknown) => setReseller(id, body),
       setDiscount: (id: number, body: unknown) => setDiscount(id, body),
+      // The drawer reads the customer's audit trail. Stubbed empty rather than
+      // omitted: an api object missing a method the component calls throws
+      // synchronously, which is a different failure from the one under test.
+      customerHistory: async () => ({ ok: true, items: [] }),
     },
   };
 });

@@ -153,6 +153,16 @@ export async function blockForSpam(
     userId: opts.userId,
     status: 'BLOCKED',
     reason: SPAM_BLOCK_REASON,
+    // Nobody pressed anything. `SYSTEM` rather than an invented email, for the
+    // reason 0013 gave Telegram admins their own column instead of writing a
+    // fabricated address into a table whose purpose is being believed later.
+    //
+    // This is the caller the audit exists for: until now a flood block left
+    // `users.blocked_reason` and nothing else — no actor, no timestamp, no row
+    // anywhere — so «چرا این مشتری مسدود است؟» had no answer for exactly the
+    // blocks no human witnessed.
+    actor: { kind: 'SYSTEM' },
+    note: `flood guard, update ${opts.updateId}`,
   });
   // Already blocked, or the row is gone. Either way there is nothing to
   // announce: an operator who unblocks somebody must not be told again on the
