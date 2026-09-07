@@ -319,7 +319,9 @@ bash "$HERE/sync-production-candidate-envs.sh" \
 # auto-deploy off") and no later step gave them one. So `temp_domain_verify`
 # could only ever read `fail`, and a preparation that had done everything else
 # perfectly would die at its own verification — the whole point of preparing on
-# temporary names being that they are reachable.
+# temporary names being that they are reachable through the proxy. (Reachable
+# from a browser as well needs an A record for each name at Cloudflare; the
+# pipeline does not depend on one — `observe-production.sh` says why.)
 #
 # The temporary names, not the live ones. Moving `shikoo.chopon.uk` or
 # `sms.chopon.uk` is `cutover-production.sh`, a separate dispatch; this only
