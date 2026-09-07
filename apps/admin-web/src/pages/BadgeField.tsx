@@ -23,7 +23,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { premiumEmojiTag, renderedLabelLength } from '@shikoo/contracts';
+import { premiumEmojiTag, renderedLabelLength, stripCustomEmoji } from '@shikoo/contracts';
 import { api, type EmojiPack, type ButtonStyle } from '../api.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -272,7 +272,17 @@ export function BadgeField({
             color: painted ? '#fff' : 'inherit',
           }}
         >
-          {preview}
+          {/*
+            Stripped, because this line claims to be «the button as the bot will
+            draw it» and a `<tg-emoji>` tag is the one thing that is never on
+            the button. The emoji travels in `icon_custom_emoji_id`; the label
+            carries the fallback glyph, which is exactly what `stripCustomEmoji`
+            leaves behind — and exactly what a customer without Premium sees.
+
+            Done here rather than at the three call sites that build `preview`,
+            so a fourth screen cannot get it wrong.
+          */}
+          {stripCustomEmoji(preview)}
         </span>
       </div>
     </div>
