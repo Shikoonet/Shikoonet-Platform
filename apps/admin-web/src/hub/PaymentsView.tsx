@@ -1790,6 +1790,12 @@ function ContinuityClaimsSection({
   );
 }
 
+/** The one line that says why a delivered claim is still unmatched, or nothing. */
+function ReconcileNote({ item }: { item: PaymentItem }) {
+  const note = reconcileNote(item);
+  return note === null ? null : <span className="payment-reason__text muted">{note}</span>;
+}
+
 function ContinuityRow({
   item,
   isNew,
@@ -1837,9 +1843,7 @@ function ContinuityRow({
             Without it «a bank credit was found and refused as out-of-window»
             and «nothing has arrived at all» drew identically.
           */}
-          {reconcileNote(item) && (
-            <span className="payment-reason__text muted">{reconcileNote(item)}</span>
-          )}
+          <ReconcileNote item={item} />
           <ReceiptMark item={item} />
         </div>
       </button>
