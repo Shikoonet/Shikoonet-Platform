@@ -125,6 +125,24 @@ export interface StatusChange {
   userId: number;
   status: 'ACTIVE' | 'BLOCKED';
   reason: string | null;
+  /**
+   * Who did it. Required, and not defaulted, because the whole point of this
+   * argument is that the caller that could not name an actor was the one whose
+   * blocks disappeared.
+   *
+   * The panel passes an operator's email and their role. The bot's flood guard
+   * passes `{ kind: 'SYSTEM' }` — nobody pressed anything, and inventing an
+   * email for it would be a lie in the table whose purpose is being believed
+   * later, which is the same reason 0013 gave Telegram admins their own column
+   * rather than a fabricated address.
+   */
+  actor:
+    | { kind: 'OPERATOR'; email: string; role: 'ADMIN' | 'REVIEWER' | 'READ_ONLY' }
+    | { kind: 'TELEGRAM'; telegramId: number }
+    | { kind: 'SYSTEM' };
+  /** The operator's note, distinct from `reason` which is stored on the row. */
+  note?: string | null;
+  requestId?: string | null;
 }
 
 export interface StatusChangeResult {
@@ -134,14 +152,36 @@ export interface StatusChangeResult {
 }
 
 /**
- * Blocks or unblocks. Null when there is no such customer.
+ * Blocks or unblocks, and records who did it. Null when there is no such
+ * customer.
  *
  * The reason is cleared on unblock rather than kept: a stale «چرا مسدود شد» on
  * an active account is a sentence an operator will read as current.
+ *
+ * ## Why the audit row is written HERE and not by the caller
+ *
+ * It used to be the caller's job, and only one of the two callers did it. The
+ * dashboard route wrote `customer.blocked`; `blockForSpam` in the bot did not,
+ * and the flood guard is the thing that blocks customers WITHOUT anybody
+ * watching. So the blocks most in need of an explanation were the ones with
+ * none — `users.blocked_reason` held the constant string
+ * «auto-blocked for flooding the bot» and no timestamp, no actor and no row in
+ * `audit_logs` anywhere.
+ *
+ * The comment above this function already claimed the two surfaces shared one
+ * statement so they could not drift. They shared the UPDATE and drifted on
+ * everything around it — which is rule 6 about our own code: a sentence saying
+ * something is safe is not evidence that it is.
+ *
+ * One statement, so a status change cannot be recorded without its trail or
+ * vice versa: the audit row is written from the UPDATE's own `RETURNING`, so it
+ * exists exactly when a row actually moved. A no-op change writes nothing,
+ * which is why `audit_logs` does not fill with «X → X» when an operator presses
+ * block on somebody already blocked.
  */
 export async function setCustomerStatus(
   db: Db,
-  { userId, status, reason }: StatusChange,
+  { userId, status, reason, actor, note, requestId }: StatusChange,
 ): Promise<StatusChangeResult | null> {
   const before = await db
     .prepare(`SELECT status, blocked_reason FROM users WHERE id = ?1`)
@@ -153,11 +193,62 @@ export async function setCustomerStatus(
   if (before.status === status)
     return { changed: false, before, blockedReason: before.blocked_reason };
 
-  await db
-    .prepare(`UPDATE users SET status = ?1, blocked_reason = ?2, updated_at = now() WHERE id = ?3`)
-    .bind(status, blockedReason, userId)
+  const actorEmail = actor.kind === 'OPERATOR' ? actor.email : null;
+  const actorRole = actor.kind === 'OPERATOR' ? actor.role : 'SYSTEM';
+  const actorTelegramId = actor.kind === 'TELEGRAM' ? actor.telegramId : null;
+
+  const done = await db
+    .prepare(
+      `WITH moved AS (
+         UPDATE users
+            SET status = ?1, blocked_reason = ?2, updated_at = now()
+          WHERE id = ?3 AND status <> ?1
+          RETURNING id, ?4::text AS prev_status, ?5::text AS prev_reason
+       )
+       INSERT INTO audit_logs
+         (id, actor_email, actor_role, actor_telegram_id, action, entity_type, entity_id,
+          before_json, after_json, reason, request_id, created_at)
+       SELECT ?6, ?7, ?8, ?9, ?10, 'CUSTOMER', moved.id::text,
+              json_build_object('status', moved.prev_status,
+                                'blocked_reason', moved.prev_reason)::text,
+              ?11, ?12, ?13, ?14
+         FROM moved`,
+    )
+    .bind(
+      status,
+      blockedReason,
+      userId,
+      before.status,
+      before.blocked_reason,
+      crypto.randomUUID(),
+      actorEmail,
+      actorRole,
+      actorTelegramId,
+      status === 'BLOCKED' ? 'customer.blocked' : 'customer.unblocked',
+      JSON.stringify({ status, blocked_reason: blockedReason }),
+      note ?? null,
+      requestId ?? null,
+      Date.now(),
+    )
     .run();
-  return { changed: true, before, blockedReason };
+
+  /*
+   * `changes` and not `true`.
+   *
+   * The UPDATE carries `status <> ?1`, so two callers racing on the same
+   * customer both pass the read above and only one moves the row. The loser
+   * inserts no audit row — which is right — and used to be told `changed: true`
+   * anyway. `blockForSpam` decides whether to announce a block to the shop's
+   * channel from exactly this flag, so the losing caller announced a block it
+   * had not made, with no row in `audit_logs` to explain the message.
+   *
+   * The number comes from the statement, so «the row moved», «the trail was
+   * written» and «the caller was told yes» are one fact rather than three that
+   * agree by inspection. That is what the paragraph above claims, and this is
+   * what makes it true.
+   */
+  const changed = done.meta.changes !== 0;
+  return { changed, before, blockedReason: changed ? blockedReason : before.blocked_reason };
 }
 
 export interface ResellerChange {

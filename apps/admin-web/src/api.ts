@@ -68,6 +68,8 @@ export interface CustomerListItem {
   username: string | null;
   phone: string | null;
   status: string;
+  /** Why they are blocked, on the LIST — not only in the drawer. */
+  blockedReason: string | null;
   isReseller: boolean;
   /** Their own standing percentage — stored, but not necessarily charged. */
   discountPercent: number;
@@ -89,6 +91,24 @@ export interface CustomerListPage {
   page: number;
   pageSize: number;
   items: CustomerListItem[];
+}
+
+/**
+ * One line of a customer's audit trail.
+ *
+ * `actor` is null when the row was written by the system — the bot's flood
+ * guard — and that is a real answer rather than a missing one, which is why
+ * `actorRole` carries `SYSTEM` beside it instead of the screen having to guess.
+ */
+export interface CustomerHistoryRow {
+  id: string;
+  action: string;
+  actor: string | null;
+  actorRole: string;
+  before: string | null;
+  after: string | null;
+  reason: string | null;
+  createdAt: number;
 }
 
 export interface WalletEntryRow {
@@ -1539,6 +1559,11 @@ export const api = {
       `/customers/${id}/wallet`,
       { method: 'POST', body: JSON.stringify(body) },
     );
+  },
+
+  /** «چه کسی، کِی، چرا» — the customer's own rows out of `audit_logs`. */
+  customerHistory(id: number) {
+    return req<{ ok: boolean; items: CustomerHistoryRow[] }>(`/customers/${id}/history`);
   },
 
   setStatus(id: number, body: { status: 'ACTIVE' | 'BLOCKED'; reason: string | null }) {

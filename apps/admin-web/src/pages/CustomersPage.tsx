@@ -30,9 +30,30 @@ import {
   type CustomerListItem,
   type CustomerPayments,
   type WalletEntryRow,
+  type CustomerHistoryRow,
 } from '../api.js';
 import { CopyButton } from '../CopyButton.js';
 import { count, dateTime, irrToToman, toman } from '../format.js';
+
+/**
+ * The audit action, in the panel's own language.
+ *
+ * Falls through to the raw key rather than to «نامشخص»: a new action added by a
+ * later change should show up as something searchable, not as a word that hides
+ * it. Every action on the customer reaches this, not just the two blocks —
+ * narrowing the endpoint to blocks would have answered today's question and
+ * hidden the wallet adjustment three rows above it.
+ */
+function actionLabel(action: string): string {
+  const NAMES: Record<string, string> = {
+    'customer.blocked': 'مسدود شد',
+    'customer.unblocked': 'رفع مسدودی',
+    'customer.wallet_adjusted': 'موجودی تغییر کرد',
+    'customer.discount_changed': 'تخفیف تغییر کرد',
+    'customer.reseller_changed': 'نمایندگی تغییر کرد',
+  };
+  return NAMES[action] ?? action;
+}
 
 const PAGE_SIZE = 25;
 
@@ -211,6 +232,15 @@ export function CustomersPage() {
                     >
                       {u.status === 'BLOCKED' ? 'مسدود' : 'فعال'}
                     </span>
+                    {/* On the row, because «فهرست بلاک‌شده‌ها» filtered to
+                        مسدود was a page where every line said the same word
+                        and finding out why any of them was blocked meant
+                        opening them one at a time. */}
+                    {u.status === 'BLOCKED' && u.blockedReason && (
+                      <div className="page-head__sub" title={u.blockedReason}>
+                        {u.blockedReason}
+                      </div>
+                    )}
                     {u.isReseller && (
                       // The LEVEL, not just «نماینده» — the two are priced
                       // differently and a row that does not say which is a row
@@ -271,6 +301,7 @@ function CustomerDrawer({
 }) {
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [entries, setEntries] = useState<WalletEntryRow[]>([]);
+  const [history, setHistory] = useState<CustomerHistoryRow[]>([]);
   const [payments, setPayments] = useState<CustomerPayments | null>(null);
   const [err, setErr] = useState<string | null>(null);
   /**
@@ -312,6 +343,25 @@ function CustomerDrawer({
       setTier(d.customer.tier?.code ?? (d.customer.isReseller ? 'n' : ''));
     } catch (e) {
       setErr(message(e));
+    }
+
+    /*
+     * After everything else, and in a try of its own.
+     *
+     * The trail is ADMIN-only, so a REVIEWER opening this drawer gets a 403
+     * here and must still get the drawer. It sat in the middle of the block
+     * above for one commit and cost a test five seconds to find out why that is
+     * wrong: `api.customerHistory` throwing SYNCHRONOUSLY — which is what an
+     * older bundle or a stubbed api does — skipped `setPayments` and everything
+     * under it, so an optional side-read took out the primary one. The `catch`
+     * on the promise cannot catch a throw that happens before the promise
+     * exists.
+     */
+    try {
+      const h = await api.customerHistory(id);
+      setHistory(h.items);
+    } catch {
+      setHistory([]);
     }
   }
 
@@ -677,6 +727,46 @@ function CustomerDrawer({
               >
                 مسدود کردن
               </button>
+            </div>
+          )}
+
+          <h4>تاریخچهٔ تغییرات</h4>
+          {/*
+            The screen that said «در تاریخچهٔ تغییرات ثبت ماند» after every
+            block, and then had nowhere to show it. `audit_logs` had three
+            readers in the worker and all three were about revenue.
+
+            It matters most for the blocks nobody watched: the bot's flood guard
+            calls the same helper, and until `setCustomerStatus` started writing
+            the row itself those blocks left `blocked_reason` and nothing else —
+            no actor, no time.
+          */}
+          {history.length === 0 ? (
+            <p className="muted">چیزی ثبت نشده است.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="app-table">
+                <thead>
+                  <tr>
+                    <th>چه شد</th>
+                    <th>چه کسی</th>
+                    <th>چرا</th>
+                    <th>کِی</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((h) => (
+                    <tr key={h.id}>
+                      <td>{actionLabel(h.action)}</td>
+                      {/* «ربات» and not an empty cell: the flood guard is a real
+                          actor, and a blank here reads as missing data. */}
+                      <td className="ltr">{h.actor ?? (h.actorRole === 'SYSTEM' ? 'ربات' : '—')}</td>
+                      <td>{h.reason ?? '—'}</td>
+                      <td>{dateTime(new Date(h.createdAt).toISOString())}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
 

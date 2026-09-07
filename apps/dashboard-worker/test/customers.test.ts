@@ -520,6 +520,46 @@ describe('POST /api/v1/admin/customers/:id/status', () => {
     expect(log).toMatchObject({ action: 'customer.blocked', reason: 'chargeback fraud' });
   });
 
+  /**
+   * The header the caller was handed and the `request_id` on the row are the
+   * same string.
+   *
+   * `e2e/request-id.spec.ts` asserts exactly this through a browser, and it is
+   * what caught the bug: moving the audit write into `setCustomerStatus` I
+   * passed `cf-ray`, which is not what the worker generates — Cloudflare is not
+   * in front of this any more, so the header is absent and the row recorded
+   * null. Every unit suite stayed green because the pairing spans the HTTP
+   * response and the database, and nothing below the browser walk looked at
+   * both.
+   *
+   * This does, for a tenth of the cost. It does not replace the e2e — that one
+   * proves a real browser is handed the header — it stops the same mistake
+   * reaching it.
+   */
+  it('records the id the response was handled under, not a header nobody sets', async () => {
+    const { id } = await makeCustomer('reqid');
+    const res = await app.request(
+      `/api/v1/admin/customers/${id}/status`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: 'BLOCKED', reason: 'request id' }),
+      },
+      envAs(ADMIN),
+    );
+    expect(res.status).toBe(200);
+
+    const header = res.headers.get('x-request-id');
+    expect(header).toBeTruthy();
+
+    const log = await baseEnv.DB.prepare(
+      `SELECT request_id FROM audit_logs WHERE entity_id = ?1 AND action = 'customer.blocked'`,
+    )
+      .bind(String(id))
+      .first<{ request_id: string | null }>();
+    expect(log?.request_id).toBe(header);
+  });
+
   it('clears the reason on unblock', async () => {
     const { id } = await makeCustomer('unblockme', { status: 'BLOCKED' });
     await baseEnv.DB.prepare(`UPDATE users SET blocked_reason = 'old' WHERE id = ?1`)
