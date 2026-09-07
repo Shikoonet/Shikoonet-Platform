@@ -204,6 +204,7 @@ candidate_ingest=$CAND_INGEST
 candidate_dashboard=$CAND_DASHBOARD
 candidate_bot=$CAND_BOT
 EOF
+  ( cd "$dir/state" && sha256sum preparation.env >preparation.sha256 )
   printf '%s\n' "$dir"
 }
 
@@ -213,7 +214,8 @@ run_cutover() { # case-dir output [extra env]
   set +e
   env PATH="$BIN:$PATH" CONF="$CONF" STATE="$dir/state" IMAGE_NAME="$IMAGE" \
     FAKE_STATE="$dir" FAKE_API_LOG="$dir/api.log" FAKE_DOCKER_LOG="$dir/docker.log" \
-    "$@" bash "$SCRIPT" "$SHA" "$DIGEST" >"$output" 2>&1
+    "$@" bash "$SCRIPT" "$SHA" "$DIGEST" \
+    "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT" >"$output" 2>&1
   local rc=$?
   set -e
   return $rc
@@ -299,9 +301,21 @@ else
   bad 'two current bot containers are refused before a domain moves' "$(tail -8 "$MULTIPLE_OUT")"
 fi
 
+TAMPERED=$(make_case tampered)
+TAMPERED_OUT="$TAMPERED/output.log"
+printf 'candidate_bot=ccccccccccccccccccccccc3\n' >>"$TAMPERED/state/preparation.env"
+if run_cutover "$TAMPERED" "$TAMPERED_OUT"; then
+  bad 'a changed host ledger is refused before a domain moves' 'the checksum was ignored'
+elif grep -qF 'host-side preparation ledger checksum does not verify' "$TAMPERED_OUT" &&
+  [ ! -s "$TAMPERED/api.log" ] && [ ! -s "$TAMPERED/docker.log" ]; then
+  ok 'a changed host ledger is refused before a domain moves'
+else
+  bad 'a changed host ledger is refused before a domain moves' "$(tail -8 "$TAMPERED_OUT")"
+fi
+
 for secret in "$SECRET_TOKEN" "$SECRET_DB"; do
   if grep -qF -- "$secret" "$HAPPY_OUT" "$RECOVERY_OUT" "$MULTIPLE_OUT" \
-    "$HAPPY/api.log" "$RECOVERY/api.log" "$MULTIPLE/api.log"; then
+    "$TAMPERED_OUT" "$HAPPY/api.log" "$RECOVERY/api.log" "$MULTIPLE/api.log" "$TAMPERED/api.log"; then
     bad 'cutover output contains no credential' 'a fake credential was printed'
   else
     ok 'cutover output contains no credential'
