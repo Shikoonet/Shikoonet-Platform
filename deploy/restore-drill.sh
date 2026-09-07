@@ -249,8 +249,14 @@ say "  $LEDGER applied, latest $LATEST"
 # a host that should already be current.
 DRIFTED=""
 PENDING=""
-DISK_NAMES=$(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '0*.sql' -printf '%f\n' | sort)
-LEDGER_NAMES=$(psql_ -tAd "$SCRATCH" -c "SELECT name FROM schema_migrations ORDER BY name")
+# One collation on both sides. `sort` follows the host locale and Postgres
+# follows the database's, and the prefix test below compares their outputs
+# directly — so a host whose locale orders differently from the database would
+# refuse a perfectly good ledger, reporting «a gap or a divergent branch» about
+# a disagreement over sorting. The same class of bug as the `comm` one in the
+# task runner, one process boundary further out.
+DISK_NAMES=$(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '0*.sql' -printf '%f\n' | LC_ALL=C sort)
+LEDGER_NAMES=$(psql_ -tAd "$SCRATCH" -c "SELECT name FROM schema_migrations ORDER BY name COLLATE \"C\"")
 LEDGER_COUNT=$(printf '%s\n' "$LEDGER_NAMES" | grep -c . || true)
 DISK_COUNT=$(printf '%s\n' "$DISK_NAMES" | grep -c . || true)
 

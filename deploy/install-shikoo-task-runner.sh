@@ -48,7 +48,7 @@ BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
 # The one hard-coded value. Everything else is derived from the manifest it
 # pins, and a CI test asserts this still equals
 # sha256sum deploy/shikoo-task-runner.manifest.
-MANIFEST_SHA256=67a4f5b4a4209b2dae0b5ae0b6d254a69bcf55f4a7aa4b34589a5948f9522181
+MANIFEST_SHA256=81c00dad5708a82e7d31c9bec4538b1cbf49a6cada5b3c7465ed4d3898a955a4
 
 say() { echo "[install] $*"; }
 die() { echo "[install] FAILED: $*" >&2; exit 1; }
@@ -248,9 +248,14 @@ if command -v systemd-tmpfiles >/dev/null 2>&1; then
     fail_back "$RELEASE_LOCK is not root:$RUN_AS 0660 after systemd-tmpfiles"
   say "release lock will be recreated on boot ($TMPFILES)"
 else
-  # Not fatal: the lock exists now and the release path works. But say it
-  # plainly, because the failure it predicts arrives silently and much later.
-  say "WARNING: systemd-tmpfiles is not installed — $TMPFILES is written but nothing will apply it, so the release lock will NOT survive a reboot"
+  # Fail, rather than warn. This installer already requires systemd — it arms
+  # its rollback with `systemctl enable --now` above and dies without it — so a
+  # host reaching here without `systemd-tmpfiles` is not a lesser configuration
+  # to tolerate, it is one this script has already refused to run on. And the
+  # failure it would otherwise leave behind is the exact one this whole block
+  # exists to prevent: a release lock that is correct today and silently gone
+  # after the next reboot, discovered by a production dispatch.
+  fail_back "systemd-tmpfiles is not installed, so nothing would recreate $RELEASE_LOCK after a reboot"
 fi
 
 # ── sudoers ──────────────────────────────────────────────────────────────

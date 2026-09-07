@@ -124,9 +124,26 @@ die() {
 # ---------------------------------------------------------------------- lock
 # Fail fast rather than queue: GitHub's environment concurrency already queues,
 # so a second copy here means a hand-run racing CI, which is worth seeing.
-# `>>`, not `>`: /var/lock is mode 1777, so a symlink planted at this path by
-# any local account would have `>` truncate whatever it points at. Append never
-# truncates, and the lock does not care what the file contains.
+# /var/lock is mode 1777, so any local account can create this path first, and
+# an opened symlink is worse than it looks in BOTH directions: `>` truncates
+# whatever it points at, and the flock then lands on that other inode — so two
+# deploys each "hold the lock" on different files and the mutual exclusion is
+# gone with no error anywhere. `>>` alone fixes only the truncation half.
+#
+# So: refuse a symlink, create with O_EXCL when the path is free (which fails on
+# a symlink rather than following it), and open append-only. Same protocol the
+# release lock uses in attestation-store.sh — one lesson, written once.
+[ ! -L "$LOCK_FILE" ] || die "$LOCK_FILE is a symlink — refusing to lock through it"
+if ! ( set -C; : >"$LOCK_FILE" ) 2>/dev/null; then
+  [ -f "$LOCK_FILE" ] && [ ! -L "$LOCK_FILE" ] ||
+    die "$LOCK_FILE exists and is not a regular file — refusing to lock on it"
+  lock_owner=$(stat -c '%u' "$LOCK_FILE" 2>/dev/null) || die "cannot stat $LOCK_FILE"
+  # Ours or root's. Anything else means somebody outside this pipeline got to
+  # the path first, and adopting it is how a deploy waits for ever on a lock
+  # nobody in this pipeline holds.
+  [ "$lock_owner" = "$(id -u)" ] || [ "$lock_owner" = '0' ] ||
+    die "$LOCK_FILE is owned by uid ${lock_owner}, neither root nor $(id -un) — refusing to lock on it"
+fi
 exec 9>>"$LOCK_FILE"
 flock -n 9 || die "another deploy of $ENV_ARG holds $LOCK_FILE"
 
