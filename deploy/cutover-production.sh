@@ -60,6 +60,9 @@ die() {
   die "the host-side preparation ledger has no checksum"
 ( cd "$STATE" && sha256sum -c --status preparation.sha256 ) ||
   die "the host-side preparation ledger checksum does not verify"
+if cut -d= -f1 "$STATE/preparation.env" | LC_ALL=C sort | uniq -d | grep -q .; then
+  die "the host-side preparation ledger contains a duplicate key and is ambiguous"
+fi
 
 cfg() { sed -n "s/^$1=//p" "$CONF" | head -n1; }
 COOLIFY_URL=$(cfg COOLIFY_URL)
@@ -83,6 +86,16 @@ for candidate in "$EXPECTED_CAND_INGEST" "$EXPECTED_CAND_DASHBOARD" "$EXPECTED_C
   [[ $candidate =~ ^[a-z0-9]{20,32}$ ]] ||
     die "a candidate uuid is missing or malformed"
 done
+if [ "$EXPECTED_CAND_INGEST" = "$EXPECTED_CAND_DASHBOARD" ] ||
+  [ "$EXPECTED_CAND_INGEST" = "$EXPECTED_CAND_BOT" ] ||
+  [ "$EXPECTED_CAND_DASHBOARD" = "$EXPECTED_CAND_BOT" ]; then
+  die "the verified preparation artifact does not name three distinct candidate applications"
+fi
+if [ "$CAND_INGEST" = "$CAND_DASHBOARD" ] ||
+  [ "$CAND_INGEST" = "$CAND_BOT" ] ||
+  [ "$CAND_DASHBOARD" = "$CAND_BOT" ]; then
+  die "the host ledger does not name three distinct candidate applications"
+fi
 if [ "$CAND_INGEST" != "$EXPECTED_CAND_INGEST" ] ||
   [ "$CAND_DASHBOARD" != "$EXPECTED_CAND_DASHBOARD" ] ||
   [ "$CAND_BOT" != "$EXPECTED_CAND_BOT" ]; then

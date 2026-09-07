@@ -207,6 +207,10 @@ jobs:
           SHA: ${{ needs.cutover-gate.outputs.sha }}
         run: |
           set -Eeuo pipefail
+          if cut -d= -f1 preparation/preparation.env | LC_ALL=C sort | uniq -d | grep -q .; then
+            echo "::error::the verified preparation artifact contains a duplicate key"
+            exit 1
+          fi
           field() { sed -n "s/^$1=//p" preparation/preparation.env | head -1; }
           CANDIDATE_INGEST=$(field candidate_ingest)
           CANDIDATE_DASHBOARD=$(field candidate_dashboard)
@@ -217,6 +221,12 @@ jobs:
               exit 1
             }
           done
+          if [ "$CANDIDATE_INGEST" = "$CANDIDATE_DASHBOARD" ] ||
+            [ "$CANDIDATE_INGEST" = "$CANDIDATE_BOT" ] ||
+            [ "$CANDIDATE_DASHBOARD" = "$CANDIDATE_BOT" ]; then
+            echo "::error::the verified preparation artifact does not name three distinct candidate applications"
+            exit 1
+          fi
           bash deploy/run-on-host.sh deploy/cutover-production.sh \
             '${{ needs.cutover-gate.outputs.sha }}' \
             '${{ needs.cutover-gate.outputs.digest }}' \

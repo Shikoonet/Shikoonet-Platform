@@ -313,9 +313,38 @@ else
   bad 'a changed host ledger is refused before a domain moves' "$(tail -8 "$TAMPERED_OUT")"
 fi
 
+DUPLICATE=$(make_case duplicate)
+DUPLICATE_OUT="$DUPLICATE/output.log"
+printf 'candidate_bot=ccccccccccccccccccccccc3\n' >>"$DUPLICATE/state/preparation.env"
+( cd "$DUPLICATE/state" && sha256sum preparation.env >preparation.sha256 )
+if run_cutover "$DUPLICATE" "$DUPLICATE_OUT"; then
+  bad 'a checksum-valid host ledger with a duplicate key is refused' 'the ambiguous ledger was accepted'
+elif grep -qF 'host-side preparation ledger contains a duplicate key' "$DUPLICATE_OUT" &&
+  [ ! -s "$DUPLICATE/api.log" ] && [ ! -s "$DUPLICATE/docker.log" ]; then
+  ok 'a checksum-valid host ledger with a duplicate key is refused before any API or Docker call'
+else
+  bad 'a checksum-valid host ledger with a duplicate key is refused before any API or Docker call' \
+    "$(tail -8 "$DUPLICATE_OUT")"
+fi
+
+REUSED=$(make_case reused)
+REUSED_OUT="$REUSED/output.log"
+sed -i "s/^candidate_dashboard=.*/candidate_dashboard=$CAND_INGEST/" "$REUSED/state/preparation.env"
+( cd "$REUSED/state" && sha256sum preparation.env >preparation.sha256 )
+if run_cutover "$REUSED" "$REUSED_OUT"; then
+  bad 'a checksum-valid host ledger that reuses a candidate is refused' 'the ambiguous roles were accepted'
+elif grep -qF 'host ledger does not name three distinct candidate applications' "$REUSED_OUT" &&
+  [ ! -s "$REUSED/api.log" ] && [ ! -s "$REUSED/docker.log" ]; then
+  ok 'a checksum-valid host ledger that reuses a candidate is refused before any API or Docker call'
+else
+  bad 'a checksum-valid host ledger that reuses a candidate is refused before any API or Docker call' \
+    "$(tail -8 "$REUSED_OUT")"
+fi
+
 for secret in "$SECRET_TOKEN" "$SECRET_DB"; do
   if grep -qF -- "$secret" "$HAPPY_OUT" "$RECOVERY_OUT" "$MULTIPLE_OUT" \
-    "$TAMPERED_OUT" "$HAPPY/api.log" "$RECOVERY/api.log" "$MULTIPLE/api.log" "$TAMPERED/api.log"; then
+    "$TAMPERED_OUT" "$DUPLICATE_OUT" "$REUSED_OUT" "$HAPPY/api.log" "$RECOVERY/api.log" \
+    "$MULTIPLE/api.log" "$TAMPERED/api.log" "$DUPLICATE/api.log" "$REUSED/api.log"; then
     bad 'cutover output contains no credential' 'a fake credential was printed'
   else
     ok 'cutover output contains no credential'

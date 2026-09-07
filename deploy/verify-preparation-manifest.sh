@@ -44,6 +44,10 @@ fail() {
 ( cd "$DIR" && sha256sum -c --status preparation.sha256 ) ||
   fail "preparation manifest checksum does not verify — it was altered after Prepare Production wrote it"
 
+if cut -d= -f1 "$DIR/preparation.env" | LC_ALL=C sort | uniq -d | grep -q .; then
+  fail "preparation manifest contains a duplicate key — a checksum-valid but ambiguous ledger is not trusted"
+fi
+
 field() { sed -n "s/^$1=//p" "$DIR/preparation.env" | head -1; }
 
 [ "$(field schema_version)" = '1' ] || fail "unsupported preparation schema_version '$(field schema_version)'"
@@ -51,6 +55,19 @@ field() { sed -n "s/^$1=//p" "$DIR/preparation.env" | head -1; }
 : "${EXPECTED_SHA:?EXPECTED_SHA is not set — refusing to verify against nothing}"
 : "${EXPECTED_DIGEST:?EXPECTED_DIGEST is not set — refusing to verify against nothing}"
 : "${EXPECTED_STAGING_RUN_ID:?EXPECTED_STAGING_RUN_ID is not set — refusing to verify against nothing}"
+
+CANDIDATE_INGEST=$(field candidate_ingest)
+CANDIDATE_DASHBOARD=$(field candidate_dashboard)
+CANDIDATE_BOT=$(field candidate_bot)
+for candidate in "$CANDIDATE_INGEST" "$CANDIDATE_DASHBOARD" "$CANDIDATE_BOT"; do
+  [[ $candidate =~ ^[a-z0-9]{20,32}$ ]] ||
+    fail "the preparation manifest has a missing or malformed candidate uuid"
+done
+if [ "$CANDIDATE_INGEST" = "$CANDIDATE_DASHBOARD" ] ||
+  [ "$CANDIDATE_INGEST" = "$CANDIDATE_BOT" ] ||
+  [ "$CANDIDATE_DASHBOARD" = "$CANDIDATE_BOT" ]; then
+  fail "the preparation manifest does not name three distinct candidate applications"
+fi
 
 # Every observation is required. An unset one is a check that did not happen,
 # and a check that did not happen must never read as a check that passed — the
