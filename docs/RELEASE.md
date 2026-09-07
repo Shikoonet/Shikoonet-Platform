@@ -525,6 +525,11 @@ lock count that is not exactly one, a vanished backup.
    `/var/lib/shikoo/restore-attestation.env` — the same shape as the Coolify
    contract attestation step 5 requires, and for the same reason: the proof has
    to exist before the release, and the release only has to be able to read it.
+   The drill publishes both that file and its checksum as
+   `root:shikoo-deploy 0640`: root remains the only writer, while the unprivileged
+   production workflow can read and verify the proof. `root:root 0640` is a
+   broken installation even if `shikoo-task-runner status` calls the evidence
+   valid, because that status command itself runs as root.
 
    Two things it checks that are easy to trip over. The drill writes **one**
    attestation for the whole host, so a `restore-drill-staging` run overwrites
