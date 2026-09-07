@@ -83,10 +83,11 @@ for candidate in "$EXPECTED_CAND_INGEST" "$EXPECTED_CAND_DASHBOARD" "$EXPECTED_C
   [[ $candidate =~ ^[a-z0-9]{20,32}$ ]] ||
     die "a candidate uuid is missing or malformed"
 done
-[ "$CAND_INGEST" = "$EXPECTED_CAND_INGEST" ] &&
-  [ "$CAND_DASHBOARD" = "$EXPECTED_CAND_DASHBOARD" ] &&
-  [ "$CAND_BOT" = "$EXPECTED_CAND_BOT" ] ||
+if [ "$CAND_INGEST" != "$EXPECTED_CAND_INGEST" ] ||
+  [ "$CAND_DASHBOARD" != "$EXPECTED_CAND_DASHBOARD" ] ||
+  [ "$CAND_BOT" != "$EXPECTED_CAND_BOT" ]; then
   die "the host ledger names different candidates than the verified preparation artifact"
+fi
 
 # The host's own record has to agree with what the workflow was told. Two
 # independent stories about which release this is, and both have to match.
