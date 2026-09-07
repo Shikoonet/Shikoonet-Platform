@@ -75,6 +75,33 @@ else
   bad 'an existing canonical pointer cannot be replaced' "$(cat "$WORK/readopt.log")"
 fi
 
+# Materialise a competing, valid pointer at the exact commit boundary. A
+# check-then-move implementation overwrites it; atomic no-replace must lose the
+# race and leave the other cutover's identity byte-for-byte intact.
+RACE_BIN="$WORK/race-bin"
+RACE_POINTER="$WORK/race-current.env"
+RACE_WINNER="$WORK/race-winner.env"
+mkdir -p "$RACE_BIN"
+cp "$WORK/good.env" "$RACE_WINNER"
+sed -i "s/^app_ingest=.*/app_ingest=$OLD_INGEST/; s/^app_dashboard=.*/app_dashboard=$OLD_DASHBOARD/; s/^app_bot=.*/app_bot=$OLD_BOT/" "$RACE_WINNER"
+cat >"$RACE_BIN/ln" <<'FAKE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cp "$RACE_WINNER" "$RACE_POINTER"
+exec /usr/bin/ln "$@"
+FAKE
+chmod +x "$RACE_BIN/ln"
+if PATH="$RACE_BIN:$PATH" RACE_WINNER="$RACE_WINNER" RACE_POINTER="$RACE_POINTER" \
+  bash "$SCRIPT" adopt "$RACE_POINTER" "$NEW_INGEST" "$NEW_DASHBOARD" "$NEW_BOT" "$SHA" "$DIGEST" \
+  >"$WORK/race.log" 2>&1; then
+  bad 'concurrent adoption cannot replace the winning pointer' 'the losing adoption reported success'
+elif grep -qF 'appeared while adopting' "$WORK/race.log" &&
+  cmp -s "$RACE_POINTER" "$RACE_WINNER"; then
+  ok 'concurrent adoption cannot replace the winning pointer'
+else
+  bad 'concurrent adoption cannot replace the winning pointer' "$(cat "$WORK/race.log")"
+fi
+
 printf 'app_bot=ccccccccccccccccccccccc3\n' >>"$POINTER"
 if bash "$SCRIPT" resolve "$POINTER" "$CONF" >"$WORK/duplicate.log" 2>&1; then
   bad 'a duplicate pointer key is refused' 'it resolved ambiguously'
@@ -105,7 +132,7 @@ else
 fi
 
 if grep -qF "$SECRET" "$OUT" "$WORK/adopted.log" "$WORK/duplicate.log" \
-  "$WORK/readopt.log" "$WORK/malformed.log" "$WORK/symlink.log"; then
+  "$WORK/readopt.log" "$WORK/race.log" "$WORK/malformed.log" "$WORK/symlink.log"; then
   bad 'the resolver never prints a credential from deploy.env' 'the fake token reached output'
 else
   ok 'the resolver never prints a credential from deploy.env'

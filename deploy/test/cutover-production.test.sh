@@ -211,7 +211,7 @@ EOF
 }
 
 run_cutover_mode() { # case-dir output handover-mode [extra env]
-  local dir=$1 output=$2 handover_mode=$3
+  local dir="$1" output="$2" handover_mode="$3"
   shift 3
   set +e
   env PATH="$BIN:$PATH" CONF="$CONF" STATE="$dir/state" IMAGE_NAME="$IMAGE" \
