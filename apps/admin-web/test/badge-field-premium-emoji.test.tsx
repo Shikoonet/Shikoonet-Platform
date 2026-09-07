@@ -11,7 +11,7 @@
  * something that never reaches a customer.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { BadgeField } from '../src/pages/BadgeField.js';
 import { RoleProvider } from '../src/role.js';
