@@ -143,10 +143,11 @@ jobs:
           persist-credentials: false
 
       # P1–P10, on the box, in one script so the order cannot be rearranged by
-      # editing YAML. The dump attestation is verified as its first act, before
-      # a migration, a Coolify write or a ledger line — the attestation lives on
-      # the secure host because the dump may not leave it, which is why this
-      # check is here rather than in the gate.
+      # editing YAML. Its first act used to be verifying a dump-rehearsal
+      # attestation; that gate guarded a release path that migrated the legacy
+      # dataset, and the owner retired that path on 2026-09-07 — the release
+      # ships the platform, and loading data is an owner operation after
+      # cutover. The script records the decision where the gate stood.
       - name: prepare production (P1–P10)
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}

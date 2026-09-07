@@ -258,6 +258,40 @@ else
   fail_back "systemd-tmpfiles is not installed, so nothing would recreate $RELEASE_LOCK after a reboot"
 fi
 
+# ── the restore drill, on a clock instead of a person ─────────────────────
+#
+# P3 refuses a restore attestation older than 48 hours, and the drill needs
+# root — which meant every release began with somebody ssh-ing in to run it by
+# hand, and a release attempted 49 hours after the last one failed on
+# freshness alone. The owner's direction (2026-09-07) is that a release must
+# not require hands on the host, so the host runs the drill itself: daily,
+# with a randomized delay so it does not land on the minute everything else
+# does, and `Persistent=true` so a boot that slept through the tick runs it on
+# wake. A failed drill writes no attestation, so a broken backup surfaces as
+# P3 refusing stale evidence — the drill failing loudly into the journal is
+# the alarm, and the release refusing is the backstop.
+cat >/etc/systemd/system/shikoo-restore-drill.service <<UNIT
+[Unit]
+Description=Prove the newest production backup restores (writes the P3 attestation)
+[Service]
+Type=oneshot
+ExecStart=/bin/sh $LIB/restore-drill.sh production
+UNIT
+cat >/etc/systemd/system/shikoo-restore-drill.timer <<'UNIT'
+[Unit]
+Description=Daily proof that the newest production backup restores
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now shikoo-restore-drill.timer >/dev/null 2>&1 ||
+  fail_back "could not arm the daily restore drill timer"
+say "restore drill armed daily (shikoo-restore-drill.timer); P3's 48h freshness needs no hands"
+
 # ── sudoers ──────────────────────────────────────────────────────────────
 TMP_SUDO=$(mktemp)
 cp "$STAGE/shikoo-task-runner.sudoers" "$TMP_SUDO"
