@@ -19,7 +19,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { METER_INTERVAL_MS, meterResellers } from '../src/resellerMeter.js';
 import { db } from './helpers/env.js';
-import { ensureCatalog, makeCustomer, providerId } from './helpers/shop.js';
+import { ensureCatalog, makeCustomer } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 8, 7, 12, 0, 0);
 const GIB = 1024 ** 3;
@@ -140,21 +140,34 @@ async function purge(): Promise<void> {
 
 let panelId: number;
 
+/**
+ * A panel OF THIS FILE'S OWN, rather than a borrowed seeded one.
+ *
+ * `sync.test.ts` repoints `sim-vip` at a fake host, and this file used to do
+ * the same. That leaves `sim-vip` carrying `base_url = 'https://meter.test'`
+ * and a secret ref only this process holds — the bot suites share one database
+ * and run in one worker, so the next file to reach for that panel inherits it.
+ * `ensureCatalog()` puts `kind` back and touches neither of the other two.
+ *
+ * So this suite creates its own provider and leaves every seeded row alone.
+ * Cheaper than an `afterAll` that restores fields, and it cannot forget.
+ */
 beforeAll(async () => {
   await ensureCatalog();
-  // The same shape `sync.test.ts` uses: the seeded VIP panel is pointed at a
-  // fake host and given a secret this process holds, so the adapter's own
-  // login runs rather than being stubbed out.
   process.env[`PANEL_${SECRET_REF.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`] = 'admin:secret';
-  panelId = await providerId('sim-vip');
-  await db
+  const row = await db
     .prepare(
-      `UPDATE provisioning_providers
-          SET base_url = 'https://meter.test', secret_ref = ?2, kind = 'pasarguard'
-        WHERE id = ?1`,
+      `INSERT INTO provisioning_providers (code, name, kind, base_url, secret_ref, status)
+       VALUES ('sim-meter-panel', 'panel for the meter suite', 'pasarguard',
+               'https://meter.test', ?1, 'ACTIVE')
+       ON CONFLICT (code) DO UPDATE
+         SET base_url = EXCLUDED.base_url, secret_ref = EXCLUDED.secret_ref,
+             kind = EXCLUDED.kind
+       RETURNING id`,
     )
-    .bind(panelId, SECRET_REF)
-    .run();
+    .bind(SECRET_REF)
+    .first<{ id: number }>();
+  panelId = row!.id;
 });
 
 beforeEach(async () => {

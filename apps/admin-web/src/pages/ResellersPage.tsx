@@ -20,7 +20,7 @@
  * about money those are the same glyph and opposite facts.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, type ResellerReading, type ResellerRow } from '../api.js';
 import { count, dateOnly, dateTime, gigabytes } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
@@ -41,6 +41,14 @@ const STATUS_LABEL: Record<string, string> = {
 function capacityLine(row: ResellerRow): string {
   if (row.dataLimitBytes === null) return 'نامحدود';
   const used = row.billableBytes;
+  // A cap of ZERO is a real state and not the same as no cap — the whole
+  // reason the adapter refuses to collapse `null` into `0`. It is what the
+  // panel reports for an admin who may use nothing at all, and dividing by it
+  // would put «NaN٪» or «Infinity٪» on a screen about money. Said in words
+  // instead.
+  if (row.dataLimitBytes === 0) {
+    return used === null || used === 0 ? 'سقف صفر' : `${gigabytes(used)} با سقف صفر`;
+  }
   if (used === null) return `${gigabytes(row.dataLimitBytes)} خریده`;
   const pct = Math.round((used / row.dataLimitBytes) * 100);
   return `${gigabytes(used)} از ${gigabytes(row.dataLimitBytes)} (${count(pct)}٪)`;
@@ -53,6 +61,10 @@ export function ResellersPage() {
   const [busy, setBusy] = useState<number | null>(null);
   const [open, setOpen] = useState<number | null>(null);
   const [readings, setReadings] = useState<ResellerReading[]>([]);
+  // What is selected RIGHT NOW, readable from inside a promise that started
+  // earlier. `open` in a closure is the value it had when the request began.
+  const idRef = useRef<number | null>(null);
+  idRef.current = open;
 
   async function load() {
     try {
@@ -73,12 +85,20 @@ export function ResellersPage() {
       setOpen(null);
       return;
     }
+    // Opened optimistically so a slow answer cannot land under the wrong row.
+    // Open A, then B: if A's request finishes last, writing its rows without
+    // this check would show A's ledger beneath B's name — a reseller looking
+    // at somebody else's usage, which on this screen is the one mistake worth
+    // ruling out.
+    setOpen(id);
+    setReadings([]);
     try {
       const res = await api.resellerReadings(id);
-      setReadings(res.items);
-      setOpen(id);
+      setReadings((prev) => (idRef.current === id ? res.items : prev));
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : 'خوانش‌ها خوانده نشد');
+      if (idRef.current === id) {
+        setErr(e instanceof ApiError ? e.message : 'خوانش‌ها خوانده نشد');
+      }
     }
   }
 
