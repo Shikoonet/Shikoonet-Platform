@@ -46,8 +46,11 @@ EOF
 # sees what the first one created — which is the whole property under test.
 STATE="$WORK/apps.json"
 POSTS="$WORK/posts.log"
+HARDENS="$WORK/hardens.log"
 printf '[]' >"$STATE"
 : >"$POSTS"
+: >"$HARDENS"
+export FAKE_HARDENS="$HARDENS"
 
 cat >"$BIN/curl" <<FAKE
 #!/usr/bin/env bash
@@ -119,6 +122,7 @@ chmod +x "$BIN/curl"
 cat >"$BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+printf 'checked\n' >>"$FAKE_HARDENS"
 printf 'f|f\n'
 FAKE
 chmod +x "$BIN/docker"
@@ -153,6 +157,12 @@ for role in ingest dashboard bot; do
 done
 
 POSTS_AFTER_FIRST=$(grep -c . "$POSTS" || true)
+HARDENS_AFTER_FIRST=$(grep -c . "$HARDENS" || true)
+if [ "$HARDENS_AFTER_FIRST" = '3' ]; then
+  ok 'the first run proves all three new candidates hardened'
+else
+  bad 'the first run proves all three new candidates hardened' "observed ${HARDENS_AFTER_FIRST} settings reads"
+fi
 
 OUT2="$WORK/run2.txt"
 if run_ensure "$OUT2"; then ok 'the second run succeeds'; else
@@ -172,6 +182,14 @@ if [ "$POSTS_AFTER_FIRST" = "$POSTS_AFTER_SECOND" ]; then
 else
   bad 'the second run makes no create call at all' \
     "create calls went from ${POSTS_AFTER_FIRST} to ${POSTS_AFTER_SECOND}"
+fi
+
+HARDENS_AFTER_SECOND=$(grep -c . "$HARDENS" || true)
+if [ "$HARDENS_AFTER_SECOND" = '6' ]; then
+  ok 'the second run re-proves all three reused candidates hardened'
+else
+  bad 'the second run re-proves all three reused candidates hardened' \
+    "settings reads went from ${HARDENS_AFTER_FIRST} to ${HARDENS_AFTER_SECOND}"
 fi
 
 # Same uuids, not merely the same count.
@@ -258,6 +276,7 @@ printf '[]' >"$STATE"
 cat >"$BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+printf 'checked\n' >>"$FAKE_HARDENS"
 printf 't|f
 '   # the PATCH answered 200 and Auto Deploy is still on
 FAKE
@@ -295,6 +314,7 @@ fi
 cat >"$BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+printf 'checked\n' >>"$FAKE_HARDENS"
 printf 'f|f
 '
 FAKE
