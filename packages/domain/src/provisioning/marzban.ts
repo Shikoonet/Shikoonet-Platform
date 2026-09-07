@@ -39,6 +39,7 @@
  */
 
 import type {
+  AccountDeleteResult,
   AccountAction,
   AccountActionResult,
   AccountsResult,
@@ -82,6 +83,8 @@ interface MarzbanUser {
   subscription_url?: unknown;
   expire?: unknown;
   status?: unknown;
+  /** ISO-ish timestamp of the last connection, or null/absent. */
+  online_at?: unknown;
   used_traffic?: unknown;
   data_limit?: unknown;
   note?: unknown;
@@ -948,6 +951,49 @@ export const marzbanAdapter: ProvisioningAdapter = {
   },
 
   /**
+   * Removes one account. `DELETE /api/user/{username}` — the same call
+   * Mirzabot's `Panel->RemoveUser` makes (`Marzban.php`).
+   *
+   * 404 is success and `gone: false`: the account is not on the panel, which
+   * is what was asked for. Saying «failed» would make a sweep retry for ever
+   * against an account nobody can find, and the flag is what keeps that
+   * distinguishable in the log from a deletion this run actually performed.
+   *
+   * A 5xx is retryable and a 4xx is not, the same split `isPanelFault` makes
+   * everywhere else here: a panel having a bad minute must not cost a removal
+   * its next attempt, and a panel refusing the request will refuse it again.
+   */
+  async deleteAccount(
+    provider: ProviderContext,
+    username: string,
+  ): Promise<AccountDeleteResult> {
+    try {
+      const auth = await login(provider);
+      if ('error' in auth) return { ok: false, reason: auth.error, retryable: true };
+      const base = provider.baseUrl!.replace(/\/+$/, '');
+      const res = await withTimeout((signal) =>
+        provider.fetch(`${base}/api/user/${encodeURIComponent(username)}`, {
+          method: 'DELETE',
+          headers: { accept: 'application/json', authorization: `Bearer ${auth.token}` },
+          signal,
+        }),
+      );
+      if (res.status === 404) return { ok: true, gone: false };
+      if (!res.ok) {
+        return {
+          ok: false,
+          reason: `panel refused the delete (HTTP ${res.status})`,
+          retryable: isPanelFault(res.status),
+        };
+      }
+      return { ok: true, gone: true };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: `could not reach the panel: ${reason}`, retryable: true };
+    }
+  },
+
+  /**
    * Re-group every account that carries `from`, so the group can be retired
    * without silently emptying its members' subscriptions.
    *
@@ -1188,6 +1234,12 @@ export const marzbanAdapter: ProvisioningAdapter = {
             // versions, and a second parser here would be a second chance to
             // read one of the two as «no expiry».
             expiresAtMs: expiryMs(user.expire),
+            // Lowercased and otherwise untouched. Every consumer compares
+            // against a known word and treats anything else as «do not act»,
+            // so a panel that invents a sixth status makes removals stop
+            // rather than makes them wrong.
+            status: asString(user.status)?.toLowerCase() ?? null,
+            onlineAt: asString(user.online_at),
           });
         }
         // A short page is the last page. Trusting `total` instead would mean

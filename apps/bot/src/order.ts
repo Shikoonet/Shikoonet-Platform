@@ -18,8 +18,8 @@
 import { randomBytes } from 'node:crypto';
 import type { D1DatabaseSession } from '@shikoo/database';
 import type { CatalogPlan } from './catalog.js';
-import { ORDER_TTL_MS } from './expire.js';
 import { priceForUser, type Price } from './money.js';
+import { loadShopSettings } from './settings.js';
 
 export interface PlacedOrder {
   id: number;
@@ -355,6 +355,13 @@ async function place(
   // tapping the same plan again would be keeping a card-to-card invoice — and
   // the card printed on it — alive indefinitely. `expire.ts` says what that
   // costs.
+  //
+  // The length is the shop's, read here rather than in `expire.ts`, because
+  // this is where the deadline is DECIDED. An admin who shortens the window
+  // must not thereby close invoices that were issued under the old one: those
+  // carry the deadline they were printed with, which is the only reading a
+  // customer holding a 24-hour invoice would call fair.
+  const { orderTtlHours } = await loadShopSettings(tx);
   const row = await tx
     .prepare(
       `INSERT INTO orders
@@ -374,7 +381,7 @@ async function place(
       price.discountIrr,
       price.totalIrr,
       quantity,
-      ORDER_TTL_MS / 1000,
+      orderTtlHours * 3600,
       usernameText,
     )
     .first<{ id: number; public_id: string; total_irr: number }>();

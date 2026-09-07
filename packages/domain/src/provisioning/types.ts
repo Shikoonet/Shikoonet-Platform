@@ -173,17 +173,35 @@ export type ProvisionResult = ProvisionOk | ProvisionFailed;
 /**
  * One remote account as the provider currently sees it.
  *
- * Deliberately four fields and not the panel's whole user object. What is left
- * out — status, inbounds — cannot be mapped without guessing, and a sync that
- * guesses is a sync that can mark a paid service dead because a panel had a bad
- * minute.
+ * Deliberately small, and not the panel's whole user object: what is left out
+ * cannot be mapped without guessing, and a sync that guesses is a sync that can
+ * mark a paid service dead because a panel had a bad minute.
  *
- * `expiresAtMs` was left out on those grounds too, and the grounds were wrong.
- * "We sell the duration, so we own the date" is true of every service THIS bot
- * has sold and false of the 5,352 it inherited: the importer has no expiry to
- * read — `invoice` never stored one, and `legacy_attrs` carries an `expire` key
- * on zero rows of 8,428 — so those services arrived with no date at all. Not a
+ * ## `expiresAtMs`, and the rule that was wrong
+ *
+ * It was left out on those grounds too, and the grounds were wrong. «We sell
+ * the duration, so we own the date» is true of every service THIS bot has sold
+ * and false of the 5,352 it inherited: the importer has no expiry to read —
+ * `invoice` never stored one, and `legacy_attrs` carries an `expire` key on
+ * zero rows of 8,428 — so those services arrived with no date at all. Not a
  * date we own: no date. Issue #92.
+ *
+ * ## `status` and `onlineAt`, and why the rule above still holds
+ *
+ * The comment here used to say status could not be mapped. That is still true
+ * of `subscriptions.status` — six words of ours against five of the panel's,
+ * and `sync.ts` still refuses to write one from the other.
+ *
+ * What changed is that two jobs now need to know what the PANEL thinks, kept
+ * apart from what WE think. Mirzabot's two removal crons
+ * (`cronbot/NoticationsService.php`) both gate on it: neither will remove an
+ * account unless the panel itself reports `limited` or `expired`, and the
+ * volume one also needs the last connection time. Deleting on our dates alone
+ * would remove a service the panel considers live — which is precisely the
+ * failure the original rule was written against.
+ *
+ * So these are stored verbatim, under names that say whose opinion they are,
+ * and nothing maps them onto our own status.
  */
 export interface RemoteAccount {
   username: string;
@@ -200,6 +218,18 @@ export interface RemoteAccount {
    * that rule is spelled out and enforced.
    */
   expiresAtMs: number | null;
+  /**
+   * The panel's own word for this account, unmapped and lowercased.
+   *
+   * `active`, `limited`, `expired`, `disabled`, `on_hold` on PasarGuard and
+   * Marzban. NULL when the provider does not say — and NULL must never be read
+   * as «not limited»: a removal gated on this requires the word to be PRESENT
+   * and to be one of the two, so a panel that stops reporting stops removals
+   * rather than starting them.
+   */
+  status: string | null;
+  /** When the panel last saw this account connect. NULL when it does not say. */
+  onlineAt: string | null;
 }
 
 /** One group as the panel reports it. `name` is for a person to recognise. */
@@ -269,6 +299,19 @@ export type InboundsResult =
 export type GroupWriteResult = { ok: true; group: PanelGroup } | { ok: false; reason: string };
 
 export type GroupDeleteResult = { ok: true } | { ok: false; reason: string };
+
+/**
+ * The outcome of removing one customer's account from a panel.
+ *
+ * `gone` on the success arm distinguishes «we deleted it» from «it was not
+ * there», and the caller records which. They are the same end state and a
+ * different story: the second means somebody removed it by hand, or a previous
+ * sweep did and the write that recorded it was lost — worth reading in the log
+ * rather than counted as a deletion this run performed.
+ */
+export type AccountDeleteResult =
+  | { ok: true; gone: boolean }
+  | { ok: false; reason: string; retryable: boolean };
 
 /**
  * The outcome of walking a panel's accounts and re-grouping the ones that were
@@ -469,6 +512,22 @@ export interface ProvisioningAdapter {
    * only asks.
    */
   deleteGroup?(provider: ProviderContext, id: number): Promise<GroupDeleteResult>;
+
+  /**
+   * Removes one account from the panel. Irreversible.
+   *
+   * Optional, and the only method on this interface that destroys a thing a
+   * customer paid for. It exists for the two removal sweeps and nothing else
+   * calls it; an adapter without it makes those sweeps skip its panels, which
+   * is the correct behaviour for `manual` — there is nothing there to delete.
+   *
+   * The guards do NOT live here. Whether this account has been expired long
+   * enough, whether the panel agrees it is finished, and whether the shop has
+   * even asked for removals to happen are all questions the caller answers,
+   * because this layer knows nothing about our dates or our settings. What
+   * this owes the caller is an honest report of what happened to the panel.
+   */
+  deleteAccount?(provider: ProviderContext, username: string): Promise<AccountDeleteResult>;
 
   /**
    * Move every account out of one group and into another.
