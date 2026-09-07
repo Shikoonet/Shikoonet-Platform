@@ -228,34 +228,76 @@ say "  $LEDGER applied, latest $LATEST"
 # compares like with like rather than trusting the column's name. The checksum
 # is the half that matters: a name-only check passes a migration whose content
 # was edited after it was applied, which is the shape of drift that hurts.
-MISSING=""
+# ── prefix, not equality — and why that is not a weakening ───────────────
+#
+# This demanded the restored ledger equal the shipped set EXACTLY, which made
+# the drill unpassable on exactly the host it matters most on. Before the first
+# cutover, production is by definition some migrations behind the release being
+# prepared — that pending range is the whole reason the release exists, and the
+# dump rehearsal asserts the same range is non-empty. So the drill and the
+# rehearsal demanded opposite things about one database and neither could be
+# satisfied without breaking the other.
+#
+# What equality was really buying was drift detection, and none of that is
+# given up here. Still refused: a ledger entry with no file (a backup from a
+# divergent branch), an entry whose bytes differ from the file of that name
+# (edited after it was applied — the shape that hurts), and a gap in the
+# sequence. Only "production has already caught up" is dropped, which was never
+# this check's business — that is what the migration about to run is for.
+#
+# Set MIGRATION_LEDGER_EXACT=1 to demand the old behaviour, which is right for
+# a host that should already be current.
 DRIFTED=""
-DISK_NAMES=$(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '0*.sql' -printf '%f\n' | sort)
-LEDGER_NAMES=$(psql_ -tAd "$SCRATCH" -c "SELECT name FROM schema_migrations ORDER BY name")
-[ "$DISK_NAMES" = "$LEDGER_NAMES" ] || {
-  say "FAIL: the restored ledger and shipped migration filename sets differ"
+PENDING=""
+# One collation on both sides. `sort` follows the host locale and Postgres
+# follows the database's, and the prefix test below compares their outputs
+# directly — so a host whose locale orders differently from the database would
+# refuse a perfectly good ledger, reporting «a gap or a divergent branch» about
+# a disagreement over sorting. The same class of bug as the `comm` one in the
+# task runner, one process boundary further out.
+DISK_NAMES=$(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '0*.sql' -printf '%f\n' | LC_ALL=C sort)
+LEDGER_NAMES=$(psql_ -tAd "$SCRATCH" -c "SELECT name FROM schema_migrations ORDER BY name COLLATE \"C\"")
+LEDGER_COUNT=$(printf '%s\n' "$LEDGER_NAMES" | grep -c . || true)
+DISK_COUNT=$(printf '%s\n' "$DISK_NAMES" | grep -c . || true)
+
+[ "$LEDGER_COUNT" -gt 0 ] || {
+  say "FAIL: the restored copy has an empty schema_migrations ledger — it is not a database this code has ever built"
   exit 1
 }
-for f in "$MIGRATIONS_DIR"/*.sql; do
-  n=$(basename "$f")
-  [ "$n" = "verify_invariants.sql" ] && continue
-  want=$(sha256sum "$f" | cut -d' ' -f1)
-  got=$(psql_ -tAd "$SCRATCH" -c "SELECT checksum FROM schema_migrations WHERE name = '$n'")
-  if [ -z "$got" ]; then
-    MISSING="$MISSING $n"
-  elif [ "$got" != "$want" ]; then
-    DRIFTED="$DRIFTED $n"
-  fi
-done
-if [ -n "$MISSING" ] || [ -n "$DRIFTED" ]; then
-  say "FAIL: the restored copy does not match the migrations shipped with this drill."
-  [ -n "$MISSING" ] && say "      absent from its ledger:$MISSING"
-  [ -n "$DRIFTED" ] && say "      present but a DIFFERENT file was applied:$DRIFTED"
-  say "      a dump that restores into an older or divergent schema than the"
-  say "      running code cannot be deployed onto — that is this check's point."
+# Names are zero-padded and applied in name order, so the sorted disk list IS
+# the apply order and «the ledger is the first N of it» is the whole test: an
+# unknown migration, a reordering and a gap all fail this one comparison.
+if [ "$LEDGER_NAMES" != "$(printf '%s\n' "$DISK_NAMES" | head -n "$LEDGER_COUNT")" ]; then
+  say "FAIL: the restored ledger is not an initial run of the shipped migrations."
+  say "      it lists $LEDGER_COUNT, disk ships $DISK_COUNT, and the first $LEDGER_COUNT do not match."
+  say "      that means an unknown migration, a gap, or a divergent branch — not"
+  say "      simply a database that is behind."
   exit 1
 fi
-say "  ledger is current against $MIGRATIONS_DIR (name + sha256, every file)"
+if [ "${MIGRATION_LEDGER_EXACT:-0}" = '1' ] && [ "$LEDGER_COUNT" != "$DISK_COUNT" ]; then
+  say "FAIL: MIGRATION_LEDGER_EXACT=1 and the restored copy is $(( DISK_COUNT - LEDGER_COUNT )) migration(s) behind"
+  exit 1
+fi
+# Checksums, for every migration the ledger claims to have applied.
+for n in $LEDGER_NAMES; do
+  want=$(sha256sum "$MIGRATIONS_DIR/$n" | cut -d' ' -f1)
+  got=$(psql_ -tAd "$SCRATCH" -c "SELECT checksum FROM schema_migrations WHERE name = '$n'")
+  [ "$got" = "$want" ] || DRIFTED="$DRIFTED $n"
+done
+if [ -n "$DRIFTED" ]; then
+  say "FAIL: the restored copy applied a DIFFERENT file than the one shipped here:$DRIFTED"
+  say "      a migration edited after it was applied is drift the ledger cannot see"
+  say "      on its own — that is this check's point."
+  exit 1
+fi
+PENDING=$(printf '%s\n' "$DISK_NAMES" | tail -n +$(( LEDGER_COUNT + 1 )) | tr '\n' ' ')
+if [ "$LEDGER_COUNT" = "$DISK_COUNT" ]; then
+  LEDGER_VERDICT=yes
+  say "  ledger is current against $MIGRATIONS_DIR ($LEDGER_COUNT applied, name + sha256, every file)"
+else
+  LEDGER_VERDICT=prefix
+  say "  ledger is an initial run of $MIGRATIONS_DIR ($LEDGER_COUNT applied, name + sha256; pending:$PENDING)"
+fi
 
 say "money invariants against the restored copy:"
 if [ -f "$INVARIANTS" ]; then
@@ -285,7 +327,14 @@ umask 027
   printf 'dump_age_hours=%s\n' "$AGE_H"
   printf 'schema_migrations=%s\n' "$LEDGER"
   printf 'latest_migration=%s\n' "$LATEST"
-  printf 'migration_set_exact=yes\n'
+  # `yes` when the restored copy is fully caught up, `prefix` when it is an
+  # initial run of the shipped set with a pending tail — which is what a
+  # production backup looks like before a cutover. Both mean «no unknown
+  # migration, no gap, no drifted checksum»; they differ only in whether the
+  # release still has work to do.
+  printf 'migration_set_exact=%s\n' "$LEDGER_VERDICT"
+  printf 'migrations_applied=%s\n' "$LEDGER_COUNT"
+  printf 'migrations_pending=%s\n' "$(( DISK_COUNT - LEDGER_COUNT ))"
   printf 'migration_checksums=pass\n'
   printf 'invariants=pass\n'
   printf 'scratch_dropped=yes\n'
