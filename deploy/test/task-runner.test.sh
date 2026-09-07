@@ -94,15 +94,29 @@ fi
 #
 # `git ls-files` rather than a glob, so an untracked file sitting in the
 # working tree cannot make this pass either.
-want=$(git -C "$ROOT" ls-files 'migrations/0*.sql' | wc -l)
-n=$(grep -c ' migrations/0' "$MANIFEST" || true)
-if [ "$want" -gt 0 ] && [ "$n" -eq "$want" ]; then
-  ok "the manifest ships every one of the ${want} migrations in migrations/"
+# SETS, not counts. Counting was this check's second mistake in a row: `-ge 37`
+# compared against a frozen number, and `-eq $want` compared two totals — which
+# a manifest that omits 0042 and lists 0041 twice satisfies exactly. The bundle
+# would then be missing a migration from restore verification with the test
+# green, which is the failure this whole section exists to prevent, reached by
+# a different route.
+#
+# `git ls-files` rather than a glob, so an untracked file sitting in the working
+# tree cannot make this pass either. `LC_ALL=C` on every side because comm
+# rejects input this host's collation ordered differently.
+disk=$(git -C "$ROOT" ls-files 'migrations/0*.sql' | LC_ALL=C sort)
+listed=$(awk '{print $2}' "$MANIFEST" | grep '^migrations/0' | LC_ALL=C sort)
+missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$disk") <(printf '%s\n' "$listed") | tr '\n' ' ')
+extra=$(LC_ALL=C comm -13 <(printf '%s\n' "$disk") <(printf '%s\n' "$listed") | tr '\n' ' ')
+# A duplicate is neither missing nor extra — both sets stay empty — so it is
+# counted separately rather than inferred.
+dupes=$(printf '%s\n' "$listed" | uniq -d | tr '\n' ' ')
+want=$(printf '%s\n' "$disk" | grep -c .)
+if [ "$want" -gt 0 ] && [ -z "$missing" ] && [ -z "$extra" ] && [ -z "$dupes" ]; then
+  ok "the manifest ships exactly the ${want} migrations in migrations/, each once"
 else
-  missing=$(comm -23 \
-    <(git -C "$ROOT" ls-files 'migrations/0*.sql' | LC_ALL=C sort) \
-    <(awk '{print $2}' "$MANIFEST" | grep '^migrations/0' | LC_ALL=C sort) | tr '\n' ' ')
-  bad 'the manifest ships every migration' "manifest has ${n}, migrations/ has ${want}; absent from the manifest: ${missing:-none}"
+  bad 'the manifest ships every migration, each exactly once' \
+    "absent: ${missing:-none} · not in migrations/: ${extra:-none} · listed twice: ${dupes:-none}"
 fi
 
 section 'the subcommand list is closed'

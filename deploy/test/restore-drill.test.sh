@@ -246,11 +246,15 @@ fi
 section 'the superuser comes from the container, not from a literal'
 STATE_PGUSER="$FULL/state-pguser"
 if run_full "$STATE_PGUSER"; then
-  if grep -q -- '-U shikoo' "$FULL_LOG" && ! grep -q -- '-U postgres' "$FULL_LOG"; then
+  # The SET of usernames, not «is one of them right». `grep -q -- '-U shikoo'`
+  # passes on a log where one query used shikoo and another used something else
+  # entirely — and «something else» is exactly what a half-applied fix looks
+  # like. Absence of `postgres` is not presence of only `shikoo`.
+  seen=$(grep -o -- '-U [A-Za-z0-9_]*' "$FULL_LOG" | sort -u | tr '\n' ' ')
+  if [ "$seen" = '-U shikoo ' ]; then
     ok 'every query runs as the user the container reported'
   else
-    bad 'every query runs as the user the container reported' \
-      "$(grep -o -- '-U [a-z]*' "$FULL_LOG" | sort -u | tr '\n' ' ')"
+    bad 'every query runs as the user the container reported' "usernames seen: ${seen:-none}"
   fi
 else
   bad 'every query runs as the user the container reported' "$(tail -5 "$WORK/out")"
@@ -260,11 +264,11 @@ fi
 # reports something unhelpful.
 STATE_PGOVERRIDE="$FULL/state-pgoverride"
 if run_full "$STATE_PGOVERRIDE" PGUSER=chosen; then
-  if grep -q -- '-U chosen' "$FULL_LOG"; then
+  seen=$(grep -o -- '-U [A-Za-z0-9_]*' "$FULL_LOG" | sort -u | tr '\n' ' ')
+  if [ "$seen" = '-U chosen ' ]; then
     ok 'an explicit PGUSER overrides what the container says'
   else
-    bad 'an explicit PGUSER overrides what the container says' \
-      "$(grep -o -- '-U [a-z]*' "$FULL_LOG" | sort -u | tr '\n' ' ')"
+    bad 'an explicit PGUSER overrides what the container says' "usernames seen: ${seen:-none}"
   fi
 else
   bad 'an explicit PGUSER overrides what the container says' "$(tail -5 "$WORK/out")"
