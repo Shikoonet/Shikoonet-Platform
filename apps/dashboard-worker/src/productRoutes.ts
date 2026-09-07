@@ -107,7 +107,7 @@ const ListQuery = z.object({
  * `keyboardFor` fills it from a `<tg-emoji>` tag at the front of the label. So
  * a badge that carries one is 53 characters of markup that draw as one glyph,
  * and measuring the raw string refused every badge this feature exists to
- * allow. Migration 0059 widened the CHECK the same way, with the same regex, so
+ * allow. migration 0060 widened the CHECK the same way, with the same regex, so
  * the panel and the database agree by construction and not by coincidence.
  *
  * `renderedLabelLength` rather than a second spelling of it: it counts code

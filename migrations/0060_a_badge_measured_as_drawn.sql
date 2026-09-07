@@ -1,4 +1,11 @@
--- 0059 — a premium emoji may sit on a plan button, and the cap stops lying.
+-- 0060 — a premium emoji may sit on a plan button, and the cap stops lying.
+--
+-- Numbered 0060 and not 0059 on purpose: `0059_a_code_more_than_once.sql`
+-- landed on `main` while this was on a branch, and two files sharing a number
+-- is how the same schema ends up applied in a different order on two machines.
+-- The ledger keys on the NAME, so both would have run — but «it happens to
+-- work out» is not a thing to leave in a directory somebody reads to find out
+-- what the schema is. Same reason 0051 skipped 0050.
 --
 -- ## The thing that was already true
 --
@@ -72,21 +79,21 @@ BEGIN
    WHERE badge IS NOT NULL
      AND length(regexp_replace(badge, '<tg-emoji[^>]*>(.*?)</tg-emoji>', '\1', 'g')) NOT BETWEEN 1 AND 24;
   IF bad <> 0 THEN
-    RAISE EXCEPTION '0059 left % category badges outside the new rule', bad;
+    RAISE EXCEPTION '0060 left % category badges outside the new rule', bad;
   END IF;
 
   SELECT count(*) INTO bad FROM product_plans
    WHERE badge IS NOT NULL
      AND length(regexp_replace(badge, '<tg-emoji[^>]*>(.*?)</tg-emoji>', '\1', 'g')) NOT BETWEEN 1 AND 24;
   IF bad <> 0 THEN
-    RAISE EXCEPTION '0059 left % plan badges outside the new rule', bad;
+    RAISE EXCEPTION '0060 left % plan badges outside the new rule', bad;
   END IF;
 
   -- And that the new rule is genuinely wider: a badge that is one premium emoji
   -- plus a word measures under the cap now and did not before.
   IF length(regexp_replace('<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji> آف',
                            '<tg-emoji[^>]*>(.*?)</tg-emoji>', '\1', 'g')) > 24 THEN
-    RAISE EXCEPTION '0059 did not widen the rule it exists to widen';
+    RAISE EXCEPTION '0060 did not widen the rule it exists to widen';
   END IF;
 END $$;
 
