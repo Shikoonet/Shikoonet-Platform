@@ -60,10 +60,16 @@ const WITHHELD = [
   // part of reviewing payments and `eventRoutes.ts` answers 403 to anyone but
   // an ADMIN.
   'رویدادها',
+  // Added 2026-09-07, and it was missing rather than newly withheld: the
+  // section landed with «ایمپورت میرزابات» and this list was never extended,
+  // so for that whole time nothing asserted a reader could not see the button
+  // that EMPTIES the shop's data. `READABLE_BY_READER` never held it — the
+  // hole was in the test, not in the panel.
+  'ایمپورت میرزابات',
 ];
 
 /**
- * What is left of twenty-eight once those nine are gone.
+ * What is left of thirty once those ten are gone.
  *
  * Fifteen of twenty-four until 2026-08-27. «محصولات» and «دسته‌بندی‌ها» are both
  * in `READABLE_BY_READER`, so both new sections raise this count rather than the
@@ -77,8 +83,14 @@ const WITHHELD = [
  * and what it names is a bot's username, which is public the moment anybody
  * opens the shop. The write behind that one is ADMIN-only and
  * `write-roles.test.ts` counts it separately.
+ *
+ * Twenty on 2026-09-07. «کرون‌جاب‌ها» is readable for the reason «تنظیمات»
+ * beside it is: which sweeps are armed is shop operation, not customer data,
+ * and the write behind it is ADMIN-only — `write-roles.test.ts` counts that
+ * one separately. «ایمپورت میرزابات» arrived in the same window and is NOT
+ * readable; it joined the withheld list above.
  */
-const OFFERED_TO_A_READER = 19;
+const OFFERED_TO_A_READER = 20;
 
 async function signInAsReader(page: Page): Promise<void> {
   await page.goto(`${BASE}/admin/`);
@@ -88,14 +100,14 @@ async function signInAsReader(page: Page): Promise<void> {
   await expect(page.locator('.sidebar-link.active')).toBeVisible();
 }
 
-test('a reader is offered nineteen sections of twenty-eight, and the count is read off the screen', async ({
+test('a reader is offered twenty sections of thirty, and the count is read off the screen', async ({
   page,
 }) => {
   await signInAsReader(page);
   await expect(page.locator('.sidebar-link')).toHaveCount(OFFERED_TO_A_READER);
 });
 
-test('none of the nine withheld sections is drawn', async ({ page }) => {
+test('none of the ten withheld sections is drawn', async ({ page }) => {
   await signInAsReader(page);
   const sidebar = page.locator('.sidebar-link');
   for (const label of WITHHELD) {
