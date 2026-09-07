@@ -24,11 +24,11 @@
 #
 # ── The bot handover ──────────────────────────────────────────────────────
 #
-# Old bot stopped, advisory lock proven to be 0, new bot started, lock proven to
-# be 1. Never both: they share one token, and Telegram hands each update to
-# exactly one getUpdates caller, so two pollers means messages customers sent
-# vanishing into the wrong process. `pg_try_advisory_lock` would make the second
-# exit rather than double-poll, but that is a backstop, not the plan.
+# Exact old bot container stopped and retained, advisory lock proven to be 0,
+# new bot started, lock proven to be 1. Never both: they share one token, and
+# Telegram hands each update to exactly one getUpdates caller, so two pollers
+# means messages customers sent vanishing into the wrong process. The retained
+# container restores the exact old bytes if candidate verification fails.
 #
 # ── No revision inputs ────────────────────────────────────────────────────
 #
