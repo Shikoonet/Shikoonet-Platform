@@ -4041,16 +4041,27 @@
  * does the revenue figure — so this strip is the only thing standing between
  * «we turned it on during an incident» and «we left it on for a week».
  */
+/* A row of its own under the header bar, not an item inside the controls.
+   As a flex ITEM in `.shikoonet-header__right` this sat in the `auto` track of
+   `.shikoonet-header__bar`'s two-column grid, so its own content width set that
+   track — and the `minmax(0, 1fr)` track beside it, the one holding the payment
+   tabs, was squeezed to whatever was left. */
 .continuity-banner {
   display: flex;
   align-items: center;
   gap: 0.6rem;
   flex-wrap: wrap;
-  padding: 0.35rem 0.75rem;
+  padding: 0.4rem 0.75rem;
+  margin-block-end: var(--space-sm);
   border-radius: 6px;
   background: #7f1d1d;
   color: #fff;
   font-size: 0.85rem;
+}
+/* Pushed to the far edge so «خاموش کن» is in the same place whether or not the
+   activation carried a reason. */
+.continuity-banner__off {
+  margin-inline-start: auto;
 }
 .continuity-banner strong {
   white-space: nowrap;
@@ -4062,6 +4073,23 @@
 }
 .continuity-open {
   font-size: 0.8rem;
+}
+
+/* «مسدود کردن مشتری» — the fraud answer on a claim that cannot be rejected,
+   because the customer is already holding the product. Same shape as the other
+   confirm-then-act blocks in this panel. */
+.payment-review__block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+.payment-review__block label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  font-size: 0.85rem;
 }
 
 /* The one action in the panel that gives product away against no evidence. */

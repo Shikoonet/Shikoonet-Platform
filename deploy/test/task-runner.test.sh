@@ -76,11 +76,33 @@ if grep -q ' migrations/verify_invariants.sql$' "$MANIFEST"; then
 else
   bad 'the manifest ships verify_invariants.sql' 'it is absent'
 fi
+# Counted against the migrations DIRECTORY, never against a literal.
+#
+# This read `[ "$n" -ge 37 ]` and printed «the manifest ships all ${n}
+# migrations». Both halves were wrong in the same way: 37 was frozen the day it
+# was written, and the sentence reported the manifest's own count back as if it
+# were a total. The repository reached 62 migrations and this stayed green,
+# because it never asked the directory anything.
+#
+# What that cost is not hypothetical. The bundle installed on the production
+# host shipped migrations 0001–0037 and a `verify_invariants.sql` written for
+# 0059, so the restore drill measured production's ledger against a truncated
+# set, reported «ledger is current» for a database 25 migrations behind, and
+# then died inside the invariants on an index 0059 was supposed to have
+# replaced. A backup verifier answering «current» when it cannot see the
+# migrations is worse than one that fails.
+#
+# `git ls-files` rather than a glob, so an untracked file sitting in the
+# working tree cannot make this pass either.
+want=$(git -C "$ROOT" ls-files 'migrations/0*.sql' | wc -l)
 n=$(grep -c ' migrations/0' "$MANIFEST" || true)
-if [ "$n" -ge 37 ]; then
-  ok "the manifest ships all ${n} migrations"
+if [ "$want" -gt 0 ] && [ "$n" -eq "$want" ]; then
+  ok "the manifest ships every one of the ${want} migrations in migrations/"
 else
-  bad 'the manifest ships every migration' "only ${n} present"
+  missing=$(comm -23 \
+    <(git -C "$ROOT" ls-files 'migrations/0*.sql' | LC_ALL=C sort) \
+    <(awk '{print $2}' "$MANIFEST" | grep '^migrations/0' | LC_ALL=C sort) | tr '\n' ' ')
+  bad 'the manifest ships every migration' "manifest has ${n}, migrations/ has ${want}; absent from the manifest: ${missing:-none}"
 fi
 
 section 'the subcommand list is closed'

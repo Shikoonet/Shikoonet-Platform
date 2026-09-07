@@ -143,6 +143,12 @@ const MUST_HOLD = [
   'one order cannot take a second config from the shelf',
   'a config cannot be marked sold without naming the order that took it',
   'one order cannot be paid twice',
+  // The discount rule migration 0059 moved. It used to be UNIQUE on
+  // `(code_id, user_id)` and is now UNIQUE on `(code_id, order_id)`; the
+  // per-customer ceiling became a count under a lock. Named here because a
+  // guarantee that has already been relocated once is the one most likely to
+  // be dropped the second time by somebody who reads the old comment.
+  'the same code cannot be redeemed twice against one order',
   // A customer is never told twice that their payment landed.
   'one event cannot owe a customer two messages',
   'a delivered message does not release its key',

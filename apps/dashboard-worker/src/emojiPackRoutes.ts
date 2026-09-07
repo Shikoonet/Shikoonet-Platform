@@ -31,6 +31,7 @@ import { createLogger, resolveBotToken } from '@shikoo/domain';
 import type { EnvName } from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 import { faNum } from './fa.js';
+import { customEmojiOn } from './botContentRoutes.js';
 
 const log = createLogger('dashboard');
 
@@ -185,7 +186,20 @@ export function registerEmojiPackRoutes(
       }
       packs.set(row.id, pack);
     }
-    return c.json({ ok: true, packs: [...packs.values()] });
+    /*
+     * The switch travels with the packs because every caller needs both.
+     *
+     * A picker that inserts `<tg-emoji>` markup while the shop has custom emoji
+     * OFF is a control that produces something the bot then strips — the
+     * operator picks a glyph and the customer sees the fallback, with nothing on
+     * screen explaining why. `BotContentPages` already gated on this; the badge
+     * field needs the same gate, and a second round trip to learn one boolean
+     * is a round trip.
+     *
+     * `customEmojiOn` is imported rather than re-queried: it was already the one
+     * place that decides what this setting means.
+     */
+    return c.json({ ok: true, packs: [...packs.values()], customEmoji: await customEmojiOn(c.env.DB) });
   });
 
   /** Adds a pack, or re-reads one that is already here. Same call either way. */

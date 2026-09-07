@@ -31,12 +31,17 @@ const STATE_FA: Record<string, string> = {
   USABLE: 'قابل استفاده',
   EXPIRED: 'منقضی',
   USED_UP: 'تمام شده',
+  // Not «منقضی». An expired code is finished; a paused one is waiting for
+  // somebody to turn it back on, and the two need different words or nobody
+  // will think to look for the switch.
+  DISABLED: 'غیرفعال',
 };
 
 const STATE_BADGE: Record<string, string> = {
   USABLE: 'badge badge-active',
   EXPIRED: 'badge badge-block',
   USED_UP: 'badge badge-info',
+  DISABLED: 'badge badge-warning',
 };
 
 const APPLIES_FA: Record<string, string> = { ALL: 'همه', BUY: 'خرید', RENEW: 'تمدید' };
@@ -104,6 +109,18 @@ export function DiscountsPage() {
     }
     try {
       await api.expireDiscount(d.id);
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    }
+  }
+
+  async function toggle(d: DiscountItem) {
+    // No confirm. Pausing is the reversible one — it is the button somebody
+    // reaches for BECAUSE they are unsure — and a dialog in front of it would
+    // make it feel like «باطل کن», which is the one that cannot be taken back.
+    try {
+      await api.setDiscountStatus(d.id, d.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE');
       await load();
     } catch (e) {
       setErr(message(e));
@@ -231,9 +248,27 @@ export function DiscountsPage() {
                   <td>
                     {d.firstPurchaseOnly && <span className="badge badge-info">خرید اول</span>}
                     {d.resellersOnly && <span className="badge badge-info">نماینده</span>}
+                    {d.usesPerUser > 1 && (
+                      <span className="badge badge-info">
+                        {count(d.usesPerUser)} بار برای هر نفر
+                      </span>
+                    )}
+                    {d.targetUser && (
+                      <span className="badge badge-info ltr">
+                        {d.targetUser.username
+                          ? `@${d.targetUser.username}`
+                          : (d.targetUser.telegramId ?? d.targetUser.id)}
+                      </span>
+                    )}
                     {d.product && <span className="badge">{d.product.name}</span>}
                     {d.provider && <span className="badge">{d.provider.name}</span>}
-                    {!d.firstPurchaseOnly && !d.resellersOnly && !d.product && !d.provider && '—'}
+                    {!d.firstPurchaseOnly &&
+                      !d.resellersOnly &&
+                      d.usesPerUser === 1 &&
+                      !d.targetUser &&
+                      !d.product &&
+                      !d.provider &&
+                      '—'}
                   </td>
                   <td>{d.expiresAt === null ? 'بدون انقضا' : dateTime(d.expiresAt)}</td>
                   <td>
@@ -246,14 +281,24 @@ export function DiscountsPage() {
                       مصرف‌کننده‌ها
                     </button>{' '}
                     {d.state !== 'EXPIRED' && (
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => void expire(d)}
-                        {...w}
-                      >
-                        باطل کن
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => void toggle(d)}
+                          {...w}
+                        >
+                          {d.status === 'ACTIVE' ? 'خاموش کن' : 'روشن کن'}
+                        </button>{' '}
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => void expire(d)}
+                          {...w}
+                        >
+                          باطل کن
+                        </button>
+                      </>
                     )}
                   </td>
                 </tr>
@@ -298,6 +343,16 @@ function CreateForm({ onDone }: { onDone: () => void }) {
   const [percent, setPercent] = useState('');
   const [maxUses, setMaxUses] = useState('');
   /**
+   * How many times ONE customer may use it. Blank means the old behaviour.
+   *
+   * Left blank rather than pre-filled with «1», so a form nobody touches sends
+   * nothing and the server's default decides. The alternative is a field that
+   * looks like a choice somebody made when it is only the box's initial value.
+   */
+  const [usesPerUser, setUsesPerUser] = useState('');
+  /** A telegram id, when the code is for one customer only. */
+  const [targetTelegramId, setTargetTelegramId] = useState('');
+  /**
    * When the code stops working, as a plain date.
    *
    * There was no field here until 2026-08-22, and the route has accepted
@@ -330,6 +385,8 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         // Toman in the form, Rial on the wire — the one conversion, in one line.
         ...(isPercent ? { percent: Number(percent) } : { amountIrr: Math.round(typedAmount) * 10 }),
         ...(maxUses.trim() ? { maxUses: Number(maxUses) } : {}),
+        ...(usesPerUser.trim() ? { usesPerUser: Number(usesPerUser) } : {}),
+        ...(targetTelegramId.trim() ? { targetTelegramId: Number(targetTelegramId) } : {}),
         ...(expiresOn ? { expiresAt: endOfTehranDay(expiresOn) } : {}),
         // A gift credits a wallet and is never applied to a purchase, so the
         // server refuses these on one; the form does not offer them either.
@@ -417,6 +474,34 @@ function CreateForm({ onDone }: { onDone: () => void }) {
             value={maxUses}
             onChange={(e) => setMaxUses(e.target.value)}
             placeholder="نامحدود"
+          />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="new-per-user">
+            سقف هر نفر
+          </label>
+          <input
+            id="new-per-user"
+            className="form-control ltr"
+            type="number"
+            min={1}
+            max={100}
+            value={usesPerUser}
+            onChange={(e) => setUsesPerUser(e.target.value)}
+            placeholder="۱ بار"
+          />
+        </div>
+        <div>
+          <label className="form-label" htmlFor="new-target">
+            فقط برای این مشتری
+          </label>
+          <input
+            id="new-target"
+            className="form-control ltr"
+            type="number"
+            value={targetTelegramId}
+            onChange={(e) => setTargetTelegramId(e.target.value)}
+            placeholder="آیدی عددی تلگرام — خالی یعنی همه"
           />
         </div>
         <div>

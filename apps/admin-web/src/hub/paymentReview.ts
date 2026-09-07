@@ -209,6 +209,16 @@ export interface PaymentItem {
   reopenBlockedReason?: string | null;
   fulfillmentState?: 'UNKNOWN' | 'NOT_APPLICABLE';
   /** Audit facts stamped when an order was delivered before bank evidence. */
+  /**
+   * The customer's own row, when the claim's reference matches one.
+   *
+   * Null is a real answer and not a missing one — one production claim holds
+   * «Poyan test payment» in `customer_reference` — so the screen offers no
+   * block button rather than one that 404s.
+   */
+  customerUserId?: number | null;
+  customerStatus?: string | null;
+  customerBlockedReason?: string | null;
   fulfilmentMode?: 'MANUAL' | 'CONTINUITY' | null;
   fulfilledAt?: number | null;
   fulfilledBy?: string | null;
@@ -535,4 +545,41 @@ export function reopenBlockedReason(item: PaymentItem): string | null {
     return 'فقط پرداخت‌های تاییدشدهٔ دستی را می‌شود دوباره باز کرد.';
   }
   return 'No revert snapshot was saved when this payment was verified. Older manual verifications may not support reopen.';
+}
+
+
+/**
+ * Why a delivered claim is still waiting for its money, in one line.
+ *
+ * Only for rows that have been fulfilled and not reconciled. `suspectReason` is
+ * the matcher's own answer and it is the useful half here: it separates «a bank
+ * credit exists and the matcher would not take it» from «nothing has arrived»,
+ * which is the difference between an operator having a transaction to attach
+ * and having a customer to suspect.
+ *
+ * `OUTSIDE_AUTO_MATCH_WINDOW` is the one that matters most and it is nobody's
+ * mistake: continuity mode is on because the SMS relay is down, so its claims'
+ * credits arrive as a backlog, hours after «پرداخت کردم», and the ±5-minute
+ * auto-match window refuses them by construction (#134). The row says so
+ * instead of leaving the operator to guess.
+ */
+export function reconcileNote(item: PaymentItem): string | null {
+  if (item.fulfilledAt == null || item.reconciledAt != null) return null;
+  switch (item.suspectReason) {
+    case 'OUTSIDE_AUTO_MATCH_WINDOW':
+      return 'واریزی پیدا شد ولی بیرون از بازهٔ تطبیق خودکار — دستی بررسی کن';
+    case 'AMOUNT_MISMATCH':
+      return 'واریزی پیدا شد ولی مبلغش نمی‌خواند';
+    case 'AMBIGUOUS_TRANSACTIONS':
+      return 'بیش از یک واریزی نامزد است — کدام؟';
+    case 'AMBIGUOUS_CLAIMS':
+      return 'چند سفارش سر یک واریزی رقابت دارند';
+    case 'TRANSACTION_ALREADY_CONSUMED':
+      return 'واریزی نامزد قبلاً خرج سفارش دیگری شده';
+    case 'NO_TRANSACTION':
+    case 'NO_TRANSACTION_AFTER_10M':
+      return 'هنوز هیچ واریزی‌ای نیامده است';
+    default:
+      return null;
+  }
 }
