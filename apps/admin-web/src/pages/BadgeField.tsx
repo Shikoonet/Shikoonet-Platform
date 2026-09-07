@@ -111,21 +111,32 @@ export function BadgeField({
   // and one badge. Refused rather than sliced when it would not fit — slicing a
   // string that contains a `<tg-emoji>` tag cuts the tag in half, which is
   // markup the button cannot draw and the route now refuses by shape.
+  // What a chip would leave in the box, so «does this fit» and «what is
+  // written» are the same computation rather than two that agree by eye.
+  const withChip = (chip: string) => (value.trim() === '' ? chip : `${value.trim()} ${chip}`);
+  const fits = (next: string) => renderedLabelLength(next) <= BADGE_MAX;
   const add = (chip: string) => {
-    const next = value.trim() === '' ? chip : `${value.trim()} ${chip}`;
-    if (renderedLabelLength(next) <= BADGE_MAX) onChange(next);
+    if (fits(withChip(chip))) onChange(withChip(chip));
   };
   // One tag, at the front — the only shape `keyboardFor` can turn into
   // `icon_custom_emoji_id`. Anywhere else Telegram draws literal angle
   // brackets on the customer's screen.
   const addEmoji = (tag: string) => {
     const rest = value.trim();
-    if (rest.startsWith('<tg-emoji')) return;
     const next = rest === '' ? tag : `${tag} ${rest}`;
-    if (renderedLabelLength(next) <= BADGE_MAX) onChange(next);
+    if (!hasEmoji && fits(next)) onChange(next);
   };
   const drawn = renderedLabelLength(value);
-  const hasEmoji = value.trim().startsWith('<tg-emoji');
+  /*
+   * ANY tag, not just one at the front.
+   *
+   * `startsWith` was the wrong question. A badge that already carries a tag
+   * somewhere in the middle — pasted by hand — answered false, so the picker
+   * stayed enabled and prepending a second one built a value the route then
+   * refuses by shape. Asking whether there is a tag at all closes that: the
+   * operator clears it first, which is what «بدون ایموجی» is for.
+   */
+  const hasEmoji = value.includes('<tg-emoji');
   const painted = STYLES.find((s) => s.value === style);
 
   return (
@@ -147,6 +158,12 @@ export function BadgeField({
             key={chipText}
             type="button"
             className="btn btn-sm"
+            // Disabled rather than inert. It used to slice the result to the
+            // cap, which cuts a `<tg-emoji>` tag in half and produces markup no
+            // button can draw; refusing silently was the first fix and it left
+            // a chip that looks pressable and does nothing. This says why.
+            disabled={!fits(withChip(chipText))}
+            title={fits(withChip(chipText)) ? undefined : `از ${BADGE_MAX} نویسه بیشتر می‌شود`}
             onClick={() => add(chipText)}
             {...w}
           >
