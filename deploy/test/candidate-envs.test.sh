@@ -270,9 +270,11 @@ elif grep -qF 'candidate has duplicate key(s): ENV_NAME' "$OUT3"; then
 else
   bad 'a duplicated candidate key is refused' "$(tail -4 "$OUT3")"
 fi
-[ "$(wc -l <"$FAKE_WRITES")" = "$before" ] &&
-  ok 'a duplicated target causes no write' ||
+if [ "$(wc -l <"$FAKE_WRITES")" = "$before" ]; then
+  ok 'a duplicated target causes no write'
+else
   bad 'a duplicated target causes no write' 'the panel was mutated'
+fi
 
 write_sources
 empty_candidates
@@ -293,9 +295,11 @@ elif grep -qF 'source key SERVICE is duplicated with different values or flags' 
 else
   bad 'conflicting source duplicates are refused' "$(tail -4 "$OUT4")"
 fi
-[ "$(wc -l <"$FAKE_WRITES")" = "$before" ] &&
-  ok 'ambiguous source rows cause no write' ||
+if [ "$(wc -l <"$FAKE_WRITES")" = "$before" ]; then
+  ok 'ambiguous source rows cause no write'
+else
   bad 'ambiguous source rows cause no write' 'the panel was mutated'
+fi
 
 write_sources
 empty_candidates
@@ -347,9 +351,11 @@ elif grep -qF 'source ingest configuration changed while it was being copied' "$
 else
   bad 'a source edited during the copy is refused' "$(tail -4 "$OUT7")"
 fi
-[ "$(wc -l <"$FAKE_WRITES")" = "$before" ] &&
-  ok 'a moving source causes no write' ||
+if [ "$(wc -l <"$FAKE_WRITES")" = "$before" ]; then
+  ok 'a moving source causes no write'
+else
   bad 'a moving source causes no write' 'the panel was mutated'
+fi
 
 section 'no credential reaches output'
 
