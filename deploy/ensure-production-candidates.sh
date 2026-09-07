@@ -165,7 +165,14 @@ ensure_one() { # name role -> prints "<created|reused> <uuid>"
   local name=$1 role=$2 uuid
   uuid=$(find_uuid "$name")
   if [ -n "$uuid" ]; then
-    say "${role}: reusing ${name} (${uuid}) — nothing created"
+    # Reuse is not permission to trust an old settings observation. A person
+    # can re-enable Auto Deploy or previews between releases, and P5a attaches
+    # production secrets immediately after this function returns. Re-apply
+    # both false values and prove them from Coolify's database before returning
+    # a reused application to the configuration step.
+    coolify_harden_settings "$uuid" ||
+      die "${role}: reused candidate ${name} could not be proven hardened; no production configuration was attached"
+    say "${role}: reusing ${name} (${uuid}), hardening re-verified — nothing created"
     printf 'reused %s' "$uuid"
     return 0
   fi

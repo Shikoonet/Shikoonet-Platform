@@ -287,9 +287,12 @@ say "    candidates: ingest=${CAND_INGEST} dashboard=${CAND_DASHBOARD} bot=${CAN
 # this step the first deployment reaches deploy.sh's preflight with no
 # ENV_NAME and stops before migration — safely, but permanently.
 #
-# The sync is an API upsert followed by an exact read-back. It copies no
-# preview variables, preserves Coolify's row flags, refuses ambiguous source
-# duplicates, and never logs a value. Release-specific APP_VERSION and the
+# The sync is an API upsert followed by an exact read-back. It copies no source
+# preview variables, preserves Coolify's active-row flags, refuses ambiguous
+# source duplicates, and never logs a value. Coolify automatically creates a
+# dormant preview twin for each newly inserted active row even while preview
+# deployments are disabled; validation permits one corresponding twin, but no
+# preview-only or duplicate key. Release-specific APP_VERSION and the
 # dashboard INGEST_URL remain owned by deploy.sh.
 say "P5a. candidate production environments"
 bash "$HERE/sync-production-candidate-envs.sh" \
