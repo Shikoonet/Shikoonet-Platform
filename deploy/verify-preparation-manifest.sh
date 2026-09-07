@@ -104,9 +104,18 @@ done
 [ "$OBSERVED_AUTO_DEPLOY" = 'off' ] ||
   fail "native Auto Deploy or preview deployments are ON somewhere in production ('${OBSERVED_AUTO_DEPLOY}') — a push could deploy behind this cutover"
 
-# Exactly one poller, still, before the handover that briefly has to have none.
-[ "$OBSERVED_BOT_LOCKS" = '1' ] ||
-  fail "production holds ${OBSERVED_BOT_LOCKS} bot advisory lock(s), expected exactly 1 — the bot handover starts from a known single poller or not at all"
+# The normal baseline is one old poller. The one-time bootstrap is allowed only
+# when preparation explicitly recorded that it started from no old container
+# and zero locks. Cutover binds this mode to both the artifact and host ledger
+# before moving a domain.
+BOT_HANDOVER_MODE=$(field bot_handover_mode)
+RECORDED_BOT_LOCKS=$(field bot_advisory_locks)
+[ "$OBSERVED_BOT_LOCKS" = "$RECORDED_BOT_LOCKS" ] ||
+  fail "the bot lock baseline changed from ${RECORDED_BOT_LOCKS} at preparation to ${OBSERVED_BOT_LOCKS} now"
+case "$BOT_HANDOVER_MODE:$OBSERVED_BOT_LOCKS" in
+  replace-single:1 | bootstrap-empty:0) ;;
+  *) fail "the preparation records unsupported bot handover state '${BOT_HANDOVER_MODE}' with ${OBSERVED_BOT_LOCKS} lock(s)" ;;
+esac
 
 [ "$OBSERVED_TEMP_DOMAIN_VERIFY" = 'pass' ] ||
   fail "the temporary-domain checks do not pass now ('${OBSERVED_TEMP_DOMAIN_VERIFY}') — the candidates verified at preparation and do not verify today"
@@ -114,4 +123,4 @@ done
 [ "$OBSERVED_BACKUP_PRESENT" = 'present' ] ||
   fail "the pre-cutover backup $(field backup_id) is not present — the only recovery path for the migration is gone, and cutover does not proceed without it"
 
-echo "[cutover] preparation $(field prepare_run_id) verified: ${EXPECTED_SHA:0:12} @ ${EXPECTED_DIGEST:0:19}…, schema $(field db_schema_version), candidates healthy, live domains unmoved, one poller"
+echo "[cutover] preparation $(field prepare_run_id) verified: ${EXPECTED_SHA:0:12} @ ${EXPECTED_DIGEST:0:19}…, schema $(field db_schema_version), candidates healthy, live domains unmoved, bot=${BOT_HANDOVER_MODE}"

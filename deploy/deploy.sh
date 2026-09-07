@@ -28,7 +28,7 @@
 # The hyphen is not a typo. ApplicationDeploymentJob.php:1191-1193 reads a tag
 # beginning `sha256-` and pulls `name@sha256:<hex>` — a digest, not a tag. That
 # is Coolify's own spelling for a digest deploy, read out of the source of the
-# installed version (4.3.11) rather than assumed.
+# installed version (4.3.14) rather than assumed.
 #
 # ## What this script still owns
 #
@@ -44,8 +44,9 @@
 #     COOLIFY_URL     http://localhost:8000 — LOCAL on purpose: the panel is
 #                     plain HTTP, so the token must never cross a wire
 #     COOLIFY_TOKEN   abilities read, write, deploy. Never leaves this host
-#     APP_INGEST / APP_DASHBOARD / APP_BOT   application UUIDs, which are
-#                     stable across deploys — unlike container names
+#     APP_INGEST / APP_DASHBOARD / APP_BOT   bootstrap application UUIDs.
+#                     After the first cutover, the canonical non-secret UUIDs
+#                     are atomically resolved from production deploy state
 #     DB_CONTAINER    this environment's Postgres container
 #
 #   /var/lib/shikoo/<env>/deployed    the deploy history, and the rollback source
@@ -186,6 +187,23 @@ COOLIFY_TOKEN=$(cfg COOLIFY_TOKEN)
 APP_INGEST=$(cfg APP_INGEST)
 APP_DASHBOARD=$(cfg APP_DASHBOARD)
 APP_BOT=$(cfg APP_BOT)
+# The first production cutover moves service ownership from the legacy
+# Git/Dockerfile applications to canonical Docker Image applications. The
+# root-owned credential file cannot be rewritten by the deploy account, so the
+# successful cutover atomically records only those three non-secret UUIDs in
+# the state directory. Every later normal promotion resolves that pointer here.
+# Staging has no bootstrap pointer and continues to use deploy.env directly.
+if [ "$ENV_ARG" = production ]; then
+  CURRENT_APPS_FILE=${CURRENT_APPS_FILE:-/var/lib/shikoo/production/current-applications.env}
+  CURRENT_APPS=$(bash "$(dirname "${BASH_SOURCE[0]}")/current-production-apps.sh" \
+    resolve "$CURRENT_APPS_FILE" "$CONF") ||
+    die "could not resolve the current production application UUIDs"
+  APP_INGEST=$(printf '%s' "$CURRENT_APPS" | sed -n 's/^app_ingest=//p')
+  APP_DASHBOARD=$(printf '%s' "$CURRENT_APPS" | sed -n 's/^app_dashboard=//p')
+  APP_BOT=$(printf '%s' "$CURRENT_APPS" | sed -n 's/^app_bot=//p')
+  APPLICATIONS_SOURCE=$(printf '%s' "$CURRENT_APPS" | sed -n 's/^applications_source=//p')
+  say "production applications: ${APPLICATIONS_SOURCE} pointer"
+fi
 DB_CONTAINER=$(cfg DB_CONTAINER)
 # The superuser is READ OFF THE CONTAINER when the config does not name it,
 # because the container is the thing that knows. `postgres` is right only when
@@ -339,7 +357,7 @@ except Exception:
 
 # The check that makes leaving `build_pack` alone safe.
 #
-# `dockerimage` is NOT a build strategy. Coolify 4.3.11 offers five of those —
+# `dockerimage` is NOT a build strategy. Coolify 4.3.14 offers five of those —
 # railpack, nixpacks, static, dockerfile, dockercompose — and `dockerimage` is
 # none of them: it is an application TYPE, decided when the application is
 # created (`Livewire/Project/New/DockerImage.php`) and reachable by no UI
@@ -499,7 +517,7 @@ say "schema gate: safe to start on"
 # bot against a table its migration has not created is the 2026-08-18 failure.
 # `build_pack` is deliberately NOT sent.
 #
-# Coolify 4.3.11's `BuildPackTypes` enum is nixpacks / static / dockerfile /
+# Coolify 4.3.14's `BuildPackTypes` enum is nixpacks / static / dockerfile /
 # dockercompose / railpack. There is no `dockerimage` case, so the API refuses
 # any PATCH carrying that value:
 #

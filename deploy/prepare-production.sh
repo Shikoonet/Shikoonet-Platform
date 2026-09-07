@@ -50,6 +50,16 @@ die() {
 [[ $STAGING_RUN =~ ^[0-9]{1,20}$ ]] || die "staging run id '$STAGING_RUN' is not a run id"
 [ -r "$CONF" ] || die "cannot read $CONF — run as the shikoo-deploy user"
 
+# This workflow is the one-time bridge from the legacy Git applications to
+# three Docker Image applications. Once Cutover has atomically adopted those
+# UUIDs, normal releases use Promote Production and deploy them in place. A
+# second Prepare would otherwise back up the legacy UUIDs from deploy.env and
+# reason about the wrong live owners, so refuse before taking even a backup.
+CURRENT_APPS_FILE=${CURRENT_APPS_FILE:-$STATE/current-applications.env}
+if [ -e "$CURRENT_APPS_FILE" ] || [ -L "$CURRENT_APPS_FILE" ]; then
+  die "canonical production applications are already adopted at $CURRENT_APPS_FILE — use Promote Production for later releases"
+fi
+
 # ── P0 is gone, and where it went is written down ─────────────────────────
 #
 # Until 2026-09-07 the first act here was verifying a production-dump
@@ -429,9 +439,28 @@ LIVE_DASH=$(printf '%s' "$OBS" | sed -n 's/^live_dashboard_owner=//p')
 
 [ "$TEMP_OK" = 'pass' ] || die "the candidates do not answer on their temporary domains"
 
-# The old bot must still be the only poller: preparation does not touch it, and
-# a count that is not 1 means something else did.
-[ "$LOCKS" = '1' ] || die "production holds ${LOCKS} bot advisory lock(s), expected exactly 1 — preparation does not touch the bot, so something else did"
+# Most releases replace one observed old poller. This installation's first
+# cutover starts from a different, equally concrete baseline: the legacy bot is
+# exited and has no retained container, and the production database has zero
+# bot-namespace locks. That may bootstrap the first poller only while the old
+# and candidate UUIDs differ. Once the canonical bot is adopted, zero is an
+# outage and remains a refusal.
+if ! OLD_BOT_CONTAINERS=$(docker ps -q --filter "label=coolify.name=$OLD_BOT" 2>/dev/null); then
+  die "could not query Docker for the current production bot container"
+fi
+OLD_BOT_COUNT=$(printf '%s\n' "$OLD_BOT_CONTAINERS" | sed '/^$/d' | wc -l)
+case "${LOCKS}:${OLD_BOT_COUNT}" in
+  1:1) BOT_HANDOVER_MODE=replace-single ;;
+  0:0)
+    [ "$OLD_BOT" != "$CAND_BOT" ] ||
+      die "the canonical production bot has stopped — zero pollers is not a bootstrap after adoption"
+    BOT_HANDOVER_MODE=bootstrap-empty
+    ;;
+  *)
+    die "production has ${LOCKS} bot lock(s) and ${OLD_BOT_COUNT} current bot container(s); expected 1/1 replacement or the one-time 0/0 bootstrap"
+    ;;
+esac
+say "    bot handover mode: ${BOT_HANDOVER_MODE} (${LOCKS} lock(s), ${OLD_BOT_COUNT} old container(s))"
 
 # P7: the old applications still serve the migrated schema. This is what keeps
 # image rollback a real recovery path rather than a hope.
@@ -450,7 +479,7 @@ MAIN_SHA="$SHA_ARG" DIGEST="$DIGEST_ARG" STAGING_RUN_ID="$STAGING_RUN" \
   BACKUP_ID="$BACKUP_ID" ENV_BACKUP_ID="$ENV_BACKUP_ID" SCHEMA_VERSION="$SCHEMA" \
   TEMP_DOMAIN_VERIFY="$TEMP_OK" OLD_APPS_HEALTHY="$OLD_OK" \
   LIVE_INGEST_OWNER="$LIVE_ING" LIVE_DASHBOARD_OWNER="$LIVE_DASH" \
-  BOT_ADVISORY_LOCKS="$LOCKS" \
+  BOT_ADVISORY_LOCKS="$LOCKS" BOT_HANDOVER_MODE="$BOT_HANDOVER_MODE" \
   bash "$HERE/write-preparation-manifest.sh" "$MANIFEST_DIR" ||
   die "the preparation manifest could not be written"
 

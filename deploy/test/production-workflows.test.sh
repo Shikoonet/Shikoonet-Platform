@@ -149,6 +149,14 @@ want "$CUT_SCRIPT" 'recovery cancels the queued candidate deployment before rest
   'cancel_candidate_deployment || recovered=0'
 want "$CUT_SCRIPT" 'recovery restarts the retained old container, not a mutable application record' \
   "docker start \"\$OLD_BOT_CID\""
+want "$CUT_SCRIPT" 'the first release has an explicit zero-poller bootstrap mode' \
+  'bootstrap-empty)'
+want "$CUT_SCRIPT" 'a successful first cutover adopts the canonical application UUIDs' \
+  'current-production-apps.sh" adopt'
+# The literal shell expression is what the workflow must pass through.
+# shellcheck disable=SC2016
+want "$CUT" 'the verified artifact binds the bot handover mode to the host cutover' \
+  '"$BOT_HANDOVER_MODE"'
 
 prepared_line=$(grep -n 'verify-production-bot-candidate.sh" prepared' "$CUT_SCRIPT" | head -1 | cut -d: -f1)
 move_line=$(grep -n 'say "P11\. moving' "$CUT_SCRIPT" | head -1 | cut -d: -f1)
