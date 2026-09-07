@@ -246,11 +246,17 @@ fi
 section 'the superuser comes from the container, not from a literal'
 STATE_PGUSER="$FULL/state-pguser"
 if run_full "$STATE_PGUSER"; then
+  # `[^[:space:]]+`, not a character class of «letters and digits»: `-U
+  # shikoo-other` matched the class only as far as the hyphen and was recorded
+  # as `-U shikoo`, so a query running as the WRONG role satisfied the exact-set
+  # check below. A pattern that silently truncates its input is a pattern that
+  # agrees with whatever it was hoping for.
+  #
   # The SET of usernames, not «is one of them right». `grep -q -- '-U shikoo'`
   # passes on a log where one query used shikoo and another used something else
   # entirely — and «something else» is exactly what a half-applied fix looks
   # like. Absence of `postgres` is not presence of only `shikoo`.
-  seen=$(grep -o -- '-U [A-Za-z0-9_]*' "$FULL_LOG" | sort -u | tr '\n' ' ')
+  seen=$(grep -oE -- '-U [^[:space:]]+' "$FULL_LOG" | sort -u | tr '\n' ' ')
   if [ "$seen" = '-U shikoo ' ]; then
     ok 'every query runs as the user the container reported'
   else
@@ -264,7 +270,7 @@ fi
 # reports something unhelpful.
 STATE_PGOVERRIDE="$FULL/state-pgoverride"
 if run_full "$STATE_PGOVERRIDE" PGUSER=chosen; then
-  seen=$(grep -o -- '-U [A-Za-z0-9_]*' "$FULL_LOG" | sort -u | tr '\n' ' ')
+  seen=$(grep -oE -- '-U [^[:space:]]+' "$FULL_LOG" | sort -u | tr '\n' ' ')
   if [ "$seen" = '-U chosen ' ]; then
     ok 'an explicit PGUSER overrides what the container says'
   else
