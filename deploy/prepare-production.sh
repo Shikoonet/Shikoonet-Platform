@@ -278,6 +278,26 @@ for v in "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT"; do
 done
 say "    candidates: ingest=${CAND_INGEST} dashboard=${CAND_DASHBOARD} bot=${CAND_BOT} (created ${CREATED_COUNT})"
 
+# ── P5a. production configuration, before anything is started ─────────────
+#
+# Candidate creation is configuration-free on purpose: the creator first has
+# to prove native Auto Deploy and previews are off while the new application
+# has no secrets and cannot run. Once that proof exists, the candidates still
+# need the runtime/buildtime rows of the applications they replace. Without
+# this step the first deployment reaches deploy.sh's preflight with no
+# ENV_NAME and stops before migration — safely, but permanently.
+#
+# The sync is an API upsert followed by an exact read-back. It copies no
+# preview variables, preserves Coolify's row flags, refuses ambiguous source
+# duplicates, and never logs a value. Release-specific APP_VERSION and the
+# dashboard INGEST_URL remain owned by deploy.sh.
+say "P5a. candidate production environments"
+bash "$HERE/sync-production-candidate-envs.sh" \
+  "$OLD_INGEST" "$CAND_INGEST" \
+  "$OLD_DASHBOARD" "$CAND_DASHBOARD" \
+  "$OLD_BOT" "$CAND_BOT" ||
+  die "could not copy the current production configuration onto the candidates"
+
 # ── P5b. the temporary domains ────────────────────────────────────────────
 #
 # Nothing did this, and P10 has always required its result. `observe-production`
