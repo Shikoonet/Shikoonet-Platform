@@ -1408,6 +1408,47 @@ export interface CronJobRow {
   lastActed: { at: string; count: number } | null;
 }
 
+/**
+ * One franchise, as «نمایندگان» draws it.
+ *
+ * `billableBytes` is `null` when the meter has never been read — NOT zero. On
+ * a screen about money those look identical and mean opposite things, so the
+ * page has to be able to tell them apart.
+ */
+export interface ResellerRow {
+  id: number;
+  name: string;
+  status: 'ACTIVE' | 'SUSPENDED' | 'CLOSED';
+  telegramId: string | null;
+  username: string | null;
+  providerId: number;
+  providerName: string;
+  panelAdminUsername: string;
+  /** `null` is unlimited, exactly as the panel reports it. */
+  dataLimitBytes: number | null;
+  expiresAt: string | null;
+  installationUrl: string | null;
+  note: string | null;
+  billableBytes: number | null;
+  latestUsedBytes: number | null;
+  latestTotalUsers: number | null;
+  latestPanelStatus: string | null;
+  latestPanelIsLimited: boolean | null;
+  lastReadAt: string | null;
+  readings: number;
+}
+
+/** One meter reading, from the append-only ledger. */
+export interface ResellerReading {
+  usedBytes: number | null;
+  lifetimeUsedBytes: number | null;
+  dataLimitBytes: number | null;
+  totalUsers: number;
+  panelStatus: string | null;
+  panelIsLimited: boolean | null;
+  takenAt: string;
+}
+
 export const api = {
   me() {
     return req<{ ok: boolean } & Me>('/me');
@@ -2403,6 +2444,37 @@ export const api = {
       items: CronJobRow[];
       dryRun: { key: string; on: boolean | null };
     }>('/cron');
+  },
+
+  resellers() {
+    return req<{ ok: boolean; items: ResellerRow[] }>('/resellers');
+  },
+
+  resellerReadings(id: number) {
+    return req<{ ok: boolean; items: ResellerReading[] }>(`/resellers/${id}/readings`);
+  },
+
+  createReseller(body: {
+    userId: number;
+    providerId: number;
+    panelAdminUsername: string;
+    name: string;
+    dataLimitBytes: number | null;
+    expiresAtMs: number | null;
+    installationUrl: string | null;
+    note: string | null;
+  }) {
+    return req<{ ok: boolean; id: number }>('/resellers', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  setResellerStatus(id: number, status: 'ACTIVE' | 'SUSPENDED' | 'CLOSED') {
+    return req<{ ok: boolean }>(`/resellers/${id}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ status }),
+    });
   },
 
   updateCron(body: { key: string; value: boolean | number }) {
