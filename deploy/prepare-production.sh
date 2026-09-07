@@ -220,10 +220,34 @@ else
   # this is the confusion most likely to actually happen.
   [ "$(rfield environment)" = "$ENV_ARG" ] ||
     die "the restore attestation is for environment '$(rfield environment)', not $ENV_ARG"
-  for f in migration_checksums:pass invariants:pass scratch_dropped:yes; do
+  for f in migration_checksums:pass scratch_dropped:yes; do
     [ "$(rfield "${f%%:*}")" = "${f##*:}" ] ||
       die "the restore attestation does not record ${f%%:*}=${f##*:} — the drill did not prove what P3 requires"
   done
+  # The invariants, and the one case where not running them is the honest answer.
+  #
+  # They are written against today's schema. A production backup taken before a
+  # cutover restores at the schema production is ON, which is behind by exactly
+  # the range this release applies — so the current assertions meet a database
+  # that does not have the objects they name, and fail as if an invariant were
+  # broken. Demanding `pass` there would force the drill to lie or the release
+  # to stop for a reason that is not real.
+  #
+  # `not-applicable-ledger-behind` is therefore accepted, but ONLY paired with a
+  # ledger that is genuinely behind. On a current database there is no excuse
+  # for skipping them, and the pairing is what stops this becoming one.
+  #
+  # Nothing is given up: the rehearsal P0 already requires proves the invariants
+  # on production's data AFTER the pending range is applied, and records that
+  # separately as `prod_invariants`. This is the narrower question — does the
+  # newest backup restore into the database we think it is.
+  case "$(rfield invariants)" in
+    pass) ;;
+    not-applicable-ledger-behind)
+      [ "$(rfield migration_set_exact)" = 'prefix' ] ||
+        die "the restore attestation skipped the invariants but does not record a ledger behind the shipped set — a current database has no reason to skip them" ;;
+    *) die "the restore attestation records invariants='$(rfield invariants)', which is neither a pass nor a stated reason for not running them" ;;
+  esac
   # `yes` (already current) or `prefix` (an initial run with a pending tail).
   # Both mean no unknown migration, no gap and no drifted checksum; before the
   # first cutover the honest answer is `prefix`, and demanding `yes` here would

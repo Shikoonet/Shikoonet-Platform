@@ -92,8 +92,6 @@ fi
 # replaced. A backup verifier answering «current» when it cannot see the
 # migrations is worse than one that fails.
 #
-# `git ls-files` rather than a glob, so an untracked file sitting in the
-# working tree cannot make this pass either.
 # SETS, not counts. Counting was this check's second mistake in a row: `-ge 37`
 # compared against a frozen number, and `-eq $want` compared two totals — which
 # a manifest that omits 0042 and lists 0041 twice satisfies exactly. The bundle
@@ -105,7 +103,11 @@ fi
 # tree cannot make this pass either. `LC_ALL=C` on every side because comm
 # rejects input this host's collation ordered differently.
 disk=$(git -C "$ROOT" ls-files 'migrations/0*.sql' | LC_ALL=C sort)
-listed=$(awk '{print $2}' "$MANIFEST" | grep '^migrations/0' | LC_ALL=C sort)
+# `awk` filtering rather than `grep`: with an empty result grep exits 1, and
+# under `set -Eeuo pipefail` that kills this script outright — so the very worst
+# manifest, one listing no migrations at all, would take the suite down instead
+# of failing this assertion. The check has to survive the thing it checks for.
+listed=$(awk '$2 ~ /^migrations\/0/ { print $2 }' "$MANIFEST" | LC_ALL=C sort)
 missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$disk") <(printf '%s\n' "$listed") | tr '\n' ' ')
 extra=$(LC_ALL=C comm -13 <(printf '%s\n' "$disk") <(printf '%s\n' "$listed") | tr '\n' ' ')
 # A duplicate is neither missing nor extra — both sets stay empty — so it is
