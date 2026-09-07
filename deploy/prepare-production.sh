@@ -39,14 +39,6 @@ ENV_ARG=production
 CONF=${CONF:-/etc/shikoo/$ENV_ARG/deploy.env}
 STATE=${STATE:-/var/lib/shikoo/$ENV_ARG}
 BACKUP_DIR=${BACKUP_DIR:-$STATE/backups}
-ATTESTATION=${ATTESTATION:-$STATE/attestation}
-# The comment here used to say this path took the production release lock. It
-# did not — there was no flock anywhere in this script, so Prepare could read
-# `current` in the middle of the rehearsal's swap. Both sides now use one
-# protocol from one file, and this is the side that actually acquires it.
-# shellcheck source=deploy/attestation-store.sh
-. "$HERE/attestation-store.sh"
-
 say() { echo "[prepare] $*"; }
 die() {
   echo "[prepare] STOP: $*" >&2
@@ -58,34 +50,27 @@ die() {
 [[ $STAGING_RUN =~ ^[0-9]{1,20}$ ]] || die "staging run id '$STAGING_RUN' is not a run id"
 [ -r "$CONF" ] || die "cannot read $CONF — run as the shikoo-deploy user"
 
-# ── the dump rehearsal, before anything at all ────────────────────────────
+# ── P0 is gone, and where it went is written down ─────────────────────────
 #
-# First act, deliberately. It lives on this host because the dump may not leave
-# it, so it cannot be checked in the workflow gate — but it is checked before a
-# migration, a Coolify write or a ledger line, which is what the ordering was
-# for.
-say "P0. the production-dump rehearsal covers this release"
-# The ROOT is passed, not a version directory. Resolving the pointer here and
-# handing the result to the verifier looked tidier and was worse: the verifier
-# then had a directory chosen by its caller, took its standalone branch, and
-# checked the whole attestation with no lock held. One resolution, inside the
-# verifier, under the shared lock, for the whole read.
-EXPECTED_SHA="$SHA_ARG" EXPECTED_DIGEST="$DIGEST_ARG" \
-  EXPECTED_STAGING_RUN_ID="$STAGING_RUN" \
-  bash "$HERE/verify-dump-attestation.sh" "$ATTESTATION" ||
-  # NOT «the dump attestation does not cover this release». That sentence was
-  # pasted over every non-zero exit of the verifier — a missing lock file, an
-  # unresolvable pointer, an unreadable directory — and it names a cause the
-  # caller has not established. It cost a real diagnosis twice: on 2026-08-28
-  # over «no attestation.env», and on 2026-09-07 over a release lock that did
-  # not exist, where it sent the reader off to re-run a rehearsal that would
-  # have died at the identical line. The verifier has already printed the
-  # precise reason as `::error::` and the store has printed the mechanism as
-  # `[att]`; both reach the log, so the only job left here is not to overwrite
-  # them. This is the rule verify-dump-attestation.sh's own header argues for —
-  # missing, malformed, stale and mismatched are different failures — applied
-  # one level up, where it had been lost.
-  die "P0 refused — the ::error:: line above says which check failed"
+# Until 2026-09-07 the first act here was verifying a production-dump
+# rehearsal attestation: proof that the legacy Mirzabot/D1 dataset had been
+# imported, migrated over the pending range, and measured — before this script
+# was allowed to touch anything. That gate guarded a plan in which THIS
+# pipeline performed the legacy data migration as part of the release.
+#
+# The owner retired that plan (2026-09-07): the release ships the platform
+# with the schema applied and whatever data the database already holds; legacy
+# data, if and when it is loaded, is an owner operation AFTER cutover, not a
+# step of promotion. A gate has to guard something. With no legacy migration
+# in the release path there is no rehearsal for an attestation to attest, and
+# requiring one anyway would be a ceremony — the exact kind of green light
+# that stops meaning anything.
+#
+# The machinery was not deleted: `production-dump-rehearsal.sh`,
+# `verify-dump-attestation.sh` and the attestation store all remain installed
+# for the data work when the owner does it, and `docs/RELEASE.md` records the
+# decision. If a future release ever migrates customer data again, the gate
+# goes back FIRST — restore this block from history rather than rewriting it.
 
 # ── P1/P2. recovery points ────────────────────────────────────────────────
 say "P1/P2. snapshot and encrypted Coolify recovery backup"
