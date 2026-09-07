@@ -66,6 +66,43 @@ describe('PHASE 6 — decision test matrix', () => {
     expect(d.reason).toBe('UNIQUE_EXACT_MATCH');
   });
 
+  /**
+   * The same claim, at the delay the state actually occurs at — and it does NOT
+   * reconcile.
+   *
+   * The test above uses `tx()`, whose credit lands twenty seconds after the
+   * click. That is a delay a `FULFILLED_UNRECONCILED` claim essentially never
+   * sees, because the only two ways into that status are a manual fulfilment
+   * and Continuity mode, and Continuity mode is switched on BECAUSE the SMS
+   * relay is down. Its credits arrive when the relay comes back — as a backlog,
+   * hours later.
+   *
+   * So the existing test is true and silent about the case that matters, which
+   * is the shape CLAUDE.md rule 9 describes: a probe on the easy data reports
+   * healthy and the real data behaves differently.
+   *
+   * This pins what actually happens, and it is deliberately NOT a fix.
+   * `|bank_timestamp − paid_clicked_at| ≤ 300000ms` is one of the money rules
+   * that must not be broken, so the reconciliation queue is drained by a person
+   * pressing «تایید انتخاب‌شده‌ها» (#135) rather than by widening it here.
+   *
+   * If that decision is ever revisited, this test fails first and says so.
+   */
+  it('does NOT auto-reconcile a delivered claim whose credit arrives three hours later', () => {
+    const THREE_HOURS = 3 * 60 * 60_000;
+    const d = decide(claim({ status: 'FULFILLED_UNRECONCILED' }), [
+      tx({ bankTimestamp: BASE_MS + THREE_HOURS }),
+    ]);
+
+    expect(d.decision).toBe('SUGGEST');
+    expect(d.reason).toBe('OUTSIDE_AUTO_MATCH_WINDOW');
+    expect(d.diagnostics.timeDeltaMs).toBe(THREE_HOURS);
+    // The credit IS found — it is refused, not missing. That distinction is
+    // what tells an operator there is a transaction to attach rather than a
+    // customer to suspect, and it is why the row says so out loud now.
+    expect(d.transactionId).toBeNull();
+  });
+
   it('TEST 2 delta 4m59s → AUTO_VERIFY', () => {
     const d = decide(claim(), [tx({ bankTimestamp: BASE_MS + 4 * 60_000 + 59_000 })]);
     expect(d.decision).toBe('AUTO_VERIFY');

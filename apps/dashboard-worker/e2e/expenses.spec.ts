@@ -327,7 +327,24 @@ test('a euro bill, posted from the banner, moves the ledger and the due date', a
   await expect(form).toContainText(asToman(-426_000_000));
 
   await form.getByRole('button', { name: 'ثبت قسط' }).click();
-  await expect(page.locator('#main-content')).toContainText('سررسید بعدی');
+  /**
+   * «ثبت شد — …», not «سررسید بعدی».
+   *
+   * This line used to wait for «سررسید بعدی», and it waited for NOTHING: the
+   * form itself says «بعد از ثبت، سررسید بعدی …» — asserted twelve lines up —
+   * and the form is inside `#main-content`. So the phrase was already on screen
+   * before the button was pressed, the assertion passed instantly, and the very
+   * next line read the database while the POST was still in flight.
+   *
+   * On an idle runner the insert won the race and this was green. Under load it
+   * lost, and the failure surfaced three PRs away from anything to do with
+   * expenses, as `after.rows` being one short — with the trace showing the POST
+   * cancelled, unanswered, by the browser closing.
+   *
+   * `ثبت شد` is written in exactly one place in `ExpensesPage.tsx`, and only
+   * after the request has come back. Waiting for it is waiting for the row.
+   */
+  await expect(page.locator('#main-content')).toContainText('ثبت شد — سررسید بعدی');
 
   // The row is in the books, at the euro figure...
   const after = await ledger();

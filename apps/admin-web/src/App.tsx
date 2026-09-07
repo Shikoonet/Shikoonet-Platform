@@ -37,6 +37,7 @@ import { ImportPage } from './pages/ImportPage.js';
 import { EventsPage } from './pages/EventsPage.js';
 import { Icon } from './icons.js';
 import { HubSection } from './hub/HubSection.js';
+import { VersionBadge } from './VersionBadge.js';
 import { createCache } from './hub/query.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { StatsPage } from './pages/StatsPage.js';
@@ -324,7 +325,12 @@ export function App() {
           <span>
             پنل مدیریت
             <br />
-            <span className="muted">نسخهٔ ۱</span>
+            {/* Was the literal «نسخهٔ ۱», which no build could ever change — a
+                sentence on the screen is not evidence. The badge reads the
+                running build from `/api/v1/version`, and it is here rather than
+                in the hub header because the sidebar is on every page and that
+                header is on six of twenty-nine. */}
+            <VersionBadge />
           </span>
         </div>
       </aside>

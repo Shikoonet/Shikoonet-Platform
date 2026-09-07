@@ -101,7 +101,7 @@ function textProblem(problem: NonNullable<ReturnType<typeof checkOverride>>): st
  * a stale answer would either refuse markup the shop just enabled or accept
  * markup it just turned off.
  */
-async function customEmojiOn(db: D1Database): Promise<boolean> {
+export async function customEmojiOn(db: D1Database): Promise<boolean> {
   const row = await db
     .prepare(`SELECT value FROM settings WHERE scope = 'bot' AND key = 'custom_emoji'`)
     .first<{ value: unknown }>();

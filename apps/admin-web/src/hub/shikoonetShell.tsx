@@ -9,7 +9,7 @@ import {
 } from 'react';
 import { NotificationBell } from './NotificationBell.js';
 import type { Cache } from './query.js';
-import { ContinuityBanner } from './ContinuityBanner.js';
+import { ContinuityBanner, ContinuityButton, useContinuityMode } from './ContinuityBanner.js';
 
 type HeaderSlotName = 'center' | 'dateNav';
 
@@ -37,62 +37,6 @@ export function HeaderSlot({ slot, children }: { slot: HeaderSlotName; children:
     return <div className="payments-shell__date-slot">{children}</div>;
   }
   return null;
-}
-
-/**
- * Which build am I looking at? Dev and production sit behind the same Cloudflare
- * Access policy and serve the same SPA bundle, so without this an operator can
- * approve a real payment while believing they are in dev. Production stays quiet
- * (version only); anything else shouts.
- */
-function VersionBadge() {
-  const [info, setInfo] = useState<{ version: string; env: string } | null>(null);
-
-  useEffect(() => {
-    const ac = new AbortController();
-    // Fetched once — the running build cannot change while the page is open.
-    fetch('/api/v1/version', { signal: ac.signal })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        // Validate the shape rather than trusting `ok` — an older worker, a
-        // proxy, or a stubbed fetch can answer 200 with something else, and a
-        // missing field here would crash the whole header.
-        if (typeof d?.version === 'string' && typeof d?.env === 'string') {
-          setInfo({ version: d.version, env: d.env });
-        }
-      })
-      .catch(() => {
-        /* badge is cosmetic; a failed probe just hides it */
-      });
-    return () => ac.abort();
-  }, []);
-
-  if (!info) return null;
-  const isProd = info.env === 'production';
-  /*
-   * Seven characters, because `APP_VERSION` is a full git sha.
-   *
-   * On production the badge printed `v` followed by all forty of them, so the
-   * header carried `v70fb1055bd5fff3e378c0296d4eb2887ae2d66ae` — wider than the
-   * «بررسی» tab beside it, and unreadable at any width. Sam's screenshot of the
-   * live panel on 2026-08-25 is a strip of hexadecimal where a version should
-   * be.
-   *
-   * Seven is what git itself abbreviates to and what a person can compare
-   * against `git log` at a glance. The whole value stays in `title`, so nothing
-   * is lost for the one case that wants it — and the slice is harmless if the
-   * value is ever a real version like `1.4.2`, which is shorter than seven.
-   */
-  const short = info.version.slice(0, 7);
-
-  return (
-    <span
-      className={`env-badge${isProd ? '' : ' env-badge--nonprod'}`}
-      title={`${info.env} — ${info.version}`}
-    >
-      {isProd ? `v${short}` : `${info.env.toUpperCase()} v${short}`}
-    </span>
-  );
 }
 
 interface ShikoonetHeaderProps {
@@ -179,6 +123,12 @@ export function ShikoonetHeader({
   const [center, setCenter] = useState<ReactNode>(null);
   const [dateNav, setDateNav] = useState<ReactNode>(null);
 
+  // One poll for both children. They are never on screen together — the button
+  // is the NORMAL state and the strip is the CONTINUITY one — but each mounting
+  // its own timer would mean two requests every thirty seconds to answer one
+  // question.
+  const continuity = useContinuityMode();
+
   const slots = useMemo<HeaderSlots>(
     () => ({
       setSlot(slot, node) {
@@ -200,13 +150,19 @@ export function ShikoonetHeader({
           <div className="shikoonet-header__center">{center}</div>
 
           <div className="shikoonet-header__right">
-            <ContinuityBanner />
-            <VersionBadge />
+            <ContinuityButton state={continuity.state} onChanged={continuity.refresh} />
             {dateNav && <div className="shikoonet-header__date">{dateNav}</div>}
             <NotificationBell cache={cache} onNavigate={onNavigate} />
             <OperatorMenu onRefresh={onRefresh} />
           </div>
         </div>
+        {/* Its own row, under the bar, because it is a STRIP.
+            It used to be a flex item inside `__right`, which is the `auto`
+            track of a two-column grid: a paragraph of Persian in there opened
+            that track to its full content width and starved the `minmax(0,1fr)`
+            track next to it — the one holding the payment tabs. The warning
+            broke the navigation of the screen it was warning about. */}
+        <ContinuityBanner state={continuity.state} onChanged={continuity.refresh} />
       </header>
       {children}
     </HeaderSlotsContext.Provider>
