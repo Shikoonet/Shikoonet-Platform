@@ -79,10 +79,45 @@ else
   emit candidate_health "ingest:${ING} dashboard:${DASH}"
 fi
 
-# The candidates still answering on their temporary domains.
+# The candidates still answering on their temporary domains — through the
+# proxy on this box, by name, without asking public DNS where the name points.
+#
+# The temporary names are rehearsal names: nothing a customer types, nothing
+# any other system resolves. On 2026-09-07 Prepare Production reached P10 for
+# the first time with both candidates deployed, healthy and routed — pinned to
+# the box's address they answered 200 — and died here anyway, because the
+# `-next` A records had gone from Cloudflare between P5b and P10 and this
+# probe got no address at all. A rehearsal that depends on a DNS record nobody
+# in the pipeline owns is a rehearsal that fails for reasons the release
+# cannot see.
+#
+# So the request is aimed at the proxy directly (`--resolve` pins the name to
+# the proxy address; the Host/SNI still carries the temporary name, so Traefik
+# routes it exactly as it would for a customer) and the certificate is not
+# verified: the name has no customer, so the certificate has no relying
+# party, and its issuance is the one part of this that DOES need public DNS
+# (HTTP-01). What is proven is what P10 needs — the container behind THIS
+# name, through THIS proxy, answers healthy. The live names are verified by
+# cutover the way a customer would, DNS and certificate included.
+#
+# The address is overridable for the one case that is not this host.
 TEMP_ING=${TEMP_INGEST_URL:-https://sms-next.chopon.uk}
 TEMP_DASH=${TEMP_DASHBOARD_URL:-https://shikoo-next.chopon.uk}
-probe() { curl -sS -o /dev/null -w '%{http_code}' --max-time 12 "$1" 2>/dev/null || printf '000'; }
+PROXY_ADDR=${PROXY_ADDR:-127.0.0.1}
+probe() { # url -> http status, through the local proxy
+  # `--resolve` applies to one host:port pair, so the port has to be the one
+  # curl will actually use for this URL — explicit if the URL names one,
+  # otherwise the scheme's default. A pinned 443 under an override that says
+  # `:8443` would silently fall back to DNS, the exact dependency this removes.
+  local host port
+  read -r host port < <(printf '%s' "$1" | python3 -c '
+import sys, urllib.parse as u
+p = u.urlsplit(sys.stdin.read().strip())
+print(p.hostname or "", p.port or (443 if p.scheme == "https" else 80))' 2>/dev/null || printf '\n')
+  [ -n "${host:-}" ] || { printf '000'; return; }
+  curl -sS -k -o /dev/null -w '%{http_code}' --max-time 12 \
+    --resolve "${host}:${port}:${PROXY_ADDR}" "$1" 2>/dev/null || printf '000'
+}
 if [ "$(probe "${TEMP_ING}/health")" = '200' ] && [ "$(probe "${TEMP_DASH}/api/v1/health")" = '200' ]; then
   emit temp_domain_verify pass
 else
