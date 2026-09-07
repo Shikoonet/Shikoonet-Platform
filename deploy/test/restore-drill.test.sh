@@ -286,7 +286,7 @@ if run_full "$STATE_BEHIND"; then
   if grep -qx 'migration_set_exact=prefix' "$STATE_BEHIND/restore-attestation.env" &&
      grep -qx 'migrations_applied=1' "$STATE_BEHIND/restore-attestation.env" &&
      grep -qx 'migrations_pending=1' "$STATE_BEHIND/restore-attestation.env" &&
-     grep -qx 'invariants=pass' "$STATE_BEHIND/restore-attestation.env" &&
+     grep -qx 'invariants=not-applicable-ledger-behind' "$STATE_BEHIND/restore-attestation.env" &&
      (cd "$STATE_BEHIND" && sha256sum -c restore-attestation.sha256 >/dev/null); then
     ok 'a ledger behind the shipped set passes and is attested as a prefix'
   else
@@ -296,6 +296,50 @@ if run_full "$STATE_BEHIND"; then
 else
   bad 'a ledger behind the shipped set passes and is attested as a prefix' "$(cat "$WORK/out")"
 fi
+
+# ── the invariants are skipped, and SAID to be, when the copy is behind ──
+#
+# `verify_invariants.sql` is written against today's schema. Run against a
+# restore that is behind it fails on objects the pending migrations create — on
+# the production host it died with «duplicate key value violates unique
+# constraint idx_redemption_once_per_user», an index 0059 replaces. That reads
+# as a broken money invariant and is nothing of the kind.
+#
+# The fixture's invariants file is a script that always fails, so this can tell
+# «not run» from «ran and passed» rather than inferring it from a green exit.
+STATE_BEHIND_INV="$FULL/state-behind-inv"
+if run_full "$STATE_BEHIND_INV"; then
+  if grep -qx 'invariants=not-applicable-ledger-behind' "$STATE_BEHIND_INV/restore-attestation.env" &&
+     ! grep -q -- '-q -d restore_test_scratch$' "$FULL_LOG"; then
+    ok 'a behind ledger skips the invariants and records why'
+  else
+    bad 'a behind ledger skips the invariants and records why' \
+      "$(grep '^invariants=' "$STATE_BEHIND_INV/restore-attestation.env" 2>/dev/null || tail -3 "$WORK/out")"
+  fi
+else
+  bad 'a behind ledger skips the invariants and records why' "$(tail -6 "$WORK/out")"
+fi
+# And the other half: a CURRENT ledger must still run them, so «not applicable»
+# cannot quietly become how every drill passes.
+#
+# The INVOCATION is what is asserted, not its result: the fake docker does not
+# execute SQL, so a failing invariants file proves nothing here. That call is
+# the only one ending in `-q -d <scratch>` with no `-c`, which is what makes it
+# identifiable in the log at all.
+rm -f "$MIGRATIONS/0002_pending.sql"
+STATE_CURRENT_INV="$FULL/state-current-inv"
+if run_full "$STATE_CURRENT_INV"; then
+  if grep -q -- '-q -d restore_test_scratch$' "$FULL_LOG" &&
+     grep -qx 'invariants=pass' "$STATE_CURRENT_INV/restore-attestation.env"; then
+    ok 'a current ledger still runs the invariants'
+  else
+    bad 'a current ledger still runs the invariants' \
+      "invariants call in log: $(grep -c -- '-q -d restore_test_scratch$' "$FULL_LOG"); attested: $(grep '^invariants=' "$STATE_CURRENT_INV/restore-attestation.env" 2>/dev/null)"
+  fi
+else
+  bad 'a current ledger still runs the invariants' "$(tail -6 "$WORK/out")"
+fi
+printf '%s\n' 'select 1;' >"$MIGRATIONS/0002_pending.sql"
 
 STATE_STRICT="$FULL/state-strict"
 if run_full "$STATE_STRICT" MIGRATION_LEDGER_EXACT=1; then
