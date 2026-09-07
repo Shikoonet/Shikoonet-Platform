@@ -580,7 +580,14 @@ export function registerCustomerRoutes(
       reason,
       actor: { kind: 'OPERATOR', email: ident.email, role: ident.role },
       note: reason,
-      requestId: c.req.header('cf-ray') ?? null,
+      // `ident.requestId`, which is the id the worker generated and put on the
+      // response as `x-request-id` — NOT `cf-ray`. `e2e/request-id.spec.ts`
+      // asserts the header a browser was handed equals the `request_id` on the
+      // audit row, and Cloudflare is not in front of this worker any more, so
+      // `cf-ray` is absent and the row recorded null. Caught by the full gate;
+      // no unit suite covers that pairing because it spans the HTTP response
+      // and the database.
+      requestId: ident.requestId ?? null,
     });
     if (!outcome) return c.json({ ok: false, error: 'not_found' }, 404);
     if (!outcome.changed) return c.json({ ok: true, changed: false, status });
