@@ -238,6 +238,90 @@ else
   done
 fi
 
+# ── the temporary names are proven through the proxy, not through DNS ───
+#
+# On 2026-09-07 P10 was reached for the first time with both candidates
+# deployed, healthy and routed, and died because the `-next` A records had
+# vanished from Cloudflare and the probe got no address. The observer now aims
+# the request at the proxy on the box by name. This executes the real script
+# with a fake proxy: what matters is the exact shape of the request — pinned
+# to the proxy address, still carrying the temporary hostname, certificate
+# not relied on — and that the verdict follows what the proxy answers.
+section 'the temporary-domain probe asks the proxy on the box, not public DNS'
+OBSERVE="$ROOT/deploy/observe-production.sh"
+OBS_BIN="$WORK/obs-bin"
+mkdir -p "$OBS_BIN"
+cat >"$OBS_BIN/docker" <<'FAKE'
+#!/usr/bin/env bash
+# No Coolify, no containers: every Docker-backed observation reads unknown.
+case "${1:-}" in
+  ps) exit 0 ;;
+  *) exit 1 ;;
+esac
+FAKE
+cat >"$OBS_BIN/curl" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_CURL_LOG"
+url=${*: -1}
+case "$url" in
+  https://sms-next.chopon.uk/health | https://sms-next.chopon.uk:*/health) printf '%s' "${FAKE_INGEST_CODE:-200}" ;;
+  https://shikoo-next.chopon.uk/api/v1/health) printf '%s' "${FAKE_DASHBOARD_CODE:-200}" ;;
+  *) printf '000' ;;
+esac
+FAKE
+chmod +x "$OBS_BIN/docker" "$OBS_BIN/curl"
+
+observe() { # curl-log [env overrides...]
+  local log=$1
+  shift
+  : >"$log"
+  env PATH="$OBS_BIN:$PATH" FAKE_CURL_LOG="$log" BACKUP_DIR="$WORK/no-backups-here" "$@" \
+    bash "$OBSERVE" 2>/dev/null || true
+}
+
+OBS_LOG="$WORK/observe-curl.log"
+OBS_OUT=$(observe "$OBS_LOG")
+if printf '%s\n' "$OBS_OUT" | grep -qx 'temp_domain_verify=pass'; then
+  ok 'both candidates answering through the proxy is a pass'
+else
+  bad 'both candidates answering through the proxy is a pass' "$(printf '%s' "$OBS_OUT" | tr '\n' ' ')"
+fi
+if grep -q -- '--resolve sms-next.chopon.uk:443:127.0.0.1 https://sms-next.chopon.uk/health$' "$OBS_LOG" &&
+  grep -q -- '--resolve shikoo-next.chopon.uk:443:127.0.0.1 https://shikoo-next.chopon.uk/api/v1/health$' "$OBS_LOG"; then
+  ok 'each request is pinned to the proxy on the box and still carries the temporary hostname'
+else
+  bad 'each request is pinned to the proxy on the box and still carries the temporary hostname' "$(tr '\n' ' ' <"$OBS_LOG")"
+fi
+if [ "$(grep -c -- ' -k ' "$OBS_LOG")" = 2 ]; then
+  ok 'the certificate of a rehearsal name is not relied on'
+else
+  bad 'the certificate of a rehearsal name is not relied on' "$(tr '\n' ' ' <"$OBS_LOG")"
+fi
+
+OBS_OUT=$(observe "$OBS_LOG" PROXY_ADDR=10.9.9.9)
+if grep -q -- '--resolve sms-next.chopon.uk:443:10.9.9.9 ' "$OBS_LOG"; then
+  ok 'the proxy address is overridable for a host that is not this one'
+else
+  bad 'the proxy address is overridable for a host that is not this one' "$(tr '\n' ' ' <"$OBS_LOG")"
+fi
+
+# `--resolve` is per host:port. An override that names a port must be pinned on
+# that port, or curl quietly goes back to DNS for it.
+OBS_OUT=$(observe "$OBS_LOG" TEMP_INGEST_URL=https://sms-next.chopon.uk:8443)
+if grep -q -- '--resolve sms-next.chopon.uk:8443:127.0.0.1 https://sms-next.chopon.uk:8443/health$' "$OBS_LOG" &&
+  printf '%s\n' "$OBS_OUT" | grep -qx 'temp_domain_verify=pass'; then
+  ok 'an override with an explicit port is pinned on that port'
+else
+  bad 'an override with an explicit port is pinned on that port' "$(tr '\n' ' ' <"$OBS_LOG")"
+fi
+
+OBS_OUT=$(observe "$OBS_LOG" FAKE_DASHBOARD_CODE=502)
+if printf '%s\n' "$OBS_OUT" | grep -qx 'temp_domain_verify=fail'; then
+  ok 'one candidate not answering through the proxy is a fail'
+else
+  bad 'one candidate not answering through the proxy is a fail' "$(printf '%s' "$OBS_OUT" | tr '\n' ' ')"
+fi
+
 # ── the retired gate stays retired, unless somebody means it ─────────────
 #
 # P0 — the dump-rehearsal attestation — was removed from prepare on 2026-09-07
