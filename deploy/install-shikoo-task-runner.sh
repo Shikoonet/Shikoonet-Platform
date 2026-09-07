@@ -48,7 +48,7 @@ BACKUP=/var/backups/shikoo-task-runner-$(date -u +%Y%m%dT%H%M%SZ)
 # The one hard-coded value. Everything else is derived from the manifest it
 # pins, and a CI test asserts this still equals
 # sha256sum deploy/shikoo-task-runner.manifest.
-MANIFEST_SHA256=223654a9467d4f964d3eefb4f43c8256377ba06cc45d09edcaf8bba0ecdd78e4
+MANIFEST_SHA256=42ae8fdc907a2ed1d24e4fc25a41c40806e01d956b8c95c7bf3b053fd7b88ab8
 
 say() { echo "[install] $*"; }
 die() { echo "[install] FAILED: $*" >&2; exit 1; }
@@ -222,6 +222,41 @@ chmod 0660 "$RELEASE_LOCK"
 [ "$(stat -c '%U:%G:%a' "$RELEASE_LOCK")" = "root:$RUN_AS:660" ] ||
   fail_back "$RELEASE_LOCK is not root:$RUN_AS 0660 after installation"
 say "release lock $RELEASE_LOCK is root:$RUN_AS 0660"
+
+# ── and again after every reboot ──────────────────────────────────────────
+#
+# /var/lock is /run/lock, which is a tmpfs: everything above is undone by the
+# next boot, and nothing about the host looks different afterwards. The first
+# signal would be a production dispatch dying at P0 on a file nobody removed —
+# which is how 2026-09-07 was spent.
+#
+# systemd-tmpfiles recreates it before any local account can reach the 1777
+# directory, so this closes the land-grab window on every boot as well as
+# restoring the file. `f` creates it only when absent and never truncates an
+# existing one, so a release holding the lock across a `systemd-tmpfiles
+# --create` keeps holding the same inode.
+TMPFILES=/etc/tmpfiles.d/shikoo-release-lock.conf
+printf 'f %s 0660 root %s -\n' "$RELEASE_LOCK" "$RUN_AS" >"$TMPFILES.new"
+chown root:root "$TMPFILES.new"
+chmod 0644 "$TMPFILES.new"
+mv -Tf "$TMPFILES.new" "$TMPFILES"
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+  systemd-tmpfiles --create "$TMPFILES" ||
+    fail_back "systemd-tmpfiles refused $TMPFILES"
+  # It ran; prove it did not disturb what we just set.
+  [ "$(stat -c '%U:%G:%a' "$RELEASE_LOCK")" = "root:$RUN_AS:660" ] ||
+    fail_back "$RELEASE_LOCK is not root:$RUN_AS 0660 after systemd-tmpfiles"
+  say "release lock will be recreated on boot ($TMPFILES)"
+else
+  # Fail, rather than warn. This installer already requires systemd — it arms
+  # its rollback with `systemctl enable --now` above and dies without it — so a
+  # host reaching here without `systemd-tmpfiles` is not a lesser configuration
+  # to tolerate, it is one this script has already refused to run on. And the
+  # failure it would otherwise leave behind is the exact one this whole block
+  # exists to prevent: a release lock that is correct today and silently gone
+  # after the next reboot, discovered by a production dispatch.
+  fail_back "systemd-tmpfiles is not installed, so nothing would recreate $RELEASE_LOCK after a reboot"
+fi
 
 # ── sudoers ──────────────────────────────────────────────────────────────
 TMP_SUDO=$(mktemp)

@@ -77,6 +77,18 @@ ssh "${SSH_OPTS[@]}" -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
 scp "${SSH_OPTS[@]}" -q -P "$PORT" deploy/*.sh \
   "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/"
 
+# And `migrations/`, because two of those scripts read it and neither says so
+# in a way this upload could have inferred. `restore-drill.sh` resolves
+# `<its dir>/migrations` (the installed layout) or `../migrations` (the repo
+# layout) and fails outright with neither, and `verify_invariants.sql` lives in
+# the same directory. Uploading only `deploy/*.sh` gave it a third layout that
+# has never existed anywhere else — a throwaway directory with the scripts and
+# nothing beside them — so the drill died on a missing directory that is sitting
+# in the repository, which is the exact failure the comment above this warns
+# about, one directory over.
+scp "${SSH_OPTS[@]}" -qr -P "$PORT" migrations \
+  "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/"
+
 cleanup_remote() {
   ssh "${SSH_OPTS[@]}" -p "$PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
     "rm -rf '$REMOTE_DIR'" >/dev/null 2>&1 || true
