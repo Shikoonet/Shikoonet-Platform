@@ -105,12 +105,20 @@ case "$MODE" in
       printf 'adopted_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } >"$tmp"
     # Parse the staged file through the same strict reader the next promotion
-    # will use. An atomic rename then makes partial state impossible.
+    # will use. A same-directory hard link is the atomic create-without-replace
+    # primitive: unlike an existence check followed by mv, it cannot overwrite
+    # a pointer another cutover committed in between.
     staged=$FILE
     FILE=$tmp
     resolve_pointer >/dev/null
     FILE=$staged
-    mv -f "$tmp" "$FILE"
+    if ! ln -- "$tmp" "$FILE"; then
+      if [ -e "$FILE" ] || [ -L "$FILE" ]; then
+        die "$FILE appeared while adopting — canonical production applications may be adopted only once"
+      fi
+      die "cannot atomically commit $FILE without replacing an existing pointer"
+    fi
+    rm -f "$tmp"
     trap - EXIT
     echo "[current-apps] adopted the three canonical production applications"
     ;;

@@ -58,7 +58,7 @@
 #                   migration suite against the synthetic legacy source, and
 #                   the deployable-image checks
 #   e2e             the browser walk against a real server and a real SPA
-#   deploy-suites   the 23 bash suites over `deploy/`
+#   deploy-suites   26 bash suites over `deploy/` and three CI selector suites
 #
 # Environment:
 #   PGHOST/PGPORT/PGUSER/PGPASSWORD  the throwaway server this job started

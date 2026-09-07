@@ -77,8 +77,8 @@ three suites that need no database (`@shikoo/contracts`, `@shikoo/sms-parser`,
 **`integration-db`** — `db:hub`, `db:services`, the migration rehearsal, the
 money invariants and the image checks. One Postgres, one MySQL, one install.
 
-**`integration-e2e`** — the Playwright browser walk and the 23 deploy bash
-suites plus the two CI selector suites.
+**`integration-e2e`** — the Playwright browser walk and the 26 deploy bash
+suites plus the three CI selector suites.
 
 **`image`** — the deployable artifact. A `main` job only.
 
