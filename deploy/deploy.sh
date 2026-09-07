@@ -449,7 +449,10 @@ if [ "$BOT_ENABLED" = 1 ]; then
   assert_deployable "$APP_BOT" bot
 elif [ "$PIN_STOPPED_BOT" = 1 ]; then
   assert_deployable "$APP_BOT" bot
-  [ -z "$(docker ps -q --filter "label=coolify.name=$APP_BOT" | head -1)" ] ||
+  if ! BOT_CANDIDATE_CONTAINERS=$(docker ps -q --filter "label=coolify.name=$APP_BOT"); then
+    die "could not determine whether the bot candidate has a running container"
+  fi
+  [ -z "$BOT_CANDIDATE_CONTAINERS" ] ||
     die "bot candidate already has a running container — preparation will not pin a service that may already be polling"
 fi
 say "every application this deploy touches is set to deploy an image, not to rebuild"
@@ -815,7 +818,10 @@ else
     set_version "$APP_BOT" "$EXPECTED_SHA"
     [ "$(app_field "$APP_BOT" docker_registry_image_tag)" = "$COOLIFY_TAG" ] ||
       die "bot candidate did not retain the digest tag written for cutover"
-    [ -z "$(container_for "$APP_BOT")" ] ||
+    if ! BOT_CANDIDATE_CONTAINERS=$(docker ps -q --filter "label=coolify.name=$APP_BOT"); then
+      die "could not prove the pinned bot candidate remained stopped"
+    fi
+    [ -z "$BOT_CANDIDATE_CONTAINERS" ] ||
       die "pinning the bot candidate unexpectedly started a container"
     say "bot: pinned to the release digest for cutover; still stopped and not health-checked"
     summary "bot=PINNED FOR CUTOVER (not started)"

@@ -87,7 +87,9 @@ raise SystemExit(0 if ok else 1)
   die "candidate bot environment is missing, duplicated, or not bound to this production release"
 fi
 
-CONTAINERS=$(docker ps -q --filter "label=coolify.name=$APP_UUID" 2>/dev/null || true)
+if ! CONTAINERS=$(docker ps -q --filter "label=coolify.name=$APP_UUID" 2>/dev/null); then
+  die "could not query Docker; the candidate bot container state cannot be proven"
+fi
 COUNT=$(printf '%s\n' "$CONTAINERS" | sed '/^$/d' | wc -l)
 if [ "$MODE" = prepared ]; then
   [ "$COUNT" = 0 ] ||
