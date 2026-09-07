@@ -73,7 +73,7 @@ chmod 700 "$SYNC_DIR"
 #   0: every managed row is present and identical
 #   3: a managed row is absent or differs (safe to upsert)
 #   2: the candidate is ambiguous or contains unmanaged configuration
-env_shape() { # source|target role desired-file-or-dash
+env_shape() { # source|target|target-report role desired-file-or-dash
   python3 -c '
 import json, re, sys
 from collections import Counter, defaultdict
@@ -117,6 +117,13 @@ def canonical(row):
         refuse("%s has a non-string comment" % key)
     if isinstance(comment, str) and len(comment) > 256:
         refuse("%s has a comment Coolify bulk update cannot accept" % key)
+    # Coolify 4.3.14 compares comments with PHP loose inequality. It therefore
+    # treats null and the empty string as equal and will not update one to the
+    # other. They are also the same absence of a human note, so use the shape
+    # the panel can actually converge on while keeping values and every
+    # execution flag exact.
+    if comment == "":
+        comment = None
     return {
         "key": key,
         "value": value,
@@ -162,8 +169,9 @@ if mode == "source":
     print(json.dumps({"data": desired}, separators=(",", ":")))
     raise SystemExit(0)
 
-if mode != "target":
+if mode not in ("target", "target-report"):
     refuse("unknown environment comparison mode")
+report = mode == "target-report"
 
 try:
     with open(desired_path, encoding="utf-8") as handle:
@@ -211,10 +219,16 @@ unexpected = sorted(set(target) - set(wanted))
 if unexpected:
     refuse("candidate has unmanaged active key(s): %s" % ", ".join(unexpected))
 
-if set(target) != set(wanted):
+missing = sorted(set(wanted) - set(target))
+if missing:
+    if report:
+        refuse("candidate is missing managed active key(s): %s" % ", ".join(missing), 3)
     raise SystemExit(3)
 for key, item in wanted.items():
-    if target[key] != item:
+    differing = sorted(field for field in item if target[key].get(field) != item[field])
+    if differing:
+        if report:
+            refuse("candidate active key %s differs in field(s): %s" % (key, ", ".join(differing)), 3)
         raise SystemExit(3)
 raise SystemExit(0)
 ' "$1" "$2" "$3"
@@ -283,7 +297,7 @@ sync_one() { # source candidate role
   esac
 
   read_envs "$candidate" "candidate ${role} after update"
-  if ! printf '%s' "$API_BODY" | env_shape target "$role" "$desired"; then
+  if ! printf '%s' "$API_BODY" | env_shape target-report "$role" "$desired"; then
     die "candidate ${role} did not read back exactly what Coolify accepted"
   fi
   say "${role}: copied and verified ${count} managed variables"
