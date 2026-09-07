@@ -129,8 +129,16 @@ want "$CUT_SCRIPT" 'cutover verifies the host-side preparation checksum' \
   'sha256sum -c --status preparation.sha256'
 want "$CUT_SCRIPT" 'cutover binds host candidates to the verified artifact' \
   'the host ledger names different candidates than the verified preparation artifact'
+want "$CUT_SCRIPT" 'cutover refuses duplicate host-ledger keys before reading fields' \
+  'host-side preparation ledger contains a duplicate key'
+want "$CUT_SCRIPT" 'cutover requires three distinct host candidate applications' \
+  'host ledger does not name three distinct candidate applications'
 want "$CUT" 'the verified artifact supplies the candidate uuids to the remote cutover' \
   "CANDIDATE_INGEST=\$(field candidate_ingest)"
+want "$CUT" 'the workflow refuses duplicate artifact keys before reading fields' \
+  'verified preparation artifact contains a duplicate key'
+want "$CUT" 'the workflow requires three distinct artifact candidate applications' \
+  'verified preparation artifact does not name three distinct candidate applications'
 want "$CUT_SCRIPT" 'cutover verifies the running bot digest and sha' \
   'verify-production-bot-candidate.sh" running'
 want "$CUT_SCRIPT" 'a failed candidate bot invokes automatic handover recovery' \

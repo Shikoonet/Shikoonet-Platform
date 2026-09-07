@@ -84,6 +84,12 @@ for spec in 'MAIN_SHA=abc' 'DIGEST=latest' 'SCHEMA_VERSION=many' 'CANDIDATE_BOT=
   fi
 done
 
+if mkprep "CANDIDATE_BOT=$C_INGEST"; then
+  bad 'the writer refuses one application reused for two candidate roles' 'it wrote an ambiguous manifest'
+else
+  ok 'the writer refuses one application reused for two candidate roles'
+fi
+
 section 'a preparation nothing has disturbed verifies'
 
 mkprep || true
@@ -99,6 +105,16 @@ refuses 'a missing preparation blocks the cutover' 'no Prepare Production run be
 mkprep || true
 printf 'db_schema_version=99\n' >>"$WORK/prep/preparation.env"
 refuses 'an edited preparation manifest is refused by its checksum' 'checksum does not verify'
+
+mkprep || true
+printf 'candidate_bot=ccccccccccccccccccccccc3\n' >>"$WORK/prep/preparation.env"
+( cd "$WORK/prep" && sha256sum preparation.env >preparation.sha256 )
+refuses 'a checksum-valid manifest with a duplicate key is refused' 'contains a duplicate key'
+
+mkprep || true
+sed -i "s/^candidate_dashboard=.*/candidate_dashboard=$C_INGEST/" "$WORK/prep/preparation.env"
+( cd "$WORK/prep" && sha256sum preparation.env >preparation.sha256 )
+refuses 'a checksum-valid manifest that reuses a candidate is refused' 'three distinct candidate applications'
 
 mkprep || true
 refuses 'a cutover for a different commit is refused' 'main moved, or the wrong preparation run' \
