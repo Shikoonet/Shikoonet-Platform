@@ -35,7 +35,9 @@
 # No domain, no host-published port, no environment variable, and
 # `instant_deploy=false` — creation and deployment are separate steps because
 # a new image needs the migrated schema, and an application that starts the
-# moment it is created starts against the old one.
+# moment it is created starts against the old one. Preparation copies the
+# current production environment only AFTER this script has proved native Auto
+# Deploy and previews are off.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # Run: ensure-production-candidates.sh <env>
