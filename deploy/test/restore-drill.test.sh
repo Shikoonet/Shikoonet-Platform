@@ -49,6 +49,10 @@ if [ "${FAKE_FULL:-0}" = '1' ]; then
       exit 0 ;;
     *'SELECT checksum FROM schema_migrations'*)
       printf '%s\n' "$MIGRATION_CHECKSUM"; exit 0 ;;
+    # The container answers with a superuser that is NOT `postgres`, because
+    # `postgres` is the value a drill that never asks would use anyway — an
+    # answer identical to the guess would make the probe untestable.
+    *' printenv POSTGRES_USER '*) printf '%s\n' "${FAKE_PGUSER:-shikoo}"; exit 0 ;;
     *) exit 0 ;;
   esac
 fi
@@ -222,6 +226,42 @@ fi
 # migrations behind by definition — could never pass it. These two cases pin
 # the replacement: an initial run with a pending tail is accepted and recorded
 # as such, and MIGRATION_LEDGER_EXACT=1 still gets the old strictness.
+# ── the superuser is asked for, not assumed ──────────────────────────────
+#
+# `PGUSER="${PGUSER:-postgres}"` was a guess, and on the real host it was the
+# wrong one: the drill's first command died with «role "postgres" does not
+# exist», which means this backup verifier had never verified a backup. The
+# same lesson is already written into deploy.sh:196-198, one file over.
+#
+# The fake container answers `shikoo`, so a drill that still guesses would run
+# every query as `postgres` and this fails.
+section 'the superuser comes from the container, not from a literal'
+STATE_PGUSER="$FULL/state-pguser"
+if run_full "$STATE_PGUSER"; then
+  if grep -q -- '-U shikoo' "$FULL_LOG" && ! grep -q -- '-U postgres' "$FULL_LOG"; then
+    ok 'every query runs as the user the container reported'
+  else
+    bad 'every query runs as the user the container reported' \
+      "$(grep -o -- '-U [a-z]*' "$FULL_LOG" | sort -u | tr '\n' ' ')"
+  fi
+else
+  bad 'every query runs as the user the container reported' "$(tail -5 "$WORK/out")"
+fi
+
+# An explicit PGUSER still wins, so an operator can override a container that
+# reports something unhelpful.
+STATE_PGOVERRIDE="$FULL/state-pgoverride"
+if run_full "$STATE_PGOVERRIDE" PGUSER=chosen; then
+  if grep -q -- '-U chosen' "$FULL_LOG"; then
+    ok 'an explicit PGUSER overrides what the container says'
+  else
+    bad 'an explicit PGUSER overrides what the container says' \
+      "$(grep -o -- '-U [a-z]*' "$FULL_LOG" | sort -u | tr '\n' ' ')"
+  fi
+else
+  bad 'an explicit PGUSER overrides what the container says' "$(tail -5 "$WORK/out")"
+fi
+
 STATE_BEHIND="$FULL/state-behind"
 printf '%s\n' 'select 1;' >"$MIGRATIONS/0002_pending.sql"
 if run_full "$STATE_BEHIND"; then
