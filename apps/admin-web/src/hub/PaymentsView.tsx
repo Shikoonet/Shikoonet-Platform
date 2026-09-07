@@ -559,15 +559,39 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   }
                   onReopen={() => setReopenTarget(reviewing)}
                   onFulfil={() => setFulfilTarget(reviewing)}
-                  // The customer route, not a payment one — blocking is a fact
-                  // about the person, and there is exactly one statement in the
-                  // codebase that may put them in that state.
-                  onSetCustomerStatus={(status, reason) =>
-                    post(`/api/v1/admin/customers/${reviewing.customerUserId}/status`, {
-                      status,
-                      reason,
-                    })
-                  }
+                  /*
+                   * Deliberately NOT `post`.
+                   *
+                   * Two differences, and the browser found both. `post` calls
+                   * `closeReview()`, which is right for a decision about the
+                   * PAYMENT — approve, reject, deliver — because the queue is
+                   * where you go next. Blocking is a fact about the PERSON and
+                   * the payment is still open in front of you: you may well
+                   * block a fraudster and then still attach the bank credit
+                   * that did arrive. Closing the screen mid-decision loses that.
+                   *
+                   * And the refetch has to include the `?claim=` key. A review
+                   * opened from a link resolves through a different cache key
+                   * from the queue's, so refetching the queue alone left the
+                   * panel showing the customer as active immediately after
+                   * blocking them — the same trap `onDone` documents below.
+                   */
+                  onSetCustomerStatus={async (status, reason) => {
+                    setError(null);
+                    const r = await fetch(
+                      `/api/v1/admin/customers/${reviewing.customerUserId}/status`,
+                      {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ status, reason }),
+                      },
+                    );
+                    if (!r.ok) {
+                      const j = (await r.json().catch(() => ({}))) as { error?: string };
+                      throw new Error(j.error ?? `${r.status}`);
+                    }
+                    cache.refetch(queryKey, QK.payments(`claim=${reviewing.id}`), QK.suggested, QK.today);
+                  }}
                   onError={setError}
                 />
               )}
