@@ -181,6 +181,7 @@ interface CustomerRow extends TierColumns {
   username: string | null;
   phone: string | null;
   status: string;
+  blocked_reason: string | null;
   is_reseller: boolean;
   discount_percent: number;
   balance_irr: number | null;
@@ -244,7 +245,8 @@ export function registerCustomerRoutes(
     const limitParam = params.length;
     params.push((page - 1) * pageSize);
     const rows = await c.env.DB.prepare(
-      `SELECT u.id, u.telegram_id, u.username, u.phone, u.status, u.is_reseller,
+      `SELECT u.id, u.telegram_id, u.username, u.phone, u.status, u.blocked_reason,
+              u.is_reseller,
               u.discount_percent, ${TIER_COLUMNS},
               w.balance_irr, u.registered_at, u.last_seen_at
          FROM users u
@@ -268,6 +270,11 @@ export function registerCustomerRoutes(
         username: r.username,
         phone: r.phone,
         status: r.status,
+        // On the LIST, not only in the drawer. «فهرست کسانی که بلاک شده‌اند»
+        // filtered to BLOCKED used to be a page of rows that all said the same
+        // word and nothing else, so finding out why any of them was blocked
+        // meant opening them one at a time.
+        blockedReason: r.blocked_reason,
         isReseller: r.is_reseller,
         // The personal column, raw. `effectiveDiscountPercent` beside it is
         // what the bot charges — they differ for every reseller on a level, and
@@ -303,7 +310,6 @@ export function registerCustomerRoutes(
       .first<
         CustomerRow & {
           phone_verified: boolean;
-          blocked_reason: string | null;
           referral_code: string | null;
         }
       >();
@@ -480,6 +486,76 @@ export function registerCustomerRoutes(
     return c.json({ ok: true, applied: true, balanceIrr, negative: balanceIrr < 0 });
   });
 
+  // --- history ------------------------------------------------------------
+
+  /**
+   * «چه کسی، کِی، و چرا» — the customer's own trail out of `audit_logs`.
+   *
+   * The panel told an operator their block «در تاریخچهٔ تغییرات ثبت ماند» and
+   * then offered no way to read that history: `audit_logs` had three readers in
+   * this worker and all three were about revenue. So the sentence was true and
+   * useless.
+   *
+   * ADMIN only, and stricter than the drawer around it on purpose. A
+   * `READ_ONLY` operator may look at a customer; the trail names other
+   * operators and what they did, which is a different thing from the customer's
+   * own record.
+   *
+   * Every action on this entity, not just the blocks. Narrowing to
+   * `customer.blocked` would answer today's question and hide the wallet
+   * adjustment three rows above it, which is usually the next thing asked.
+   */
+  app.get('/api/v1/admin/customers/:id/history', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ ok: false, error: 'invalid_id' }, 400);
+
+    // `idx_audit_entity` is on (entity_type, entity_id, created_at DESC), so
+    // this is the index's own order and needs no sort.
+    const rows = await c.env.DB.prepare(
+      `SELECT id, actor_email, actor_role, actor_telegram_id, action,
+              before_json, after_json, reason, created_at
+         FROM audit_logs
+        WHERE entity_type = 'CUSTOMER' AND entity_id = ?1
+        ORDER BY created_at DESC
+        LIMIT 100`,
+    )
+      .bind(String(id))
+      .all<{
+        id: string;
+        actor_email: string | null;
+        actor_role: string;
+        actor_telegram_id: number | null;
+        action: string;
+        before_json: string | null;
+        after_json: string | null;
+        reason: string | null;
+        created_at: number;
+      }>();
+
+    return c.json({
+      ok: true,
+      items: (rows.results ?? []).map((r) => ({
+        id: r.id,
+        action: r.action,
+        // One field for the screen rather than three nullable ones it would
+        // have to prioritise itself. `SYSTEM` is a real answer — the flood
+        // guard — and not a missing one.
+        actor:
+          r.actor_email ??
+          (r.actor_telegram_id === null ? null : `telegram:${r.actor_telegram_id}`) ??
+          null,
+        actorRole: r.actor_role,
+        before: r.before_json,
+        after: r.after_json,
+        reason: r.reason,
+        createdAt: Number(r.created_at),
+      })),
+    });
+  });
+
   // --- block / unblock ----------------------------------------------------
 
   app.post('/api/v1/admin/customers/:id/status', async (c) => {
@@ -493,20 +569,22 @@ export function registerCustomerRoutes(
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
     const { status, reason } = parsed.data;
 
-    const outcome = await setCustomerStatus(c.env.DB, { userId: id, status, reason });
+    // The audit row is `setCustomerStatus`'s own, written from the UPDATE's
+    // `RETURNING` in one statement. It used to be a second call from here, and
+    // the bot's flood guard — which calls the same helper and blocks people
+    // with nobody watching — never had one. Moving it inside is what gives
+    // those blocks a trail; leaving a copy here would give this one two.
+    const outcome = await setCustomerStatus(c.env.DB, {
+      userId: id,
+      status,
+      reason,
+      actor: { kind: 'OPERATOR', email: ident.email, role: ident.role },
+      note: reason,
+      requestId: c.req.header('cf-ray') ?? null,
+    });
     if (!outcome) return c.json({ ok: false, error: 'not_found' }, 404);
     if (!outcome.changed) return c.json({ ok: true, changed: false, status });
 
-    await audit(
-      c.env.DB,
-      ident,
-      status === 'BLOCKED' ? 'customer.blocked' : 'customer.unblocked',
-      'CUSTOMER',
-      String(id),
-      outcome.before,
-      { status, blocked_reason: outcome.blockedReason },
-      reason,
-    );
     return c.json({ ok: true, changed: true, status });
   });
 
