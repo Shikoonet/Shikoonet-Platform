@@ -148,6 +148,11 @@ describe('navigation', () => {
       // an admin could not stop the shop warning customers, and could not see
       // that two jobs the PHP bot deletes services with had never been built.
       'cron',
+      // «نمایندگان» — a franchise, which is a business rather than a customer.
+      // The screen shows what one bought and what the PANEL's meter says they
+      // used; none of their own customers is on it, and none can be, because
+      // they never reach this database.
+      'resellers',
     ];
     expect([...ALL].sort()).toEqual([...implemented].sort());
   });
