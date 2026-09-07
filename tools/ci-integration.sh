@@ -58,7 +58,7 @@
 #                   migration suite against the synthetic legacy source, and
 #                   the deployable-image checks
 #   e2e             the browser walk against a real server and a real SPA
-#   deploy-suites   the 22 bash suites over `deploy/`
+#   deploy-suites   the 23 bash suites over `deploy/`
 #
 # Environment:
 #   PGHOST/PGPORT/PGUSER/PGPASSWORD  the throwaway server this job started
@@ -334,6 +334,7 @@ suite_deploy_suites() {
     deploy/test/preparation.test.sh \
     deploy/test/candidates.test.sh \
     deploy/test/candidate-envs.test.sh \
+    deploy/test/current-production-apps.test.sh \
     deploy/test/cutover-bot.test.sh \
     deploy/test/cutover-production.test.sh \
     deploy/test/production-workflows.test.sh \

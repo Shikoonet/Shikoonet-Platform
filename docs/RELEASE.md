@@ -1,6 +1,7 @@
 # Releasing, and what «staging is ready» means
 
-One direction, and nothing that skips a step.
+After the one-time production bootstrap, releases have one direction and
+nothing that skips a step.
 
 ```
 merge to main ──▶ CI ──▶ Deploy Staging (automatic) ──▶ Promote Production (a person, on purpose)
@@ -11,6 +12,12 @@ merge to main ──▶ CI ──▶ Deploy Staging (automatic) ──▶ Promot
 `Promote Production` has no digest input at all: it downloads that artifact and
 promotes what staging actually ran. There is no path that rebuilds for
 production and no field anybody can type an image reference into.
+
+The first production release is the deliberate exception: **Prepare
+Production** creates and proves the Docker Image applications beside the legacy
+Git applications, then **Cutover Production** transfers the live domains and
+bot once. A successful cutover adopts those UUIDs; every later release returns
+to the single `Promote Production` path above.
 
 `Deploy Staging` can also be started by hand — Actions ▸ Deploy Staging ▸ Run
 workflow — for a redeploy after a Coolify variable was fixed, or to roll the bot
@@ -38,14 +45,17 @@ with a branch restriction, an actor check and an audit trail.
 9. ~~Authorise and run the secure production-dump rehearsal~~ — retired
    2026-09-07 with the legacy-import release path; see §5. Loading data is an
    owner operation after cutover, not a step of promotion.
-10. Run **Prepare Production** — candidates, migration, temporary domains.
-    Customers are still on the old applications.
+10. On the **first production release only**, run **Prepare Production** —
+    candidates, migration, temporary domains. Customers are still on the old
+    applications.
 11. Read the preparation evidence, then run **Cutover Production** — the only
-    step that moves live domains and the bot.
+    step that moves live domains and the bot. For every later release, replace
+    steps 10 and 11 with **Promote Production**.
 
-Steps 10 and 11 are two separate dispatches on purpose. A production release
-has one irreversible step and several reversible ones, and putting them behind
-one button means the reversible ones are only ever seen in hindsight.
+The first release's steps 10 and 11 are two separate dispatches on purpose. Its
+bootstrap has one irreversible step and several reversible ones, and putting
+them behind one button means the reversible ones are only ever seen in
+hindsight.
 
 The rest of this file is the part that is not automatic.
 
@@ -425,20 +435,28 @@ path, or a timestamp of customer activity.
 ### Splitting promotion in two
 
 `Prepare Production` and `Cutover Production` replace the single promotion for
-a release that changes the schema. Preparation creates the candidates stopped,
-migrates, and proves the candidates on temporary domains while customers stay
-on the old applications; cutover moves the domains and hands the bot over.
+the one-time move from legacy Git applications to Docker Image applications.
+Preparation creates the candidates stopped, migrates, and proves the candidates
+on temporary domains while customers stay on the old applications; cutover
+moves the domains and hands the bot over. Once their UUIDs are adopted, this
+bootstrap workflow refuses to run again and later releases use `Promote
+Production`.
 
 Between them, `deploy/write-preparation-manifest.sh` records what preparation
 observed and created — including which application currently answers on each
 live domain — and `deploy/verify-preparation-manifest.sh` re-checks all of it
 at cutover. Any drift aborts: a schema that moved, an unhealthy candidate, a
 domain somebody already repointed, native Auto Deploy switched back on, a bot
-lock count that is not exactly one, a vanished backup.
+handover baseline that changed, or a vanished backup. A normal handover is
+`replace-single` (one old container and one bot-namespace lock). The first
+release may be `bootstrap-empty` only when the legacy bot has neither a running
+container nor a lock and its UUID differs from the stopped candidate; after the
+canonical bot is adopted, zero pollers is an outage and is refused.
 
 ### The exact procedure, in the GitHub UI
 
-**A normal release, once production is on Docker Image applications:**
+**The first production release, while production is still on legacy Git
+applications:**
 
 0. **Restage the owner bundle from the merged SHA.** Not optional, and first:
 
@@ -582,15 +600,25 @@ It then verifies the running container's digest, `APP_VERSION`, `ENV_NAME` and
 `SERVICE` after the singleton lock moves. A failed handover restores the
 domains and attempts to restore the original single poller from the exact
 retained container rather than asking Coolify to rebuild the old application.
-The old applications are kept, stopped, for **14 days**.
+If the measured baseline had no old poller, recovery instead proves the
+candidate is absent and restores that same zero-poller baseline. After success,
+Cutover atomically writes `/var/lib/shikoo/production/current-applications.env`;
+normal `Promote Production` runs use those three Docker Image UUIDs while all
+credentials remain in the root-owned `deploy.env`. The old applications are
+kept, stopped, for **14 days**.
 
-**Every release after it** reuses those same three applications.
-`ensure-production-candidates.sh` looks them up by name in the production
-project and creates only what is genuinely absent, so the second release
-creates zero applications and the third creates zero — and the count is printed
-on every run rather than left to be inferred. Without that, each release would
-leave three more near-identically named applications behind, and which one owns
-the live domain becomes whichever a person last remembered.
+**Every release after it** reuses those same three applications through
+`Promote Production`. `deploy.sh` resolves their UUIDs from the strict,
+non-secret `current-applications.env` pointer written by Cutover, and refuses a
+malformed, ambiguous or symlinked pointer. `Prepare Production` refuses once
+that pointer exists, before taking a backup or touching Coolify, so the
+bootstrap cannot accidentally be treated as an ordinary release path.
+
+`ensure-production-candidates.sh` is consequently a bootstrap tool. During
+that first preparation it looks applications up by the stable `shikoo-prod-*`
+names and creates only what is genuinely absent, so retrying a failed
+preparation does not leave three more near-identically named applications
+behind.
 
 The old Dockerfile applications are never selected as canonical again: the
 lookup is by the `shikoo-prod-*` names, which they do not have.

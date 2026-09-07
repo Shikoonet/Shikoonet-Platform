@@ -52,7 +52,7 @@ name: CI
 #   integration-db      db:hub, db:services, the migration rehearsal, the money
 #                       invariants and the image checks. One Postgres, one
 #                       MySQL, one checkout, one install.
-#   integration-e2e     the browser walk and the 22 deploy bash suites.
+#   integration-e2e     the browser walk and the 23 deploy bash suites.
 #   image               the deployable artifact. A `main` job only.
 #   Required Quality Gate
 #
@@ -340,7 +340,7 @@ jobs:
               $1 == "unit"          { print "| unit suites (contracts, sms-parser, admin-web) | " $2 " |" }
               $1 == "db"            { print "| integration-db (db shards, migrations, invariants, image) | " $2 " |" }
               $1 == "e2e"           { print "| e2e (browser walk) | " $2 " |" }
-              $1 == "deploy_suites" { print "| deploy suites (22 bash suites) | " $2 " |" }
+              $1 == "deploy_suites" { print "| deploy suites (23 bash suites) | " $2 " |" }
               $1 == "image"         { print "| image (main only) | " $2 " |" }
               $1 == "reason"        { reason = $2 }
               END                   { print ""; print "_" reason "_" }
@@ -591,7 +591,7 @@ jobs:
           if-no-files-found: error
 
   # =======================================================================
-  # The browser walk, and the 22 bash suites over `deploy/`.
+  # The browser walk, and the 23 bash suites over `deploy/`.
   #
   # Was two jobs and seven billed minutes. The deploy suites need no database
   # and no node_modules — they are bash, `jq` and `curl`, driving a fake GitHub

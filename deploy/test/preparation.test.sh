@@ -34,7 +34,7 @@ mkprep() { # [override=value ...]
     BACKUP_ID='backup-2026-08-28T05-00Z' ENV_BACKUP_ID='envbak-2026-08-28' \
     SCHEMA_VERSION=37 TEMP_DOMAIN_VERIFY=pass OLD_APPS_HEALTHY=pass \
     LIVE_INGEST_OWNER='shikoo-ingest' LIVE_DASHBOARD_OWNER='shikoo-dashboard' \
-    DB_SYSTEM_IDENTIFIER=7678248300486692898 BOT_ADVISORY_LOCKS=1 \
+    DB_SYSTEM_IDENTIFIER=7678248300486692898 BOT_ADVISORY_LOCKS=1 BOT_HANDOVER_MODE=replace-single \
     GITHUB_REPOSITORY='Shikoonet/Shikoonet-Platform' GITHUB_RUN_ID=5150 \
     "$@" bash "$WRITE" "$WORK/prep" >/dev/null 2>&1
 }
@@ -76,7 +76,8 @@ for spec in 'TEMP_DOMAIN_VERIFY=fail' 'OLD_APPS_HEALTHY=fail'; do
   fi
 done
 
-for spec in 'MAIN_SHA=abc' 'DIGEST=latest' 'SCHEMA_VERSION=many' 'CANDIDATE_BOT=not a uuid'; do
+for spec in 'MAIN_SHA=abc' 'DIGEST=latest' 'SCHEMA_VERSION=many' 'CANDIDATE_BOT=not a uuid' \
+  'BOT_HANDOVER_MODE=unknown'; do
   if mkprep "$spec"; then
     bad "the writer refuses ${spec}" 'it was written'
   else
@@ -146,14 +147,28 @@ mkprep || true
 refuses 'native Auto Deploy switched back on is refused' 'a push could deploy behind this cutover' \
   OBSERVED_AUTO_DEPLOY=on
 
-# The handover starts from exactly one poller or not at all.
+# The normal handover starts from exactly one poller.
 mkprep || true
-refuses 'two production pollers before the handover is refused' 'expected exactly 1' \
+refuses 'two production pollers before the handover is refused' 'bot lock baseline changed' \
   OBSERVED_BOT_LOCKS=2
 
 mkprep || true
-refuses 'zero production pollers before the handover is refused' 'expected exactly 1' \
+refuses 'zero production pollers do not satisfy a replace-single manifest' 'bot lock baseline changed' \
   OBSERVED_BOT_LOCKS=0
+
+# The first cutover may start from a proven empty baseline. Its mode and lock
+# count are paired in the signed manifest; neither can silently turn into the
+# other between Prepare and Cutover.
+mkprep BOT_HANDOVER_MODE=bootstrap-empty BOT_ADVISORY_LOCKS=0 || true
+if verify OBSERVED_BOT_LOCKS=0; then
+  ok 'a manifest-bound zero-poller bootstrap verifies'
+else
+  bad 'a manifest-bound zero-poller bootstrap verifies' "$(tail -2 "$LOG")"
+fi
+
+mkprep BOT_HANDOVER_MODE=bootstrap-empty BOT_ADVISORY_LOCKS=0 || true
+refuses 'a poller appearing during bootstrap is refused' 'bot lock baseline changed' \
+  OBSERVED_BOT_LOCKS=1
 
 mkprep || true
 refuses 'candidates that no longer answer on their temporary domains are refused' \
@@ -239,6 +254,15 @@ if grep -v '^[[:space:]]*#' "$ROOT/deploy/prepare-production.sh" | grep -q 'veri
     'it does — if the legacy-import path is back, update this test in the same commit as the decision'
 else
   ok 'prepare does not invoke the dump-attestation verifier'
+fi
+
+section 'the one-time bootstrap cannot be rerun after adoption'
+if grep -qF 'canonical production applications are already adopted' "$PREPARE" &&
+  grep -qF 'use Promote Production for later releases' "$PREPARE"; then
+  ok 'prepare refuses before mutations once canonical application UUIDs exist'
+else
+  bad 'prepare refuses before mutations once canonical application UUIDs exist' \
+    'the adopted-application guard or its operator direction is missing'
 fi
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

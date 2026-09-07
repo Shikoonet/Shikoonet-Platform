@@ -45,7 +45,7 @@ if [ -n "$PG" ]; then
   SCHEMA=$(docker exec -i "$PG" sh -c \
     'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from schema_migrations"' 2>/dev/null || true)
   LOCKS=$(docker exec -i "$PG" sh -c \
-    "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -tAc \"select count(*) from pg_locks where locktype='advisory'\"" 2>/dev/null || true)
+    "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -tAc \"select count(distinct pid) from pg_locks where locktype='advisory' and granted and classid=1399324672\"" 2>/dev/null || true)
 else
   SCHEMA=''
   LOCKS=''
