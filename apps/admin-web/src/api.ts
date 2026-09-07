@@ -2454,7 +2454,9 @@ export const api = {
    * observed. These come from Telegram's own `getStickerSet`.
    */
   emojiPacks() {
-    return req<{ ok: boolean; packs: EmojiPack[] }>('/emoji-packs');
+    // `customEmoji` rides along because every caller needs both: a picker that
+    // inserts markup the bot is configured to strip is a control that lies.
+    return req<{ ok: boolean; packs: EmojiPack[]; customEmoji: boolean }>('/emoji-packs');
   },
 
   addEmojiPack(set: string) {

@@ -22,7 +22,9 @@
  * set — «آف ۳۰٪» is a badge an operator will want and no list would have.
  */
 
-import type { ButtonStyle } from '../api.js';
+import { useEffect, useState } from 'react';
+import { premiumEmojiTag, renderedLabelLength } from '@shikoo/contracts';
+import { api, type EmojiPack, type ButtonStyle } from '../api.js';
 import { useAdminWriteProps } from '../role.js';
 
 /** The four an operator reaches for, as whole badges rather than as words. */
@@ -41,7 +43,48 @@ const STYLES: { value: ButtonStyle; label: string; token: string }[] = [
   { value: 'danger', label: 'قرمز', token: 'var(--danger)' },
 ];
 
+/**
+ * Twenty-four characters AS DRAWN.
+ *
+ * Not as typed. A premium emoji is `<tg-emoji emoji-id="…">🔥</tg-emoji>` — 53
+ * characters of markup that draw as one glyph, because a button's `text` is
+ * plain in the Bot API and the emoji actually travels in `icon_custom_emoji_id`.
+ * A raw `maxLength` of 24 refused every badge carrying one, which is the whole
+ * of what this field was asked to allow.
+ *
+ * `renderedLabelLength` is the same function the worker's zod schema and
+ * migration 0059's CHECK measure with, so the input, the route and the database
+ * cannot disagree about what fits.
+ */
 export const BADGE_MAX = 24;
+
+/** Room for the cap plus one tag, so typing is bounded without being wrong. */
+const BADGE_RAW_MAX = 400;
+
+/**
+ * The premium emoji this shop has, and whether the bot will actually send them.
+ *
+ * Fetched here rather than threaded from four call sites. Its own failure is
+ * swallowed for the reason `BotContentPages` swallows the same one: the picker
+ * is a convenience beside the field, and a pack list that will not load must not
+ * take down the form that edits the shop's catalogue.
+ */
+function usePremiumEmoji(): { packs: EmojiPack[]; on: boolean } {
+  const [state, setState] = useState<{ packs: EmojiPack[]; on: boolean }>({ packs: [], on: false });
+  useEffect(() => {
+    let live = true;
+    void api
+      .emojiPacks()
+      .then((d) => live && setState({ packs: d.packs, on: d.customEmoji }))
+      .catch(() => {
+        /* no picker, and the plain field still works */
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  return state;
+}
 
 export function BadgeField({
   value,
@@ -63,8 +106,26 @@ export function BadgeField({
   // Appended, never replaced: a preset and a word already there are two chips
   // and one badge. Trimmed to the cap here rather than refused, because the
   // input's own maxLength does the same thing and the two must not disagree.
-  const add = (chip: string) =>
-    onChange((value.trim() === '' ? chip : `${value.trim()} ${chip}`).slice(0, BADGE_MAX));
+  const { packs, on: emojiOn } = usePremiumEmoji();
+  // Appended, never replaced: a preset and a word already there are two chips
+  // and one badge. Refused rather than sliced when it would not fit — slicing a
+  // string that contains a `<tg-emoji>` tag cuts the tag in half, which is
+  // markup the button cannot draw and the route now refuses by shape.
+  const add = (chip: string) => {
+    const next = value.trim() === '' ? chip : `${value.trim()} ${chip}`;
+    if (renderedLabelLength(next) <= BADGE_MAX) onChange(next);
+  };
+  // One tag, at the front — the only shape `keyboardFor` can turn into
+  // `icon_custom_emoji_id`. Anywhere else Telegram draws literal angle
+  // brackets on the customer's screen.
+  const addEmoji = (tag: string) => {
+    const rest = value.trim();
+    if (rest.startsWith('<tg-emoji')) return;
+    const next = rest === '' ? tag : `${tag} ${rest}`;
+    if (renderedLabelLength(next) <= BADGE_MAX) onChange(next);
+  };
+  const drawn = renderedLabelLength(value);
+  const hasEmoji = value.trim().startsWith('<tg-emoji');
   const painted = STYLES.find((s) => s.value === style);
 
   return (
@@ -76,7 +137,7 @@ export function BadgeField({
         id={id}
         className="form-control"
         value={value}
-        maxLength={BADGE_MAX}
+        maxLength={BADGE_RAW_MAX}
         placeholder="🆕 نیو"
         onChange={(e) => onChange(e.target.value)}
       />
@@ -98,6 +159,68 @@ export function BadgeField({
           </button>
         )}
       </div>
+
+      {/*
+        The premium emoji, and only when the shop has them switched ON.
+
+        Off, the bot strips the markup before it sends (`keyboardFor`), so the
+        customer would see the fallback glyph while the panel showed the picked
+        one — a control whose effect is invisible from the screen that offers
+        it. Same gate `BotContentPages` puts on the same chips.
+
+        One per badge, at the front, because that is the only place a button has
+        to put it: the Bot API parses no markup in a button's `text`, and the
+        emoji rides in `icon_custom_emoji_id` instead. Picking a second is
+        refused by `addEmoji` rather than being offered and then rejected on
+        save.
+      */}
+      {emojiOn && packs.some((pack) => pack.emoji.length > 0) && (
+        <>
+          <div className="form-label" style={{ marginBlockStart: 10 }}>
+            ایموجی پریمیوم
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {packs.flatMap((pack) =>
+              pack.emoji.map((e) => (
+                <button
+                  key={`${pack.id}-${e.id}`}
+                  type="button"
+                  className="btn btn-sm"
+                  title={`${pack.title} — ${e.fallback}`}
+                  disabled={hasEmoji}
+                  onClick={() =>
+                    addEmoji(premiumEmojiTag({ label: pack.title, fallback: e.fallback, id: e.id }))
+                  }
+                  {...w}
+                >
+                  {e.fallback}
+                </button>
+              )),
+            )}
+            {hasEmoji && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => onChange(value.replace(/^\s*<tg-emoji[^>]*>.*?<\/tg-emoji>\s*/, ''))}
+                {...w}
+              >
+                بدون ایموجی
+              </button>
+            )}
+          </div>
+          <p className="muted" style={{ marginBlockStart: 4, marginBlockEnd: 0 }}>
+            {/* Said plainly, because the picker cannot show it: these draw as
+                the plain glyph for any customer whose client has no Premium. */}
+            برای مشتری‌های بدون پریمیوم، همان ایموجی ساده دیده می‌شود.
+          </p>
+        </>
+      )}
+
+      {/* «۴ از ۲۴» — counted as the button draws it, so a badge with a premium
+          emoji does not appear to be fifty characters long. */}
+      <p className="muted" style={{ marginBlockStart: 4, marginBlockEnd: 0 }}>
+        {`${drawn} از ${BADGE_MAX} نویسه روی دکمه`}
+      </p>
 
       <div className="form-label" style={{ marginBlockStart: 10 }}>
         رنگ دکمه
