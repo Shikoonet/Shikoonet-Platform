@@ -27,9 +27,10 @@ ROOT=$(cd -- "$HERE/../.." && pwd)
 GATE="$ROOT/deploy/approval-gate.sh"
 DEPLOY="$ROOT/deploy/deploy.sh"
 OVER_SSH="$ROOT/deploy/over-ssh.sh"
+CURRENT_APPS="$ROOT/deploy/current-production-apps.sh"
 WORKFLOW="$ROOT/.github/workflows/deploy-staging.yml"
 PROMOTE_WF="$ROOT/.github/workflows/promote-production.yml"
-for f in "$GATE" "$DEPLOY" "$OVER_SSH" "$WORKFLOW" "$PROMOTE_WF"; do
+for f in "$GATE" "$DEPLOY" "$OVER_SSH" "$CURRENT_APPS" "$WORKFLOW" "$PROMOTE_WF"; do
   [ -r "$f" ] || {
     echo "cannot read $f" >&2
     exit 1
@@ -953,9 +954,9 @@ mkdir -p "$ENVDIR"
 cat >"$ENVDIR/deploy.env" <<CONF
 COOLIFY_URL=http://127.0.0.1:8000
 COOLIFY_TOKEN=$FAKE_TOKEN
-APP_INGEST=uuid-ingest
-APP_DASHBOARD=uuid-dashboard
-APP_BOT=uuid-bot
+APP_INGEST=aaaaaaaaaaaaaaaaaaaaaaa1
+APP_DASHBOARD=aaaaaaaaaaaaaaaaaaaaaaa2
+APP_BOT=aaaaaaaaaaaaaaaaaaaaaaa3
 DB_CONTAINER=fake-db
 CONF
 
@@ -984,6 +985,7 @@ run_deploy_ref() { # image-ref
     FAKE_APP_IMAGE='ghcr.io/x/y' FAKE_REPO_DIGEST="ghcr.io/x/y@sha256:${DIGEST}" \
     FAKE_APP_READS="$WORK/appreads" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
+    CURRENT_APPS_FILE="${CURRENT_APPS_FILE:-$WORK/current-applications.absent}" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED=false \
     bash "$DEPLOY" production "$1" "$SHA_MERGED" \
     >"$DEPLOY_LOG" 2>&1
@@ -1008,6 +1010,7 @@ run_deploy() { # bot-flag
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads"     FAKE_ENV_ROWS="${FAKE_ENV_ROWS:-}" FAKE_ENV_PATCH_FAILS="${FAKE_ENV_PATCH_FAILS:-}" \
     FAKE_INGEST_FQDN="${FAKE_INGEST_FQDN-https://sms.example.test}" FAKE_APP_TAG="${FAKE_APP_TAG:-}" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
+    CURRENT_APPS_FILE="${CURRENT_APPS_FILE:-$WORK/current-applications.absent}" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
     PREPARE_BOT_FOR_CUTOVER="${PREPARE_BOT_FOR_CUTOVER:-}" \
     DASHBOARD_INGEST_URL="${DASHBOARD_INGEST_URL:-}" \
@@ -1023,12 +1026,12 @@ run_deploy() { # bot-flag
 }
 
 if run_deploy false; then
-  if grep -q '^uuid-bot$' "$WORK/deploys"; then
+  if grep -q '^aaaaaaaaaaaaaaaaaaaaaaa3$' "$WORK/deploys"; then
     bad 'the bot is not deployed when the flag is false' 'a deploy was queued for the bot application'
   else
     ok 'the bot is not deployed when the flag is false'
   fi
-  if grep -q '^uuid-bot$' "$WORK/pins"; then
+  if grep -q '^aaaaaaaaaaaaaaaaaaaaaaa3$' "$WORK/pins"; then
     bad 'the bot image is not pinned when the flag is false' 'the bot application was PATCHed'
   else
     ok 'the bot image is not pinned when the flag is false'
@@ -1038,7 +1041,7 @@ if run_deploy false; then
   else
     bad 'the bot poller lock is not asserted when the bot was not started' "$(grep -F bot_singleton "$DEPLOY_LOG" || true)"
   fi
-  if grep -q '^uuid-ingest$' "$WORK/deploys" && grep -q '^uuid-dashboard$' "$WORK/deploys"; then
+  if grep -q '^aaaaaaaaaaaaaaaaaaaaaaa1$' "$WORK/deploys" && grep -q '^aaaaaaaaaaaaaaaaaaaaaaa2$' "$WORK/deploys"; then
     ok 'ingest and dashboard still deploy with the bot off'
   else
     bad 'ingest and dashboard still deploy with the bot off' "$(cat "$WORK/deploys")"
@@ -1048,18 +1051,37 @@ else
 fi
 
 for falsey in '' 'false' 'TRUE' '1' 'yes' 'True'; do
-  if run_deploy "$falsey" && ! grep -q '^uuid-bot$' "$WORK/deploys"; then
+  if run_deploy "$falsey" && ! grep -q '^aaaaaaaaaaaaaaaaaaaaaaa3$' "$WORK/deploys"; then
     ok "the bot stays off for DEPLOY_BOT_ENABLED='${falsey}'"
   else
     bad "the bot stays off for DEPLOY_BOT_ENABLED='${falsey}'" 'the bot deployed, or the run failed'
   fi
 done
 
-if run_deploy true && grep -q '^uuid-bot$' "$WORK/deploys"; then
+if run_deploy true && grep -q '^aaaaaaaaaaaaaaaaaaaaaaa3$' "$WORK/deploys"; then
   ok "the bot deploys for the exact string 'true'"
 else
   bad "the bot deploys for the exact string 'true'" "$(tail -3 "$DEPLOY_LOG")"
 fi
+
+ADOPTED_POINTER="$WORK/current-applications.env"
+NEW_INGEST=bbbbbbbbbbbbbbbbbbbbbbb1
+NEW_DASHBOARD=bbbbbbbbbbbbbbbbbbbbbbb2
+NEW_BOT=bbbbbbbbbbbbbbbbbbbbbbb3
+bash "$CURRENT_APPS" adopt "$ADOPTED_POINTER" "$NEW_INGEST" "$NEW_DASHBOARD" "$NEW_BOT" \
+  "$SHA_MERGED" "sha256:$DIGEST" >/dev/null
+CURRENT_APPS_FILE="$ADOPTED_POINTER"
+if run_deploy false &&
+  grep -q "^$NEW_INGEST$" "$WORK/deploys" &&
+  grep -q "^$NEW_DASHBOARD$" "$WORK/deploys" &&
+  ! grep -q '^aaaaaaaaaaaaaaaaaaaaaaa1$' "$WORK/deploys" &&
+  grep -qF 'production applications: adopted pointer' "$DEPLOY_LOG"; then
+  ok 'normal production promotion targets the canonical applications adopted by cutover'
+else
+  bad 'normal production promotion targets the canonical applications adopted by cutover' \
+    "deploys=$(tr '\n' ' ' <"$WORK/deploys"): $(tail -3 "$DEPLOY_LOG")"
+fi
+unset CURRENT_APPS_FILE
 
 # Preparation needs a third state: the old bot keeps polling, while the stopped
 # candidate is bound to the exact digest Cutover will ask Coolify to start.
@@ -1068,11 +1090,11 @@ FAKE_ENV_ROWS="$WORK/pin-only-rows"
 FAKE_ENV_PATCH_FAILS=1
 FAKE_APP_TAG="sha256-${DIGEST}"
 PREPARE_BOT_FOR_CUTOVER=true
-FAKE_STOPPED_UUID=uuid-bot
+FAKE_STOPPED_UUID=aaaaaaaaaaaaaaaaaaaaaaa3
 if run_deploy false &&
-  grep -q '^uuid-bot$' "$WORK/pins" &&
-  ! grep -q '^uuid-bot$' "$WORK/deploys" &&
-  grep -q "^uuid-bot|.*|APP_VERSION|${SHA_MERGED}$" "$FAKE_ENV_ROWS"; then
+  grep -q '^aaaaaaaaaaaaaaaaaaaaaaa3$' "$WORK/pins" &&
+  ! grep -q '^aaaaaaaaaaaaaaaaaaaaaaa3$' "$WORK/deploys" &&
+  grep -q "^aaaaaaaaaaaaaaaaaaaaaaa3|.*|APP_VERSION|${SHA_MERGED}$" "$FAKE_ENV_ROWS"; then
   ok 'production preparation pins the stopped bot without deploying it'
 else
   bad 'production preparation pins the stopped bot without deploying it' \
@@ -1088,8 +1110,8 @@ FAKE_ENV_ROWS="$WORK/pin-docker-failure-rows"
 FAKE_ENV_PATCH_FAILS=1
 FAKE_APP_TAG="sha256-${DIGEST}"
 PREPARE_BOT_FOR_CUTOVER=true
-FAKE_STOPPED_UUID=uuid-bot
-FAKE_DOCKER_PS_FAIL_UUID=uuid-bot
+FAKE_STOPPED_UUID=aaaaaaaaaaaaaaaaaaaaaaa3
+FAKE_DOCKER_PS_FAIL_UUID=aaaaaaaaaaaaaaaaaaaaaaa3
 
 : >"$WORK/docker-ps-calls"
 FAKE_DOCKER_PS_FAIL_AFTER=1
@@ -1107,7 +1129,7 @@ FAKE_DOCKER_PS_FAIL_AFTER=2
 if run_deploy false; then
   bad 'a Docker failure after pinning is not reported as a proven stop' 'the deploy continued'
 elif grep -qF 'could not prove the pinned bot candidate remained stopped' "$DEPLOY_LOG" &&
-  ! grep -q '^uuid-bot$' "$WORK/deploys"; then
+  ! grep -q '^aaaaaaaaaaaaaaaaaaaaaaa3$' "$WORK/deploys"; then
   ok 'a Docker failure after pinning is not reported as a proven stop'
 else
   bad 'a Docker failure after pinning is not reported as a proven stop' "$(tail -3 "$DEPLOY_LOG")"
@@ -1339,7 +1361,7 @@ FAKE_INGEST_FQDN='https://sms.example.test'
 name='writes INGEST_URL on the dashboard, built from the ingest application domain'
 if run_deploy false; then
   total=$(grep -c '|INGEST_URL|' "$FAKE_ENV_ROWS" || true)
-  right=$(grep -c '^uuid-dashboard|.*|INGEST_URL|https://sms.example.test/api/v1/sms$' "$FAKE_ENV_ROWS" || true)
+  right=$(grep -c '^aaaaaaaaaaaaaaaaaaaaaaa2|.*|INGEST_URL|https://sms.example.test/api/v1/sms$' "$FAKE_ENV_ROWS" || true)
   # One row, on the dashboard, holding the ingest's own domain plus the path.
   # The total matters as much as the match: Coolify creates a spare on every
   # POST, and a version that wrote the right value and left the twin behind
@@ -1386,7 +1408,7 @@ DASHBOARD_INGEST_URL='https://sms.chopon.uk/api/v1/sms'
 FAKE_INGEST_FQDN='https://sms-next.chopon.uk'
 name='a production preparation bakes the final ingest URL into the dashboard'
 if run_deploy false &&
-  grep -q '^uuid-dashboard|.*|INGEST_URL|https://sms.chopon.uk/api/v1/sms$' "$FAKE_ENV_ROWS" &&
+  grep -q '^aaaaaaaaaaaaaaaaaaaaaaa2|.*|INGEST_URL|https://sms.chopon.uk/api/v1/sms$' "$FAKE_ENV_ROWS" &&
   ! grep -q '|INGEST_URL|https://sms-next.chopon.uk' "$FAKE_ENV_ROWS"; then
   ok "$name"
 else
@@ -1443,7 +1465,7 @@ if run_deploy false; then
   bad "$name" 'it deployed anyway'
 elif grep -qF 'every application this deploy touches is set to deploy an image' "$DEPLOY_LOG" &&
   grep -qF 'not a Docker Image application' "$DEPLOY_LOG" &&
-  ! grep -q '^uuid-ingest$' "$WORK/deploys"; then
+  ! grep -q '^aaaaaaaaaaaaaaaaaaaaaaa1$' "$WORK/deploys"; then
   ok "$name"
 else
   bad "$name" "pre-flight did not pass first, or a deploy was queued: $(tail -2 "$DEPLOY_LOG")"
@@ -1538,6 +1560,13 @@ kill "$HOLDER" 2>/dev/null || true
 wait "$HOLDER" 2>/dev/null || true
 
 section 'over-ssh.sh — only a digest is deployable'
+
+if grep -qF 'deploy/deploy.sh deploy/current-production-apps.sh' "$OVER_SSH"; then
+  ok 'the remote deploy receives its canonical-application resolver'
+else
+  bad 'the remote deploy receives its canonical-application resolver' \
+    'over-ssh.sh uploads deploy.sh without the helper it invokes'
+fi
 
 try_over_ssh() { # image-ref
   set +e

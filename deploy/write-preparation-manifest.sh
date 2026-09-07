@@ -40,6 +40,8 @@ mkdir -p "$OUT_DIR"
 : "${OLD_APPS_HEALTHY:?OLD_APPS_HEALTHY is required: pass or fail}"
 : "${LIVE_INGEST_OWNER:?LIVE_INGEST_OWNER is required — which application answers on the live ingest domain}"
 : "${LIVE_DASHBOARD_OWNER:?LIVE_DASHBOARD_OWNER is required}"
+: "${BOT_ADVISORY_LOCKS:?BOT_ADVISORY_LOCKS is required}"
+: "${BOT_HANDOVER_MODE:?BOT_HANDOVER_MODE is required}"
 
 refuse() {
   echo "refusing: $*" >&2
@@ -60,6 +62,10 @@ if [ "$CANDIDATE_INGEST" = "$CANDIDATE_DASHBOARD" ] ||
 fi
 case "$TEMP_DOMAIN_VERIFY" in pass | fail) ;; *) refuse "TEMP_DOMAIN_VERIFY must be pass or fail" ;; esac
 case "$OLD_APPS_HEALTHY" in pass | fail) ;; *) refuse "OLD_APPS_HEALTHY must be pass or fail" ;; esac
+case "$BOT_HANDOVER_MODE:$BOT_ADVISORY_LOCKS" in
+  replace-single:1 | bootstrap-empty:0) ;;
+  *) refuse "BOT_HANDOVER_MODE and BOT_ADVISORY_LOCKS do not describe a supported handover baseline" ;;
+esac
 
 # Preparation that did not verify is preparation that must not be cut over to.
 # Recorded as a failure AND refused here, so a red preparation cannot leave a
@@ -90,7 +96,8 @@ IMAGE_NAME=${IMAGE_NAME:-ghcr.io/shikoonet/shikoonet-platform}
   printf 'old_apps_healthy=%s\n' "$OLD_APPS_HEALTHY"
   printf 'live_ingest_owner=%s\n' "$LIVE_INGEST_OWNER"
   printf 'live_dashboard_owner=%s\n' "$LIVE_DASHBOARD_OWNER"
-  printf 'bot_advisory_locks=%s\n' "${BOT_ADVISORY_LOCKS:-unrecorded}"
+  printf 'bot_advisory_locks=%s\n' "$BOT_ADVISORY_LOCKS"
+  printf 'bot_handover_mode=%s\n' "$BOT_HANDOVER_MODE"
   printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >"$OUT_DIR/preparation.env"
 

@@ -107,9 +107,9 @@ SSH_OPTS=(
   -o ConnectTimeout=15
 )
 
-echo "==> $ENV_ARG: uploading deploy.sh from $SHA"
-scp "${SSH_OPTS[@]}" -P "$PORT" deploy/deploy.sh \
-  "$DEPLOY_USER@$DEPLOY_HOST:/opt/shikoo/deploy.sh"
+echo "==> $ENV_ARG: uploading deploy.sh and its application resolver from $SHA"
+scp "${SSH_OPTS[@]}" -P "$PORT" deploy/deploy.sh deploy/current-production-apps.sh \
+  "$DEPLOY_USER@$DEPLOY_HOST:/opt/shikoo/"
 
 echo "==> $ENV_ARG: deploying $IMAGE_REF"
 # Positional 4 is the dry-run slot and is deliberately empty: the script reads

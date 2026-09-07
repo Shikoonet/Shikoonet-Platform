@@ -215,6 +215,7 @@ jobs:
           CANDIDATE_INGEST=$(field candidate_ingest)
           CANDIDATE_DASHBOARD=$(field candidate_dashboard)
           CANDIDATE_BOT=$(field candidate_bot)
+          BOT_HANDOVER_MODE=$(field bot_handover_mode)
           for candidate in "$CANDIDATE_INGEST" "$CANDIDATE_DASHBOARD" "$CANDIDATE_BOT"; do
             [[ "$candidate" =~ ^[a-z0-9]{20,32}$ ]] || {
               echo "::error::the verified preparation artifact has a malformed candidate uuid"
@@ -227,7 +228,12 @@ jobs:
             echo "::error::the verified preparation artifact does not name three distinct candidate applications"
             exit 1
           fi
+          case "$BOT_HANDOVER_MODE" in
+            replace-single | bootstrap-empty) ;;
+            *) echo "::error::the verified preparation artifact has an invalid bot handover mode"; exit 1 ;;
+          esac
           bash deploy/run-on-host.sh deploy/cutover-production.sh \
             '${{ needs.cutover-gate.outputs.sha }}' \
             '${{ needs.cutover-gate.outputs.digest }}' \
-            "$CANDIDATE_INGEST" "$CANDIDATE_DASHBOARD" "$CANDIDATE_BOT"
+            "$CANDIDATE_INGEST" "$CANDIDATE_DASHBOARD" "$CANDIDATE_BOT" \
+            "$BOT_HANDOVER_MODE"

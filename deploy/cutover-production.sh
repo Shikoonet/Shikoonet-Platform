@@ -8,9 +8,11 @@
 #
 # ── The bot handover, and why it is three steps rather than two ───────────
 #
-# Exact old bot container stopped (but kept) → advisory lock count proven to
-# be ZERO → new bot started → count proven to be ONE. The middle step is
-# the one that is tempting to skip and must not be: stopping a container and
+# In replace-single mode: exact old bot container stopped (but kept) → its
+# advisory lock proven to be ZERO → new bot started → count proven to be ONE.
+# In one-time bootstrap-empty mode the first two facts are already the measured
+# baseline: no old container and zero locks. The middle proof is the one that
+# is tempting to skip and must not be: stopping a container and
 # observing that it stopped are different facts, and Telegram hands each
 # update to exactly one getUpdates caller. Two pollers on one token means
 # messages a customer sent disappearing into the wrong process, silently, with
@@ -25,10 +27,12 @@
 # The rollback here is a domain move, which is seconds, and it happens
 # automatically the moment external verification fails. During the bot
 # handover the old bot container is stopped directly rather than deleted
-# through Coolify, so a failed candidate can restore those exact old bytes.
+# through Coolify, so a failed candidate can restore those exact old bytes. A
+# bootstrap failure instead proves the candidate absent and restores the same
+# zero-poller baseline it began with.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# Run: cutover-production.sh <sha> <digest> <candidate-ingest> <candidate-dashboard> <candidate-bot>
+# Run: cutover-production.sh <sha> <digest> <candidate-ingest> <candidate-dashboard> <candidate-bot> <replace-single|bootstrap-empty>
 
 set -Eeuo pipefail
 
@@ -37,6 +41,7 @@ DIGEST_ARG=${2:-}
 EXPECTED_CAND_INGEST=${3:-}
 EXPECTED_CAND_DASHBOARD=${4:-}
 EXPECTED_CAND_BOT=${5:-}
+EXPECTED_BOT_HANDOVER_MODE=${6:-}
 ENV_ARG=production
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CONF=${CONF:-/etc/shikoo/$ENV_ARG/deploy.env}
@@ -80,6 +85,7 @@ CAND_DASHBOARD=$(field candidate_dashboard)
 CAND_BOT=$(field candidate_bot)
 LEDGER_SHA=$(field main_sha)
 LEDGER_DIGEST=$(field digest)
+BOT_HANDOVER_MODE=$(field bot_handover_mode)
 
 for candidate in "$EXPECTED_CAND_INGEST" "$EXPECTED_CAND_DASHBOARD" "$EXPECTED_CAND_BOT" \
   "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT"; do
@@ -108,6 +114,11 @@ fi
   die "the host ledger prepared ${LEDGER_SHA:0:12}, this cutover is for ${SHA_ARG:0:12}"
 [ "$LEDGER_DIGEST" = "$DIGEST_ARG" ] ||
   die "the host ledger prepared a different digest than this cutover would deploy"
+case "$EXPECTED_BOT_HANDOVER_MODE" in replace-single | bootstrap-empty) ;; *)
+  die "the verified preparation artifact has an invalid bot handover mode" ;;
+esac
+[ "$BOT_HANDOVER_MODE" = "$EXPECTED_BOT_HANDOVER_MODE" ] ||
+  die "the host ledger names a different bot handover mode than the verified preparation artifact"
 
 # shellcheck source=deploy/coolify-api.sh
 . "$(dirname "${BASH_SOURCE[0]}")/coolify-api.sh"
@@ -182,7 +193,7 @@ PG=$(docker exec -i "${COOLIFY_DB_CONTAINER:-coolify-db}" psql -U coolify -d coo
 [ -n "$PG" ] || die "could not find the production database container to count pollers"
 locks() {
   docker exec -i "$PG" sh -c \
-    "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -tAc \"select count(*) from pg_locks where locktype='advisory'\"" 2>/dev/null || printf 'unknown'
+    "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -tAc \"select count(distinct pid) from pg_locks where locktype='advisory' and granted and classid=1399324672\"" 2>/dev/null || printf 'unknown'
 }
 [ "$OLD_BOT" != "$CAND_BOT" ] ||
   die "the current and candidate bot are the same application — this bootstrap handover cannot stop and start one uuid as two pollers"
@@ -190,9 +201,21 @@ if ! OLD_BOT_CONTAINERS=$(docker ps -q --filter "label=coolify.name=$OLD_BOT" 2>
   die "could not query Docker for the current bot container"
 fi
 OLD_BOT_COUNT=$(printf '%s\n' "$OLD_BOT_CONTAINERS" | sed '/^$/d' | wc -l)
-[ "$OLD_BOT_COUNT" = 1 ] ||
-  die "the current bot has ${OLD_BOT_COUNT} running containers, expected exactly one before handover"
-OLD_BOT_CID=$(printf '%s\n' "$OLD_BOT_CONTAINERS" | head -1)
+OLD_BOT_CID=''
+case "$BOT_HANDOVER_MODE" in
+  replace-single)
+    [ "$OLD_BOT_COUNT" = 1 ] ||
+      die "the current bot has ${OLD_BOT_COUNT} running containers, expected exactly one for replace-single"
+    [ "$(locks)" = 1 ] || die "replace-single no longer has exactly one production bot lock"
+    OLD_BOT_CID=$(printf '%s\n' "$OLD_BOT_CONTAINERS" | head -1)
+    ;;
+  bootstrap-empty)
+    [ "$OLD_BOT_COUNT" = 0 ] ||
+      die "bootstrap-empty found ${OLD_BOT_COUNT} old bot container(s), expected none"
+    [ "$(locks)" = 0 ] || die "bootstrap-empty no longer has zero production bot locks"
+    ;;
+  *) die "the host ledger has an invalid bot handover mode '$BOT_HANDOVER_MODE'" ;;
+esac
 CONF="$CONF" IMAGE_NAME="$IMAGE_NAME" \
   bash "$HERE/verify-production-bot-candidate.sh" prepared "$CAND_BOT" "$SHA_ARG" "$DIGEST_ARG" ||
   die "the candidate bot is not the stopped, immutable release preparation recorded"
@@ -296,40 +319,53 @@ recover_bot_handover() { # reason
   # queues a fresh deployment. Starting the exact container retained at P13 is
   # the only rollback that restores observed old bytes rather than whatever the
   # old application record happens to build now.
-  docker start "$OLD_BOT_CID" >/dev/null || recovered=0
-  wait_for_locks 1 || recovered=0
+  if [ "$BOT_HANDOVER_MODE" = replace-single ]; then
+    docker start "$OLD_BOT_CID" >/dev/null || recovered=0
+    wait_for_locks 1 || recovered=0
+  else
+    wait_for_locks 0 || recovered=0
+  fi
   if ! final_candidate_containers=$(candidate_containers); then
     recovered=0
   elif [ -n "$final_candidate_containers" ]; then
     recovered=0
   fi
-  if ! old_running=$(docker ps -q --filter "id=$OLD_BOT_CID" 2>/dev/null | head -1); then
-    recovered=0
-  elif [ "$old_running" != "$OLD_BOT_CID" ]; then
-    recovered=0
+  if [ "$BOT_HANDOVER_MODE" = replace-single ]; then
+    if ! old_running=$(docker ps -q --filter "id=$OLD_BOT_CID" 2>/dev/null | head -1); then
+      recovered=0
+    elif [ "$old_running" != "$OLD_BOT_CID" ]; then
+      recovered=0
+    fi
   fi
   if [ "$recovered" = 1 ]; then
-    die "${reason} — domains and the original single bot poller were restored"
+    if [ "$BOT_HANDOVER_MODE" = replace-single ]; then
+      die "${reason} — domains and the original single bot poller were restored"
+    fi
+    die "${reason} — domains were restored and the prior zero-poller state remains"
   fi
   die "${reason} — automatic recovery was incomplete; production needs manual intervention"
 }
 
-say "P13. stopping the old bot"
-if ! docker stop --time "${BOT_STOP_TIMEOUT:-30}" "$OLD_BOT_CID" >/dev/null; then
-  rollback_domains || die "could not stop the old production bot and automatic domain rollback was incomplete"
-  die "could not stop and retain the exact old production bot container; domains were restored"
-fi
+if [ "$BOT_HANDOVER_MODE" = replace-single ]; then
+  say "P13. stopping the old bot"
+  if ! docker stop --time "${BOT_STOP_TIMEOUT:-30}" "$OLD_BOT_CID" >/dev/null; then
+    rollback_domains || die "could not stop the old production bot and automatic domain rollback was incomplete"
+    die "could not stop and retain the exact old production bot container; domains were restored"
+  fi
 
-# Observed, not assumed. «I asked it to stop» and «it stopped» are different
-# facts, and starting the second poller on the strength of the first is how one
-# token ends up with two.
-if ! wait_for_locks 0; then
-  rollback_domains || die "the old bot still holds its lock and automatic domain rollback was incomplete"
-  # This exact old container will wait on the same singleton lock if Postgres
-  # has not released the stopped session yet. Do not call that observed
-  # recovery: a count of one here could still be the stale session.
-  docker start "$OLD_BOT_CID" >/dev/null || true
-  die "the old bot lock did not clear — no second poller was started, domains were restored, and the retained old container was restarted for manual verification"
+  # Observed, not assumed. «I asked it to stop» and «it stopped» are different
+  # facts, and starting the second poller on the strength of the first is how one
+  # token ends up with two.
+  if ! wait_for_locks 0; then
+    rollback_domains || die "the old bot still holds its lock and automatic domain rollback was incomplete"
+    # This exact old container will wait on the same singleton lock if Postgres
+    # has not released the stopped session yet. Do not call that observed
+    # recovery: a count of one here could still be the stale session.
+    docker start "$OLD_BOT_CID" >/dev/null || true
+    die "the old bot lock did not clear — no second poller was started, domains were restored, and the retained old container was restarted for manual verification"
+  fi
+else
+  say "P13. bootstrap baseline has no old bot container and zero poller locks"
 fi
 say "P14. zero pollers confirmed; starting the candidate bot"
 
@@ -342,10 +378,20 @@ CONF="$CONF" IMAGE_NAME="$IMAGE_NAME" \
   recover_bot_handover "the candidate poller is not running the prepared digest and sha"
 say "P15. exactly one poller confirmed on the prepared digest"
 
-# ── P16. identity, then the ledger ────────────────────────────────────────
+# The one-time cutover changes which application UUIDs a normal production
+# promotion must target. Credentials stay in the root-owned deploy.env; only
+# these non-secret UUIDs are atomically adopted in deploy-owned state. If this
+# cannot be recorded, restore the pre-cutover state rather than leave the next
+# promotion aimed at the legacy Git applications.
+bash "$HERE/current-production-apps.sh" adopt "$STATE/current-applications.env" \
+  "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT" "$SHA_ARG" "$DIGEST_ARG" ||
+  recover_bot_handover "could not record the canonical production applications"
+say "P16. canonical Docker Image application UUIDs adopted for later promotions"
+
+# ── P17. identity, then the ledger ────────────────────────────────────────
 BOT_NAME=$(docker exec -i "$PG" sh -c \
   "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -tAc \"select value::text from settings where scope='bot' and key='username'\"" 2>/dev/null | tr -d '"' || true)
-say "P16. bot identity: ${BOT_NAME:-not yet recorded}"
+say "P17. bot identity: ${BOT_NAME:-not yet recorded}"
 
 mkdir -p "$STATE"
 printf '%s %s %s promoted-by-hand\n' \
