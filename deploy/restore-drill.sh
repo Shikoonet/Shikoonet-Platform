@@ -135,6 +135,12 @@ SCRATCH="${SCRATCH:-restore_drill_scratch}"
 PGUSER="${PGUSER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER 2>/dev/null || true)}"
 PGUSER="${PGUSER:-postgres}"
 STATE_DIR="${STATE_DIR:-/var/lib/shikoo}"
+# The drill runs as root, but Prepare Production deliberately does not. Its
+# only access to the result is group-read through the same narrowly scoped
+# account that owns the release lock. Leaving mktemp's root:root group in place
+# makes a perfectly valid proof indistinguishable from a missing one to that
+# reader — the exact failure this attestation is meant to prevent.
+ATTESTATION_GROUP="${ATTESTATION_GROUP:-shikoo-deploy}"
 case "$SCRATCH" in
   '' | [0-9]* | *[!A-Za-z0-9_]*)
     echo "unsafe scratch database name: $SCRATCH" >&2
@@ -414,11 +420,13 @@ umask 027
   printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >"$TMP_ATTESTATION"
 chmod 0640 "$TMP_ATTESTATION"
+chgrp "$ATTESTATION_GROUP" "$TMP_ATTESTATION"
 mv -f "$TMP_ATTESTATION" "$ATTESTATION"
 TMP_ATTESTATION=''
 TMP_CHECKSUM=$(mktemp "$STATE_DIR/.restore-attestation-sha.XXXXXX")
 ( cd "$STATE_DIR" && sha256sum "$(basename "$ATTESTATION")" ) >"$TMP_CHECKSUM"
 chmod 0640 "$TMP_CHECKSUM"
+chgrp "$ATTESTATION_GROUP" "$TMP_CHECKSUM"
 mv -f "$TMP_CHECKSUM" "$STATE_DIR/restore-attestation.sha256"
 TMP_CHECKSUM=''
 say "attestation written — $ATTESTATION"
