@@ -726,10 +726,25 @@ docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' <container> | grep
   only `persistent` or `file`; anything else answers «The selected type is
   invalid» without naming what is valid. Same silent-drop family as
   `--network-alias`, which the edge section already warns about.
-- **`POST /applications/<uuid>/envs` writes TWO rows**, which makes the *next*
-  deploy refuse with «defined more than once». `set_app_env` in `deploy.sh`
-  PATCHes first and cleans up after the create path for exactly this reason —
-  anything hand-rolled has to do the same.
+- **`POST /applications/<uuid>/envs` writes TWO rows.** The second is an
+  `is_preview: true` twin that `EnvironmentVariable::created()` adds beside
+  every new application variable, even with preview deployments off — and a
+  normal deployment never reads it (`generate_runtime_environment_variables`
+  takes the preview set only for a pull request). Until 2026-09-07 `deploy.sh`
+  counted the twin as a second definition and refused with «defined more than
+  once»; the first production preparation died that way on candidates whose
+  environment `sync-production-candidate-envs.sh` had just verified. Every
+  environment check in this directory now looks at `is_preview: false` rows
+  only. Anything hand-rolled has to do the same, and must not delete a twin as
+  if it were the problem.
+- **`PATCH /applications/<uuid>` with `domains` moves the record, not the
+  route.** It regenerates the proxy labels stored on the application, and
+  Traefik never reads those: it routes by the labels on running containers,
+  written when each container was created. A domain move takes effect only
+  when the application is redeployed — `POST /applications/<uuid>/restart` is
+  a full redeploy for a Docker Image application — and the previous owner's
+  container keeps answering the name until it is stopped. `cutover-production.sh`
+  does both, in that order.
 - **`/api/v1/deploy` is a POST now** (a GET answers «This endpoint has changed to a POST request»), and there is no endpoint to cancel a deployment once it
   is queued. `DELETE /deployments/<uuid>` answers 404.
 
