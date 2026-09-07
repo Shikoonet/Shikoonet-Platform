@@ -592,14 +592,21 @@ unreadable secret or an ambiguous duplicate, and leaves release-specific
 migrates and proves the candidates on temporary domains while the old
 applications keep serving. The dashboard is started with the final
 `https://sms.chopon.uk/api/v1/sms` endpoint rather than its temporary hostname,
-because Cutover removes `sms-next` without restarting the dashboard. The bot's
+so the address it prints into a phone is right on both names. The bot's
 application record is pinned to the same digest and SHA but remains stopped;
 Cutover verifies the host ledger checksum, binds its three UUIDs to the verified
 GitHub preparation artifact, and verifies that bot pin before moving a domain.
-It then verifies the running container's digest, `APP_VERSION`, `ENV_NAME` and
-`SERVICE` after the singleton lock moves. A failed handover restores the
-domains and attempts to restore the original single poller from the exact
-retained container rather than asking Coolify to rebuild the old application.
+Moving a domain is three steps, because Traefik routes by the labels on running
+containers and not by Coolify's record: the records move, each candidate is
+redeployed and must come back healthy carrying the live name on the prepared
+digest, and only then are the old ingest and dashboard containers stopped — and
+kept, since their labels are the rollback. Cutover then hands the bot over and
+verifies the running container's digest, `APP_VERSION`, `ENV_NAME` and
+`SERVICE` after the singleton lock moves. A failure at any step restores the
+domain records, starts the retained old web containers again, stops any
+candidate container that took a live name, and attempts to restore the original
+single poller from the exact retained container rather than asking Coolify to
+rebuild the old application.
 If the measured baseline had no old poller, recovery instead proves the
 candidate is absent and restores that same zero-poller baseline. After success,
 Cutover atomically writes `/var/lib/shikoo/production/current-applications.env`;
