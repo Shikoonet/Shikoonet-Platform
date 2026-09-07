@@ -197,7 +197,7 @@ export async function setCustomerStatus(
   const actorRole = actor.kind === 'OPERATOR' ? actor.role : 'SYSTEM';
   const actorTelegramId = actor.kind === 'TELEGRAM' ? actor.telegramId : null;
 
-  await db
+  const done = await db
     .prepare(
       `WITH moved AS (
          UPDATE users
@@ -231,7 +231,24 @@ export async function setCustomerStatus(
       Date.now(),
     )
     .run();
-  return { changed: true, before, blockedReason };
+
+  /*
+   * `changes` and not `true`.
+   *
+   * The UPDATE carries `status <> ?1`, so two callers racing on the same
+   * customer both pass the read above and only one moves the row. The loser
+   * inserts no audit row — which is right — and used to be told `changed: true`
+   * anyway. `blockForSpam` decides whether to announce a block to the shop's
+   * channel from exactly this flag, so the losing caller announced a block it
+   * had not made, with no row in `audit_logs` to explain the message.
+   *
+   * The number comes from the statement, so «the row moved», «the trail was
+   * written» and «the caller was told yes» are one fact rather than three that
+   * agree by inspection. That is what the paragraph above claims, and this is
+   * what makes it true.
+   */
+  const changed = done.meta.changes !== 0;
+  return { changed, before, blockedReason: changed ? blockedReason : before.blocked_reason };
 }
 
 export interface ResellerChange {
