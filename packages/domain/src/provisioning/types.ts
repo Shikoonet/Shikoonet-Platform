@@ -270,6 +270,71 @@ export interface PanelGroup {
 export type GroupsResult = { ok: true; groups: PanelGroup[] } | { ok: false; reason: string };
 
 /**
+ * One admin account on the panel, and what it has used.
+ *
+ * This is the meter a reseller is billed from, and the reason it comes from
+ * here rather than from the reseller's own installation: their installation is
+ * theirs. Their report of their own usage is not evidence of it — the panel's
+ * count is, and neither side can move it.
+ *
+ * Measured against PasarGuard 5.2.1 on 2026-09-07 rather than read off any
+ * documentation, because `/openapi.json` is 404 on that panel.
+ */
+export interface PanelAdmin {
+  username: string;
+  /**
+   * Resets whenever the panel resets it — so it answers "this period", and
+   * only that.
+   *
+   * `null` is "the panel did not give a readable number", never zero. The
+   * distinction is the difference between a meter that could not be read and a
+   * reseller who used nothing, and only one of those is a bill.
+   */
+  usedBytes: number | null;
+  /**
+   * Only ever goes up, which is the only reason a bill can be built on it.
+   * Kept beside the resettable figure rather than instead of it: "used this
+   * month" and "used ever" are different questions and the screen asks both.
+   *
+   * `null` for the same reason as above, and it matters more here: this is the
+   * figure an invoice is derived from. A panel mid-restart reporting a
+   * negative or fractional counter — which has been seen — must leave a gap in
+   * the ledger, not a reading of zero that says they owe nothing.
+   */
+  lifetimeUsedBytes: number | null;
+  /** The panel's own cap. `null` is unlimited, which is what it reports. */
+  dataLimitBytes: number | null;
+  /**
+   * How many accounts sit under this admin. DISPLAY ONLY — Sam was explicit
+   * that we do not need to know who a reseller's users are, and a count is not
+   * a user. It is here so an operator can see a shop that has stopped growing.
+   */
+  totalUsers: number;
+  /** The panel's own word, so a suspension reads differently from a cap. */
+  status: string | null;
+  /** Switched off by an operator on the panel. */
+  disabled: boolean;
+  /**
+   * Over its own `dataLimitBytes`. Separate from `disabled` on purpose: the
+   * panel reaches this by itself, and the role's
+   * `disconnect_users_when_limited` means it also stops that admin's customers
+   * — so this is the field that says "they ran out", not "somebody acted".
+   */
+  limited: boolean;
+}
+
+/**
+ * Absent rather than empty when a panel cannot be asked.
+ *
+ * A caller must treat `ok: false` as "unknown", never as "used nothing" — a
+ * meter that read zero because the panel was unreachable would bill a reseller
+ * for nothing, and would look identical to a shop that stopped selling.
+ */
+export type PanelAdminsResult =
+  | { ok: true; admins: PanelAdmin[] }
+  | { ok: false; reason: string };
+
+/**
  * One inbound the panel has, and whether it can actually deliver.
  *
  * `hosted` is the same distinction `PanelGroup.deliverableInbounds` counts, at
@@ -464,6 +529,23 @@ export interface ProvisioningAdapter {
    * A caller must treat absence as "cannot be asked", never as "has none".
    */
   listGroups?(provider: ProviderContext): Promise<GroupsResult>;
+
+  /**
+   * Every admin account on this panel, with its meter.
+   *
+   * The whole of what we need from a reseller's installation, and the reason
+   * we need nothing else from it: a franchise runs its own bot, its own
+   * database and its own dashboard, and none of its customers reach us. What
+   * reaches us is a number the panel counted.
+   *
+   * One listing per panel per sweep rather than a call per reseller — the same
+   * decision `listAccounts` above documents, for the same reason. Ten
+   * resellers on one panel is one request.
+   *
+   * Optional: `manual` has no admins, and a caller must treat absence as
+   * "cannot be asked". `ok: false` means the same — never "used nothing".
+   */
+  listPanelAdmins?(provider: ProviderContext): Promise<PanelAdminsResult>;
 
   /**
    * Every inbound this panel has, whether or not a group uses it.

@@ -69,7 +69,7 @@ const WITHHELD = [
 ];
 
 /**
- * What is left of thirty once those ten are gone.
+ * What is left of thirty-one once those ten are gone.
  *
  * Fifteen of twenty-four until 2026-08-27. «محصولات» and «دسته‌بندی‌ها» are both
  * in `READABLE_BY_READER`, so both new sections raise this count rather than the
@@ -89,8 +89,13 @@ const WITHHELD = [
  * and the write behind it is ADMIN-only — `write-roles.test.ts` counts that
  * one separately. «ایمپورت میرزابات» arrived in the same window and is NOT
  * readable; it joined the withheld list above.
+ *
+ * Twenty-one on 2026-09-07. «نمایندگان» is readable for the reason
+ * «کرون‌جاب‌ها» beside it is, and one stronger: a reseller's own customers
+ * never reach this database, so there is no name on that screen to withhold.
+ * All three writes behind it are ADMIN-only in the route.
  */
-const OFFERED_TO_A_READER = 20;
+const OFFERED_TO_A_READER = 21;
 
 async function signInAsReader(page: Page): Promise<void> {
   await page.goto(`${BASE}/admin/`);
@@ -100,7 +105,7 @@ async function signInAsReader(page: Page): Promise<void> {
   await expect(page.locator('.sidebar-link.active')).toBeVisible();
 }
 
-test('a reader is offered twenty sections of thirty, and the count is read off the screen', async ({
+test('a reader is offered twenty-one sections of thirty-one, and the count is read off the screen', async ({
   page,
 }) => {
   await signInAsReader(page);

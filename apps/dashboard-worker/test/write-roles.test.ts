@@ -417,6 +417,24 @@ describe('every write route, asked directly', () => {
     // creating one. It is the only write here that is REVERSIBLE — expiring a
     // code rewrites when it ended and cannot be undone — and that is why the
     // screen does not ask «مطمئنی؟» before it, unlike delete.
-    expect(writeRoutes().length).toBe(155);
+    //
+    // +3, the «نمایندگان» writes. All three are ADMIN, and the reason is one
+    // sentence: each decides whether somebody else's business keeps running.
+    //
+    //   POST   /resellers             — a franchise begins
+    //   PATCH  /resellers/:id         — capacity and term. NOT the panel admin:
+    //                                   moving that would point the meter at a
+    //                                   different counter and the ledger would
+    //                                   silently change subject.
+    //   POST   /resellers/:id/status  — suspend, reactivate, close
+    //
+    // None of them calls the panel. Disabling a panel admin cuts every one of
+    // that franchise's customers off at once, so that stays an act somebody
+    // performs on the panel with the consequence in front of them.
+    //
+    // The two GETs beside them are readable by a READ_ONLY operator, like
+    // «تنظیمات» and «کرون‌جاب‌ها» — no customer of a reseller's appears on that
+    // screen, and there is no route here that could list one.
+    expect(writeRoutes().length).toBe(158);
   });
 });
