@@ -95,9 +95,19 @@ coolify_api() {
   API_BODY=''
   API_STATUS=000
   if [ -n "$body" ]; then
-    out=$(curl -sS -m 45 -w '%{http_code}' -K "$COOLIFY_API_DIR/c" \
+    # `--data-binary @-`, so the body arrives on stdin and never in argv.
+    #
+    # The header above already makes this argument about the token — "it
+    # reaches curl through a 0600 config file and never through argv, which
+    # every process on the host can read" — and then the body went straight
+    # into argv anyway. It is not inert content: `set_domain` and
+    # `set_temp_domain` put a URL in there, and a URL can carry userinfo, so a
+    # password was readable by every local account for the duration of the
+    # request. Moving it out of python3's argv in the callers fixed one layer
+    # and left this one, which is the layer they all pass through.
+    out=$(printf '%s' "$body" | curl -sS -m 45 -w '%{http_code}' -K "$COOLIFY_API_DIR/c" \
       -X "$method" -H 'Content-Type: application/json' \
-      --data-binary "$body" "${COOLIFY_URL}/api/v1${path}" 2>/dev/null) || return 1
+      --data-binary @- "${COOLIFY_URL}/api/v1${path}" 2>/dev/null) || return 1
   else
     out=$(curl -sS -m 45 -w '%{http_code}' -K "$COOLIFY_API_DIR/c" \
       -X "$method" "${COOLIFY_URL}/api/v1${path}" 2>/dev/null) || return 1

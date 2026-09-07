@@ -76,11 +76,47 @@ if grep -q ' migrations/verify_invariants.sql$' "$MANIFEST"; then
 else
   bad 'the manifest ships verify_invariants.sql' 'it is absent'
 fi
-n=$(grep -c ' migrations/0' "$MANIFEST" || true)
-if [ "$n" -ge 37 ]; then
-  ok "the manifest ships all ${n} migrations"
+# Counted against the migrations DIRECTORY, never against a literal.
+#
+# This read `[ "$n" -ge 37 ]` and printed «the manifest ships all ${n}
+# migrations». Both halves were wrong in the same way: 37 was frozen the day it
+# was written, and the sentence reported the manifest's own count back as if it
+# were a total. The repository reached 62 migrations and this stayed green,
+# because it never asked the directory anything.
+#
+# What that cost is not hypothetical. The bundle installed on the production
+# host shipped migrations 0001–0037 and a `verify_invariants.sql` written for
+# 0059, so the restore drill measured production's ledger against a truncated
+# set, reported «ledger is current» for a database 25 migrations behind, and
+# then died inside the invariants on an index 0059 was supposed to have
+# replaced. A backup verifier answering «current» when it cannot see the
+# migrations is worse than one that fails.
+#
+# `git ls-files` rather than a glob, so an untracked file sitting in the
+# working tree cannot make this pass either.
+# SETS, not counts. Counting was this check's second mistake in a row: `-ge 37`
+# compared against a frozen number, and `-eq $want` compared two totals — which
+# a manifest that omits 0042 and lists 0041 twice satisfies exactly. The bundle
+# would then be missing a migration from restore verification with the test
+# green, which is the failure this whole section exists to prevent, reached by
+# a different route.
+#
+# `git ls-files` rather than a glob, so an untracked file sitting in the working
+# tree cannot make this pass either. `LC_ALL=C` on every side because comm
+# rejects input this host's collation ordered differently.
+disk=$(git -C "$ROOT" ls-files 'migrations/0*.sql' | LC_ALL=C sort)
+listed=$(awk '{print $2}' "$MANIFEST" | grep '^migrations/0' | LC_ALL=C sort)
+missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$disk") <(printf '%s\n' "$listed") | tr '\n' ' ')
+extra=$(LC_ALL=C comm -13 <(printf '%s\n' "$disk") <(printf '%s\n' "$listed") | tr '\n' ' ')
+# A duplicate is neither missing nor extra — both sets stay empty — so it is
+# counted separately rather than inferred.
+dupes=$(printf '%s\n' "$listed" | uniq -d | tr '\n' ' ')
+want=$(printf '%s\n' "$disk" | grep -c .)
+if [ "$want" -gt 0 ] && [ -z "$missing" ] && [ -z "$extra" ] && [ -z "$dupes" ]; then
+  ok "the manifest ships exactly the ${want} migrations in migrations/, each once"
 else
-  bad 'the manifest ships every migration' "only ${n} present"
+  bad 'the manifest ships every migration, each exactly once' \
+    "absent: ${missing:-none} · not in migrations/: ${extra:-none} · listed twice: ${dupes:-none}"
 fi
 
 section 'the subcommand list is closed'

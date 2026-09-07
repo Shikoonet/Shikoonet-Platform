@@ -294,16 +294,34 @@ LIVE_DASHBOARD_DOMAIN=${LIVE_DASHBOARD_DOMAIN:-shikoo.chopon.uk}
 # port, so the PATCH would have handed a candidate the live customer hostname
 # while this guard read «not a live domain». The one thing this must never do,
 # defeated by a colon.
-host_of() { # url -> lowercased hostname, no scheme, no port, no path
-  local h=${1#*://}
-  h=${h%%/*}
-  h=${h%%\?*}
-  h=${h##*@}
-  h=${h%%:*}
-  # bash's own case conversion, not `tr 'A-Z' 'a-z'`: no subprocess, and no
-  # locale in the loop. A hostname is ASCII, and a range-based `tr` would be
-  # the one thing here whose behaviour depends on where the host thinks it is.
-  printf '%s' "${h,,}"
+# ── parsed by the standard library, not by this script ───────────────────
+#
+# The hand-rolled version stripped the scheme, then `/`, `?`, userinfo and the
+# port — and was wrong twice for the same reason. First it compared whole URL
+# strings and `https://sms.chopon.uk:443` walked past it. Then it stripped the
+# port but not the fragment, and `https://sms.chopon.uk#candidate` walked past
+# it. Both times Coolify normalised what this guard had not, and assigned the
+# live customer hostname to a candidate.
+#
+# The bug was never a missing delimiter, it was hand-parsing a URL at all: a
+# guard that enumerates delimiters is only ever as correct as its list. So it
+# asks the thing that already knows. `python3` is not a new dependency — the
+# PATCH body two functions down is built with it, so this function cannot run
+# on a host where this is unavailable.
+#
+# `.hostname` lowercases, drops userinfo, drops the port, and ends the
+# authority at the first of `/`, `?` or `#` — all of it, by definition rather
+# than by a list somebody has to keep complete.
+#
+# The URL goes in on STDIN, not in argv. This function accepts userinfo by
+# design — `https://u:p@host` is one of the spellings the guard has to see
+# through — and argv is world-readable in `ps`, so a URL carrying a password
+# would publish it to every local account for as long as python3 runs. That is
+# this directory's standing rule, not a new judgement.
+host_of() { # url (stdin-fed) -> hostname, or empty when there is none
+  printf '%s' "$1" |
+    python3 -c 'import sys,urllib.parse as u; print(u.urlsplit(sys.stdin.read().strip()).hostname or "")' 2>/dev/null ||
+    printf ''
 }
 for u in "$TEMP_INGEST_URL" "$TEMP_DASHBOARD_URL"; do
   case "$u" in
@@ -327,8 +345,12 @@ trap coolify_api_cleanup EXIT
 # «PATCH || die» would read Coolify refusing the write as success and then
 # verify against a domain that was never set. Same lesson cutover records.
 set_temp_domain() { # uuid url
+  # The URL on stdin here too. `host_of` above was fixed for argv exposure and
+  # this is the same URL, in the same function's caller, one screen down — a
+  # rule applied to one of two identical lines is a rule that will be wrong
+  # again at the next edit.
   coolify_api PATCH "/applications/$1" \
-    "$(python3 -c 'import json,sys; print(json.dumps({"domains": sys.argv[1]}))' "$2")" || return 1
+    "$(printf '%s' "$2" | python3 -c 'import json,sys; print(json.dumps({"domains": sys.stdin.read()}))')" || return 1
   case "$API_STATUS" in 2??) return 0 ;; *) return 1 ;; esac
 }
 set_temp_domain "$CAND_INGEST" "$TEMP_INGEST_URL" ||
