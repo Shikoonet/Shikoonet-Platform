@@ -61,6 +61,16 @@ for a in "\$@"; do
   [ "\$prev" = '--data-binary' ] && body="\$a"
   prev="\$a"
 done
+# A body of '@-' means curl was told to read it from STDIN, which is how the
+# client sends it so that a URL carrying userinfo never lands in argv, where ps
+# shows it. This fake read the body out of argv and so modelled the old
+# transport: after the client changed it saw the literal '@-' and every create
+# failed to parse. A fake that lags the thing it fakes fails honest code.
+#
+# No backticks in this comment. The heredoc that writes this file is unquoted,
+# so a backtick here is command substitution at generation time, not
+# punctuation — shellcheck caught it trying to run '--data-binary @-'.
+[ "\$body" = '@-' ] && body=\$(cat)
 case "\$url" in
   */projects)     printf '[{"name":"shikoo","uuid":"projuuid00000000000001"}]200' ;;
   */servers)      printf '[{"uuid":"srvuuid000000000000001"}]200' ;;

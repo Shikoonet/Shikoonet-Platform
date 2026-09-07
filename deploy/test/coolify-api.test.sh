@@ -266,5 +266,82 @@ for spec in 'missing:/nonexistent/deploy.env' 'empty'; do
   fi
 done
 
+# ── the request body reaches curl, and does not reach argv ───────────────
+#
+# Two facts, and the suite asserted neither. The fake curl above ignores its
+# arguments entirely, so nothing here ever proved a body was transmitted at
+# all — a helper that silently dropped it would have passed every test on this
+# page. And the body went in as `--data-binary "$body"`, so it sat in argv,
+# which `ps` shows to every account on the host. That is not inert content:
+# `set_domain` and `set_temp_domain` put a URL there, and a URL can carry
+# userinfo.
+#
+# So this fake records what it was given, both ways, and the assertions read
+# the recording rather than the helper.
+section 'the request body goes over stdin, never over argv'
+SECRET_BODY='{"domains":"https://user:hunter2@sms.chopon.uk"}'
+cat >"$BIN/curl" <<'SPY'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >"$SPY_ARGV"
+cat >"$SPY_STDIN"
+printf '{"ok":1}200'
+SPY
+chmod +x "$BIN/curl"
+# `</dev/null` on the run below, and it is load-bearing.
+#
+# The spy blocks in `cat` until stdin closes. When the helper pipes the body in,
+# that is the pipe and it closes immediately. When a regression puts the body
+# back in argv, curl inherits whatever stdin the suite has — and under CI that
+# is not closed, so the spy would wait for ever and the regression would HANG
+# the run instead of failing it. A test that hangs on the bug it exists to catch
+# reports nothing; /dev/null makes the same regression an empty stdin and a red
+# assertion, which is what it has to be.
+SPY_ARGV="$WORK/argv.txt"
+SPY_STDIN="$WORK/stdin.txt"
+: >"$SPY_ARGV"
+: >"$SPY_STDIN"
+SPY_ARGV="$SPY_ARGV" SPY_STDIN="$SPY_STDIN" bash -c '
+  set -Eeuo pipefail
+  . "$1"
+  coolify_api_init "$2" >/dev/null
+  coolify_api PATCH /applications/abc "$3" >/dev/null
+  coolify_api_cleanup
+' _ "$LIB" "$CONF" "$SECRET_BODY" </dev/null
+
+if [ "$(cat "$SPY_STDIN")" = "$SECRET_BODY" ]; then
+  ok 'the body arrives on stdin, byte for byte'
+else
+  bad 'the body arrives on stdin, byte for byte' "stdin held '$(cat "$SPY_STDIN")'"
+fi
+
+if grep -qF 'hunter2' "$SPY_ARGV"; then
+  bad 'the body is absent from curl argv' "argv held: $(cat "$SPY_ARGV")"
+else
+  ok 'the body is absent from curl argv'
+fi
+
+if grep -qF -- '--data-binary @-' "$SPY_ARGV"; then
+  ok 'curl is told to read the body from stdin'
+else
+  bad 'curl is told to read the body from stdin' "argv held: $(cat "$SPY_ARGV")"
+fi
+
+# A bodyless call must still send nothing rather than an empty document.
+: >"$SPY_ARGV"
+: >"$SPY_STDIN"
+SPY_ARGV="$SPY_ARGV" SPY_STDIN="$SPY_STDIN" bash -c '
+  set -Eeuo pipefail
+  . "$1"
+  coolify_api_init "$2" >/dev/null
+  coolify_api GET /teams/current >/dev/null
+  coolify_api_cleanup
+' _ "$LIB" "$CONF" </dev/null
+if grep -qF -- '--data-binary' "$SPY_ARGV"; then
+  bad 'a bodyless request sends no body at all' "argv held: $(cat "$SPY_ARGV")"
+else
+  ok 'a bodyless request sends no body at all'
+fi
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
