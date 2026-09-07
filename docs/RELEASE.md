@@ -369,10 +369,19 @@ Publication order is fixed, and nothing fallible follows the swap:
 4. rename `current` onto the new version — one inode operation
 5. release
 
-The lock is created by the installer as `root:shikoo-deploy 0660`, and both the
-root rehearsal and the `shikoo-deploy` Prepare path validate its ownership
-before using it. `/var/lock` is world-writable, so a lock file that is not
-exactly that is refused rather than adopted.
+The lock is created by the installer as `root:shikoo-deploy 0660` — **by running
+it**, which is step 0 of the procedure above and was not in this document until
+a dispatch was spent discovering that. Both the root rehearsal and the
+`shikoo-deploy` Prepare path validate its ownership before using it.
+`/var/lock` is world-writable, so a lock file that is not exactly that is
+refused rather than adopted — including one `deploy.sh` created on demand,
+which is why that script's own lock is named `shikoo-deploy-run-<env>.lock` and
+not this path.
+
+It does not survive a reboot on its own: `/var/lock` is `/run/lock`, a tmpfs.
+The installer writes `/etc/tmpfiles.d/shikoo-release-lock.conf` so systemd
+recreates it at boot, which also means systemd — not whoever gets there first —
+wins the race for a path in a 1777 directory.
 
 The dump itself never leaves that host. `dump_id` is a sha256 and a date, and a
 value shaped like a path is refused by the writer.
@@ -444,6 +453,36 @@ lock count that is not exactly one, a vanished backup.
    its files agree with each other whatever commit they came from. Never run
    that check in a directory whose provenance was not established first.
 
+   **Then install it.** Staging the bundle only puts the files where the
+   installer can read them; it changes nothing on the host.
+
+   ```sh
+   sudo bash ~/install-shikoo-task-runner.sh
+   ```
+
+   This step was missing from this list, and its absence cost a production
+   dispatch. The installer is the only thing that creates
+   `/var/lock/shikoo-deploy-production.lock` — which both the dump rehearsal
+   (to publish an attestation) and `Prepare Production` (to read one) refuse to
+   run without. On 2026-09-07 Prepare died at P0 on that file, and the message
+   it printed sent the reader off to re-run a rehearsal that would have died at
+   the identical line. Nothing in this document had ever told anybody to run
+   the installer; the sentence under *Resolving it* below asserted the lock
+   "is created by the installer" as though that happened on its own.
+
+   It is also **not** a one-time step in the way the rest of this list is. The
+   lock lives on `/run/lock`, which is a tmpfs, so a reboot removes it. The
+   installer writes `/etc/tmpfiles.d/shikoo-release-lock.conf` so systemd
+   recreates it on boot — but a host installed before that fragment existed
+   does not have it, and looks no different.
+
+   Confirm it, rather than assuming it — this is the one check that would have
+   turned that dispatch into a five-second answer:
+
+   ```sh
+   sudo /usr/local/sbin/shikoo-task-runner status   # `release lock:` must read root:shikoo-deploy:660
+   ```
+
 1. Merge the pull request. Nothing else is needed for staging — CI runs, and
    `Deploy Staging` deploys the merge commit automatically.
 2. Read the staging acceptance checklist (§4).
@@ -455,6 +494,35 @@ lock count that is not exactly one, a vanished backup.
    requires it to be no older than the newest D1 file (§ *What the sidecar
    proves*).
 4. Run the dump rehearsal on the secure host and record its attestation.
+4b. **Run the restore drill on the production host**, within 48 hours of the
+   dispatch in step 5:
+
+   ```sh
+   sudo sh /usr/local/lib/shikoo-step-e/restore-drill.sh production
+   ```
+
+   P3 used to run this itself and could not: it needs root, and the deploy
+   account the workflow arrives as has none — the only sudo grant on this host
+   is `hessamx`, limited to fixed task-runner subcommands, and the installer's
+   own negative test asserts no production drill is among them. Widening that
+   to satisfy a check is the wrong trade: it would put a passwordless root
+   command on production into the release path, to prove a backup.
+
+   So P3 now verifies the checksummed attestation this writes to
+   `/var/lib/shikoo/restore-attestation.env` — the same shape as the Coolify
+   contract attestation step 5 requires, and for the same reason: the proof has
+   to exist before the release, and the release only has to be able to read it.
+
+   Two things it checks that are easy to trip over. The drill writes **one**
+   attestation for the whole host, so a `restore-drill-staging` run overwrites
+   this one — P3 refuses an attestation whose `environment=` is not
+   `production`. And it must be no older than 48 hours (`RESTORE_MAX_AGE_H`),
+   because the backup the release would fall back to is the newest one.
+
+   Before the first cutover this correctly reports `migration_set_exact=prefix`
+   — production is behind by exactly the pending range the dump rehearsal
+   asserts is non-empty. That is expected, not a failure. `yes` means already
+   current, and both are accepted.
 5. **Actions ▸ Prepare Production ▸ Run workflow**, branch `main`,
    `confirm: PREPARE`. Nothing customers can see changes. It ends with
    `READY FOR CUTOVER` and a summary of everything it observed.
@@ -522,6 +590,21 @@ than reporting a missing dump as a failed restore. Configure one in Coolify
 before drilling staging.
 
 ### Before the first production release
+
+Three things have to exist on the host, and only the third one was ever written
+down here. In the order `Prepare Production` demands them:
+
+1. **The release lock** — `/var/lock/shikoo-deploy-production.lock`, created by
+   `install-shikoo-task-runner.sh` (step 0 of the procedure above). Without it
+   P0 refuses, and so does the rehearsal that would satisfy P0. Check with
+   `sudo /usr/local/sbin/shikoo-task-runner status`.
+2. **A restore attestation** no older than 48 hours, from
+   `restore-drill.sh production` (step 4b). P3 refuses without one.
+3. **The Coolify contract attestation**, below. P5 refuses without one.
+
+The first two are new to this list because their absence is what the two failed
+`Prepare Production` dispatches actually found — and neither was discoverable
+before spending a dispatch.
 
 `Prepare Production` refuses to create anything until a Coolify contract
 attestation exists on the host, recording that `instant_deploy=false` and
