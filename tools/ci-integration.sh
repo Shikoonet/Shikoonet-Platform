@@ -333,6 +333,7 @@ suite_deploy_suites() {
     deploy/test/attestation.test.sh \
     deploy/test/preparation.test.sh \
     deploy/test/candidates.test.sh \
+    deploy/test/candidate-envs.test.sh \
     deploy/test/production-workflows.test.sh \
     tools/test/ci-plan.test.sh \
     tools/test/ci-draft-state.test.sh \
