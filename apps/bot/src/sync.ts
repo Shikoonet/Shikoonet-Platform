@@ -166,14 +166,15 @@ export async function syncSubscriptions(
  * `subscription_url` is COALESCEd so a panel that stops returning one does not
  * erase a link the customer already has. `used_bytes` is not: a NULL there
  * means the panel genuinely no longer counts, and keeping a stale number would
- * be worse than showing none.
+ * be worse than showing none. `panel_status` is not either, and for a stronger
+ * reason — see the comment on the statement.
  *
- * `expires_at` is COALESCEd for a stronger reason than either: the existing
- * value must WIN. Writing the panel's date over ours would hand a panel with a
- * wrong clock — or an account somebody renewed there by hand — the power to
- * shorten what a customer paid for, and no screen would show that it happened.
- * So the panel is read only into rows that have no date, which after the import
- * is the only rows that ever get one from here.
+ * `expires_at` is COALESCEd for a stronger reason than any of them: the
+ * existing value must WIN. Writing the panel's date over ours would hand a
+ * panel with a wrong clock — or an account somebody renewed there by hand —
+ * the power to shorten what a customer paid for, and no screen would show that
+ * it happened. So the panel is read only into rows that have no date, which
+ * after the import is the only rows that ever get one from here.
  */
 async function writeAccounts(
   db: D1Database,
@@ -192,10 +193,20 @@ async function writeAccounts(
                 -- that names no expiry leaves the column exactly as it was.
                 expires_at       = COALESCE(s.expires_at,
                                             to_timestamp(v.expires_ms / 1000.0)),
+                -- The panel's own verdict, verbatim. NOT coalesced, unlike the
+                -- url and the date above: a panel that stops reporting a status
+                -- must make the removal sweeps stop, and keeping the last word
+                -- we heard would let them go on deleting on a reading nobody
+                -- confirmed.
+                panel_status     = v.panel_status,
+                panel_online_at  = v.panel_online_at,
                 last_synced_at   = now(),
                 updated_at       = now()
-           FROM (SELECT * FROM unnest(?2::text[], ?3::bigint[], ?4::text[], ?5::bigint[])
-                          AS t(username, used_bytes, url, expires_ms)) v
+           FROM (SELECT * FROM unnest(?2::text[], ?3::bigint[], ?4::text[],
+                                      ?5::bigint[], ?6::text[],
+                                      ?7::timestamptz[])
+                          AS t(username, used_bytes, url, expires_ms,
+                               panel_status, panel_online_at)) v
           WHERE s.provider_id = ?1
             AND s.status = 'ACTIVE'
             AND s.remote_username = v.username`,
@@ -206,6 +217,8 @@ async function writeAccounts(
         chunk.map((a) => a.usedBytes),
         chunk.map((a) => a.subscriptionUrl),
         chunk.map((a) => a.expiresAtMs),
+        chunk.map((a) => a.status),
+        chunk.map((a) => a.onlineAt),
       )
       .run();
     updated += result.meta.changes;

@@ -1370,6 +1370,32 @@ export interface ImportRun {
   finished_at: string | null;
 }
 
+/**
+ * One sweep as «کرون‌جاب‌ها» draws it.
+ *
+ * `on` and `value` are nullable and that is not «unset» — it is «the stored row
+ * could not be read as a switch or a number», which the screen shows as the
+ * bot's default rather than as something the admin chose.
+ */
+export interface CronJobRow {
+  key: string;
+  name: string;
+  what: string;
+  destructive: boolean;
+  texts: string[];
+  toggle: { key: string; on: boolean | null } | null;
+  numbers: {
+    key: string;
+    label: string;
+    unit: string;
+    min: number;
+    max: number;
+    value: number | null;
+  }[];
+  /** Null means «has not acted in the thirty days of events we keep». */
+  lastActed: { at: string; count: number } | null;
+}
+
 export const api = {
   me() {
     return req<{ ok: boolean } & Me>('/me');
@@ -2350,6 +2376,21 @@ export const api = {
       debitIrr: number;
       items: EntryRow[];
     }>(`/wallet-entries?${qs.toString()}`);
+  },
+
+  cron() {
+    return req<{
+      ok: boolean;
+      items: CronJobRow[];
+      dryRun: { key: string; on: boolean | null };
+    }>('/cron');
+  },
+
+  updateCron(body: { key: string; value: boolean | number }) {
+    return req<{ ok: boolean; key: string; value: boolean | number }>('/cron', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
   },
 
   settings(p: { scope?: string; q?: string } = {}) {

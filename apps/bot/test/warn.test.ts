@@ -482,3 +482,127 @@ describe('bought and never connected', () => {
     expect(note?.text).not.toContain('@');
   });
 });
+
+describe('the switch an admin can turn off', () => {
+  /**
+   * The proof each switch asks for is not «the count went down» — it is that
+   * the OTHER two branches still ran. A single switch that turned off the whole
+   * sweep would pass a test written the lazy way, and would be a shop that
+   * stopped telling anybody anything the first time somebody disabled a
+   * warning they did not want.
+   *
+   * So each case builds all three kinds of due service, turns one switch off,
+   * and asserts on which reasons came back.
+   */
+  async function threeDueServices(): Promise<void> {
+    const time = await makeCustomer(nextTelegramId());
+    await makeService(time, { publicId: 'sw-time', expiresInDays: 1 });
+
+    const volume = await makeCustomer(nextTelegramId());
+    await makeService(volume, {
+      publicId: 'sw-volume',
+      expiresInDays: 30,
+      volumeGb: 50,
+      // Half a gigabyte left, inside the one-gigabyte threshold.
+      usedBytes: 50 * GIB - GIB / 2,
+    });
+
+    const unused = await makeCustomer(nextTelegramId());
+    await makeService(unused, {
+      publicId: 'sw-unused',
+      expiresInDays: 30,
+      usedBytes: 0,
+      purchasedDaysAgo: 5,
+      synced: true,
+    });
+  }
+
+  /** Which subscriptions came out warned, by the key the sweep wrote. */
+  async function warnedReasons(): Promise<string[]> {
+    const { results } = await db
+      .prepare(
+        `SELECT public_id, notify FROM subscriptions
+          WHERE notify <> '{}'::jsonb ORDER BY public_id`,
+      )
+      .all<{ public_id: string; notify: Record<string, unknown> }>();
+    return (results ?? []).flatMap((r) => Object.keys(r.notify).map((k) => `${r.public_id}:${k}`));
+  }
+
+  async function setSwitch(key: string, on: boolean): Promise<void> {
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value) VALUES ('bot', ?1, ?2::jsonb)
+         ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind(key, on ? 'true' : 'false')
+      .run();
+    invalidateShopSettings();
+  }
+
+  afterEach(async () => {
+    await db
+      .prepare(`DELETE FROM settings WHERE scope = 'bot' AND key LIKE 'cron_%'`)
+      .run();
+    invalidateShopSettings();
+  });
+
+  it('warns about all three when nothing is switched off', async () => {
+    await threeDueServices();
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(3);
+    expect(await warnedReasons()).toEqual(['sw-time:time', 'sw-unused:unused', 'sw-volume:volume']);
+  });
+
+  it('stops the volume warning and leaves the other two running', async () => {
+    await threeDueServices();
+    await setSwitch('cron_warn_volume', false);
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(2);
+    // And the volume service is NOT marked warned — a disabled branch that
+    // still selected rows would claim it and never message anybody, so the
+    // customer would be silently skipped for ever once it was turned back on.
+    expect(await warnedReasons()).toEqual(['sw-time:time', 'sw-unused:unused']);
+  });
+
+  it('stops the expiry warning and leaves the other two running', async () => {
+    await threeDueServices();
+    await setSwitch('cron_warn_time', false);
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(2);
+    expect(await warnedReasons()).toEqual(['sw-unused:unused', 'sw-volume:volume']);
+  });
+
+  it('stops the unused nudge and leaves the other two running', async () => {
+    await threeDueServices();
+    await setSwitch('cron_warn_unused', false);
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(2);
+    expect(await warnedReasons()).toEqual(['sw-time:time', 'sw-volume:volume']);
+  });
+
+  it('asks the database nothing when all three are off', async () => {
+    await threeDueServices();
+    await setSwitch('cron_warn_time', false);
+    await setSwitch('cron_warn_volume', false);
+    await setSwitch('cron_warn_unused', false);
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(0);
+    expect(await warnedReasons()).toEqual([]);
+  });
+
+  it('keeps warning when the switch row holds something unreadable', async () => {
+    // The rule every other setting follows: a value we failed to understand
+    // must not be what takes a warning away from a customer. `Boolean('x')` is
+    // true and `Boolean('false')` is also true, which is exactly why the
+    // reader matches the two words rather than coercing.
+    await threeDueServices();
+    await db
+      .prepare(
+        `INSERT INTO settings (scope, key, value) VALUES ('bot', 'cron_warn_time', '"maybe"'::jsonb)
+         ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+      )
+      .run();
+    invalidateShopSettings();
+
+    expect(await warnExpiringServices(db, NOW_MS)).toBe(3);
+  });
+});
