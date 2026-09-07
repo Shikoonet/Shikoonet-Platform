@@ -207,5 +207,23 @@ else
   done
 fi
 
+# ── the retired gate stays retired, unless somebody means it ─────────────
+#
+# P0 — the dump-rehearsal attestation — was removed from prepare on 2026-09-07
+# together with the legacy-import release path, by owner decision. This check
+# exists so the gate cannot drift back in half-remembered: whoever restores it
+# is making a policy decision and updates this assertion in the same commit,
+# which is exactly the visibility the original removal got.
+section 'the retired dump-attestation gate does not quietly return'
+# Comment lines are excluded deliberately — the script's own retirement note
+# names the verifier on purpose, so the next reader knows where the gate went.
+# What must not come back is an INVOCATION.
+if grep -v '^[[:space:]]*#' "$ROOT/deploy/prepare-production.sh" | grep -q 'verify-dump-attestation'; then
+  bad 'prepare does not invoke the dump-attestation verifier' \
+    'it does — if the legacy-import path is back, update this test in the same commit as the decision'
+else
+  ok 'prepare does not invoke the dump-attestation verifier'
+fi
+
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

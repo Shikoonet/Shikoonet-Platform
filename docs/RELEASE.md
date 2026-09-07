@@ -35,8 +35,9 @@ with a branch restriction, an actor check and an audit trail.
 6. Enable `STAGING_BOT_ENABLED`, after §2 has proved a dedicated identity.
 7. Run the no-input manual staging redeploy and verify the bot (§2).
 8. Perform the real handset → ingest → dashboard SMS acceptance (§3).
-9. Authorise and run the secure production-dump rehearsal, and record its
-   attestation for the merged sha and the exact digest staging accepted.
+9. ~~Authorise and run the secure production-dump rehearsal~~ — retired
+   2026-09-07 with the legacy-import release path; see §5. Loading data is an
+   owner operation after cutover, not a step of promotion.
 10. Run **Prepare Production** — candidates, migration, temporary domains.
     Customers are still on the old applications.
 11. Read the preparation evidence, then run **Cutover Production** — the only
@@ -310,6 +311,15 @@ Production is not touched by anything else in this repository.
 
 ### What promotion additionally requires
 
+> **Retired from the promotion path, 2026-09-07.** Everything below describes
+> the rehearsal gate as it stood while the release pipeline migrated the
+> legacy dataset. The owner retired that plan: promotion no longer requires a
+> dump attestation, and Prepare's P0 no longer checks one. The machinery —
+> rehearsal, verifier, attestation store, release lock — remains installed and
+> maintained for the owner's own data work, and this section stays as its
+> manual. If a release ever migrates customer data again, the gate goes back
+> before the data does.
+
 A production-dump rehearsal, recorded as a checksummed attestation and
 verified before any credential is in scope. It binds the merged sha, the CI
 run, the Deploy Staging run, the exact digest, the identity of the D1 export,
@@ -486,16 +496,19 @@ lock count that is not exactly one, a vanished backup.
 1. Merge the pull request. Nothing else is needed for staging — CI runs, and
    `Deploy Staging` deploys the merge commit automatically.
 2. Read the staging acceptance checklist (§4).
-3. Produce the D1 export's provenance sidecar in the same operation that
-   produces the export:
-   `tools/d1-export-manifest.py <export-dir> <mirzabot-dump> deploy/d1-tables.manifest`
-   The rehearsal refuses an export without it, and does not infer authenticity
-   from the shape of the rows. Capture the MySQL dump **last** — the contract
-   requires it to be no older than the newest D1 file (§ *What the sidecar
-   proves*).
-4. Run the dump rehearsal on the secure host and record its attestation.
-4b. **Run the restore drill on the production host**, within 48 hours of the
-   dispatch in step 5:
+3. ~~The D1 export sidecar~~ and ~~4. the dump rehearsal~~ — retired,
+   2026-09-07, together with the plan they served. The release pipeline no
+   longer imports the legacy Mirzabot/D1 dataset; it ships the platform with
+   the schema applied and whatever the database already holds. Loading legacy
+   data — if and when — is an owner operation after cutover, with the
+   rehearsal machinery still installed for it. Prepare's P0 gate went with the
+   plan, and the reasoning is written where the gate stood
+   (`deploy/prepare-production.sh`).
+4b. **The restore drill runs itself.** The installer arms
+   `shikoo-restore-drill.timer`: daily, as root, `Persistent=true`. P3 refuses
+   an attestation older than 48 hours, and a timer is what keeps that promise
+   without a person ssh-ing in before every release. To run it by hand anyway
+   (say, right before a dispatch, for the freshest possible evidence):
 
    ```sh
    sudo sh /usr/local/lib/shikoo-step-e/restore-drill.sh production
@@ -595,12 +608,17 @@ Three things have to exist on the host, and only the third one was ever written
 down here. In the order `Prepare Production` demands them:
 
 1. **The release lock** — `/var/lock/shikoo-deploy-production.lock`, created by
-   `install-shikoo-task-runner.sh` (step 0 of the procedure above). Without it
-   P0 refuses, and so does the rehearsal that would satisfy P0. Check with
+   `install-shikoo-task-runner.sh` (step 0 of the procedure above), recreated
+   on boot by its tmpfiles fragment. Check with
    `sudo /usr/local/sbin/shikoo-task-runner status`.
-2. **A restore attestation** no older than 48 hours, from
-   `restore-drill.sh production` (step 4b). P3 refuses without one.
+2. **A restore attestation** no older than 48 hours. The installer arms
+   `shikoo-restore-drill.timer`, which keeps this fresh daily with no hands on
+   the host; P3 refuses without one, which is the backstop when the timer or
+   the backup itself breaks.
 3. **The Coolify contract attestation**, below. P5 refuses without one.
+
+A dump-rehearsal attestation is **no longer** on this list — retired
+2026-09-07 with the legacy-import release path (§5).
 
 The first two are new to this list because their absence is what the two failed
 `Prepare Production` dispatches actually found — and neither was discoverable

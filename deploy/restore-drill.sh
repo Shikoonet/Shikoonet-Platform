@@ -45,6 +45,18 @@
 #
 # Exit 0 only when all three pass.
 
+# ── POSIX sh, BY DESIGN — do not convert to bash strict mode ──────────────
+#
+# deploy/** normally requires `set -Eeuo pipefail`, and this file is the
+# documented exception. It runs as `sh -s` over ssh (the usage line above),
+# under dash on this host, and dash has no `pipefail` to set. More to the
+# point, pipefail would make it worse: the resolution pipelines below —
+# `find … | head -1`, `ls -l … | sort -rn | head -1` — deliberately tolerate a
+# failing left side and follow with a NAMED refusal («no backup directory for
+# …», «no dump found in …»). Under pipefail the same condition dies at the
+# assignment as an anonymous set -e exit, replacing a diagnosable refusal with
+# a silent one. `set -eu` is the strictness this dialect actually has, and
+# every pipeline's failure mode here was chosen, not defaulted.
 set -eu
 
 # Which environment's backup to drill. `production` unless told otherwise,
