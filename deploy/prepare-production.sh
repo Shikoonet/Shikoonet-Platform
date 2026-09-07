@@ -294,16 +294,26 @@ LIVE_DASHBOARD_DOMAIN=${LIVE_DASHBOARD_DOMAIN:-shikoo.chopon.uk}
 # port, so the PATCH would have handed a candidate the live customer hostname
 # while this guard read «not a live domain». The one thing this must never do,
 # defeated by a colon.
-host_of() { # url -> lowercased hostname, no scheme, no port, no path
-  local h=${1#*://}
-  h=${h%%/*}
-  h=${h%%\?*}
-  h=${h##*@}
-  h=${h%%:*}
-  # bash's own case conversion, not `tr 'A-Z' 'a-z'`: no subprocess, and no
-  # locale in the loop. A hostname is ASCII, and a range-based `tr` would be
-  # the one thing here whose behaviour depends on where the host thinks it is.
-  printf '%s' "${h,,}"
+# ── parsed by the standard library, not by this script ───────────────────
+#
+# The hand-rolled version stripped the scheme, then `/`, `?`, userinfo and the
+# port — and was wrong twice for the same reason. First it compared whole URL
+# strings and `https://sms.chopon.uk:443` walked past it. Then it stripped the
+# port but not the fragment, and `https://sms.chopon.uk#candidate` walked past
+# it. Both times Coolify normalised what this guard had not, and assigned the
+# live customer hostname to a candidate.
+#
+# The bug was never a missing delimiter, it was hand-parsing a URL at all: a
+# guard that enumerates delimiters is only ever as correct as its list. So it
+# asks the thing that already knows. `python3` is not a new dependency — the
+# PATCH body two functions down is built with it, so this function cannot run
+# on a host where this is unavailable.
+#
+# `.hostname` lowercases, drops userinfo, drops the port, and ends the
+# authority at the first of `/`, `?` or `#` — all of it, by definition rather
+# than by a list somebody has to keep complete.
+host_of() { # url -> hostname, or empty when there is none
+  python3 -c 'import sys,urllib.parse as u; print(u.urlsplit(sys.argv[1]).hostname or "")' "$1" 2>/dev/null || printf ''
 }
 for u in "$TEMP_INGEST_URL" "$TEMP_DASHBOARD_URL"; do
   case "$u" in
