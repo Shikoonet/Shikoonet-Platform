@@ -105,6 +105,13 @@ SCRATCH="${SCRATCH:-restore_drill_scratch}"
 #
 # DB_CONTAINER is resolved from Coolify above, so by here there is something to
 # ask. The literal stays as the last resort, never as the first answer.
+#
+# An inherited PGUSER still wins, deliberately — `sudo PGUSER=shikoo sh …` is
+# how an operator overrides a container that reports something unhelpful. Be
+# aware that it wins whether or not it was meant: CI proved this by having
+# PGUSER in the runner's environment, so the drill used it and never asked.
+# If a drill reports a superuser you did not expect, check your own shell
+# before the container's.
 PGUSER="${PGUSER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER 2>/dev/null || true)}"
 PGUSER="${PGUSER:-postgres}"
 STATE_DIR="${STATE_DIR:-/var/lib/shikoo}"
