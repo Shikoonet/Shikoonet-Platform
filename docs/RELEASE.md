@@ -564,9 +564,25 @@ These are different problems and only the first one is interesting.
 **The first production release** moves production off three Git/Dockerfile
 applications that the deploy path refuses outright — `deploy.sh` will not hand
 a digest to an application Coolify would rebuild from source. So preparation
-creates three *new* Docker Image applications beside the old ones, migrates,
-and proves the candidates on temporary domains while the old applications keep
-serving. The old ones are kept, stopped, for **14 days**.
+creates three *new* Docker Image applications beside the old ones. They are
+created with no domain, port mapping or environment; only after Auto Deploy and
+previews are proven off does `sync-production-candidate-envs.sh` copy and
+read-back-verify the non-preview production rows from the corresponding old
+application. It preserves Coolify's runtime/buildtime/literal flags, refuses an
+unreadable secret or an ambiguous duplicate, and leaves release-specific
+`APP_VERSION` and dashboard `INGEST_URL` to `deploy.sh`. Preparation then
+migrates and proves the candidates on temporary domains while the old
+applications keep serving. The dashboard is started with the final
+`https://sms.chopon.uk/api/v1/sms` endpoint rather than its temporary hostname,
+because Cutover removes `sms-next` without restarting the dashboard. The bot's
+application record is pinned to the same digest and SHA but remains stopped;
+Cutover verifies the host ledger checksum, binds its three UUIDs to the verified
+GitHub preparation artifact, and verifies that bot pin before moving a domain.
+It then verifies the running container's digest, `APP_VERSION`, `ENV_NAME` and
+`SERVICE` after the singleton lock moves. A failed handover restores the
+domains and attempts to restore the original single poller from the exact
+retained container rather than asking Coolify to rebuild the old application.
+The old applications are kept, stopped, for **14 days**.
 
 **Every release after it** reuses those same three applications.
 `ensure-production-candidates.sh` looks them up by name in the production

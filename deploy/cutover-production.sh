@@ -8,12 +8,13 @@
 #
 # ── The bot handover, and why it is three steps rather than two ───────────
 #
-# Old bot stopped → advisory lock count proven to be ZERO → new bot started →
-# count proven to be ONE. The middle step is the one that is tempting to skip
-# and must not be: stopping a container and observing that it stopped are
-# different facts, and Telegram hands each update to exactly one getUpdates
-# caller. Two pollers on one token means messages a customer sent disappearing
-# into the wrong process, silently, with both bots looking healthy.
+# Exact old bot container stopped (but kept) → advisory lock count proven to
+# be ZERO → new bot started → count proven to be ONE. The middle step is
+# the one that is tempting to skip and must not be: stopping a container and
+# observing that it stopped are different facts, and Telegram hands each
+# update to exactly one getUpdates caller. Two pollers on one token means
+# messages a customer sent disappearing into the wrong process, silently, with
+# both bots looking healthy.
 #
 # `pg_try_advisory_lock` would make the second poller exit rather than
 # double-poll, and that is a backstop, not the plan. A plan that relies on its
@@ -22,22 +23,27 @@
 # ── Domains move back on any failure ─────────────────────────────────────
 #
 # The rollback here is a domain move, which is seconds, and it happens
-# automatically the moment external verification fails. Nothing waits for a
-# person to notice: the old applications are still running, which is the whole
-# reason they are kept.
+# automatically the moment external verification fails. During the bot
+# handover the old bot container is stopped directly rather than deleted
+# through Coolify, so a failed candidate can restore those exact old bytes.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# Run: cutover-production.sh <sha> <digest>
+# Run: cutover-production.sh <sha> <digest> <candidate-ingest> <candidate-dashboard> <candidate-bot>
 
 set -Eeuo pipefail
 
 SHA_ARG=${1:-}
 DIGEST_ARG=${2:-}
+EXPECTED_CAND_INGEST=${3:-}
+EXPECTED_CAND_DASHBOARD=${4:-}
+EXPECTED_CAND_BOT=${5:-}
 ENV_ARG=production
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CONF=${CONF:-/etc/shikoo/$ENV_ARG/deploy.env}
 STATE=${STATE:-/var/lib/shikoo/$ENV_ARG}
 LIVE_INGEST_DOMAIN=${LIVE_INGEST_DOMAIN:-sms.chopon.uk}
 LIVE_DASHBOARD_DOMAIN=${LIVE_DASHBOARD_DOMAIN:-shikoo.chopon.uk}
+IMAGE_NAME=${IMAGE_NAME:-ghcr.io/shikoonet/shikoonet-platform}
 
 say() { echo "[cutover] $*"; }
 die() {
@@ -50,6 +56,13 @@ die() {
 [ -r "$CONF" ] || die "cannot read $CONF — run as the shikoo-deploy user"
 [ -r "$STATE/preparation.env" ] ||
   die "no host-side preparation ledger at ${STATE}/preparation.env — this box has no record of a preparation for this release"
+[ -r "$STATE/preparation.sha256" ] ||
+  die "the host-side preparation ledger has no checksum"
+( cd "$STATE" && sha256sum -c --status preparation.sha256 ) ||
+  die "the host-side preparation ledger checksum does not verify"
+if cut -d= -f1 "$STATE/preparation.env" | LC_ALL=C sort | uniq -d | grep -q .; then
+  die "the host-side preparation ledger contains a duplicate key and is ambiguous"
+fi
 
 cfg() { sed -n "s/^$1=//p" "$CONF" | head -n1; }
 COOLIFY_URL=$(cfg COOLIFY_URL)
@@ -67,6 +80,27 @@ CAND_DASHBOARD=$(field candidate_dashboard)
 CAND_BOT=$(field candidate_bot)
 LEDGER_SHA=$(field main_sha)
 LEDGER_DIGEST=$(field digest)
+
+for candidate in "$EXPECTED_CAND_INGEST" "$EXPECTED_CAND_DASHBOARD" "$EXPECTED_CAND_BOT" \
+  "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT"; do
+  [[ "$candidate" =~ ^[a-z0-9]{20,32}$ ]] ||
+    die "a candidate uuid is missing or malformed"
+done
+if [ "$EXPECTED_CAND_INGEST" = "$EXPECTED_CAND_DASHBOARD" ] ||
+  [ "$EXPECTED_CAND_INGEST" = "$EXPECTED_CAND_BOT" ] ||
+  [ "$EXPECTED_CAND_DASHBOARD" = "$EXPECTED_CAND_BOT" ]; then
+  die "the verified preparation artifact does not name three distinct candidate applications"
+fi
+if [ "$CAND_INGEST" = "$CAND_DASHBOARD" ] ||
+  [ "$CAND_INGEST" = "$CAND_BOT" ] ||
+  [ "$CAND_DASHBOARD" = "$CAND_BOT" ]; then
+  die "the host ledger does not name three distinct candidate applications"
+fi
+if [ "$CAND_INGEST" != "$EXPECTED_CAND_INGEST" ] ||
+  [ "$CAND_DASHBOARD" != "$EXPECTED_CAND_DASHBOARD" ] ||
+  [ "$CAND_BOT" != "$EXPECTED_CAND_BOT" ]; then
+  die "the host ledger names different candidates than the verified preparation artifact"
+fi
 
 # The host's own record has to agree with what the workflow was told. Two
 # independent stories about which release this is, and both have to match.
@@ -101,7 +135,67 @@ app_action() { # uuid start|stop
   case "$API_STATUS" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
+BOT_DEPLOYMENT_UUID=''
+start_candidate_bot() {
+  coolify_api POST "/applications/$CAND_BOT/start" || return 1
+  case "$API_STATUS" in 2??) ;; *) return 1 ;; esac
+  BOT_DEPLOYMENT_UUID=$(printf '%s' "$API_BODY" | python3 -c '
+import json, re, sys
+try:
+    value = json.load(sys.stdin).get("deployment_uuid", "")
+except Exception:
+    value = ""
+print(value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{6,80}", value) else "")
+')
+  [ -n "$BOT_DEPLOYMENT_UUID" ]
+}
+
+cancel_candidate_deployment() {
+  [ -n "$BOT_DEPLOYMENT_UUID" ] || return 1
+  coolify_api POST "/deployments/$BOT_DEPLOYMENT_UUID/cancel" || return 1
+  case "$API_STATUS" in
+    2??) return 0 ;;
+    400)
+      # A completed or already-cancelled deployment cannot be cancelled, but it
+      # is no longer capable of materialising a new container behind recovery.
+      printf '%s' "$API_BODY" | python3 -c '
+import json, re, sys
+try:
+    message = json.load(sys.stdin).get("message", "")
+except Exception:
+    raise SystemExit(1)
+ok = re.fullmatch(r"Deployment cannot be cancelled\. Current status: (finished|failed|cancelled-by-user)", message)
+raise SystemExit(0 if ok else 1)
+' ;;
+    *) return 1 ;;
+  esac
+}
+
 probe() { curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$1" 2>/dev/null || printf '000'; }
+
+# Resolve the database and prove the stopped bot BEFORE a customer hostname is
+# moved. `/start` queues a Coolify deployment; it is not a plain container
+# restart. Preparation therefore pins the application record, and this check
+# binds that record plus APP_VERSION to the manifest Cutover was handed.
+PG=$(docker exec -i "${COOLIFY_DB_CONTAINER:-coolify-db}" psql -U coolify -d coolify -At \
+  -c "select p.uuid from standalone_postgresqls p join environments e on e.id=p.environment_id where e.name='production' limit 1;" 2>/dev/null || true)
+[ -n "$PG" ] || die "could not find the production database container to count pollers"
+locks() {
+  docker exec -i "$PG" sh -c \
+    "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -tAc \"select count(*) from pg_locks where locktype='advisory'\"" 2>/dev/null || printf 'unknown'
+}
+[ "$OLD_BOT" != "$CAND_BOT" ] ||
+  die "the current and candidate bot are the same application — this bootstrap handover cannot stop and start one uuid as two pollers"
+if ! OLD_BOT_CONTAINERS=$(docker ps -q --filter "label=coolify.name=$OLD_BOT" 2>/dev/null); then
+  die "could not query Docker for the current bot container"
+fi
+OLD_BOT_COUNT=$(printf '%s\n' "$OLD_BOT_CONTAINERS" | sed '/^$/d' | wc -l)
+[ "$OLD_BOT_COUNT" = 1 ] ||
+  die "the current bot has ${OLD_BOT_COUNT} running containers, expected exactly one before handover"
+OLD_BOT_CID=$(printf '%s\n' "$OLD_BOT_CONTAINERS" | head -1)
+CONF="$CONF" IMAGE_NAME="$IMAGE_NAME" \
+  bash "$HERE/verify-production-bot-candidate.sh" prepared "$CAND_BOT" "$SHA_ARG" "$DIGEST_ARG" ||
+  die "the candidate bot is not the stopped, immutable release preparation recorded"
 
 # ── P11. the domains ──────────────────────────────────────────────────────
 #
@@ -110,24 +204,26 @@ probe() { curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$1" 2>/dev/null
 # picks is not a decision anybody made.
 say "P11. moving ${LIVE_INGEST_DOMAIN} and ${LIVE_DASHBOARD_DOMAIN}"
 rollback_domains() {
+  local failed=0
   say "ROLLING BACK: returning both domains to the old applications"
-  set_domain "$CAND_INGEST" '' || true
-  set_domain "$CAND_DASHBOARD" '' || true
-  set_domain "$OLD_INGEST" "https://${LIVE_INGEST_DOMAIN}" || true
-  set_domain "$OLD_DASHBOARD" "https://${LIVE_DASHBOARD_DOMAIN}" || true
+  set_domain "$CAND_INGEST" '' || failed=1
+  set_domain "$CAND_DASHBOARD" '' || failed=1
+  set_domain "$OLD_INGEST" "https://${LIVE_INGEST_DOMAIN}" || failed=1
+  set_domain "$OLD_DASHBOARD" "https://${LIVE_DASHBOARD_DOMAIN}" || failed=1
+  [ "$failed" = 0 ]
 }
 
 set_domain "$OLD_INGEST" '' || die "could not release ${LIVE_INGEST_DOMAIN} from the old ingest"
 set_domain "$CAND_INGEST" "https://${LIVE_INGEST_DOMAIN}" || {
-  rollback_domains
+  rollback_domains || die "could not move ${LIVE_INGEST_DOMAIN} onto the candidate and automatic domain rollback was incomplete"
   die "could not move ${LIVE_INGEST_DOMAIN} onto the candidate"
 }
 set_domain "$OLD_DASHBOARD" '' || {
-  rollback_domains
+  rollback_domains || die "could not release ${LIVE_DASHBOARD_DOMAIN} and automatic domain rollback was incomplete"
   die "could not release ${LIVE_DASHBOARD_DOMAIN} from the old dashboard"
 }
 set_domain "$CAND_DASHBOARD" "https://${LIVE_DASHBOARD_DOMAIN}" || {
-  rollback_domains
+  rollback_domains || die "could not move ${LIVE_DASHBOARD_DOMAIN} onto the candidate and automatic domain rollback was incomplete"
   die "could not move ${LIVE_DASHBOARD_DOMAIN} onto the candidate"
 }
 
@@ -142,42 +238,109 @@ try: print(json.load(sys.stdin).get("version") or "")
 except Exception: print("")')
 
 if [ "$ING_CODE" != '200' ] || [ "$DASH_CODE" != '200' ] || [ "$VER_SHA" != "$SHA_ARG" ]; then
-  rollback_domains
+  rollback_domains || die "live verification failed and automatic domain rollback was incomplete"
   die "live verification failed (ingest ${ING_CODE}, dashboard ${DASH_CODE}, version '${VER_SHA:0:12}') — domains returned to the old applications"
 fi
 say "    ingest 200, dashboard 200, version ${VER_SHA:0:12}"
 
 # ── P13–P15. the bot handover ─────────────────────────────────────────────
-PG=$(docker exec -i "${COOLIFY_DB_CONTAINER:-coolify-db}" psql -U coolify -d coolify -At \
-  -c "select p.uuid from standalone_postgresqls p join environments e on e.id=p.environment_id where e.name='production' limit 1;" 2>/dev/null || true)
-[ -n "$PG" ] || die "could not find the production database container to count pollers"
-locks() {
-  docker exec -i "$PG" sh -c \
-    "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -tAc \"select count(*) from pg_locks where locktype='advisory'\"" 2>/dev/null || printf 'unknown'
+wait_for_locks() { # exact-count
+  local want=$1
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ "$(locks)" = "$want" ] && return 0
+    sleep 6
+  done
+  return 1
+}
+
+candidate_containers() {
+  docker ps -q --filter "label=coolify.name=$CAND_BOT" 2>/dev/null
+}
+
+wait_for_candidate_absent() {
+  local quiet=0 containers
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    containers=''
+    if ! containers=$(candidate_containers); then
+      return 1
+    fi
+    if [ -z "$containers" ]; then
+      quiet=$((quiet + 1))
+      [ "$quiet" -ge 3 ] && return 0
+    else
+      quiet=0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+# A candidate that fails after the old bot stopped must not leave production
+# with zero pollers and the domains in their post-cutover state. Best-effort is
+# not described as success: every leg is observed, and an incomplete recovery
+# is named as manual intervention.
+recover_bot_handover() { # reason
+  local reason=$1 recovered=1 final_candidate_containers='' old_running=''
+  say "ROLLING BACK BOT HANDOVER: ${reason}"
+  rollback_domains || recovered=0
+  cancel_candidate_deployment || recovered=0
+  app_action "$CAND_BOT" stop || recovered=0
+  wait_for_candidate_absent || recovered=0
+  wait_for_locks 0 || recovered=0
+  # Even an incomplete cancellation should get a best-effort availability
+  # recovery. The singleton lock keeps a late candidate from polling beside
+  # this container; the checks below still refuse to call that recovery
+  # complete unless the candidate is observed absent.
+  #
+  # Coolify's stop endpoint removes the container, and its start endpoint
+  # queues a fresh deployment. Starting the exact container retained at P13 is
+  # the only rollback that restores observed old bytes rather than whatever the
+  # old application record happens to build now.
+  docker start "$OLD_BOT_CID" >/dev/null || recovered=0
+  wait_for_locks 1 || recovered=0
+  if ! final_candidate_containers=$(candidate_containers); then
+    recovered=0
+  elif [ -n "$final_candidate_containers" ]; then
+    recovered=0
+  fi
+  if ! old_running=$(docker ps -q --filter "id=$OLD_BOT_CID" 2>/dev/null | head -1); then
+    recovered=0
+  elif [ "$old_running" != "$OLD_BOT_CID" ]; then
+    recovered=0
+  fi
+  if [ "$recovered" = 1 ]; then
+    die "${reason} — domains and the original single bot poller were restored"
+  fi
+  die "${reason} — automatic recovery was incomplete; production needs manual intervention"
 }
 
 say "P13. stopping the old bot"
-app_action "$OLD_BOT" stop || die "could not stop the old production bot (HTTP ${API_STATUS})"
+if ! docker stop --time "${BOT_STOP_TIMEOUT:-30}" "$OLD_BOT_CID" >/dev/null; then
+  rollback_domains || die "could not stop the old production bot and automatic domain rollback was incomplete"
+  die "could not stop and retain the exact old production bot container; domains were restored"
+fi
 
 # Observed, not assumed. «I asked it to stop» and «it stopped» are different
 # facts, and starting the second poller on the strength of the first is how one
 # token ends up with two.
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [ "$(locks)" = '0' ] && break
-  sleep 6
-done
-[ "$(locks)" = '0' ] ||
-  die "the old bot still holds an advisory lock after being stopped — refusing to start a second poller on the same token"
+if ! wait_for_locks 0; then
+  rollback_domains || die "the old bot still holds its lock and automatic domain rollback was incomplete"
+  # This exact old container will wait on the same singleton lock if Postgres
+  # has not released the stopped session yet. Do not call that observed
+  # recovery: a count of one here could still be the stale session.
+  docker start "$OLD_BOT_CID" >/dev/null || true
+  die "the old bot lock did not clear — no second poller was started, domains were restored, and the retained old container was restarted for manual verification"
+fi
 say "P14. zero pollers confirmed; starting the candidate bot"
 
-app_action "$CAND_BOT" start || die "could not start the candidate bot (HTTP ${API_STATUS})"
-BOT_OK=''
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [ "$(locks)" = '1' ] && { BOT_OK=yes; break; }
-  sleep 6
-done
-[ -n "$BOT_OK" ] || die "the candidate bot did not take the advisory lock — production has NO poller; start the old bot to recover"
-say "P15. exactly one poller confirmed"
+start_candidate_bot ||
+  recover_bot_handover "could not start the candidate bot (HTTP ${API_STATUS})"
+wait_for_locks 1 ||
+  recover_bot_handover "the candidate bot did not take the advisory lock"
+CONF="$CONF" IMAGE_NAME="$IMAGE_NAME" \
+  bash "$HERE/verify-production-bot-candidate.sh" running "$CAND_BOT" "$SHA_ARG" "$DIGEST_ARG" ||
+  recover_bot_handover "the candidate poller is not running the prepared digest and sha"
+say "P15. exactly one poller confirmed on the prepared digest"
 
 # ── P16. identity, then the ledger ────────────────────────────────────────
 BOT_NAME=$(docker exec -i "$PG" sh -c \

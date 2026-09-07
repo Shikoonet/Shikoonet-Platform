@@ -51,8 +51,13 @@ refuse() {
 [[ $STAGING_RUN_ID =~ ^[0-9]{1,20}$ ]] || refuse "STAGING_RUN_ID is not a run id"
 [[ $SCHEMA_VERSION =~ ^[0-9]{1,4}$ ]] || refuse "SCHEMA_VERSION is not a migration count"
 for u in "$CANDIDATE_INGEST" "$CANDIDATE_DASHBOARD" "$CANDIDATE_BOT"; do
-  [[ $u =~ ^[a-z0-9]{20,32}$ ]] || refuse "'$u' is not a Coolify application uuid"
+  [[ "$u" =~ ^[a-z0-9]{20,32}$ ]] || refuse "'$u' is not a Coolify application uuid"
 done
+if [ "$CANDIDATE_INGEST" = "$CANDIDATE_DASHBOARD" ] ||
+  [ "$CANDIDATE_INGEST" = "$CANDIDATE_BOT" ] ||
+  [ "$CANDIDATE_DASHBOARD" = "$CANDIDATE_BOT" ]; then
+  refuse "the ingest, dashboard and bot candidates must be three distinct applications"
+fi
 case "$TEMP_DOMAIN_VERIFY" in pass | fail) ;; *) refuse "TEMP_DOMAIN_VERIFY must be pass or fail" ;; esac
 case "$OLD_APPS_HEALTHY" in pass | fail) ;; *) refuse "OLD_APPS_HEALTHY must be pass or fail" ;; esac
 
@@ -88,6 +93,13 @@ IMAGE_NAME=${IMAGE_NAME:-ghcr.io/shikoonet/shikoonet-platform}
   printf 'bot_advisory_locks=%s\n' "${BOT_ADVISORY_LOCKS:-unrecorded}"
   printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >"$OUT_DIR/preparation.env"
+
+# This file is consumed as key=value rather than sourced. A repeated key would
+# otherwise silently acquire first-row-wins semantics in the readers below,
+# making the signed ledger ambiguous even when its checksum is valid.
+if cut -d= -f1 "$OUT_DIR/preparation.env" | LC_ALL=C sort | uniq -d | grep -q .; then
+  refuse "the generated preparation manifest contains a duplicate key"
+fi
 
 ( cd "$OUT_DIR" && sha256sum preparation.env >preparation.sha256 )
 

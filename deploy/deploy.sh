@@ -228,6 +228,19 @@ else
   summary "bot=EXCLUDED"
 fi
 
+# Production preparation cannot start the replacement bot while the old one
+# still owns Telegram's poller lock. It can — and must — bind the stopped
+# application record to the digest Cutover will start later. Kept as a separate
+# exact opt-in so an ordinary staging deploy with the bot disabled continues to
+# leave that application completely alone.
+PREPARE_BOT_FOR_CUTOVER=${PREPARE_BOT_FOR_CUTOVER:-false}
+if [ "$BOT_ENABLED" = 0 ] && [ "$PREPARE_BOT_FOR_CUTOVER" = 'true' ]; then
+  PIN_STOPPED_BOT=1
+  say "bot: will be pinned for a later cutover, but not deployed or started"
+else
+  PIN_STOPPED_BOT=0
+fi
+
 # ------------------------------------------------------------ registry auth
 # With `--registry-token-stdin` the caller hands a registry credential on
 # STDIN — the deploy workflow passes GitHub's own per-run token, which is
@@ -434,6 +447,13 @@ assert_deployable "$APP_INGEST" ingest
 assert_deployable "$APP_DASHBOARD" dashboard
 if [ "$BOT_ENABLED" = 1 ]; then
   assert_deployable "$APP_BOT" bot
+elif [ "$PIN_STOPPED_BOT" = 1 ]; then
+  assert_deployable "$APP_BOT" bot
+  if ! BOT_CANDIDATE_CONTAINERS=$(docker ps -q --filter "label=coolify.name=$APP_BOT"); then
+    die "could not determine whether the bot candidate has a running container"
+  fi
+  [ -z "$BOT_CANDIDATE_CONTAINERS" ] ||
+    die "bot candidate already has a running container — preparation will not pin a service that may already be polling"
 fi
 say "every application this deploy touches is set to deploy an image, not to rebuild"
 
@@ -591,6 +611,26 @@ set_version() { # uuid sha
 # one recreates the bug that constant was deleted for.
 ensure_ingest_url() {
   local fqdn url
+  if [ -n "${DASHBOARD_INGEST_URL:-}" ]; then
+    url=$DASHBOARD_INGEST_URL
+    # Preparation's candidate answers on `sms-next`, but Cutover replaces that
+    # hostname with the live one without restarting the dashboard. The final
+    # URL therefore has to be baked into the candidate dashboard before it
+    # starts. It is caller-supplied only inside the reviewed production script,
+    # and is still parsed here rather than trusted as a plausible-looking URL.
+    if ! printf '%s' "$url" | python3 -c '
+import sys, urllib.parse as u
+p = u.urlsplit(sys.stdin.read())
+ok = p.scheme in ("http", "https") and bool(p.hostname) and not p.username and not p.password and not p.query and not p.fragment and p.path == "/api/v1/sms"
+raise SystemExit(0 if ok else 1)
+'; then
+      die "DASHBOARD_INGEST_URL is not a credential-free http(s) /api/v1/sms endpoint"
+    fi
+    set_app_env "$APP_DASHBOARD" INGEST_URL "$url"
+    say "dashboard INGEST_URL = $url (the final endpoint selected by production preparation)"
+    return 0
+  fi
+
   fqdn=$(app_field "$APP_INGEST" fqdn)
   # Coolify stores several domains as a comma-separated list, routing the first.
   # A trailing slash would produce `…//api/v1/sms`.
@@ -602,8 +642,9 @@ ensure_ingest_url() {
     https://* | http://*) ;;
     *) die "the ingest application's domain in Coolify is '$fqdn', which is not an http(s) URL — refusing to build a phone configuration from it" ;;
   esac
-  # The same shape `ingestUrl()` builds in the worker: the path is appended
-  # unless the domain already carries it.
+  # The same shape `ingestUrl()` builds in the worker: appended unless already
+  # carried. A normal staging deploy takes this branch; production preparation
+  # uses the final-endpoint branch above.
   case "$fqdn" in
     */api/v1/sms) url=$fqdn ;;
     *) url="$fqdn/api/v1/sms" ;;
@@ -768,7 +809,25 @@ if [ "$BOT_ENABLED" = 1 ]; then
   assert_running_digest "$APP_BOT" bot
   summary "health=ok (ingest, dashboard, bot)"
 else
-  say "bot: not deployed, not started, not health-checked"
+  if [ "$PIN_STOPPED_BOT" = 1 ]; then
+    # No POST /deploy: this changes only the stopped application's record. In
+    # Coolify 4.3.4 POST /applications/{uuid}/start queues a deployment, so the
+    # tag it reads here is exactly what Cutover will start. The cutover re-checks
+    # both this tag and APP_VERSION before stopping the old poller.
+    set_image "$APP_BOT" "$COOLIFY_TAG"
+    set_version "$APP_BOT" "$EXPECTED_SHA"
+    [ "$(app_field "$APP_BOT" docker_registry_image_tag)" = "$COOLIFY_TAG" ] ||
+      die "bot candidate did not retain the digest tag written for cutover"
+    if ! BOT_CANDIDATE_CONTAINERS=$(docker ps -q --filter "label=coolify.name=$APP_BOT"); then
+      die "could not prove the pinned bot candidate remained stopped"
+    fi
+    [ -z "$BOT_CANDIDATE_CONTAINERS" ] ||
+      die "pinning the bot candidate unexpectedly started a container"
+    say "bot: pinned to the release digest for cutover; still stopped and not health-checked"
+    summary "bot=PINNED FOR CUTOVER (not started)"
+  else
+    say "bot: not deployed, not started, not health-checked"
+  fi
   summary "health=ok (ingest, dashboard)"
 fi
 
