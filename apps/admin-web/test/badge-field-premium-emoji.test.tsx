@@ -95,6 +95,26 @@ describe('one tag, at the front', () => {
   });
 });
 
+describe('a chip that would not fit', () => {
+  it('is disabled and says why, rather than looking pressable and doing nothing', async () => {
+    mockPacks(true);
+    // «۲۲ نویسه» plus « 🆕 نیو» goes over twenty-four.
+    draw('ط'.repeat(22));
+    const preset = (await screen.findByText('🆕 نیو')) as HTMLButtonElement;
+    expect(preset.disabled).toBe(true);
+    expect(preset.getAttribute('title')).toContain('24');
+  });
+
+  it('the emoji picker is closed to a badge that already carries a tag ANYWHERE', async () => {
+    mockPacks(true);
+    // Not at the front — pasted by hand. `startsWith` answered false here and
+    // let a second tag be prepended, which the route then refuses by shape.
+    draw(`آف ${TAG}`);
+    await screen.findByText('ایموجی پریمیوم');
+    expect((screen.getByTitle('پک — 🔥') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
 describe('the counter and the preview both measure what is drawn', () => {
   it('counts a tag as the one glyph it draws, not as fifty-three characters', async () => {
     mockPacks(true);
