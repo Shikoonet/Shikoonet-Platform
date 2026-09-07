@@ -160,6 +160,7 @@ MIGRATION_CHECKSUM=$(sha256sum "$MIGRATIONS/0001_test.sql" | cut -d' ' -f1)
 export MIGRATION_CHECKSUM
 DUMP="$BACKUPS/staging-$(date +%s).dmp"
 printf 'fake custom-format dump\n' >"$DUMP"
+TEST_ATTESTATION_GROUP=$(id -gn)
 
 run_full() { # state-dir [extra env...]
   local state=$1
@@ -174,6 +175,7 @@ run_full() { # state-dir [extra env...]
     STATE_DIR="$state" \
     MIGRATIONS_DIR="$MIGRATIONS" \
     INVARIANTS="$MIGRATIONS/verify_invariants.sql" \
+    ATTESTATION_GROUP="$TEST_ATTESTATION_GROUP" \
     SCRATCH=restore_test_scratch \
     "$@"
 }
@@ -187,7 +189,9 @@ if run_full "$STATE_OK"; then
      grep -qx 'migration_set_exact=yes' "$STATE_OK/restore-attestation.env" &&
      grep -qx 'migration_checksums=pass' "$STATE_OK/restore-attestation.env" &&
      grep -qx 'invariants=pass' "$STATE_OK/restore-attestation.env" &&
-     grep -qx 'scratch_dropped=yes' "$STATE_OK/restore-attestation.env"; then
+     grep -qx 'scratch_dropped=yes' "$STATE_OK/restore-attestation.env" &&
+     [ "$(stat -c '%G:%a' "$STATE_OK/restore-attestation.env")" = "$TEST_ATTESTATION_GROUP:640" ] &&
+     [ "$(stat -c '%G:%a' "$STATE_OK/restore-attestation.sha256")" = "$TEST_ATTESTATION_GROUP:640" ]; then
     ok 'a successful drill writes checksummed, non-secret evidence'
   else
     bad 'a successful drill writes checksummed, non-secret evidence' "$(cat "$WORK/out")"

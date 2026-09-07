@@ -173,8 +173,10 @@ if [ "$(id -u)" = '0' ]; then
 else
   # Checksum first, before a single field is read — same order as the dump
   # attestation, and for the same reason.
-  [ -r "$RESTORE_ATT" ] ||
+  [ -e "$RESTORE_ATT" ] ||
     die "no restore attestation at $RESTORE_ATT — run the drill on this host first (sudo sh /usr/local/lib/shikoo-step-e/restore-drill.sh production), then re-dispatch. The migration below has no recovery path until a restore has actually been proven, and a backup nobody has restored is a belief rather than a backup."
+  [ -r "$RESTORE_ATT" ] ||
+    die "the restore attestation exists at $RESTORE_ATT but is not readable by $(id -un) — reinstall the current owner bundle and run the production restore drill again; it must publish the proof as root:shikoo-deploy 0640"
   # ── who wrote it matters more than what it says ──────────────────────────
   #
   # This attestation is trusted BECAUSE root produced it. A checksum proves the
