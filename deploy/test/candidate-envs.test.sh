@@ -163,13 +163,20 @@ import json, sys
 state_path, body_path = sys.argv[1:]
 rows = json.load(open(state_path))
 data = json.load(open(body_path))["data"]
-by_key = {row.get("key"): row for row in rows}
 for item in data:
-    old = by_key.get(item["key"])
+    old = next((row for row in rows
+                if row.get("key") == item["key"] and not row.get("is_preview", False)), None)
     if old is None:
         old = {"uuid": "fake-" + item["key"].lower()}
         rows.append(old)
-        by_key[item["key"]] = old
+        # Coolify EnvironmentVariable::created() automatically creates one
+        # preview twin for every new active application variable, even when
+        # preview deployments are disabled in application_settings.
+        if not any(row.get("key") == item["key"] and row.get("is_preview", False) for row in rows):
+            twin = dict(item)
+            twin["uuid"] = "fake-preview-" + item["key"].lower()
+            twin["is_preview"] = True
+            rows.append(twin)
     old.update(item)
 json.dump(rows, open(state_path, "w"), separators=(",", ":"))
 print(json.dumps(rows, separators=(",", ":")), end="")
@@ -210,9 +217,13 @@ check_candidate() { # role secret-key secret-value
 import json, sys
 path, secret_key, secret_value, role = sys.argv[1:]
 rows = json.load(open(path))
-by_key = {row["key"]: row for row in rows}
+active = [row for row in rows if not row.get("is_preview", False)]
+preview = [row for row in rows if row.get("is_preview", False)]
+by_key = {row["key"]: row for row in active}
 expected = {"ENV_NAME", "SERVICE", "DATABASE_URL", secret_key}
 assert set(by_key) == expected, (role, sorted(by_key))
+assert {row["key"] for row in preview} == expected, (role, "preview", sorted(row["key"] for row in preview))
+assert len(preview) == len(expected), (role, "duplicate preview twin")
 assert by_key["ENV_NAME"]["value"] == "production"
 assert by_key["SERVICE"]["value"] == role
 assert by_key[secret_key]["value"] == secret_value
@@ -237,6 +248,20 @@ else
   bad 'bot receives its token once even when the source has an identical duplicate' 'candidate JSON differs'
 fi
 
+# deploy.sh owns APP_VERSION and can leave both its active row and Coolify's
+# automatic preview twin behind. Both are intentionally outside this sync.
+python3 - "$WORK/ingest.candidate.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+rows = json.load(open(path))
+for preview in (False, True):
+    rows.append({"uuid": "transient-preview" if preview else "transient-active",
+                 "key": "APP_VERSION", "value": "previous-sha", "is_preview": preview,
+                 "is_literal": False, "is_multiline": False, "is_shown_once": False,
+                 "is_runtime": True, "is_buildtime": True, "comment": None})
+json.dump(rows, open(path, "w"))
+PY
+
 OUT2="$WORK/run2.log"
 reset_reads
 if run_sync "$OUT2"; then ok 'the second environment sync succeeds'; else
@@ -249,6 +274,73 @@ else
 fi
 
 section 'ambiguous or incoherent configuration is refused before a write'
+
+# A preview twin for a managed key is Coolify's automatic bookkeeping. A
+# preview-only key is not: it came from a separate configuration decision and
+# must not be smuggled onto a production candidate merely because previews are
+# currently disabled.
+python3 - "$WORK/ingest.candidate.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+rows = json.load(open(path))
+rows.append({"uuid": "preview-only", "key": "PREVIEW_ONLY", "value": "unused",
+             "is_preview": True})
+json.dump(rows, open(path, "w"))
+PY
+OUT_PREVIEW="$WORK/unmanaged-preview.log"
+before=$(wc -l <"$FAKE_WRITES")
+reset_reads
+if run_sync "$OUT_PREVIEW"; then
+  bad 'an unmanaged preview-only key is refused' 'the sync proceeded'
+elif grep -qF 'candidate has unmanaged preview key(s): PREVIEW_ONLY' "$OUT_PREVIEW"; then
+  ok 'an unmanaged preview-only key is refused'
+else
+  bad 'an unmanaged preview-only key is refused' "$(tail -4 "$OUT_PREVIEW")"
+fi
+if [ "$(wc -l <"$FAKE_WRITES")" = "$before" ]; then
+  ok 'an unmanaged preview-only key causes no write'
+else
+  bad 'an unmanaged preview-only key causes no write' 'the panel was mutated'
+fi
+python3 - "$WORK/ingest.candidate.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+rows = [row for row in json.load(open(path)) if row.get("uuid") != "preview-only"]
+json.dump(rows, open(path, "w"))
+PY
+
+# A production row and its one preview twin are two separate scopes. Two
+# preview rows for the same key are still ambiguous and are never waved through
+# as though Coolify's automatic twin explained both of them.
+python3 - "$WORK/ingest.candidate.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+rows = json.load(open(path))
+twin = next(row for row in rows if row.get("key") == "ENV_NAME" and row.get("is_preview"))
+rows.append(dict(twin, uuid="duplicate-preview-env-name"))
+json.dump(rows, open(path, "w"))
+PY
+OUT_PREVIEW_DUP="$WORK/duplicate-preview.log"
+before=$(wc -l <"$FAKE_WRITES")
+reset_reads
+if run_sync "$OUT_PREVIEW_DUP"; then
+  bad 'a duplicated preview twin is refused' 'the sync proceeded'
+elif grep -qF 'candidate has duplicate preview key(s): ENV_NAME' "$OUT_PREVIEW_DUP"; then
+  ok 'a duplicated preview twin is refused'
+else
+  bad 'a duplicated preview twin is refused' "$(tail -4 "$OUT_PREVIEW_DUP")"
+fi
+if [ "$(wc -l <"$FAKE_WRITES")" = "$before" ]; then
+  ok 'a duplicated preview twin causes no write'
+else
+  bad 'a duplicated preview twin causes no write' 'the panel was mutated'
+fi
+python3 - "$WORK/ingest.candidate.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+rows = [row for row in json.load(open(path)) if row.get("uuid") != "duplicate-preview-env-name"]
+json.dump(rows, open(path, "w"))
+PY
 
 # A duplicate on the candidate means Coolify, not this script, would choose
 # which value reaches the container. Even identical rows are refused there:
@@ -265,7 +357,7 @@ before=$(wc -l <"$FAKE_WRITES")
 reset_reads
 if run_sync "$OUT3"; then
   bad 'a duplicated candidate key is refused' 'the sync proceeded'
-elif grep -qF 'candidate has duplicate key(s): ENV_NAME' "$OUT3"; then
+elif grep -qF 'candidate has duplicate active key(s): ENV_NAME' "$OUT3"; then
   ok 'a duplicated candidate key is refused'
 else
   bad 'a duplicated candidate key is refused' "$(tail -4 "$OUT3")"
@@ -360,7 +452,8 @@ fi
 section 'no credential reaches output'
 
 for secret in "$SECRET_TOKEN" "$SECRET_DATABASE" "$SECRET_INGEST" "$SECRET_SESSION" "$SECRET_BOT"; do
-  if grep -qF -- "$secret" "$OUT1" "$OUT2" "$OUT3" "$OUT4" "$OUT5" "$OUT6" "$OUT7"; then
+  if grep -qF -- "$secret" "$OUT1" "$OUT2" "$OUT_PREVIEW" "$OUT_PREVIEW_DUP" \
+    "$OUT3" "$OUT4" "$OUT5" "$OUT6" "$OUT7"; then
     bad 'candidate environment output contains no credential' 'a fake credential was printed'
   else
     ok 'candidate environment output contains no credential'

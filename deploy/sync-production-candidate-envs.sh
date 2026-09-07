@@ -11,8 +11,12 @@
 # three applications have been ensured and before one is deployed.
 #
 # The source is the CURRENT production application for the same role. Only
-# non-preview rows are copied, and the flags that change how Coolify presents a
-# variable to the build and runtime are preserved. APP_VERSION and
+# active (non-preview) rows are copied, and the flags that change how Coolify
+# presents a variable to the build and runtime are preserved. Coolify itself
+# creates one dormant preview twin whenever a new active application variable
+# is inserted, even when preview deployments are disabled. Target validation
+# therefore permits one twin for a managed active key, but still refuses a
+# preview-only key or a duplicate in either scope. APP_VERSION and
 # SOURCE_COMMIT describe running bytes rather than service configuration, so
 # the deploy writes the new APP_VERSION and Coolify owns SOURCE_COMMIT. The
 # dashboard's INGEST_URL is also release-specific: deploy.sh derives it from
@@ -167,27 +171,41 @@ try:
 except Exception:
     refuse("the private candidate environment snapshot is invalid")
 
-keys = []
+wanted = {item["key"]: item for item in desired}
+active_keys = []
+preview_keys = []
 target = {}
 for row in rows:
     key = row.get("key")
     if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
         refuse("candidate contains an invalid environment key")
-    keys.append(key)
-    if flag(row, "is_preview", False):
-        refuse("candidate contains preview variable %s while previews are disabled" % key)
+    is_preview = flag(row, "is_preview", False)
+    (preview_keys if is_preview else active_keys).append(key)
     if key in transient:
+        continue
+    if is_preview:
+        # EnvironmentVariable::created() in Coolify creates this dormant twin
+        # for every new active application variable. Preview deployments are
+        # disabled and proven separately; here the safety boundary is that a
+        # twin may name only a managed active key and may occur only once.
         continue
     target[key] = canonical(row)
 
-duplicates = sorted(key for key, count in Counter(keys).items() if count > 1)
-if duplicates:
-    refuse("candidate has duplicate key(s): %s" % ", ".join(duplicates))
+active_duplicates = sorted(key for key, count in Counter(active_keys).items() if count > 1)
+if active_duplicates:
+    refuse("candidate has duplicate active key(s): %s" % ", ".join(active_duplicates))
 
-wanted = {item["key"]: item for item in desired}
+preview_duplicates = sorted(key for key, count in Counter(preview_keys).items() if count > 1)
+if preview_duplicates:
+    refuse("candidate has duplicate preview key(s): %s" % ", ".join(preview_duplicates))
+
+unexpected_preview = sorted(set(preview_keys) - set(wanted) - transient)
+if unexpected_preview:
+    refuse("candidate has unmanaged preview key(s): %s" % ", ".join(unexpected_preview))
+
 unexpected = sorted(set(target) - set(wanted))
 if unexpected:
-    refuse("candidate has unmanaged key(s): %s" % ", ".join(unexpected))
+    refuse("candidate has unmanaged active key(s): %s" % ", ".join(unexpected))
 
 if set(target) != set(wanted):
     raise SystemExit(3)
