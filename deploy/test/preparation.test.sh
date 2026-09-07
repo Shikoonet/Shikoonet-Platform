@@ -264,7 +264,7 @@ cat >"$OBS_BIN/curl" <<'FAKE'
 printf '%s\n' "$*" >>"$FAKE_CURL_LOG"
 url=${*: -1}
 case "$url" in
-  https://sms-next.chopon.uk/health) printf '%s' "${FAKE_INGEST_CODE:-200}" ;;
+  https://sms-next.chopon.uk/health | https://sms-next.chopon.uk:*/health) printf '%s' "${FAKE_INGEST_CODE:-200}" ;;
   https://shikoo-next.chopon.uk/api/v1/health) printf '%s' "${FAKE_DASHBOARD_CODE:-200}" ;;
   *) printf '000' ;;
 esac
@@ -303,6 +303,16 @@ if grep -q -- '--resolve sms-next.chopon.uk:443:10.9.9.9 ' "$OBS_LOG"; then
   ok 'the proxy address is overridable for a host that is not this one'
 else
   bad 'the proxy address is overridable for a host that is not this one' "$(tr '\n' ' ' <"$OBS_LOG")"
+fi
+
+# `--resolve` is per host:port. An override that names a port must be pinned on
+# that port, or curl quietly goes back to DNS for it.
+OBS_OUT=$(observe "$OBS_LOG" TEMP_INGEST_URL=https://sms-next.chopon.uk:8443)
+if grep -q -- '--resolve sms-next.chopon.uk:8443:127.0.0.1 https://sms-next.chopon.uk:8443/health$' "$OBS_LOG" &&
+  printf '%s\n' "$OBS_OUT" | grep -qx 'temp_domain_verify=pass'; then
+  ok 'an override with an explicit port is pinned on that port'
+else
+  bad 'an override with an explicit port is pinned on that port' "$(tr '\n' ' ' <"$OBS_LOG")"
 fi
 
 OBS_OUT=$(observe "$OBS_LOG" FAKE_DASHBOARD_CODE=502)

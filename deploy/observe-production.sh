@@ -105,11 +105,18 @@ TEMP_ING=${TEMP_INGEST_URL:-https://sms-next.chopon.uk}
 TEMP_DASH=${TEMP_DASHBOARD_URL:-https://shikoo-next.chopon.uk}
 PROXY_ADDR=${PROXY_ADDR:-127.0.0.1}
 probe() { # url -> http status, through the local proxy
-  local host
-  host=$(printf '%s' "$1" | python3 -c 'import sys,urllib.parse as u; print(u.urlsplit(sys.stdin.read().strip()).hostname or "")' 2>/dev/null || printf '')
-  [ -n "$host" ] || { printf '000'; return; }
+  # `--resolve` applies to one host:port pair, so the port has to be the one
+  # curl will actually use for this URL — explicit if the URL names one,
+  # otherwise the scheme's default. A pinned 443 under an override that says
+  # `:8443` would silently fall back to DNS, the exact dependency this removes.
+  local host port
+  read -r host port < <(printf '%s' "$1" | python3 -c '
+import sys, urllib.parse as u
+p = u.urlsplit(sys.stdin.read().strip())
+print(p.hostname or "", p.port or (443 if p.scheme == "https" else 80))' 2>/dev/null || printf '\n')
+  [ -n "${host:-}" ] || { printf '000'; return; }
   curl -sS -k -o /dev/null -w '%{http_code}' --max-time 12 \
-    --resolve "${host}:443:${PROXY_ADDR}" "$1" 2>/dev/null || printf '000'
+    --resolve "${host}:${port}:${PROXY_ADDR}" "$1" 2>/dev/null || printf '000'
 }
 if [ "$(probe "${TEMP_ING}/health")" = '200' ] && [ "$(probe "${TEMP_DASH}/api/v1/health")" = '200' ]; then
   emit temp_domain_verify pass
