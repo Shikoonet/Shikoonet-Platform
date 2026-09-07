@@ -203,22 +203,30 @@ digest=$DIGEST
 candidate_ingest=$CAND_INGEST
 candidate_dashboard=$CAND_DASHBOARD
 candidate_bot=$CAND_BOT
+bot_advisory_locks=1
+bot_handover_mode=replace-single
 EOF
   ( cd "$dir/state" && sha256sum preparation.env >preparation.sha256 )
   printf '%s\n' "$dir"
 }
 
-run_cutover() { # case-dir output [extra env]
-  local dir=$1 output=$2
-  shift 2
+run_cutover_mode() { # case-dir output handover-mode [extra env]
+  local dir=$1 output=$2 handover_mode=$3
+  shift 3
   set +e
   env PATH="$BIN:$PATH" CONF="$CONF" STATE="$dir/state" IMAGE_NAME="$IMAGE" \
     FAKE_STATE="$dir" FAKE_API_LOG="$dir/api.log" FAKE_DOCKER_LOG="$dir/docker.log" \
     "$@" bash "$SCRIPT" "$SHA" "$DIGEST" \
-    "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT" >"$output" 2>&1
+    "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT" "$handover_mode" >"$output" 2>&1
   local rc=$?
   set -e
   return $rc
+}
+
+run_cutover() { # case-dir output [extra env]
+  local dir=$1 output=$2
+  shift 2
+  run_cutover_mode "$dir" "$output" replace-single "$@"
 }
 
 section 'successful cutover'
@@ -250,10 +258,57 @@ fi
 if [ "$(cat "$HAPPY/old-running")" = 0 ] &&
   [ "$(cat "$HAPPY/candidate-running")" = 1 ] &&
   [ "$(cat "$HAPPY/locks")" = 1 ] &&
-  grep -qF "$DIGEST $SHA promoted-by-hand" "$HAPPY/state/deployed"; then
+  grep -qF "$DIGEST $SHA promoted-by-hand" "$HAPPY/state/deployed" &&
+  grep -qF "app_ingest=$CAND_INGEST" "$HAPPY/state/current-applications.env" &&
+  grep -qF "app_dashboard=$CAND_DASHBOARD" "$HAPPY/state/current-applications.env" &&
+  grep -qF "app_bot=$CAND_BOT" "$HAPPY/state/current-applications.env"; then
   ok 'success records one candidate poller and the immutable release ledger'
 else
   bad 'success records one candidate poller and the immutable release ledger' "$(tail -8 "$HAPPY_OUT")"
+fi
+
+section 'first-poller bootstrap and recovery'
+
+BOOTSTRAP=$(make_case bootstrap)
+printf '0\n' >"$BOOTSTRAP/old-running"
+printf '0\n' >"$BOOTSTRAP/locks"
+sed -i 's/^bot_advisory_locks=.*/bot_advisory_locks=0/;s/^bot_handover_mode=.*/bot_handover_mode=bootstrap-empty/' \
+  "$BOOTSTRAP/state/preparation.env"
+( cd "$BOOTSTRAP/state" && sha256sum preparation.env >preparation.sha256 )
+BOOTSTRAP_OUT="$BOOTSTRAP/output.log"
+if run_cutover_mode "$BOOTSTRAP" "$BOOTSTRAP_OUT" bootstrap-empty; then
+  ok 'a manifest-bound empty baseline starts the first production poller'
+else
+  bad 'a manifest-bound empty baseline starts the first production poller' "$(tail -10 "$BOOTSTRAP_OUT")"
+fi
+if [ "$(cat "$BOOTSTRAP/old-running")" = 0 ] &&
+  [ "$(cat "$BOOTSTRAP/candidate-running")" = 1 ] &&
+  [ "$(cat "$BOOTSTRAP/locks")" = 1 ] &&
+  ! grep -qF 'stop old-bot-cid' "$BOOTSTRAP/docker.log" &&
+  grep -qF "app_bot=$CAND_BOT" "$BOOTSTRAP/state/current-applications.env"; then
+  ok 'bootstrap starts only the prepared candidate and adopts its UUID'
+else
+  bad 'bootstrap starts only the prepared candidate and adopts its UUID' "$(tail -10 "$BOOTSTRAP_OUT")"
+fi
+
+BOOTSTRAP_RECOVERY=$(make_case bootstrap-recovery)
+printf '0\n' >"$BOOTSTRAP_RECOVERY/old-running"
+printf '0\n' >"$BOOTSTRAP_RECOVERY/locks"
+sed -i 's/^bot_advisory_locks=.*/bot_advisory_locks=0/;s/^bot_handover_mode=.*/bot_handover_mode=bootstrap-empty/' \
+  "$BOOTSTRAP_RECOVERY/state/preparation.env"
+( cd "$BOOTSTRAP_RECOVERY/state" && sha256sum preparation.env >preparation.sha256 )
+BOOTSTRAP_RECOVERY_OUT="$BOOTSTRAP_RECOVERY/output.log"
+if run_cutover_mode "$BOOTSTRAP_RECOVERY" "$BOOTSTRAP_RECOVERY_OUT" bootstrap-empty \
+  FAKE_RUNTIME_DIGEST='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; then
+  bad 'a failed bootstrap candidate restores the empty baseline' 'the mismatched candidate was accepted'
+elif grep -qF 'domains were restored and the prior zero-poller state remains' "$BOOTSTRAP_RECOVERY_OUT" &&
+  [ "$(cat "$BOOTSTRAP_RECOVERY/old-running")" = 0 ] &&
+  [ "$(cat "$BOOTSTRAP_RECOVERY/candidate-running")" = 0 ] &&
+  [ "$(cat "$BOOTSTRAP_RECOVERY/locks")" = 0 ] &&
+  [ ! -e "$BOOTSTRAP_RECOVERY/state/current-applications.env" ]; then
+  ok 'a failed bootstrap restores domains, no candidate and zero pollers'
+else
+  bad 'a failed bootstrap restores domains, no candidate and zero pollers' "$(tail -12 "$BOOTSTRAP_RECOVERY_OUT")"
 fi
 
 section 'runtime mismatch recovery'
@@ -343,7 +398,8 @@ fi
 
 for secret in "$SECRET_TOKEN" "$SECRET_DB"; do
   if grep -qF -- "$secret" "$HAPPY_OUT" "$RECOVERY_OUT" "$MULTIPLE_OUT" \
-    "$TAMPERED_OUT" "$DUPLICATE_OUT" "$REUSED_OUT" "$HAPPY/api.log" "$RECOVERY/api.log" \
+    "$BOOTSTRAP_OUT" "$BOOTSTRAP_RECOVERY_OUT" "$TAMPERED_OUT" "$DUPLICATE_OUT" "$REUSED_OUT" \
+    "$HAPPY/api.log" "$RECOVERY/api.log" "$BOOTSTRAP/api.log" "$BOOTSTRAP_RECOVERY/api.log" \
     "$MULTIPLE/api.log" "$TAMPERED/api.log" "$DUPLICATE/api.log" "$REUSED/api.log"; then
     bad 'cutover output contains no credential' 'a fake credential was printed'
   else

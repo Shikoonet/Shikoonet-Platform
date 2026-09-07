@@ -34,7 +34,7 @@
 #
 #   e2e=            the browser walk, inside `integration-e2e`.
 #
-#   deploy_suites=  the 22 bash suites over `deploy/`, also inside
+#   deploy_suites=  the 23 bash suites over `deploy/`, also inside
 #                   `integration-e2e`. The job runs when EITHER is true.
 #
 #   image=          the deployable-artifact checks. A `main` job only.
@@ -318,7 +318,7 @@ if [ "$docs_only" = 'true' ]; then
 fi
 
 # An `apps/`-only change. `static` always; the rest as the map decided.
-# `deploy_suites` is false BECAUSE the 22 bash suites read `deploy/`,
+# `deploy_suites` is false BECAUSE the 23 bash suites read `deploy/`,
 # `.github/workflows/` and the migrator's source and nothing else — none of
 # which an `apps/`-only change can reach. Any path under those forced the
 # complete gate above and never got here.
