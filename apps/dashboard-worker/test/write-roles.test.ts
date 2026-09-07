@@ -404,12 +404,19 @@ describe('every write route, asked directly', () => {
     // SERVER read it at boot, never echoed back to the caller. The preview
     // beside it is a GET and does not appear here.
     //
+    // +1, «POST /cron». One route for every switch and threshold on
+    // «کرون‌جاب‌ها», ADMIN-only — and of the 155 routes counted here it is the
+    // only one that can arm something which DELETES a paying customer's
+    // account from a panel. It refuses any key not in the `CRON_JOBS`
+    // registry, so «what this route may write» is a list a reviewer can read
+    // rather than the whole `settings` table.
+    //
     // +1, «POST /discounts/:id/status». Switches a discount code off and back
     // on. ADMIN-only like every other write on this screen: it decides whether
     // a code takes money off an invoice, which is the same blast radius as
     // creating one. It is the only write here that is REVERSIBLE — expiring a
     // code rewrites when it ended and cannot be undone — and that is why the
     // screen does not ask «مطمئنی؟» before it, unlike delete.
-    expect(writeRoutes().length).toBe(154);
+    expect(writeRoutes().length).toBe(155);
   });
 });

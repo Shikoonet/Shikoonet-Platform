@@ -1071,9 +1071,43 @@ in the schema (`migrations/0006_bot.sql`): `telegram_updates` is keyed on
 `update_id`, which is unique per bot token, so two bots on one database would
 collide. In the database-per-customer model that never arises.
 
-Branding is confined to `apps/dashboard-web` — the page title, the logo file,
-the wordmark, the theme storage key. Those are build-time today; making them
-env-driven is the work if and when a second brand is sold.
+### Branding — done, 2026-09-06
+
+> **This paragraph used to say the opposite and it is worth seeing why.** It
+> read: «Branding is confined to `apps/dashboard-web` — the page title, the logo
+> file, the wordmark, the theme storage key. Those are build-time today; making
+> them env-driven is the work if and when a second brand is sold.» Two things
+> in it were wrong by the time anybody came back to it: the package has been
+> `apps/admin-web` for a long time, and there is no logo file or theme storage
+> key — the sidebar draws a letter, and the light theme went away. A sentence
+> nobody re-checked, which is rule 6 about our own notes.
+
+Set **`BRAND_NAME`** on the dashboard application. That is the whole of it.
+
+```bash
+# on the reseller's stack, once
+set_app_env "$APP_DASHBOARD" BRAND_NAME 'نماینده‌نت'
+```
+
+It is read at **run** time and served to the page by `GET /api/v1/brand` — the
+one public route besides `/health`, because the sign-in card draws the name
+before there is a session. So the same image and the same SPA bundle serve every
+installation: one image, many stacks, which is the point of the reseller model.
+A `VITE_BRAND_NAME` would have been baked into the bundle and meant one BUILD
+per reseller.
+
+Unset means «شیکو», so our own boxes need no change and read exactly as they did
+before. `packages/contracts/src/brand.ts` holds the default and the sanitising;
+`apps/admin-web/test/brand.test.tsx` scans the source and fails if the name is
+ever typed back into a component.
+
+**One string is still ours and it is not on this screen:** the bot's `WELCOME`
+default reads «به شیکو خوش آمدید». It is editable from «متن‌های ربات», so a
+reseller can change it — but a reseller who never opens that screen ships our
+name to their customers, and a reset (`import.reset`) empties `bot_texts` and
+puts it back. Making that default brand-aware means giving `TEXTS` a
+placeholder, which is the panel's text editor and not a one-liner. Left as a
+decision rather than done quietly.
 
 ## ~~Still hardcoded at deploy time~~ — settled
 

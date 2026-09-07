@@ -585,17 +585,39 @@ describe('listing every account on a panel', () => {
     const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
 
     expect(result.ok).toBe(true);
-    // `expiresAtMs` is null here because this fixture's users carry no `expire`
-    // key at all — the panel saying nothing, which is not the same as a date of
-    // zero. The test below feeds it both.
+    // `expiresAtMs` is null because this fixture's users carry no `expire` key
+    // at all — the panel saying nothing, which is not the same as a date of
+    // zero. `status` and `onlineAt` are null because it does not report them
+    // either, and null is the answer the removal sweeps require for «do not
+    // act». All three asserted rather than omitted: a build that started
+    // sending an empty string or the word «unknown» would authorise nothing,
+    // and this is where that would be seen. The tests below feed each of them.
     const url = (i: number) => `https://panel.example.com/sub/u_${i}`;
+    const blank = { expiresAtMs: null, status: null, onlineAt: null };
     expect(result.ok && result.accounts).toEqual([
-      { username: 'u_0', usedBytes: 0, subscriptionUrl: url(0), expiresAtMs: null },
-      { username: 'u_1', usedBytes: 1024, subscriptionUrl: url(1), expiresAtMs: null },
-      { username: 'u_2', usedBytes: 2048, subscriptionUrl: url(2), expiresAtMs: null },
+      { username: 'u_0', usedBytes: 0, subscriptionUrl: url(0), ...blank },
+      { username: 'u_1', usedBytes: 1024, subscriptionUrl: url(1), ...blank },
+      { username: 'u_2', usedBytes: 2048, subscriptionUrl: url(2), ...blank },
     ]);
     // One full page was not needed, so one request.
     expect(panel.pages).toHaveLength(1);
+  });
+
+  it('carries the panel’s own status and last connection through, lowercased', async () => {
+    // The two fields the removal sweeps gate on. Lowercased because the panels
+    // disagree about case and every consumer compares against a known word;
+    // otherwise untouched, because nothing here is allowed to interpret them.
+    const panel = listingPanel(1, () => ({
+      status: 'Limited',
+      online_at: '2026-08-01T10:00:00Z',
+    }));
+
+    const result = await marzbanAdapter.listAccounts!(provider({ fetch: panel.fetchImpl }));
+
+    expect(result.ok && result.accounts[0]).toMatchObject({
+      status: 'limited',
+      onlineAt: '2026-08-01T10:00:00Z',
+    });
   });
 
   /**
