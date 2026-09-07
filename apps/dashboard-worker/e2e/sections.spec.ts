@@ -71,7 +71,11 @@ test('every section opens without a failed request, a thrown render or an error 
   // ids — so this constant had been stale on `main` for some time, red in a
   // suite nobody could run because CI is off. Counted from `nav.ts` and checked
   // for duplicates, not adjusted until it went green.
-  expect(labels.length).toBe(29);
+  // 29 -> 30 on 2026-09-07 with «کرون‌جاب‌ها». Unlike the 28 -> 29 above,
+  // this one IS a new section: the sidebar gained an item, so the number
+  // moved for the reason a number should. Counted off `nav.ts`, which has
+  // thirty `{ id:` entries.
+  expect(labels.length).toBe(30);
 
   for (const label of labels) {
     section = label;

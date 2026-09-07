@@ -27,6 +27,7 @@ import {
   type PageId,
 } from './nav.js';
 import { api, type PanelRole } from './api.js';
+import { brand, mark } from './brand.js';
 import { ADMIN_ONLY_HINT, READ_ONLY_HINT, RoleProvider } from './role.js';
 import { useRoute } from './route.js';
 import { LoginPage } from './LoginPage.js';
@@ -47,6 +48,7 @@ import { CategoriesPage } from './pages/CategoriesPage.js';
 import { PanelsPage } from './pages/PanelsPage.js';
 import { ContentPage } from './pages/ContentPage.js';
 import { StockPage } from './pages/StockPage.js';
+import { CronPage } from './pages/CronPage.js';
 import { ExpensesPage } from './pages/ExpensesPage.js';
 import { DiscountsPage } from './pages/DiscountsPage.js';
 import { OrdersPage, SubscriptionsPage, TransactionsPage } from './pages/LedgerPages.js';
@@ -115,6 +117,8 @@ function Body({
       return <PanelsPage onGo={go} />;
     case 'stock':
       return <StockPage />;
+    case 'cron':
+      return <CronPage onGo={go} />;
     case 'expenses':
       return <ExpensesPage />;
     case 'discounts':
@@ -245,7 +249,9 @@ export function App() {
           </button>
           <div>
             <div className="app-header__title">{pageLabel(page)}</div>
-            <div className="app-header__crumb">شیکو / {pageLabel(page)}</div>
+            <div className="app-header__crumb">
+              {brand()} / {pageLabel(page)}
+            </div>
           </div>
         </div>
         {/* The two things you do to your own account rather than to the shop.
@@ -283,9 +289,9 @@ export function App() {
 
       <aside className={navOpen ? 'app-sidebar open' : 'app-sidebar'}>
         <div className="sidebar-brand">
-          <span className="sidebar-brand__mark">ش</span>
+          <span className="sidebar-brand__mark">{mark()}</span>
           <span>
-            <span className="sidebar-brand__name">شیکو</span>
+            <span className="sidebar-brand__name">{brand()}</span>
             <br />
             <span className="sidebar-brand__sub">پنل مدیریت</span>
           </span>
