@@ -73,6 +73,7 @@ import {
   type PaymentsResponse,
   type ResellerItem,
   type AccountRefLike,
+  reconcileNote,
 } from './paymentReview.js';
 import { FulfilWithoutPaymentModal } from './FulfilWithoutPaymentModal.js';
 
@@ -558,6 +559,15 @@ export function PaymentsView({ cache }: { cache: Cache }) {
                   }
                   onReopen={() => setReopenTarget(reviewing)}
                   onFulfil={() => setFulfilTarget(reviewing)}
+                  // The customer route, not a payment one — blocking is a fact
+                  // about the person, and there is exactly one statement in the
+                  // codebase that may put them in that state.
+                  onSetCustomerStatus={(status, reason) =>
+                    post(`/api/v1/admin/customers/${reviewing.customerUserId}/status`, {
+                      status,
+                      reason,
+                    })
+                  }
                   onError={setError}
                 />
               )}
@@ -1793,6 +1803,19 @@ function ContinuityRow({
           <span className="payment-reason__text">
             {item.fulfilmentReason ?? 'تحویل خودکار در حالت تداوم'}
           </span>
+          {/*
+            Beside the reason it was delivered, not instead of it — the two
+            answer different questions. That one says why the shop was selling
+            without evidence; this says why the evidence still has not been
+            matched, which is what decides whether there is a transaction to
+            attach or a customer to suspect.
+
+            Without it «a bank credit was found and refused as out-of-window»
+            and «nothing has arrived at all» drew identically.
+          */}
+          {reconcileNote(item) && (
+            <span className="payment-reason__text muted">{reconcileNote(item)}</span>
+          )}
           <ReceiptMark item={item} />
         </div>
       </button>
@@ -2007,6 +2030,7 @@ function ReviewPanel({
   onMarkFake,
   onReopen,
   onFulfil,
+  onSetCustomerStatus,
   onError,
 }: {
   item: PaymentItem;
@@ -2025,6 +2049,8 @@ function ReviewPanel({
   onReopen: () => void;
   /** Open «تأیید و تحویل دستی». The dialog and the request live in the parent. */
   onFulfil: () => void;
+  /** Block or unblock the payer, without leaving the payment. */
+  onSetCustomerStatus: (status: 'ACTIVE' | 'BLOCKED', reason: string | null) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const w = useWriteProps();
@@ -2035,8 +2061,32 @@ function ReviewPanel({
   const [confirmManual, setConfirmManual] = useState(false);
   const [manualReason, setManualReason] = useState('');
   const [showReassign, setShowReassign] = useState(false);
+  const [confirmBlock, setConfirmBlock] = useState(false);
+  const [blockReason, setBlockReason] = useState('');
   const [busy, setBusy] = useState(false);
-  const actionable = item.reviewState === 'NEEDS_REVIEW' || item.reviewState === 'NO_TRANSFER_FOUND';
+  /**
+   * «Is there a bank transaction to decide about» — the question the
+   * approve/reject controls answer.
+   *
+   * `FULFILLED_UNRECONCILED` is in the set, and adding it is what gives the
+   * continuity queue an exit. The server has always accepted it:
+   * `verifyMirzabotClaim` has an explicit `reconciling` branch that stamps
+   * `reconciled_at`, moves the row to `VERIFIED` and — the line the whole
+   * feature turns on — enqueues NO second fulfilment notice, because the
+   * customer already has the product. What was missing was any way to ASK for
+   * it: the screen never drew the button, so the only tab whose rows are
+   * waiting for exactly this decision offered nothing to press.
+   *
+   * It matters more than it looks. Continuity mode is on because the SMS relay
+   * is down, so the bank credits for its claims arrive as a backlog — hours
+   * after `paid_clicked_at`, well outside the ±5-minute auto-match window. The
+   * matcher will not close these on its own by construction (#134); a person
+   * has to, and this is the control they do it with.
+   */
+  const actionable =
+    item.reviewState === 'NEEDS_REVIEW' ||
+    item.reviewState === 'NO_TRANSFER_FOUND' ||
+    item.reviewState === 'FULFILLED_UNRECONCILED';
   /**
    * Deliverable by hand, right now — and deliberately a WIDER set than
    * `actionable`.
@@ -2060,6 +2110,20 @@ function ReviewPanel({
     item.reviewState === 'WAITING' ||
     item.reviewState === 'NO_TRANSFER_FOUND';
   const canMarkFake = item.reviewState === 'NO_TRANSFER_FOUND';
+  /**
+   * The claim is delivered and waiting for its bank credit.
+   *
+   * What an operator may still do to it is narrower than for an undecided
+   * claim, and the narrowing is the state machine's, not a preference:
+   * `CLAIM_TRANSITIONS` gives `FULFILLED_UNRECONCILED` exactly one exit,
+   * `VERIFIED`. It cannot be rejected and it cannot be marked fake, because the
+   * customer is holding the product and withdrawing a state the world has
+   * already seen is not something a button should pretend to do.
+   *
+   * So the fraud answer here is not a claim status. It is the CUSTOMER — see
+   * the block control below.
+   */
+  const reconciling = item.reviewState === 'FULFILLED_UNRECONCILED';
   const isManuallyVerified = item.reviewState === 'MANUALLY_VERIFIED';
   const canReopen = isReopenEligible(item);
   const reopenBlocked = reopenBlockedReason(item);
@@ -2135,6 +2199,98 @@ function ReviewPanel({
       )}
 
       <ReceiptSection item={item} />
+
+      {/*
+        «رسید فیک فرستاده» — the answer to a fake receipt, next to the receipt.
+        
+        Blocking is a fact about the PERSON, and until now reaching it from a
+        payment meant copying the Telegram id, opening «کاربران», and typing it
+        back in. On a continuity claim that is the only decision available at
+        all: the state machine gives `FULFILLED_UNRECONCILED` one exit and it is
+        `VERIFIED`, because the customer is holding the product and no button
+        should pretend to withdraw that.
+
+        Hidden entirely when the claim's reference matches no customer — one
+        production row holds «Poyan test payment» — rather than shown broken.
+      */}
+      {item.customerUserId != null && (
+        <section className="drawer-section">
+          <h3 className="drawer-section__heading">مشتری</h3>
+          {item.customerStatus === 'BLOCKED' ? (
+            <div className="payment-review__block">
+              <p className="muted">
+                این مشتری مسدود است
+                {item.customerBlockedReason ? `: ${item.customerBlockedReason}` : ''}
+              </p>
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy}
+                onClick={() => run(async () => {
+                  await onSetCustomerStatus('ACTIVE', null);
+                  await onRefresh();
+                })}
+                {...w}
+              >
+                رفع مسدودی
+              </button>
+            </div>
+          ) : !confirmBlock ? (
+            <div className="payment-review__block">
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy}
+                onClick={() => setConfirmBlock(true)}
+                {...w}
+              >
+                مسدود کردن مشتری
+              </button>
+            </div>
+          ) : (
+            <div className="payment-review__block">
+              {/* Said before the button, and saying what a block actually does
+                  — the same warning «کاربران» gives, because an operator
+                  blocking from here is making the same decision. */}
+              <p className="muted">
+                دیگر نه منویی می‌بیند نه پیامی می‌گیرد. رسید پرداختی که همین حالا باز است هنوز
+                می‌رسد، و رفع مسدودی همین‌جاست.
+              </p>
+              <label>
+                دلیل (اختیاری)
+                <input
+                  type="text"
+                  value={blockReason}
+                  maxLength={500}
+                  onChange={(e) => setBlockReason(e.target.value)}
+                />
+              </label>
+              <button
+                type="button"
+                className="danger"
+                disabled={busy}
+                onClick={() => run(async () => {
+                  await onSetCustomerStatus('BLOCKED', blockReason.trim() || null);
+                  setConfirmBlock(false);
+                  setBlockReason('');
+                  await onRefresh();
+                })}
+                {...w}
+              >
+                مسدود کن
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy}
+                onClick={() => setConfirmBlock(false)}
+              >
+                انصراف
+              </button>
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="drawer-section">
         <h3 className="drawer-section__heading">دستگاه</h3>
@@ -2218,10 +2374,20 @@ function ReviewPanel({
             exactly the edit that would have left the old accusation standing
             here, on the one screen where money is decided.
           */}
+          {/*
+            For a delivered claim the flag says nothing the «وضعیت» row four
+            lines up has not already said, and printing it twice is how
+            `getByText` on this screen started matching two nodes. What an
+            operator needs HERE is the other question — why the money still has
+            not been matched — which is what decides whether there is a
+            transaction to attach or a customer to suspect.
+          */}
           {actionable && (
-            <span className="payment-reason__flag">{stateLabel(item.reviewState)}</span>
+            <span className="payment-reason__flag">
+              {reconciling ? (reconcileNote(item) ?? 'در انتظار تطبیق بانکی') : stateLabel(item.reviewState)}
+            </span>
           )}{' '}
-          {reasonText(item.suspectReason)}
+          {!reconciling && reasonText(item.suspectReason)}
         </p>
 
         {canFulfil && (
@@ -2266,6 +2432,15 @@ function ReviewPanel({
                 </button>
               </div>
 
+              {/*
+                Not on a claim that is already delivered. This control asserts
+                «the payment really arrived» and writes VERIFIED with no match
+                behind it; on a `FULFILLED_UNRECONCILED` row the delivery has
+                already happened and what is still owed is EVIDENCE, which is
+                what «تایید انتخاب‌شده‌ها» above attaches. Offering both would be
+                two buttons for one question with different answers.
+              */}
+              {!reconciling && (
               <div className="payment-review__manual-anyway">
                 <p className="muted">اصلاً تراکنش بانکی وجود ندارد؟</p>
                 {!confirmManual ? (
@@ -2311,6 +2486,7 @@ function ReviewPanel({
                   </>
                 )}
               </div>
+              )}
 
               {canMarkFake && (
                 <div className="payment-review__remove">

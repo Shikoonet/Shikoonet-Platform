@@ -4064,6 +4064,23 @@
   font-size: 0.8rem;
 }
 
+/* «مسدود کردن مشتری» — the fraud answer on a claim that cannot be rejected,
+   because the customer is already holding the product. Same shape as the other
+   confirm-then-act blocks in this panel. */
+.payment-review__block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+.payment-review__block label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
 /* The one action in the panel that gives product away against no evidence. */
 .review-page__fulfil {
   margin-inline-start: auto;
