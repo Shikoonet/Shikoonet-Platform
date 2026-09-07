@@ -37,6 +37,8 @@ import {
   MAX_CATALOG_ROWS,
   MAX_SINGLE_PAYMENT_IRR,
   checkCatalogLayout,
+  labelMarkupProblem,
+  renderedLabelLength,
   type CatalogLayoutProblem,
 } from '@shikoo/contracts';
 import { checkNameEmoji } from './customEmojiNames.js';
@@ -96,12 +98,44 @@ const ListQuery = z.object({
  * tables: two screens with two ideas of what fits on a button is how the panel
  * being replaced ended up with labels Telegram truncates.
  */
+/**
+ * Twenty-four characters AS DRAWN, which is not the same as twenty-four
+ * characters of input.
+ *
+ * A premium emoji on a button is not a character in the label — the Bot API has
+ * no markup in a button's `text`. It is a FIELD, `icon_custom_emoji_id`, and
+ * `keyboardFor` fills it from a `<tg-emoji>` tag at the front of the label. So
+ * a badge that carries one is 53 characters of markup that draw as one glyph,
+ * and measuring the raw string refused every badge this feature exists to
+ * allow. migration 0060 widened the CHECK the same way, with the same regex, so
+ * the panel and the database agree by construction and not by coincidence.
+ *
+ * `renderedLabelLength` rather than a second spelling of it: it counts code
+ * points, not UTF-16 units, which is what Postgres's `length()` counts — a
+ * plain `.length` here would be stricter than the CHECK that has the last word,
+ * and only for badges with emoji in them, which is most of this shop's.
+ *
+ * The raw cap stays as a bound on input, generously above one tag plus a full
+ * label, so a pasted wall of markup is refused before any of the above runs.
+ */
+const BADGE_RENDERED_MAX = 24;
+
 const BADGE = z
   .string()
   .trim()
   .min(1)
-  .max(24)
+  .max(400)
   .regex(/^[^\r\n\t]+$/, 'badge is one line')
+  // The shape a button can actually draw: one tag, at the very front, well
+  // formed. Anywhere else and `keyboardFor` leaves it in the text, where
+  // Telegram renders it as literal angle brackets on the customer's screen.
+  // Same function the bot's own admin screen calls, so there is one rule.
+  .refine((v) => !labelMarkupProblem(v), {
+    message: 'a premium emoji must be one well-formed tag at the front of the badge',
+  })
+  .refine((v) => renderedLabelLength(v) >= 1 && renderedLabelLength(v) <= BADGE_RENDERED_MAX, {
+    message: `badge draws longer than ${BADGE_RENDERED_MAX} characters`,
+  })
   .nullable();
 
 /**
