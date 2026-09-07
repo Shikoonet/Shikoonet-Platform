@@ -125,6 +125,12 @@ want "$PREP_SCRIPT" 'the candidate dashboard starts with the final public ingest
   "DASHBOARD_INGEST_URL=\"https://\${LIVE_INGEST_DOMAIN}/api/v1/sms\""
 want "$CUT_SCRIPT" 'cutover verifies the bot pin before moving traffic' \
   'verify-production-bot-candidate.sh" prepared'
+want "$CUT_SCRIPT" 'cutover verifies the host-side preparation checksum' \
+  'sha256sum -c --status preparation.sha256'
+want "$CUT_SCRIPT" 'cutover binds host candidates to the verified artifact' \
+  'the host ledger names different candidates than the verified preparation artifact'
+want "$CUT" 'the verified artifact supplies the candidate uuids to the remote cutover' \
+  'CANDIDATE_INGEST=$(field candidate_ingest)'
 want "$CUT_SCRIPT" 'cutover verifies the running bot digest and sha' \
   'verify-production-bot-candidate.sh" running'
 want "$CUT_SCRIPT" 'a failed candidate bot invokes automatic handover recovery' \

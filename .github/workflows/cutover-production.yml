@@ -207,6 +207,17 @@ jobs:
           SHA: ${{ needs.cutover-gate.outputs.sha }}
         run: |
           set -Eeuo pipefail
+          field() { sed -n "s/^$1=//p" preparation/preparation.env | head -1; }
+          CANDIDATE_INGEST=$(field candidate_ingest)
+          CANDIDATE_DASHBOARD=$(field candidate_dashboard)
+          CANDIDATE_BOT=$(field candidate_bot)
+          for candidate in "$CANDIDATE_INGEST" "$CANDIDATE_DASHBOARD" "$CANDIDATE_BOT"; do
+            [[ $candidate =~ ^[a-z0-9]{20,32}$ ]] || {
+              echo "::error::the verified preparation artifact has a malformed candidate uuid"
+              exit 1
+            }
+          done
           bash deploy/run-on-host.sh deploy/cutover-production.sh \
             '${{ needs.cutover-gate.outputs.sha }}' \
-            '${{ needs.cutover-gate.outputs.digest }}'
+            '${{ needs.cutover-gate.outputs.digest }}' \
+            "$CANDIDATE_INGEST" "$CANDIDATE_DASHBOARD" "$CANDIDATE_BOT"

@@ -28,12 +28,15 @@
 # through Coolify, so a failed candidate can restore those exact old bytes.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# Run: cutover-production.sh <sha> <digest>
+# Run: cutover-production.sh <sha> <digest> <candidate-ingest> <candidate-dashboard> <candidate-bot>
 
 set -Eeuo pipefail
 
 SHA_ARG=${1:-}
 DIGEST_ARG=${2:-}
+EXPECTED_CAND_INGEST=${3:-}
+EXPECTED_CAND_DASHBOARD=${4:-}
+EXPECTED_CAND_BOT=${5:-}
 ENV_ARG=production
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CONF=${CONF:-/etc/shikoo/$ENV_ARG/deploy.env}
@@ -53,6 +56,10 @@ die() {
 [ -r "$CONF" ] || die "cannot read $CONF — run as the shikoo-deploy user"
 [ -r "$STATE/preparation.env" ] ||
   die "no host-side preparation ledger at ${STATE}/preparation.env — this box has no record of a preparation for this release"
+[ -r "$STATE/preparation.sha256" ] ||
+  die "the host-side preparation ledger has no checksum"
+( cd "$STATE" && sha256sum -c --status preparation.sha256 ) ||
+  die "the host-side preparation ledger checksum does not verify"
 
 cfg() { sed -n "s/^$1=//p" "$CONF" | head -n1; }
 COOLIFY_URL=$(cfg COOLIFY_URL)
@@ -70,6 +77,16 @@ CAND_DASHBOARD=$(field candidate_dashboard)
 CAND_BOT=$(field candidate_bot)
 LEDGER_SHA=$(field main_sha)
 LEDGER_DIGEST=$(field digest)
+
+for candidate in "$EXPECTED_CAND_INGEST" "$EXPECTED_CAND_DASHBOARD" "$EXPECTED_CAND_BOT" \
+  "$CAND_INGEST" "$CAND_DASHBOARD" "$CAND_BOT"; do
+  [[ $candidate =~ ^[a-z0-9]{20,32}$ ]] ||
+    die "a candidate uuid is missing or malformed"
+done
+[ "$CAND_INGEST" = "$EXPECTED_CAND_INGEST" ] &&
+  [ "$CAND_DASHBOARD" = "$EXPECTED_CAND_DASHBOARD" ] &&
+  [ "$CAND_BOT" = "$EXPECTED_CAND_BOT" ] ||
+  die "the host ledger names different candidates than the verified preparation artifact"
 
 # The host's own record has to agree with what the workflow was told. Two
 # independent stories about which release this is, and both have to match.
