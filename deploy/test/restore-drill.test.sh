@@ -64,7 +64,15 @@ chmod +x "$BIN/docker"
 
 run() { # env-prefix... -> rc, output in $WORK/out
   set +e
-  env "$@" sh "$DRILL" "${DRILL_ENV:-production}" >"$WORK/out" 2>&1
+  # `-u PGUSER`, because the drill honours an inherited one and CI has one.
+  #
+  # GitHub's Ubuntu image ships PostgreSQL and carries PGUSER in the
+  # environment, so the superuser test passed here and failed there: the drill
+  # took the runner's value and never asked the container, which is the exact
+  # behaviour that test exists to detect. A test that reads the environment
+  # instead of setting it is measuring the machine, not the code. The override
+  # case below passes PGUSER explicitly after this, which still wins.
+  env -u PGUSER "$@" sh "$DRILL" "${DRILL_ENV:-production}" >"$WORK/out" 2>&1
   local rc=$?
   set -e
   return $rc
