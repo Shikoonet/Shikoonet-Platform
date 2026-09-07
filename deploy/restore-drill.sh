@@ -90,6 +90,29 @@ say_target() { printf 'target  %s  container=%s  dir=%s\n' "$ENV_ARG" "$DB_CONTA
 # and dropped again on the way in, because a drill that died halfway must not
 # make the next one fail.
 SCRATCH="${SCRATCH:-restore_drill_scratch}"
+# The superuser is READ OFF THE CONTAINER, not guessed.
+#
+# This was `${PGUSER:-postgres}`, and `postgres` is only right when the image
+# was started with its default user. This box's Postgres was not: the drill's
+# first command died with «role "postgres" does not exist», so the backup
+# verifier had never actually verified a backup.
+#
+# `deploy.sh:196-198` already resolves it this way, and the comment above that
+# line describes this exact error costing a red deploy on 2026-08-29. The
+# lesson was written down in one file and not in the one beside it — which is
+# the third time that pattern has cost something in this release path, so it is
+# spelled out here rather than left as a fixed value that happens to work.
+#
+# DB_CONTAINER is resolved from Coolify above, so by here there is something to
+# ask. The literal stays as the last resort, never as the first answer.
+#
+# An inherited PGUSER still wins, deliberately — `sudo PGUSER=shikoo sh …` is
+# how an operator overrides a container that reports something unhelpful. Be
+# aware that it wins whether or not it was meant: CI proved this by having
+# PGUSER in the runner's environment, so the drill used it and never asked.
+# If a drill reports a superuser you did not expect, check your own shell
+# before the container's.
+PGUSER="${PGUSER:-$(docker exec "$DB_CONTAINER" printenv POSTGRES_USER 2>/dev/null || true)}"
 PGUSER="${PGUSER:-postgres}"
 STATE_DIR="${STATE_DIR:-/var/lib/shikoo}"
 case "$SCRATCH" in

@@ -87,8 +87,12 @@ trap coolify_api_cleanup EXIT
 # cutover would then report a completed domain move, verify against a domain
 # that never moved, and roll back something it had not done.
 set_domain() { # uuid fqdn-or-empty
+  # On stdin, not in argv, which `ps` shows to every local account. This one was
+  # not reported — the identical line in prepare-production.sh was — and fixing
+  # only the reported half is how the same hole survives in the file that moves
+  # the LIVE customer domains.
   coolify_api PATCH "/applications/$1" \
-    "$(python3 -c 'import json,sys; print(json.dumps({"domains": sys.argv[1]}))' "$2")" || return 1
+    "$(printf '%s' "$2" | python3 -c 'import json,sys; print(json.dumps({"domains": sys.stdin.read()}))')" || return 1
   case "$API_STATUS" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
