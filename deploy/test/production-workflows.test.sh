@@ -122,7 +122,7 @@ section 'the stopped bot and the final handset URL are part of preparation'
 want "$PREP_SCRIPT" 'preparation pins the stopped bot for the later cutover' \
   'PREPARE_BOT_FOR_CUTOVER=true'
 want "$PREP_SCRIPT" 'the candidate dashboard starts with the final public ingest URL' \
-  'DASHBOARD_INGEST_URL="https://${LIVE_INGEST_DOMAIN}/api/v1/sms"'
+  "DASHBOARD_INGEST_URL=\"https://\${LIVE_INGEST_DOMAIN}/api/v1/sms\""
 want "$CUT_SCRIPT" 'cutover verifies the bot pin before moving traffic' \
   'verify-production-bot-candidate.sh" prepared'
 want "$CUT_SCRIPT" 'cutover verifies the running bot digest and sha' \
@@ -130,11 +130,11 @@ want "$CUT_SCRIPT" 'cutover verifies the running bot digest and sha' \
 want "$CUT_SCRIPT" 'a failed candidate bot invokes automatic handover recovery' \
   'recover_bot_handover "the candidate poller is not running the prepared digest and sha"'
 want "$CUT_SCRIPT" 'the old bot is stopped without deleting its exact rollback container' \
-  'docker stop --time "${BOT_STOP_TIMEOUT:-30}" "$OLD_BOT_CID"'
+  "docker stop --time \"\${BOT_STOP_TIMEOUT:-30}\" \"\$OLD_BOT_CID\""
 want "$CUT_SCRIPT" 'recovery cancels the queued candidate deployment before restoring the old bot' \
   'cancel_candidate_deployment || recovered=0'
 want "$CUT_SCRIPT" 'recovery restarts the retained old container, not a mutable application record' \
-  'docker start "$OLD_BOT_CID"'
+  "docker start \"\$OLD_BOT_CID\""
 
 prepared_line=$(grep -n 'verify-production-bot-candidate.sh" prepared' "$CUT_SCRIPT" | head -1 | cut -d: -f1)
 move_line=$(grep -n 'say "P11\. moving' "$CUT_SCRIPT" | head -1 | cut -d: -f1)
