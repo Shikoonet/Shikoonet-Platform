@@ -221,8 +221,8 @@ sys.exit(0 if isinstance(d, dict) and "build_pack" in d else 1)'; then
           # dashboard's INGEST_URL out of it. Empty is a real state — an
           # application Coolify does not route — and has to be answerable here,
           # so the refusal can be tested rather than reasoned about.
-          printf '{"uuid":"x","build_pack":"%s","docker_registry_image_name":"%s","fqdn":"%s"}' \
-            "$pack" "${FAKE_APP_IMAGE:-ghcr.io/x/y}" "${FAKE_INGEST_FQDN-https://sms.example.test}" ;;
+          printf '{"uuid":"x","build_pack":"%s","docker_registry_image_name":"%s","docker_registry_image_tag":"%s","fqdn":"%s"}' \
+            "$pack" "${FAKE_APP_IMAGE:-ghcr.io/x/y}" "${FAKE_APP_TAG:-}" "${FAKE_INGEST_FQDN-https://sms.example.test}" ;;
         *) printf '{"message":"no coolify route"}' >&2; exit 22 ;;
       esac
       exit 0 ;;
@@ -916,6 +916,9 @@ case "${1:-}" in
     # A container id that CHANGES once this uuid has been asked to deploy,
     # which is what `wait_healthy` is watching for.
     n=$(grep -c "^${uuid}$" "$FAKE_REPLACED" 2>/dev/null || true)
+    if [ "${FAKE_STOPPED_UUID:-}" = "$uuid" ] && [ "$n" = 0 ]; then
+      exit 0
+    fi
     printf 'cid-%s-%s\n' "$uuid" "${n:-0}"
     exit 0 ;;
   inspect)
@@ -998,9 +1001,12 @@ run_deploy() { # bot-flag
     FAKE_NO_ENV_NAME="${FAKE_NO_ENV_NAME:-}" FAKE_COOLIFY_REFUSES="${FAKE_COOLIFY_REFUSES:-}" \
     FAKE_DUPLICATE_ENVS="${FAKE_DUPLICATE_ENVS:-}" FAKE_MALFORMED_ENVS="${FAKE_MALFORMED_ENVS:-}" \
     FAKE_FLIP_AFTER="${FAKE_FLIP_AFTER:-}" FAKE_APP_READS="$WORK/appreads"     FAKE_ENV_ROWS="${FAKE_ENV_ROWS:-}" FAKE_ENV_PATCH_FAILS="${FAKE_ENV_PATCH_FAILS:-}" \
-    FAKE_INGEST_FQDN="${FAKE_INGEST_FQDN-https://sms.example.test}" \
+    FAKE_INGEST_FQDN="${FAKE_INGEST_FQDN-https://sms.example.test}" FAKE_APP_TAG="${FAKE_APP_TAG:-}" \
     ENV_DIR="$ENVDIR" STATE_FILE="$WORK/state" LOCK_FILE="$WORK/lock" \
     WAIT_TIMEOUT=5 NETWORK=none DEPLOY_BOT_ENABLED="$1" \
+    PREPARE_BOT_FOR_CUTOVER="${PREPARE_BOT_FOR_CUTOVER:-}" \
+    DASHBOARD_INGEST_URL="${DASHBOARD_INGEST_URL:-}" \
+    FAKE_STOPPED_UUID="${FAKE_STOPPED_UUID:-}" \
     bash "$DEPLOY" production "${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a" "$SHA_MERGED" \
     >"$DEPLOY_LOG" 2>&1
   local rc=$?
@@ -1046,6 +1052,25 @@ if run_deploy true && grep -q '^uuid-bot$' "$WORK/deploys"; then
 else
   bad "the bot deploys for the exact string 'true'" "$(tail -3 "$DEPLOY_LOG")"
 fi
+
+# Preparation needs a third state: the old bot keeps polling, while the stopped
+# candidate is bound to the exact digest Cutover will ask Coolify to start.
+FAKE_ENV_ROWS="$WORK/pin-only-rows"
+: >"$FAKE_ENV_ROWS"
+FAKE_ENV_PATCH_FAILS=1
+FAKE_APP_TAG="sha256-${DIGEST}"
+PREPARE_BOT_FOR_CUTOVER=true
+FAKE_STOPPED_UUID=uuid-bot
+if run_deploy false &&
+  grep -q '^uuid-bot$' "$WORK/pins" &&
+  ! grep -q '^uuid-bot$' "$WORK/deploys" &&
+  grep -q "^uuid-bot|.*|APP_VERSION|${SHA_MERGED}$" "$FAKE_ENV_ROWS"; then
+  ok 'production preparation pins the stopped bot without deploying it'
+else
+  bad 'production preparation pins the stopped bot without deploying it' \
+    "pins=$(tr '\n' ' ' <"$WORK/pins") deploys=$(tr '\n' ' ' <"$WORK/deploys"): $(tail -3 "$DEPLOY_LOG")"
+fi
+unset PREPARE_BOT_FOR_CUTOVER FAKE_STOPPED_UUID FAKE_APP_TAG FAKE_ENV_PATCH_FAILS FAKE_ENV_ROWS
 
 section 'the fake Coolify refuses a build_pack MEMBER, not the words'
 
@@ -1309,6 +1334,33 @@ if run_deploy false &&
 else
   bad "$name" "$(grep '|INGEST_URL|' "$FAKE_ENV_ROWS" || echo none)"
 fi
+
+# Production's temporary hostname is removed during Cutover, without a second
+# dashboard rollout. Preparation therefore selects the FINAL public endpoint
+# before this candidate container is started.
+: >"$FAKE_ENV_ROWS"
+DASHBOARD_INGEST_URL='https://sms.chopon.uk/api/v1/sms'
+FAKE_INGEST_FQDN='https://sms-next.chopon.uk'
+name='a production preparation bakes the final ingest URL into the dashboard'
+if run_deploy false &&
+  grep -q '^uuid-dashboard|.*|INGEST_URL|https://sms.chopon.uk/api/v1/sms$' "$FAKE_ENV_ROWS" &&
+  ! grep -q '|INGEST_URL|https://sms-next.chopon.uk' "$FAKE_ENV_ROWS"; then
+  ok "$name"
+else
+  bad "$name" "$(grep '|INGEST_URL|' "$FAKE_ENV_ROWS" || echo none)"
+fi
+
+DASHBOARD_INGEST_URL='https://user:password@sms.chopon.uk/api/v1/sms'
+name='a final ingest URL carrying credentials is refused before deployment'
+if run_deploy false; then
+  bad "$name" 'the deploy accepted credential-bearing userinfo'
+elif grep -qF 'credential-free http(s) /api/v1/sms endpoint' "$DEPLOY_LOG" &&
+  [ ! -s "$WORK/deploys" ]; then
+  ok "$name"
+else
+  bad "$name" "$(tail -3 "$DEPLOY_LOG")"
+fi
+unset DASHBOARD_INGEST_URL
 
 unset FAKE_ENV_PATCH_FAILS
 unset FAKE_ENV_ROWS

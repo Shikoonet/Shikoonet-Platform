@@ -13,6 +13,8 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PREP="$ROOT/.github/workflows/prepare-production.yml"
 CUT="$ROOT/.github/workflows/cutover-production.yml"
 STAGE="$ROOT/.github/workflows/deploy-staging.yml"
+PREP_SCRIPT="$ROOT/deploy/prepare-production.sh"
+CUT_SCRIPT="$ROOT/deploy/cutover-production.sh"
 
 PASS=0
 FAIL=0
@@ -114,6 +116,34 @@ want "$CUT" 'cutover compares against the preparation manifest' 'verify-preparat
 # against them is the manifest agreeing with itself.
 want "$CUT" 'cutover derives sha and digest from the staging release, not the preparation' \
   'verify-release-manifest.sh'
+
+section 'the stopped bot and the final handset URL are part of preparation'
+
+want "$PREP_SCRIPT" 'preparation pins the stopped bot for the later cutover' \
+  'PREPARE_BOT_FOR_CUTOVER=true'
+want "$PREP_SCRIPT" 'the candidate dashboard starts with the final public ingest URL' \
+  'DASHBOARD_INGEST_URL="https://${LIVE_INGEST_DOMAIN}/api/v1/sms"'
+want "$CUT_SCRIPT" 'cutover verifies the bot pin before moving traffic' \
+  'verify-production-bot-candidate.sh" prepared'
+want "$CUT_SCRIPT" 'cutover verifies the running bot digest and sha' \
+  'verify-production-bot-candidate.sh" running'
+want "$CUT_SCRIPT" 'a failed candidate bot invokes automatic handover recovery' \
+  'recover_bot_handover "the candidate poller is not running the prepared digest and sha"'
+want "$CUT_SCRIPT" 'the old bot is stopped without deleting its exact rollback container' \
+  'docker stop --time "${BOT_STOP_TIMEOUT:-30}" "$OLD_BOT_CID"'
+want "$CUT_SCRIPT" 'recovery cancels the queued candidate deployment before restoring the old bot' \
+  'cancel_candidate_deployment || recovered=0'
+want "$CUT_SCRIPT" 'recovery restarts the retained old container, not a mutable application record' \
+  'docker start "$OLD_BOT_CID"'
+
+prepared_line=$(grep -n 'verify-production-bot-candidate.sh" prepared' "$CUT_SCRIPT" | head -1 | cut -d: -f1)
+move_line=$(grep -n 'say "P11\. moving' "$CUT_SCRIPT" | head -1 | cut -d: -f1)
+if [ -n "$prepared_line" ] && [ -n "$move_line" ] && [ "$prepared_line" -lt "$move_line" ]; then
+  ok 'the bot pin is proven before a customer hostname moves'
+else
+  bad 'the bot pin is proven before a customer hostname moves' \
+    "prepared check line=${prepared_line:-missing}, domain move line=${move_line:-missing}"
+fi
 
 section 'provenance is resolved server-side in both'
 

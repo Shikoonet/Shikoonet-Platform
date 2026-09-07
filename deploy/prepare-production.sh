@@ -394,9 +394,10 @@ say "    temporary domains assigned to the candidates; the live domains are unto
 #
 # `deploy.sh` is the tested sequence: it migrates, rolls ingest then dashboard,
 # smoke-tests each against the digest it pulled, asserts no host port is
-# published, and rolls back on failure. The bot is off, which is what keeps this
-# a preparation: `DEPLOY_BOT_ENABLED=false` means the candidate bot is neither
-# pinned, deployed, started nor health-checked.
+# published, and rolls back on failure. The bot is not deployed or started,
+# which keeps the old process the only Telegram poller; its stopped application
+# record is nevertheless pinned to this digest so Cutover cannot deploy a
+# mutable/default tag when it starts the replacement.
 say "P6–P9. migrate, then ingest and dashboard on temporary domains"
 CANDIDATE_CONF="$STATE/candidate.deploy.env"
 {
@@ -407,7 +408,9 @@ CANDIDATE_CONF="$STATE/candidate.deploy.env"
 } >"$CANDIDATE_CONF"
 chmod 600 "$CANDIDATE_CONF"
 
-DEPLOY_BOT_ENABLED=false DEPLOY_APPROVAL_POLICY=promoted-by-hand \
+DEPLOY_BOT_ENABLED=false PREPARE_BOT_FOR_CUTOVER=true \
+  DASHBOARD_INGEST_URL="https://${LIVE_INGEST_DOMAIN}/api/v1/sms" \
+  DEPLOY_APPROVAL_POLICY=promoted-by-hand \
   CONF="$CANDIDATE_CONF" bash "$HERE/deploy.sh" "$ENV_ARG" \
   "${IMAGE_REF:?IMAGE_REF is required}" "$SHA_ARG" '' ||
   die "the candidate rollout failed — deploy.sh has rolled back what it changed"

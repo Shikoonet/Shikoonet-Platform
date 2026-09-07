@@ -334,6 +334,8 @@ suite_deploy_suites() {
     deploy/test/preparation.test.sh \
     deploy/test/candidates.test.sh \
     deploy/test/candidate-envs.test.sh \
+    deploy/test/cutover-bot.test.sh \
+    deploy/test/cutover-production.test.sh \
     deploy/test/production-workflows.test.sh \
     tools/test/ci-plan.test.sh \
     tools/test/ci-draft-state.test.sh \
