@@ -345,6 +345,9 @@ type ClaimRow = {
    * seeing, not a thing to file under the commonest answer.
    */
   customer_is_reseller: boolean | null;
+  customer_user_id: number | null;
+  customer_status: string | null;
+  customer_blocked_reason: string | null;
   effective_ts: number;
   // DEV-only: present when the worker is built with ENABLE_PURCHASE_TYPE=true
   // and the dev D1 has these columns. Production D1 doesn't have them and the
@@ -1418,6 +1421,18 @@ export function registerMirzabotRoutes(
               d.id AS device_id, d.display_name AS device_display_name,
               d.device_code AS device_code,
               cu.is_reseller AS customer_is_reseller,
+              -- The join is already here for «شخصی یا نماینده». Three more
+              -- columns off it are what let the review screen block a customer
+              -- without sending the operator to another page to type the
+              -- Telegram id back in by hand.
+              --
+              -- cu.id and not the Telegram id: blocking is keyed on the users
+              -- row, and a claim whose customer_reference matches no user at
+              -- all is a real state (one production row holds «Poyan test
+              -- payment»). Null here means «no button», which is right.
+              cu.id AS customer_user_id,
+              cu.status AS customer_status,
+              cu.blocked_reason AS customer_blocked_reason,
               ${EFFECTIVE_TS} AS effective_ts
        ${claimsFrom}
        WHERE ${where.join(' AND ')}
@@ -1556,6 +1571,12 @@ export function registerMirzabotRoutes(
           orderId: row.external_order_id.replace(/^mirzabot:test:/, ''),
           telegramUserId: meta.telegramUserId ?? row.customer_reference,
           telegramUsername: meta.telegramUsername ?? null,
+          // Null when the reference matches no customer — not every claim has
+          // one, and a screen that assumed it did would offer a button that
+          // 404s.
+          customerUserId: row.customer_user_id ?? null,
+          customerStatus: row.customer_status ?? null,
+          customerBlockedReason: row.customer_blocked_reason ?? null,
           expectedAmountIrr: row.expected_amount_irr,
           expectedAmountToman: Math.floor(row.expected_amount_irr / 10),
           cardMasked: cardDigits ? maskCardDigits(cardDigits) : null,
