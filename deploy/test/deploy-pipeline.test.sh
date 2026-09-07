@@ -913,6 +913,11 @@ case "${1:-}" in
     for a in "$@"; do
       case "$a" in label=coolify.name=*) uuid=${a#label=coolify.name=} ;; esac
     done
+    if [ "${FAKE_DOCKER_PS_FAIL_UUID:-}" = "$uuid" ]; then
+      printf '%s\n' "$uuid" >>"${FAKE_DOCKER_PS_CALLS:?}"
+      calls=$(grep -c "^${uuid}$" "$FAKE_DOCKER_PS_CALLS")
+      [ "$calls" -lt "${FAKE_DOCKER_PS_FAIL_AFTER:-1}" ] || exit 2
+    fi
     # A container id that CHANGES once this uuid has been asked to deploy,
     # which is what `wait_healthy` is watching for.
     n=$(grep -c "^${uuid}$" "$FAKE_REPLACED" 2>/dev/null || true)
@@ -1007,6 +1012,9 @@ run_deploy() { # bot-flag
     PREPARE_BOT_FOR_CUTOVER="${PREPARE_BOT_FOR_CUTOVER:-}" \
     DASHBOARD_INGEST_URL="${DASHBOARD_INGEST_URL:-}" \
     FAKE_STOPPED_UUID="${FAKE_STOPPED_UUID:-}" \
+    FAKE_DOCKER_PS_FAIL_UUID="${FAKE_DOCKER_PS_FAIL_UUID:-}" \
+    FAKE_DOCKER_PS_FAIL_AFTER="${FAKE_DOCKER_PS_FAIL_AFTER:-}" \
+    FAKE_DOCKER_PS_CALLS="$WORK/docker-ps-calls" \
     bash "$DEPLOY" production "${IMAGE_UNDER_TEST:-ghcr.io/x/y}@sha256:27fc8cda20a91beed15e11df848a2b0c7313cae193ae06032990c529dca8014a" "$SHA_MERGED" \
     >"$DEPLOY_LOG" 2>&1
   local rc=$?
@@ -1071,6 +1079,41 @@ else
     "pins=$(tr '\n' ' ' <"$WORK/pins") deploys=$(tr '\n' ' ' <"$WORK/deploys"): $(tail -3 "$DEPLOY_LOG")"
 fi
 unset PREPARE_BOT_FOR_CUTOVER FAKE_STOPPED_UUID FAKE_APP_TAG FAKE_ENV_PATCH_FAILS FAKE_ENV_ROWS
+
+# An unknown Docker state is not the same state as stopped. Exercise both the
+# preflight observation and the post-pin observation: neither may turn a daemon
+# error into permission to continue.
+FAKE_ENV_ROWS="$WORK/pin-docker-failure-rows"
+: >"$FAKE_ENV_ROWS"
+FAKE_ENV_PATCH_FAILS=1
+FAKE_APP_TAG="sha256-${DIGEST}"
+PREPARE_BOT_FOR_CUTOVER=true
+FAKE_STOPPED_UUID=uuid-bot
+FAKE_DOCKER_PS_FAIL_UUID=uuid-bot
+
+: >"$WORK/docker-ps-calls"
+FAKE_DOCKER_PS_FAIL_AFTER=1
+if run_deploy false; then
+  bad 'a Docker failure before pinning is not mistaken for a stopped bot' 'the deploy continued'
+elif grep -qF 'could not determine whether the bot candidate has a running container' "$DEPLOY_LOG" &&
+  [ ! -s "$WORK/deploys" ]; then
+  ok 'a Docker failure before pinning is not mistaken for a stopped bot'
+else
+  bad 'a Docker failure before pinning is not mistaken for a stopped bot' "$(tail -3 "$DEPLOY_LOG")"
+fi
+
+: >"$WORK/docker-ps-calls"
+FAKE_DOCKER_PS_FAIL_AFTER=2
+if run_deploy false; then
+  bad 'a Docker failure after pinning is not reported as a proven stop' 'the deploy continued'
+elif grep -qF 'could not prove the pinned bot candidate remained stopped' "$DEPLOY_LOG" &&
+  ! grep -q '^uuid-bot$' "$WORK/deploys"; then
+  ok 'a Docker failure after pinning is not reported as a proven stop'
+else
+  bad 'a Docker failure after pinning is not reported as a proven stop' "$(tail -3 "$DEPLOY_LOG")"
+fi
+unset PREPARE_BOT_FOR_CUTOVER FAKE_STOPPED_UUID FAKE_APP_TAG FAKE_ENV_PATCH_FAILS FAKE_ENV_ROWS
+unset FAKE_DOCKER_PS_FAIL_UUID FAKE_DOCKER_PS_FAIL_AFTER
 
 section 'the fake Coolify refuses a build_pack MEMBER, not the words'
 

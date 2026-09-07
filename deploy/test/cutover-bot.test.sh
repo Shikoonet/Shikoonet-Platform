@@ -72,6 +72,7 @@ cat >"$BIN/docker" <<'FAKE'
 set -Eeuo pipefail
 case "${1:-}" in
   ps)
+    [ "${FAKE_DOCKER_PS_FAIL:-0}" != 1 ] || exit 2
     case "${FAKE_RUNNING:-0}" in
       0) ;;
       1) printf 'candidate-bot-cid\n' ;;
@@ -163,6 +164,15 @@ else
   bad 'a candidate already running before handover is refused' "$(tail -3 "$OUT4")"
 fi
 
+OUT_DOCKER="$WORK/docker-unavailable.log"
+if run_verify prepared "$OUT_DOCKER" FAKE_DOCKER_PS_FAIL=1; then
+  bad 'an unavailable Docker daemon is not mistaken for a stopped candidate' 'the verifier passed'
+elif grep -qF 'candidate bot container state cannot be proven' "$OUT_DOCKER"; then
+  ok 'an unavailable Docker daemon is not mistaken for a stopped candidate'
+else
+  bad 'an unavailable Docker daemon is not mistaken for a stopped candidate' "$(tail -3 "$OUT_DOCKER")"
+fi
+
 section 'after the candidate takes the singleton lock'
 
 OUT5="$WORK/running.log"
@@ -204,7 +214,8 @@ fi
 section 'no bot credential is printed'
 
 for secret in "$SECRET_TOKEN" "$SECRET_DB" "$SECRET_BOT"; do
-  if grep -qF -- "$secret" "$OUT1" "$OUT2" "$OUT3" "$OUT4" "$OUT5" "$OUT6" "$OUT7" "$OUT8"; then
+  if grep -qF -- "$secret" "$OUT1" "$OUT2" "$OUT3" "$OUT4" "$OUT_DOCKER" \
+    "$OUT5" "$OUT6" "$OUT7" "$OUT8"; then
     bad 'the verifier output contains no credential' 'a fake credential was printed'
   else
     ok 'the verifier output contains no credential'

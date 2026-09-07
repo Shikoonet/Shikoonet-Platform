@@ -173,7 +173,9 @@ locks() {
 }
 [ "$OLD_BOT" != "$CAND_BOT" ] ||
   die "the current and candidate bot are the same application — this bootstrap handover cannot stop and start one uuid as two pollers"
-OLD_BOT_CONTAINERS=$(docker ps -q --filter "label=coolify.name=$OLD_BOT" 2>/dev/null || true)
+if ! OLD_BOT_CONTAINERS=$(docker ps -q --filter "label=coolify.name=$OLD_BOT" 2>/dev/null); then
+  die "could not query Docker for the current bot container"
+fi
 OLD_BOT_COUNT=$(printf '%s\n' "$OLD_BOT_CONTAINERS" | sed '/^$/d' | wc -l)
 [ "$OLD_BOT_COUNT" = 1 ] ||
   die "the current bot has ${OLD_BOT_COUNT} running containers, expected exactly one before handover"
@@ -239,13 +241,17 @@ wait_for_locks() { # exact-count
 }
 
 candidate_containers() {
-  docker ps -q --filter "label=coolify.name=$CAND_BOT" 2>/dev/null || true
+  docker ps -q --filter "label=coolify.name=$CAND_BOT" 2>/dev/null
 }
 
 wait_for_candidate_absent() {
-  local quiet=0
+  local quiet=0 containers
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-    if [ -z "$(candidate_containers)" ]; then
+    containers=''
+    if ! containers=$(candidate_containers); then
+      return 1
+    fi
+    if [ -z "$containers" ]; then
       quiet=$((quiet + 1))
       [ "$quiet" -ge 3 ] && return 0
     else
@@ -261,7 +267,7 @@ wait_for_candidate_absent() {
 # not described as success: every leg is observed, and an incomplete recovery
 # is named as manual intervention.
 recover_bot_handover() { # reason
-  local reason=$1 recovered=1
+  local reason=$1 recovered=1 final_candidate_containers='' old_running=''
   say "ROLLING BACK BOT HANDOVER: ${reason}"
   rollback_domains || recovered=0
   cancel_candidate_deployment || recovered=0
@@ -279,8 +285,16 @@ recover_bot_handover() { # reason
   # old application record happens to build now.
   docker start "$OLD_BOT_CID" >/dev/null || recovered=0
   wait_for_locks 1 || recovered=0
-  [ -z "$(candidate_containers)" ] || recovered=0
-  [ "$(docker ps -q --filter "id=$OLD_BOT_CID" 2>/dev/null | head -1)" = "$OLD_BOT_CID" ] || recovered=0
+  if ! final_candidate_containers=$(candidate_containers); then
+    recovered=0
+  elif [ -n "$final_candidate_containers" ]; then
+    recovered=0
+  fi
+  if ! old_running=$(docker ps -q --filter "id=$OLD_BOT_CID" 2>/dev/null | head -1); then
+    recovered=0
+  elif [ "$old_running" != "$OLD_BOT_CID" ]; then
+    recovered=0
+  fi
   if [ "$recovered" = 1 ]; then
     die "${reason} — domains and the original single bot poller were restored"
   fi
