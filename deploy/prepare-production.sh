@@ -312,8 +312,16 @@ LIVE_DASHBOARD_DOMAIN=${LIVE_DASHBOARD_DOMAIN:-shikoo.chopon.uk}
 # `.hostname` lowercases, drops userinfo, drops the port, and ends the
 # authority at the first of `/`, `?` or `#` — all of it, by definition rather
 # than by a list somebody has to keep complete.
-host_of() { # url -> hostname, or empty when there is none
-  python3 -c 'import sys,urllib.parse as u; print(u.urlsplit(sys.argv[1]).hostname or "")' "$1" 2>/dev/null || printf ''
+#
+# The URL goes in on STDIN, not in argv. This function accepts userinfo by
+# design — `https://u:p@host` is one of the spellings the guard has to see
+# through — and argv is world-readable in `ps`, so a URL carrying a password
+# would publish it to every local account for as long as python3 runs. That is
+# this directory's standing rule, not a new judgement.
+host_of() { # url (stdin-fed) -> hostname, or empty when there is none
+  printf '%s' "$1" |
+    python3 -c 'import sys,urllib.parse as u; print(u.urlsplit(sys.stdin.read().strip()).hostname or "")' 2>/dev/null ||
+    printf ''
 }
 for u in "$TEMP_INGEST_URL" "$TEMP_DASHBOARD_URL"; do
   case "$u" in
@@ -337,8 +345,12 @@ trap coolify_api_cleanup EXIT
 # «PATCH || die» would read Coolify refusing the write as success and then
 # verify against a domain that was never set. Same lesson cutover records.
 set_temp_domain() { # uuid url
+  # The URL on stdin here too. `host_of` above was fixed for argv exposure and
+  # this is the same URL, in the same function's caller, one screen down — a
+  # rule applied to one of two identical lines is a rule that will be wrong
+  # again at the next edit.
   coolify_api PATCH "/applications/$1" \
-    "$(python3 -c 'import json,sys; print(json.dumps({"domains": sys.argv[1]}))' "$2")" || return 1
+    "$(printf '%s' "$2" | python3 -c 'import json,sys; print(json.dumps({"domains": sys.stdin.read()}))')" || return 1
   case "$API_STATUS" in 2??) return 0 ;; *) return 1 ;; esac
 }
 set_temp_domain "$CAND_INGEST" "$TEMP_INGEST_URL" ||
