@@ -1601,6 +1601,81 @@ button.cat-card--new:hover {
   font-weight: 700;
 }
 
+/* ── «نیاز به توجه» ────────────────────────────────────────────────────────
+   A strip of queues above the aggregates. Chips rather than cards: these are
+   meant to be counted at a glance and pressed, not read. */
+.attention {
+  padding-block: 12px;
+}
+.attention__title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.attention__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.attention__chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--surface-2, var(--surface-1));
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  /* A queue count never wraps: «۱۷۱ درخواست» split over two lines inside a
+     pill is the same misreading a broken money figure is. */
+  white-space: nowrap;
+}
+.attention__chip:hover {
+  border-color: var(--accent);
+}
+.attention__chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.attention__n {
+  font-weight: 800;
+  font-size: 15px;
+}
+
+/* ── The chart ────────────────────────────────────────────────────────────
+   No library: `preserveAspectRatio="none"` on a viewBox lets the bars scale
+   with the column, so nothing has to be measured in JavaScript. */
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.chart__title {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.chart__svg {
+  width: 100%;
+  height: 160px;
+  display: block;
+}
+.chart__svg rect {
+  fill: var(--accent);
+}
+.chart__axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.chart--empty {
+  min-height: 80px;
+  justify-content: center;
+}
+
 /* ── The ledger table ──────────────────────────────────────────────────────
    `.th-button` came from `hub/styles.css` when the panel's own ledgers grew
    sortable headers. It is here rather than there because the hub stopped
@@ -1702,3 +1777,9 @@ td.money,
     content: none;
   }
 }
+
+/* `.visually-hidden` is NOT defined here.
+   `hub/styles.css` already carries it, unscoped, so it applies across the whole
+   panel — and a second copy would make it a class both stylesheets define,
+   which `css-scope.test.ts` refuses. The chart's hidden value table uses that
+   one. */

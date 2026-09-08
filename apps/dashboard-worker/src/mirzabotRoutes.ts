@@ -598,7 +598,7 @@ async function loadCandidates(db: D1Database, row: ClaimRow, candidateIds: strin
 }
 
 /** Tab badges + the "today" header, counted over the whole population. */
-async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, actorEmail?: string) {
+export async function loadCounts(db: D1Database, dayStart: number, dayEnd: number, actorEmail?: string) {
   const rows = await db
     .prepare(
       `SELECT
