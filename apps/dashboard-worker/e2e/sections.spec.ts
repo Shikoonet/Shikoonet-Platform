@@ -100,6 +100,21 @@ test('every section opens without a failed request, a thrown render or an error 
 
     const drawn = (await page.locator('#main-content').innerText()).trim();
     if (drawn === '') trouble.push({ section: label, what: 'drew nothing at all' });
+
+    // A screen with no heading cannot be navigated by one, and on 2026-09-09
+    // that was every screen: the panel's titles were `div`s and so was the
+    // shell's. Asserted for all thirty-one rather than for a sample, because
+    // the sample that was checked (`shell.test.tsx`, «پرداخت‌ها») passed while
+    // «آمار مالی» was serving four headers and no heading at all.
+    const headings = (await page.locator('h1').allInnerTexts()).map((t) => t.trim());
+    if (headings.length !== 1) {
+      trouble.push({ section: label, what: `${headings.length} h1: ${headings.join(' | ') || '(none)'}` });
+    } else if (headings[0] !== label) {
+      trouble.push({ section: label, what: `heading says «${headings[0]}», sidebar says «${label}»` });
+    }
+
+    const shells = await page.locator('header.app-header').count();
+    if (shells !== 1) trouble.push({ section: label, what: `${shells} app headers` });
   }
 
   expect(trouble.map((t) => `${t.section} — ${t.what}`)).toEqual([]);

@@ -83,3 +83,61 @@ describe('the panel has one header', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /اعلان/ })).toBeTruthy());
   });
 });
+
+/**
+ * Every screen names itself, once, in a real heading.
+ *
+ * Walking staging on 2026-09-09 (`v8a7c470`) counted the `h1` elements on
+ * «کاربران», «پرداخت‌ها» and «آمار مالی» and found **zero** on all three. The
+ * panel's titles are `<div className="page-head__title">` — twenty-four of
+ * them — and the shell's own title is a `div` too, so a screen reader
+ * navigating by heading finds nothing to land on anywhere in the panel.
+ *
+ * `theme.css` already knew: the comment above `.page-head__title` says «a page
+ * title is not a `div` — a screen reader navigating by heading has to be able
+ * to find it», and the rule carries the `margin: 0` that a real heading needs.
+ * Two pages out of twenty-six took it up. This is the rest.
+ *
+ * The heading is the SHELL's title rather than the page's, because that is the
+ * one element all thirty-one screens have: six of them are finance screens with
+ * no `.page-head` at all, and giving each its own would be six chances to
+ * forget the seventh.
+ */
+describe('every screen has one heading, and it names the screen', () => {
+  // A panel page whose title is a `div`; a page that already had its own `h1`
+  // and would otherwise now have two; and two finance screens that have no page
+  // title at all. If the claim holds anywhere it has to hold on all four.
+  const SCREENS = ['کاربران', 'نمایندگان', 'پرداخت‌ها', 'آمار مالی'];
+
+  it('puts the section name in exactly one h1', SHELL, async () => {
+    await drawApp();
+    for (const label of SCREENS) {
+      await go(label);
+      await waitFor(() =>
+        expect([...document.querySelectorAll('h1')].map((h) => h.textContent?.trim())).toEqual([
+          label,
+        ]),
+      );
+    }
+  });
+
+  it('does not print the section name a third time as a breadcrumb', SHELL, async () => {
+    // «کاربران» appeared three times on the 2026-09-09 screenshot: the sidebar's
+    // active item, the header title, and «شیکو / کاربران» directly under it.
+    await drawApp();
+    await go('کاربران');
+    expect(document.querySelector('.app-header__crumb')).toBeNull();
+  });
+
+  it('draws one header on a finance screen too, not four', SHELL, async () => {
+    // The test above this block asserts «exactly one header» on «پرداخت‌ها»
+    // alone, and passes — while «آمار مالی» was serving four, because the hub's
+    // statistics view kept a page header of its own with a second copy of the
+    // title and a second date control. A guard that checks one of the screens
+    // its claim covers is not a guard.
+    await drawApp();
+    await go('آمار مالی');
+    await waitFor(() => expect(document.querySelectorAll('header.app-header')).toHaveLength(1));
+    expect(document.querySelector('#main-content .page-header')).toBeNull();
+  });
+});
