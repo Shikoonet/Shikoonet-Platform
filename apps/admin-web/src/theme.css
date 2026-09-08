@@ -609,9 +609,38 @@ body {
   flex: 1 1 16rem;
   min-width: 12rem;
 }
+/*
+ * A field in either filter bar must never be wider than the bar.
+ *
+ * `min-width: 0` on the wrapper, because a flex item defaults to
+ * `min-width: auto` and so cannot shrink below its content — and the content
+ * here is a `<select>`, whose intrinsic width is its WIDEST OPTION. A panel
+ * called «🥇سرویس تیتانیوم - مولتی لوکیشن 🌍» therefore set the width of
+ * the page: at 390px «ارسال گروهی» scrolled sideways by 54px and «قفسهٔ انبار»
+ * by 20px, taking the header and the sidebar button off-screen with them.
+ *
+ * `max-width: 100%` on the select is the other half. `width: auto` is what
+ * asks for the widest option in the first place and it is deliberate — a
+ * status filter reading «همه» should not be as wide as a search box — so the
+ * cap keeps that while making it yield to the screen, and the control
+ * ellipsises the option text itself.
+ *
+ * Both bars, because they are the same bar twice: `.toolbar` is what
+ * «محصولات», «سرویس‌ها» and the catalogue screens use and `.filters` is what
+ * the ledgers use, and fixing one would have left the other overflowing by
+ * 90px with an identical rule three hundred lines away.
+ *
+ * Measured at 390px (iPhone 14/15/16 portrait) on 2026-09-07 and guarded by
+ * the phone walk in `e2e/sections.spec.ts`.
+ */
+.filters > *,
+.toolbar > * {
+  min-width: 0;
+}
 .filters select.form-control {
   width: auto;
   min-width: 9rem;
+  max-width: 100%;
 }
 
 .pager {
@@ -1250,6 +1279,7 @@ body {
 .toolbar select.form-control {
   width: auto;
   min-width: 8.5rem;
+  max-width: 100%;
 }
 
 /* Row actions on one line. Two stacked buttons in a narrow cell was the single
