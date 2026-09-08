@@ -213,7 +213,23 @@ describe('a day-by-day series, so the shop can be drawn', () => {
           AND date_trunc('day', completed_at AT TIME ZONE 'Asia/Tehran') = date '2026-09-07'`,
     ).first<{ n: number }>();
     expect(seventh?.salesCount).toBe(counted!.n);
-    expect(sixth?.salesCount ?? 0).toBe(0);
+
+    /*
+     * The sixth is asserted against Postgres too, not against zero.
+     *
+     * `toBe(0)` assumed nothing else in the database had completed a sale that
+     * Tehran day — an assumption about a database `integration-db` runs several
+     * suites against. It held here and failed in CI with «expected 1 to be +0»,
+     * which says nothing about bucketing and everything about a neighbour's
+     * fixture. The claim that matters is «the route and the database agree»,
+     * and that one does not care what else is in there.
+     */
+    const onSixth = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM orders
+        WHERE status = 'COMPLETED' AND kind = 'NEW_PURCHASE'
+          AND date_trunc('day', completed_at AT TIME ZONE 'Asia/Tehran') = date '2026-09-06'`,
+    ).first<{ n: number }>();
+    expect(sixth?.salesCount ?? 0).toBe(onSixth!.n);
   });
 
   it('keeps a bar inside the window, not merely inside the day', async () => {
