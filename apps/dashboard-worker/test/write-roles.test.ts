@@ -435,6 +435,17 @@ describe('every write route, asked directly', () => {
     // The two GETs beside them are readable by a READ_ONLY operator, like
     // «تنظیمات» and «کرون‌جاب‌ها» — no customer of a reseller's appears on that
     // screen, and there is no route here that could list one.
-    expect(writeRoutes().length).toBe(158);
+    //
+    // +1, «تایید انتخاب‌شده‌ها» on the reseller queue:
+    //
+    //   POST /reseller-requests/decide — the same decision the single route
+    //                                    takes, for up to a hundred rows.
+    //
+    // ADMIN, and it has to be, for the same reason the single one is: this is
+    // the route that makes somebody a reseller. It grants nothing the single
+    // route did not already grant — the check is the same, the audit row per
+    // request is the same, and a request already decided is refused rather
+    // than re-decided. What it removes is 171 presses.
+    expect(writeRoutes().length).toBe(159);
   });
 });

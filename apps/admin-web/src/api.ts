@@ -1469,6 +1469,33 @@ export interface ResellerReading {
   takenAt: string;
 }
 
+/**
+ * Everything the three ledgers filter on, as query parameters.
+ *
+ * One builder for the fetch and for the export href, so a file can never come
+ * back narrower or wider than the screen it was taken from. `page`/`pageSize`
+ * are left to the caller: the export ignores them and the list needs them.
+ */
+export interface LedgerQuery {
+  q?: string;
+  customerId?: number;
+  status?: string;
+  kind?: string;
+  providerId?: number;
+  sort?: string;
+  dir?: 'asc' | 'desc';
+  from?: string;
+  to?: string;
+}
+
+function ledgerParams(p: LedgerQuery): URLSearchParams {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) {
+    if (v !== undefined && v !== '' && v !== null) qs.set(k, String(v));
+  }
+  return qs;
+}
+
 export const api = {
   me() {
     return req<{ ok: boolean } & Me>('/me');
@@ -2427,10 +2454,18 @@ export const api = {
     kind?: string;
     page: number;
     pageSize: number;
+    sort?: string;
+    dir?: 'asc' | 'desc';
+    from?: string;
+    to?: string;
   }) {
     const qs = new URLSearchParams({ page: String(p.page), pageSize: String(p.pageSize) });
     if (p.q) qs.set('q', p.q);
     if (p.customerId) qs.set('customerId', String(p.customerId));
+    if (p.sort) qs.set('sort', p.sort);
+    if (p.dir) qs.set('dir', p.dir);
+    if (p.from) qs.set('from', p.from);
+    if (p.to) qs.set('to', p.to);
     if (p.status) qs.set('status', p.status);
     if (p.kind) qs.set('kind', p.kind);
     return req<{ ok: boolean; total: number; items: OrderRow[] }>(`/orders?${qs.toString()}`);
@@ -2456,14 +2491,49 @@ export const api = {
     status?: string;
     page: number;
     pageSize: number;
+    sort?: string;
+    dir?: 'asc' | 'desc';
+    from?: string;
+    to?: string;
   }) {
     const qs = new URLSearchParams({ page: String(p.page), pageSize: String(p.pageSize) });
     if (p.q) qs.set('q', p.q);
     if (p.customerId) qs.set('customerId', String(p.customerId));
+    if (p.sort) qs.set('sort', p.sort);
+    if (p.dir) qs.set('dir', p.dir);
+    if (p.from) qs.set('from', p.from);
+    if (p.to) qs.set('to', p.to);
     if (p.status) qs.set('status', p.status);
     return req<{ ok: boolean; total: number; items: SubscriptionRow[] }>(
       `/subscriptions?${qs.toString()}`,
     );
+  },
+
+  /**
+   * The three ledgers as files, for an `<a href>` rather than a fetch.
+   *
+   * `format=csv` on the SAME path the screen reads, which is what makes the
+   * file and the screen impossible to tell apart — one handler, one WHERE, one
+   * branch at the end. A `/export.csv` sibling would be a second copy of every
+   * filter, and `revenueRoutes.ts:1057` records what a path ending in `.csv`
+   * did to `mayRead`'s prefix test.
+   */
+  ordersCsvUrl(p: LedgerQuery) {
+    const qs = ledgerParams(p);
+    qs.set('format', 'csv');
+    return `${BASE}/orders?${qs.toString()}`;
+  },
+
+  subscriptionsCsvUrl(p: LedgerQuery) {
+    const qs = ledgerParams(p);
+    qs.set('format', 'csv');
+    return `${BASE}/subscriptions?${qs.toString()}`;
+  },
+
+  walletEntriesCsvUrl(p: LedgerQuery) {
+    const qs = ledgerParams(p);
+    qs.set('format', 'csv');
+    return `${BASE}/wallet-entries?${qs.toString()}`;
   },
 
   walletEntries(p: {
@@ -2472,10 +2542,18 @@ export const api = {
     kind?: string;
     page: number;
     pageSize: number;
+    sort?: string;
+    dir?: 'asc' | 'desc';
+    from?: string;
+    to?: string;
   }) {
     const qs = new URLSearchParams({ page: String(p.page), pageSize: String(p.pageSize) });
     if (p.q) qs.set('q', p.q);
     if (p.customerId) qs.set('customerId', String(p.customerId));
+    if (p.sort) qs.set('sort', p.sort);
+    if (p.dir) qs.set('dir', p.dir);
+    if (p.from) qs.set('from', p.from);
+    if (p.to) qs.set('to', p.to);
     if (p.kind) qs.set('kind', p.kind);
     return req<{
       ok: boolean;
@@ -2563,6 +2641,20 @@ export const api = {
   },
 
   /** `tier` is only read on APPROVED; null there means level one. */
+  /**
+   * The same decision for a selection, in one call.
+   *
+   * Per-row results come back rather than one verdict: a request decided on
+   * somebody else's screen in the meantime is refused individually, and the
+   * caller reports that rather than treating the batch as failed.
+   */
+  decideResellerRequests(ids: number[], status: 'APPROVED' | 'REJECTED', tier: 'n' | 'n2' | null) {
+    return req<{ ok: boolean; results: Array<{ id: number; ok: boolean; error?: string }> }>(
+      '/reseller-requests/decide',
+      { method: 'POST', body: JSON.stringify({ ids, status, tier }) },
+    );
+  },
+
   decideResellerRequest(
     id: number,
     status: 'APPROVED' | 'REJECTED',
