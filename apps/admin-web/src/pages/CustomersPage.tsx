@@ -395,8 +395,15 @@ function CustomerDrawer({
    * to answer the question, and «همهٔ N» goes to the full ledger for the
    * rest.
    */
+  /*
+   * `null` means «not read», and that is deliberately NOT the same as «empty».
+   * It started as one state for both «still loading» and «the read failed»,
+   * which put «خوانده نشد.» on screen for as long as the request was in
+   * flight — a sentence saying the panel is broken, while it is working.
+   */
   const [orders, setOrders] = useState<{ total: number; items: OrderRow[] } | null>(null);
   const [subs, setSubs] = useState<{ total: number; items: SubscriptionRow[] } | null>(null);
+  const [listsLoading, setListsLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   /**
    * What the last action did, in a sentence.
@@ -458,27 +465,45 @@ function CustomerDrawer({
       setHistory([]);
     }
 
-    // Each in its own try, for the reason the audit trail above has one: a
-    // side-read that throws must not take the card down with it.
+    /*
+     * Each in its own try, for the reason the audit trail above has one: a
+     * side-read that throws must not take the card down with it.
+     *
+     * And each guarded by the customer it was asked for. The drawer does not
+     * remount when `id` changes — it is the same component with a new prop —
+     * so pressing «مدیریت» on a second row while the first is still in flight
+     * used to let the OLDER answer land last and paint one customer's orders
+     * under another customer's name. Nothing would look wrong.
+     */
+    const asked = id;
+    const stillCurrent = () => asked === currentId.current;
+
     try {
       const o = await api.orders({ customerId: id, page: 1, pageSize: DRAWER_PAGE });
-      setOrders({ total: o.total, items: o.items });
+      if (stillCurrent()) setOrders({ total: o.total, items: o.items });
     } catch {
-      setOrders(null);
+      if (stillCurrent()) setOrders(null);
     }
     try {
       const sub = await api.subscriptions({ customerId: id, page: 1, pageSize: DRAWER_PAGE });
-      setSubs({ total: sub.total, items: sub.items });
+      if (stillCurrent()) setSubs({ total: sub.total, items: sub.items });
     } catch {
-      setSubs(null);
+      if (stillCurrent()) setSubs(null);
     }
+    if (stillCurrent()) setListsLoading(false);
   }
 
+  /** The customer this card is currently about, readable from a stale closure. */
+  const currentId = useRef(id);
   useEffect(() => {
+    currentId.current = id;
     // Cleared with the customer, not left standing. «@sara_m مسدود شد» still
     // on screen while the drawer now shows @reza_kh is a sentence about the
     // wrong person, which is worse than no sentence at all.
     setDone(null);
+    setOrders(null);
+    setSubs(null);
+    setListsLoading(true);
     void load();
   }, [id]);
 
@@ -1015,7 +1040,11 @@ function CustomerDrawer({
               <a
                 className="page-head__sub"
                 style={{ marginInlineStart: 10 }}
-                href={`${pathForPage('orders')}?q=${customer.telegramId}`}
+                /* `?customerId=`, not `?q=`. The search box is a FRAGMENT
+                   match — it will also return an order whose public id
+                   contains these digits, and another customer whose username
+                   contains this one's. «همهٔ ۱۲ سفارش» must be twelve. */
+                href={`${pathForPage('orders')}?customerId=${customer.id}`}
               >
                 همهٔ {count(orders.total)} سفارش ←
               </a>
@@ -1035,7 +1064,11 @@ function CustomerDrawer({
                 {(orders?.items.length ?? 0) === 0 && (
                   <tr>
                     <td className="empty" colSpan={4}>
-                      {orders === null ? 'خوانده نشد.' : 'هنوز سفارشی ثبت نکرده است.'}
+                      {listsLoading
+                        ? 'در حال بارگذاری…'
+                        : orders === null
+                          ? 'خوانده نشد.'
+                          : 'هنوز سفارشی ثبت نکرده است.'}
                     </td>
                   </tr>
                 )}
@@ -1061,7 +1094,7 @@ function CustomerDrawer({
               <a
                 className="page-head__sub"
                 style={{ marginInlineStart: 10 }}
-                href={`${pathForPage('subscriptions')}?q=${customer.telegramId}`}
+                href={`${pathForPage('subscriptions')}?customerId=${customer.id}`}
               >
                 همهٔ {count(subs.total)} سرویس ←
               </a>
@@ -1081,7 +1114,11 @@ function CustomerDrawer({
                 {(subs?.items.length ?? 0) === 0 && (
                   <tr>
                     <td className="empty" colSpan={4}>
-                      {subs === null ? 'خوانده نشد.' : 'سرویس فعالی ندارد.'}
+                      {listsLoading
+                        ? 'در حال بارگذاری…'
+                        : subs === null
+                          ? 'خوانده نشد.'
+                          : 'سرویس فعالی ندارد.'}
                     </td>
                   </tr>
                 )}

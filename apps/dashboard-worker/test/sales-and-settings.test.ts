@@ -554,18 +554,21 @@ describe('the read-only ledgers', () => {
     const a = await makeUser();
     const b = await makeUser();
     for (const { id } of [a, b]) {
+      // Derived from the user id, not random: a failure names the same row on
+      // the next run, which is the difference between a bug you can reproduce
+      // and one you can only re-roll.
       await baseEnv.DB.prepare(
         `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status)
          VALUES (?1, ?2, 'NEW_PURCHASE', 1000, 1, 0, 1000, 'COMPLETED')`,
       )
-        .bind(crypto.randomUUID(), id)
+        .bind(`zzsales-cid-order-${id}`, id)
         .run();
       await baseEnv.DB.prepare(
         `INSERT INTO subscriptions
            (public_id, user_id, plan_name_at_sale, price_irr, status, purchased_at)
          VALUES (?1, ?2, 'پلن', 1000, 'ACTIVE', now())`,
       )
-        .bind(crypto.randomUUID(), id)
+        .bind(`zzsales-cid-sub-${id}`, id)
         .run();
       await baseEnv.DB.prepare(
         `INSERT INTO wallet_entries (user_id, amount_irr, kind, idempotency_key)

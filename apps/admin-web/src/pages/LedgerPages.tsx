@@ -17,7 +17,7 @@
  * it was fixed.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   api,
   ApiError,
@@ -134,6 +134,7 @@ function ListPage<T extends { id: number }>({
   row: (item: T, reload: () => void) => ReactNode;
   fetchPage: (p: {
     q?: string;
+    customerId?: number;
     filter?: string;
     page: number;
     pageSize: number;
@@ -163,6 +164,21 @@ function ListPage<T extends { id: number }>({
   // Seeded from the address so «همهٔ N سفارش ←» on a customer's card lands on
   // this ledger already narrowed to them, rather than on the whole shop.
   const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
+  /*
+   * One customer, exactly, when the address names one.
+   *
+   * «همهٔ ۱۲ سفارش ←» on a customer's card links here with `?customerId=`, and
+   * twelve has to mean twelve: `q` is a fragment match and would also return
+   * an order whose public id contains those digits, or another customer whose
+   * username contains this one's. Read once on mount — arriving here IS the
+   * navigation, so there is nothing to keep in sync afterwards, and the
+   * operator can widen the view by typing in the box.
+   */
+  const customerId = useMemo(() => {
+    const raw = new URLSearchParams(window.location.search).get('customerId');
+    const n = raw === null ? NaN : Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : undefined;
+  }, []);
   const [filter, setFilter] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -176,12 +192,13 @@ function ListPage<T extends { id: number }>({
         page: toPage,
         pageSize: PAGE_SIZE,
         ...(sentQ ? { q: sentQ } : {}),
+        ...(customerId ? { customerId } : {}),
         ...(filter ? { filter } : {}),
       });
       setRows(d.items);
       setTotal(d.total);
       setExtra(d);
-      setNarrowed(sentQ !== '' || filter !== '');
+      setNarrowed(sentQ !== '' || filter !== '' || customerId !== undefined);
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -368,6 +385,7 @@ export function OrdersPage() {
           page: p.page,
           pageSize: p.pageSize,
           ...(p.q ? { q: p.q } : {}),
+          ...(p.customerId ? { customerId: p.customerId } : {}),
           ...(p.filter ? { status: p.filter } : {}),
         })
       }
@@ -429,6 +447,7 @@ export function SubscriptionsPage() {
           page: p.page,
           pageSize: p.pageSize,
           ...(p.q ? { q: p.q } : {}),
+          ...(p.customerId ? { customerId: p.customerId } : {}),
           ...(p.filter ? { status: p.filter } : {}),
         })
       }
@@ -496,6 +515,7 @@ export function TransactionsPage() {
           page: p.page,
           pageSize: p.pageSize,
           ...(p.q ? { q: p.q } : {}),
+          ...(p.customerId ? { customerId: p.customerId } : {}),
           ...(p.filter ? { kind: p.filter } : {}),
         })
       }
