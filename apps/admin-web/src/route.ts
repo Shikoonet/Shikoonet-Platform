@@ -20,7 +20,8 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { isPageId, type PageId } from './nav.js';
+import { brand } from './brand.js';
+import { isPageId, pageLabel, type PageId } from './nav.js';
 
 /**
  * Where this build is mounted — `/admin` in the deployed panel, `/` under
@@ -57,6 +58,24 @@ export function useRoute(): [PageId, (id: PageId, search?: string) => void] {
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
+
+  /**
+   * The section, in the browser tab.
+   *
+   * Until now every one of the thirty-one screens set the same title, so a
+   * bookmark, a restored window and a second tab opened on a payment were
+   * indistinguishable from one another — and browser history, which is the
+   * cheapest way back to a screen you had open an hour ago, listed the panel
+   * thirty-one times under one name.
+   *
+   * Here rather than in each page: the section is already known here, and a
+   * title written per page is a title that goes missing on the next page
+   * somebody adds. The brand comes second because the section is what the
+   * operator is looking for in a row of truncated tabs.
+   */
+  useEffect(() => {
+    document.title = `${pageLabel(page)} · ${brand()}`;
+  }, [page]);
 
   const navigate = useCallback((id: PageId, search = '') => {
     const path = pathForPage(id);
