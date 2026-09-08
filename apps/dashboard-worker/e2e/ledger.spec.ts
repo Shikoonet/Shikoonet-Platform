@@ -257,3 +257,60 @@ test('typing in the search box does not relabel figures it has not fetched yet',
   await page.getByRole('button', { name: 'جست‌وجو' }).click();
   await expect(main).toContainText('واریزِ این جست‌وجو');
 });
+/**
+ * The three ledgers, on a phone and on a desk.
+ *
+ * The 2026-09-07 walk found every table on this panel clipped at 390px, and
+ * the 2026-09-08 walk of staging found a money column breaking mid-number at
+ * 1440 — «۲٬۷۲۰٬۵۴۵ تومان» wrapping after the fourth digit so the first line
+ * read a different, smaller, entirely plausible figure.
+ *
+ * Both are layout, and layout is the one thing a unit test cannot see: happy-dom
+ * has no layout engine, so `getBoundingClientRect` there is zeros. Only a real
+ * browser can answer «does this wrap».
+ */
+
+const LEDGERS = ['/admin/orders', '/admin/subscriptions', '/admin/transactions'];
+
+test.describe('on a phone', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  for (const path of LEDGERS) {
+    test(`${path} reads as cards, not as a table pushed off the screen`, async ({ page }) => {
+      await page.goto(path);
+      await expect(page.locator('table.app-table tbody tr').first()).toBeVisible();
+
+      const overflow = await page.evaluate(() => {
+        const d = document.documentElement;
+        const main = document.querySelector('#main-content');
+        return { doc: d.scrollWidth - d.clientWidth, main: main ? main.scrollWidth - main.clientWidth : 0 };
+      });
+      expect(overflow.doc).toBeLessThanOrEqual(1);
+      expect(overflow.main).toBeLessThanOrEqual(1);
+
+      // The headings are gone and each cell carries its own, which is the
+      // whole of what makes the card readable.
+      await expect(page.locator('table.app-table thead')).toBeHidden();
+      const labels = await page
+        .locator('table.app-table tbody tr')
+        .first()
+        .locator('td')
+        .evaluateAll((tds) => tds.map((td) => td.getAttribute('data-label')));
+      expect(labels.length).toBeGreaterThan(2);
+      expect(labels.every((l) => l !== null && l !== '')).toBe(true);
+    });
+  }
+});
+
+test('a ledger can be ordered by a column, and the address says so', async ({ page }) => {
+  await page.goto('/admin/orders');
+  await expect(page.locator('table.app-table tbody tr').first()).toBeVisible();
+
+  const [response] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes('/api/v1/admin/orders?') && r.url().includes('sort=')),
+    page.getByRole('button', { name: /مبلغ/ }).click(),
+  ]);
+  expect(new URL(response.url()).searchParams.get('sort')).toBe('total_irr');
+  // In the address, so the screen can be sent to somebody.
+  expect(new URL(page.url()).searchParams.get('sort_orders')).toBe('total_irr:asc');
+});
