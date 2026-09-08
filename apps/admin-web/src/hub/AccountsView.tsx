@@ -258,7 +258,11 @@ export function AccountsView({ cache }: AccountsViewProps) {
           'صفحهٔ «امروز»، جمع‌ها و تطبیق بیرون می‌ماند — نه فقط از امروز به بعد.\n\n' +
           'پرداخت تازه به این حساب دیگر خودکار تایید نمی‌شود و به صف بررسی دستی می‌رود، ' +
           'پس اگر کارتی از این حساب هنوز به مشتری‌ها نشان داده می‌شود اول آن را بردار.\n\n' +
-          'با «بازگرداندن صدا» همه‌چیز برمی‌گردد؛ هیچ داده‌ای پاک نمی‌شود.',
+          // «باصدا» — the label actually printed on the button, not a
+          // description of it. CodeRabbit caught «بازگرداندن صدا» here, which
+          // is the same defect this branch exists to fix one layer down: text
+          // that tells an operator to press something the screen does not say.
+          'با «باصدا» همه‌چیز برمی‌گردد؛ هیچ داده‌ای پاک نمی‌شود.',
       unmute:
         'صدای این حساب برگردد؟ با تمام تاریخچه‌اش دوباره وارد صفحهٔ «امروز»، جمع‌ها و ' +
           'تطبیق می‌شود، و پرداخت به آن دوباره خودکار تایید می‌شود.',
