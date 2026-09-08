@@ -167,7 +167,7 @@ export function StatsPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">آمار فروشگاه</div>
+          <h2 className="page-head__title">آمار فروشگاه</h2>
           <div className="page-head__sub">
             همان اعدادی که ربات قدیمی زیر «آمار کلی ربات» نشان می‌دهد
           </div>

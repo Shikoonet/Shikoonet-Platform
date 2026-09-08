@@ -161,7 +161,7 @@ export function BotPage() {
     <div>
       <div className="page-head">
         <div>
-          <div className="page-head__title">ربات تلگرام</div>
+          <h2 className="page-head__title">ربات تلگرام</h2>
           <div className="page-head__sub">
             توکن را از @BotFather بگیر و همین‌جا بگذار. تلگرام قبل از ذخیره تایید می‌کند که توکن
             واقعاً مال یک ربات است — توکن غلط اصلاً ذخیره نمی‌شود.

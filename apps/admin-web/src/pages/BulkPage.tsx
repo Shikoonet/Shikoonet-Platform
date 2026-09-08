@@ -378,7 +378,7 @@ export function BulkPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">ارسال گروهی</div>
+          <h2 className="page-head__title">ارسال گروهی</h2>
           <div className="page-head__sub">
             {reach === null ? '…' : `${count(reach)} مشتری فعال`}
           </div>

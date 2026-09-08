@@ -180,7 +180,7 @@ export function ListPage<T>({
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">{pageLabel(pageId)}</div>
+          <h2 className="page-head__title">{pageLabel(pageId)}</h2>
           <div className="page-head__sub">
             {count(total)} {unit}
           </div>
