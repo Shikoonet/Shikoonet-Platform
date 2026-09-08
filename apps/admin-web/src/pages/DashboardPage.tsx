@@ -10,7 +10,11 @@
 
 import { useEffect, useState } from 'react';
 import { CustomerLink } from '../CustomerLink.js';
-import { api, ApiError } from '../api.js';
+import {
+  ApiError,
+  api,
+  type Attention,
+} from '../api.js';
 import { Icon } from '../icons.js';
 import { count, dateTime, planDisplayName, toman, tomanCompact } from '../format.js';
 import type { PageId } from '../nav.js';
@@ -28,7 +32,70 @@ const ORDER_STATUS: Record<string, { label: string; cls: string }> = {
   EXPIRED: { label: 'منقضی', cls: 'badge' },
 };
 
-export function DashboardPage({ onGo }: { onGo: (id: PageId) => void }) {
+/**
+ * The queues that still need a person, above everything else on the screen.
+ *
+ * Aggregates say how the shop is doing; these say what it is waiting on, and
+ * that is the question somebody opening the panel at nine in the morning is
+ * actually asking. Each chip is a BUTTON that lands on the screen which clears
+ * it — a number an operator has to go and find again is a number that has not
+ * saved them anything.
+ *
+ * Only the non-zero ones are drawn. «۰ دستگاه خاموش» is a line the eye must
+ * read before discarding, on a strip whose whole job is to be scanned; when
+ * every queue is empty the strip says so in one sentence instead.
+ */
+function AttentionRow({
+  attention,
+  onGo,
+}: {
+  attention: Attention;
+  onGo: (id: PageId, search?: string) => void;
+}) {
+  const chips: Array<{ n: number; label: string; go: () => void }> = [
+    {
+      n: attention.openClaims,
+      label: 'پرداخت در انتظار بررسی',
+      // The tab, not just the screen: landing on the default view of a
+      // six-tab page and having to find the queue again is most of the walk
+      // this chip exists to remove.
+      go: () => onGo('payments', '?tab=open'),
+    },
+    {
+      n: attention.pendingRequests,
+      label: 'درخواست نمایندگی',
+      go: () => onGo('requests'),
+    },
+    {
+      n: attention.expiringSubscriptions7d,
+      label: 'سرویس رو به انقضا (۷ روز)',
+      go: () => onGo('subscriptions'),
+    },
+    { n: attention.staleDevices, label: 'دستگاه خاموش', go: () => onGo('devices') },
+    { n: attention.panelsWithoutSecret, label: 'پنل بی‌رمز', go: () => onGo('panels') },
+  ];
+  const waiting = chips.filter((c) => c.n > 0);
+
+  return (
+    <div className="card attention">
+      <h4 className="attention__title">نیاز به توجه</h4>
+      {waiting.length === 0 ? (
+        <p className="muted">چیزی در انتظار نیست.</p>
+      ) : (
+        <div className="attention__chips">
+          {waiting.map((c) => (
+            <button key={c.label} type="button" className="attention__chip" onClick={c.go}>
+              <span className="attention__n">{count(c.n)}</span>
+              <span>{c.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function DashboardPage({ onGo }: { onGo: (id: PageId, search?: string) => void }) {
   const [data, setData] = useState<Overview | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -63,6 +130,8 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId) => void }) {
           <div className="page-head__sub">وضعیت فروشگاه در یک نگاه</div>
         </div>
       </div>
+
+      <AttentionRow attention={data.attention} onGo={onGo} />
 
       <div className="stats-grid">
         <Stat

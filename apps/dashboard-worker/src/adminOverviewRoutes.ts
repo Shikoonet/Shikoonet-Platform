@@ -17,6 +17,8 @@ import type { EnvName } from '@shikoo/contracts';
 import type { Hono } from 'hono';
 import type { D1Database } from '@shikoo/database';
 import { parseStatsDay, parseStatsRange, shopReport, shopStats } from '@shikoo/domain';
+import { tehranDayFromUtc } from '@shikoo/domain';
+import { loadCounts } from './mirzabotRoutes.js';
 
 type Ident = { email: string; role: import('@shikoo/contracts').AccessRole };
 
@@ -111,8 +113,61 @@ export function registerAdminOverviewRoutes(
         created_at: string;
       }>();
 
+    /*
+     * What still needs a person.
+     *
+     * The dashboard answered «how is the shop doing» and nothing about what is
+     * waiting, so the first act of every morning was visiting four screens to
+     * find out whether there was anything to do. These five are the queues a
+     * shop can actually be blocked on.
+     *
+     * `openClaims` is READ from the payments surface rather than counted here,
+     * and that is deliberate: a badge and its list disagreeing is the oldest
+     * bug on that surface, and it was fixed by making them one number. A third
+     * query would be a third answer.
+     */
+    const now = Date.now();
+    const { start: dayStart, end: dayEnd } = tehranDayFromUtc(now);
+    const counts = await loadCounts(db, dayStart, dayEnd);
+
+    const waiting = await db
+      .prepare(
+        `SELECT
+           (SELECT count(*) FROM reseller_requests WHERE status = 'PENDING') AS pending_requests,
+           -- ACTIVE only: a REMOVED service is not expiring, it is gone. And
+           -- bounded below by now(), so an expiry that already passed is not
+           -- counted as something to act on today — that is a different queue.
+           (SELECT count(*) FROM subscriptions
+             WHERE status = 'ACTIVE' AND expires_at IS NOT NULL
+               AND expires_at BETWEEN now() AND now() + interval '7 days') AS expiring_7d,
+           -- A device that has not reported for a day is one the shop is not
+           -- hearing bank SMS from, which is silent by nature: nothing errors,
+           -- payments simply stop verifying.
+           (SELECT count(*) FROM devices
+             WHERE active = 1
+               AND (last_seen_at IS NULL OR last_seen_at < ?1)) AS stale_devices,
+           -- An ACTIVE panel with no secret cannot provision. The catalogue
+           -- will happily sell from it.
+           (SELECT count(*) FROM provisioning_providers
+             WHERE status = 'ACTIVE' AND secret_ref IS NULL) AS panels_without_secret`,
+      )
+      .bind(now - 24 * 60 * 60 * 1000)
+      .first<{
+        pending_requests: number;
+        expiring_7d: number;
+        stale_devices: number;
+        panels_without_secret: number;
+      }>();
+
     return c.json({
       ok: true,
+      attention: {
+        openClaims: counts.total.open,
+        pendingRequests: Number(waiting?.pending_requests ?? 0),
+        expiringSubscriptions7d: Number(waiting?.expiring_7d ?? 0),
+        staleDevices: Number(waiting?.stale_devices ?? 0),
+        panelsWithoutSecret: Number(waiting?.panels_without_secret ?? 0),
+      },
       customers: stats.customers,
       customersToday: stats.customersToday,
       activeSubscriptions: stats.activeSubscriptions,
