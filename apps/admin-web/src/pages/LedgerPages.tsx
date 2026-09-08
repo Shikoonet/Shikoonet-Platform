@@ -17,7 +17,7 @@
  * it was fixed.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import {
   api,
   ApiError,
@@ -40,10 +40,7 @@ import {
 } from '../format.js';
 import { CustomerLink } from '../CustomerLink.js';
 import { ListPage, type FetchParams } from '../ListPage.js';
-import { pageLabel, type PageId } from '../nav.js';
 import { useWriteProps } from '../role.js';
-
-const PAGE_SIZE = 25;
 
 const ORDER_KIND_FA: Record<string, string> = {
   NEW_PURCHASE: 'خرید جدید',
