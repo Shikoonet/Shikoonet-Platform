@@ -200,6 +200,18 @@ export function CustomersPage() {
         </div>
       </div>
 
+      {/* Above the list, not under it.
+          It used to render after the pager and rely on `scrollIntoView` to
+          drag the operator down to it. That was written for the one way the
+          card could be opened — pressing «مدیریت» on a row. A pasted
+          `?id=` link now opens it on a cold load, and there the smooth scroll
+          is a page that arrives showing a table and then moves on its own,
+          past the thing that was actually asked for. Above the list it is
+          simply where the eye already is. */}
+      {openId !== null && (
+        <CustomerDrawer id={openId} onClose={close} onChanged={() => void load()} />
+      )}
+
       <div className="card">
         <form
           className="filters"
@@ -357,9 +369,6 @@ export function CustomersPage() {
         </div>
       </div>
 
-      {openId !== null && (
-        <CustomerDrawer id={openId} onClose={close} onChanged={() => void load()} />
-      )}
     </>
   );
 }
@@ -481,6 +490,9 @@ function CustomerDrawer({
   // rather than reasoning about it.
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    // `block: 'nearest'` and nothing when it is already in view — the card
+    // sits above the list now, so on a cold `?id=` load the browser is already
+    // looking at it and scrolling would move the page away from it.
     root.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [id]);
 
