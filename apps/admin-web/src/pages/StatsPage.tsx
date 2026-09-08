@@ -20,6 +20,7 @@
 import { useEffect, useState } from 'react';
 import { formatJalali, jalaliToIsoDate, toJalali, type JalaliDate } from '@shikoo/contracts';
 import { CustomerLink } from '../CustomerLink.js';
+import { BarChart } from '../BarChart.js';
 import { DateField } from '../DateField.js';
 import {
   api,
@@ -29,7 +30,12 @@ import {
   type StatsRange,
 } from '../api.js';
 import { Icon } from '../icons.js';
-import { count, toman, tomanCompact } from '../format.js';
+import {
+  count,
+  dateOnly,
+  toman,
+  tomanCompact,
+} from '../format.js';
 
 /** How many wallets «بیشترین موجودی» lists. A glance, not a report. */
 const TOP_WALLETS = 10;
@@ -286,6 +292,19 @@ export function StatsPage() {
               نخریده، و شمردنش این‌جا یک ریال را دو بار می‌شمارد — یک بار موقع واریز و یک
               بار موقع خرید.
             </p>
+          </Section>
+
+          {/* Above the figures, because shape is the question the numbers
+              cannot answer: «۴۰ میلیون» reads the same whether it arrived in a
+              week or on one afternoon. */}
+          <Section
+            title="فروش، روز به روز"
+            sub="هر میله یک روز تهرانی است؛ روزهای بدون فروش هم رسم می‌شوند."
+          >
+            <BarChart
+              series={data.byDay.map((d) => ({ label: dateOnly(d.day), value: d.salesIrr }))}
+              format={(v) => toman(v)}
+            />
           </Section>
 
           <Section
