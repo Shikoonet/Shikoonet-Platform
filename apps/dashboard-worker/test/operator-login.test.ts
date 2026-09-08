@@ -389,7 +389,27 @@ describe('the rate limit in front of the login', () => {
     expect(over.status).toBe(429);
   });
 
-  it('does not lock everybody else out with one attacker', async () => {
+  /*
+   * Twenty-five real logins, and the default timeout is five seconds.
+   *
+   * Every one of them costs a password verification — including the twenty-five
+   * against addresses that do not exist, because this route hashes a dummy on
+   * purpose so an unknown address cannot be told from a wrong password by how
+   * long the answer takes. That is the feature; the cost is the price of it.
+   *
+   * Measured on 2026-09-08 on an idle machine: **3,832 ms under vitest 3.2.7
+   * and 4,101 ms under 2.1.9** — the same test, seventy-seven per cent of its
+   * own budget, on both runners. So under a full `pnpm -r` run, with eight
+   * packages' worth of work already on the machine, it crosses five seconds and
+   * fails for a reason that has nothing to do with the login. It did exactly
+   * that once, and cost an afternoon proving the runner was innocent.
+   *
+   * Fifteen seconds, and per-test rather than a raised `testTimeout`: a suite
+   * that gives every test fifteen seconds stops noticing the one that hangs.
+   * The only honest alternative is fewer attempts, and the number is
+   * `LOGIN_ATTEMPTS_PER_IP + 5` because the claim IS «past the limit».
+   */
+  it('does not lock everybody else out with one attacker', { timeout: 15_000 }, async () => {
     // The other half, and the reason the key is the address rather than a
     // constant: the old `?? 'unknown'` would have put this operator in the same
     // bucket as the flood above and answered them 429 too.
