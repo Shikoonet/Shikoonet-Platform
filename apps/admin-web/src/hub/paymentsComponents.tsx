@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { CustomerLink } from '../CustomerLink.js';
 import type { PaymentItem } from './paymentReview.js';
 import { formatTomanFromIrr } from './format.js';
 import { IdentifierText } from './IdentifierText.js';
@@ -242,7 +243,10 @@ export function BotVerifiedTransactionRow({
       <td>{customerCell(item)}</td>
       <td className="txn-row__telegram-id">
         {telegramId ? (
-          <span className="telegram-id-cell">{telegramId}</span>
+          // No `users.id` on this row — the hub's payment tables are built from
+          // what the bank and the bot reported, not from a join. `?q=` finds
+          // them in one more query rather than leaving the column a dead end.
+          <CustomerLink customer={{ telegramId }} className="telegram-id-cell" />
         ) : (
           <span className="muted">—</span>
         )}

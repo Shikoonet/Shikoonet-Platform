@@ -17,39 +17,31 @@
  * it was fixed.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   api,
   ApiError,
   type EntryRow,
   type OrderRow,
   type SubscriptionRow,
-  type CustomerRef,
 } from '../api.js';
 import {
+  ORDER_STATUS_FA,
+  SUB_STATUS_FA,
   actorFa,
   count,
   dateTime,
   entryNoteFa,
   gigabytes,
   planDisplayName,
+  statusTone,
   toman,
 } from '../format.js';
+import { CustomerLink } from '../CustomerLink.js';
 import { pageLabel, type PageId } from '../nav.js';
 import { useWriteProps } from '../role.js';
 
 const PAGE_SIZE = 25;
-
-const ORDER_STATUS_FA: Record<string, string> = {
-  DRAFT: 'پیش‌نویس',
-  AWAITING_PAYMENT: 'در انتظار پرداخت',
-  PAID: 'پرداخت شده',
-  PROVISIONING: 'در حال تحویل',
-  COMPLETED: 'تکمیل شده',
-  FAILED: 'ناموفق',
-  CANCELLED: 'لغو شده',
-  EXPIRED: 'منقضی',
-};
 
 const ORDER_KIND_FA: Record<string, string> = {
   NEW_PURCHASE: 'خرید جدید',
@@ -58,15 +50,6 @@ const ORDER_KIND_FA: Record<string, string> = {
   ADD_TIME: 'زمان اضافه',
   WALLET_TOPUP: 'شارژ کیف پول',
   TRANSFER: 'انتقال',
-};
-
-const SUB_STATUS_FA: Record<string, string> = {
-  ACTIVE: 'فعال',
-  PENDING_PAYMENT: 'در انتظار پرداخت',
-  ON_HOLD: 'در انتظار اتصال',
-  DISABLED: 'غیرفعال',
-  REMOVED: 'حذف شده',
-  FAILED: 'ناموفق',
 };
 
 const ENTRY_KIND_FA: Record<string, string> = {
@@ -91,10 +74,6 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function who(c: CustomerRef): string {
-  return c.username ? `@${c.username}` : String(c.telegramId);
-}
-
 /**
  * What was bought, for an order whose product is not a plan.
  *
@@ -114,14 +93,6 @@ function whatWasBought(o: OrderRow): string {
 }
 
 /** Green for a good end state, red for a bad one, plain for in-flight. */
-function tone(status: string): string {
-  if (['COMPLETED', 'ACTIVE', 'PAID'].includes(status)) return 'badge badge-active';
-  if (['FAILED', 'CANCELLED', 'EXPIRED', 'REMOVED', 'DISABLED'].includes(status)) {
-    return 'badge badge-block';
-  }
-  return 'badge badge-info';
-}
-
 /**
  * The frame all three share: a search box, one filter, a table, a pager.
  *
@@ -163,6 +134,7 @@ function ListPage<T extends { id: number }>({
   row: (item: T, reload: () => void) => ReactNode;
   fetchPage: (p: {
     q?: string;
+    customerId?: number;
     filter?: string;
     page: number;
     pageSize: number;
@@ -189,7 +161,24 @@ function ListPage<T extends { id: number }>({
    */
   const [narrowed, setNarrowed] = useState(false);
   const [page, setPage] = useState(1);
-  const [q, setQ] = useState('');
+  // Seeded from the address so «همهٔ N سفارش ←» on a customer's card lands on
+  // this ledger already narrowed to them, rather than on the whole shop.
+  const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
+  /*
+   * One customer, exactly, when the address names one.
+   *
+   * «همهٔ ۱۲ سفارش ←» on a customer's card links here with `?customerId=`, and
+   * twelve has to mean twelve: `q` is a fragment match and would also return
+   * an order whose public id contains those digits, or another customer whose
+   * username contains this one's. Read once on mount — arriving here IS the
+   * navigation, so there is nothing to keep in sync afterwards, and the
+   * operator can widen the view by typing in the box.
+   */
+  const customerId = useMemo(() => {
+    const raw = new URLSearchParams(window.location.search).get('customerId');
+    const n = raw === null ? NaN : Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : undefined;
+  }, []);
   const [filter, setFilter] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -203,12 +192,13 @@ function ListPage<T extends { id: number }>({
         page: toPage,
         pageSize: PAGE_SIZE,
         ...(sentQ ? { q: sentQ } : {}),
+        ...(customerId ? { customerId } : {}),
         ...(filter ? { filter } : {}),
       });
       setRows(d.items);
       setTotal(d.total);
       setExtra(d);
-      setNarrowed(sentQ !== '' || filter !== '');
+      setNarrowed(sentQ !== '' || filter !== '' || customerId !== undefined);
     } catch (e) {
       setErr(message(e));
     } finally {
@@ -395,6 +385,7 @@ export function OrdersPage() {
           page: p.page,
           pageSize: p.pageSize,
           ...(p.q ? { q: p.q } : {}),
+          ...(p.customerId ? { customerId: p.customerId } : {}),
           ...(p.filter ? { status: p.filter } : {}),
         })
       }
@@ -420,13 +411,15 @@ export function OrdersPage() {
               full id by the bot, so an admin reading two characters less was
               comparing a different string to the one being quoted at them. */}
           <td className="ltr">{o.publicId}</td>
-          <td className="ltr">{who(o.customer)}</td>
+          <td>
+            <CustomerLink customer={o.customer} />
+          </td>
           <td>{ORDER_KIND_FA[o.kind] ?? o.kind}</td>
           <td>{whatWasBought(o)}</td>
           <td>{toman(o.totalIrr)}</td>
           <td>{o.discountIrr > 0 ? toman(o.discountIrr) : '—'}</td>
           <td>
-            <span className={tone(o.status)}>{ORDER_STATUS_FA[o.status] ?? o.status}</span>
+            <span className={statusTone(o.status)}>{ORDER_STATUS_FA[o.status] ?? o.status}</span>
             {/* The reason the last attempt failed, as the panel already showed
                 it: a category and a panel name, never a stack trace and never a
                 credential. The order number in the first column is the same
@@ -454,6 +447,7 @@ export function SubscriptionsPage() {
           page: p.page,
           pageSize: p.pageSize,
           ...(p.q ? { q: p.q } : {}),
+          ...(p.customerId ? { customerId: p.customerId } : {}),
           ...(p.filter ? { status: p.filter } : {}),
         })
       }
@@ -472,7 +466,9 @@ export function SubscriptionsPage() {
       }
       row={(s) => (
         <tr key={s.id}>
-          <td className="ltr">{who(s.customer)}</td>
+          <td>
+            <CustomerLink customer={s.customer} />
+          </td>
           {/* The names as they were at sale — renaming a config today must not
               rewrite what this customer bought. */}
           {/* Not `planDisplayName` here, deliberately: this table has no
@@ -499,7 +495,7 @@ export function SubscriptionsPage() {
           <td>{dateTime(s.purchasedAt)}</td>
           <td>{s.expiresAt === null ? 'بدون انقضا' : dateTime(s.expiresAt)}</td>
           <td>
-            <span className={tone(s.status)}>{SUB_STATUS_FA[s.status] ?? s.status}</span>
+            <span className={statusTone(s.status)}>{SUB_STATUS_FA[s.status] ?? s.status}</span>
           </td>
         </tr>
       )}
@@ -519,6 +515,7 @@ export function TransactionsPage() {
           page: p.page,
           pageSize: p.pageSize,
           ...(p.q ? { q: p.q } : {}),
+          ...(p.customerId ? { customerId: p.customerId } : {}),
           ...(p.filter ? { kind: p.filter } : {}),
         })
       }
@@ -578,7 +575,9 @@ export function TransactionsPage() {
       }
       row={(e) => (
         <tr key={e.id}>
-          <td className="ltr">{who(e.customer)}</td>
+          <td>
+            <CustomerLink customer={e.customer} />
+          </td>
           <td className={e.amountIrr < 0 ? 'negative' : undefined}>{toman(e.amountIrr)}</td>
           <td>{ENTRY_KIND_FA[e.kind] ?? e.kind}</td>
           <td className="ltr">{actorFa(e.actor) ?? '—'}</td>
