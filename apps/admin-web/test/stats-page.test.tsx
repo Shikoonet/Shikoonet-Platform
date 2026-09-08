@@ -26,6 +26,7 @@ const BASE: ShopStatsResponse = {
   range: 'all',
   startMs: null,
   endMs: null,
+  byDay: [],
 
   newCustomers: 15025,
   buyers: 4617,

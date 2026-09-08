@@ -3008,29 +3008,9 @@
     transition-duration: 0.01ms !important;
   }}
 
-/* === Sortable header button (fills <th>) === */
-.th-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  margin: 0;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  text-align: start;
-  width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.th-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 2px;
-}
+/* `.th-button` moved to theme.css when the panel's own ledgers grew
+   sortable headers — the hub is no longer its only reader, and a class two
+   stylesheets define is how one screen ends up looking like neither. */
 
 /* === Mobile sort dropdown === */
 .sort-dropdown {
@@ -3128,6 +3108,24 @@
 .data-table td {
   overflow: hidden;
   word-break: break-word;
+}
+
+/* …except a money cell, which is one word.
+   `word-break: break-word` above breaks INSIDE a number whatever
+   `white-space` says — measured in Chromium 2026-09-08 as
+   `ws=nowrap wb=break-word` on a 150px cell, with «۴٬۲۲۳٬۱۶۵ تومان» coming
+   back in pieces on staging. The first fragment reads as a smaller, entirely
+   plausible figure, which is worse than a value visibly cut off.
+
+   Written HERE rather than in `theme.css`, and scoped under `.hub`, because
+   both halves of that are load-bearing: naming `.data-table` in the panel's
+   stylesheet made it a class both files define, and `css-scope.test.ts` — 
+   correctly — refused it. `theme.css` keeps the plain `td.num` rule for the
+   panel's own tables; this one exists only to outrank the line above it. */
+.hub .data-table td.num,
+.hub .data-table td.money {
+  white-space: nowrap;
+  word-break: normal;
 }
 .data-table td > code,
 .txn-table .identifier-text code {
