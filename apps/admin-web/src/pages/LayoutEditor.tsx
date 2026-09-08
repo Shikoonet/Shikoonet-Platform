@@ -26,7 +26,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { MAX_CATALOG_ROWS, MAX_ROW_WIDTH, groupIntoRows } from '@shikoo/contracts';
+import { stripCustomEmoji, MAX_CATALOG_ROWS, MAX_ROW_WIDTH, groupIntoRows } from '@shikoo/contracts';
 import { ButtonGrid, GRID_HELP, type GridChip } from './ButtonGrid.js';
 import { api, ApiError, type LayoutItem, type LayoutScope } from '../api.js';
 import { count } from '../format.js';
@@ -52,7 +52,9 @@ type Rows = LayoutButton[][];
 
 /** This screen's row, found again by the key the grid handed back. */
 function toChip(b: LayoutButton): GridChip {
-  return { key: String(b.id), label: b.label, hint: b.hint };
+  // The preview draws what the bot sends, so a custom emoji shows as its
+  // fallback glyph rather than as the tag it is stored in.
+  return { key: String(b.id), label: stripCustomEmoji(b.label), hint: b.hint };
 }
 
 export function LayoutEditor({

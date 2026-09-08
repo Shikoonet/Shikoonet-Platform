@@ -12,7 +12,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NAV, navItem, pageLabel, type PageId } from '../src/nav.js';
 import { App } from '../src/App.js';
 
@@ -218,5 +218,92 @@ describe('the shell', () => {
     await waitFor(() => expect(document.querySelector('.sidebar-link.active')).toBeTruthy());
     const active = document.querySelector('.sidebar-link.active');
     expect(active?.textContent).toContain('داشبورد');
+  });
+});
+
+/**
+ * The name in the sidebar, the name in the header and the name the page draws
+ * over itself must be the same name.
+ *
+ * `nav.test.tsx` already guarded that no two sections share a label. What it
+ * could not see is a section drawing a DIFFERENT label over itself: «اشتراک‌های
+ * مشتری» rendered a page headed «سرویس‌ها», which is the name of the catalogue
+ * section two groups above it. An operator who clicked one entry and read the
+ * other's name has no way to tell which screen they are on — and the substring
+ * rule above, which exists precisely so labels cannot be confused, was passing
+ * the whole time because it only ever read `nav.ts`.
+ *
+ * Found by walking the live panel on 2026-09-07, not by any assertion.
+ *
+ * The hub's six finance screens are excluded: they have no page head at all,
+ * they carry their own header, and merging the two shells is its own change.
+ *
+ * One render and twenty-five clicks rather than twenty-five renders: mounting
+ * the whole panel per section took two and a half minutes, which is a test
+ * nobody runs while they work.
+ */
+describe('a section and its page agree on the name', () => {
+  const HUB: PageId[] = ['payments', 'statistics', 'today', 'accounts', 'banks', 'devices'];
+  const PANEL = ALL.filter((id) => !HUB.includes(id));
+
+  const signedIn = () =>
+    vi.fn(async (url: string) =>
+      String(url).endsWith('/me')
+        ? { ok: true, status: 200, json: async () => ({ ok: true, email: 'a@b.c', role: 'ADMIN' }) }
+        : Promise.reject(new Error('not stubbed')),
+    );
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', signedIn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function open(id: PageId): Promise<void> {
+    const link = await screen.findByRole('button', { name: new RegExp(pageLabel(id)) });
+    fireEvent.click(link);
+    await waitFor(() => expect(document.querySelector('.sidebar-link.active')).toBeTruthy());
+  }
+
+  // Twenty-five sections in one test, each mounting a screen that then fails
+  // its own fetch: comfortably past vitest's five-second default.
+  it('draws each section its own name, in the same element every time', { timeout: 60_000 }, async () => {
+    render(<App />);
+    await waitFor(() => expect(document.querySelector('.sidebar-link')).toBeTruthy());
+
+    const wrong: string[] = [];
+    const headless: string[] = [];
+    for (const id of PANEL) {
+      await open(id);
+      if (!document.querySelector('.page-head')) { headless.push(id); continue; }
+      // The title ELEMENT, not merely the text somewhere on the page: three
+      // pages drew their heading as a bare `h1` or `h2` inside `.page-head`
+      // while twenty-two used `.page-head__title`, so the same heading came
+      // out at three different sizes depending on the screen.
+      const drawn = document.querySelector('.page-head__title')?.textContent?.trim() ?? null;
+      if (drawn !== pageLabel(id)) wrong.push(`${id}: «${drawn}» ≠ «${pageLabel(id)}»`);
+    }
+    expect(wrong).toEqual([]);
+    // A page that returns early on a failed load draws no head at all, so the
+    // operator reading the red box cannot tell which screen produced it. Only
+    // the dashboard does that today; the list is pinned so a second one is a
+    // decision somebody makes rather than something that happens.
+    expect(headless).toEqual(['dashboard']);
+  });
+
+  it('puts the section in the browser tab', async () => {
+    // The tab said «پنل مدیریت شیکو» on all thirty-one screens, so a bookmark,
+    // a restored window and a second tab were indistinguishable.
+    render(<App />);
+    await waitFor(() => expect(document.querySelector('.sidebar-link')).toBeTruthy());
+
+    await open('customers');
+    await waitFor(() => expect(document.title).toContain(pageLabel('customers')));
+
+    await open('orders');
+    await waitFor(() => expect(document.title).toContain(pageLabel('orders')));
+    expect(document.title).not.toContain(pageLabel('customers'));
   });
 });

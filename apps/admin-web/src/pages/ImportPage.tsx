@@ -665,11 +665,13 @@ export function ImportPage() {
   return (
     <div>
       <div className="page-head">
-        <h2>ایمپورت میرزابات</h2>
-        <p className="muted">
-          دادهٔ ربات قدیمی را از یک بکاپ MySQL به این پنل می‌آورد. فایل را همین‌جا آپلود کن یا با
-          SCP روی سرور بگذار — هر دو به یک پوشه می‌روند.
-        </p>
+        <div>
+          <h1 className="page-head__title">ایمپورت میرزابات</h1>
+          <p className="page-head__sub">
+            دادهٔ ربات قدیمی را از یک بکاپ MySQL به این پنل می‌آورد. فایل را همین‌جا آپلود کن یا با
+            SCP روی سرور بگذار — هر دو به یک پوشه می‌روند.
+          </p>
+        </div>
       </div>
 
       {err && <div className="alert-error">{err}</div>}

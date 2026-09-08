@@ -120,6 +120,12 @@ function shapeSetting(r: SettingRow) {
   };
 }
 
+/** Same ceiling the other lists use, so one screen cannot ask for the table. */
+const RequestListQuery = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(25),
+});
+
 export function registerSettingsRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
@@ -243,8 +249,26 @@ export function registerSettingsRoutes(
 
   // --- لیست درخواست‌ها -----------------------------------------------------
 
+  /**
+   * The queue, paginated like every other list in the panel.
+   *
+   * It answered `LIMIT 200` with no `total` until 2026-09-08, so the screen
+   * drew every open request at once — 171 of them on staging, a page eighteen
+   * thousand pixels tall — and request two hundred and one was invisible with
+   * nothing on the screen saying so. The shape is `{ok,total,page,pageSize,
+   * items}` because that is what `customers`, `orders`, `subscriptions` and
+   * `wallet-entries` already answer; a third shape would be one more thing the
+   * panel has to know per screen.
+   */
   app.get('/api/v1/admin/reseller-requests', async (c) => {
     const status = c.req.query('status');
+    const paging = RequestListQuery.safeParse({
+      page: c.req.query('page') ?? undefined,
+      pageSize: c.req.query('pageSize') ?? undefined,
+    });
+    if (!paging.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
+    const { page, pageSize } = paging.data;
+
     const where: string[] = [];
     const params: unknown[] = [];
     if (status) {
@@ -256,6 +280,17 @@ export function registerSettingsRoutes(
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
+    // Counted over the filter rather than over the page, which is the whole
+    // point of returning it: the screen says «۱۷۱ درخواست» above a table of 25.
+    const totalRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM reseller_requests r ${whereSql}`,
+    )
+      .bind(...params)
+      .first<{ n: number }>();
+    const total = Number(totalRow?.n ?? 0);
+
+    const limitParam = params.length + 1;
+    const offsetParam = params.length + 2;
     const rows = await c.env.DB.prepare(
       `SELECT r.id, r.description, r.kind, r.status, r.created_at, r.decided_at,
               u.id AS user_id, u.telegram_id, u.username, u.is_reseller
@@ -263,9 +298,9 @@ export function registerSettingsRoutes(
          JOIN users u ON u.id = r.user_id
          ${whereSql}
         ORDER BY CASE WHEN r.status = 'PENDING' THEN 0 ELSE 1 END, r.id DESC
-        LIMIT 200`,
+        LIMIT ?${limitParam} OFFSET ?${offsetParam}`,
     )
-      .bind(...params)
+      .bind(...params, pageSize, (page - 1) * pageSize)
       .all<{
         id: number;
         description: string | null;
@@ -281,6 +316,9 @@ export function registerSettingsRoutes(
 
     return c.json({
       ok: true,
+      total,
+      page,
+      pageSize,
       items: (rows.results ?? []).map((r) => ({
         id: r.id,
         description: r.description,
