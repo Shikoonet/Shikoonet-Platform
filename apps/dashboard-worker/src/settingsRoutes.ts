@@ -83,6 +83,22 @@ const DecisionBody = z
   .strict();
 
 /**
+ * The same decision, taken for a selection.
+ *
+ * A hundred at a time: the queue held 171 open requests on staging, so the
+ * cap has to be worth pressing while still being a cap. `ids` is a list of
+ * request numbers, not of customers — deciding «this row» is what the screen
+ * offers, and two rows can belong to one person.
+ */
+const BulkDecisionBody = z
+  .object({
+    ids: z.array(z.number().int().positive()).min(1).max(100),
+    status: z.enum(['APPROVED', 'REJECTED']),
+    tier: z.enum(['n', 'n2']).nullable().default(null),
+  })
+  .strict();
+
+/**
  * The one thing an operator may change about a level.
  *
  * NOT the name. The label is seeded by 0047 and shown, and «قیمت حجم و زمان
@@ -334,6 +350,92 @@ export function registerSettingsRoutes(
         },
       })),
     });
+  });
+
+  /**
+   * One decision, taken for a selection.
+   *
+   * **Registered before `:id`, and that ordering is load-bearing.** To hono's
+   * router `decide` is a perfectly good `:id` segment, so with these two the
+   * other way round every bulk press would answer `invalid_id` — which looks
+   * like a client bug and is a routing one. There is a test that presses this
+   * path and expects `invalid_body` rather than `invalid_id`, so the order
+   * cannot quietly swap back.
+   *
+   * **Per row, not per batch.** Each id gets its own answer, because the
+   * interesting case is the one that was already decided on somebody else's
+   * screen while this one was being read: refusing the whole selection for it
+   * would punish the operator for a race, and deciding it anyway would flip a
+   * reseller flag from a stale view.
+   *
+   * ponytail: a loop of single decisions, not one statement. The single route
+   * is not transactional either, and the rows are independent — the batch has
+   * no invariant across it to protect. If this ever needs to be atomic, the
+   * place is one `UPDATE ... WHERE id = ANY(...) AND status = 'PENDING'`
+   * followed by a read-back of what it touched.
+   */
+  app.post('/api/v1/admin/reseller-requests/decide', async (c) => {
+    const ident = c.get('identity');
+    if (ident.role !== 'ADMIN') return c.json({ ok: false, error: 'forbidden' }, 403);
+
+    const parsed = BulkDecisionBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false, error: 'invalid_body' }, 400);
+    const { ids, status, tier } = parsed.data;
+
+    const results: Array<{ id: number; ok: boolean; error?: string }> = [];
+    for (const id of ids) {
+      const before = await c.env.DB.prepare(
+        `SELECT r.id, r.status, r.user_id, u.is_reseller
+           FROM reseller_requests r JOIN users u ON u.id = r.user_id
+          WHERE r.id = ?1`,
+      )
+        .bind(id)
+        .first<{ id: number; status: string; user_id: number; is_reseller: boolean }>();
+      if (!before) {
+        results.push({ id, ok: false, error: 'not_found' });
+        continue;
+      }
+      if (before.status !== 'PENDING') {
+        results.push({ id, ok: false, error: 'already_decided' });
+        continue;
+      }
+
+      await c.env.DB.prepare(
+        `UPDATE reseller_requests SET status = ?1, decided_at = now() WHERE id = ?2`,
+      )
+        .bind(status, id)
+        .run();
+
+      if (status === 'APPROVED') {
+        await c.env.DB.prepare(
+          `UPDATE users SET is_reseller = true, reseller_tier = ?2, updated_at = now()
+            WHERE id = ?1`,
+        )
+          .bind(before.user_id, tier)
+          .run();
+      }
+
+      // One audit row per request, the same shape the single route writes —
+      // «who became a reseller and when» must read identically whichever
+      // button was pressed.
+      await audit(
+        c.env.DB,
+        ident,
+        status === 'APPROVED' ? 'reseller_request.approved' : 'reseller_request.rejected',
+        'RESELLER_REQUEST',
+        String(id),
+        { status: before.status, is_reseller: before.is_reseller },
+        {
+          status,
+          is_reseller: status === 'APPROVED' ? true : before.is_reseller,
+          ...(status === 'APPROVED' ? { reseller_tier: tier } : {}),
+        },
+        null,
+      );
+      results.push({ id, ok: true });
+    }
+
+    return c.json({ ok: true, results });
   });
 
   app.post('/api/v1/admin/reseller-requests/:id', async (c) => {

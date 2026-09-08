@@ -256,8 +256,8 @@ export function TodayView({ cache }: TodayViewProps) {
                     <td>
                       {directionLabel(t.direction)} <NewBadge isNew={isNew} />
                     </td>
-                    <td>{formatTomanFromIrr(t.amount_irr)}</td>
-                    <td>{formatTomanFromIrr(t.balance_irr)}</td>
+                    <td className="num">{formatTomanFromIrr(t.amount_irr)}</td>
+                    <td className="num">{formatTomanFromIrr(t.balance_irr)}</td>
                     <td>
                       <AccountCell
                         accountDisplay={t.account_display}
@@ -318,10 +318,10 @@ export function TodayView({ cache }: TodayViewProps) {
                     }}
                   >
                     <td>{directionLabel(t.direction)}</td>
-                    <td>
+                    <td className="num">
                       {formatTomanFromIrr(t.amount_irr)} <NewBadge isNew={isNew} />
                     </td>
-                    <td>{formatTomanFromIrr(t.balance_irr)}</td>
+                    <td className="num">{formatTomanFromIrr(t.balance_irr)}</td>
                     <td>
                       {/* One line, ellipsised, whole value in the tooltip.
                           Printed bare this wrapped as «Auto:» / «****57.» /
