@@ -613,6 +613,102 @@ describe('the read-only ledgers', () => {
     }
   });
 
+  it('bounds a ledger by Tehran days, not by UTC ones', async () => {
+    // 2026-09-06T20:30:00Z is 2026-09-07 00:00 in Tehran. A UTC-bounded query
+    // files it under the 6th, which is the shop's yesterday — and every daily
+    // figure an operator reconciles against is a Tehran day.
+    const { id: userId } = await makeUser();
+    await baseEnv.DB.prepare(
+      `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status, created_at)
+       VALUES (?1, ?2, 'NEW_PURCHASE', 1000, 1, 0, 1000, 'COMPLETED', to_timestamp(?3 / 1000.0))`,
+    )
+      .bind(crypto.randomUUID(), userId, Date.UTC(2026, 8, 6, 20, 30, 0))
+      .run();
+
+    const on7th = await app.request(
+      `/api/v1/admin/orders?customerId=${userId}&from=2026-09-07&to=2026-09-07`,
+      {},
+      envAs(ADMIN),
+    );
+    expect(((await on7th.json()) as { total: number }).total).toBe(1);
+
+    const on6th = await app.request(
+      `/api/v1/admin/orders?customerId=${userId}&from=2026-09-06&to=2026-09-06`,
+      {},
+      envAs(ADMIN),
+    );
+    expect(((await on6th.json()) as { total: number }).total).toBe(0);
+  });
+
+  it('orders by a column the caller names, and refuses one it invents', async () => {
+    const { id: userId } = await makeUser();
+    for (const total of [300_000, 100_000, 200_000]) {
+      await baseEnv.DB.prepare(
+        `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, 0, ?3, 'COMPLETED')`,
+      )
+        .bind(crypto.randomUUID(), userId, total)
+        .run();
+    }
+
+    const res = await app.request(
+      `/api/v1/admin/orders?customerId=${userId}&sort=total_irr&dir=asc`,
+      {},
+      envAs(ADMIN),
+    );
+    const body = (await res.json()) as { items: Array<{ id: number; totalIrr: number }> };
+    // Against an ORDER BY Postgres computed separately, not against the array
+    // sorted in this test.
+    const { results } = await baseEnv.DB.prepare(
+      `SELECT id FROM orders WHERE user_id = ?1 ORDER BY total_irr ASC, id DESC`,
+    )
+      .bind(userId)
+      .all<{ id: number }>();
+    expect(body.items.map((o) => o.id)).toEqual((results ?? []).map((r) => Number(r.id)));
+
+    // A column name is not a free text field on its way into ORDER BY.
+    const evil = await app.request(
+      `/api/v1/admin/orders?sort=total_irr;DROP`,
+      {},
+      envAs(ADMIN),
+    );
+    expect(evil.status).toBe(400);
+  });
+
+  it('hands the same rows back as a file, and only to an admin', async () => {
+    const { id: userId } = await makeUser();
+    for (let i = 0; i < 3; i++) {
+      await baseEnv.DB.prepare(
+        `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', 1000, 1, 0, 1000, 'COMPLETED')`,
+      )
+        .bind(crypto.randomUUID(), userId)
+        .run();
+    }
+
+    const res = await app.request(
+      `/api/v1/admin/orders?customerId=${userId}&format=csv`,
+      {},
+      envAs(ADMIN),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/csv');
+    const text = await res.text();
+    // The BOM, so Excel opens Persian as Persian rather than as mojibake.
+    expect(text.charCodeAt(0)).toBe(0xfeff);
+    // Header plus one line per row — the file is the filter, not the page.
+    expect(text.trim().split(String.fromCharCode(13, 10))).toHaveLength(4);
+
+    // Reading a page and taking a file of customers out of the building are
+    // different acts; the second is ADMIN only, exactly as `/payments` has it.
+    const asReviewer = await app.request(
+      `/api/v1/admin/orders?customerId=${userId}&format=csv`,
+      {},
+      envAs(REVIEWER),
+    );
+    expect(asReviewer.status).toBe(403);
+  });
+
   it('offers no way to write any of the three', async () => {
     // The wallet is append-only in Postgres and orders are written by the
     // purchase flow; a second writer here would race both.
