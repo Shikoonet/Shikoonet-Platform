@@ -2525,10 +2525,18 @@ export const api = {
     });
   },
 
-  resellerRequests(status?: string) {
+  resellerRequests(p: { status?: string; page?: number; pageSize?: number } = {}) {
     const qs = new URLSearchParams();
-    if (status) qs.set('status', status);
-    return req<{ ok: boolean; items: ResellerRequestRow[] }>(`/reseller-requests?${qs.toString()}`);
+    if (p.status) qs.set('status', p.status);
+    if (p.page) qs.set('page', String(p.page));
+    if (p.pageSize) qs.set('pageSize', String(p.pageSize));
+    return req<{
+      ok: boolean;
+      total: number;
+      page: number;
+      pageSize: number;
+      items: ResellerRequestRow[];
+    }>(`/reseller-requests?${qs.toString()}`);
   },
 
   /** `tier` is only read on APPROVED; null there means level one. */
