@@ -1604,6 +1604,29 @@ fi
 kill "$HOLDER" 2>/dev/null || true
 wait "$HOLDER" 2>/dev/null || true
 
+# And it is a DIFFERENT file from the release lock. Those two were once the
+# same inode taken by two protocols on two file descriptors, which is the same
+# as no lock at all: a deploy and a release could each hold "the" lock and
+# never see the other. Every case above overrides LOCK_FILE, so the production
+# default is exercised nowhere else — read it out of the two scripts and
+# compare, rather than trusting the comment that says they differ.
+# Both single-quoted on purpose: these are literals to search FOR in another
+# file, so expansion is exactly what must not happen to them.
+# shellcheck disable=SC2016
+DEPLOY_LOCK=$(sed -n 's/^LOCK_FILE=${LOCK_FILE:-\(.*\)}$/\1/p' "$DEPLOY" | head -1)
+# shellcheck disable=SC2016
+DEPLOY_LOCK=${DEPLOY_LOCK//'$ENV_ARG'/production}
+RELEASE_LOCK=$(sed -n 's/^RELEASE_LOCK=//p' "$ROOT/deploy/shikoo-task-runner" | head -1)
+if [ -z "$DEPLOY_LOCK" ] || [ -z "$RELEASE_LOCK" ]; then
+  bad "the deploy lock and the release lock are different files" \
+    "could not read them: deploy='${DEPLOY_LOCK}' release='${RELEASE_LOCK}' — did a constant move or get renamed?"
+elif [ "$DEPLOY_LOCK" = "$RELEASE_LOCK" ]; then
+  bad "the deploy lock and the release lock are different files" \
+    "both are ${DEPLOY_LOCK} — one inode, two locking protocols, which is no lock at all"
+else
+  ok "the deploy lock and the release lock are different files"
+fi
+
 section 'over-ssh.sh — only a digest is deployable'
 
 if grep -qF 'deploy/deploy.sh deploy/current-production-apps.sh' "$OVER_SSH"; then
