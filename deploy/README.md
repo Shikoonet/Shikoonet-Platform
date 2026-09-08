@@ -239,6 +239,14 @@ rebuilds and ignores `docker_registry_image_name` entirely. A Git application
 asked to deploy would go green, report a healthy container, and be running a
 tree this pipeline never verified.
 
+`cutover-production.sh` asserts the same two fields on the two web candidates
+before P11 moves a live domain. Its own backstop — `relabel_candidate` waiting
+for a replacement container whose `RepoDigests` carry the prepared digest —
+does catch a rebuild, but only by exhausting `WAIT_TIMEOUT`, with the customer
+name already on the candidate for the whole of it. The bot candidate is covered
+by `verify-production-bot-candidate.sh`, which checks the same two fields plus
+the exact prepared tag, also before P11.
+
 The same path is what makes digests work at all — Coolify reads a `sha256-`
 prefixed tag and pulls `name@sha256:<hex>`:
 
