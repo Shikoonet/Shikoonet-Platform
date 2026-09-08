@@ -290,7 +290,7 @@ test.describe('on a phone', () => {
 
       // The headings are gone and each cell carries its own, which is the
       // whole of what makes the card readable.
-      await expect(page.locator('table.app-table thead')).toBeHidden();
+      await expect(page.locator('table.app-table--cards thead')).toBeHidden();
       const labels = await page
         .locator('table.app-table tbody tr')
         .first()

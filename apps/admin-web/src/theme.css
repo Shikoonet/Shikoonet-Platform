@@ -1655,23 +1655,29 @@ td.money,
    scrolls sideways is a table whose far columns nobody ever sees — which is
    what the 2026-09-07 walk found on every one of them. */
 @media (max-width: 720px) {
-  .app-table thead {
+  /* `--cards`, not every `.app-table`.
+     A cell prints its own heading from `data-label`, and only the tables that
+     went through `ListPage` carry one. Applying this to all of them would turn
+     «کدهای تخفیف», «موجودی» and every other hand-written table into stacks of
+     unlabelled values — a different screen, silently, on a change that was
+     about the ledgers. Tables opt in as they migrate. */
+  .app-table--cards thead {
     display: none;
   }
-  .app-table,
-  .app-table tbody,
-  .app-table tr,
-  .app-table td {
+  .app-table--cards,
+  .app-table--cards tbody,
+  .app-table--cards tr,
+  .app-table--cards td {
     display: block;
     width: auto;
   }
-  .app-table tr {
+  .app-table--cards tr {
     border: 1px solid var(--border-soft);
     border-radius: var(--radius);
     margin-block-end: 10px;
     padding-block: 4px;
   }
-  .app-table td {
+  .app-table--cards td {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
@@ -1681,18 +1687,18 @@ td.money,
     /* The value may wrap; the label may not, or the two columns fight. */
     white-space: normal;
   }
-  .app-table td::before {
+  .app-table--cards td::before {
     content: attr(data-label);
     flex: 0 0 auto;
     color: var(--text-muted);
     font-size: 12px;
   }
   /* The empty-state row is one sentence, not a labelled field. */
-  .app-table td.empty {
+  .app-table--cards td.empty {
     justify-content: center;
     text-align: center;
   }
-  .app-table td.empty::before {
+  .app-table--cards td.empty::before {
     content: none;
   }
 }

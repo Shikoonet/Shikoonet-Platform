@@ -234,7 +234,7 @@ export function ListPage<T>({
         {summary && extra ? summary(extra, { narrowed }) : null}
 
         <div className="table-wrap">
-          <table className="app-table">
+          <table className="app-table app-table--cards">
             <thead>
               <tr>
                 {columns.map((col) =>
