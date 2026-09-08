@@ -259,8 +259,18 @@ export function SettingsPage() {
   );
 }
 
+/**
+ * Twenty-five, the same as every other list.
+ *
+ * This screen drew all of them: 171 rows on staging on 2026-09-07, an eighteen
+ * thousand pixel page, and every row carrying its own «تایید» and «رد».
+ */
+const REQUEST_PAGE_SIZE = 25;
+
 export function RequestsPage() {
   const [rows, setRows] = useState<ResellerRequestRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [tiers, setTiers] = useState<ResellerTierRow[]>([]);
   const [status, setStatus] = useState('PENDING');
   const [err, setErr] = useState<string | null>(null);
@@ -270,14 +280,15 @@ export function RequestsPage() {
   const [pickedTier, setPickedTier] = useState<Record<number, 'n' | 'n2'>>({});
   const [tierDraft, setTierDraft] = useState<Record<string, string>>({});
 
-  async function load() {
+  async function load(p = page) {
     setErr(null);
     try {
       const [requests, levels] = await Promise.all([
-        api.resellerRequests(status || undefined),
+        api.resellerRequests({ ...(status ? { status } : {}), page: p, pageSize: REQUEST_PAGE_SIZE }),
         api.resellerTiers(),
       ]);
       setRows(requests.items);
+      setTotal(requests.total);
       setTiers(levels.items);
       setTierDraft(Object.fromEntries(levels.items.map((t) => [t.code, String(t.percent)])));
     } catch (e) {
@@ -286,8 +297,17 @@ export function RequestsPage() {
   }
 
   useEffect(() => {
-    void load();
-  }, [status]);
+    void load(page);
+  }, [status, page]);
+
+  // A decision removes the row from the PENDING filter, so the page it was on
+  // can empty under the operator. Stepping back is the only sane answer — a
+  // pager that offers page four of three is how a queue looks finished when it
+  // is not.
+  const lastPage = Math.max(1, Math.ceil(total / REQUEST_PAGE_SIZE));
+  useEffect(() => {
+    if (page > lastPage) setPage(lastPage);
+  }, [page, lastPage]);
 
   async function saveTier(t: ResellerTierRow) {
     const raw = (tierDraft[t.code] ?? '').trim();
@@ -348,7 +368,7 @@ export function RequestsPage() {
       <div className="page-head">
         <div>
           <div className="page-head__title">لیست درخواست‌ها</div>
-          <div className="page-head__sub">{count(rows.length)} درخواست نمایندگی</div>
+          <div className="page-head__sub">{count(total)} درخواست نمایندگی</div>
         </div>
       </div>
 
@@ -524,6 +544,28 @@ export function RequestsPage() {
               ))}
             </tbody>
           </table>
+        </div>
+
+        <div className="pager">
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={page <= 1}
+            onClick={() => setPage(page - 1)}
+          >
+            قبلی
+          </button>
+          <span>
+            صفحهٔ {count(page)} از {count(lastPage)}
+          </span>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={page >= lastPage}
+            onClick={() => setPage(page + 1)}
+          >
+            بعدی
+          </button>
         </div>
       </div>
     </>
