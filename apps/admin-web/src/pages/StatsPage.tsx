@@ -19,6 +19,7 @@
 
 import { useEffect, useState } from 'react';
 import { formatJalali, jalaliToIsoDate, toJalali, type JalaliDate } from '@shikoo/contracts';
+import { CustomerLink } from '../CustomerLink.js';
 import { DateField } from '../DateField.js';
 import {
   api,
@@ -472,7 +473,9 @@ export function StatsPage() {
                             'NOT_USERNAME' and the import drops it — so the id
                             beside it is the identifier that always exists. */}
                         <td>{w.username ? `@${w.username}` : '—'}</td>
-                        <td>{String(w.telegramId)}</td>
+                        <td>
+                          <CustomerLink customer={{ id: w.id, telegramId: w.telegramId }} />
+                        </td>
                         <td>{toman(w.balanceIrr)}</td>
                       </tr>
                     ))}

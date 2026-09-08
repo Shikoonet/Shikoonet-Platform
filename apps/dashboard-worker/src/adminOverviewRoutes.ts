@@ -90,7 +90,7 @@ export function registerAdminOverviewRoutes(
         // an imported order has no `plan_id` at all, so without it every row
         // on this list reads as a dash. Safe to join because
         // `idx_subscriptions_one_per_order` is UNIQUE on `order_id`.
-        `SELECT o.public_id, u.telegram_id,
+        `SELECT o.public_id, u.id AS user_id, u.telegram_id,
                 COALESCE(p.name, s.plan_name_at_sale) AS plan_name,
                 o.total_irr, o.status, o.created_at
            FROM orders o
@@ -103,6 +103,7 @@ export function registerAdminOverviewRoutes(
       .bind(RECENT)
       .all<{
         public_id: string;
+        user_id: number | null;
         telegram_id: number | null;
         plan_name: string | null;
         total_irr: number;
@@ -134,6 +135,10 @@ export function registerAdminOverviewRoutes(
         lastSeenAt: r.last_seen_at,
       })),
       recentOrders: (recentOrders.results ?? []).map((r) => ({
+        // The internal id as well as the telegram one, so this row can link
+        // to the customer exactly rather than by a search that matches a
+        // fragment. LEFT JOIN, so an order whose user row is gone keeps null.
+        userId: r.user_id,
         publicId: r.public_id,
         telegramId: r.telegram_id,
         planName: r.plan_name,

@@ -27,6 +27,7 @@ import {
   PLAN_LABEL_TOKENS,
   renderPlanLabel,
 } from '@shikoo/contracts';
+import { CustomerLink } from '../CustomerLink.js';
 import { count, dateTime } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 
@@ -472,8 +473,8 @@ export function RequestsPage() {
               )}
               {rows.map((r) => (
                 <tr key={r.id}>
-                  <td className="ltr">
-                    {r.customer.username ? `@${r.customer.username}` : r.customer.telegramId}
+                  <td>
+                    <CustomerLink customer={r.customer} />
                     {r.customer.isReseller && <span className="badge badge-info">نماینده</span>}
                   </td>
                   <td>{r.description ?? '—'}</td>
