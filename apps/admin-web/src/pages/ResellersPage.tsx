@@ -119,11 +119,19 @@ export function ResellersPage() {
   return (
     <div className="page">
       <div className="page-head">
-        <h1>نمایندگان</h1>
-        {/* Both numbers, always — the same rule «محصولات» learned: a total on
-            its own says nothing about whether anything is running. */}
-        <div className="muted">
-          {count(rows.length)} نماینده · {count(active)} فعال
+        <div>
+          <div className="page-head__title">نمایندگان</div>
+          {/* Both numbers, always — the same rule «محصولات» learned: a total on
+              its own says nothing about whether anything is running.
+
+              Inside the wrapper `div`, and in `page-head__sub` rather than
+              `muted`: `.page-head` is `justify-content: space-between`, so a
+              count that is a direct child is not a subtitle under the title —
+              it is a second column, and it was drawn hard against the far edge
+              of the screen with the title alone on the other side. */}
+          <div className="page-head__sub">
+            {count(rows.length)} نماینده · {count(active)} فعال
+          </div>
         </div>
       </div>
 

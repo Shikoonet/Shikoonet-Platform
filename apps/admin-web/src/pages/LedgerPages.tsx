@@ -27,6 +27,7 @@ import {
   type CustomerRef,
 } from '../api.js';
 import { count, dateTime, gigabytes, toman } from '../format.js';
+import { pageLabel, type PageId } from '../nav.js';
 import { useWriteProps } from '../role.js';
 
 const PAGE_SIZE = 25;
@@ -120,7 +121,7 @@ function tone(status: string): string {
  * loading, error, paging, the empty state — is written once.
  */
 function ListPage<T extends { id: number }>({
-  title,
+  page: pageId,
   unit,
   filterLabel,
   filterOptions,
@@ -130,7 +131,17 @@ function ListPage<T extends { id: number }>({
   summary,
   searchPlaceholder = 'آیدی عددی یا @نام‌کاربری',
 }: {
-  title: string;
+  /**
+   * Which section this is — not a title string.
+   *
+   * It used to be a string, and «اشتراک‌های مشتری» passed «سرویس‌ها», which is
+   * the name of the catalogue section two groups above it in the same sidebar.
+   * The sidebar entry, the header and the page each said one of two different
+   * names and nothing could tell them apart. Taking the id instead means the
+   * heading has one source, `nav.ts`, and the wrong name is no longer a value
+   * anybody can pass.
+   */
+  page: PageId;
   unit: string;
   filterLabel: string;
   filterOptions: Array<[string, string]>;
@@ -207,7 +218,7 @@ function ListPage<T extends { id: number }>({
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">{title}</div>
+          <div className="page-head__title">{pageLabel(pageId)}</div>
           <div className="page-head__sub">
             {count(total)} {unit}
           </div>
@@ -366,7 +377,7 @@ function RetryPreparation({ order, reload }: { order: OrderRow; reload: () => vo
 export function OrdersPage() {
   return (
     <ListPage<OrderRow>
-      title="سفارشات"
+      page="orders"
       unit="سفارش"
       filterLabel="وضعیت"
       searchPlaceholder="آیدی عددی، @نام‌کاربری یا شمارهٔ سفارش"
@@ -425,7 +436,7 @@ export function OrdersPage() {
 export function SubscriptionsPage() {
   return (
     <ListPage<SubscriptionRow>
-      title="سرویس‌ها"
+      page="subscriptions"
       unit="سرویس"
       filterLabel="وضعیت"
       searchPlaceholder="آیدی عددی، @نام‌کاربری یا نام روی پنل"
@@ -486,7 +497,7 @@ export function SubscriptionsPage() {
 export function TransactionsPage() {
   return (
     <ListPage<EntryRow>
-      title="تراکنش‌ها"
+      page="transactions"
       unit="تراکنش"
       filterLabel="نوع"
       filterOptions={Object.entries(ENTRY_KIND_FA)}
