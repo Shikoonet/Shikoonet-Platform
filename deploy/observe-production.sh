@@ -132,3 +132,22 @@ if [ -d "$BACKUP_DIR" ] && [ -n "$(find "$BACKUP_DIR" -type f -size +1k -print -
 else
   emit backup_present missing
 fi
+
+# And WHICH file, because `present` alone stopped being an observation. It goes
+# green on any file over 1KB anywhere under the directory, and after the first
+# Prepare the directory is never empty again — so a dump left by a release
+# weeks ago reads exactly like the one this manifest names, and the check can
+# no longer say `missing`. The name is what makes that readable.
+#
+# Newest by mtime, the spelling restore-drill.sh already uses: `find -printf`
+# sorts on the timestamp itself rather than on `ls` output, so a filename
+# containing a newline cannot shift the answer by a line (SC2012).
+#
+# This file only LOOKS. It reports the name and leaves every judgement about
+# whether that is the right file to the comparison.
+NEWEST=$(find "$BACKUP_DIR" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+if [ -n "$NEWEST" ]; then
+  emit backup_newest "$(basename "$NEWEST")"
+else
+  emit backup_newest none
+fi
