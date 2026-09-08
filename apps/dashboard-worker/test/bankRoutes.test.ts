@@ -31,7 +31,21 @@ function row(over: Partial<BankSmsPatternRow> = {}): BankSmsPatternRow {
 }
 
 describe('the ReDoS gate', () => {
-  it('rejects the classic catastrophic shapes', () => {
+  /*
+   * Four patterns, and each is detected by LETTING IT BACKTRACK until it blows
+   * the budget. That is not an implementation detail this test could avoid —
+   * running the regex is how `overBudget` knows — so the cost of the assertion
+   * is four budgets, by design.
+   *
+   * Measured on 2026-09-08 on an idle machine: **4,475 ms under vitest 3.2.7
+   * and 4,560 ms under 2.1.9** — eighty-nine per cent of the five-second
+   * default, on both runners. Under a full `pnpm -r` run it crosses, and it
+   * did, reporting the ReDoS gate broken when the gate was fine.
+   *
+   * Per-test rather than a raised `testTimeout`, so the suite still notices a
+   * test that genuinely hangs.
+   */
+  it('rejects the classic catastrophic shapes', { timeout: 15_000 }, () => {
     for (const evil of ['^(a+)+$', '^(a|a)+$', '^(a*)*b', '^(\\d+)+$']) {
       expect(overBudget(row({ detectRe: evil })), evil).toBe(true);
     }
