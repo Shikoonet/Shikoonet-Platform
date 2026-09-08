@@ -326,6 +326,81 @@ describe('settings', () => {
   });
 });
 
+describe('which settings the shop actually reads', () => {
+  async function put(scope: string, key: string, value: string) {
+    // `value` is `jsonb` and `updated_at` defaults to now() — the same shape
+    // `seedPaySettings` above uses. Writing a bare string and an epoch here got
+    // «invalid input syntax for type json» and «date/time field value out of
+    // range», which is the column type answering rather than the route.
+    await baseEnv.DB.prepare(
+      `INSERT INTO settings (scope, key, value) VALUES (?1, ?2, ?3::jsonb)
+       ON CONFLICT (scope, key) DO UPDATE SET value = excluded.value`,
+    )
+      .bind(scope, key, JSON.stringify(value))
+      .run();
+  }
+
+  it('says of each row whether anything reads it, and what it is called', async () => {
+    // `/admin/settings` printed 163 rows of raw key and raw value, most of them
+    // dead columns the importer copied across. An operator looking for «چند روز
+    // قبل از انقضا هشدار برود» read forty lines of noise to find `daywarn` —
+    // and every one of those lines was editable.
+    await put('bot', 'daywarn', '3');
+    await put('bot', 'Dice', 'on');
+
+    const res = await app.request('/api/v1/admin/settings', {}, envAs(ADMIN));
+    const body = (await res.json()) as {
+      items: Array<{ scope: string; key: string; live: boolean; label?: string; kind?: string }>;
+    };
+    const live = body.items.find((r) => r.key === 'daywarn');
+    const imported = body.items.find((r) => r.key === 'Dice');
+
+    expect(live?.live).toBe(true);
+    expect(live?.label).toBe('هشدار انقضا (روز)');
+    expect(live?.kind).toBe('int');
+
+    // Still listed — an operator must be able to SEE what the import left, or
+    // «where did my lottery setting go» has no answer. Just not as a control.
+    expect(imported?.live).toBe(false);
+    expect(imported?.label).toBeUndefined();
+  });
+
+  it('refuses to write a key nothing reads, rather than storing it', async () => {
+    // Sam's decision, 2026-08-20: «ما گردونه شانس نداریم». A value nothing
+    // reads, edited on a screen that accepted the edit, is worse than one the
+    // screen never offered — the operator believes they changed something.
+    await put('bot', 'Dice', 'on');
+
+    const res = await app.request(
+      '/api/v1/admin/settings',
+      { method: 'POST', body: JSON.stringify({ scope: 'bot', key: 'Dice', value: 'off' }) },
+      envAs(ADMIN),
+    );
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: 'imported_key' });
+
+    // Read back from the database, not from the response.
+    const after = await baseEnv.DB.prepare(
+      `SELECT value FROM settings WHERE scope = 'bot' AND key = 'Dice'`,
+    ).first<{ value: string }>();
+    expect(after?.value).toBe('on');
+  });
+
+  it('still writes a key the shop does read', async () => {
+    await put('bot', 'daywarn', '3');
+    const res = await app.request(
+      '/api/v1/admin/settings',
+      { method: 'POST', body: JSON.stringify({ scope: 'bot', key: 'daywarn', value: '5' }) },
+      envAs(ADMIN),
+    );
+    expect(res.status).toBe(200);
+    const after = await baseEnv.DB.prepare(
+      `SELECT value FROM settings WHERE scope = 'bot' AND key = 'daywarn'`,
+    ).first<{ value: string }>();
+    expect(after?.value).toBe('5');
+  });
+});
+
 describe('the read-only ledgers', () => {
   it('lists orders with the customer, and filters by status and kind', async () => {
     const { id: userId } = await makeUser();

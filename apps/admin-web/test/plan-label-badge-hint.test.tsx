@@ -22,6 +22,12 @@ import { api, type SettingRow } from '../src/api.js';
 const TEMPLATE_ROW: SettingRow = {
   scope: 'shop',
   key: 'plan_button_template',
+  // Live, and it has to be: the screen draws a control for a row only when the
+  // shop reads it, and this whole test is about the control's hint.
+  live: true,
+  label: 'قالب دکمهٔ سرویس',
+  hint: 'مثل {name} — {volume} گیگ — {days} روز.',
+  kind: 'text',
   secret: false,
   value: '',
   isSet: false,
@@ -55,11 +61,16 @@ async function openTheTemplateEditor() {
       <SettingsPage />
     </RoleProvider>,
   );
-  await waitFor(() => screen.getByText('plan_button_template'));
-  fireEvent.click(screen.getByRole('button', { name: 'ویرایش' }));
-  // The only `textbox` on the screen: the search field above is `type="search"`,
-  // which is a `searchbox`, and the scope filter is a `combobox`.
-  return screen.getByRole('textbox');
+  /*
+   * No «ویرایش» step any more, and the row is found by its LABEL.
+   *
+   * «تنظیمات» was a table of 163 raw key/value rows where each field opened
+   * behind an edit button; it is a form now, and every live setting is a
+   * labelled control that is already there. The row is `plan_button_template`
+   * either way — what changed is that a person can find it.
+   */
+  const field = await screen.findByLabelText('قالب دکمهٔ سرویس');
+  return field;
 }
 
 function type(field: HTMLElement, value: string) {

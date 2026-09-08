@@ -1600,3 +1600,39 @@ button.cat-card--new:hover {
   color: var(--danger, #b3261e);
   font-weight: 700;
 }
+
+/* ── The settings form ────────────────────────────────────────────────────
+   A column of labelled fields, each with the sentence that says what changing
+   it does. It replaced a table of 163 raw key/value rows where an operator
+   looking for «چند روز قبل از انقضا هشدار برود» read forty lines to find
+   `daywarn` — and where a change to any of the dead ones saved silently. */
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 640px;
+}
+.settings-field {
+  display: grid;
+  gap: 4px;
+}
+.settings-field__label {
+  font-weight: 600;
+  font-size: 14px;
+}
+.settings-field__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+/* A switch reads label-after-control, which is the one place in this RTL
+   panel where the control comes first — that is what a checkbox is. */
+.settings-field--switch {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 10px;
+}
+.settings-field--switch .settings-field__hint {
+  grid-column: 2;
+}
