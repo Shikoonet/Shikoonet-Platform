@@ -151,7 +151,7 @@ type PaymentsBody = {
     cardMasked: string | null;
     suspectReason: string | null;
     device: { id: string; name: string } | null;
-    candidates: Array<{ id: string }>;
+    candidates: Array<{ id: string; timeDeltaSeconds: number | null; alreadyConsumed: boolean }>;
     matchedTransaction: { id: string; timeDeltaSeconds: number | null } | null;
     isNew?: boolean;
     fulfilmentMode?: 'MANUAL' | 'CONTINUITY' | null;
@@ -1150,5 +1150,208 @@ describe('the income tabs count what they did not send', () => {
   it('the total agrees with the badge the tab draws', async () => {
     const body = await get('tab=income&range=all&pageSize=2');
     expect(body.total).toBe(body.counts.income);
+  });
+});
+
+/**
+ * The exit from «در انتظار تطبیق» — issue #134, the manual half.
+ *
+ * ## Why these rows had no way out at all
+ *
+ * A continuity claim is `FULFILLED_UNRECONCILED`: the product was delivered
+ * before the money was proved. The matcher will never close it on its own, and
+ * that is by construction rather than by accident — the auto-match window is
+ * `|bank_timestamp − paid_clicked_at| ≤ 300000ms`, and continuity mode exists
+ * precisely for the days the SMS relay is down, so its credits arrive as a
+ * backlog HOURS later. `mirzabotMatch.test.ts` pins that refusal at three
+ * hours; the window is deliberately untouched.
+ *
+ * So the row is drained by a person, and the panel already draws the control
+ * for it — «تایید انتخاب‌شده‌ها» is a radio list plus a button, and the button
+ * stays disabled until a radio is chosen. The list route answered
+ * `candidates: []` for this state, so there was never a radio to choose, and
+ * the button could never leave `disabled`. Not automatic, and not manual
+ * either.
+ *
+ * ## Why the delay in these fixtures is three hours
+ *
+ * CLAUDE.md rule 9: a probe on easy data reports healthy while real data
+ * behaves differently. A credit twenty seconds after the click is a delay this
+ * status essentially never sees. Every claim below is clicked three hours
+ * before its credit, which is the shape production actually holds.
+ *
+ * ## Why no `suspect_metadata_json` is seeded
+ *
+ * Because production does not have one. `recordMirzabotSuspect` writes
+ * `WHERE ... status IN ('PENDING','MATCH_SUGGESTED')`
+ * (`packages/domain/src/mirzabotVerify.ts:322`), so the matcher's own
+ * `candidateTransactionIds` never reach a claim in this status — measured, not
+ * assumed. The candidate therefore has to come from `loadCandidates`'
+ * same-account/same-amount fallback, and seeding a candidate set here would be
+ * a fixture that proves the fallback is never exercised.
+ */
+describe('the continuity queue has a manual exit', () => {
+  const THREE_HOURS = 3 * 60 * 60_000;
+
+  function approve(claimId: string, transactionId: string) {
+    return app.fetch(
+      new Request(`https://example.com/api/v1/suspects/${claimId}/approve`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ transactionId }),
+      }),
+      envAs(),
+    );
+  }
+
+  /** A delivered continuity claim whose bank credit landed three hours later. */
+  async function seedLate(claimId: string, txId: string | null): Promise<number> {
+    const paid = Date.now() - THREE_HOURS - 60_000;
+    if (txId) await seedTx(txId, paid + THREE_HOURS);
+    await seedClaim(claimId, {
+      status: 'FULFILLED_UNRECONCILED',
+      paidClickedAt: paid,
+      fulfilmentMode: 'CONTINUITY',
+      fulfilledAt: paid + 1_000,
+      fulfilledBy: 'ops@example.com',
+      fulfilmentReason: 'رله پیامک قطع است',
+    });
+    return paid;
+  }
+
+  async function claimRow(id: string) {
+    return await baseEnv.DB.prepare(
+      `SELECT status, fulfilled_at, reconciled_at FROM payment_claims WHERE id = ?1`,
+    )
+      .bind(id)
+      .first<{ status: string; fulfilled_at: number | null; reconciled_at: number | null }>();
+  }
+
+  async function consumingMatches(column: string, id: string): Promise<number> {
+    const r = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM reconciliation_matches
+        WHERE ${column} = ?1 AND status IN ('CONFIRMED','AUTO_VERIFIED')`,
+    )
+      .bind(id)
+      .first<{ n: number }>();
+    return r?.n ?? 0;
+  }
+
+  it('serves the late credit as a candidate, so there is a radio to select', async () => {
+    await seedLate('c-late', 't-late');
+
+    const body = await get('tab=continuity&continuityState=pending&range=all');
+    const row = body.items.find((i) => i.id === 'c-late');
+    expect(row?.reviewState).toBe('FULFILLED_UNRECONCILED');
+    expect(row?.candidates.map((c) => c.id)).toEqual(['t-late']);
+    // Three hours, in seconds — arithmetic, not what the mapper happens to
+    // return. It is also the number that proves this is the late-credit case
+    // and not a twenty-second one dressed up as one.
+    expect(row?.candidates[0]?.timeDeltaSeconds).toBe(THREE_HOURS / 1000);
+  });
+
+  it('approving what the panel was served stamps reconciled_at and drains the row', async () => {
+    await seedLate('c-drain', 't-drain');
+
+    const before = await get('tab=continuity&continuityState=pending&range=all');
+    const served = before.items.find((i) => i.id === 'c-drain')?.candidates[0]?.id;
+    // The panel can only send what the list gave it, so the approval goes
+    // through the served id rather than the fixture's. With the route's gate
+    // back in place there is nothing here to send.
+    expect(served).toBe('t-drain');
+
+    const res = await approve('c-drain', served!);
+    expect(res.status).toBe(200);
+
+    const row = await claimRow('c-drain');
+    expect(row?.status).toBe('VERIFIED');
+    expect(row?.reconciled_at).not.toBeNull();
+    // The delivery it already made is a fact about the world and is not rewritten.
+    expect(row?.fulfilled_at).not.toBeNull();
+
+    const pending = await get('tab=continuity&continuityState=pending&range=all');
+    expect(pending.items.map((i) => i.id)).not.toContain('c-drain');
+    const history = await get('tab=continuity&continuityState=history&range=all');
+    expect(history.items.map((i) => i.id)).toContain('c-drain');
+  });
+
+  it('queues no second delivery notice — the customer already has the product', async () => {
+    await seedLate('c-once', 't-once');
+    const before = await get('tab=continuity&continuityState=pending&range=all');
+    const served = before.items.find((i) => i.id === 'c-once')!.candidates[0]!.id;
+    expect((await approve('c-once', served)).status).toBe(200);
+
+    // `verified-<claim>-<tx>` is the id `verifiedEventId` gives the fulfilment
+    // notice. A continuity claim was already announced as `fulfilled-<claim>`,
+    // a different primary key, so `webhook_deliveries` would accept both and
+    // the legacy bot would be asked to fulfil the same order twice.
+    const notice = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM webhook_deliveries WHERE id = ?1`,
+    )
+      .bind('verified-c-once-t-once')
+      .first<{ n: number }>();
+    expect(notice?.n).toBe(0);
+  });
+
+  describe('the money invariants, re-asserted on this path', () => {
+    it('one bank transaction settles at most one claim, and Postgres is what says so', async () => {
+      await seedLate('c-first', 't-shared');
+      await seedLate('c-second', null);
+
+      const served = (await get('tab=continuity&continuityState=pending&range=all')).items;
+      // Both rows are offered the same credit — there is only one.
+      expect(served.find((i) => i.id === 'c-first')?.candidates.map((c) => c.id)).toEqual([
+        't-shared',
+      ]);
+      expect(served.find((i) => i.id === 'c-second')?.candidates.map((c) => c.id)).toEqual([
+        't-shared',
+      ]);
+
+      expect((await approve('c-first', 't-shared')).status).toBe(200);
+      const second = await approve('c-second', 't-shared');
+      expect(second.status).toBe(409);
+      expect(((await second.json()) as { error: string }).error).toBe(
+        'transaction_already_consumed',
+      );
+      expect((await claimRow('c-second'))?.status).toBe('FULFILLED_UNRECONCILED');
+
+      // And it is not the route that holds this. Going around every line of
+      // application code, the partial unique index refuses the second
+      // consuming row itself.
+      await expect(
+        baseEnv.DB.prepare(
+          `INSERT INTO reconciliation_matches
+             (id, transaction_candidate_id, payment_claim_id, score, matching_reasons_json,
+              mismatch_reasons_json, status, created_at, updated_at)
+           VALUES ('m-bypass-tx', 't-shared', 'c-second', 1.0, '[]', '[]', 'CONFIRMED', 1, 1)`,
+        ).run(),
+      ).rejects.toThrow(/duplicate key value violates unique constraint/);
+      expect(await consumingMatches('transaction_candidate_id', 't-shared')).toBe(1);
+    });
+
+    it('a claim settles at most once, and Postgres is what says so', async () => {
+      await seedLate('c-solo', 't-solo-a');
+
+      const served = (await get('tab=continuity&continuityState=pending&range=all')).items.find(
+        (i) => i.id === 'c-solo',
+      )?.candidates[0]?.id;
+      expect(served).toBe('t-solo-a');
+      expect((await approve('c-solo', served!)).status).toBe(200);
+
+      // A second, unrelated credit for the same account and amount.
+      await seedTx('t-solo-b', Date.now());
+      // The state machine has no second exit from VERIFIED either.
+      expect((await approve('c-solo', 't-solo-b')).status).toBe(409);
+
+      await expect(
+        baseEnv.DB.prepare(
+          `INSERT INTO reconciliation_matches
+             (id, transaction_candidate_id, payment_claim_id, score, matching_reasons_json,
+              mismatch_reasons_json, status, created_at, updated_at)
+           VALUES ('m-bypass-claim', 't-solo-b', 'c-solo', 1.0, '[]', '[]', 'CONFIRMED', 1, 1)`,
+        ).run(),
+      ).rejects.toThrow(/duplicate key value violates unique constraint/);
+      expect(await consumingMatches('payment_claim_id', 'c-solo')).toBe(1);
+    });
   });
 });

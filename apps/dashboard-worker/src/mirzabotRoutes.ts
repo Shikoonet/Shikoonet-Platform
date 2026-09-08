@@ -1553,8 +1553,33 @@ export function registerMirzabotRoutes(
           (row.receipt_submitted_at ?? row.paid_clicked_at)
             ? now - (row.receipt_submitted_at ?? row.paid_clicked_at)!
             : null;
+        /*
+         * `FULFILLED_UNRECONCILED` is in the set, and adding it is what gives
+         * the «در انتظار تطبیق» queue an exit — issue #134.
+         *
+         * The panel has drawn «تایید انتخاب‌شده‌ها» for this state since #135,
+         * and the server accepted it before that (`verifyMirzabotClaim` has a
+         * `reconciling` branch that stamps `reconciled_at` and enqueues no
+         * second delivery notice). But the button stays disabled until a radio
+         * is chosen, the radios ARE these candidates, and this gate answered
+         * `[]` — so the control was drawn and permanently inert. The queue had
+         * no exit at all: not automatic, and not manual either.
+         *
+         * The ±5-minute auto-match window is deliberately untouched. Continuity
+         * credits arrive hours late and the matcher must go on refusing them;
+         * one human click per row is the decision, and this is what that click
+         * needs in front of it.
+         *
+         * The id list is almost always empty here, and knowing why matters:
+         * `recordMirzabotSuspect` writes only to `PENDING`/`MATCH_SUGGESTED`
+         * claims, so the matcher's own candidate set never reaches this status.
+         * `loadCandidates` then falls back to same-account/same-amount, which is
+         * exactly the credit an operator is looking for.
+         */
         const candidates =
-          state === 'NEEDS_REVIEW' || state === 'NO_TRANSFER_FOUND'
+          state === 'NEEDS_REVIEW' ||
+          state === 'NO_TRANSFER_FOUND' ||
+          state === 'FULFILLED_UNRECONCILED'
             ? await loadCandidates(c.env.DB, row, suspectMeta.candidateTransactionIds ?? [])
             : [];
         const cardDigits = row.card_digits ?? meta.cardDigits ?? null;
