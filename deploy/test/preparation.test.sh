@@ -322,6 +322,42 @@ else
   bad 'one candidate not answering through the proxy is a fail' "$(printf '%s' "$OBS_OUT" | tr '\n' ' ')"
 fi
 
+# ── the backup observation says WHICH file ───────────────────────────────
+#
+# `backup_present` goes green on any file over 1KB anywhere under the backup
+# directory, so once the first Prepare has run it can never say `missing`
+# again: a dump left by a release weeks ago is indistinguishable from the one
+# this manifest names. `backup_newest` is the observation that carries a fact.
+#
+# The two files below are named against the answer on purpose — an
+# implementation that took the alphabetically last name, or whatever `find`
+# happened to walk first, would answer `zebra-old.dmp`. Only mtime order
+# answers `alpha-new.dmp`, and the mtimes are set here rather than read back
+# from the script.
+section 'the backup observation names the newest file, by mtime'
+BACKUPS="$WORK/prod-backups"
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS"
+OBS_OUT=$(observe "$OBS_LOG" BACKUP_DIR="$BACKUPS")
+if printf '%s\n' "$OBS_OUT" | grep -qx 'backup_newest=none' &&
+  printf '%s\n' "$OBS_OUT" | grep -qx 'backup_present=missing'; then
+  ok 'an empty backup directory reports none, never an omitted field'
+else
+  bad 'an empty backup directory reports none, never an omitted field' "$(printf '%s' "$OBS_OUT" | tr '\n' ' ')"
+fi
+
+head -c 2048 /dev/zero >"$BACKUPS/zebra-old.dmp"
+head -c 2048 /dev/zero >"$BACKUPS/alpha-new.dmp"
+touch -d '2026-09-01 00:00:00' "$BACKUPS/zebra-old.dmp"
+touch -d '2026-09-08 00:00:00' "$BACKUPS/alpha-new.dmp"
+OBS_OUT=$(observe "$OBS_LOG" BACKUP_DIR="$BACKUPS")
+if printf '%s\n' "$OBS_OUT" | grep -qx 'backup_newest=alpha-new.dmp' &&
+  printf '%s\n' "$OBS_OUT" | grep -qx 'backup_present=present'; then
+  ok 'the newest dump is named, and backup_present is unchanged beside it'
+else
+  bad 'the newest dump is named, and backup_present is unchanged beside it' "$(printf '%s' "$OBS_OUT" | tr '\n' ' ')"
+fi
+
 # ── the retired gate stays retired, unless somebody means it ─────────────
 #
 # P0 — the dump-rehearsal attestation — was removed from prepare on 2026-09-07
