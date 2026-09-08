@@ -11,12 +11,15 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  actorFa,
   count,
   dateOnly,
   dateTime,
   endOfTehranDay,
+  entryNoteFa,
   gigabytes,
   irrToToman,
+  planDisplayName,
   toman,
   tomanCompact,
 } from '../src/format.js';
@@ -164,5 +167,85 @@ describe('when a dated code stops working', () => {
     const out = endOfTehranDay('2026-09-01');
     expect(out).not.toBe('2026-09-01');
     expect(out.endsWith('Z')).toBe(true);
+  });
+});
+
+/**
+ * The wallet ledger's own words.
+ *
+ * Three English sentences are written into `wallet_entries.note` at the moment
+ * the row is created — by `packages/migrate` for every migrated opening
+ * balance, and by `apps/bot` for renewal cashback and referral commission. The
+ * panel printed them verbatim, so «تراکنش‌ها» read
+ * «legacy balance carried over unchanged» and «5% of a renewal» in a Persian
+ * table, and the actor column said «SYSTEM».
+ *
+ * Translated on the way out rather than in the database: `kind` already carries
+ * the whole meaning, the note only adds a percentage, and rewriting an
+ * append-only ledger to fix its wording is not a trade anybody should take.
+ */
+describe('the ledger, in Persian', () => {
+  it('names the three notes the system writes', () => {
+    expect(entryNoteFa('OPENING', 'legacy balance carried over unchanged')).toBe(
+      'موجودی اولیه، همان‌طور که از ربات قدیمی منتقل شد',
+    );
+    // The percentage is the only thing the note adds to `kind`, so it survives
+    // — in Persian digits, like every other number on the screen.
+    expect(entryNoteFa('RENEWAL_CASHBACK', '5% of a renewal')).toBe('۵٪ هدیهٔ تمدید');
+    expect(entryNoteFa('REFERRAL_BONUS', '10% of a first purchase')).toBe(
+      '۱۰٪ پورسانت اولین خرید زیرمجموعه',
+    );
+  });
+
+  it('leaves a note an operator typed alone', () => {
+    // `ADMIN_ADJUST` notes are typed by a person and are already Persian; a
+    // mapping that swallowed them would erase the reason a balance changed.
+    expect(entryNoteFa('ADMIN_ADJUST', 'بابت خرابی سرویس')).toBe('بابت خرابی سرویس');
+    // An unrecognised note is shown rather than hidden: a row whose reason the
+    // panel cannot translate still has a reason.
+    expect(entryNoteFa('TOPUP', 'something new from a later build')).toBe(
+      'something new from a later build',
+    );
+    expect(entryNoteFa('TOPUP', null)).toBe(null);
+  });
+
+  it('names the system as the system', () => {
+    expect(actorFa('SYSTEM')).toBe('سیستم');
+    // An operator's email is who they are; it is not translated.
+    expect(actorFa('sam@samsos.org')).toBe('sam@samsos.org');
+    expect(actorFa(null)).toBe(null);
+  });
+});
+
+/**
+ * A plan name that already contains its price.
+ *
+ * Every product migrated from Mirzabot has the Toman price inside its name —
+ * «1ماهه-20گیگ-چند کاربر-200.000» — because the legacy bot had no price column
+ * on the button. Beside a «مبلغ» column that says «۲۰۰٬۰۰۰ تومان» the row reads
+ * the number twice, and the second one is not even formatted like the first.
+ *
+ * Only the trailing price goes. `plan_name_at_sale` is frozen at the moment of
+ * sale and is not touched; this is what the table draws.
+ */
+describe('a plan name with its price baked in', () => {
+  it('drops the price the amount column already shows', () => {
+    expect(planDisplayName('1ماهه-20گیگ-چند کاربر-200.000')).toBe('1ماهه-20گیگ-چند کاربر');
+    expect(planDisplayName('2ماهه-50گیگ-329.000ت')).toBe('2ماهه-50گیگ');
+    expect(planDisplayName('6ماهه-300گیگ-چند کاربر-1.300.000ت')).toBe('6ماهه-300گیگ-چند کاربر');
+    expect(planDisplayName('نامحدود - تک لوکیشن - 250.000 تومان')).toBe('نامحدود - تک لوکیشن');
+  });
+
+  it('leaves a name that is not a price alone', () => {
+    expect(planDisplayName('سرویس تست')).toBe('سرویس تست');
+    expect(planDisplayName('۱ ماهه')).toBe('۱ ماهه');
+    // A number that is part of what is being sold, not its price.
+    expect(planDisplayName('سرویس طلایی - بدون محدودیت یوزر و زمان')).toBe(
+      'سرویس طلایی - بدون محدودیت یوزر و زمان',
+    );
+    // Three digits with no thousands group is a volume or a duration, not a
+    // price: «1ماهه-100گیگ» must not lose its size.
+    expect(planDisplayName('1ماهه-100گیگ')).toBe('1ماهه-100گیگ');
+    expect(planDisplayName(null)).toBe(null);
   });
 });
