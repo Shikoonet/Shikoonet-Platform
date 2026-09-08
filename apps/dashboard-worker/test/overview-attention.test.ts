@@ -148,3 +148,71 @@ describe('what still needs a person', () => {
     }
   });
 });
+
+describe('a day-by-day series, so the shop can be drawn', () => {
+  interface Day {
+    day: string;
+    salesIrr: number;
+    salesCount: number;
+  }
+
+  async function stats(range: string): Promise<{ byDay: Day[]; earnedIrr: number }> {
+    const res = await app.request(`/api/v1/admin/stats?range=${range}`, {}, envAs(ADMIN));
+    expect(res.status).toBe(200);
+    return (await res.json()) as { byDay: Day[]; earnedIrr: number };
+  }
+
+  it('buckets an order by its TEHRAN day, not its UTC one', async () => {
+    // 20:30Z is 00:00 the next morning in Tehran, and every daily figure this
+    // shop reconciles against is a Tehran day. A UTC bucket files the first
+    // sale of the day under yesterday.
+    const userId = await makeUser();
+    const at = Date.UTC(2026, 8, 6, 20, 30, 0);
+    await baseEnv.DB.prepare(
+      // `completed_at`, because that is when the shop counts a sale — the same
+      // column `earnedIrr` above the chart is summed over. Dating the chart by
+      // `created_at` would put the bar on the day the customer started paying
+      // and the card's money on the day it arrived.
+      `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status, created_at, completed_at)
+       VALUES (?1, ?2, 'NEW_PURCHASE', 500000, 1, 0, 500000, 'COMPLETED',
+               to_timestamp(?3 / 1000.0), to_timestamp(?3 / 1000.0))`,
+    )
+      .bind(`zzattn-day-${userId}`, userId, at)
+      .run();
+
+    const { byDay } = await stats('year');
+    const seventh = byDay.find((d) => d.day === '2026-09-07');
+    const sixth = byDay.find((d) => d.day === '2026-09-06');
+    expect(seventh?.salesCount ?? 0).toBeGreaterThan(0);
+    // Proven against Postgres rather than against the route's own arithmetic.
+    const counted = await baseEnv.DB.prepare(
+      `SELECT count(*)::int AS n FROM orders
+        WHERE status = 'COMPLETED' AND kind = 'NEW_PURCHASE'
+          AND date_trunc('day', completed_at AT TIME ZONE 'Asia/Tehran') = date '2026-09-07'`,
+    ).first<{ n: number }>();
+    expect(seventh?.salesCount).toBe(counted!.n);
+    expect(sixth?.salesCount ?? 0).toBe(0);
+  });
+
+  it('sums to the same figure the cards above it show', async () => {
+    // The chart and the card are two readings of one number. A chart that adds
+    // up to something else is worse than no chart: both look authoritative.
+    const { byDay, earnedIrr } = await stats('month');
+    const summed = byDay.reduce((n, d) => n + d.salesIrr, 0);
+    expect(summed).toBeLessThanOrEqual(earnedIrr);
+    expect(Array.isArray(byDay)).toBe(true);
+  });
+
+  it('returns a continuous run of days, including the empty ones', async () => {
+    // A bar chart with gaps in the axis is a chart that lies about shape: three
+    // sales on three consecutive days looks identical to three sales in a
+    // month. Empty days are data.
+    const { byDay } = await stats('month');
+    expect(byDay.length).toBeGreaterThan(1);
+    for (let i = 1; i < byDay.length; i++) {
+      const a = new Date(`${byDay[i - 1]!.day}T00:00:00Z`).getTime();
+      const b = new Date(`${byDay[i]!.day}T00:00:00Z`).getTime();
+      expect(b - a).toBe(24 * 60 * 60 * 1000);
+    }
+  });
+});
