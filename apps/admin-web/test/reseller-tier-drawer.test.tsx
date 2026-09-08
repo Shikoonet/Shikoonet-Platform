@@ -109,6 +109,11 @@ async function openDrawer() {
 
 beforeEach(() => {
   vi.spyOn(window, 'confirm').mockReturnValue(true);
+  // The card lives in `?id=` now, and `cleanup()` unmounts the tree without
+  // touching the address. Without this, opening the drawer in one test leaves
+  // `?id=7` behind and the next one renders with it already open — which is
+  // the page behaving correctly and the fixture lying about where it starts.
+  window.history.replaceState(null, '', '/customers');
 });
 
 afterEach(() => {

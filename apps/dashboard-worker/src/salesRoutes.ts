@@ -51,6 +51,11 @@ const Paging = {
 const OrderQuery = z.object({
   ...Paging,
   q: z.string().trim().max(64).optional(),
+  // The internal user id, not the telegram id: this is what a link out of a
+  // row carries, and it has to mean exactly one customer. `q` cannot serve —
+  // it is a fragment match by design, so it answers «who might this be» and
+  // not «this one».
+  customerId: z.coerce.number().int().positive().optional(),
   status: z
     .enum([
       'DRAFT',
@@ -71,6 +76,7 @@ const OrderQuery = z.object({
 const SubscriptionQuery = z.object({
   ...Paging,
   q: z.string().trim().max(64).optional(),
+  customerId: z.coerce.number().int().positive().optional(),
   status: z
     .enum(['ACTIVE', 'PENDING_PAYMENT', 'ON_HOLD', 'DISABLED', 'REMOVED', 'FAILED'])
     .optional(),
@@ -80,6 +86,7 @@ const SubscriptionQuery = z.object({
 const EntryQuery = z.object({
   ...Paging,
   q: z.string().trim().max(64).optional(),
+  customerId: z.coerce.number().int().positive().optional(),
   kind: z
     .enum([
       'OPENING',
@@ -144,13 +151,14 @@ export function registerSalesRoutes(
   app.get('/api/v1/admin/orders', async (c) => {
     const parsed = OrderQuery.safeParse({
       q: c.req.query('q') || undefined,
+      customerId: c.req.query('customerId') || undefined,
       status: c.req.query('status') || undefined,
       kind: c.req.query('kind') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, status, kind, page, pageSize } = parsed.data;
+    const { q, customerId, status, kind, page, pageSize } = parsed.data;
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -161,6 +169,10 @@ export function registerSalesRoutes(
     if (kind) {
       params.push(kind);
       where.push(`o.kind = ?${params.length}`);
+    }
+    if (customerId) {
+      params.push(customerId);
+      where.push(`o.user_id = ?${params.length}`);
     }
     // The order number is on the screen and in the customer's own invoice, so
     // it is the first thing typed into this box when somebody asks about one.
@@ -265,13 +277,14 @@ export function registerSalesRoutes(
   app.get('/api/v1/admin/subscriptions', async (c) => {
     const parsed = SubscriptionQuery.safeParse({
       q: c.req.query('q') || undefined,
+      customerId: c.req.query('customerId') || undefined,
       status: c.req.query('status') || undefined,
       providerId: c.req.query('providerId') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, status, providerId, page, pageSize } = parsed.data;
+    const { q, customerId, status, providerId, page, pageSize } = parsed.data;
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -282,6 +295,10 @@ export function registerSalesRoutes(
     if (providerId) {
       params.push(providerId);
       where.push(`s.provider_id = ?${params.length}`);
+    }
+    if (customerId) {
+      params.push(customerId);
+      where.push(`s.user_id = ?${params.length}`);
     }
     // The panel account name, because the panel is where this lookup starts:
     // an admin sees an account misbehaving or expiring on PasarGuard and holds
@@ -362,18 +379,23 @@ export function registerSalesRoutes(
   app.get('/api/v1/admin/wallet-entries', async (c) => {
     const parsed = EntryQuery.safeParse({
       q: c.req.query('q') || undefined,
+      customerId: c.req.query('customerId') || undefined,
       kind: c.req.query('kind') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, kind, page, pageSize } = parsed.data;
+    const { q, customerId, kind, page, pageSize } = parsed.data;
 
     const where: string[] = [];
     const params: unknown[] = [];
     if (kind) {
       params.push(kind);
       where.push(`e.kind = ?${params.length}`);
+    }
+    if (customerId) {
+      params.push(customerId);
+      where.push(`e.user_id = ?${params.length}`);
     }
     if (q) where.push(customerFilter(q, params));
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';

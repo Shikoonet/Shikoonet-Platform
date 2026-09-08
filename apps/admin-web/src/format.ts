@@ -264,3 +264,44 @@ export function planDisplayName(name: string | null): string | null {
   // still more use to an operator than an empty cell.
   return trimmed.trim() === '' ? name : trimmed.trim();
 }
+
+/**
+ * A sale's status and a service's status, in the panel's own words — and the
+ * colour that goes with either.
+ *
+ * Here for the reason `STATUS_FA` above is here: a second screen reads them.
+ * The customer's card lists that customer's own orders and services, and a
+ * private copy on that page is how «تکمیل شده» and «انجام شد» end up on two
+ * screens describing one column.
+ *
+ * Indexed by string so a status this build has never heard of falls through to
+ * itself rather than rendering «undefined».
+ */
+export const ORDER_STATUS_FA: Record<string, string> = {
+  DRAFT: 'پیش‌نویس',
+  AWAITING_PAYMENT: 'در انتظار پرداخت',
+  PAID: 'پرداخت شده',
+  PROVISIONING: 'در حال تحویل',
+  COMPLETED: 'تکمیل شده',
+  FAILED: 'ناموفق',
+  CANCELLED: 'لغو شده',
+  EXPIRED: 'منقضی',
+};
+
+export const SUB_STATUS_FA: Record<string, string> = {
+  ACTIVE: 'فعال',
+  PENDING_PAYMENT: 'در انتظار پرداخت',
+  ON_HOLD: 'در انتظار اتصال',
+  DISABLED: 'غیرفعال',
+  REMOVED: 'حذف شده',
+  FAILED: 'ناموفق',
+};
+
+/** Green for a good end state, red for a bad one, plain for in-flight. */
+export function statusTone(status: string): string {
+  if (['COMPLETED', 'ACTIVE', 'PAID'].includes(status)) return 'badge badge-active';
+  if (['FAILED', 'CANCELLED', 'EXPIRED', 'REMOVED', 'DISABLED'].includes(status)) {
+    return 'badge badge-block';
+  }
+  return 'badge badge-info';
+}

@@ -2419,9 +2419,18 @@ export const api = {
     return req<{ ok: boolean; items: RedemptionRow[] }>(`/discounts/${id}/redemptions`);
   },
 
-  orders(p: { q?: string; status?: string; kind?: string; page: number; pageSize: number }) {
+  orders(p: {
+    q?: string;
+    /** One customer's own orders, by `users.id`. Exact, unlike `q`. */
+    customerId?: number;
+    status?: string;
+    kind?: string;
+    page: number;
+    pageSize: number;
+  }) {
     const qs = new URLSearchParams({ page: String(p.page), pageSize: String(p.pageSize) });
     if (p.q) qs.set('q', p.q);
+    if (p.customerId) qs.set('customerId', String(p.customerId));
     if (p.status) qs.set('status', p.status);
     if (p.kind) qs.set('kind', p.kind);
     return req<{ ok: boolean; total: number; items: OrderRow[] }>(`/orders?${qs.toString()}`);
@@ -2441,18 +2450,32 @@ export const api = {
     );
   },
 
-  subscriptions(p: { q?: string; status?: string; page: number; pageSize: number }) {
+  subscriptions(p: {
+    q?: string;
+    customerId?: number;
+    status?: string;
+    page: number;
+    pageSize: number;
+  }) {
     const qs = new URLSearchParams({ page: String(p.page), pageSize: String(p.pageSize) });
     if (p.q) qs.set('q', p.q);
+    if (p.customerId) qs.set('customerId', String(p.customerId));
     if (p.status) qs.set('status', p.status);
     return req<{ ok: boolean; total: number; items: SubscriptionRow[] }>(
       `/subscriptions?${qs.toString()}`,
     );
   },
 
-  walletEntries(p: { q?: string; kind?: string; page: number; pageSize: number }) {
+  walletEntries(p: {
+    q?: string;
+    customerId?: number;
+    kind?: string;
+    page: number;
+    pageSize: number;
+  }) {
     const qs = new URLSearchParams({ page: String(p.page), pageSize: String(p.pageSize) });
     if (p.q) qs.set('q', p.q);
+    if (p.customerId) qs.set('customerId', String(p.customerId));
     if (p.kind) qs.set('kind', p.kind);
     return req<{
       ok: boolean;
@@ -2641,6 +2664,7 @@ export const api = {
       recentCustomers: CustomerListItem[];
       recentOrders: Array<{
         publicId: string;
+        userId: number | null;
         telegramId: number | null;
         planName: string | null;
         totalIrr: number;

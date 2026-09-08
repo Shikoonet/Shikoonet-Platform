@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { CustomerLink } from '../CustomerLink.js';
 import { api, ApiError, type DiscountItem, type RedemptionRow } from '../api.js';
 import { count, dateTime, endOfTehranDay, toman } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
@@ -254,10 +255,14 @@ export function DiscountsPage() {
                       </span>
                     )}
                     {d.targetUser && (
-                      <span className="badge badge-info ltr">
-                        {d.targetUser.username
-                          ? `@${d.targetUser.username}`
-                          : (d.targetUser.telegramId ?? d.targetUser.id)}
+                      <span className="badge badge-info">
+                        <CustomerLink
+                          customer={{
+                            id: d.targetUser.id,
+                            telegramId: d.targetUser.telegramId ?? d.targetUser.id,
+                            username: d.targetUser.username,
+                          }}
+                        />
                       </span>
                     )}
                     {d.product && <span className="badge">{d.product.name}</span>}
@@ -618,7 +623,13 @@ function Redemptions({ code, onClose }: { code: DiscountItem; onClose: () => voi
             )}
             {rows.map((r) => (
               <tr key={r.id}>
-                <td className="ltr">{r.username ? `@${r.username}` : r.telegramId}</td>
+                <td>
+                  {/* No `users.id` on a redemption row, so `?q=` — an exact
+                      match on an all-digit telegram id, one query away rather
+                      than a dead end. Adding the column to the route would be
+                      the larger change for the same landing page. */}
+                  <CustomerLink customer={{ telegramId: r.telegramId, username: r.username }} />
+                </td>
                 <td>{toman(r.amountIrr)}</td>
                 <td>{dateTime(r.createdAt)}</td>
               </tr>
