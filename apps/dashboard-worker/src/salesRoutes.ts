@@ -21,8 +21,112 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import type { Ident } from './adminAudit.js';
+import { tehranDayBoundsFromDate } from '@shikoo/domain';
+import { csvCell, IRR_PER_TOMAN } from './revenueRoutes.js';
 
 const PAGE_SIZE_MAX = 100;
+
+/** A calendar day the operator typed, not an instant. */
+const ISO_DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
+
+/**
+ * The window a date filter means, in Tehran.
+ *
+ * `from` is the start of that day and `to` is the start of the day AFTER it,
+ * because `tehranDayBoundsFromDate(...).end` is `start + DAY_MS` — the first
+ * instant that is NOT in the day. So the SQL compares `< endMs`, and «۱۵ تا ۱۵
+ * شهریور» is one whole day rather than an empty range. Reading that `end` as
+ * inclusive is the mistake `mirzabotRoutes.ts` records paying for with a
+ * `- 1`; comparing with `<` says the same thing without the magic number.
+ * Epoch milliseconds against `to_timestamp(?/1000.0)`, so the column stays a
+ * timestamp and its index stays usable.
+ */
+function dayWindow(from: string | undefined, to: string | undefined) {
+  return {
+    startMs: from === undefined ? null : tehranDayBoundsFromDate(from).start,
+    endMs: to === undefined ? null : tehranDayBoundsFromDate(to).end,
+  };
+}
+
+/**
+ * The columns each ledger will order by, and nothing else.
+ *
+ * A whitelist rather than an escape, because the value lands inside `ORDER BY`
+ * where no parameter can go. `?sort=total_irr;DROP` is a 400 before it reaches
+ * SQL — zod refuses the enum — so the map below is only ever indexed by a
+ * string this file wrote.
+ *
+ * Every entry ends `, <table>.id DESC`. Ordering by a non-unique column alone
+ * leaves ties in whatever order the plan happens to produce, and with LIMIT/
+ * OFFSET on top that means a row can appear on two pages or on none.
+ */
+const ORDER_BY = {
+  orders: {
+    id: 'o.id',
+    created_at: 'o.created_at',
+    total_irr: 'o.total_irr',
+    status: 'o.status',
+  },
+  subscriptions: {
+    id: 's.id',
+    purchased_at: 's.purchased_at',
+    expires_at: 's.expires_at',
+    price_irr: 's.price_irr',
+    status: 's.status',
+  },
+  entries: {
+    id: 'e.id',
+    created_at: 'e.created_at',
+    amount_irr: 'e.amount_irr',
+  },
+} as const;
+
+function orderClause(
+  table: keyof typeof ORDER_BY,
+  sort: string | undefined,
+  dir: 'asc' | 'desc',
+  tie: string,
+): string {
+  const map = ORDER_BY[table] as Record<string, string>;
+  const col = sort === undefined ? undefined : map[sort];
+  if (col === undefined) return `ORDER BY ${tie} DESC`;
+  return `ORDER BY ${col} ${dir === 'asc' ? 'ASC' : 'DESC'}, ${tie} DESC`;
+}
+
+/**
+ * One request, one file.
+ *
+ * Above this the answer is truncated rather than wrong, and the same number
+ * `/api/v1/payments` uses — an export that silently stops at a different row
+ * count from the one beside it is worse than either.
+ */
+const EXPORT_MAX = 5000;
+
+/**
+ * A CSV body, with the two things a spreadsheet needs to read Persian.
+ *
+ * The BOM, or Excel opens UTF-8 as its own legacy code page and every column
+ * is mojibake. CRLF, because that is what Excel writes and therefore what it
+ * round-trips without adding a blank line.
+ */
+function csvBody(header: readonly string[], rows: readonly (readonly unknown[])[]): string {
+  const lines = [header.map(csvCell).join(','), ...rows.map((r) => r.map(csvCell).join(','))];
+  return `﻿${lines.join('\r\n')}\r\n`;
+}
+
+const CSV_HEADERS = { 'content-type': 'text/csv; charset=utf-8' } as const;
+
+/**
+ * Whether this operator may take a file away.
+ *
+ * ADMIN only, and that IS stricter than the screen — the same line
+ * `mirzabotRoutes.ts` draws for `/payments`. Reading a page and carrying off
+ * every customer's Telegram id are different acts, and the second one leaves
+ * the building.
+ */
+function mayExport(ident: Ident): boolean {
+  return ident.role === 'ADMIN';
+}
 
 /**
  * The delivery lifecycle, read off the two facts that decide it.
@@ -56,6 +160,14 @@ const OrderQuery = z.object({
   // it is a fragment match by design, so it answers «who might this be» and
   // not «this one».
   customerId: z.coerce.number().int().positive().optional(),
+  // A calendar day in Tehran, inclusive at both ends. Named `...Day` because
+  // that is what they are — `from`/`to` on the wire, since that is what the
+  // screen's two date fields are called.
+  fromDay: ISO_DAY.optional(),
+  toDay: ISO_DAY.optional(),
+  dir: z.enum(['asc', 'desc']).default('desc'),
+  format: z.enum(['csv']).optional(),
+  sort: z.enum(['id', 'created_at', 'total_irr', 'status']).optional(),
   status: z
     .enum([
       'DRAFT',
@@ -77,6 +189,14 @@ const SubscriptionQuery = z.object({
   ...Paging,
   q: z.string().trim().max(64).optional(),
   customerId: z.coerce.number().int().positive().optional(),
+  // A calendar day in Tehran, inclusive at both ends. Named `...Day` because
+  // that is what they are — `from`/`to` on the wire, since that is what the
+  // screen's two date fields are called.
+  fromDay: ISO_DAY.optional(),
+  toDay: ISO_DAY.optional(),
+  dir: z.enum(['asc', 'desc']).default('desc'),
+  format: z.enum(['csv']).optional(),
+  sort: z.enum(['id', 'purchased_at', 'expires_at', 'price_irr', 'status']).optional(),
   status: z
     .enum(['ACTIVE', 'PENDING_PAYMENT', 'ON_HOLD', 'DISABLED', 'REMOVED', 'FAILED'])
     .optional(),
@@ -87,6 +207,14 @@ const EntryQuery = z.object({
   ...Paging,
   q: z.string().trim().max(64).optional(),
   customerId: z.coerce.number().int().positive().optional(),
+  // A calendar day in Tehran, inclusive at both ends. Named `...Day` because
+  // that is what they are — `from`/`to` on the wire, since that is what the
+  // screen's two date fields are called.
+  fromDay: ISO_DAY.optional(),
+  toDay: ISO_DAY.optional(),
+  dir: z.enum(['asc', 'desc']).default('desc'),
+  format: z.enum(['csv']).optional(),
+  sort: z.enum(['id', 'created_at', 'amount_irr']).optional(),
   kind: z
     .enum([
       'OPENING',
@@ -152,13 +280,19 @@ export function registerSalesRoutes(
     const parsed = OrderQuery.safeParse({
       q: c.req.query('q') || undefined,
       customerId: c.req.query('customerId') || undefined,
+      fromDay: c.req.query('from') || undefined,
+      toDay: c.req.query('to') || undefined,
+      sort: c.req.query('sort') || undefined,
+      dir: c.req.query('dir') ?? undefined,
+      format: c.req.query('format') || undefined,
       status: c.req.query('status') || undefined,
       kind: c.req.query('kind') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, customerId, status, kind, page, pageSize } = parsed.data;
+    const { q, customerId, status, kind, page, pageSize, fromDay, toDay, sort, dir, format } =
+      parsed.data;
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -174,12 +308,65 @@ export function registerSalesRoutes(
       params.push(customerId);
       where.push(`o.user_id = ?${params.length}`);
     }
+    const { startMs, endMs } = dayWindow(fromDay, toDay);
+    if (startMs !== null) {
+      params.push(startMs);
+      where.push(`o.created_at >= to_timestamp(?${params.length} / 1000.0)`);
+    }
+    if (endMs !== null) {
+      params.push(endMs);
+      where.push(`o.created_at < to_timestamp(?${params.length} / 1000.0)`);
+    }
     // The order number is on the screen and in the customer's own invoice, so
     // it is the first thing typed into this box when somebody asks about one.
     if (q) where.push(customerFilter(q, params, ['o.public_id']));
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const from = `FROM orders o JOIN users u ON u.id = o.user_id`;
+
+    /*
+     * `?format=csv` on the same GET, rather than a route beside it.
+     *
+     * A sibling route means a second copy of every filter above, and an export
+     * that answers a different question from the screen it was taken from is
+     * worse than no export at all. Here it cannot drift: same handler, same
+     * WHERE, one branch at the end.
+     */
+    if (format === 'csv') {
+      if (!mayExport(c.get('identity'))) return c.json({ ok: false, error: 'forbidden' }, 403);
+      params.push(EXPORT_MAX);
+      const { results } = await c.env.DB.prepare(
+        `SELECT o.public_id, o.kind, o.status, o.quantity, o.total_irr, o.created_at,
+                u.telegram_id, u.username,
+                COALESCE(pl.name, sub.plan_name_at_sale) AS plan_name
+           ${from}
+           LEFT JOIN product_plans pl ON pl.id = o.plan_id
+           LEFT JOIN subscriptions sub ON sub.order_id = o.id
+           ${whereSql}
+          ${orderClause('orders', sort, dir, 'o.id')}
+          LIMIT ?${params.length}`,
+      )
+        .bind(...params)
+        .all<Record<string, unknown>>();
+      return c.body(
+        csvBody(
+          ['شمارهٔ سفارش', 'کاربر', 'آیدی تلگرام', 'نوع', 'وضعیت', 'چه چیزی', 'تعداد', 'مبلغ (تومان)', 'زمان'],
+          (results ?? []).map((r) => [
+            r['public_id'],
+            r['username'] === null ? '' : `@${String(r['username'])}`,
+            r['telegram_id'],
+            r['kind'],
+            r['status'],
+            r['plan_name'] ?? '',
+            r['quantity'],
+            Number(r['total_irr']) / IRR_PER_TOMAN,
+            r['created_at'],
+          ]),
+        ),
+        200,
+        CSV_HEADERS,
+      );
+    }
     const totalRow = await c.env.DB.prepare(`SELECT COUNT(*) AS n ${from} ${whereSql}`)
       .bind(...params)
       .first<{ n: number }>();
@@ -206,7 +393,7 @@ export function registerSalesRoutes(
          -- shared FROM so the COUNT above still counts orders.
          LEFT JOIN subscriptions s ON s.order_id = o.id
          ${whereSql}
-        ORDER BY o.id DESC
+        ${orderClause('orders', sort, dir, 'o.id')}
         LIMIT ?${limitParam} OFFSET ?${params.length}`,
     )
       .bind(...params)
@@ -278,13 +465,19 @@ export function registerSalesRoutes(
     const parsed = SubscriptionQuery.safeParse({
       q: c.req.query('q') || undefined,
       customerId: c.req.query('customerId') || undefined,
+      fromDay: c.req.query('from') || undefined,
+      toDay: c.req.query('to') || undefined,
+      sort: c.req.query('sort') || undefined,
+      dir: c.req.query('dir') ?? undefined,
+      format: c.req.query('format') || undefined,
       status: c.req.query('status') || undefined,
       providerId: c.req.query('providerId') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, customerId, status, providerId, page, pageSize } = parsed.data;
+    const { q, customerId, status, providerId, page, pageSize, fromDay, toDay, sort, dir, format } =
+      parsed.data;
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -300,6 +493,15 @@ export function registerSalesRoutes(
       params.push(customerId);
       where.push(`s.user_id = ?${params.length}`);
     }
+    const { startMs, endMs } = dayWindow(fromDay, toDay);
+    if (startMs !== null) {
+      params.push(startMs);
+      where.push(`s.purchased_at >= to_timestamp(?${params.length} / 1000.0)`);
+    }
+    if (endMs !== null) {
+      params.push(endMs);
+      where.push(`s.purchased_at < to_timestamp(?${params.length} / 1000.0)`);
+    }
     // The panel account name, because the panel is where this lookup starts:
     // an admin sees an account misbehaving or expiring on PasarGuard and holds
     // no other identifier for it. Without this, the column is a dead end.
@@ -307,6 +509,41 @@ export function registerSalesRoutes(
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const from = `FROM subscriptions s JOIN users u ON u.id = s.user_id`;
+
+    if (format === 'csv') {
+      if (!mayExport(c.get('identity'))) return c.json({ ok: false, error: 'forbidden' }, 403);
+      params.push(EXPORT_MAX);
+      const { results } = await c.env.DB.prepare(
+        `SELECT s.public_id, s.status, s.plan_name_at_sale, s.provider_name_at_sale,
+                s.price_irr, s.volume_gb, s.remote_username, s.purchased_at, s.expires_at,
+                u.telegram_id, u.username
+           ${from} ${whereSql}
+          ${orderClause('subscriptions', sort, dir, 's.id')}
+          LIMIT ?${params.length}`,
+      )
+        .bind(...params)
+        .all<Record<string, unknown>>();
+      return c.body(
+        csvBody(
+          ['شناسه', 'کاربر', 'آیدی تلگرام', 'سرویس', 'پنل', 'نام روی پنل', 'حجم (گیگ)', 'مبلغ (تومان)', 'وضعیت', 'خرید', 'انقضا'],
+          (results ?? []).map((r) => [
+            r['public_id'],
+            r['username'] === null ? '' : `@${String(r['username'])}`,
+            r['telegram_id'],
+            r['plan_name_at_sale'],
+            r['provider_name_at_sale'] ?? '',
+            r['remote_username'] ?? '',
+            r['volume_gb'] ?? '',
+            Number(r['price_irr']) / IRR_PER_TOMAN,
+            r['status'],
+            r['purchased_at'],
+            r['expires_at'] ?? '',
+          ]),
+        ),
+        200,
+        CSV_HEADERS,
+      );
+    }
     const totalRow = await c.env.DB.prepare(`SELECT COUNT(*) AS n ${from} ${whereSql}`)
       .bind(...params)
       .first<{ n: number }>();
@@ -321,7 +558,7 @@ export function registerSalesRoutes(
               u.id AS user_id, u.telegram_id, u.username
          ${from}
          ${whereSql}
-        ORDER BY s.id DESC
+        ${orderClause('subscriptions', sort, dir, 's.id')}
         LIMIT ?${limitParam} OFFSET ?${params.length}`,
     )
       .bind(...params)
@@ -380,12 +617,17 @@ export function registerSalesRoutes(
     const parsed = EntryQuery.safeParse({
       q: c.req.query('q') || undefined,
       customerId: c.req.query('customerId') || undefined,
+      fromDay: c.req.query('from') || undefined,
+      toDay: c.req.query('to') || undefined,
+      sort: c.req.query('sort') || undefined,
+      dir: c.req.query('dir') ?? undefined,
+      format: c.req.query('format') || undefined,
       kind: c.req.query('kind') || undefined,
       page: c.req.query('page') ?? undefined,
       pageSize: c.req.query('pageSize') ?? undefined,
     });
     if (!parsed.success) return c.json({ ok: false, error: 'invalid_query' }, 400);
-    const { q, customerId, kind, page, pageSize } = parsed.data;
+    const { q, customerId, kind, page, pageSize, fromDay, toDay, sort, dir, format } = parsed.data;
 
     const where: string[] = [];
     const params: unknown[] = [];
@@ -397,10 +639,50 @@ export function registerSalesRoutes(
       params.push(customerId);
       where.push(`e.user_id = ?${params.length}`);
     }
+    const { startMs, endMs } = dayWindow(fromDay, toDay);
+    if (startMs !== null) {
+      params.push(startMs);
+      where.push(`e.created_at >= to_timestamp(?${params.length} / 1000.0)`);
+    }
+    if (endMs !== null) {
+      params.push(endMs);
+      where.push(`e.created_at < to_timestamp(?${params.length} / 1000.0)`);
+    }
     if (q) where.push(customerFilter(q, params));
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const from = `FROM wallet_entries e JOIN users u ON u.id = e.user_id`;
+
+    if (format === 'csv') {
+      if (!mayExport(c.get('identity'))) return c.json({ ok: false, error: 'forbidden' }, 403);
+      params.push(EXPORT_MAX);
+      const { results } = await c.env.DB.prepare(
+        `SELECT e.id, e.amount_irr, e.kind, e.actor, e.note, e.created_at,
+                u.telegram_id, u.username
+           ${from} ${whereSql}
+          ${orderClause('entries', sort, dir, 'e.id')}
+          LIMIT ?${params.length}`,
+      )
+        .bind(...params)
+        .all<Record<string, unknown>>();
+      return c.body(
+        csvBody(
+          ['شناسه', 'کاربر', 'آیدی تلگرام', 'نوع', 'مبلغ (تومان)', 'توسط', 'یادداشت', 'زمان'],
+          (results ?? []).map((r) => [
+            r['id'],
+            r['username'] === null ? '' : `@${String(r['username'])}`,
+            r['telegram_id'],
+            r['kind'],
+            Number(r['amount_irr']) / IRR_PER_TOMAN,
+            r['actor'] ?? '',
+            r['note'] ?? '',
+            r['created_at'],
+          ]),
+        ),
+        200,
+        CSV_HEADERS,
+      );
+    }
     const totals = await c.env.DB.prepare(
       `SELECT COUNT(*) AS n,
               COALESCE(SUM(e.amount_irr) FILTER (WHERE e.amount_irr > 0), 0) AS credit,
@@ -419,7 +701,7 @@ export function registerSalesRoutes(
               u.id AS user_id, u.telegram_id, u.username
          ${from}
          ${whereSql}
-        ORDER BY e.id DESC
+        ${orderClause('entries', sort, dir, 'e.id')}
         LIMIT ?${limitParam} OFFSET ?${params.length}`,
     )
       .bind(...params)

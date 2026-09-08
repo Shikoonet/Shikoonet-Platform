@@ -280,6 +280,15 @@ export function RequestsPage() {
   const [busy, setBusy] = useState(false);
   /** The level each pending row would be approved onto. Keyed by request id. */
   const [pickedTier, setPickedTier] = useState<Record<number, 'n' | 'n2'>>({});
+  /**
+   * The rows ticked for a decision taken all at once.
+   *
+   * A Set of request ids rather than of customers: two rows can belong to one
+   * person, and «this row» is what the screen offers. Cleared on every reload,
+   * because a tick that survives a filter change points at a row that is no
+   * longer on screen.
+   */
+  const [picked, setPicked] = useState<Set<number>>(new Set());
   const [tierDraft, setTierDraft] = useState<Record<string, string>>({});
 
   async function load(p = page) {
@@ -291,6 +300,7 @@ export function RequestsPage() {
       ]);
       setRows(requests.items);
       setTotal(requests.total);
+      setPicked(new Set());
       setTiers(levels.items);
       setTierDraft(Object.fromEntries(levels.items.map((t) => [t.code, String(t.percent)])));
     } catch (e) {
@@ -332,6 +342,42 @@ export function RequestsPage() {
     try {
       await api.saveResellerTier(t.code, { percent });
       setDone(`تخفیف «${t.name}» روی ${count(percent)}٪ ذخیره شد.`);
+      await load();
+    } catch (e) {
+      setErr(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * The same decision, for everything ticked.
+   *
+   * Confirms with the COUNT first, because this is the widest single act on
+   * the screen: 171 requests were open on staging, and «تایید همه» without a
+   * number in front of it is a button nobody can check before pressing.
+   */
+  async function decideSelection(next: 'APPROVED' | 'REJECTED') {
+    const ids = rows.filter((r) => picked.has(r.id)).map((r) => r.id);
+    if (ids.length === 0) return;
+    const word = next === 'APPROVED' ? 'تایید' : 'رد';
+    if (!window.confirm(`${count(ids.length)} درخواست ${word} شود؟`)) return;
+
+    setBusy(true);
+    setErr(null);
+    setDone(null);
+    try {
+      const res = await api.decideResellerRequests(ids, next, next === 'APPROVED' ? 'n' : null);
+      const ok = res.results.filter((r) => r.ok).length;
+      const refused = res.results.length - ok;
+      // Reported rather than swallowed: a row already decided on somebody
+      // else's screen is not a failure of this press, and it is not a success
+      // either.
+      setDone(
+        refused === 0
+          ? `${count(ok)} درخواست ${word} شد.`
+          : `${count(ok)} درخواست ${word} شد؛ ${count(refused)} تا قبلاً تصمیم‌گیری شده بود.`,
+      );
       await load();
     } catch (e) {
       setErr(message(e));
@@ -453,10 +499,45 @@ export function RequestsPage() {
 
         {err && <div className="alert alert-error">{err}</div>}
 
+        {picked.size > 0 && (
+          /* Only while something is ticked. A bar that is always there, greyed
+             out, is a bar an operator learns to read past — and the two
+             buttons on it are the widest acts this screen can take. */
+          <div className="toolbar" role="status">
+            <span>{count(picked.size)} انتخاب‌شده</span>
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              disabled={busy}
+              onClick={() => void decideSelection('APPROVED')}
+            >
+              تایید انتخاب‌شده‌ها
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={() => void decideSelection('REJECTED')}
+            >
+              رد انتخاب‌شده‌ها
+            </button>
+          </div>
+        )}
+
         <div className="table-wrap">
           <table className="app-table">
             <thead>
               <tr>
+                <th>
+                  <input
+                    type="checkbox"
+                    aria-label="انتخاب همه"
+                    checked={rows.length > 0 && picked.size === rows.length}
+                    onChange={(e) =>
+                      setPicked(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())
+                    }
+                  />
+                </th>
                 <th>کاربر</th>
                 <th>توضیح</th>
                 <th>زمان</th>
@@ -467,13 +548,28 @@ export function RequestsPage() {
             <tbody>
               {rows.length === 0 && (
                 <tr>
-                  <td className="empty" colSpan={5}>
+                  <td className="empty" colSpan={6}>
                     درخواستی در این وضعیت نیست.
                   </td>
                 </tr>
               )}
               {rows.map((r) => (
                 <tr key={r.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      aria-label={`انتخاب ${r.description ?? r.customer.telegramId}`}
+                      checked={picked.has(r.id)}
+                      onChange={(e) =>
+                        setPicked((prev) => {
+                          const next = new Set(prev);
+                          if (e.target.checked) next.add(r.id);
+                          else next.delete(r.id);
+                          return next;
+                        })
+                      }
+                    />
+                  </td>
                   <td>
                     <CustomerLink customer={r.customer} />
                     {r.customer.isReseller && <span className="badge badge-info">نماینده</span>}
