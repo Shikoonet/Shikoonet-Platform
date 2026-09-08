@@ -244,3 +244,69 @@ test('a message to a customer says it was queued, not that it was sent', async (
   expect(queued?.n).toBe(1);
   expect(Number(queued?.tg)).toBe(TELEGRAM_ID);
 });
+
+/*
+ * The cross-link, in a browser.
+ *
+ * The unit tests prove the address is written and read; only a real browser
+ * proves the address SURVIVES — that a pasted link opens the card on a cold
+ * load, and that Back walks back out of it instead of leaving the section.
+ * Both are history behaviour, which happy-dom simulates and does not own.
+ */
+test('a customer card can be opened by address alone', async ({ page }) => {
+  const row = await withDb((d) =>
+    d.prepare(`SELECT id FROM users WHERE telegram_id = ?1`).bind(TELEGRAM_ID).first<{ id: number }>(),
+  );
+  await page.goto(`/admin/customers?id=${row!.id}`);
+  // No search, no click: the card is open because the address said so.
+  await expect(page.locator('#cust-discount')).toBeVisible();
+  await expect(page.getByText(String(TELEGRAM_ID)).first()).toBeVisible();
+});
+
+test('a row names its customer, and Back returns to the row', async ({ page }) => {
+  await page.goto('/admin/orders');
+  await expect(page.locator('.sidebar-link.active')).toHaveText('سفارشات');
+
+  const link = page.locator('tbody tr a[href*="/customers?"]').first();
+  await expect(link).toBeVisible();
+  await link.click();
+
+  await expect(page.locator('#cust-discount')).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe('/admin/customers');
+  await expect(page.locator('.sidebar-link.active')).toHaveText('کاربران');
+
+  // One entry was pushed, so one Back returns to the ledger the link was on —
+  // not two. Crossing a section and opening the card is a single step.
+  await page.goBack();
+  await expect(page.locator('.sidebar-link.active')).toHaveText('سفارشات');
+  await expect(page.locator('#cust-discount')).toBeHidden();
+});
+
+test('opening the card from inside «کاربران» is its own step back', async ({ page }) => {
+  // The other half of the same rule: within the section, Back closes the card
+  // and leaves the operator on the list they were reading — which is what a
+  // drawer kept in `useState` could never do.
+  await open(page);
+  expect(new URL(page.url()).search).toMatch(/(^|[?&])id=\d+/);
+
+  await page.goBack();
+  await expect(page.locator('#cust-discount')).toBeHidden();
+  await expect(page.locator('.sidebar-link.active')).toHaveText('کاربران');
+});
+
+test('the card lists this customer’s own orders and services', async ({ page }) => {
+  const row = await withDb((d) =>
+    d.prepare(`SELECT id FROM users WHERE telegram_id = ?1`).bind(TELEGRAM_ID).first<{ id: number }>(),
+  );
+  const asked: string[] = [];
+  page.on('request', (r) => {
+    const u = r.url();
+    if (u.includes('/api/v1/admin/orders?') || u.includes('/api/v1/admin/subscriptions?')) asked.push(u);
+  });
+  await page.goto(`/admin/customers?id=${row!.id}`);
+  await expect(page.getByRole('heading', { name: /^سفارش‌ها/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /^سرویس‌ها/ })).toBeVisible();
+  // Narrowed by the server, not filtered in the browser after fetching the shop.
+  expect(asked.every((u) => u.includes(`customerId=${row!.id}`))).toBe(true);
+  expect(asked.length).toBeGreaterThan(0);
+});
