@@ -20,8 +20,6 @@
  * real and frequent answer, and it has to look like an answer.
  */
 
-import { useId } from 'react';
-
 export interface BarPoint {
   label: string;
   value: number;
@@ -39,8 +37,16 @@ export function BarChart({
   height?: number;
   title?: string;
 }) {
-  const id = useId();
   const max = series.reduce((m, p) => Math.max(m, p.value), 0);
+  /*
+   * A name the graphic always has.
+   *
+   * `role="img"` with nothing naming it is announced as «image» and nothing
+   * else. `StatsPage` renders this inside a `<Section>` that already carries
+   * the heading, so it passes no `title` — which left the chart nameless on
+   * the one screen it actually appears on. Caught by CodeRabbit.
+   */
+  const name = title ?? 'نمودار';
 
   // Zero bars and all-zero bars are the same answer, and neither is a chart:
   // one divides by zero, the other draws a full-height floor for nothing.
@@ -63,16 +69,14 @@ export function BarChart({
   return (
     <div className="chart">
       {title && (
-        <div className="chart__title" id={`${id}-t`}>
-          {title}
-        </div>
+        <div className="chart__title">{title}</div>
       )}
       <svg
         className="chart__svg"
         viewBox={`0 0 100 ${height}`}
         preserveAspectRatio="none"
         role="img"
-        {...(title ? { 'aria-labelledby': `${id}-t` } : {})}
+        aria-label={name}
       >
         {series.map((p, i) => {
           const h = (p.value / max) * height;
@@ -96,6 +100,21 @@ export function BarChart({
         <span>{series[0]!.label}</span>
         <span>{series[series.length - 1]!.label}</span>
       </div>
+      {/* The same numbers, as a table nobody sees.
+          A `<title>` inside a `<rect>` is a tooltip; it is not a text
+          alternative for the graphic, and a screen reader walking the SVG does
+          not read them out as its content. This is not a duplicate of the data
+          — it IS the data, drawn twice: once as bars, once as rows. */}
+      <table className="visually-hidden" aria-label={`${name} — جدول مقادیر`}>
+        <tbody>
+          {series.map((p) => (
+            <tr key={p.label}>
+              <th scope="row">{p.label}</th>
+              <td>{format(p.value)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

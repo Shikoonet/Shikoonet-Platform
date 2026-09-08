@@ -1777,3 +1777,9 @@ td.money,
     content: none;
   }
 }
+
+/* `.visually-hidden` is NOT defined here.
+   `hub/styles.css` already carries it, unscoped, so it applies across the whole
+   panel — and a second copy would make it a class both stylesheets define,
+   which `css-scope.test.ts` refuses. The chart's hidden value table uses that
+   one. */
