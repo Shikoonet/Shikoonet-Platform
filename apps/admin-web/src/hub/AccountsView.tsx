@@ -155,7 +155,13 @@ export function AccountsView({ cache }: AccountsViewProps) {
         `«${name}» غیرفعال شود؟ از «آمار مالی» بیرون می‌رود، ربات دیگر کارت‌های آن را ` +
           `به مشتری نمی‌دهد، و از صف بررسی هم برداشته می‌شود. در همین فهرست می‌ماند و ` +
           `با «فعال‌کردن» برمی‌گردد.\n\n` +
-          `اگر فقط می‌خواهید موقتاً از «امروز» و تطبیق بیرون بماند، «بی‌صدا» همان کار را می‌کند.`,
+          // The third place in this file «امروز» was left bare, and the same
+          // trap as the mute copy above: read as a date it promises the
+          // account leaves those views from today onwards, when muting takes
+          // its whole history out. One word — «صفحهٔ» — makes it the screen
+          // it is. «موقتاً» goes with it: what makes muting temporary is that
+          // it can be undone, not that it covers a stretch of time.
+          `اگر فقط می‌خواهید از صفحهٔ «امروز» و تطبیق بیرون بماند، «بی‌صدا» همان کار را می‌کند.`,
       )
     ) {
       return;
