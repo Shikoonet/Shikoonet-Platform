@@ -30,7 +30,13 @@
 
   --text-main: #f1f3f8;
   --text-muted: #8b94a6;
-  --text-dim: #5a627a;
+  /* Raised from `#5a627a` on 2026-09-09, which measured 3.1:1 on a card. It is
+     not decoration: it carries «چیزی یافت نشد» in an empty table — the only
+     text on the screen when a table is empty — the sidebar's group labels and
+     the code on a device card. Same hue and saturation, lightness up until both
+     grounds clear 4.5:1 with a little headroom; still plainly dimmer than
+     `--text-muted`. `legibility.test.ts` holds the bar. */
+  --text-dim: #747d99;
 
   --accent: #3b82f6;
   --accent-soft: rgba(59, 130, 246, 0.15);
@@ -208,7 +214,7 @@ body {
   font-size: 11px;
 }
 .sidebar-section-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 1px;
   color: var(--text-dim);
   padding: 14px 8px 6px;

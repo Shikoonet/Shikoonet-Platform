@@ -1,5 +1,5 @@
 /**
- * A link in the panel is readable.
+ * The panel's text is readable.
  *
  * Measured on staging 2026-09-09, `/admin/customers`: every customer link that
  * slice 2 put on nine screens renders `color: rgb(0, 0, 238)`. That is not a
@@ -144,7 +144,7 @@ function contrast(fg: Rgb, bg: Rgb): number {
   return (hi! + 0.05) / (lo! + 0.05);
 }
 
-describe('a link is readable on the panel background', () => {
+describe('text is readable on the panel background', () => {
   const body = over(parseColour(resolveValue('var(--bg-body)')), [0, 0, 0]);
   const card = over(parseColour(resolveValue('var(--surface-1)')), body);
 
@@ -161,6 +161,22 @@ describe('a link is readable on the panel background', () => {
 
     expect(contrast(link, body)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(link, card)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  /**
+   * Tokens that colour text a person has to READ, against the two grounds the
+   * panel puts them on.
+   *
+   * `--text-dim` is not decoration: it carries «چیزی یافت نشد» in an empty
+   * table — which is the ONLY text on the screen when a table is empty — the
+   * sidebar's group labels, and the device code on a device card. Measured at
+   * about 3.1:1 before this, which is below the bar for body text at any size
+   * the panel uses it at.
+   */
+  it.each([['--text-muted'], ['--text-dim']])('%s clears 4.5:1 on both grounds', (token) => {
+    const fg = over(parseColour(resolveValue(`var(${token})`)), body);
+    expect(contrast(fg, body)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(fg, card)).toBeGreaterThanOrEqual(4.5);
   });
 
   it('measures the browser default as the failure it is', () => {
