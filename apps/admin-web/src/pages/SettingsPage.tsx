@@ -91,10 +91,18 @@ export function SettingsPage() {
     void load();
   }, [scope]);
 
-  // Split once, here, rather than filtered at each of the two render sites —
-  // the counts on the tabs and the rows under them have to be the same set.
-  const live = rows.filter((r) => r.live);
-  const imported = rows.filter((r) => !r.live);
+  /*
+   * Split once, here, rather than filtered at each of the two render sites —
+   * the counts on the tabs and the rows under them have to be the same set.
+   *
+   * A gateway credential counts as the shop's own even though it is not in the
+   * registry: «آیا مرچنت زرین‌پال ثبت شده؟» is a question an operator asks, and
+   * the answer belongs beside the other settings rather than filed under «what
+   * the import left». It renders as «ثبت شده / ندارد» and nothing more — the
+   * server never sends the value and refuses a write either way.
+   */
+  const live = rows.filter((r) => r.live || r.secret);
+  const imported = rows.filter((r) => !r.live && !r.secret);
 
   /**
    * One field, saved on its own, with the value the control holds.
