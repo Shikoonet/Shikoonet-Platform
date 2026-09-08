@@ -1643,9 +1643,22 @@ button.cat-card--new:hover {
 
 @media (max-width: 720px) {
   /* On a phone the header holds the menu button, the title and the account
-     actions; the shop-state controls move under it rather than competing for
-     a row that is already full. */
+     actions; the shop-state controls move under it rather than competing for a
+     row that is already full.
+
+     And it stops being FIXED, which is the fix rather than a preference.
+     Measured at 390px: the header is 127px on most screens and 151px on
+     «پرداخت‌ها», where the tab strip lands in it. Everything below a fixed
+     header is offset by one `--header-h`, so no single number covers both —
+     64px slid the first 51 pixels of the page underneath, and 116px still left
+     «پرداخت‌ها» short by 23. Measuring it in JavaScript would be real code for
+     a layout problem.
+
+     Unpinned, the content simply flows under it and the offset is zero. A
+     150px bar pinned to an 844px screen was eating eighteen per cent of it to
+     show a title the page repeats anyway. */
   .app-header {
+    position: static;
     flex-wrap: wrap;
     height: auto;
     padding-block: 8px;
@@ -1654,6 +1667,13 @@ button.cat-card--new:hover {
     order: 3;
     flex-basis: 100%;
     justify-content: flex-start;
+  }
+  #main-content {
+    margin-block-start: 0;
+    min-height: auto;
+  }
+  .scroll-target {
+    scroll-margin-block-start: 12px;
   }
 }
 

@@ -303,3 +303,31 @@ test('the payment tabs keep their own row inside the one header', async ({ page 
   const h = await page.locator('header.app-header').evaluate((el) => el.getBoundingClientRect().height);
   expect(h).toBeLessThan(140);
 });
+
+test('the header never covers the first thing on the page', async ({ page }) => {
+  /*
+   * On a phone the header wraps: the shop-state controls move to a row of
+   * their own, so it is taller than the 64px `--header-h` that offsets the
+   * content beneath it. Content sliding under a FIXED header is invisible and
+   * unscrollable — the page looks like it starts at its second paragraph.
+   *
+   * Measured rather than reasoned about, and at both widths: the desk case is
+   * the control that says the phone case is about wrapping.
+   */
+  for (const [w, h] of [
+    [390, 844],
+    [1440, 900],
+  ] as const) {
+    await page.setViewportSize({ width: w, height: h });
+    for (const path of ['/admin/', '/admin/payments']) {
+      await page.goto(path);
+      await expect(page.locator('header.app-header')).toBeVisible();
+      const gap = await page.evaluate(() => {
+        const header = document.querySelector('header.app-header')!.getBoundingClientRect();
+        const main = document.querySelector('#main-content')!.getBoundingClientRect();
+        return Math.round(main.top - header.bottom);
+      });
+      expect(gap, `${path} at ${w}px`).toBeGreaterThanOrEqual(0);
+    }
+  }
+});
