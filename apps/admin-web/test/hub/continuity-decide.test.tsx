@@ -259,3 +259,86 @@ describe('why it is still unreconciled, said out loud', () => {
     expect(reconcileNote(continuityClaim({ fulfilledAt: null }))).toBeNull();
   });
 });
+
+/**
+ * The button, actually pressed — issue #134's manual half.
+ *
+ * The tests above prove «تایید انتخاب‌شده‌ها» is DRAWN, and that was true and
+ * silent about the thing that matters: it is `disabled={busy || selected ==
+ * null}`, the radios are `item.candidates`, and the list route answered
+ * `candidates: []` for this state. So the only control this queue has was
+ * rendered permanently inert, and the queue had no exit at all — not automatic
+ * (the ±5-minute window refuses a credit that lands hours late, by design and
+ * unchanged) and not manual either.
+ *
+ * The delay in these fixtures is three hours because that is the delay this
+ * state actually occurs at: continuity mode is on BECAUSE the SMS relay is
+ * down, so its credits arrive as a backlog when the relay comes back.
+ */
+describe('pressing «تایید انتخاب‌شده‌ها»', () => {
+  const THREE_HOURS_S = 3 * 60 * 60;
+
+  /** The late bank credit, as the list route now serves it. */
+  const lateCredit = {
+    id: 'tx-late-1',
+    amountIrr: 2_000_000,
+    bankTimestamp: BASE + THREE_HOURS_S * 1000,
+    timeDeltaSeconds: THREE_HOURS_S,
+    accountId: 'acc-1',
+    accountDisplay: 'ملی',
+    accountBank: 'Melli',
+    accountHint: '6006',
+    alreadyConsumed: false,
+  };
+
+  it('is inert while nothing is served — the state the queue was stuck in', async () => {
+    mockApi(continuityClaim());
+    renderPanel();
+    await screen.findByTestId('review-page');
+    const btn = (await screen.findByRole('button', {
+      name: 'تایید انتخاب‌شده‌ها',
+    })) as HTMLButtonElement;
+    // Drawn, and pressing it can do nothing: there is no radio to select, so
+    // `selected` can never leave null.
+    expect(btn.disabled).toBe(true);
+    expect(screen.queryByRole('radio')).toBeNull();
+  });
+
+  it('enables once the operator picks the late credit, and posts exactly it', async () => {
+    mockApi(continuityClaim({ candidates: [lateCredit] }));
+    renderPanel();
+    await screen.findByTestId('review-page');
+
+    const btn = (await screen.findByRole('button', {
+      name: 'تایید انتخاب‌شده‌ها',
+    })) as HTMLButtonElement;
+    // One human click per row is the whole decision, so nothing is preselected
+    // here: production rows carry no `suspectReason`, which is what
+    // `defaultCandidateId` needs before it will choose for the operator.
+    expect(btn.disabled).toBe(true);
+
+    fireEvent.click(await screen.findByRole('radio'));
+    await waitFor(() => expect(btn.disabled).toBe(false));
+
+    fireEvent.click(btn);
+    await waitFor(() => expect(posts.length).toBeGreaterThan(0));
+    const call = posts.find((c) => c.url.includes('/approve'));
+    // The reconciliation route, carrying the credit the operator chose — not a
+    // fulfil route, which would deliver a product the customer already has.
+    expect(call?.url).toBe('/api/v1/suspects/claim-cont-1/approve');
+    expect(call?.body).toEqual({ transactionId: 'tx-late-1' });
+  });
+
+  it('will not let a credit already spent elsewhere be chosen', async () => {
+    mockApi(continuityClaim({ candidates: [{ ...lateCredit, alreadyConsumed: true }] }));
+    renderPanel();
+    await screen.findByTestId('review-page');
+    const radio = (await screen.findByRole('radio')) as HTMLInputElement;
+    // One bank transaction settles at most one claim. The database is what
+    // enforces it; the screen must not offer the operator the losing press.
+    expect(radio.disabled).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'تایید انتخاب‌شده‌ها' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+});
