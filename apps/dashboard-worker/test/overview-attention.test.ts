@@ -13,7 +13,7 @@
  * a rule about.
  */
 
-import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { applySchema, env as baseEnv, deleteFixtureUsers, FIXTURE_TG_BASE } from './helpers/env.js';
 import { app } from '../src/index.js';
 
@@ -63,7 +63,29 @@ beforeAll(async () => {
     .run();
 });
 
-beforeEach(purge);
+/**
+ * The clock, pinned.
+ *
+ * This suite files an order on a fixed calendar day and then asks for
+ * `range=year`, so a live clock makes it a bomb: the day is inside the window
+ * today and outside it in 2027, and the failure would arrive on a morning
+ * nobody had changed anything. The repository has a rule about exactly this and
+ * this file broke it — caught by CodeRabbit on the pull request that added it.
+ *
+ * 2026-09-20 rather than the order's own day, so «this year» genuinely contains
+ * it and the two are not the same number by accident.
+ */
+const NOW_MS = Date.UTC(2026, 8, 20, 9, 0, 0);
+
+beforeEach(async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
+  await purge();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 afterAll(purge);
 
 describe('what still needs a person', () => {
@@ -192,6 +214,53 @@ describe('a day-by-day series, so the shop can be drawn', () => {
     ).first<{ n: number }>();
     expect(seventh?.salesCount).toBe(counted!.n);
     expect(sixth?.salesCount ?? 0).toBe(0);
+  });
+
+  it('keeps a bar inside the window, not merely inside the day', async () => {
+    /*
+     * The gap between «same Tehran day» and «inside the range».
+     *
+     * The join filtered by day alone, so `range=day` — which starts at Tehran
+     * midnight — counted a sale from earlier that same day even when the window
+     * began after it. The chart then added up to more than the card above it,
+     * which is the exact failure the sums test was written to stop and did not
+     * catch, because its own window is wide.
+     *
+     * Two sales on the SAME Tehran day, hours apart, with the window opening
+     * between them. Caught by CodeRabbit on the pull request that added the
+     * chart.
+     */
+    const userId = await makeUser();
+    const day = '2026-09-18';
+    for (const [tag, at] of [
+      ['early', Date.UTC(2026, 8, 17, 21, 0, 0)],  // 00:30 Tehran on the 18th
+      ['late', Date.UTC(2026, 8, 18, 14, 0, 0)],   // 17:30 Tehran on the 18th
+    ] as const) {
+      await baseEnv.DB.prepare(
+        `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status, created_at, completed_at)
+         VALUES (?1, ?2, 'NEW_PURCHASE', 100000, 1, 0, 100000, 'COMPLETED',
+                 to_timestamp(?3 / 1000.0), to_timestamp(?3 / 1000.0))`,
+      )
+        .bind(`zzattn-win-${userId}-${tag}`, userId, at)
+        .run();
+    }
+
+    // A window that opens at 12:00 Tehran on the 18th: one sale in, one out.
+    const res = await app.request(
+      `/api/v1/admin/stats?range=between&day=${day}&to=${day}`,
+      {},
+      envAs(ADMIN),
+    );
+    const body = (await res.json()) as {
+      byDay: Array<{ day: string; salesCount: number }>;
+      salesCount: number;
+    };
+    const bar = body.byDay.find((d) => d.day === day);
+    // The bar and the card are two readings of one number. Whatever the window
+    // turns out to hold, they have to agree.
+    expect(bar?.salesCount ?? 0).toBe(body.salesCount);
+    // And the series never runs past the window it was asked for.
+    expect(body.byDay.every((d) => d.day <= day)).toBe(true);
   });
 
   it('sums to the same figure the cards above it show', async () => {

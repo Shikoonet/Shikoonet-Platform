@@ -321,7 +321,15 @@ export async function shopReport(
       `WITH days AS (
          SELECT generate_series(
            date_trunc('day', to_timestamp(?1 / 1000.0) AT TIME ZONE 'Asia/Tehran'),
-           date_trunc('day', to_timestamp(?2 / 1000.0) AT TIME ZONE 'Asia/Tehran'),
+           -- The last instant INSIDE the window, not the boundary itself. The
+           -- range is end-exclusive, so a window closing at Tehran midnight
+           -- would otherwise generate the next day and draw a bar for a day it
+           -- does not cover.
+           -- Cast to bigint explicitly: with a bare subtraction Postgres infers
+           -- the parameter as integer and refuses an epoch in milliseconds —
+           -- «value out of range for type integer», which reads like a data
+           -- problem and is a type-inference one.
+           date_trunc('day', to_timestamp((?2::bigint - 1) / 1000.0) AT TIME ZONE 'Asia/Tehran'),
            interval '1 day'
          )::date AS d
        )
@@ -333,6 +341,12 @@ export async function shopReport(
            ON o.status = 'COMPLETED'
           AND o.kind = 'NEW_PURCHASE'
           AND date_trunc('day', o.completed_at AT TIME ZONE 'Asia/Tehran')::date = days.d
+          -- The WINDOW too, not just the day. A range that opens at noon shares
+          -- its first Tehran day with sales made that morning, and counting
+          -- those made the chart add up to more than the card above it — the
+          -- exact disagreement the chart exists to avoid.
+          AND o.completed_at >= to_timestamp(?1 / 1000.0)
+          AND o.completed_at <  to_timestamp(?2 / 1000.0)
         GROUP BY days.d
         ORDER BY days.d`,
     )

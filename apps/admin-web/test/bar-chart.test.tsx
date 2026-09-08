@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { BarChart } from '../src/BarChart.js';
 
 const SERIES = [
@@ -44,6 +44,37 @@ describe('the bar chart', () => {
     // `<title>` inside each bar: the browser's own tooltip, and what a screen
     // reader announces. No hover state to invent, nothing to keep positioned.
     expect(screen.getByText('۱۶ شهریور — 300000 تومان')).toBeTruthy();
+  });
+
+  it('has a name, and every value in text a screen reader can reach', () => {
+    /*
+     * `role="img"` with no accessible name is an image announced as «image».
+     * And the `<title>` inside each `<rect>` is a tooltip, not a text
+     * alternative for the graphic — a screen reader walking the SVG does not
+     * read them out as the chart's content.
+     *
+     * So the chart carries a visually hidden table of the same numbers. Not a
+     * duplicate of the data: it IS the data, drawn twice, once as bars and once
+     * as rows. Caught by CodeRabbit on the pull request that added the chart.
+     */
+    render(<BarChart series={SERIES} format={(v) => `${v} تومان`} title="فروش روزانه" />);
+    expect(screen.getByRole('img', { name: 'فروش روزانه' })).toBeTruthy();
+
+    const table = screen.getByRole('table', { name: /فروش روزانه/ });
+    expect(table).toBeTruthy();
+    // Every point, label and value, as text.
+    for (const p of SERIES) {
+      expect(within(table).getByText(p.label)).toBeTruthy();
+    }
+    expect(within(table).getByText('300000 تومان')).toBeTruthy();
+  });
+
+  it('is named even when the screen gives it no title', () => {
+    // `StatsPage` renders it inside a `<Section>` that already carries the
+    // heading, so it passes no `title` — and that left the graphic with no
+    // accessible name at all.
+    render(<BarChart series={SERIES} format={String} />);
+    expect(screen.getByRole('img', { name: /نمودار/ })).toBeTruthy();
   });
 
   it('says so in a sentence when there is nothing to draw', () => {
