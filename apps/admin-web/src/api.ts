@@ -2191,8 +2191,18 @@ export const api = {
     return req<EventFacets>(`/events/facets?window=${encodeURIComponent(window)}`);
   },
 
-  panels() {
-    return req<{ ok: boolean; items: PanelItem[] }>('/panels');
+  /**
+   * The panels «مدیریت پنل‌ها» means — the ones an operator configured.
+   *
+   * `includeShelves` adds the panel each shelf makes for itself. Only «کاربران
+   * یک پنل» on «ارسال گروهی» wants those: that audience is «holds a live
+   * service on this panel» and a shelf's panel carries the shelf's name, so it
+   * is a real audience. Nothing that EDITS a panel should be offered one.
+   */
+  panels(opts: { includeShelves?: boolean } = {}) {
+    return req<{ ok: boolean; items: PanelItem[] }>(
+      opts.includeShelves ? '/panels?includeShelves=1' : '/panels',
+    );
   },
 
   createPanel(body: {

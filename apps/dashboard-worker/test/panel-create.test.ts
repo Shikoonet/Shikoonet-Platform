@@ -255,6 +255,24 @@ describe('creating a panel', () => {
     expect(res.status).toBe(400);
   });
 
+  /**
+   * issue #125 — `shelf-` is reserved, and that is what makes it a key.
+   *
+   * Every screen meaning «a panel someone configured» excludes `shelf-%`
+   * (`NOT_A_SHELF_PANEL`), so a hand-typed `shelf-x` would be created and then
+   * be invisible on the screen that created it, with nothing saying why. The
+   * refusal is in Persian because it is read by the person typing the code, and
+   * it is what turns a naming convention into evidence.
+   */
+  it('refuses a code in the reserved shelf namespace, in the operator’s language', async () => {
+    const res = await post('/api/v1/admin/panels', { ...BODY, code: 'shelf-hand-typed' });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { detail: string }).toMatchObject({
+      detail: expect.stringContaining('رزرو شده'),
+    });
+    expect(await panelExists('shelf-hand-typed'), 'nothing may be written').toBe(false);
+  });
+
   it('refuses a REVIEWER, and writes nothing', async () => {
     const res = await post('/api/v1/admin/panels', { ...BODY, code: `${PREFIX}rev` }, REVIEWER);
     expect(res.status).toBe(403);

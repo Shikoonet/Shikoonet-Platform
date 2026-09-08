@@ -66,6 +66,7 @@ import {
 import type { ProviderContext, ProvisioningAdapter } from '@shikoo/domain';
 import { faNum } from './fa.js';
 import { checkNameEmoji } from './customEmojiNames.js';
+import { SHELF_CODE_PREFIX } from './stockRoutes.js';
 
 
 /**
@@ -616,7 +617,16 @@ const PanelCreate = z
       .trim()
       .min(2)
       .max(60)
-      .regex(/^[a-z0-9][a-z0-9-]*$/, 'lowercase letters, digits and dashes only'),
+      .regex(/^[a-z0-9][a-z0-9-]*$/, 'lowercase letters, digits and dashes only')
+      // Reserved, and this one line is what turns a naming habit into a key.
+      // Every screen that means «a panel someone configured» excludes
+      // `shelf-%` (`NOT_A_SHELF_PANEL`); a hand-typed `shelf-x` would vanish
+      // from «مدیریت پنل‌ها» the moment it was created, with nothing saying
+      // why. Refused here instead, in the words of the person typing it.
+      .refine(
+        (v) => !v.startsWith(SHELF_CODE_PREFIX),
+        `کد پنل نمی‌تواند با «${SHELF_CODE_PREFIX}» شروع شود — این پیشوند برای پنل داخلی قفسه‌ها رزرو شده است`,
+      ),
     name: z.string().trim().min(1).max(120),
     // The same nine the CHECK constraint allows. Listed rather than free text
     // so a typo answers 400 here instead of 500 from Postgres.
@@ -882,15 +892,50 @@ const SELECT_PANEL = `
              AND s.status IN ('ACTIVE', 'ON_HOLD')) AS live_subscriptions
     FROM provisioning_providers pr`;
 
+/**
+ * «this row is a panel someone configured», as SQL.
+ *
+ * Exported because `productRoutes.ts` asks the same question of the same table
+ * for its two panel pickers, and a screen that offered a shelf's own panel as a
+ * destination for a product would be offering the operator a way to move a
+ * product onto the box it is stocked from.
+ *
+ * `code` is the discriminator and not `kind`: `manual` is a legitimate panel
+ * kind an operator chooses, so it names nothing. The prefix is reserved by
+ * `PanelCreate` below, which is what makes this a key rather than a guess.
+ */
+export const NOT_A_SHELF_PANEL = `pr.code NOT LIKE '${SHELF_CODE_PREFIX}%'`;
+
 export function registerPanelRoutes(
   app: Hono<{ Bindings: { DB: D1Database; ENV_NAME: EnvName }; Variables: { identity: Ident } }>,
 ) {
+  /**
+   * The panels, and by default only the ones an operator made.
+   *
+   * `includeShelves=1` is opt-in and there is exactly one caller: «کاربران یک
+   * پنل» on «ارسال گروهی». That audience means «holds a live service on this
+   * panel» (`packages/domain/src/bulkCustomers.ts`, the `provider` case) and a
+   * shelf's panel carries the SHELF'S name, so «message everyone holding an
+   * account from this shelf» is a real thing to want — the Spotify passwords
+   * rotated and the people to tell are exactly that set.
+   *
+   * Every other caller wants «مدیریت پنل‌ها»'s meaning, where a shelf's panel is
+   * an internal artifact with two live controls attached to it (issue #125), so
+   * the default is the safe one and an opt-in flag is what a caller spends to
+   * leave it.
+   */
   app.get('/api/v1/admin/panels', async (c) => {
+    const includeShelves = c.req.query('includeShelves') === '1';
     const rows = await c.env.DB.prepare(
-      `${SELECT_PANEL} ORDER BY pr.sort_order, pr.id`,
+      `${SELECT_PANEL}
+        ${includeShelves ? '' : `WHERE ${NOT_A_SHELF_PANEL}`}
+        ORDER BY pr.sort_order, pr.id`,
     ).all<PanelRow>();
-    // Five rows on this dataset and a hard ceiling of a few dozen — there is
-    // nothing to page.
+    // Still nothing to page, and the ceiling is no longer a hope: a panel is
+    // added by hand from «مدیریت پنل‌ها» and there are five. The rows that DO
+    // grow without anyone deciding to add one — one per shelf — are the rows
+    // this route excludes unless asked for them, and the bulk page that asks
+    // reads the list once into a `<select>`.
     return c.json({ ok: true, items: (rows.results ?? []).map(shape) });
   });
 

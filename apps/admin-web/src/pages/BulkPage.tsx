@@ -212,7 +212,11 @@ export function BulkPage() {
     void loadRecent();
     void (async () => {
       try {
-        setPanels((await api.panels()).items);
+        // Shelves included, and only here: «کاربران یک پنل» means «holds a
+        // live service on this panel», and a shelf's panel carries the
+        // shelf's name — «everyone with an account from this shelf» is the
+        // audience you want the day its passwords rotate.
+        setPanels((await api.panels({ includeShelves: true })).items);
       } catch (e) {
         setErr(message(e));
       }

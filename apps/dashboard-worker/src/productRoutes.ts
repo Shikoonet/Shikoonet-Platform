@@ -44,7 +44,7 @@ import {
 import { checkNameEmoji } from './customEmojiNames.js';
 import { isAutomated } from '@shikoo/domain';
 import { audit, type Ident } from './adminAudit.js';
-import { PANEL_HAS_SECRET } from './panelRoutes.js';
+import { NOT_A_SHELF_PANEL, PANEL_HAS_SECRET } from './panelRoutes.js';
 import { faNum } from './fa.js';
 
 const PAGE_SIZE_MAX = 100;
@@ -997,7 +997,11 @@ export function registerProductRoutes(
     // The filter needs the panels, and there are five of them — a second
     // round trip from the browser to fetch a five-row list is not worth it.
     const providers = await c.env.DB.prepare(
-      `SELECT id, code, name, status, kind FROM provisioning_providers ORDER BY sort_order, id`,
+      // Without the shelves. Each one auto-creates a panel of its own
+      // (`stockRoutes.ts`, `SHELF_CODE_PREFIX`), and offering that panel here
+      // would let a product be moved onto the box it is stocked from.
+      `SELECT id, code, name, status, kind FROM provisioning_providers pr
+        WHERE ${NOT_A_SHELF_PANEL} ORDER BY sort_order, id`,
     ).all<{ id: number; code: string; name: string; status: string; kind: string }>();
 
     return c.json({
@@ -1131,7 +1135,11 @@ export function registerProductRoutes(
     const configs = rows.length === 0 ? [] : await configsFor(c.env.DB, rows.map((r) => r.id));
 
     const panels = await c.env.DB.prepare(
-      `SELECT id, code, name, status, kind FROM provisioning_providers ORDER BY sort_order, id`,
+      // Without the shelves. Each one auto-creates a panel of its own
+      // (`stockRoutes.ts`, `SHELF_CODE_PREFIX`), and offering that panel here
+      // would let a product be moved onto the box it is stocked from.
+      `SELECT id, code, name, status, kind FROM provisioning_providers pr
+        WHERE ${NOT_A_SHELF_PANEL} ORDER BY sort_order, id`,
     ).all<{ id: number; code: string; name: string; status: string; kind: string }>();
 
     return c.json({

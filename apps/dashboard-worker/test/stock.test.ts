@@ -290,6 +290,59 @@ describe('making a shelf', () => {
     });
   });
 
+  /**
+   * issue #125 — the shelf's panel is machinery, and «مدیریت پنل‌ها» handed the
+   * operator two live controls on it.
+   *
+   * «غیرفعال» there does not hide a row: SELLABLE wants the provider ACTIVE, so
+   * it silently stops the shelf selling. «ویرایش» edits a record that is not a
+   * panel at all. Both are offered on something nobody created.
+   *
+   * The `not.toContain`/`toContain` pair is one assertion, not two: an empty
+   * database would satisfy the first on its own, and the second is what makes
+   * the first mean «excluded» rather than «missing».
+   */
+  it('keeps its own panel out of «مدیریت پنل‌ها» and out of the service pickers', async () => {
+    const { planId } = (await (
+      await post('/api/v1/admin/stock/shelves', {
+        name: 'قفسهٔ پنهان',
+        priceIrr: 1_000_000,
+        categoryId: await categoryId(),
+      })
+    ).json()) as { planId: number };
+
+    const panelId = Number(
+      (
+        await baseEnv.DB.prepare(
+          `SELECT pr.id FROM product_plans pl
+             JOIN products p ON p.id = pl.product_id
+             JOIN provisioning_providers pr ON pr.id = p.provider_id
+            WHERE pl.id = ?1`,
+        )
+          .bind(planId)
+          .first<{ id: number }>()
+      )!.id,
+    );
+
+    const idsAt = async (url: string, key: 'items' | 'providers' | 'panels') =>
+      ((await (await app.request(url, {}, envAs(ADMIN))).json()) as Record<
+        string,
+        { id: number }[]
+      >)[key]!.map((p) => Number(p.id));
+
+    expect(await idsAt('/api/v1/admin/panels', 'items')).not.toContain(panelId);
+    // And out of both panel pickers, where choosing it would move a product
+    // onto the box it is stocked from.
+    expect(await idsAt('/api/v1/admin/products', 'providers')).not.toContain(panelId);
+    expect(await idsAt('/api/v1/admin/catalog', 'panels')).not.toContain(panelId);
+
+    // «کاربران یک پنل» on «ارسال گروهی» still asks for them, and this is why:
+    // that audience means «holds a live service on this panel», and a shelf's
+    // panel carries the SHELF'S name — «everyone with an account from this
+    // shelf» is exactly who you tell when its passwords rotate.
+    expect(await idsAt('/api/v1/admin/panels?includeShelves=1', 'items')).toContain(panelId);
+  });
+
   it('refuses a free shelf, which the bot would draw and then not sell', async () => {
     // `placeOrder` refuses `totalIrr <= 0` outright, and nothing in the bot's
     // visibility predicate looks at price — so a zero-price shelf draws every

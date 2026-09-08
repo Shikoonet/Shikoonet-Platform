@@ -97,6 +97,25 @@ function looksLikeHeader(username: string, credential: string): boolean {
  * steps ask about panels and services — machinery that has nothing to do with
  * a box of accounts. This route builds the whole chain from a name.
  */
+/**
+ * The prefix on every panel a shelf makes for itself, and the only thing that
+ * tells one apart from a panel an operator configured.
+ *
+ * A shelf cannot share its panel — `idx_stock_account_once` is
+ * `(provider_id, remote_username)`, so one address could not sit in both the
+ * Spotify shelf and the ChatGPT one — which is why the route below writes a
+ * `provisioning_providers` row nobody asked for. «مدیریت پنل‌ها» then offered
+ * two live controls on it: «غیرفعال», which silently unsells the shelf because
+ * SELLABLE wants the provider ACTIVE, and «ویرایش» on a record that is not a
+ * panel (issue #125).
+ *
+ * This works as a key because `code` is immutable — there is no PATCH route for
+ * it and `PanelPatch` has no `code` field — and because `PanelCreate` REFUSES
+ * this prefix, so the only rows carrying it are the ones written here. A naming
+ * habit would not have been enough; a reserved prefix is.
+ */
+export const SHELF_CODE_PREFIX = 'shelf-';
+
 const ShelfCreate = z
   .object({
     name: z.string().trim().min(1).max(120),
@@ -314,7 +333,7 @@ export function registerStockRoutes(
     // for the panel, and a Persian name slugs to nothing — so they are derived
     // from a uuid and never shown.
     const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 10);
-    const code = `shelf-${suffix}`;
+    const code = `${SHELF_CODE_PREFIX}${suffix}`;
 
     let planId: number | null = null;
     try {
