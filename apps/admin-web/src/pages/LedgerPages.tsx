@@ -24,6 +24,7 @@ import {
   type EntryRow,
   type OrderRow,
   type SubscriptionRow,
+  type LedgerQuery,
 } from '../api.js';
 import {
   ORDER_STATUS_FA,
@@ -38,6 +39,7 @@ import {
   toman,
 } from '../format.js';
 import { CustomerLink } from '../CustomerLink.js';
+import { ListPage, type FetchParams } from '../ListPage.js';
 import { pageLabel, type PageId } from '../nav.js';
 import { useWriteProps } from '../role.js';
 
@@ -94,208 +96,232 @@ function whatWasBought(o: OrderRow): string {
 
 /** Green for a good end state, red for a bad one, plain for in-flight. */
 /**
- * The frame all three share: a search box, one filter, a table, a pager.
+ * The screen's controls, as the three routes want them.
  *
- * Generic over the row so each page keeps its own columns; everything else —
- * loading, error, paging, the empty state — is written once.
+ * One place, because the same object has to reach two callers that must not
+ * disagree: the fetch that fills the table, and the href that downloads it.
+ * The filter's NAME differs per ledger — `status` on two, `kind` on the third —
+ * so it is a parameter rather than three copies of this function.
  */
-function ListPage<T extends { id: number }>({
-  page: pageId,
-  unit,
-  filterLabel,
-  filterOptions,
-  head,
-  row,
-  fetchPage,
-  summary,
-  searchPlaceholder = 'آیدی عددی یا @نام‌کاربری',
-}: {
-  /**
-   * Which section this is — not a title string.
-   *
-   * It used to be a string, and «اشتراک‌های مشتری» passed «سرویس‌ها», which is
-   * the name of the catalogue section two groups above it in the same sidebar.
-   * The sidebar entry, the header and the page each said one of two different
-   * names and nothing could tell them apart. Taking the id instead means the
-   * heading has one source, `nav.ts`, and the wrong name is no longer a value
-   * anybody can pass.
-   */
-  page: PageId;
-  unit: string;
-  filterLabel: string;
-  filterOptions: Array<[string, string]>;
-  head: ReactNode;
-  /**
-   * `reload` is handed to the row rather than kept private, because the one
-   * action on these screens — retrying a failed preparation — changes the row
-   * it sits in and the screen would otherwise keep showing «ناموفق» after a
-   * successful retry.
-   */
-  row: (item: T, reload: () => void) => ReactNode;
-  fetchPage: (p: {
-    q?: string;
-    filter?: string;
-    page: number;
-    pageSize: number;
-  }) => Promise<{ total: number; items: T[] }>;
-  /**
-   * Rendered above the table from the whole response, with the scope that
-   * produced it. The scope is passed because a total is only readable next to
-   * what it covers: these routes sum over everything the filter matches, which
-   * is right, and a card that says «مجموع» beside a narrowed figure is not.
-   */
-  summary?: (extra: unknown, scope: { narrowed: boolean }) => ReactNode;
-  searchPlaceholder?: string;
-}) {
-  const [rows, setRows] = useState<T[]>([]);
-  const [total, setTotal] = useState(0);
-  const [extra, setExtra] = useState<unknown>(null);
-  /**
-   * Whether the figures now on screen came from a narrowed request.
-   *
-   * Set from what was actually sent rather than from `q`, which changes with
-   * every keystroke: a box being typed into has not narrowed anything yet, and
-   * saying so while whole-ledger totals are still displayed would be the same
-   * lie in the other direction.
-   */
-  const [narrowed, setNarrowed] = useState(false);
-  const [page, setPage] = useState(1);
-  // Seeded from the address so «همهٔ N سفارش ←» on a customer's card lands on
-  // this ledger already narrowed to them, rather than on the whole shop.
-  const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
-  const [filter, setFilter] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+function toQuery(
+  p: Partial<FetchParams>,
+  filterName: 'status' | 'kind',
+): LedgerQuery & { page: number; pageSize: number } {
+  return {
+    page: p.page ?? 1,
+    pageSize: p.pageSize ?? 25,
+    ...(p.q ? { q: p.q } : {}),
+    ...(p.filter ? { [filterName]: p.filter } : {}),
+    ...(p.sort ? { sort: p.sort } : {}),
+    ...(p.dir ? { dir: p.dir } : {}),
+    ...(p.from ? { from: p.from } : {}),
+    ...(p.to ? { to: p.to } : {}),
+  };
+}
 
-  async function load(toPage = page) {
-    setLoading(true);
-    setErr(null);
-    const sentQ = q.trim();
-    try {
-      const d = await fetchPage({
-        page: toPage,
-        pageSize: PAGE_SIZE,
-        ...(sentQ ? { q: sentQ } : {}),
-        ...(filter ? { filter } : {}),
-      });
-      setRows(d.items);
-      setTotal(d.total);
-      setExtra(d);
-      setNarrowed(sentQ !== '' || filter !== '');
-    } catch (e) {
-      setErr(message(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void load(page);
-  }, [page, filter]);
-
-  const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
+export function OrdersPage() {
   return (
-    <>
-      <div className="page-head">
-        <div>
-          <div className="page-head__title">{pageLabel(pageId)}</div>
-          <div className="page-head__sub">
-            {count(total)} {unit}
-          </div>
-        </div>
-      </div>
+    <ListPage<OrderRow>
+      page="orders"
+      unit="سفارش"
+      filterLabel="وضعیت"
+      searchPlaceholder="آیدی عددی، @نام‌کاربری یا شمارهٔ سفارش"
+      filterOptions={Object.entries(ORDER_STATUS_FA)}
+      dateRange
+      rowKey={(o) => o.id}
+      csvUrl={(p) => api.ordersCsvUrl(toQuery(p, 'status'))}
+      fetchPage={(p) => api.orders(toQuery(p, 'status'))}
+      columns={[
+        {
+          key: 'publicId',
+          label: 'شناسه',
+          className: 'ltr',
+          /* Whole, not `slice(0, 8)`. Every legacy invoice id is exactly eight
+             characters — all 5,131 of them — so the truncation was invisible
+             until our own bot started issuing ten (`randomBytes(5).hex`), and
+             then it cut two off every new order. The customer is shown the
+             full id by the bot, so an admin reading two characters less was
+             comparing a different string to the one being quoted at them. */
+          cell: (o) => o.publicId,
+        },
+        { key: 'customer', label: 'کاربر', cell: (o) => <CustomerLink customer={o.customer} /> },
+        { key: 'kind', label: 'نوع', cell: (o) => ORDER_KIND_FA[o.kind] ?? o.kind },
+        // Not «کانفیگ»: an add-on row carries a quantity here, not one.
+        { key: 'what', label: 'چه چیزی', cell: (o) => whatWasBought(o) },
+        { key: 'total', label: 'مبلغ', sort: 'total_irr', cell: (o) => toman(o.totalIrr) },
+        {
+          key: 'discount',
+          label: 'تخفیف',
+          cell: (o) => (o.discountIrr > 0 ? toman(o.discountIrr) : '—'),
+        },
+        {
+          key: 'status',
+          label: 'وضعیت',
+          sort: 'status',
+          cell: (o, reload) => (
+            <>
+              <span className={statusTone(o.status)}>{ORDER_STATUS_FA[o.status] ?? o.status}</span>
+              {/* The reason the last attempt failed, as the panel already showed
+                  it: a category and a panel name, never a stack trace and never a
+                  credential. The order number in the first column is the same
+                  reference the customer was given. */}
+              {o.failureReason && <div className="page-head__sub">{o.failureReason}</div>}
+              <RetryPreparation order={o} reload={reload} />
+            </>
+          ),
+        },
+        { key: 'created', label: 'زمان', sort: 'created_at', cell: (o) => dateTime(o.createdAt) },
+      ]}
+    />
+  );
+}
 
-      <div className="card">
-        <form
-          className="filters"
-          onSubmit={(e) => {
-            e.preventDefault();
-            setPage(1);
-            void load(1);
-          }}
-        >
-          <div className="grow">
-            <label className="form-label" htmlFor="ledger-q">
-              جست‌وجوی کاربر
-            </label>
-            <input
-              id="ledger-q"
-              className="form-control ltr"
-              type="search"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder={searchPlaceholder}
-            />
-          </div>
-          <div>
-            <label className="form-label" htmlFor="ledger-filter">
-              {filterLabel}
-            </label>
-            <select
-              id="ledger-filter"
-              className="form-control"
-              value={filter}
-              onChange={(e) => {
-                setFilter(e.target.value);
-                setPage(1);
-              }}
-            >
-              <option value="">همه</option>
-              {filterOptions.map(([v, label]) => (
-                <option key={v} value={v}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <button type="submit" className="btn btn-primary" disabled={loading}>
-            جست‌وجو
-          </button>
-        </form>
+export function SubscriptionsPage() {
+  return (
+    <ListPage<SubscriptionRow>
+      page="subscriptions"
+      unit="سرویس"
+      filterLabel="وضعیت"
+      searchPlaceholder="آیدی عددی، @نام‌کاربری یا نام روی پنل"
+      filterOptions={Object.entries(SUB_STATUS_FA)}
+      dateRange
+      rowKey={(s) => s.id}
+      csvUrl={(p) => api.subscriptionsCsvUrl(toQuery(p, 'status'))}
+      fetchPage={(p) => api.subscriptions(toQuery(p, 'status'))}
+      columns={[
+        { key: 'customer', label: 'کاربر', cell: (s) => <CustomerLink customer={s.customer} /> },
+        {
+          key: 'plan',
+          label: 'کانفیگ',
+          /* The name as it was at sale — renaming a config today must not
+             rewrite what this customer bought. Not `planDisplayName` here,
+             deliberately: this table has no «مبلغ» column, so the price inside
+             the name is not a duplicate — it is the only thing distinguishing
+             one tier from another on the row. */
+          cell: (s) => s.planName,
+        },
+        { key: 'provider', label: 'پنل', cell: (s) => s.providerName ?? '—' },
+        {
+          key: 'remote',
+          label: 'نام روی پنل',
+          className: 'ltr',
+          cell: (s) => s.remoteUsername ?? '—',
+        },
+        {
+          key: 'volume',
+          label: 'حجم',
+          cell: (s) => (s.volumeGb === null ? 'نامحدود' : `${count(s.volumeGb)} گیگ`),
+        },
+        {
+          key: 'used',
+          label: 'مصرف',
+          /* The one column here that comes from outside: the bot's sweep reads
+             it off the panel every ten minutes. It carries WHEN, because a
+             figure from a panel unreachable since yesterday looks exactly like
+             a customer who stopped using their service. */
+          cell: (s) =>
+            s.lastSyncedAt === null ? (
+              <span className="muted">هنوز خوانده نشده</span>
+            ) : (
+              <span title={`از پنل، ${dateTime(s.lastSyncedAt)}`}>{gigabytes(s.usedBytes)}</span>
+            ),
+        },
+        {
+          key: 'purchased',
+          label: 'خرید',
+          sort: 'purchased_at',
+          cell: (s) => dateTime(s.purchasedAt),
+        },
+        {
+          key: 'expires',
+          label: 'انقضا',
+          sort: 'expires_at',
+          cell: (s) => (s.expiresAt === null ? 'بدون انقضا' : dateTime(s.expiresAt)),
+        },
+        {
+          key: 'status',
+          label: 'وضعیت',
+          sort: 'status',
+          cell: (s) => (
+            <span className={statusTone(s.status)}>{SUB_STATUS_FA[s.status] ?? s.status}</span>
+          ),
+        },
+      ]}
+    />
+  );
+}
 
-        {err && <div className="alert alert-error">{err}</div>}
-        {summary && extra ? summary(extra, { narrowed }) : null}
-
-        <div className="table-wrap">
-          <table className="app-table">
-            <thead>{head}</thead>
-            <tbody>
-              {rows.length === 0 && !loading && (
-                <tr>
-                  <td className="empty" colSpan={9}>
-                    چیزی با این جست‌وجو پیدا نشد.
-                  </td>
-                </tr>
-              )}
-              {rows.map((r) => row(r, () => void load()))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="pager">
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={page <= 1 || loading}
-            onClick={() => setPage(page - 1)}
-          >
-            قبلی
-          </button>
-          <span>
-            صفحهٔ {count(page)} از {count(lastPage)}
-          </span>
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={page >= lastPage || loading}
-            onClick={() => setPage(page + 1)}
-          >
-            بعدی
-          </button>
-        </div>
-      </div>
-    </>
+export function TransactionsPage() {
+  return (
+    <ListPage<EntryRow>
+      page="transactions"
+      unit="تراکنش"
+      filterLabel="نوع"
+      filterOptions={Object.entries(ENTRY_KIND_FA)}
+      dateRange
+      rowKey={(e) => e.id}
+      csvUrl={(p) => api.walletEntriesCsvUrl(toQuery(p, 'kind'))}
+      fetchPage={(p) => api.walletEntries(toQuery(p, 'kind'))}
+      summary={(extra, { narrowed }) => {
+        const d = extra as { creditIrr: number; debitIrr: number };
+        // The route sums over everything the filter matches rather than over
+        // the page, and says so — a page total would read as the shop's figure
+        // and be wrong by a factor of the page count. That leaves the labels
+        // to carry the other half of the truth, and until 2026-08-22 they did
+        // not: filtering to «خرید» produced a card reading «مجموع واریز ۰
+        // تومان» while the shop had taken five million in, and «خالص» went
+        // deep red for a shop that was up on the month. The number was right
+        // and the word above it was a claim about the whole ledger.
+        const of = (whole: string, part: string) => (narrowed ? part : whole);
+        const net = d.creditIrr + d.debitIrr;
+        return (
+          <>
+            <div className="stats-grid">
+              <div className="stat-card tone-blue">
+                <div className="stat-card__label">{of('مجموع واریز', 'واریزِ این جست‌وجو')}</div>
+                <div>{toman(d.creditIrr)}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-card__label">{of('مجموع برداشت', 'برداشتِ این جست‌وجو')}</div>
+                {/* The magnitude, because the word above already says which
+                    direction it goes — «برداشت ‎−۵۲۵٬۰۰۰» is a double
+                    negative, and هزینه‌ها writes the same figure the same way. */}
+                <div>{toman(Math.abs(d.debitIrr))}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-card__label">{of('خالص', 'خالصِ این جست‌وجو')}</div>
+                {/* Sign kept here, and only here: this is the one figure whose
+                    direction is not already in its label. */}
+                <div className={net < 0 ? 'negative' : undefined}>
+                  {net < 0 ? '−' : ''}
+                  {toman(Math.abs(net))}
+                </div>
+              </div>
+            </div>
+            {narrowed && (
+              <p className="muted">
+                این سه عدد فقط روی ردیف‌هایی حساب شده‌اند که این جست‌وجو برگردانده، نه روی کل دفتر.
+              </p>
+            )}
+          </>
+        );
+      }}
+      columns={[
+        { key: 'customer', label: 'کاربر', cell: (e) => <CustomerLink customer={e.customer} /> },
+        {
+          key: 'amount',
+          label: 'مبلغ',
+          sort: 'amount_irr',
+                cell: (e) => (
+            <span className={e.amountIrr < 0 ? 'negative' : undefined}>{toman(e.amountIrr)}</span>
+          ),
+        },
+        { key: 'kind', label: 'نوع', cell: (e) => ENTRY_KIND_FA[e.kind] ?? e.kind },
+        { key: 'actor', label: 'عامل', className: 'ltr', cell: (e) => actorFa(e.actor) ?? '—' },
+        { key: 'note', label: 'توضیح', cell: (e) => entryNoteFa(e.kind, e.note) ?? '—' },
+        { key: 'created', label: 'زمان', sort: 'created_at', cell: (e) => dateTime(e.createdAt) },
+      ]}
+    />
   );
 }
 
@@ -352,219 +378,5 @@ function RetryPreparation({ order, reload }: { order: OrderRow; reload: () => vo
       </button>
       {err && <div className="page-head__sub">{err}</div>}
     </>
-  );
-}
-
-export function OrdersPage() {
-  return (
-    <ListPage<OrderRow>
-      page="orders"
-      unit="سفارش"
-      filterLabel="وضعیت"
-      searchPlaceholder="آیدی عددی، @نام‌کاربری یا شمارهٔ سفارش"
-      filterOptions={Object.entries(ORDER_STATUS_FA)}
-      fetchPage={(p) =>
-        api.orders({
-          page: p.page,
-          pageSize: p.pageSize,
-          ...(p.q ? { q: p.q } : {}),
-          ...(p.filter ? { status: p.filter } : {}),
-        })
-      }
-      head={
-        <tr>
-          <th>شناسه</th>
-          <th>کاربر</th>
-          <th>نوع</th>
-          {/* Not «کانفیگ»: an add-on row carries a quantity here, not one. */}
-          <th>چه چیزی</th>
-          <th>مبلغ</th>
-          <th>تخفیف</th>
-          <th>وضعیت</th>
-          <th>زمان</th>
-        </tr>
-      }
-      row={(o, reload) => (
-        <tr key={o.id}>
-          {/* Whole, not `slice(0, 8)`. Every legacy invoice id is exactly eight
-              characters — all 5,131 of them — so the truncation was invisible
-              until our own bot started issuing ten (`randomBytes(5).hex`), and
-              then it cut two off every new order. The customer is shown the
-              full id by the bot, so an admin reading two characters less was
-              comparing a different string to the one being quoted at them. */}
-          <td className="ltr">{o.publicId}</td>
-          <td>
-            <CustomerLink customer={o.customer} />
-          </td>
-          <td>{ORDER_KIND_FA[o.kind] ?? o.kind}</td>
-          <td>{whatWasBought(o)}</td>
-          <td>{toman(o.totalIrr)}</td>
-          <td>{o.discountIrr > 0 ? toman(o.discountIrr) : '—'}</td>
-          <td>
-            <span className={statusTone(o.status)}>{ORDER_STATUS_FA[o.status] ?? o.status}</span>
-            {/* The reason the last attempt failed, as the panel already showed
-                it: a category and a panel name, never a stack trace and never a
-                credential. The order number in the first column is the same
-                reference the customer was given. */}
-            {o.failureReason && <div className="page-head__sub">{o.failureReason}</div>}
-            <RetryPreparation order={o} reload={reload} />
-          </td>
-          <td>{dateTime(o.createdAt)}</td>
-        </tr>
-      )}
-    />
-  );
-}
-
-export function SubscriptionsPage() {
-  return (
-    <ListPage<SubscriptionRow>
-      page="subscriptions"
-      unit="سرویس"
-      filterLabel="وضعیت"
-      searchPlaceholder="آیدی عددی، @نام‌کاربری یا نام روی پنل"
-      filterOptions={Object.entries(SUB_STATUS_FA)}
-      fetchPage={(p) =>
-        api.subscriptions({
-          page: p.page,
-          pageSize: p.pageSize,
-          ...(p.q ? { q: p.q } : {}),
-          ...(p.filter ? { status: p.filter } : {}),
-        })
-      }
-      head={
-        <tr>
-          <th>کاربر</th>
-          <th>کانفیگ</th>
-          <th>پنل</th>
-          <th>نام روی پنل</th>
-          <th>حجم</th>
-          <th>مصرف</th>
-          <th>خرید</th>
-          <th>انقضا</th>
-          <th>وضعیت</th>
-        </tr>
-      }
-      row={(s) => (
-        <tr key={s.id}>
-          <td>
-            <CustomerLink customer={s.customer} />
-          </td>
-          {/* The names as they were at sale — renaming a config today must not
-              rewrite what this customer bought. */}
-          {/* Not `planDisplayName` here, deliberately: this table has no
-              «مبلغ» column, so the price inside the name is not a duplicate —
-              it is the only thing distinguishing one tier from another on the
-              row. The helper is for the two tables that show the amount
-              beside it. */}
-          <td>{s.planName}</td>
-          <td>{s.providerName ?? '—'}</td>
-          <td className="ltr">{s.remoteUsername ?? '—'}</td>
-          <td>{s.volumeGb === null ? 'نامحدود' : `${count(s.volumeGb)} گیگ`}</td>
-          {/* The one column on this screen that comes from outside: the
-              bot's sweep reads it off the panel every ten minutes and
-              writes it here. It carries when, because a figure from a
-              panel that has been unreachable since yesterday looks exactly
-              like a customer who stopped using their service. */}
-          <td title={s.lastSyncedAt === null ? undefined : `از پنل، ${dateTime(s.lastSyncedAt)}`}>
-            {s.lastSyncedAt === null ? (
-              <span className="muted">هنوز خوانده نشده</span>
-            ) : (
-              gigabytes(s.usedBytes)
-            )}
-          </td>
-          <td>{dateTime(s.purchasedAt)}</td>
-          <td>{s.expiresAt === null ? 'بدون انقضا' : dateTime(s.expiresAt)}</td>
-          <td>
-            <span className={statusTone(s.status)}>{SUB_STATUS_FA[s.status] ?? s.status}</span>
-          </td>
-        </tr>
-      )}
-    />
-  );
-}
-
-export function TransactionsPage() {
-  return (
-    <ListPage<EntryRow>
-      page="transactions"
-      unit="تراکنش"
-      filterLabel="نوع"
-      filterOptions={Object.entries(ENTRY_KIND_FA)}
-      fetchPage={(p) =>
-        api.walletEntries({
-          page: p.page,
-          pageSize: p.pageSize,
-          ...(p.q ? { q: p.q } : {}),
-          ...(p.filter ? { kind: p.filter } : {}),
-        })
-      }
-      summary={(extra, { narrowed }) => {
-        const d = extra as { creditIrr: number; debitIrr: number };
-        // The route sums over everything the filter matches rather than over
-        // the page, and says so — a page total would read as the shop's figure
-        // and be wrong by a factor of the page count. That leaves the labels
-        // to carry the other half of the truth, and until 2026-08-22 they did
-        // not: filtering to «خرید» produced a card reading «مجموع واریز ۰
-        // تومان» while the shop had taken five million in, and «خالص» went
-        // deep red for a shop that was up on the month. The number was right
-        // and the word above it was a claim about the whole ledger.
-        const of = (whole: string, part: string) => (narrowed ? part : whole);
-        const net = d.creditIrr + d.debitIrr;
-        return (
-          <>
-            <div className="stats-grid">
-              <div className="stat-card tone-blue">
-                <div className="stat-card__label">{of('مجموع واریز', 'واریزِ این جست‌وجو')}</div>
-                <div>{toman(d.creditIrr)}</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-card__label">{of('مجموع برداشت', 'برداشتِ این جست‌وجو')}</div>
-                {/* The magnitude, because the word above already says which
-                    direction it goes — «برداشت ‎−۵۲۵٬۰۰۰» is a double
-                    negative, and هزینه‌ها writes the same figure the same way. */}
-                <div>{toman(Math.abs(d.debitIrr))}</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-card__label">{of('خالص', 'خالصِ این جست‌وجو')}</div>
-                {/* Sign kept here, and only here: this is the one figure whose
-                    direction is not already in its label. */}
-                <div className={net < 0 ? 'negative' : undefined}>
-                  {net < 0 ? '−' : ''}
-                  {toman(Math.abs(net))}
-                </div>
-              </div>
-            </div>
-            {narrowed && (
-              <p className="muted">
-                این سه عدد فقط روی ردیف‌هایی حساب شده‌اند که این جست‌وجو برگردانده، نه روی کل دفتر.
-              </p>
-            )}
-          </>
-        );
-      }}
-      head={
-        <tr>
-          <th>کاربر</th>
-          <th>مبلغ</th>
-          <th>نوع</th>
-          <th>عامل</th>
-          <th>توضیح</th>
-          <th>زمان</th>
-        </tr>
-      }
-      row={(e) => (
-        <tr key={e.id}>
-          <td>
-            <CustomerLink customer={e.customer} />
-          </td>
-          <td className={e.amountIrr < 0 ? 'negative' : undefined}>{toman(e.amountIrr)}</td>
-          <td>{ENTRY_KIND_FA[e.kind] ?? e.kind}</td>
-          <td className="ltr">{actorFa(e.actor) ?? '—'}</td>
-          <td>{entryNoteFa(e.kind, e.note) ?? '—'}</td>
-          <td>{dateTime(e.createdAt)}</td>
-        </tr>
-      )}
-    />
   );
 }

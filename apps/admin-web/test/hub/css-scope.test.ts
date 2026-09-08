@@ -65,7 +65,15 @@ function topLevelSelectors(css: string): string[] {
 
 /** Class names a stylesheet defines, so the overlap is measured, not assumed. */
 function classNames(css: string): Set<string> {
-  return new Set([...css.matchAll(/\.([a-zA-Z][a-zA-Z0-9_-]*)/g)].map((m) => m[1]!));
+  // Comments stripped first, exactly as `topLevelSelectors` above does it. A
+  // class name written in prose defines nothing, and on 2026-09-08 one did:
+  // `theme.css` explained in a comment why `.data-table td` breaks numbers,
+  // and this function read that sentence as a declaration — so every hub rule
+  // for `.data-table` was suddenly «shared and unscoped» and the guard failed
+  // on a change that had touched no selector at all. `shared.length > 0` below
+  // is what stops this loosening into nothing.
+  const noComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  return new Set([...noComments.matchAll(/\.([a-zA-Z][a-zA-Z0-9_-]*)/g)].map((m) => m[1]!));
 }
 
 describe('the hub stylesheet is scoped to .hub', () => {
