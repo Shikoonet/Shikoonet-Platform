@@ -149,49 +149,74 @@ test.describe('on a phone', () => {
     }
   }
 
-  let restore: Array<{ table: string; id: number; name: string }> = [];
+  // Only these two tables are ever renamed, and the map is what the restore
+  // statement reads its table name from — a name that reached SQL from a row
+  // would be an injection point, however unlikely the row.
+  type Renamed = { table: 'provisioning_providers' | 'product_plans'; id: number; name: string };
+
+  // At module scope rather than assigned from the setup's return value: if the
+  // second rename throws, the first has already happened and `afterAll` still
+  // has to undo it. Assigning the whole array at the end means a half-finished
+  // setup leaves a panel called «🥇سرویس تیتانیوم …» in the database for every
+  // later run.
+  const renamed: Renamed[] = [];
+
+  async function restoreNames(): Promise<void> {
+    if (renamed.length === 0) return;
+    await withDb(async (d) => {
+      // Spliced as it goes, so a failure part-way does not put the rows that
+      // were already restored back on the list for a second attempt.
+      while (renamed.length > 0) {
+        const r = renamed[renamed.length - 1]!;
+        const sql =
+          r.table === 'product_plans'
+            ? `UPDATE product_plans SET name = ?2 WHERE id = ?1`
+            : `UPDATE provisioning_providers SET name = ?2 WHERE id = ?1`;
+        await d.prepare(sql).bind(r.id, r.name).run();
+        renamed.pop();
+      }
+    });
+  }
 
   test.beforeAll(async () => {
-    restore = await withDb(async (d) => {
-      const saved: Array<{ table: string; id: number; name: string }> = [];
-      // One provider, for «ارسال گروهی»'s panel filter, and one plan, for
-      // «قفسهٔ انبار»'s config filter. Both are read back before the rename so
-      // the original goes back exactly as it was.
-      const provider = await d
-        .prepare(`SELECT id, name FROM provisioning_providers ORDER BY id LIMIT 1`)
-        .first<{ id: number; name: string }>();
-      if (provider) {
-        saved.push({ table: 'provisioning_providers', id: Number(provider.id), name: provider.name });
-        await d
-          .prepare(`UPDATE provisioning_providers SET name = ?2 WHERE id = ?1`)
-          .bind(provider.id, LONG)
-          .run();
-      }
-      const plan = await d
-        .prepare(`SELECT id, name FROM product_plans ORDER BY id LIMIT 1`)
-        .first<{ id: number; name: string }>();
-      if (plan) {
-        saved.push({ table: 'product_plans', id: Number(plan.id), name: plan.name });
-        await d
-          .prepare(`UPDATE product_plans SET name = ?2 WHERE id = ?1`)
-          .bind(plan.id, LONG)
-          .run();
-      }
-      return saved;
-    });
-    expect(restore.length, 'nothing to rename — run seed:sim').toBeGreaterThan(0);
+    try {
+      await withDb(async (d) => {
+        // One provider, for «ارسال گروهی»'s panel filter, and one plan, for
+        // «قفسهٔ انبار»'s config filter. Each is read back and recorded BEFORE
+        // its own update, so whatever fails, what has changed is known.
+        const provider = await d
+          .prepare(`SELECT id, name FROM provisioning_providers ORDER BY id LIMIT 1`)
+          .first<{ id: number; name: string }>();
+        if (provider) {
+          renamed.push({
+            table: 'provisioning_providers',
+            id: Number(provider.id),
+            name: provider.name,
+          });
+          await d
+            .prepare(`UPDATE provisioning_providers SET name = ?2 WHERE id = ?1`)
+            .bind(provider.id, LONG)
+            .run();
+        }
+        const plan = await d
+          .prepare(`SELECT id, name FROM product_plans ORDER BY id LIMIT 1`)
+          .first<{ id: number; name: string }>();
+        if (plan) {
+          renamed.push({ table: 'product_plans', id: Number(plan.id), name: plan.name });
+          await d
+            .prepare(`UPDATE product_plans SET name = ?2 WHERE id = ?1`)
+            .bind(plan.id, LONG)
+            .run();
+        }
+      });
+    } catch (e) {
+      await restoreNames();
+      throw e;
+    }
+    expect(renamed.length, 'nothing to rename — run seed:sim').toBeGreaterThan(0);
   });
 
-  test.afterAll(async () => {
-    await withDb(async (d) => {
-      for (const r of restore) {
-        await d
-          .prepare(`UPDATE ${r.table === 'product_plans' ? 'product_plans' : 'provisioning_providers'} SET name = ?2 WHERE id = ?1`)
-          .bind(r.id, r.name)
-          .run();
-      }
-    });
-  });
+  test.afterAll(restoreNames);
 
   test('no section scrolls the page sideways', async ({ page }) => {
     await page.goto('/admin/');

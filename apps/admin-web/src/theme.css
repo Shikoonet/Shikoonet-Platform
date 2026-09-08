@@ -309,7 +309,12 @@ body {
   flex-wrap: wrap;
   margin-block-end: 20px;
 }
+/* Carries its own size and weight so it can sit on a real heading element:
+   the two pages that use `h1` here would otherwise arrive with the browser's
+   2em and its block margin, and a page title is not a `div` — a screen reader
+   navigating by heading has to be able to find it. */
 .page-head__title {
+  margin: 0;
   font-size: 20px;
   font-weight: 800;
 }

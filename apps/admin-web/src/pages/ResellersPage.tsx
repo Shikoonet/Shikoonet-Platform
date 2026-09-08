@@ -120,7 +120,7 @@ export function ResellersPage() {
     <div className="page">
       <div className="page-head">
         <div>
-          <div className="page-head__title">نمایندگان</div>
+          <h1 className="page-head__title">نمایندگان</h1>
           {/* Both numbers, always — the same rule «محصولات» learned: a total on
               its own says nothing about whether anything is running.
 
