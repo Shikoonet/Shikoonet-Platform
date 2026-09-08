@@ -18,8 +18,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { ContinuityBanner, ContinuityButton } from '../../src/hub/ContinuityBanner.js';
-import { ShikoonetHeader } from '../../src/hub/shikoonetShell.js';
-import { createCache } from '../../src/hub/query.js';
+import { App } from '../../src/App.js';
 import { RoleProvider } from '../../src/role.js';
 
 const ON = {
@@ -94,37 +93,52 @@ describe('the strip is not in the controls row — the containment that starved 
     // children.
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
+      vi.fn(async (input: unknown) => {
         const url = String(input);
-        const body = url.includes('/continuity-mode')
-          ? { ok: true, ...ON }
-          : { ok: true, items: [], counts: {}, total: 0 };
-        return new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
+        /*
+         * Two answers, and everything else REFUSED — the pattern
+         * `nav.test.tsx` established.
+         *
+         * Answering every call with one generic body is what broke the first
+         * version: `/overview` came back shaped like a list, `DashboardPage`
+         * read fields that were not there and threw, React unmounted the whole
+         * tree, and the assertion reported «expected null not to be null» about
+         * a panel that had crashed. A refused request is caught by the screen
+         * that made it and the shell still draws — which is the thing under
+         * test.
+         */
+        if (url.endsWith('/me')) {
+          return { ok: true, status: 200, json: async () => ({ ok: true, email: 'a@b.c', role: 'ADMIN' }) };
+        }
+        if (url.includes('/continuity-mode')) {
+          return { ok: true, status: 200, json: async () => ({ ok: true, ...ON }) };
+        }
+        return Promise.reject(new Error('not stubbed'));
       }),
     );
   });
 
-  it('renders the banner outside .shikoonet-header__right, and the bar keeps both its tracks', async () => {
-    const { container } = render(
-      <RoleProvider role="ADMIN">
-        <ShikoonetHeader cache={createCache()} onNavigate={() => {}} onRefresh={() => {}} opsMode>
-          <div />
-        </ShikoonetHeader>
-      </RoleProvider>,
-    );
-
+  it('renders the banner outside the header controls, and the header keeps its row', { timeout: 15_000 }, async () => {
+    /*
+     * Rewritten on 2026-09-08 when the two shells became one.
+     *
+     * The bug and the assertion are unchanged: the strip must not be a flex
+     * item beside the controls, because there its own content width sets the
+     * track and the one next to it — the payment tabs — collapses to zero. Only
+     * the header it is placed in changed, from `.shikoonet-header` to the
+     * panel's own `.app-header`, so the test now drives `<App/>`. Asserting
+     * against a component that no longer renders would have been a test that
+     * passes about nothing.
+     */
+    const { container } = render(<App />);
     await waitFor(() => expect(container.querySelector('.continuity-banner')).not.toBeNull());
 
-    // THE assertion. Inside `__right` the strip sets the width of the grid's
-    // `auto` track and the `minmax(0, 1fr)` track holding the tabs collapses.
-    expect(container.querySelector('.shikoonet-header__right .continuity-banner')).toBeNull();
-    // A sibling of the bar, not a descendant of it.
-    expect(container.querySelector('.shikoonet-header__bar .continuity-banner')).toBeNull();
-    expect(container.querySelector('.shikoonet-header > .continuity-banner')).not.toBeNull();
-    // And the track that was starved still exists to be measured.
-    expect(container.querySelector('.shikoonet-header__center')).not.toBeNull();
+    // THE assertion, in its new home.
+    expect(container.querySelector('.app-header__tools .continuity-banner')).toBeNull();
+    expect(container.querySelector('.app-header .continuity-banner')).toBeNull();
+    // A sibling of the header, not a descendant of it.
+    expect(container.querySelector('header.app-header + .continuity-banner')).not.toBeNull();
+    // And the row that would have been starved still exists to be measured.
+    expect(container.querySelector('.app-header__tools')).not.toBeNull();
   });
 });

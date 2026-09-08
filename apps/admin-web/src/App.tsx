@@ -38,7 +38,14 @@ import { EventsPage } from './pages/EventsPage.js';
 import { Icon } from './icons.js';
 import { HubSection } from './hub/HubSection.js';
 import { VersionBadge } from './VersionBadge.js';
-import { createCache } from './hub/query.js';
+import { createCache, type Cache } from './hub/query.js';
+import { HeaderSlotsProvider, HeaderSlotOutlet } from './hub/shikoonetShell.js';
+import { NotificationBell } from './hub/NotificationBell.js';
+import {
+  ContinuityBanner,
+  ContinuityButton,
+  useContinuityMode,
+} from './hub/ContinuityBanner.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { StatsPage } from './pages/StatsPage.js';
 import { CustomersPage } from './pages/CustomersPage.js';
@@ -98,7 +105,7 @@ function Body({
   cache: ReturnType<typeof createCache>;
 }) {
   if (isHubPage(page)) {
-    return <HubSection section={page} cache={cache} onGo={go} />;
+    return <HubSection section={page} cache={cache} />;
   }
   switch (page) {
     case 'dashboard':
@@ -240,6 +247,78 @@ export function App() {
 
   return (
     <RoleProvider role={role}>
+      <HeaderSlotsProvider>
+        <Shell
+          page={page}
+          go={go}
+          cache={cache}
+          navOpen={navOpen}
+          setNavOpen={setNavOpen}
+          passwordOpen={passwordOpen}
+          setPasswordOpen={setPasswordOpen}
+          role={role}
+          visible={visible}
+          withheld={withheld}
+          banner={banner}
+          onRefreshSession={() => setReload((n) => n + 1)}
+        />
+      </HeaderSlotsProvider>
+    </RoleProvider>
+  );
+}
+
+/**
+ * The panel's one shell.
+ *
+ * Split out of `App` for a single reason: the header shows what the CURRENT
+ * screen has put in it, and reading that means calling `useHeaderSlots()` —
+ * which has to happen inside the provider, not in the component that renders
+ * it.
+ *
+ * Until 2026-09-08 there were two shells. Six finance screens carried a header
+ * of their own with the notification bell, the continuity control and a date
+ * navigator; the other twenty-five carried none of it, and on those six the two
+ * headers stacked — two bars, and a brand block one row under another one's. So
+ * «آیا پرداختی رسیده؟» was a question the panel could answer from «امروز» and
+ * not from «کاربران», which made the bell a property of a section rather than
+ * of the panel.
+ */
+function Shell({
+  page,
+  go,
+  cache,
+  navOpen,
+  setNavOpen,
+  passwordOpen,
+  setPasswordOpen,
+  role,
+  visible,
+  withheld,
+  banner,
+  onRefreshSession,
+}: {
+  page: PageId;
+  go: (id: PageId, search?: string) => void;
+  cache: Cache;
+  navOpen: boolean;
+  setNavOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  passwordOpen: boolean;
+  setPasswordOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  role: PanelRole | null;
+  /** Which sections this operator may open — computed once, in `App`. */
+  visible: (id: PageId) => boolean;
+  /** Whether THIS section is closed to them, and the sentence that says why. */
+  withheld: boolean;
+  banner: string | null;
+  onRefreshSession: () => void;
+}) {
+  // One poll for the whole panel. The button is the normal state and the strip
+  // is the continuity one — never both — but a per-screen instance would mean a
+  // request every thirty seconds per screen to answer one question.
+  const continuity = useContinuityMode();
+
+  return (
+    <>
       <header className="app-header">
         <div className="app-header__left">
           <button
@@ -258,6 +337,43 @@ export function App() {
             </div>
           </div>
         </div>
+        {/* Everything the panel offers about the SHOP's state, on every screen.
+            These three lived in a second header that only the six finance
+            sections drew, so the bell — the one control that says «money has
+            arrived» — was invisible from the twenty-five screens an operator
+            actually spends the day on. */}
+        <div className="app-header__tools">
+          <HeaderSlotOutlet slot="center" />
+          <ContinuityButton state={continuity.state} onChanged={continuity.refresh} />
+          <HeaderSlotOutlet slot="dateNav" />
+          {/* The only thing the hub's operator menu did that the sidebar does
+              not. It was a one-item dropdown; a one-item dropdown is a button
+              wearing a hat. The views poll on their own — this is for the
+              moment an operator wants an answer NOW rather than in thirty
+              seconds. */}
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="تازه‌سازی همهٔ نماها"
+            title="تازه‌سازی همهٔ نماها"
+            onClick={() => cache.refetch()}
+          >
+            <Icon name="refresh" />
+          </button>
+          <NotificationBell
+            cache={cache}
+            onNavigate={(tab, filter) => {
+              // The bell deep-links into a payment TAB, and the tab lives in
+              // `?tab=`. One navigation rather than two: a section change
+              // pushes a path with no query, so anything written beforehand is
+              // wiped a moment later — which is what sent every bell entry to
+              // the income tab.
+              const paymentTab = filter?.paymentTab;
+              go(tab, paymentTab ? `?tab=${encodeURIComponent(paymentTab)}` : '');
+            }}
+          />
+        </div>
+
         {/* The two things you do to your own account rather than to the shop.
             Here rather than in the sidebar because every role needs both, and
             the sidebar is filtered by role — READ_ONLY sees fifteen of
@@ -282,7 +398,7 @@ export function App() {
             className="app-header__signout"
             onClick={() => {
               void fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).finally(
-                () => setReload((n) => n + 1),
+                onRefreshSession,
               );
             }}
           >
@@ -290,6 +406,11 @@ export function App() {
           </button>
         </div>
       </header>
+      {/* Its own row, under the bar, because it is a STRIP. Inside the header's
+          flex row a paragraph of Persian opened its track to full content width
+          and starved the one next to it — the warning broke the navigation of
+          the screen it was warning about. */}
+      <ContinuityBanner state={continuity.state} onChanged={continuity.refresh} />
 
       <aside className={navOpen ? 'app-sidebar open' : 'app-sidebar'}>
         <div className="sidebar-brand">
@@ -374,6 +495,6 @@ export function App() {
           )}
         </div>
       </section>
-    </RoleProvider>
+    </>
   );
 }
