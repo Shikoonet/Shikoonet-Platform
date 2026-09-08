@@ -693,9 +693,13 @@ describe('the read-only ledgers', () => {
     );
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/csv');
+    // Asserted on the BYTES, not on the string: the WHATWG decoder eats a
+    // leading BOM, so `text.charCodeAt(0)` is the first quote — 34, which is
+    // exactly what this assertion said before `payments-list.test.ts:1013`
+    // turned out to have written the same lesson down already.
+    const bytes = new Uint8Array(await res.clone().arrayBuffer());
+    expect([bytes[0], bytes[1], bytes[2]]).toEqual([0xef, 0xbb, 0xbf]);
     const text = await res.text();
-    // The BOM, so Excel opens Persian as Persian rather than as mojibake.
-    expect(text.charCodeAt(0)).toBe(0xfeff);
     // Header plus one line per row — the file is the filter, not the page.
     expect(text.trim().split(String.fromCharCode(13, 10))).toHaveLength(4);
 
