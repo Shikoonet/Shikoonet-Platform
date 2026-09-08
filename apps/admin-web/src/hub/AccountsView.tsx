@@ -155,7 +155,13 @@ export function AccountsView({ cache }: AccountsViewProps) {
         `«${name}» غیرفعال شود؟ از «آمار مالی» بیرون می‌رود، ربات دیگر کارت‌های آن را ` +
           `به مشتری نمی‌دهد، و از صف بررسی هم برداشته می‌شود. در همین فهرست می‌ماند و ` +
           `با «فعال‌کردن» برمی‌گردد.\n\n` +
-          `اگر فقط می‌خواهید موقتاً از «امروز» و تطبیق بیرون بماند، «بی‌صدا» همان کار را می‌کند.`,
+          // The third place in this file «امروز» was left bare, and the same
+          // trap as the mute copy above: read as a date it promises the
+          // account leaves those views from today onwards, when muting takes
+          // its whole history out. One word — «صفحهٔ» — makes it the screen
+          // it is. «موقتاً» goes with it: what makes muting temporary is that
+          // it can be undone, not that it covers a stretch of time.
+          `اگر فقط می‌خواهید از صفحهٔ «امروز» و تطبیق بیرون بماند، «بی‌صدا» همان کار را می‌کند.`,
       )
     ) {
       return;
@@ -225,10 +231,41 @@ export function AccountsView({ cache }: AccountsViewProps) {
     id: string,
     action: 'accept' | 'mute' | 'unmute' | 'decline' | 'restore',
   ) {
+    /**
+     * Said in full, because two of these are not undoable by reading the
+     * screen afterwards.
+     *
+     * The mute copy used to read «از «امروز»، جمع‌ها و تطبیق بیرون می‌مانند».
+     * «امروز» is the NAME OF A SCREEN here, but in Persian that sentence
+     * reads far more naturally as «from today onwards» — the opposite of
+     * what happens. The filter is `COALESCE(fa.status,'ACTIVE') = 'ACTIVE'`
+     * (`accountStatus.ts`), a condition on the account's current status with
+     * no date in it at all, so muting takes the account's WHOLE history out
+     * of those views and unmuting brings all of it back.
+     *
+     * And it never mentioned the consequence that actually costs money: a
+     * claim against a non-ACTIVE account returns `ACCOUNT_NOT_ACTIVE` and
+     * cannot auto-verify (`mirzabotMatch.ts`, asserted by TEST 16). An admin
+     * who mutes an account whose card is still being handed to customers has
+     * just sent every payment to that card into the manual queue, and nothing
+     * on this screen would have told them so.
+     */
     const labels: Record<typeof action, string> = {
       accept: 'این حساب پذیرفته و وارد بررسی فعال شود؟',
-      mute: 'این حساب بی‌صدا شود؟ تراکنش‌ها همچنان می‌رسند اما از «امروز»، جمع‌ها و تطبیق بیرون می‌مانند.',
-      unmute: 'صدای این حساب برگردد؟ دوباره وارد «امروز»، جمع‌ها و تطبیق می‌شود.',
+      mute:
+        'این حساب بی‌صدا شود؟\n\n' +
+          'پیامک‌ها همچنان می‌رسند و ذخیره می‌شوند، ولی این حساب و تمام تاریخچه‌اش از ' +
+          'صفحهٔ «امروز»، جمع‌ها و تطبیق بیرون می‌ماند — نه فقط از امروز به بعد.\n\n' +
+          'پرداخت تازه به این حساب دیگر خودکار تایید نمی‌شود و به صف بررسی دستی می‌رود، ' +
+          'پس اگر کارتی از این حساب هنوز به مشتری‌ها نشان داده می‌شود اول آن را بردار.\n\n' +
+          // «باصدا» — the label actually printed on the button, not a
+          // description of it. CodeRabbit caught «بازگرداندن صدا» here, which
+          // is the same defect this branch exists to fix one layer down: text
+          // that tells an operator to press something the screen does not say.
+          'با «باصدا» همه‌چیز برمی‌گردد؛ هیچ داده‌ای پاک نمی‌شود.',
+      unmute:
+        'صدای این حساب برگردد؟ با تمام تاریخچه‌اش دوباره وارد صفحهٔ «امروز»، جمع‌ها و ' +
+          'تطبیق می‌شود، و پرداخت به آن دوباره خودکار تایید می‌شود.',
       decline: 'این حساب رد شود؟ تراکنش‌ها همچنان می‌رسند اما از نماهای عملیاتی بیرون می‌مانند.',
       restore: 'این حساب به صف بررسی برگردد؟',
     };
