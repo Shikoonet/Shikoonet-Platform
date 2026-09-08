@@ -1600,3 +1600,234 @@ button.cat-card--new:hover {
   color: var(--danger, #b3261e);
   font-weight: 700;
 }
+
+/* ── The one header's middle ──────────────────────────────────────────────
+   Everything the panel says about the SHOP's state, on every screen: the
+   payment tabs a finance screen puts in the centre slot, the continuity
+   control, a date navigator, the refresh, and the bell.
+
+   Until 2026-09-08 these lived in a second header that only six of the
+   thirty-one sections drew — so the bell, the one control that says «money has
+   arrived», was invisible from the twenty-five screens an operator actually
+   spends the day on. On those six the two headers stacked.
+
+   `min-width: 0` because the centre slot holds a tab strip: without it the
+   strip's content width sets this flex item and the title beside it is
+   squeezed out — the same starvation the continuity banner caused when it sat
+   in a controls row, which `continuity-banner-placement.test.tsx` guards. */
+.app-header__tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+.app-header__center {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow-x: auto;
+  /* The strip scrolls rather than wrapping: two rows of payment tabs pushes
+     the header past its fixed height and the page content under it. */
+  scrollbar-width: none;
+}
+.app-header__center::-webkit-scrollbar {
+  display: none;
+}
+.app-header__date {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 720px) {
+  /* On a phone the header holds the menu button, the title and the account
+     actions; the shop-state controls move under it rather than competing for
+     a row that is already full. */
+  .app-header {
+    flex-wrap: wrap;
+    height: auto;
+    padding-block: 8px;
+  }
+  .app-header__tools {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+}
+
+/* The payment tabs, as they look inside the header rather than on a page.
+   Moved here from `hub/styles.css` when the two shells became one — the slot
+   they sit in is the panel's now, and a class both stylesheets define is what
+   `css-scope.test.ts` exists to stop. */
+.app-header__center .ops-nav__strip--primary {
+  width: auto;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  gap: 0.35rem;
+}
+.app-header__center .ops-nav__tab {
+  min-height: 44px;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.9375rem;
+  border-radius: var(--radius);
+}
+.app-header__center .ops-nav__tab--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25), 0 0 20px rgba(59, 130, 246, 0.14);
+}
+
+/* ── The payment tab strip ────────────────────────────────────────────────
+   Moved here from `hub/styles.css` on 2026-09-08, and not for tidiness: the
+   strip renders in the PANEL's header now, outside `.hub`, so the rules had to
+   follow the markup or the tabs would have lost every one of them. The
+   secondary strip inside the payments page comes along for the same reason —
+   one family, one home, and `css-scope.test.ts` refuses a class defined in
+   both files. */
+/* One rule did NOT come with the rest of the family: the width override for a
+   primary strip inside `HeaderSlot`'s fallback wrapper. That wrapper renders
+   only when there is no provider — never in the app, since `App` wraps the
+   whole tree in one — and its own rule stays in `hub/styles.css` beside its
+   markup. Naming the wrapper's class here (with its leading dot) is enough to
+   make `css-scope.test.ts` read this comment as a second definition, which is
+   why this paragraph describes it instead. */
+/* === Ops navigation (Shikoonet segmented) === */
+.ops-nav {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+.ops-nav--subnav {
+  margin: 0;
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ops-nav__strip--review {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  gap: 0.35rem;
+}
+.ops-nav__strip--review .ops-nav__subtab {
+  min-height: 46px;
+  padding: 0.45rem 0.95rem;
+  font-size: 0.875rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+}
+.ops-nav__strip--review .ops-nav__subtab--active {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25), 0 0 18px rgba(59, 130, 246, 0.12);
+}
+.ops-nav__level1,
+.ops-nav__level2 {
+  margin: 0;
+}
+/* A strip is `min-width: max-content` below, so its labels never wrap — which
+   also means that on a phone it is wider than the screen. With nothing around
+   it that scrolls, that width propagated all the way out: 872px of tabs inside
+   a 326px column stretched the document to 997px, and every screen on the
+   dashboard scrolled sideways. The strip keeps its intrinsic width; the rail
+   around it is what scrolls. */
+.ops-nav {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  /* A sideways flick on the tabs must not drag the page behind it. */
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  /* Room for the active tab's outline, which a scroll container would clip. */
+  padding-block: 2px;
+}
+.ops-nav__strip {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0.2rem;
+  min-width: max-content;
+  padding: 0.2rem;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.ops-nav__strip--primary {
+  width: 100%;
+  max-width: 100%;
+}
+/* The payment tabs' header variant moved to `theme.css` with the header that
+   holds them: `.app-header__center` is the panel's own class, and
+   `css-scope.test.ts` refuses one class defined in both stylesheets. */
+
+.ops-nav__strip--secondary {
+  width: auto;
+}
+.ops-nav__tab,
+.ops-nav__subtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-md) - 2px);
+  padding: 0.5rem 0.85rem;
+  min-height: 40px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease,
+    border-color 140ms ease;
+}
+.ops-nav__subtab {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.ops-nav__tab-icon,
+.ops-nav__subtab-icon {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.ops-nav__tab--active,
+.ops-nav__subtab--active {
+  color: var(--gold);
+  background: var(--gold-muted);
+  border-color: var(--border-gold);
+  box-shadow: var(--shadow-glow);
+}
+.ops-nav__tab--active .ops-nav__tab-icon,
+.ops-nav__subtab--active .ops-nav__subtab-icon {
+  color: var(--gold);
+  opacity: 1;
+}
+.ops-nav__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  padding: 0 0.35rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  line-height: 1.35rem;
+}
+.ops-nav__badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  margin-inline-start: 0.35rem;
+}
+.ops-nav__badge--new {
+  color: var(--background);
+  background: var(--gold);
+}
+
