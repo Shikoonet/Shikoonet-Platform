@@ -20,6 +20,8 @@ import { BulkPage } from '../src/pages/BulkPage.js';
 let sent: { url: string; body: Record<string, unknown> }[] = [];
 /** Every `/bulk/reach` the screen asked, in order, as a query string. */
 let asked: string[] = [];
+/** Every `/panels` URL the screen asked for, so the shelf opt-in is visible. */
+let panelUrls: string[] = [];
 /** Held answers, when a test wants to look at the moment before one arrives. */
 let holdReach: ((n: number) => void) | null = null;
 
@@ -35,6 +37,7 @@ const REACH: Record<string, number> = {
 beforeEach(() => {
   sent = [];
   asked = [];
+  panelUrls = [];
   holdReach = null;
   vi.stubGlobal(
     'fetch',
@@ -58,6 +61,7 @@ beforeEach(() => {
         }
         return { ok: true, status: 200, json: async () => ({ ok: true, reach: answer }) } as Response;
       }
+      if (u.includes('/panels')) panelUrls.push(u);
       return {
         ok: true,
         status: 200,
@@ -97,6 +101,24 @@ async function open() {
 }
 
 describe('choosing who hears a broadcast', () => {
+  /**
+   * This screen is the ONE caller that asks for the shelves — issue #125.
+   *
+   * `GET /panels` drops a shelf's own panel by default, because «مدیریت پنل‌ها»
+   * offers «غیرفعال» and «ویرایش» on it and neither belongs on machinery. Here
+   * the meaning is different: «کاربران یک پنل» is «holds a live service on this
+   * panel», and a shelf's panel carries the shelf's name — «everyone with an
+   * account from this shelf» is who you message the day its passwords rotate.
+   *
+   * A tidy-up that drops the flag would take that audience away in silence, so
+   * the flag is asserted on the wire rather than trusted to a comment.
+   */
+  it('asks for the shelves too, which no other screen does', async () => {
+    await open();
+    await waitFor(() => expect(panelUrls.length).toBeGreaterThan(0));
+    expect(panelUrls.every((u) => u.includes('includeShelves=1'))).toBe(true);
+  });
+
   it('shows the server’s count for the audience, not one of its own', async () => {
     const picker = await open();
     await waitFor(() => expect(within(messageCard()).getByText(/۱۵٬۵۲۴ نفر/)).toBeTruthy());

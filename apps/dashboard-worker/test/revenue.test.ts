@@ -68,6 +68,28 @@ const patch = (path: string, body: unknown, email = ADMIN) =>
     envAs(email),
   );
 
+/**
+ * A ledger URL scoped to the rows this file wrote — issue #118.
+ *
+ * `q` is an `ILIKE` on the note (`revenueRoutes.ts`, `ledgerWhere`) and every
+ * note here starts with `PREFIX`, so it selects exactly this suite's rows. The
+ * list, the `total`, the `totals` and the `byCategory` breakdown are all built
+ * from that same `WHERE`, which is what lets these assertions stay absolute on
+ * a database holding rows they did not write.
+ *
+ * Verified against Postgres before it was relied on, not against this comment:
+ * with two foreign rows and two of ours in the table, the route's `TOTALS_SQL`
+ * unfiltered gives net −۲٬۴۲۲٬۰۰۰ over 4 rows and under `ILIKE '%zz-revenue-%'`
+ * gives −۲۰۰٬۰۰۰ over 2.
+ *
+ * ONE `q` only. The route reads its query with
+ * `Object.fromEntries(searchParams)`, so a second `q=` does not narrow this one
+ * — it silently REPLACES it and un-scopes the read. A test that wants to search
+ * for something prefixes the value it searches for instead.
+ */
+const scoped = (query = '', path = '/api/v1/admin/revenue-adjustments') =>
+  `${path}?q=${encodeURIComponent(PREFIX)}${query ? `&${query}` : ''}`;
+
 type Kind = 'EXPENSE' | 'REVENUE_FIX' | 'MANUAL_INCOME';
 
 function add(amountToman: number, kind: Kind, label: string, extra: object = {}) {
@@ -94,57 +116,25 @@ const rowById = (id: number) =>
     .first<{ amount_irr: string | number; note: string; created_by: string | null }>();
 
 /**
- * The ledger rows only. The audit entries stay, because they cannot go: this
- * teardown was written with a `DELETE FROM audit_logs` in it and the database
- * refused it — «audit_logs is append-only (attempted DELETE)». Which is the
- * whole point of the table the deletion test above relies on, demonstrated by
- * accident on the first run.
+ * This suite's own rows, and nothing else — before every test and after them
+ * all.
+ *
+ * It used to be `DELETE FROM revenue_adjustments` with no WHERE at all, which
+ * on a machine holding an imported dump took 239 production ledger rows with it
+ * (issue #46). That became a loud refusal, which stopped the destruction and
+ * left the suite unable to run there at all; issue #118 is this: every read
+ * below is scoped with `scoped()`, so the assertions no longer need an empty
+ * table and the prefix-matched delete is the whole of the cleanup.
+ *
+ * The audit entries stay, because they cannot go: this teardown was written
+ * with a `DELETE FROM audit_logs` in it and the database refused it —
+ * «audit_logs is append-only (attempted DELETE)». Which is the whole point of
+ * the table the deletion test relies on, demonstrated by accident on the first
+ * run.
  */
 async function purge(): Promise<void> {
   // Rows first: `recurrence_id` points the other way, so a template with an
   // instalment against it is a template this cannot remove.
-  await baseEnv.DB.prepare(`DELETE FROM revenue_adjustments WHERE note LIKE ?1`)
-    .bind(`${PREFIX}%`)
-    .run();
-  await baseEnv.DB.prepare(`DELETE FROM expense_recurrences WHERE label LIKE ?1`)
-    .bind(`${PREFIX}%`)
-    .run();
-}
-
-/**
- * Empty the ledger — after proving there is nothing here but this suite's rows.
- *
- * The totals below are over the WHOLE ledger by design, so a row this file did
- * not write is counted in every one of them. That is why this used to be
- * `DELETE FROM revenue_adjustments` with no WHERE at all, and on a machine
- * holding an imported dump it took all 239 production ledger rows with it —
- * issue #46, in a `beforeEach`, silently, every run.
- *
- * Deleting only `${PREFIX}%` is not enough on its own: the assertions would
- * then count the imported rows and fail in ways that read as bugs in the code
- * under test. So the refusal comes first and says which database this is. A
- * suite that cannot be isolated should stop, not guess — and stopping is
- * strictly better than the silent version, because the answer («run the gate
- * against a second database») is one line away instead of one restore away.
- *
- * Making these assertions scope themselves — every read filtered to
- * `q=${PREFIX}` so the suite measures only its own rows — is the real repair
- * and is issue #118.
- */
-async function emptyLedger(): Promise<void> {
-  const foreign = await baseEnv.DB.prepare(
-    `SELECT count(*)::int AS n FROM revenue_adjustments WHERE note IS NULL OR note NOT LIKE ?1`,
-  )
-    .bind(`${PREFIX}%`)
-    .first<{ n: number }>();
-  if ((foreign?.n ?? 0) > 0) {
-    throw new Error(
-      `revenue_adjustments holds ${foreign?.n} row(s) this suite did not write. ` +
-        `Its totals are over the whole ledger, so it cannot run here without ` +
-        `destroying them — see issue #46. Point DATABASE_URL at a second, empty ` +
-        `database and run the gate there.`,
-    );
-  }
   await baseEnv.DB.prepare(`DELETE FROM revenue_adjustments WHERE note LIKE ?1`)
     .bind(`${PREFIX}%`)
     .run();
@@ -190,7 +180,7 @@ beforeAll(async () => {
   ).toBeGreaterThan(0);
 });
 
-beforeEach(emptyLedger);
+beforeEach(purge);
 afterAll(purge);
 
 describe('writing a line', () => {
@@ -338,9 +328,11 @@ describe('writing a line', () => {
       REVIEWER,
     );
     expect(res.status).toBe(403);
-    const n = await baseEnv.DB.prepare(`SELECT COUNT(*)::int AS n FROM revenue_adjustments`).first<{
-      n: number;
-    }>();
+    const n = await baseEnv.DB.prepare(
+      `SELECT COUNT(*)::int AS n FROM revenue_adjustments WHERE note LIKE ?1`,
+    )
+      .bind(`${PREFIX}%`)
+      .first<{ n: number }>();
     expect(n?.n).toBe(0);
   });
 
@@ -369,7 +361,7 @@ describe('the totals', () => {
     await add(50_000, 'REVENUE_FIX', 'c', { direction: 'expense' });
     await add(80_000, 'MANUAL_INCOME', 'd');
 
-    const body = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+    const body = (await (await get(scoped())).json()) as {
       total: number;
       totals: {
         expensesIrr: number;
@@ -395,9 +387,10 @@ describe('the totals', () => {
     // no total at all.
     for (let i = 0; i < 5; i++) await add(10_000, 'EXPENSE', `page-${i}`);
 
-    const body = (await (
-      await get('/api/v1/admin/revenue-adjustments?page=1&pageSize=2')
-    ).json()) as { items: unknown[]; totals: { netIrr: number } };
+    const body = (await (await get(scoped('page=1&pageSize=2'))).json()) as {
+      items: unknown[];
+      totals: { netIrr: number };
+    };
     expect(body.items).toHaveLength(2);
     expect(body.totals.netIrr).toBe(-500_000);
   });
@@ -418,21 +411,41 @@ describe('the totals', () => {
    * position and never moves.
    */
   it('follow the filter, while the lifetime figure stays the shop position', async () => {
+    /**
+     * `lifetime` is a DELTA here, and that is stronger than the absolute it
+     * replaced.
+     *
+     * The `life` query in `revenueRoutes.ts` is
+     * `SELECT … FROM revenue_adjustments ra WHERE ra.voided_at IS NULL` — no
+     * `ledgerWhere` at all — so `q` cannot reach it and there is no scoped
+     * absolute to assert. Reading it either side of the two writes asserts the
+     * exact IRR they moved it by, which proves the property the old assertion
+     * meant (the filter does not touch this figure) AND that these two rows
+     * actually landed in it. Exact integers, no tolerance: this is money.
+     */
+    const lifetime = async () =>
+      ((await (await get(scoped())).json()) as {
+        lifetime: { manualIncomeIrr: number; netIrr: number };
+      }).lifetime;
+
+    const before = await lifetime();
+
     await add(100_000, 'EXPENSE', 'w-a');
     await add(50_000, 'MANUAL_INCOME', 'w-b');
 
-    const body = (await (await get('/api/v1/admin/revenue-adjustments?kind=EXPENSE')).json()) as {
+    const body = (await (await get(scoped('kind=EXPENSE'))).json()) as {
       items: unknown[];
       totals: { expensesIrr: number; manualIncomeIrr: number; netIrr: number };
-      lifetime: { expensesIrr: number; manualIncomeIrr: number; netIrr: number };
+      lifetime: { manualIncomeIrr: number; netIrr: number };
     };
     expect(body.items).toHaveLength(1);
     // The rows on screen, added up.
     expect(body.totals.expensesIrr).toBe(-1_000_000);
     expect(body.totals.manualIncomeIrr).toBe(0);
-    // The books, unmoved by looking at them through a filter.
-    expect(body.lifetime.manualIncomeIrr).toBe(500_000);
-    expect(body.lifetime.netIrr).toBe(-500_000);
+    // The books, unmoved by looking at them through a filter: the two rows
+    // above and not a Rial more, even under `kind=EXPENSE`.
+    expect(body.lifetime.manualIncomeIrr - before.manualIncomeIrr).toBe(500_000);
+    expect(body.lifetime.netIrr - before.netIrr).toBe(-500_000);
   });
 
   /**
@@ -452,7 +465,7 @@ describe('the totals', () => {
     await add(300_000, 'EXPENSE', 'ads-2', { categoryId: Number(cat!.id) });
     await add(70_000, 'EXPENSE', 'uncategorised');
 
-    const body = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+    const body = (await (await get(scoped())).json()) as {
       totals: { expensesIrr: number };
       byCategory: { categoryId: number | null; name: string | null; count: number; irr: number }[];
     };
@@ -477,14 +490,14 @@ describe('the totals', () => {
     // ever one.
     const id = await addId(100_000, 'EXPENSE', 'derived');
 
-    const before = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+    const before = (await (await get(scoped())).json()) as {
       totals: { netIrr: number };
     };
     expect(before.totals.netIrr).toBe(-1_000_000);
 
     expect((await voidRow(id)).status).toBe(200);
 
-    const after = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+    const after = (await (await get(scoped())).json()) as {
       total: number;
       totals: { netIrr: number };
     };
@@ -674,17 +687,21 @@ describe('reading the ledger', () => {
     await add(50_000, 'MANUAL_INCOME', 'f-sale', { spentOn: '2026-08-10' });
 
     const one = async (query: string) =>
-      (
-        (await (await get(`/api/v1/admin/revenue-adjustments?${query}`)).json()) as {
-          items: { note: string }[];
-        }
-      ).items;
+      ((await (await get(scoped(query))).json()) as { items: { note: string }[] }).items;
 
     expect(await one('kind=EXPENSE')).toHaveLength(1);
     expect(await one(`categoryId=${Number(cat!.id)}`)).toHaveLength(1);
     // The window is on `spent_on`, so a row typed today for July answers to July.
     expect(await one('from=2026-07-01&to=2026-07-31')).toHaveLength(1);
-    expect(await one('q=f-server')).toHaveLength(1);
+    // The search test scopes itself by searching for a PREFIXED value, not by
+    // adding a second `q`: `Object.fromEntries(searchParams)` keeps the LAST
+    // one, so `scoped('q=f-server')` would throw away the scope and search the
+    // whole ledger for «f-server» — silently, and green on this machine.
+    expect(
+      ((await (
+        await get(`/api/v1/admin/revenue-adjustments?q=${encodeURIComponent(`${PREFIX}f-server`)}`)
+      ).json()) as { items: unknown[] }).items,
+    ).toHaveLength(1);
     expect(await one('uncategorised=true')).toHaveLength(0);
   });
 
@@ -693,11 +710,7 @@ describe('reading the ledger', () => {
     await voidRow(id);
 
     const count = async (query: string) =>
-      (
-        (await (await get(`/api/v1/admin/revenue-adjustments?${query}`)).json()) as {
-          items: unknown[];
-        }
-      ).items.length;
+      ((await (await get(scoped(query))).json()) as { items: unknown[] }).items.length;
 
     expect(await count('')).toBe(0);
     expect(await count('voided=show')).toBe(1);
@@ -709,7 +722,7 @@ describe('reading the ledger', () => {
     await patch(`/api/v1/admin/revenue-adjustments/${id}`, { amountToman: 60_000 });
     await patch(`/api/v1/admin/revenue-adjustments/${id}`, { note: `${PREFIX}renamed` });
 
-    const body = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+    const body = (await (await get(scoped())).json()) as {
       items: { id: number; editCount: number; lastEditedBy: string | null }[];
     };
     const row = body.items.find((i) => i.id === id);
@@ -738,7 +751,9 @@ describe('reading the ledger', () => {
     await add(100_000, 'EXPENSE', 'csv-a');
     await add(50_000, 'MANUAL_INCOME', 'csv-b');
 
-    const res = await get('/api/v1/admin/revenue-adjustments/export.csv?kind=EXPENSE');
+    const res = await get(
+      scoped('kind=EXPENSE', '/api/v1/admin/revenue-adjustments/export.csv'),
+    );
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/csv');
 
@@ -771,18 +786,27 @@ describe('reading the ledger', () => {
     // Beside, not inside: `shopStats.revenueIrr` is the bot's «آمار» screen as
     // well, and it means completed sales on both. The legacy panel splits it
     // the same way (`panel/index.php:28`).
-    await add(100_000, 'EXPENSE', 'overview');
+    // A DELTA, because `/admin/overview` sums `shop_books` with no WHERE at
+    // all (`adminOverviewRoutes.ts`) — there is no query parameter that could
+    // scope it, so the absolute it used to assert was an assertion about the
+    // whole database. The movement is the exact IRR this row put into the
+    // figure, which also proves the row reached it. No tolerance: this is money.
+    const overview = async () =>
+      (await (await get('/api/v1/admin/overview')).json()) as {
+        revenueIrr: number;
+        revenueAdjustmentIrr: number;
+      };
 
-    const body = (await (await get('/api/v1/admin/overview')).json()) as {
-      revenueIrr: number;
-      revenueAdjustmentIrr: number;
-    };
-    expect(body.revenueAdjustmentIrr).toBe(-1_000_000);
+    const before = await overview();
+    await add(100_000, 'EXPENSE', 'overview');
+    const after = await overview();
+
+    expect(after.revenueAdjustmentIrr - before.revenueAdjustmentIrr).toBe(-1_000_000);
     // Whatever the sales figure is, the adjustment is not already in it.
     const sales = await baseEnv.DB.prepare(
       `SELECT COALESCE(SUM(total_irr), 0) AS n FROM orders WHERE status = 'COMPLETED'`,
     ).first<{ n: string | number }>();
-    expect(body.revenueIrr).toBe(Number(sales?.n ?? 0));
+    expect(after.revenueIrr).toBe(Number(sales?.n ?? 0));
   });
 
   it('is readable by a REVIEWER, who has to reconcile against it', async () => {
@@ -864,10 +888,15 @@ describe('a foreign bill', () => {
     }
 
     const bad = await baseEnv.DB.prepare(
+      // This suite's rows, not the table: a foreign non-IRR row on a machine
+      // holding a dump is not this assertion's business — issue #118.
       `SELECT count(*)::int AS n FROM revenue_adjustments
-        WHERE currency <> 'IRR'
+        WHERE note LIKE ?1
+          AND currency <> 'IRR'
           AND abs(amount_irr) <> round(original_amount * fx_rate_irr / 10) * 10`,
-    ).first<{ n: number }>();
+    )
+      .bind(`${PREFIX}%`)
+      .first<{ n: number }>();
     expect(Number(bad?.n)).toBe(0);
 
     // And the columns hold the invoice, not a re-derivation of it.
@@ -915,7 +944,7 @@ describe('a foreign bill', () => {
 
   it('is an ordinary expense in every total, whatever it was paid in', async () => {
     await euro(10, 'in-totals');
-    const body = (await (await get('/api/v1/admin/revenue-adjustments')).json()) as {
+    const body = (await (await get(scoped())).json()) as {
       totals: { expensesIrr: number; netIrr: number };
     };
     expect(body.totals.expensesIrr).toBe(-120_000_000);
@@ -924,7 +953,7 @@ describe('a foreign bill', () => {
 
   it('carries the invoice into the export beside the figure it produced', async () => {
     await euro(35.5, 'csv-fx');
-    const res = await get('/api/v1/admin/revenue-adjustments/export.csv');
+    const res = await get(scoped('', '/api/v1/admin/revenue-adjustments/export.csv'));
     const text = await res.text();
     expect(text).toContain('"ارز","مبلغ ارزی","نرخ (تومان)"');
     expect(text).toContain('"EUR","35.5","1200000"');
