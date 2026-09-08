@@ -43,6 +43,18 @@ type Db = D1Database | D1DatabaseSession;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * One Tehran day of the window, for drawing.
+ *
+ * `day` is a calendar date and not an instant: a chart's axis is days, and
+ * shipping a timestamp would make every reader decide a timezone again.
+ */
+export interface ShopDay {
+  day: string;
+  salesIrr: number;
+  salesCount: number;
+}
+
 /** One payment method and what came in through it. */
 export interface GatewayTotal {
   method: string;
@@ -55,6 +67,8 @@ export interface ShopReport {
   /** The window actually measured. `null` on both means everything. */
   startMs: number | null;
   endMs: number | null;
+  /** One row per Tehran day of the window, for the chart. Never sparse. */
+  byDay: ShopDay[];
 
   /* ---- flows: these move with the range ---- */
   newCustomers: number;
@@ -279,10 +293,63 @@ export async function shopReport(
   const projectionDays =
     spanStart === null ? 0 : Math.max(1, Math.round((spanEnd - spanStart) / DAY_MS));
 
+  /*
+   * The same sales, one row per Tehran day.
+   *
+   * `generate_series` and a LEFT JOIN rather than a `GROUP BY` over the orders
+   * alone, because a bar chart with gaps in its axis lies about shape: three
+   * sales on three consecutive days would look identical to three sales spread
+   * over a month. An empty day is data.
+   *
+   * `o.completed_at` and `status = 'COMPLETED'` — the same definition of a sale
+   * the figures above use, in the same window. A chart that adds up to
+   * something other than the card over it is worse than no chart, because both
+   * look authoritative.
+   *
+   * Capped at 120 days. «کل» on a shop with two years of history would be 700
+   * bars in a 900px box, which is a texture rather than a chart; the cards
+   * still answer the whole window.
+   */
+  const CHART_DAYS_MAX = 120;
+  const dayEndMs = bounds.end ?? nowMs;
+  const dayStartMs = Math.max(
+    bounds.start ?? dayEndMs - CHART_DAYS_MAX * DAY_MS,
+    dayEndMs - CHART_DAYS_MAX * DAY_MS,
+  );
+  const byDayRows = await db
+    .prepare(
+      `WITH days AS (
+         SELECT generate_series(
+           date_trunc('day', to_timestamp(?1 / 1000.0) AT TIME ZONE 'Asia/Tehran'),
+           date_trunc('day', to_timestamp(?2 / 1000.0) AT TIME ZONE 'Asia/Tehran'),
+           interval '1 day'
+         )::date AS d
+       )
+       SELECT to_char(days.d, 'YYYY-MM-DD') AS day,
+              COALESCE(sum(o.total_irr), 0)::bigint AS sales_irr,
+              count(o.id)::int AS sales_count
+         FROM days
+         LEFT JOIN orders o
+           ON o.status = 'COMPLETED'
+          AND o.kind = 'NEW_PURCHASE'
+          AND date_trunc('day', o.completed_at AT TIME ZONE 'Asia/Tehran')::date = days.d
+        GROUP BY days.d
+        ORDER BY days.d`,
+    )
+    .bind(dayStartMs, dayEndMs)
+    .all<{ day: string; sales_irr: number; sales_count: number }>();
+
+  const byDay: ShopDay[] = (byDayRows.results ?? []).map((r) => ({
+    day: r.day,
+    salesIrr: Number(r.sales_irr),
+    salesCount: r.sales_count,
+  }));
+
   return {
     range,
     startMs: bounds.start,
     endMs: bounds.end,
+    byDay,
 
     newCustomers,
     buyers,
