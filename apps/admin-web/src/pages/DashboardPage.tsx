@@ -9,6 +9,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { CustomerLink } from '../CustomerLink.js';
 import { api, ApiError } from '../api.js';
 import { Icon } from '../icons.js';
 import { count, dateTime, planDisplayName, toman, tomanCompact } from '../format.js';
@@ -147,7 +148,13 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId) => void }) {
                   const st = ORDER_STATUS[o.status] ?? { label: o.status, cls: 'badge' };
                   return (
                     <tr key={o.publicId}>
-                      <td className="ltr">{o.telegramId ?? '—'}</td>
+                      <td>
+                        {o.telegramId === null ? (
+                          '—'
+                        ) : (
+                          <CustomerLink customer={{ id: o.userId, telegramId: o.telegramId }} />
+                        )}
+                      </td>
                       <td>{planDisplayName(o.planName) ?? '—'}</td>
                       <td>{toman(o.totalIrr)}</td>
                       <td>
@@ -189,7 +196,9 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId) => void }) {
                 )}
                 {data.recentCustomers.map((u) => (
                   <tr key={u.id}>
-                    <td className="ltr">{u.telegramId}</td>
+                    <td>
+                      <CustomerLink customer={{ id: u.id, telegramId: u.telegramId }} />
+                    </td>
                     <td className="ltr">{u.username ? `@${u.username}` : '—'}</td>
                     <td className={u.balanceIrr < 0 ? 'negative' : undefined}>
                       {toman(u.balanceIrr)}

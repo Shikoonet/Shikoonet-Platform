@@ -31,9 +31,24 @@ import {
   type CustomerPayments,
   type WalletEntryRow,
   type CustomerHistoryRow,
+  type OrderRow,
+  type SubscriptionRow,
 } from '../api.js';
 import { CopyButton } from '../CopyButton.js';
-import { count, dateTime, irrToToman, toman } from '../format.js';
+import { CustomerLink } from '../CustomerLink.js';
+import { pathForPage } from '../route.js';
+import {
+  ORDER_STATUS_FA,
+  SUB_STATUS_FA,
+  actorFa,
+  count,
+  dateTime,
+  entryNoteFa,
+  irrToToman,
+  planDisplayName,
+  statusTone,
+  toman,
+} from '../format.js';
 
 /**
  * The audit action, in the panel's own language.
@@ -80,16 +95,40 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/**
+ * The customer in the address bar.
+ *
+ * A card that lives only in `useState` cannot be linked to, cannot be opened
+ * in a second tab, and swallows the Back button — which on a screen whose job
+ * is «show me this person» is the whole feature. `?id=` rather than
+ * `/customers/:id` because `route.ts` maps one path segment to one section and
+ * teaching it a second segment would be a router; this is the same shape
+ * «پرداخت‌ها» already uses for its sub-tab.
+ */
+/** Rows of each list on the customer's card. Enough to answer «چی خریده».*/
+const DRAWER_PAGE = 10;
+
+function idFromSearch(): number | null {
+  const raw = new URLSearchParams(window.location.search).get('id');
+  if (raw === null) return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function qFromSearch(): string {
+  return new URLSearchParams(window.location.search).get('q') ?? '';
+}
+
 export function CustomersPage() {
   const [rows, setRows] = useState<CustomerListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [q, setQ] = useState('');
+  const [q, setQ] = useState(qFromSearch);
   const [status, setStatus] = useState('');
   const [reseller, setReseller] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [openId, setOpenId] = useState<number | null>(null);
+  const [openId, setOpenId] = useState<number | null>(idFromSearch);
 
   async function load(toPage = page) {
     setLoading(true);
@@ -116,6 +155,39 @@ export function CustomersPage() {
     // Not on `q`: the box searches when it is submitted, not on every
     // keystroke against 11k rows.
   }, [page, status, reseller]);
+
+  /*
+   * Back and Forward, and links arriving from another section.
+   *
+   * `CustomerLink` pushes `/customers?id=N` and dispatches `popstate`; the
+   * browser's own Back does the same without the dispatch. Both land here, so
+   * the card follows the address in every direction rather than only when a
+   * button on this page was pressed.
+   */
+  useEffect(() => {
+    const onPop = () => setOpenId(idFromSearch());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  /** Open the card and say so in the address bar, in that order. */
+  function open(id: number) {
+    setOpenId(id);
+    const params = new URLSearchParams(window.location.search);
+    params.set('id', String(id));
+    // `pushState`, so Back closes the card. Closing it is what an operator
+    // means by Back here — «کاربران» is still the screen they are on.
+    window.history.pushState(null, '', `${pathForPage('customers')}?${params}`);
+  }
+
+  function close() {
+    setOpenId(null);
+    const params = new URLSearchParams(window.location.search);
+    params.delete('id');
+    const rest = params.toString();
+    // `replaceState`: pressing «بستن» and then Back should not re-open it.
+    window.history.replaceState(null, '', `${pathForPage('customers')}${rest ? `?${rest}` : ''}`);
+  }
 
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -218,7 +290,9 @@ export function CustomersPage() {
               )}
               {rows.map((u) => (
                 <tr key={u.id}>
-                  <td className="ltr">{u.telegramId}</td>
+                  <td>
+                    <CustomerLink customer={{ id: u.id, telegramId: u.telegramId }} />
+                  </td>
                   <td className="ltr">{u.username ? `@${u.username}` : '—'}</td>
                   <td className="ltr">{u.phone ?? '—'}</td>
                   <td className={u.balanceIrr < 0 ? 'negative' : undefined}>
@@ -250,7 +324,7 @@ export function CustomersPage() {
                   </td>
                   <td>{dateTime(u.registeredAt)}</td>
                   <td>
-                    <button type="button" className="btn btn-sm" onClick={() => setOpenId(u.id)}>
+                    <button type="button" className="btn btn-sm" onClick={() => open(u.id)}>
                       مدیریت
                     </button>
                   </td>
@@ -284,7 +358,7 @@ export function CustomersPage() {
       </div>
 
       {openId !== null && (
-        <CustomerDrawer id={openId} onClose={() => setOpenId(null)} onChanged={() => void load()} />
+        <CustomerDrawer id={openId} onClose={close} onChanged={() => void load()} />
       )}
     </>
   );
@@ -303,6 +377,17 @@ function CustomerDrawer({
   const [entries, setEntries] = useState<WalletEntryRow[]>([]);
   const [history, setHistory] = useState<CustomerHistoryRow[]>([]);
   const [payments, setPayments] = useState<CustomerPayments | null>(null);
+  /**
+   * What this customer bought, on this card.
+   *
+   * The two questions every support conversation starts with — «چی خریده»
+   * and «سرویسش فعاله» — lived on two other sections, each needing the
+   * telegram id pasted into a search box. Ten of each, newest first: enough
+   * to answer the question, and «همهٔ N» goes to the full ledger for the
+   * rest.
+   */
+  const [orders, setOrders] = useState<{ total: number; items: OrderRow[] } | null>(null);
+  const [subs, setSubs] = useState<{ total: number; items: SubscriptionRow[] } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   /**
    * What the last action did, in a sentence.
@@ -362,6 +447,21 @@ function CustomerDrawer({
       setHistory(h.items);
     } catch {
       setHistory([]);
+    }
+
+    // Each in its own try, for the reason the audit trail above has one: a
+    // side-read that throws must not take the card down with it.
+    try {
+      const o = await api.orders({ customerId: id, page: 1, pageSize: DRAWER_PAGE });
+      setOrders({ total: o.total, items: o.items });
+    } catch {
+      setOrders(null);
+    }
+    try {
+      const sub = await api.subscriptions({ customerId: id, page: 1, pageSize: DRAWER_PAGE });
+      setSubs({ total: sub.total, items: sub.items });
+    } catch {
+      setSubs(null);
     }
   }
 
@@ -897,6 +997,102 @@ function CustomerDrawer({
             </table>
           </div>
 
+          <h4>
+            سفارش‌ها{orders && orders.total > 0 ? ` (${count(orders.total)})` : ''}
+            {orders && orders.total > DRAWER_PAGE && (
+              <a
+                className="page-head__sub"
+                style={{ marginInlineStart: 10 }}
+                href={`${pathForPage('orders')}?q=${customer.telegramId}`}
+              >
+                همهٔ {count(orders.total)} سفارش ←
+              </a>
+            )}
+          </h4>
+          <div className="table-wrap">
+            <table className="app-table">
+              <thead>
+                <tr>
+                  <th>زمان</th>
+                  <th>چه چیزی</th>
+                  <th>مبلغ</th>
+                  <th>وضعیت</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(orders?.items.length ?? 0) === 0 && (
+                  <tr>
+                    <td className="empty" colSpan={4}>
+                      {orders === null ? 'خوانده نشد.' : 'هنوز سفارشی ثبت نکرده است.'}
+                    </td>
+                  </tr>
+                )}
+                {orders?.items.map((o) => (
+                  <tr key={o.id}>
+                    <td>{dateTime(o.createdAt)}</td>
+                    <td>{planDisplayName(o.planName) ?? '—'}</td>
+                    <td>{toman(o.totalIrr)}</td>
+                    <td>
+                      <span className={statusTone(o.status)}>
+                        {ORDER_STATUS_FA[o.status] ?? o.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <h4>
+            سرویس‌ها{subs && subs.total > 0 ? ` (${count(subs.total)})` : ''}
+            {subs && subs.total > DRAWER_PAGE && (
+              <a
+                className="page-head__sub"
+                style={{ marginInlineStart: 10 }}
+                href={`${pathForPage('subscriptions')}?q=${customer.telegramId}`}
+              >
+                همهٔ {count(subs.total)} سرویس ←
+              </a>
+            )}
+          </h4>
+          <div className="table-wrap">
+            <table className="app-table">
+              <thead>
+                <tr>
+                  <th>سرویس</th>
+                  <th>پنل</th>
+                  <th>انقضا</th>
+                  <th>وضعیت</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(subs?.items.length ?? 0) === 0 && (
+                  <tr>
+                    <td className="empty" colSpan={4}>
+                      {subs === null ? 'خوانده نشد.' : 'سرویس فعالی ندارد.'}
+                    </td>
+                  </tr>
+                )}
+                {subs?.items.map((v) => (
+                  <tr key={v.id}>
+                    {/* The name it was SOLD under, unshortened: on this card
+                        the price inside a legacy name is part of what the
+                        customer agreed to, and there is no «مبلغ» column
+                        beside it to contradict. */}
+                    <td>{v.planName}</td>
+                    <td>{v.providerName ?? '—'}</td>
+                    <td>{v.expiresAt ? dateTime(v.expiresAt) : '—'}</td>
+                    <td>
+                      <span className={statusTone(v.status)}>
+                        {SUB_STATUS_FA[v.status] ?? v.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
           <h4>دفتر کیف پول</h4>
           <div className="table-wrap">
             <table className="app-table">
@@ -925,8 +1121,8 @@ function CustomerDrawer({
                       {e.amountIrr > 0 ? '+' : ''}
                       {toman(e.amountIrr)}
                     </td>
-                    <td className="ltr">{e.actor ?? '—'}</td>
-                    <td>{e.note ?? '—'}</td>
+                    <td className="ltr">{actorFa(e.actor) ?? '—'}</td>
+                    <td>{entryNoteFa(e.kind, e.note) ?? '—'}</td>
                   </tr>
                 ))}
               </tbody>
