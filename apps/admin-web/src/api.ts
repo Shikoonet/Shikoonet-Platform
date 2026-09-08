@@ -460,6 +460,8 @@ export interface ShopStatsResponse {
   /** The window measured. `null` on both means «everything». */
   startMs: number | null;
   endMs: number | null;
+  /** One row per Tehran day of the window, for the chart. Never sparse. */
+  byDay: Array<{ day: string; salesIrr: number; salesCount: number }>;
 
   /** Flows — these move with the range. */
   newCustomers: number;
@@ -1467,6 +1469,21 @@ export interface ResellerReading {
   panelStatus: string | null;
   panelIsLimited: boolean | null;
   takenAt: string;
+}
+
+/**
+ * The queues that still need a person, counted by the server.
+ *
+ * Every field is a number and never absent: zero is an answer, and a missing
+ * key would make the dashboard draw «—» for a shop with nothing waiting —
+ * which reads as «unknown» rather than «clear».
+ */
+export interface Attention {
+  openClaims: number;
+  pendingRequests: number;
+  expiringSubscriptions7d: number;
+  staleDevices: number;
+  panelsWithoutSecret: number;
 }
 
 export const api = {
@@ -2650,6 +2667,7 @@ export const api = {
 
   overview() {
     return req<{
+      attention: Attention;
       ok: boolean;
       customers: number;
       customersToday: number;
