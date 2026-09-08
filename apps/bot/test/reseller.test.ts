@@ -13,6 +13,7 @@
 
 import { CUSTOMER, RESELLER } from './helpers/viewers.js';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_CONTENT } from '../src/botContent.js';
 import { handleUpdate } from '../src/handle.js';
 import * as menu from '../src/menu.js';
 import { applyForReseller, DESCRIPTION_MAX } from '../src/reseller.js';
@@ -145,6 +146,22 @@ describe('applying', () => {
   });
 
   it('does not offer the button to a reseller at all', async () => {
+    /*
+     * Pinned to the SHIPPED layout, because that is what this test is about.
+     *
+     * `mainMenu` reads `LAYOUTS_NOW`, a module-level global that `handleUpdate`
+     * fills from `bot_layouts` — a table every suite in this package shares one
+     * Postgres for. So this assertion was really about whatever layout the last
+     * file to touch that table happened to save, and on 2026-09-08 it failed
+     * with `expected [ 'buy' ] to include 'agr'`: a saved layout carrying one
+     * visible button, written by a sibling file, read here as the answer to
+     * «does the shop offer this to a customer».
+     *
+     * It passed for months by ordering accident. The outside truth this is
+     * measured against is the shipped layout, so the test names it rather than
+     * inheriting one.
+     */
+    menu.applyContent(DEFAULT_CONTENT);
     const texts = menu
       .mainMenu(RESELLER)
       .flat()

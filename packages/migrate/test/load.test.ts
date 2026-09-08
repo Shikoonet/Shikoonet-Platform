@@ -69,7 +69,25 @@ afterAll(async () => {
 });
 
 describeIf('loadDump', () => {
-  it('loads a plain .sql and reports what landed', async () => {
+  /*
+   * Every test here shells a MySQL dump into a real server, and the default
+   * timeout is five seconds.
+   *
+   * On 2026-09-08 two of them timed out in CI on run 34210731682 — a pull
+   * request that touched neither this package nor anything it imports — and
+   * the same commit passed on `gh run rerun --failed` with nothing changed.
+   * That is a machine reporting its own load as a defect in the loader, which
+   * is the failure this repository has already been bitten by twice.
+   *
+   * No local measurement to quote, and that is not an omission: this whole
+   * file is `describe.skip` without the MySQL container on 3307, so the number
+   * would have to come from a runner rather than from here. Loading and
+   * re-loading a dump over a socket on a shared runner is not five-second
+   * work; thirty is generous enough that only a genuine hang reaches it.
+   */
+  const LOADS_A_DUMP = { timeout: 30_000 };
+
+  it('loads a plain .sql and reports what landed', LOADS_A_DUMP, async () => {
     const result = await loadDump(cfg(), FIXTURE);
     expect(result.database).toBe(SCRATCH);
     expect(result.tables).toBeGreaterThan(0);
@@ -79,7 +97,7 @@ describeIf('loadDump', () => {
     expect(Number((rows as { n: number }[])[0]!.n)).toBeGreaterThan(0);
   });
 
-  it('reads a .sql.gz as the same dump', async () => {
+  it('reads a .sql.gz as the same dump', LOADS_A_DUMP, async () => {
     const gz = join(tmp, 'fixture.sql.gz');
     writeFileSync(gz, gzipSync(readFileSync(FIXTURE)));
 
@@ -92,7 +110,7 @@ describeIf('loadDump', () => {
     expect(zipped.tables).toBe(plain.tables);
   });
 
-  it('drops what a previous dump left, rather than merging two sources', async () => {
+  it('drops what a previous dump left, rather than merging two sources', LOADS_A_DUMP, async () => {
     await loadDump(cfg(), FIXTURE);
     await conn.query(`CREATE TABLE \`${SCRATCH}\`.leftover (a int)`);
     await loadDump(cfg(), FIXTURE);
