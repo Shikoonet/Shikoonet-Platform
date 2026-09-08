@@ -2641,6 +2641,20 @@ export const api = {
   },
 
   /** `tier` is only read on APPROVED; null there means level one. */
+  /**
+   * The same decision for a selection, in one call.
+   *
+   * Per-row results come back rather than one verdict: a request decided on
+   * somebody else's screen in the meantime is refused individually, and the
+   * caller reports that rather than treating the batch as failed.
+   */
+  decideResellerRequests(ids: number[], status: 'APPROVED' | 'REJECTED', tier: 'n' | 'n2' | null) {
+    return req<{ ok: boolean; results: Array<{ id: number; ok: boolean; error?: string }> }>(
+      '/reseller-requests/decide',
+      { method: 'POST', body: JSON.stringify({ ids, status, tier }) },
+    );
+  },
+
   decideResellerRequest(
     id: number,
     status: 'APPROVED' | 'REJECTED',
