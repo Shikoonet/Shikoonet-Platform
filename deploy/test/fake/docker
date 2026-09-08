@@ -253,8 +253,12 @@ if verb == "exec":
                 sys.exit(0)
         sys.exit(0)
     if "select name from schema_migrations" in sql:
-        n = ledger(container)
-        out("".join(f"{i:04d}_m.sql\n" for i in range(1, n + 1)))
+        # The world's own filenames, in the order psql would return them. This
+        # used to synthesise `{i:04d}_m.sql`, which quietly made every four-digit
+        # prefix unique here and nowhere else — so a ledger cut landing between
+        # two files that share a prefix was unrepresentable in the fixture.
+        names = open(os.path.join(STATE, "mig-names.txt"), encoding="utf-8").read().split()
+        out("".join(x + "\n" for x in names[:ledger(container)]))
         sys.exit(0)
     if "count(*) from schema_migrations" in sql:
         # FAKE_LEDGER_DRIFT simulates the subject silently being a different

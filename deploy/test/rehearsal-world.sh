@@ -38,7 +38,22 @@ build_world() { # root  [script-override]
   for i in $(seq 1 37); do
     printf 'select 1;\n' >"$w/repo/migrations/$(printf '%04d' "$i")_m.sql"
   done
+  # FAKE_DUP_MIGRATION gives an existing four-digit prefix a SECOND file, which
+  # is the shape migrations/ really has (0056, 0057, 0060). Set it to the last
+  # prefix production applied and the ledger cut falls BETWEEN the two halves —
+  # the one case where a numeric range and the ledger disagree about what is
+  # pending. Its body is longer than the others so the two halves are also
+  # distinguishable in the fake docker log.
+  [ -z "${FAKE_DUP_MIGRATION:-}" ] ||
+    printf -- '-- the second file under a shared prefix\nselect 1;\n' \
+      >"$w/repo/migrations/${FAKE_DUP_MIGRATION}_z.sql"
   printf -- '-- verify_invariants\nselect 1;\n' >"$w/repo/migrations/verify_invariants.sql"
+  # The real schema_migrations ledger names FILES. The fake docker reads this
+  # list instead of synthesising `%04d_m.sql`, so a shared prefix in the world
+  # is a shared prefix in the ledger too — the fake cannot be the only place
+  # where four digits happen to be unique.
+  ( cd "$w/repo/migrations" && ls -1 [0-9][0-9][0-9][0-9]_*.sql ) | LC_ALL=C sort \
+    >"$w/state/mig-names.txt"
   printf 'lock\n' >"$w/repo/pnpm-lock.yaml"
   ( cd "$w/repo" && git init -q -b main . && git config user.email t@t && git config user.name t &&
     git remote add origin https://github.com/Shikoonet/Shikoonet-Platform.git &&
