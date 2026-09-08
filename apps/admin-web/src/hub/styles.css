@@ -267,10 +267,6 @@
   margin-bottom: 0;
 }
 
-.shikoonet-header--ops .shikoonet-header__bar {
-  border-bottom: 0;
-  padding-bottom: var(--space-md);
-}
 
 /* Two columns, not three. The first used to hold the SHIKOONET brand, with the
    centre track between two equal 1fr rails so the tabs sat in the middle of the
@@ -287,15 +283,6 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
-/* The brand block's rules were here — logo, wordmark, link. The markup went
-   when the panel's own header took over the identity; leaving the CSS behind is
-   how a stylesheet ends up 4,500 lines long. */
-
-.shikoonet-header__center {
-  display: flex;
-  justify-content: center;
-  min-width: 0;
-}
 
 .shikoonet-header__right {
   display: flex;
@@ -305,9 +292,6 @@
   min-width: 0;
 }
 
-.shikoonet-header__date {
-  margin-inline-end: var(--space-xs);
-}
 
 /* Build identity. Production is deliberately understated; any non-production
    environment is loud, because dev and prod are otherwise indistinguishable. */
@@ -328,16 +312,7 @@
   opacity: 1;
 }
 
-.shikoonet-header__icon-btn {
-  min-height: 40px;
-  min-width: 40px;
-  padding: 0.35rem;
-  border-radius: var(--radius-sm);
-}
 
-.shikoonet-header__secondary {
-  padding-top: var(--space-sm);
-}
 
 @media (max-width: 1023px) {
   .shikoonet-header__bar {
@@ -353,68 +328,11 @@
   position: relative;
 }
 
-.operator-menu__trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  background: var(--surface-2);
-  color: var(--text-primary);
-  border: 1px solid var(--border-gold);
-  border-radius: 999px;
-  padding: 0.2rem 0.55rem 0.2rem 0.2rem;
-  min-height: 40px;
-  min-width: 0;
-}
 
-.operator-menu__avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 999px;
-  background: var(--gold-muted);
-  color: var(--gold);
-  font-size: 0.6875rem;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-}
 
-.operator-menu__chevron {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-}
 
-.operator-menu__panel {
-  position: absolute;
-  inset-inline-end: 0;
-  top: calc(100% + 0.35rem);
-  z-index: 40;
-  min-width: 12rem;
-  padding: 0.35rem;
-  background: var(--surface-1);
-  border: 1px solid var(--border-gold);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
-}
 
-.operator-menu__item {
-  display: block;
-  width: 100%;
-  background: transparent;
-  color: var(--text-primary);
-  border: 0;
-  padding: 0.5rem 0.65rem;
-  min-height: 0;
-  text-align: start;
-  font-size: 0.8125rem;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
 
-.operator-menu__item:hover {
-  background: var(--surface-hover);
-}
 
 /* === Unified date control === */
 .unified-date-control {
@@ -534,9 +452,6 @@
   margin-bottom: var(--space-sm);
 }
 
-.payments-shell__header-slot .ops-nav__strip--primary {
-  width: 100%;
-}
 
 .payments-shell__date-slot {
   margin-bottom: var(--space-sm);
@@ -752,176 +667,23 @@
     width: 100%;
   }}
 
-/* === Ops navigation (Shikoonet segmented) === */
-.ops-nav{
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-}
 
-.ops-nav--subnav {
-  margin: 0;
-  padding-bottom: var(--space-xs);
-  border-bottom: 1px solid var(--border-subtle);
-}
 
-.ops-nav__strip--review {
-  width: 100%;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  gap: 0.35rem;
-}
 
-.ops-nav__strip--review .ops-nav__subtab {
-  min-height: 46px;
-  padding: 0.45rem 0.95rem;
-  font-size: 0.875rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-}
 
-.ops-nav__strip--review .ops-nav__subtab--active {
-  border-color: var(--gold);
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25), 0 0 18px rgba(59, 130, 246, 0.12);
-}
 
-.ops-nav__level1,
-.ops-nav__level2{
-  margin: 0;
-}
 
-/* A strip is `min-width: max-content` below, so its labels never wrap — which
-   also means that on a phone it is wider than the screen. With nothing around
-   it that scrolls, that width propagated all the way out: 872px of tabs inside
-   a 326px column stretched the document to 997px, and every screen on the
-   dashboard scrolled sideways. The strip keeps its intrinsic width; the rail
-   around it is what scrolls. */
-.ops-nav{
-  min-width: 0;
-  max-width: 100%;
-  overflow-x: auto;
-  /* A sideways flick on the tabs must not drag the page behind it. */
-  overscroll-behavior-x: contain;
-  scrollbar-width: thin;
-  /* Room for the active tab's outline, which a scroll container would clip. */
-  padding-block: 2px;
-}
 
-.ops-nav__strip{
-  display: inline-flex;
-  align-items: stretch;
-  gap: 0.2rem;
-  min-width: max-content;
-  padding: 0.2rem;
-  background: var(--surface-muted);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-}
 
-.ops-nav__strip--primary{
-  width: 100%;
-  max-width: 100%;
-}
 
-.shikoonet-header__center .ops-nav__strip--primary {
-  width: auto;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  gap: 0.35rem;
-}
 
-.shikoonet-header__center .ops-nav__tab {
-  min-height: 44px;
-  padding: 0.5rem 1.1rem;
-  font-size: 0.9375rem;
-  border-radius: var(--radius-sm);
-}
 
-.shikoonet-header__center .ops-nav__tab--active {
-  border-color: var(--gold);
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25), 0 0 20px rgba(59, 130, 246, 0.14);
-}
 
-.ops-nav__strip--secondary{
-  width: auto;
-}
 
-.ops-nav__tab,
-.ops-nav__subtab{
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  background: transparent;
-  color: var(--text-muted);
-  border: 1px solid transparent;
-  border-radius: calc(var(--radius-md) - 2px);
-  padding: 0.5rem 0.85rem;
-  min-height: 40px;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background-color 140ms ease,
-    color 140ms ease,
-    box-shadow 140ms ease,
-    border-color 140ms ease;
-}
 
-.ops-nav__subtab{
-  padding: 0.4rem 0.7rem;
-  font-size: 0.8125rem;
-  font-weight: 500;
-}
 
-.ops-nav__tab-icon,
-.ops-nav__subtab-icon{
-  flex-shrink: 0;
-  opacity: 0.85;
-}
 
-.ops-nav__tab--active,
-.ops-nav__subtab--active{
-  color: var(--gold);
-  background: var(--gold-muted);
-  border-color: var(--border-gold);
-  box-shadow: var(--shadow-glow);
-}
 
-.ops-nav__tab--active .ops-nav__tab-icon,
-.ops-nav__subtab--active .ops-nav__subtab-icon{
-  color: var(--gold);
-  opacity: 1;
-}
-
-.ops-nav__badge{
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.25rem;
-  padding: 0 0.35rem;
-  font-size: 0.6875rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 999px;
-  line-height: 1.35rem;
-}
-
-.ops-nav__badges {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-  margin-inline-start: 0.35rem;
-}
-
-.ops-nav__badge--new{
-  color: var(--background);
-  background: var(--gold);
-}
 
 /* === Bot verified metrics + table === */
 .bot-metrics {
@@ -1994,15 +1756,6 @@
   width: 100%;
 }
 
-/* === Header hamburger + drawer === */
-.hamburger {
-  background: transparent;
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  padding: 0.4rem 0.7rem;
-  font-size: 1.1rem;
-  line-height: 1;
-}
 
 /* === Tabs === */
 /* Scoped 2026-08-23, and the scope test is what found it.
