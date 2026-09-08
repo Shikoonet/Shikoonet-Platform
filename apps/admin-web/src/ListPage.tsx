@@ -23,7 +23,7 @@
  * a request; nothing rearranges what is on screen.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ApiError } from './api.js';
 import { DateField } from './DateField.js';
 import { SortableHeader } from './hub/SortableHeader.js';
@@ -48,6 +48,8 @@ export interface Column<T> {
 
 export interface FetchParams {
   q?: string;
+  /** One customer, exactly — set from `?customerId=` in the address. */
+  customerId?: number;
   filter?: string;
   sort?: string;
   dir?: 'asc' | 'desc';
@@ -108,6 +110,20 @@ export function ListPage<T>({
   // Seeded from the address so «همهٔ N سفارش ←» on a customer's card lands on
   // this ledger already narrowed to them, rather than on the whole shop.
   const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
+  /*
+   * One customer, exactly, when the address names one.
+   *
+   * «همهٔ ۱۲ سفارش ←» on a customer's card links here with `?customerId=`, and
+   * twelve has to mean twelve: `q` is a fragment match and would also return
+   * an order whose public id contains those digits, or another customer whose
+   * username contains this one's. Read once on mount — arriving here IS the
+   * navigation — and the operator widens the view by typing in the box.
+   */
+  const customerId = useMemo(() => {
+    const raw = new URLSearchParams(window.location.search).get('customerId');
+    const n = raw === null ? NaN : Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : undefined;
+  }, []);
   const [filter, setFilter] = useState('');
   const [jFrom, setJFrom] = useState<JalaliDate>(NO_DATE);
   const [jTo, setJTo] = useState<JalaliDate>(NO_DATE);
@@ -125,6 +141,7 @@ export function ListPage<T>({
 
   const params = (): Omit<FetchParams, 'page' | 'pageSize'> => ({
     ...(q.trim() ? { q: q.trim() } : {}),
+    ...(customerId ? { customerId } : {}),
     ...(filter ? { filter } : {}),
     ...(sort.column ? { sort: sort.column, dir: sort.direction } : {}),
     ...(isSet(jFrom) ? { from: jalaliToIsoDate(jFrom) } : {}),

@@ -108,6 +108,7 @@ function toQuery(
     page: p.page ?? 1,
     pageSize: p.pageSize ?? 25,
     ...(p.q ? { q: p.q } : {}),
+    ...(p.customerId ? { customerId: p.customerId } : {}),
     ...(p.filter ? { [filterName]: p.filter } : {}),
     ...(p.sort ? { sort: p.sort } : {}),
     ...(p.dir ? { dir: p.dir } : {}),
