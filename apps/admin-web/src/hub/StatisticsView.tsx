@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Cache } from './query.js';
 import { HistoryDateNav } from './historyRangeNav.js';
+import { HeaderSlot } from './shikoonetShell.js';
 import { SalesTrendChart, TopMetricsSummary } from './financialHub.js';
 import { AccountUsagePanel } from './accountAnalytics.js';
 import { CardBalancingPanel } from './cardAnalytics.js';
@@ -30,15 +31,15 @@ export function StatisticsView({ cache }: { cache: Cache }) {
 
   return (
     <section className="panel statistics">
-      <header className="page-header">
-        <div className="page-header__text">
-          <h2 className="page-header__title">آمار مالی</h2>
-          <p className="page-header__subtitle muted">فروش و فعالیت حساب‌ها</p>
-        </div>
-        <div className="page-header__actions">
-          <HistoryDateNav value={rangeState} onChange={setRangeState} />
-        </div>
-      </header>
+      {/* The date control goes to the panel's one header, exactly as
+          «پرداخت‌ها» sends its own. What used to be here was a second header
+          carrying a second copy of «آمار مالی» and a second date control, so
+          this screen served four `header` elements and the title twice — the
+          two-shells problem slice 5 set out to end, still standing on the one
+          screen its test did not visit. */}
+      <HeaderSlot slot="dateNav">
+        <HistoryDateNav value={rangeState} onChange={setRangeState} />
+      </HeaderSlot>
 
       {analyticsStatus === 'error' && (
         <p className="error">بارگذاری آمار ناموفق بود. صفحه را تازه کنید.</p>

@@ -116,7 +116,7 @@ export function CategoriesPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">دسته‌بندی‌ها</div>
+          <h2 className="page-head__title">دسته‌بندی‌ها</h2>
           <div className="page-head__sub">
             {count(inShop.length)} در فروشگاه از {count(rows.length)} · {count(products)} محصول ·{' '}
             <strong className={sellable === 0 ? 'tone-danger' : ''}>

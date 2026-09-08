@@ -1958,7 +1958,7 @@ export function PanelsPage({ onGo }: { onGo: (id: 'products', search?: string) =
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">مدیریت پنل‌ها</div>
+          <h2 className="page-head__title">مدیریت پنل‌ها</h2>
           <div className="page-head__sub">
             {count(rows.length)} پنل
             {broken > 0 &&

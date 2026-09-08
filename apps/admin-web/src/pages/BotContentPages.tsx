@@ -166,7 +166,7 @@ export function BotTextsPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">متن‌های ربات</div>
+          <h2 className="page-head__title">متن‌های ربات</h2>
           <div className="page-head__sub">
             {count(rows.length)} متن · {count(customised)} تغییر داده شده
           </div>
@@ -567,7 +567,7 @@ export function KeyboardPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">چیدمان کیبورد</div>
+          <h2 className="page-head__title">چیدمان کیبورد</h2>
           <div className="page-head__sub">
             {menus.find((m) => m.id === menu)?.label ?? menu} ·{' '}
             {customised ? 'تغییر داده شده' : 'پیش‌فرض'}

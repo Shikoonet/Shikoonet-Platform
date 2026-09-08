@@ -228,7 +228,7 @@ export function CatalogPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">سرویس‌ها</div>
+          <h2 className="page-head__title">سرویس‌ها</h2>
           <div className="page-head__sub">
             {count(total)} سرویس · {count(configCount)} کانفیگ در این صفحه
           </div>

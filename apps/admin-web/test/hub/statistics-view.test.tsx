@@ -143,7 +143,11 @@ afterEach(() => {
 describe('StatisticsView', () => {
   it('shows three top metrics and sales trend', async () => {
     render(<StatisticsView cache={createCache()} />);
-    expect(await screen.findByText('آمار مالی')).toBeTruthy();
+    // The screen no longer names itself. Its title was a second copy of the one
+    // the shell already draws, in a second `header` beside the shell's own —
+    // and the date control that sat next to it now goes to the shell's date
+    // slot. `shell.test.tsx` asserts the heading; this file asserts the numbers.
+    expect(screen.queryByText('آمار مالی')).toBeNull();
     expect(await screen.findByText('موجودی کل')).toBeTruthy();
     expect(await screen.findByText('فروش ربات')).toBeTruthy();
     expect(await screen.findByText('فروش نمایندگی')).toBeTruthy();

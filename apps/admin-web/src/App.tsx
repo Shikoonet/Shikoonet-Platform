@@ -330,12 +330,22 @@ function Shell({
           >
             <Icon name="bars" />
           </button>
-          <div>
-            <div className="app-header__title">{pageLabel(page)}</div>
-            <div className="app-header__crumb">
-              {brand()} / {pageLabel(page)}
-            </div>
-          </div>
+          {/* The panel's one heading, and the reason it lives here rather than
+              on the page: this is the only title all thirty-one screens have.
+              Six of them are finance screens with no `.page-head` at all, so a
+              heading owned by the pages would be six chances to forget the
+              seventh — and on 2026-09-09 the count of `h1` elements across the
+              whole panel was zero.
+
+              The breadcrumb that sat under it — the brand name, a slash, and
+              this same label — is gone: with the sidebar's active item and this
+              title, it was the third copy of the section's name on the screen
+              and it led nowhere.
+
+              (Written without quoting it: `brand.test.tsx` scans this file's
+              text, comments included, for the default brand name, because a
+              name compiled into the bundle is one a reseller cannot change.) */}
+          <h1 className="app-header__title">{pageLabel(page)}</h1>
         </div>
         {/* Everything the panel offers about the SHOP's state, on every screen.
             These three lived in a second header that only the six finance
@@ -484,7 +494,7 @@ function Shell({
           {withheld ? (
             <div className="page-head">
               <div>
-                <div className="page-head__title">{pageLabel(page)}</div>
+                <h2 className="page-head__title">{pageLabel(page)}</h2>
                 <div className="page-head__sub">
                   این بخش برای نقش شما باز نیست. از منوی کنار، بخشی را انتخاب کنید.
                 </div>

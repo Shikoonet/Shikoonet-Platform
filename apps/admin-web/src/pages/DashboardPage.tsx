@@ -126,7 +126,7 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId, search?: string) =>
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">داشبورد</div>
+          <h2 className="page-head__title">داشبورد</h2>
           <div className="page-head__sub">وضعیت فروشگاه در یک نگاه</div>
         </div>
       </div>
