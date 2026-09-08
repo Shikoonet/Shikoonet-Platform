@@ -142,3 +142,48 @@ test('a shop with no debtors says nothing about debt', async ({ page }) => {
   expect(reported.walletDebtors).toBe(t.debtors);
   expect(reported.walletHeldIrr).toBe(t.heldIrr);
 });
+
+/**
+ * «نیاز به توجه» — the strip that turns a report into a screen you act on.
+ *
+ * Asserted in a browser rather than in a unit test for one reason: the claim
+ * is that a chip LANDS somewhere useful, and «somewhere useful» is a real
+ * navigation to a real screen with a real tab selected. A mocked `onGo` proves
+ * the argument, not the arrival.
+ */
+test('a queue on the dashboard lands on the screen that clears it', async ({ page }) => {
+  await page.goto('/admin/');
+  await expect(page.getByText('نیاز به توجه')).toBeVisible();
+
+  /*
+   * Asserted unconditionally, with no «or it was empty» escape.
+   *
+   * The seeded shop measured on 2026-09-08 has one service expiring inside a
+   * week, six devices that have not reported, and four ACTIVE panels with no
+   * secret — so there is always something here. An `if (empty) return` would
+   * make this test pass on a seed that stopped producing queues, which is the
+   * silent kind of green: it would still be a strip that nobody had pressed.
+   */
+  const chip = page.locator('.attention__chip').first();
+  await expect(chip).toBeVisible();
+  const label = (await chip.innerText()).replace(/\s+/g, ' ').trim();
+  await chip.click();
+  // Whatever the first queue is, the panel moved and the sidebar agrees.
+  await expect(page.locator('.sidebar-link.active')).not.toHaveText('داشبورد');
+  expect(new URL(page.url()).pathname).not.toBe('/admin/');
+  expect(label.length).toBeGreaterThan(0);
+});
+
+test('the shop is drawn day by day, and an empty day is still a day', async ({ page }) => {
+  await page.goto('/admin/stats');
+  await expect(page.getByText('فروش، روز به روز')).toBeVisible();
+
+  const bars = page.locator('.chart__svg rect');
+  // The default range is «کل», and the seed has sales — so bars, not the empty
+  // sentence. Left unconditional for the same reason as above.
+  await expect(bars.first()).toBeAttached();
+  // Every bar carries its own value in words: a bar cannot be read to the Rial.
+  const titles = await bars.evaluateAll((rs) => rs.map((r) => r.querySelector('title')?.textContent));
+  expect(titles.length).toBeGreaterThan(0);
+  expect(titles.every((t) => typeof t === 'string' && t.includes('—'))).toBe(true);
+});
