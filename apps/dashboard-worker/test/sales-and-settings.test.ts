@@ -546,6 +546,73 @@ describe('the read-only ledgers', () => {
     expect(body.debitIrr).toBe(Number(sums!.debit));
   });
 
+  it('narrows each ledger to one customer, by the id the row already carries', async () => {
+    // `?q=` is a fragment match — a username fragment or a telegram id that
+    // ILIKEs another customer's. A link out of a row must land on THAT row's
+    // customer and nobody else, so the filter is the internal id the payload
+    // already ships in `customer.id`.
+    const a = await makeUser();
+    const b = await makeUser();
+    for (const { id } of [a, b]) {
+      await baseEnv.DB.prepare(
+        `INSERT INTO orders (public_id, user_id, kind, unit_price_irr, quantity, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', 1000, 1, 0, 1000, 'COMPLETED')`,
+      )
+        .bind(crypto.randomUUID(), id)
+        .run();
+      await baseEnv.DB.prepare(
+        `INSERT INTO subscriptions
+           (public_id, user_id, plan_name_at_sale, price_irr, status, purchased_at)
+         VALUES (?1, ?2, 'پلن', 1000, 'ACTIVE', now())`,
+      )
+        .bind(crypto.randomUUID(), id)
+        .run();
+      await baseEnv.DB.prepare(
+        `INSERT INTO wallet_entries (user_id, amount_irr, kind, idempotency_key)
+         VALUES (?1, 1000, 'ADMIN_ADJUST', ?2)`,
+      )
+        .bind(id, `zz-sales-cid-${id}`)
+        .run();
+    }
+
+    for (const [path, table, column] of [
+      ['orders', 'orders', 'user_id'],
+      ['subscriptions', 'subscriptions', 'user_id'],
+      ['wallet-entries', 'wallet_entries', 'user_id'],
+    ] as const) {
+      const res = await app.request(
+        `/api/v1/admin/${path}?customerId=${a.id}`,
+        {},
+        envAs(ADMIN),
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        total: number;
+        items: Array<{ customer: { id: number } }>;
+      };
+      // Counted by Postgres, separately from the route that is under test.
+      const counted = await baseEnv.DB.prepare(
+        `SELECT count(*)::int AS n FROM ${table} WHERE ${column} = ?1`,
+      )
+        .bind(a.id)
+        .first<{ n: number }>();
+      expect(body.total).toBe(counted!.n);
+      expect(body.items).toHaveLength(1);
+      expect(body.items.every((r) => r.customer.id === a.id)).toBe(true);
+    }
+  });
+
+  it('refuses a customerId that is not one', async () => {
+    for (const path of ['orders', 'subscriptions', 'wallet-entries']) {
+      const res = await app.request(
+        `/api/v1/admin/${path}?customerId=abc`,
+        {},
+        envAs(ADMIN),
+      );
+      expect(res.status).toBe(400);
+    }
+  });
+
   it('offers no way to write any of the three', async () => {
     // The wallet is append-only in Postgres and orders are written by the
     // purchase flow; a second writer here would race both.
