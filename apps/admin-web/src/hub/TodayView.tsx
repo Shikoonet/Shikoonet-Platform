@@ -323,7 +323,18 @@ export function TodayView({ cache }: TodayViewProps) {
                     </td>
                     <td>{formatTomanFromIrr(t.balance_irr)}</td>
                     <td>
-                      {t.account_display ?? (
+                      {/* One line, ellipsised, whole value in the tooltip.
+                          Printed bare this wrapped as «Auto:» / «****57.» /
+                          «1» on a 1440px screen — a masked account number
+                          split after a dot reads as two values, and this is
+                          the column an operator matches a transfer on. The
+                          compact layout has done it this way since it was
+                          written; the wide one had not. */}
+                      {t.account_display ? (
+                        <span className="table-ellipsis" title={t.account_display}>
+                          {t.account_display}
+                        </span>
+                      ) : (
                         <span className="muted">{t.account_hint ? 'نگاشت‌نشده' : '—'}</span>
                       )}
                     </td>

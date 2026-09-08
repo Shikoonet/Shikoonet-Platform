@@ -23,6 +23,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test';
+import { createPostgresD1 } from '@shikoo/db';
 
 /**
  * Requests every screen makes that are allowed to fail, with the reason.
@@ -102,4 +103,150 @@ test('every section opens without a failed request, a thrown render or an error 
   }
 
   expect(trouble.map((t) => `${t.section} — ${t.what}`)).toEqual([]);
+});
+
+/**
+ * The same walk on a phone, watching one thing: does the PAGE scroll sideways.
+ *
+ * A table wider than the screen is not this — `.table-wrap` scrolls on its own
+ * and that is intended. What this catches is the document overflowing, which
+ * takes the header, the sidebar toggle and every button on the screen out from
+ * under the operator's thumb and cannot be scrolled back to on iOS without
+ * pinching.
+ *
+ * ## Why this plants a long name first
+ *
+ * Walking staging at 390px on 2026-09-07 found «ارسال گروهی» over by 54px and
+ * «قفسهٔ انبار» by 20px. Measuring which element did it named a `<select>` in
+ * the filter bar both times — and the cause is not the filter bar's widths but
+ * `width: auto` on the select, which means «as wide as your widest option».
+ * Staging overflowed because a real panel is called «🥇سرویس تیتانیوم - مولتی
+ * لوکیشن 🌍» and a real config «نقره‌ای — ۱ ماهه · ۵۰ گیگ · چند کاربره».
+ *
+ * On a seeded database every option is short and the page fits, so this test
+ * written against `seed:sim` alone would have been green over the live defect —
+ * exactly the shape of «a LIMIT that is not a limit», where a table with three
+ * rows never gets the plan that shows the bug. So it plants one long name,
+ * measures, and puts the name back.
+ *
+ * 390px is an iPhone 14/15/16 in portrait, and the width the finding was
+ * measured at.
+ */
+test.describe('on a phone', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  // Long enough that a select sized to it cannot fit a 390px screen, and
+  // shaped like the real ones rather than like a stress string: this is a
+  // production panel name from the 2026-09-07 walk.
+  const LONG = '🥇سرویس تیتانیوم - مولتی لوکیشن 🌍 - چند کاربره - بدون محدودیت';
+
+  async function withDb<T>(fn: (d: ReturnType<typeof createPostgresD1>['db']) => Promise<T>) {
+    const { db, pool } = createPostgresD1({ connectionString: process.env['DATABASE_URL']! });
+    try {
+      return await fn(db);
+    } finally {
+      await pool.end();
+    }
+  }
+
+  // Only these two tables are ever renamed, and the map is what the restore
+  // statement reads its table name from — a name that reached SQL from a row
+  // would be an injection point, however unlikely the row.
+  type Renamed = { table: 'provisioning_providers' | 'product_plans'; id: number; name: string };
+
+  // At module scope rather than assigned from the setup's return value: if the
+  // second rename throws, the first has already happened and `afterAll` still
+  // has to undo it. Assigning the whole array at the end means a half-finished
+  // setup leaves a panel called «🥇سرویس تیتانیوم …» in the database for every
+  // later run.
+  const renamed: Renamed[] = [];
+
+  async function restoreNames(): Promise<void> {
+    if (renamed.length === 0) return;
+    await withDb(async (d) => {
+      // Spliced as it goes, so a failure part-way does not put the rows that
+      // were already restored back on the list for a second attempt.
+      while (renamed.length > 0) {
+        const r = renamed[renamed.length - 1]!;
+        const sql =
+          r.table === 'product_plans'
+            ? `UPDATE product_plans SET name = ?2 WHERE id = ?1`
+            : `UPDATE provisioning_providers SET name = ?2 WHERE id = ?1`;
+        await d.prepare(sql).bind(r.id, r.name).run();
+        renamed.pop();
+      }
+    });
+  }
+
+  test.beforeAll(async () => {
+    try {
+      await withDb(async (d) => {
+        // One provider, for «ارسال گروهی»'s panel filter, and one plan, for
+        // «قفسهٔ انبار»'s config filter. Each is read back and recorded BEFORE
+        // its own update, so whatever fails, what has changed is known.
+        const provider = await d
+          .prepare(`SELECT id, name FROM provisioning_providers ORDER BY id LIMIT 1`)
+          .first<{ id: number; name: string }>();
+        if (provider) {
+          renamed.push({
+            table: 'provisioning_providers',
+            id: Number(provider.id),
+            name: provider.name,
+          });
+          await d
+            .prepare(`UPDATE provisioning_providers SET name = ?2 WHERE id = ?1`)
+            .bind(provider.id, LONG)
+            .run();
+        }
+        const plan = await d
+          .prepare(`SELECT id, name FROM product_plans ORDER BY id LIMIT 1`)
+          .first<{ id: number; name: string }>();
+        if (plan) {
+          renamed.push({ table: 'product_plans', id: Number(plan.id), name: plan.name });
+          await d
+            .prepare(`UPDATE product_plans SET name = ?2 WHERE id = ?1`)
+            .bind(plan.id, LONG)
+            .run();
+        }
+      });
+    } catch (e) {
+      await restoreNames();
+      throw e;
+    }
+    expect(renamed.length, 'nothing to rename — run seed:sim').toBeGreaterThan(0);
+  });
+
+  test.afterAll(restoreNames);
+
+  test('no section scrolls the page sideways', async ({ page }) => {
+    await page.goto('/admin/');
+    await expect(page.locator('.sidebar-link').first()).toBeVisible();
+
+    const labels = (await page.locator('.sidebar-link').allInnerTexts()).map((l) => l.trim());
+    const wide: string[] = [];
+
+    for (const label of labels) {
+      // The sidebar is a drawer at this width and covers the page, so it has
+      // to be opened for the click and is closed by the navigation itself.
+      await page.getByRole('button', { name: 'منو', exact: true }).click();
+      await page.getByRole('button', { name: label, exact: true }).click();
+      await expect(page.locator('.sidebar-link.active')).toHaveText(label);
+      await page.waitForLoadState('networkidle');
+
+      const over = await page.evaluate(() => {
+        const doc = document.documentElement;
+        const main = document.querySelector('#main-content');
+        return {
+          doc: doc.scrollWidth - doc.clientWidth,
+          main: main ? main.scrollWidth - main.clientWidth : 0,
+        };
+      });
+      // One pixel of slack for sub-pixel rounding; anything an operator can
+      // see is many.
+      if (over.doc > 1) wide.push(`${label}: document over by ${over.doc}px`);
+      if (over.main > 1) wide.push(`${label}: #main-content over by ${over.main}px`);
+    }
+
+    expect(wide).toEqual([]);
+  });
 });

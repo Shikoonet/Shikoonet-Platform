@@ -199,3 +199,68 @@ export const STATUS_FA: Record<string, string> = {
   HIDDEN: 'پنهان',
   DISABLED: 'غیرفعال',
 };
+
+
+/**
+ * The three notes the system writes into `wallet_entries.note`, in Persian.
+ *
+ * They are English because they are written in English, at insert time:
+ * `packages/migrate/src/migrate.ts` stamps «legacy balance carried over
+ * unchanged» on every migrated opening balance, `apps/bot/src/wallet.ts`
+ * writes «5% of a renewal» and `apps/bot/src/referral.ts` «10% of a first
+ * purchase». They then sat untranslated in a Persian table on two screens.
+ *
+ * Translated here rather than in the database. `kind` already carries the whole
+ * meaning of each of these rows — the note only adds a percentage — and
+ * `wallet_entries` is append-only by trigger, so "fixing" the wording would
+ * mean rewriting a ledger to change a caption. What the operator reads is a
+ * presentation question, and this is the presentation layer.
+ *
+ * A note this function does not recognise is returned as it is. Two kinds of
+ * note reach here that must not be touched: one an operator typed themselves
+ * (`ADMIN_ADJUST`, already Persian), and one from a build newer than this
+ * panel. A row whose reason cannot be translated still has a reason.
+ */
+export function entryNoteFa(kind: string, note: string | null): string | null {
+  if (note === null) return null;
+  if (kind === 'OPENING' && note === 'legacy balance carried over unchanged') {
+    return 'موجودی اولیه، همان‌طور که از ربات قدیمی منتقل شد';
+  }
+  const renewal = /^(\d+)% of a renewal$/.exec(note);
+  if (kind === 'RENEWAL_CASHBACK' && renewal) return `${count(Number(renewal[1]))}٪ هدیهٔ تمدید`;
+  const referral = /^(\d+)% of a first purchase$/.exec(note);
+  if (kind === 'REFERRAL_BONUS' && referral) {
+    return `${count(Number(referral[1]))}٪ پورسانت اولین خرید زیرمجموعه`;
+  }
+  return note;
+}
+
+/** Who moved the money. Only the system has a name that needs translating. */
+export function actorFa(actor: string | null): string | null {
+  return actor === 'SYSTEM' ? 'سیستم' : actor;
+}
+
+/**
+ * A plan name with its own price cut off the end.
+ *
+ * Every product migrated from Mirzabot carries the Toman price inside its
+ * name — «1ماهه-20گیگ-چند کاربر-200.000» — because the legacy bot had no price
+ * column on its buttons and put the number in the label. Beside a «مبلغ» column
+ * the row then reads the price twice, and the second one is not formatted like
+ * the first: Latin digits, a full stop for the thousands group, no unit.
+ *
+ * Display only. `plan_name_at_sale` is frozen at the moment of sale on purpose
+ * and is not touched by this.
+ *
+ * The thousands group is what makes it a price. A bare run of digits is a
+ * volume or a duration — «1ماهه-100گیگ» must not lose its size — so this only
+ * takes a number that is grouped («200.000», «1.300.000»), optionally followed
+ * by «ت» or «تومان».
+ */
+export function planDisplayName(name: string | null): string | null {
+  if (name === null) return null;
+  const trimmed = name.replace(/[-–—\s]*\d{1,3}(?:\.\d{3})+\s*(?:ت|تومان)?\s*$/u, '');
+  // A name that is nothing BUT its price keeps its price — «250.000» alone is
+  // still more use to an operator than an empty cell.
+  return trimmed.trim() === '' ? name : trimmed.trim();
+}

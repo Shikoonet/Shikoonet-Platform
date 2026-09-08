@@ -654,6 +654,51 @@ describe('reseller requests', () => {
     expect(user!.is_reseller).toBe(false);
   });
 
+  /**
+   * The queue paginated like every other list, because it was not one.
+   *
+   * This route answered with a hard `LIMIT 200` and no `total`, so the screen
+   * drew all of them at once: 171 rows on staging on 2026-09-07, a page
+   * eighteen thousand pixels tall, and the two hundred and first request
+   * invisible with nothing saying so. Every other list in the panel answers
+   * `{ok,total,page,pageSize,items}` and this one is the reason the shape has
+   * to be checked rather than assumed.
+   */
+  it('pages, and says how many there are in total', async () => {
+    for (let i = 0; i < 30; i++) await makeRequest();
+
+    const res = await app.request(
+      '/api/v1/admin/reseller-requests?status=PENDING&pageSize=25',
+      {},
+      envAs(ADMIN),
+    );
+    const body = (await res.json()) as {
+      items: unknown[];
+      total: number;
+      page: number;
+      pageSize: number;
+    };
+    expect(body.items).toHaveLength(25);
+    expect(body.page).toBe(1);
+    expect(body.pageSize).toBe(25);
+
+    // Counted separately rather than read back from the response — a `total`
+    // taken over the page instead of over the filter is exactly the bug the
+    // wallet totals in this file already guard against.
+    const counted = await baseEnv.DB.prepare(
+      `SELECT COUNT(*) AS n FROM reseller_requests WHERE status = 'PENDING'`,
+    ).first<{ n: number }>();
+    expect(body.total).toBe(Number(counted!.n));
+
+    const second = await app.request(
+      '/api/v1/admin/reseller-requests?status=PENDING&pageSize=25&page=2',
+      {},
+      envAs(ADMIN),
+    );
+    const rest = (await second.json()) as { items: Array<{ id: number }> };
+    expect(rest.items.length).toBe(Number(counted!.n) - 25);
+  });
+
   it('puts the undecided ones first', async () => {
     const a = await makeRequest();
     await makeRequest();

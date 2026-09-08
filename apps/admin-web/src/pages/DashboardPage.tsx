@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError } from '../api.js';
 import { Icon } from '../icons.js';
-import { count, dateTime, toman, tomanCompact } from '../format.js';
+import { count, dateTime, planDisplayName, toman, tomanCompact } from '../format.js';
 import type { PageId } from '../nav.js';
 
 type Overview = Awaited<ReturnType<typeof api.overview>>;
@@ -148,7 +148,7 @@ export function DashboardPage({ onGo }: { onGo: (id: PageId) => void }) {
                   return (
                     <tr key={o.publicId}>
                       <td className="ltr">{o.telegramId ?? '—'}</td>
-                      <td>{o.planName ?? '—'}</td>
+                      <td>{planDisplayName(o.planName) ?? '—'}</td>
                       <td>{toman(o.totalIrr)}</td>
                       <td>
                         <span className={st.cls}>{st.label}</span>
