@@ -118,6 +118,16 @@ const GLYPHS: Record<string, ReactNode> = {
       <line x1="4" y1="18" x2="20" y2="18" />
     </>
   ),
+  // Two arcs and two arrowheads — the loop everybody reads as «again». Added
+  // when the hub's one-item operator menu became a button in the header.
+  refresh: (
+    <>
+      <path d="M20 11a8 8 0 0 0-13.7-5.7L4 7.5" />
+      <path d="M4 4v3.5h3.5" />
+      <path d="M4 13a8 8 0 0 0 13.7 5.7L20 16.5" />
+      <path d="M20 20v-3.5h-3.5" />
+    </>
+  ),
   money: (
     <>
       <rect x="2" y="6" width="20" height="12" rx="2" />

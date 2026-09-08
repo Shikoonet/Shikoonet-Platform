@@ -21,7 +21,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from '../src/App.js';
 
 /**
@@ -158,14 +158,22 @@ describe('one panel', () => {
     fireEvent.click(screen.getByRole('button', { name: /پرداخت‌ها/ }));
     await screen.findByRole('tablist', { name: 'بخش‌های پرداخت' });
 
-    // The operator menu survives — it refreshes every view and switches the
-    // theme. What it must not do any more is offer «Statistics», «Devices» and
-    // the rest a second time, one row below the sidebar that already has them.
-    fireEvent.click(screen.getByRole('button', { name: 'منوی اپراتور' }));
-    const menu = screen.getByRole('menu');
-    expect(within(menu).getByRole('menuitem', { name: 'تازه‌سازی همهٔ نماها' })).toBeTruthy();
+    /*
+     * Rewritten on 2026-09-08: the operator menu is gone, not narrowed.
+     *
+     * It used to offer «Statistics», «Devices» and the rest a second time, one
+     * row below the sidebar that already had them; the previous pass cut that
+     * list down to one item. A one-item dropdown is a button wearing a hat, so
+     * when the two shells became one the menu went and its one item stayed —
+     * as a button in the panel's own header.
+     *
+     * The claim is unchanged and now stronger: there is no second way to change
+     * section anywhere on a finance screen.
+     */
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'تازه‌سازی همهٔ نماها' })).toBeTruthy();
     for (const gone of ['Statistics', 'Today', 'Devices', 'Accounts', 'Banks']) {
-      expect(within(menu).queryByRole('menuitem', { name: gone })).toBeNull();
+      expect(screen.queryByRole('menuitem', { name: gone })).toBeNull();
     }
   });
 });
