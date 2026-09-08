@@ -174,6 +174,151 @@ maybe('a migration that reaches the database', () => {
       await my!.query("UPDATE `user` SET codeInvitation = 'FIXREF01' WHERE id = 9000000000005");
     }
   }, 120_000);
+
+  /**
+   * The middle layer, and the reason issue #71 could not be answered from the
+   * simulation.
+   *
+   * A legacy `product` row is one PRICE. On four real dumps every row shares a
+   * single `inbounds`/`proxies` pair while a Location carries 1-7 of them, and
+   * `migrateProducts` used to write each row as a service AND a plan — so the
+   * shop's shape after migration would have been «one service per price»,
+   * named «1ماهه-20گیگ-119.000ت», with one plan each. The sim answered «the
+   * middle layer is unused» because the sim's shape was the importer's.
+   *
+   * What is asserted here is a SHAPE, not a number of rows this file happens to
+   * contain, and the two properties that must not move are stated separately:
+   *
+   *   the safety property   every legacy row still becomes exactly one plan.
+   *                         Read from MySQL, not written down — a hard-coded 7
+   *                         would stop meaning «one per row» the moment
+   *                         somebody adds a row to the fixture.
+   *
+   *   the shape             services are named by their Location and carry its
+   *                         plans, which is only visible because the fixture
+   *                         now holds Locations with two and three prices.
+   */
+  it('groups the legacy rows by Location, one service per Location', async () => {
+    const cfg = loadConfig();
+    interface Service {
+      id: string;
+      name: string;
+      provider_name: string | null;
+      once_per_user: boolean;
+      resellers_only: boolean;
+      plans: number;
+    }
+    let services: Service[] = [];
+    let plans = 0;
+    let planNames: string[] = [];
+    let scopedCodes: { code: string; product_id: string }[] = [];
+
+    // The source side, asked of MySQL.
+    const [srcRows] = await my!.query<never>('SELECT COUNT(*) AS n FROM product');
+    const legacyRows = Number((srcRows as unknown as { n: number }[])[0]!.n);
+    // The fixture is not allowed to make this test vacuous: with one row per
+    // Location the grouping would be indistinguishable from the old 1:1.
+    expect(legacyRows).toBeGreaterThan(4);
+
+    await my!.query("UPDATE `user` SET codeInvitation = 'FIXREF05' WHERE id = 9000000000005");
+    let result;
+    try {
+      result = await migrate(cfg, my!, pgc!, {
+        commit: false,
+        domains: ['catalog', 'discounts'],
+        beforeSettle: async () => {
+          services = (
+            await pgc!.query<Service>(
+              `SELECT p.id, p.name, pr.name AS provider_name,
+                      p.once_per_user, p.resellers_only,
+                      (SELECT count(*)::int FROM product_plans pl
+                        WHERE pl.product_id = p.id) AS plans
+                 FROM products p
+                 LEFT JOIN provisioning_providers pr ON pr.id = p.provider_id
+                WHERE p.legacy_id IS NOT NULL`,
+            )
+          ).rows;
+          plans = Number(
+            (await pgc!.query('SELECT count(*)::int AS n FROM product_plans WHERE legacy_id IS NOT NULL'))
+              .rows[0]!['n'],
+          );
+          planNames = (
+            await pgc!.query<{ name: string }>(
+              `SELECT pl.name FROM product_plans pl
+                 JOIN products p ON p.id = pl.product_id
+                WHERE p.name = '🥇 لوکیشن طلایی 🎯' ORDER BY pl.legacy_id`,
+            )
+          ).rows.map((r) => r.name);
+          scopedCodes = (
+            await pgc!.query<{ code: string; product_id: string }>(
+              'SELECT code, product_id FROM discount_codes WHERE product_id IS NOT NULL',
+            )
+          ).rows;
+          return true;
+        },
+      });
+    } finally {
+      await my!.query("UPDATE `user` SET codeInvitation = 'FIXREF01' WHERE id = 9000000000005");
+    }
+
+    // ── the safety property ────────────────────────────────────────────────
+    // Nothing dropped, nothing merged away: one purchasable plan per legacy
+    // row, and the same total as before the regrouping.
+    expect(plans, 'every legacy product row must still be one plan').toBe(legacyRows);
+    // …and the collapse actually happened. This is the assertion the old 1:1
+    // mapping fails: it produced `plans` services.
+    expect(services.length).toBeLessThan(plans);
+
+    const byName = (name: string): Service[] => services.filter((s) => s.name === name);
+
+    // ── the shape ─────────────────────────────────────────────────────────
+    // Two prices on one Location: one service, two plans, and the service is
+    // named after the Location rather than after either price.
+    expect(byName('fixture panel A')).toHaveLength(1);
+    expect(byName('fixture panel A')[0]!.plans).toBe(2);
+    // Service and provider stay one-to-one: the Location IS the panel.
+    expect(byName('fixture panel A')[0]!.provider_name).toBe('fixture panel A');
+
+    // Persian with emoji at both ends, byte-for-byte through MySQL, Node and
+    // Postgres — the Location's own name, three prices under it.
+    expect(byName('🥇 لوکیشن طلایی 🎯')).toHaveLength(1);
+    expect(byName('🥇 لوکیشن طلایی 🎯')[0]!.plans).toBe(3);
+    // The prices stayed in the PLAN names, where legacy typed them.
+    expect(planNames).toEqual([
+      '1ماهه-20گیگ-119.000ت',
+      '2ماهه-40گیگ-219.000ت',
+      '3ماهه-60گیگ-299.000ت',
+    ]);
+
+    // ── the gates ─────────────────────────────────────────────────────────
+    // `fixture panel B` holds a free trial beside a resellers-only tier.
+    // `once_per_user` and `resellers_only` are columns of `products` and
+    // `apps/bot/src/catalog.ts` asks both before selling any plan beneath, so
+    // merging these two rows would either make the reseller price public or
+    // make the free trial repeatable. They stay two services under one name.
+    const panelB = byName('fixture panel B');
+    expect(panelB).toHaveLength(2);
+    expect(panelB.every((s) => s.plans === 1)).toBe(true);
+    expect(panelB.filter((s) => s.once_per_user && !s.resellers_only)).toHaveLength(1);
+    expect(panelB.filter((s) => s.resellers_only && !s.once_per_user)).toHaveLength(1);
+
+    // ── the discounts ─────────────────────────────────────────────────────
+    // Money points at the plan (`orders.plan_id`); a discount points at the
+    // service (`discount_codes.product_id`). `DiscountSell.code_product` names
+    // a legacy ROW, so a code scoped to a row that is no longer a service of
+    // its own has to resolve THROUGH its plan to the service carrying it.
+    const scoped = new Map(scopedCodes.map((c) => [c.code, c.product_id]));
+    // fxp01 heads its group, fxp02 does not. Both are `fixture panel A`.
+    expect(scoped.get('FXSELL30')).toBe(byName('fixture panel A')[0]!.id);
+    expect(scoped.get('FXSELL40')).toBe(byName('fixture panel A')[0]!.id);
+    // fxp07 is the THIRD row of its Location — the case a lookup on
+    // `products.code` alone drops entirely.
+    expect(scoped.get('FXSELL50')).toBe(byName('🥇 لوکیشن طلایی 🎯')[0]!.id);
+    // …and none of them was quietly thrown away on the way.
+    expect(
+      result.skipped.filter(([what]) => what.includes('scoped to a product that is gone')),
+    ).toEqual([]);
+  }, 120_000);
 });
 
 /**

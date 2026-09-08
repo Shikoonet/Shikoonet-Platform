@@ -115,12 +115,36 @@ const COUNT_PAIRS: [Domain, string, string, string, string?, string?][] = [
   // seedCatalog, so the bot has something to sell offline), and a bare
   // COUNT(*) then reports a migration failure that is really six fixture
   // products. `legacy_id` is exactly "this row came from MySQL".
+  // One legacy row is one PLAN, not one product: since issue #71 the rows are
+  // grouped by `Location` into a service each, so the source side of this check
+  // has to count the groups the importer builds rather than the rows. Written
+  // out here rather than derived, because a source query that asked
+  // `product_plans` how many services it expects would be the check agreeing
+  // with the code it checks.
+  //
+  // `COLLATE utf8mb4_bin`, twice, because `Map` keys in the importer are
+  // case-sensitive and MySQL's default `GROUP BY` is not: without it a shop
+  // with «Germany» and «germany» would be two services here and one there, and
+  // the count would disagree for a reason nobody could see (rule 7 —
+  // `Active`/`active` cost exactly this once already).
+  //
+  // The gate columns are in the key for the reason `migrateProducts` states:
+  // a Location whose rows gate differently cannot be one service.
   [
     'catalog',
     'products',
-    'SELECT COUNT(*) FROM product',
+    `SELECT (SELECT COUNT(*) FROM product WHERE TRIM(COALESCE(Location,'')) = '')
+          + (SELECT COUNT(*) FROM (
+               SELECT 1 FROM product
+                WHERE TRIM(COALESCE(Location,'')) <> ''
+                GROUP BY TRIM(Location) COLLATE utf8mb4_bin,
+                         one_buy_status = '1',
+                         TRIM(agent) COLLATE utf8mb4_bin IN ('n','n2')
+             ) grouped)`,
     'SELECT COUNT(*) FROM products WHERE legacy_id IS NOT NULL',
   ],
+  // The safety property of the regrouping: every legacy row still becomes
+  // exactly one purchasable plan. Nothing is merged away, only refiled.
   [
     'catalog',
     'product plans',
