@@ -96,7 +96,7 @@ import { audit, type Ident } from './adminAudit.js';
 const MAX_ADJUSTMENT_TOMAN = 10_000_000_000;
 
 /** Toman in, IRR out — the project's one conversion, at the edge, once. */
-const IRR_PER_TOMAN = 10;
+export const IRR_PER_TOMAN = 10;
 
 /** How many rows one export may carry. A ledger, not a data dump. */
 const EXPORT_MAX = 5_000;
