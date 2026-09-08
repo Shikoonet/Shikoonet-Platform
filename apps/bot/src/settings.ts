@@ -20,7 +20,9 @@ import {
   REPORT_KINDS,
   CRON_TOGGLES,
   CRON_DRY_RUN,
+  SHOP_SETTINGS,
   type ReportKind,
+  type ShopSettingKey as ContractShopSettingKey,
 } from '@shikoo/contracts';
 
 const log = createLogger('bot');
@@ -456,64 +458,22 @@ export const CUSTOM_EMOJI_SETTING = { scope: 'bot', key: 'custom_emoji' } as con
  * Keys are unique across scopes, and there is a test that says so: the lookup
  * below matches on the key alone.
  */
-export const SHOP_SETTING_KEYS = [
-  ['bot', 'Bot_Status'],
-  ['shop', 'statusextra'],
-  ['shop', 'statustimeextra'],
-  ['shop', 'statuschangeservice'],
-  // `setting` is one row of 51 columns and every column lands in scope `bot`;
-  // every `shopSetting` row lands in scope `shop`. That is `migrateSettings`,
-  // not a convention — reading either from the wrong scope finds nothing and
-  // silently keeps the default for ever.
-  ['bot', 'statuscopycart'],
-  ['bot', 'linkappstatus'],
-  ['shop', 'configshow'],
-  ['bot', 'Channel_Report'],
-  ['bot', 'affiliatespercentage'],
-  // Misspelled in the legacy schema and matched as it is actually written,
-  // like `offtimeextraa` above.
-  ['shop', 'chashbackextend'],
-  ['pay', 'minbalancecart'],
-  ['pay', 'maxbalancecart'],
-  [CUSTOM_EMOJI_SETTING.scope, CUSTOM_EMOJI_SETTING.key],
-  ['bot', 'daywarn'],
-  ['bot', 'volumewarn'],
-  ['bot', 'on_hold_day'],
-  // The cron rows, inserted by 0057. Listed here one at a time rather than
-  // spread from CRON_SETTING_KEYS, because this array is a `const` tuple that
-  // TYPES every read below — spreading a wider array would turn `text('daywarn')`
-  // back into an unchecked string lookup for all forty of them.
-  [CRON_TOGGLES.warn_time.scope, CRON_TOGGLES.warn_time.key],
-  [CRON_TOGGLES.warn_volume.scope, CRON_TOGGLES.warn_volume.key],
-  [CRON_TOGGLES.warn_unused.scope, CRON_TOGGLES.warn_unused.key],
-  [CRON_TOGGLES.remove_expired.scope, CRON_TOGGLES.remove_expired.key],
-  [CRON_TOGGLES.remove_volume.scope, CRON_TOGGLES.remove_volume.key],
-  [CRON_TOGGLES.nudge_never_bought.scope, CRON_TOGGLES.nudge_never_bought.key],
-  [CRON_DRY_RUN.scope, CRON_DRY_RUN.key],
-  ['bot', 'removedayc'],
-  ['bot', 'cronvolumere'],
-  ['bot', 'nudge_after_days'],
-  ['bot', 'order_ttl_hours'],
-  ['bot', 'limit_usertest_all'],
-  ['bot', 'roll_Status'],
-  // Ours, not a migrated legacy column — there was nothing in the PHP schema
-  // that composed a button label, which is the whole reason this exists.
-  [PLAN_LABEL_SETTING.scope, PLAN_LABEL_SETTING.key],
-  // The report topics. Ten rows the importer has been writing since it was
-  // written and nothing has ever read — see `packages/contracts/reportTopics`.
-  ['bot', 'topic_buyreport'],
-  ['bot', 'topic_otherservice'],
-  ['bot', 'topic_paymentreport'],
-  ['bot', 'topic_otherreport'],
-  ['bot', 'topic_reporttest'],
-  ['bot', 'topic_errorreport'],
-  ['bot', 'topic_porsantreport'],
-  ['bot', 'topic_reportnight'],
-  ['bot', 'topic_reportcron'],
-  ['bot', 'topic_backupfile'],
-] as const satisfies readonly (readonly [SettingScope, string])[];
+/**
+ * The keys this file's typed helpers may read, derived from the registry.
+ *
+ * It used to be a hand-written tuple here, and it was the only list of live
+ * settings anywhere — so the panel drew all 163 imported rows because nothing
+ * else knew which of them the shop actually reads. That list moved to
+ * `@shikoo/contracts/shopSettings`, where the dashboard and the panel can see
+ * it too, and this is now a view of it.
+ *
+ * Derived rather than duplicated on purpose: a key missing from the registry
+ * stops COMPILING here rather than failing a test, which is a stronger guard
+ * than the one the registry's own test provides.
+ */
+export const SHOP_SETTING_KEYS = SHOP_SETTINGS.map((s) => [s.scope, s.key] as const);
 
-type ShopSettingKey = (typeof SHOP_SETTING_KEYS)[number][1];
+type ShopSettingKey = ContractShopSettingKey;
 
 /**
  * A stored template, or null when it cannot be drawn.

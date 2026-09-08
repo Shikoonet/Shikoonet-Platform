@@ -34,7 +34,13 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { D1Database } from '@shikoo/database';
 import type { EnvName } from '@shikoo/contracts';
-import { checkPlanLabel, PLAN_LABEL_SETTING, PLAN_LABEL_TOKENS } from '@shikoo/contracts';
+import {
+  checkPlanLabel,
+  isLiveSetting,
+  PLAN_LABEL_SETTING,
+  PLAN_LABEL_TOKENS,
+  shopSetting,
+} from '@shikoo/contracts';
 import { audit, type Ident } from './adminAudit.js';
 
 /**
@@ -107,9 +113,24 @@ interface SettingRow {
 
 function shapeSetting(r: SettingRow) {
   const secret = isSecretKey(r.key);
+  /*
+   * Whether the shop READS this row, and what to call it if it does.
+   *
+   * The screen printed 163 rows of raw key and raw value, most of them dead
+   * columns the Mirzabot importer copied across. An operator hunting «چند روز
+   * قبل از انقضا هشدار برود» read forty lines of noise to find `daywarn`, and
+   * every one of those lines was editable — so a change to `Lottery_Status`
+   * saved, showed no error, and did nothing for ever.
+   *
+   * The dead rows are still LISTED, because «where did my setting go» needs an
+   * answer. They are just not controls.
+   */
+  const live = shopSetting(r.scope, r.key);
   return {
     scope: r.scope,
     key: r.key,
+    live: live !== undefined,
+    ...(live ? { label: live.label, hint: live.hint, kind: live.kind } : {}),
     // For a secret key: whether something is set, never what. `""` and JSON
     // null both count as unset, matching `settingText`.
     secret,
@@ -218,6 +239,25 @@ export function registerSettingsRoutes(
     // No insert: the bot reads a fixed set of keys and a new one would be a
     // row nothing reads.
     if (!before) return c.json({ ok: false, error: 'unknown_setting' }, 404);
+
+    /*
+     * The row exists and the shop does not read it. Refused, not stored.
+     *
+     * A value nothing reads, edited on a screen that accepted the edit, is
+     * worse than one the screen never offered: the operator believes they
+     * changed something. `Dice` is the clearest case — Sam decided on
+     * 2026-08-20 that this shop has no wheel of fortune, so that row is a
+     * DECLINED feature rather than an unbuilt one.
+     *
+     * After the existence check, not before it, and the two codes say different
+     * things: 404 «there is no such setting» for a key nobody ever imported,
+     * 409 «this one is not ours to change» for one the import left behind. The
+     * first ordering collapsed both into 409 and broke the older test that
+     * draws exactly that line.
+     */
+    if (!isLiveSetting(scope, key)) {
+      return c.json({ ok: false, error: 'imported_key' }, 409);
+    }
 
     await c.env.DB.prepare(
       `UPDATE settings SET value = ?1::jsonb, updated_at = now(), updated_by = ?2
