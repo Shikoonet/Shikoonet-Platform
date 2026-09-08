@@ -1,15 +1,4 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react';
-import { NotificationBell } from './NotificationBell.js';
-import type { Cache } from './query.js';
-import { ContinuityBanner, ContinuityButton, useContinuityMode } from './ContinuityBanner.js';
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 type HeaderSlotName = 'center' | 'dateNav';
 
@@ -39,101 +28,33 @@ export function HeaderSlot({ slot, children }: { slot: HeaderSlotName; children:
   return null;
 }
 
-interface ShikoonetHeaderProps {
-  cache: Cache;
-  onNavigate: (
-    tab: 'payments' | 'statistics' | 'today',
-    filter?: { kind: string; paymentTab?: string },
-  ) => void;
-  onRefresh: () => void;
-  opsMode?: boolean;
-  children?: ReactNode;
-}
-
-function OperatorMenu({ onRefresh }: { onRefresh: () => void }) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDoc(e: MouseEvent) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
-    }
-    document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
-  return (
-    <div className="operator-menu" ref={wrapRef}>
-      <button
-        type="button"
-        className="operator-menu__trigger"
-        aria-label="منوی اپراتور"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <span className="operator-menu__avatar" aria-hidden>
-          OP
-        </span>
-        <span className="operator-menu__chevron" aria-hidden>
-          ▾
-        </span>
-      </button>
-      {open && (
-        <div className="operator-menu__panel" role="menu">
-          <button
-            type="button"
-            role="menuitem"
-            className="operator-menu__item"
-            onClick={() => {
-              onRefresh();
-              setOpen(false);
-            }}
-          >
-            تازه‌سازی همهٔ نماها
-          </button>
-          {/* The section list that used to live here is the panel's sidebar
-              now. Two menus offering the same six destinations is how the two
-              panels drifted apart in the first place.
-
-              The light/dark switch went the same way: the panel is dark, these
-              screens take its palette, and a control that changes nothing is
-              worse than no control. */}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function ShikoonetHeader({
-  cache,
-  onNavigate,
-  onRefresh,
-  opsMode = false,
-  children,
-}: ShikoonetHeaderProps) {
-  const [center, setCenter] = useState<ReactNode>(null);
-  const [dateNav, setDateNav] = useState<ReactNode>(null);
-
-  // One poll for both children. They are never on screen together — the button
-  // is the NORMAL state and the strip is the CONTINUITY one — but each mounting
-  // its own timer would mean two requests every thirty seconds to answer one
-  // question.
-  const continuity = useContinuityMode();
+/**
+ * The two slots a finance screen fills in the panel's own header.
+ *
+ * `HeaderSlot` is unchanged — a screen still says «put this in the middle»
+ * without knowing where the header is. What moved is the header: there is one
+ * now, in `App`, and this is how the six finance screens still reach it.
+ *
+ * ## Why the filled slots are not lifted into the shell
+ *
+ * The obvious shape — hold `center`/`dateNav` in the provider and let `App`
+ * read them — hangs, and it hung for real on 2026-09-08 before this comment
+ * existed. Filling a slot sets state on the provider, which re-renders the whole
+ * tree under it, which re-renders the screen, which produces a NEW `children`
+ * element, whose `useEffect` fills the slot again. React elements are new
+ * objects on every render, so the dependency never settles and the loop never
+ * ends. Vitest simply stopped producing output.
+ *
+ * So the state stays put and only `HeaderSlotOutlet` subscribes to it: the
+ * header re-renders, the screen does not, and the cycle has nowhere to close.
+ */
+export function HeaderSlotsProvider({ children }: { children: ReactNode }) {
+  const [filled, setFilled] = useState<FilledSlots>({ center: null, dateNav: null });
 
   const slots = useMemo<HeaderSlots>(
     () => ({
       setSlot(slot, node) {
-        if (slot === 'center') setCenter(node);
-        else setDateNav(node);
+        setFilled((prev) => ({ ...prev, [slot]: node }));
       },
     }),
     [],
@@ -141,30 +62,28 @@ export function ShikoonetHeader({
 
   return (
     <HeaderSlotsContext.Provider value={slots}>
-      <header className={`shikoonet-header${opsMode ? ' shikoonet-header--ops' : ''}`}>
-        <div className="shikoonet-header__bar">
-          {/* The brand block and the mobile hamburger were here. Both belong to
-              the panel's own header and sidebar now — a second logo one row
-              below the first is what «two panels» looks like after they have
-              supposedly been merged. */}
-          <div className="shikoonet-header__center">{center}</div>
-
-          <div className="shikoonet-header__right">
-            <ContinuityButton state={continuity.state} onChanged={continuity.refresh} />
-            {dateNav && <div className="shikoonet-header__date">{dateNav}</div>}
-            <NotificationBell cache={cache} onNavigate={onNavigate} />
-            <OperatorMenu onRefresh={onRefresh} />
-          </div>
-        </div>
-        {/* Its own row, under the bar, because it is a STRIP.
-            It used to be a flex item inside `__right`, which is the `auto`
-            track of a two-column grid: a paragraph of Persian in there opened
-            that track to its full content width and starved the `minmax(0,1fr)`
-            track next to it — the one holding the payment tabs. The warning
-            broke the navigation of the screen it was warning about. */}
-        <ContinuityBanner state={continuity.state} onChanged={continuity.refresh} />
-      </header>
-      {children}
+      <FilledSlotsContext.Provider value={filled}>{children}</FilledSlotsContext.Provider>
     </HeaderSlotsContext.Provider>
   );
+}
+
+interface FilledSlots {
+  center: ReactNode;
+  dateNav: ReactNode;
+}
+
+const FilledSlotsContext = createContext<FilledSlots>({ center: null, dateNav: null });
+
+/**
+ * What the current screen has put in one slot.
+ *
+ * A component of its own rather than a hook the header calls, so that filling a
+ * slot re-renders THIS and not the shell around it — see the loop described
+ * above.
+ */
+export function HeaderSlotOutlet({ slot }: { slot: HeaderSlotName }) {
+  const filled = useContext(FilledSlotsContext);
+  const node = filled[slot];
+  if (!node) return null;
+  return <div className={slot === 'center' ? 'app-header__center' : 'app-header__date'}>{node}</div>;
 }

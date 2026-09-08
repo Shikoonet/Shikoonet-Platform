@@ -267,3 +267,39 @@ test('a decrease that would zero a plan is refused on the screen, not after the 
   // And the way out is closed: the operator cannot press through the warning.
   await expect(confirm.getByRole('button', { name: 'تایید' })).toBeDisabled();
 });
+
+/**
+ * One header, in a browser.
+ *
+ * The unit test proves the bell mounts; only a real browser proves the header
+ * is one bar rather than two stacked, and that the payment tab strip still
+ * looks like a tab strip after moving into it. Both of those are layout, and
+ * happy-dom has none.
+ */
+test('every section draws exactly one header, and it carries the bell', async ({ page }) => {
+  for (const path of ['/admin/', '/admin/customers', '/admin/payments', '/admin/today']) {
+    await page.goto(path);
+    await expect(page.locator('header')).toHaveCount(1);
+    // The one control that says «money has arrived», on a shop screen as well
+    // as on a finance one.
+    await expect(page.getByRole('button', { name: /اعلان/ })).toBeVisible();
+  }
+});
+
+test('the payment tabs keep their own row inside the one header', async ({ page }) => {
+  await page.goto('/admin/payments');
+  const strip = page.locator('.app-header__center .ops-nav__strip--primary');
+  await expect(strip).toBeVisible();
+
+  // The starvation this panel has been bitten by twice: a wide thing in the
+  // header's flex row squeezing the title out of existence. The title is the
+  // one element that must survive whatever else is in there.
+  const title = page.locator('.app-header__title');
+  await expect(title).toBeVisible();
+  const w = await title.evaluate((el) => el.getBoundingClientRect().width);
+  expect(w).toBeGreaterThan(20);
+
+  // And the header stays one row tall on a desk.
+  const h = await page.locator('header.app-header').evaluate((el) => el.getBoundingClientRect().height);
+  expect(h).toBeLessThan(140);
+});
