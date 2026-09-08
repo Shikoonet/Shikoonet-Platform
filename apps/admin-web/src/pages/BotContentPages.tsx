@@ -26,7 +26,12 @@ import {
 import { count, dateTime } from '../format.js';
 import { useAdminWriteProps } from '../role.js';
 import { ButtonGrid, GRID_HELP, type GridRows } from './ButtonGrid.js';
-import { BUTTON_STYLES, premiumEmojiTag, type ButtonStyle } from '@shikoo/contracts';
+import {
+  BUTTON_STYLES,
+  premiumEmojiTag,
+  stripCustomEmoji,
+  type ButtonStyle,
+} from '@shikoo/contracts';
 
 function message(e: unknown): string {
   if (e instanceof ApiError) {
@@ -350,7 +355,14 @@ export function BotTextsPage() {
                         )}
                       </>
                     ) : (
-                      <span style={{ whiteSpace: 'pre-wrap' }}>{r.value}</span>
+                      // What the customer reads, not what is stored: a custom
+                      // emoji is fifty characters of markup around one glyph,
+                      // and printing it hides the sentence the operator came to
+                      // check. `stripCustomEmoji` is the same function the bot
+                      // runs before it sends anything to a non-Premium chat.
+                      // The textarea above still edits the raw value — the
+                      // markup is what gets saved, the glyph is what gets shown.
+                      <span style={{ whiteSpace: 'pre-wrap' }}>{stripCustomEmoji(r.value)}</span>
                     )}
                   </td>
                   <td>
@@ -485,7 +497,9 @@ export function KeyboardPage() {
           .sort((x, y) => x.colIndex - y.colIndex)
           .map((b) => ({
             key: b.action,
-            label: b.label,
+            // The chip is a picture of a Telegram button; markup on it is
+            // markup the operator is being told the customer will see.
+            label: stripCustomEmoji(b.label),
             hint: b.action,
             tint: b.style ? STYLE_TOKENS[b.style] : null,
             dim: !b.visible,

@@ -26,7 +26,15 @@ import {
   type SubscriptionRow,
   type CustomerRef,
 } from '../api.js';
-import { count, dateTime, gigabytes, toman } from '../format.js';
+import {
+  actorFa,
+  count,
+  dateTime,
+  entryNoteFa,
+  gigabytes,
+  planDisplayName,
+  toman,
+} from '../format.js';
 import { pageLabel, type PageId } from '../nav.js';
 import { useWriteProps } from '../role.js';
 
@@ -102,7 +110,7 @@ function whatWasBought(o: OrderRow): string {
   if (o.kind === 'ADD_VOLUME') return `${count(o.quantity)} گیگ`;
   if (o.kind === 'ADD_TIME') return `${count(o.quantity)} روز`;
   // NULL after the plan is retired — the order still happened.
-  return o.planName ?? '—';
+  return planDisplayName(o.planName) ?? '—';
 }
 
 /** Green for a good end state, red for a bad one, plain for in-flight. */
@@ -467,6 +475,11 @@ export function SubscriptionsPage() {
           <td className="ltr">{who(s.customer)}</td>
           {/* The names as they were at sale — renaming a config today must not
               rewrite what this customer bought. */}
+          {/* Not `planDisplayName` here, deliberately: this table has no
+              «مبلغ» column, so the price inside the name is not a duplicate —
+              it is the only thing distinguishing one tier from another on the
+              row. The helper is for the two tables that show the amount
+              beside it. */}
           <td>{s.planName}</td>
           <td>{s.providerName ?? '—'}</td>
           <td className="ltr">{s.remoteUsername ?? '—'}</td>
@@ -568,8 +581,8 @@ export function TransactionsPage() {
           <td className="ltr">{who(e.customer)}</td>
           <td className={e.amountIrr < 0 ? 'negative' : undefined}>{toman(e.amountIrr)}</td>
           <td>{ENTRY_KIND_FA[e.kind] ?? e.kind}</td>
-          <td className="ltr">{e.actor ?? '—'}</td>
-          <td>{e.note ?? '—'}</td>
+          <td className="ltr">{actorFa(e.actor) ?? '—'}</td>
+          <td>{entryNoteFa(e.kind, e.note) ?? '—'}</td>
           <td>{dateTime(e.createdAt)}</td>
         </tr>
       )}
