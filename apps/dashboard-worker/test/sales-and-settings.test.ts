@@ -749,6 +749,72 @@ describe('reseller requests', () => {
     return { id: Number(row!.id), userId };
   }
 
+  it('decides a whole selection at once, and says what happened to each', async () => {
+    // 171 open requests on staging, decided one press at a time. The route the
+    // screen needs is one that takes a list — and reports per row rather than
+    // per batch, because the interesting case is the row that was already
+    // decided on somebody else's screen while this one was being read.
+    const a = await makeRequest();
+    const b = await makeRequest();
+    const stale = await makeRequest();
+    await baseEnv.DB.prepare(`UPDATE reseller_requests SET status = 'REJECTED' WHERE id = ?1`)
+      .bind(stale.id)
+      .run();
+
+    const res = await app.request(
+      '/api/v1/admin/reseller-requests/decide',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ids: [a.id, b.id, stale.id], status: 'APPROVED' }),
+      },
+      envAs(ADMIN),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      results: Array<{ id: number; ok: boolean; error?: string }>;
+    };
+    const byId = new Map(body.results.map((r) => [r.id, r]));
+    expect(byId.get(a.id)?.ok).toBe(true);
+    expect(byId.get(b.id)?.ok).toBe(true);
+    // Refused, not silently re-decided: that flag came from a stale screen.
+    expect(byId.get(stale.id)).toMatchObject({ ok: false, error: 'already_decided' });
+
+    // Read back from the database, not from the response the writer produced.
+    for (const { userId } of [a, b]) {
+      const u = await baseEnv.DB.prepare(`SELECT is_reseller FROM users WHERE id = ?1`)
+        .bind(userId)
+        .first<{ is_reseller: boolean }>();
+      expect(u?.is_reseller).toBe(true);
+    }
+    const untouched = await baseEnv.DB.prepare(`SELECT is_reseller FROM users WHERE id = ?1`)
+      .bind(stale.userId)
+      .first<{ is_reseller: boolean }>();
+    expect(untouched?.is_reseller).toBe(false);
+  });
+
+  it('registers «decide» before «:id», or hono reads it as a request number', async () => {
+    // The trap this route walks into if it is registered second: `decide` is a
+    // valid `:id` segment as far as the router is concerned, and the single
+    // route would answer first with `invalid_id`.
+    const res = await app.request(
+      '/api/v1/admin/reseller-requests/decide',
+      { method: 'POST', body: JSON.stringify({ ids: [], status: 'APPROVED' }) },
+      envAs(ADMIN),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: 'invalid_body' });
+  });
+
+  it('refuses a bulk decision from anyone but an admin', async () => {
+    const { id } = await makeRequest();
+    const res = await app.request(
+      '/api/v1/admin/reseller-requests/decide',
+      { method: 'POST', body: JSON.stringify({ ids: [id], status: 'APPROVED' }) },
+      envAs(REVIEWER),
+    );
+    expect(res.status).toBe(403);
+  });
+
   it('approving one is what makes the customer a reseller', async () => {
     const { id, userId } = await makeRequest();
 
