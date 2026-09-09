@@ -29,11 +29,15 @@ const signedIn = () =>
 
 beforeEach(() => {
   window.history.replaceState(null, '', '/');
+  // The sidebar remembers which groups are folded, and a leftover from the
+  // previous test would decide this one.
+  localStorage.clear();
   vi.stubGlobal('fetch', signedIn());
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  localStorage.clear();
   window.history.replaceState(null, '', '/');
 });
 
@@ -139,5 +143,58 @@ describe('every screen has one heading, and it names the screen', () => {
     await go('آمار مالی');
     await waitFor(() => expect(document.querySelectorAll('header.app-header')).toHaveLength(1));
     expect(document.querySelector('#main-content .page-header')).toBeNull();
+  });
+});
+
+/**
+ * The sidebar's groups fold, and remember that they did.
+ *
+ * Thirty-one sections in seven groups is a column taller than a laptop screen,
+ * and an operator who lives on «پرداخت‌ها» scrolls past «کاتالوگ» all day. The
+ * group headings were already there and already inert — this makes them the
+ * control they look like.
+ *
+ * `<details>`/`<summary>` rather than a button and a conditional render: the
+ * open/closed state, the keyboard handling and the disclosure semantics are the
+ * element's, and the only thing left to write is remembering the choice.
+ *
+ * Only the memory is asserted from `localStorage` directly; the folding itself
+ * is asserted from `details.open`, because a closed `<details>` still holds its
+ * children in the DOM and «the links are gone» would be a claim about styling
+ * that happy-dom does not apply.
+ */
+describe('the sidebar groups fold', () => {
+  const groupOf = (label: string) =>
+    screen.getByText(label, { selector: 'summary' }).closest('details')!;
+
+  it('folds a group when its heading is pressed, and says so on disk', SHELL, async () => {
+    await drawApp();
+    await go('کاربران');
+    const catalogue = groupOf('کاتالوگ');
+    expect(catalogue.open).toBe(true);
+
+    fireEvent.click(screen.getByText('کاتالوگ', { selector: 'summary' }));
+    expect(catalogue.open).toBe(false);
+    expect(JSON.parse(localStorage.getItem('sidebar.collapsed') ?? '[]')).toContain('کاتالوگ');
+  });
+
+  it('is still folded the next time the panel is opened', SHELL, async () => {
+    localStorage.setItem('sidebar.collapsed', JSON.stringify(['کاتالوگ']));
+    await drawApp();
+    expect(groupOf('کاتالوگ').open).toBe(false);
+    // Everything else stays open: a remembered choice about one group is not a
+    // choice about the others, and `sections.spec.ts` counts the links.
+    expect(groupOf('گزارش‌ها').open).toBe(true);
+  });
+
+  it('unfolds the group holding the section you have just opened', SHELL, async () => {
+    // Otherwise arriving at «سرویس‌ها» — from a link, or from the address bar —
+    // leaves the sidebar with no highlighted entry anywhere, which reads as
+    // «this screen is not in the menu».
+    localStorage.setItem('sidebar.collapsed', JSON.stringify(['کاتالوگ']));
+    await drawApp();
+    expect(groupOf('کاتالوگ').open).toBe(false);
+    await go('سرویس‌ها');
+    await waitFor(() => expect(groupOf('کاتالوگ').open).toBe(true));
   });
 });

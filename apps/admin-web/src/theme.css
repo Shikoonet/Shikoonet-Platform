@@ -213,11 +213,20 @@ body {
   color: var(--text-dim);
   font-size: 11px;
 }
+/* A `<summary>` since 2026-09-09, so it folds its group away. The native
+   disclosure marker is kept rather than replaced with an icon: it is the one
+   affordance every browser already draws in the reading direction, and it
+   inherits the colour set here. */
 .sidebar-section-label {
   font-size: 11px;
   letter-spacing: 1px;
   color: var(--text-dim);
   padding: 14px 8px 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.sidebar-section-label:hover {
+  color: var(--text-muted);
 }
 .sidebar-link {
   display: flex;
