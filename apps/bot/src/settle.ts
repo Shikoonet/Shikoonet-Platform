@@ -173,114 +173,114 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
     let settled = false;
     try {
       settled = await db.withSession(async (tx) => {
-      // The money genuinely arrived, so the payment is paid whatever state the
-      // order is in. Guarded on the old status so a concurrent sweep — or this
-      // one running twice — settles it exactly once.
-      const paid = await tx
-        .prepare(
-          `UPDATE payments SET status = 'PAID', updated_at = now()
-                   WHERE id = ?1 AND status <> 'PAID'`,
-        )
-        .bind(row.payment_id)
-        .run();
-      if (paid.meta.changes === 0) return false;
-
-      if (row.order_id !== null) {
-        // A deposit has nothing to provision, so it finishes here rather than
-        // going to PAID. Two reasons, and either alone would be enough: the
-        // provisioning sweep takes every PAID order and fails any without a
-        // plan, and a deposit that sat in PAID would be money the customer
-        // cannot see in their balance.
-        const isTopup = row.order_kind === 'WALLET_TOPUP';
-        const moved = await tx
+        // The money genuinely arrived, so the payment is paid whatever state the
+        // order is in. Guarded on the old status so a concurrent sweep — or this
+        // one running twice — settles it exactly once.
+        const paid = await tx
           .prepare(
-            isTopup
-              ? `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
-                  WHERE id = ?1 AND status = 'AWAITING_PAYMENT'`
-              : `UPDATE orders SET status = 'PAID', updated_at = now()
-                  WHERE id = ?1 AND status = 'AWAITING_PAYMENT'`,
+            `UPDATE payments SET status = 'PAID', updated_at = now()
+                     WHERE id = ?1 AND status <> 'PAID'`,
           )
-          .bind(row.order_id)
+          .bind(row.payment_id)
           .run();
-        if (moved.meta.changes === 1 && isTopup) {
-          // Same transaction as the status move, so the balance and the order
-          // can never disagree. The credit is idempotent on its own key too, so
-          // it survives this running twice for any other reason.
-          if (row.order_user_id === null || row.order_total_irr === null) {
-            throw new Error(`top-up order ${row.order_id} has no user or no amount`);
+        if (paid.meta.changes === 0) return false;
+
+        if (row.order_id !== null) {
+          // A deposit has nothing to provision, so it finishes here rather than
+          // going to PAID. Two reasons, and either alone would be enough: the
+          // provisioning sweep takes every PAID order and fails any without a
+          // plan, and a deposit that sat in PAID would be money the customer
+          // cannot see in their balance.
+          const isTopup = row.order_kind === 'WALLET_TOPUP';
+          const moved = await tx
+            .prepare(
+              isTopup
+                ? `UPDATE orders SET status = 'COMPLETED', completed_at = now(), updated_at = now()
+                    WHERE id = ?1 AND status = 'AWAITING_PAYMENT'`
+                : `UPDATE orders SET status = 'PAID', updated_at = now()
+                    WHERE id = ?1 AND status = 'AWAITING_PAYMENT'`,
+            )
+            .bind(row.order_id)
+            .run();
+          if (moved.meta.changes === 1 && isTopup) {
+            // Same transaction as the status move, so the balance and the order
+            // can never disagree. The credit is idempotent on its own key too, so
+            // it survives this running twice for any other reason.
+            if (row.order_user_id === null || row.order_total_irr === null) {
+              throw new Error(`top-up order ${row.order_id} has no user or no amount`);
+            }
+            await creditTopup(tx, row.order_user_id, row.order_id, row.order_total_irr);
+            credited = row.order_total_irr;
           }
-          await creditTopup(tx, row.order_user_id, row.order_id, row.order_total_irr);
-          credited = row.order_total_irr;
+          if (moved.meta.changes === 1 && !isTopup) {
+            // Whoever brought this customer is paid here, in the same transaction
+            // that made the order real — not in a sweep that could run against an
+            // order that later turned out not to be paid at all.
+            await payReferralCommission(tx, row.order_id, commissionPercent);
+          }
+          if (moved.meta.changes === 0) {
+            // Somebody paid for an order that is no longer waiting to be paid —
+            // cancelled, expired, or already settled by another route. The payment
+            // stays PAID because the money is real, and this is a refund somebody
+            // has to make.
+            //
+            // Written to `audit_logs` and not only to stdout. A log line is the
+            // one record in this system that rotates away, and what it is holding
+            // here is a customer's money with nobody assigned to it. The row is
+            // durable, append-only, carries the amount and the order's state at
+            // the moment it happened, and is reachable by the entity index the
+            // dashboard already uses.
+            //
+            // In the same transaction as the settlement it belongs to, so a
+            // rollback cannot leave the incident recorded for a payment that was
+            // never settled, or settle one without recording it.
+            await recordIncident(tx, row);
+            log.error('settle.failed', {
+              ref: row.payment_public_id,
+              order_status: row.order_status ?? 'missing',
+            });
+          }
         }
-        if (moved.meta.changes === 1 && !isTopup) {
-          // Whoever brought this customer is paid here, in the same transaction
-          // that made the order real — not in a sweep that could run against an
-          // order that later turned out not to be paid at all.
-          await payReferralCommission(tx, row.order_id, commissionPercent);
-        }
-        if (moved.meta.changes === 0) {
-          // Somebody paid for an order that is no longer waiting to be paid —
-          // cancelled, expired, or already settled by another route. The payment
-          // stays PAID because the money is real, and this is a refund somebody
-          // has to make.
-          //
-          // Written to `audit_logs` and not only to stdout. A log line is the
-          // one record in this system that rotates away, and what it is holding
-          // here is a customer's money with nobody assigned to it. The row is
-          // durable, append-only, carries the amount and the order's state at
-          // the moment it happened, and is reachable by the entity index the
-          // dashboard already uses.
-          //
-          // In the same transaction as the settlement it belongs to, so a
-          // rollback cannot leave the incident recorded for a payment that was
-          // never settled, or settle one without recording it.
-          await recordIncident(tx, row);
-          log.error('settle.failed', {
-            ref: row.payment_public_id,
-            order_status: row.order_status ?? 'missing',
+
+        // Inside the transaction, on purpose. If this insert fails the payment
+        // is not marked paid either, and the next sweep picks the row up again —
+        // which is recoverable. A payment marked paid with no message owed is
+        // not: nothing would ever produce it a second time.
+        if (row.telegram_id !== null) {
+          await enqueue(tx, {
+            // The payment's public id, so this sweep running twice — or two
+            // sweeps overlapping — enqueues one message.
+            dedupeKey: `settle:${row.payment_public_id}`,
+            chatId: row.telegram_id,
+            text:
+              credited === null
+                ? menu.paymentConfirmed(row.payment_public_id)
+                : menu.walletToppedUp(credited),
           });
         }
-      }
-
-      // Inside the transaction, on purpose. If this insert fails the payment
-      // is not marked paid either, and the next sweep picks the row up again —
-      // which is recoverable. A payment marked paid with no message owed is
-      // not: nothing would ever produce it a second time.
-      if (row.telegram_id !== null) {
-        await enqueue(tx, {
-          // The payment's public id, so this sweep running twice — or two
-          // sweeps overlapping — enqueues one message.
-          dedupeKey: `settle:${row.payment_public_id}`,
-          chatId: row.telegram_id,
-          text:
-            credited === null
-              ? menu.paymentConfirmed(row.payment_public_id)
-              : menu.walletToppedUp(credited),
-        });
-      }
-      /*
-       * «💰 گزارش مالی» — money in, in the same transaction that settles it.
-       *
-       * Inside, for the reason the customer's message above is inside: if this
-       * insert fails the payment is not marked paid either and the next sweep
-       * picks it up again, which is recoverable. A payment settled with no
-       * report is not — nothing would ever produce it a second time.
-       *
-       * Silent when no group is configured, which is every shop until somebody
-       * sets one.
-       */
-      await report(
-        tx,
-        await loadShopSettings(db),
-        'paymentreport',
-        row.payment_public_id,
-        menu.paymentReport({
-          payment: row.payment_public_id,
-          customer: row.telegram_id,
-          amountIrr: Number(row.order_total_irr ?? 0),
-        }),
-      );
-      return true;
+        /*
+         * «💰 گزارش مالی» — money in, in the same transaction that settles it.
+         *
+         * Inside, for the reason the customer's message above is inside: if this
+         * insert fails the payment is not marked paid either and the next sweep
+         * picks it up again, which is recoverable. A payment settled with no
+         * report is not — nothing would ever produce it a second time.
+         *
+         * Silent when no group is configured, which is every shop until somebody
+         * sets one.
+         */
+        await report(
+          tx,
+          await loadShopSettings(db),
+          'paymentreport',
+          row.payment_public_id,
+          menu.paymentReport({
+            payment: row.payment_public_id,
+            customer: row.telegram_id,
+            amountIrr: Number(row.order_total_irr ?? 0),
+          }),
+        );
+        return true;
       });
     } catch (err) {
       log.error(
