@@ -286,6 +286,39 @@ describe('a code that works', () => {
   });
 });
 
+describe('a second code typed after the first was accepted', () => {
+  it('replaces it, instead of being dropped in silence', async () => {
+    /*
+     * The natural next action, right under a screen that just said the first
+     * code worked — and it did nothing at all.
+     *
+     * After a code is accepted the step is `code:held`, which matched no branch
+     * in `handleTypedAnswer` and fell through to `IGNORED`. That skips
+     * `withCleanChat` entirely, so there was no reply AND no delete: the
+     * customer's message sat in the chat for ever with no answer. It is the
+     * exact failure `clean-chat.test.ts` exists to prevent, arrived at from the
+     * one step nobody had walked.
+     */
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('firstone', { percent: 20 });
+    await makeCode('secondone', { percent: 30 });
+
+    const first = await useCode(updateId, telegramId, VIP_PLAN, 'firstone');
+    expect(first).toContain('firstone');
+
+    // Typed while the first is still held.
+    const out = await handleUpdate(db, types(updateId + 2, telegramId, 'secondone'));
+
+    // Answered at all, which it was not...
+    expect(out.status).toBe('processed');
+    expect(out.replies[0]?.text ?? '').toContain('secondone');
+    // ...and the typed message is taken out of the chat, like every other
+    // answer to a question this bot asked.
+    expect(out.deletes).toContainEqual({ chatId: telegramId, messageId: updateId + 2 });
+  });
+});
+
 describe('a code that does not', () => {
   it('refuses one whose date has passed', async () => {
     // 31 of the 33 production codes are in this state.

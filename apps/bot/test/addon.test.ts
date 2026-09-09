@@ -485,7 +485,23 @@ describe('what the customer may type', () => {
     for (const [i, text] of ['', 'پنج', '-3', '2.5', '0'].entries()) {
       const out = await handleUpdate(db, types(updateId + 1 + i, telegramId, text));
       // An empty message is not a message; the rest are answered.
-      if (text !== '') expect(out.replies[0]?.text).toBe(menu.ADDON_NOT_A_NUMBER);
+      if (text !== '') {
+        expect(out.replies[0]?.text).toBe(menu.ADDON_NOT_A_NUMBER);
+        /*
+         * And answered WITH the prompt's buttons still on it.
+         *
+         * `withCleanChat` writes the answer back onto the message that asked,
+         * so a reply built with no keyboard does not merely arrive bare — it
+         * edits «چند گیگابایت؟» and takes its buttons away. The step stays open
+         * on purpose, so the customer was then inside a question whose only
+         * remaining exits were the bottom bar and `/start`.
+         *
+         * Every sibling re-ask in `handle.ts` passes chrome — the discount
+         * code, the account name, the top-up amount, the reseller application.
+         * This handler was the lone outlier.
+         */
+        expect(out.replies[0]?.keyboard ?? []).not.toEqual([]);
+      }
       expect(await lastOrder(userId)).toBeNull();
     }
   });

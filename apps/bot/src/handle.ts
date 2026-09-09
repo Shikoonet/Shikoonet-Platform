@@ -951,10 +951,26 @@ async function handleTypedAnswer(
   if (session.step.startsWith('addon:')) {
     return withCleanChat(await handleAddonAmount(tx, message, user, session), message, session);
   }
-  if (session.step === 'code') {
+  // `:held` too, and that is the fix rather than a widening for its own sake.
+  //
+  // After a code is accepted the step becomes `code:held`, and typing a SECOND
+  // code — the natural next action, right under a screen that just said the
+  // first one worked — matched nothing here and fell to `IGNORED`. That skips
+  // `withCleanChat` entirely, so there was no reply AND no delete: the
+  // customer's text sat in the chat for ever with no answer. It is exactly the
+  // failure `clean-chat.test.ts` exists to prevent.
+  //
+  // Safe to route, because both handlers re-check everything from the database
+  // and the `:held` payload carries the field each of them reads — `planId`
+  // for one, `subscriptionId` for the other. A second code simply replaces the
+  // first, which is what typing one means.
+  //
+  // NOT extended to `uname:held`. `handleCustomerName` ends in
+  // `placeOrderScreen`, so routing a stray message there would place an order.
+  if (session.step === 'code' || session.step === 'code:held') {
     return withCleanChat(await handleDiscountCode(tx, message, user, session), message, session);
   }
-  if (session.step === 'coder') {
+  if (session.step === 'coder' || session.step === 'coder:held') {
     return withCleanChat(await handleRenewalCode(tx, message, user, session), message, session);
   }
   if (session.step === 'gift') {
@@ -1361,9 +1377,27 @@ async function handleAddonAmount(
   const subscriptionId = Number(session.data['subscriptionId']);
   if (!Number.isSafeInteger(subscriptionId)) return IGNORED;
 
-  const reply = (text: string, keyboard?: InlineKeyboard): HandleOutcome => ({
+  /**
+   * The prompt's own chrome by default, and every sibling handler already does
+   * this.
+   *
+   * `withCleanChat` writes the answer back onto the message that ASKED, so a
+   * reply built with no keyboard does not merely arrive bare — it EDITS the
+   * «چند گیگابایت؟» screen and takes its buttons away. The step stays open on
+   * purpose, so the customer was then inside a question whose only remaining
+   * exits were the bottom bar and `/start`.
+   *
+   * Four paths reached it: two «this is not a number» and the two bounds. Every
+   * other re-ask in this file passes chrome — the discount code, the account
+   * name, the top-up amount, the reseller application — which is what makes
+   * this one the outlier rather than the convention.
+   */
+  const reply = (
+    text: string,
+    keyboard: InlineKeyboard = menu.promptMenu(encode('sub', subscriptionId)),
+  ): HandleOutcome => ({
     status: 'processed',
-    replies: [{ chatId: message.chat.id, text, ...(keyboard ? { keyboard } : {}) }],
+    replies: [{ chatId: message.chat.id, text, keyboard }],
   });
 
   // Persian digits are what a Persian keyboard produces, so they are accepted
