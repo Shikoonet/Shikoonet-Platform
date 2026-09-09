@@ -18,6 +18,7 @@ import {
   remoteUsernameFor,
   renewAllowed,
   renewModeFor,
+  withTimeout,
   type ProviderContext,
   type ProvisionRequest,
   type RenewRequest,
@@ -1316,5 +1317,42 @@ describe('reading the meter off a panel', () => {
     await marzbanAdapter.listPanelAdmins!(provider({ fetch: panel.fetchImpl }));
 
     expect(panel.calls.filter((u) => u.includes('/api/admins'))).toHaveLength(1);
+  });
+});
+
+/**
+ * The deadline has to outlive the call it was given to, and that is the whole
+ * of #175.
+ *
+ * `run` is always a `fetch`, and a fetch resolves as soon as the response
+ * HEADERS arrive. Every caller in the adapter then reads the body OUTSIDE this
+ * function, so a deadline cleared on the way out was disarmed exactly one step
+ * before the part that can hang. A panel answering 200 and then stalling its
+ * body blocked for ever — and because `provisionPaidOrders` runs inline in the
+ * single poll loop, that stops `getUpdates`, `notify.flush` and every sweep.
+ *
+ * Asserted on the SIGNAL rather than on a stalled body: the signal staying
+ * armed after `run` resolves is precisely what makes the abort reach the
+ * response stream, and it is provable in milliseconds instead of twenty
+ * seconds.
+ */
+describe('the adapter deadline', () => {
+  it('is still armed after the fetch has returned its headers', async () => {
+    const signal = await withTimeout(async (s) => s, 20);
+    // Headers are in; the body has not been read. Under the old shape the timer
+    // was cleared right here and nothing could ever abort the read.
+    expect(signal.aborted).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(signal.aborted).toBe(true);
+  });
+
+  it('does not wait when the call finishes inside it', async () => {
+    // The ordinary path must not be slowed by the deadline outliving it: the
+    // value comes back immediately and only the abort is deferred.
+    const started = Date.now();
+    await withTimeout(async () => 'done', 5_000);
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });

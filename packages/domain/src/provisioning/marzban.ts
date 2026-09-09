@@ -163,14 +163,44 @@ function absoluteSubUrl(raw: unknown, baseUrl: string): string | null {
   return `${baseUrl.replace(/\/+$/, '')}/${value.replace(/^\/+/, '')}`;
 }
 
-async function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+/**
+ * A deadline that outlives the call it was given to.
+ *
+ * The timer is deliberately NOT cleared when `run` resolves, and that is the
+ * whole fix. `run` is always a `fetch`, and a fetch resolves as soon as the
+ * response HEADERS arrive — the body has not been read yet. Every caller here
+ * then does `await res.json()` outside this function, so clearing the timer on
+ * the way out disarmed the deadline exactly one step before the part that can
+ * hang: a panel that answers 200 and then stalls its body blocked for ever.
+ *
+ * That is not one adapter call hanging. `provisionPaidOrders` runs inline in
+ * the single poll loop, so a stalled body stops `getUpdates`, stops
+ * `notify.flush`, and stops every sweep — the bot is dead to every customer
+ * until somebody restarts it. It is the same shape as the incident already
+ * written down in `poll.ts`, where a slow panel closed Telegram's callback
+ * window and every tap in the shop came back «query is too old».
+ *
+ * Leaving the timer armed keeps the signal live for the body read as well, so
+ * the abort reaches the response stream and `res.json()` rejects.
+ *
+ * `unref()` so a pending deadline cannot hold a process open on its own. It
+ * does not stop the timer firing — the poll loop or the in-flight fetch keeps
+ * the event loop alive — it only stops this being the last thing keeping the
+ * process from exiting.
+ *
+ * Three paths return without reading the body at all: a failed login, a 404
+ * from `getUser`, and a 409 from `provision`. Those leave an undrained body
+ * that the still-armed controller aborts later, which undici treats as
+ * discarding a stream nobody was reading.
+ */
+export function withTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  /** Overridable so a test can prove the deadline survives `run` resolving. */
+  timeoutMs: number = TIMEOUT_MS,
+): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    return await run(controller.signal);
-  } finally {
-    clearTimeout(timer);
-  }
+  setTimeout(() => controller.abort(), timeoutMs).unref();
+  return run(controller.signal);
 }
 
 /**
