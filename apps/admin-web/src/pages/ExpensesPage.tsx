@@ -302,7 +302,7 @@ export function ExpensesPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">هزینه‌ها</div>
+          <h2 className="page-head__title">هزینه‌ها</h2>
           <div className="page-head__sub">{count(total)} ردیف در این فیلتر</div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>

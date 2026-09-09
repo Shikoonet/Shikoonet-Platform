@@ -121,7 +121,7 @@ export function ContentPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">آموزش، برنامه‌ها و کانال‌ها</div>
+          <h2 className="page-head__title">آموزش، برنامه‌ها و کانال‌ها</h2>
           <div className="page-head__sub">
             {count(articles.length)} مطلب · {count(apps.length)} برنامه ·{' '}
             {count(channels.filter((c) => c.active).length)} کانال اجباری

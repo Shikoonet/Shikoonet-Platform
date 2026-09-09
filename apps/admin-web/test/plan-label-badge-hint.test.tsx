@@ -87,8 +87,25 @@ function type(field: HTMLElement, value: string) {
   fireEvent.change(field, { target: { value } });
 }
 
+/**
+ * Fifteen seconds, and the reason is arithmetic rather than slowness — the same
+ * one `shell.test.tsx` writes down.
+ *
+ * `test/setup.ts` gives every `findBy`/`waitFor` five seconds, which is exactly
+ * vitest's per-test default. So a retry loop that has not settled yet consumes
+ * the whole test budget and the test dies as «Test timed out in 5000ms» before
+ * reaching a single assertion — which says nothing about what was wrong.
+ *
+ * This file is one of the two named in issue #168: green on its own every time,
+ * red at random under a full suite run. Twice on 2026-09-09 it failed CI at
+ * 5012ms and 5164ms — a few percent over, on a loaded runner, on a test that
+ * takes well under a second here. That is a budget too small to distinguish a
+ * slow machine from a defect, not a defect.
+ */
+const SLOW = { timeout: 15_000 };
+
 describe('the plan-button template', () => {
-  it('says so when the template would drop every badge in the shop', async () => {
+  it('says so when the template would drop every badge in the shop', SLOW, async () => {
     const field = await openTheTemplateEditor();
 
     // A template that never mentions the badge. Legal, saveable, and lossy.
@@ -96,7 +113,7 @@ describe('the plan-button template', () => {
     await waitFor(() => expect(screen.getByText(HINT)).toBeTruthy());
   });
 
-  it('stops saying it the moment the token is back', async () => {
+  it('stops saying it the moment the token is back', SLOW, async () => {
     const field = await openTheTemplateEditor();
 
     type(field, '{badge} {duration} | {price}');
@@ -104,7 +121,7 @@ describe('the plan-button template', () => {
     expect(screen.queryByText(HINT)).toBeNull();
   });
 
-  it('saves a preset that was chosen with the mouse', async () => {
+  it('saves a preset that was chosen with the mouse', SLOW, async () => {
     /*
      * The field saves on blur, and a click on one of these buttons blurs it
      * FIRST — so the save that fires carries the old draft and the chosen
@@ -124,9 +141,22 @@ describe('the plan-button template', () => {
     expect(sent.key).toBe('plan_button_template');
     expect(sent.value).not.toBe('');
     expect((screen.getByLabelText('قالب دکمهٔ سرویس') as HTMLInputElement).value).toBe(sent.value);
+
+    /*
+     * Waited out rather than left running, and this is the whole reason the
+     * next test in this file went red at random.
+     *
+     * `saveValue` does two awaits: the write, and then a full `load()` to show
+     * what the server now holds. Asserting on the first and returning leaves
+     * the second in flight — the mocks are torn down under it by `afterEach`,
+     * and the settle lands somewhere inside whichever test runs next. That is
+     * the same shape as the stale-response race this repository has already
+     * been bitten by: let both promises settle, THEN finish.
+     */
+    await waitFor(() => expect(screen.getByText(/ذخیره شد/)).toBeTruthy());
   });
 
-  it('stays quiet on an empty template, which means «leave it as it always was»', async () => {
+  it('stays quiet on an empty template, which means «leave it as it always was»', SLOW, async () => {
     await openTheTemplateEditor();
 
     // Nothing typed. Empty is «not configured» — the bot falls back to the label
@@ -134,7 +164,7 @@ describe('the plan-button template', () => {
     expect(screen.queryByText(HINT)).toBeNull();
   });
 
-  it('stays quiet while the template is refused, so one field says one thing', async () => {
+  it('stays quiet while the template is refused, so one field says one thing', SLOW, async () => {
     const field = await openTheTemplateEditor();
 
     type(field, '{prise}');

@@ -135,7 +135,7 @@ export function DiscountsPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">کدهای تخفیف</div>
+          <h2 className="page-head__title">کدهای تخفیف</h2>
           <div className="page-head__sub">{count(total)} کد</div>
         </div>
         <button

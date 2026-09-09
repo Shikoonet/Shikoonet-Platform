@@ -188,7 +188,7 @@ export function EventsPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">رویدادها</div>
+          <h2 className="page-head__title">رویدادها</h2>
           <div className="page-head__sub">
             {count(total)} رویداد · {count(errors)} خطا · {count(warns)} هشدار
           </div>

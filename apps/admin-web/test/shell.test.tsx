@@ -29,11 +29,15 @@ const signedIn = () =>
 
 beforeEach(() => {
   window.history.replaceState(null, '', '/');
+  // The sidebar remembers which groups are folded, and a leftover from the
+  // previous test would decide this one.
+  localStorage.clear();
   vi.stubGlobal('fetch', signedIn());
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  localStorage.clear();
   window.history.replaceState(null, '', '/');
 });
 
@@ -81,5 +85,116 @@ describe('the panel has one header', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /اعلان/ })).toBeTruthy());
     await go('سفارشات');
     await waitFor(() => expect(screen.getByRole('button', { name: /اعلان/ })).toBeTruthy());
+  });
+});
+
+/**
+ * Every screen names itself, once, in a real heading.
+ *
+ * Walking staging on 2026-09-09 (`v8a7c470`) counted the `h1` elements on
+ * «کاربران», «پرداخت‌ها» and «آمار مالی» and found **zero** on all three. The
+ * panel's titles are `<div className="page-head__title">` — twenty-four of
+ * them — and the shell's own title is a `div` too, so a screen reader
+ * navigating by heading finds nothing to land on anywhere in the panel.
+ *
+ * `theme.css` already knew: the comment above `.page-head__title` says «a page
+ * title is not a `div` — a screen reader navigating by heading has to be able
+ * to find it», and the rule carries the `margin: 0` that a real heading needs.
+ * Two pages out of twenty-six took it up. This is the rest.
+ *
+ * The heading is the SHELL's title rather than the page's, because that is the
+ * one element all thirty-one screens have: six of them are finance screens with
+ * no `.page-head` at all, and giving each its own would be six chances to
+ * forget the seventh.
+ */
+describe('every screen has one heading, and it names the screen', () => {
+  // A panel page whose title is a `div`; a page that already had its own `h1`
+  // and would otherwise now have two; and two finance screens that have no page
+  // title at all. If the claim holds anywhere it has to hold on all four.
+  const SCREENS = ['کاربران', 'نمایندگان', 'پرداخت‌ها', 'آمار مالی'];
+
+  it('puts the section name in exactly one h1', SHELL, async () => {
+    await drawApp();
+    for (const label of SCREENS) {
+      await go(label);
+      await waitFor(() =>
+        expect([...document.querySelectorAll('h1')].map((h) => h.textContent?.trim())).toEqual([
+          label,
+        ]),
+      );
+    }
+  });
+
+  it('does not print the section name a third time as a breadcrumb', SHELL, async () => {
+    // «کاربران» appeared three times on the 2026-09-09 screenshot: the sidebar's
+    // active item, the header title, and «شیکو / کاربران» directly under it.
+    await drawApp();
+    await go('کاربران');
+    expect(document.querySelector('.app-header__crumb')).toBeNull();
+  });
+
+  it('draws one header on a finance screen too, not four', SHELL, async () => {
+    // The test above this block asserts «exactly one header» on «پرداخت‌ها»
+    // alone, and passes — while «آمار مالی» was serving four, because the hub's
+    // statistics view kept a page header of its own with a second copy of the
+    // title and a second date control. A guard that checks one of the screens
+    // its claim covers is not a guard.
+    await drawApp();
+    await go('آمار مالی');
+    await waitFor(() => expect(document.querySelectorAll('header.app-header')).toHaveLength(1));
+    expect(document.querySelector('#main-content .page-header')).toBeNull();
+  });
+});
+
+/**
+ * The sidebar's groups fold, and remember that they did.
+ *
+ * Thirty-one sections in seven groups is a column taller than a laptop screen,
+ * and an operator who lives on «پرداخت‌ها» scrolls past «کاتالوگ» all day. The
+ * group headings were already there and already inert — this makes them the
+ * control they look like.
+ *
+ * `<details>`/`<summary>` rather than a button and a conditional render: the
+ * open/closed state, the keyboard handling and the disclosure semantics are the
+ * element's, and the only thing left to write is remembering the choice.
+ *
+ * Only the memory is asserted from `localStorage` directly; the folding itself
+ * is asserted from `details.open`, because a closed `<details>` still holds its
+ * children in the DOM and «the links are gone» would be a claim about styling
+ * that happy-dom does not apply.
+ */
+describe('the sidebar groups fold', () => {
+  const groupOf = (label: string) =>
+    screen.getByText(label, { selector: 'summary' }).closest('details')!;
+
+  it('folds a group when its heading is pressed, and says so on disk', SHELL, async () => {
+    await drawApp();
+    await go('کاربران');
+    const catalogue = groupOf('کاتالوگ');
+    expect(catalogue.open).toBe(true);
+
+    fireEvent.click(screen.getByText('کاتالوگ', { selector: 'summary' }));
+    expect(catalogue.open).toBe(false);
+    expect(JSON.parse(localStorage.getItem('sidebar.collapsed') ?? '[]')).toContain('کاتالوگ');
+  });
+
+  it('is still folded the next time the panel is opened', SHELL, async () => {
+    localStorage.setItem('sidebar.collapsed', JSON.stringify(['کاتالوگ']));
+    await drawApp();
+    expect(groupOf('کاتالوگ').open).toBe(false);
+    // Everything else stays open: a remembered choice about one group is not a
+    // choice about the others, and `sections.spec.ts` counts the links.
+    expect(groupOf('گزارش‌ها').open).toBe(true);
+  });
+
+  it('unfolds the group holding the section you have just opened', SHELL, async () => {
+    // Otherwise arriving at «سرویس‌ها» — from a link, or from the address bar —
+    // leaves the sidebar with no highlighted entry anywhere, which reads as
+    // «this screen is not in the menu».
+    localStorage.setItem('sidebar.collapsed', JSON.stringify(['کاتالوگ']));
+    await drawApp();
+    expect(groupOf('کاتالوگ').open).toBe(false);
+    await go('سرویس‌ها');
+    await waitFor(() => expect(groupOf('کاتالوگ').open).toBe(true));
   });
 });

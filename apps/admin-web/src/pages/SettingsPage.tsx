@@ -127,7 +127,7 @@ export function SettingsPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">تنظیمات</div>
+          <h2 className="page-head__title">تنظیمات</h2>
           <div className="page-head__sub">{count(rows.length)} کلید</div>
         </div>
       </div>
@@ -432,7 +432,7 @@ export function RequestsPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">لیست درخواست‌ها</div>
+          <h2 className="page-head__title">لیست درخواست‌ها</h2>
           <div className="page-head__sub">{count(total)} درخواست نمایندگی</div>
         </div>
       </div>
