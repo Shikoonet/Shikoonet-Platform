@@ -28,6 +28,18 @@ import type { TelegramUpdate } from '../src/telegram.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
 
+/** Payment rows a "I have paid" press could still claim against. */
+async function openPayments(orderId: number): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT count(*)::int AS n FROM payments
+        WHERE order_id = ?1 AND status IN ('PENDING', 'AWAITING_REVIEW')`,
+    )
+    .bind(orderId)
+    .first<{ n: number }>();
+  return row!.n;
+}
+
 /** One button press, the way `poll.ts` hands it over. */
 function press(updateId: number, telegramId: number, data: string): TelegramUpdate {
   return {
@@ -351,6 +363,80 @@ describe('a deposit that is paid for', () => {
       .bind(order.id)
       .first<{ status: string; failure_reason: string | null }>();
     expect(row).toMatchObject({ status: 'PAID', failure_reason: null });
+  });
+
+  it('says how much is missing when the balance will not cover the order', async () => {
+    /*
+     * «موجودی کافی نیست» used to be the whole message.
+     *
+     * The total is on the checkout screen and the balance is on the wallet
+     * screen, so the customer was left to do the subtraction between two places
+     * before they could choose a deposit. The number is the one thing they need
+     * in order to act.
+     *
+     * Reachable without forging anything: «پرداخت از کیف پول» is drawn only
+     * when the balance covers the order, but Telegram keeps a button pressable
+     * for ever — so opening two checkouts and paying one from the balance
+     * leaves the other one live and now unaffordable.
+     */
+    const telegramId = 920_100_016;
+    const userId = await makeCustomer(telegramId);
+    const plan = await planId('sim-gold-10');
+    await handleUpdate(db, press(920_100_917, telegramId, `order:${plan}`));
+    const order = await db
+      .prepare(
+        `SELECT id, total_irr FROM orders
+          WHERE user_id = ?1 AND kind = 'NEW_PURCHASE' ORDER BY id DESC LIMIT 1`,
+      )
+      .bind(userId)
+      .first<{ id: number; total_irr: number }>();
+    // Enough to be a real balance, not enough to buy.
+    await credit(userId, order!.total_irr - 250_000, `t:${userId}:short`);
+
+    const out = await handleUpdate(db, press(920_100_918, telegramId, `wpay:${order!.id}`));
+
+    // The shortfall, in the Toman the customer transfers.
+    expect(out.replies[0]!.text).toContain('25,000');
+    expect(await balanceFor(db, userId)).toBe(order!.total_irr - 250_000);
+  });
+
+  it('closes the card checkout it supersedes, so the order cannot be paid twice', async () => {
+    /*
+     * Paying from the balance left the card row PENDING on a PAID order.
+     *
+     * The two payment indexes are deliberately disjoint — one open row per
+     * order, one PAID row per order — so the pair is legal, and nothing closed
+     * the card half: `expireUnpaidOrders` only touches payments whose ORDER
+     * expired, and a paid order never does.
+     *
+     * What that left reachable: press «پرداخت کردم» on the stale checkout,
+     * the card row flips to AWAITING_REVIEW and opens a claim, the customer
+     * transfers a second time, and settling that claim collides with the PAID
+     * row on the unique index. `settle.ts` no longer stalls on the collision,
+     * but the state should not exist at all.
+     */
+    const telegramId = 920_100_015;
+    const userId = await makeCustomer(telegramId);
+    await credit(userId, 5_000_000, `t:${userId}:a`);
+    const plan = await planId('sim-gold-10');
+
+    // A real checkout, so there is a real CARD_TO_CARD row to supersede.
+    await handleUpdate(db, press(920_100_915, telegramId, `order:${plan}`));
+    const order = await db
+      .prepare(
+        `SELECT id, total_irr FROM orders
+          WHERE user_id = ?1 AND kind = 'NEW_PURCHASE' ORDER BY id DESC LIMIT 1`,
+      )
+      .bind(userId)
+      .first<{ id: number; total_irr: number }>();
+    expect(await openPayments(order!.id)).toBe(1);
+
+    await handleUpdate(db, press(920_100_916, telegramId, `wpay:${order!.id}`));
+
+    // The wallet paid it, and the card row is no longer open for anybody to
+    // claim against.
+    expect(await balanceFor(db, userId)).toBe(5_000_000 - order!.total_irr);
+    expect(await openPayments(order!.id)).toBe(0);
   });
 
   it('cannot be paid out of the balance it exists to fill', async () => {

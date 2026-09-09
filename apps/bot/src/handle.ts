@@ -2216,9 +2216,16 @@ async function handleCallback(
       if (action.id !== undefined) {
         const article = await helpArticle(tx, action.id);
         if (!article) return screen(menu.HELP_EMPTY, menu.mainMenu(user));
+        // The list travels WITH the article. Redrawing with an empty one made
+        // this a one-way door: to read a second article the customer had to go
+        // home and walk back into «آموزش», and the shop's keyboard declares no
+        // «back to the list» action, so an admin could not add one either.
         return screen(
           menu.helpArticleScreen(article.title, article.body),
-          menu.helpMenu([], (await clientApps(tx)).length > 0 && SHOP.showsAppLink),
+          menu.helpMenu(
+            await helpArticles(tx),
+            (await clientApps(tx)).length > 0 && SHOP.showsAppLink,
+          ),
         );
       }
       const articles = await helpArticles(tx);
@@ -2235,7 +2242,8 @@ async function handleCallback(
     case 'app': {
       const apps = await clientApps(tx);
       if (apps.length === 0) return screen(menu.APPS_EMPTY, menu.mainMenu(user));
-      return screen(menu.appsScreen(apps), menu.helpMenu([], false));
+      // Same one-way door as the article screen above, same answer.
+      return screen(menu.appsScreen(apps), menu.helpMenu(await helpArticles(tx), false));
     }
 
     case 'ref': {
@@ -2334,7 +2342,10 @@ async function handleCallback(
       }
       // A new message rather than an edit: the detail screen the customer is
       // looking at stays where it is, and the picture arrives under it.
-      const copy = menu.copyLinkMenu(service.subscription_url);
+      // The picture arrives as a NEW message, so the detail screen it came from
+      // is now above it in the chat. Without a way back the only route is
+      // scrolling, which on a phone with a long history is no route at all.
+      const copy = menu.qrMenu(service.subscription_url, service.id);
       return {
         status: 'processed',
         replies: [
@@ -2742,7 +2753,14 @@ async function handleCallback(
       }
       const spent = await spendOnOrder(tx, user.id, order.id, order.total_irr);
       if (spent === 'INSUFFICIENT') {
-        return screen(menu.WALLET_TOO_LITTLE, menu.walletMenu());
+        // Say how much is missing. The customer is looking at a screen whose
+        // total and whose balance live on two different screens, and the
+        // subtraction is the only thing between them and the deposit buttons
+        // underneath.
+        return screen(
+          menu.walletTooLittle(order.total_irr - (await balanceFor(tx, user.id))),
+          menu.walletMenu(),
+        );
       }
       // The money is ours now, so the order is paid and the provisioning sweep
       // owns it from here. A WALLET payment row is written so the sale reads
@@ -2762,6 +2780,29 @@ async function handleCallback(
         // money bought an order that no longer accepts it.
         throw new Error(`order ${order.id} moved out of AWAITING_PAYMENT under a held lock`);
       }
+      // The card checkout this supersedes is closed in the same transaction.
+      //
+      // `idx_payments_one_open_per_order` and `idx_payments_one_paid_per_order`
+      // are deliberately disjoint, so an order may legitimately carry a PENDING
+      // CARD_TO_CARD row beside the PAID WALLET row written below — and nothing
+      // used to close the card one. `expireUnpaidOrders` only expires payments
+      // whose ORDER expired, and a paid order never does.
+      //
+      // What that left behind was a live card row on a paid order: «پرداخت
+      // کردم» would flip it to AWAITING_REVIEW and open a claim, the customer
+      // could pay a second time by card, and settling that claim would collide
+      // with the PAID row on the unique index. `settle.ts` now isolates the row
+      // rather than stalling on it; the honest fix is not to create the state.
+      //
+      // 'EXPIRED' is the status `expire.ts` already uses to close a PENDING
+      // payment, so nothing downstream has to learn a new word.
+      await tx
+        .prepare(
+          `UPDATE payments SET status = 'EXPIRED', updated_at = now()
+            WHERE order_id = ?1 AND status = 'PENDING'`,
+        )
+        .bind(order.id)
+        .run();
       // Paying from the balance is a purchase like any other, so it earns the
       // referrer the same commission a card-to-card payment does. Both paths
       // call the same function, which is what stops the two disagreeing.
