@@ -2029,9 +2029,28 @@ export function serviceSwitched(enabled: boolean): string {
 }
 
 /** The panel said no. The reason is the adapter's, and it is written for a person. */
-export function actionFailed(reason: string): string {
+/**
+ * «این کار انجام نشد» — and, only when we have one, a Persian line saying why.
+ *
+ * The parameter is optional now, and that is the fix rather than a convenience.
+ * It used to be required and `handle.ts` filled it with the ADAPTER's `reason`,
+ * which is developer English written for a log: «the panel does not know this
+ * account», «panel refused the change (HTTP 502)», «could not reach the panel:
+ * terminated». A Persian customer pressing «⛔ خاموش کردن سرویس» was shown our
+ * infrastructure's own error text, in a language the shop does not sell in.
+ *
+ * The only reason still passed is `ACTION_FAILED_NO_LINK`, which is one of the
+ * shop's own editable lines. The panel's sentence goes to the log, where it was
+ * always the audience.
+ */
+export function actionFailed(reason?: string): string {
   const t = TEXTS_NOW;
-  return [t.raw('ACTION_FAILED_TITLE'), '', reason, '', t.raw('ACTION_FAILED_RETRY')].join('\n');
+  return [
+    t.raw('ACTION_FAILED_TITLE'),
+    ...(reason === undefined ? [] : ['', reason]),
+    '',
+    t.raw('ACTION_FAILED_RETRY'),
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------
