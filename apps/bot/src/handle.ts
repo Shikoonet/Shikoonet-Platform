@@ -53,7 +53,7 @@ import {
 import { loadBotContent } from './botContent.js';
 import { acceptRules, gateFor, type GateVerdict, type MembershipApi } from './gate.js';
 import * as menu from './menu.js';
-import { IRR_PER_TOMAN, priceForUser } from './money.js';
+import { IRR_PER_TOMAN, priceForUser, toAsciiDigits } from './money.js';
 import {
   newPublicId,
   placeAddonOrder,
@@ -1368,7 +1368,9 @@ async function handleAddonAmount(
 
   // Persian digits are what a Persian keyboard produces, so they are accepted
   // and normalised rather than rejected as "not a number".
-  const typed = message.text!.trim().replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+  // Both digit blocks, via the money edge's own helper. This handled only the
+  // Persian one, so an Arabic keyboard layout's «١٠» was refused as not a number.
+  const typed = toAsciiDigits(message.text!.trim());
   if (!/^[0-9]+$/.test(typed)) return reply(menu.ADDON_NOT_A_NUMBER);
   const quantity = Number(typed);
   if (quantity <= 0) return reply(menu.ADDON_NOT_A_NUMBER);
@@ -1846,10 +1848,9 @@ async function handleTopupAmount(
 
   // Persian digits, and the separators a person types into a chat: `100,000`
   // and `۱۰۰٬۰۰۰` are both what somebody means by a hundred thousand.
-  const typed = message
-    .text!.trim()
-    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
-    .replace(/[,٬\s]/g, '');
+  // Same helper as the add-on path, and for the same reason: `٠-٩` is a second
+  // digit block that looks like `۰-۹` and is what an Arabic layout produces.
+  const typed = toAsciiDigits(message.text!.trim()).replace(/[,٬\s]/g, '');
   if (!/^[0-9]{1,12}$/.test(typed)) {
     return reply(menu.askTopupAmount(SHOP.topupMinIrr, SHOP.topupMaxIrr), back);
   }
@@ -2361,8 +2362,19 @@ async function handleCallback(
       if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
       // A service with no link has nothing to encode. Sending a QR of an empty
       // string is a picture that scans to nothing, which is worse than saying so.
+      //
+      // «لینک هنوز در دسترس نیست», not «این سرویس دستی آماده شده». This service
+      // came back from `subscriptionOnPanelForUser`, so it IS panel-backed and
+      // the manual sentence is simply false — its link has not synced yet. The
+      // BODY of this same screen already prints the true one, so the screen
+      // described one state two ways and the button's version was the wrong one.
+      // The button is drawn for a link-less service on purpose (`menu.ts`), so
+      // this is the reachable answer rather than a corner.
       if (!service.subscription_url) {
-        return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu(actionsFor(service, SHOP, tierFor(user))));
+        return screen(
+          menu.SERVICE_DETAIL_NO_LINK,
+          menu.serviceDetailMenu(actionsFor(service, SHOP, tierFor(user))),
+        );
       }
       // A new message rather than an edit: the detail screen the customer is
       // looking at stays where it is, and the picture arrives under it.

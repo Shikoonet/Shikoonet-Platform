@@ -137,6 +137,34 @@ describe('the registry and the code agree', () => {
     expect(stale).toEqual([]);
   });
 
+  it('ships no markup this bot cannot render', () => {
+    /*
+     * `parse_mode` is set for a message ONLY when its text contains a
+     * `<tg-emoji>` tag — `hasCustomEmoji` matches that and nothing else. So any
+     * other tag in a registry default goes out as characters, and the reader
+     * sees `<b>خرید تازه</b>`.
+     *
+     * This has now happened twice. `report.ts` records the nightly report
+     * building `<b>…</b>` until 2026-08-21, and `report.test.ts` pins THAT one
+     * by driving a report through `sendMessage`. Five report lines in the
+     * registry carried `<b>` and `<code>` regardless, because the guard was
+     * written around one function instead of around the rule.
+     *
+     * A second cost that is easy to miss: `checkCustomEmoji` refuses an
+     * override whose remainder still holds a tag, so a stray `<b>` made every
+     * attempt to put a premium emoji on that line come back as MALFORMED_TAG —
+     * an error about emoji, on a line whose problem was bold.
+     *
+     * Asserted over the whole registry rather than over the lines that happen
+     * to be wrong today, so the next author cannot add a sixth.
+     */
+    const withMarkup = TEXT_KEYS.filter((key) => {
+      const withoutEmoji = TEXTS[key].default.replace(/<\/?tg-emoji\b[^>]*>/g, '');
+      return /<[a-zA-Z/][^>]*>/.test(withoutEmoji);
+    });
+    expect(withMarkup).toEqual([]);
+  });
+
   it('puts every key on a screen the panel can name', () => {
     const known = new Set(SCREEN_IDS);
     for (const key of TEXT_KEYS) {
