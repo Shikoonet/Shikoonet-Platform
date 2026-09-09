@@ -718,7 +718,7 @@ export async function loadShopSettings(db: Db, now = Date.now()): Promise<ShopSe
       // `topicId`, not `chatId`: a topic is a small positive integer and a
       // chat id is a large negative one, so the two cannot share a validator.
       reportTopics: Object.fromEntries(
-        REPORT_KINDS.map((k) => [k, topicId(num(`topic_${k}` as ShopSettingKey))]),
+        REPORT_KINDS.map((k) => [k, topicId(num(`topic_${k}`))]),
       ) as Record<ReportKind, number | null>,
       commissionPercent: percent(
         num('affiliatespercentage'),

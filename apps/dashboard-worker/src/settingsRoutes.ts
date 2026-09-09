@@ -146,7 +146,11 @@ function shapeSetting(r: SettingRow) {
     scope: r.scope,
     key: r.key,
     live: live !== undefined,
-    ...(live ? { label: live.label, hint: live.hint, kind: live.kind } : {}),
+    // `truth` travels with the row because the SWITCH has to write the exact
+    // string this key's reader recognises, and no two of them agree on it.
+    ...(live
+      ? { label: live.label, hint: live.hint, kind: live.kind, truth: live.truth ?? null }
+      : {}),
     // For a secret key: whether something is set, never what. `""` and JSON
     // null both count as unset, matching `settingText`.
     secret,

@@ -15,7 +15,8 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SHOP_SETTINGS, isLiveSetting } from '../src/shopSettings.js';
+import { SHOP_SETTINGS, isLiveSetting, shopSetting } from '../src/shopSettings.js';
+import { REPORT_KINDS, reportTopicKey } from '../src/reportTopics.js';
 
 const ROOT = resolve(process.cwd(), '..', '..');
 
@@ -47,6 +48,83 @@ describe('the live-settings registry', () => {
     // Named rather than counted: a failure has to say WHICH key, or the next
     // person reads forty lines of registry looking for it.
     expect([...new Set(missing)]).toEqual([]);
+  });
+
+  it('covers the keys that are BUILT rather than typed out', () => {
+    /*
+     * The scan above cannot see these and never could.
+     *
+     * `loadShopSettings` reads the ten report topics as ``text(`topic_${k}`)``
+     * — one template literal, ten keys, and a regex looking for a quoted string
+     * matches none of them. The registry called all ten dead, the bot read all
+     * ten every time it sent a report, and the cast on that line is what kept
+     * the two from ever meeting: `as ShopSettingKey` told the compiler the
+     * question had been answered.
+     *
+     * So the expectation is built from `REPORT_KINDS` — the same list the bot
+     * loops over — and not from `SHOP_SETTINGS`, which is the thing under test.
+     */
+    const dead = REPORT_KINDS.map((k) => reportTopicKey(k)).filter(
+      (key) => !isLiveSetting('bot', key),
+    );
+    expect(dead).toEqual([]);
+  });
+
+  it('says, for each switch, the exact words its reader recognises', () => {
+    /*
+     * A switch writes a value some other code has to recognise, and in this
+     * shop no two of them agree on what that value is.
+     *
+     *   `Bot_Status`      off is exactly `botstatusoff`      (`isOff`)
+     *   `statuscopycart`  off is exactly `0`                 (`isOff`)
+     *   the cron toggles  on is `true`, off is `false`       (`bool`)
+     *   `roll_Status`     on is exactly `rolleon`            (`===`)
+     *
+     * A form that writes a generic `'on'`/`'off'` for all of them is not a
+     * form that turns things on and off — it is one that writes a word nobody
+     * reads. `'off'` is not `botstatusoff`, so pressing «ربات روشن است» to
+     * close the shop would have left the shop open and selling.
+     */
+    for (const s of SHOP_SETTINGS) {
+      if (s.kind !== 'bool') continue;
+      expect(s.truth, `${s.scope}/${s.key} truth`).toBeTruthy();
+      expect(s.truth?.on, `${s.scope}/${s.key} on`).toBeTruthy();
+      expect(s.truth?.off, `${s.scope}/${s.key} off`).toBeTruthy();
+      expect(s.truth?.on, `${s.scope}/${s.key}`).not.toBe(s.truth?.off);
+    }
+  });
+
+  it('takes those words from the reader, not from a second opinion', () => {
+    /*
+     * Read out of `apps/bot/src/settings.ts` itself, so the registry cannot
+     * drift from the code that consumes it. `isOff(text('K'), 'W')` is the
+     * whole rule for seven of the switches: `W` is the ONLY value that means
+     * off, and everything else — including `'off'` — means on.
+     */
+    const IS_OFF = /isOff\(\s*text\('([^']+)'\)\s*,\s*'([^']*)'\s*\)/g;
+    const wrong: string[] = [];
+    let seen = 0;
+    for (const m of SOURCES.matchAll(IS_OFF)) {
+      const [, key, offWord] = m;
+      seen += 1;
+      const entry = SHOP_SETTINGS.find((s) => s.key === key);
+      if (!entry) {
+        wrong.push(`${key}: not in the registry`);
+      } else if (entry.truth?.off !== offWord) {
+        wrong.push(`${key}: reader says «${offWord}», registry says «${entry.truth?.off}»`);
+      }
+    }
+    // Without this the regex could stop matching — a rename, a reformat — and
+    // the loop would pass over nothing at all.
+    expect(seen, 'isOff calls found in the bot source').toBeGreaterThanOrEqual(7);
+    expect(wrong).toEqual([]);
+  });
+
+  it('never writes the word «on» to a switch whose reader has its own', () => {
+    // The failure this whole block exists for, stated once as a fact rather
+    // than as a mechanism: `Bot_Status` must not be written as `'on'`/`'off'`.
+    const botStatus = shopSetting('bot', 'Bot_Status');
+    expect(botStatus?.truth).toEqual({ on: 'botstatuson', off: 'botstatusoff', unknown: 'on' });
   });
 
   it('lists nothing twice', () => {

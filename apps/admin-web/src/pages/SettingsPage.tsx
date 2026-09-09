@@ -29,7 +29,6 @@ import {
 } from '@shikoo/contracts';
 import { CustomerLink } from '../CustomerLink.js';
 import { count, dateTime } from '../format.js';
-import { SETTING_ON } from '@shikoo/contracts';
 import { useAdminWriteProps } from '../role.js';
 
 const SCOPE_FA: Record<string, string> = {
@@ -812,11 +811,22 @@ function SettingField({
     );
   }
 
-  if (row.kind === 'bool') {
-    // `SETTING_ON` and not `true`: the legacy rows store `'on'`/`'off'`, and
-    // which string a key uses is whatever the PHP wrote rather than a
-    // convention. The bot compares against that string.
-    const on = raw === SETTING_ON;
+  if (row.kind === 'bool' && row.truth) {
+    /*
+     * The words come from the row, not from this file.
+     *
+     * The comment that used to sit here said which string a key uses «is
+     * whatever the PHP wrote rather than a convention», and then wrote a single
+     * `SETTING_ON = 'on'` for all seventeen switches. `'off'` is not
+     * `botstatusoff`, so closing the shop from this screen left it open.
+     *
+     * A value matching neither is the ordinary case, not the corner one: these
+     * rows were written by an old PHP panel and most have never been through
+     * this form. `unknown` says which way each key's reader falls, so the
+     * switch is drawn where the BOT thinks it is.
+     */
+    const { truth } = row;
+    const on = raw === truth.on ? true : raw === truth.off ? false : truth.unknown === 'on';
     return (
       <div className="settings-field settings-field--switch">
         <input
@@ -824,7 +834,7 @@ function SettingField({
           type="checkbox"
           checked={on}
           {...write}
-          onChange={() => void onSave(row, on ? 'off' : SETTING_ON)}
+          onChange={() => void onSave(row, on ? truth.off : truth.on)}
         />
         <label className="settings-field__label" htmlFor={id}>
           {row.label ?? row.key}
