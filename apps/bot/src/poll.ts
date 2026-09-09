@@ -257,6 +257,14 @@ export async function pollOnce(
     attempts.delete(update.update_id);
     if (!sawFailure) confirmedThrough = update.update_id;
     counts[outcome.status]++;
+    // Counted for a cycle and otherwise invisible, so nobody could say whether
+    // this has ever happened outside a restart. It is the only trace a reply
+    // lost between the commit and the send leaves behind — see the rule at the
+    // claim in `handle.ts` — and «rare» should be a measurement rather than a
+    // belief.
+    if (outcome.status === 'duplicate') {
+      log.info('update.duplicate', { trace: traceOf(update) });
+    }
     // A reply keyboard cannot share a message with the inline keyboard on the
     // screen. Change the chat-wide bar first through its invisible carrier,
     // then land the actual screen as a NEW message. Editing the old screen does

@@ -292,6 +292,46 @@ export async function handleUpdate(
       .bind(update.update_id)
       .run();
     if (claim.meta.changes === 0) {
+      /*
+       * Handled already, so nothing runs and nothing is said. The rule that
+       * makes the silence safe is written here because it was real and unwritten
+       * — which is how issue #176 came to be filed against it.
+       *
+       * ## The outbox is the durability boundary, not this return value
+       *
+       * The claim commits with the transaction; the replies are sent afterwards
+       * by `poll.ts`. So a process that dies in between loses them, and the
+       * redelivery lands here and says nothing.
+       *
+       * What that can cost is a SCREEN, never a receipt and never a delivery.
+       * Everything a customer cannot re-summon is enqueued inside the very
+       * transaction that earns it — `settle.ts` for a settled payment,
+       * `provision.ts` for a delivered service — and `notify.flush` retries it
+       * until it lands. What travels on `replies` is the interactive half: a
+       * menu, an invoice, a confirmation of something whose durable half is
+       * already recorded.
+       *
+       * And a customer who presses again produces a NEW `update_id`, so their
+       * second press never reaches this branch. `paid` answers `paidAlready`,
+       * a re-sent receipt answers `replaced`, the QR redraws. The recovery is
+       * structural rather than lucky.
+       *
+       * ## The rule this makes checkable
+       *
+       * A handler that mutates state and announces it ONLY through `replies` is
+       * a bug. If a new one has something unrecoverable to say, it enqueues it
+       * beside the write, the way the two sweeps above do.
+       *
+       * Not made durable in general, deliberately. Routing screens through
+       * `bot_notifications` would put every button press behind the sweep chain
+       * — the latency `poll.ts` already blames for «query is too old» — and the
+       * row carries no `editMessageId`, no reply keyboard and no deletion list,
+       * so the one-live-screen ordering could not survive it. Replaying stored
+       * replies is worse: the offset is deliberately never persisted, so the
+       * last batch is unacknowledged after EVERY restart, and re-emitting it
+       * would turn a rare lost screen into a duplicate-screen storm on every
+       * deploy.
+       */
       return { status: 'duplicate', replies: [] };
     }
 
