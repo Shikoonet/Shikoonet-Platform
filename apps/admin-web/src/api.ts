@@ -1207,6 +1207,15 @@ export interface SettingRow {
   label?: string;
   hint?: string;
   kind?: 'bool' | 'int' | 'irr' | 'text' | 'chatId';
+  /**
+   * The exact strings THIS switch's reader recognises, for `kind: 'bool'`.
+   *
+   * There is no shop-wide `'on'`/`'off'`: the bot reads `Bot_Status` as off
+   * only on `botstatusoff`, `statuscopycart` as `1`/`0`, and its own cron
+   * toggles as `true`/`false`. A switch that wrote a word its reader does not
+   * know would look saved and change nothing.
+   */
+  truth?: { on: string; off: string; unknown: 'on' | 'off' } | null;
   secret: boolean;
   value: unknown;
   isSet: boolean;

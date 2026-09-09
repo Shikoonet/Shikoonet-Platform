@@ -3,8 +3,10 @@
  *
  * `/admin/settings` printed the settings TABLE: 163 rows of raw key and raw
  * value, sorted by scope, most of them dead columns the Mirzabot importer
- * copied across — `Lottery_Status`, `Dice`, `ticketstatus`, ten `topic_*` rows
- * nothing has ever read. An operator looking for «چند روز قبل از انقضا هشدار
+ * copied across — `Lottery_Status`, `Dice`, `ticketstatus` and the rest. (The
+ * ten `topic_*` rows were listed here as dead too, for a day, and they are
+ * not: the bot reads every one of them. See `REPORT_TOPIC_SETTINGS` below.)
+ * An operator looking for «چند روز قبل از انقضا هشدار
  * برود» read forty lines of `daywarn`-shaped noise to find it, and every one of
  * those lines was editable.
  *
@@ -29,7 +31,29 @@
  * honour a change to it; those three would be lies.
  */
 
+import { REPORT_KINDS, REPORT_TOPIC_TITLES, reportTopicKey, type ReportKind } from './reportTopics.js';
+
 export type SettingKind = 'bool' | 'int' | 'irr' | 'text' | 'chatId';
+
+/**
+ * The exact strings ONE switch's reader recognises.
+ *
+ * There is no shop-wide convention and there never was. `Bot_Status` is off on
+ * `botstatusoff` and on nothing else; `statuscopycart` uses `1`/`0`; the cron
+ * toggles are this platform's own and use `true`/`false`. The words come from
+ * the PHP that wrote the rows — `legacy/mirzabot-php/admin.php` — for the nine
+ * imported switches, and from `loadShopSettings` for ours.
+ *
+ * `unknown` is what a value matching NEITHER means, and it is not decoration:
+ * for the seven read through `isOff` the rule is «off only on the exact word»,
+ * so an unrecognised row is ON, and for `roll_Status` the rule is the opposite.
+ * A form that guessed would draw the shop-open switch in the wrong position.
+ */
+export interface SettingTruth {
+  on: string;
+  off: string;
+  unknown: 'on' | 'off';
+}
 
 export interface ShopSetting {
   scope: 'bot' | 'shop' | 'pay' | 'panel';
@@ -38,18 +62,21 @@ export interface ShopSetting {
   /** One sentence about what changing it does. Shown under the control. */
   hint: string;
   kind: SettingKind;
+  /** Required for `kind: 'bool'`, meaningless otherwise. */
+  truth?: SettingTruth;
 }
 
 /**
- * `on` for a switch is the string the bot compares against, not `true`.
+ * `SETTING_ON` was here, and the comment it carried is why it is not.
  *
- * The legacy rows store `'on'`/`'off'` and, in a few places, `'1'`/`'0'` — and
- * which one a given key uses is not a convention, it is whatever the PHP wrote.
- * The dashboard sends back exactly what it was given for anything it does not
- * recognise, so a key whose truth value this file guesses wrong fails loudly at
- * the form rather than quietly at the bot.
+ * It said: «the legacy rows store `'on'`/`'off'` and, in a few places,
+ * `'1'`/`'0'` — and which one a given key uses is not a convention, it is
+ * whatever the PHP wrote». That was correct, and the file exported a single
+ * `SETTING_ON = 'on'` for all seventeen switches anyway. Pressing
+ * «ربات روشن است» to close the shop wrote `'off'`; the bot compares against
+ * `'botstatusoff'`; the shop stayed open and kept selling. Each entry now
+ * carries its own `truth`, taken from the reader.
  */
-export const SETTING_ON = 'on';
 
 /*
  * `as const`, and that is what makes this a contract rather than a list.
@@ -61,7 +88,7 @@ export const SETTING_ON = 'on';
  * unchecked lookups, which is the trap the tuple in that file already carried a
  * comment about.
  */
-export const SHOP_SETTINGS = [
+const TYPED_OUT_SETTINGS = [
   // ── The shop's front door ───────────────────────────────────────────────
   {
     scope: 'bot',
@@ -69,6 +96,7 @@ export const SHOP_SETTINGS = [
     label: 'ربات روشن است',
     hint: 'خاموش که باشد، ربات به هیچ پیامی جواب نمی‌دهد جز به ادمین‌ها.',
     kind: 'bool',
+    truth: { on: 'botstatuson', off: 'botstatusoff', unknown: 'on' },
   },
   {
     scope: 'shop',
@@ -76,6 +104,7 @@ export const SHOP_SETTINGS = [
     label: 'نمایش کانفیگ در ربات',
     hint: 'کانفیگ سرویس بعد از خرید داخل چت نشان داده شود یا فقط لینک.',
     kind: 'bool',
+    truth: { on: 'onconfig', off: 'offconfig', unknown: 'on' },
   },
   {
     scope: 'bot',
@@ -83,6 +112,7 @@ export const SHOP_SETTINGS = [
     label: 'کپی‌کردن شمارهٔ کارت',
     hint: 'دکمهٔ کپی زیر شمارهٔ کارت در پیام پرداخت.',
     kind: 'bool',
+    truth: { on: '1', off: '0', unknown: 'on' },
   },
   {
     scope: 'bot',
@@ -90,6 +120,7 @@ export const SHOP_SETTINGS = [
     label: 'نمایش لینک اپلیکیشن',
     hint: 'لینک دانلود اپ همراه کانفیگ فرستاده شود.',
     kind: 'bool',
+    truth: { on: '1', off: '0', unknown: 'on' },
   },
   {
     scope: 'bot',
@@ -97,6 +128,7 @@ export const SHOP_SETTINGS = [
     label: 'ثبت‌نام آزاد',
     hint: 'خاموش که باشد کاربر تازه نمی‌تواند وارد ربات شود.',
     kind: 'bool',
+    truth: { on: 'rolleon', off: 'rolleoff', unknown: 'off' },
   },
 
   // ── Extra volume and time ───────────────────────────────────────────────
@@ -106,6 +138,7 @@ export const SHOP_SETTINGS = [
     label: 'فروش حجم اضافه',
     hint: 'مشتری می‌تواند به سرویس فعالش حجم اضافه کند.',
     kind: 'bool',
+    truth: { on: 'onextra', off: 'offextra', unknown: 'on' },
   },
   {
     scope: 'shop',
@@ -113,6 +146,7 @@ export const SHOP_SETTINGS = [
     label: 'فروش زمان اضافه',
     hint: 'مشتری می‌تواند به سرویس فعالش روز اضافه کند.',
     kind: 'bool',
+    truth: { on: 'ontimeextraa', off: 'offtimeextraa', unknown: 'on' },
   },
   {
     scope: 'shop',
@@ -120,6 +154,7 @@ export const SHOP_SETTINGS = [
     label: 'تغییر سرویس',
     hint: 'مشتری می‌تواند سرویسش را با یکی دیگر عوض کند.',
     kind: 'bool',
+    truth: { on: 'onstatus', off: 'offstatus', unknown: 'on' },
   },
 
   // ── Money ───────────────────────────────────────────────────────────────
@@ -196,6 +231,7 @@ export const SHOP_SETTINGS = [
     label: 'کرون: هشدار انقضا',
     hint: 'روزی یک بار به سرویس‌های رو به انقضا پیام می‌دهد.',
     kind: 'bool',
+    truth: { on: 'true', off: 'false', unknown: 'on' },
   },
   {
     scope: 'bot',
@@ -203,6 +239,7 @@ export const SHOP_SETTINGS = [
     label: 'کرون: هشدار حجم',
     hint: 'روزی یک بار به سرویس‌های رو به اتمام حجم پیام می‌دهد.',
     kind: 'bool',
+    truth: { on: 'true', off: 'false', unknown: 'on' },
   },
   {
     scope: 'bot',
@@ -210,6 +247,7 @@ export const SHOP_SETTINGS = [
     label: 'کرون: هشدار سرویس بلااستفاده',
     hint: 'به سرویسی که خریده شده و وصل نشده پیام می‌دهد.',
     kind: 'bool',
+    truth: { on: 'true', off: 'false', unknown: 'on' },
   },
   {
     scope: 'bot',
@@ -217,6 +255,7 @@ export const SHOP_SETTINGS = [
     label: 'کرون: حذف سرویس منقضی',
     hint: 'اکانت مشتری را از پنل پاک می‌کند و برگشت ندارد.',
     kind: 'bool',
+    truth: { on: 'true', off: 'false', unknown: 'off' },
   },
   {
     scope: 'bot',
@@ -224,6 +263,7 @@ export const SHOP_SETTINGS = [
     label: 'کرون: حذف سرویس بی‌حجم',
     hint: 'اکانت مشتری را از پنل پاک می‌کند و برگشت ندارد.',
     kind: 'bool',
+    truth: { on: 'true', off: 'false', unknown: 'off' },
   },
   {
     scope: 'bot',
@@ -231,6 +271,7 @@ export const SHOP_SETTINGS = [
     label: 'کرون: یادآوری به نخریده‌ها',
     hint: 'به کاربرانی که ثبت‌نام کرده‌اند و هیچ خریدی نکرده‌اند پیام می‌دهد.',
     kind: 'bool',
+    truth: { on: 'true', off: 'false', unknown: 'off' },
   },
   {
     scope: 'bot',
@@ -238,6 +279,7 @@ export const SHOP_SETTINGS = [
     label: 'کرون حذف فقط گزارش بدهد',
     hint: 'روشن که باشد، کرون‌های حذف چیزی پاک نمی‌کنند و فقط گزارش می‌دهند. پیش‌فرض روشن است.',
     kind: 'bool',
+    truth: { on: 'true', off: 'false', unknown: 'on' },
   },
   {
     scope: 'bot',
@@ -275,6 +317,7 @@ export const SHOP_SETTINGS = [
     label: 'پشتیبانی از طریق پیام خصوصی',
     hint: 'خاموش که باشد، دکمهٔ پشتیبانی به کانال می‌برد نه به پی‌وی.',
     kind: 'bool',
+    truth: { on: 'onpvsupport', off: 'offpvsupport', unknown: 'off' },
   },
   {
     scope: 'bot',
@@ -298,6 +341,7 @@ export const SHOP_SETTINGS = [
     label: 'ایموجی پریمیوم',
     hint: 'خاموش که باشد ربات ایموجی ساده می‌فرستد؛ روشن، برای کاربران غیرپریمیوم هم درست دیده می‌شود.',
     kind: 'bool',
+    truth: { on: 'true', off: 'false', unknown: 'off' },
   },
   {
     scope: 'shop',
@@ -308,8 +352,47 @@ export const SHOP_SETTINGS = [
   },
 ] as const satisfies readonly ShopSetting[];
 
-/** The key of any setting the shop reads. */
-export type ShopSettingKey = (typeof SHOP_SETTINGS)[number]['key'];
+/**
+ * The ten report topics, generated rather than typed out.
+ *
+ * The header of this file used to name them among the dead imported rows —
+ * «ten `topic_*` rows nothing has ever read» — and `loadShopSettings` had been
+ * reading all ten the whole time, as ``topicId(num(`topic_${k}`))``. The cast
+ * on that line, `as ShopSettingKey`, is what let the two coexist: it told the
+ * compiler a question had been answered that nobody had asked. The registry's
+ * own test could not see it either, because a key built from a template
+ * literal is invisible to a regex looking for a quoted string.
+ *
+ * So the shop's report topics were not editable: the panel filed all ten under
+ * «وارداتی» and the server answered `409 imported_key` to any change.
+ *
+ * Generated from `REPORT_KINDS` so that an eleventh kind cannot arrive without
+ * its setting, and titled from `REPORT_TOPIC_TITLES` so the form says the same
+ * words as the topic the report lands in.
+ */
+const REPORT_TOPIC_SETTINGS: readonly ShopSetting[] = REPORT_KINDS.map((kind) => ({
+  scope: 'bot',
+  key: reportTopicKey(kind),
+  label: `تاپیک ${REPORT_TOPIC_TITLES[kind]}`,
+  hint: 'شمارهٔ تاپیک این گزارش در گروه گزارش‌ها. خالی یعنی به خودِ گروه برود.',
+  kind: 'int',
+}));
+
+export const SHOP_SETTINGS: readonly ShopSetting[] = [
+  ...TYPED_OUT_SETTINGS,
+  ...REPORT_TOPIC_SETTINGS,
+];
+
+/**
+ * The key of any setting the shop reads.
+ *
+ * A union of the literal keys above and the ten generated ones, so the bot's
+ * typed helpers still fail to COMPILE on a key that is not here — which was
+ * the whole point of `as const`, and what the cast was quietly undoing.
+ */
+export type ShopSettingKey =
+  | (typeof TYPED_OUT_SETTINGS)[number]['key']
+  | `topic_${ReportKind}`;
 
 /** Fast membership test for the server's «may this be written» check. */
 const LIVE = new Set(SHOP_SETTINGS.map((s) => `${s.scope}/${s.key}`));

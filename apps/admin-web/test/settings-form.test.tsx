@@ -38,7 +38,11 @@ const LIVE = [
     label: 'ربات روشن است',
     hint: 'خاموش که باشد، ربات به هیچ پیامی جواب نمی‌دهد جز به ادمین‌ها.',
     kind: 'bool',
+    truth: { on: 'botstatuson', off: 'botstatusoff', unknown: 'on' },
     secret: false,
+    // Deliberately a word this key's reader does not know. The rows on a real
+    // shop were written by the old PHP panel and most have never been through
+    // this form, so «matches neither» is the ordinary case.
     value: 'on',
     isSet: true,
     updatedAt: '2026-09-01T09:00:00Z',
@@ -142,12 +146,30 @@ describe('the settings screen', () => {
     fireEvent.click(screen.getByLabelText('ربات روشن است'));
 
     await waitFor(() => expect(updateSetting).toHaveBeenCalledTimes(1));
-    // Judged by the request body — a switch that flips on screen and sends the
-    // old value is the failure this asserts against.
+    /*
+     * Judged by the request body, and the body is `botstatusoff`.
+     *
+     * This assertion read `value: 'off'` when it was written, which is what
+     * the screen sent and what the bot does not read. `isOff` compares against
+     * `botstatusoff` and nothing else, so closing the shop from here saved,
+     * showed no error, and left the shop open and selling. The word is the
+     * legacy panel's — `legacy/mirzabot-php/admin.php:1784` writes exactly
+     * this — and it now travels with the row rather than being guessed here.
+     */
     expect(updateSetting.mock.calls[0]![0]).toMatchObject({
       scope: 'bot',
       key: 'Bot_Status',
-      value: 'off',
+      value: 'botstatusoff',
     });
+  });
+
+  it('draws a switch where the BOT thinks it is, not where the word looks', async () => {
+    // The stored value is `'on'`, which `Bot_Status` does not recognise. The
+    // bot's rule for it is «off only on the exact off word», so an
+    // unrecognised row is ON — and the screen has to agree, or an operator
+    // reads a closed shop as open.
+    draw();
+    await screen.findByText('ربات روشن است');
+    expect((screen.getByLabelText('ربات روشن است') as HTMLInputElement).checked).toBe(true);
   });
 });
