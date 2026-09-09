@@ -2793,6 +2793,47 @@ async function handleCallback(
       if (order.kind === 'WALLET_TOPUP') {
         return screen(menu.ORDER_GONE, menu.walletMenu());
       }
+      /*
+       * And refused when the customer has ALREADY told us they sent bank money
+       * for this order. Without it they pay twice and the settlement sweep
+       * stalls for ever.
+       *
+       * Both buttons can be live at once, and no forging is needed. `screen()`
+       * edits only the message its press came from, and Telegram keeps every
+       * other one pressable: open the checkout, open the same plan again from
+       * an older message — `place()` reuses the same order and `checkoutFor`
+       * the same payment — and there are two live invoices for one order.
+       * Press «پرداخت کردم» on one and «پرداخت از کیف پول» on the other.
+       *
+       * The order is still AWAITING_PAYMENT at that point, so the lock above
+       * passes and the balance is taken. The cleanup below cannot help: by then
+       * `recordPaidClick` has moved the card row to AWAITING_REVIEW and that
+       * statement closes PENDING rows only — deliberately, because closing a
+       * claim against money already sent is worse than this.
+       *
+       * What follows is not just a double charge. The customer's transfer
+       * arrives, the matcher verifies the claim, and `settle.ts` tries to mark
+       * that payment PAID against `idx_payments_one_paid_per_order` — which the
+       * WALLET row already holds. 23505, every cycle, for ever. The per-row
+       * isolation added to that sweep keeps it from taking the whole batch
+       * down, but the row never leaves and no audit line is written, because
+       * `recordIncident` fires on a different branch.
+       *
+       * Refused rather than reconciled: the money is in a bank and only a
+       * person can decide about it. `paidAlready` is the sentence the rest of
+       * this file already uses for «you have told us, we are waiting».
+       */
+      const alreadyClaimed = await tx
+        .prepare(
+          `SELECT public_id FROM payments
+            WHERE order_id = ?1 AND status = 'AWAITING_REVIEW'
+            LIMIT 1`,
+        )
+        .bind(order.id)
+        .first<{ public_id: string }>();
+      if (alreadyClaimed) {
+        return screen(menu.paidAlready(alreadyClaimed.public_id), menu.afterPaidMenu());
+      }
       const spent = await spendOnOrder(tx, user.id, order.id, order.total_irr);
       if (spent === 'INSUFFICIENT') {
         // Say how much is missing. The customer is looking at a screen whose
