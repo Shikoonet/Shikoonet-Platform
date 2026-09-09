@@ -1581,7 +1581,16 @@ async function heldRenewalCode(
   if (
     check.reason === 'ALREADY_USED' &&
     check.code &&
-    (await redemptionOnOpenOrder(tx, check.code.id, user.id, plan.planId))
+    // The total this code would produce, so the open order it matches is the
+    // one the customer is about to land on and not an older one at a price the
+    // catalog has since moved away from.
+    (await redemptionOnOpenOrder(
+      tx,
+      check.code.id,
+      user.id,
+      plan.planId,
+      priceIrr - discountFor(check.code, priceIrr),
+    ))
   ) {
     return { code: check.code, discountIrr: discountFor(check.code, priceIrr) };
   }
@@ -1906,7 +1915,16 @@ async function heldCode(
   if (
     check.reason === 'ALREADY_USED' &&
     check.code &&
-    (await redemptionOnOpenOrder(tx, check.code.id, user.id, plan.planId))
+    // The total this code would produce, so the open order it matches is the
+    // one the customer is about to land on and not an older one at a price the
+    // catalog has since moved away from.
+    (await redemptionOnOpenOrder(
+      tx,
+      check.code.id,
+      user.id,
+      plan.planId,
+      priceIrr - discountFor(check.code, priceIrr),
+    ))
   ) {
     return { code: check.code, discountIrr: discountFor(check.code, priceIrr) };
   }
