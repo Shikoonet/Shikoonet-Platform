@@ -1113,6 +1113,26 @@ export function helpMenu(
   );
 }
 
+/**
+ * «موجودی کافی نیست» — and, now, by how much.
+ *
+ * The screen used to state the problem and stop, leaving the customer to work
+ * out the difference between a total on one screen and a balance on another.
+ * The number is the one thing they need to act, and `topupNeededIrr` already
+ * computes it for the button beside it.
+ *
+ * Reachable in ordinary use, not only by a forged press: «پرداخت از کیف پول» is
+ * drawn only when the balance covers the order, but Telegram keeps a button
+ * pressable for ever — so a customer who opens two checkouts and pays one from
+ * their balance lands here on the older screen.
+ */
+export function walletTooLittle(shortfallIrr: number): string {
+  const t = TEXTS_NOW;
+  return [t.raw('WALLET_TOO_LITTLE'), '', t.render('WALLET_SHORTFALL', {
+    amount: formatToman(shortfallIrr),
+  })].join('\n');
+}
+
 export function helpArticleScreen(title: string, body: string): string {
   const head = TEXTS_NOW.render('HELP_ARTICLE_TITLE', { title });
   return body.trim() === '' ? head : `${head}\n\n${body}`;
@@ -1829,6 +1849,26 @@ export function copyLinkMenu(url: string): InlineKeyboard | undefined {
   if (url.length > MAX_COPY_TEXT_LENGTH) return undefined;
   return [[{ text: '📋 کپی لینک اشتراک', copy_text: { text: url } }]];
 }
+
+/**
+ * The keyboard under a QR picture: copy the link, and get back to the service.
+ *
+ * The picture is a NEW message rather than an edit — deliberately, so the
+ * detail screen stays where it is — which means that screen is now somewhere
+ * above it in the chat. The only way back was scrolling.
+ *
+ * `copyLinkMenu` can answer undefined for a link Telegram will not carry on a
+ * button, and the way back must survive that: the two rows are independent, and
+ * a missing copy row must not take the exit with it.
+ */
+export function qrMenu(url: string, subscriptionId: number): InlineKeyboard {
+  const back = [{ text: QR_BACK_LABEL, callback_data: encode('sub', subscriptionId) }];
+  const copy = copyLinkMenu(url);
+  return copy === undefined ? [back] : [...copy, back];
+}
+
+/** Beside `copyLinkMenu`'s own label, and hardcoded for the same reason. */
+const QR_BACK_LABEL = '↩️ بازگشت به سرویس';
 
 /**
  * ponytail: back always lands on the first page. Carrying the page the customer

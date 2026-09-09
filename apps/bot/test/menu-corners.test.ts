@@ -138,6 +138,30 @@ describe('education', () => {
     expect(article.replies[0]?.text).toContain('اتصال در اندروید');
   });
 
+  it('keeps the article list under the article, so a second one is one tap away', async () => {
+    /*
+     * The article screen used to be a one-way door.
+     *
+     * It redrew with `helpMenu([], hasApps)` — the list rows gone, only the
+     * chrome left — so reading a second article meant going home and walking
+     * back into «آموزش». `MENUS.help` declares no «back to the list» action
+     * either, so a shop could not add the button itself.
+     */
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+
+    const list = await handleUpdate(db, press(updateId, telegramId, 'hlp'));
+    const first = list.replies[0]!.keyboard![0]![0]!;
+    const article = await handleUpdate(db, press(updateId + 1, telegramId, first.callback_data!));
+
+    // Another article is reachable from the one being read.
+    const rows = article.replies[0]!.keyboard!;
+    const articleButtons = rows
+      .flat()
+      .filter((b) => /^hlp:\d+$/.test(b.callback_data ?? ''));
+    expect(articleButtons.length).toBeGreaterThan(0);
+  });
+
   it('does not open an article that has been switched off', async () => {
     const { updateId, telegramId } = ids();
     await makeCustomer(telegramId);
