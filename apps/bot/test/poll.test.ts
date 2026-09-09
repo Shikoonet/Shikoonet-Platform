@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_UPDATE_ATTEMPTS, pollOnce, pruneUpdates, run } from '../src/poll.js';
+import { MAX_UPDATE_ATTEMPTS, REPLY_RETRY_BUDGET_MS, pollOnce, pruneUpdates, run } from '../src/poll.js';
 import type { Attempt } from '../src/poll.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db } from './helpers/env.js';
 import { stubApi } from './helpers/telegram.js';
+import { TelegramRejection } from '../src/telegram.js';
 import * as provisionModule from '../src/provision.js';
 import * as syncModule from '../src/sync.js';
 import { makeCustomer } from './helpers/shop.js';
@@ -45,6 +46,94 @@ function fakeApi(updates: TelegramUpdate[], opts: { sendFails?: boolean } = {}) 
   });
   return { api, sent };
 }
+
+describe('a reply Telegram is rate limiting', () => {
+  /**
+   * Telegram allows roughly one message per second per chat, and one `/start`
+   * emits two. So this is ordinary use, not an edge: the customer taps, the
+   * transaction commits, `answer()` clears the spinner, and before this fix the
+   * screen was simply dropped with one `reply.undelivered` line.
+   *
+   * A 429 is the ONE refusal safe to re-send, because Telegram is stating it
+   * did not deliver. That is asserted here on the count and on what arrived,
+   * not on wall-clock time — a timing assertion would also pass if the sleep
+   * were removed, since the rest of the cycle runs in the same gap.
+   */
+  it('waits as long as Telegram said and sends it again', async () => {
+    const { updateId, telegramId } = ids();
+    let attempts = 0;
+    const sent: string[] = [];
+    const api = stubApi({
+      getUpdates: async () => [startUpdate(updateId, telegramId)],
+      sendMessage: async (_chatId, text) => {
+        attempts += 1;
+        // Only the first attempt is refused, so the count separates «retried
+        // once» from «never retried» and from «retried for ever».
+        if (attempts === 1) throw new TelegramRejection('Too Many Requests', 429, 1);
+        sent.push(text);
+      },
+    });
+
+    const result = await pollOnce(db, api, updateId);
+
+    expect(result.counts.processed).toBe(1);
+    // Three calls for two screens: the refused one, its retry, and the second
+    // screen. Both screens actually arrive, which is the point.
+    expect(attempts).toBe(3);
+    expect(sent).toHaveLength(2);
+  });
+
+  it('does not re-send an error that never proved the message was lost', async () => {
+    // A 5xx or a dropped socket leaves it UNKNOWN whether Telegram sent it.
+    // Re-sending an unknown is how a customer gets the same screen twice, so
+    // the reply is given up instead — the behaviour that was already correct
+    // and must not be widened by the retry.
+    const { updateId, telegramId } = ids();
+    let attempts = 0;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const api = stubApi({
+      getUpdates: async () => [startUpdate(updateId, telegramId)],
+      sendMessage: async () => {
+        attempts += 1;
+        throw new TelegramRejection('Bad Gateway', 502);
+      },
+    });
+
+    const result = await pollOnce(db, api, updateId);
+    errors.mockRestore();
+
+    // One attempt per screen and not one more. The update still counts as
+    // handled: the transaction committed, and re-running it would be a no-op.
+    expect(attempts).toBe(2);
+    expect(result.counts.processed).toBe(1);
+  });
+
+  it('gives up rather than sleeping past the cycle budget', async () => {
+    // The budget protects the LOOP. Telegram's callback window is short, so a
+    // batch that slept for every throttled reply would answer «query is too
+    // old» to every press behind it. A wait longer than the budget is refused
+    // outright rather than partly paid.
+    const { updateId, telegramId } = ids();
+    let attempts = 0;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const tooLong = Math.ceil(REPLY_RETRY_BUDGET_MS / 1000) + 5;
+    const api = stubApi({
+      getUpdates: async () => [startUpdate(updateId, telegramId)],
+      sendMessage: async () => {
+        attempts += 1;
+        throw new TelegramRejection('Too Many Requests', 429, tooLong);
+      },
+    });
+
+    const started = Date.now();
+    await pollOnce(db, api, updateId);
+    errors.mockRestore();
+
+    expect(attempts).toBe(2);
+    // And it did not sit through the wait it refused.
+    expect(Date.now() - started).toBeLessThan(tooLong * 1000);
+  });
+});
 
 describe('pollOnce', () => {
   it('handles the batch, replies, and advances the offset past the highest id', async () => {
