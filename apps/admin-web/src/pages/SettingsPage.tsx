@@ -58,9 +58,19 @@ export function SettingsPage() {
   const [q, setQ] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
-  const [editing, setEditing] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState(false);
+  // `editing`, `draft`, `busy` and `save` went with the edit panel this form
+  // replaced: every live setting is a control that is already on screen, and
+  // each one saves itself.
+  /**
+   * Which half of the screen is on: the shop's own settings, or what the
+   * import left behind.
+   *
+   * Two tabs rather than one filtered list, because they are not two views of
+   * the same thing — one is a form the shop honours and the other is a record
+   * of what a MySQL dump contained. Mixing them is how a change to
+   * `Lottery_Status` came to save, show no error, and do nothing for ever.
+   */
+  const [tab, setTab] = useState<'live' | 'imported'>('live');
 
   async function load() {
     setErr(null);
@@ -80,21 +90,38 @@ export function SettingsPage() {
     void load();
   }, [scope]);
 
-  async function save(r: SettingRow) {
-    setBusy(true);
+  /*
+   * Split once, here, rather than filtered at each of the two render sites —
+   * the counts on the tabs and the rows under them have to be the same set.
+   *
+   * A gateway credential counts as the shop's own even though it is not in the
+   * registry: «آیا مرچنت زرین‌پال ثبت شده؟» is a question an operator asks, and
+   * the answer belongs beside the other settings rather than filed under «what
+   * the import left». It renders as «ثبت شده / ندارد» and nothing more — the
+   * server never sends the value and refuses a write either way.
+   */
+  const live = rows.filter((r) => r.live || r.secret);
+  const imported = rows.filter((r) => !r.live && !r.secret);
+
+  /**
+   * One field, saved on its own, with the value the control holds.
+   *
+   * No «ذخیره» for the whole form: forty controls behind one button means an
+   * operator who changed one thing cannot tell what else went with it, and the
+   * server writes one key per request anyway.
+   */
+  async function saveValue(r: SettingRow, value: string) {
     setErr(null);
     setDone(null);
     try {
-      await api.updateSetting({ scope: r.scope, key: r.key, value: draft });
-      setDone(`«${r.key}» ذخیره شد.`);
-      setEditing(null);
+      await api.updateSetting({ scope: r.scope, key: r.key, value });
+      setDone(`«${r.label ?? r.key}» ذخیره شد.`);
       await load();
     } catch (e) {
       setErr(message(e));
-    } finally {
-      setBusy(false);
     }
   }
+
 
   return (
     <>
@@ -158,103 +185,94 @@ export function SettingsPage() {
           </div>
         )}
 
-        <div className="table-wrap">
-          <table className="app-table">
-            <thead>
-              <tr>
-                <th>دسته</th>
-                <th>کلید</th>
-                <th>مقدار</th>
-                <th>آخرین تغییر</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 && (
-                <tr>
-                  <td className="empty" colSpan={5}>
-                    تنظیمی با این جست‌وجو پیدا نشد.
-                  </td>
-                </tr>
-              )}
-              {rows.map((r) => {
-                const id = `${r.scope}:${r.key}`;
-                return (
-                  <tr key={id}>
-                    <td>{SCOPE_FA[r.scope] ?? r.scope}</td>
-                    <td className="ltr">{r.key}</td>
-                    <td>
-                      {r.secret ? (
-                        <span className={r.isSet ? 'badge badge-active' : 'badge badge-block'}>
-                          {r.isSet ? 'ثبت شده' : 'ندارد'}
-                        </span>
-                      ) : editing === id ? (
-                        <>
-                          <input
-                            className="form-control ltr"
-                            type="text"
-                            value={draft}
-                            onChange={(e) => setDraft(e.target.value)}
-                          />
-                          {r.key === PLAN_LABEL_SETTING.key && (
-                            <PlanLabelHelp draft={draft} onPick={setDraft} />
-                          )}
-                        </>
-                      ) : (
-                        <span className="ltr">{String(r.value ?? '—')}</span>
-                      )}
-                    </td>
-                    <td>
-                      {r.updatedBy ? (
-                        <>
-                          <div className="ltr">{r.updatedBy}</div>
-                          <div className="page-head__sub">{dateTime(r.updatedAt)}</div>
-                        </>
-                      ) : (
-                        '—'
-                      )}
-                    </td>
-                    <td>
-                      {r.secret ? (
-                        <span className="muted">قفل</span>
-                      ) : editing === id ? (
-                        <>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-primary"
-                            disabled={busy}
-                            onClick={() => void save(r)}
-                            {...w}
-                          >
-                            ذخیره
-                          </button>{' '}
-                          <button
-                            type="button"
-                            className="btn btn-sm"
-                            onClick={() => setEditing(null)}
-                          >
-                            انصراف
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          type="button"
-                          className="btn btn-sm"
-                          onClick={() => {
-                            setEditing(id);
-                            setDraft(String(r.value ?? ''));
-                          }}
-                        >
-                          ویرایش
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        {/* Two tabs, not one filtered list. They are not two views of one
+            thing: the first is a form the shop honours, the second a record of
+            what a MySQL dump contained. Mixing them is how a change to
+            `Lottery_Status` came to save, show no error, and do nothing. */}
+        {/* `role="tab"` on its own announces «tab» and points at nothing. The
+            ids below are the other half of the pattern: each tab names the
+            panel it opens and each panel names the tab that opened it, so a
+            screen reader can move between them instead of being told a control
+            has a type and no destination. */}
+        <div className="toolbar" role="tablist" aria-label="بخش‌های تنظیمات">
+          <button
+            type="button"
+            role="tab"
+            id="settings-tab-live"
+            aria-controls="settings-panel-live"
+            aria-selected={tab === 'live'}
+            className={tab === 'live' ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
+            onClick={() => setTab('live')}
+          >
+            تنظیمات فروشگاه ({count(live.length)})
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="settings-tab-imported"
+            aria-controls="settings-panel-imported"
+            aria-selected={tab === 'imported'}
+            className={tab === 'imported' ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
+            onClick={() => setTab('imported')}
+          >
+            وارداتی ({count(imported.length)})
+          </button>
         </div>
+
+        {tab === 'live' ? (
+          <div
+            className="settings-form"
+            role="tabpanel"
+            id="settings-panel-live"
+            aria-labelledby="settings-tab-live"
+          >
+            {live.length === 0 && <p className="muted">چیزی با این جست‌وجو پیدا نشد.</p>}
+            {live.map((r) => (
+              <SettingField key={`${r.scope}/${r.key}`} row={r} onSave={saveValue} write={w} />
+            ))}
+          </div>
+        ) : (
+          <div
+            role="tabpanel"
+            id="settings-panel-imported"
+            aria-labelledby="settings-tab-imported"
+          >
+            <p className="muted">
+              این کلیدها از ربات قدیمی وارد شده‌اند و هیچ‌کدام خوانده نمی‌شوند. اینجا هستند تا معلوم
+              باشد دامپ چه داشته؛ تغییرشان چیزی را عوض نمی‌کند و سرور هم نمی‌پذیرد.
+            </p>
+            <div className="table-wrap">
+              <table className="app-table">
+                <thead>
+                  <tr>
+                    <th>دسته</th>
+                    <th>کلید</th>
+                    <th>مقدار</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {imported.length === 0 && (
+                    <tr>
+                      <td className="empty" colSpan={3}>
+                        چیزی وارد نشده است.
+                      </td>
+                    </tr>
+                  )}
+                  {imported.map((r) => (
+                    <tr key={`${r.scope}/${r.key}`}>
+                      <td>{SCOPE_FA[r.scope] ?? r.scope}</td>
+                      <td className="ltr">{r.key}</td>
+                      {/* Read-only: no control at all, not a disabled one. A
+                          greyed-out field still reads as «you may change this,
+                          later». */}
+                      <td className="ltr">{r.secret ? '—' : String(r.value ?? '')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );
@@ -764,6 +782,127 @@ function PlanLabelHelp({
             )}
           </>
         )
+      )}
+    </div>
+  );
+}
+
+/**
+ * One setting, as the control its VALUE actually is.
+ *
+ * The screen asked for everything as a free-text box, so «ربات روشن است» was a
+ * field an operator typed `on` into — and typing `ON`, or `1`, or `روشن` saved
+ * happily and switched nothing off. The kind comes from the registry in
+ * `@shikoo/contracts`, which is also what the bot reads, so the control and
+ * the reader cannot disagree about what a value looks like.
+ *
+ * Saved per field, on change for a switch and on blur for everything else. No
+ * «ذخیره» for the whole form: forty controls behind one button means an
+ * operator who changed one thing cannot tell what else went with it.
+ */
+function SettingField({
+  row,
+  onSave,
+  write,
+}: {
+  row: SettingRow;
+  onSave: (row: SettingRow, value: string) => Promise<void>;
+  write: ReturnType<typeof useAdminWriteProps>;
+}) {
+  const id = `set-${row.scope}-${row.key}`;
+  const raw = row.value === null || row.value === undefined ? '' : String(row.value);
+  const [draft, setDraft] = useState(raw);
+
+  // Re-seeded when the row is reloaded, so a save that the server normalised
+  // shows what the server kept rather than what was typed.
+  useEffect(() => setDraft(raw), [raw]);
+
+  if (row.secret) {
+    return (
+      <div className="settings-field">
+        <span className="settings-field__label">{row.label ?? row.key}</span>
+        <span className="muted">{row.isSet ? 'ثبت شده' : 'ندارد'}</span>
+        <p className="settings-field__hint">
+          اعتبارنامهٔ درگاه است؛ مقدارش نه نشان داده می‌شود نه از اینجا عوض.
+        </p>
+      </div>
+    );
+  }
+
+  if (row.kind === 'bool' && row.truth) {
+    /*
+     * The words come from the row, not from this file.
+     *
+     * The comment that used to sit here said which string a key uses «is
+     * whatever the PHP wrote rather than a convention», and then wrote a single
+     * `SETTING_ON = 'on'` for all seventeen switches. `'off'` is not
+     * `botstatusoff`, so closing the shop from this screen left it open.
+     *
+     * A value matching neither is the ordinary case, not the corner one: these
+     * rows were written by an old PHP panel and most have never been through
+     * this form. `unknown` says which way each key's reader falls, so the
+     * switch is drawn where the BOT thinks it is.
+     */
+    const { truth } = row;
+    const on = raw === truth.on ? true : raw === truth.off ? false : truth.unknown === 'on';
+    return (
+      <div className="settings-field settings-field--switch">
+        <input
+          id={id}
+          type="checkbox"
+          checked={on}
+          {...write}
+          onChange={() => void onSave(row, on ? truth.off : truth.on)}
+        />
+        <label className="settings-field__label" htmlFor={id}>
+          {row.label ?? row.key}
+        </label>
+        <p className="settings-field__hint">{row.hint}</p>
+      </div>
+    );
+  }
+
+  const numeric = row.kind === 'int' || row.kind === 'irr' || row.kind === 'chatId';
+  return (
+    <div className="settings-field">
+      <label className="settings-field__label" htmlFor={id}>
+        {row.label ?? row.key}
+      </label>
+      <input
+        id={id}
+        className="form-control ltr"
+        type={numeric ? 'number' : 'text'}
+        value={draft}
+        {...write}
+        onChange={(e) => setDraft(e.target.value)}
+        // On blur, not on every keystroke: a request per character against a
+        // shop's live settings is a shop being reconfigured forty times while
+        // somebody types a number.
+        onBlur={() => {
+          if (draft !== raw) void onSave(row, draft);
+        }}
+      />
+      <p className="settings-field__hint">{row.hint}</p>
+      {/* The one setting whose value has a GRAMMAR, so it carries its own help
+          beside the field. It used to live inside the edit panel this form
+          replaced; without it an operator has to know `{duration}` exists
+          before they can type it, which is the same as the feature not being
+          there. */}
+      {row.scope === PLAN_LABEL_SETTING.scope && row.key === PLAN_LABEL_SETTING.key && (
+        <PlanLabelHelp
+          draft={draft}
+          // Saved here rather than left to the field's `onBlur`, because that
+          // blur has already happened: clicking one of these buttons takes
+          // focus off the input first, so the save it fires carries the draft
+          // from BEFORE the pick and the pick itself is never sent. On screen
+          // it looked saved — the input showed the new template and nothing
+          // said otherwise — and these buttons are the ordinary way to set this
+          // template, so the ordinary path was the one that did not persist.
+          onPick={(next) => {
+            setDraft(next);
+            if (next !== raw) void onSave(row, next);
+          }}
+        />
       )}
     </div>
   );

@@ -10,6 +10,7 @@ export * from './brand.js';
 export * from './env.js';
 export * from './device-auth.js';
 export * from './money.js';
+export * from './shopSettings.js';
 export * from './adminPermissions.js';
 export * from './customEmoji.js';
 export * from './premiumEmoji.js';

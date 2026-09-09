@@ -55,6 +55,19 @@ export function BotTextsPage() {
   const [packLink, setPackLink] = useState('');
   const [screen, setScreen] = useState('');
   const [query, setQuery] = useState('');
+  /**
+   * Which page of the texts is on screen.
+   *
+   * The walk on 2026-09-07 measured this page at eighteen thousand pixels:
+   * every text the bot can say, all at once, each with a five-row textarea
+   * behind an edit button. Finding one meant scrolling past ninety.
+   *
+   * Paged in the BROWSER, and that is the lazy answer on purpose: the whole set
+   * is a hundred-odd short strings, the screen already loads all of them to
+   * count how many are customised, and a request per page would be asking the
+   * server a question the page has already answered.
+   */
+  const [page, setPage] = useState(1);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [err, setErr] = useState<string | null>(null);
@@ -162,6 +175,14 @@ export function BotTextsPage() {
   );
   const customised = rows.filter((r) => r.customised).length;
 
+  const PAGE_SIZE = 25;
+  const lastPage = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  // Clamped rather than left out of range: a filter that shrinks the list under
+  // the operator would otherwise leave them on «صفحهٔ ۴ از ۲», reading an empty
+  // table and concluding there is nothing there.
+  const current = Math.min(page, lastPage);
+  const pageRows = shown.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+
   return (
     <>
       <div className="page-head">
@@ -255,7 +276,10 @@ export function BotTextsPage() {
               id="text-screen"
               className="form-control"
               value={screen}
-              onChange={(e) => setScreen(e.target.value)}
+              onChange={(e) => {
+                setScreen(e.target.value);
+                setPage(1);
+              }}
             >
               <option value="">همه صفحه‌ها</option>
               {screens.map((s) => (
@@ -275,7 +299,12 @@ export function BotTextsPage() {
               type="search"
               placeholder="بخشی از جمله یا توضیحش"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                // Otherwise a search typed from page three shows «چیزی پیدا
+                // نشد» over results sitting on page one.
+                setPage(1);
+              }}
             />
           </div>
         </div>
@@ -299,7 +328,7 @@ export function BotTextsPage() {
               </tr>
             </thead>
             <tbody>
-              {shown.map((r) => (
+              {pageRows.map((r) => (
                 <tr key={r.key}>
                   <td style={{ maxWidth: 420 }}>
                     {editing === r.key ? (
@@ -435,6 +464,28 @@ export function BotTextsPage() {
               ))}
             </tbody>
           </table>
+        </div>
+
+        <div className="pager">
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={current <= 1}
+            onClick={() => setPage(current - 1)}
+          >
+            قبلی
+          </button>
+          <span>
+            صفحهٔ {count(current)} از {count(lastPage)}
+          </span>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={current >= lastPage}
+            onClick={() => setPage(current + 1)}
+          >
+            بعدی
+          </button>
         </div>
       </div>
     </>
