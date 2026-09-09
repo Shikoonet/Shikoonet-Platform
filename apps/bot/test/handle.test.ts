@@ -141,6 +141,33 @@ describe('/start', () => {
     expect((await userRow(telegramId))?.username).toBe('renamed');
   });
 
+  it('is reachable again the moment they come back', async () => {
+    /*
+     * `notify.ts` sets `notify_enabled = false` on a 403 so the sweeps stop
+     * chasing somebody unreachable. Without this it is a ONE-WAY door: a
+     * customer who blocks the bot, changes their mind, unblocks and returns
+     * would never receive an expiry warning again, and nothing in the product
+     * could put it back.
+     *
+     * The update IS the evidence. Telegram does not deliver a message from a
+     * customer who has the bot blocked, so its arrival is the 403 being over.
+     */
+    const { updateId, telegramId } = ids();
+    await handleUpdate(db, startUpdate(updateId, telegramId));
+    await db
+      .prepare(`UPDATE users SET notify_enabled = false WHERE telegram_id = ?1`)
+      .bind(telegramId)
+      .run();
+
+    await handleUpdate(db, startUpdate(updateId + 1, telegramId));
+
+    const row = await db
+      .prepare(`SELECT notify_enabled FROM users WHERE telegram_id = ?1`)
+      .bind(telegramId)
+      .first<{ notify_enabled: boolean }>();
+    expect(row?.notify_enabled).toBe(true);
+  });
+
   it('records a blocked customer as seen but answers nothing', async () => {
     const { updateId, telegramId } = ids();
     await handleUpdate(db, startUpdate(updateId, telegramId));

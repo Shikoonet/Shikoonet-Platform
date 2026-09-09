@@ -31,6 +31,7 @@ import type { D1Database } from '@shikoo/database';
 import { tehranDateStringFromMs, tehranDayBoundsFromDate } from '@shikoo/domain';
 import { enqueue } from './notify.js';
 import { loadShopSettings } from './settings.js';
+import { formatToman } from './money.js';
 
 /** How many resellers the ranking names, matching the legacy's `LIMIT 3`. */
 const TOP_RESELLERS = 3;
@@ -161,9 +162,17 @@ async function topResellers(
   }));
 }
 
-/** IRR to the toman a Persian reader expects, grouped. */
+/**
+ * The shop's one money formatter, without its «تومان» suffix.
+ *
+ * This file used to divide by ten itself and group with `fa-IR`, which put
+ * Persian digits — «۱۹۵٬۰۰۰» — in the one message the admin reads, while every
+ * number on every customer screen is Latin because `formatToman` says so and
+ * explains why. Two spellings of the same amount in one shop, and only the
+ * nightly report used the ad-hoc one.
+ */
 function toman(irr: number): string {
-  return Math.round(irr / 10).toLocaleString('fa-IR');
+  return formatToman(irr).replace(' تومان', '');
 }
 
 /** The message itself, built from a day that is already over. */

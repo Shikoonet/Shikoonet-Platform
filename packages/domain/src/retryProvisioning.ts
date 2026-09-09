@@ -135,7 +135,20 @@ export async function retryOrderProvisioning(
     .prepare(
       `WITH requeued AS (
          UPDATE orders AS o
-            SET status = 'PAID', failure_reason = NULL, updated_at = now()
+            SET status = 'PAID',
+                failure_reason = NULL,
+                -- Cleared with the reason, because it is the same fact.
+                --
+                -- stock.ts stamps it on the FIRST retryable failure and
+                -- nothing ever reset it, so an order failed days ago and
+                -- requeued here arrived already past STOCK_GRACE_MS (no
+                -- backticks in here: it is a JS template literal). It would
+                -- take from the finite shelf on its first stumble rather than
+                -- waiting out the grace, which is the whole thing the grace is
+                -- for: give the panel a few minutes before spending a config
+                -- nobody can make more of.
+                provision_first_failed_at = NULL,
+                updated_at = now()
           WHERE o.public_id = ?1
             AND o.status = 'FAILED'
             AND NOT EXISTS (SELECT 1 FROM wallet_entries w

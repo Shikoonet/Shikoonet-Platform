@@ -25,7 +25,19 @@ import type { OwnedSubscriptionOnPanel } from './owned.js';
 export function actionsFor(
   service: OwnedSubscriptionOnPanel,
   shop: ShopSettings,
-  tier: menu.CustomerTier = 'f',
+  /**
+   * Required, with no default, and that is the point.
+   *
+   * It defaulted to `'f'` — an ordinary customer — so a caller that forgot it
+   * compiled and quietly priced a reseller's add-ons from the wrong column.
+   * `extraPricingFor` reads the rate PER TIER and a panel may legally price
+   * `n` without pricing `f`, in which case the buttons the reseller was just
+   * offered vanish on the next redraw: press QR, or switch the service off, or
+   * have an action fail, and «➕ حجم اضافه» is gone. Four of the eight call
+   * sites had drifted this way. A required parameter is what makes the
+   * compiler name them.
+   */
+  tier: menu.CustomerTier,
 ): menu.ServiceActions | null {
   if (!service.provider_kind || !service.provider_base_url || !service.remote_username) return null;
   if (!isAutomated(service.provider_kind)) return null;

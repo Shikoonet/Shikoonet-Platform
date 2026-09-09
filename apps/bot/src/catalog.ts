@@ -133,6 +133,37 @@ const PURCHASABLE = `
    * the panel, not accounts on the panel itself, because the panel may carry
    * accounts this shop never sold.
    */
+`;
+
+/**
+ * The extra condition that applies only to selling a NEW account.
+ *
+ * «محدودیت ساخت اکانت» — legacy 'limit_panel', migrated into
+ * provisioning_providers.capacity, where it sat unread. The dashboard has
+ * written it and drawn it beside the live count since the screen was built, so
+ * an operator setting it had every reason to believe it did something; nothing
+ * in the bot ever asked. NULL is unlimited, which is what the legacy
+ * 'unlimited' string became.
+ *
+ * Counted the way the PHP counted it (index.php:3600) — live subscriptions on
+ * the panel, not accounts on the panel itself, because the panel may carry
+ * accounts this shop never sold.
+ *
+ * ## Why it is not in PURCHASABLE
+ *
+ * It was, and that made a full panel refuse RENEWALS. A renewal creates no
+ * account, so the cap has nothing to say about it — but `plansOnPanel` is the
+ * renewal plan list and `purchasablePlan` is the gate behind it, and both read
+ * the shared predicate. A customer who had already paid opened «تمدید», got an
+ * empty list, and could not extend the service they were already using.
+ *
+ * `catalog.test.ts` claimed to cover exactly this and did not: its assertion
+ * was `SELECT count(*) FROM provisioning_providers WHERE status = 'ACTIVE'`,
+ * which is true whatever the capacity is and whatever the renewal list does. A
+ * test that cannot fail is not evidence — ground rule 13 — and this is what it
+ * was hiding.
+ */
+const SELLS_NEW = `
   AND (
         pr.capacity IS NULL
      OR pr.capacity > (
@@ -252,6 +283,7 @@ export async function productsForUser(
         WHERE (?2::bigint IS NULL OR pr.id = ?2)
           AND (?3::bigint IS NULL OR p.category_id = ?3)
           AND ${PURCHASABLE}
+          ${SELLS_NEW}
         GROUP BY p.id, p.name, p.sort_order, p.row_index, pr.name
         -- The product's own order, and nothing before it.
         --
@@ -341,6 +373,7 @@ export async function categoriesForUser(db: Db, userId: number): Promise<Catalog
          JOIN provisioning_providers pr ON pr.id = p.provider_id
          JOIN users u                   ON u.id = ?1
         WHERE ${PURCHASABLE}
+        ${SELLS_NEW}
         GROUP BY cat.id, cat.name, cat.badge, cat.button_style, cat.row_index, cat.sort_order
         ORDER BY cat.sort_order, cat.id`,
     )
@@ -537,6 +570,7 @@ export async function tariffForUser(db: Db, userId: number): Promise<CatalogPlan
     .prepare(
       `SELECT ${PLAN_COLUMNS} ${PLAN_FROM}
         WHERE ${PURCHASABLE}
+        ${SELLS_NEW}
         ORDER BY p.sort_order, p.id, pl.sort_order, pl.price_irr, pl.id`,
     )
     .bind(userId)
@@ -587,6 +621,7 @@ export async function plansInProduct(
     .prepare(
       `SELECT ${PLAN_COLUMNS} ${PLAN_FROM}
         WHERE p.id = ?2 AND ${PURCHASABLE}
+        ${SELLS_NEW}
         ORDER BY pl.sort_order, pl.price_irr, pl.id`,
     )
     .bind(userId, productId)
@@ -606,11 +641,22 @@ export async function purchasablePlan(
   db: Db,
   userId: number,
   planId: number,
+  /**
+   * This plan is being RENEWED onto, not bought fresh.
+   *
+   * The one caller that passes it is `rord`, and it has to: this function is
+   * the gate behind the renewal plan list, so leaving the new-account cap in
+   * here would refuse at the last step exactly what `plansOnPanel` had just
+   * offered. Everything else `PURCHASABLE` asks — is the plan active, is the
+   * category on, may this customer see this panel — is asked of a renewal too.
+   */
+  forRenewal = false,
 ): Promise<CatalogPlan | null> {
   const row = await db
     .prepare(
       `SELECT ${PLAN_COLUMNS} ${PLAN_FROM}
-        WHERE pl.id = ?2 AND ${PURCHASABLE}`,
+        WHERE pl.id = ?2 AND ${PURCHASABLE}
+        ${forRenewal ? '' : SELLS_NEW}`,
     )
     .bind(userId, planId)
     .first<PlanRow>();
