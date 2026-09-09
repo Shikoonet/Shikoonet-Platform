@@ -156,7 +156,7 @@ export function CronPage({ onGo }: { onGo?: (page: PageId) => void }) {
 
       {destructive.length > 0 && (
         <section className="cron-danger">
-          <h2 className="page-head__title">کارهایی که سرویس مشتری را پاک می‌کنند</h2>
+          <h3 className="page-head__title">کارهایی که سرویس مشتری را پاک می‌کنند</h3>
           <div className="page-head__sub">
             این دو تنها چیزهایی در کل سیستم‌اند که اکانت مشتری را از پنل حذف می‌کنند و{' '}
             <strong>حذف برگشت‌پذیر نیست</strong>. ربات PHP هر دو را روشن دارد؛ ما پیش‌فرض خاموش
@@ -227,7 +227,7 @@ function JobCard({
     <article className={danger ? 'card cron-card cron-card-danger' : 'card cron-card'}>
       <div className="cron-card-head">
         <div>
-          <h2 className="page-head__title">{row.name}</h2>
+          <h3 className="page-head__title">{row.name}</h3>
           <div className="page-head__sub">{row.what}</div>
         </div>
         {row.toggle ? (

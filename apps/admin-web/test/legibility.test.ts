@@ -87,42 +87,65 @@ function resolveValue(value: string): string {
 }
 
 /**
+ * Every rule in the sheet, in document order, at-rules descended into.
+ *
+ * The first version of this counted braces and treated `@media` as one block,
+ * which meant the rules INSIDE it were never looked at — while the comment
+ * above it claimed the opposite, in the same breath as citing
+ * `money-never-breaks.test.ts:52` for making that exact mistake. Proven with a
+ * three-line stylesheet: the rule inside the media query was dropped and the
+ * only thing reported was the top-level one.
+ *
+ * So at-rules are recursed into rather than skipped over. Document order is
+ * preserved, which is what lets the caller take the last declaration as the
+ * winner for equal specificity.
+ */
+function eachRule(css: string, visit: (selector: string, body: string) => void): void {
+  let i = 0;
+  let selStart = 0;
+  while (i < css.length) {
+    const ch = css[i];
+    if (ch === '{') {
+      const selector = css.slice(selStart, i).trim();
+      let depth = 1;
+      let j = i + 1;
+      while (j < css.length && depth > 0) {
+        if (css[j] === '{') depth += 1;
+        else if (css[j] === '}') depth -= 1;
+        j += 1;
+      }
+      const body = css.slice(i + 1, j - 1);
+      // `@media`, `@supports`, `@layer` — the body holds rules, not
+      // declarations. `@font-face` holds declarations and no selector matches
+      // it, so recursing costs nothing and finds nothing.
+      if (selector.startsWith('@')) eachRule(body, visit);
+      else visit(selector, body);
+      i = j;
+      selStart = j;
+    } else if (ch === '}') {
+      i += 1;
+      selStart = i;
+    } else {
+      i += 1;
+    }
+  }
+}
+
+/**
  * The value `prop` ends up with for `selector`, or null if nothing sets it.
  *
- * Brace-counted rather than matched with `([^{}]+)\{([^{}]*)\}`, which cannot
- * see inside `@media` — the mistake `money-never-breaks.test.ts` records at its
- * own line 52, where a broken instrument reported three confident failures.
- * Last declaration wins, which is what the cascade does for equal specificity.
+ * Last declaration wins, which is what the cascade does at equal specificity —
+ * and every rule for a bare `a` has the same specificity, so a media query
+ * later in the file really is the one that decides.
  */
 function declaredValue(css: string, selector: string, prop: string): string | null {
   let found: string | null = null;
-  let depth = 0;
-  let blockStart = 0;
-  let selStart = 0;
-  for (let i = 0; i < css.length; i += 1) {
-    const ch = css[i];
-    if (ch === '{') {
-      if (depth === 0) blockStart = i;
-      depth += 1;
-    } else if (ch === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        const sel = css.slice(selStart, blockStart).trim();
-        const body = css.slice(blockStart + 1, i);
-        if (sel.split(',').some((s) => s.trim() === selector)) {
-          const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;}]+)`, 'g');
-          let hit: RegExpExecArray | null;
-          while ((hit = m.exec(body))) found = hit[1]!.trim();
-        }
-        selStart = i + 1;
-      } else if (depth === 1) {
-        // Leaving a nested rule inside `@media`: the next selector starts here.
-        selStart = i + 1;
-      }
-    } else if (depth === 1 && ch === '{') {
-      selStart = i + 1;
-    }
-  }
+  eachRule(css, (sel, body) => {
+    if (!sel.split(',').some((s) => s.trim() === selector)) return;
+    const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;}]+)`, 'g');
+    let hit: RegExpExecArray | null;
+    while ((hit = m.exec(body))) found = hit[1]!.trim();
+  });
   return found;
 }
 
@@ -177,6 +200,27 @@ describe('text is readable on the panel background', () => {
     const fg = over(parseColour(resolveValue(`var(${token})`)), body);
     expect(contrast(fg, body)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(fg, card)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('reads a rule inside a media query, which the first parser did not', () => {
+    /*
+     * The instrument, checked against a stylesheet whose answer is known.
+     *
+     * The first version of `declaredValue` counted braces and handed `@media`
+     * back as a single block, so the rules inside it were never visited — and
+     * every assertion above would have passed over a link colour overridden
+     * there. `money-never-breaks.test.ts` records the same trap at its line 52;
+     * this one repeats it while citing it.
+     */
+    const sheet = [
+      'a { color: #111111; }',
+      '@media (max-width: 720px) { a { color: #222222; } }',
+    ].join('\n');
+    expect(declaredValue(sheet, 'a', 'color')).toBe('#222222');
+    // And a plain sheet still works, so the fix did not trade one blindness
+    // for another.
+    expect(declaredValue('a { color: #333333; }', 'a', 'color')).toBe('#333333');
+    expect(declaredValue('b { color: #333333; }', 'a', 'color')).toBeNull();
   });
 
   it('measures the browser default as the failure it is', () => {
