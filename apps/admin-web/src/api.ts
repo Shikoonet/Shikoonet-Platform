@@ -1194,6 +1194,28 @@ export interface EntryRow {
 export interface SettingRow {
   scope: string;
   key: string;
+  /**
+   * Whether the shop reads this row.
+   *
+   * False for the rows the Mirzabot importer copied across and nothing has
+   * ever read. They are listed — «where did my lottery setting go» needs an
+   * answer — and they are not controls: the server answers `409 imported_key`
+   * to a write, so a form field for one would be a promise it cannot keep.
+   */
+  live: boolean;
+  /** Present only when `live`. The name a person uses, not the column name. */
+  label?: string;
+  hint?: string;
+  kind?: 'bool' | 'int' | 'irr' | 'text' | 'chatId';
+  /**
+   * The exact strings THIS switch's reader recognises, for `kind: 'bool'`.
+   *
+   * There is no shop-wide `'on'`/`'off'`: the bot reads `Bot_Status` as off
+   * only on `botstatusoff`, `statuscopycart` as `1`/`0`, and its own cron
+   * toggles as `true`/`false`. A switch that wrote a word its reader does not
+   * know would look saved and change nothing.
+   */
+  truth?: { on: string; off: string; unknown: 'on' | 'off' } | null;
   secret: boolean;
   value: unknown;
   isSet: boolean;
