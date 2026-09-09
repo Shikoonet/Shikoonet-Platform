@@ -207,7 +207,24 @@ export async function buildDailyReport(db: D1Database, dateStr: string): Promise
   ];
 
   if (panels.length > 0) {
-    lines.push('', '🖥 به تفکیک لوکیشن');
+    // «فروش نو», not «فروش», and the word is the whole fix.
+    //
+    // The block counts SUBSCRIPTIONS on `purchased_at`, which is written once
+    // when a service is first delivered and never again — the renewal UPDATE in
+    // `provision.ts` touches neither `purchased_at` nor `price_irr`. The total
+    // directly above it counts ORDERS and includes renewals. So on a shop whose
+    // revenue is mostly renewals the two disagreed by most of the day's
+    // takings, with nothing on screen saying why, and an admin reading down the
+    // message had every reason to think the panel lines should sum to the line
+    // above them.
+    //
+    // Naming what it counts closes that without changing what it counts, and
+    // keeps the legacy meaning: the PHP report is per-panel NEW services too.
+    // If the shop would rather see sales and renewals together per panel, that
+    // is a different query — build it from `orders` joined to the subscription
+    // it targets, so both halves answer from the same table — and a different
+    // decision, because it also has to say what a TRIAL counts as.
+    lines.push('', '🖥 فروش نو به تفکیک لوکیشن');
     for (const p of panels) {
       lines.push(`• ${p.name}: ${p.count} سرویس — ${toman(p.irr)} تومان — ${p.gb} گیگ`);
     }

@@ -117,8 +117,17 @@ async function makeService(telegramId: number): Promise<void> {
   // another file's fixture is a test that passes by luck.
   await db
     .prepare(
+      // `secret_ref` beside the address, for the same self-containment reason
+      // the comment above gives. `actionsFor` now requires a credential as well
+      // as an address before it draws a paid button — an add-on sold on a panel
+      // that cannot log in is money taken for nothing — so a fixture with only
+      // half the pair would make these tests fail for a reason that has nothing
+      // to do with the switch under test. It names an environment variable that
+      // does not exist here, and that is fine: nothing in this file calls a
+      // panel. `addon.test.ts` sets the same field on the same row.
       `UPDATE provisioning_providers
           SET base_url = coalesce(base_url, 'https://panel.test'),
+              secret_ref = coalesce(secret_ref, 'PANEL_SIM_VIP'),
               kind = 'pasarguard',
               config = coalesce(config, '{}'::jsonb) || ?2::jsonb
         WHERE id = ?1`,
@@ -224,6 +233,50 @@ describe('reading the shop settings', () => {
     const shop = await loadShopSettings(db);
     expect(shop.topupMinIrr).toBe(DEFAULT_SHOP_SETTINGS.topupMinIrr);
     expect(shop.topupMaxIrr).toBe(DEFAULT_SHOP_SETTINGS.topupMaxIrr);
+  });
+});
+
+describe('a panel that cannot log in', () => {
+  it('sells no add-on on it, rather than taking the money and failing', async () => {
+    /*
+     * The address was required before a paid button was drawn and the
+     * credential was not, which is half a question.
+     *
+     * `login()` refuses a panel with no secret and answers `retryable: false`,
+     * so an add-on bought on one is taken, fails, and — for a card-to-card
+     * payment — is not refunded automatically. The shop-side predicate cannot
+     * help here: «➕ حجم اضافه» sells against a service that already exists, so
+     * it never goes near `purchasablePlan`.
+     *
+     * Drawing no button is the right answer rather than failing at checkout.
+     * The customer never spends anything, and an operator who fixes the panel
+     * gets the buttons back on the next screen with nothing to unwind — which
+     * is the second half of what this asserts.
+     */
+    const telegramId = 855_900_009;
+    await makeService(telegramId);
+    const provider = await providerId('sim-vip');
+
+    await db
+      .prepare(`UPDATE provisioning_providers SET secret_ref = NULL WHERE id = ?1`)
+      .bind(provider)
+      .run();
+    try {
+      const without = await serviceButtons(telegramId);
+      expect(without.some((d) => d.startsWith('xv:'))).toBe(false);
+      expect(without.some((d) => d.startsWith('xt:'))).toBe(false);
+      // Not stranded: the way back is still there.
+      expect(without).toContain('mine');
+    } finally {
+      await db
+        .prepare(`UPDATE provisioning_providers SET secret_ref = ?2 WHERE id = ?1`)
+        .bind(provider, 'PANEL_SIM_VIP')
+        .run();
+    }
+
+    // And the moment the panel has a credential again, so do the buttons.
+    const withCredential = await serviceButtons(telegramId);
+    expect(withCredential.some((d) => d.startsWith('xv:'))).toBe(true);
   });
 });
 

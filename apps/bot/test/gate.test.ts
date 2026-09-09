@@ -35,12 +35,26 @@ import { MEMBERSHIP_TTL_MS, type MembershipApi } from '../src/gate.js';
 import { invalidateBotContent } from '../src/botContent.js';
 import * as menu from '../src/menu.js';
 
-/** Its own block of ids, so nothing here can collide with another file's. */
+/**
+ * Its own block of ids, so nothing here can collide with another file's.
+ *
+ * `* 10`, which is what twenty-four other test files in this directory already
+ * do — so each call OWNS ten update ids and a test may safely use
+ * `updateId + 1 .. + 9` for the extra updates it needs.
+ *
+ * It stepped by one until 2026-09-09, and several tests here needed more than
+ * one update, so they invented their own room: `+ 100`, `+ 500`, `+ 800`. Those
+ * literals were a private agreement between neighbours, and two of them
+ * overlapped — which is not a loud failure, because `handleUpdate` answers an
+ * update id it has already claimed with `{ status: 'duplicate', replies: [] }`.
+ * Silence, not an error. The order is simply never created, and the assertion
+ * that fails is in whichever test lost the race, about something else entirely.
+ */
 const BASE_TELEGRAM = 662_000;
 const BASE_UPDATE = 662_000_000;
 let nextId = 0;
 function ids(): { updateId: number; telegramId: number } {
-  const n = ++nextId;
+  const n = ++nextId * 10;
   return { updateId: BASE_UPDATE + n, telegramId: BASE_TELEGRAM + n };
 }
 
@@ -321,8 +335,8 @@ describe('the channel gate', () => {
     const api = membership('member');
 
     await handleUpdate(db, startUpdate(updateId, telegramId), globalThis.fetch, api);
-    await handleUpdate(db, press(updateId + 100, telegramId, 'buy'), globalThis.fetch, api);
-    await handleUpdate(db, press(updateId + 101, telegramId, 'wal'), globalThis.fetch, api);
+    await handleUpdate(db, press(updateId + 1, telegramId, 'buy'), globalThis.fetch, api);
+    await handleUpdate(db, press(updateId + 2, telegramId, 'wal'), globalThis.fetch, api);
     expect(api.calls).toHaveLength(1);
 
     // An hour and a second later the door has closed again and it re-asks. The
@@ -330,7 +344,7 @@ describe('the channel gate', () => {
     // constant the code reads and not a timestamp this test invented.
     const later = Date.now() + MEMBERSHIP_TTL_MS + 1000;
     vi.spyOn(Date, 'now').mockReturnValue(later);
-    await handleUpdate(db, press(updateId + 102, telegramId, 'buy'), globalThis.fetch, api);
+    await handleUpdate(db, press(updateId + 3, telegramId, 'buy'), globalThis.fetch, api);
     expect(api.calls).toHaveLength(2);
   });
 
@@ -649,15 +663,9 @@ describe('a receipt is not stopped by the gate', () => {
      * owner, so a forged id belongs to nobody, and the gate still stands in
      * front of every way to START a purchase.
      */
-    // +800/+801, and the band matters. `ids()` steps by ONE, so a test that
-    // invents neighbours for itself is reaching into the next test's base; the
-    // test below already claims +500/+501 for that reason, and re-using that
-    // band overlaps it by one. A claimed update id is answered with silence
-    // rather than an error, so the collision shows up as «the order was never
-    // created» in whichever test loses.
     const { updateId, telegramId } = ids();
-    const buying = updateId + 800;
-    const paying = updateId + 801;
+    const buying = updateId + 1;
+    const paying = updateId + 2;
     const userId = await makeCustomer(telegramId);
     const plan = await planId('sim-vip-1m-50');
     await handleUpdate(db, press(buying, telegramId, `order:${plan}`));
@@ -698,12 +706,9 @@ describe('a receipt is not stopped by the gate', () => {
     const { updateId, telegramId } = ids();
     await makeCustomer(telegramId);
 
-    // +500 and +501: `ids()` steps by one, and the test above consumes three
-    // update ids from its own base. A collision here is silently a duplicate,
-    // which answers with no replies and reads as a broken assertion.
     const out = await handleUpdate(
       db,
-      sendsPhoto(updateId + 500, telegramId),
+      sendsPhoto(updateId + 1, telegramId),
       globalThis.fetch,
       membership('left'),
     );
@@ -712,7 +717,7 @@ describe('a receipt is not stopped by the gate', () => {
     // And the moment they try to actually start something, the gate is there.
     const browse = await handleUpdate(
       db,
-      startUpdate(updateId + 501, telegramId),
+      startUpdate(updateId + 2, telegramId),
       globalThis.fetch,
       membership('left'),
     );

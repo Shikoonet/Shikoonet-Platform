@@ -41,6 +41,26 @@ export function actionsFor(
 ): menu.ServiceActions | null {
   if (!service.provider_kind || !service.provider_base_url || !service.remote_username) return null;
   if (!isAutomated(service.provider_kind)) return null;
+  /*
+   * A credential, asked for beside the address it goes with.
+   *
+   * The address was already required here and the credential was not, which is
+   * half a question: `login()` refuses a panel with no secret and answers
+   * `retryable: false`, so an add-on bought on such a panel is taken, fails,
+   * and — for a card-to-card payment — is not refunded automatically.
+   *
+   * This is the sibling of the shop-side hole in #182 and it is the one the
+   * shop-side clause does NOT cover: «➕ حجم اضافه» and «➕ زمان اضافه» sell
+   * against a service that already exists, so they never go near
+   * `purchasablePlan`. Both spellings of «has a credential» count, the same two
+   * `trialPanelsForUser` counts, because a panel wired before `provider_secrets`
+   * existed resolves through the environment.
+   *
+   * Drawing no button is the right answer rather than failing at checkout: the
+   * customer never spends anything, and an operator who fixes the panel gets
+   * the buttons back on the next screen with nothing to unwind.
+   */
+  if (!service.provider_secret_ref && !service.provider_sealed) return null;
   // REMOVED, FAILED, PENDING_PAYMENT: nothing to revoke and nothing to switch.
   if (service.status !== 'ACTIVE' && service.status !== 'DISABLED') return null;
   const pricing = extraPricingFor(service.provider_config ?? {}, tier);
