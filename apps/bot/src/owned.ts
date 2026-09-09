@@ -27,6 +27,17 @@ export interface OwnedOrder {
   status: string;
   total_irr: number;
   plan_id: number | null;
+  /**
+   * What the order IS, so a caller cannot act on one kind as if it were
+   * another.
+   *
+   * Added because `wpay` did exactly that: it locked any order this customer
+   * owned and spent the balance on it, including a `WALLET_TOPUP`. Nothing
+   * downstream catches that — `creditTopup` runs only from the card
+   * settlement, and the provisioning sweep skips deposits by name — so the
+   * money left the wallet and never came back.
+   */
+  kind: string;
 }
 
 /**
@@ -36,7 +47,7 @@ export interface OwnedOrder {
  * somebody else. The caller cannot tell those apart, which is deliberate: a
  * different answer for "not yours" turns this into an enumeration oracle.
  */
-const ORDER_FOR_USER = `SELECT id, public_id, status, total_irr, plan_id
+const ORDER_FOR_USER = `SELECT id, public_id, status, total_irr, plan_id, kind
      FROM orders
     WHERE id = ?1 AND user_id = ?2`;
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { formatToman, nameMentionsPrice, priceForUser } from '../src/money.js';
+import { discountFor } from '../src/discount.js';
 
 describe('formatToman', () => {
   it('renders IRR as the Toman the customer is quoted', () => {
@@ -19,6 +20,40 @@ describe('formatToman', () => {
     expect(formatToman(7_500_000)).toBe('750,000 تومان');
     // '🥇30گیگ - VIP ... 300.000ت'
     expect(formatToman(3_000_000)).toBe('300,000 تومان');
+  });
+});
+
+describe('discountFor', () => {
+  /**
+   * The code discount is floored to a whole TOMAN, like the standing one.
+   *
+   * `discount_codes.percent` is `numeric(5,2)`, so a fractional percentage is a
+   * value an admin can save — and it used to round to a whole RIAL, which is
+   * half a Toman. A customer cannot transfer half a Toman: they send the
+   * rounded amount, the claim carries the unrounded one, and auto-verify
+   * compares the two exactly with no tolerance. The payment could never verify
+   * itself, and every order bought with that code went to manual review.
+   */
+  const percentCode = (percent: number) =>
+    ({ id: 1, code: 'X', kind: 'PERCENT_OFF', percent, amount_irr: null }) as never;
+
+  it('floors a fractional percentage to a whole Toman', () => {
+    // 7.25% of 1,950,000 IRR is 141,375 — which leaves a total of 1,808,625,
+    // i.e. 180,862.5 Toman.
+    expect(discountFor(percentCode(7.25), 1_950_000)).toBe(141_370);
+    expect(1_950_000 - discountFor(percentCode(7.25), 1_950_000)).toBe(1_808_630);
+  });
+
+  it('leaves every total a whole number of Toman, whatever the percentage', () => {
+    // The property, not one example: this is the thing auto-verify depends on.
+    for (const percent of [1, 2.5, 3.33, 7.25, 12.5, 33.33, 99.99]) {
+      const total = 1_950_000 - discountFor(percentCode(percent), 1_950_000);
+      expect(total % 10).toBe(0);
+    }
+  });
+
+  it('never gives more away than the price', () => {
+    expect(discountFor(percentCode(100), 1_950_000)).toBe(1_950_000);
   });
 });
 
