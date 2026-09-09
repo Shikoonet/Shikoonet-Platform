@@ -620,6 +620,27 @@ const DISCOUNT_PERCENT = `COALESCE(
  * installs the navigation bar for both, so there is no longer a second menu
  * policy hiding in whether the INSERT or UPDATE branch happened to run.
  */
+/**
+ * A customer who is talking to us can be reached, and that is the evidence.
+ *
+ * `notify.ts` sets `notify_enabled = false` when Telegram answers 403 —
+ * blocked, or the chat deleted — so the sweeps stop spending attempts on
+ * somebody unreachable. Without a way back that is a ONE-WAY door: a customer
+ * who blocks the bot, changes their mind, unblocks and returns would never get
+ * an expiry warning again, and nothing in the product could restore it.
+ *
+ * The proof is the update itself. Telegram does not deliver a message or a
+ * button press from a customer who has the bot blocked, so an inbound update
+ * IS the 403 being over. Nothing weaker is needed and nothing stronger exists.
+ *
+ * Safe to set unconditionally TODAY because nothing else writes this column —
+ * checked across the repo, not assumed. The day it becomes a switch a customer
+ * can turn off themselves, this line stops being «restore what a 403 took» and
+ * becomes «overrule what they asked for», and it has to move behind a test for
+ * which of the two set it.
+ */
+const NOTIFY_REACHABLE = `notify_enabled = true`;
+
 async function upsertUser(
   tx: D1DatabaseSession,
   from: { id: number; username?: string | undefined },
@@ -631,6 +652,7 @@ async function upsertUser(
        ON CONFLICT (telegram_id) DO UPDATE
          SET username = EXCLUDED.username,
              last_seen_at = now(),
+             ${NOTIFY_REACHABLE},
              updated_at = now()
        RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
     )
@@ -2003,7 +2025,9 @@ async function handleCallback(
 
   const user = await tx
     .prepare(
-      `UPDATE users SET last_seen_at = now(), updated_at = now()
+      // Both writes that mean «this customer is here» restore the flag, because
+      // a customer who only presses buttons never reaches `upsertUser`.
+      `UPDATE users SET last_seen_at = now(), ${NOTIFY_REACHABLE}, updated_at = now()
         WHERE telegram_id = ?1
         RETURNING id, status, is_reseller, reseller_tier, ${DISCOUNT_PERCENT}, ${IS_ADMIN}`,
     )

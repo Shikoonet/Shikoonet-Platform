@@ -295,13 +295,24 @@ export async function flush(
          * removed from the group, which says nothing about anybody's switch.
          */
         if (permanent && routeOf(row.dedupe_key).destination === 'customer') {
+          // Its own catch, like every other write on this path.
+          //
+          // `settle` and `markQrSent` both swallow their failures here for the
+          // same reason: this loop has no handler of its own, so a rejection
+          // escapes `flush` entirely and abandons the rest of the batch — and
+          // the broadcast sweep after it. The row is already DEAD by this
+          // point, so losing this flag costs one more silenced sweep for one
+          // customer. Losing the batch costs every other customer's message.
           await db
             .prepare(
               `UPDATE users SET notify_enabled = false, updated_at = now()
                 WHERE telegram_id = ?1 AND notify_enabled`,
             )
             .bind(row.chat_id)
-            .run();
+            .run()
+            .catch((e: unknown) => {
+              log.warn('notify.silence_unrecorded', { ref: String(row.id) }, e);
+            });
         }
         result.dead += 1;
         log.error(

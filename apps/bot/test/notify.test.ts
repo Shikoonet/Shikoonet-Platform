@@ -231,6 +231,67 @@ describe('delivering it', () => {
     expect(row.next_attempt_at).toBeNull();
   });
 
+  it('stops the other sweeps chasing a customer who blocked the bot', async () => {
+    /*
+     * The DEAD row alone taught nothing.
+     *
+     * `notify_enabled` stayed true, so `warn.ts` queued that customer another
+     * expiry warning on the next cycle, `nudge.ts` kept nudging, every
+     * broadcast counted them as a recipient and failed, and each attempt left
+     * one more DEAD row in a table nothing prunes. Every one of those sweeps
+     * already filters on this column, so the single write is what silences
+     * all of them.
+     */
+    await db
+      .prepare(
+        `INSERT INTO users (telegram_id, notify_enabled, registered_at, last_seen_at)
+         VALUES (?1, true, now(), now())
+         ON CONFLICT (telegram_id) DO UPDATE SET notify_enabled = true`,
+      )
+      .bind(CHAT)
+      .run();
+    await put('provision:blocked-1');
+
+    await flush(
+      db,
+      apiThat(() => Promise.reject(new TelegramRejection('bot was blocked by the user', 403))),
+      { now: NOW },
+    );
+
+    const user = await db
+      .prepare(`SELECT notify_enabled FROM users WHERE telegram_id = ?1`)
+      .bind(CHAT)
+      .first<{ notify_enabled: boolean }>();
+    expect(user?.notify_enabled).toBe(false);
+  });
+
+  it('leaves the reports group alone when IT is unreachable', async () => {
+    // A 403 from the reports group means the bot was removed from the group.
+    // That says nothing about any customer's switch, and flipping one because
+    // an admin tidied a group would silence somebody at random.
+    await db
+      .prepare(
+        `INSERT INTO users (telegram_id, notify_enabled, registered_at, last_seen_at)
+         VALUES (?1, true, now(), now())
+         ON CONFLICT (telegram_id) DO UPDATE SET notify_enabled = true`,
+      )
+      .bind(CHAT)
+      .run();
+    await put('report:buyreport:order-9');
+
+    await flush(
+      db,
+      apiThat(() => Promise.reject(new TelegramRejection('bot is not a member', 403))),
+      { now: NOW },
+    );
+
+    const user = await db
+      .prepare(`SELECT notify_enabled FROM users WHERE telegram_id = ?1`)
+      .bind(CHAT)
+      .first<{ notify_enabled: boolean }>();
+    expect(user?.notify_enabled).toBe(true);
+  });
+
   it('identifies whether a dead notification targeted the reports group', async () => {
     await put('report:buyreport:order-1');
     let dead: LogRecord | undefined;
