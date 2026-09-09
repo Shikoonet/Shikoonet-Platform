@@ -196,11 +196,31 @@ export async function emojiById(db: Db, id: number): Promise<StoredEmoji | null>
  * saves layouts — so the change is the shop's layout, visible in the panel, and
  * undone the same way anything else there is.
  */
+/**
+ * Why a button's emoji could not be placed.
+ *
+ * A bare `null` collapsed five different refusals into one, and both callers
+ * rendered the same sentence for all of them: «روی این دکمه جا نشد… اول در
+ * چیدمان کیبورد کوتاهش کن». For an admin whose button is simply not in this
+ * shop's saved layout that is not merely unhelpful, it is a false instruction —
+ * shortening the label will never make it work. `EMOJI_BUTTON_GONE` already
+ * existed and was unreachable from this path.
+ */
+export type EmojiRefusal =
+  /** The label with the emoji on it is over `MAX_LABEL_LENGTH`. Shortening helps. */
+  | 'TOO_LONG'
+  /** This shop's layout has no such button — an admin took that row off. */
+  | 'GONE'
+  /** The fallback glyph is not one emoji, so the markup would not draw. */
+  | 'BAD_EMOJI';
+
+export type EmojiPlacement = { ok: true; label: string } | { ok: false; reason: EmojiRefusal };
+
 export async function setButtonEmoji(
   db: Db,
   action: string,
   emoji: { customEmojiId: string; fallbackEmoji: string },
-): Promise<string | null> {
+): Promise<EmojiPlacement> {
   // Refused rather than written, and NULL rather than the old label — the
   // caller has to be able to tell «placed» from «could not».
   //
@@ -233,7 +253,7 @@ export async function setButtonEmoji(
   // Reject an invalid fallback before materialising a default layout. Length
   // is checked later against the raw stored label, which may still contain an
   // old tag even when the shop's display-time switch exposed only its glyph.
-  if (labelMarkupProblem(withEmoji(''))) return null;
+  if (labelMarkupProblem(withEmoji(''))) return { ok: false, reason: 'BAD_EMOJI' };
 
   // ## The whole layout, or none of it
   //
@@ -291,10 +311,10 @@ export async function setButtonEmoji(
     .prepare(`SELECT label FROM bot_keyboard_buttons WHERE menu = 'main' AND action = ?1`)
     .bind(action)
     .first<{ label: string }>();
-  if (!stored) return null;
+  if (!stored) return { ok: false, reason: 'GONE' };
   const label = withEmoji(stored.label);
-  if (labelMarkupProblem(label)) return null;
-  if (renderedLabelLength(label) > MAX_LABEL_LENGTH) return null;
+  if (labelMarkupProblem(label)) return { ok: false, reason: 'BAD_EMOJI' };
+  if (renderedLabelLength(label) > MAX_LABEL_LENGTH) return { ok: false, reason: 'TOO_LONG' };
 
   const updated = await db
     .prepare(
@@ -309,10 +329,10 @@ export async function setButtonEmoji(
   // that row on purpose and putting it back would add a button they took off —
   // or the seed above lost a race with a layout that does not carry it. Both
   // are «could not», and the caller says so.
-  if (!updated) return null;
+  if (!updated) return { ok: false, reason: 'GONE' };
   // The next update must read the label just written. `loadBotContent` normally
   // keeps layouts for thirty seconds; without invalidation an admin could see
   // the old icon return immediately after the success screen.
   invalidateBotContent();
-  return label;
+  return { ok: true, label };
 }

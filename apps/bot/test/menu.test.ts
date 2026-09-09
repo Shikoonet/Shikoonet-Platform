@@ -231,6 +231,27 @@ const SERVICE: CatalogProduct = {
 };
 
 describe('the service list', () => {
+  it('draws no «back to categories» when the shop has only one category', () => {
+    /*
+     * The migrated shop IS one category. Migration 0032 puts every product in
+     * «سرویس‌ها», so `handle.ts` collapses `buy` straight through to this very
+     * screen — and the button's destination is the screen it is drawn on.
+     * Telegram answers the resulting edit with «message is not modified»,
+     * `telegram.ts` swallows it, the spinner clears, and nothing happens.
+     *
+     * The simulation seed has TWO active categories, which is why no
+     * integration test in this package reaches the state and why this one is
+     * built by hand.
+     */
+    const withList = callbacks(menu.productMenu([SERVICE])).map((b) => b.callback_data);
+    expect(withList).toContain('buy');
+
+    const alone = callbacks(menu.productMenu([SERVICE], false)).map((b) => b.callback_data);
+    expect(alone).not.toContain('buy');
+    // And not a dead end: the way home is `required` on this layout.
+    expect(alone).toContain('menu');
+  });
+
   it('is names, and nothing else', () => {
     // A level does not have a price. A service holding three sizes has three
     // of them, and quoting the cheapest with «از» — which this drew at first —
@@ -387,6 +408,24 @@ describe('the plan list', () => {
   it('goes back to the service list, which is the shop first screen', () => {
     const targets = callbacks(menu.planMenu([PLAN])).map((b) => b.callback_data);
     expect(targets).toContain('buy');
+  });
+
+  it('names the tier list when the category holds more than one service', () => {
+    /*
+     * `buy` from here lands on whatever screen the customer was actually
+     * shown, and on a category holding several services that is the TIER list,
+     * not the category list. Sending them one level too far up is the same
+     * defect `planDetailMenu` already fixed with the same two counts.
+     *
+     * Not suppressed, unlike the service screen above: from here the button
+     * has a real and different destination on every shop shape, including the
+     * migrated one-category shop where it is the only working way back.
+     */
+    const targets = callbacks(menu.planMenu([{ ...PLAN, tiers: 3, categoryId: 42 }])).map(
+      (b) => b.callback_data,
+    );
+    expect(targets).toContain('cat:42');
+    expect(targets).not.toContain('buy');
   });
 
   it('is just a way back when there is nothing to list', () => {

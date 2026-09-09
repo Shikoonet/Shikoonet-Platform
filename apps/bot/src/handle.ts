@@ -1024,11 +1024,18 @@ async function handlePremiumEmoji(
       return reply(menu.EMOJI_ONE_REQUIRED, menu.promptMenu(encode('emj')));
     }
 
-    const label = await setButtonEmoji(tx, target.action, found[0]!);
+    const placed = await setButtonEmoji(tx, target.action, found[0]!);
     await clearSession(tx, user.id);
-    if (label === null) {
-      return reply(menu.emojiTooLong(target.label), menu.emojiHomeMenu(menu.mainMenuButtons()));
+    if (!placed.ok) {
+      // The reason, not one sentence for all of them. Telling an admin whose
+      // button is not in this shop's layout to shorten its label is an
+      // instruction that can never work.
+      return reply(
+        menu.emojiRefused(placed.reason, target.label),
+        menu.emojiHomeMenu(menu.mainMenuButtons()),
+      );
     }
+    const label = placed.label;
     await enableCustomEmoji(tx);
     await rememberEmoji(tx, found);
     const buttons = menu
@@ -1971,6 +1978,15 @@ async function categoryScreen(
   user: Caller,
   category: CatalogCategory,
   screen: (text: string, keyboard?: InlineKeyboard) => HandleOutcome,
+  /**
+   * Whether a category list exists above this screen.
+   *
+   * Passed rather than re-derived, because both callers have just run
+   * `categoriesForUser` and it is the authoritative predicate. Asking again in
+   * SQL would mean approximating `PURCHASABLE` with something simpler, and an
+   * approximation here draws or hides a button on the wrong shops.
+   */
+  hasCategoryList: boolean,
 ): Promise<HandleOutcome> {
   // The LEVEL, not the price list.
   //
@@ -1985,7 +2001,7 @@ async function categoryScreen(
   const services = await productsForUser(tx, user.id, undefined, category.categoryId);
   if (services.length === 0) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu([]));
   if (services.length > 1) {
-    return screen(menu.categoryPlans(category.name), menu.productMenu(services));
+    return screen(menu.categoryPlans(category.name), menu.productMenu(services, hasCategoryList));
   }
 
   // A list of one is not a choice — the same rule the category list follows one
@@ -2108,7 +2124,10 @@ async function handleCallback(
       // applied. One category means the shop has no kinds, only prices, so the
       // customer meets them on the first tap instead of after a pointless one.
       if (categories.length === 1) {
-        return categoryScreen(tx, user, categories[0]!, screen);
+        // One category means there is no list above this screen, so the
+        // «بازگشت به دسته‌بندی‌ها» it would draw has nowhere to go. That is the
+        // migrated shop: 0032 puts every product in one category.
+        return categoryScreen(tx, user, categories[0]!, screen, false);
       }
       return screen(menu.CHOOSE_CATEGORY, menu.categoryMenu(categories));
     }
@@ -2141,7 +2160,8 @@ async function handleCallback(
       // to open. One answer for all three: telling them apart would hand out a
       // map of the hidden catalogue.
       if (!category) return screen(menu.CATEGORY_EMPTY, menu.categoryMenu(categories));
-      return categoryScreen(tx, user, category, screen);
+      // Reached from the category list itself, so there is one to go back to.
+      return categoryScreen(tx, user, category, screen, categories.length > 1);
     }
 
     case 'panel': {
@@ -2686,14 +2706,17 @@ async function handleCallback(
           return screen(menu.EMOJI_BUTTON_GONE, menu.emojiHomeMenu(buttons));
         }
 
-        const label = await setButtonEmoji(tx, target.action, chosen);
-        if (label !== null) await enableCustomEmoji(tx);
+        const placed = await setButtonEmoji(tx, target.action, chosen);
+        if (placed.ok) await enableCustomEmoji(tx);
         await clearSession(tx, user.id);
         const after = buttons.map((b) =>
-          b.slot === target.slot && label !== null ? { ...b, label } : b,
+          b.slot === target.slot && placed.ok ? { ...b, label: placed.label } : b,
         );
+        // Same as the typed-emoji path: say which of the three it was.
         return screen(
-          label === null ? menu.emojiTooLong(target.label) : menu.emojiChanged(target.label),
+          placed.ok
+            ? menu.emojiChanged(target.label)
+            : menu.emojiRefused(placed.reason, target.label),
           menu.emojiHomeMenu(after),
         );
       }
