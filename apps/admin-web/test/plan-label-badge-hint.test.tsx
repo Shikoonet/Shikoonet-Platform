@@ -22,6 +22,12 @@ import { api, type SettingRow } from '../src/api.js';
 const TEMPLATE_ROW: SettingRow = {
   scope: 'shop',
   key: 'plan_button_template',
+  // Live, and it has to be: the screen draws a control for a row only when the
+  // shop reads it, and this whole test is about the control's hint.
+  live: true,
+  label: 'قالب دکمهٔ سرویس',
+  hint: 'مثل {name} — {volume} گیگ — {days} روز.',
+  kind: 'text',
   secret: false,
   value: '',
   isSet: false,
@@ -32,12 +38,22 @@ const TEMPLATE_ROW: SettingRow = {
 /** The hint, matched loosely: the assertion is about the token, not the wording. */
 const HINT = /نشانِ پلن‌ها روی دکمه‌ها نشان داده نمی‌شود/;
 
+// Typed with the body it receives, not as `() =>`: a zero-argument mock makes
+// `mock.calls` a tuple of length nought, and reading `[0]` off it is a type
+// error rather than the assertion it looks like.
+const updateSetting = vi.fn(
+  async (_body: Parameters<typeof api.updateSetting>[0]) =>
+    ({ ok: true }) as Awaited<ReturnType<typeof api.updateSetting>>,
+);
+
 beforeEach(() => {
   vi.spyOn(api, 'settings').mockResolvedValue({
     ok: true,
     items: [TEMPLATE_ROW],
     hiddenCount: 0,
   });
+  updateSetting.mockClear();
+  vi.spyOn(api, 'updateSetting').mockImplementation(updateSetting);
 });
 
 afterEach(() => {
@@ -55,11 +71,16 @@ async function openTheTemplateEditor() {
       <SettingsPage />
     </RoleProvider>,
   );
-  await waitFor(() => screen.getByText('plan_button_template'));
-  fireEvent.click(screen.getByRole('button', { name: 'ویرایش' }));
-  // The only `textbox` on the screen: the search field above is `type="search"`,
-  // which is a `searchbox`, and the scope filter is a `combobox`.
-  return screen.getByRole('textbox');
+  /*
+   * No «ویرایش» step any more, and the row is found by its LABEL.
+   *
+   * «تنظیمات» was a table of 163 raw key/value rows where each field opened
+   * behind an edit button; it is a form now, and every live setting is a
+   * labelled control that is already there. The row is `plan_button_template`
+   * either way — what changed is that a person can find it.
+   */
+  const field = await screen.findByLabelText('قالب دکمهٔ سرویس');
+  return field;
 }
 
 function type(field: HTMLElement, value: string) {
@@ -81,6 +102,28 @@ describe('the plan-button template', () => {
     type(field, '{badge} {duration} | {price}');
     await waitFor(() => expect(screen.getByText(/در ربات:/)).toBeTruthy());
     expect(screen.queryByText(HINT)).toBeNull();
+  });
+
+  it('saves a preset that was chosen with the mouse', async () => {
+    /*
+     * The field saves on blur, and a click on one of these buttons blurs it
+     * FIRST — so the save that fires carries the old draft and the chosen
+     * preset is never sent at all. On screen it looks saved: the input shows
+     * the new template and nothing says otherwise.
+     *
+     * These buttons are the ordinary way to set this template — three of the
+     * four presets exist precisely so nobody has to type the grammar — so the
+     * ordinary path was the one that did not persist.
+     */
+    await openTheTemplateEditor();
+    const preset = screen.getAllByRole('button', { name: /\{/ })[0]!;
+    fireEvent.click(preset);
+
+    await waitFor(() => expect(updateSetting).toHaveBeenCalled());
+    const sent = updateSetting.mock.calls.at(-1)![0];
+    expect(sent.key).toBe('plan_button_template');
+    expect(sent.value).not.toBe('');
+    expect((screen.getByLabelText('قالب دکمهٔ سرویس') as HTMLInputElement).value).toBe(sent.value);
   });
 
   it('stays quiet on an empty template, which means «leave it as it always was»', async () => {
