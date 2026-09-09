@@ -95,10 +95,22 @@ test('a gateway credential is never sent to the browser, and cannot be written b
   await page.goto('/admin/settings');
   await expect(page.locator('.sidebar-link.active')).toHaveText('تنظیمات');
 
-  const row = page.locator(`tbody tr:has-text("${SECRET_KEY}")`);
-  await expect(row).toContainText('ثبت شده');
-  // Locked rather than editable, so the control itself says why.
-  await expect(row.getByRole('button', { name: 'ویرایش' })).toHaveCount(0);
+  /*
+   * A FIELD now, not a table row.
+   *
+   * «تنظیمات» became a form on 2026-09-08: the settings the shop reads are
+   * labelled controls and the imported rows sit read-only on their own tab. A
+   * gateway credential is neither — it stays with the shop's settings, because
+   * «آیا مرچنت ثبت شده؟» is a question an operator asks, and it renders as a
+   * sentence rather than a control.
+   *
+   * The claim is unchanged: the value is never on the screen and never on the
+   * wire, and there is nothing to type it into.
+   */
+  const field = page.locator(`.settings-field:has-text("${SECRET_KEY}")`);
+  await expect(field).toContainText('ثبت شده');
+  // No control at all, not a disabled one.
+  await expect(field.locator('input')).toHaveCount(0);
 
   // Not merely absent from the table — absent from the document, and absent
   // from what the server actually put on the wire. A masked cell above a
@@ -162,11 +174,15 @@ test('a key the bot does not read cannot be invented from this screen', async ({
 
 test('a plain setting is still editable, so the lock is about credentials', async ({ page }) => {
   await page.goto('/admin/settings');
-  const row = page.locator(`tbody tr:has-text("${PLAIN_KEY}")`);
   // The premise: if everything on this screen were locked the test above would
   // pass for a screen that simply refuses all writes.
-  await expect(row.getByRole('button', { name: 'ویرایش' })).toBeVisible();
-  await expect(row).toContainText('80000');
+  //
+  // Found by its LABEL, not its key: that is the whole point of the form —
+  // `minbalancecart` is «کمینهٔ شارژ کیف پول» to the person changing it.
+  const input = page.getByLabel('کمینهٔ شارژ کیف پول');
+  await expect(input).toBeVisible();
+  await expect(input).toBeEditable();
+  await expect(input).toHaveValue('80000');
 });
 
 test('a panel that cannot deliver does not read as فعال', async ({ page }) => {
