@@ -311,6 +311,42 @@ describe('a preparation that failed for want of configuration', () => {
     expect(payments?.n).toBe(1);
   });
 
+  it('gives the retried order its shelf grace back', async () => {
+    /*
+     * `provision_first_failed_at` is stamped on the FIRST retryable failure and
+     * nothing ever cleared it.
+     *
+     * `STOCK_GRACE_MS` exists so a panel that is merely slow gets a few minutes
+     * before the bot spends a pre-made config from a shelf nobody can refill.
+     * An order that failed days ago and is requeued here arrived already past
+     * that window, so its very first stumble took from the shelf — the grace
+     * silently not applying to exactly the orders most likely to need it.
+     *
+     * Cleared with `failure_reason`, because it is the same fact: this order is
+     * being tried again from the beginning.
+     */
+    const { orderId, publicId } = await paidOrder();
+    const panel = fakePanel();
+    await provisionPaidOrders(db, panel.fetchImpl);
+
+    // Stamp it the way a retryable failure would, and well outside any grace.
+    await db
+      .prepare(
+        `UPDATE orders SET provision_first_failed_at = now() - interval '3 days'
+          WHERE id = ?1`,
+      )
+      .bind(orderId)
+      .run();
+
+    await retryOrderProvisioning(db, { orderPublicId: publicId, ...ACTOR });
+
+    const row = await db
+      .prepare(`SELECT provision_first_failed_at FROM orders WHERE id = ?1`)
+      .bind(orderId)
+      .first<{ provision_first_failed_at: string | null }>();
+    expect(row?.provision_first_failed_at).toBeNull();
+  });
+
   it('gives one entitlement when two operators retry at once', async () => {
     const { orderId, publicId } = await paidOrder();
     const panel = fakePanel();

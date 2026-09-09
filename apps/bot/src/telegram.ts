@@ -481,7 +481,38 @@ export const TRUNCATION_MARK = '\n…';
 function clamp(text: string): string {
   if (text.length <= MAX_MESSAGE_LENGTH) return text;
   log.warn('telegram.message_truncated', { chars: text.length, limit: MAX_MESSAGE_LENGTH });
-  return text.slice(0, MAX_MESSAGE_LENGTH - TRUNCATION_MARK.length) + TRUNCATION_MARK;
+  return cutTo(text, MAX_MESSAGE_LENGTH - TRUNCATION_MARK.length) + TRUNCATION_MARK;
+}
+
+/**
+ * `slice`, except it never cuts an emoji in half.
+ *
+ * The slice is by UTF-16 code unit, matching Telegram's own count — and an
+ * emoji is TWO of them. Cutting between the pair leaves a lone high surrogate
+ * at the end of the string, `JSON.stringify` writes it as a literal `\ud83d`,
+ * and Telegram is handed a body that is not valid UTF-8. Reachable from any
+ * screen built out of unbounded data, the price list first among them.
+ *
+ * Dropping the orphan costs one character of a message that is already being
+ * cut, which is the cheapest possible answer.
+ */
+function cutTo(text: string, limit: number): string {
+  const cut = text.slice(0, limit);
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+}
+
+/**
+ * The same for a caption, whose limit is a quarter of a message's.
+ *
+ * It used to be a bare `slice` in three places: no truncation mark, no log
+ * line, and the same lone-surrogate hazard. The QR screen makes that matter —
+ * its caption IS the subscription link — so a cut one arrives looking whole and
+ * simply does not work. Now it reads as cut and says so in the log.
+ */
+function clampCaption(caption: string): string {
+  if (caption.length <= MAX_CAPTION_LENGTH) return caption;
+  log.warn('telegram.caption_truncated', { chars: caption.length, limit: MAX_CAPTION_LENGTH });
+  return cutTo(caption, MAX_CAPTION_LENGTH - TRUNCATION_MARK.length) + TRUNCATION_MARK;
 }
 
 /**
@@ -900,7 +931,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
           // Not run through `withEmojiFallback`: a caption is one short line the
           // bot writes itself, never an admin's override, so there is no markup
           // here to escape and nothing to land back from.
-          ...(caption === undefined ? {} : { caption: caption.slice(0, MAX_CAPTION_LENGTH) }),
+          ...(caption === undefined ? {} : { caption: clampCaption(caption) }),
         },
         15_000,
       );
@@ -914,7 +945,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
       const bytes = new Uint8Array(png.byteLength);
       bytes.set(png);
       form.set('photo', new Blob([bytes], { type: 'image/png' }), 'qr.png');
-      if (caption !== undefined) form.set('caption', caption.slice(0, MAX_CAPTION_LENGTH));
+      if (caption !== undefined) form.set('caption', clampCaption(caption));
       if (keyboard !== undefined) {
         // Plain, not premium. The one keyboard that reaches here is the QR
         // screen's own «copy the link» button, which the bot writes itself and
@@ -933,7 +964,7 @@ export function createTelegramApi(options: TelegramApiOptions): TelegramApi {
           document: fileId,
           // Not run through `withEmojiFallback`, for the same reason `sendPhoto`
           // is not: a caption here is one short line the bot writes itself.
-          ...(caption === undefined ? {} : { caption: caption.slice(0, MAX_CAPTION_LENGTH) }),
+          ...(caption === undefined ? {} : { caption: clampCaption(caption) }),
         },
         15_000,
       );
