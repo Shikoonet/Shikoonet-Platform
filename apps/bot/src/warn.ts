@@ -64,7 +64,18 @@ const BATCH = 50;
 
 interface DueRow {
   id: number;
-  telegram_id: number | null;
+  /**
+   * NOT nullable, and the type says so now.
+   *
+   * `users.telegram_id` is `bigint NOT NULL UNIQUE` (migration 0001) and no
+   * later `ALTER TABLE users` touches it — 0020 and 0047 both only ADD a
+   * column. Every branch of the query below inner-joins `users`, so the value
+   * cannot arrive null.
+   *
+   * Declaring it nullable bought a dead branch that returned «yes, handled» for
+   * a row that could not exist, and the counters believed it.
+   */
+  telegram_id: number;
   plan_name_at_sale: string;
   expires_at: string | null;
   volume_gb: number | null;
@@ -233,7 +244,6 @@ export async function warnExpiringServices(
         .bind(row.id, row.reason)
         .run();
       if (marked.meta.changes === 0) return false;
-      if (row.telegram_id === null) return true;
 
       // Subscription, reason, and the cycle the warning is ABOUT.
       //
