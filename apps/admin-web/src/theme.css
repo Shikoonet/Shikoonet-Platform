@@ -79,7 +79,7 @@ body {
    clickable.
 
    `--accent` clears 4.5:1 on the page background and on a card, which
-   `link-legibility.test.ts` computes from WCAG's own arithmetic. The two
+   `legibility.test.ts` computes from WCAG's own arithmetic. The two
    anchors styled as buttons carry `.btn` and outrank this by specificity. */
 a {
   color: var(--accent);
