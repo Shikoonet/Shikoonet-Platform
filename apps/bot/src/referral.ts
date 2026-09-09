@@ -142,8 +142,15 @@ export async function payReferralCommission(
 
   const counted = await tx
     .prepare(
+      // TRIAL is excluded for the same reason WALLET_TOPUP is: neither is a
+      // purchase. A trial order is written PAID with `total_irr = 0`
+      // (`order.ts`'s `placeTrialOrder`), so counting it made the referred
+      // customer's FIRST REAL purchase their second order — and this function
+      // pays only on the first. The ordinary funnel is trial then buy, so the
+      // commission was being withheld from most of the people who earned it,
+      // silently and with no row anywhere saying so.
       `SELECT count(*)::int AS n FROM orders
-        WHERE user_id = ?1 AND kind <> 'WALLET_TOPUP'
+        WHERE user_id = ?1 AND kind NOT IN ('WALLET_TOPUP', 'TRIAL')
           AND status IN ('PAID', 'PROVISIONING', 'COMPLETED')`,
     )
     .bind(order.user_id)

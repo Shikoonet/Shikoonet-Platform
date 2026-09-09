@@ -411,7 +411,15 @@ export async function recordReceipt(
         WHERE p.user_id = ?1
           AND (p.status = 'AWAITING_REVIEW'
                OR (p.status = 'PAID' AND c.status = 'FULFILLED_UNRECONCILED'))
-        ORDER BY p.updated_at DESC, p.id DESC
+        -- A claim with no receipt yet wins, and only then the newest.
+        --
+        -- On updated_at alone (no backticks here: this is inside a JS template
+        -- literal) a customer with two open claims could only ever feed the newer
+        -- one: the first photo landed there, and the second REPLACED it rather
+        -- than reaching the older claim, which then had no way to receive
+        -- evidence at all. Under CONTINUITY that also released the wrong order
+        -- and acknowledged a receipt the other one was waiting for.
+        ORDER BY (c.receipt_url_or_r2_key IS NOT NULL), p.updated_at DESC, p.id DESC
         LIMIT 1`,
     )
     .bind(userId)

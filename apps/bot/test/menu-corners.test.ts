@@ -283,6 +283,54 @@ describe('referrals', () => {
     expect(await payReferralCommission(db as never, second!.id)).toBeNull();
   });
 
+  it('still pays when the customer took the free trial first', async () => {
+    /*
+     * The ordinary funnel is trial, then buy — and it used to cancel the
+     * commission outright.
+     *
+     * `placeTrialOrder` writes a TRIAL order PAID with `total_irr = 0`, and the
+     * "is this their first purchase" count read every order that was not a
+     * top-up. So the trial was counted, the real purchase behind it was the
+     * SECOND order, and the referrer was silently paid nothing. Nothing
+     * anywhere recorded that a commission had been skipped.
+     *
+     * A free order is not a purchase, which is the same reasoning the top-up
+     * exclusion below already rests on.
+     */
+    const referrer = await makeCustomer(ids().telegramId);
+    const buyerTelegram = ids().telegramId;
+    const buyer = await makeCustomer(buyerTelegram);
+    await db.prepare(`UPDATE users SET referred_by = ?1 WHERE id = ?2`).bind(referrer, buyer).run();
+    // `orders_trial_is_free` requires a panel and a zero total, so the fixture
+    // is the real shape a trial has rather than an approximation of one.
+    const panel = await db
+      .prepare(`SELECT provider_id FROM products p JOIN product_plans pl ON pl.product_id = p.id
+                 WHERE pl.id = ?1`)
+      .bind(VIP_PLAN)
+      .first<{ provider_id: number }>();
+    await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, provider_id, quantity,
+                             unit_price_irr, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'TRIAL', ?3, 1, 0, 0, 0, 'PAID')`,
+      )
+      .bind(`reftrial-${buyerTelegram}`, buyer, panel!.provider_id)
+      .run();
+    const purchase = await db
+      .prepare(
+        `INSERT INTO orders (public_id, user_id, kind, plan_id, quantity,
+                             unit_price_irr, discount_irr, total_irr, status)
+         VALUES (?1, ?2, 'NEW_PURCHASE', ?3, 1, ?4, 0, ?4, 'PAID')
+         RETURNING id`,
+      )
+      .bind(`reftrialbuy-${buyerTelegram}`, buyer, VIP_PLAN, VIP_PRICE)
+      .first<{ id: number }>();
+
+    expect(await payReferralCommission(db as never, purchase!.id)).toBe(
+      Math.floor((VIP_PRICE * COMMISSION_PERCENT) / 100),
+    );
+  });
+
   it('pays nothing on a wallet top-up', async () => {
     // Otherwise the commission is paid twice: once on the money going in, and
     // once on whatever that money then buys.

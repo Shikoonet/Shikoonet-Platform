@@ -23,8 +23,23 @@ import {
   TOPUP_AMOUNTS_IRR,
   TOPUP_MIN_IRR,
 } from '../src/wallet.js';
+import { handleUpdate } from '../src/handle.js';
+import type { TelegramUpdate } from '../src/telegram.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
+
+/** One button press, the way `poll.ts` hands it over. */
+function press(updateId: number, telegramId: number, data: string): TelegramUpdate {
+  return {
+    update_id: updateId,
+    callback_query: {
+      id: `cq-${updateId}`,
+      from: { id: telegramId, username: `w${telegramId}` },
+      message: { message_id: 42, chat: { id: telegramId } },
+      data,
+    },
+  };
+}
 
 beforeEach(async () => {
   await ensureCatalog();
@@ -336,6 +351,36 @@ describe('a deposit that is paid for', () => {
       .bind(order.id)
       .first<{ status: string; failure_reason: string | null }>();
     expect(row).toMatchObject({ status: 'PAID', failure_reason: null });
+  });
+
+  it('cannot be paid out of the balance it exists to fill', async () => {
+    /*
+     * `wpay` on a deposit order used to take the money and give nothing back.
+     *
+     * The button is never drawn for a deposit — `checkoutMenu` omits the wallet
+     * row because `topup()` passes it no balance — but `callback_data` is
+     * unsigned, so the press arrives anyway. What followed: the balance was
+     * debited, the order moved to PAID, `creditTopup` was never called (only
+     * the card settlement calls it), and the provisioning sweep skips
+     * `WALLET_TOPUP` by name, so nothing ever failed the order into a refund.
+     * The money left the wallet and no row said where it went.
+     *
+     * Asserted on the BALANCE rather than on the screen: what makes this a bug
+     * is the money, and the screen is only how the customer finds out.
+     */
+    const telegramId = 920_100_014;
+    const userId = await makeCustomer(telegramId);
+    await credit(userId, 3_000_000, `t:${userId}:a`);
+    const order = await topupOrder(userId, 1_000_000);
+
+    await handleUpdate(db, press(920_100_914, telegramId, `wpay:${order.id}`));
+
+    expect(await balanceFor(db, userId)).toBe(3_000_000);
+    const row = await db
+      .prepare(`SELECT status FROM orders WHERE id = ?1`)
+      .bind(order.id)
+      .first<{ status: string }>();
+    expect(row).toMatchObject({ status: 'AWAITING_PAYMENT' });
   });
 
   it('credits once even when the sweep runs again', async () => {

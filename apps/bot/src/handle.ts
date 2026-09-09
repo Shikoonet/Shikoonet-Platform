@@ -320,7 +320,39 @@ export async function handleUpdate(
       return adminAnswer;
     };
 
-    if (!SHOP.open && from && chatId !== undefined && !(await isAdmin())) {
+    const action = update.callback_query ? decode(update.callback_query.data)?.action : null;
+    const isStart = update.message?.text !== undefined && command(update.message.text) === '/start';
+
+    /*
+     * The customer has already sent money to a card, and this update is how
+     * they say so. Nothing here STARTS anything — it attaches evidence to, or
+     * opens a claim against, a payment that is already waiting on an order
+     * this customer already owns — so letting it past grants nothing that the
+     * screens in front of it are guarding.
+     *
+     * Written once and consulted by both guards below, because the two used to
+     * disagree and each disagreement cost a real payment:
+     *
+     *   * the closed sign answered a receipt with «فروشگاه بسته است». The
+     *     photo was never recorded, `expireUnpaidOrders` then killed the
+     *     invoice, and the money was in the bank with nothing pointing at it.
+     *     The cutover pause — the reason the switch exists — is exactly when a
+     *     customer is most likely to be mid-payment.
+     *   * the membership gate let a RECEIPT past and held «پرداخت کردم». That
+     *     one is worse than it looks: `paid_clicked_at` is half of the
+     *     auto-verify window, so a customer who left the channel between
+     *     ordering and paying could never have their transfer matched
+     *     automatically at all.
+     *
+     * `orderForUser` and `recordReceipt` both re-check the owner, so a forged
+     * id belongs to nobody and a customer with nothing waiting learns nothing.
+     */
+    const carriesReceipt =
+      update.message?.photo !== undefined ||
+      (update.message?.document !== undefined && isReceiptFile(update.message.document.mime_type));
+    const recoversAPayment = carriesReceipt || action === 'paid';
+
+    if (!SHOP.open && from && chatId !== undefined && !recoversAPayment && !(await isAdmin())) {
       return {
         status: 'processed',
         replies: [
@@ -374,34 +406,17 @@ export async function handleUpdate(
     // session reset and the referral the customer arrived on: gating it here
     // would throw away the referrer of everyone who arrives on a link and is not
     // yet in the channel.
-    const action = update.callback_query ? decode(update.callback_query.data)?.action : null;
-    const isStart = update.message?.text !== undefined && command(update.message.text) === '/start';
-
-    // A receipt goes through the gate, because it is not a purchase — it is the
-    // recovery path of one that already happened.
     //
-    // The customer has sent money to a card. If they left the channel in the
-    // meantime, or Telegram's membership call is having a bad minute (and
-    // `gate.ts` fails open only for OUR errors, not for a truthful "not a
-    // member"), the gate would refuse the one message that proves they paid.
-    // They cannot be helped through it either: the screen says "join the
-    // channel", and joining is not what is wrong.
-    //
-    // Nothing is granted by letting it past. `handleReceipt` looks for a
-    // payment that is actually waiting and answers RECEIPT_NOTHING_WAITING
-    // when there is none, so a non-member with no order learns nothing and
-    // gets nothing — the gate still stands in front of every way to start one.
-    const carriesReceipt =
-      update.message?.photo !== undefined ||
-      (update.message?.document !== undefined && isReceiptFile(update.message.document.mime_type));
-
+    // And `recoversAPayment`, for the reasons written where it is built: a
+    // customer who has already sent money cannot be helped by a screen that
+    // says «join the channel», because joining is not what is wrong.
     if (
       from &&
       chatId !== undefined &&
       action !== 'chk' &&
       action !== 'acc' &&
       !isStart &&
-      !carriesReceipt
+      !recoversAPayment
     ) {
       const gated = (await isAdmin()) ? null : await gateFor(tx, api, from.id, SHOP.requiresRules);
       if (gated) return gateScreen(chatId, gated);
@@ -1283,10 +1298,26 @@ async function ask(
 ): Promise<void> {
   await tx
     .prepare(
+      // `navBack` is carried over, exactly as `clearSession` carries it.
+      //
+      // It is not part of any question — it is where the persistent bottom bar
+      // points — so a question that replaced the whole `data` object dropped
+      // it. On the callback path `applyCallbackNavigation` runs afterwards and
+      // writes it back; on the TYPED path nothing does, so accepting a discount
+      // code, a renewal code or an account name left the bar saying «↩️ برگشت»
+      // on the main menu with nothing to go back to, and no later update could
+      // repair it: the transition that replaces the keyboard only fires when
+      // the mode CHANGES, and by then both sides read as home.
       `INSERT INTO bot_sessions (user_id, step, data, updated_at)
        VALUES (?1, ?2, ?3::jsonb, now())
        ON CONFLICT (user_id) DO UPDATE
-         SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now()`,
+         SET step = EXCLUDED.step,
+             data = CASE
+               WHEN jsonb_exists(bot_sessions.data, 'navBack')
+                 THEN jsonb_build_object('navBack', bot_sessions.data->'navBack') || EXCLUDED.data
+               ELSE EXCLUDED.data
+             END,
+             updated_at = now()`,
     )
     .bind(userId, step, JSON.stringify(screenId === undefined ? data : { ...data, screen: screenId }))
     .run();
@@ -1353,13 +1384,23 @@ async function handleAddonAmount(
     await clearSession(tx, user.id);
     return reply(menu.ORDER_NOT_PAYABLE, menu.serviceDetailMenu());
   }
+  // Cleared the moment the order exists, and no later.
+  //
+  // It used to sit below the two returns underneath, so a shop with no active
+  // payment card placed the order, answered «کارتی موجود نیست» with the
+  // after-payment chrome — which reads as finished — and left the session still
+  // saying `addon:`. Every number the customer typed afterwards placed ANOTHER
+  // add-on order, with nothing on screen suggesting they were still inside a
+  // question. `handleTopupAmount` clears before it places for exactly this
+  // reason.
+  //
+  // Everything above this line re-asks and leaves the step open on purpose: a
+  // customer who typed something unusable is still in the flow.
+  await clearSession(tx, user.id);
+
   const checkout = await checkoutFor(tx, user.id, placed.id, placed.totalIrr, newPublicId());
   if (!checkout) return reply(menu.NO_CARD_AVAILABLE, menu.afterPaidMenu());
   if (checkout.claimed) return reply(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
-
-  // The step is cleared here and not before: a customer who typed something
-  // unusable is still in the flow and can simply type again.
-  await clearSession(tx, user.id);
 
   return reply(
     menu.addonCheckout(
@@ -2289,7 +2330,7 @@ async function handleCallback(
       // A service with no link has nothing to encode. Sending a QR of an empty
       // string is a picture that scans to nothing, which is worse than saying so.
       if (!service.subscription_url) {
-        return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu(actionsFor(service, SHOP)));
+        return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu(actionsFor(service, SHOP, tierFor(user))));
       }
       // A new message rather than an edit: the detail screen the customer is
       // looking at stays where it is, and the picture arrives under it.
@@ -2325,23 +2366,32 @@ async function handleCallback(
       // The amount is typed, not tapped, so the flow has to survive the gap.
       // `bot_sessions` is where that lives, and it is scoped to the user row —
       // the service id in it was already checked for ownership just above.
-      await tx
-        .prepare(
-          `INSERT INTO bot_sessions (user_id, step, data, updated_at)
-           VALUES (?1, ?2, ?3::jsonb, now())
-           ON CONFLICT (user_id) DO UPDATE
-             SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now()`,
-        )
-        .bind(user.id, `addon:${kind}`, JSON.stringify({ subscriptionId: service.id }))
-        .run();
-      return screen(menu.askAddonAmount(kind, unit), menu.confirmRevokeMenu(service.id).slice(1));
+      //
+      // Through `ask` like every other question in this file, rather than the
+      // hand-written INSERT that used to be here. That copy omitted the screen
+      // id, so this was the one typed answer in the bot that could not be
+      // written back into the message that asked for it, and it did not
+      // preserve `navBack` either.
+      await ask(tx, user.id, `addon:${kind}`, { subscriptionId: service.id }, editId);
+      // `promptMenu`, not a slice of somebody else's keyboard.
+      //
+      // This drew `confirmRevokeMenu(id).slice(1)` — the REVOKE confirmation
+      // with its first row cut off — which worked only because the default
+      // layout happens to put «✅ بله، لینک را عوض کن» in row 0 and the way
+      // back in row 1. That layout is admin-editable and `rvk2` is `required`,
+      // so it can be moved but not removed: an admin who reorders the rows puts
+      // «yes, replace the link» directly under «چند گیگابایت می‌خواهی؟», one tap
+      // from killing the subscription on every device the customer imported it
+      // onto. An admin who puts both on one row leaves the prompt with no
+      // keyboard at all.
+      return screen(menu.askAddonAmount(kind, unit), menu.promptMenu(encode('sub', service.id)));
     }
 
     case 'rvk': {
       if (action.id === undefined) return IGNORED;
       const service = await subscriptionOnPanelForUser(tx, user.id, action.id);
       if (!service) return screen(menu.SERVICE_GONE, menu.myServicesMenu([], Date.now(), 1, 1));
-      if (!actionsFor(service, SHOP)) {
+      if (!actionsFor(service, SHOP, tierFor(user))) {
         return screen(menu.ACTION_UNSUPPORTED, menu.serviceDetailMenu());
       }
       return screen(menu.CONFIRM_REVOKE, menu.confirmRevokeMenu(action.id));
@@ -2362,8 +2412,10 @@ async function handleCallback(
       }
       if (outcome.status === 'FAILED') {
         return screen(
-          menu.actionFailed(outcome.reason),
-          menu.serviceDetailMenu(actionsFor(outcome.service, SHOP)),
+          // No `outcome.reason`: it is the panel's English, written for the
+          // log, and `actOnService` has already put it there.
+          menu.actionFailed(),
+          menu.serviceDetailMenu(actionsFor(outcome.service, SHOP, tierFor(user))),
         );
       }
       // The service is redrawn under the message, so the customer sees the new
@@ -2377,7 +2429,7 @@ async function handleCallback(
           : menu.serviceSwitched(kind === 'ENABLE');
       return screen(
         `${said}\n\n${detail}`,
-        menu.serviceDetailMenu(actionsFor(outcome.service, SHOP)),
+        menu.serviceDetailMenu(actionsFor(outcome.service, SHOP, tierFor(user))),
       );
     }
 
@@ -2456,7 +2508,11 @@ async function handleCallback(
       if (!renewAllowed(service.provider_config ?? {})) {
         return screen(menu.RENEWAL_CLOSED, menu.afterPaidMenu());
       }
-      const plan = await purchasablePlan(tx, user.id, action.id2);
+      // `forRenewal`, so a panel that has hit its new-account cap can still
+      // extend what it already sold. The cap counts accounts being created and
+      // a renewal creates none; leaving it in this gate refused at the last
+      // step what the list one screen back had just offered.
+      const plan = await purchasablePlan(tx, user.id, action.id2, true);
       // A plan from another panel is not a renewal of THIS service, whatever
       // the button said. Checking the provider is what stops a cheap plan on
       // one panel being used to extend an expensive service on another.
@@ -2669,6 +2725,20 @@ async function handleCallback(
       const order = await lockOrderForUser(tx, user.id, action.id);
       if (!order || order.status !== 'AWAITING_PAYMENT') {
         return screen(menu.ORDER_GONE, menu.afterPaidMenu());
+      }
+      // A deposit cannot be paid FROM the balance it is meant to fill, and the
+      // button that says so was never the guard. `checkoutMenu` omits the
+      // wallet row for a deposit — `topup()` passes it no balance — but
+      // `callback_data` is unsigned, so `wpay:<a deposit's order id>` arrives
+      // here anyway.
+      //
+      // What it used to do: debit the balance, move the order to PAID, and
+      // stop. `creditTopup` runs only from the card settlement, and the
+      // provisioning sweep skips `WALLET_TOPUP` by name, so nothing ever
+      // credited the deposit and nothing ever failed the order into a refund.
+      // The money simply left, and no row said where it went.
+      if (order.kind === 'WALLET_TOPUP') {
+        return screen(menu.ORDER_GONE, menu.walletMenu());
       }
       const spent = await spendOnOrder(tx, user.id, order.id, order.total_irr);
       if (spent === 'INSUFFICIENT') {

@@ -147,7 +147,32 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
   for (const row of results ?? []) {
     /** The deposit this sweep credited, so the customer is told the right thing. */
     let credited: number | null = null;
-    const settled = await db.withSession(async (tx) => {
+    /*
+     * One row's failure is one row's failure, and it took a real shape to see
+     * why that has to be written down.
+     *
+     * The batch is `ORDER BY p.id LIMIT 100`, so a row that throws every time
+     * is not just its own problem: it aborts the loop, and every VERIFIED
+     * payment with a higher id behind it never settles either. Orders stay
+     * AWAITING_PAYMENT, nothing is provisioned, nobody is told, and the only
+     * trace is one `sweep.failed` line per cycle — for money that is already in
+     * the bank.
+     *
+     * The reachable case is a payment whose order also carries a PAID WALLET
+     * row: `idx_payments_one_paid_per_order` refuses the second PAID and
+     * Postgres raises 23505 from inside the transaction. `wpay` no longer
+     * writes that state and `recordPaidClick` no longer opens a claim against a
+     * paid order, so this is the second lock on a door that is now shut — kept
+     * because "no caller creates that row today" is not a property this sweep
+     * can rely on, and the cost of being wrong is every customer's payment.
+     *
+     * The row is left un-settled rather than skipped for good: the next cycle
+     * picks it up again, and if it is genuinely poisoned it says so once per
+     * cycle instead of taking the shop with it.
+     */
+    let settled = false;
+    try {
+      settled = await db.withSession(async (tx) => {
       // The money genuinely arrived, so the payment is paid whatever state the
       // order is in. Guarded on the old status so a concurrent sweep — or this
       // one running twice — settles it exactly once.
@@ -256,7 +281,19 @@ export async function settleVerifiedPayments(db: D1Database): Promise<number> {
         }),
       );
       return true;
-    });
+      });
+    } catch (err) {
+      log.error(
+        'settle.row_failed',
+        {
+          ref: row.payment_public_id,
+          order_status: row.order_status ?? 'missing',
+          consequence: 'left for the next cycle; the rest of the batch continues',
+        },
+        err,
+      );
+      continue;
+    }
 
     if (settled) settledCount += 1;
   }
