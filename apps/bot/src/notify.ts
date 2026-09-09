@@ -278,6 +278,42 @@ export async function flush(
       const exhausted = row.attempt_count >= MAX_ATTEMPTS;
       if (permanent || exhausted) {
         await settle(db, row.id, 'DEAD', String(err), null);
+        /*
+         * Marked here, in the one place that learns it, rather than in each
+         * sweep that keeps finding out the hard way.
+         *
+         * A 403 is Telegram saying this customer blocked the bot or deleted the
+         * chat. Nothing wrote that down: `notify_enabled` stayed true, so
+         * `warn.ts` queued them another expiry warning on every cycle,
+         * `nudge.ts` kept nudging, every broadcast counted them as a recipient
+         * and failed, and the DEAD rows accumulated in a table nothing prunes.
+         * One row per attempt, for ever, for somebody who cannot be reached.
+         *
+         * Every one of those sweeps already filters on `u.notify_enabled`, so
+         * this single write silences all of them. Only for a message that was
+         * going to a CUSTOMER: a 403 from the reports group means the bot was
+         * removed from the group, which says nothing about anybody's switch.
+         */
+        if (permanent && routeOf(row.dedupe_key).destination === 'customer') {
+          // Its own catch, like every other write on this path.
+          //
+          // `settle` and `markQrSent` both swallow their failures here for the
+          // same reason: this loop has no handler of its own, so a rejection
+          // escapes `flush` entirely and abandons the rest of the batch — and
+          // the broadcast sweep after it. The row is already DEAD by this
+          // point, so losing this flag costs one more silenced sweep for one
+          // customer. Losing the batch costs every other customer's message.
+          await db
+            .prepare(
+              `UPDATE users SET notify_enabled = false, updated_at = now()
+                WHERE telegram_id = ?1 AND notify_enabled`,
+            )
+            .bind(row.chat_id)
+            .run()
+            .catch((e: unknown) => {
+              log.warn('notify.silence_unrecorded', { ref: String(row.id) }, e);
+            });
+        }
         result.dead += 1;
         log.error(
           'notify.dead',

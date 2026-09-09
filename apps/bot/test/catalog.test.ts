@@ -569,18 +569,32 @@ describe('the panel cap', () => {
   });
 
   it('does not touch renewals — a full panel still renews what it already sold', async () => {
+    /*
+     * This test asserted `SELECT count(*) FROM provisioning_providers WHERE
+     * status = 'ACTIVE'` until now — true whatever the capacity was and
+     * whatever the renewal list did. It could not fail, so it was not evidence,
+     * and what it was hiding is that a full panel DID refuse renewals.
+     *
+     * The renewal screen reads `plansOnPanel`, and the gate behind it is
+     * `purchasablePlan`. Both shared the predicate that carried the cap, so a
+     * customer who had already paid opened «تمدید» and was offered nothing.
+     * The cap counts accounts being CREATED, and a renewal creates none.
+     */
     await setCapacity(0);
-    // `RENEWABLE` in owned.ts is a separate predicate and deliberately has no
-    // cap in it. A customer who already paid must not be locked out of
-    // extending because the panel filled up after they bought.
-    const renewable = await db
-      .prepare(
-        `SELECT COUNT(*)::int AS n FROM provisioning_providers
-          WHERE id = ?1 AND status = 'ACTIVE'`,
-      )
-      .bind(vip)
-      .first<{ n: number }>();
-    expect(renewable!.n).toBe(1);
+
+    // The shop stops selling, which is the cap doing its job...
+    expect(await sellsFrom(vip)).toBe(false);
+    // ...and the renewal list is untouched, which is the cap staying out of a
+    // question it has no answer to.
+    expect((await plansOnPanel(db, customer, vip)).length).toBeGreaterThan(0);
+
+    // And the gate behind that list agrees with it, or the customer picks a
+    // plan and is told it is gone.
+    const offered = (await plansOnPanel(db, customer, vip))[0]!;
+    expect(await purchasablePlan(db, customer, offered.planId, true)).not.toBeNull();
+    // The same plan, asked as a NEW purchase, is correctly refused.
+    expect(await purchasablePlan(db, customer, offered.planId)).toBeNull();
+
     await setCapacity(null);
   });
 });
