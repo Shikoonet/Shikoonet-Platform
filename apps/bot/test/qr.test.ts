@@ -13,6 +13,9 @@ import { describe, expect, it } from 'vitest';
 import jsQR from 'jsqr';
 import { PNG } from 'pngjs';
 import { qrPng } from '../src/qr.js';
+import { qrMenu } from '../src/menu.js';
+import { MAX_COPY_TEXT_LENGTH } from '../src/telegram.js';
+import { decode as decodeCallback } from '../src/callback.js';
 
 /** The bytes as a scanner sees them: one RGBA quadruple per pixel. */
 function decode(png: Buffer): string | null {
@@ -47,5 +50,33 @@ describe('qrPng', () => {
     const blank = new PNG({ width: 64, height: 64 });
     blank.data.fill(0xff);
     expect(decode(PNG.sync.write(blank))).toBeNull();
+  });
+});
+
+/**
+ * The keyboard under the picture.
+ *
+ * The QR is sent as a NEW message rather than an edit — on purpose, so the
+ * service screen it came from stays put — which means that screen is now
+ * somewhere above it in the chat. Until this row existed the only way back was
+ * scrolling.
+ */
+describe('the keyboard under a QR', () => {
+  const link = 'https://panel.example.com/sub/abc123';
+
+  it('offers the link and a way back to the service', () => {
+    const rows = qrMenu(link, 77);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]![0]!.copy_text).toEqual({ text: link });
+    expect(decodeCallback(rows[1]![0]!.callback_data)).toEqual({ action: 'sub', id: 77 });
+  });
+
+  it('keeps the way back when the link is too long to copy', () => {
+    // `copyLinkMenu` gives up above Telegram's 256-character cap for
+    // `copy_text`. The exit must not go with it — a customer whose panel emits
+    // a very long link is exactly the one who cannot scroll back past a QR.
+    const rows = qrMenu('https://x/'.padEnd(MAX_COPY_TEXT_LENGTH + 1, 'y'), 78);
+    expect(rows).toHaveLength(1);
+    expect(decodeCallback(rows[0]![0]!.callback_data)).toEqual({ action: 'sub', id: 78 });
   });
 });
