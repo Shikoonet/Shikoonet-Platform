@@ -1311,12 +1311,21 @@ async function renew(
 
   const expiresAt = result.expiresAt ?? null;
   if (addon !== null) {
+    /**
+     * What the ROW ends up holding, which is what the customer is told.
+     *
+     * `GREATEST` below can keep our stored date instead of the panel's, and
+     * before this the message still quoted the panel's — so the one case the
+     * guard exists for was also the one case the screen disagreed with the
+     * database. Read back rather than recomputed, so the two cannot drift.
+     */
+    let storedExpiry: Date | null = expiresAt;
     // Only what was bought. Writing the plan columns here would blank the
     // service's name and duration, because an add-on has no plan — and a
     // separate statement rather than a branch inside one, because the adapter
     // rejects a bound parameter the SQL never uses.
     await db.withSession(async (tx) => {
-      await tx
+      const kept = await tx
         .prepare(
           // GREATEST, never a plain assignment, and the reason is the same one
           // sync.ts gives for COALESCE-ing the expiry: a panel clock that is
@@ -1342,17 +1351,19 @@ async function renew(
                   notify         = '{}'::jsonb,
                   last_synced_at = NULL,
                   updated_at     = now()
-            WHERE id = ?1`,
+            WHERE id = ?1
+          RETURNING expires_at`,
         )
         .bind(
           row.target_subscription_id,
           result.volumeGb ?? null,
           expiresAt === null ? null : expiresAt.toISOString(),
         )
-        .run();
+        .first<{ expires_at: string | null }>();
+      storedExpiry = kept?.expires_at == null ? null : new Date(kept.expires_at);
       await complete(tx, row.order_id);
     });
-    return say(menu.addonApplied(addon.kind, addon.quantity, serviceName, expiresAt));
+    return say(menu.addonApplied(addon.kind, addon.quantity, serviceName, storedExpiry));
   }
 
   let cashbackIrr: number | null = null;
