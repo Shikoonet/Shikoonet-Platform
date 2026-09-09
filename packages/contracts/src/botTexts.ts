@@ -1248,6 +1248,12 @@ export const TEXTS = {
     screen: 'wallet',
     hint: 'موجودی کمتر از مبلغ سفارش',
   },
+  WALLET_SHORTFALL: {
+    default: '{amount} کم دارید.',
+    placeholders: ['amount'],
+    screen: 'wallet',
+    hint: 'زیر پیام «موجودی کافی نیست» — چقدر کم است',
+  },
   WALLET_PAID_TITLE: {
     default: '✅ پرداخت از کیف پول انجام شد.',
     placeholders: [],

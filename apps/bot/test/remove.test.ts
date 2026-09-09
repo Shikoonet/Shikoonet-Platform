@@ -63,6 +63,17 @@ interface Fixture {
   /** Days ago the panel last saw it connect. Null = never reported. */
   onlineDaysAgo?: number | null;
   status?: string;
+  /**
+   * When our row last heard from the panel. Null = never, or not since we last
+   * wrote to it ourselves.
+   *
+   * Defaults to «just now», because that is what an ordinary service looks
+   * like: `sync.ts` stamps it every ten minutes. It is a fixture knob because
+   * of what NULL means — an add-on or a renewal sets it to NULL deliberately,
+   * to say «the panel's verdict on this row is older than what we just did to
+   * it», and the removal sweeps must refuse a row in that state.
+   */
+  syncedDaysAgo?: number | null;
 }
 
 async function makeService(userId: number, fx: Fixture): Promise<number> {
@@ -70,8 +81,10 @@ async function makeService(userId: number, fx: Fixture): Promise<number> {
     .prepare(
       `INSERT INTO subscriptions
          (public_id, user_id, plan_name_at_sale, price_irr, remote_username, provider_id,
-          status, purchased_at, expires_at, panel_status, panel_online_at, notify)
-       VALUES (?1, ?2, 'یک‌ماهه-۵۰گیگ', 1950000, ?3, ?4, ?5, now(), ?6, ?7, ?8, '{}'::jsonb)
+          status, purchased_at, expires_at, panel_status, panel_online_at, last_synced_at,
+          notify)
+       VALUES (?1, ?2, 'یک‌ماهه-۵۰گیگ', 1950000, ?3, ?4, ?5, now(), ?6, ?7, ?8, ?9,
+               '{}'::jsonb)
        RETURNING id`,
     )
     .bind(
@@ -87,6 +100,9 @@ async function makeService(userId: number, fx: Fixture): Promise<number> {
       fx.onlineDaysAgo === undefined || fx.onlineDaysAgo === null
         ? null
         : new Date(NOW_MS - fx.onlineDaysAgo * DAY).toISOString(),
+      fx.syncedDaysAgo === null
+        ? null
+        : new Date(NOW_MS - (fx.syncedDaysAgo ?? 0) * DAY).toISOString(),
     )
     .first<{ id: number }>();
   if (!row) throw new Error('remove fixture failed');
@@ -287,6 +303,50 @@ describe('removing a service that ran out of gigabytes', () => {
 
     expect((await removeFinishedServices(db, 'volume', fakePanel(), NOW_MS)).due).toBe(0);
     expect(await statusOf(id)).toBe('ACTIVE');
+  });
+
+  it('refuses a service whose panel verdict is older than our own last write', async () => {
+    /*
+     * The customer just paid to top the account up, and this sweep would have
+     * deleted it.
+     *
+     * `panel_status` and `panel_online_at` come from exactly one place —
+     * `sync.ts`, every ten minutes. An add-on writes the new volume, the new
+     * expiry and `last_synced_at = NULL`, and deliberately leaves the panel's
+     * two columns alone, because it has no fresh reading of them. So for up to
+     * ten minutes a just-topped-up account still reads `limited` with a
+     * weeks-old last connection — and this sweep runs every twenty-five
+     * seconds.
+     *
+     * NULL `last_synced_at` is the row saying «what you are about to judge me
+     * on is out of date». There is no undoing a deletion, so it is refused.
+     */
+    const userId = await makeCustomer(nextTelegramId());
+    await makeService(userId, {
+      publicId: 'rm-vol-just-topped-up',
+      panelStatus: 'limited',
+      onlineDaysAgo: 60,
+      syncedDaysAgo: null,
+    });
+
+    expect((await removeFinishedServices(db, 'volume', fakePanel(), NOW_MS)).due).toBe(0);
+    expect(deleted).toEqual([]);
+  });
+
+  it('refuses an expired service whose panel verdict is older than our own last write', async () => {
+    // The same guard on the other sweep. A RENEWAL nulls `last_synced_at` too,
+    // and a renewed service still carrying the panel's «expired» is exactly the
+    // account that must not be deleted.
+    const userId = await makeCustomer(nextTelegramId());
+    await makeService(userId, {
+      publicId: 'rm-exp-just-renewed',
+      panelStatus: 'expired',
+      expiredDaysAgo: 60,
+      syncedDaysAgo: null,
+    });
+
+    expect((await removeFinishedServices(db, 'expired', fakePanel(), NOW_MS)).due).toBe(0);
+    expect(deleted).toEqual([]);
   });
 
   it('will not take an expired account, because that is the other sweep', async () => {

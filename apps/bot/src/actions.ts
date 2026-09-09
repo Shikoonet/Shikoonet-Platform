@@ -16,10 +16,12 @@
  * sweep. Move it out when a panel's latency starts showing up as lock waits.
  */
 
-import { adapterFor, type AccountAction } from '@shikoo/domain';
+import { adapterFor, createLogger, type AccountAction } from '@shikoo/domain';
 import type { D1DatabaseSession } from '@shikoo/database';
 import { credentialsFor } from './provision.js';
 import { subscriptionOnPanelForUser, type OwnedSubscriptionOnPanel } from './owned.js';
+
+const log = createLogger('bot');
 
 export type ServiceAction = 'REVOKE' | 'ENABLE' | 'DISABLE';
 
@@ -61,7 +63,19 @@ export async function actOnService(
     config: service.provider_config ?? {},
     fetch: fetchImpl,
   });
-  if (!result.ok) return { status: 'FAILED', service, reason: result.reason };
+  if (!result.ok) {
+    // Logged here, where the panel's own sentence is produced and where its
+    // audience is. It used to travel out to `handle.ts` and be printed on the
+    // customer's screen in English; now it goes to the one place that can act
+    // on it, and the customer gets the shop's Persian line.
+    log.warn('service.action_refused', {
+      action,
+      subscription: subscriptionId,
+      panel: service.provider_code ?? String(service.provider_id ?? ''),
+      reason: result.reason,
+    });
+    return { status: 'FAILED', service, reason: result.reason };
+  }
 
   // Only what the panel actually changed is written back. A status change
   // echoes the same link, and rewriting it would touch a row for nothing.

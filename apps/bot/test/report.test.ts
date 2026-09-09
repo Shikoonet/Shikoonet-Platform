@@ -96,11 +96,16 @@ describe('the daily report', () => {
     const text = await buildDailyReport(db, DAY);
 
     // One sale, and the money is the one inside the window converted to toman.
+    //
+    // Latin digits, because this report now goes through `formatToman` like
+    // every other amount in the shop. It used to divide by ten and group with
+    // `fa-IR` on its own, so the one message the admin reads was the only place
+    // in the product spelling money in Persian digits.
     expect(text).toContain('فروش نو: 1');
-    expect(text).toContain('۱۰۰٬۰۰۰');
+    expect(text).toContain('100,000');
     // The neighbours' amounts must not appear anywhere in it.
-    expect(text).not.toContain('۷۰۰٬۰۰۰');
-    expect(text).not.toContain('۹۰۰٬۰۰۰');
+    expect(text).not.toContain('700,000');
+    expect(text).not.toContain('900,000');
     expect(inside.orderId).toBeGreaterThan(0);
   });
 
@@ -117,7 +122,7 @@ describe('the daily report', () => {
     expect(text).toContain('شارژ کیف پول: 1');
     // 200,000 + 100,000 toman. A top-up is money moving into a wallet, not a
     // sale, and adding it here would flatter every day it happened on.
-    expect(text).toContain('مجموع فروش و تمدید: ۳۰۰٬۰۰۰ تومان');
+    expect(text).toContain('مجموع فروش و تمدید: 300,000 تومان');
   });
 
   it('is queued once, however many times the loop asks', async () => {

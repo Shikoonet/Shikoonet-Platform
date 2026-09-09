@@ -755,7 +755,19 @@ async function deliver(
         row.provider_config ?? {},
         row.telegram_username,
         row.username_text,
-        toNumber(row.purchase_seq),
+        // Only a purchase carries a purchase number.
+        //
+        // `purchase_seq` counts NEW_PURCHASE orders, so a TRIAL inherits the
+        // number of whatever the customer bought last — and two trials share
+        // one. On a panel set to PANEL_TEXT_SEQ that asks for the SAME account
+        // name twice: the adapter finds the existing account and answers
+        // `alreadyExisted`, the insert then hits
+        // `idx_subscription_one_per_panel_account`, and the customer's trial
+        // is refunded with «سرویس نیاز به بررسی دارد». Every time.
+        //
+        // Null is already the documented «could not count it» path and falls
+        // back to the order's own public id, which is unique by construction.
+        row.order_kind === 'NEW_PURCHASE' ? toNumber(row.purchase_seq) : null,
       ),
     ),
     volumeGb,
@@ -1014,20 +1026,43 @@ async function recordPartialRenewal(
  * plan would produce. Never an empty list: PasarGuard reads that as «no
  * group», which strips every inbound.
  *
- * Best effort, and the marker is cleared either way. A customer who has just
- * paid must not be told their renewal failed because the account is on the
- * wrong groups; the next renewal sends them again, and `sync.ts` will keep
- * showing the service as live in the meantime.
+ * Best effort about the PANEL call, and that is deliberate: a customer who has
+ * just paid must not be told their renewal failed because the account is on the
+ * wrong groups. The marker is a different question, and it used to be cleared
+ * unconditionally — which was wrong in the one case that matters.
+ *
+ * `viaPanel` false means "the adapter already carried the groups". For a
+ * renewal it usually has, but `groupIdsFor` answers undefined when neither the
+ * plan nor the panel names any, and `renew` then omits `group_ids` from the PUT
+ * on purpose (an empty array tells PasarGuard the account belongs to no group,
+ * which strips every inbound). So on a panel that has `downgrade_group_ids` and
+ * sells plans without groups, the renewal left the account sitting on the
+ * downgrade groups — and clearing the marker erased the only record that it was
+ * ever moved. A paid customer, permanently on the slow inbound, with nothing to
+ * find them by.
+ *
+ * So the marker now goes only when a restore actually happened, or when there
+ * was provably nothing to restore. Anything else leaves it standing, and the
+ * next renewal tries again.
  */
 async function restoreGroups(
   db: D1Database,
   row: PendingOrder,
   fetchImpl: typeof globalThis.fetch,
-  viaPanel: boolean,
+  /**
+   * The adapter's own call already carried the groups, so the account is back
+   * where it belongs and this only has to clear the marker.
+   *
+   * Passed rather than inferred from the order's kind, which is what it used to
+   * be. «It is a renewal, so the PUT carried group_ids» is true only when there
+   * were group ids to carry, and the caller is the one that knows.
+   */
+  alreadyRestored: boolean,
 ): Promise<void> {
   if (row.target_downgraded_at === null || row.target_subscription_id === null) return;
 
-  if (viaPanel && row.target_username !== null && row.provider_kind !== null) {
+  let restored = alreadyRestored;
+  if (!restored && row.target_username !== null && row.provider_kind !== null) {
     const stored = Array.isArray(row.target_groups_before)
       ? row.target_groups_before
           .map((v) => (typeof v === 'number' ? v : Number(v)))
@@ -1057,13 +1092,29 @@ async function restoreGroups(
           fetch: fetchImpl,
         },
       );
-      if (!result.ok) {
+      if (result.ok) restored = true;
+      else {
         log.warn('downgrade.restore_refused', {
           ref: row.order_public_id,
           reason: result.reason,
         });
       }
     }
+  }
+
+  if (!restored) {
+    // The marker stays, and that is the point of it staying. It is the only
+    // record that this account was moved onto the downgrade groups, it is what
+    // keeps `groups_before_downgrade` from being overwritten, and it is what
+    // gives the next renewal something to try again with. Clearing it here —
+    // which is what this function did until now — left a paying customer on
+    // the downgrade inbound with nothing left to find them by.
+    log.error('downgrade.restore_pending', {
+      ref: row.order_public_id,
+      subscription: row.target_subscription_id,
+      consequence: 'the account is still on the downgrade groups',
+    });
+    return;
   }
 
   await db
@@ -1105,6 +1156,25 @@ async function renew(
       row.order_id,
       'the service this renewal points at no longer exists',
     );
+    return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
+  }
+
+  /*
+   * The panel, asked here as well as in `deliver`.
+   *
+   * `deliver` routes an add-on to this function BEFORE its own «the plan or
+   * its provider no longer exists» check, because an add-on legitimately has
+   * no plan. That put a service whose panel row had been deleted on a path
+   * with no provider guard at all: `adapterFor(null!)` fell through to the
+   * manual adapter, which has no `renew`, and the branch below completed the
+   * order with «a person is finishing it». The money was kept, the gigabytes
+   * were never added, and no `failure_reason` recorded any of it.
+   *
+   * Failing is the same answer every other undeliverable order gets, and it
+   * is the one that refunds.
+   */
+  if (row.provider_id === null || row.provider_kind === null) {
+    const refunded = await fail(db, row.order_id, 'the panel this service lives on no longer exists');
     return say(menu.serviceNeedsHelp(row.order_public_id, refunded));
   }
 
@@ -1150,6 +1220,24 @@ async function renew(
     renewCashbackPercent = shop.renewCashbackPercent;
   }
 
+  /*
+   * The groups this renewal will actually send, computed once so two decisions
+   * can be made from the same answer: what goes in the PUT, and whether
+   * `restoreGroups` still has work to do afterwards.
+   *
+   * `renew` omits the key entirely when this is empty, because an empty array
+   * tells PasarGuard the account belongs to no group. So «it is a renewal» is
+   * not the same statement as «the groups were sent», and reading it as if it
+   * were is what stranded a downgraded account on a paid renewal.
+   */
+  const rawGroupIds = groupIdsFor({
+    planAttrs: planAttrsFor(row),
+    providerConfig: row.provider_config ?? {},
+  });
+  const renewalGroupIds = addon === null ? rawGroupIds : undefined;
+  const renewalCarriedGroups =
+    addon === null && Array.isArray(rawGroupIds) && rawGroupIds.length > 0;
+
   const result = await adapter.renew(
     {
       username: row.target_username,
@@ -1177,14 +1265,7 @@ async function renew(
        * distinction — `renewModeFor` answers 'ADD' for ordinary renewals in
        * some shops. So the caller, which knows, decides.
        */
-      ...(addon === null
-        ? {
-            groupIds: groupIdsFor({
-              planAttrs: planAttrsFor(row),
-              providerConfig: row.provider_config ?? {},
-            }),
-          }
-        : {}),
+      ...(addon === null ? { groupIds: renewalGroupIds } : {}),
       mode,
       renewFrom: new Date(now),
     },
@@ -1226,34 +1307,63 @@ async function renew(
   // The service is live again, so it must not still be sitting on the groups
   // it was moved to when it ended. A renewal has already been sent the plan's
   // groups by the adapter; an add-on has not, and needs the call.
-  await restoreGroups(db, row, fetchImpl, addon !== null);
+  await restoreGroups(db, row, fetchImpl, renewalCarriedGroups);
 
   const expiresAt = result.expiresAt ?? null;
   if (addon !== null) {
+    /**
+     * What the ROW ends up holding, which is what the customer is told.
+     *
+     * `GREATEST` below can keep our stored date instead of the panel's, and
+     * before this the message still quoted the panel's — so the one case the
+     * guard exists for was also the one case the screen disagreed with the
+     * database. Read back rather than recomputed, so the two cannot drift.
+     */
+    let storedExpiry: Date | null = expiresAt;
     // Only what was bought. Writing the plan columns here would blank the
     // service's name and duration, because an add-on has no plan — and a
     // separate statement rather than a branch inside one, because the adapter
     // rejects a bound parameter the SQL never uses.
     await db.withSession(async (tx) => {
-      await tx
+      const kept = await tx
         .prepare(
+          // GREATEST, never a plain assignment, and the reason is the same one
+          // sync.ts gives for COALESCE-ing the expiry: a panel clock that is
+          // wrong must not be able to shorten what a customer paid for.
+          //
+          // The adapter answers an add-on with the account's expiry AS THE
+          // PANEL HOLDS IT — for ADD_VOLUME it adds no days at all, so it hands
+          // back exactly what it read. A shelf-delivered account is the case
+          // where those two disagree by construction: stock.ts writes
+          // now + duration_days on OUR row while the pre-made account on the
+          // panel still carries whatever it was loaded with, often nothing.
+          // Buying five gigabytes then moved the customer's expiry backwards,
+          // or erased it, and their next ADD_TIME anchored from the past.
+          //
+          // GREATEST ignores a NULL argument, so a panel that names no date
+          // leaves ours exactly as it was — which is what a missing answer
+          // means. This belongs on the add-on statement alone: the RESET
+          // renewal below is allowed to move the date, because that is what
+          // renewing from zero is.
           `UPDATE subscriptions
               SET volume_gb      = COALESCE(?2, volume_gb),
-                  expires_at     = ?3,
+                  expires_at     = GREATEST(?3::timestamptz, expires_at),
                   notify         = '{}'::jsonb,
                   last_synced_at = NULL,
                   updated_at     = now()
-            WHERE id = ?1`,
+            WHERE id = ?1
+          RETURNING expires_at`,
         )
         .bind(
           row.target_subscription_id,
           result.volumeGb ?? null,
           expiresAt === null ? null : expiresAt.toISOString(),
         )
-        .run();
+        .first<{ expires_at: string | null }>();
+      storedExpiry = kept?.expires_at == null ? null : new Date(kept.expires_at);
       await complete(tx, row.order_id);
     });
-    return say(menu.addonApplied(addon.kind, addon.quantity, serviceName, expiresAt));
+    return say(menu.addonApplied(addon.kind, addon.quantity, serviceName, storedExpiry));
   }
 
   let cashbackIrr: number | null = null;

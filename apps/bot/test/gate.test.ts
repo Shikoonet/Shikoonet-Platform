@@ -633,6 +633,63 @@ describe('a receipt is not stopped by the gate', () => {
     expect(api.calls).toEqual([]);
   });
 
+  it('lets a customer who has left the channel still say they paid', async () => {
+    /*
+     * «پرداخت کردم» is the same half of the same purchase as the receipt above,
+     * and it was the half the gate still held.
+     *
+     * Worse than it looks, because of what the press WRITES: `paid_clicked_at`
+     * is one side of the auto-verify window — a bank transaction matches a
+     * claim only within 300,000 ms of it. A customer who left the channel
+     * between ordering and paying could therefore never have their transfer
+     * matched automatically at all, and the screen they were shown said «join
+     * the channel», which is not what was wrong.
+     *
+     * Nothing is granted by letting it through: `orderForUser` re-checks the
+     * owner, so a forged id belongs to nobody, and the gate still stands in
+     * front of every way to START a purchase.
+     */
+    // +800/+801, and the band matters. `ids()` steps by ONE, so a test that
+    // invents neighbours for itself is reaching into the next test's base; the
+    // test below already claims +500/+501 for that reason, and re-using that
+    // band overlaps it by one. A claimed update id is answered with silence
+    // rather than an error, so the collision shows up as «the order was never
+    // created» in whichever test loses.
+    const { updateId, telegramId } = ids();
+    const buying = updateId + 800;
+    const paying = updateId + 801;
+    const userId = await makeCustomer(telegramId);
+    const plan = await planId('sim-vip-1m-50');
+    await handleUpdate(db, press(buying, telegramId, `order:${plan}`));
+    const order = await db
+      .prepare(`SELECT id FROM orders WHERE user_id = ?1 ORDER BY id DESC LIMIT 1`)
+      .bind(userId)
+      .first<{ id: number }>();
+
+    await addChannel();
+    const api = membership('left');
+    const out = await handleUpdate(
+      db,
+      press(paying, telegramId, `paid:${order!.id}`),
+      globalThis.fetch,
+      api,
+    );
+
+    expect(out.replies[0]!.text).not.toBe(menu.gateChannels());
+    // The claim really opened, which is the whole point: without it the payment
+    // has no clock to be matched against.
+    const claim = await db
+      .prepare(
+        `SELECT c.paid_clicked_at FROM payments p
+           JOIN payment_claims c ON c.external_order_id = 'shikoo:' || p.public_id
+          WHERE p.order_id = ?1`,
+      )
+      .bind(order!.id)
+      .first<{ paid_clicked_at: number }>();
+    expect(claim?.paid_clicked_at).toBeGreaterThan(0);
+    expect(api.calls).toEqual([]);
+  });
+
   it('still refuses to let a receipt buy anything', async () => {
     // The bypass is scoped to the receipt itself. Somebody outside the channel
     // who sends a photo gets told nothing is waiting — no order, no card, no

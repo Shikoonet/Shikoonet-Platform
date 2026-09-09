@@ -16,7 +16,7 @@ import { handleUpdate } from '../src/handle.js';
 import { provisionPaidOrders } from '../src/provision.js';
 import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
-import { db } from './helpers/env.js';
+import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, providerId, setTierDiscount } from './helpers/shop.js';
 
 const NOW_MS = Date.UTC(2026, 7, 14, 9, 0, 0);
@@ -397,6 +397,56 @@ describe('buying extra volume', () => {
       // And the service keeps its name — an add-on has no plan to rename it to.
       plan_name_at_sale: 'یک‌ماهه-۲۰گیگ',
     });
+  });
+
+  it('keeps our expiry when the panel names an earlier one, and says the one it kept', async () => {
+    /*
+     * The panel's clock is not allowed to shorten what a customer paid for, and
+     * the message must agree with the row.
+     *
+     * ADD_VOLUME buys no days, so the adapter adds none and hands back the
+     * account's expiry AS THE PANEL HOLDS IT. When the two disagree, `GREATEST`
+     * keeps ours — and until this branch the customer was still told the
+     * panel's, so the single case the guard exists for was also the only case
+     * where the screen disagreed with the database.
+     *
+     * A shelf-delivered account is where they disagree by construction:
+     * `stock.ts` writes now + duration_days on our row while the pre-made
+     * account on the panel carries whatever it was loaded with. Here that state
+     * is built directly, because the two fixtures already take the stored date
+     * and the panel's date as separate arguments.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    const ours = new Date(NOW_MS + 30 * DAY);
+    const theirs = new Date(NOW_MS + 5 * DAY);
+    const service = await makeService(userId, { expiresInDays: 30 });
+    await handleUpdate(db, press(updateId, telegramId, `xv:${service}`));
+    await handleUpdate(db, types(updateId + 1, telegramId, '5'));
+    const order = await lastOrder(userId);
+    await db.prepare(`UPDATE orders SET status = 'PAID' WHERE id = ?1`).bind(order!.id).run();
+
+    // The panel believes this account ends twenty-five days sooner than we do.
+    const p = panel({
+      username: 'u_add',
+      data_limit: 20 * GIB,
+      expire: Math.floor(theirs.getTime() / 1000),
+    });
+    await provisionPaidOrders(db, p.fetchImpl, NOW_MS);
+
+    // The row keeps the date the customer paid for.
+    const row = await db
+      .prepare(`SELECT expires_at FROM subscriptions WHERE id = ?1`)
+      .bind(service)
+      .first<{ expires_at: string }>();
+    expect(new Date(row!.expires_at).getTime()).toBe(ours.getTime());
+
+    // And so does the sentence. Compared against both renderings rather than
+    // against a hand-written date: what is under test is WHICH date was
+    // chosen, and the formatting is pinned elsewhere.
+    const said = (await pendingNotifications()).find((n) => n.chatId === telegramId)?.text ?? '';
+    expect(said).toBe(menu.addonApplied('ADD_VOLUME', 5, 'یک‌ماهه-۲۰گیگ', ours));
+    expect(said).not.toBe(menu.addonApplied('ADD_VOLUME', 5, 'یک‌ماهه-۲۰گیگ', theirs));
   });
 });
 

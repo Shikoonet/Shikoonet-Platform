@@ -34,6 +34,7 @@
  */
 
 import type { D1DatabaseSession } from '@shikoo/database';
+import { IRR_PER_TOMAN } from './money.js';
 
 /** Why a code cannot be used. Each one gets its own sentence on screen. */
 export type DiscountRefusal =
@@ -140,15 +141,27 @@ async function findCode(tx: D1DatabaseSession, typed: string) {
 /**
  * How much comes off, in whole IRR, never more than the price itself.
  *
- * `round`, matching `index.php:4280`. A percentage of a Rial price can land on
- * a fraction, and the schema's `total = unit x quantity - discount` is integer
- * arithmetic that a fraction would break.
+ * Floored to a whole TOMAN, not merely to a whole Rial, and that is the whole
+ * point of this function rather than a rounding preference.
+ *
+ * `discount_codes.percent` is `numeric(5,2)`, so 7.25 is a value an admin can
+ * save. A percentage of a Rial price then lands on a total like 1,808,625 IRR
+ * — 180,862.5 Toman — and a customer cannot transfer half a Toman. They send
+ * 180,863, the claim carries `expected_amount_irr = 1_808_625`, and auto-verify
+ * compares the two EXACTLY with no tolerance: the payment can never verify
+ * itself, and every order bought with such a code lands in manual review.
+ *
+ * `priceForUser` has floored the standing discount to whole Toman since it was
+ * written, for this reason. This is the same rule on the code path, where it
+ * was missing. Floored rather than rounded so the discount can never exceed
+ * what the code actually grants.
  */
 export function discountFor(code: DiscountCode, priceIrr: number): number {
-  const off =
+  const raw =
     code.kind === 'PERCENT_OFF'
-      ? Math.round((Number(code.percent ?? 0) / 100) * priceIrr)
+      ? (Number(code.percent ?? 0) / 100) * priceIrr
       : (code.amount_irr ?? 0);
+  const off = Math.floor(raw / IRR_PER_TOMAN) * IRR_PER_TOMAN;
   return Math.max(0, Math.min(priceIrr, off));
 }
 
