@@ -1553,10 +1553,44 @@ export function registerMirzabotRoutes(
           (row.receipt_submitted_at ?? row.paid_clicked_at)
             ? now - (row.receipt_submitted_at ?? row.paid_clicked_at)!
             : null;
+        /*
+         * A delivered-but-unreconciled claim gets candidates too, and that is
+         * the exit the continuity queue never had.
+         *
+         * Continuity mode exists BECAUSE the SMS relay is late, so the bank
+         * credit for one of its claims lands hours after `paid_clicked_at` —
+         * far outside the ±5-minute auto-match window. `evaluateEdge` therefore
+         * answers `OUTSIDE_AUTO_MATCH_WINDOW`, `recordMirzabotSuspect` writes
+         * only `suspect_reason` and never touches `reconciled_at`, and the
+         * «در انتظار تطبیق» filter is `reconciled_at IS NULL`. The row is
+         * structurally incapable of leaving on its own.
+         *
+         * The manual exit was already built and already correct: the screen
+         * draws the approve control for this state, the route accepts the
+         * transition, and `verifyMirzabotClaim` takes its `reconciling` branch
+         * — stamping `reconciled_at`, and enqueueing NO second fulfilment
+         * notice, because the customer already has the product. The only thing
+         * missing was a list of transactions to press, so the operator was
+         * shown «هیچ تراکنش بانکی در فهرست نامزدهای نزدیک نیست» and had nothing
+         * to do.
+         *
+         * An EMPTY array on purpose, not the matcher's own guesses. With ids
+         * `loadCandidates` returns exactly those rows; with none it runs the
+         * fallback — same financial account, CREDIT, still ACTIONABLE, and the
+         * EXACT expected amount. For a claim the matcher has already refused on
+         * time alone, that set is the right one and its single guess is not.
+         *
+         * No money rule moves. The window is not widened, `evaluateEdge` is
+         * untouched, nothing is auto-verified and nothing is auto-rejected: a
+         * person still chooses, and the partial unique index still allows one
+         * transaction to settle one claim.
+         */
         const candidates =
           state === 'NEEDS_REVIEW' || state === 'NO_TRANSFER_FOUND'
             ? await loadCandidates(c.env.DB, row, suspectMeta.candidateTransactionIds ?? [])
-            : [];
+            : state === 'FULFILLED_UNRECONCILED'
+              ? await loadCandidates(c.env.DB, row, [])
+              : [];
         const cardDigits = row.card_digits ?? meta.cardDigits ?? null;
         let device = deviceFromRow(row);
         if (!device) {

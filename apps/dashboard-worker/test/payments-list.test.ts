@@ -401,6 +401,43 @@ describe('GET /api/v1/payments', () => {
     expect(body.items[0]!.candidates.map((c) => c.id)).toEqual(['t-c1', 't-c2']);
   });
 
+  it('offers the late bank credit to a delivered claim, so the continuity queue can be emptied', async () => {
+    /*
+     * «در انتظار تطبیق» could not empty itself, by construction.
+     *
+     * Continuity mode is on BECAUSE the SMS relay is late, so the bank credit
+     * for one of its claims arrives hours after `paid_clicked_at` — far outside
+     * the ±5-minute auto-match window. `evaluateEdge` answers
+     * `OUTSIDE_AUTO_MATCH_WINDOW`, `recordMirzabotSuspect` writes only
+     * `suspect_reason` and never touches `reconciled_at`, and the tab's filter
+     * is `reconciled_at IS NULL`. The row stays for ever.
+     *
+     * The manual exit was already built — the screen draws the approve control
+     * for this state, the route accepts the transition, and
+     * `verifyMirzabotClaim` has a `reconciling` branch — but the server sent no
+     * candidates for it, so the operator was shown «هیچ تراکنش بانکی در فهرست
+     * نامزدهای نزدیک نیست» and had nothing to press.
+     *
+     * The transaction here is deliberately EIGHT HOURS late, which is the shape
+     * the feature exists for and the shape the matcher will never take.
+     */
+    const paid = Date.now() - 9 * 3_600_000;
+    await seedTx('t-late', paid + 8 * 3_600_000);
+    await seedClaim('c-late', {
+      status: 'FULFILLED_UNRECONCILED',
+      fulfilmentMode: 'CONTINUITY',
+      fulfilledAt: paid,
+      fulfilledBy: 'continuity',
+      fulfilmentReason: 'sms relay down',
+      paidClickedAt: paid,
+      reconciledAt: null,
+    });
+
+    const body = await get('tab=continuity&continuityState=pending&range=all');
+    const row = body.items.find((i) => i.id === 'c-late');
+    expect(row?.candidates.map((c) => c.id)).toEqual(['t-late']);
+  });
+
   it('mark-fake sets FAKE_RECEIPT with audit trail', async () => {
     await seedClaim('c-fake', { suspectReason: 'NO_TRANSACTION_AFTER_10M' });
     const r = await app.fetch(
