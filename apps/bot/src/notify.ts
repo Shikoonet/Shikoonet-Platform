@@ -278,6 +278,31 @@ export async function flush(
       const exhausted = row.attempt_count >= MAX_ATTEMPTS;
       if (permanent || exhausted) {
         await settle(db, row.id, 'DEAD', String(err), null);
+        /*
+         * Marked here, in the one place that learns it, rather than in each
+         * sweep that keeps finding out the hard way.
+         *
+         * A 403 is Telegram saying this customer blocked the bot or deleted the
+         * chat. Nothing wrote that down: `notify_enabled` stayed true, so
+         * `warn.ts` queued them another expiry warning on every cycle,
+         * `nudge.ts` kept nudging, every broadcast counted them as a recipient
+         * and failed, and the DEAD rows accumulated in a table nothing prunes.
+         * One row per attempt, for ever, for somebody who cannot be reached.
+         *
+         * Every one of those sweeps already filters on `u.notify_enabled`, so
+         * this single write silences all of them. Only for a message that was
+         * going to a CUSTOMER: a 403 from the reports group means the bot was
+         * removed from the group, which says nothing about anybody's switch.
+         */
+        if (permanent && routeOf(row.dedupe_key).destination === 'customer') {
+          await db
+            .prepare(
+              `UPDATE users SET notify_enabled = false, updated_at = now()
+                WHERE telegram_id = ?1 AND notify_enabled`,
+            )
+            .bind(row.chat_id)
+            .run();
+        }
         result.dead += 1;
         log.error(
           'notify.dead',
