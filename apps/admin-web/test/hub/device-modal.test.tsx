@@ -143,8 +143,19 @@ async function fillAndCreateDevice() {
   fireEvent.click(screen.getByText('ساخت دستگاه'));
 }
 
+/**
+ * Fifteen seconds, for the same arithmetic reason `shell.test.tsx` writes down:
+ * `test/setup.ts` gives every `findBy`/`waitFor` five seconds, which is exactly
+ * vitest's per-test default, so an unsettled retry loop eats the whole budget
+ * and the test dies as a bare timeout before reaching an assertion.
+ *
+ * The other file named in issue #168 — green alone every time, red at random
+ * under a full suite run.
+ */
+const SLOW = { timeout: 15_000 };
+
 describe('DevicesView Add-Device modal — close flow', () => {
-  it('opens, switches to one-time setup on create, and Done closes it', async () => {
+  it('opens, switches to one-time setup on create, and Done closes it', SLOW, async () => {
     const routes = jsonRoutes();
     routes[`POST ${DEVICES_PATH}`] = createDeviceResponse;
     globalThis.fetch = mockFetch(routes);
@@ -171,7 +182,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     expect(document.body.textContent).not.toContain(TOKEN);
   });
 
-  it('X asks for confirmation when setup has not been saved; cancel keeps it open; confirm closes', async () => {
+  it('X asks for confirmation when setup has not been saved; cancel keeps it open; confirm closes', SLOW, async () => {
     const routes = jsonRoutes();
     routes[`POST ${DEVICES_PATH}`] = createDeviceResponse;
     globalThis.fetch = mockFetch(routes);
@@ -201,7 +212,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     expect(document.body.textContent).not.toContain(TOKEN);
   });
 
-  it('X closes immediately once the token or JSON has been copied', async () => {
+  it('X closes immediately once the token or JSON has been copied', SLOW, async () => {
     const routes = jsonRoutes();
     routes[`POST ${DEVICES_PATH}`] = createDeviceResponse;
     const writeText = stubClipboard();
@@ -226,7 +237,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     expect(screen.queryByTestId('close-confirmation')).toBeNull();
   });
 
-  it('Escape follows the same guarded close behavior', async () => {
+  it('Escape follows the same guarded close behavior', SLOW, async () => {
     const routes = jsonRoutes();
     routes[`POST ${DEVICES_PATH}`] = createDeviceResponse;
     globalThis.fetch = mockFetch(routes);
@@ -253,7 +264,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     });
   });
 
-  it('Backdrop click follows the same guarded close behavior', async () => {
+  it('Backdrop click follows the same guarded close behavior', SLOW, async () => {
     const routes = jsonRoutes();
     routes[`POST ${DEVICES_PATH}`] = createDeviceResponse;
     globalThis.fetch = mockFetch(routes);
@@ -283,7 +294,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     });
   });
 
-  it('beforeunload is registered while setup is unsaved and removed after close', async () => {
+  it('beforeunload is registered while setup is unsaved and removed after close', SLOW, async () => {
     const routes = jsonRoutes();
     routes[`POST ${DEVICES_PATH}`] = createDeviceResponse;
     globalThis.fetch = mockFetch(routes);
@@ -307,7 +318,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     expect(removeSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
   });
 
-  it('background polling does not reopen or reset the modal', async () => {
+  it('background polling does not reopen or reset the modal', SLOW, async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const routes = jsonRoutes();
     routes[`POST ${DEVICES_PATH}`] = createDeviceResponse;
@@ -343,7 +354,7 @@ describe('DevicesView Add-Device modal — close flow', () => {
     expect(screen.queryByRole('dialog', { name: 'راه‌اندازی دستگاه' })).toBeNull();
   });
 
-  it('focus returns to the Add Device trigger after close', async () => {
+  it('focus returns to the Add Device trigger after close', SLOW, async () => {
     const routes = jsonRoutes();
     routes[`POST ${DEVICES_PATH}`] = createDeviceResponse;
     globalThis.fetch = mockFetch(routes);
