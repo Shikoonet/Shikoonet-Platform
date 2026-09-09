@@ -30,7 +30,13 @@
 
   --text-main: #f1f3f8;
   --text-muted: #8b94a6;
-  --text-dim: #5a627a;
+  /* Raised from `#5a627a` on 2026-09-09, which measured 3.1:1 on a card. It is
+     not decoration: it carries «چیزی یافت نشد» in an empty table — the only
+     text on the screen when a table is empty — the sidebar's group labels and
+     the code on a device card. Same hue and saturation, lightness up until both
+     grounds clear 4.5:1 with a little headroom; still plainly dimmer than
+     `--text-muted`. `legibility.test.ts` holds the bar. */
+  --text-dim: #747d99;
 
   --accent: #3b82f6;
   --accent-soft: rgba(59, 130, 246, 0.15);
@@ -64,6 +70,22 @@ html,
 body {
   margin: 0;
   padding: 0;
+}
+
+/* Until 2026-09-09 this rule did not exist, and so every plain `<a>` in the
+   panel rendered in the browser's default `#0000EE`. Measured on staging that
+   is about 2:1 against `--bg-body` — on the customer links that slice 2 put on
+   nine screens, which is to say on the one column those screens exist to make
+   clickable.
+
+   `--accent` clears 4.5:1 on the page background and on a card, which
+   `legibility.test.ts` computes from WCAG's own arithmetic. The two
+   anchors styled as buttons carry `.btn` and outrank this by specificity. */
+a {
+  color: var(--accent);
+}
+a:hover {
+  color: var(--text-main);
 }
 
 body {
@@ -119,13 +141,14 @@ body {
   align-items: center;
   gap: 12px;
 }
+/* An `h1` — the panel's one heading, on all thirty-one screens. So it carries
+   its own size and weight and, above all, its own margin: the browser's `2em`
+   and `0.67em` block margin would push the header open and drop everything in
+   it out of line. `.app-header__crumb` was removed with the markup. */
 .app-header__title {
+  margin: 0;
   font-weight: 700;
   font-size: 15px;
-}
-.app-header__crumb {
-  color: var(--text-dim);
-  font-size: 12px;
 }
 .icon-btn {
   width: 36px;
@@ -190,11 +213,20 @@ body {
   color: var(--text-dim);
   font-size: 11px;
 }
+/* A `<summary>` since 2026-09-09, so it folds its group away. The native
+   disclosure marker is kept rather than replaced with an icon: it is the one
+   affordance every browser already draws in the reading direction, and it
+   inherits the colour set here. */
 .sidebar-section-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 1px;
   color: var(--text-dim);
   padding: 14px 8px 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.sidebar-section-label:hover {
+  color: var(--text-muted);
 }
 .sidebar-link {
   display: flex;
@@ -309,10 +341,14 @@ body {
   flex-wrap: wrap;
   margin-block-end: 20px;
 }
-/* Carries its own size and weight so it can sit on a real heading element:
-   the two pages that use `h1` here would otherwise arrive with the browser's
-   2em and its block margin, and a page title is not a `div` — a screen reader
-   navigating by heading has to be able to find it. */
+/* Carries its own size and weight so it can sit on a real heading element,
+   which since 2026-09-09 all twenty-six of them do: without this they would
+   arrive with the browser's 2em and its block margin. The note this comment
+   used to end on — «a page title is not a `div` — a screen reader navigating
+   by heading has to be able to find it» — was written when two pages out of
+   twenty-six had taken it up, and stayed true and unheeded for the rest until
+   a walk counted the panel's headings and got zero. `h2`, under the shell's
+   `h1`: the section name is the page's title, and this sits beneath it. */
 .page-head__title {
   margin: 0;
   font-size: 20px;

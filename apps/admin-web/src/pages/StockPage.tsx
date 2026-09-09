@@ -221,7 +221,7 @@ export function StockPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">قفسهٔ انبار</div>
+          <h2 className="page-head__title">قفسهٔ انبار</h2>
           <div className="page-head__sub">
             {count(shelves.reduce((n, s) => n + s.available, 0))} اکانت آماده روی{' '}
             {count(shelves.length)} قفسه

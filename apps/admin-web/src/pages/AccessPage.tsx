@@ -59,7 +59,7 @@ export function AccessPage({ role }: { role: PanelRole | null }) {
     <>
       <div className="page-head">
         <div>
-          <div className="page-head__title">دسترسی‌ها</div>
+          <h2 className="page-head__title">دسترسی‌ها</h2>
           <div className="page-head__sub">نقش شما: {role === null ? '…' : PANEL_ROLE_FA[role]}</div>
         </div>
       </div>

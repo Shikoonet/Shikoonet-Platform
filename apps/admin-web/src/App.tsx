@@ -283,6 +283,35 @@ export function App() {
  * not from «کاربران», which made the bell a property of a section rather than
  * of the panel.
  */
+/**
+ * Which sidebar groups the operator has folded away.
+ *
+ * `localStorage` can throw outright — a browser set to block site data answers
+ * the accessor itself with a `SecurityError`, not with `null` — so both
+ * directions are guarded and a failure just means the sidebar opens the way it
+ * ships. This is a convenience, not state anything depends on.
+ */
+const COLLAPSED_KEY = 'sidebar.collapsed';
+
+function loadCollapsedGroups(): ReadonlySet<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((v): v is string => typeof v === 'string'));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedGroups(groups: ReadonlySet<string>): void {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...groups]));
+  } catch {
+    /* Nothing to do and nothing worth telling the operator. */
+  }
+}
+
 function Shell({
   page,
   go,
@@ -317,6 +346,33 @@ function Shell({
   // request every thirty seconds per screen to answer one question.
   const continuity = useContinuityMode();
 
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(loadCollapsedGroups);
+
+  function setGroupCollapsed(label: string, folded: boolean): void {
+    setCollapsed((prev) => {
+      if (prev.has(label) === folded) return prev;
+      const next = new Set(prev);
+      if (folded) next.add(label);
+      else next.delete(label);
+      saveCollapsedGroups(next);
+      return next;
+    });
+  }
+
+  // Arriving at a section whose group is folded — from a link, from the address
+  // bar — would leave the sidebar with no highlighted entry anywhere, which
+  // reads as «this screen is not in the menu». Unfolding on arrival rather than
+  // forcing `open` in the render: forced, the group holding the current page
+  // could never be folded at all, because React would put it straight back.
+  useEffect(() => {
+    const group = NAV.find((g) => g.items.some((i) => i.id === page));
+    if (group) setGroupCollapsed(group.label, false);
+    // Deliberately keyed on `page` alone. `setGroupCollapsed` only ever calls
+    // `setCollapsed`, which bails when nothing changes, so re-running this on
+    // an unrelated render would be a no-op — but running it on every render is
+    // not what this means, which is «on arrival».
+  }, [page]);
+
   return (
     <>
       <header className="app-header">
@@ -330,12 +386,22 @@ function Shell({
           >
             <Icon name="bars" />
           </button>
-          <div>
-            <div className="app-header__title">{pageLabel(page)}</div>
-            <div className="app-header__crumb">
-              {brand()} / {pageLabel(page)}
-            </div>
-          </div>
+          {/* The panel's one heading, and the reason it lives here rather than
+              on the page: this is the only title all thirty-one screens have.
+              Six of them are finance screens with no `.page-head` at all, so a
+              heading owned by the pages would be six chances to forget the
+              seventh — and on 2026-09-09 the count of `h1` elements across the
+              whole panel was zero.
+
+              The breadcrumb that sat under it — the brand name, a slash, and
+              this same label — is gone: with the sidebar's active item and this
+              title, it was the third copy of the section's name on the screen
+              and it led nowhere.
+
+              (Written without quoting it: `brand.test.tsx` scans this file's
+              text, comments included, for the default brand name, because a
+              name compiled into the bundle is one a reseller cannot change.) */}
+          <h1 className="app-header__title">{pageLabel(page)}</h1>
         </div>
         {/* Everything the panel offers about the SHOP's state, on every screen.
             These three lived in a second header that only the six finance
@@ -422,9 +488,18 @@ function Shell({
           </span>
         </div>
 
+        {/* `<details>` rather than a button and a conditional render: seven
+            groups of thirty-one sections is a column taller than a laptop
+            screen, and the element already carries the open/closed state, the
+            keyboard handling and the disclosure semantics. What is left to
+            write is remembering the choice. */}
         {NAV.map((group) => (
-          <div key={group.label}>
-            <div className="sidebar-section-label">{group.label}</div>
+          <details
+            key={group.label}
+            open={!collapsed.has(group.label)}
+            onToggle={(e) => setGroupCollapsed(group.label, !e.currentTarget.open)}
+          >
+            <summary className="sidebar-section-label">{group.label}</summary>
             {group.items
               .filter((item) => visible(item.id))
               .map((item) => (
@@ -441,7 +516,7 @@ function Shell({
                   <span>{item.label}</span>
                 </button>
               ))}
-          </div>
+          </details>
         ))}
 
         <div className="sidebar-foot">
@@ -484,7 +559,7 @@ function Shell({
           {withheld ? (
             <div className="page-head">
               <div>
-                <div className="page-head__title">{pageLabel(page)}</div>
+                <h2 className="page-head__title">{pageLabel(page)}</h2>
                 <div className="page-head__sub">
                   این بخش برای نقش شما باز نیست. از منوی کنار، بخشی را انتخاب کنید.
                 </div>
