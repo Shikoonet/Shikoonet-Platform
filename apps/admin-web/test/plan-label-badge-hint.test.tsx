@@ -38,12 +38,22 @@ const TEMPLATE_ROW: SettingRow = {
 /** The hint, matched loosely: the assertion is about the token, not the wording. */
 const HINT = /نشانِ پلن‌ها روی دکمه‌ها نشان داده نمی‌شود/;
 
+// Typed with the body it receives, not as `() =>`: a zero-argument mock makes
+// `mock.calls` a tuple of length nought, and reading `[0]` off it is a type
+// error rather than the assertion it looks like.
+const updateSetting = vi.fn(
+  async (_body: Parameters<typeof api.updateSetting>[0]) =>
+    ({ ok: true }) as Awaited<ReturnType<typeof api.updateSetting>>,
+);
+
 beforeEach(() => {
   vi.spyOn(api, 'settings').mockResolvedValue({
     ok: true,
     items: [TEMPLATE_ROW],
     hiddenCount: 0,
   });
+  updateSetting.mockClear();
+  vi.spyOn(api, 'updateSetting').mockImplementation(updateSetting);
 });
 
 afterEach(() => {
@@ -92,6 +102,28 @@ describe('the plan-button template', () => {
     type(field, '{badge} {duration} | {price}');
     await waitFor(() => expect(screen.getByText(/در ربات:/)).toBeTruthy());
     expect(screen.queryByText(HINT)).toBeNull();
+  });
+
+  it('saves a preset that was chosen with the mouse', async () => {
+    /*
+     * The field saves on blur, and a click on one of these buttons blurs it
+     * FIRST — so the save that fires carries the old draft and the chosen
+     * preset is never sent at all. On screen it looks saved: the input shows
+     * the new template and nothing says otherwise.
+     *
+     * These buttons are the ordinary way to set this template — three of the
+     * four presets exist precisely so nobody has to type the grammar — so the
+     * ordinary path was the one that did not persist.
+     */
+    await openTheTemplateEditor();
+    const preset = screen.getAllByRole('button', { name: /\{/ })[0]!;
+    fireEvent.click(preset);
+
+    await waitFor(() => expect(updateSetting).toHaveBeenCalled());
+    const sent = updateSetting.mock.calls.at(-1)![0];
+    expect(sent.key).toBe('plan_button_template');
+    expect(sent.value).not.toBe('');
+    expect((screen.getByLabelText('قالب دکمهٔ سرویس') as HTMLInputElement).value).toBe(sent.value);
   });
 
   it('stays quiet on an empty template, which means «leave it as it always was»', async () => {

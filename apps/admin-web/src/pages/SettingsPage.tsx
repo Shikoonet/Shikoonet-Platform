@@ -189,10 +189,17 @@ export function SettingsPage() {
             thing: the first is a form the shop honours, the second a record of
             what a MySQL dump contained. Mixing them is how a change to
             `Lottery_Status` came to save, show no error, and do nothing. */}
+        {/* `role="tab"` on its own announces «tab» and points at nothing. The
+            ids below are the other half of the pattern: each tab names the
+            panel it opens and each panel names the tab that opened it, so a
+            screen reader can move between them instead of being told a control
+            has a type and no destination. */}
         <div className="toolbar" role="tablist" aria-label="بخش‌های تنظیمات">
           <button
             type="button"
             role="tab"
+            id="settings-tab-live"
+            aria-controls="settings-panel-live"
             aria-selected={tab === 'live'}
             className={tab === 'live' ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
             onClick={() => setTab('live')}
@@ -202,6 +209,8 @@ export function SettingsPage() {
           <button
             type="button"
             role="tab"
+            id="settings-tab-imported"
+            aria-controls="settings-panel-imported"
             aria-selected={tab === 'imported'}
             className={tab === 'imported' ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
             onClick={() => setTab('imported')}
@@ -211,14 +220,23 @@ export function SettingsPage() {
         </div>
 
         {tab === 'live' ? (
-          <div className="settings-form">
+          <div
+            className="settings-form"
+            role="tabpanel"
+            id="settings-panel-live"
+            aria-labelledby="settings-tab-live"
+          >
             {live.length === 0 && <p className="muted">چیزی با این جست‌وجو پیدا نشد.</p>}
             {live.map((r) => (
               <SettingField key={`${r.scope}/${r.key}`} row={r} onSave={saveValue} write={w} />
             ))}
           </div>
         ) : (
-          <>
+          <div
+            role="tabpanel"
+            id="settings-panel-imported"
+            aria-labelledby="settings-tab-imported"
+          >
             <p className="muted">
               این کلیدها از ربات قدیمی وارد شده‌اند و هیچ‌کدام خوانده نمی‌شوند. اینجا هستند تا معلوم
               باشد دامپ چه داشته؛ تغییرشان چیزی را عوض نمی‌کند و سرور هم نمی‌پذیرد.
@@ -253,7 +271,7 @@ export function SettingsPage() {
                 </tbody>
               </table>
             </div>
-          </>
+          </div>
         )}
       </div>
     </>
@@ -871,7 +889,20 @@ function SettingField({
           before they can type it, which is the same as the feature not being
           there. */}
       {row.scope === PLAN_LABEL_SETTING.scope && row.key === PLAN_LABEL_SETTING.key && (
-        <PlanLabelHelp draft={draft} onPick={setDraft} />
+        <PlanLabelHelp
+          draft={draft}
+          // Saved here rather than left to the field's `onBlur`, because that
+          // blur has already happened: clicking one of these buttons takes
+          // focus off the input first, so the save it fires carries the draft
+          // from BEFORE the pick and the pick itself is never sent. On screen
+          // it looked saved — the input showed the new template and nothing
+          // said otherwise — and these buttons are the ordinary way to set this
+          // template, so the ordinary path was the one that did not persist.
+          onPick={(next) => {
+            setDraft(next);
+            if (next !== raw) void onSave(row, next);
+          }}
+        />
       )}
     </div>
   );
