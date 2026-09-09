@@ -215,6 +215,16 @@ export async function pollOnce(
         );
         // The same shape as an ordinary failure: the offset does not move past
         // it, the count is left where it is, and the spinner still stops.
+        //
+        // `failed` is incremented as well, and it is not bookkeeping. `run`
+        // decides whether to back off with `failed > 0 && offset unchanged`, so
+        // a batch that made no progress but reported zero failures spun at the
+        // speed of the network — getUpdates returns instantly while an update
+        // is still pending, and the only case that reaches here is a database
+        // outage, which is also what makes the sweep below fail fast. The whole
+        // point of holding the update was that the outage is bounded; without
+        // this line it was bounded and hammered.
+        failed++;
         sawFailure = true;
         continue;
       }
@@ -584,11 +594,18 @@ export async function sweepBroadcasts(
   await Promise.all(
     Array.from({ length: Math.min(SEND_CONCURRENCY, batch.length) }, () => worker()),
   );
-  if (batch.length > 0) {
-    await closeFinishedBroadcasts(db).catch((err: unknown) =>
-      log.error('broadcast.close_failed', {}, err),
-    );
-  }
+  // Outside the `if` that used to hold it, on purpose. The close was only
+  // attempted on a cycle that claimed at least one recipient, so a transient
+  // failure on the FINAL batch of a broadcast was never retried: every later
+  // cycle claimed nothing, skipped the call, and the broadcast stayed open for
+  // ever with the shop's own screen reporting it as still running.
+  //
+  // It is documented as cheap and idempotent and its NOT EXISTS makes it a
+  // no-op when nothing has changed, so paying for it every cycle is the whole
+  // cost of never losing the close.
+  await closeFinishedBroadcasts(db).catch((err: unknown) =>
+    log.error('broadcast.close_failed', {}, err),
+  );
   // The only voice a stranded row has. It is deliberately not retried — whether
   // Telegram accepted the message before the process died is exactly what
   // nobody knows, and guessing wrong spams a paying customer.

@@ -127,16 +127,30 @@ export async function deliverFromStock(
   await db.withSession(async (tx) => {
     // SKIP LOCKED so two sweeps take two different configs rather than one
     // waiting on the other; the status guard is what makes each one at-most-once.
+    //
+    // `WITH … AS MATERIALIZED`, which is the house fence for a LIMIT that has
+    // to bound the whole statement rather than each re-execution of a
+    // subquery. This was a bare scalar subquery, which is the shape rule nine
+    // forbids — safer than the `IN (…)` case, because a scalar subquery must
+    // yield one row and `idx_stock_one_row_per_order` would turn a
+    // re-execution into a loud 23505 rather than a quiet double sale, but
+    // «it would have failed loudly» is not the guarantee to rely on when the
+    // thing being claimed is a config somebody paid for. The tests run against
+    // a shelf of one or two rows, which never gets a nested loop — so they are
+    // silent about this rather than green.
     taken =
       (await tx
         .prepare(
-          `UPDATE provisioning_stock s
+          `WITH due AS MATERIALIZED (
+             SELECT id FROM provisioning_stock
+              WHERE plan_id = ?1 AND status = 'AVAILABLE'
+              ORDER BY id
+              LIMIT 1
+              FOR UPDATE SKIP LOCKED
+           )
+           UPDATE provisioning_stock s
               SET status = 'USED', order_id = ?2, used_at = now()
-            WHERE s.id = (SELECT id FROM provisioning_stock
-                           WHERE plan_id = ?1 AND status = 'AVAILABLE'
-                           ORDER BY id
-                           LIMIT 1
-                           FOR UPDATE SKIP LOCKED)
+            WHERE s.id IN (SELECT id FROM due)
             RETURNING s.id, s.provider_id, s.remote_username, s.remote_ref, s.subscription_url,
                       s.secret`,
         )

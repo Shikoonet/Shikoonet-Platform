@@ -166,7 +166,17 @@ describe('settling a verified payment', () => {
       )
       .run();
     try {
-      await expect(settleVerifiedPayments(db)).rejects.toThrow();
+      // Not `rejects.toThrow()` any more, and the reason is a fix rather than a
+      // weakening. The sweep now isolates each row, because a row that throws
+      // every time used to abort the loop and take every VERIFIED payment
+      // behind it in the same `ORDER BY p.id LIMIT 100` batch with it.
+      //
+      // What this test is actually about is unchanged and is still asserted
+      // below: the enqueue happens INSIDE the transaction, so a failure there
+      // rolls the settlement back. If it were moved out, the three assertions
+      // underneath would show a PAID payment with no message owed — which is
+      // exactly the state no later sweep would ever revisit.
+      expect(await settleVerifiedPayments(db)).toBe(0);
 
       expect(await statuses(sale.orderId, sale.paymentPublicId)).toEqual({
         order: 'AWAITING_PAYMENT',

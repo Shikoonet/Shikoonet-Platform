@@ -124,6 +124,24 @@ const EXPIRED_DUE = `
       FROM subscriptions s
      WHERE s.status = 'ACTIVE'
        AND s.remote_username IS NOT NULL
+       -- The panel's verdict has to be NEWER than our own last write, and
+       -- last_synced_at is the only thing that says so. warn.ts already carries
+       -- this clause, for the same reason stated there.
+       --
+       -- panel_status and panel_online_at are written by exactly one place,
+       -- sync.ts, every ten minutes. An add-on or a renewal writes the volume,
+       -- the expiry, and last_synced_at = NULL, and deliberately does NOT touch
+       -- the panel's two columns, because it has no fresh reading of them. So a
+       -- customer whose account ran out of gigabytes, who stopped connecting,
+       -- and who has just PAID to top it up, still carries panel_status
+       -- 'limited' and a weeks-old panel_online_at until the next sync lands.
+       -- This sweep runs every twenty-five seconds. It would have deleted the
+       -- account they had just bought, and there is no putting it back.
+       --
+       -- Waiting for one real sync is the whole fix: it either re-confirms the
+       -- verdict, in which case the removal happens a few minutes later, or it
+       -- does not, in which case there was never anything to remove.
+       AND s.last_synced_at IS NOT NULL
        AND s.panel_status IN ('limited', 'expired')
        AND s.expires_at IS NOT NULL
        AND s.expires_at <= to_timestamp(?1 / 1000.0) - make_interval(days => ?2)
@@ -145,6 +163,10 @@ const VOLUME_DUE = `
       FROM subscriptions s
      WHERE s.status = 'ACTIVE'
        AND s.remote_username IS NOT NULL
+       -- The same freshness gate the expiry sweep above carries, and this is
+       -- the sweep it was found on: an ADD_VOLUME is exactly the purchase that
+       -- makes 'limited' stale.
+       AND s.last_synced_at IS NOT NULL
        -- Only limited. The PHP's two overlapping lists leave exactly this one
        -- word; see the file header. An expired account is the other sweep's.
        AND s.panel_status = 'limited'
