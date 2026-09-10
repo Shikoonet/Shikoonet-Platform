@@ -2106,22 +2106,16 @@ td.money,
    one. */
 
 /* The command palette.
-   `<dialog open>` rather than `showModal()` — happy-dom has no `showModal`, so
-   the tests could not open it — which means the top layer and the backdrop are
-   this file's job rather than the browser's. */
-.palette-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  padding-block-start: 12vh;
+   `showModal()`, so the top layer, the backdrop and the keyboard trap belong to
+   the browser. The hand-rolled `.palette-backdrop` this used to need is gone
+   with it — it was there on the belief that happy-dom has no `showModal`, which
+   nobody had checked and which is false. */
+.palette::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
 .palette {
-  position: static;
-  margin: 0;
+  margin-block-start: 12vh;
+  margin-inline: auto;
   padding: 10px;
   width: min(560px, calc(100vw - 32px));
   max-height: 62vh;
