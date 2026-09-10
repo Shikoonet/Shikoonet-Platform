@@ -410,22 +410,42 @@ describe('the plan list', () => {
     expect(targets).toContain('buy');
   });
 
-  it('names the tier list when the category holds more than one service', () => {
+  it('goes where the caller says, not where it can guess', () => {
     /*
-     * `buy` from here lands on whatever screen the customer was actually
-     * shown, and on a category holding several services that is the TIER list,
-     * not the category list. Sending them one level too far up is the same
-     * defect `planDetailMenu` already fixed with the same two counts.
+     * The destination is the caller's to name, and the guess it replaced is
+     * why.
      *
-     * Not suppressed, unlike the service screen above: from here the button
-     * has a real and different destination on every shop shape, including the
-     * migrated one-category shop where it is the only working way back.
+     * It read `plans[0].tiers > 1 ? cat : buy`. But `tiers` counts ACTIVE
+     * siblings, while the screen `cat:` would draw is built by
+     * `productsForUser`, which ALSO applies `resellers_only`,
+     * `provider_hidden_users`, `once_per_user` and the panel's own status. One
+     * ordinary admin action — switching a panel in a shared category to
+     * non-ACTIVE — makes the two disagree: `cat:` re-renders the identical plan
+     * list, Telegram answers «message is not modified», and the button is dead.
+     * That is the same defect the service screen was changed to fix, recreated
+     * one level down.
+     *
+     * Both real callers know the answer without counting anything. The
+     * collapse in `categoryScreen` never drew a service list, so back is the
+     * category list or nothing; `prd:` was reached FROM a service list, so back
+     * is that category.
      */
-    const targets = callbacks(menu.planMenu([{ ...PLAN, tiers: 3, categoryId: 42 }])).map(
-      (b) => b.callback_data,
-    );
-    expect(targets).toContain('cat:42');
-    expect(targets).not.toContain('buy');
+    const named = callbacks(menu.planMenu([PLAN], 0, null, 'cat:42')).map((b) => b.callback_data);
+    expect(named).toContain('cat:42');
+    expect(named).not.toContain('buy');
+
+    // Null is «there is nothing above this screen» — the one-category collapse.
+    const alone = callbacks(menu.planMenu([PLAN], 0, null, null)).map((b) => b.callback_data);
+    expect(alone).not.toContain('buy');
+    expect(alone).toContain('menu');
+
+    // And `tiers` decides nothing now: the same plan with a count that used to
+    // force `cat:` follows the caller instead.
+    const ignoresTiers = callbacks(
+      menu.planMenu([{ ...PLAN, tiers: 9, categoryId: 7 }], 0, null, 'buy'),
+    ).map((b) => b.callback_data);
+    expect(ignoresTiers).toContain('buy');
+    expect(ignoresTiers).not.toContain('cat:7');
   });
 
   it('is just a way back when there is nothing to list', () => {

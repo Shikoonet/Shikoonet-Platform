@@ -895,6 +895,30 @@ export function planMenu(
    * into its name.
    */
   template: string | null = null,
+  /**
+   * Where «بازگشت» goes from this screen, decided by the CALLER.
+   *
+   * A string is that destination; `null` suppresses the button; `undefined`
+   * keeps it as the bare `buy` the chrome declares, which is what the
+   * `planMenu([])` error screens want and where there is nothing to derive
+   * from anyway.
+   *
+   * Explicit rather than derived, and the derived version is why. It read
+   * `plans[0].tiers > 1 ? cat : buy`, but `tiers` counts ACTIVE siblings while
+   * the screen it would send you to is built by `productsForUser`, which also
+   * applies `resellers_only`, `provider_hidden_users`, `once_per_user` and the
+   * panel's own status. The moment those two disagree — one ordinary admin
+   * action, switching a panel in a shared category to non-ACTIVE — `cat:`
+   * re-renders the identical plan list, Telegram answers «message is not
+   * modified», and the button is dead. That is the exact defect this screen's
+   * sibling was changed to fix, recreated one level down.
+   *
+   * Both real callers already know the answer without a count: the collapse in
+   * `categoryScreen` never drew a service list, so back is the category list
+   * or nothing; `prd:` was reached FROM a service list, so back is that
+   * category.
+   */
+  backTo?: string | null,
 ): InlineKeyboard {
   return withChrome(
     // The label and the callback are built together, from ONE plan object,
@@ -913,21 +937,10 @@ export function planMenu(
       // Re-pointed, never suppressed — the opposite of what the screen above
       // needs, and the difference matters.
       //
-      // From here, `buy` on a one-category shop lands on the SERVICE list,
-      // which is a real and different screen: the migrated shop is one category
-      // holding twenty-one services. Dropping the button there would take away
-      // the only working way back. What it gets wrong is a level, not a
-      // destination — it goes to the category list when the customer came from
-      // the tier list — so the fix is to name the right screen.
-      //
-      // The same two counts `planDetailMenu` already uses, and for the same
-      // stated reason: a customer never shown a list of one must not be sent
-      // «back» to a screen with a single button leading where they already are.
-      target: (action) => {
-        const first = plans[0];
-        if (action !== 'buy' || first === undefined) return undefined;
-        return first.tiers > 1 ? encode('cat', first.categoryId) : encode('buy');
-      },
+      // Suppressed only when the caller says there is nowhere to go.
+      applies: (action) => (action === 'buy' ? backTo !== null : true),
+      target: (action) =>
+        action === 'buy' && typeof backTo === 'string' ? backTo : undefined,
     },
   );
 }

@@ -2056,7 +2056,16 @@ async function categoryScreen(
   if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
   return screen(
     menu.choosePlan(only.name, plans, user.discount_percent),
-    menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate),
+    // The customer was never shown a service list — this screen IS the
+    // collapse — so back is the category list, or nothing when there is not
+    // one. Sending them to `cat:` here would re-run this same collapse and
+    // redraw the screen they are on.
+    menu.planMenu(
+      plans,
+      user.discount_percent,
+      SHOP.planButtonTemplate,
+      hasCategoryList ? encode('buy') : null,
+    ),
   );
 }
 
@@ -2234,7 +2243,14 @@ async function handleCallback(
       if (plans.length === 1) return planScreen(tx, user, plans[0]!, screen);
       return screen(
         menu.choosePlan(plans[0]!.productName, plans, user.discount_percent),
-        menu.planMenu(plans, user.discount_percent, SHOP.planButtonTemplate),
+        // Reached by pressing a service, so a service list really was drawn and
+        // its category is where back belongs.
+        menu.planMenu(
+          plans,
+          user.discount_percent,
+          SHOP.planButtonTemplate,
+          encode('cat', plans[0]!.categoryId),
+        ),
       );
     }
 
