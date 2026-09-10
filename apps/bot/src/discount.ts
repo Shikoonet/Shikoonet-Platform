@@ -114,7 +114,7 @@ export function normalizeCode(typed: string): string {
  * A redemption that still counts against a code's ceilings.
  *
  * A use is spent when an order is placed, and given BACK when that order dies
- * without ever being paid for. Until now nothing gave it back:
+ * without the customer keeping anything. Until now nothing gave it back:
  * `expireUnpaidOrders` closes the order and leaves the redemption, and both
  * ceilings are counted straight off `discount_redemptions` — so one tap on
  * «ثبت سفارش» that the customer never paid burnt a `max_uses = 1` code for the
@@ -127,6 +127,14 @@ export function normalizeCode(typed: string): string {
  * what was offered to whom. The row stays and simply stops counting, which is
  * what «the use was given back» actually means.
  *
+ * `FAILED` is in the list for the same reason as `EXPIRED`, and it was missed
+ * on the first pass. `fail()` marks the order FAILED and refunds it in the same
+ * transaction, so the customer paid, received nothing, and got their money
+ * back — and a `max_uses = 1` code was burnt for the whole shop by an outage on
+ * a panel. `EXPIRED` is what `expireUnpaidOrders` writes and `CANCELLED` is
+ * what the legacy import carries; between the three, every way an order dies
+ * without the customer keeping something is covered.
+ *
  * `order_id IS NULL` still counts, and that is not an oversight. The legacy
  * import writes redemptions with only `legacy_id`, `code_id` and `user_id`
  * (`migrate.ts`, out of `Giftcodeconsumed`), so a migrated use has no order to
@@ -134,7 +142,7 @@ export function normalizeCode(typed: string): string {
  */
 const REDEMPTION_COUNTS = `
   LEFT JOIN orders o ON o.id = r.order_id
-   WHERE (r.order_id IS NULL OR o.status NOT IN ('EXPIRED', 'CANCELLED'))
+   WHERE (r.order_id IS NULL OR o.status NOT IN ('EXPIRED', 'CANCELLED', 'FAILED'))
 `;
 
 /**

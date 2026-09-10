@@ -60,6 +60,18 @@ export function actionsFor(
    * customer never spends anything, and an operator who fixes the panel gets
    * the buttons back on the next screen with nothing to unwind.
    *
+   * ## What it asks, exactly
+   *
+   * Whether a credential is NAMED, not whether it RESOLVES. A `secret_ref`
+   * pointing at a `PANEL_<REF>` that is absent from the environment still draws
+   * the buttons, and that panel still cannot log in. Deliberate, for two
+   * reasons: it is the predicate `trialPanelsForUser` already uses for the same
+   * question, so the tree agrees with itself; and a panel whose env var has
+   * gone missing cannot provision anything either, so the add-on path is not
+   * the exposure — a new purchase on it fails too, and that one IS refunded.
+   * What this closes is the never-wired panel, which `migrate.ts` produces by
+   * design and the dashboard counts as `panels_without_secret`.
+   *
    * ## It takes away only what needs the panel
    *
    * An earlier version of this returned null for the WHOLE object, which also

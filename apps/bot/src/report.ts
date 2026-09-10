@@ -118,8 +118,16 @@ async function perPanel(
               COALESCE(sum(s.price_irr), 0)  AS irr,
               COALESCE(sum(s.volume_gb), 0)  AS gb
          FROM subscriptions s
+         -- LEFT, so a subscription carried over by the import — which has no
+         -- order at all — still counts. What the join is here for is the one
+         -- kind that would otherwise make the heading false: a TRIAL writes a
+         -- subscription and is not a sale, so it appeared in this block while
+         -- «🛒 فروش نو» above counts NEW_PURCHASE orders and never saw it. A
+         -- renewal writes no subscription row, so it was never in either.
+         LEFT JOIN orders o ON o.id = s.order_id
         WHERE s.purchased_at >= to_timestamp(?1 / 1000.0)
           AND s.purchased_at <  to_timestamp(?2 / 1000.0)
+          AND (o.kind IS NULL OR o.kind = 'NEW_PURCHASE')
         GROUP BY s.provider_name_at_sale
         ORDER BY irr DESC`,
     )

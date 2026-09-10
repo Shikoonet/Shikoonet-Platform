@@ -289,7 +289,7 @@ describe('the channel gate', () => {
 
   it('cannot be walked past with a button press', async () => {
     await addChannel();
-    const { telegramId } = ids();
+    const { updateId, telegramId } = ids();
     await makeCustomer(telegramId);
     const api = membership('left');
 
@@ -297,7 +297,7 @@ describe('the channel gate', () => {
     // nothing but the gate stands between them and the catalogue.
     const out = await handleUpdate(
       db,
-      press(BASE_UPDATE + 500, telegramId, 'buy'),
+      press(updateId, telegramId, 'buy'),
       globalThis.fetch,
       api,
     );

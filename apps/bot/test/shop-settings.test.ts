@@ -122,9 +122,10 @@ async function makeService(telegramId: number): Promise<void> {
       // as an address before it draws a paid button — an add-on sold on a panel
       // that cannot log in is money taken for nothing — so a fixture with only
       // half the pair would make these tests fail for a reason that has nothing
-      // to do with the switch under test. It names an environment variable that
-      // does not exist here, and that is fine: nothing in this file calls a
-      // panel. `addon.test.ts` sets the same field on the same row.
+      // to do with the switch under test. The variable it names does not have to
+      // exist: `actionsFor` asks whether a credential is NAMED, not whether it
+      // resolves, and nothing in this file calls a panel. `addon.test.ts` sets
+      // the same field on the same row.
       `UPDATE provisioning_providers
           SET base_url = coalesce(base_url, 'https://panel.test'),
               secret_ref = coalesce(secret_ref, 'PANEL_SIM_VIP'),
@@ -257,6 +258,10 @@ describe('a panel that cannot log in', () => {
     await makeService(telegramId);
     const provider = await providerId('sim-vip');
 
+    const before = await db
+      .prepare(`SELECT secret_ref FROM provisioning_providers WHERE id = ?1`)
+      .bind(provider)
+      .first<{ secret_ref: string | null }>();
     await db
       .prepare(`UPDATE provisioning_providers SET secret_ref = NULL WHERE id = ?1`)
       .bind(provider)
@@ -287,10 +292,39 @@ describe('a panel that cannot log in', () => {
       expect(without.some((d) => d.startsWith('qr:'))).toBe(true);
       // Not stranded: the way back is still there.
       expect(without).toContain('mine');
+      /*
+       * The sealed half, which nothing else in this package builds.
+       *
+       * `secret_ref` is still NULL here; the credential is a `provider_secrets`
+       * row, which is how a panel added from «مدیریت پنل‌ها» is wired. Without
+       * this the guard could be reduced to one of its two terms and the suite
+       * would stay green while every sealed panel in the shop lost its add-on
+       * buttons.
+       */
+      await db
+        .prepare(
+          `INSERT INTO provider_secrets (provider_id, sealed, key_id)
+           VALUES (?1, 'not-a-sealed-value', 'test')
+           ON CONFLICT (provider_id) DO UPDATE SET sealed = EXCLUDED.sealed`,
+        )
+        .bind(provider)
+        .run();
+      try {
+        const sealed = await serviceButtons(telegramId);
+        expect(sealed.some((d) => d.startsWith('xv:'))).toBe(true);
+      } finally {
+        await db
+          .prepare(`DELETE FROM provider_secrets WHERE provider_id = ?1`)
+          .bind(provider)
+          .run();
+      }
     } finally {
+      // Restored to what it was, not to a literal. `addon.test.ts` writes a
+      // different value onto this same row, and putting back a guess is how a
+      // fixture leaves the shared database in a state nobody wrote.
       await db
         .prepare(`UPDATE provisioning_providers SET secret_ref = ?2 WHERE id = ?1`)
-        .bind(provider, 'PANEL_SIM_VIP')
+        .bind(provider, before?.secret_ref ?? null)
         .run();
     }
 

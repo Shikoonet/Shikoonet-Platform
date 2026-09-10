@@ -131,6 +131,11 @@ interface CodeRow {
 /**
  * Usable, expired, or spent — derived exactly as `checkCode` derives it.
  *
+ * «exactly» is load-bearing and was briefly untrue: the bot stopped counting a
+ * redemption whose order died unpaid, and this route went on counting it, so
+ * the panel showed USED_UP for a code a customer could still spend. `used` in
+ * `SELECT_CODE` carries the same predicate now. If one moves again, move both.
+ *
  * Expiry is compared against the server's clock, the same instant Postgres
  * would use; the caller renders it in Tehran time but never decides with it.
  */
@@ -185,7 +190,16 @@ const SELECT_CODE = `
          dc.expires_at, dc.created_at,
          dc.uses_per_user, dc.status, dc.target_user_id,
          tu.telegram_id AS target_user_telegram_id, tu.username AS target_user_username,
-         (SELECT COUNT(*) FROM discount_redemptions r WHERE r.code_id = dc.id) AS used
+         -- The same predicate the bot counts with, spelled out rather than
+         -- imported: a use is given back when the order dies without the
+         -- customer keeping anything. When these two disagree the panel says
+         -- USED_UP about a code customers can still spend, and the USABLE
+         -- filter hides it from the list as well.
+         (SELECT COUNT(*) FROM discount_redemptions r
+            LEFT JOIN orders o ON o.id = r.order_id
+           WHERE r.code_id = dc.id
+             AND (r.order_id IS NULL
+                  OR o.status NOT IN ('EXPIRED', 'CANCELLED', 'FAILED'))) AS used
     FROM discount_codes dc
     LEFT JOIN products p ON p.id = dc.product_id
     LEFT JOIN provisioning_providers pr ON pr.id = dc.provider_id

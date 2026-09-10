@@ -24,6 +24,7 @@ import {
   TOPUP_MIN_IRR,
 } from '../src/wallet.js';
 import { handleUpdate } from '../src/handle.js';
+import * as menu from '../src/menu.js';
 import type { TelegramUpdate } from '../src/telegram.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId } from './helpers/shop.js';
@@ -438,11 +439,11 @@ describe('a deposit that is paid for', () => {
     await handleUpdate(db, press(920_100_920, telegramId, `paid:${order!.id}`));
     const claimed = await db
       .prepare(
-        `SELECT count(*)::int AS n FROM payments
+        `SELECT count(*)::int AS n, min(public_id) AS ref FROM payments
           WHERE order_id = ?1 AND status = 'AWAITING_REVIEW'`,
       )
       .bind(order!.id)
-      .first<{ n: number }>();
+      .first<{ n: number; ref: string }>();
     expect(claimed?.n).toBe(1);
 
     // Then the other, still-live invoice.
@@ -459,7 +460,11 @@ describe('a deposit that is paid for', () => {
       .first<{ n: number }>();
     expect(wallet?.n).toBe(0);
     // Told what is actually true: we are waiting on the transfer they sent.
-    expect(out.replies[0]!.text).toContain('پرداخت');
+    //
+    // Identity, against the message this branch is for. «پرداخت» on its own is
+    // in `WALLET_PAID_TITLE` too, so `toContain` held whether or not the guard
+    // fired — it could not tell the refusal from the double charge it prevents.
+    expect(out.replies[0]!.text).toBe(menu.paidAlready(claimed!.ref));
   });
 
   it('closes the card checkout it supersedes, so the order cannot be paid twice', async () => {

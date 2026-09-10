@@ -260,6 +260,89 @@ describe('an invoice nobody paid', () => {
       .first<{ n: number }>();
     expect(kept?.n).toBe(1);
   });
+
+  it('gives a per-CUSTOMER use back to the customer who abandoned it', async () => {
+    /*
+     * The sibling of the test above, and the one that reaches the counts the
+     * other cannot.
+     *
+     * That test uses two different customers, so both per-user counts read zero
+     * with the filter or without it — three of the four call sites were green
+     * either way. This one is the SAME customer twice against
+     * `uses_per_user = 1`, which is the ceiling `checkCode` reads before
+     * offering the discount and `redeem` reads again before writing the row.
+     *
+     * The second assertion is the one that reaches `redeem`: `discount_irr` on
+     * the order is written by `placeOrder` from the held check, so it is set
+     * even when `redeem` refuses. A second redemption ROW is not.
+     */
+    const first = ids();
+    const buyer = await makeCustomer(first.telegramId);
+    const codeId = await makeCode('giveback1', { usesPerUser: 1, maxUses: null });
+
+    await useCode(first.updateId, first.telegramId, VIP_PLAN, 'giveback1');
+    await handleUpdate(db, press(first.updateId + 2, first.telegramId, `order:${VIP_PLAN}`));
+    const abandoned = await lastOrder(buyer);
+    expect(abandoned?.discount_irr).toBeGreaterThan(0);
+
+    await db
+      .prepare(`UPDATE orders SET expires_at = to_timestamp(?2 / 1000.0) WHERE id = ?1`)
+      .bind(abandoned!.id, NOW_MS - 60_000)
+      .run();
+    await expireUnpaidOrders(db, NOW_MS);
+
+    // The same person comes back.
+    const again = ids();
+    const said = await useCode(again.updateId, first.telegramId, VIP_PLAN, 'giveback1');
+    expect(said).toContain('giveback1');
+    await handleUpdate(db, press(again.updateId + 2, first.telegramId, `order:${VIP_PLAN}`));
+
+    const second = await lastOrder(buyer);
+    expect(second?.id).not.toBe(abandoned?.id);
+    expect(second?.discount_irr).toBeGreaterThan(0);
+    // Two rows: the abandoned one, kept as the money record it is, and the new
+    // one `redeem` was allowed to write.
+    const rows = await db
+      .prepare(`SELECT count(*)::int AS n FROM discount_redemptions WHERE code_id = ?1`)
+      .bind(codeId)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(2);
+  });
+
+  it('gives the use back when the order was paid for and never delivered', async () => {
+    /*
+     * The other dead-order path, and it was missed on the first pass: `fail()`
+     * marks the order FAILED and refunds it in the same transaction, so the
+     * customer paid, got nothing, and has their money back — while the code
+     * stayed spent for the whole shop.
+     *
+     * The status is written here rather than by driving a panel outage, and
+     * that is the honest boundary of this test: what it proves is that a FAILED
+     * order stops counting. That `fail()` writes exactly this status is
+     * `provision.ts`'s `UPDATE orders SET status = 'FAILED' … WHERE id = ?1 AND
+     * status = 'PROVISIONING'`, one line above its `refundOrder`.
+     */
+    const first = ids();
+    const second = ids();
+    const buyer = await makeCustomer(first.telegramId);
+    const other = await makeCustomer(second.telegramId);
+    await makeCode('outage1', { maxUses: 1 });
+
+    await useCode(first.updateId, first.telegramId, VIP_PLAN, 'outage1');
+    await handleUpdate(db, press(first.updateId + 2, first.telegramId, `order:${VIP_PLAN}`));
+    const dead = await lastOrder(buyer);
+    expect(dead?.discount_irr).toBeGreaterThan(0);
+
+    await db
+      .prepare(`UPDATE orders SET status = 'FAILED' WHERE id = ?1`)
+      .bind(dead!.id)
+      .run();
+
+    const said = await useCode(second.updateId, second.telegramId, VIP_PLAN, 'outage1');
+    expect(said).toContain('outage1');
+    await handleUpdate(db, press(second.updateId + 2, second.telegramId, `order:${VIP_PLAN}`));
+    expect((await lastOrder(other))?.discount_irr).toBeGreaterThan(0);
+  });
 });
 
 describe('a code that works', () => {
