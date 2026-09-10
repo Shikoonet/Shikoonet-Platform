@@ -186,7 +186,17 @@ export const MENUS = {
     // from a category, which is the level it was built for.
     hint: 'سرویس‌های یک دسته‌بندی — پلاتینیوم، طلایی، معمولی. صفحهٔ دوم خرید، وقتی دسته‌بندی بیش از یک سرویس دارد',
     buttons: [
-      { action: 'buy', label: 'بازگشت به دسته‌بندی‌ها ⬅️', hint: 'برگشت به فهرست دسته‌بندی‌ها' },
+      {
+        action: 'buy',
+        label: 'بازگشت به دسته‌بندی‌ها ⬅️',
+        hint: 'برگشت به فهرست دسته‌بندی‌ها',
+        // Drawn only when there IS a category list above this screen. On a shop
+        // with one category the bot arrives here directly and the button would
+        // re-open the screen it is on. Every other applies-dropped action
+        // carries the flag; without it the panel promises an admin a button the
+        // bot may not draw.
+        conditional: true,
+      },
       BACK_TO_MENU,
     ],
   },
