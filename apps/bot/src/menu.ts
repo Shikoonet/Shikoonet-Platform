@@ -144,10 +144,11 @@ export let ACTION_UNSUPPORTED = DEFAULT_TEXTS.raw('ACTION_UNSUPPORTED');
  *
  * A live binding because `handle.ts` needs it too: the QR button answered
  * `ACTION_UNSUPPORTED` — «این سرویس به‌صورت دستی آماده شده» — for a service that
- * is not manual at all. It reached `subscriptionOnPanelForUser`, so it IS on a
- * panel; only the link is missing. The body of that very screen already prints
- * this sentence for the same state, so one screen described it two ways and the
- * button's version was false.
+ * is not manual at all. What says it is on a panel is that `serviceDetailMenu`
+ * only draws `qr` when `actionsFor()` returned something, and that requires a
+ * provider kind, a base URL and a remote username; only the link is missing.
+ * The body of that very screen already prints this sentence for the same state,
+ * so one screen described it two ways and the button's version was false.
  */
 export let SERVICE_DETAIL_NO_LINK = DEFAULT_TEXTS.raw('SERVICE_DETAIL_NO_LINK');
 export let CONFIRM_REVOKE = DEFAULT_TEXTS.raw('CONFIRM_REVOKE');

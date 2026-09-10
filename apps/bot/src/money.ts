@@ -51,8 +51,11 @@ export function tomanDigits(priceIrr: number): string {
  * both appear in this shop. A customer typing on that layout had their number
  * refused as «not a number».
  *
- * One helper rather than three regexes: this one was already correct, already
- * lives on the money edge, and is already exercised through `nameMentionsPrice`.
+ * One helper rather than three regexes: this one was already correct and
+ * already lives on the money edge. It was NOT already exercised on both arms —
+ * every test in the repo passed it Persian digits, so the `0x0660` branch, the
+ * whole reason the two typed paths were pointed at it, was covered by nothing
+ * until 2026-09-10. `money.test.ts` and `addon.test.ts` each carry one now.
  */
 export function toAsciiDigits(text: string): string {
   return text.replace(/[۰-۹٠-٩]/g, (digit) => {

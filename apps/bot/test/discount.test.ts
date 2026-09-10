@@ -335,7 +335,7 @@ describe('a second code typed after the first was accepted', () => {
      * one step nobody had walked.
      */
     const { updateId, telegramId } = ids();
-    await makeCustomer(telegramId);
+    const userId = await makeCustomer(telegramId);
     await makeCode('firstone', { percent: 20 });
     await makeCode('secondone', { percent: 30 });
 
@@ -351,6 +351,46 @@ describe('a second code typed after the first was accepted', () => {
     // ...and the typed message is taken out of the chat, like every other
     // answer to a question this bot asked.
     expect(out.deletes).toContainEqual({ chatId: telegramId, messageId: updateId + 2 });
+
+    // And the ORDER agrees with the screen, which is this file's standard: a
+    // screen saying «30%» over an invoice charging 20% is the failure it is
+    // for. Asserting only the reply left the replacement half untested.
+    await handleUpdate(db, press(updateId + 3, telegramId, `order:${VIP_PLAN}`));
+    expect(await lastOrder(userId)).toMatchObject({
+      discount_irr: Math.round(VIP_PRICE * 0.3),
+    });
+  });
+
+  it('keeps the first one when the second is refused, and says so on the keyboard', async () => {
+    /*
+     * The state routing `code:held` here made reachable, and the one the
+     * keyboard used to describe wrongly.
+     *
+     * `handleDiscountCode` returns before `ask()` on a refusal, so the FIRST
+     * code is still held and still discounting the order — while the keyboard
+     * was rebuilt with no `applied`, which withdraws «برداشتن کد» and offers
+     * «کد تخفیف دارم» again. A keyboard describing a state `bot_sessions` does
+     * not hold.
+     */
+    const { updateId, telegramId } = ids();
+    const userId = await makeCustomer(telegramId);
+    await makeCode('kept20', { percent: 20 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'kept20');
+    const out = await handleUpdate(db, types(updateId + 2, telegramId, 'no-such-code'));
+
+    expect(out.replies[0]?.text).toBe(menu.DISCOUNT_REFUSED['UNKNOWN_CODE']);
+    const data = (out.replies[0]?.keyboard ?? []).flat().map((b) => b.callback_data);
+    // «برداشتن کد» is drawn, «کد تخفیف دارم» is not — because one IS held.
+    expect(data.some((d) => (d ?? '').startsWith('dsx:'))).toBe(true);
+    expect(data.some((d) => (d ?? '').startsWith('dsc:'))).toBe(false);
+
+    // And the money follows the keyboard: the first code is still the one
+    // charged.
+    await handleUpdate(db, press(updateId + 3, telegramId, `order:${VIP_PLAN}`));
+    expect(await lastOrder(userId)).toMatchObject({
+      discount_irr: Math.round(VIP_PRICE * 0.2),
+    });
   });
 });
 

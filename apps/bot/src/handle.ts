@@ -965,8 +965,20 @@ async function handleTypedAnswer(
   // for one, `subscriptionId` for the other. A second code simply replaces the
   // first, which is what typing one means.
   //
+  // The payload was never the risk, though — the SCREEN was, and it took a
+  // review to see it. `ask()` remembers a message id in `data.screen`, and
+  // `code:held` deliberately survives the order, so a stray word typed beside a
+  // live checkout invoice used to be EDITED ONTO that invoice. The invoice
+  // paths drop `data.screen` now (`forgetScreen`), which is why routing here is
+  // safe rather than merely well-intentioned.
+  //
   // NOT extended to `uname:held`. `handleCustomerName` ends in
   // `placeOrderScreen`, so routing a stray message there would place an order.
+  // That step therefore keeps the silence the rest of this fixes: a stray
+  // message at `uname:held` still falls through to IGNORED, and `withCleanChat`
+  // returns early on an ignored outcome, so it is not even deleted. Left as it
+  // is on purpose — placing an order for a customer who typed a word is worse
+  // than leaving that word in the chat.
   if (session.step === 'code' || session.step === 'code:held') {
     return withCleanChat(await handleDiscountCode(tx, message, user, session), message, session);
   }
@@ -1550,9 +1562,23 @@ async function handleDiscountCode(
   );
   if (!check.ok) {
     // The question stays open: the customer mistyped and can type again.
+    //
+    // And the keyboard has to agree with the session. This returns BEFORE
+    // `ask()`, so a refusal typed at `code:held` leaves the first code still
+    // held and still discounting the order — while a bare `planDetailMenu(plan)`
+    // withdraws «برداشتن کد» and offers «کد تخفیف دارم» again, which is a
+    // keyboard describing a state `bot_sessions` does not hold. Reachable only
+    // since `code:held` began routing here; before that the refusal branch was
+    // reachable from step `code` alone, where nothing was applied.
+    const stillHeld = await heldCode(tx, user, plan, price.totalIrr);
     return answer(
       menu.DISCOUNT_REFUSED[check.reason] ?? menu.DISCOUNT_REFUSED['UNKNOWN_CODE']!,
-      menu.planDetailMenu(plan),
+      menu.planDetailMenu(
+        plan,
+        stillHeld
+          ? { code: stillHeld.code.code, discountIrr: stillHeld.discountIrr }
+          : undefined,
+      ),
     );
   }
 
@@ -2428,13 +2454,22 @@ async function handleCallback(
       // A service with no link has nothing to encode. Sending a QR of an empty
       // string is a picture that scans to nothing, which is worse than saying so.
       //
-      // «لینک هنوز در دسترس نیست», not «این سرویس دستی آماده شده». This service
-      // came back from `subscriptionOnPanelForUser`, so it IS panel-backed and
-      // the manual sentence is simply false — its link has not synced yet. The
-      // BODY of this same screen already prints the true one, so the screen
-      // described one state two ways and the button's version was the wrong one.
-      // The button is drawn for a link-less service on purpose (`menu.ts`), so
-      // this is the reachable answer rather than a corner.
+      // «لینک هنوز در دسترس نیست», not «این سرویس دستی آماده شده».
+      //
+      // What proves the service is panel-backed is the BUTTON, not this query:
+      // `serviceDetailMenu` draws `qr` only when `actionsFor()` returned
+      // something, and `actionsFor` requires a provider kind, a base URL and a
+      // remote username. `subscriptionOnPanelForUser` does not — its name
+      // oversells a LEFT JOIN, and it hands back rows whose `provider_kind` is
+      // null, which `actions.ts` treats as UNSUPPORTED precisely because they
+      // are the manual ones.
+      //
+      // So the manual sentence is false HERE, for the reachable press: the link
+      // has not synced yet. The BODY of this same screen already prints the true
+      // one, so the screen described one state two ways and the button's version
+      // was the wrong one. A stale `qr:` replayed out of old chat history can
+      // still reach this line for a row whose provider was deleted, and it is
+      // the better of the two answers there too.
       if (!service.subscription_url) {
         return screen(
           menu.SERVICE_DETAIL_NO_LINK,

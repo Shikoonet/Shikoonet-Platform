@@ -144,6 +144,20 @@ async function makeService(telegramId: number): Promise<void> {
     .run();
 }
 
+/** The reply a customer gets from pressing one of their service's buttons. */
+async function pressServiceButton(telegramId: number, prefix: string): Promise<string> {
+  const { updateId } = ids();
+  await handleUpdate(db, startUpdate(updateId, telegramId));
+  const mine = await handleUpdate(db, press(updateId + 1, telegramId, 'mine'));
+  const sub = datas(mine.replies[0]?.keyboard).find((d) => d.startsWith('sub:'));
+  if (sub === undefined) throw new Error('the service fixture is not listed');
+  const detail = await handleUpdate(db, press(updateId + 2, telegramId, sub));
+  const target = datas(detail.replies[0]?.keyboard).find((d) => d.startsWith(prefix));
+  if (target === undefined) throw new Error(`no ${prefix} button on the service page`);
+  const out = await handleUpdate(db, press(updateId + 3, telegramId, target));
+  return out.replies[0]?.text ?? '';
+}
+
 /** The buttons a customer is actually sent on their service page. */
 async function serviceButtons(telegramId: number): Promise<string[]> {
   const { updateId } = ids();
@@ -161,6 +175,30 @@ beforeAll(async () => {
 });
 beforeEach(clearSettings);
 afterEach(clearSettings);
+
+describe('the config button on a service whose link has not arrived', () => {
+  it('says the link is not ready yet, not that the service is a manual one', async () => {
+    /*
+     * The button is drawn for a link-less service on purpose, so this is the
+     * reachable answer rather than a corner — and it used to be
+     * `ACTION_UNSUPPORTED`, «این سرویس به‌صورت دستی آماده شده», about a service
+     * that is on a panel and simply has not synced yet. The BODY of the same
+     * screen already printed the true sentence, so one screen described one
+     * state two ways and the button's version was the false one.
+     *
+     * Nothing pressed `qr:` on a link-less service anywhere in the suite, so
+     * both lines could be reverted with everything green.
+     */
+    const telegramId = 855_900_031;
+    await makeService(telegramId);
+    await db
+      .prepare(`UPDATE subscriptions SET subscription_url = NULL WHERE public_id = ?1`)
+      .bind(`sw${telegramId}`)
+      .run();
+
+    expect(await pressServiceButton(telegramId, 'qr:')).toBe(menu.SERVICE_DETAIL_NO_LINK);
+  });
+});
 
 describe('reading the shop settings', () => {
   it('names every row it reads exactly once, whatever the scope', async () => {
