@@ -92,6 +92,20 @@ export const MAX_UPDATE_ATTEMPTS = 3;
  */
 export const REPLY_RETRY_BUDGET_MS = 10_000;
 
+/**
+ * The most one reply may hold up the loop, whatever the budget still has.
+ *
+ * The budget alone would let a single `retry_after: 10` spend all of it at
+ * once, and every update behind that one waits for `answer()` while it does —
+ * a spinner Telegram gives a short life to. The per-chat limit this retry
+ * exists for is roughly one message per second, and the `retry_after` that
+ * comes back with it is small; the large values are the group and broadcast
+ * limits, which belong to `sweepBroadcasts` and its own pause, not here.
+ *
+ * Three seconds covers the wait this is for and refuses the one it is not.
+ */
+export const MAX_SINGLE_WAIT_MS = 3_000;
+
 /** What is known about an update that has failed at least once. */
 export interface Attempt {
   count: number;
@@ -178,6 +192,13 @@ export async function pollOnce(
    * only in a log line nobody kept.
    */
   attempts: Map<number, Attempt> = new Map(),
+  /**
+   * Overridable for one reason: the budget is a property of the CYCLE, and a
+   * test that pins it against the real ten seconds has to sleep for ten
+   * seconds. With a small budget the same two updates prove the same thing in
+   * a second.
+   */
+  budgetMs: number = REPLY_RETRY_BUDGET_MS,
 ): Promise<PollResult> {
   const updates = await api.getUpdates(offset, timeoutSec, signal);
   const counts = { ...EMPTY_COUNTS };
@@ -193,7 +214,7 @@ export async function pollOnce(
    * Ten seconds is under half a `getUpdates` long poll, so a fully spent budget
    * still leaves the cycle shorter than a quiet one.
    */
-  let retryBudgetMs = REPLY_RETRY_BUDGET_MS;
+  let retryBudgetMs = budgetMs;
   /**
    * Sends, and on a 429 waits exactly as long as Telegram said and sends once
    * more.
@@ -208,16 +229,36 @@ export async function pollOnce(
    * one, so the decision is made per call against the error that call actually
    * produced. A wrapper around the whole branch would judge a failed
    * `sendPhotoBytes` by whether the fallback `sendMessage` was rate limited.
+   *
+   * Three sends are wrapped, all of them `sendMessage`: the QR fallback, the
+   * new screen, and the edit fallback. The photo, the document and the
+   * reply-keyboard carrier are deliberately not. The first two have no producer
+   * in the bot today; the carrier is a `sendMessage` against the same limit,
+   * but what it costs when it is refused is a stale bottom label, and its own
+   * catch already says that is not worth spending the cycle's budget on. The
+   * screen it precedes is wrapped, and that is the message the customer is
+   * waiting for.
    */
-  const onceMore = async (send: () => Promise<void>): Promise<void> => {
+  const onceMore = async (trace: string, send: () => Promise<void>): Promise<void> => {
     try {
       await send();
     } catch (err) {
       const waitMs = rateLimitedForMs(err);
-      if (waitMs === null || waitMs > retryBudgetMs) throw err;
+      // Two ceilings, and they answer different questions. `MAX_SINGLE_WAIT_MS`
+      // asks «how long may ONE customer hold up the loop», because `answer()`
+      // for every update behind this one waits here too and the spinner they
+      // are watching is on a short Telegram clock. The budget asks «how long
+      // may the whole cycle spend». A wait past either is refused outright
+      // rather than partly paid — a partly paid wait is still a wait, and it
+      // does not deliver the message at the end of it.
+      if (waitMs === null || waitMs > MAX_SINGLE_WAIT_MS || waitMs > retryBudgetMs) throw err;
       retryBudgetMs -= waitMs;
-      log.warn('reply.rate_limited', { waitMs, budget_left_ms: retryBudgetMs });
+      log.warn('reply.rate_limited', { trace, waitMs, budget_left_ms: retryBudgetMs });
       await sleep(waitMs, signal);
+      // `sleep` resolves on abort rather than rejecting, so without this the
+      // retry fires into a process that is shutting down: one doomed API call
+      // and one misleading `reply.undelivered` per pending retry.
+      if (signal?.aborted) throw err;
       await send();
     }
   };
@@ -352,7 +393,9 @@ export async function pollOnce(
             );
           } catch (err) {
             log.warn('reply.qr_failed', { trace: traceOf(update), fallback: 'link only' }, err);
-            await onceMore(() => api.sendMessage(reply.chatId, reply.text, reply.keyboard));
+            await onceMore(traceOf(update), () =>
+              api.sendMessage(reply.chatId, reply.text, reply.keyboard),
+            );
           }
         } else if (reply.photo !== undefined) {
           await api.sendPhoto(reply.chatId, reply.photo, reply.text);
@@ -362,7 +405,7 @@ export async function pollOnce(
           reply.editMessageId === undefined ||
           outcome.replyKeyboardUpdate !== undefined
         ) {
-          await onceMore(() =>
+          await onceMore(traceOf(update), () =>
             api.sendMessage(
               reply.chatId,
               reply.text,
@@ -404,7 +447,9 @@ export async function pollOnce(
             // tidiness problem; a screen that never arrives is the customer
             // pressing a button and watching nothing happen.
             log.warn('reply.edit_failed', { trace: traceOf(update), fallback: 'new message' }, err);
-            await onceMore(() => api.sendMessage(reply.chatId, reply.text, reply.keyboard));
+            await onceMore(traceOf(update), () =>
+              api.sendMessage(reply.chatId, reply.text, reply.keyboard),
+            );
           }
         }
       } catch (err) {
