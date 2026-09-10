@@ -206,7 +206,7 @@ export async function downgradeExpired(
     // reads the DOWNGRADE groups as «before». That is why the renewal path
     // treats an unusable `groups_before_downgrade` as «whatever the plan gives a
     // new account» rather than trusting it blindly.
-    await db
+    const marked = await db
       .prepare(
         `UPDATE subscriptions
             SET downgraded_at = now(),
@@ -219,6 +219,16 @@ export async function downgradeExpired(
         result.groupIdsBefore === undefined ? null : JSON.stringify(result.groupIdsBefore),
       )
       .run();
+    // Counted only when this pass is the one that moved the row, for the same
+    // reason `remove.ts` counts that way: the UPDATE is guarded on the state the
+    // SELECT read, so another poller or a hand-edit between the two leaves zero
+    // changes here. Nothing reads `moved` today — `poll.ts` calls this sweep
+    // with no job key, so `sweep()` logs nothing — which is precisely why the
+    // overcount would have been invisible until something did.
+    if (marked.meta.changes === 0) {
+      log.info('downgrade.already_moved', { ref: row.provider_code });
+      continue;
+    }
     summary.moved++;
   }
 

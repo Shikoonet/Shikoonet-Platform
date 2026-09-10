@@ -417,6 +417,13 @@ describe('when the panel will not do it', () => {
     const userId = await makeCustomer(telegramId);
     const id = await makeService(userId, { publicId: 'rm-raced', expiredDaysAgo: 45 });
 
+    // A second due row, on a second customer, that nothing races. It is what
+    // makes the early `continue` a continuation rather than an exit: with one
+    // fixture, turning that `continue` into a `break` changed nothing.
+    const otherTelegramId = nextTelegramId();
+    const otherUserId = await makeCustomer(otherTelegramId);
+    await makeService(otherUserId, { publicId: 'rm-not-raced', expiredDaysAgo: 45 });
+
     let panelCalled = false;
     const racing = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
@@ -426,10 +433,11 @@ describe('when the panel will not do it', () => {
           headers: { 'content-type': 'application/json' },
         });
       }
-      if (init?.method === 'DELETE' && url.includes('/api/user/')) {
+      if (init?.method === 'DELETE' && url.includes('/api/user/u_rm-raced')) {
         panelCalled = true;
         // Somebody else takes the row, after it was selected and after the
-        // panel agreed, but before our guarded UPDATE.
+        // panel agreed, but before our guarded UPDATE. Only this row — the
+        // other one takes the ordinary path in the same pass.
         await db
           .prepare(`UPDATE subscriptions SET status = 'REMOVED' WHERE id = ?1`)
           .bind(id)
@@ -443,11 +451,46 @@ describe('when the panel will not do it', () => {
     // It really was due and really reached the panel — without this the test
     // would pass for the wrong reason.
     expect(panelCalled).toBe(true);
-    expect(out.due).toBe(1);
-    // But this pass did not move it, so it is not counted...
-    expect(out.removed).toBe(0);
-    // ...and the customer is not told a second time about a service somebody
-    // else has already finished with.
+    // Two were due; only the unraced one is counted, and `failed` stays 0 —
+    // a raced row is not a panel failure and must not be retried as one.
+    expect(out).toMatchObject({ due: 2, removed: 1, failed: 0, dryRun: false });
+    // The customer whose row somebody else took is not told a second time
+    // about a service that is already finished with.
+    expect(await toldAnything(telegramId)).toBe(false);
+    // The other one is, in the same pass.
+    expect(await toldAnything(otherTelegramId)).toBe(true);
+  });
+
+  it('counts the row it moved even when the message was already queued', async () => {
+    /*
+     * The other half of the `{ claimed, told }` split. `claimed` is «our row
+     * moved to REMOVED» and `told` is «the customer has a message owed to
+     * them», and only the first decides the count.
+     *
+     * The state is reached the way production reaches it: the dedupe key is
+     * already in `bot_notifications`, so `enqueue` returns false. Nothing
+     * prunes that table, so a key written once is there for good — which is
+     * exactly why `told` must not be allowed to zero the count.
+     */
+    const telegramId = nextTelegramId();
+    const userId = await makeCustomer(telegramId);
+    const id = await makeService(userId, { publicId: 'rm-told', expiredDaysAgo: 45 });
+
+    await db
+      .prepare(
+        `INSERT INTO bot_notifications (dedupe_key, chat_id, body, status)
+         VALUES (?1, ?2, 'anything', 'SENT')`,
+      )
+      .bind(`remove:${id}:expired`, telegramId)
+      .run();
+
+    const out = await removeFinishedServices(db, 'expired', fakePanel(), NOW_MS);
+
+    expect(deleted).toEqual(['u_rm-told']);
+    expect(out).toMatchObject({ due: 1, removed: 1, failed: 0, dryRun: false });
+    expect(await statusOf(id)).toBe('REMOVED');
+    // Nothing new was queued — the key was taken — and that is not a reason to
+    // report the removal as something that did not happen.
     expect(await toldAnything(telegramId)).toBe(false);
   });
 

@@ -105,9 +105,13 @@ interface ProviderRow {
 }
 
 export interface RemovalSummary {
-  /** Accounts actually deleted from a panel. Always 0 while the dry run is on. */
+  /**
+   * Subscriptions this pass moved to REMOVED. Always 0 while the dry run is on.
+   * A row this pass deleted on the panel but did not move is `remove.already_gone`
+   * in the log and is deliberately not counted here.
+   */
   removed: number;
-  /** Rows that met every condition. Equals `removed` only outside the dry run. */
+  /** Rows that met every condition. */
   due: number;
   /** Panels that refused or could not be reached. Those rows stay for next cycle. */
   failed: number;
@@ -315,7 +319,15 @@ export async function removeFinishedServices(
     // that left ACTIVE between the SELECT and here — was reported as an account
     // this sweep deleted. The only hint was `told:false` in the log line.
     if (!claimed) {
-      log.info('remove.already_gone', { job: reason, ref: row.public_id });
+      log.info('remove.already_gone', {
+        job: reason,
+        ref: row.public_id,
+        panel: provider.ctx.code,
+        // Both fields are here for the one irreversible case: the panel DELETE
+        // went through and somebody else took our row. `app_events` outlives
+        // the container, so this line is the only record that it happened.
+        was_present: result.gone,
+      });
       continue;
     }
     removed += 1;
