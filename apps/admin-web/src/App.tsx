@@ -36,6 +36,7 @@ import { AccessPage } from './pages/AccessPage.js';
 import { ImportPage } from './pages/ImportPage.js';
 import { EventsPage } from './pages/EventsPage.js';
 import { Icon } from './icons.js';
+import { CommandPalette } from './CommandPalette.js';
 import { HubSection } from './hub/HubSection.js';
 import { VersionBadge } from './VersionBadge.js';
 import { createCache, type Cache } from './hub/query.js';
@@ -477,6 +478,12 @@ function Shell({
           and starved the one next to it — the warning broke the navigation of
           the screen it was warning about. */}
       <ContinuityBanner state={continuity.state} onChanged={continuity.refresh} />
+
+      {/* Mounted for every role, and filtered by the same predicate the
+          sidebar uses — a palette that offered a section the server answers
+          403 for would be a door around the menu rather than a way through
+          it. Draws nothing until `Ctrl/⌘+K` or `/`. */}
+      <CommandPalette go={go} visible={visible} />
 
       <aside className={navOpen ? 'app-sidebar open' : 'app-sidebar'}>
         <div className="sidebar-brand">

@@ -198,3 +198,35 @@ describe('the sidebar groups fold', () => {
     await waitFor(() => expect(groupOf('کاتالوگ').open).toBe(true));
   });
 });
+
+/**
+ * The palette is mounted by the shell, not by a screen.
+ *
+ * Asserted from `<App/>` for the same reason everything else here is: the claim
+ * is «from anywhere», and only the app knows what anywhere is. The component's
+ * own behaviour — the debounce, the role filter, the arrow keys — is
+ * `command-palette.test.tsx`; this is the wiring.
+ */
+describe('the panel can be told where to go', () => {
+  it('opens the palette from a screen that is not the dashboard', SHELL, async () => {
+    await drawApp();
+    await go('پرداخت‌ها');
+    expect(document.querySelector('dialog[open]')).toBeNull();
+    fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
+    await waitFor(() => expect(document.querySelector('dialog[open]')).toBeTruthy());
+  });
+
+  it('takes the keyboard to a section it names', SHELL, async () => {
+    await drawApp();
+    await go('پرداخت‌ها');
+    fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
+    await waitFor(() => expect(document.querySelector('dialog[open]')).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText('نام بخش یا مشتری'), { target: { value: 'سفارشات' } });
+    fireEvent.keyDown(document, { key: 'Enter' });
+    await waitFor(() => expect(document.querySelector('.sidebar-link.active')?.textContent).toContain('سفارشات'));
+    // And it closes behind itself, or the next keystroke goes into a box that
+    // is still on top of the screen it just opened.
+    expect(document.querySelector('dialog[open]')).toBeNull();
+  });
+});
