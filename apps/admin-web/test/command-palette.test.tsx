@@ -126,6 +126,26 @@ describe('the command palette', () => {
     expect(customers.mock.calls[0]![0]).toMatchObject({ q: '713749' });
   });
 
+  it('drops the previous query’s customers the moment the query changes', async () => {
+    /*
+     * The debounce puts 250ms between the keystroke and the answer, and for
+     * that whole window the list underneath still held the LAST query's
+     * customers — so Enter, pressed at any normal typing speed, opened a
+     * customer who does not match what is on screen. A palette that acts on
+     * something other than what it is showing is worse than a slow one.
+     */
+    draw();
+    openIt();
+    const box = screen.getByRole('textbox');
+    fireEvent.change(box, { target: { value: '7137494513' } });
+    const hit = await screen.findByText(/reza_kh/);
+    expect(hit).toBeTruthy();
+
+    fireEvent.change(box, { target: { value: '9999999999' } });
+    // Synchronously, before the new request can possibly have answered.
+    expect(screen.queryByText(/reza_kh/)).toBeNull();
+  });
+
   it('does not ask about one letter', () => {
     draw();
     openIt();

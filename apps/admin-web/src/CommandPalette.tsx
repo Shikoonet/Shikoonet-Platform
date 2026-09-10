@@ -15,11 +15,16 @@
  * screen, and a palette that also searched orders, panels, plans and codes
  * would mostly return the wrong kind of thing.
  *
- * ## Why `<dialog open>` and not `showModal()`
+ * ## Why `showModal()`
  *
- * happy-dom has no `showModal`, so the tests could not open it. `open` as an
- * attribute is the same element in the same state minus the top-layer and the
- * backdrop, both of which this draws itself.
+ * It traps the keyboard. `<dialog open>` does not: Tab walks out of the palette
+ * into the page behind it, which for a control that exists to be used from the
+ * keyboard is the whole point missed. It also brings the top layer and a real
+ * `::backdrop`, so the hand-rolled backdrop this had is gone.
+ *
+ * The first version used the bare `open` attribute on the belief that happy-dom
+ * has no `showModal`. Nobody checked. happy-dom implements it, and the belief
+ * had been written into three comments and a pull request by then.
  *
  * ## Why the role filter is not optional
  *
@@ -65,6 +70,7 @@ export function CommandPalette({
   const [cursor, setCursor] = useState(0);
   const [people, setPeople] = useState<CustomerHit[]>([]);
   const box = useRef<HTMLInputElement | null>(null);
+  const shell = useRef<HTMLDialogElement | null>(null);
 
   const pages: Row[] = NAV.flatMap((g) => g.items)
     .filter((i) => visible(i.id))
@@ -136,8 +142,21 @@ export function CommandPalette({
     return () => document.removeEventListener('keydown', onKey);
   });
 
+  // `showModal()` rather than the `open` attribute, which is what this used
+  // until CodeRabbit asked why. The difference is not cosmetic: a modal dialog
+  // is in the top layer, gets a real `::backdrop`, and TRAPS THE KEYBOARD —
+  // with `open` alone, Tab walks straight out of the palette into the page
+  // behind it, which for a control that exists to be used from the keyboard is
+  // the whole point missed.
+  //
+  // The comment that used to sit here said happy-dom has no `showModal`. That
+  // was never checked, and it is false: happy-dom implements it and it sets
+  // `open`. An assumption, written down three times and believed.
   useEffect(() => {
-    if (open) box.current?.focus();
+    if (!open) return;
+    const el = shell.current;
+    if (el && !el.open) el.showModal();
+    box.current?.focus();
   }, [open]);
 
   // Customers are asked for, sections are not: the section list is already here
@@ -148,6 +167,13 @@ export function CommandPalette({
       setPeople([]);
       return undefined;
     }
+    // Cleared before the request is even scheduled, not when its answer lands.
+    // The debounce puts 250ms between the keystroke and the answer, and for
+    // that whole window this list otherwise still held the LAST query's
+    // customers — so Enter, at any normal typing speed, opened a customer who
+    // does not match what is on screen. A palette that acts on something other
+    // than what it shows is worse than a slow one.
+    setPeople([]);
     let dropped = false;
     const t = setTimeout(() => {
       void api
@@ -174,13 +200,26 @@ export function CommandPalette({
   if (!open) return null;
 
   return (
-    <div className="palette-backdrop" onClick={close} role="presentation">
-      <dialog
-        open
-        className="palette"
-        aria-label="رفتن به"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <dialog
+      ref={shell}
+      className="palette"
+      aria-label="رفتن به"
+      // A modal dialog's backdrop is part of the dialog, so a click on it
+      // arrives with the dialog itself as the target — anything inside reports
+      // the child it landed on.
+      onClick={(e) => {
+        if (e.target === shell.current) close();
+      }}
+      // Escape is the browser's, and it closes the element without telling
+      // React. Without this the state says open and nothing is on screen, and
+      // the next Ctrl+K toggles it shut.
+      onClose={close}
+      onCancel={(e) => {
+        e.preventDefault();
+        close();
+      }}
+    >
+      <div className="palette__inner">
         <input
           ref={box}
           className="form-control palette__box"
@@ -219,7 +258,7 @@ export function CommandPalette({
             ))}
           </ul>
         )}
-      </dialog>
-    </div>
+      </div>
+    </dialog>
   );
 }

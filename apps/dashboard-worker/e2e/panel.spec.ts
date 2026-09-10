@@ -362,6 +362,36 @@ test('Ctrl+K opens the palette anywhere and takes the keyboard to a section', as
   await expect(page.locator('dialog.palette')).toHaveCount(0);
 });
 
+test('the palette keeps the keyboard while it is open', async ({ page }) => {
+  /*
+   * The reason it is `showModal()` and not `<dialog open>`.
+   *
+   * With the bare attribute the dialog is an ordinary element in the flow and
+   * Tab walks straight out of it into the sidebar behind — on a control whose
+   * entire purpose is to be used without the mouse. A modal dialog sits in the
+   * top layer and the browser confines Tab to it.
+   *
+   * Only a browser can answer this. happy-dom implements `showModal()` and sets
+   * `open`, but not the top layer, so the unit tests pass either way — the
+   * shape this repository keeps being caught by.
+   */
+  await page.goto('/admin/payments');
+  await page.keyboard.press('Control+k');
+  await expect(page.getByLabel('نام بخش یا مشتری')).toBeFocused();
+
+  // Enough presses to have left a four-element dialog several times over.
+  for (let i = 0; i < 12; i += 1) await page.keyboard.press('Tab');
+
+  const stillInside = await page.evaluate(() => {
+    const dialog = document.querySelector('dialog.palette');
+    return !!dialog && !!document.activeElement && dialog.contains(document.activeElement);
+  });
+  expect(stillInside, 'focus left the palette').toBe(true);
+
+  await page.keyboard.press('Escape');
+  await expect(page.locator('dialog.palette')).toHaveCount(0);
+});
+
 test('«/» opens the palette, but not while a search box has the keyboard', async ({ page }) => {
   await page.goto('/admin/orders');
   const search = page.locator('#ledger-q');
