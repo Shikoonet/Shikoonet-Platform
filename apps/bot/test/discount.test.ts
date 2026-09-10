@@ -286,6 +286,41 @@ describe('a code that works', () => {
   });
 });
 
+describe('typing beside a live invoice', () => {
+  it('does not overwrite the invoice with the answer', async () => {
+    /*
+     * Routing the `:held` steps closed a silence and opened something worse.
+     *
+     * The held-code step deliberately SURVIVES the order — it is what lets a
+     * second tap re-price the same plan identically — so a customer looking at
+     * their invoice is still in `code:held`. The session's `screen` is the
+     * message the question was asked on, and the invoice replaced that message.
+     * So a refusal typed beside the invoice was written back ONTO it: card
+     * digits, amount and buttons gone, replaced by one line about a code.
+     *
+     * Before the routing that message was ignored. Turning silence into damage
+     * is a worse trade than the one it fixed, and this is the assertion that
+     * says so.
+     */
+    const { updateId, telegramId } = ids();
+    await makeCustomer(telegramId);
+    await makeCode('invoicecode', { percent: 20 });
+
+    await useCode(updateId, telegramId, VIP_PLAN, 'invoicecode');
+    // The invoice replaces the question on message 7 — `press` uses that id.
+    const invoice = await handleUpdate(db, press(updateId + 2, telegramId, `order:${VIP_PLAN}`));
+    expect(invoice.replies[0]?.editMessageId).toBe(7);
+
+    // Now anything at all, typed beside it. The step is still `code:held`.
+    const stray = await handleUpdate(db, types(updateId + 3, telegramId, 'not-a-real-code'));
+
+    // Answered — that part of the routing is right and stays...
+    expect(stray.status).toBe('processed');
+    // ...but NOT by editing the invoice. A new message under it instead.
+    expect(stray.replies[0]?.editMessageId).toBeUndefined();
+  });
+});
+
 describe('a second code typed after the first was accepted', () => {
   it('replaces it, instead of being dropped in silence', async () => {
     /*

@@ -1316,6 +1316,34 @@ async function clearSession(tx: D1DatabaseSession, userId: number): Promise<void
     .run();
 }
 
+/**
+ * Forgets which message a question was asked on, without ending the question.
+ *
+ * `screenOf` is what makes a typed answer land back INSIDE the message that
+ * asked, and that is right while the question is still on screen. Once an
+ * invoice has replaced it, it is wrong: the id now points at the invoice, so a
+ * later refusal would edit the customer's card details and amount away and
+ * leave a one-line «this code is not usable» in their place.
+ *
+ * Reachable because the held-code step deliberately survives the order — it is
+ * what lets a second tap re-price the same plan identically — so a customer who
+ * types anything at all beside their invoice is still in `code:held`. Before
+ * those steps were routed, such a message was ignored; routing them made the
+ * silence into damage, which is worse than what it fixed.
+ *
+ * The step and the held code stay. Only the screen id goes, so the next reply
+ * arrives as a NEW message under the invoice instead of on top of it.
+ */
+async function forgetScreen(tx: D1DatabaseSession, userId: number): Promise<void> {
+  await tx
+    .prepare(
+      `UPDATE bot_sessions SET data = data - 'screen', updated_at = now()
+        WHERE user_id = ?1`,
+    )
+    .bind(userId)
+    .run();
+}
+
 /** Asks a question and remembers that it was asked. */
 async function ask(
   tx: D1DatabaseSession,
@@ -1696,6 +1724,9 @@ async function placeOrderScreen(
   if (checkout.claimed) {
     return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
   }
+  // The invoice now occupies the message the question was asked on, so nothing
+  // may edit it again. See `forgetScreen`.
+  await forgetScreen(tx, user.id);
   return screen(
     menu.checkout(
       placed.publicId,
@@ -2622,6 +2653,8 @@ async function handleCallback(
       if (checkout.claimed) {
         return screen(menu.paidAlready(checkout.publicId), menu.afterPaidMenu());
       }
+      // Same as the purchase invoice: this message is no longer a question.
+      await forgetScreen(tx, user.id);
       return screen(
         menu.renewCheckout(
           placed.publicId,
