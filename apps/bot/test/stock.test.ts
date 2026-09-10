@@ -12,6 +12,7 @@ import { provisionPaidOrders } from '../src/provision.js';
 import { deliverFromStock, STOCK_GRACE_MS } from '../src/stock.js';
 import { db, pendingNotifications } from './helpers/env.js';
 import { ensureCatalog, makeCustomer, planId, providerId } from './helpers/shop.js';
+import { TEXTS } from '@shikoo/contracts';
 
 const PROVIDER_CODE = 'sim-stock-panel';
 
@@ -41,6 +42,48 @@ async function paidOrder(
     .bind(publicId, userId, options.kind ?? 'NEW_PURCHASE', plan)
     .first<{ id: number }>();
   return { orderId: row!.id, publicId, telegramId, planId: plan };
+}
+
+/**
+ * A paid RENEWAL against a service that really exists.
+ *
+ * `renew()` fails an order whose `target_subscription_id` resolves to nothing —
+ * terminally, with a refund — so a renewal built without one would never reach
+ * the retryable exit this is for.
+ */
+async function paidRenewal(): Promise<{
+  orderId: number;
+  publicId: string;
+  telegramId: number;
+}> {
+  const { telegramId, publicId } = nextIds();
+  const userId = await makeCustomer(telegramId);
+  const plan = await planId('sim-vip-1m-50');
+  // The plan's own panel: `beforeAll` turns every provider into a live one, so
+  // the renewal resolves against the account's panel exactly as production does.
+  const provider = await providerId('sim-vip');
+  const sub = await db
+    .prepare(
+      `INSERT INTO subscriptions
+         (public_id, user_id, plan_id, provider_id, plan_name_at_sale,
+          provider_name_at_sale, price_irr, remote_username, volume_gb,
+          status, purchased_at, expires_at)
+       VALUES (?1, ?2, ?3, ?4, 'یک‌ماهه', 'لوکیشن تست', 1950000, ?5, 50,
+               'ACTIVE', now(), now() + interval '1 day')
+       RETURNING id`,
+    )
+    .bind(`sub-${publicId}`, userId, plan, provider, `u_${publicId}`)
+    .first<{ id: number }>();
+  const row = await db
+    .prepare(
+      `INSERT INTO orders (public_id, user_id, kind, plan_id, target_subscription_id,
+                           quantity, unit_price_irr, total_irr, status)
+       VALUES (?1, ?2, 'RENEWAL', ?3, ?4, 1, 1950000, 1950000, 'PAID')
+       RETURNING id`,
+    )
+    .bind(publicId, userId, plan, sub!.id)
+    .first<{ id: number }>();
+  return { orderId: row!.id, publicId, telegramId };
 }
 
 /**
@@ -118,6 +161,33 @@ const NOW_MS = Date.now();
 /** A moment late enough that the grace period has passed. */
 function afterGrace(): number {
   return Date.now() + STOCK_GRACE_MS + 60_000;
+}
+
+/**
+ * Backdates the first-failure stamp by `ageMs`, against the SAME clock the
+ * sweep is given.
+ *
+ * The point is to stop comparing two clocks. `provision_first_failed_at` is
+ * written by Postgres with its own `now()`, and the grace check subtracts it
+ * from the mocked `Date.now()` — so a test that lets Postgres set it is
+ * asserting against a difference neither side chose.
+ */
+async function ageFailure(orderId: number, ageMs: number): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE orders SET provision_first_failed_at = to_timestamp(?2 / 1000.0) WHERE id = ?1`,
+    )
+    .bind(orderId, Date.now() - ageMs)
+    .run();
+}
+
+/** The «still working on it» notices for one order, by their own dedupe key. */
+async function waitingNotes(
+  publicId: string,
+): Promise<{ chatId: number; text: string; dedupeKey: string }[]> {
+  return (await pendingNotifications()).filter(
+    (n) => n.dedupeKey === `provision:${publicId}:waiting`,
+  );
 }
 
 beforeAll(async () => {
@@ -205,27 +275,61 @@ describe('selling from the shelf', () => {
     const order = await paidOrder();
     // No shelve() — an empty shelf is the state this exists for.
 
-    // Early: still silent.
+    // One sweep to stamp `provision_first_failed_at`, then the clock is set
+    // from the TEST rather than compared against Postgres's own.
+    //
+    // The first version of this test asserted the early silence with the stamp
+    // left as Postgres wrote it, which is strictly LATER than the mocked clock
+    // the sweep is given — so `now - failingSince` was negative and the
+    // assertion held for a grace of ten minutes, of one second, or of zero. It
+    // pinned nothing. Both edges are driven explicitly now, and the wall-clock
+    // budget that construction quietly depended on is gone with it.
     await provisionPaidOrders(db, deadPanel, Date.now());
-    expect(
-      (await pendingNotifications()).some(
-        (n) => n.dedupeKey === `provision:${order.publicId}:waiting`,
-      ),
-    ).toBe(false);
+    await ageFailure(order.orderId, STOCK_GRACE_MS - 60_000);
 
-    // Past the grace: told, once.
-    await provisionPaidOrders(db, deadPanel, afterGrace());
-    await provisionPaidOrders(db, deadPanel, afterGrace() + 60_000);
+    // Just inside the grace: still silent, and now for the right reason.
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    expect(await waitingNotes(order.publicId)).toHaveLength(0);
+
+    // Just past it: told, once, however many sweeps run.
+    await ageFailure(order.orderId, STOCK_GRACE_MS + 60_000);
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    await provisionPaidOrders(db, deadPanel, Date.now());
 
     // Identified by its own dedupe key, so this cannot pass on somebody else's
     // message to the same chat — a delivery note or a failure carries a
     // different key and would satisfy a `chatId` filter just as well.
-    const mine = (await pendingNotifications()).filter(
-      (n) => n.dedupeKey === `provision:${order.publicId}:waiting`,
-    );
+    const mine = await waitingNotes(order.publicId);
     expect(mine).toHaveLength(1);
     expect(mine[0]!.text).toContain(order.publicId);
+    // Against the registry, not against a phrase typed here: this asserts the
+    // customer got THIS message and not the delivery one, which also carries
+    // the tracking id.
+    expect(mine[0]!.text).toContain(TEXTS.SERVICE_STILL_WORKING_TITLE.default);
     // Still retryable — the notice is not a verdict on the order.
+    expect(await orderStatus(order.orderId)).toBe('PAID');
+  });
+
+  it('tells a waiting RENEWAL customer too, not only a new one', async () => {
+    /*
+     * One of three retryable exits used to carry this, and `renew()` has the
+     * other two — covering RENEWAL, ADD_VOLUME and ADD_TIME. A customer whose
+     * renewal could not be applied paid, watched their service expire, and
+     * heard nothing at all: the same defect, on the path where they already
+     * have something to lose.
+     *
+     * The notice lives in `release()` now, which is the funnel all three pass
+     * through, so this asserts the funnel rather than a third copy of the code.
+     */
+    const order = await paidRenewal();
+
+    await provisionPaidOrders(db, deadPanel, Date.now());
+    await ageFailure(order.orderId, STOCK_GRACE_MS + 60_000);
+    await provisionPaidOrders(db, deadPanel, Date.now());
+
+    const mine = await waitingNotes(order.publicId);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.text).toContain(TEXTS.SERVICE_STILL_WORKING_TITLE.default);
     expect(await orderStatus(order.orderId)).toBe('PAID');
   });
 
