@@ -39,9 +39,14 @@
  */
 .hub {
   --background: var(--bg-body);
-  /* Panel `--surface-1` / `--surface-2` — same names, written out. */
-  --surface-1: rgba(20, 22, 30, 0.48);
-  --surface-2: rgba(28, 30, 40, 0.74);
+  /* `--surface-1` and `--surface-2` were written out here, with the same values
+     `:root` already held. Identical is exactly what made them dangerous:
+     nothing goes wrong until somebody changes `:root`, and then the six finance
+     screens keep the old colour and nothing says so. `--text-dim` was raised on
+     2026-09-09 for measuring 3.26:1 on text an operator has to read; a copy of
+     it here would have kept the illegible one on these screens and left
+     `legibility.test.ts` — which reads `theme.css` — green over it. Inherited
+     now, and `css-scope.test.ts` refuses a second literal. */
   /* The same colour as `--surface-1`, at full alpha, for the surfaces whose job
      is to COVER what is behind them rather than to sit on it.
      Glass is right for a card: it lies on the opaque page background and the
@@ -57,19 +62,18 @@
   --surface-elevated: var(--surface-3);
   --surface-hover: var(--glass-sheen);
   --text-primary: var(--text-main);
-  --text-secondary: #8b94a6;
-  --text-muted: #8b94a6;
-  /* Panel `--accent` and its two tints. */
-  --gold: #3b82f6;
-  --gold-muted: rgba(59, 130, 246, 0.15);
-  --border-gold: rgba(59, 130, 246, 0.35);
-  --accent: #3b82f6;
+  /* Through the panel's token rather than beside it, so raising one raises
+     both. `--text-muted` is inherited outright. */
+  --text-secondary: var(--text-muted);
+  /* The hub's own names for `--accent` and its tints. Aliases, not copies: they
+     resolve through the panel's value and cannot drift from it. Renaming the
+     five hundred usages would be a 4,500-line diff buying nothing. */
+  --gold: var(--accent);
+  --gold-muted: var(--accent-soft);
+  --border-gold: var(--accent-mid);
   --accent-strong: #2563eb;
-  --accent-muted: rgba(59, 130, 246, 0.15);
-  --accent-glow: rgba(59, 130, 246, 0.35);
-  --success: #22c55e;
-  --warning: #f59e0b;
-  --danger: #ef4444;
+  --accent-muted: var(--accent-soft);
+  --accent-glow: var(--accent-mid);
   --border: var(--border-soft);
   --border-subtle: var(--border-soft);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
@@ -80,10 +84,9 @@
   --space-md: 0.75rem;
   --space-lg: 1rem;
   --space-xl: 1.5rem;
-  /* Panel `--radius-sm` / `--radius` / `--radius-lg`. */
-  --radius-sm: 8px;
-  --radius-md: 14px;
-  --radius-lg: 20px;
+  /* `--radius-sm` and `--radius-lg` are `:root`'s and inherited. `--radius-md`
+     is the hub's own name for the panel's plain `--radius`. */
+  --radius-md: var(--radius);
   --transition-theme: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
 
   /*
