@@ -331,3 +331,52 @@ test('the header never covers the first thing on the page', async ({ page }) => 
     }
   }
 });
+
+/**
+ * The palette, in a browser that has a real focus model.
+ *
+ * happy-dom covers the filtering, the debounce and the role check; what it
+ * cannot answer is whether the thing opens over the page, takes the keyboard,
+ * and hands it back. `<dialog open>` is not `showModal()` — there is no top
+ * layer and no browser backdrop — so «is it actually in front and focused» is a
+ * question only a browser settles.
+ */
+test('Ctrl+K opens the palette anywhere and takes the keyboard to a section', async ({ page }) => {
+  await page.goto('/admin/payments');
+  await expect(page.locator('header.app-header')).toBeVisible();
+  await expect(page.locator('dialog.palette')).toHaveCount(0);
+
+  await page.keyboard.press('Control+k');
+  const box = page.getByLabel('نام بخش یا مشتری');
+  await expect(box).toBeVisible();
+  // Focused without anyone clicking it: a palette you have to click into is a
+  // slower way of using the sidebar.
+  await expect(box).toBeFocused();
+
+  await box.fill('سفارشات');
+  await page.keyboard.press('Enter');
+
+  await expect(page.locator('.sidebar-link.active')).toHaveText('سفارشات');
+  // And it closes behind itself, or the next keystroke lands in a box still
+  // sitting on top of the screen it just opened.
+  await expect(page.locator('dialog.palette')).toHaveCount(0);
+});
+
+test('«/» opens the palette, but not while a search box has the keyboard', async ({ page }) => {
+  await page.goto('/admin/orders');
+  const search = page.locator('#ledger-q');
+  await expect(search).toBeVisible();
+
+  await search.click();
+  await page.keyboard.press('/');
+  await expect(page.locator('dialog.palette')).toHaveCount(0);
+  // The character went where it was typed, which is the whole point.
+  await expect(search).toHaveValue('/');
+
+  await search.fill('');
+  await search.blur();
+  await page.keyboard.press('/');
+  await expect(page.locator('dialog.palette')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('dialog.palette')).toHaveCount(0);
+});
