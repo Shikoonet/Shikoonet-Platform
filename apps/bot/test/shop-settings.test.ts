@@ -263,8 +263,28 @@ describe('a panel that cannot log in', () => {
       .run();
     try {
       const without = await serviceButtons(telegramId);
+      // Gone: everything that would have to log in to the panel.
       expect(without.some((d) => d.startsWith('xv:'))).toBe(false);
       expect(without.some((d) => d.startsWith('xt:'))).toBe(false);
+      // Revoking REPLACES the link at the panel, so it needs the credential too.
+      expect(without.some((d) => d.startsWith('rvk:'))).toBe(false);
+      expect(without.some((d) => d.startsWith('off:'))).toBe(false);
+      expect(without.some((d) => d.startsWith('on:'))).toBe(false);
+      /*
+       * Still there: «کانفیگ». It encodes `subscriptions.subscription_url`, a
+       * column we already hold, and never reaches a panel — so it works fine on
+       * one nobody can log into.
+       *
+       * This assertion is the one that matters. An earlier version of the guard
+       * returned null for the WHOLE actions object and took this button away
+       * too, and no assertion here could see it. That state is ordinary rather
+       * than exotic: `migrate.ts` lands every imported provider with an address
+       * and no secret, the dashboard counts `panels_without_secret` as a live
+       * condition, and a shelf delivery hands out a pre-made link without ever
+       * logging in. Taking a customer's own config away in all three cases
+       * would have been a worse bug than the one being fixed.
+       */
+      expect(without.some((d) => d.startsWith('qr:'))).toBe(true);
       // Not stranded: the way back is still there.
       expect(without).toContain('mine');
     } finally {

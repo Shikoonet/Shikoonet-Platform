@@ -59,20 +59,36 @@ export function actionsFor(
    * Drawing no button is the right answer rather than failing at checkout: the
    * customer never spends anything, and an operator who fixes the panel gets
    * the buttons back on the next screen with nothing to unwind.
+   *
+   * ## It takes away only what needs the panel
+   *
+   * An earlier version of this returned null for the WHOLE object, which also
+   * withdrew «کانفیگ» — and that button never touches a panel. It encodes
+   * `subscriptions.subscription_url`, a column the shelf and the last sync
+   * already filled, so it works perfectly well on a panel nobody can log into.
+   *
+   * The state is not hypothetical: `migrate.ts` lands every imported provider
+   * with an address and no `secret_ref` on purpose, the dashboard counts
+   * `panels_without_secret` as a live condition, and a shelf-backed panel
+   * legitimately has no credential at all because a shelf delivery hands out a
+   * pre-made link without ever logging in. Taking the customer's own config
+   * away from them in all three cases is a worse bug than the one being fixed.
    */
-  if (!service.provider_secret_ref && !service.provider_sealed) return null;
   // REMOVED, FAILED, PENDING_PAYMENT: nothing to revoke and nothing to switch.
   if (service.status !== 'ACTIVE' && service.status !== 'DISABLED') return null;
   const pricing = extraPricingFor(service.provider_config ?? {}, tier);
+  const canReachPanel = Boolean(service.provider_secret_ref || service.provider_sealed);
   return {
     id: service.id,
     disabled: service.status === 'DISABLED',
     // A panel that prices an add-on can still be a shop that does not sell it.
     // Production has had both of these switched off for years while our bot
     // drew the buttons anyway.
-    volumeIrrPerGb: shop.sellsExtraVolume ? pricing.volumeIrrPerGb : null,
-    timeIrrPerDay: shop.sellsExtraTime ? pricing.timeIrrPerDay : null,
-    canSwitch: shop.allowsServiceSwitch,
+    volumeIrrPerGb: canReachPanel && shop.sellsExtraVolume ? pricing.volumeIrrPerGb : null,
+    timeIrrPerDay: canReachPanel && shop.sellsExtraTime ? pricing.timeIrrPerDay : null,
+    canSwitch: canReachPanel && shop.allowsServiceSwitch,
+    canRevoke: canReachPanel,
+    // Deliberately NOT gated on the credential — see above.
     showsConfig: shop.showsConfigButton,
   };
 }
